@@ -5,17 +5,16 @@
 # Every INSTALLED header must compile standalone at the language level the package
 # ADVERTISES, not the one the kernel is built with: the kernel compiles at C++20, the
 # exported targets carry cxx_std_17. A C++20 construct in a public header compiles under
-# the kernel's own flags here and fails only in the consumer's build.
+# the kernel's own flags and fails only in the consumer's build.
 #
 # Usage: check_public_headers.sh <install-prefix> <c++-compiler> <std> <c-compiler>
 #
-# Standalone also means self-contained: a header that only compiles after some other
-# header has been included is a header whose include list is wrong.
+# Standalone also means self-contained: a header that compiles only after some other header
+# has been included has a wrong include list.
 #
-# The C arm at the bottom is the other half of that promise: a header guarding `extern "C"`
-# with __cplusplus tells a consumer their C translation unit may include it, so it has to
-# compile as C. The C compiler is a REQUIRED argument, not defaulted: a gate that hunted for
-# one and found none would report the whole C surface clean.
+# The C arm at the bottom: a header guarding `extern "C"` with __cplusplus tells a consumer
+# their C translation unit may include it, so it has to compile as C. The C compiler is a
+# REQUIRED argument, never defaulted.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -32,9 +31,8 @@ INC="$PREFIX/include"
 [ -d "$INC" ] || fail "no include directory in the package at $PREFIX"
 
 # The usage requirements a consumer inherits from the target, minus the generator
-# expressions CMake resolves per configuration. An ARRAY, not a joined string: a shell
-# that does not word-split would pass the whole thing as one unrecognised argument,
-# dropping every define and firing board.h's missing-chip-header #error instead.
+# expressions CMake resolves per configuration. An ARRAY, not a joined string: joined, the
+# whole thing arrives as one unrecognised argument and every define is dropped.
 DEFS=(-Dmain=kickos_app_main -D__KickOS__=1
       -DKICKOS_TELEMETRY=0 -DKICKOS_TELEMETRY_RTT=0 -DKICKOS_TRACE_ARCH=0
       -DKICKOS_HAVE_MPU=1 -DKICKOS_DEBUG=0)
@@ -65,7 +63,7 @@ echo "PASS: $n installed headers compile standalone at $STD"
 #
 #   corpus  DERIVED, never listed: an installed header whose CODE both names __cplusplus
 #           and carries an `extern "C"`, plus every installed header such a header
-#           includes, transitively. There is no include or exclude list to edit.
+#           includes, transitively.
 #           The installed prefix is ONE merged include root, so this needs none of the
 #           per-arch root disambiguation the same rule needs against the source tree (six
 #           directories there provide kickos/arch/context.h).
@@ -97,7 +95,6 @@ compile_as_c() { # <include-spelling> <stderr file>; 0 ok, 1 not valid C, 2 an i
 }
 
 # --- the compiler and the pin, proven both ways ----------------------------
-# An -std that did not take, or a flag typo, would report the whole C corpus clean.
 mkdir -p "$TMP/p"
 cat > "$TMP/p/ok.h" <<'EOF'
 #include <stdint.h>
@@ -129,8 +126,7 @@ probe_neg alignas       'struct s { alignas(8) unsigned char b[8]; };'
 # --- the selector -----------------------------------------------------------
 # The stripper blanks string literals as well as comments, so `extern "C"` survives it only
 # as `extern `: the STRIPPED line proves the text was code, the RAW line supplies the
-# literal. Not optional. kickos/arch/arch.h says both __cplusplus and extern "C" in prose
-# while making no claim, and a plain grep enlists it.
+# literal. Not optional: a header naming both spellings in prose is a hit to a plain grep.
 c_facing() { # <path>; 0 names __cplusplus and has a non-comment extern "C", 1 not, 2 refused
   LC_ALL=C awk -f "$STRIP" "$1" > "$TMP/stripped" 2>>"$TMP/strip.err" || return 2
   grep -q '__cplusplus' "$TMP/stripped" || return 1
@@ -221,10 +217,9 @@ if [ -s "$TMP/cbad" ]; then
   echo "" >&2
   fail "$(wc -l < "$TMP/cbad" | tr -d ' ') C-facing installed header(s) are not valid C11.
       Each guards an extern \"C\" block with __cplusplus, or is included by one that does,
-      which tells a consumer their C translation unit may include it. Either write both
-      spellings under the guard, as kickos/sys/byte_ring.h does for std::atomic<uint32_t>
-      and _Atomic uint32_t, or DROP the guard so the header declares itself C++ only and
-      leaves this corpus."
+      which tells a consumer their C translation unit may include it. Either write the
+      C-valid spelling of what it needs, or DROP the guard so the header declares itself
+      C++ only and leaves this corpus."
 fi
 
 echo "PASS: $CN C-facing installed header(s) compile standalone at $CFLAGS"

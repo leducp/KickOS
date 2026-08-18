@@ -53,6 +53,13 @@
       "inherits": "esp32c6-wroom",
       "binaryDir": "${sourceDir}/build/esp32c6-wroom-flat",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" }
+    },
+    {
+      "name": "esp32c6-wroom-bench",
+      "displayName": "ESP32-C6-WROOM-1 + KICKOS_BENCH - the call/reply phase decomposition, enforcing",
+      "inherits": "esp32c6-wroom",
+      "binaryDir": "${sourceDir}/build/esp32c6-wroom-bench",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" }
     }
   ],
   "buildPresets": [
@@ -61,7 +68,8 @@
     { "name": "qemu-riscv-bench", "configurePreset": "qemu-riscv-bench" },
     { "name": "esp32c6-wroom", "configurePreset": "esp32c6-wroom" },
     { "name": "esp32c6-wroom-st", "configurePreset": "esp32c6-wroom-st" },
-    { "name": "esp32c6-wroom-flat", "configurePreset": "esp32c6-wroom-flat" }
+    { "name": "esp32c6-wroom-flat", "configurePreset": "esp32c6-wroom-flat" },
+    { "name": "esp32c6-wroom-bench", "configurePreset": "esp32c6-wroom-bench" }
   ],
   "testPresets": [
     { "name": "qemu-riscv", "configurePreset": "qemu-riscv", "output": { "outputOnFailure": true } },

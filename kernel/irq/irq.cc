@@ -18,21 +18,18 @@ namespace kickos
 {
     namespace
     {
-        // Resolve a caller's CAP_IRQ to its binding, enforcing `need` at the one
-        // rights chokepoint. Caller holds IrqLock.
+        // Caller holds IrqLock.
         IrqBinding* binding_of_cap(Thread* c, uint32_t cap_handle, uint8_t need, int* err)
         {
             return static_cast<IrqBinding*>(
                 cap_resolve_e(c, cap_handle, CapType::CAP_IRQ, need, err));
         }
 
-        // Rearm the line a previous wait consumed. Caller holds IrqLock.
-        // EDGE is a bare unmask: a raise latched while masked redelivers, so no pulse is
-        // lost. The FIRST arm discards the latch whatever the trigger, since a raise latched
-        // before the line had an owner would phantom-wake the first wait; LEVEL keeps
-        // discarding on every rearm, after the driver's own device clear. Clearing here for
-        // EDGE would drop the coalesced raises this path exists to redeliver, so an EDGE
-        // driver that KNOWS its latch is stale calls irq_discard instead.
+        // Caller holds IrqLock.
+        // The FIRST arm discards the latch whatever the trigger: a raise latched before the
+        // line had an owner would phantom-wake the first wait. After that only LEVEL keeps
+        // discarding; clearing for EDGE would drop the coalesced raises this path exists to
+        // redeliver, so an EDGE driver with a known-stale latch calls irq_discard.
         void rearm_locked(IrqBinding* b)
         {
             if (not b->needs_rearm)
@@ -48,9 +45,8 @@ namespace kickos
             arch_irq_unmask(b->line);
         }
 
-        // First-level ISR stub for a tier-1 line: mask, so it cannot re-fire while the
-        // driver services it, then post the bound notification. `arg` IS the pre-bound
-        // binding: no table lookup in ISR context (the latency invariant).
+        // ISR context. `arg` is the pre-bound binding, not a line number.
+        // Masks the line; the matching unmask is rearm_locked, on wait return.
         void irq_event_isr(void* arg)
         {
             IrqBinding* b = static_cast<IrqBinding*>(arg);
@@ -58,10 +54,9 @@ namespace kickos
             sem_post(&b->sem);
         }
 
-        // Null-object default bound to every line with no driver. An enabled line that fires
-        // with no handler must be masked, or it re-asserts forever into an interrupt storm,
-        // and counted rather than silently dropped. ISR context, so async-safe only: mask and
-        // bump a counter, no I/O. `arg` encodes the line (seeded by irq_init/irq_detach).
+        // Null-object default bound to every line with no driver. An unhandled enabled line
+        // must be masked or it re-asserts forever. ISR context: mask and count, no I/O.
+        // `arg` encodes the line (seeded by irq_init/irq_detach).
         void irq_default_handler(void* arg)
         {
             int line = static_cast<int>(reinterpret_cast<intptr_t>(arg));
@@ -77,8 +72,7 @@ namespace kickos
         }
     }
 
-    // Seed every line with the null-object default so the dispatch table has no
-    // null slots. Must run before any irq_attach/irq_claim (kmain, pre-start).
+    // Must run before any irq_attach/irq_claim (kmain, pre-start): after it no slot is null.
     void irq_init()
     {
         IrqLock lock;
@@ -101,9 +95,7 @@ namespace kickos
             return false;
         }
         IrqLock lock;
-        // One driver per line: only a line still holding the null-object default
-        // is free to claim. Without this a tier-2 attach would silently overwrite
-        // a line a tier-1 driver already owns, orphaning its irq_wait() forever.
+        // One driver per line: only a line still holding the null-object default is free.
         if (kernel().irq_table[irq].handler != irq_default_handler)
         {
             return false;
@@ -120,8 +112,8 @@ namespace kickos
             return;
         }
         IrqLock lock;
-        set_default(irq); // restore the null-object, not a null slot
-        arch_irq_mask(irq); // register/attach armed the line; detach disarms it
+        set_default(irq); // the null-object, not a null slot
+        arch_irq_mask(irq);
     }
 
     int irq_claim(Thread* c, int line, unsigned int flags, uint32_t* out_cap)
@@ -130,30 +122,28 @@ namespace kickos
         *out_cap = KCAP_INVALID;
         if (c == nullptr)
         {
-            return -KOS_EPERM; // no caller context (defensive; unreachable from a real syscall)
+            return -KOS_EPERM;
         }
         if (line < 0 or line >= KICKOS_MAX_IRQ)
         {
-            return -KOS_EINVAL; // bad irq line
+            return -KOS_EINVAL;
         }
         if ((flags & ~static_cast<unsigned int>(KOS_IRQ_LEVEL)) != 0)
         {
-            return -KOS_EINVAL; // unknown claim flag
+            return -KOS_EINVAL;
         }
         Kernel& k = kernel();
-        // One driver per line: a line is free iff it still holds the null-object
-        // default (every slot is non-null since irq_init, so the old != nullptr
-        // check would reject every line). This is also what enforces the ordering
-        // in INVARIANT H2: the console line stays unclaimable until the kernel's
+        // One driver per line: free iff it still holds the null-object default. This is also
+        // what enforces INVARIANT H2: the console line stays unclaimable until the kernel's
         // own console_tx_deinit has detached it.
         if (k.irq_table[line].handler != irq_default_handler)
         {
-            return -KOS_EBUSY; // line already owned; no stealing
+            return -KOS_EBUSY;
         }
         int const i = k.irq_bindings.alloc();
         if (i < 0)
         {
-            return -KOS_ENOMEM; // binding pool exhausted
+            return -KOS_ENOMEM;
         }
         IrqBinding* b = k.irq_bindings.at(i);
         sem_init(&b->sem, 0);
@@ -167,11 +157,10 @@ namespace kickos
         {
             b->trigger = IRQ_LEVEL;
         }
-        k.irq_refs[i] = 1; // this claimer's cap is the first reference
+        k.irq_refs[i] = 1; // the claimer's cap is the first reference
         int const obj = k.irq_bindings.handle_for(i);
-        // A full table is a clean failure: release the just-claimed binding. Install
-        // BEFORE attaching so a failure path never leaves a line bound to a slot that
-        // is about to be freed.
+        // Install BEFORE attaching: a failure path must never leave a line bound to a slot
+        // that is about to be freed.
         uint32_t cap = KCAP_INVALID;
         int const rc = cap_install(c, obj, CapType::CAP_IRQ,
                                    CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER, &cap);
@@ -183,21 +172,17 @@ namespace kickos
         }
         // The ISR is handed the binding's ADDRESS, stable for the slot's life.
         irq_attach(line, irq_event_isr, b);
-        // Deliberately NOT armed here. The line stays masked until the first irq_wait, so it
-        // is never armed while its eventual owner is not yet running, which is what closes
-        // the publish-to-claim window.
+        // Deliberately NOT armed here (INVARIANT H1).
         *out_cap = cap;
         return 0;
     }
 
-    // The ONE cancellation point in the kernel. It must NOT be folded back into sem_wait:
-    // sem_wait returns void and never reads wait_result, so a third party waking it early
-    // would be indistinguishable from a post. Parking through wq_block directly is what
-    // gives this wait an error return.
+    // The ONE cancellation point in the kernel. Do NOT fold back into sem_wait: sem_wait
+    // returns void and never reads wait_result, so an early wake would look like a post.
     int irq_wait(Thread* c, uint32_t cap_handle)
     {
         IrqBinding* b = nullptr;
-        uint64_t epoch = 0;
+        uint32_t epoch = 0;
         {
             IrqLock lock;
             int err = 0;
@@ -208,43 +193,36 @@ namespace kickos
             }
             if (c->cancel_kind != CANCEL_NONE)
             {
-                return -KOS_ECANCELED; // refuse to RE-block a thread already cancelled
+                return -KOS_ECANCELED;
             }
-            // Arm the line: the first wait does the initial arm, every later one
-            // rearms what the previous wait consumed (no explicit ack needed).
             rearm_locked(b);
             if (b->sem.count > 0)
             {
-                // A raise already banked: consume it without parking. Event consumed, so
-                // the same rearm flag the parked path sets on resume.
+                // Flag for rearm exactly as the parked path does on resume.
                 b->sem.count--;
                 b->needs_rearm = true;
                 return 0;
             }
-            // A SlotPool slot address is stable for the slot's life and this waiter holds
-            // a reference to it (its own cap), so `b` stays valid across the park: the
-            // binding cannot be freed under us.
+            // `b` survives the park: this waiter's own cap holds a reference to the slot.
             c->wait_result = 0; // sem_post hands the token WITHOUT writing this
             epoch = c->switch_count;
-            // WAIT_IRQ, not WAIT_SEM, though the queue is a semaphore's: it is the only
-            // tag that says this park reads wait_result and so may be ended early.
+            // WAIT_IRQ, not WAIT_SEM, though the queue is a semaphore's: only this tag says
+            // the park reads wait_result and so may be ended early.
             wq_block(b->sem.waiters, WAIT_IRQ, b);
         }
-        // Mandatory, and OUTSIDE the lock: on ARM the switch is only pended when the
-        // block scope's lock drops, so a wait_result read before this returns the
-        // pre-block value (sync.h).
+        // Mandatory, and OUTSIDE the lock: where the switch is only pended when the block
+        // scope's lock drops, a wait_result read before this returns the pre-block value.
         wq_confirm_resume(c, epoch);
         {
             IrqLock lock;
             if (c->wait_result != 0)
             {
-                // Cancelled. The line is deliberately left as the rearm above set it:
-                // this thread is exiting, and its cap drop detaches and masks the line.
+                // Left as the rearm above set it: the exiting thread's cap drop detaches
+                // and masks the line.
                 return static_cast<int>(c->wait_result);
             }
-            // Event consumed: flag the line for rearm HERE, not in the ISR. The ISR
-            // masked before posting, so the line is masked now; setting the flag on
-            // wait-return (never in ISR) is what makes ack;compute;wait phantom-free.
+            // Flag for rearm HERE, never in the ISR: that is what makes ack;compute;wait
+            // phantom-free.
             b->needs_rearm = true;
         }
         return 0;
@@ -259,8 +237,7 @@ namespace kickos
         {
             return -err; // EBADF (bad/closed cap) or EPERM (no WAIT right)
         }
-        // OPTIONAL + idempotent: only unmask if a wait consumed an event and left
-        // the line masked. A double ack, or an ack after auto-rearm, is a no-op.
+        // Optional and idempotent: a double ack, or an ack after auto-rearm, is a no-op.
         rearm_locked(b);
         return 0;
     }
@@ -275,10 +252,8 @@ namespace kickos
             return -err; // EBADF (bad/closed cap) or EPERM (no WAIT right)
         }
         // The controller only: needs_rearm and the mask state are both untouched, so a
-        // discard can neither arm nor open a line and the sequencing stays with the driver.
-        // Discarding while the line is still armed is legal and races the device by
-        // construction; the caller can only know the latch is stale with the line masked,
-        // that is, between a wait return and its ack.
+        // discard can neither arm nor open a line. Discarding an armed line races the
+        // device; the latch is only known stale between a wait return and its ack.
         arch_irq_clear_pending(b->line);
         return 0;
     }
@@ -293,8 +268,7 @@ namespace kickos
             return -err; // EBADF (bad/closed cap) or EPERM (no SIGNAL right)
         }
         // The controller is NOT touched: the waiter wakes with nothing asserted and must be
-        // idempotent about finding no work. needs_rearm is left alone, since a notify must
-        // not unmask a line whose event has not been serviced.
+        // idempotent about finding no work. A notify must never unmask an unserviced line.
         sem_post(&b->sem);
         return 0;
     }
@@ -315,30 +289,23 @@ namespace kickos
         }
         if (r == 0)
         {
-            // Same leak-don't-strand guard as the sem/mutex/endpoint arms, and UNREACHABLE:
-            // every parked waiter holds its own cap, so waiters <= refs, and cancellation
-            // unlinks the target in the killer's context before the target tears down. An
-            // async destroy would break that, and this assert is what would say so.
             if (not b->sem.waiters.empty())
             {
-                KICKOS_ASSERT(teardown); // refs->0 with a waiter parked is unreachable via close
-                r = 1;                   // leak, never strand
+                KICKOS_ASSERT(teardown);
+                r = 1; // leak, never strand
                 return;
             }
-            // DETACH BEFORE FREE, and it is load-bearing: irq_event_isr holds this
-            // binding's address as its pre-bound arg, so the slot must stop being
-            // reachable from the dispatch table before it returns to the pool.
-            // irq_detach restores the null-object default AND masks the line, which is
-            // what makes a later irq_claim of the same line pass its EBUSY test.
+            // DETACH BEFORE FREE: irq_event_isr holds this binding's address as its
+            // pre-bound arg, so the slot must leave the dispatch table before it returns
+            // to the pool. The detach also masks the line and restores the null-object,
+            // which is what lets a later irq_claim of the same line pass its EBUSY test.
             irq_detach(b->line);
             k.irq_bindings.free(obj_handle);
         }
     }
 }
 
-// Called by the arch backend in ISR context when device line `irq` fires. Runs
-// the attached handler by index (no search); the handler posts a sem/flag and so
-// drives a switch to the readied thread on interrupt exit.
+// Called by the arch backend in ISR context when device line `irq` fires.
 extern "C" void kickos_isr_irq(int irq)
 {
     if (irq < 0 or irq >= KICKOS_MAX_IRQ)
@@ -346,8 +313,7 @@ extern "C" void kickos_isr_irq(int irq)
         return;
     }
     ::kickos::Kernel& k = ::kickos::kernel();
-    // Every slot is a valid callback (the null-object default), so no null check:
-    // an unbound line dispatches to irq_default_handler (mask + spurious count).
+    // No null check: every slot is a valid callback (the null-object default).
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     ::kickos::ktrace_irq_enter(static_cast<uint16_t>(irq));
 #endif

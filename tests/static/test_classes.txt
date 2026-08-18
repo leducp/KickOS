@@ -7,30 +7,20 @@
 #
 #   <host|image>  <src|build>  <path relative to that root>
 #
-# host  = executes no KickOS image: source-tree checks, host programs linking real KickOS
-#         sources or headers, static checks that read a built ELF with nm/readelf, and
-#         builds that deliberately never run what they produced. Reads no clock, so
-#         `ctest -L host` is batchable.
-# image = runs a KickOS image, natively or under an emulator, directly or through a tree
-#         it configures and builds itself. Must run standalone: the sim and qemu suites
-#         have no silicon clock and fail under the load of a back-to-back run.
+# host  = executes no KickOS image: source-tree checks, host programs linking KickOS sources
+#         or headers, static checks reading a built ELF, and builds that never run what they
+#         produced. Reads no clock, so `ctest -L host` is batchable.
+# image = runs a KickOS image, natively or under an emulator, directly or through a tree it
+#         configures and builds itself. Must run standalone: the sim and qemu suites have no
+#         silicon clock and fail under the load of a back-to-back run.
 #
-# No rule over the ctest command line can replace this file. check_oot_export.sh and
-# check_oot_export_mcu.sh are siblings in tests/integration/ with the same argument shape and
-# the same helper library, and they are on opposite sides: the first runs the app it built,
-# the second cannot (an MCU ELF does not run on the host). Neither the directory nor the
-# argument list discriminates, so a new test gets a line here or the gate refuses it.
+# Neither the directory nor the argument list discriminates the two: check_oot_export.sh and
+# check_oot_export_mcu.sh are siblings with the same shape on opposite sides. A new test gets
+# a line here or the gate refuses it.
 #
-# A build path is relative to the CMake binary directory. Only the sim arch registers any:
-# it is the one arch whose images and whose GoogleTest binaries are native programs.
-#
-# One board's ctest run sees only the subset of these its own configuration registers, so a
-# line naming a program NO board registers any more is dead. The `src` half of that rot is
-# caught on every board (the gate checks the file still exists). The `build` half is caught
-# only on a sim tree with the host unit binaries built, which is the one configuration that
-# registers every build path here: an MCU board registers none of them and cannot tell a
-# dead line from one it simply does not build, so a run of the fleet that never includes
-# that configuration checks the `build` half nowhere.
+# A `build` path is relative to the CMake binary directory. A dead `build` line is caught only
+# on a sim tree with the host unit binaries built; no MCU board registers any, so a fleet run
+# without that configuration checks the `build` half nowhere.
 
 # --- source-tree and host-program gates --------------------------------------
 host   src    tests/integration/check_oot_export_mcu.sh
@@ -54,6 +44,7 @@ host   src    tests/unit/telemetry/check_idmap.py
 
 # --- host unit-test binaries (GoogleTest, one ctest entry per case) ----------
 host   build  tests/unit/cancelkind/cancel_kind
+host   build  tests/unit/capprobe/cap_probe
 host   build  tests/unit/capreply/capreply_packing
 host   build  tests/unit/capsweep/cap_sweep
 host   build  tests/unit/captable/captable_deep

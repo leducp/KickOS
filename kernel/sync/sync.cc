@@ -22,10 +22,9 @@ namespace kickos
         {
             q.unlink(&best->link);
             best->clear_wait_edge();
-            // No deadline cancel here. A pop is not an unpark: endpoint_recv pops a
-            // CALL_SEND_WAIT caller straight into reply_donor_park, and cancelling here
-            // would strip the deadline that must span both call phases. sched::wake owns
-            // the cancel, because becoming ready is what ends a wait.
+            // No deadline cancel here: a pop is not an unpark, since endpoint_recv pops a
+            // CALL_SEND_WAIT caller straight into reply_donor_park and the deadline must
+            // span both call phases. sched::wake owns the cancel.
         }
         return best;
     }
@@ -49,19 +48,15 @@ namespace kickos
     }
 
     // `epoch` MUST be c->switch_count sampled under the block lock immediately before
-    // wq_block. On ARM the pended PendSV has not fired when that lock is released
-    // (arch_irq_restore has no ISB), so the caller is still executing pre-switch and must
-    // not trust anything a waker wrote. switch_to bumps the INCOMING thread's
-    // switch_count, so an advance is proof of a real switch-in. Volatile, not atomic: the
-    // value moves via the exception-mode switch, invisibly to this function, and it is 64
-    // bits wide (sys/atomic.h refuses those). Zero iterations on the sim, where wq_block
-    // switches synchronously.
-    void wq_confirm_resume(Thread* c, uint64_t epoch)
+    // wq_block. Where the switch is pended it has not fired when that lock is released, so
+    // the caller is still executing pre-switch and must not trust anything a waker wrote.
+    // switch_to bumps the INCOMING thread's switch_count, so an advance is proof of a real
+    // switch-in and the acquire load is what makes the waker's writes readable.
+    void wq_confirm_resume(Thread* c, uint32_t epoch)
     {
-        // Reaching the cap means the switch is never coming (a masked or lost PendSV);
-        // the pended switch otherwise fires as soon as the caller's IrqLock drops.
+        // Reaching the cap means the switch is never coming (a masked or lost pend).
         uint32_t spin = 0;
-        while (*static_cast<uint64_t volatile*>(&c->switch_count) == epoch)
+        while (c->switch_count.load() == epoch)
         {
             if (++spin > KICKOS_POLL_SPIN_MAX)
             {
@@ -77,9 +72,8 @@ namespace kickos
         // BLOCKED before the detach: on_remove reads `state` to tell a park from a
         // set_prio re-seat, and only a park forfeits the RR slice remainder.
         c->state = ThreadState::BLOCKED;
-        // Detach from the ready list FIRST: the ready list and the wait queues share the
-        // TCB link node, so the push below would clobber the links the ready-list removal
-        // still has to read.
+        // Detach from the ready list FIRST: the ready list and the wait queues share the TCB
+        // link node, so the push below would clobber links the removal still has to read.
         sched::detach_current();
         c->wait_queue = &q;
         c->wait_kind = kind;
@@ -90,9 +84,8 @@ namespace kickos
 
     void park_queueless(Thread* c, WaitKind kind, void* obj)
     {
-        // Same ordering rule as wq_block: BLOCKED before the detach (on_remove reads it),
-        // and the ready-list removal reads `link`, so it must run before anything re-uses
-        // that node.
+        // Same ordering as wq_block: BLOCKED before the detach (on_remove reads it), and the
+        // removal reads `link`, so it must run before anything re-uses that node.
         c->state = ThreadState::BLOCKED;
         sched::detach_current();
         c->wait_queue = nullptr;
@@ -100,8 +93,6 @@ namespace kickos
         c->wait_obj = obj;
     }
 
-    // The ceiling must be representable in Semaphore::count, else the bound in sem_post is
-    // itself the overflow it prevents.
     static_assert(KOS_SEM_COUNT_MAX <= INT_MAX,
                   "KOS_SEM_COUNT_MAX must fit Semaphore::count (an int)");
 
@@ -145,15 +136,15 @@ namespace kickos
         }
         if (s->count >= KOS_SEM_COUNT_MAX)
         {
-            return false; // at the ceiling: refuse rather than wrap a signed int (UB)
+            return false; // refuse rather than wrap a signed int (UB)
         }
         s->count++;
         return true;
     }
 
-    // Priority inheritance. sched::set_prio is the SOLE writer of an effective priority.
-    // Inheritance does NOT propagate through semaphores: a thread blocked on a sem answers
-    // nullptr from wait_mutex(), so the chain walk stops there.
+    // sched::set_prio is the SOLE writer of an effective priority. Inheritance does NOT
+    // propagate through semaphores: a thread blocked on a sem answers nullptr from
+    // wait_mutex(), so the chain walk stops there.
     namespace
     {
         void held_push(Thread* owner, Mutex* m)
@@ -192,21 +183,18 @@ namespace kickos
             return best;
         }
 
-        // Caller holds IrqLock, and must already have held_remove'd m from the releaser
-        // and popped w off m->waiters; that pop is what cleared w's wait edge.
-        // Both that clear and `status` belong to the WAKER, never to the woken thread
-        // after it resumes: on ARM the woken thread resumes only after a deferred PendSV,
-        // so a self-clear leaves a window in which a still-parked thread already answers
-        // nullptr from wait_mutex() and the chain walk stops short of it, losing a boost
-        // or a deadlock detection.
+        // Caller holds IrqLock, and must already have held_remove'd m from the releaser and
+        // popped w off m->waiters; that pop is what cleared w's wait edge. Both that clear
+        // and `status` belong to the WAKER: where the resume is deferred, a self-clear leaves
+        // a window in which a still-parked thread answers nullptr from wait_mutex() and the
+        // chain walk stops short of it, losing a boost or a deadlock detection.
         void transfer_to(Mutex* m, Thread* w, intptr_t status)
         {
             m->owner = w;
             w->wait_result = status;
             held_push(w, m);
-            // VACUOUS while the pop returns the highest-prio waiter: every waiter left on
-            // m is then <= w. Kept as the general form so a change of pop policy does not
-            // silently drop the new owner's inheritance.
+            // VACUOUS while the pop returns the highest-prio waiter: every waiter left on m
+            // is then <= w.
             uint8_t wp = w->prio;
             uint8_t const hw = highest_waiter_prio(m);
             if (hw > wp)
@@ -222,8 +210,7 @@ namespace kickos
 
     // Unchecked preconditions: `caller` is already off the ready set and off every other
     // queue, so its `link` is free; and its CAP_REPLY is already installed in `server`'s
-    // table. The entry is what the server closes and the membership is what the funnel
-    // reads, so the two must move together or the funnel miscounts.
+    // table. The cap entry and this membership must move together or the funnel miscounts.
     void reply_donor_park(Thread* server, Thread* caller)
     {
         server->reply_waiters.push(&caller->link);
@@ -234,14 +221,13 @@ namespace kickos
         caller->wait_obj = server;
     }
 
-    // Must run wherever a CAP_REPLY entry is consumed (reply, voluntary close, exit
-    // teardown) and BEFORE the funnel recompute that follows, else the donor is counted
-    // after its cap is gone. Membership is TESTED, not assumed: cap_reply_caller matches
-    // only the low 8 bits of the call sequence, so a stale reply cap held by thread A can
-    // resolve to a caller actually parked on thread B, and unlinking it from A would
-    // splice B's list. The false return is what the caller must branch on: `link` is
-    // ready-list XOR wait-queue XOR reply-donor, so completing a transaction against a
-    // caller this did not unlink walks two lists through one node.
+    // Must run wherever a CAP_REPLY entry is consumed (reply, voluntary close, exit teardown)
+    // and BEFORE the funnel recompute that follows, else the donor is counted after its cap is
+    // gone. Membership is TESTED, not assumed: cap_reply_caller matches only the low 8 bits of
+    // the call sequence, so a stale reply cap held by A can resolve to a caller parked on B.
+    // The false return must be branched on: `link` is ready-list XOR wait-queue XOR
+    // reply-donor, so completing a transaction against a caller this did not unlink would
+    // walk two lists through one node.
     bool reply_donor_unpark(Thread* server, Thread* caller)
     {
         // The clear rides the unlink: clearing on a miss would erase a live edge while the
@@ -281,8 +267,7 @@ namespace kickos
 
     void endpoint_server_set(Endpoint* ep, Thread* t)
     {
-        // Same thread recv'ing again: this early return keeps index_of's divide off the
-        // per-message path.
+        // Keeps index_of's divide off the per-message path.
         if (ep->server == t)
         {
             return;
@@ -316,11 +301,11 @@ namespace kickos
                 p = caller->prio;
             }
         }
-        // ep->server stays the authoritative "t is this endpoint's receiver" bit; the chain
-        // only indexes it. Do not re-derive membership from t's capability table, and do not
-        // sweep the endpoint pool either: at a large KICKOS_MAX_ENDPOINTS that sweep is the
-        // masked window. A chain member is always a live slot: server is cleared before
-        // recv_holders can reach 0, and the slot is freed only at zero refs.
+        // ep->server is the authoritative "t is this endpoint's receiver" bit; the chain only
+        // indexes it. Do not re-derive membership from t's capability table, and do not sweep
+        // the endpoint pool either: at a large KICKOS_MAX_ENDPOINTS that sweep is the masked
+        // window. A chain member is always a live slot: server is cleared before recv_holders
+        // can reach 0, and the slot is freed only at zero refs.
         uint16_t r = t->served_head;
         while (r != EP_SERVED_NONE)
         {
@@ -349,7 +334,7 @@ namespace kickos
     int mutex_lock(Mutex* m)
     {
         Thread* c = sched::current();
-        uint64_t epoch = 0;
+        uint32_t epoch = 0;
         {
             IrqLock lock;
             if (m->owner == nullptr)
@@ -362,10 +347,8 @@ namespace kickos
             {
                 return -KOS_EDEADLK; // a recursive lock is refused, never parked
             }
-            // Pass 1: cycle detection, READ ONLY, so a refusal writes no boost. Walking
-            // owner -> wait_mutex() -> owner reaching c means blocking c on m would close a
-            // wait cycle. The depth bound only stops the walk on a PRE-EXISTING foreign
-            // cycle; those threads are already deadlocked.
+            // Pass 1: cycle detection, READ ONLY, so a refusal writes no boost. The depth
+            // bound only stops the walk on a PRE-EXISTING foreign cycle.
             {
                 Thread* t = m->owner;
                 int depth = 0;
@@ -411,16 +394,14 @@ namespace kickos
                     }
                 }
             }
-            // Must be sampled under the lock, immediately before parking; the barrier
-            // below waits for it to advance.
+            // Sampled under the lock, immediately before parking.
             epoch = c->switch_count;
-            // WAIT_MUTEX is what puts c on the chain walk above for the next blocker.
-            // A waker transfers ownership and writes wait_result.
+            // WAIT_MUTEX is what puts c on the chain walk above for the next blocker. A
+            // waker transfers ownership and writes wait_result.
             wq_block(m->waiters, WAIT_MUTEX, m);
         }
         // The wait_result read must be BOTH outside the critical section AND after the
-        // barrier: on ARM a couple of instructions retire on the not-yet-switched thread
-        // after the unmask, so reading it earlier returns the pre-block value.
+        // barrier, or it returns the pre-block value.
         wq_confirm_resume(c, epoch);
         return static_cast<int>(c->wait_result);
     }
@@ -460,11 +441,9 @@ namespace kickos
 
     void mutex_force_unlock(Mutex* m, Thread* dying)
     {
-        // `dying` gets NO recompute: it only runs the rest of its own teardown, so it
-        // stays boosted for the remainder of the sweep. That inversion is bounded and
-        // unmasked because the sweep is chunked. The waiter is woken with
-        // MUTEX_OWNER_DIED because the protected state may be inconsistent; it is never
-        // stranded.
+        // `dying` gets NO recompute: it stays boosted for the remainder of its own teardown,
+        // a bounded inversion since the sweep is chunked. The waiter is woken with
+        // MUTEX_OWNER_DIED, the protected state may be inconsistent, but never stranded.
         held_remove(dying, m);
         Thread* w = wq_pop_highest(m->waiters);
         if (w == nullptr)

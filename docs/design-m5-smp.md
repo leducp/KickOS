@@ -183,10 +183,31 @@ one kernel instance per core over disjoint memory -- "because they are simpler a
 closer to the current sequential seL4 proofs." The project this document cites as
 the big-lock precedent has aimed its own assurance roadmap away from the big lock.
 
-The number that should decide it is not in this document and is cheap to get: what
-fraction of a call/reply round-trip is spent inside `IrqLock` today, measured
-single-core on the bench. A shared kernel's payoff is Amdahl-bounded by exactly that
-fraction, and the "about 2x" figure below is unproven.
+The number that should decide it is no longer missing. `design-m5-ipc-fastpath.md`
+section 3.0.4 measures it on `esp32c6-wroom` (rv32imac, enforcing, 160 MHz): **53
+percent of a call/reply round trip is spent inside `IrqLock`, with a leaf floor of 43
+percent.** A shared kernel's payoff is Amdahl-bounded by exactly that fraction, so a
+two-core big lock is bounded at `1 / (0.53 + 0.47 / 2)` = **1.31x**, and even the floor
+caps it at 1.40x. **The "about 2x" figure below is not merely unproven, it is out of
+reach**, and it is out of reach before any contention, cache-line bouncing or lock
+handoff cost is counted.
+
+Three things about that number bear on the choices here rather than merely sizing them:
+
+- **It is not an MPU artifact.** The PMP reprogram is 443 cycles per switch and both
+  switches are inside the lock, so it is 886 of the 3651 locked cycles. Delete it
+  entirely and the fraction is still 46 percent, bounding 1.37x.
+- **The round trip has THREE locked legs**, not the two a call-and-reply reading
+  suggests: the server's own `kos_recv` park holds `IrqLock` across a context switch and
+  is one of the two switches per trip. A big lock serialises that leg too.
+- **What sits in the critical section is mostly not the copy.** It is the reply-cap mint,
+  the two ready-queue reschedules, the MPU reprogram and the lock plumbing itself. So
+  shrinking the HOLD TIME is a different piece of work from the fastpath, and neither
+  substitutes for the other.
+
+An earlier reading of this page planned against "at least 31 percent" bounding 1.45x,
+from `design-m5-ipc-fastpath.md` section 3.0.1. That was a floor taken over two of the
+three locked legs with the wake path unbracketed, and it is superseded rather than wrong.
 
 ## M6 lands the MMU, so do not design M5 into a corner
 
@@ -355,14 +376,21 @@ happens-before edge, so the secondary must NOT re-init them.
     honour, so every ordering question this design raises is still open; what changed is
     that the accesses are now defined rather than UB, and each one is a named place for the
     acquire or release to go. Three residues land here:
-    - the 64-bit fields that stayed `volatile`, chiefly `Thread::switch_count` read through
-      a cast in `kernel/sync/sync.cc` and the selftest's hog deadline;
-    - the six per-chip clock anchors, a `_high`/`_low` word pair made coherent by `IrqLock`
-      alone. Two relaxed atomics still tear against each other, and on SMP an `IrqLock` on
-      one core excludes nothing on another, so this pair needs a seqlock or a per-core
-      anchor whatever type the words have;
-    - `KOS_RING_BARRIER` in `user/include/kickos/sys/byte_ring.h`, still a consumer `-D`
-      escape hatch rather than a release store on the now-atomic index.
+    - the 64-bit fields that stayed `volatile`. None remain: the two that mattered were
+      each narrower than their width said, so both were narrowed to a 32-bit atomic and
+      given the ordering the width had been denying them;
+    - the seven per-chip clock extenders, a `_high`/`_last` word pair made coherent by
+      `arch_irq_save` alone: `stm32f103`, `stm32f302`, `stm32f411`, `sam3x8e`, `imxrt1062`,
+      `rx72m` and the lx6 CCOUNT fallback. On SMP an interrupt mask on one core excludes
+      nothing on another, so the pair needs a seqlock or a per-core anchor whatever type the
+      words have. Note what a seqlock costs here first: the fold is done BY THE READER, so
+      every reader is a writer and there is no single writer to seqlock behind. The four
+      parts with a wrap ISR can move the fold into it and gain one; `imxrt1062`, `rx72m` and
+      the lx6 fallback poll only and would have to grow one. The wrapper carries no fence
+      surface either, and a seqlock reader needs an acquire FENCE that an acquire load does
+      not supply;
+    - the publication barrier in `user/include/kickos/sys/byte_ring.h`, which was a
+      consumer `-D` escape hatch rather than a release store on the now-atomic index.
   - **Console reclaim, `docs/design-m3-console-handover-stageii.md` ruling 7.** No
     hook is reserved for it. Under AMP or SMP the other core's console driver must be
     stopped or fenced before reclaim, or it races the polled panic writer. Reclaim is
@@ -379,6 +407,8 @@ happens-before edge, so the secondary must NOT re-init them.
   - Static partition sizes (per-core arena versus shared window, slot count and size)
     against real app and console-ring footprints, and the PMSAv6 grant of the window
     on BOTH cores under an MPU build (natural alignment, no arena overlap).
-  - BKL contention and the ~2x claim, measured on a real 2-core workload.
+  - BKL contention on a real 2-core workload. The ~2x claim is already refused
+    single-core (1.31x, `design-m5-ipc-fastpath.md` section 3.0.4); what is still open is
+    how much BELOW that figure contention drives it.
   - Cross-ISA parity: one SMP image as dual-M33 versus dual-Hazard3 producing
     identical scheduler behaviour on one RP2350 board.

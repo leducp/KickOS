@@ -2361,9 +2361,13 @@ rule.
         inline plain instructions there, because RMW is not. So no `static_assert` on it, and no
         `fetch_add` anywhere: every converted field has one writer.
       Byte-wide atomics cost one redundant `uxtb` per load on ARM. Accepted.
-- [x] **`byte_ring.h` keeps its C validity through a two-spelling shim.** It is the one shared-memory
-      struct a C driver may have to name, so `KOS_ATOMIC_U32` is `std::atomic<uint32_t>` in C++ and
-      `_Atomic uint32_t` in C. Both spellings agree on layout, checked on armv6m: 20 bytes, 4-aligned.
+- [x] **`byte_ring.h` kept its C validity through a two-spelling shim.** It was held to be the one
+      shared-memory struct a C driver may have to name, so its counter type was one macro spelling
+      `std::atomic<uint32_t>` in C++ and `_Atomic uint32_t` in C (the macro is not spelled here,
+      because it no longer exists in the tree). Both spellings agreed on layout, checked on armv6m:
+      20 bytes, 4-aligned. **SUPERSEDED in M5**: the premise was wrong, `kos_byte_ring` has no C
+      reader anywhere, so that header is C++-only and uses the wrapper, and the one struct a C main
+      really must name, `kos_uart_stats`, carries `kos_counter_t` behind `kos_counter_*` instead.
       Every other header spells the C++ type directly.
 
 ### What the conversion's sweep FOUND, none of it about atomics
@@ -2428,7 +2432,8 @@ rule.
       line comment opened a block that never closed and every identifier after it dropped out of
       the valid set. Silent under-coverage: the gate still passes, on fewer names. It bit twice in
       one session, both times on a comment naming a path glob. Proven both ways -- planting the
-      shape ahead of `KOS_RING_BARRIER`, the only definition of that name, takes the old stripper
+      shape ahead of the ring publication barrier, then the only definition of that name, takes the
+      old stripper
       from 697 identifiers to 696 and leaves the fixed one at 697, and both agree on a clean tree.
       The scan now takes whichever marker comes FIRST.
 
@@ -2453,7 +2458,7 @@ rule.
       call the link-chosen `kos_uart_*`: in one TU with the ring side they made the ring member
       undefined on any board with no UART backend, and the sim's `selftest` calls
       `uart::shared_init`.
-- [x] **`KOS_RING_BARRIER` is the one build knob that is not global**, an out-of-tree `-D` escape
+- [x] **The ring publication barrier was the one build knob that is not global**, an out-of-tree `-D` escape
       hatch no CMake file sets. A ring body compiled into `libkickos_user.a` bakes the default
       compiler-only barrier while a consumer's own TU still gets their `-D`.
       `user/src/console_ring.cc` already carries that exposure from M4.9.1, so the class is not new.
@@ -2654,12 +2659,16 @@ fleet-wide, and it FAILS ON SILICON at a known point. Do not read it as landed.
 - [ ] **THE RULE, and it is broader than the counters:** a call site never spells a load, a
       store or a memory order. Every atomic access is behind a `kos_` helper whose NAME
       carries its contract. `Atomic<T, Order>` does this for the C++-only fields by putting
-      the ordering in the type; the C-facing `KOS_ATOMIC_U32` fields still need helpers.
+      the ordering in the type; the C-facing counter fields still need helpers, which in M5
+      became `kos_counter_increment` and `kos_counter_load` over a one-member `kos_counter_t`.
+      The TYPE is what enforces the rule there: a one-member struct has no `++`, no `+=`, no
+      bare read and no bare write, in either language, so a call site cannot violate it.
 - [ ] **The counter helper, 21 sites.** Every increment in the tree is a load-then-store pair
       on a `kos_uart_stats` field, across `uart_c6.cc`, `uart_lx6.cc`, `uart_k64.cc`,
-      `uart_sci.cc`, `rpusb.cc`, `rt1062usb.cc` and the sim service lists. Those fields are
-      `KOS_ATOMIC_U32` because `uart.h` is C-facing and includes `byte_ring.h`, so a C++
-      template cannot reach them: the helper must be a free function valid in both languages.
+      `uart_sci.cc`, `rpusb.cc`, `rt1062usb.cc` and the sim service lists. Those fields were a
+      C-facing atomic macro because `uart.h` is C-facing, so a C++ template cannot reach them: the
+      helper must be a free function valid in both languages. M5 kept the helper and dropped the
+      macro, the fields being single-writer plain words.
       The name must state the SINGLE-WRITER precondition, because the pair is not atomic and a
       second writer loses an update with no gate able to see it. NAME IT
       `kos_counter_increment`, not `bump`, which is jargon and says nothing, and not
@@ -5159,8 +5168,9 @@ below where they were previously mislabeled.
   This heading previously read "AMP first on RP2040, SMP-BKL endgame on RP2350" and attributed
   that verdict to the spike. The spike does not contain it and `roadmap.md` says the opposite
   ("not two AMP instances"), so the three records disagreed. Settle it before writing SMP code.
-  The deciding measurement is the in-kernel fraction of a call/reply round-trip, single-core on
-  the bench, since a shared kernel's payoff is Amdahl-bounded by it. Design spike:
+  The deciding measurement is TAKEN: 53 percent of a call/reply round-trip is inside `IrqLock`
+  on `esp32c6-wroom` (floor 43 percent), which Amdahl-bounds a two-core big lock at 1.31x --
+  see `docs/design-m5-ipc-fastpath.md` 3.0.4. Design spike:
   `docs/design-m5-smp.md` carries the cross-core IPC invariants, the
   per-chip hardware mechanics, the SMP candidate ranking + staged model and the
   SMP-is-per-chip-capability constraint. Candidate
@@ -5186,9 +5196,11 @@ below where they were previously mislabeled.
   guarantee (masking IRQs on one core does nothing to another). Plan:
   - **Step 1 -- Big Kernel Lock.** Redefine `IrqLock` as "disable *local* interrupts + take one
     global spinlock." Centralised, so it's a redefinition of one class, not a 200-site audit;
-    every existing critical section keeps working, kernel is SMP-*correct* (coarsely). For a
-    2-core MCU this likely already gives ~2x (user threads run concurrently; only syscalls
-    serialise on the BKL). Per-core run-queues + finer locks come later as *optimisation*.
+    every existing critical section keeps working, kernel is SMP-*correct* (coarsely). This
+    line used to say "for a 2-core MCU this likely already gives ~2x"; it is MEASURED at
+    **1.31x** (`docs/design-m5-ipc-fastpath.md` 3.0.4, 53 percent of a round trip inside the
+    lock), and that is before any contention. Per-core run-queues + finer locks are therefore
+    not a later *optimisation* but where most of the payoff actually is.
   - **RP2040 specifics:** M0+ has **no atomics** (no LDREX/STREX) -> use the **SIO hardware
     spinlocks** (32 in the SIO block) for the lock; launch core 1 via bootrom/SIO-FIFO
     (`chip_rp2040.cc` already notes the core-1 milestone + the single-core `TIMELR/TIMEHR`
@@ -5624,8 +5636,8 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       acquire or a release belongs. Three known residues: the 64-bit fields that had to stay
       `volatile` (a relaxed 64-bit load is a `__atomic_load_8` libcall), the six per-chip
       `_high`/`_last` clock anchors that `IrqLock` alone makes coherent, and
-      `KOS_RING_BARRIER`, still a consumer `-D` rather than a release store on the ring's
-      now-atomic index. `docs/design-m5-smp.md` carries the reasoning.
+      the ring publication barrier, then still a consumer `-D` rather than a release
+      store on the ring's now-atomic index. `docs/design-m5-smp.md` carries the reasoning.
 
 ## M6
 

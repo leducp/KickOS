@@ -24,7 +24,6 @@
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart.h>
 
-#include <atomic>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -44,8 +43,7 @@ enum
 };
 
 // The shared block, in ONE power-of-two naturally-aligned allocation: the RAM arm of
-// grant_region_admissible requires that of every caller, privileged included. Header plus
-// payload must fit one power of two, which the static_assert below enforces.
+// grant_region_admissible requires that of every caller, privileged included.
 enum
 {
     KOS_UART_TX_SIZE = 512,
@@ -65,8 +63,7 @@ struct Shared
     Atomic<uint32_t, Order::RELAXED> ready;
     // Write policy for the unframed console arm, from kos_uart_flags. The service thread is
     // its only writer. Zero, so BLOCKING: a UART drains whether or not anything is
-    // listening, so an unbounded write terminates here. A transport whose consumer may never
-    // exist must seat KOS_UART_F_NONBLOCK instead.
+    // listening. A transport whose consumer may never exist must seat KOS_UART_F_NONBLOCK.
     Atomic<uint32_t, Order::RELAXED> mode;
     uint8_t tx_buf[KOS_UART_TX_SIZE];
     uint8_t rx_buf[KOS_UART_RX_SIZE];
@@ -76,16 +73,15 @@ static_assert(sizeof(struct Shared) <= KOS_UART_BLOCK_SIZE,
               "the UART shared block must fit one 1 KiB power-of-two grant");
 
 // kos_byte_ring_init REFUSES a non-power-of-two or sub-2 size and leaves the ring reporting
-// empty-and-full forever, which a blocking (unbounded) console write would spin on. Pinned
-// here because that loop's termination argument depends on it.
+// empty-and-full forever, which a blocking (unbounded) console write would spin on.
 static_assert(KOS_UART_TX_SIZE >= 2 and (KOS_UART_TX_SIZE & (KOS_UART_TX_SIZE - 1)) == 0,
               "the TX ring size must be a power of two >= 2 or it never accepts a byte");
 
 // Lay out the block. Not thread-safe: the bring-up calls it before either thread exists.
 void shared_init(Shared* s);
 
-// The whole granted block: the shared rings plus the class config the IRQ thread opens
-// the device with. Every thread reaches it through its thread ARG.
+// The whole granted block: the shared rings plus the class config the IRQ thread opens the
+// device with. Every thread reaches it through its thread ARG.
 struct Ctx
 {
     struct Shared sh;
@@ -102,8 +98,8 @@ constexpr uint16_t KOS_UART_READY_OFFSET =
     static_cast<uint16_t>(offsetof(Ctx, sh) + offsetof(Shared, ready));
 
 // Lay out the block and fill the class config from the service cfg. `fallback_baud` is what
-// a cfg naming no rate asks for, and 0 there means "keep the divisor the boot console left"
-// rather than "0 baud".
+// a cfg naming no rate asks for; 0 there means "keep the divisor the boot console left",
+// not "0 baud".
 int ctx_init(Ctx* ctx, struct kos_service_cfg const* cfg, uint32_t fallback_baud);
 
 // ---------------------------------------------------------------------------------
@@ -111,10 +107,9 @@ int ctx_init(Ctx* ctx, struct kos_service_cfg const* cfg, uint32_t fallback_baud
 // correct: the pass is re-entered on the next wake.
 constexpr uint32_t KOS_UART_IRQ_SEG = 64;
 
-// One service pass: fill RX, then drain TX.
-//
-// A wake is not proof of a hardware event, kos_irq_notify being a pure post, so both
-// transfers must tolerate an idle device and both rings a zero-length move.
+// One service pass: fill RX, then drain TX. A wake is not proof of a hardware event
+// (kos_irq_notify is a pure post), so both transfers must tolerate an idle device and both
+// rings a zero-length move.
 //
 // THIS DECLARATION MUST STAY AHEAD OF THE TEMPLATE BELOW: without it a call with a
 // `struct kos_uart*` deduces the template and asks for a service_irq() that does not exist.
@@ -128,9 +123,9 @@ inline void irq_pass(Uart* dev, Shared*)
     dev->service_irq();
 }
 
-// Give the device back quiet. FLUSH BEFORE CLOSE: close stops the channel, and on a part
-// whose stop is a mode-disable rather than a drain it truncates a frame still shifting.
-// Declared ahead of the template for the same reason as irq_pass.
+// Give the device back quiet. FLUSH BEFORE CLOSE: on a part whose stop is a mode-disable
+// rather than a drain, closing truncates a frame still shifting. Declared ahead of the
+// template for the same reason as irq_pass.
 void dev_shutdown(struct kos_uart* dev);
 
 // Pairs with the irq_pass arm above: such a backend has no close, so its device is left as
@@ -155,13 +150,12 @@ void irq_loop(Uart& dev, Shared* sh)
             break; // the cap went away: the line is gone, so this thread has no work
         }
         kos_counter_increment(&sh->stats.irq_wakes, 1u);
-        // "Found nothing" is judged from what THIS thread owns: reading tx_bytes would
-        // race the service thread, which owns it.
-        uint32_t const rx_before = sh->stats.rx_bytes.load(std::memory_order_relaxed);
+        // "Found nothing" is judged from what THIS thread owns: tx_bytes moves under the
+        // service thread, so its value says nothing about whether this wake found work.
+        uint32_t const rx_before = kos_counter_load(&sh->stats.rx_bytes);
         bool const tx_had_work = (kos_byte_ring_used(&sh->tx) != 0u);
         irq_pass(&dev, sh);
-        if (sh->stats.rx_bytes.load(std::memory_order_relaxed) == rx_before
-            and not tx_had_work)
+        if (kos_counter_load(&sh->stats.rx_bytes) == rx_before and not tx_had_work)
         {
             // A doorbell with an empty ring, or a stray raise.
             kos_counter_increment(&sh->stats.irq_spurious, 1u);
@@ -228,8 +222,8 @@ uint32_t push_all(Shared* sh, uint8_t const* p, uint32_t n);
 uint32_t console_write(Shared* sh, uint8_t const* p, uint32_t n);
 
 // The service thread. Replies out of ring state and never touches the device.
-// Returns kos_reply's result: a reply can fail on a dead cap, and a caller that has
-// gone is the one thing this arm cannot see from its own state.
+// Returns kos_reply's result: a reply can fail on a dead cap, and a caller that has gone is
+// the one thing this arm cannot see from its own state.
 int reply_status(kos_cap_t reply_cap, int32_t status, uint16_t len);
 
 // Parse + run one request frame; the reply is this function's, on every path.
@@ -242,10 +236,9 @@ int serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t const*
 // Recv/dispatch loop. Returns only when the endpoint dies, which is the respawn signal.
 void serve_loop(Shared* sh);
 
-// The same loop with the CONSOLE arm: this endpoint carries TWO protocols, a kos_call
-// being a kos_uart_req frame and a plain send raw console bytes (kos_console_publish
-// routes libc stdout to cap 0 unframed), so the recv must be info-bearing to tell them
-// apart.
+// The same loop with the CONSOLE arm: this endpoint carries TWO protocols, a kos_call being
+// a kos_uart_req frame and a plain send raw console bytes, so the recv must be info-bearing
+// to tell them apart.
 void console_serve_loop(Shared* sh);
 
 // The console service thread entry: its ARG is the Ctx the bring-up granted.

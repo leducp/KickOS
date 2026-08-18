@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The console endpoint's FRAMED arm, exercised against a real published driver.
+// The console endpoint's FRAMED arm, against kickos_services_sim's one-thread driver.
 //
 // Every arm below is the same assertion: the call RETURNS. A console endpoint carries two
 // protocols, and a driver that does not tell a kos_call from a plain send leaves the caller
 // parked forever on a reply that cannot come.
 //
-// Only kickos_services_sim's one-thread driver is covered here. Every other console service
-// answers through uart_service.h's serve_one, which the selftest already drives.
-//
-// The framed WRITE's payload is the one line the gate matches apart from the TAP stream: it
-// travels the console as BYTES rather than as a verdict about it.
+// The framed WRITE's payload is the one line the gate matches apart from the TAP stream.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -19,7 +15,6 @@
 #include <kickos/sys/uart.h>
 #include <kickos/sys/console_ring.h> // stats_unpack
 
-#include <atomic>
 #include <stdint.h>
 
 #include "tap.h"
@@ -32,8 +27,8 @@ namespace
     // Clear of kos_uart_op, so a future op cannot turn this into a valid request.
     constexpr uint8_t OP_BOGUS = 200;
 
-    // The reply's status, or the error the call failed with. A reply shorter than the
-    // header is its own failure.
+    // Returns the reply's status, or the error the call failed with. A reply shorter than
+    // the header is itself -KOS_EINVAL.
     int uart_call(uint8_t op, uint8_t flags, uint16_t len, uint8_t const* payload,
                   uint8_t* out, uint16_t out_max, uint16_t* got)
     {
@@ -106,8 +101,7 @@ namespace
                   == 0);
     }
 
-    // A host fd write always completes, so this transport requires nothing and a request to
-    // block is satisfiable.
+    // A host fd write always completes, so a request to block is satisfiable.
     void t_set_mode_blocking()
     {
         TAP_CHECK(uart_call(KOS_UART_SET_MODE, 0, 0, nullptr, nullptr, 0, nullptr) == 0);
@@ -153,8 +147,8 @@ namespace
         TAP_CHECK(took == WIRE_LEN);
     }
 
-    // Live counters, not a zeroed struct answered to shut the caller up. The floor is the
-    // framed write alone; the TAP stream reaches the same driver as plain sends.
+    // The floor is the framed write alone; the TAP stream reaches the same driver as
+    // plain sends.
     void t_stats()
     {
         uint8_t st[sizeof(struct kos_uart_stats)];
@@ -163,7 +157,7 @@ namespace
         TAP_CHECK(stlen == sizeof(struct kos_uart_stats));
         struct kos_uart_stats s;
         kickos::console::stats_unpack(&s, st);
-        TAP_CHECK(s.tx_bytes.load(std::memory_order_relaxed) >= WIRE_LEN);
+        TAP_CHECK(kos_counter_load(&s.tx_bytes) >= WIRE_LEN);
     }
 }
 

@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <new> // Thread holds a kickos::Atomic: a reset is a re-construction, not an assignment
+
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
@@ -96,9 +98,8 @@ namespace kickos
         }
 
         // Advances the cursor by what was WRITTEN, never by snprintf's return: that return is
-        // the length it WOULD have written, so on the first truncation the cursor walks past
-        // the buffer and the next call gets a past-the-end destination with a huge size.
-        // Memory corruption, not truncation, and dormant until one arm gets long.
+        // the length it WOULD have written, so the first truncation walks the cursor past the
+        // buffer and the next call writes past the end.
         void trace_add(char const* fmt, ...)
         {
             if (TRACE_CAP - g_trace_len <= 1)
@@ -128,7 +129,6 @@ namespace kickos
             g_trace_len += written;
         }
 
-        // ctx is the TCB's first member, but go through the offset rather than assume that.
         Thread* thread_of_context(struct arch_context* c)
         {
             return KICKOS_CONTAINER_OF(c, Thread, ctx);
@@ -142,7 +142,7 @@ namespace kickos
                 // switch_to credits the INCOMING thread, which under a returning stub is
                 // never the one that parked, so wq_confirm_resume would spin to
                 // KICKOS_POLL_SPIN_MAX and panic.
-                w->switch_count++;
+                w->switch_count.store(w->switch_count.load() + 1u);
                 if (g_park_waker == nullptr)
                 {
                     printf("FIXTURE FAIL: no waker armed for the park of thread %u\n", w->id);
@@ -249,8 +249,8 @@ namespace kickos
                 printf("FIXTURE FAIL: a capability sweep is still in flight\n");
                 exit(1);
             }
-            kernel() = Kernel{};
-            g_fx = Fixture{};
+            new (&kernel()) Kernel{};
+            new (&g_fx) Fixture{};
             g_in_isr = false;
             g_now_ns = 0;
             for (int i = 0; i < KICKOS_MAX_TASKS; i++)
@@ -274,8 +274,8 @@ namespace kickos
             cap_slab_init();
             cap_console_reset();
             // Every dispatch slot back to the null-object default. The Kernel assignment
-            // above zeroed the table, and a NULL handler is not the state irq_claim reads as
-            // a free line: without this every claim in every arm answers -KOS_EBUSY.
+            // above zeroed the table, and a NULL handler is not what irq_claim reads as a
+            // free line: without this every claim answers -KOS_EBUSY.
             irq_init();
             sched::init();
             g_fx.idle.base_prio = KICKOS_PRIO_IDLE;
@@ -293,8 +293,7 @@ namespace kickos
                 printf("FIXTURE FAIL: spawn slot %d out of range\n", slot);
                 exit(1);
             }
-            Thread* th = &g_fx.t[slot];
-            *th = Thread{};
+            Thread* th = new (&g_fx.t[slot]) Thread{};
             th->base_prio = prio;
             th->prio = prio;
             th->id = static_cast<uint16_t>(slot + 1);
@@ -303,9 +302,8 @@ namespace kickos
         }
 
         // Ids start at 10 so no trace token reads ambiguously against a spawn() thread. Seats
-        // the TCB and `next` only, and NOT the pool's gen[] or claim state: the exit sweep
-        // finds a waiter by SCANNING, so that is all it needs. An arm that wants a thread
-        // resolvable by HANDLE (cap_reply_caller reads gen) has to go through the real alloc.
+        // the TCB and `next` only, NOT the pool's gen[] or claim state: an arm that wants a
+        // thread resolvable by HANDLE (cap_reply_caller reads gen) needs the real alloc.
         Thread* seat_pool(int slot, uint8_t prio)
         {
             if (slot < 0 or slot >= KICKOS_THREAD_SLOTS)
@@ -314,8 +312,7 @@ namespace kickos
                 exit(1);
             }
             Kernel& k = kernel();
-            Thread* w = &k.threads.slots[slot];
-            *w = Thread{};
+            Thread* w = new (&k.threads.slots[slot]) Thread{};
             w->base_prio = prio;
             w->prio = prio;
             w->id = static_cast<uint16_t>(10 + slot);
@@ -333,14 +330,13 @@ namespace kickos
             w->state = ThreadState::BLOCKED;
             w->wait_kind = WAIT_JOIN;
             w->wait_obj = target;
-            // POISONED, because a fresh TCB already reads 0 and an arm asserting 0 would pass
-            // on a waker that never wrote it. A real parked waiter carries whatever its last
-            // wake left; writing the result belongs to the waker.
+            // POISONED: a fresh TCB already reads 0, so an arm asserting 0 would pass on a
+            // waker that never wrote it.
             w->wait_result = WAIT_RESULT_POISON;
         }
 
-        // From the REAL pool, because the served-endpoint chain is a pool INDEX biased by one
-        // (endpoint.h) and thread_effective_prio resolves it through kernel().endpoints. A
+        // From the REAL pool: the served-endpoint chain is a pool INDEX biased by one
+        // (endpoint.h), which thread_effective_prio resolves through kernel().endpoints, so a
         // stack-local Endpoint cannot be named by that chain at all.
         Endpoint* endpoint()
         {
@@ -379,9 +375,8 @@ namespace kickos
             ep->send_waiters.push_back(&w->link);
         }
 
-        // The held_list link is restated here because held_push is TU-local to sync.cc. The
-        // sweep's own held_remove is what unlinks it, so getting this wrong fails the sweep's
-        // totality asserts rather than passing quietly.
+        // The held_list link is restated here: held_push is TU-local to sync.cc. The sweep's
+        // own held_remove is what unlinks it.
         Mutex* own_mutex(Thread* owner, int* out_handle)
         {
             int const i = kernel().mutexes.alloc();
@@ -466,9 +461,8 @@ namespace kickos
             w->wait_kind = WAIT_SLEEP;
             w->wait_obj = nullptr;
             w->wait_result = WAIT_RESULT_POISON;
-            // The delta list itself, so ktime_deadline_cancel has something to unlink. One
-            // sleeper per arm is enough for every claim here, so the insert is a head push
-            // rather than a sorted one.
+            // The delta list itself, so ktime_deadline_cancel has something to unlink. A head
+            // push, not a sorted insert: one sleeper per arm.
             w->deadline_ns = deadline_ns;
             w->tnext = kernel().sleepq;
             kernel().sleepq = w;

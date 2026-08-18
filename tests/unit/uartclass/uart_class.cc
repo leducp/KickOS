@@ -10,7 +10,6 @@
 
 #include "uart_mock.h"
 
-#include <atomic>
 #include <stdint.h>
 
 #include <gtest/gtest.h>
@@ -30,8 +29,8 @@ namespace
     }
 }
 
-// The kos_uart_cfg_check clauses, measured through the class entry point rather than by
-// calling the helper, so a backend that dropped the call fails here.
+// The kos_uart_cfg_check clauses, measured through the class entry point, so a backend that
+// dropped the call fails here.
 TEST(UartClass, open_refuses_a_malformed_config)
 {
     struct kos_uart_mock m = {};
@@ -65,8 +64,8 @@ TEST(UartClass, open_refuses_an_unexpressible_frame)
     struct kos_uart_config cfg = {};
     configure(&cfg, &m, &stats);
 
-    // Refused BEFORE it binds: a consumer that ignored the return must not find a
-    // half-open channel.
+    // Refused BEFORE it binds: a consumer that ignored the return must not find a half-open
+    // channel.
     struct kos_uart_config bad = cfg;
     bad.data_bits = 9;
     struct kos_uart dev;
@@ -112,11 +111,10 @@ TEST(UartClass, read_on_an_idle_device_is_zero)
     struct kos_uart dev;
     ASSERT_EQ(kos_uart_open(&dev, &cfg), 115199) << "open succeeded";
 
-    // Nothing pending is 0, not an error: read is called on every pass even when the
-    // wake was a doorbell, because it is also where the error latches get cleared.
+    // Nothing pending is 0, not an error.
     unsigned char in[8];
     EXPECT_EQ(kos_uart_read(&dev, in, sizeof(in)), 0u) << "an idle read returns 0";
-    EXPECT_EQ(stats.rx_bytes.load(std::memory_order_relaxed), 0u)
+    EXPECT_EQ(kos_counter_load(&stats.rx_bytes), 0u)
         << "an idle read counted nothing";
 }
 
@@ -131,16 +129,15 @@ TEST(UartClass, write_is_short_and_owns_the_tx_arm)
     struct kos_uart dev;
     ASSERT_EQ(kos_uart_open(&dev, &cfg), 115199) << "open succeeded";
 
-    // A SHORT WRITE IS THE ORDINARY CASE: the count is what the device took, and the
-    // refusal is what arms the TX source.
+    // A SHORT WRITE IS THE ORDINARY CASE: the count is what the device took, and the refusal
+    // is what arms the TX source.
     unsigned char const six[6] = {'a', 'b', 'c', 'd', 'e', 'f'};
     EXPECT_EQ(kos_uart_write(&dev, six, 6), 4u) << "write returns what the device took";
     EXPECT_EQ(m.tx_len, 4u) << "the device holds the accepted bytes";
     EXPECT_EQ(m.tx_armed, 1u) << "a refused byte armed the TX source";
 
-    // A call the device took WHOLE disarms it, and that includes a zero-length call:
-    // draining a queue in segments has to end on a call that was not refused, or the
-    // consumer parks with the source still armed.
+    // A call the device took WHOLE disarms it, zero-length included, or a consumer draining
+    // in segments parks with the source still armed.
     m.tx_room = 8;
     EXPECT_EQ(kos_uart_write(&dev, six, 2), 2u) << "a call that fits is taken whole";
     EXPECT_EQ(m.tx_armed, 0u) << "a whole call disarmed the TX source";
@@ -149,8 +146,8 @@ TEST(UartClass, write_is_short_and_owns_the_tx_arm)
     EXPECT_EQ(m.tx_len, 6u) << "the device took six bytes across the three calls";
 
     // The class does NOT touch tx_bytes: the producer that queued the bytes owns that
-    // counter, and a second writer would break the shared block's single-writer rule.
-    EXPECT_EQ(stats.tx_bytes.load(std::memory_order_relaxed), 0u)
+    // counter, and a second writer breaks the shared block's single-writer rule.
+    EXPECT_EQ(kos_counter_load(&stats.tx_bytes), 0u)
         << "write does not touch tx_bytes";
 }
 
@@ -173,7 +170,7 @@ TEST(UartClass, read_reports_and_counts_what_arrived)
     EXPECT_TRUE(in[0] == 'R' and in[1] == 'X') << "read delivered the first two bytes";
     EXPECT_EQ(kos_uart_read(&dev, in, sizeof(in)), 1u) << "read returns the remainder";
     EXPECT_EQ(in[0], '!') << "read delivered the last byte";
-    EXPECT_EQ(stats.rx_bytes.load(std::memory_order_relaxed), 3u)
+    EXPECT_EQ(kos_counter_load(&stats.rx_bytes), 3u)
         << "read counted every delivered byte";
 }
 
@@ -187,8 +184,7 @@ TEST(UartClass, flush_then_close_is_idempotent)
     struct kos_uart dev;
     ASSERT_EQ(kos_uart_open(&dev, &cfg), 115199) << "open succeeded";
 
-    // FLUSH BEFORE CLOSE is the contract's ordering, and close is idempotent: a
-    // consumer handing the channel on may run the pair twice.
+    // FLUSH BEFORE CLOSE is the contract's ordering, and close is idempotent.
     EXPECT_EQ(kos_uart_flush(&dev), 0) << "flush succeeds";
     EXPECT_EQ(kos_uart_close(&dev), 0) << "close succeeds";
     EXPECT_EQ(kos_uart_close(&dev), 0) << "a second close succeeds";

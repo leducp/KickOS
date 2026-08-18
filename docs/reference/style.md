@@ -52,7 +52,6 @@ because they are written here and read in review.
   `-std=c11` TU with the board's own C compiler. So `static_cast`, `nullptr`, `alignas`,
   `static_assert`, a `bool` without `<stdbool.h>`, and the spelled `and`/`or`/`not` of the rule
   above are all errors there: write both spellings under the guard, as
-  `<kickos/sys/byte_ring.h>` does for `std::atomic<uint32_t>` and `_Atomic uint32_t` and
   `<kickos/sys/uart.h>` does for `static_assert` and `_Static_assert`, or split the condition.
   A header with no C consumer says so by leaving the guard off, as `<kickos/kernel.h>` and
   `arch/include/kickos/arch/arch.h` do: `extern "C"` alone is a C syntax error, so the gate
@@ -81,23 +80,45 @@ because they are written here and read in review.
     belongs behind a per-arch seam like the MPU backends, and no such seam exists yet.
     `../design-m5-smp.md` carries the measured costs and the one correctness rule such a
     seam would have to enforce, namely that `IrqLock`-bracketing is wrong on a dual-core part.
-    The gate catches the named spellings (`.fetch_add(`, `.exchange(`,
-    `.compare_exchange_*(`, the C11 generics, the `__atomic_` and `__sync_` builtins)
-    outright; it catches the operator forms (`++ -- += -= &= |= ^=`) by harvesting which
-    identifiers were declared atomic, so read the header of
-    `tests/static/check_atomic_rmw.sh` for the shapes that harvest cannot reach.
+    The gate catches the named spellings outright (`.fetch_add(`, `.exchange(`,
+    `.compare_exchange_*(`, the C11 generics, and the `__atomic_` / `__sync_` builtins that
+    are READ-MODIFY-WRITE, each listed by name); it catches the operator forms
+    (`++ -- += -= &= |= ^=`) by harvesting which identifiers were declared atomic, so read
+    the header of `tests/static/check_atomic_rmw.sh` for the shapes that harvest cannot
+    reach. **The rule is read-modify-write, never the `__atomic_` PREFIX**:
+    `__atomic_load_n` and `__atomic_store_n` are plain accesses and are used in-tree (see
+    below). Widening the alternation to a wildcard fails the gate's own self-test, which
+    carries a plain-access line in its NEGATIVE corpus for exactly that reason.
   - **No `static_assert(is_always_lock_free)`.** It is 0 on armv6m and rxv3 even where the
     load and store are inline plain instructions, because RMW is not. The wrapper bounds
     the width with `sizeof(T) <= 4` instead, there being no standard trait for "a plain
     load and store are single instructions".
   - **The accessors are `always_inline`, and that is load-bearing.** At `-Os` GCC otherwise
     emits an out-of-line copy and turns every access into a call.
-  - **`std::atomic` stays where a pure C main linking libkickos must name the struct**:
-    `kos_byte_ring` and `kos_uart_stats` spell `KOS_ATOMIC_U32`. The wrapper is a C++ class
-    template and cannot serve C; one spelling for both languages needs C++23. A call site
-    there never spells a load, a store or an order either: an increment goes through
-    `kos_counter_increment` (`byte_ring.h`), valid in both languages, and correct only
-    because each of those counters has a single writer.
+  - **There is ONE atomic mechanism and `<atomic>` appears in exactly one file**, this
+    header. A struct a pure C main must name cannot use a C++ class template, so it carries
+    `kos_counter_t` (`<kickos/sys/uart.h>`), a ONE-MEMBER STRUCT wrapping a `uint32_t`, and
+    every access goes through `kos_counter_increment` / `kos_counter_load`, which are valid
+    in both languages. Sound because each such counter has a SINGLE WRITER.
+    **The type is what enforces the discipline, not the convention.** A one-member struct has
+    no `++`, no `+=`, no bare read and no bare write from an integer: every one of those is a
+    COMPILE error in C11 and C++20 alike, so the rule cannot be violated by a call site that
+    simply did not know it. Aggregate initialisation still works. This is the same
+    make-it-unrepresentable move as nesting `kos_recv_info` inside `kos_recv_timed_opts` so a
+    plain recv has no timeout field to reach.
+    **The helper BODIES are the only place a mechanism is spelled**, and they use
+    `__atomic_load_n` / `__atomic_store_n` at `__ATOMIC_RELAXED`, which are the same single
+    instruction as a plain access at 4 bytes aligned on every backend but leave a reader
+    racing the writer DEFINED rather than UB. That is the point of the seam: the mechanism
+    can be switched in two function bodies without touching a call site.
+    Two costs worth knowing before anyone "simplifies" it back. On Xtensa, GCC's default
+    `-mserialize-volatile` emits a `MEMW` before every atomic access whatever the order, and
+    `-mno-serialize-volatile` is NOT a free fix because it would also drop `MEMW` before
+    `volatile` MMIO. And an atomic access is an OPTIMISATION BARRIER, so it can flip an
+    inlining decision: a minimal probe TU shows byte-identical codegen while a real driver
+    grows.
+    `kos_byte_ring` has no C consumer, so it uses the wrapper and its header leaves the
+    `extern "C"` guard off.
   - `volatile` stays for the three things it *is* the tool for: MMIO, an object the
     compiler must not elide or hoist, and a **64-bit** cross-thread field, because a
     relaxed 64-bit atomic load is a `__atomic_load_8` libcall on every backend including

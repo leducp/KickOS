@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The shared USB CDC-ACM class layer, templated over a concrete per-controller device
-// class. No MMIO and no controller knowledge live here: only the shared ring block's
-// layout, chapter-9 and CDC request handling, the enumeration state machine, and the two
-// loops the driver's two threads run. It reuses the UART's ring, its wire ABI
+// The shared USB CDC-ACM class layer, templated over a concrete per-controller device class.
+// No MMIO and no controller knowledge live here. It reuses the UART's ring, its wire ABI
 // (<kickos/sys/uart.h>) and its counters.
 //
 // The UsbDev class supplies the implicit interface (design-m4.6.2-usb-cdc.md sec 3.1):
@@ -34,15 +32,13 @@
 // derives from the service list (design-m4.6.2-usb-cdc.md sections 2 and 4.3).
 //
 // The link is host-controlled and may never come up, so `configured` is a SEPARATE,
-// NON-LATCHING flag beside the UART's `ready` latch (design sec 4.5) and a bus reset
-// clears it. Because this ring's consumer may never exist, the endpoint starts
-// NON-BLOCKING and shared_init says why; a blocking console write is unbounded.
+// NON-LATCHING flag beside the UART's `ready` latch (design sec 4.5) and a bus reset clears
+// it. This ring's consumer may never exist, so the endpoint starts NON-BLOCKING.
 //
-// TX pacing is self-sustaining only while a buffer is in flight, because a bulk IN
-// completion is the wake that pumps the next packet. A host that stops issuing IN tokens
-// without a bus reset (a closed tty, suspend, a bare unplug) leaves `Shared::tx_inflight`
-// set with no completion coming, so the ring fills and stays full and no doorbell shortens
-// it.
+// TX pacing is self-sustaining only while a buffer is in flight, a bulk IN completion being
+// the wake that pumps the next packet. A host that stops issuing IN tokens without a bus
+// reset (a closed tty, suspend, a bare unplug) leaves `Shared::tx_inflight` set with no
+// completion coming, so the ring fills and stays full and no doorbell shortens it.
 
 #ifndef KICKOS_SYS_USB_CDC_SERVICE_H
 #define KICKOS_SYS_USB_CDC_SERVICE_H
@@ -60,7 +56,6 @@
 
 #include <kickos/sys/atomic.h>
 
-#include <atomic>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -86,8 +81,8 @@ enum kos_usb_event
 };
 
 // One power-of-two naturally-aligned allocation: the RAM arm of grant_region_admissible
-// requires it of every caller, privileged included. TX is larger than the UART's because
-// the dark window before a host attaches is unbounded.
+// requires it of every caller, privileged included. TX is larger than the UART's: the dark
+// window before a host attaches is unbounded.
 enum
 {
     KOS_USB_TX_SIZE = 1024,
@@ -107,7 +102,7 @@ struct Shared
     // VBUS-detected, so a host that goes away without a later reset leaves this at 1.
     Atomic<uint32_t, Order::RELAXED> configured;
     // Bytes taken OUT of the tx ring and handed to the controller, not yet completed. The
-    // IRQ thread is its only writer. It sits in the shared block because the flush protocol
+    // IRQ thread is its only writer; it sits in the shared block because the flush protocol
     // runs on the SERVICE thread, which cannot see the Cdc class.
     Atomic<uint32_t, Order::RELAXED> tx_inflight;
     // Write policy for the unframed console arm, from kos_uart_flags. The service thread is
@@ -124,17 +119,16 @@ static_assert(sizeof(struct Shared) <= KOS_USB_BLOCK_SIZE,
               "the USB CDC shared block must fit one 2 KiB power-of-two grant");
 
 // kos_byte_ring_init REFUSES a non-power-of-two or sub-2 size and leaves the ring reporting
-// empty-and-full forever, which a blocking (unbounded) console write would spin on. Pinned
-// here because that loop's termination argument depends on it.
+// empty-and-full forever, which a blocking (unbounded) console write would spin on.
 static_assert(KOS_USB_TX_SIZE >= 2 and (KOS_USB_TX_SIZE & (KOS_USB_TX_SIZE - 1)) == 0,
               "the TX ring size must be a power of two >= 2 or it never accepts a byte");
 
 // Called by the BRING-UP, before either thread exists, so it races nothing.
 //
 // Seats NON-BLOCKING, unlike the UART: no IN token is issued until a host both enumerates the
-// device AND opens the tty, so this ring's consumer may never exist and a blocking write here
-// is unbounded. That is a static property of the transport, so it must NOT be keyed on
-// Shared::configured, which never clears on unplug.
+// device AND opens the tty, so a blocking write here is unbounded. That is a static property
+// of the transport and must NOT be keyed on Shared::configured, which never clears on
+// unplug.
 void shared_init(Shared* s);
 
 // The offset a generic bring-up polls the readiness latch through, it being unable to name
@@ -173,8 +167,8 @@ public:
         return 0;
     }
 
-    // One pass. A wake is NOT proof of a hardware event (the doorbell is a pure post),
-    // so finding nothing asserted must be harmless and must still pump TX.
+    // One pass. A wake is NOT proof of a hardware event (the doorbell is a pure post), so
+    // finding nothing asserted must be harmless and must still pump TX.
     void service_irq()
     {
         uint32_t const ev = dev_.take_events();
@@ -275,9 +269,9 @@ private:
         case KOS_USB_SET_ADDRESS:
         {
             // The address must not be live before the status stage completes, so it is
-            // staged here and written when the zero-length IN comes back. The flag is
-            // separate from the value because SET_ADDRESS(0) is legal (it returns the
-            // device to the default state) and a zero sentinel would swallow it.
+            // staged here and written when the zero-length IN comes back. SET_ADDRESS(0) is
+            // legal (it returns the device to the default state), so the flag cannot be a
+            // zero sentinel on the value.
             pending_addr_ = static_cast<uint8_t>(s.wValue & 0x7Fu);
             addr_pending_ = true;
             ep0_ack();
@@ -610,8 +604,8 @@ private:
         }
         dev_.ep_in(KOS_USB_CDC_EP_DATA, buf, n, bulk_in_pid_);
         bulk_in_pid_ = static_cast<uint8_t>(bulk_in_pid_ ^ 1u);
-        // Nonzero by construction, n == 0 having returned above, which is what lets one
-        // count carry both "a buffer is with the controller" and "how many bytes it holds".
+        // One count carries both "a buffer is with the controller" and "how many bytes it
+        // holds", n being nonzero here.
         sh_->tx_inflight = n;
     }
 
@@ -634,8 +628,8 @@ private:
 };
 
 // ---------------------------------------------------------------------------------
-// The IRQ thread. Owns every register and the whole control endpoint; parks in
-// irq_wait and services one pass per wake.
+// The IRQ thread. Owns every register and the whole control endpoint; parks in irq_wait and
+// services one pass per wake.
 template <typename UsbDev>
 void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
 {
@@ -649,11 +643,10 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
             break; // the cap went away: the line is gone, so this thread has no work
         }
         kos_counter_increment(&sh->stats.irq_wakes, 1u);
-        uint32_t const rx_before = sh->stats.rx_bytes.load(std::memory_order_relaxed);
+        uint32_t const rx_before = kos_counter_load(&sh->stats.rx_bytes);
         bool const tx_had_work = (kos_byte_ring_used(&sh->tx) != 0u);
         cdc.service_irq();
-        if (sh->stats.rx_bytes.load(std::memory_order_relaxed) == rx_before
-            and not tx_had_work)
+        if (kos_counter_load(&sh->stats.rx_bytes) == rx_before and not tx_had_work)
         {
             kos_counter_increment(&sh->stats.irq_spurious, 1u);
         }
@@ -668,8 +661,8 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
 // The woken pass re-reads LIVE controller status, which recovers a bulk IN completion the
 // class layer missed: the one state in which a full ring has no completion coming.
 //
-// PRECONDITION: KOS_USB_CAP_DOORBELL is the line's SIGNAL cap, which the two-thread
-// spawn provides. Any other caller has the notify refused on the cap TYPE check.
+// PRECONDITION: KOS_USB_CAP_DOORBELL is the line's SIGNAL cap, which the two-thread spawn
+// provides. Any other caller has the notify refused on the cap TYPE check.
 uint32_t tx_write(Shared* sh, uint8_t const* p, uint32_t n);
 
 // An empty ring is NOT an empty channel here: up to one bulk packet still sits in the
@@ -681,8 +674,8 @@ uint32_t console_write(Shared* sh, uint8_t const* p, uint32_t n);
 // ---------------------------------------------------------------------------------
 // The service thread. Parks in recv, replies out of ring state, never touches the device.
 // A kos_call is a <kickos/sys/uart.h> frame; a plain send is a raw console write.
-// Returns kos_reply's result: a reply can fail on a dead cap, and a caller that has
-// gone is the one thing this arm cannot see from its own state.
+// Returns kos_reply's result: a reply can fail on a dead cap, and a caller that has gone is
+// the one thing this arm cannot see from its own state.
 int reply_status(kos_cap_t reply_cap, int32_t status, uint16_t len);
 
 // Parse + run one request frame; the reply is this function's, on every path.

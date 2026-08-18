@@ -9,11 +9,88 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**M4.9.2 IS IN PROGRESS on branch `M4.9.2`, UNMERGED and unpushed.** It converts `volatile` to
-relaxed `std::atomic` on every cross-thread field, moves the non-template service-header bodies
-into `user/src/`, and writes the four gates `style.md` already claimed. What it is NOT is an
-ordering change: relaxed says nothing a second core will honour, so M5 still owns every acquire
-and release. `TODO.md`'s M4.9.2 section enumerates what the sweep found.
+**THIS TREE IS `M5.1.1`, THE FIRST REVIEWABLE M5 PR, CARVED OFF `master` (`3c3967e3`).** It
+carries ONE topic: the IPC measurement chain and the atomics work. The two are fused deliberately,
+because they share commits and touch the same functions, so splitting them would mean re-tangling
+history. Nothing else from M5 is here. A record naming work outside those two tracks is describing
+a later PR and not this tree.
+
+**THE IPC BASELINE EXISTS AND IS MEASURED.** There was no call/reply figure anywhere before this;
+there is one in `docs/design-m5-ipc-fastpath.md`, and anything touching the call path should read
+that page before touching it. A round trip is a FIXED term plus a per-byte term, and the fixed
+term holds within 1.5 percent across three ISAs and three clocks, which makes it an instruction
+count rather than silicon or memory.
+
+**THE BENCH APP WAS BROKEN AND NOBODY KNEW, WHICH IS WHY THERE WAS NO BASELINE.** Its helpers were
+DIRECT kernel calls, so with root unprivileged on every board with a ring the first call faulted
+and killed the reporter: only `esp32-wroom`, which has no ring at all, ever ran it. It also never
+returned from `main`, so `KICKOS_SHUTDOWN_TO_BOOTLOADER` was inert for it. Both are fixed behind a
+new `KOS_SYS_BENCH` syscall, and the app now returns after a bounded number of reports.
+
+**`CALL_MINT` SPLITS 290/109 INTO A CAPABILITY HALF AND A USER-MEMORY-WRITE HALF.**
+`CALL_MINT_CAP` is `cap_install_reply` at 290 cycles, `CALL_MINT_INFO` is `write_recv_info` at
+109. They sum to 399 against the pre-split 400, and twelve other leaves in the same capture are
+byte-identical, so the split is placed honestly. The 290 is NOT a search: the free-list peek
+returns on its first test and the unlink beside it is O(1). It is mint machinery, which is what a
+reserved per-thread reply slot would remove.
+
+**THE INSTRUMENT'S DOCUMENTED CORRECTION RULE WAS WRONG, and this is the bigger finding.**
+`bench.h` said a phase is `(phase - k * PH_NULL)`. The closing timestamp is evaluated as an
+ARGUMENT, so `PH_NULL` measures two counter reads and reads 1 cycle; but a bracket NESTED inside
+an enclosing span charges that parent the two reads PLUS the whole accumulator call, about 57
+cycles. The rule therefore understated the per-bracket charge by roughly 56x, every COMPOSITE was
+inflated, and only the LEAVES were ever honest. FIXED with a proper nested control phase: an
+EMPTY bracket cannot price a NESTED one, so the second control had to exist and be validated
+differentially rather than assumed.
+
+**A COMPOSITE SHARED BETWEEN TWO CODE PATHS WAS REPORTING THE WRONG PATH'S MINIMUM.** One
+accumulator served both the fastpath and slowpath arms of the call, so the shorter arm's body set
+the minimum the longer arm was read for. There is now one accumulator per code path, and each
+closes INSIDE its own arm and inside the lock.
+
+**THE ROUND TRIP HAS THREE LOCKED LEGS, NOT TWO.** The server's own `kos_recv` park holds
+`IrqLock` across one of the two context switches per round trip, and nothing had ever bracketed
+it. A leg that is never bracketed is not a small error in the total, it is absent from it.
+
+**THE LOCKED FRACTION IS 53 PERCENT, with a 43 PERCENT LEAF FLOOR**, re-derived on
+`esp32c6-wroom` with the corrected instrument. That Amdahl-bounds a two-core big lock at
+**1.31x**, and the floor caps it at 1.40x. It REPLACES the unproven "about 2x" the SMP spike
+assumed, and the gap between floor and direct is itemised rather than left as a residual. Since
+that number is what sizes the M6 big-lock decision, per-core run queues and finer locks are not a
+later optimisation but where most of the payoff actually is.
+
+**ONE ATOMIC MECHANISM TREE-WIDE, AND THE ORDER IS CARRIED IN THE TYPE.** `<atomic>` now appears
+in EXACTLY ONE FILE, `system/include/kickos/sys/atomic.h`. The C-facing atomic macros are gone;
+`kos_uart_stats` is nine plain words behind `kos_counter_*`, a ONE-MEMBER STRUCT, so `++`, `+=`, a
+bare read and a bare write are COMPILE errors in C11 and C++20 alike. The type enforces it, not a
+gate and not a convention. `Order` is a BITMASK, because acquire and release order OPPOSITE
+accesses of the same field and every cross-thread word here needs both; ACQUIRE and RELEASE are
+placed at the residues rather than swept on tree-wide. The byte ring's publication-barrier macro
+is DELETED: head and tail carry the ordering in their own type, so there is no consumer `-D` left
+to get wrong.
+
+**`Thread` SHRANK 264 TO 256 BYTES ON armv7m.** `switch_count` narrows to 32 bits and moves into
+the padding hole before `deadline_ns`, so the field is free: it costs bytes that were already
+being paid. Measure `sizeof` before and after rather than reasoning about field order.
+
+**TWO BOARDS CANNOT MEASURE CYCLES AND ONE CANNOT MEASURE TIME. Do not spend a pass rediscovering
+this.** `xmc4800-relax`'s DWT CYCCNT is DEAD, every delta zero over 120000 samples, so that board
+is wall-clock only. `esp32-wroom`'s monotonic clock intermittently returns EQUAL values across
+hundreds of milliseconds, and instrumenting it made the failure rate RISE, which is what makes it
+a race rather than a resolution limit; its cycle figures are fine. `teensy41` is the board that
+gives the full nested decomposition, having a proven-live DWT and a switch that PENDS, so unlike
+the LX6 its composite spans are honest.
+
+**TWO THINGS ABOUT THE CARVE ITSELF, because no command re-derives them.** The `KOS_SYS_BENCH`
+number and its `kos_bench_op` enum physically landed on M5 inside a commit about widening the
+syscall return to 64 bits, which is a different topic and is NOT here; they are folded into the
+bench commit instead, which is what its own message always claimed. And the sweep commit that
+carried the ACQUIRE/RELEASE orders also carried a live DIAG probe in `selftest/main.cc` that
+reddened `call_infoless_revert`; that probe is deliberately absent, so this tree's selftest is the
+state the probe was later reverted TO.
+
+**WITNESSED HERE:** `sim` 238/238 and `qemu` 40/40, both green, and every static gate exits 0.
+The count is BELOW M5's because tests added by later topics are not on this branch.
 
 **`pizero2350` IS RE-WITNESSED AT `ce34ac66`, BOTH ARMS, and it is the only board reachable
 without an operator** (BOOTSEL in, `KICKOS_SHUTDOWN_TO_BOOTLOADER` out, so the loop is unattended).
@@ -852,7 +929,7 @@ regions. Refused, because `docs/design-task-layer.md` defines a task as the set 
 ONE memory domain, so a member that shares the task but not its domain makes the definition false --
 two answers to "what memory do this task's threads see" is precisely the second truth the tiebreaker
 forbids. The right decomposition is a task of its own, and the only thing stopping that is that a
-task is also the kill group; separating "shares memory" from "dies together" is M5-scale.
+task is also the kill group; separating "shares memory" from "dies together" is M6-scale.
 **What landed is the deletion of the declaration that lied.** `drv::Thread::mem_grant`'s only reader
 was an OR-reduction into the group's grant, and it equalled `arg == KOS_DRV_ARG_BLOCK` in all
 TWELVE production descriptors, so it was a second truth twice over. `bring_up` now hands the task the block
@@ -1122,6 +1199,15 @@ artifact that can be deleted, which is why this tree mutation-tests them:
   namespace and emits unmangled GLOBALS into libkickos's public C surface; `static` is what survives
   it. 19 symbols across four backends, and the seventh site was found by an `nm` CLASS sweep that a
   construct scan cannot see. The gate refuses a file it cannot count rather than reading it clean.
+
+**`check_c_headers.sh` COMPILES WITH NO `-D` AT ALL, so a C-facing header is only ever checked in
+its DEFAULT branch.** Found in M5 while adding a Kconfig-driven seam. Any C-facing header that
+grows a `#if KICKOS_<knob>` has its other arm compiled by nothing, on any board, and the gate still
+reports PASS over its full corpus. Not triggered yet: the seam that found it lives in
+`arch/include/kickos/arch/arch.h`, which is deliberately C++-only and correctly outside that
+corpus. **Not fixed on purpose** -- widening it means compiling every header under a matrix of knob
+values, which wants measuring before it is built, the same way the doc gate's path half was
+measured at roughly 3 percent precision and REFUSED.
 
 **The selftest arm count is an EXACT FLOOR per posture** in `user/apps/common/selftest/CMakeLists.txt`
 (`_tap_arms`, plus the independent partition `_tap_arms_p1` + `_tap_arms_p2` for the two-image split,
@@ -1400,13 +1486,22 @@ nothing to land.
   +4,096 B, `frdmk64f{,-st} +MPU` +7,072 B), so static-RAM growth in a SHARED test now breaks those
   links on the POOL assert rather than the boot one. `bluepill-c8` has no ctest gate and no unit, so
   only a full-fleet build catches it. **Neither board is silicon-witnessed.**
-- **A per-chip `arch_console_reclaim` body exists only on `mk64f`, `xmc4800`, `esp32` and
-  `esp32c6`** -- FOUR, not three -- so elsewhere a driver death flips the state and the polled
-  route works but the DEVICE is whatever the dead driver left. Per-chip bodies are fleet work;
-  `roadmap.md`'s sub-milestone ledger says which number that is.
-- **`arch_console_flush_sync` is a DEVICE drain and only `mk64f` and `xmc4800` have a body**, so on
-  every other board `kickos_terminate` empties the console RING and then stops the core with
-  whatever is still in the UART FIFO. `arch.h` used to document the seam as a clock-retune hook
+- **CLOSED IN M4.9.2, and this entry said FOUR until the count was re-derived from the tree:
+  EIGHT chips carry `arch_console_reclaim` and the same eight carry
+  `arch_console_reclaim_window`** -- `mk64f`, `xmc4800`, `esp32`, `esp32c6`, `rp2040`, `rp2350`,
+  `imxrt1062` and `rx72m`, plus the sim's window. The four without either are
+  `stm32f302`, `stm32f411`, `stm32f103` and `sam3x8e`, which are exactly the four
+  console-publishing chips with NO userspace console driver, so a reclaim there has nothing to
+  reclaim from and the debt is the DRIVER's, not the seam's.
+  **Derive this count, never quote it**: the first sweep written for it missed every
+  `_window` body because the pattern was anchored too tightly, and returned zero.
+- **`arch_console_flush_sync` is a DEVICE drain and NINE chips have a body** (the eight above plus
+  `stm32f302`), where this entry claimed two. The three still on the fallback are `stm32f411`,
+  `stm32f103` and `sam3x8e`, so on those `kickos_terminate` empties the console RING and then
+  stops the core with whatever is still in the UART FIFO.
+  **What IS still thin is `arch_console_retune`, which has exactly TWO bodies**, `mk64f` and
+  `xmc4800`: the six chips that gained a console driver during the driver era have a flush and no
+  retune, so a clock change under a userspace console on any of them re-derives no baud. `arch.h` used to document the seam as a clock-retune hook
   only, which is HOW the terminal path ended up with no drain: it read as "no retune, no body
   needed". The seam now states both callers and the bound the panic path needs, `kickos_terminate`
   calls it, and `stm32f302` has a body waiting on `ISR.TC`. **NO WITNESS** -- this is argued from
