@@ -278,21 +278,15 @@ namespace kickos
                         ep->recv_holders--;
                         if (ep->recv_holders == 0)
                         {
-                            Thread* s;
-                            while ((s = wq_pop_highest(ep->send_waiters)) != nullptr)
-                            {
-                                // last receiver gone: EPIPE the parked sender. A SEND_WAIT
-                                // caller returns via kos_call's B1 call_state clear.
-                                s->wait_result = -KOS_EPIPE;
-                                sched::wake(s);
-                            }
                             // If that endpoint was the published console, no userspace
-                            // driver can ever serve it again. The reclaim runs HERE, in the
-                            // same masked window as the EPIPE wake above, so the peer that
-                            // wake releases cannot observe a console still dark: on a
-                            // teardown path cap_teardown has already released every IRQ cap
-                            // this thread held (its name-keyed pass), which is the only
-                            // precondition that used to want the rest of the sweep.
+                            // driver can ever serve it again. This must PRECEDE the EPIPE
+                            // loop below, and the surrounding mask does not order the two:
+                            // sched::wake admits a switch for a live closer, and
+                            // arch_switch swaps INLINE on the sim and on xtensa LX6, so a
+                            // woken peer would observe a console still dark. Sound ahead
+                            // of the loop on the teardown path too, cap_teardown's
+                            // name-keyed pass having already released this thread's IRQ
+                            // caps.
                             //
                             // The note is NOT the reclaim decision, and it is STICKY because
                             // this attempt can legitimately refuse. recv_holders counts
@@ -307,6 +301,14 @@ namespace kickos
                             {
                                 console_note_driver_death();
                                 console_on_driver_death();
+                            }
+                            Thread* s;
+                            while ((s = wq_pop_highest(ep->send_waiters)) != nullptr)
+                            {
+                                // last receiver gone: EPIPE the parked sender. A SEND_WAIT
+                                // caller returns via kos_call's B1 call_state clear.
+                                s->wait_result = -KOS_EPIPE;
+                                sched::wake(s);
                             }
                         }
                     }

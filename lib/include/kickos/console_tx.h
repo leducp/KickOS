@@ -94,10 +94,14 @@ void console_note_driver_death(void);
 // published, if the dead thread was not its last receiver, or while ANY live thread still
 // holds arch_console_reclaim_window().
 //
-// Called at the note, in the same masked window (cap.cc), which is sound because
-// cap_teardown releases every IRQ cap the dying thread held before it can be preempted at
-// all: no line it owned is still armed into irq_event_isr. Only a thread DEATH can free
-// the register window, so exit_current is the one site that RETRIES a refusal.
+// Called at the note (cap.cc), and it must run BEFORE the EPIPE wake of the parked senders,
+// not merely inside the same masked window: sched::wake admits a switch when the closer is
+// neither exited nor dying, and arch_switch swaps INLINE on the sim and on xtensa LX6, so
+// a woken peer would observe a dark console.
+// Running ahead of the wake stays sound on the teardown path because cap_teardown releases
+// every IRQ cap the dying thread held first: no line it owned is still armed into
+// irq_event_isr. Only a thread DEATH can free the register window, so exit_current is the
+// one site that RETRIES a refusal.
 void console_on_driver_death(void);
 
 #ifdef __cplusplus
