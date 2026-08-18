@@ -102,6 +102,12 @@ if(KICKOS_ARCH STREQUAL "sim")
   # lib's rtt.h (arch -> lib is the ordinary downward direction; lib is the leaf).
   target_include_directories(kickos_arch_sim PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../lib/include")
+  if(KICKOS_MULTI_INSTANCE)
+    # PUBLIC, not PRIVATE: -pthread has to reach the final link of every app, not just
+    # this archive's compiles.
+    find_package(Threads REQUIRED)
+    target_link_libraries(kickos_arch_sim PUBLIC Threads::Threads)
+  endif()
   install(TARGETS kickos_arch_sim EXPORT KickOSTargets
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   # Kernel headers for the reverse-direction callbacks are pulled via arch.h.

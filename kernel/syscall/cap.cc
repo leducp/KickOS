@@ -31,7 +31,12 @@ namespace kickos
         // console driver serves. The kernel holds ONE ref on it (moved on re-publish);
         // cap_install_defaults seats a send-only copy at index 0 of every child. See
         // docs/design-m3-console-handover-stageii.md (D3/D4/S3).
-        constinit int g_stdout_target = KCAP_STDOUT_NONE;
+        constinit InstanceLocal<int> g_stdout_target = {KCAP_STDOUT_NONE};
+
+        int& stdout_target()
+        {
+            return g_stdout_target.get();
+        }
 
         // Every .bss datum this module owns, in ONE object. The grouping is load-bearing:
         // CapEntry is 8-aligned, so as separate objects the linker drops four bytes of fill
@@ -50,7 +55,14 @@ namespace kickos
             // declaration.
             unsigned teardown_depth;
         };
-        constinit CapState g_cap;
+        // Per instance: the slab IS the capability namespace, and a second kernel's
+        // cap_slab_init would hand this one's live runs back to the free list.
+        constinit InstanceLocal<CapState> g_cap_all;
+
+        CapState& cap_state()
+        {
+            return g_cap_all.get();
+        }
 
         // Slot index of the semaphore a global handle names (via the live object, so
         // the SlotPool handle codec is never assumed here). -1 if it does not resolve.
@@ -297,7 +309,7 @@ namespace kickos
                             // defers while any live thread still holds the register window;
                             // only a thread DEATH can free that window, so exit_current is
                             // the one site that retries.
-                            if (e.obj == g_stdout_target)
+                            if (e.obj == stdout_target())
                             {
                                 console_note_driver_death();
                                 console_on_driver_death();
@@ -602,17 +614,17 @@ namespace kickos
 
     void cap_console_reset()
     {
-        g_stdout_target = KCAP_STDOUT_NONE;
+        stdout_target() = KCAP_STDOUT_NONE;
     }
 
     void cap_slab_init()
     {
-        g_cap.free_chunks.head = nullptr;
+        cap_state().free_chunks.head = nullptr;
         // Push in reverse so the list comes out in address order and a first attach is
         // deterministic across boots.
         for (uint32_t c = KCAP_SLAB_CHUNKS; c > 0; c--)
         {
-            g_cap.free_chunks.push(&g_cap.chunks[(c - 1) * KCAP_CHUNK_SLOTS]);
+            cap_state().free_chunks.push(&cap_state().chunks[(c - 1) * KCAP_CHUNK_SLOTS]);
         }
     }
 
@@ -622,7 +634,7 @@ namespace kickos
         *out_width = 0;
         KICKOS_ASSERT(width >= KICKOS_CAP_FIRST_DYNAMIC and width <= KICKOS_MAX_HANDLES);
         uint32_t const chunks = kcap_chunks_for(width);
-        if (not g_cap.free_chunks.take(run, chunks))
+        if (not cap_state().free_chunks.take(run, chunks))
         {
             return false;
         }
@@ -647,7 +659,7 @@ namespace kickos
 
     void cap_slab_detach(CapRun* run, uint16_t* free_head, uint16_t* out_width)
     {
-        g_cap.free_chunks.give(run);
+        cap_state().free_chunks.give(run);
         // The list lived in the chunks just given back, so a surviving head would name a slot
         // in a chunk the next attach can hand to another task.
         *free_head = KCAP_FREE_NONE;
@@ -841,7 +853,7 @@ namespace kickos
 
     bool cap_teardown_active()
     {
-        return g_cap.teardown_depth > 0;
+        return cap_state().teardown_depth > 0;
     }
 
     namespace
@@ -871,7 +883,7 @@ namespace kickos
         uint32_t const cap_end = thread_cap_capacity(c);
         {
             IrqLock lock;
-            g_cap.teardown_depth++;
+            cap_state().teardown_depth++;
             // NAME-KEYED FIRST, and in ONE masked window: an IRQ line is named by NUMBER, so
             // until this thread's binding is detached a peer's irq_claim of the same line
             // answers -KOS_EBUSY. The chunked loop below hands the CPU to peers, including
@@ -943,7 +955,7 @@ namespace kickos
         KICKOS_ASSERT(c->cap_irq_live == 0);
         KICKOS_ASSERT(c->reply_waiters.empty());
         KICKOS_ASSERT(c->served_head == EP_SERVED_NONE);
-        g_cap.teardown_depth--;
+        cap_state().teardown_depth--;
     }
 
     // Seat (or re-seat) a thread's reserved stdout slot (index 0) as a SEND-ONLY (CAP_SIGNAL,
@@ -982,13 +994,13 @@ namespace kickos
     {
         // Pre-publish: nothing seated (index 0 empty). The selftest/bring-up world that
         // never publishes is untouched, and its apps fall back to kconsole_write.
-        if (g_stdout_target == KCAP_STDOUT_NONE)
+        if (stdout_target() == KCAP_STDOUT_NONE)
         {
             return;
         }
         // A ceiling refusal leaves slot 0 empty, which is the state the child already handles
         // pre-publish, so the spawn is NOT failed over it.
-        (void)cap_seat_stdout(child, g_stdout_target);
+        (void)cap_seat_stdout(child, stdout_target());
     }
 
     // Move the kernel's stdout-target ref to `obj_handle` and seat the publisher's own slot 0
@@ -1013,21 +1025,21 @@ namespace kickos
             obj_ref_undo(CapType::CAP_ENDPOINT, obj_handle, 0);
             return false;
         }
-        if (g_stdout_target != KCAP_STDOUT_NONE)
+        if (stdout_target() != KCAP_STDOUT_NONE)
         {
-            endpoint_ref_drop(g_stdout_target, /*teardown=*/false);
+            endpoint_ref_drop(stdout_target(), /*teardown=*/false);
         }
-        g_stdout_target = obj_handle;
+        stdout_target() = obj_handle;
         return true;
     }
 
     bool cap_console_target(int* out)
     {
-        if (g_stdout_target == KCAP_STDOUT_NONE)
+        if (stdout_target() == KCAP_STDOUT_NONE)
         {
             return false;
         }
-        *out = g_stdout_target;
+        *out = stdout_target();
         return true;
     }
 }

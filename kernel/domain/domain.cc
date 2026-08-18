@@ -21,9 +21,6 @@ namespace kickos
         // returned by free_slot().
         enum { KDOM_KERNEL_INDEX = 0, KDOM_DEFAULT_USER_INDEX = 1 };
 
-        constinit Domain* g_kernel = nullptr;       // domains[KDOM_KERNEL_INDEX]
-        constinit Domain* g_default_user = nullptr; // domains[KDOM_DEFAULT_USER_INDEX]
-
         // A slot is free iff it is not immortal and holds no live thread.
         Domain* free_slot()
         {
@@ -49,23 +46,23 @@ namespace kickos
         }
         // Kernel domain: the whole user-RAM arena, privileged. Immortal because
         // root, idle and every privileged thread reference it.
-        g_kernel = &k.domains[KDOM_KERNEL_INDEX];
-        g_kernel->privileged = true;
-        g_kernel->immortal = true;
+        Domain* const kdom = &k.domains[KDOM_KERNEL_INDEX];
+        kdom->privileged = true;
+        kdom->immortal = true;
         size_t size = arch_ram_size();
         if (size != 0)
         {
-            g_kernel->regions[0].base = arch_ram_base();
-            g_kernel->regions[0].size = size;
-            g_kernel->regions[0].attr = ARCH_MPU_R | ARCH_MPU_W;
-            g_kernel->region_count = 1;
+            kdom->regions[0].base = arch_ram_base();
+            kdom->regions[0].size = size;
+            kdom->regions[0].attr = ARCH_MPU_R | ARCH_MPU_W;
+            kdom->region_count = 1;
         }
         // Default user domain: no granted arena region, unprivileged. Immortal because
         // every unprivileged thread with no explicit grant shares it.
-        g_default_user = &k.domains[KDOM_DEFAULT_USER_INDEX];
-        g_default_user->privileged = false;
-        g_default_user->immortal = true;
-        g_default_user->region_count = 0;
+        Domain* const udom = &k.domains[KDOM_DEFAULT_USER_INDEX];
+        udom->privileged = false;
+        udom->immortal = true;
+        udom->region_count = 0;
     }
 
     // Only domain_init and domain_for below may touch regions[] directly. Every reader
@@ -87,12 +84,12 @@ namespace kickos
 
     Domain* domain_kernel(void)
     {
-        return g_kernel;
+        return &kernel().domains[KDOM_KERNEL_INDEX];
     }
 
     Domain* domain_default_user(void)
     {
-        return g_default_user;
+        return &kernel().domains[KDOM_DEFAULT_USER_INDEX];
     }
 
     Domain* domain_for(bool privileged, void* mem_base, size_t mem_size,
@@ -101,11 +98,11 @@ namespace kickos
         *err = 0;
         if (privileged)
         {
-            return g_kernel;
+            return domain_kernel();
         }
         if (mem_base == nullptr or mem_size == 0)
         {
-            return g_default_user;
+            return domain_default_user();
         }
         uintptr_t const base = reinterpret_cast<uintptr_t>(mem_base);
         size_t const rsz = arch_ram_region_size(mem_size);

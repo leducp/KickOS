@@ -76,7 +76,8 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
   foreach(_knob KICKOS_MAX_THREADS KICKOS_USER_STACK_SIZE KICKOS_IDLE_STACK_SIZE
                 KICKOS_ROOT_STACK_SIZE KICKOS_MAX_SEMAPHORES KICKOS_MAX_MUTEXES
                 KICKOS_MAX_ENDPOINTS KICKOS_CAP_TABLE_SUPPLY KICKOS_MAX_SPAWN_GRANTS
-                KICKOS_MAX_IRQ_HANDLES KICKOS_RTT_CH1_SIZE KICKOS_USER_HEAP_SIZE)
+                KICKOS_MAX_IRQ_HANDLES KICKOS_RTT_CH1_SIZE KICKOS_USER_HEAP_SIZE
+                KICKOS_MAX_INSTANCES)
     if(DEFINED ${_knob})
       list(APPEND _kcfg_req "CONFIG_${_knob}=${${_knob}}")
     endif()
@@ -97,7 +98,7 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
     endif()
   endforeach()
   foreach(_flag KICKOS_ENABLE_SELFTEST KICKOS_DEBUG KICKOS_BENCH
-                KICKOS_SHUTDOWN_TO_BOOTLOADER
+                KICKOS_SHUTDOWN_TO_BOOTLOADER KICKOS_MULTI_INSTANCE
                 CONFIG_SCHED_PERIODIC_TICK)
     if(DEFINED ${_flag})
       string(REGEX REPLACE "^CONFIG_" "" _sym "${_flag}")
@@ -306,6 +307,16 @@ else()
 endif()
 add_compile_definitions(KICKOS_CONSOLE_CHIP=${_con_chip} KICKOS_CONSOLE_RTT=${_con_rtt} KICKOS_CONSOLE_CRLF=${_con_crlf})
 message(STATUS "KickOS: console=${KICKOS_CONSOLE} (chip=${_con_chip} rtt=${_con_rtt} crlf=${_con_crlf})")
+
+# Several independent kernels in one address space (instance_local.h). Always defined 0
+# or 1 so `#if KICKOS_MULTI_INSTANCE` is -Wundef-clean, and carried to consumers for the
+# same ODR reason as KICKOS_HAVE_MPU: it changes kernel() in a shipped header. The COUNT
+# rides in the generated board_config.h with the other provisioning knobs.
+if(KICKOS_MULTI_INSTANCE)
+  add_compile_definitions(KICKOS_MULTI_INSTANCE=1)
+else()
+  add_compile_definitions(KICKOS_MULTI_INSTANCE=0)
+endif()
 
 # Positive identification only: a new arch must land in the 0 branch of every
 # `#if KICKOS_ARCH_SIM`.
@@ -808,6 +819,7 @@ if(TARGET kickos_kernel)
     KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
     KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU}
     KICKOS_ARCH_SIM=${_kos_iface_sim}
+    KICKOS_MULTI_INSTANCE=$<BOOL:${KICKOS_MULTI_INSTANCE}>
     KICKOS_DEBUG=$<BOOL:${KICKOS_DEBUG}>)
   target_compile_options(kickos_core INTERFACE -include kickos/app.h)
   # Force-include the seam header so an app-TU-defined kickos_init_entry gets C linkage.

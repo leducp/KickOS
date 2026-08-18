@@ -29,6 +29,18 @@ if(_sched_exit_gateable AND KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(sim_sched_exit PROPERTIES TIMEOUT 15)
 endif()
 
+# Multi-instance gate. Registered from HERE because it runs this app, which keeps no
+# file-scope counter of its own, so a co-resident run is comparable line for line against
+# a solo one. Registered only in the SINGLE-instance tree: the gate configures its own
+# tree with the knob on and would otherwise recurse.
+if(_sched_exit_gateable AND KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND NOT KICKOS_MULTI_INSTANCE)
+  add_test(NAME sim_multi_instance
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_multi_instance.sh"
+            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
+  set_tests_properties(sim_multi_instance PROPERTIES TIMEOUT 300)
+endif()
+
 # QEMU armv7m gate: this is where the bug lived (deferred PendSV under IrqLock).
 # Run on every MPS2 image: the deferred switch is the same code on each, but the
 # exception-return path it rides differs per core.

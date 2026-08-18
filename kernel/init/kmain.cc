@@ -85,11 +85,6 @@ namespace kickos
 {
     namespace
     {
-        // Idle's TCB, the one thread the pool does not seat. Still file-static:
-        // instance-scoping residue (invariant #7). Its STACK is deliberately NOT here;
-        // see boot_stack_alloc.
-        constinit Thread g_idle_tcb;
-
         // Take one bootstrap thread stack from the user-RAM arena, and assert at boot the
         // two properties an MPU descriptor over it depends on. A .bss array satisfies
         // neither: PMSAv7 and PMP/NAPOT can only name a pow2 block naturally aligned to
@@ -232,11 +227,11 @@ namespace kickos
         // Idle gets no run at all: an empty directory means capacity 0, so it can neither
         // create, receive nor be delegated a capability.
         idle_attr.cap_run = CapRun{};
-        thread_create(&g_idle_tcb, idle_entry, nullptr,
+        thread_create(&kernel().idle_tcb, idle_entry, nullptr,
                       idle_stack, KICKOS_IDLE_STACK_SIZE, idle_attr);
         // Idle is created first, so it MUST be trace id 0 (the telemetry decoder
         // keys CPU% off tid 0 == idle). Assert the invariant, not just assume it.
-        KICKOS_ASSERT(g_idle_tcb.id == KICKOS_TID_IDLE);
+        KICKOS_ASSERT(kernel().idle_tcb.id == KICKOS_TID_IDLE);
 
         // Root runs at a low priority so a worker's completion post never preempts the
         // orchestrator. That is the only scheduling property the priority buys, and it is

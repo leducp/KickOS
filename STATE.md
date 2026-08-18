@@ -9,12 +9,33 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**THIS TREE IS `M5.1.2`, THE SECOND REVIEWABLE M5 PR, CARVED OFF `master` (`f56b591b`).** It
-carries the arch and ABI groundwork the rest of M5 sits on, plus the `sched::wake` fix that was
-branch `hotfix/wake-parks-wrong-thread`. Nothing else from M5 is here. Everything below about the
-IPC measurement chain and the atomics is `M5.1.1`, already merged as PR 26 and still true of this
-tree; a record naming multi-instance, I2C, the stm32f411 console, the IPC fastpath implementation
-or S7 is describing a later PR and not this tree.
+**THIS TREE IS `M5.1.3`, THE THIRD REVIEWABLE M5 PR, CARVED OFF `master` (`ee2b2323`).** It
+carries the instance-local seam, the multi-instance sim and the console reclaim ordering. Nothing
+else from M5 is here. Everything below about the arch and ABI groundwork, the IPC measurement
+chain and the atomics is `M5.1.1` and `M5.1.2`, already merged and still true of this tree; a
+record naming I2C, the stm32f411 console, the IPC fastpath implementation or S7 is describing a
+later PR and not this tree.
+
+**A KERNEL IS INSTANCE LOCAL, AND THE SIM HOSTS FIFTY AT ONCE.** `InstanceLocal<T>` in
+`include/kickos/instance_local.h` is `KICKOS_MAX_INSTANCES` copies behind one index, and that
+index is a literal `0u` by preprocessor unless `KICKOS_MULTI_INSTANCE` is set, which only the sim
+may set. `struct Kernel`, the capability slab, the console TX ring, the fault record and the sim
+backend state all wrap in it; module-private state stays in its own file rather than moving into
+`struct Kernel`. Under the knob each instance owns a host thread, a `SIGEV_THREAD_ID` timer and a
+`sigaltstack`, and `arch_shutdown` resumes the frame that started the instance instead of ending
+the process. The `[n] ` stdout tag is emitted only where the process hosts more than one instance,
+so a knob-on image running alone is byte-identical to a knob-off one and every banner-exact and
+TAP-exact gate holds either way. `check_sim_multi_instance.sh` diffs fifty co-resident kernels
+against a one-instance run of the same image; it does NOT cover a shared `sigaltstack`, which
+needs an app that faults.
+
+**THE CONSOLE RECLAIM IS SEQUENCED BEFORE THE EPIPE WAKE, AND THE MASK DOES NOT ORDER THEM.**
+When the published console loses its last WAIT-bearing cap, `console_note_driver_death` and
+`console_on_driver_death` run AHEAD of the loop that EPIPEs the parked senders. `sched::wake`
+admits a switch for a closer that is neither exited nor dying, and `arch_switch` swaps INLINE on
+the sim and on `lx6`, so a woken peer would otherwise observe a console still dark. The capsweep
+arm `a_voluntary_close_reclaims_before_the_wake_it_admits` is the only oracle that fails on the
+move.
 
 **THE MILESTONE NUMBERS MOVED AND THE ABI FREEZE IS KEYED TO A NAME.** SMP is M6
 (`docs/design-m6-smp.md`), the seam rework is M7, and the freeze is M8, the last milestone.
@@ -51,7 +72,7 @@ highest-priority thread woken on each exit that does not park. The regression ar
 `call_infoless_revert`, restaged so `recv#2` always finds the caller alone and parks; `qemu`
 `mps2-an386` PENDS its switch and catches it, `sim` swaps inline and cannot witness the class at
 all. **The bug is on `master`, not introduced by M5**, and branch
-`hotfix/wake-parks-wrong-thread` is redundant once this PR lands.
+`hotfix/wake-parks-wrong-thread` is retired.
 
 **`KOS_SYS_CALL_REG = 56` EXISTS AND EMITS NO CODE ON THIS BRANCH.** The register-carrying call
 number, `KOS_CALL_REG_FALLBACK` and the five-word / 20-byte payload budget are ABI here; the

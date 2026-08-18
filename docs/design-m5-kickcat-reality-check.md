@@ -2,8 +2,10 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Design -- KickCAT as the driver-API reality check
 
-> **Status: SURVEYED, not ported.** The gap is measured against both trees at KickOS `3c3967e3`
-> and KickCAT `43ad3e9`. The ruling in section 3 is made; the work is not started.
+> **Status: BACKEND WRITTEN AND COMPILED, NEVER LINKED, NEVER RUN.** The gap was measured against
+> both trees at KickOS `3c3967e3` and KickCAT `43ad3e9`; the ruling in section 3 is made and the
+> backend implements it. Section 8 records what writing it found, including one correction to
+> section 3 and one retraction from section 1. Silicon is owed: `frdmk64f` was not on the bus.
 
 KickCAT (`../KickCAT`) was delinked from KickOS in M4.1 and set aside through the whole driver era,
 to be brought back at the end as the thing that JUDGES the driver APIs rather than as a consumer
@@ -54,35 +56,67 @@ and both refusals are deliberate rulings rather than gaps:
 Under the current API those two `transfer()` calls become two `kos_call`s, each releasing CS at the
 end, so the LAN9252 would see two unrelated transactions and the read would return garbage.
 
-## 3. The ruling: KickCAT's seam is what moves
+## 3. The ruling: NEITHER interface moves, and the backend absorbs it
 
-**KickOS is right here and should not be changed to accommodate the split form.** The mechanism the
-port needs already exists: `nseg` up to `KOS_BUS_SEG_MAX` under one chip-select bracket is exactly
-the LAN9252 header-plus-payload shape. `writeInternalRegister` maps to `nseg == 1` unchanged; the
-read path maps to `nseg == 2`, header then payload.
+**KickOS is right not to offer a cross-call chip-select hold, and `AbstractSPI` does not have to
+change either.** The mechanism the port needs already exists on the KickOS side: `nseg` up to
+`KOS_BUS_SEG_MAX` under one chip-select bracket is exactly the LAN9252 header-plus-payload shape.
 
-`AbstractSPI`'s split form encodes an assumption that the CALLER owns the bus across calls. That is
-natural for exactly one kind of backend, a memory-mapped single-address-space driver such as the
-RPi bcm2835 one, and it does not survive contact with any OS-mediated SPI stack. Both of the other
-backends KickCAT would want are already better served by the segmented form: NuttX has `SPI_LOCK`
-and Linux `spidev` has the `SPI_IOC_MESSAGE` multi-transfer ioctl precisely because the split form
-does not compose. So the change is not a concession to KickOS; it is a fix KickCAT wants anyway.
+The thing that makes the collision dissolve is that **`enableChipSelect()` and `disableChipSelect()`
+are PURE VIRTUALS**. The bracket is already a backend concept, so a backend is entitled to decide
+what it means, and the KickOS one means "accumulate":
 
-The shape: add a segmented `transfer(segments)` primitive to `AbstractSPI` and keep the existing
-two-call form as a default-implemented convenience over it, so no existing backend breaks.
+- `enableChipSelect()` starts a segment list and touches no hardware.
+- `transfer()` appends a segment.
+- the list goes out as ONE `kos_spi_transfer`, and `disableChipSelect()` closes the list.
 
-**This is the milestone's intended output.** The reality check was set up so that a KickCAT demand
-would drive an API change; what it produced instead is the inverse, and declining the demand is the
-finding. Recording it that way matters, because "the consumer asked and we said no" is only a
-defensible answer with the reason written down.
+The single wrinkle is that `transfer()` must fill `data_read` before returning, so a read cannot be
+deferred. It does not need to be: the backend FLUSHES AT THE READ, issuing everything accumulated
+plus that segment, filling the buffer, and leaving `disableChipSelect()` a no-op. That is exactly
+`Lan9252::readInternalRegister` -- write the three-byte command, read the payload, release --
+which becomes `nseg == 2`. `writeInternalRegister` is `nseg == 1` and needs nothing.
 
-### 3.1 What the port therefore is
+**The shape the backend cannot express is a read followed by another transfer in the SAME bracket**,
+because the flush has already released the chip select. It must REFUSE that loudly rather than
+silently splitting the transaction; `THROW_ERROR` is what KickCAT uses. No such shape exists in the
+LAN9252 path today.
+
+### 3.1 Why not change `AbstractSPI` anyway
+
+A segmented `transfer(segments)` primitive is defensible on its own terms: the split form encodes
+an assumption that the CALLER owns the bus across calls, which suits a memory-mapped
+single-address-space backend and composes badly with an OS-mediated one. NuttX has `SPI_LOCK` and
+Linux `spidev` has the `SPI_IOC_MESSAGE` multi-transfer ioctl for that reason.
+
+**It is still refused, for now, because nothing forces it.** Changing a public interface moves every
+existing backend and consumer; the buffering backend is contained in the one file this port writes
+anyway, and it enforces its limit with a throw rather than a silent wrong answer. If a real ESC
+driver later needs read-then-write inside one bracket, THAT is the forcing consumer and that is when
+the interface moves, on evidence rather than on a prediction.
+
+**This entry previously said the opposite** -- that `AbstractSPI` was what had to move, and that
+declining KickCAT's demand was the milestone's finding. That was reasoning from "KickOS cannot hold
+a chip select across calls" straight to "the caller's interface is wrong", without noticing that the
+bracket was already a customisation point. The correct output of the reality check is narrower and
+better: the impedance mismatch is real, it is absorbable in a backend, and NEITHER public interface
+needs to change to absorb it.
+
+One consequence worth stating because it is a genuine semantic change: deferring means a `write()`
+inside a bracket clocks no bytes until the flush. For a device with timing requirements BETWEEN
+phases of one transaction that would matter. It does not for LAN9252 CSR access, which is one
+indivisible transaction by construction, and the accumulated bytes must in any case fit
+`KOS_SPI_XFER_MAX` and `KOS_BUS_SEG_MAX` -- 212 bytes and 8 segments, against a worst case here of
+about 35 bytes and 2.
+
+### 3.2 What the port therefore is
 
 Three discrete pieces, plus one open question:
 
-1. `AbstractSPI` grows the segmented primitive; a new `kickcat::SPI` backend implements it over
-   `kos_spi_bus_open` / `kos_spi_device_open` / `kos_spi_transfer`.
-2. `Lan9252`'s read path is rewritten from bracket-plus-two-calls to one segmented call.
+1. A new `kickcat::SPI` backend over `kos_spi_bus_open` / `kos_spi_device_open` /
+   `kos_spi_transfer`, accumulating across the chip-select bracket per section 3 and throwing on
+   the one shape it cannot express. `AbstractSPI` is untouched.
+2. `Lan9252` is untouched too: its read path already brackets the command and the payload, which is
+   what the backend turns into `nseg == 2`.
 3. `KICKOS_MULTI_INSTANCE` is wired into the build (see section 5).
 
 The buffer discipline differs mechanically and is not a design question: KickCAT passes distinct
@@ -181,8 +215,52 @@ person to hit it during a KickCAT bring-up recognises it instead of re-deriving 
 
 ## 7. Size
 
-**Medium.** Smaller than its age suggests: the build glue is intact and correct, KickCAT is already
-multi-instance clean, `AbstractESC` needs nothing, time still links, and KickOS already has the
-segmented mechanism plus two working SPI drivers. Larger than a symbol rename: the four `spi_*`
-symbols have no drop-in replacement precisely because the seam that named them encodes an
-assumption the current API refuses on purpose.
+**Small to medium, and smaller than section 3 first made it.** The build glue is intact and correct,
+KickCAT is already multi-instance clean, `AbstractESC` needs nothing, time still links, KickOS
+already has the segmented mechanism and two working SPI drivers, and now that the bracket is
+absorbed in the backend neither public interface moves and `Lan9252` is untouched.
+
+What is left is one new backend file, plus `KICKOS_MULTI_INSTANCE`, plus the latency question in
+4.1 which is a measurement rather than a change. The four vanished `spi_*` symbols still have no
+drop-in replacement, but the gap between them and `kos_spi_*` is now entirely inside the file the
+port writes.
+
+## 8. What the port found once it was written
+
+The backend is `ea7ea4d` on KickCAT `master`, unpushed: `lib/slave/driver/{include,src}/kickcat/SPI.{h,cc}`
+over `kos_spi_bus_open` / `kos_spi_device_open` / `kos_spi_transfer` / `kos_spi_bus_close`, with
+`AbstractSPI`, `AbstractESC` and `Lan9252` untouched as section 3 ruled. It compiles clean for
+cortex-m4 against the real KickOS headers at `-Wall -Wextra -Wshadow -Wundef -Werror`, and its only
+undefined symbols are the four `kos_spi_*` names. **It has never linked and never run on silicon**:
+`frdmk64f` was not on the bus. That is the state to carry into the bring-up, not a completed port.
+
+Section 3 needs one correction and section 1 needs one retraction.
+
+- **`disableChipSelect()` is not always a no-op.** Section 3 reads as if the flush always happens at
+  the read. For a write-only bracket -- `writeInternalRegister`, `nseg == 1` -- there is no read to
+  flush at, so the end of the bracket IS the flush point. The backend keys the three behaviours on
+  three different facts (bracket open, bracket already flushed, segments pending), because one flag
+  cannot distinguish them.
+- **Section 1's "all of KickCAT's KickOS build glue is live and correct" was too generous.** Beyond
+  the four vanished `spi_*` symbols, the example assigned a `kos::thread::Handle` to an `int`. It
+  could not have compiled even with the SPI symbols present, so the glue was never being built.
+
+Three findings are about KickOS rather than KickCAT, which is what the reality check was for.
+
+1. **`spawn_caps` cannot take a custom stack** (`user/include/kickos/kos.h:440`). It hard-passes
+   `nullptr, 0` for both mmio and stack, so a consumer wanting delegated caps AND a custom stack has
+   to abandon the helper and call `spawn` positionally through all eighteen arguments. The in-tree
+   `k64dspi` app never hit this because it takes the default stack; KickCAT needs 16 KB, so it does.
+   Not a defect -- the helper is honest about being a shortcut -- but it is a real gap, and the
+   remedy is to give `spawn_caps` the two stack parameters rather than to document the workaround.
+2. **A capability has no home in `AbstractSPI`.** `open()` carries a device *string*, and a
+   capability is not a string, so the endpoint arrives through a non-virtual setter the consumer
+   calls concretely. That works and it is the honest answer, but it is the one place the two
+   interfaces genuinely do not meet: a KickOS SPI consumer is **not** substitutable through
+   `AbstractSPI` alone, because it must know it is on KickOS to hand the cap over. Section 3 ruled
+   that neither interface moves; this is the price of that ruling, and it is worth paying.
+3. Section 4's non-constraints are confirmed against the built code, not just read off the headers:
+   worst case ~35 bytes over 2 segments against 212 and 8.
+
+Section 4.1's latency question is untouched by any of this. `waitCSR()` is still one IPC round trip
+per poll iteration, and the baseline in `design-m5-ipc-fastpath.md` is what prices it.

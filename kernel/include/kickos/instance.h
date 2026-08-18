@@ -5,6 +5,9 @@
 // host process, one per simulated MCU, so nothing here may become a file-static. App-owned
 // OBJECTS (TCBs, semaphores) stay caller-owned; this is only the runtime's own bookkeeping.
 // The sim arch backend keeps its own parallel SimInstance and never crosses the arch seam.
+//
+// State a module owns PRIVATELY stays where it is and wraps in InstanceLocal
+// (instance_local.h) rather than moving in here.
 
 #ifndef KICKOS_INSTANCE_H
 #define KICKOS_INSTANCE_H
@@ -16,6 +19,7 @@
 #include <kickos/config.h>
 #include <kickos/domain.h>
 #include <kickos/endpoint.h>
+#include <kickos/instance_local.h>
 #include <kickos/irq.h>
 #include <kickos/list.h>
 #include <kickos/slotpool.h>
@@ -79,6 +83,10 @@ namespace kickos
         // one obj_ref_inc moves both counters or neither.
         SlotPool<Endpoint, KICKOS_MAX_ENDPOINTS> endpoints;
         uint8_t endpoint_refs[KICKOS_MAX_ENDPOINTS] = {};
+        // Idle's TCB, the one thread the pool below does not seat. Placed against an
+        // 8-aligned member so it introduces no fill of its own; its STACK is not here,
+        // it comes from the arena (boot_stack_alloc).
+        Thread idle_tcb;
         // Thread pool (see ThreadPool in thread.h): the TCBs + their kernel stacks,
         // intrinsic liveness (a slot is free iff state==EXITED), generation bumped at
         // reclaim (ABA). All allocation goes through thread_spawn().
@@ -121,18 +129,13 @@ namespace kickos
 
     namespace detail
     {
-        extern Kernel g_instance;
+        extern InstanceLocal<Kernel> g_instance;
     }
 
-    // The single access seam for instance-scoped state. Storage is selected at compile
-    // time: a static singleton, or a per-host-thread instance for the multi-slave sim.
+    // The single access seam for instance-scoped state.
     inline Kernel& kernel()
     {
-#if defined(KICKOS_MULTI_INSTANCE)
-        return *detail::g_instance_tls;
-#else
-        return detail::g_instance;
-#endif
+        return detail::g_instance.get();
     }
 }
 
