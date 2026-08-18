@@ -81,9 +81,12 @@ namespace
     // "U, PV"); only their write side is privileged.
     //
     // RM eq.18.8 off the fractional divider of RM eq.18.2: fSCLK = fPERIPH * STEP/1024 /
-    // ((PDIV+1) * (PCTQ+1) * 2 * (DCTQ+1)). That form holds ONLY for DM = fractional with the
-    // three divider-chain selects at 0, so both are checked: a chain this backend cannot
-    // express is ENOTSUP, not a rate reported four times too high.
+    // (2 * (PDIV+1)). PCTQ and DCTQ are NOT in it -- RM 18.4.3.1 states the SSC baud generator
+    // has no time-quanta counter, and those two feed the slave-select delays of eq.18.9
+    // instead. The ASC path next door DOES divide by them, eq.18.6 being a time-quanta
+    // formula, and the two divider readings must not be unified.
+    // The form holds ONLY for DM = fractional with the three divider-chain selects at 0
+    // (PPPEN among them, which is the other factor of two), so both are checked.
     int32_t achieved_hz(uintptr_t win)
     {
         uint32_t const fperiph = kos_periph_clock_hz(win);
@@ -103,10 +106,7 @@ namespace
         }
         uint64_t const step = fdr & ru::FDR_STEP_MASK;
         uint64_t const pdiv = ((brg & ru::BRG_PDIV_MASK) >> ru::BRG_PDIV_SHIFT) + 1u;
-        uint64_t const pctq = ((brg & ru::BRG_PCTQ_MASK) >> ru::BRG_PCTQ_SHIFT) + 1u;
-        uint64_t const dctq = ((brg & ru::BRG_DCTQ_MASK) >> ru::BRG_DCTQ_SHIFT) + 1u;
-        uint64_t const rate =
-            (static_cast<uint64_t>(fperiph) * step) / (1024u * pdiv * pctq * 2u * dctq);
+        uint64_t const rate = (static_cast<uint64_t>(fperiph) * step) / (1024u * 2u * pdiv);
         if (rate == 0u)
         {
             return -KOS_ENOTSUP; // STEP=0 stops the divider: no rate to report
