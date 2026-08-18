@@ -16,6 +16,7 @@
 #define KICKOS_ERRNO_TABLE(X)                                                                     \
     X(KOS_EPERM,      "privilege denied, missing capability right, or not the owner", "EPERM")    \
     X(KOS_ESRCH,      "reply target gone: the caller is stale",                       "ESRCH")    \
+    X(KOS_EIO,        "the device did not play its part in the transfer",             "EIO")      \
     X(KOS_EBADF,      "handle names nothing valid",                                   "EBADF")    \
     X(KOS_ENOMEM,     "a pool, arena or descriptor budget could not allocate",        "ENOMEM")   \
     X(KOS_EFAULT,     "buffer not owned by the caller",                               "EFAULT")   \

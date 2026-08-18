@@ -29,6 +29,10 @@ namespace kickos::rx::mmap
     constexpr uintptr_t ICU = 0x00087000;
     // SCI6, the board console UART (UM sec.42).
     constexpr uintptr_t SCI6 = 0x0008A0C0;
+    // RIICa channels (UM sec.43): 0x20 stride, 0x14 bytes of registers in each.
+    constexpr uintptr_t RIIC0 = 0x00088300;
+    constexpr uintptr_t RIIC1 = 0x00088320;
+    constexpr uintptr_t RIIC2 = 0x00088340;
     // Compare Match Timer W (UM sec.32). Register fields in rxv3/regs.h.
     constexpr uintptr_t CMTW0 = 0x00094200; // one-shot next-event timer
     constexpr uintptr_t CMTW1 = 0x00094280; // free-running monotonic clock

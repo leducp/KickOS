@@ -28,7 +28,11 @@ namespace kickos::rx::reg::cgc
     constexpr uintptr_t MSTPCRB = mmap::SYSTEM + 0x0014; // 32-bit module stop B
     constexpr uint32_t MSTPA_CMTW1 = 1u << 0;  // MSTPCRA b0 = CMTW unit 1
     constexpr uint32_t MSTPA_CMTW0 = 1u << 1;  // MSTPCRA b1 = CMTW unit 0
+    constexpr uintptr_t MSTPCRC = mmap::SYSTEM + 0x0018; // 32-bit module stop C
     constexpr uint32_t MSTPB_SCI6 = 1u << 25;  // MSTPCRB b25 = SCI6
+    constexpr uint32_t MSTPB_RIIC0 = 1u << 21; // MSTPCRB b21 = RIIC0
+    constexpr uint32_t MSTPB_RIIC1 = 1u << 20; // MSTPCRB b20 = RIIC1
+    constexpr uint32_t MSTPC_RIIC2 = 1u << 17; // MSTPCRC b17 = RIIC2
 
     // --- Clock generation circuit (UM sec.9), all PRC0-protected ---
     constexpr uintptr_t SCKCR = mmap::SYSTEM + 0x0020;    // 32-bit system clock control (sec.9.2.1)

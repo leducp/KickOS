@@ -475,11 +475,60 @@ void kickos_rx_dev_dispatch(void)
 // arch/common fallback answering with 0 and no link error at all.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
-    if (base != mmap::SCI6)
+    if (base == mmap::SCI6)
     {
-        return 0;
+        return pclkb_hz();
     }
-    return pclkb_hz();
+    // RIICa is on PCLKB too (UM sec.43 preamble, "PCLK" there being PCLKB).
+    if (base == mmap::RIIC0 or base == mmap::RIIC1 or base == mmap::RIIC2)
+    {
+        return pclkb_hz();
+    }
+    return 0;
+}
+
+// Ungate a block for the unprivileged thread that already holds its window (arch.h). A RIIC
+// channel comes out of reset in module stop: its registers read back reset values and drop
+// stores until MSTPCR says otherwise (UM sec.43.16.1), and MSTPCRB/MSTPCRC sit in the
+// kernel-reserved SYSTEM block behind PRCR.PRC1, out of the window holder's reach.
+//
+// The console and timer blocks are deliberately absent: arch_init releases those, and
+// answering for them would let a grant holder gate a block the kernel is using.
+//
+// Same must-stay-in-this-TU rule as arch_periph_clock_hz above.
+int arch_periph_enable(uintptr_t base)
+{
+    uintptr_t reg = 0;
+    uint32_t bit = 0;
+
+    if (base == mmap::RIIC0)
+    {
+        reg = cgc::MSTPCRB;
+        bit = cgc::MSTPB_RIIC0;
+    }
+    else if (base == mmap::RIIC1)
+    {
+        reg = cgc::MSTPCRB;
+        bit = cgc::MSTPB_RIIC1;
+    }
+    else if (base == mmap::RIIC2)
+    {
+        reg = cgc::MSTPCRC;
+        bit = cgc::MSTPC_RIIC2;
+    }
+    else
+    {
+        return -KOS_EINVAL;
+    }
+
+    unlock_registers(true);
+    r32(reg) &= ~bit;
+    unlock_registers(false);
+    if ((r32(reg) & bit) != 0u)
+    {
+        return -KOS_EPERM; // the protect bracket did not take
+    }
+    return 0;
 }
 
 void arch_console_write(char const* buf, size_t n)
