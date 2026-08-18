@@ -504,8 +504,10 @@ inline int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_
                                            // of the grant predicate demands it of root too
         ...
         // Reach it before writing it: kos_ram_alloc grants nothing, and under enforcement
-        // root's own region set does not cover the arena.
-        if (kos_mem_self_grant(blk, d.block_size) != 0) { ... }
+        // root's own region set does not cover the arena. `block_flags` (kos_mem_flags)
+        // rides BOTH this grant and the task grant below, so a non-cacheable block has no
+        // cacheable mapping even during bring-up (docs/design-m4.6.2-usb-cdc.md, S7).
+        if (kos_mem_self_grant(blk, d.block_size, d.block_flags) != 0) { ... }
         if (d.block_init(blk, cfg) != 0) { ... }
     }
 

@@ -46,12 +46,17 @@ namespace kickos
         constexpr uint32_t RLAR_EN = 1u << 0;
         constexpr uint32_t RLAR_ATTR_NORMAL = 0u << 1; // AttrIndx 0 -> MAIR0 slot 0
         constexpr uint32_t RLAR_ATTR_DEVICE = 1u << 1; // AttrIndx 1 -> MAIR0 slot 1
+        constexpr uint32_t RLAR_ATTR_NORMAL_NC = 2u << 1; // AttrIndx 2 -> MAIR0 slot 2
 
         // MAIR attribute bytes (indexed by AttrIndx). Slot 0: Normal, outer+inner
         // Write-Back, Read/Write-Allocate (0xFF) for cacheable XIP flash + SRAM. Slot 1:
-        // Device-nGnRE (0x04) for ordered MMIO. Programmed once into MPU_MAIR0.
+        // Device-nGnRE (0x04) for ordered MMIO. Slot 2: Normal, outer+inner non-cacheable
+        // (0x44). Programmed once into MPU_MAIR0. In 0x44 each 0b0100 field is the
+        // non-cacheable Normal encoding; a zero outer field would make the byte Device
+        // instead, and an unaligned access UNPREDICTABLE.
         constexpr uint32_t MAIR_NORMAL_WBWA = 0xFFu;
         constexpr uint32_t MAIR_DEVICE_nGnRE = 0x04u;
+        constexpr uint32_t MAIR_NORMAL_NC = 0x44u;
     }
 }
 

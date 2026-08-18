@@ -49,6 +49,7 @@ namespace
         .tag = "[c6uart] ",
         .expected_base = mmap::UART0_BASE,
         .block_size = uart::KOS_UART_BLOCK_SIZE,
+        .block_flags = 0,
         .ready_offset = uart::KOS_UART_READY_OFFSET,
         .ep_posture = drv::KOS_DRV_EP_HANDOVER,
         .svc_kind = KOS_SVC_CONSOLE,

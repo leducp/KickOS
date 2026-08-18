@@ -61,13 +61,16 @@ namespace
         return v;
     }
 
-    // {attr} -> the MPU_RLAR AttrIndx bits: MMIO selects the Device MAIR slot, all
-    // other memory (code, data, stack) selects the Normal cacheable slot.
+    // {attr} -> the MPU_RLAR AttrIndx bits, i.e. the MAIR0 slot programmed below.
     uint32_t pmsav8_rlar_attr(uint32_t attr)
     {
         if (attr & ARCH_MPU_DEV)
         {
             return RLAR_ATTR_DEVICE;
+        }
+        if (attr & ARCH_MPU_NOCACHE)
+        {
+            return RLAR_ATTR_NORMAL_NC;
         }
         return RLAR_ATTR_NORMAL;
     }
@@ -90,7 +93,9 @@ size_t kickos_arm_mpu_pending(struct arch_mpu_region const** out);
 // The MPU is per-core banked, so this must run once PER CORE at bring-up.
 void kickos_arm_pmsav8_init(void)
 {
-    reg32(MPU_MAIR0) = MAIR_NORMAL_WBWA | (MAIR_DEVICE_nGnRE << 8); // slot0 Normal, slot1 Device
+    // slot0 Normal cacheable, slot1 Device, slot2 Normal non-cacheable
+    reg32(MPU_MAIR0) =
+        MAIR_NORMAL_WBWA | (MAIR_DEVICE_nGnRE << 8) | (MAIR_NORMAL_NC << 16);
     reg32(MPU_MAIR1) = 0;
     reg32(SCB_SHCSR) |= SHCSR_MEMFAULTENA; // MPU violation -> MemManage, not escalated HardFault
     __asm volatile("dsb" ::: "memory");

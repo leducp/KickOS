@@ -65,6 +65,36 @@ namespace kickos
         return false;
     }
 
+    bool user_range_typed_ok(uintptr_t ptr, size_t len, uint32_t need)
+    {
+        Thread* c = sched::current();
+        if (c == nullptr or len == 0)
+        {
+            return false;
+        }
+        uintptr_t const end = ptr + len;
+        if (end < ptr)
+        {
+            return false; // address-space wrap
+        }
+        std::span const regions{c->regions, c->region_count};
+        for (arch_mpu_region const& r : regions)
+        {
+            // EXACT, not a superset: a region carrying a memory type the caller did not ask
+            // for is a different mapping of the block, not a wider one.
+            if (r.attr != need)
+            {
+                continue;
+            }
+            uintptr_t const rend = r.base + r.size;
+            if (rend >= r.base and ptr >= r.base and end <= rend)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     namespace
     {
         // The live DEV region whose base is EXACTLY `base`, or nullptr. Exact base, not

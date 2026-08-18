@@ -69,6 +69,7 @@ set(KICKOS_SEAM_DEFAULTS_ARM
   arm/common/arch_bitband_present_default.cc
   arm/common/arch_idle_wait_default.cc
   arm/common/arch_mpu_min_region_default.cc
+  arm/common/arch_mpu_nocache_support_default.cc
   arm/common/arch_mpu_region_encodable_default.cc
   arm/common/arch_mpu_region_pow2_default.cc
   arm/common/arch_shutdown_default.cc
@@ -339,14 +340,11 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   kickos_apply_freestanding(kickos_chip_${KICKOS_CHIP})
   # M7 D-cache: forward the option to the imxrt chip TU so arch_init calls
   # kickos_armv7m_dcache_enable(). Default ON, silicon-validated (selftest 43/43 plus a
-  # ~38 M-switch soak under enforcement, a measurable throughput win). Safe while the M7 is
-  # single-core with no DMA; M4 DMA drivers MUST add clean/invalidate cache maintenance
-  # around DMA buffers. Set OFF to opt back out.
+  # ~38 M-switch soak under enforcement). Safe while the M7 is single-core with no DMA; M4
+  # DMA drivers MUST add clean/invalidate cache maintenance around DMA buffers.
   #
-  # The default INVERTS under a USB console: the device controller reads its descriptor
-  # lists as a bus master, and this tree has no clean-or-invalidate-by-address anywhere
-  # (arch/arm/armv7m/cache.cc invalidates by set/way, once, at boot). KICKOS_USB_CONSOLE is
-  # derived from the service list in the top-level CMakeLists, above add_subdirectory(arch).
+  # KICKOS_USB_CONSOLE is derived from the service list in the top-level CMakeLists, above
+  # add_subdirectory(arch).
   set(_imxrt_dcache_default ON)
   if(KICKOS_CHIP STREQUAL "imxrt1062" AND KICKOS_USB_CONSOLE)
     set(_imxrt_dcache_default OFF)
@@ -355,23 +353,29 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
          ${_imxrt_dcache_default})
   # option() CACHES, so an existing build directory switched onto a USB service list keeps a
   # stale ON.
+  #
+  # Coherency with the cache on rests entirely on KOS_MEM_NOCACHE reaching BOTH of the
+  # block's grants, so that no cacheable mapping of it survives (stage S7,
+  # docs/design-m4.6.2-usb-cdc.md).
   if(KICKOS_CHIP STREQUAL "imxrt1062" AND KICKOS_USB_CONSOLE AND KICKOS_IMXRT_DCACHE)
-    message(FATAL_ERROR
-      "KICKOS_IMXRT_DCACHE=ON is not compatible with a USB console on imxrt1062: the "
-      "device controller reads its descriptor lists out of OCRAM2 as a bus master and no "
-      "cache maintenance exists in this tree. Configure a FRESH build directory (the "
-      "default is then OFF), or pass -DKICKOS_IMXRT_DCACHE=OFF. Keeping the cache AND the "
-      "USB console needs a non-cacheable MPU attribute on the grant, which is stage 3 of "
-      "docs/design-m4.6.2-usb-cdc.md section 4.3.")
+    message(WARNING
+      "KickOS: KICKOS_IMXRT_DCACHE=ON with a USB console on imxrt1062 is UNWITNESSED ON "
+      "SILICON. The device controller reads its descriptor lists out of OCRAM2 as a bus "
+      "master and this tree has no cache maintenance at all; coherency rests ENTIRELY on "
+      "the S7 non-cacheable attribute reaching every mapping of the shared block "
+      "(docs/design-m4.6.2-usb-cdc.md section 4.3 and the S7 section). Nothing here has "
+      "enumerated on a host with the cache on. Pass -DKICKOS_IMXRT_DCACHE=OFF for the "
+      "witnessed posture; that is what a fresh build directory selects by default.")
   endif()
   if(KICKOS_CHIP STREQUAL "imxrt1062" AND NOT KICKOS_IMXRT_DCACHE)
     message(WARNING
       "KickOS: the Cortex-M7 L1 D-cache is OFF on this image, which costs about 6x on IPC "
       "(measured: 61124 ns per call/reply round-trip with it on, 363005 ns with it off). "
       "Code executes XIP from FlexSPI, so literal pools and .rodata are data reads that "
-      "reach external QSPI flash with the cache off. A USB console selects this posture "
-      "because the device controller is a bus master and no cache maintenance exists yet; "
-      "stage S7 of docs/design-m4.6.2-usb-cdc.md is the fix.")
+      "reach external QSPI flash with the cache off. A USB console selects this posture by "
+      "default because keeping the cache rests on the S7 non-cacheable attribute "
+      "(docs/design-m4.6.2-usb-cdc.md), which no board on this bench can witness. Pass "
+      "-DKICKOS_IMXRT_DCACHE=ON to take that path.")
   endif()
   if(KICKOS_CHIP STREQUAL "imxrt1062" AND KICKOS_IMXRT_DCACHE)
     target_compile_definitions(kickos_chip_${KICKOS_CHIP} PRIVATE KICKOS_IMXRT_DCACHE=1)

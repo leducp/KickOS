@@ -611,6 +611,13 @@ int arch_mpu_region_pow2(void)
     return 0;
 }
 
+// A SYSMPU descriptor is access permissions only and names no memory type, but the
+// Cortex-M4 on this part has no data cache.
+int arch_mpu_nocache_support(void)
+{
+    return ARCH_MPU_NOCACHE_ALREADY;
+}
+
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (K64 RM). Granting SYSMPU or an AIPS bridge control page would be
 // total escalation: SYSMPU holds the isolation regions, and one PACR SP bit opens a whole

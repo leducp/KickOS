@@ -109,8 +109,10 @@ namespace kickos
     //
     // Takes the domain reference immediately and holds the slot on `creator_tag`'s behalf,
     // so refcount 0 does not free it. Refusals are domain_for's, plus KOS_ENOMEM.
+    // mem_attr is domain_for's: the memory TYPE the shared region is committed with
+    // (ARCH_MPU_NOCACHE, or 0). task_for passes 0; an implicit task cannot ask for one.
     Task* task_create(uint16_t creator_tag, void* mem_base, size_t mem_size,
-                      bool caller_authorized, int* err);
+                      uint32_t mem_attr, bool caller_authorized, int* err);
 
     // Resolve a handle to an EXPLICIT task, or null. An implicit task is deliberately
     // unnameable: idle's and root's carry the kernel domain, and a resolvable handle to one

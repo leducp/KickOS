@@ -905,6 +905,9 @@ namespace
         // cfg naming another window would grant one block and poke another.
         .expected_base = reg::USB1_BASE,
         .block_size = BLOCK_SIZE,
+        // The controller reads its dQH/dTD lists and writes transfer results out of this
+        // block as a BUS MASTER, and this tree has no cache-maintenance primitive.
+        .block_flags = KOS_MEM_NOCACHE,
         .ready_offset = READY_OFFSET,
         // The publish blinds the kernel console, which is LPUART6 on pins 0/1 and a
         // different peripheral from the one taken here.

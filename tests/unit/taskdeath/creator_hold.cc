@@ -55,7 +55,7 @@ namespace kickos
             Task* create_for(Thread* creator)
             {
                 int err = 0;
-                return task_create(kernel().threads.kill_tag_of(creator), nullptr, 0,
+                return task_create(kernel().threads.kill_tag_of(creator), nullptr, 0, 0u,
                                    /*caller_authorized=*/false, &err);
             }
         }

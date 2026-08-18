@@ -2485,8 +2485,11 @@ fleet-wide, and it FAILS ON SILICON at a known point. Do not read it as landed.
 - [x] The backend exists: `system/driver/imxrt1062/rt1062usb/` (~721 lines, EHCI-derived dQH/dTD
       lists, RM ch. 42 cited at every register), a `kickos_services_teensy41_usbcdc` list, and the
       `KICKOS_IMXRT_DCACHE=OFF` posture that `design-m4.6.2-usb-cdc.md` section 4.3 chose as
-      stage 1. Stage 3, the non-cacheable MPU attribute, is NOT attempted and still needs the
-      grant encoder to express it.
+      stage 1. Stage 3 (S7), the non-cacheable MPU attribute, is now BUILT and equally
+      unwitnessed: `ARCH_MPU_NOCACHE` on the block's ALLOCATION, encoded by PMSAv7 and
+      PMSAv8, admitted through a three-valued per-chip seam. The configure-time refusal of
+      D-cache-plus-USB-console is now a WARNING naming the unwitnessed state, and the
+      default for a `_usbcdc` image stays OFF until a board proves otherwise.
 - [x] `imxrt1062` gained the three console seams and the diag LED, all of which it lacked. The
       LED matters more than it sounds: `kfault_terminate`'s 3-blink pattern already existed and
       was board-agnostic, so the chip was simply throwing it away. **`docs/reference/boards.md`
@@ -2627,7 +2630,9 @@ fleet-wide, and it FAILS ON SILICON at a known point. Do not read it as landed.
       earlier reading that on-chip OCRAM2 bounds the damage was WRONG and is why this was
       left unmeasured. With the cache on the figure is FLAT across payloads and with it off
       it climbs, which is the tell that memory became the bottleneck.
-      So S7, a non-cacheable attribute on a dynamic grant, is a priority and not a nicety.
+      So S7, a non-cacheable attribute on the block's ALLOCATION, is a priority and not a
+      nicety. It is built now; what it has NOT got is a run. The witness it owes, and the
+      results that would falsify it, are written into `design-m4.6.2-usb-cdc.md`.
 - [ ] **`bench` DIES ON teensy41 BEFORE ITS SWITCH AND IRQ SECTIONS.** Both runs end with
       `=== THREAD FAULT === thread 'root' killed`, `CFSR=0x82` (DACCVIOL plus MMARVALID),
       `ADDR=0x20200038`, which is OCRAM2. The app's own header advertises context-switch

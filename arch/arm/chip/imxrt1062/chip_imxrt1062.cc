@@ -471,6 +471,18 @@ namespace
 extern "C"
 {
 
+// The M7 caches OCRAM, and the arena lives there (imxrt1062.ld RAM at 0x20200000); DTCM
+// would not be cached. arch_init enables the D-cache only inside its KICKOS_HAVE_MPU guard,
+// so moving either that enable or the arena must change this answer too.
+int arch_mpu_nocache_support(void)
+{
+#if KICKOS_HAVE_MPU && defined(KICKOS_IMXRT_DCACHE) && KICKOS_IMXRT_DCACHE
+    return ARCH_MPU_NOCACHE_PROGRAMMED;
+#else
+    return ARCH_MPU_NOCACHE_ALREADY;
+#endif
+}
+
 void arch_init(void)
 {
 #if KICKOS_HAVE_MPU

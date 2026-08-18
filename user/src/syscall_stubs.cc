@@ -223,7 +223,8 @@ int kos_thread_slay(kos_thread_t thread, uint32_t timeout_us)
                                          static_cast<uintptr_t>(timeout_us), 0, 0));
 }
 
-int kos_task_create(void* mem_base, uint32_t mem_size, kos_task_t* out_task)
+int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
+                    kos_task_t* out_task)
 {
     // Seated BEFORE the trap, so the "always written" guarantee holds even for a refusal the
     // kernel answers without touching the out-pointer.
@@ -234,7 +235,8 @@ int kos_task_create(void* mem_base, uint32_t mem_size, kos_task_t* out_task)
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_CREATE,
                                          reinterpret_cast<uintptr_t>(mem_base),
                                          static_cast<uintptr_t>(mem_size),
-                                         reinterpret_cast<uintptr_t>(out_task), 0));
+                                         reinterpret_cast<uintptr_t>(out_task),
+                                         static_cast<uintptr_t>(mem_flags)));
 }
 
 int kos_task_kill(kos_task_t task)
@@ -448,11 +450,11 @@ void* kos_ram_alloc(size_t size)
         arch_syscall(KOS_SYS_RAM_ALLOC, static_cast<uintptr_t>(size), 0, 0, 0));
 }
 
-int kos_mem_self_grant(void* base, size_t size)
+int kos_mem_self_grant(void* base, size_t size, uint32_t flags)
 {
     return static_cast<int>(
         arch_syscall(KOS_SYS_MEM_SELF_GRANT, reinterpret_cast<uintptr_t>(base),
-                     static_cast<uintptr_t>(size), 0, 0));
+                     static_cast<uintptr_t>(size), static_cast<uintptr_t>(flags), 0));
 }
 
 void kos_kernel_diag_led_set(int on)

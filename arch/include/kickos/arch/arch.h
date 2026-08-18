@@ -197,9 +197,8 @@ uint32_t arch_cpu_clock_set(uint32_t target);
 //         the peripheral clock moves (S6). Called under the caller's IrqLock, BEFORE the
 //         rate change. Only a chip whose console clock moves with the core clock cares.
 //       - kickos_terminate, so arch_shutdown does not stop the core with a byte still in
-//         the FIFO. EVERY chip whose console can outrun a shutdown cares about this one,
-//         which is why the retune-only framing this comment used to carry was wrong: it
-//         read as "no retune, no body needed" and left the terminal path truncating.
+//         the FIFO. EVERY chip whose console can outrun a shutdown needs a body here,
+//         not only a chip that retunes; without one the terminal path truncates.
 //     Must be BOUNDED. It is on the panic and shutdown paths, where a wedged UART must
 //     cost a dropped tail rather than a hang.
 //   arch_console_retune: re-derive + reprogram the console baud from the CURRENT
@@ -235,8 +234,29 @@ enum
     ARCH_MPU_R = 1u << 0,
     ARCH_MPU_W = 1u << 1,
     ARCH_MPU_X = 1u << 2,
-    ARCH_MPU_DEV = 1u << 3 // device / MMIO
+    ARCH_MPU_DEV = 1u << 3,    // device / MMIO
+    ARCH_MPU_NOCACHE = 1u << 4 // Normal, outer+inner non-cacheable
 };
+
+// How this chip satisfies the ARCH_MPU_NOCACHE region attribute.
+enum arch_mpu_nocache
+{
+    // A data cache sits in the path and the region descriptor carries no memory type.
+    ARCH_MPU_NOCACHE_REFUSED = 0,
+    // The region descriptor carries the memory type.
+    ARCH_MPU_NOCACHE_PROGRAMMED = 1,
+    // No data cache reaches the grantable memory, so the attribute costs nothing to honour.
+    ARCH_MPU_NOCACHE_ALREADY = 2
+};
+
+// Read at grant ADMISSION (kernel/grant), never on a commit path: a commit backend drops
+// a region it cannot encode SILENTLY. Answers for the enforcement posture actually built,
+// not only for the silicon: with KICKOS_HAVE_MPU=0 no region is programmed at all.
+//
+// ONE answer for the whole chip, while the property is per REGION: a Cortex-M7 caches OCRAM
+// but not TCM. Every backend answers for the band its arena lives in, so a linker script
+// that moves the arena into a differently cached band must revisit its chip's answer.
+int arch_mpu_nocache_support(void);
 
 struct arch_mpu_region
 {

@@ -56,6 +56,7 @@ namespace
         .tag = "[simcon] ",
         .expected_base = 0,
         .block_size = 0,
+        .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = drv::KOS_DRV_EP_HANDOVER,
         .svc_kind = KOS_SVC_CONSOLE,
@@ -386,7 +387,7 @@ extern "C"
         // either thread's death ends the other. No shared region, because the sim's "device" is
         // fd 1 and there is no ring block.
         kos_task_t task = KOS_TASK_NONE;
-        int const task_rc = kos_task_create(nullptr, 0, &task);
+        int const task_rc = kos_task_create(nullptr, 0, 0, &task);
         if (task_rc != 0)
         {
             return task_rc;
@@ -486,7 +487,7 @@ extern "C"
         // The driver thread's own group, holding only it. An explicit task even for one
         // member, because the handover tail ends a GROUP and nothing else.
         kos_task_t task = KOS_TASK_NONE;
-        int const task_rc = kos_task_create(nullptr, 0, &task);
+        int const task_rc = kos_task_create(nullptr, 0, 0, &task);
         if (task_rc != 0)
         {
             (void)g_win_thread.kill();
