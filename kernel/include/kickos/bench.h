@@ -16,29 +16,60 @@ namespace kickos
     // KICKOS_BENCH_SPAN discards its arguments in a non-bench build, so a name that
     // does not exist would still compile and a typo would survive to the bench build.
     //
-    // PH_NULL is an EMPTY bracket taken once per round trip. Its min is the instrument's
-    // own cost, so every other phase's figure is (phase - k * PH_NULL) for the k brackets
-    // nested inside it. It is not optional: without it no phase number can be believed.
+    // THE TWO CONTROLS, and they correct DIFFERENT things. KICKOS_BENCH_SPAN evaluates its
+    // closing counter read as an ARGUMENT, so a bracket's own accumulator call runs AFTER
+    // that read and is invisible to the bracket itself -- but it is fully inside whatever
+    // span encloses it.
+    //
+    //   PH_NULL is an empty bracket. It prices the two counter reads, so a LEAF is
+    //   (leaf - PH_NULL).
+    //   PH_NEST is that same empty bracket with an enclosing span wrapped around it, so it
+    //   prices what ONE COMPLETE NESTED BRACKET costs its parent: inner mark, inner closing
+    //   read AND the inner accumulator call. A COMPOSITE holding k brackets at any depth is
+    //   (composite - k * PH_NEST), which comes out as the sum of its children's CORRECTED
+    //   values plus the parent's own unbracketed work.
+    //
+    // Correcting a composite with PH_NULL instead understates the charge by a whole
+    // accumulator call: 1 cycle against about 57 on esp32-wroom. Neither is optional.
     enum BenchPhase : uint32_t
     {
         PH_NULL = 0,
+        PH_NEST,
         PH_CALL_TOTAL,
         PH_CALL_VALIDATE,
         PH_CALL_LOCKED,
         PH_CALL_RESOLVE,
+        PH_CALL_PEEK,
         PH_CALL_PROBE,
+        PH_CALL_POP,
         PH_CALL_COPY,
         PH_CALL_MINT,
+        // The two halves of PH_CALL_MINT, which share nothing: a capability-table mint
+        // and a write into the receiver's user memory. They nest inside it, so
+        // MINT - MINT_CAP - MINT_INFO is their two brackets plus the assert between them,
+        // and a residual larger than that means the split is misplaced.
+        PH_CALL_MINT_CAP,
+        PH_CALL_MINT_INFO,
         PH_CALL_DONATE,
         PH_CALL_PARK,
         PH_CALL_WAKE,
         PH_CALL_RESUME,
-        // The slowpath arm keeps its OWN phases. The two arms do different work, and a
-        // shared accumulator would let one slowpath sample move the fastpath's min with
-        // nothing in the table saying it had. n == 0 on these two is the evidence that
-        // the sweep really did run entirely on the fastpath.
+        // The slowpath arm keeps its OWN phases, down to the two composites. The two arms
+        // do different work, and a shared accumulator lets one slowpath sample move the
+        // fastpath's min with nothing in the table saying it had -- which is exactly what
+        // a shared CALL_LOCKED did, since the slowpath arm parks without ever reaching the
+        // mint. Matching n against CALL_MINT is what catches a recurrence.
+        PH_CALL_SLOW_TOTAL,
+        PH_CALL_SLOW_LOCKED,
         PH_CALL_SLOW_DONATE,
         PH_CALL_SLOW_PARK,
+        // The round trip's THIRD locked leg: the server's own recv, which parks it between
+        // one reply and the next call. These close only on the PARKING arm -- the arm that
+        // serves a queued sender returns from inside the scan, before the spans.
+        PH_RECV_LOCKED,
+        PH_RECV_RESOLVE,
+        PH_RECV_SCAN,
+        PH_RECV_PARK,
         PH_REPLY_TOTAL,
         PH_REPLY_VALIDATE,
         PH_REPLY_LOCKED,
@@ -46,9 +77,19 @@ namespace kickos
         PH_REPLY_COPY,
         PH_REPLY_FUNNEL,
         PH_REPLY_WAKE,
-        PH_KTIME_REARM,
-        PH_MPU_APPLY,
+        // The wake path, in execution order. Every phase below is fed by BOTH sides of a
+        // round trip and by every other wake and reschedule in the system, so n is what
+        // says whether a min came from the path being measured.
+        // SWITCH_TO is the composite over the four that follow it; the rest are leaves.
+        PH_WAKE_UNPARK,
+        PH_PICK_NEXT,
         PH_SWITCH_TO,
+        PH_SWITCH_BOOK,
+        PH_MPU_APPLY,
+        PH_KTIME_REARM,
+        // A leaf only where arch_switch PENDS (armv7m, rv32imac, rxv3). On the LX6 and the
+        // sim it swaps inline, and this one closes when the thread is next resumed.
+        PH_ARCH_SWITCH,
         PH_COUNT
     };
 }

@@ -83,12 +83,18 @@ namespace
     // Padded to one width because kvsnprintf implements no field width (lib/libc/fmt.cc):
     // a "%-14s" here would print the flag and the digits literally.
     constexpr char const* PHASE_NAME[kickos::PH_COUNT] = {
-        "NULL            ", "CALL_TOTAL      ", "CALL_VALIDATE   ", "CALL_LOCKED     ",
-        "CALL_RESOLVE    ", "CALL_PROBE      ", "CALL_COPY       ", "CALL_MINT       ",
-        "CALL_DONATE     ", "CALL_PARK       ", "CALL_WAKE       ", "CALL_RESUME     ",
-        "CALL_SLOW_DONATE", "CALL_SLOW_PARK  ", "REPLY_TOTAL     ", "REPLY_VALIDATE  ",
+        "NULL            ", "NEST            ", "CALL_TOTAL      ", "CALL_VALIDATE   ",
+        "CALL_LOCKED     ", "CALL_RESOLVE    ", "CALL_PEEK       ", "CALL_PROBE      ",
+        "CALL_POP        ", "CALL_COPY       ", "CALL_MINT       ",
+        "CALL_MINT_CAP   ", "CALL_MINT_INFO  ", "CALL_DONATE     ", "CALL_PARK       ",
+        "CALL_WAKE       ", "CALL_RESUME     ",
+        "CALL_SLOW_TOTAL ", "CALL_SLOW_LOCKED",
+        "CALL_SLOW_DONATE", "CALL_SLOW_PARK  ",
+        "RECV_LOCKED     ", "RECV_RESOLVE    ", "RECV_SCAN       ", "RECV_PARK       ",
+        "REPLY_TOTAL     ", "REPLY_VALIDATE  ",
         "REPLY_LOCKED    ", "REPLY_LOOKUP    ", "REPLY_COPY      ", "REPLY_FUNNEL    ",
-        "REPLY_WAKE      ", "KTIME_REARM     ", "MPU_APPLY       ", "SWITCH_TO       "};
+        "REPLY_WAKE      ", "WAKE_UNPARK     ", "PICK_NEXT       ", "SWITCH_TO       ",
+        "SWITCH_BOOK     ", "MPU_APPLY       ", "KTIME_REARM     ", "ARCH_SWITCH     "};
     static_assert(sizeof(PHASE_NAME) / sizeof(PHASE_NAME[0]) == kickos::PH_COUNT,
                   "one name per phase, in enum order");
 }
@@ -195,7 +201,7 @@ namespace kickos
 
     void bench_phase_print()
     {
-        kprintf("  phase table (cycles; subtract NULL per nested bracket):\n");
+        kprintf("  phase table (cycles; leaf -= NULL, composite -= k*NEST for k nested):\n");
         for (uint32_t i = 0; i < PH_COUNT; i++)
         {
             PhaseAcc const& a = g_phase[i];

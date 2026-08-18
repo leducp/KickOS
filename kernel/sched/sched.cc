@@ -31,6 +31,7 @@ namespace kickos
         // to the arch.
         void switch_to(Thread* next)
         {
+            KICKOS_BENCH_MARK(bm_book);
             Thread* prev = kernel().current;
             if (prev->state == ThreadState::RUNNING)
             {
@@ -40,6 +41,7 @@ namespace kickos
             next->state = ThreadState::RUNNING;
             next->switch_count.store(next->switch_count.load() + 1u);
             kernel().policy->on_switch_in(next);
+            KICKOS_BENCH_SPAN(PH_SWITCH_BOOK, bm_book);
             KICKOS_BENCH_MARK(bm_mpu);
             arch_mpu_apply(next->regions, next->region_count);
             KICKOS_BENCH_SPAN(PH_MPU_APPLY, bm_mpu);
@@ -61,7 +63,9 @@ namespace kickos
                 arch_ctx_redirect(&next->ctx, kickos_thread_slay_exit, next->stack_base,
                                   next->stack_size);
             }
+            KICKOS_BENCH_MARK(bm_arch);
             arch_switch(&prev->ctx, &next->ctx);
+            KICKOS_BENCH_SPAN(PH_ARCH_SWITCH, bm_arch);
         }
     }
 
@@ -114,7 +118,9 @@ namespace kickos
         void reschedule()
         {
             IrqLock lock;
+            KICKOS_BENCH_MARK(bm_pick);
             Thread* next = kernel().policy->pick_next();
+            KICKOS_BENCH_SPAN(PH_PICK_NEXT, bm_pick);
             if (next == kernel().current)
             {
                 return;
@@ -160,6 +166,9 @@ namespace kickos
         void wake(Thread* t)
         {
             IrqLock lock;
+            // Closes only on the readying path: the two refusals below do no ready-queue
+            // work, so counting them would pull this phase's min toward zero.
+            KICKOS_BENCH_MARK(bm_unpark);
             // THE unpark funnel, and so the ONE place a timed wait's deadline is dropped.
             // Deliberately NOT in wq_pop_highest: a CALL_SEND_WAIT caller popped there goes
             // straight to reply_donor_park, a park-to-park migration that never becomes
@@ -179,6 +188,7 @@ namespace kickos
             }
             t->state = ThreadState::READY;
             kernel().policy->on_ready(t);
+            KICKOS_BENCH_SPAN(PH_WAKE_UNPARK, bm_unpark);
             Thread const* const c = kernel().current;
             // Null between sched::init and sched::start.
             if (c == nullptr)

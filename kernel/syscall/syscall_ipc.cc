@@ -261,6 +261,8 @@ namespace kickos
         uint32_t epoch = 0;
         {
             IrqLock lock;
+            KICKOS_BENCH_MARK(bm_rlocked);
+            KICKOS_BENCH_MARK(bm_rresolve);
             int err = 0;
             Endpoint* e = static_cast<Endpoint*>(
                 cap_resolve_e(c, cap, CapType::CAP_ENDPOINT, CAP_WAIT, &err));
@@ -269,6 +271,8 @@ namespace kickos
                 return -err; // EBADF (bad cap) or EPERM (no WAIT right)
             }
             endpoint_server_set(e, c); // the conventional receiver (D2 boost target)
+            KICKOS_BENCH_SPAN(PH_RECV_RESOLVE, bm_rresolve);
+            KICKOS_BENCH_MARK(bm_rscan);
             while (true)
             {
                 Thread* s = wq_pop_highest(e->send_waiters);
@@ -346,12 +350,16 @@ namespace kickos
                 sched::wake(s);
                 return static_cast<int>(n);
             }
+            KICKOS_BENCH_SPAN(PH_RECV_SCAN, bm_rscan);
+            KICKOS_BENCH_MARK(bm_rpark);
             c->ipc.buf = buf;
             c->ipc.len = cap_len;
             c->ipc.badge_out = badge_out;
             epoch = c->switch_count;
             park_deadline_arm(c, timeout_us);
             wq_block(e->recv_waiters, WAIT_EP_RECV, e);
+            KICKOS_BENCH_SPAN(PH_RECV_PARK, bm_rpark);
+            KICKOS_BENCH_SPAN(PH_RECV_LOCKED, bm_rlocked);
         }
         wq_confirm_resume(c, epoch);
         return static_cast<int32_t>(c->wait_result);
@@ -398,10 +406,13 @@ namespace kickos
         {
             IrqLock lock;
             KICKOS_BENCH_MARK(bm_locked);
-            // The empty bracket: taken once per round trip, and under the same interrupt
-            // mask as the brackets it calibrates.
+            // The two controls, taken once per round trip and under the same interrupt mask
+            // as the brackets they calibrate. PH_NEST is PH_NULL with an enclosing span
+            // around it, so it prices the accumulator call PH_NULL cannot see.
+            KICKOS_BENCH_MARK(bm_nest);
             KICKOS_BENCH_MARK(bm_null);
             KICKOS_BENCH_SPAN(PH_NULL, bm_null);
+            KICKOS_BENCH_SPAN(PH_NEST, bm_nest);
             int err = 0;
             KICKOS_BENCH_MARK(bm_resolve);
             Endpoint* e = static_cast<Endpoint*>(
@@ -415,7 +426,9 @@ namespace kickos
             {
                 return -KOS_EPIPE; // dead endpoint: no receiver can ever exist
             }
+            KICKOS_BENCH_MARK(bm_peek);
             Thread* w = wq_peek_highest(e->recv_waiters);
+            KICKOS_BENCH_SPAN(PH_CALL_PEEK, bm_peek);
             if (w != nullptr)
             {
                 // Fastpath: a receiver is parked. Probe BEFORE popping (B3): a popped
@@ -441,7 +454,9 @@ namespace kickos
                     return -KOS_EMFILE;
                 }
                 KICKOS_BENCH_SPAN(PH_CALL_PROBE, bm_probe);
+                KICKOS_BENCH_MARK(bm_pop);
                 (void)wq_pop_highest(e->recv_waiters); // == w (nothing mutates under the lock)
+                KICKOS_BENCH_SPAN(PH_CALL_POP, bm_pop);
                 size_t n = send_len;
                 if (w->ipc.len < n)
                 {
@@ -453,10 +468,14 @@ namespace kickos
                 c->call_seq++; // new epoch BEFORE packing (the reply cap rides this seq)
                 uint32_t rcap = KCAP_INVALID;
                 KICKOS_BENCH_MARK(bm_mint);
+                KICKOS_BENCH_MARK(bm_mint_cap);
                 // Not inside the assert: a compiled-out condition would drop the mint.
                 int const minted = cap_install_reply(w, c, &rcap);
+                KICKOS_BENCH_SPAN(PH_CALL_MINT_CAP, bm_mint_cap);
                 KICKOS_ASSERT(minted == 0); // cap_can_take_reply probed w above
+                KICKOS_BENCH_MARK(bm_mint_info);
                 write_recv_info(w->ipc.badge_out, KOS_BADGE_NONE, rcap);
+                KICKOS_BENCH_SPAN(PH_CALL_MINT_INFO, bm_mint_info);
                 KICKOS_BENCH_SPAN(PH_CALL_MINT, bm_mint);
                 w->wait_result = static_cast<intptr_t>(n);
                 // Repurpose our own ipc to the reply target (in-place buffer); the
@@ -485,6 +504,12 @@ namespace kickos
                 KICKOS_BENCH_MARK(bm_wake);
                 sched::wake(w);
                 KICKOS_BENCH_SPAN(PH_CALL_WAKE, bm_wake);
+                // Both close INSIDE the lock, and inside the ARM: the brace below is where
+                // the lock releases and a pended switch fires, so a span reaching past it
+                // would time the round trip, and a span shared with the slowpath arm would
+                // report that arm's shorter body as this one's minimum.
+                KICKOS_BENCH_SPAN(PH_CALL_LOCKED, bm_locked);
+                KICKOS_BENCH_SPAN(PH_CALL_TOTAL, bm_total);
             }
             else
             {
@@ -513,11 +538,9 @@ namespace kickos
                 // the wait edge answers only which list and which object.
                 wq_block(e->send_waiters, WAIT_EP_SEND, e);
                 KICKOS_BENCH_SPAN(PH_CALL_SLOW_PARK, bm_spark);
+                KICKOS_BENCH_SPAN(PH_CALL_SLOW_LOCKED, bm_locked);
+                KICKOS_BENCH_SPAN(PH_CALL_SLOW_TOTAL, bm_total);
             }
-            // Both close INSIDE the lock. The brace below is where the lock releases and a
-            // pended switch fires, so a span reaching past it would time the round trip.
-            KICKOS_BENCH_SPAN(PH_CALL_LOCKED, bm_locked);
-            KICKOS_BENCH_SPAN(PH_CALL_TOTAL, bm_total);
         }
         KICKOS_BENCH_MARK(bm_resume);
         wq_confirm_resume(c, epoch);

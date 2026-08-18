@@ -421,3 +421,65 @@ serves equal-priority peers; the slowpath serves the priority-inverted case, whi
 latency to save. A work fastpath that only handles the parked-receiver rendezvous optimises the
 traffic that has no inversion to fix. Whatever section 4 eventually specifies has to say what it
 does for a high-priority client, or it is aimed at the wrong half.
+
+### 4.4 The mint, split -- and the instrument was lying about composites
+
+`CALL_MINT`'s 400 cycles are now two numbers. `esp32-wroom`, LX6 at 240 MHz, minimums, n = 120000,
+log `.session/logs/m5mintsplit-esp32-wroom-bench.log`:
+
+| leaf | cycles | what it is |
+|---|---|---|
+| `CALL_MINT_CAP` | **290** | `cap_install_reply` |
+| `CALL_MINT_INFO` | **109** | `write_recv_info` |
+
+They sum to 399 against the pre-split 400, which is `PH_NULL` exactly, and twelve other leaves in
+the same capture are byte-identical to the section 3.0 pass. So the split is placed honestly: the
+two operations are strictly sequential, with only an assert between them.
+
+**The mint does NOT walk the free list.** There is no walk on this path: `cap_run_peek_free` (`kernel/include/kickos/cap.h:454`) is a head peek that
+returns on its first test, and the unlink beside it is an O(1) doubly-linked removal. The 290 is not
+a search. It is mint MACHINERY -- a pointer-to-pool-index division out of `index_of`, `handle_for`,
+three out-of-line call frames on Xtensa's windowed ABI, the chunk indirection, the generation seat
+and the sequence-bitfield read-modify-write.
+
+The one O(capacity) thing in the neighbourhood is `cap_reply_live` on the FLAT path, and **this
+board does not compile it**: `KICKOS_MAX_HANDLES` 10 against `KCAP_CHUNK_TARGET` 8 selects
+SEGMENTED, so the bound test is the O(1) counter. Confirmed in the emitted code, not inferred from
+the knob. `KICKOS_CAP_REPLY_MAX` is 1 here. **A flat-path board still pays that scan twice per call
+and is still unmeasured**; nothing on this page speaks for one.
+
+`CALL_MINT_INFO`'s 109 is corroborated sideways: `write_recv_info` reaches user memory through an
+8-byte byte loop, and `CALL_COPY` at 8 B is 92 for the same loop one frame shallower. So delivery
+costs about what the request copy costs and is irreducible without changing the copy primitive.
+
+**This strengthens the reserved-reply-slot idea rather than weakening it.** The larger half is
+exactly what a reserved per-thread slot removes, and it removes 290 of machinery rather than a scan
+that was never there. With `KICKOS_CAP_REPLY_MAX == 1` on this board, "reserve `KICKOS_CAP_REPLY_MAX`
+slots" is literally one slot. What survives is the 109, which is delivery and not capability work.
+Carry one caveat: the 290 is call-chain-dominated on a windowed ABI, so an armv7m part will not
+scale from this figure.
+
+#### The instrument defect, which is the bigger finding
+
+`KICKOS_BENCH_SPAN(phase, var)` expands to `bench_phase_add((phase), bench_cyccnt() - (var))`, so
+the closing timestamp is evaluated as an ARGUMENT -- **before** `bench_phase_add` runs. `PH_NULL`
+therefore measures two counter reads and nothing else, which is why it reads 1 cycle. But a bracket
+NESTED inside an enclosing span charges that parent the two reads *plus* the whole accumulator call:
+the out-of-line frame and the min/max/64-bit-sum update, about 57 cycles here.
+
+The new parent `CALL_MINT` reads 514 where its two children sum to 399, and 514 - 399 = 115 is two
+such charges, not the two cycles `PH_NULL` predicts.
+
+**So `bench.h`'s stated correction rule, that a phase is `(phase - k * PH_NULL)`, understates the
+per-bracket charge by roughly 56x, and every COMPOSITE in section 3.0's table is inflated by about
+57 cycles per bracket nested inside it. Only the LEAVES are honest.** This page already refused the
+LX6's composites for a different reason (its `arch_switch` swaps inline, so they read as
+elapsed-until-resumed); this is a second and independent reason, and it applies to boards where the
+switch pends too.
+
+**What this puts in doubt, stated rather than quietly dropped:** section 3.0.1's locked fraction is
+a band whose 31 percent end is a LEAF floor and survives, and whose 38 percent end came from a
+composite on `teensy41` and does not. The band's upper end is therefore unproven and the honest
+reading today is "at least 31 percent". Since that number is what sizes the M6 big-lock Amdahl
+bound, **it should be re-derived from leaves before anyone plans against it**, and section 1.2's
+"31 to 38 percent" should be read as "31 percent measured, upper end withdrawn" until then.
