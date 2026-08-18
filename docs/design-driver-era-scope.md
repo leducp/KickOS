@@ -3,7 +3,7 @@
 # The driver era -- scope / gap analysis
 
 > **Status: ACTIVE.** The M4 gap list, reduced to the gaps still OPEN and the decisions that bound
-> them. Section 4 records the ORDERING decision (driver era = M4, SMP = M5, MMU = M6), so any
+> them. Section 4 records the ORDERING decision (driver era first, then SMP, then MMU), so any
 > "M4 = SMP" framing inside it is the old numbering being argued against, not a live claim.
 > `design/README.md` cites section 4 by number and eight design documents cite the `G<n>` labels, so
 > neither is renumbered. For an exact contract go to `docs/reference/`; what is recorded here is what
@@ -117,12 +117,16 @@ power-manager service (G7, sections 3 and 6).
   driver needs BOTH the per-thread PMP grant and the one-time global open; the register-level model
   is `reference/architecture.md` (the peripheral-MMIO matrix). An APM denial does NOT trap the way a
   PMP violation does, so a bad region hangs instead of faulting.
-- **RX real-peripheral-IRQ demux: OPEN.** The generic first-level path landed
-  (`kickos_rx_default_irq` plus the `kickos_rx_dev_pending_line` chip hook), but NO chip defines the
-  hook, so the fallback returns -1 and the path is inert. A real IRQ-driven RX driver, or the ring
-  console generalisation, needs an rx72m body: the INTB routes every device source to one vector and
-  RXv3 has no cheap current-vector read, so the line can only be named by a chip-side status read,
-  never derived. Effort **M**, **HW**. IRQ ownership by an unprivileged driver is designed in
+- **RX real-peripheral-IRQ demux: CLOSED, and this entry named a symbol that never shipped.**
+  `kickos_rx_dev_pending_line` exists in no source file in the tree; the single-line hook was
+  replaced by `kickos_rx_dev_dispatch` (`arch/rx/rxv3/arch_rxv3.cc`,
+  `arch/rx/chip/rx72m/chip_rx72m.cc`), which is what the shipping `rxsci` driver dispatches
+  through, and the GROUPBL0 group table it needed is in the chip
+  (`arch/rx/chip/rx72m/irq.h`, `arch/rx/chip/rx72m/regs/icu.h`).
+  `design-m4.6-irq-driver.md` already recorded the replacement; this page did not.
+  The reason the doc gate did not catch the dead name is worth keeping: its identifier oracle
+  matches UPPERCASE-prefixed names only, so a lowercase function or seam name cited in prose is
+  outside the checked corpus entirely. IRQ ownership by an unprivileged driver is designed in
   `design-m4.6-irq-driver.md`.
 - **m2-review-followups: OPEN (read).** Sweep `docs/m2-review-followups.md` for residual gaps before
   building drivers on top. Effort **S**, **NOW**.
@@ -411,7 +415,10 @@ different hot/cold profile.
 ## 4. THE MILESTONE-NUMBERING QUESTION (primary deliverable)
 
 > **DECIDED 2026-07-20, Option A.** Driver era = **M4**, SMP = **M5**, MMU / new-platform = **M6**;
-> `roadmap.md` is authoritative. Work is still named by THEME where the number is not load-bearing,
+> `roadmap.md` is authoritative. The numbers have since moved again -- the driver era took M4 and
+> M5, SMP is **M6** and MMU / new-platform is **M7** -- and the rest of this section is written in
+> the new numbering. The ORDERING decided here is unchanged; only the labels moved.
+> Work is still named by THEME where the number is not load-bearing,
 > because the roadmap's own "anytime-coherence" tagging means several pieces are not strictly gated
 > by number. `design/README.md` cites this section by number.
 
@@ -419,12 +426,12 @@ different hot/cold profile.
 1. **DRIVER ERA (M4)**, single-core: fleet UART/console drivers, per-chip reclaim, clock-select
    fleet-wide, the driver framework (call/reply IPC, taxonomy, multi-instance), and the enabling
    services init, clock-tree/power-manager, pinmux, gpio.
-2. **SMP (M5)**: one kernel image across cores (RP2040/RP2350), which reworks the foundation because
-   `IrqLock` ("IRQs off means exclusive") is single-core-only (`design-m5-smp.md`).
-3. **MMU / new-platform (M6)**: x86_64 PC plus i.MX8MP heterogeneous AMP, MMU KickOS on the A53 and
+2. **SMP (M6)**: one kernel image across cores (RP2040/RP2350), which reworks the foundation because
+   `IrqLock` ("IRQs off means exclusive") is single-core-only (`design-m6-smp.md`).
+3. **MMU / new-platform (M7)**: x86_64 PC plus i.MX8MP heterogeneous AMP, MMU KickOS on the A53 and
    MPU KickOS on the M7 over cross-core IPC (`design-mmu-era-exploration.md`).
 
-**QW-3 carries M5.** Keep the shared-IPC ring contract PHYSICALLY addressed from day one
+**QW-3 carries M6.** Keep the shared-IPC ring contract PHYSICALLY addressed from day one
 (`design-mmu-era-exploration.md:330`). It was flagged for "M3/M4" but belongs with the SMP/AMP
 cross-core IPC work.
 
@@ -471,8 +478,8 @@ G5's rx72m IRQ-demux body, and all HW re-validation. Doable NOW: the G6 design w
 split, the m2-review-followups read, and every register-homework enumeration in G2.
 
 ### 5.1 Prereq / blocker summary
-Each blocker is stated with its gap: RX72M IRQ-driven driver or ring on the missing
-`kickos_rx_dev_pending_line` body (G5), every fleet console driver on that chip's reclaim body (G2),
+Each blocker is stated with its gap: the RX72M IRQ dispatch seam (G5, since CLOSED by
+`kickos_rx_dev_dispatch`), every fleet console driver on that chip's reclaim body (G2),
 ordered bring-up on init and the foundational steps (3.1, G7), and the clock-tree SERVICE on the
 first drivers existing, even though the clock MECHANISM (G4) can precede them (G7's contradiction).
 
@@ -506,14 +513,14 @@ above where they differ.
 - **Call/reply carries the scheduling contract (finding 4): CLOSED.** Without priority donation,
   synchronous SPI/I2C over CAP_ENDPOINT is unbounded inversion on every transaction, with KickCAT
   cyclic traffic as the victim. Direct-handoff donation on call is in the shipped contract.
-- **The transfer ABI is offset-based from day one (finding 10, the one M6 landmine).** A
+- **The transfer ABI is offset-based from day one (finding 10, the one M7 landmine).** A
   large-transfer request speaks `{region-cap, offset, len}` and never a raw pointer: cheap now, an
-  ABI break at M6 when a domain becomes a page-table root. This pulls the QW-3 DISCIPLINE, not the
+  ABI break at M7 when a domain becomes a page-table root. This pulls the QW-3 DISCIPLINE, not the
   ring implementation, into the call/reply contract.
 - **Timed / abortable IPC -> EARLY-M4: OPEN.** No timed or abortable receive/call exists. It gates
   BOTH the clock-cascade quiesce-timeout and a driver-death waiter wake, and call/reply made it
   load-bearing. What it is really asking for is named in `design-m4.6-irq-driver.md` section 7.5
-  (receive-from-either-of-two-sources, an M5 kernel object).
+  (receive-from-either-of-two-sources, an M6 kernel object).
 - **Driver crash/restart plus resource reclaim: OPEN.** Pin caps, clock-gate refcounts, AIPS slots and
   endpoint holders all leak on driver death; only the panic-path console reclaim exists. `TODO.md`
   carries the `kos_cap_narrow` endpoint-rights gap that blocks a real driver-death story.

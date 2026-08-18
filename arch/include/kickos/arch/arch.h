@@ -14,6 +14,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Supplies KICKOS_NUM_CORES; a standalone TU has no board config and falls back to 1.
+#if defined(__has_include) && __has_include(<kickos/board_config.h>)
+#include <kickos/board_config.h>
+#endif
+
+#ifndef KICKOS_NUM_CORES
+#define KICKOS_NUM_CORES 1
+#endif
+
 // Per-arch definition of `struct arch_context` (opaque to the kernel; sized by
 // the arch). Resolved to arch/<arch>/include/kickos/arch/context.h.
 #include <kickos/arch/context.h>
@@ -41,6 +50,19 @@ void arch_shutdown(int status) __attribute__((noreturn));
 // with no such entry declines with -KOS_ENOSYS instead. Success never returns. The
 // backend masks interrupts itself before handing over.
 int arch_reboot(void);
+
+// --- Core identity ----------------------------------------------------------
+// The 0-based index of the core executing this code, in [0, KICKOS_NUM_CORES).
+//
+// At one core a MACRO, not an inline the optimiser folds: -Os has been measured
+// out-lining an always_inline candidate in system/include/kickos/sys/atomic.h.
+// The multi-core arm has NO fallback TU, so a port that raises KICKOS_NUM_CORES and
+// ships no definition is a LINK error rather than a kernel that believes it is on core 0.
+#if KICKOS_NUM_CORES > 1
+uint32_t arch_cpu_id(void);
+#else
+#define arch_cpu_id() 0u
+#endif
 
 // --- Context / switching ---------------------------------------------------
 // Build an initial frame in `ctx` so the first switch-in "returns" into
@@ -455,10 +477,32 @@ int arch_bitband_present(void);
 //        thread mode (so a blocking switch/PendSV saves the mid-dispatch
 //        continuation and resumes it), rather than running dispatch in the SVC
 //        handler where a switch could only be deferred.
-// 64-bit arguments/results are split into uintptr_t halves (see sys/abi.h),
-// so no arch-specific result-delivery seam is needed.
+// 64-bit ARGUMENTS are split into uintptr_t halves (see sys/abi.h), so no
+// arch-specific argument-marshalling seam is needed.
+//
+// The result comes back at the ABI's 64-bit return width: arch_syscall takes the low
+// half, arch_syscall64 both. They are the SAME trap, the pair being whatever the psABI
+// uses for a long long return (r0:r1 on ARM, a0:a1 on RISC-V, R1:R2 on RX), so a
+// backend that preserves the pair serves both.
 uintptr_t arch_syscall(uintptr_t nr,
                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
+uint64_t arch_syscall64(uintptr_t nr,
+                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
+
+// --- Register-carrying IPC trap (KOS_SYS_CALL_REG) -------------------------
+// Declared only under KICKOS_ARCH_HAS_IPC_FASTPATH, so a backend without the
+// trap-handler fastpath cannot be selected by mistake.
+//
+// `io` is KOS_CALL_REG_WORDS + 3 words, in and out over the SAME storage:
+//   in  io[0]=nr io[1]=ep_cap io[2]=packed lens io[3..] = request payload
+//   out io[1..] = reply payload; the return value is the call's result
+// The trap must preserve `io` itself across the ecall/svc.
+//
+// KOS_CALL_REG_FALLBACK is not an error: the fastpath declined and the caller must
+// re-issue through KOS_SYS_CALL.
+#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
+int32_t arch_syscall_reg(uint32_t* io);
+#endif
 
 // --- Interrupt controller (thin abstraction: mask / unmask / raise) --------
 // Deliberately minimal: no priority grouping, pending-vs-active, edge-vs-level,
@@ -588,8 +632,11 @@ void kickos_isr_irq(int irq);
 // A thread's entry function returned; the arch trampoline routes here.
 void kickos_thread_return(void) __attribute__((noreturn));
 // The arch-independent syscall table dispatch (called by arch_syscall / SVC).
-uintptr_t syscall_dispatch(uintptr_t nr,
-                           uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
+// Sign rule: an errno arm returns a NEGATED int and sign-extends, so it stays negative
+// read at any width; every other arm zero-extends. The low half is what a 32-bit target
+// always saw.
+uint64_t syscall_dispatch(uintptr_t nr,
+                          uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
 // A memory-protection violation was caught (sim: SIGSEGV over the arena).
 void kickos_isr_fault(uintptr_t addr, int is_write);
 

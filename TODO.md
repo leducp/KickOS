@@ -455,12 +455,24 @@ not deferred for lack of time. Recorded so the next reader does not re-derive th
       `__FILE_NAME__` and `__LINE__` as SEPARATE arguments (measured 4x better than one joined
       `"file:line"` literal, see the capture).
 
-## M4.7.4 -- delete the legacy management (nothing is released before M6)
+## M4.7.4 -- delete the legacy management (nothing is released before the ABI freeze)
 
-KickOS is unreleased and will not ship before M6, so **there is no backward compatibility to
-manage**. Anything that exists only because something else USED to exist is cost: it must be kept in
-sync, it reads as a supported path, and it makes a deleted thing look alive. `roadmap.md`'s ledger
+KickOS is unreleased and will not ship before the ABI-freeze milestone (M8, the last one), so
+**there is no backward compatibility to manage**. Anything that exists only because something else
+USED to exist is cost: it must be kept in sync, it reads as a supported path, and it makes a deleted
+thing look alive. `roadmap.md`'s ledger
 carries the number and the class definition.
+
+**OWED AT THE FREEZE ITSELF, and nothing else in the tree records it: a full doc and comment
+sync pass.** The instruments that keep prose honest are deliberately partial and stay that way.
+`check_doc_names.sh` validates a PATH and an UPPERCASE-prefixed IDENTIFIER, so every lowercase
+seam and function name a design page cites is outside its corpus -- which is how
+`kickos_rx_dev_pending_line` stayed valid in `docs/design-driver-era-scope.md` long after it
+stopped existing anywhere in the tree. Widening it was considered and REFUSED: it is a helper for
+keeping docs roughly in step, not a proof, and a checker that cries wolf gets disabled. The
+answer is a deliberate pass at the freeze, when the ABI stops moving and prose written against a
+moving target can be reconciled once against a fixed one, rather than a gate that tries to hold
+the line continuously against a target that is still moving.
 
 **The sweep has been RUN.** M4.7.3 audited all four surfaces and banked the inventory at
 `.session/spikes/legacy-audit.md` (gitignored, main checkout only). M4.7.4 is execution against the
@@ -607,7 +619,7 @@ under *History that must not be garbage-collected*.
   all three goals. **LANDED** as `### Non-goals -- seL4 machinery deliberately NOT adopted`
   (`m4.5.1: state the seL4 machinery KickOS does not adopt, and the arithmetic refuting it`,
   79b7a37): all four, each with its arithmetic.
-- **Sequencing: M4 driver breadth and M5 SMP wait behind goal 1** (fleet flip,
+- **Sequencing: M4 driver breadth and M6 SMP wait behind goal 1** (fleet flip,
   `arch_periph_enable`, `kos_cap_narrow`). Both multiply capability and memory complexity on a
   fleet that at the time still defaulted to privileged root, so doing them first would have widened
   the surface that goal 1 then has to confine. **LANDED** in `roadmap.md` under `## Next`
@@ -695,7 +707,7 @@ number: the record and the XMC entry under Blockers below both point at **item 5
    16-slot ceiling with the tiny boards' tables under it. **That section's `read`/`open`/`socket` sentence
    stays alone** -- the maintainer reads it as a design rule, not a status claim. It was not
    touched, and should not be by a later pass.
-4. ~~**Record the sequencing note** (M4 driver breadth and M5 SMP behind goal 1) in `roadmap.md`.~~
+4. ~~**Record the sequencing note** (M4 driver breadth and M6 SMP behind goal 1) in `roadmap.md`.~~
    -- DONE (a5fc422), as a block quote under `## Next`.
 5. ~~**Move the XMC USIC bring-up into the granted driver thread, and add the privileged configure
    seam it needs for FDR/BRG/CCR.**~~ -- DONE in M4.5.6 (`KOS_SYS_PERIPH_REG_WRITE = 42` /
@@ -916,7 +928,7 @@ triggers `push` only on `master`).
       practice: create the backup ref BEFORE any history edit, and say in the record which ref
       citations resolve against. This file's own six M3-era hashes resolve against
       `backup/m3-pre-squash` the same way.
-- [ ] **Reclaim `arch_ram_alloc`'s alignment run-up** (M5 allocator work). The bytes skipped
+- [ ] **Reclaim `arch_ram_alloc`'s alignment run-up** (allocator work). The bytes skipped
       ahead of each allocation to satisfy its alignment are dropped on the floor -- which is why
       boot-stack allocation *order* is load-bearing today (idle must be allocated before root).
       Folding the run-up back into the free space removes that ordering constraint. Subsumed by
@@ -2102,10 +2114,10 @@ USB CDC, the two sub-milestones that add the most new arch seams -- those seams 
 weak because nothing stops them, and then be rewritten: the same work twice, plus a window where the
 tree drifts back. `arch_periph_reg_write` under M4.5.6 is the pattern already being honoured ahead
 of the gate.
-It also overlaps the M6 seam rework -- `arch_ram_region_size` still carries its `SEAM (MMU era)`
+It also overlaps the M7 seam rework -- `arch_ram_region_size` still carries its `SEAM (MMU era)`
 marker -- but the three MPU-geometry seams (`arch_mpu_min_region`, `arch_mpu_region_pow2`,
 `arch_mpu_region_encodable`) were converted here rather than deferred into that redesign: they are
-fallback TUs now, so M6 rewrites bodies and not the resolution mechanism.
+fallback TUs now, so M7 rewrites bodies and not the resolution mechanism.
 
 ## M4.6.1 -- the IRQ substrate, then the buffered userspace UART on it
 
@@ -2160,7 +2172,8 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
       (`system/driver/xmc4800/xmcssc/xmcssc.cc`) all call `kos_irq_register` from a thread holding no
       authority -- `f411spi` declares `KOS_AUTH_MEMORY | KOS_AUTH_PINMUX` and nothing else, and the
       spawned drivers run at authority zero. They move to **root claims, then delegates at spawn**;
-      no compat shim, since the ABI is unstable until M6. The drivers stay at authority == 0, so the
+      no compat shim, since the ABI is unstable until the ABI-freeze milestone (M8, the last one).
+      The drivers stay at authority == 0, so the
       frozen cap-index range needs no spawn-ABI work. `selftest` is the one caller that already holds
       `AUTH_IRQ` (`user/apps/common/selftest/main.cc` (`KICKOS_APP_AUTHORITY`)) and its `kos::Irq`
       cases keep working, which also means **the suite cannot witness the refusal from root** -- the
@@ -2345,7 +2358,7 @@ Three strands, the first two of which need no board.
 
 ### The `volatile` -> relaxed `std::atomic` conversion
 
-Moved here from M5 rather than left recorded in three places. `docs/design-m5-smp.md` carries the
+Moved here from M6 rather than left recorded in three places. `docs/design-m6-smp.md` carries the
 reasoning and now records what is DONE and what is residue; `docs/reference/style.md` states the
 rule.
 
@@ -2684,7 +2697,7 @@ fleet-wide, and it FAILS ON SILICON at a known point. Do not read it as landed.
       emits the same instruction, so the choice costs nothing. Relaxed is also SUFFICIENT
       here: a reader sees the old or the new value and both are valid for an independent
       counter. That stops being true the moment a counter's value implies something about
-      other data, which is M5's problem, not this one.
+      other data, which is M6's problem, not this one.
 - [ ] **Retire "a C driver" as a justification.** It is no longer a goal, so the comments in
       `byte_ring.h` and `uart.h` that cite it must cite the C consumer APP surface instead.
       This does NOT free the shim: `uart.h` carries the `kos_uart_stats` reply a C app names
@@ -3363,7 +3376,7 @@ exists at all it is per-**domain** and writable by every member -- carving per-t
 of a region other tasks can write is unsound on sharing grounds before MPU geometry even enters.
 And the geometry is against it too: on the power-of-two backends (PMSAv7, RISC-V NAPOT) shaving
 kernel state off the top of a granted region forces the remainder down to the next lower power of
-two. A design whose isolation property is arch-dependent is the worst outcome. **Revisit at M6**,
+two. A design whose isolation property is arch-dependent is the worst outcome. **Revisit at M7**,
 when a page is the granule and the shape becomes available without the tax.
 
 **The items.** Renumbered from the spike, and item 3 below is CORRECTED against what `6be8220`
@@ -3417,7 +3430,7 @@ shape-specific probes, and the second time after writing the warning down.
       app is source- and behaviour-compatible. A plain app sees nothing new.
 - [x] 5. Per-board bucket mixes, starting from the demand counts above rather than from a guess.
 - [x] 6. **Define the storage seam now** -- attach a run, detach a run, per-class accounting behind
-      it -- so the M6 page backend can replace the slab under an unchanged interface. The slab is
+      it -- so the M7 page backend can replace the slab under an unchanged interface. The slab is
       scaffolding and should be named as such.
 
 **The two decisions the review left open are TAKEN (maintainer, 2026-08-02).** Both are recorded
@@ -3479,7 +3492,7 @@ with the consequence that comes with them, because each was chosen against a rea
 measurement -- they say what the current apps hold, not what a peak looks like under a load nobody
 has run, and no high-water mark exists. If a workload appears that needs capacity elastic *in time*,
 this is the wrong shape. If the delegation packing is being reworked for another reason anyway, the
-global design's costs are better on every axis except hazard 6. And at M6 the whole storage-origin
+global design's costs are better on every axis except hazard 6. And at M7 the whole storage-origin
 question should be re-argued from scratch rather than inherited.
 
 **Refused, and recorded so it is not re-priced**: narrowing `CapEntry` below 8 bytes, in any form.
@@ -4832,7 +4845,7 @@ isolation is real; K64F is coarse-AIPS (documentation, not enforcement).
       seam in `arch/arm/common/`, with the aperture wrap ordered BEFORE the I-cache enable.
       Enforcement selftest went from a hang to a full pass with a clean soak. Full record:
       `docs/design-teensy-mpu-hang.md` (LANDED); teaching is Book ch.7.6. Its residuals are tracked
-      separately: D-cache default-on is done (below), "Option B" is the fleet-wide post-M6 item, and
+      separately: D-cache default-on is done (below), "Option B" is the fleet-wide M8 item, and
       the reprogram-window / HFNMIENA bypasses are accepted in the design record.
 
 Book + exploratory (M3-adjacent, not milestone-gating):
@@ -4845,13 +4858,13 @@ Book + exploratory (M3-adjacent, not milestone-gating):
       (only `_write` routes over IPC, to the caller's stdout cap, with the kernel console as
       fallback), so the chapter teaches the rule (a real one belongs to the server that owns the
       device) rather than claiming an implementation.
-- [ ] **Exploratory spike: microkernel IPC performance** (M3 #4 -> M5). The Mach-era "IPC too slow"
+- [ ] **Exploratory spike: microkernel IPC performance** (M3 #4 -> M6). The Mach-era "IPC too slow"
       critique vs the L4/seL4 answer -- (a) fast SYNCHRONOUS IPC (direct switch to the woken
       receiver + register/bounded-copy; KickOS's sem_post already hands the token off and drives an
       immediate switch, so the fastpath shape exists) for control/RPC, and (b) shared-memory + async
-      notifications (non-blocking) for throughput -- the M5 cross-core design
-      (`docs/design-m5-smp.md`) already uses an SPSC ring + doorbell, exactly that shape.
-      Survey the literature, map both to CAP_ENDPOINT (#4) + the M5 rings, recommend the
+      notifications (non-blocking) for throughput -- the M6 cross-core design
+      (`docs/design-m6-smp.md`) already uses an SPSC ring + doorbell, exactly that shape.
+      Survey the literature, map both to CAP_ENDPOINT (#4) + the M6 rings, recommend the
       control-plane-vs-data-plane IPC strategy + a micro-benchmark. Good deep-research candidate.
 
 ## Clock hardening (2026-07-20) -- clock off the debug-domain / narrow counters
@@ -5090,14 +5103,14 @@ below where they were previously mislabeled.
   one pool would be false-DRY. Full unification (a shared handle codec across sems + the M3
   capability store) waits for that genuine second SlotPool-shaped case. (No MPU dependency --
   was mislabeled "M2 handle table"; it's the M3-caps substrate + anytime coherence.)
-- **[anytime coherence -- NOT M2] general freeing allocator (M5).** `arch_ram_alloc` is a
+- **[anytime coherence -- NOT M2] general freeing allocator.** `arch_ram_alloc` is a
   wholesale bump allocator (freed only at reset). Default thread stacks now reclaim via a
   single-size-class intrusive free list in `ThreadPool` (thread.h) -- the special case that needs
   no size metadata (one class == `KICKOS_USER_STACK_SIZE`, link stored in the dead block). A
-  GENERAL multi-size-class freeing allocator for `arch_ram_alloc`/`kos_ram_alloc` at large is M5;
-  it would subsume this free list. Until then, only default stacks are reclaimable. M5 should also
-  reclaim the per-allocation ALIGNMENT RUN-UP, which is dropped on the floor today -- see the
-  M4.5.1 item above (it is why boot-stack allocation order is load-bearing).
+  GENERAL multi-size-class freeing allocator for `arch_ram_alloc`/`kos_ram_alloc` at large would
+  subsume this free list. Until then, only default stacks are reclaimable. The allocator work
+  should also reclaim the per-allocation ALIGNMENT RUN-UP, which is dropped on the floor today --
+  see the M4.5.1 item above (it is why boot-stack allocation order is load-bearing).
 - **[anytime coherence -- NOT M2] user-pointer validation at the syscall boundary.** M2 is MPU
   *enforcement*; validating a user pointer is arch-neutral kernel logic that matters MORE at M1
   (no MPU to contain an OOB access -- see the `user-args-validated-at-boundary` invariant).
@@ -5160,18 +5173,18 @@ below where they were previously mislabeled.
   broken): a per-thread TLS block in the thread's data grant + a per-arch thread pointer set on the
   context switch (ARM `TPIDRURW`, RISC-V `tp`, Xtensa `THREADPTR`; RX has no TLS register -> sw-tp
   spike), local-exec model (fully static / no dlopen -> offsets fixed at link). `errno` + newlib
-  reent + `thread_local` all ride on it (one mechanism). Prereq SMP (M5) needs anyway. First sibling
+  reent + `thread_local` all ride on it (one mechanism). Prereq SMP (M6) needs anyway. First sibling
   of this family LANDED (M4.3): the `_write` stdout re-probe -- deleted the process-global sticky
   `g_stdout_probe` (per-invocation classify against the calling thread's own cap 0; no per-thread
   storage needed for it).
-- **M5 -- multicore (AMP versus a shared kernel is OPEN; see the OPEN section of the spike).**
+- **M6 -- multicore (AMP versus a shared kernel is OPEN; see the OPEN section of the spike).**
   This heading previously read "AMP first on RP2040, SMP-BKL endgame on RP2350" and attributed
   that verdict to the spike. The spike does not contain it and `roadmap.md` says the opposite
   ("not two AMP instances"), so the three records disagreed. Settle it before writing SMP code.
   The deciding measurement is TAKEN: 53 percent of a call/reply round-trip is inside `IrqLock`
   on `esp32c6-wroom` (floor 43 percent), which Amdahl-bounds a two-core big lock at 1.31x --
   see `docs/design-m5-ipc-fastpath.md` 3.0.4. Design spike:
-  `docs/design-m5-smp.md` carries the cross-core IPC invariants, the
+  `docs/design-m6-smp.md` carries the cross-core IPC invariants, the
   per-chip hardware mechanics, the SMP candidate ranking + staged model and the
   SMP-is-per-chip-capability constraint. Candidate
   ranking by the real gate (inter-core atomic + arch-switch maturity): **RP2350 BEST** (M33
@@ -5208,7 +5221,7 @@ below where they were previously mislabeled.
   - **Already seam-ready:** the `KICKOS_*_BARRIER` publish seams (console_tx / rtt) are the
     fence-injection points -- flip to real fences on the SMP build. Keep centralising `IrqLock`,
     structs-over-globals, no ad-hoc masking -> keeps this a redefinition, not a rewrite.
-  - Fits the seL4 endgame (seL4 ships a big-lock SMP variant). See `roadmap.md` (M5).
+  - Fits the seL4 endgame (seL4 ships a big-lock SMP variant). See `roadmap.md` (M6).
   - **AMP-first on RP2040 (an OPTION, not a spike verdict -- the spike does not contain one).**
     Two core-private `Kernel` instances. The `KICKOS_MULTI_INSTANCE` per-instance seam in
     `instance.h` was described here as "the ~80% substrate"; it is not. It is a dead hole:
@@ -5221,7 +5234,7 @@ below where they were previously mislabeled.
     refactor: AMP de-risks the shared mechanics (core-1 launch, IPC, console arbitration) that
     SMP also needs, and sidesteps the no-atomics problem entirely.
   - **Cross-core IPC -- required for AMP; none exists today** (`Semaphore`/`Mutex` are intra-core
-    only). Design in `docs/design-m5-smp.md`: a per-direction SPSC ring in a shared-SRAM
+    only). Design in `docs/design-m6-smp.md`: a per-direction SPSC ring in a shared-SRAM
     window (one writer per index + `DMB` ordering -> no lock, no atomics needed on M0+) with the
     SIO 8x32 FIFO used only as a doorbell (write a tag, raise `SIO_IRQ_PROCn`). API = a `Channel`
     (ring + a `Semaphore` in the receiver's kernel) exposed as `KOS_SYS_chan_{open,send,recv}`;
@@ -5295,7 +5308,7 @@ Fleet re-validation follow-ups (from the 2026-07-22 M3-branch gate; see `docs/ar
       (measured ~2.3x throughput cost on RP2350 enforce vs mpu-off). Skip the reprogram + barriers
       when the next thread's region set is unchanged (same-domain switch / region-set generation
       compare). Helps EVERY enforce board. Note the SMP caveat already flagged in
-      `docs/design-rp2350-mpu-armv8m.md`: any such cache must be per-core (or omitted) under M5, not
+      `docs/design-rp2350-mpu-armv8m.md`: any such cache must be per-core (or omitted) under M6, not
       a shared static.
 - [ ] **ESP32-C6 enforce-bench ns-scaling** (measurement-only, not M3). `cyc` counts correct; ns
       ~8x high because `rdcycle` traps on the C6 so the bench samples an MMIO counter whose rate
@@ -5584,7 +5597,7 @@ shared case only.
 
 ## MMU-era groundwork quick wins (from `docs/design-mmu-era-exploration.md` section 5)
 
-Cheap seam/groundwork changes worth making WHILE M4/M5 code is written, so the MMU era does not
+Cheap seam/groundwork changes worth making WHILE the M4-M6 code is written, so the MMU era does not
 force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`kaccess_from_user` /
 `kaccess_to_user`, `kernel/syscall/syscall_mem.cc`) and is not repeated here.
 
@@ -5599,7 +5612,7 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       pressure. A one-file accessor contains the blast radius of the single biggest below-seam
       change.
 - [ ] **QW-3. Keep the shared-IPC ring contract PHYSICALLY addressed from day one.** When the IPC
-      ring lands (`docs/design-m5-smp.md`), specify that ring control words and slot
+      ring lands (`docs/design-m6-smp.md`), specify that ring control words and slot
       references are offsets or physical addresses, NEVER a pointer valid in one core's space, even
       though on RP2040 (homogeneous, one physical space) a raw pointer would work. It costs nothing
       there and is the exact property a heterogeneous A53/M7 pairing needs. Baking a VA into the
@@ -5628,7 +5641,7 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       `arch_mpu_apply` to mean "load a page table". A sentence of foresight prevents a wrong-shaped
       first MMU port.
 
-## M5 -- SMP
+## M6 -- SMP
 
 - [ ] **Give the converted fields their real ORDER.** M4.9.2 turned every cross-thread field
       into a relaxed `std::atomic`, which is a type change and nothing more: relaxed says
@@ -5637,9 +5650,9 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       `volatile` (a relaxed 64-bit load is a `__atomic_load_8` libcall), the six per-chip
       `_high`/`_last` clock anchors that `IrqLock` alone makes coherent, and
       the ring publication barrier, then still a consumer `-D` rather than a release
-      store on the ring's now-atomic index. `docs/design-m5-smp.md` carries the reasoning.
+      store on the ring's now-atomic index. `docs/design-m6-smp.md` carries the reasoning.
 
-## M6
+## M7
 
 - [ ] **Re-inventory the test-gate surface.** M4.5.9 root-caused the binary-introspection gates'
       silent-failure paths without rewriting them; whatever is still oversized then is this pass.
@@ -5650,9 +5663,9 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       entries rather than scripts. Re-derive the count when this pass runs; do not carry the old
       numbers forward as current.
 
-## Post-M6 optimizations (not scheduled)
+## M8 optimizations (not scheduled)
 
-- [ ] **RISC-V context-switch cost** (post-M6, fable-gated) -- the rv32 trap saves the full
+- [ ] **RISC-V context-switch cost** (M8, fable-gated) -- the rv32 trap saves the full
       integer file (~60 stack words/switch vs armv7m's ~18); ~3.5x per-handoff, general to RISC-V
       (Hazard3 shares it, NOT C6-specific). Levers: (a) cooperative fast-path (callee-saved-only
       voluntary switch, ~2x, portable incl. C6); (b) optional Zcmp `cm.push`/`cm.pop` compile-gated
@@ -5660,8 +5673,8 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       excludes the save/restore). Full design in `docs/design-riscv-switch-cost.md`; roadmap
       "Later". Surfaced by the M3 C6 enforcement soak (C6 ~10.5k iters vs XMC ~33.9k, same window).
 
-- [ ] **ARMv8-M TrustZone kernel-confinement backend -- opt-in, per-chip** (post-M6, fable-gated,
-      needs the M4 service model + M5 SMP settled). The armv8-M-with-Security-Extension mechanism for
+- [ ] **ARMv8-M TrustZone kernel-confinement backend -- opt-in, per-chip** (M8, fable-gated,
+      needs the M4 service model + M6 SMP settled). The armv8-M-with-Security-Extension mechanism for
       kernel confinement: kernel/TCB in Secure state, apps in Non-secure. NOT per-task isolation and
       NOT an MPU replacement (MPU_NS still does all per-task work, same per-switch cost); it is the
       strongest armv8-M realization of "Option B" (confine the kernel), layered ON TOP of Option B,
@@ -5670,11 +5683,11 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       model. Machinery: SAU/IDAU partition, secure-gateway veneers + S/NS call ABI, banked SPs, NVIC
       ITNS interrupt targeting, a separate Secure build/link. Per-chip capability -- M23/M33/M55/M85
       MAY implement it, detect + fall back to Option B alone; RP2350's M33 is a concrete target (also
-      the PMSAv8 + SMP target). Security/assurance play, not perf. The M5 dependency is mechanical.
+      the PMSAv8 + SMP target). Security/assurance play, not perf. The M6 dependency is mechanical.
       The MPUs and the SAU are both banked per core, so a TrustZone SMP story must set up the
       S/NS partition on each core separately.
 - [ ] **Confine the trusted kernel with an explicit MPU map ("Option B") -- FLEET-WIDE hardening**
-      (post-M6, fable-gated, per-arch). Today privileged/kernel execution runs UNCONFINED on each
+      (M8, fable-gated, per-arch). Today privileged/kernel execution runs UNCONFINED on each
       backend's permissive background; a kernel wild pointer rides it silently instead of faulting.
       Option B removes that background so even the kernel is confined and a stray kernel access
       FAULTS (defense-in-depth / debuggability -- catch our own bugs early; NOT a security boundary,
@@ -5930,7 +5943,7 @@ workflow YAML rot invisibly.
       `design-m4.6-irq-driver` and `roadmap.md`; every measurement kept as taken, and the one
       verbatim capture line fenced rather than edited. Three more superseded verdicts came out with
       it: `invariants.md` and `console.md` stated the PRE-2026-08-02 console reclaim (keyed on the
-      endpoint's last receiver) as the contract, `design-m5-smp.md` asserted the retracted
+      endpoint's last receiver) as the contract, `design-m6-smp.md` asserted the retracted
       both-cores-WFI debug-bus story as chip fact, and the `arch_console_reclaim` body count was
       wrong in six files. `architecture.md`'s cap-slab figures were both one chunk high, and are now
       read off the `KickOS: cap table =` configure line instead of a formula.
@@ -6097,7 +6110,7 @@ Four non-reorderable steps, zero `.bss` on each. Design record still owed to `do
       the task but not its domain makes the definition false -- two answers to "what memory do this
       task's threads see" is the second truth the tiebreaker forbids, and the right decomposition
       for a thread that must not reach the block is a task of its own, which today would also take
-      it out of the kill group. Separating "shares memory" from "dies together" is M5-scale.
+      it out of the kill group. Separating "shares memory" from "dies together" is M6-scale.
       **The collapse landed instead.** The per-thread flag's only reader was an OR-reduction into
       the group's grant, and it equalled `arg == KOS_DRV_ARG_BLOCK` in all TWELVE production descriptors, so it was
       a second truth twice over; `bring_up` now hands the task the block whenever there is one. Leg
@@ -6275,7 +6288,7 @@ an IRQ line, and both console-reclaim sites rely on that being impossible.
       The no-chunking property is machine-checked: the gap-dating arms count 4 gaps, and 12 under a
       chunk-the-pre-pass mutant.
 
-**D -- COVERAGE, TEST-INFRA, DOCS, PERF, FUTURE (17).** Ordinary backlog. Includes the whole M5/SMP
+**D -- COVERAGE, TEST-INFRA, DOCS, PERF, FUTURE (17).** Ordinary backlog. Includes the whole M6/SMP
 group and every "no arm for this yet" item. Added while closing A, B and C -- all genuinely class D,
 which is the only reason they are filed rather than fixed:
 - [ ] **The f302 capture-protocol fix is untracked.** `.session/bench-capture.sh` is gitignored, so
@@ -6556,7 +6569,7 @@ follows is what survived that.
       overlap the sweep rather than follow it; a future second `task_release(c->task)` would then
       decrement a LIVE task to zero. It becomes a real hazard the first time anything downstream of
       the sweep wants the task.
-- [ ] **M5/SMP: the claim-then-commit shape in `domain_for` and `task_for` is safe only because
+- [ ] **M6/SMP: the claim-then-commit shape in `domain_for` and `task_for` is safe only because
       `IrqLock` is enough on one core.** Both hand out a pool slot at refcount 0 and are committed by
       a later `domain_ref`/`task_ref`, and what makes the window atomic is that `thread_spawn`
       declares a FUNCTION-SCOPE `IrqLock` as its first statement, spanning the claim, the thread-slot

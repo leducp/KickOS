@@ -395,7 +395,7 @@ Stated explicitly so this cannot be read as a rewrite.
   (`syscall_thread.cc:598`, `sched.cc:231`). Retargeting it at tasks is a separate question and is
   entangled with the reaper-init problem `TODO.md` already carries.
 - **The single physical address space.** Nothing here introduces translation. The MMU era remains
-  post-M6 and remains `design-mmu-era-exploration.md`'s subject.
+  M7 and remains `design-mmu-era-exploration.md`'s subject.
 - **M4.7.9's fault path.** Discriminator, redirect, fault record, teardown latency decision: all
   unchanged (section 3).
 - **The one-holder-per-DEV-window rule** (5.2).
@@ -403,7 +403,8 @@ Stated explicitly so this cannot be read as a rewrite.
 
 ## 8. Cost and blast radius, counted
 
-The ABI is unstable until M6, so a correct ABI change needs no migration ceremony. The cost that
+The ABI is unstable until the ABI-freeze milestone (M8, the last one), so a correct ABI change
+needs no migration ceremony. The cost that
 matters is call sites and TCB bytes.
 
 ### 8.1 Call sites
@@ -615,7 +616,7 @@ and its wake of a strictly higher-priority peer is admitted by the M4.8.2 dying 
 lands BEFORE the rest of the exit. `tests/unit/taskdeath/group_kill.cc` asserts both directions of
 that as ordered traces, because a counter oracle cannot fail on a reordering.
 
-**9.6 (post-M6).** `Domain` gains an `arch_aspace*` and a task whose domain has one is a process.
+**9.6 (M7).** `Domain` gains an `arch_aspace*` and a task whose domain has one is a process.
 Belongs to `design-mmu-era-exploration.md`, not here.
 
 Steps 9.3, 9.4 and 9.5 can be three submilestones or one; they cannot be reordered. In the event
@@ -679,7 +680,7 @@ is what puts it back. Landing 9.4 alone would have shipped a window that a survi
    this task's threads see" is exactly the second truth the tiebreaker forbids. The right
    decomposition for a thread that must not reach the block is a task of its own, and the only thing
    stopping that is that a task is also the kill group; separating "shares memory" from "dies
-   together" is an M5-scale change to the model, not a bring-up tweak.
+   together" is an M6-scale change to the model, not a bring-up tweak.
    **What landed instead is the collapse.** The flag equalled `arg == KOS_DRV_ARG_BLOCK` in every
    descriptor in the tree, so it was a second truth for that too, and it is deleted: the group's
    shared region is the block whenever there is one. Validator leg L4 grew the converse arm, refusing

@@ -15,20 +15,22 @@ pointer, why the correct requirement is arch-specific, and how a single hardcode
 ## Why the kernel touches a user pointer at all
 
 Some syscalls return more than fits in a register, or take a struct. KickOS keeps the syscall ABI
-register-based (`sys/abi.h`), so a 64-bit result is either split into register halves or written
-through a caller-supplied **out-pointer**: the stub allocates a local, passes its address, and the
-kernel stores the result there. `clock_now` is the canonical example -- the userspace stub is
+register-based (`sys/abi.h`), so a result too wide for one register is either split across the
+ABI's return-register pair or written through a caller-supplied **out-pointer**: the stub allocates
+a local, passes its address, and the kernel stores the result there.
 
-```
-uint64_t out = 0;
-arch_syscall(KOS_SYS_CLOCK_NOW, (uintptr_t)&out, ...);
-return out;
-```
+The receive path is the canonical example, because its result is a STRUCT and no register pair can
+carry it. `kos_recv` takes a `struct kos_recv_info*`, and the kernel, running privileged, stores
+the badge and the reply capability through it. Likewise a struct-TAKING syscall, thread spawn,
+copies the caller's struct into kernel memory before reading its fields. In both directions the
+kernel issues a **typed memory access** through a pointer the caller chose. A typed access has an
+alignment precondition, and the kernel did not pick the pointer.
 
-and the kernel, running privileged, does `*(uint64_t*)a0 = arch_clock_now()`. Likewise a
-struct-taking syscall (thread spawn) copies the caller's struct into kernel memory before reading
-its fields. In both cases the kernel issues a **typed memory access** through a pointer the caller
-chose. A typed access has an alignment precondition, and the kernel did not pick the pointer.
+**The first question is therefore whether the pointer needs to exist at all**, and the cheapest
+guard is the one with no subject. A 64-bit scalar fits the return-register pair on every ISA in
+this fleet, so the monotonic clock read hands its value back in registers and has no out-pointer to
+align, to bound, or to reject. That is not an optimisation; it removes a whole failure mode from
+the ABI, and the next section is what that failure mode costs when it is left in.
 
 ## Alignment is a hardware property, and it is not uniform
 
@@ -65,9 +67,16 @@ well-defined. It can fail in both directions:
 2. **Too strict.** A guard that demands *more* alignment than the type actually needs on this arch
    rejects legitimate, correctly-aligned pointers. The syscall then refuses to do its work -- and
    because a rejected out-pointer store simply does not happen, the stub returns whatever it
-   pre-initialised (for `clock_now`, a zero). The caller sees a plausible-but-wrong value with no
-   error it can act on. A hardcoded 8-byte requirement does exactly this on RXv3: it rejects the
-   stub's legitimately 4-aligned local, so the clock reads a frozen zero. The symptom appears far
+   pre-initialised. Where that pre-initialised value is a plausible one, the caller sees a wrong
+   answer with no error it can act on.
+   A clock read is the sharpest illustration, and it is why KickOS gives that syscall the return
+   register pair instead of an out-pointer: a rejected store leaves the stub returning a zero,
+   zero is a perfectly legal timestamp, and no caller can tell the two apart. A hardcoded 8-byte
+   requirement produces exactly that on RXv3, where `alignof(uint64_t)` is 4: it rejects the
+   stub's legitimately 4-aligned local, so the clock reads a frozen zero.
+   **A sentinel indistinguishable from a legitimate value is the deeper fault**, and it outlives
+   any particular guard: an out-pointer whose failure cannot be REPORTED is worse than a
+   misaligned one, because the misaligned one at least announces itself. The symptom appears far
    from the cause (a spin loop that never advances), and it is *layout-sensitive* -- whether any
    given stack local lands on an 8-boundary depends on the frame, so the same code "works" in one
    build and hangs in another.

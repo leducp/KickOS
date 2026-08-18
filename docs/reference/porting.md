@@ -535,6 +535,27 @@ fallback), and the ONE window its `arch_mpu_region_encodable` admits
 address, and every other shape of that one, still fails closed. That arm is silicon-only,
 and `c6blink` and `rxdrv` carry probes for it.
 
+### Which core am I (`arch_cpu_id`)
+
+**A port does nothing here today, and that is the point.** `KICKOS_NUM_CORES` defaults to 1 on
+every board, and at 1 `arch_cpu_id()` is a MACRO expanding to the literal `0u`
+(`arch/include/kickos/arch/arch.h`), so no symbol exists, no call is emitted, and a single-core
+image is byte-identical to one with no such seam at all.
+
+**It is a preprocessor fold and not an inline on purpose.** An `inline` returning 0 would rely on
+the optimiser, and this tree has already measured GCC out-lining an `always_inline` candidate at
+`-Os` (`system/include/kickos/sys/atomic.h` records it). The `cpu_id_fold` gate pins the property,
+so softening the macro fails the build rather than silently costing the byte-identity.
+
+**A multi-core port raises `KICKOS_NUM_CORES` in its defconfig and DEFINES the function.** There is
+deliberately no `arch/common/` fallback member on that arm, following `arch_reserved_blocks`: a
+port that raises the knob and ships no definition gets a LINK ERROR, never a kernel that quietly
+believes every core is core 0. The knob is an ordinary Kconfig int, so it reaches C through the
+generated `kickos/board_config.h` like every other provisioning integer and needs no CMake edit.
+
+Splitting per-core kernel state is NOT part of this seam and is not done yet;
+`../design-m6-state-inventory.md` classifies what would have to move.
+
 ### Privileged register write (`arch_periph_reg_write`)
 
 The other member of the same seam family, and the one for a bus that classifies the

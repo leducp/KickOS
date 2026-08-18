@@ -1383,8 +1383,8 @@ uintptr_t arch_mpu_probe_addr(void)
 }
 
 // --- Syscall trap -----------------------------------------------------------
-uintptr_t arch_syscall(uintptr_t nr,
-                       uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
+uint64_t arch_syscall64(uintptr_t nr,
+                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
 {
     // Emulated privilege raise, tracked PER-CONTEXT via SimContext::raised so it
     // survives a blocking switch: kernel dispatch may touch any user memory, so
@@ -1403,7 +1403,7 @@ uintptr_t arch_syscall(uintptr_t nr,
         self->raised = self->raised + 1;
         arena_raise_all();
     }
-    uintptr_t r = syscall_dispatch(nr, a0, a1, a2, a3);
+    uint64_t r = syscall_dispatch(nr, a0, a1, a2, a3);
     if (self != nullptr)
     {
         self->raised = self->raised - 1;
@@ -1413,6 +1413,12 @@ uintptr_t arch_syscall(uintptr_t nr,
         }
     }
     return r;
+}
+
+uintptr_t arch_syscall(uintptr_t nr,
+                       uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
+{
+    return static_cast<uintptr_t>(arch_syscall64(nr, a0, a1, a2, a3));
 }
 
 // --- Interrupt controller (mask / unmask / raise) --------------------------

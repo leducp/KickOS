@@ -12,7 +12,7 @@
 > house rule and the exact surface,
 > [`../reference/invariants.md`](../reference/invariants.md) for the fields whose
 > serialisation is a critical section rather than an atomic, and
-> [`../design-m5-smp.md`](../design-m5-smp.md) for the multicore primitive, which
+> [`../design-m6-smp.md`](../design-m6-smp.md) for the multicore primitive, which
 > is a property of the silicon and not of the language.
 
 ## The field two contexts share
@@ -227,7 +227,7 @@ pair of actions on two different objects.
 On a multicore part the primitive that provides such a section is a property of
 the silicon rather than of the language, and it differs across parts that look
 alike: a hardware spinlock block on one, architectural exclusives on another, a
-compare-and-swap instruction on a third. [`../design-m5-smp.md`](../design-m5-smp.md)
+compare-and-swap instruction on a third. [`../design-m6-smp.md`](../design-m6-smp.md)
 works that space out per part, including the case of two cores whose ISA has no
 exclusives at all. The point to carry here is only the direction of the
 dependency: what a lock can be made of is dictated by the part, and the language
@@ -325,4 +325,4 @@ than any atomicity. See [`../reference/style.md`](../reference/style.md) for the
 - The fields whose indivisibility is a critical section rather than a type:
   [`../reference/invariants.md`](../reference/invariants.md).
 - The multicore primitive a critical section would be built from, per part:
-  [`../design-m5-smp.md`](../design-m5-smp.md).
+  [`../design-m6-smp.md`](../design-m6-smp.md).

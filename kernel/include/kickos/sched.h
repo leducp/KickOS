@@ -67,6 +67,13 @@ namespace kickos
         // Make a previously-removed thread runnable again; preempts if warranted.
         void wake(Thread* t);
 
+        // A reschedule leaves `current` naming the woken thread while this caller still
+        // runs, so a caller that reads sched::current() again after waking must ready with
+        // wake_no_resched (true iff it readied t) and defer one resched_after_wake, for the
+        // HIGHEST-priority thread it woke, to every path that does not itself park.
+        [[nodiscard]] bool wake_no_resched(Thread* t);
+        void resched_after_wake(Thread const* t);
+
         // The SOLE writer of a thread's effective priority: no other code may write
         // t->prio. A READY or RUNNING thread is re-seated through the policy hooks, since
         // rq_remove locates its list by reading t->prio and a bare field write would

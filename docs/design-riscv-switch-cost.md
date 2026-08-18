@@ -3,10 +3,10 @@
 # RISC-V context-switch cost: Zcmp vs the cooperative fast-path
 
 > **Status: EXPLORATORY** -- an analysis spike; no `switch.S` or kernel change. Both levers are
-> post-M6 and unscheduled (`../roadmap.md`).
+> M8 and unscheduled (`../roadmap.md`).
 
 The verdict, the ~3.5x ratio and the soak evidence behind it are in `../roadmap.md` ("RISC-V
-context-switch cost") and `../TODO.md` (post-M6 optimizations): Option A, the software
+context-switch cost") and `../TODO.md` (M8 optimizations): Option A, the software
 cooperative fast-path, is the real and portable win; Option B, Zcmp, is a small Hazard3-only
 follow-on. What only lives here is the Zcmp availability fact and the bench-bracket defect.
 

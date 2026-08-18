@@ -9,11 +9,56 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**THIS TREE IS `M5.1.1`, THE FIRST REVIEWABLE M5 PR, CARVED OFF `master` (`3c3967e3`).** It
-carries ONE topic: the IPC measurement chain and the atomics work. The two are fused deliberately,
-because they share commits and touch the same functions, so splitting them would mean re-tangling
-history. Nothing else from M5 is here. A record naming work outside those two tracks is describing
-a later PR and not this tree.
+**THIS TREE IS `M5.1.2`, THE SECOND REVIEWABLE M5 PR, CARVED OFF `master` (`f56b591b`).** It
+carries the arch and ABI groundwork the rest of M5 sits on, plus the `sched::wake` fix that was
+branch `hotfix/wake-parks-wrong-thread`. Nothing else from M5 is here. Everything below about the
+IPC measurement chain and the atomics is `M5.1.1`, already merged as PR 26 and still true of this
+tree; a record naming multi-instance, I2C, the stm32f411 console, the IPC fastpath implementation
+or S7 is describing a later PR and not this tree.
+
+**THE MILESTONE NUMBERS MOVED AND THE ABI FREEZE IS KEYED TO A NAME.** SMP is M6
+(`docs/design-m6-smp.md`), the seam rework is M7, and the freeze is M8, the last milestone.
+Prose says "the ABI-freeze milestone" rather than a bare number, so the next renumber does not
+falsify it again. `TODO.md` M4.7.4 also records what the freeze itself owes: a full doc and
+comment sync pass, because `check_doc_names.sh` validates a path and an UPPERCASE-prefixed
+identifier and nothing else, and widening it was considered and REFUSED.
+
+**`arch_cpu_id()` IS A PREPROCESSOR MACRO AT ONE CORE, NOT AN INLINE FUNCTION THE OPTIMISER
+FOLDS**, because `-Os` has been measured out-lining an `always_inline` candidate in
+`system/include/kickos/sys/atomic.h`. `KICKOS_NUM_CORES` is a Kconfig int, never prompted, 1 on
+every board; at 1 the macro expands to `0u`, so the image carries no call, no symbol and no
+branch. Above 1 it is a declaration with NO arch/common fallback, so a port that raises the knob
+and ships no definition gets a LINK error rather than a kernel that believes every core is core
+0. `cpu_id_fold` pins this and reads the GENERATED board config, not the CMake variable.
+
+**THE SYSCALL PATH ANSWERS 64 BITS, SO `kos_clock_now` CANNOT FAIL.** `syscall_dispatch` returns
+`uint64_t`; the source type decides the extension, so an errno arm sign-extends and every other
+arm zero-extends, and the low half is bit-identical to what a 32-bit target always saw.
+`arch_syscall` keeps its 32-bit return and no existing stub changes; `arch_syscall64` is a SECOND
+LABEL ON THE SAME TRAP, the psABI's long-long return pair. `KOS_SYS_CLOCK_NOW` lost its
+out-pointer along with the null, alignment and ownership checks that guarded it, and with them a
+rejected store that returned a zero no caller could tell from a timestamp. Net smaller on every
+32-bit family. `rxv3` and `lx6` are BUILD-VERIFIED ONLY.
+
+**A WAKE INSIDE `endpoint_recv`'S SCAN PARKED THE WRONG THREAD, AND THE FIX IS HERE.** `kos_call`
+over an info-less recv could return a byte count where the ABI promises `-KOS_ENOSYS`, letting the
+caller read another sender's payload as its reply. `switch_to` advances `kernel().current` BEFORE
+`arch_switch` and every pending backend returns from `arch_switch` at once, so a `sched::wake`
+inside the scan moved `current` onto the woken caller and the `wq_block` below parked THAT caller
+on `recv_waiters` instead of the server. `wake` splits into `wake_no_resched` and
+`resched_after_wake`, the scan readies without rescheduling, and one reschedule is deferred to the
+highest-priority thread woken on each exit that does not park. The regression arm is selftest 40
+`call_infoless_revert`, restaged so `recv#2` always finds the caller alone and parks; `qemu`
+`mps2-an386` PENDS its switch and catches it, `sim` swaps inline and cannot witness the class at
+all. **The bug is on `master`, not introduced by M5**, and branch
+`hotfix/wake-parks-wrong-thread` is redundant once this PR lands.
+
+**`KOS_SYS_CALL_REG = 56` EXISTS AND EMITS NO CODE ON THIS BRANCH.** The register-carrying call
+number, `KOS_CALL_REG_FALLBACK` and the five-word / 20-byte payload budget are ABI here; the
+trap-handler implementation is a LATER PR. `kos_call`'s register arm and `arch_syscall_reg` are
+both behind `KICKOS_ARCH_HAS_IPC_FASTPATH`, which no backend defines yet, so the arm compiles
+away entirely and the generic dispatch answers `KOS_CALL_REG_FALLBACK` rather than implementing
+the register form. Dead ABI on purpose: reviewing it apart from the fastpath is the point.
 
 **THE IPC BASELINE EXISTS AND IS MEASURED.** There was no call/reply figure anywhere before this;
 there is one in `docs/design-m5-ipc-fastpath.md`, and anything touching the call path should read
@@ -81,16 +126,17 @@ a race rather than a resolution limit; its cycle figures are fine. `teensy41` is
 gives the full nested decomposition, having a proven-live DWT and a switch that PENDS, so unlike
 the LX6 its composite spans are honest.
 
-**TWO THINGS ABOUT THE CARVE ITSELF, because no command re-derives them.** The `KOS_SYS_BENCH`
-number and its `kos_bench_op` enum physically landed on M5 inside a commit about widening the
-syscall return to 64 bits, which is a different topic and is NOT here; they are folded into the
-bench commit instead, which is what its own message always claimed. And the sweep commit that
-carried the ACQUIRE/RELEASE orders also carried a live DIAG probe in `selftest/main.cc` that
-reddened `call_infoless_revert`; that probe is deliberately absent, so this tree's selftest is the
-state the probe was later reverted TO.
+**ONE THING ABOUT THE CARVE ITSELF, because no command re-derives it.** The renumber commit as it
+stands on `M5` leaves SEVEN dangling `design-m5-smp.md` references in
+`docs/book/an-atomic-buys-definedness-not-atomicity.md` and `docs/reference/style.md`, which
+`doc_names` catches and which a much later M5 commit repaired in passing. They are repaired HERE,
+so a later carve of that commit finds those two files already correct.
 
-**WITNESSED HERE:** `sim` 238/238 and `qemu` 40/40, both green, and every static gate exits 0.
-The count is BELOW M5's because tests added by later topics are not on this branch.
+**WITNESSED HERE:** `sim` 239/239, `qemu` 41/41 and `qemu-riscv` 35/35, all green, and every
+static gate exits 0. The counts are BELOW M5's because tests added by later topics are not on this
+branch, and there is no `dash_punct` gate here: it arrives with a later PR and lands red on
+pre-existing lines, so M5's one red test has no counterpart here. No silicon run belongs to this
+tree.
 
 **`pizero2350` IS RE-WITNESSED AT `ce34ac66`, BOTH ARMS, and it is the only board reachable
 without an operator** (BOOTSEL in, `KICKOS_SHUTDOWN_TO_BOOTLOADER` out, so the loop is unattended).

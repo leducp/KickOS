@@ -31,9 +31,9 @@
 
 namespace kickos
 {
-    // syscall_dispatch answers at REGISTER width (8 bytes on the host) and the userspace
-    // stub narrows that to a fixed 4, so the byte-count producers must already be 4 bytes
-    // here. Matching static_assert in user/src/syscall_stubs.cc.
+    // syscall_dispatch answers 8 bytes on every target and the userspace stub narrows that
+    // to a fixed 4, so the byte-count producers must already be 4 bytes here. Matching
+    // static_assert in user/src/syscall_stubs.cc.
     static_assert(sizeof(endpoint_send(0, 0, 0, 0)) == 4, "must be exactly 4 bytes");
     static_assert(sizeof(endpoint_recv(0, 0, 0, 0, false)) == 4, "must be exactly 4 bytes");
     static_assert(sizeof(endpoint_call(0, 0, 0, 0, 0)) == 4, "must be exactly 4 bytes");
@@ -76,13 +76,13 @@ namespace kickos
 
         // Nothing is written on failure: the stub seated its codec's NONE before trapping,
         // so the sys.h "always written" guarantee already holds.
-        uintptr_t cap_out_deliver(uintptr_t out, int rc, uint32_t handle)
+        uint64_t cap_out_deliver(uintptr_t out, int rc, uint32_t handle)
         {
             if (rc == 0)
             {
                 kaccess_to_user(out, &handle, sizeof(handle));
             }
-            return static_cast<uintptr_t>(rc);
+            return static_cast<uint64_t>(rc);
         }
 
         // noinline is load-bearing: the message buffer must not widen syscall_dispatch's
@@ -186,8 +186,8 @@ namespace
 
 namespace
 {
-    uintptr_t syscall_body(uintptr_t nr, uintptr_t a0, uintptr_t a1,
-                           uintptr_t a2, uintptr_t a3);
+    uint64_t syscall_body(uintptr_t nr, uintptr_t a0, uintptr_t a1,
+                          uintptr_t a2, uintptr_t a3);
 }
 
 // THE death point of a cancelled thread. A cancel breaks whatever park the target is in, so
@@ -196,9 +196,9 @@ namespace
 // only survivor is a thread that never enters the kernel again.
 //
 // Checked on ENTRY and never on exit: on exit it would pre-empt that cleanup window.
-extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
-                                      uintptr_t a0, uintptr_t a1,
-                                      uintptr_t a2, uintptr_t a3)
+extern "C" uint64_t syscall_dispatch(uintptr_t nr,
+                                     uintptr_t a0, uintptr_t a1,
+                                     uintptr_t a2, uintptr_t a3)
 {
     Thread* const caller = sched::current();
     if (caller != nullptr and caller->cancel_kind != CANCEL_NONE and not caller->dying)
@@ -210,9 +210,9 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
 
 namespace
 {
-uintptr_t syscall_body(uintptr_t nr,
-                       uintptr_t a0, uintptr_t a1,
-                       uintptr_t a2, uintptr_t a3)
+uint64_t syscall_body(uintptr_t nr,
+                      uintptr_t a0, uintptr_t a1,
+                      uintptr_t a2, uintptr_t a3)
 {
     KTRACE_SYSCALL_SCOPE(nr);
     switch (nr)
@@ -237,7 +237,7 @@ uintptr_t syscall_body(uintptr_t nr,
             {
                 // Cross-domain / bad buffer: write nothing. Negative code, NOT 0: a
                 // len-0 write legitimately returns 0, so 0 must not double as reject.
-                return static_cast<uintptr_t>(-KOS_EFAULT);
+                return static_cast<uint64_t>(-KOS_EFAULT);
             }
             kconsole_write(buf, len); // fan-out (chip + RTT), not the raw transport
             return len;
@@ -258,7 +258,7 @@ uintptr_t syscall_body(uintptr_t nr,
             int rc = cap_out_check(a1);
             if (rc != 0)
             {
-                return static_cast<uintptr_t>(rc);
+                return static_cast<uint64_t>(rc);
             }
             uint32_t h = KCAP_INVALID;
             rc = sem_create(static_cast<int>(a0), &h);
@@ -269,7 +269,7 @@ uintptr_t syscall_body(uintptr_t nr,
             // Type-agnostic close: drop THIS task's cap (a cap knows its own type).
             // Refcounted: the object is freed only at the last close.
             IrqLock lock;
-            return static_cast<uintptr_t>(handle_close(sched::current(), static_cast<uint32_t>(a0)));
+            return static_cast<uint64_t>(handle_close(sched::current(), static_cast<uint32_t>(a0)));
         }
         case KOS_SYS_SEM_WAIT:
         {
@@ -281,7 +281,7 @@ uintptr_t syscall_body(uintptr_t nr,
                 cap_resolve_e(sched::current(), static_cast<uint32_t>(a0), CapType::CAP_SEM, CAP_WAIT, &err));
             if (s == nullptr)
             {
-                return static_cast<uintptr_t>(-err); // EBADF (bad/closed cap) or EPERM (no WAIT right)
+                return static_cast<uint64_t>(-err); // EBADF (bad/closed cap) or EPERM (no WAIT right)
             }
             sem_wait(s);
             return 0;
@@ -294,11 +294,11 @@ uintptr_t syscall_body(uintptr_t nr,
                 cap_resolve_e(sched::current(), static_cast<uint32_t>(a0), CapType::CAP_SEM, CAP_SIGNAL, &err));
             if (s == nullptr)
             {
-                return static_cast<uintptr_t>(-err); // EBADF (bad/closed cap) or EPERM (no SIGNAL right)
+                return static_cast<uint64_t>(-err); // EBADF (bad/closed cap) or EPERM (no SIGNAL right)
             }
             if (not sem_post(s))
             {
-                return static_cast<uintptr_t>(-KOS_EOVERFLOW); // count already at the ceiling
+                return static_cast<uint64_t>(-KOS_EOVERFLOW); // count already at the ceiling
             }
             return 0;
         }
@@ -307,7 +307,7 @@ uintptr_t syscall_body(uintptr_t nr,
             int rc = cap_out_check(a0);
             if (rc != 0)
             {
-                return static_cast<uintptr_t>(rc);
+                return static_cast<uint64_t>(rc);
             }
             uint32_t h = KCAP_INVALID;
             rc = mutex_create(&h);
@@ -329,11 +329,11 @@ uintptr_t syscall_body(uintptr_t nr,
             }
             if (m == nullptr)
             {
-                return static_cast<uintptr_t>(-err); // -KOS_EBADF (need == 0, so never EPERM here)
+                return static_cast<uint64_t>(-err); // -KOS_EBADF (need == 0, so never EPERM here)
             }
             // 0 / -KOS_EOWNERDEAD (HELD, owner died) / -KOS_EDEADLK (NOT held). EOWNERDEAD is
             // negative but still an ACQUIRE: the wrapper decl documents the held-vs-not caveat.
-            return static_cast<uintptr_t>(mutex_lock(m));
+            return static_cast<uint64_t>(mutex_lock(m));
         }
         case KOS_SYS_MUTEX_UNLOCK:
         {
@@ -343,16 +343,16 @@ uintptr_t syscall_body(uintptr_t nr,
                 cap_resolve_e(sched::current(), static_cast<int>(a0), CapType::CAP_MUTEX, 0, &err));
             if (m == nullptr)
             {
-                return static_cast<uintptr_t>(-err); // -KOS_EBADF (bad cap)
+                return static_cast<uint64_t>(-err); // -KOS_EBADF (bad cap)
             }
-            return static_cast<uintptr_t>(mutex_unlock(m)); // 0, or -KOS_EPERM if not owner (no panic)
+            return static_cast<uint64_t>(mutex_unlock(m)); // 0, or -KOS_EPERM if not owner (no panic)
         }
         case KOS_SYS_ENDPOINT_CREATE:
         {
             int rc = cap_out_check(a0);
             if (rc != 0)
             {
-                return static_cast<uintptr_t>(rc);
+                return static_cast<uint64_t>(rc);
             }
             uint32_t h = KCAP_INVALID;
             rc = endpoint_create(&h);
@@ -362,19 +362,19 @@ uintptr_t syscall_body(uintptr_t nr,
         {
             // No dispatch IrqLock: endpoint_send takes and releases its own around the
             // park, and a spanning caller lock would livelock ARM (design section 3).
-            return static_cast<uintptr_t>(
+            return static_cast<uint64_t>(
                 endpoint_send(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
                               KOS_TIMEOUT_NONE));
         }
         case KOS_SYS_SEND_TIMED:
         {
-            return static_cast<uintptr_t>(
+            return static_cast<uint64_t>(
                 endpoint_send(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
                               static_cast<uint32_t>(a3)));
         }
         case KOS_SYS_RECV:
         {
-            return static_cast<uintptr_t>(
+            return static_cast<uint64_t>(
                 endpoint_recv(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2), a3,
                               /*timed=*/false));
         }
@@ -382,7 +382,7 @@ uintptr_t syscall_body(uintptr_t nr,
         {
             // The deadline is not an argument: a3 names a kos_recv_timed_opts holding it,
             // with the ordinary kos_recv_info nested inside.
-            return static_cast<uintptr_t>(
+            return static_cast<uint64_t>(
                 endpoint_recv(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2), a3,
                               /*timed=*/true));
         }
@@ -390,16 +390,24 @@ uintptr_t syscall_body(uintptr_t nr,
         {
             // No dispatch IrqLock, as for SEND/RECV: a spanning caller lock would keep
             // BASEPRI raised across the resume barrier and livelock ARM.
-            return static_cast<uintptr_t>(
+            return static_cast<uint64_t>(
                 endpoint_call(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
                               static_cast<size_t>(a3), KOS_TIMEOUT_NONE));
+        }
+        case KOS_SYS_CALL_REG:
+        {
+            // Reached only when the trap-handler fastpath declined, or this backend has
+            // none. The register payload never arrives: dispatch is handed five words and
+            // the request occupies more, so the retry re-issues from the stub's own copy.
+            return static_cast<uint64_t>(static_cast<uintptr_t>(
+                static_cast<uint32_t>(KOS_CALL_REG_FALLBACK)));
         }
         case KOS_SYS_CALL_TIMED:
         {
             // a2 carries both lengths so a3 can carry the deadline. endpoint_call is the
             // sole validator of them: the stub only saturates, so an oversize length still
             // arrives here out of range.
-            return static_cast<uintptr_t>(
+            return static_cast<uint64_t>(
                 endpoint_call(static_cast<uint32_t>(a0), a1, kos_call_lens_send(a2),
                               kos_call_lens_recv(a2), static_cast<uint32_t>(a3)));
         }
@@ -407,7 +415,7 @@ uintptr_t syscall_body(uintptr_t nr,
         {
             // Does not block the replier, so it does its whole job under endpoint_reply's
             // own lock.
-            return static_cast<uintptr_t>(
+            return static_cast<uint64_t>(
                 endpoint_reply(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2)));
         }
         case KOS_SYS_CONSOLE_PUBLISH:
@@ -417,7 +425,7 @@ uintptr_t syscall_body(uintptr_t nr,
             Thread* c = sched::current();
             if (not cap_check_authority(c, AUTH_CONSOLE))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(-KOS_EPERM);
             }
             int handle = -1;
             {
@@ -429,7 +437,7 @@ uintptr_t syscall_body(uintptr_t nr,
                 if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_ENDPOINT)
                     or kernel().endpoints.resolve(e->obj) == nullptr)
                 {
-                    return static_cast<uintptr_t>(-KOS_EBADF); // bad / non-endpoint / stale cap
+                    return static_cast<uint64_t>(-KOS_EBADF); // bad / non-endpoint / stale cap
                 }
                 handle = e->obj;
                 // Must precede the relinquish below: this is the only remaining step that
@@ -437,7 +445,7 @@ uintptr_t syscall_body(uintptr_t nr,
                 // spawned after this get slot 0 via cap_install_defaults.
                 if (not cap_console_publish(c, handle))
                 {
-                    return static_cast<uintptr_t>(-KOS_EOVERFLOW); // endpoint refcount ceiling
+                    return static_cast<uint64_t>(-KOS_EOVERFLOW); // endpoint refcount ceiling
                 }
                 if (console_owner_is_kernel() != 0)
                 {
@@ -482,7 +490,7 @@ uintptr_t syscall_body(uintptr_t nr,
             {
                 return 0;
             }
-            return static_cast<uintptr_t>(
+            return static_cast<uint64_t>(
                 cpu_clock_set(static_cast<kos_pstate_t>(a0)));
         }
         case KOS_SYS_THREAD_SPAWN:
@@ -492,7 +500,7 @@ uintptr_t syscall_body(uintptr_t nr,
             int rc = cap_out_check(a1);
             if (rc != 0)
             {
-                return static_cast<uintptr_t>(rc);
+                return static_cast<uint64_t>(rc);
             }
             kos_thread_t h = KOS_THREAD_NONE;
             rc = thread_spawn(reinterpret_cast<kos_thread_params const*>(a0), &h);
@@ -501,7 +509,7 @@ uintptr_t syscall_body(uintptr_t nr,
         case KOS_SYS_THREAD_KILL:
         {
             // UNGATED by authority, gated by parenthood inside (syscall_thread.cc).
-            return static_cast<uintptr_t>(thread_kill(static_cast<kos_thread_t>(a0)));
+            return static_cast<uint64_t>(thread_kill(static_cast<kos_thread_t>(a0)));
         }
         case KOS_SYS_TASK_CREATE:
         {
@@ -510,7 +518,7 @@ uintptr_t syscall_body(uintptr_t nr,
             int rc = cap_out_check(a2);
             if (rc != 0)
             {
-                return static_cast<uintptr_t>(rc);
+                return static_cast<uint64_t>(rc);
             }
             kos_task_t h = KOS_TASK_NONE;
             rc = task_create_call(reinterpret_cast<void*>(a0), static_cast<size_t>(a1), &h);
@@ -519,30 +527,30 @@ uintptr_t syscall_body(uintptr_t nr,
         case KOS_SYS_TASK_KILL:
         {
             // UNGATED by authority, gated by creatorship inside (syscall_thread.cc).
-            return static_cast<uintptr_t>(task_kill(static_cast<kos_task_t>(a0)));
+            return static_cast<uint64_t>(task_kill(static_cast<kos_task_t>(a0)));
         }
         case KOS_SYS_THREAD_JOIN:
         {
             // Blocks, so no dispatch IrqLock. Parenthood-gated inside.
-            return static_cast<uintptr_t>(
+            return static_cast<uint64_t>(
                 thread_join(static_cast<kos_thread_t>(a0), static_cast<uint32_t>(a1)));
         }
         case KOS_SYS_THREAD_SLAY:
         {
             // Blocks, so no dispatch IrqLock. Parenthood-gated inside, reaching exactly the
             // set kill reaches.
-            return static_cast<uintptr_t>(
+            return static_cast<uint64_t>(
                 thread_slay(static_cast<kos_thread_t>(a0), static_cast<uint32_t>(a1)));
         }
         case KOS_SYS_TASK_SLAY:
         {
             // Blocks. Creatorship-gated inside.
-            return static_cast<uintptr_t>(
+            return static_cast<uint64_t>(
                 task_slay(static_cast<kos_task_t>(a0), static_cast<uint32_t>(a1)));
         }
         case KOS_SYS_WAIT_LAST:
         {
-            return static_cast<uintptr_t>(thread_wait_last());
+            return static_cast<uint64_t>(thread_wait_last());
         }
         case KOS_SYS_EXIT:
         {
@@ -570,7 +578,7 @@ uintptr_t syscall_body(uintptr_t nr,
             Thread* c = sched::current();
             if (not cap_check_authority(c, AUTH_SYSTEM))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(-KOS_EPERM);
             }
             kickos_terminate(static_cast<int>(a0)); // noreturn
             return 0;
@@ -582,14 +590,14 @@ uintptr_t syscall_body(uintptr_t nr,
             Thread* c = sched::current();
             if (not cap_check_authority(c, AUTH_SYSTEM))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(-KOS_EPERM);
             }
             // Flush synchronously or the buffered console loses its tail.
             console_tx_flush_sync(); // empties the ring only
             // A byte still in the UART FIFO / shift register outruns the reset (the
             // RP2350 bootrom reboots after ~10 ms), truncating the tail.
             arch_console_flush_sync();
-            return static_cast<uintptr_t>(arch_reboot());
+            return static_cast<uint64_t>(arch_reboot());
         }
         case KOS_SYS_IRQ_INJECT:
         {
@@ -600,7 +608,7 @@ uintptr_t syscall_body(uintptr_t nr,
             int irq = static_cast<int>(a0);
             if (irq < 0 or irq >= KICKOS_MAX_IRQ)
             {
-                return static_cast<uintptr_t>(-KOS_EINVAL); // bad irq line
+                return static_cast<uint64_t>(-KOS_EINVAL); // bad irq line
             }
             arch_irq_inject(irq);
             return 0;
@@ -611,7 +619,7 @@ uintptr_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_IRQ_SPURIOUS:
         {
-            return static_cast<uintptr_t>(irq_spurious_count());
+            return static_cast<uint64_t>(irq_spurious_count());
         }
 #if KICKOS_HAVE_MPU
         case KOS_SYS_GRANT_PROBE:
@@ -682,7 +690,7 @@ uintptr_t syscall_body(uintptr_t nr,
                 }
                 default:
                 {
-                    return static_cast<uintptr_t>(-KOS_EINVAL);
+                    return static_cast<uint64_t>(-KOS_EINVAL);
                 }
             }
             if (result)
@@ -699,12 +707,12 @@ uintptr_t syscall_body(uintptr_t nr,
             // which else drop it. AUTH_IRQ, like irq_attach: it arms a controller line.
             if (not cap_check_authority(sched::current(), AUTH_IRQ))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(-KOS_EPERM);
             }
             int irq = static_cast<int>(a0);
             if (irq < 0 or irq >= KICKOS_MAX_IRQ)
             {
-                return static_cast<uintptr_t>(-KOS_EINVAL); // bad irq line
+                return static_cast<uint64_t>(-KOS_EINVAL); // bad irq line
             }
             arch_irq_unmask(irq);
             return 0;
@@ -716,7 +724,7 @@ uintptr_t syscall_body(uintptr_t nr,
             // it cannot bind, or steal, a line's dispatch.
             if (not cap_check_authority(sched::current(), AUTH_IRQ))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(-KOS_EPERM);
             }
             // Resolve, attach and unmask under one lock: a concurrent close between the
             // resolve check and the attach could otherwise bind the line to a dead handle.
@@ -725,7 +733,7 @@ uintptr_t syscall_body(uintptr_t nr,
             uint32_t const cap_handle = static_cast<uint32_t>(a1);
             if (irq < 0 or irq >= KICKOS_MAX_IRQ)
             {
-                return static_cast<uintptr_t>(-KOS_EINVAL); // bad irq line
+                return static_cast<uint64_t>(-KOS_EINVAL); // bad irq line
             }
             // The binding stores the GLOBAL sem handle, not the cap, and irq_sem_post
             // re-resolves that global per fire: an ISR must NEVER resolve a cap. CAP_SIGNAL
@@ -735,18 +743,18 @@ uintptr_t syscall_body(uintptr_t nr,
             if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_SEM)
                 or kernel().sems.resolve(e->obj) == nullptr)
             {
-                return static_cast<uintptr_t>(-KOS_EBADF); // bad / non-sem / stale cap
+                return static_cast<uint64_t>(-KOS_EBADF); // bad / non-sem / stale cap
             }
             if ((e->rights & CAP_SIGNAL) != CAP_SIGNAL)
             {
-                return static_cast<uintptr_t>(-KOS_EPERM); // cap lacks SIGNAL (an ISR posts)
+                return static_cast<uint64_t>(-KOS_EPERM); // cap lacks SIGNAL (an ISR posts)
             }
             int const sem_handle = e->obj;
             // irq_attach fails if the line is already owned: no stealing (EBUSY).
             if (not irq_attach(irq, irq_sem_post,
                                reinterpret_cast<void*>(static_cast<intptr_t>(sem_handle))))
             {
-                return static_cast<uintptr_t>(-KOS_EBUSY);
+                return static_cast<uint64_t>(-KOS_EBUSY);
             }
             // Required on default-masked controllers (ARM NVIC, RX): a userspace tier-2
             // binding has no separate unmask syscall (tier-1 unmasks via register/irq_ack),
@@ -757,33 +765,21 @@ uintptr_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_CLOCK_NOW:
         {
-            // Out-pointer for a 64-bit store: the kernel writes it privileged, so an
-            // unprivileged caller must own it (privileged callers bypass the ownership
-            // check). Alignment is alignof(uint64_t), arch-specific (4 on RX, 8 on
-            // ARM/RISC-V), and is what makes the typed store below well-defined.
-            if (a0 == 0 or (a0 & (alignof(uint64_t) - 1)) != 0)
-            {
-                return static_cast<uintptr_t>(-KOS_EINVAL); // null or misaligned out-ptr
-            }
-            if (not user_writable_ok(a0, sizeof(uint64_t)))
-            {
-                return static_cast<uintptr_t>(-KOS_EFAULT); // out-ptr not owned by the caller
-            }
-            uint64_t const now = arch_clock_now();
-            kaccess_to_user(a0, &now, sizeof(now));
-            return 0;
+            // No user pointer and no way to fail: every value in the u64 range is a valid
+            // instant, so this arm is OUT of the -KOS_E* scheme.
+            return arch_clock_now();
         }
         case KOS_SYS_CPU_CLOCK_HZ:
         {
             // OUT of the -KOS_E* scheme: a u32 Hz whose 0 sentinel already means
             // unknown / no silicon clock.
-            return static_cast<uintptr_t>(arch_cpu_clock_hz());
+            return static_cast<uint64_t>(arch_cpu_clock_hz());
         }
         case KOS_SYS_PERIPH_CLOCK_HZ:
         {
             // Reports the branch clock feeding the register block at a0. Ungated, and OUT
             // of the -KOS_E* scheme: a u32 Hz whose 0 sentinel already means unknown.
-            return static_cast<uintptr_t>(arch_periph_clock_hz(a0));
+            return static_cast<uint64_t>(arch_periph_clock_hz(a0));
         }
         case KOS_SYS_PINMUX_SET:
         {
@@ -798,9 +794,9 @@ uintptr_t syscall_body(uintptr_t nr,
             Thread* c = sched::current();
             if (not cap_check_authority(c, AUTH_PINMUX))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(-KOS_EPERM);
             }
-            return static_cast<uintptr_t>(arch_pinmux_set(a0, a1, a2));
+            return static_cast<uint64_t>(arch_pinmux_set(a0, a1, a2));
         }
         case KOS_SYS_RAM_ALLOC:
         {
@@ -828,13 +824,13 @@ uintptr_t syscall_body(uintptr_t nr,
             Thread* const c = sched::current();
             if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(-KOS_EPERM);
             }
             uintptr_t const base = a0;
             size_t const size = static_cast<size_t>(a1);
             if (size == 0 or (base + size) < base)
             {
-                return static_cast<uintptr_t>(-KOS_EINVAL);
+                return static_cast<uint64_t>(-KOS_EINVAL);
             }
             // Already reachable costs no descriptor: the call is idempotent, and a
             // privileged caller (whole-arena region) always lands here.
@@ -848,7 +844,7 @@ uintptr_t syscall_body(uintptr_t nr,
             size_t const rsz = arch_ram_region_size(size);
             if (rsz == 0)
             {
-                return static_cast<uintptr_t>(-KOS_EINVAL);
+                return static_cast<uint64_t>(-KOS_EINVAL);
             }
             // Nameable by one descriptor, as for the stack grant (syscall_thread.cc):
             // PMSAv7 MPU_RBAR MASKS the base down to the region size, so an unaligned base
@@ -856,19 +852,19 @@ uintptr_t syscall_body(uintptr_t nr,
             // no-MPU arch it still demands a 16-aligned base.
             if (not arch_ram_region_admissible(base, rsz))
             {
-                return static_cast<uintptr_t>(-KOS_EINVAL);
+                return static_cast<uint64_t>(-KOS_EINVAL);
             }
             if (not grant_region_admissible(base, rsz, ARCH_MPU_R | ARCH_MPU_W,
                                             cap_check_authority(c, AUTH_MEMORY)))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(-KOS_EPERM);
             }
             // Full budget is a returned error; truncating the set would fault the thread on
             // memory it was told it had. NOT -KOS_EMFILE: that code names the capability
             // table, and the knob here is KICKOS_MPU_MAX_REGIONS.
             if (c->region_count >= KICKOS_MPU_MAX_REGIONS)
             {
-                return static_cast<uintptr_t>(-KOS_ENOMEM);
+                return static_cast<uint64_t>(-KOS_ENOMEM);
             }
             c->regions[c->region_count].base = base;
             c->regions[c->region_count].size = rsz;
@@ -889,9 +885,9 @@ uintptr_t syscall_body(uintptr_t nr,
             IrqLock lock;
             if (not caller_holds_mmio_block(a0))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(-KOS_EPERM);
             }
-            return static_cast<uintptr_t>(arch_periph_enable(a0));
+            return static_cast<uint64_t>(arch_periph_enable(a0));
         }
         case KOS_SYS_PERIPH_REG_WRITE:
         {
@@ -899,12 +895,12 @@ uintptr_t syscall_body(uintptr_t nr,
             // wrapping target is -KOS_EINVAL whatever the caller holds.
             if ((a1 & (sizeof(uint32_t) - 1u)) != 0)
             {
-                return static_cast<uintptr_t>(-KOS_EINVAL);
+                return static_cast<uint64_t>(-KOS_EINVAL);
             }
             uintptr_t const top = ~static_cast<uintptr_t>(0);
             if (a1 > top - a0 or (a0 + a1) > top - (sizeof(uint32_t) - 1u))
             {
-                return static_cast<uintptr_t>(-KOS_EINVAL);
+                return static_cast<uint64_t>(-KOS_EINVAL);
             }
             // Possession of the block at a0 AND of the word at a0+a1 inside it. The
             // allowlist bounds which registers of a held block are writable, not the
@@ -913,9 +909,9 @@ uintptr_t syscall_body(uintptr_t nr,
             IrqLock lock;
             if (not caller_holds_mmio_reg(a0, a1))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(-KOS_EPERM);
             }
-            return static_cast<uintptr_t>(
+            return static_cast<uint64_t>(
                 arch_periph_reg_write(a0, a1, static_cast<uint32_t>(a2)));
         }
         case KOS_SYS_CAP_NARROW:
@@ -924,7 +920,7 @@ uintptr_t syscall_body(uintptr_t nr,
             // must keep in order to drop the others. It can only clear bits in the CALLER's
             // own table.
             IrqLock lock;
-            return static_cast<uintptr_t>(
+            return static_cast<uint64_t>(
                 cap_narrow_authority(sched::current(), static_cast<uint32_t>(a0),
                                      static_cast<uint8_t>(a1)));
         }
@@ -943,12 +939,12 @@ uintptr_t syscall_body(uintptr_t nr,
             // cap_resolve_e.
             if (not cap_check_authority(sched::current(), AUTH_IRQ))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(-KOS_EPERM);
             }
             int rc = cap_out_check(a2);
             if (rc != 0)
             {
-                return static_cast<uintptr_t>(rc);
+                return static_cast<uint64_t>(rc);
             }
             uint32_t h = KCAP_INVALID;
             rc = irq_claim(sched::current(), static_cast<int>(a0),
@@ -957,19 +953,19 @@ uintptr_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_IRQ_WAIT:
         {
-            return static_cast<uintptr_t>(irq_wait(sched::current(), static_cast<uint32_t>(a0)));
+            return static_cast<uint64_t>(irq_wait(sched::current(), static_cast<uint32_t>(a0)));
         }
         case KOS_SYS_IRQ_ACK:
         {
-            return static_cast<uintptr_t>(irq_ack(sched::current(), static_cast<uint32_t>(a0)));
+            return static_cast<uint64_t>(irq_ack(sched::current(), static_cast<uint32_t>(a0)));
         }
         case KOS_SYS_IRQ_NOTIFY:
         {
-            return static_cast<uintptr_t>(irq_notify(sched::current(), static_cast<uint32_t>(a0)));
+            return static_cast<uint64_t>(irq_notify(sched::current(), static_cast<uint32_t>(a0)));
         }
         case KOS_SYS_IRQ_DISCARD:
         {
-            return static_cast<uintptr_t>(irq_discard(sched::current(), static_cast<uint32_t>(a0)));
+            return static_cast<uint64_t>(irq_discard(sched::current(), static_cast<uint32_t>(a0)));
         }
 #if KICKOS_BENCH
         case KOS_SYS_BENCH:
@@ -999,7 +995,7 @@ uintptr_t syscall_body(uintptr_t nr,
                     int const line = static_cast<int>(a1);
                     if (line < 0 or line >= KICKOS_MAX_IRQ)
                     {
-                        return static_cast<uintptr_t>(-KOS_EINVAL);
+                        return static_cast<uint64_t>(-KOS_EINVAL);
                     }
                     bench_irq_setup(line);
                     return 0;
@@ -1009,7 +1005,7 @@ uintptr_t syscall_body(uintptr_t nr,
                     int const line = static_cast<int>(a1);
                     if (line < 0 or line >= KICKOS_MAX_IRQ)
                     {
-                        return static_cast<uintptr_t>(-KOS_EINVAL);
+                        return static_cast<uint64_t>(-KOS_EINVAL);
                     }
                     return bench_irq_once(line);
                 }
@@ -1018,7 +1014,7 @@ uintptr_t syscall_body(uintptr_t nr,
                     int const line = static_cast<int>(a1);
                     if (line < 0 or line >= KICKOS_MAX_IRQ)
                     {
-                        return static_cast<uintptr_t>(-KOS_EINVAL);
+                        return static_cast<uint64_t>(-KOS_EINVAL);
                     }
                     return bench_irq_masked_once(line, static_cast<uint32_t>(a2));
                 }
@@ -1029,7 +1025,7 @@ uintptr_t syscall_body(uintptr_t nr,
                 }
                 default:
                 {
-                    return static_cast<uintptr_t>(-KOS_EINVAL);
+                    return static_cast<uint64_t>(-KOS_EINVAL);
                 }
             }
         }
@@ -1050,7 +1046,7 @@ uintptr_t syscall_body(uintptr_t nr,
         {
             // An unknown syscall is a caller error, not a kernel invariant violation: fault
             // the caller, never panic the kernel.
-            return static_cast<uintptr_t>(-KOS_EINVAL);
+            return static_cast<uint64_t>(-KOS_EINVAL);
         }
     }
 }

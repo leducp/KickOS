@@ -11,12 +11,12 @@
 > **M4.6.1 closed neither**: the tree still carries no standing clock-tree service and no
 > shared-IRQ demux service, so each finding bites the first service that needs one. Re-read this
 > document at the top of whichever milestone builds it rather than shelving it.
-> Finding **10** stays OPEN as the M6 landmine. A finding with no OUTCOME line is untested by
+> Finding **10** stays OPEN as the M7 landmine. A finding with no OUTCOME line is untested by
 > events, not dismissed.
 
 An adversarial review of the M4 "driver era" design PRINCIPLES, run 2026-07-20 before
 M4 implementation starts. Sources reviewed: `docs/design-driver-era-scope.md`,
-`roadmap.md` (M4 + the "Later" init / power-manager / clock-tree prose + M5/M6),
+`roadmap.md` (M4 + the "Later" init / power-manager / clock-tree prose + SMP/MMU),
 `docs/design-spi-driver.md` + the K64F/F411 instances,
 `docs/design-m3-console-handover-stageii.md`,
 `docs/reference/invariants.md`, plus spot-checks of landed code (`kernel/time/clock_select.cc`,
@@ -199,16 +199,16 @@ button) that a validated kernel set/clear syscall covers with zero new kernel ob
 M4 as allocator-bookkeeping + syscall-mediated toggle + the (fixed, per finding 8) demux; revisit minted
 caps when a real MHz-rate GPIO consumer appears (a bit-banged bus). Fix the 3.1 DAG annotation.
 
-### 10. The large-transfer shared-buffer ABI is M4 work carrying an M5 label -- the one M6 landmine  -- OPEN
+### 10. The large-transfer shared-buffer ABI is M4 work carrying an SMP label -- the one M7 landmine  -- OPEN
 **Principle:** call/reply + ordering. **Severity: MAJOR (one-paragraph fix now, driver-ABI break later).**
 `KOS_EP_MSG_MAX` bounds the inline payload; scope 3.2 says larger SPI transfers "want a granted shared
 buffer" and notes this is "the same physical-addressing discipline QW-3 flags" -- but scope 4.1 parks
-QW-3 with M5. If M4's driver ABI passes raw pointers into a shared region (natural today where
-virtual==physical), every driver contract breaks at M6 when a domain becomes a page-table root: the
+QW-3 with SMP. If M4's driver ABI passes raw pointers into a shared region (natural today where
+virtual==physical), every driver contract breaks at M7 when a domain becomes a page-table root: the
 client's pointer means nothing in the driver's address space.
 **Recommendation:** pull the QW-3 DISCIPLINE (not the ring implementation) into the M4 call/reply gate:
 the wire format of a transfer request is {region-cap, offset, len}, never a raw address, from day one.
-**OUTCOME (2026-07-30): still OPEN, and still the M6 landmine.** Every transfer that has shipped fits
+**OUTCOME (2026-07-30): still OPEN, and still the M7 landmine.** Every transfer that has shipped fits
 the inline `KOS_EP_MSG_MAX` payload, so no driver ABI has committed to a shared-buffer shape yet --
 which means the one-paragraph fix is still one paragraph. That window closes the first time a
 large-transfer path lands.
@@ -269,12 +269,12 @@ then refuses every spawn on hardware. See `reference/boards.md`, *CI coverage & 
 - DMA + its shared-channel allocator: genuinely missing but the doc pre-empts it well (scope 3.4's
   defer-with-a-named-shape is the right call).
 
-## Ordering verdict (M4 -> M5 -> M6)
+## Ordering verdict (driver era -> SMP -> MMU)
 The ordering HOLDS, and scope 4.2-4.4 is the strongest part of the doc: the driver era has no
 dependency on SMP; SMP without a workload is a foundation with no payload; call/reply-before-cross-core
 -ring is the right IPC lineage. The M4 principles are mostly SMP-safe by construction (thread-per-instance
 serializes per peripheral; "atomic set/clear or don't mint" is the SMP-proofing needed anyway -- caveat:
-RX72M has no atomic GPIO set/clear, but it is not an M5 SMP target). Two things must be pulled ACROSS the
+RX72M has no atomic GPIO set/clear, but it is not an M6 SMP target). Two things must be pulled ACROSS the
 boundary rather than reordering it: the QW-3 offset-based buffer discipline belongs in the M4 driver ABI
 (finding 10), and the init entry rename + cap-layout convention belong at the very front of M4 (finding 11)
--- both cheap-now / break-later seams. Nothing in M5 or M6 argues for going first.
+-- both cheap-now / break-later seams. Nothing in SMP or the MMU era argues for going first.

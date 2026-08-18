@@ -1,12 +1,12 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 <!-- Copyright (c) 2026 Philippe Leduc -->
 
-# SMP candidates and the staged model (M5)
+# SMP candidates and the staged model (M6)
 
-> **Status: EXPLORATORY** -- a spike, not a contract. Nothing here is implemented. M5 is the
-> milestone after the M4 driver era.
+> **Status: EXPLORATORY** -- a spike, not a contract. Nothing here is implemented. M6 is the
+> milestone after the M4/M5 driver era.
 
-Status: DESIGN SPIKE. Forward-looking. This is M5. No build/runtime code change
+Status: DESIGN SPIKE. Forward-looking. This is M6. No build/runtime code change
 here -- it ranks the multi-core parts in hand by the gate that decides whether a
 shared kernel is reachable at all, and it carries the cross-core IPC ring plus
 doorbell design. It does NOT decide AMP versus a shared kernel: see the OPEN section
@@ -165,12 +165,12 @@ MPU backend follows (a chip either has the mechanism or it does not; the kernel
 above the seam is uniform). A part gets exactly the SMP tier its silicon earns:
 none (single-core), or shared-kernel (any dual-core, since one working cross-core
 lock is the whole entry requirement). What the silicon does NOT decide is lock
-granularity -- see the gate above. This is M5.
+granularity -- see the gate above. This is M6.
 
 ## OPEN: AMP or a shared kernel first
 
 This is unresolved, and the three records disagree, so nothing here should be read
-as a verdict. `roadmap.md` says "not two AMP instances"; `TODO.md`'s M5 heading says
+as a verdict. `roadmap.md` says "not two AMP instances"; `TODO.md`'s M6 heading says
 AMP first on RP2040 and attributes that verdict to this document, which has never
 contained it. Resolve it before writing SMP code, because it decides where the
 M4.9.x groundwork points.
@@ -209,35 +209,35 @@ An earlier reading of this page planned against "at least 31 percent" bounding 1
 from `design-m5-ipc-fastpath.md` section 3.0.1. That was a floor taken over two of the
 three locked legs with the wake path unbracketed, and it is superseded rather than wrong.
 
-## M6 lands the MMU, so do not design M5 into a corner
+## M7 lands the MMU, so do not design M6 into a corner
 
-`roadmap.md` makes M6 the MMU / new-platform milestone. That has three consequences
+`roadmap.md` makes M7 the MMU / new-platform milestone. That has three consequences
 for the choices above, and they cut against treating MPU-only as permanent.
 
 - **Cross-core TLB maintenance is deferred, not inapplicable.** An MPU has no
   translation cache, so today there is nothing to shoot down. Under an MMU there is,
   and both reference kernels answer it the same way: a BLOCKING all-core rendezvous
   (seL4's `doRemoteMaskOp` plus `ipi_wait`, or firmware `sbi_remote_sfence_vma` on
-  RISC-V). So an M5 cross-core transport that can carry ONLY asynchronous
-  fire-and-forget notification will need extending in M6. Design the doorbell so a
+  RISC-V). So an M6 cross-core transport that can carry ONLY asynchronous
+  fire-and-forget notification will need extending in M7. Design the doorbell so a
   blocking rendezvous can be layered on it.
 - **The primitive gap closes exactly where the MMU appears.** A blocking rendezvous
   needs fetch-add, which armv6m and rxv3 cannot emit -- but no MMU-class target is
   armv6m. The parts that force the no-RMW constraint are not the parts that will
-  carry M6.
+  carry M7.
 - **Object reclamation gets harder, so pick an answer that survives translation.**
   Holding one lock across the whole resolve-to-use span (seL4's answer) works with
   or without an MMU. A timestamp-quiescence scheme (Composite's) additionally
-  becomes the mechanism M6 needs for retyping mapped memory. Either survives; a
+  becomes the mechanism M7 needs for retyping mapped memory. Either survives; a
   design that leans on "no address translation exists" does not.
 
 `docs/design-mmu-era-exploration.md` enumerates the five places the single-physical-
-address-space assumption is baked in. It is the companion to this document, and its
-title still says post-M6 while `roadmap.md` says M6.
+address-space assumption is baked in. It is the companion to this document, and it
+is the M7 exploration.
 
 ## The hazard catalogue this document does not carry
 
-`docs/design-capability-table.md` section 8 holds the real M5 work: a catalogue of
+`docs/design-capability-table.md` section 8 holds the real M6 work: a catalogue of
 uniprocessor assumptions in the capability path, longer and sharper than anything
 here, ending on the blocker underneath -- that a pointer `cap_resolve` has just
 resolved can be freed by another core. Read the two together; neither is complete

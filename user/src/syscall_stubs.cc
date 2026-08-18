@@ -137,6 +137,42 @@ int32_t kos_recv_timed(kos_cap_t ep, void* buf, size_t cap_len,
 
 int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap)
 {
+#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
+    // The caller-side selection is SIZE only; the kernel's refusals are about STATE and
+    // live in the fastpath.
+    if (send_len <= (size_t)KOS_CALL_REG_BYTES and recv_cap <= (size_t)KOS_CALL_REG_BYTES)
+    {
+        uint32_t io[KOS_CALL_REG_WORDS + 3];
+        unsigned char* const payload = reinterpret_cast<unsigned char*>(&io[3]);
+        unsigned char const* const src = static_cast<unsigned char const*>(buf);
+        for (size_t i = 0; i < (size_t)KOS_CALL_REG_BYTES; i++)
+        {
+            unsigned char b = 0;
+            if (i < send_len)
+            {
+                b = src[i];
+            }
+            payload[i] = b; // a byte loop: `buf` carries no alignment guarantee
+        }
+        io[0] = static_cast<uint32_t>(KOS_SYS_CALL_REG);
+        io[1] = static_cast<uint32_t>(ep);
+        io[2] = static_cast<uint32_t>(kos_call_lens_pack(send_len, recv_cap));
+        int32_t const rc = arch_syscall_reg(io);
+        if (rc != KOS_CALL_REG_FALLBACK)
+        {
+            if (rc > 0)
+            {
+                unsigned char const* const reply = reinterpret_cast<unsigned char const*>(&io[1]);
+                unsigned char* const dst = static_cast<unsigned char*>(buf);
+                for (int32_t i = 0; i < rc; i++)
+                {
+                    dst[i] = reply[i];
+                }
+            }
+            return rc;
+        }
+    }
+#endif
     return static_cast<int32_t>(arch_syscall(KOS_SYS_CALL,
                                              static_cast<uintptr_t>(ep),
                                              reinterpret_cast<uintptr_t>(buf),
@@ -364,16 +400,7 @@ int kos_irq_unmask(int line)
 
 uint64_t kos_clock_now(void)
 {
-    uint64_t out = 0;
-    // On a reject (bad or misaligned out-ptr) the kernel never writes `out`, so the status
-    // must be checked or the caller gets an uninitialized time.
-    long const rc = static_cast<long>(
-        arch_syscall(KOS_SYS_CLOCK_NOW, reinterpret_cast<uintptr_t>(&out), 0, 0, 0));
-    if (rc < 0)
-    {
-        return 0;
-    }
-    return out;
+    return arch_syscall64(KOS_SYS_CLOCK_NOW, 0, 0, 0, 0);
 }
 
 uint32_t kos_cpu_clock_hz(void)

@@ -23,16 +23,16 @@ whenever it is ready, tagged as such in `TODO.md`.
 
 ## Next
 
-> **Sequencing, decided 2026-07-27: M4 driver breadth and M5 SMP wait behind goal 1** -- the fleet
+> **Sequencing, decided 2026-07-27: driver breadth and SMP wait behind goal 1** -- the fleet
 > flip to an unprivileged root, `arch_periph_enable`, `kos_cap_narrow`, and the MPU region-encoding
 > classes. The flip itself is no longer a posture: root is **unprivileged on every board by
 > construction**, and both privileged-access seams a confined root needs now exist
 > (`arch_periph_enable`, then `arch_periph_reg_write`). The cleanup that makes the seam pattern
 > non-regressible is done too: M4.5.6 removed the weak-symbol seam mechanism and put a CI gate
 > (`seam_defaults`) on every board -- see `TODO.md`, *M4.5.6*. Goal 1 is complete.
-> Both M4 and M5 multiply capability and memory complexity across the whole fleet, so doing
-> either first widens exactly the surface goal 1 then has to confine -- more drivers poking MMIO
-> from root, and on M5 a
+> Both the driver era and SMP multiply capability and memory complexity across the whole fleet,
+> so doing either first widens exactly the surface goal 1 then has to confine -- more drivers
+> poking MMIO from root, and on the SMP side a
 > second core's worth of region sets and capability tables. Finish confining one core's worth
 > first. This reorders effort, not scope: nothing below is cancelled.
 
@@ -67,7 +67,7 @@ The object/credential model on top of M2's enforcement:
 - **Console *device* handover** -- a userspace UART driver takes the peripheral as a capability;
   the kernel relinquishes it and the panic path reclaims + re-inits it.
   **LANDED**, silicon-proven on XMC: `docs/design-m3-console-handover-stageii.md`. What remains is
-  fleet coverage, not the mechanism -- a per-chip `arch_console_reclaim` body exists on four chips.
+  fleet coverage, not the mechanism -- eight chips carry a per-chip `arch_console_reclaim` body.
 - **Low-barrier hard constraint** -- a plain app never writes a capability manifest; the runtime
   wires a sane default cap set (never resurrect CapDL-to-boot friction).
 - **User-selectable CPU clock / low-power mode.** **LANDED, both sides**: the read is
@@ -106,7 +106,7 @@ a driver framework on top. Single-core throughout. Full gap list + sequencing in
 - **Fleet userspace UART / console drivers + per-chip `arch_console_reclaim` + handover
   validation** -- UART console drivers exist for xmc4800, mk64f, esp32c6, esp32 and rx72m (the
   polled pair plus the `*uartirq` set, `system/driver/<chip>/`); every other board is still
-  kernel-owned, and FOUR chips ship a reclaim body -- mk64f, xmc4800, esp32c6 and esp32 (the fault-funnel porting invariant: no real reclaim
+  kernel-owned, and EIGHT chips ship a reclaim body (the fault-funnel porting invariant: no real reclaim
   => a driver-garbled UART silently eats the panic banner). The panic path now reclaims from ANY
   state rather than only after a handover, which widened that invariant rather than retiring it:
   every chip body must be idempotent absolute stores. A board can still lose its dump for some
@@ -144,7 +144,7 @@ what is next; this carries the numbering.
 | M4.7.1 | the capability-table rework: codec, storage, errno, sizing (`docs/design-capability-table.md`) | landed |
 | M4.7.2 | the review findings against M4.7.1 | landed |
 | M4.7.3 | per-task table width, and a per-task cap on inbound replies: the chunk directory earns its keep | landed |
-| M4.7.4 | delete the legacy management: nothing is released before M6, so there is none to carry | landed |
+| M4.7.4 | delete the legacy management: nothing is released before the ABI-freeze milestone, so there is none to carry | landed |
 | M4.7.5 | Kconfig owns configuration; CMake keeps the build graph | landed |
 | M4.7.6 | the language level moves to C++20, and the tree uses what it buys | landed |
 | M4.7.7 | root is a pool thread: a kill tag of its own, a nameable root, call/reply from an app's own `main` | landed |
@@ -155,14 +155,17 @@ what is next; this carries the numbering.
 | M4.8.3 | the task layer: a set of threads that is one unit, plus the fault record a published console swallowed | merged, PR 21 |
 | M4.8.4 | close the 4.8.x tail: the wake-guard premise, the release ordering the narrowing left, rxv3's measured below-stack cost, and the three instruments that let them through | merged, PR 22 |
 | M4.9.1 | the USB CDC console, continuing M4.6.2 | merged, PR 23 |
-| M4.9.2 | the user substrate says what it means, and it grew past that line: a relaxed atomic wherever `volatile` stood in for one plus the house wrapper that carries the ordering as a type parameter, one definition per non-template body, the four gates `style.md` already claimed, the per-chip `arch_console_reclaim` and `arch_console_flush_sync` bodies on every chip that publishes (which closes G2), the i.MX RT1062 USB CDC backend (stage S6, root-caused to the AIPSTZ bridge rather than the MPU), `reclaimwit` as the board-agnostic reclaim and drain witness, a fault report that no longer dies silently during driver bring-up, and two armv7m fault-path repairs | in progress |
-| M4.9.3..N | THE REST OF THE DRIVER ERA, plus whatever the witness pass opens. The wave's content is the gap list in `docs/design-driver-era-scope.md` and most of it is still unnumbered: G4 clock-select fleet-wide, G6 the driver-API build-layering question, G7 the power manager, G8 the testing HID, and the G1, G3 and G5 tails. Also stage S7, a non-cacheable attribute on a dynamic grant, which is no longer optional: the USB console posture costs about 6x on teensy41 IPC, measured | planned |
-| M4.9.3 | the instruments the M4.9.2 witness pass exposed: the `ctest -LE host` image-gate sweep that no tool ever ran, the pool-arena assert binding every board, a gate refusing an atomic read-modify-write, and `reclaimwit` registered so the reclaim seams are automated rather than hand-run | in progress |
+| M4.9.2 | the user substrate says what it means, and it grew past that line: a relaxed atomic wherever `volatile` stood in for one plus the house wrapper that carries the ordering as a type parameter, one definition per non-template body, the four gates `style.md` already claimed, the per-chip `arch_console_reclaim` and `arch_console_flush_sync` bodies on every chip that publishes (which closes G2), the i.MX RT1062 USB CDC backend (stage S6, root-caused to the AIPSTZ bridge rather than the MPU), `reclaimwit` as the board-agnostic reclaim and drain witness, a fault report that no longer dies silently during driver bring-up, and two armv7m fault-path repairs | merged, PR 24 |
+| M4.9.3 | the instruments the M4.9.2 witness pass exposed: the `ctest -LE host` image-gate sweep that no tool ever ran, the pool-arena assert binding every board, a gate refusing an atomic read-modify-write, and `reclaimwit` registered so the reclaim seams are automated rather than hand-run | merged, PR 25 |
+
+M4.9.3 closes the M4 wave. What was the unnumbered `M4.9.x..N` tail is now **M5**, a milestone of
+its own rather than a sub-milestone, and it carries the rest of the driver era plus the single-core
+groundwork the SMP milestone needs. Its ledger is the M5 table below.
 
 **M4.7.x is kernel-core work carrying an M4 number on purpose.** The banner and package versions are
 `0.<milestone>.<submilestone>` and must stay monotonic, so a capability rework cannot be numbered
 back into M3 even though capabilities are M3's theme. It lands BEFORE the rest of the driver era
-because the capability table is the heart of userspace, and it gates M5: three assumptions in that
+because the capability table is the heart of userspace, and it gates SMP: three assumptions in that
 subsystem are single-core.
 
 **The three M4.7 numbers are one arc, and M4.7.3 is what the other two were for.** M4.7.1 fixes
@@ -199,7 +202,8 @@ root's summed width: reply traffic can never crowd out a task's own creates, and
 own once the bound is spent.
 
 **M4.7.4 exists because compatibility work keeps appearing on its own.** KickOS is not released and
-will not be before M6, so **there is no legacy to manage** and every mechanism that manages some is
+will not be before the ABI-FREEZE MILESTONE, the last one on this roadmap, so **there is no legacy
+to manage** and every mechanism that manages some is
 pure cost: it has to be kept in sync, it is read as a supported path, and it makes a deleted thing
 look alive. The class, with the instances found so far:
 
@@ -368,7 +372,40 @@ ones that would change how this kernel is written -- reflection is what "generat
 not the TU" wants to be -- but none is in a released cross compiler. Revisit when the RX
 toolchain moves.
 
-### M5 -- SMP (one kernel image across cores)
+### M5 -- the driver era completed, and everything for SMP that is not SMP
+Two halves that share one milestone because neither is worth a bench pass alone. The first
+finishes what M4 started: the remaining drivers, and **KickCAT as the reality check** -- it has
+been deferred through the whole driver era, and porting it to the current driver APIs is what
+judges them. If it asks for an API change, that is this milestone's most valuable output; the
+answer is to change the API, not to bend KickCAT. `KICKOS_MULTI_INSTANCE` belongs here and is a
+REQUIREMENT rather than cleanup: the sim instantiating tens of KickOS+KickCAT slaves in one
+process, against a KickCAT emulator, is how the driver APIs get reality-checked at scale, which
+makes it a prerequisite for the KickCAT work rather than a sibling of it.
+
+The second half is single-core work that pays off under any M6 outcome and needs none of M6's
+decisions:
+- **Bound the IPC critical section** -- a seL4-style WORK fastpath beside today's RENDEZVOUS one.
+  A wall of refusals leaving a capability lookup, a queue pop and register moves, with no memory
+  copy. A register-payload call shape is the KickOS equivalent, since with one physical address
+  space and MPU isolation the copy IS the protection-boundary crossing and registers are the only
+  free channel; it is an ABI ADDITION, so it is free until the freeze. Correctness lives in the
+  slowpath and the fastpath REFUSES anything it cannot do: a fastpath handling a case the slowpath
+  does not is two paths with two maintenance costs.
+- **`arch_cpu_id()` folding to a literal 0 by PREPROCESSOR**, not a runtime branch and not an
+  inline the optimiser must prove away. It is what delivers the byte-identical single-core build
+  M6 demands, and both reference kernels do it this way.
+- **The atomics get their real ORDER.** `Order` has one enumerator; ACQUIRE and RELEASE join it and
+  are spent at the three residues `../STATE.md` and `design-m6-smp.md` name.
+- **`struct Kernel` annotated per-core versus genuinely global**, on paper. Cheap, because the
+  struct is the complete inventory and `kernel()` the single accessor; `cap_slab` sits outside it.
+- **The latent uniprocessor bugs from `docs/design-capability-table.md` section 8** that are worth
+  fixing on their own merits: the claim-then-commit window, the non-atomic `uint8_t` refcounts, and
+  the probe/install TOCTOU whose assert becomes a hang in release.
+
+Explicitly NOT here: a second core, cross-core anything, the AMP-versus-shared-kernel decision, or
+MMU work. That decision is OPEN on purpose.
+
+### M6 -- SMP (one kernel image across cores)
 Run a multi-core part at 100% under a single KickOS -- not two AMP instances. Reworks the
 foundation: `IrqLock` ("interrupts off => exclusive") is single-core-only. Plan: a **Big Kernel
 Lock** first (redefine `IrqLock` = local-IRQ-off + one global spinlock -- coarse but correct, and
@@ -376,8 +413,9 @@ byte-identical on single-core builds), then per-core run-queues + finer locks as
 where real atomics exist. Fits the seL4 big-lock lineage. Candidate ranking by the real gate
 (inter-core atomic + arch-switch maturity: RP2350 M33/Hazard3 best -> RP2040 big-lock-only ->
 ESP32 LX6 last), the staged model, and the SMP-is-per-chip-capability constraint are spiked in
-`docs/design-m5-smp.md`, which also carries the AMP-vs-SMP feasibility and the cross-core IPC
-invariants.
+`docs/design-m6-smp.md`, which also carries the AMP-vs-SMP feasibility and the cross-core IPC
+invariants. M5 lands the single-core half of this deliberately, so what remains here is the second
+core and nothing else.
 
 ## Later
 Multi-domain isolation + cross-domain shared-memory IPC; message-passing IPC + userspace drivers;
@@ -387,7 +425,7 @@ primitive; introspection; a HAL/driver model; pluggable EDF / rate-monotonic pol
 MPU-isolated user modules; POSIX / CMSIS-RTOS2 compat; TLSF heap; RP2040 SMP; Renode CI; and
 **the Book** as the durable how-&-why reference (see `docs/book/`).
 
-### RISC-V context-switch cost -- optimization (post-M6, not scheduled)
+### RISC-V context-switch cost -- optimization (post-MMU, not scheduled)
 The rv32 trap-based switch software-saves the full integer file (~60 stack words/switch vs
 armv7m's ~18 with hardware exception stacking) -- a ~3.5x per-handoff cost, general to RISC-V
 (not C6-specific; Hazard3 shares it). Two levers, both fable-gated: (a) a **cooperative
@@ -397,7 +435,7 @@ compresses instruction count, not memory traffic; single-digit % on top of (a), 
 size). Full analysis, the compile-gate design, and the prerequisite bench-bracket fix in
 `docs/design-riscv-switch-cost.md`.
 
-### ARMv8-M TrustZone kernel-confinement backend (post-M6, opt-in, per-chip)
+### ARMv8-M TrustZone kernel-confinement backend (post-MMU, opt-in, per-chip)
 The armv8-M-with-Security-Extension MECHANISM for kernel confinement: kernel/TCB in Secure state,
 apps in Non-secure. Not a per-task isolation mechanism and NOT an MPU replacement -- NS tasks are
 still isolated from each other by MPU_NS at the same per-switch cost. The framing that makes it fit:
@@ -407,10 +445,10 @@ authority), not the register mechanism. So TrustZone is simply the strongest arm
 the parked "confine the kernel / drop PRIVDEFENA" goal (Option B), layered on top of Option B rather
 than replacing it; chips without the extension use Option B alone. Buys a hardware TCB boundary
 (NS-privileged still cannot touch Secure memory) + a PSA-style secure-services partition that fits
-the capability-gated-services model. A security/assurance play, not a performance one. Post-M6
-(needs the M4 service model + M5 SMP settled, since the MPUs and the SAU are banked per core);
+the capability-gated-services model. A security/assurance play, not a performance one. Post-MMU
+(needs the driver-era service model and SMP settled, since the MPUs and the SAU are banked per core);
 per-chip capability (M23/M33/M55/M85 MAY have it, detect + fall back); RP2350's M33 is a concrete
-target. Detail in `TODO.md` under "Post-M6 optimizations".
+target. Detail in `TODO.md` under the post-MMU optimizations.
 
 ### Userspace init service (driver-era; not hardware-gated -- anytime-coherence)
 Today the user's `main` doubles as pid-1: it IS the init entry, holds full userspace
@@ -457,7 +495,7 @@ Authority is a delegatable clock-control CAPABILITY (the service holds it like a
 an MMIO grant), not full privilege. This is the console-handover pattern applied to the clock:
 machinery -> userspace service, kernel keeps only the re-anchor + privileged-step residue.
 
-### M6 -- the MMU / new-platform horizon (foundational)
+### M7 -- the MMU / new-platform horizon (foundational)
 The biggest axis beyond the MCU fleet: today the whole memory model is **one physical address
 space + per-thread MPU regions**. A real **MMU (VMSA / page tables)** adds virtual address spaces
 -- a foundational change, not a port, and its own milestone-class effort. The **Domain seam** is
@@ -468,7 +506,7 @@ Concrete targets that motivate it:
   `__KickOS__` earns its name.
 - **i.MX8MP -- heterogeneous AMP across profiles** -- an **MMU KickOS on the Cortex-A53(s)**
   (VMSA) alongside an **MPU KickOS on the Cortex-M7**, one per core-cluster, over cross-core IPC.
-  Extends the M5 AMP/IPC work from homogeneous cores to a heterogeneous application-core +
+  Extends the SMP milestone's AMP/IPC work from homogeneous cores to a heterogeneous application-core +
   MCU-core split under a shared IPC contract.
 Captured, not scheduled -- an exploratory design/research spike scopes feasibility (the MMU memory
-model, the two boot models, the A53/M7 IPC seam) when M4 (driver era) / M5 (SMP) have settled.
+model, the two boot models, the A53/M7 IPC seam) when M5 (the driver era) and M6 (SMP) have settled.

@@ -76,7 +76,7 @@ enum kos_syscall_nr
     KOS_SYS_IRQ_INJECT = 9,     // (irq)                 -> 0, or -KOS_EINVAL (self-test only)
     KOS_SYS_GUARD_ADDR = 10,    // ()  -> protected probe addr (self-test only)
     KOS_SYS_IRQ_ATTACH = 11,    // (irq, sem_handle)  -> 0, or -KOS_E* (EPERM/EINVAL/EBADF/EBUSY)
-    KOS_SYS_CLOCK_NOW = 12,     // (uint64_t* out)       -> 0, or -KOS_EINVAL/-KOS_EFAULT (bad out-ptr)
+    KOS_SYS_CLOCK_NOW = 12,     // ()  -> monotonic nanoseconds (u64, in registers; cannot fail)
     KOS_SYS_RAM_ALLOC = 13,     // (size)                -> user-RAM ptr, or 0/NULL on ANY failure
     KOS_SYS_IRQ_CLAIM = 14,     // (line, flags, kos_cap_t* out) -> 0, or -KOS_E*: EPERM (lacks
                                 //   KOS_AUTH_IRQ), EINVAL (line/flags/out-ptr), EFAULT (out-ptr),
@@ -178,11 +178,23 @@ enum kos_syscall_nr
                                //   -KOS_EPERM (the caller did not create it), -KOS_EINVAL (the
                                //   caller is itself a member, which would wait on its own
                                //   death).
-    KOS_SYS_BENCH = 55         // (kos_bench_op, a0, a1) -> per-op (see enum kos_bench_op),
+    KOS_SYS_BENCH = 55,        // (kos_bench_op, a0, a1) -> per-op (see enum kos_bench_op),
                                //   or -KOS_EINVAL (bad op). UNGATED by authority; the
                                //   dispatch arm is compiled out unless KICKOS_BENCH, so a
                                //   normal image returns -KOS_EINVAL.
+    KOS_SYS_CALL_REG = 56      // (ep_cap, kos_call_lens_pack(send_len, recv_cap), payload in
+                               //   the remaining argument registers) -> as KOS_SYS_CALL, with
+                               //   the reply delivered in registers too. INTERNAL: no stub
+                               //   spells it, kos_call selects it on size alone. Implemented
+                               //   ONLY in the trap-handler fastpath; the generic dispatch
+                               //   answers KOS_CALL_REG_FALLBACK, the stub's cue to re-issue
+                               //   as KOS_SYS_CALL.
 };
+
+// The generic dispatch's answer for KOS_SYS_CALL_REG: retry through KOS_SYS_CALL. Outside
+// the result range by construction, a kos_call answering a byte count in [0, KOS_EP_MSG_MAX]
+// or a small negative errno, so it can never collide with a real answer.
+#define KOS_CALL_REG_FALLBACK ((int32_t)0x80000000)
 
 // Flags for KOS_SYS_IRQ_CLAIM. The trigger type is fixed at claim time and never changes for
 // the binding's life.
@@ -315,6 +327,11 @@ static inline size_t kos_call_lens_recv(uintptr_t packed)
     return (size_t)((packed >> KOS_CALL_LEN_BITS) & KOS_CALL_LEN_MASK);
 }
 
+// KOS_SYS_CALL_REG's payload budget, in 32-bit words and in bytes. Five is what an rv32
+// psABI leaves after (nr, ep_cap, lens) claim a0-a2; the reply comes back in a1-a5.
+#define KOS_CALL_REG_WORDS 5
+#define KOS_CALL_REG_BYTES (KOS_CALL_REG_WORDS * 4)
+
 // Counting-semaphore ceiling. sem_create refuses an initial outside [0, KOS_SEM_COUNT_MAX]
 // with -KOS_EINVAL; a post at the ceiling is refused with -KOS_EOVERFLOW.
 #define KOS_SEM_COUNT_MAX 0x7FFFFFFF
@@ -322,9 +339,10 @@ static inline size_t kos_call_lens_recv(uintptr_t packed)
 // The robust-mutex "owner died" case is a NEGATIVE code: mutex_lock returns -KOS_EOWNERDEAD
 // with the lock HELD. See the kos_mutex_lock decl for the held-vs-not-held caveat.
 
-// 64-bit values are passed and returned as two uintptr_t halves, identically on 32-bit (ARM
-// M-class) and 64-bit (sim) targets: never rely on uintptr_t being 64 bits. sleep_ns takes
-// (lo, hi); clock_now writes its u64 result through a caller-supplied out-pointer.
+// 64-bit ARGUMENTS are passed as two uintptr_t halves, identically on 32-bit (ARM M-class)
+// and 64-bit (sim) targets: never rely on uintptr_t being 64 bits. sleep_ns takes (lo, hi).
+// A 64-bit RESULT comes back whole in the psABI's long-long return register pair, so it
+// needs no out-pointer.
 static inline uint32_t kos_u64_lo(uint64_t v)
 {
     return (uint32_t)(v & 0xffffffffu);

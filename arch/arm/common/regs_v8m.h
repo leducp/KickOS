@@ -38,7 +38,7 @@ namespace kickos
         constexpr uint32_t RBAR_AP_RW_ANY = 0x1u << 1;
         constexpr uint32_t RBAR_AP_RO_ANY = 0x3u << 1;
         // SH[4:3] left 0 (non-shareable): single-core, Normal memory needs no
-        // cross-observer ordering. SMP (dual-M33, M5) revisits this for shared data.
+        // cross-observer ordering. SMP (dual-M33, M6) revisits this for shared data.
 
         // MPU_RLAR: LIMIT[31:5] | AttrIndx[3:1] | EN[0]. LIMIT is the INCLUSIVE top
         // address (base+size-1) with its low 5 bits implied 0x1F by the hardware.

@@ -108,17 +108,17 @@ per-chip patch, which is what the staging bought. On RP2350 the boot stacks now 
 of to 2048/8192. Note the mode is POSTURE-dependent: `arch_arm_pmsav8.cc` is linked only at
 `KICKOS_HAVE_MPU=1`, so a non-enforcement build of the same chip still takes the v7-M pow2 fallback.
 
-## SMP interaction (M5 endgame -- noted, NOT designed here)
+## SMP interaction (M6 endgame -- noted, NOT designed here)
 
-The RP2350 is the M5 SMP target: dual M33 with real LDREX/STREX exclusives, and the MPU is
+The RP2350 is the M6 SMP target: dual M33 with real LDREX/STREX exclusives, and the MPU is
 **per-core, banked** -- each M33 has its own register file at the same core-local addresses. Two
-guardrails so the single-core backend does not embed an assumption M5 would have to unwind:
+guardrails so the single-core backend does not embed an assumption M6 would have to unwind:
 
 - **Keep the commit operating on "the current core's MPU" only.** It writes core-local registers
   with no core index, which is already SMP-correct provided the switch path that calls it runs on
   the core the thread lands on. Do NOT add a global or shared MPU cache: the K64F-style
   "skip if the region set is unchanged" static cache would be per-core state under SMP and must
-  become core-local, or be omitted. Flagged for M5, not added now.
+  become core-local, or be omitted. Flagged for M6, not added now.
 - **The one-time MAIR setup must run once PER CORE**, not once globally -- fold it into the
   per-core bring-up, never a boot-once path.
 

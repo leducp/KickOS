@@ -34,9 +34,11 @@ Two things follow from this that are easy to get wrong:
 - **A LANDED record is not the contract.** It says what was decided and why, frozen at decision
   time. The code-synced contract is `../reference/`, and where the two disagree the Reference
   wins (and the code wins over that).
-- **Milestone numbers inside older documents may predate the renumbering.** The driver era took
-  **M4**, SMP moved to **M5**, and the MMU horizon to **M6**; that decision is recorded in
-  `../design-driver-era-scope.md` section 4. A document written before it may say "M4 = SMP".
+- **Milestone numbers inside older documents may predate a renumbering.** The driver wave has been
+  renumbered twice. The driver era now holds **M4** and **M5**, SMP is **M6**, and the MMU /
+  new-platform horizon is **M7**, with everything beyond it **M8**; the first of those decisions is
+  recorded in `../design-driver-era-scope.md` section 4. A document written before it may say
+  "M4 = SMP", and one written between the two may say "M5 = SMP" or "M6 = MMU".
   `../../roadmap.md` is authoritative.
 
 ## LANDED
@@ -83,7 +85,7 @@ Two things follow from this that are easy to get wrong:
 
 | Document | Subject |
 |---|---|
-| [`design-m5-smp.md`](../design-m5-smp.md) | SMP candidate ranking by the one gate that decides it, the big-kernel-lock-first staged model, the per-chip hardware mechanics and the cross-core IPC invariants |
+| [`design-m6-smp.md`](../design-m6-smp.md) | SMP candidate ranking by the one gate that decides it, the big-kernel-lock-first staged model, the per-chip hardware mechanics and the cross-core IPC invariants |
 | [`design-rp2350-hazard3.md`](../design-rp2350-hazard3.md) | Porting to the RP2350's RISC-V Hazard3 cores as a sibling of the M33 port |
 | [`design-riscv-switch-cost.md`](../design-riscv-switch-cost.md) | Whether the RISC-V switch gap is worth a cooperative fast-path and/or Zcmp |
 | [`design-mmu-era-exploration.md`](../design-mmu-era-exploration.md) | Growing from an MPU RTOS to real virtual address spaces (x86_64, i.MX8MP heterogeneous AMP) |

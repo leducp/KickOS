@@ -28,6 +28,7 @@ host   src    tests/static/check_ascii.sh
 host   src    tests/static/check_atomic_rmw.sh
 host   src    tests/static/check_c_headers.sh
 host   src    tests/static/check_class_backend.sh
+host   src    tests/static/check_cpu_id_fold.sh
 host   src    tests/static/check_doc_names.sh
 host   src    tests/static/check_extern_c_linkage.sh
 host   src    tests/static/check_forever_loop.sh
