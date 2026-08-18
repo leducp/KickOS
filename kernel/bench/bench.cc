@@ -1,20 +1,17 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Cycle-accurate microbenchmark state (KICKOS_BENCH builds only). Two accumulators live
-// here. The SWITCH one is fed from the arch switch handler (switch.S), which brackets the
-// software switch body with two cycle-counter reads and calls kickos_bench_switch_done;
-// the measured window is the register + FP + CONTROL save/restore, not the hardware
-// exception entry (that is IRQ-entry latency). The PHASE one is fed by the brackets in
-// the syscall/scheduler/timer paths (see <kickos/bench.h>), and answers where a round
-// trip's fixed cost goes.
+// Cycle-accurate microbenchmark state (KICKOS_BENCH builds only). The SWITCH accumulator is
+// fed from the arch switch handler (switch.S): the measured window is the register + FP +
+// CONTROL save/restore, NOT the hardware exception entry, which is IRQ-entry latency. The
+// PHASE accumulator is fed by the brackets in the syscall/scheduler/timer paths
+// (<kickos/bench.h>).
 //
-// Both report MIN as well as avg/max, and min is the statistic to read: the XMC4800's DWT
-// is documented unreliable on that silicon (chip_xmc4800.cc), and a glitched counter read
-// can only inflate a delta, never push it below the true minimum.
+// MIN is the statistic to read: the XMC4800's DWT is documented unreliable on that silicon
+// (chip_xmc4800.cc), and a glitched counter read can only inflate a delta, never push it
+// below the true minimum.
 //
-// The KERNEL prints both tables, from thread context and outside any IrqLock. That is
-// what lets the bench syscall carry no out-pointer and copy no struct to userspace.
+// The KERNEL prints both tables, from thread context and outside any IrqLock.
 
 #include <kickos/bench.h>
 #include <kickos/irq.h>
@@ -31,29 +28,28 @@ namespace
     using kickos::Order;
     using kickos::bench_cyccnt;
 
-    // IRQ-entry latency: a bench handler timestamps its own entry; bench_irq_once
-    // triggers the line and returns (entry - trigger) cycles.
+    // IRQ-entry latency: the handler stamps its own entry here.
     constinit Atomic<uint32_t, Order::RELAXED> g_irq_entry = 0;
     constinit Atomic<uint32_t, Order::RELAXED> g_irq_seen = 0;
 
-    // Nothing but the cycle stamp belongs in here: the handler IS the thing being measured,
-    // so any work added between entry and the seen flag inflates every sample.
+    // Nothing but the cycle stamp belongs in here: any work added between entry and the seen
+    // flag inflates every sample.
     void bench_irq_handler(void*)
     {
         g_irq_entry = bench_cyccnt();
         g_irq_seen = 1;
     }
 
-    // Masked-span body: a byte copy across these models the M3 endpoint copy-under-
-    // IrqLock (bounded by KOS_EP_MSG_MAX). volatile so it is neither elided nor
-    // hoisted out of the masked window.
+    // Masked-span body: a byte copy across these models the endpoint copy under IrqLock
+    // (bounded by KOS_EP_MSG_MAX). volatile so it is neither elided nor hoisted out of the
+    // masked window.
     constexpr uint32_t BENCH_LAT_SPAN_MAX = 1024;
     constinit volatile uint8_t g_lat_src[BENCH_LAT_SPAN_MAX] = {0};
     constinit volatile uint8_t g_lat_dst[BENCH_LAT_SPAN_MAX] = {0};
 
-    // Set the line pending. On ARM a direct STIR write (works while PRIMASK holds the
-    // span masked); elsewhere the arch inject seam (no-op where no line is software-
-    // injectable, where the sample then reads 0).
+    // Set the line pending. On ARM a direct STIR write, which works while PRIMASK holds the
+    // span masked; elsewhere the arch inject seam, a no-op where no line is software
+    // injectable and the sample then reads 0.
     inline void bench_irq_raise(int line)
     {
 #if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
@@ -80,8 +76,8 @@ namespace
     };
     constinit PhaseAcc g_phase[kickos::PH_COUNT] = {};
 
-    // Padded to one width because kvsnprintf implements no field width (lib/libc/fmt.cc):
-    // a "%-14s" here would print the flag and the digits literally.
+    // Padded to one width: kvsnprintf implements no field width (lib/libc/fmt.cc), so a
+    // "%-14s" here would print the flag and the digits literally.
     constexpr char const* PHASE_NAME[kickos::PH_COUNT] = {
         "NULL            ", "NEST            ", "CALL_TOTAL      ", "CALL_VALIDATE   ",
         "CALL_LOCKED     ", "CALL_RESOLVE    ", "CALL_PEEK       ", "CALL_PROBE      ",
@@ -128,8 +124,7 @@ extern "C"
 
 namespace
 {
-    // 0 where the chip backend publishes no clock (the sim), which prints as 0 ns rather
-    // than as a wrong duration.
+    // 0 where the chip backend publishes no clock (the sim), which prints as 0 ns.
     uint32_t cyc_to_ns(uint32_t cyc)
     {
         if (SystemCoreClock == 0)
@@ -164,16 +159,15 @@ namespace kickos
 
     void bench_reset()
     {
-        // Locked, unlike the two prints: this runs in thread context with interrupts on,
-        // and the switch handler writes the same accumulator from the switch tail.
+        // Locked, unlike the two prints: this runs in thread context with interrupts on, and
+        // the switch handler writes the same accumulator from the switch tail.
         IrqLock lock;
         g_sw_min = 0xFFFFFFFFu;
         g_sw_max = 0;
         g_sw_sum = 0;
         g_sw_count = 0;
-        // Drop any un-banked xtensa sample so the first switch after a reset only
-        // re-primes and banks nothing; else the previous window's last switch would
-        // leak into this window's min/max (it is banked one switch late by design).
+        // Drop any un-banked xtensa sample, which is banked one switch late: else the previous
+        // window's last switch leaks into this window's min/max.
         g_bench_sw_end = 0;
         for (uint32_t i = 0; i < PH_COUNT; i++)
         {
@@ -220,11 +214,10 @@ namespace kickos
 
     uint32_t bench_core_hz() { return SystemCoreClock; }
 
-    // Attach the bench handler to a spare line + unmask it (call once). The bench
-    // app activates no other IRQ source, so any line the console does not own is free.
+    // Attach the bench handler to a spare line and unmask it. Call once.
     void bench_irq_setup(int line)
     {
-        (void)irq_attach(line, bench_irq_handler, nullptr); // line 20 is always free here
+        (void)irq_attach(line, bench_irq_handler, nullptr);
         arch_irq_clear_pending(line); // discard pre-arm garbage (latch-and-coalesce contract)
         arch_irq_unmask(line);
     }
@@ -233,11 +226,10 @@ namespace kickos
     // has no cycle counter / no injectable line).
     uint32_t bench_irq_once(int line)
     {
-        // Re-arm before each inject: some backends mask the logical line on delivery
-        // and expect a driver's irq_ack to re-unmask (xtensa's software-doorbell path).
-        // The bench's tier-2 handler does not ack, so without this only the FIRST inject
-        // would fire (the rest hit the masked-line drop). Idempotent no-op on backends
-        // that do not mask on delivery (ARM NVIC / RISC-V).
+        // Re-arm before each inject: some backends mask the logical line on delivery and
+        // expect a driver's irq_ack to re-unmask (xtensa's software-doorbell path). The bench
+        // handler does not ack, so without this only the FIRST inject would fire. No-op on
+        // backends that do not mask on delivery (ARM NVIC / RISC-V).
         arch_irq_unmask(line);
         g_irq_seen = 0;
         uint32_t t0 = bench_cyccnt();
@@ -250,9 +242,9 @@ namespace kickos
         {
             return 0; // genuinely did not fire (no injectable line / masked)
         }
-        // Fired. "0" is the sentinel for "did not fire", so a real but sub-counter-tick
-        // latency (delta==0, e.g. RX's coarse 133 ns CMTW1 tick) must report as 1, not
-        // be discarded by the caller's `!= 0` fired-check.
+        // 0 is the sentinel for "did not fire", so a real but sub-counter-tick latency
+        // (delta==0, e.g. RX's coarse 133 ns CMTW1 tick) must report as 1 rather than be
+        // discarded by the caller's `!= 0` fired-check.
         uint32_t d = g_irq_entry - t0;
         if (d == 0)
         {
@@ -262,13 +254,11 @@ namespace kickos
     }
 
     // WORST-case ISR-entry latency: raise the line at the START of a masked span, hold
-    // interrupts off across a bounded body (span_bytes of the endpoint-copy model),
-    // then release; the pending IRQ fires on unmask and the handler stamps entry.
-    // Returns inject->entry cycles (worst case = span hold + exception entry); 0 where
-    // the line is not injectable. The mask is the SAME arch_irq_save/restore seam
-    // kickos::IrqLock wraps, so the span is the identical primitive every syscall
-    // critical section holds. Frozen-counter arches (mps2 DWT / sim) read ~1, exactly
-    // as the best-case line does; the ns hold below is the number that survives there.
+    // interrupts off across a bounded body (span_bytes of the endpoint-copy model), then
+    // release. Returns inject-to-entry cycles (span hold + exception entry), or 0 where the
+    // line is not injectable. The mask is the SAME arch_irq_save/restore seam kickos::IrqLock
+    // wraps. Frozen-counter arches (mps2 DWT / sim) read ~1, exactly as the best-case line
+    // does.
     uint32_t bench_irq_masked_once(int line, uint32_t span_bytes)
     {
         if (span_bytes > BENCH_LAT_SPAN_MAX)

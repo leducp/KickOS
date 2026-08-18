@@ -9,142 +9,88 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**M5 IS OPEN AND UNCOMMITTED. `master` is `3c3967e3` (PR 25); everything below sits in the
-WORKING TREE.** M4 is closed: M4.9.2 (PR 24) and M4.9.3 (PR 25) are both merged, and the ledger in
-`roadmap.md` says so now rather than "in progress".
+**THIS TREE IS `M5.1.1`, THE FIRST REVIEWABLE M5 PR, CARVED OFF `master` (`3c3967e3`).** It
+carries ONE topic: the IPC measurement chain and the atomics work. The two are fused deliberately,
+because they share commits and touch the same functions, so splitting them would mean re-tangling
+history. Nothing else from M5 is here. A record naming work outside those two tracks is describing
+a later PR and not this tree.
 
-**THE NUMBERS ARE RENUMBERED. M5 = the driver era completed plus everything for SMP that is not
-SMP; M6 = SMP; M7 = MMU; M8 = beyond, and M8 is where the ABI FREEZES.** Every record that said
-M5 meaning SMP or M6 meaning MMU is corrected, the SMP spike is renamed to
-`docs/design-m6-smp.md` (28 citations chased), and the ABI-freeze rule is restated BY NAME at all seven of its sites
-because keying it to a digit is what let it drift onto the wrong milestone in the first place.
+**THE IPC BASELINE EXISTS AND IS MEASURED.** There was no call/reply figure anywhere before this;
+there is one in `docs/design-m5-ipc-fastpath.md`, and anything touching the call path should read
+that page before touching it. A round trip is a FIXED term plus a per-byte term, and the fixed
+term holds within 1.5 percent across three ISAs and three clocks, which makes it an instruction
+count rather than silicon or memory.
 
-**THE IPC BASELINE EXISTS NOW, AND IT REDIRECTED THE MILESTONE'S HEADLINE ITEM.** There was no
-call/reply figure anywhere before this; there is one in `docs/design-m5-ipc-fastpath.md`, and the
-next session should read that page before touching the fastpath. The short version:
+**THE BENCH APP WAS BROKEN AND NOBODY KNEW, WHICH IS WHY THERE WAS NO BASELINE.** Its helpers were
+DIRECT kernel calls, so with root unprivileged on every board with a ring the first call faulted
+and killed the reporter: only `esp32-wroom`, which has no ring at all, ever ran it. It also never
+returned from `main`, so `KICKOS_SHUTDOWN_TO_BOOTLOADER` was inert for it. Both are fixed behind a
+new `KOS_SYS_BENCH` syscall, and the app now returns after a bounded number of reports.
 
-- A round trip is a FIXED term plus 18 cycles per byte, and the fixed term is **~4640 cycles on
-  armv7m M4, armv7m M7 and Xtensa LX6 alike**, within 1.5 percent across three ISAs and three
-  clocks. An invariant like that is an instruction count, not silicon and not memory.
-- **Of the four costs the milestone set out to rank: the reply MINT is 400 cycles and is the
-  biggest AND the only constant one; the COPY is 218 at real driver traffic; the SWITCH is 290;
-  and the D1 DONATION IS ZERO BECAUSE IT NEVER FIRES** -- the bench runs equal-priority peers, so
-  that branch is dead and donation has never been measured by anyone. Pricing it needs a new arm.
-- **All four together are about 10 percent.** A semaphore ping-pong round, which does none of
-  them, costs the same as a call/reply round trip. The other 90 percent is generic syscall entry
-  and exit and the scheduler, shared with `kos_sem_post`. **So a register-payload fastpath that
-  only removes the copy is worth about 4 percent**, and an seL4-shaped fastpath has to be a
-  SEPARATE ENTRY PATH that never enters the generic one, which is what seL4's actually is.
-- **At least 31 percent of a round trip is inside `IrqLock`**, which is the Amdahl input
-  `design-m6-smp.md` says is missing. It bounds a two-core big-lock speedup at about **1.45x**,
-  materially under the unproven "about 2x" in that spike. The AMP-versus-shared-kernel decision
-  stays OPEN, but it now has a number.
+**`CALL_MINT` SPLITS 290/109 INTO A CAPABILITY HALF AND A USER-MEMORY-WRITE HALF.**
+`CALL_MINT_CAP` is `cap_install_reply` at 290 cycles, `CALL_MINT_INFO` is `write_recv_info` at
+109. They sum to 399 against the pre-split 400, and twelve other leaves in the same capture are
+byte-identical, so the split is placed honestly. The 290 is NOT a search: the free-list peek
+returns on its first test and the unlink beside it is O(1). It is mint machinery, which is what a
+reserved per-thread reply slot would remove.
 
-**THE BENCH APP WAS BROKEN AND NOBODY KNEW, WHICH IS WHY THERE WAS NO BASELINE.** Its
-`kickos_bench_*` helpers were DIRECT kernel calls, so with root unprivileged on every board the
-first call faulted and killed the reporter: the throughput and cycle half had been dead on every
-board with a privilege ring since the root flip, and only `esp32-wroom` (no ring at all) ever ran
-it. It also never returned from `main`, so `KICKOS_SHUTDOWN_TO_BOOTLOADER` was inert for it and
-every bench capture cost a button press. Both are fixed behind a new `KOS_SYS_BENCH` syscall, and
-the second is **witnessed**: `pizero2350` re-enumerated into BOOTSEL by itself after an
-instrumented run.
+**THE INSTRUMENT'S DOCUMENTED CORRECTION RULE WAS WRONG, and this is the bigger finding.**
+`bench.h` said a phase is `(phase - k * PH_NULL)`. The closing timestamp is evaluated as an
+ARGUMENT, so `PH_NULL` measures two counter reads and reads 1 cycle; but a bracket NESTED inside
+an enclosing span charges that parent the two reads PLUS the whole accumulator call, about 57
+cycles. The rule therefore understated the per-bracket charge by roughly 56x, every COMPOSITE was
+inflated, and only the LEAVES were ever honest. FIXED with a proper nested control phase: an
+EMPTY bracket cannot price a NESTED one, so the second control had to exist and be validated
+differentially rather than assumed.
+
+**A COMPOSITE SHARED BETWEEN TWO CODE PATHS WAS REPORTING THE WRONG PATH'S MINIMUM.** One
+accumulator served both the fastpath and slowpath arms of the call, so the shorter arm's body set
+the minimum the longer arm was read for. There is now one accumulator per code path, and each
+closes INSIDE its own arm and inside the lock.
+
+**THE ROUND TRIP HAS THREE LOCKED LEGS, NOT TWO.** The server's own `kos_recv` park holds
+`IrqLock` across one of the two context switches per round trip, and nothing had ever bracketed
+it. A leg that is never bracketed is not a small error in the total, it is absent from it.
+
+**THE LOCKED FRACTION IS 53 PERCENT, with a 43 PERCENT LEAF FLOOR**, re-derived on
+`esp32c6-wroom` with the corrected instrument. That Amdahl-bounds a two-core big lock at
+**1.31x**, and the floor caps it at 1.40x. It REPLACES the unproven "about 2x" the SMP spike
+assumed, and the gap between floor and direct is itemised rather than left as a residual. Since
+that number is what sizes the M6 big-lock decision, per-core run queues and finer locks are not a
+later optimisation but where most of the payoff actually is.
+
+**ONE ATOMIC MECHANISM TREE-WIDE, AND THE ORDER IS CARRIED IN THE TYPE.** `<atomic>` now appears
+in EXACTLY ONE FILE, `system/include/kickos/sys/atomic.h`. The C-facing atomic macros are gone;
+`kos_uart_stats` is nine plain words behind `kos_counter_*`, a ONE-MEMBER STRUCT, so `++`, `+=`, a
+bare read and a bare write are COMPILE errors in C11 and C++20 alike. The type enforces it, not a
+gate and not a convention. `Order` is a BITMASK, because acquire and release order OPPOSITE
+accesses of the same field and every cross-thread word here needs both; ACQUIRE and RELEASE are
+placed at the residues rather than swept on tree-wide. The byte ring's publication-barrier macro
+is DELETED: head and tail carry the ordering in their own type, so there is no consumer `-D` left
+to get wrong.
+
+**`Thread` SHRANK 264 TO 256 BYTES ON armv7m.** `switch_count` narrows to 32 bits and moves into
+the padding hole before `deadline_ns`, so the field is free: it costs bytes that were already
+being paid. Measure `sizeof` before and after rather than reasoning about field order.
 
 **TWO BOARDS CANNOT MEASURE CYCLES AND ONE CANNOT MEASURE TIME. Do not spend a pass rediscovering
-this.** `xmc4800-relax`'s DWT CYCCNT is DEAD (every delta zero over 120000 samples; the chip
-comment's "observed returning DWT_CTRL's value" is exactly it), so that board is wall-clock only.
-`esp32-wroom`'s monotonic clock intermittently returns EQUAL values across hundreds of
-milliseconds, and instrumenting it made the failure rate rise from 2-of-6 to 5-of-6 -- a rate that
-moves with timing is a RACE, which points at the TIMG0 `T0UPDATE` shadow being read before it
-latches rather than at the other candidate. Its CCOUNT figures are fine. **`teensy41` is the board
-that can give the full nested decomposition**: proven-live DWT, and a deferred switch, so unlike
+this.** `xmc4800-relax`'s DWT CYCCNT is DEAD, every delta zero over 120000 samples, so that board
+is wall-clock only. `esp32-wroom`'s monotonic clock intermittently returns EQUAL values across
+hundreds of milliseconds, and instrumenting it made the failure rate RISE, which is what makes it
+a race rather than a resolution limit; its cycle figures are fine. `teensy41` is the board that
+gives the full nested decomposition, having a proven-live DWT and a switch that PENDS, so unlike
 the LX6 its composite spans are honest.
 
-**A SECOND DEFECT SHARED THAT SYMPTOM AND IS NOW UNREACHABLE BY CONSTRUCTION.** `kos_clock_now()`
-returned **0** on failure, indistinguishable from a valid timestamp, while its own comment said the
-status "must be checked" -- the same class as the discarded `kos_irq_attach` return that became a
-silent `picopi` deadlock. **FIXED, and not by asserting**: the syscall path gained a 64-bit return,
-so the clock hands its value back in the ABI's register pair and there is no out-pointer left to
-reject. The public `uint64_t kos_clock_now(void)` is unchanged; only the private syscall ABI moved,
-which was free because the out-pointer had exactly one call site and no user could supply one.
-**It is a NET SHRINK, not a cost**: zero added instructions on ARM and RX, one 2-byte compressed
-store on RISC-V, and `syscall.cc` on armv7m fell 2425 to 2357 bytes because GCC tail-merges every
-return into one epilogue. That matters beyond this fix, because the generic syscall path is ~1700
-of the 4640 cycles a fastpath has to attack, and widening it cost nothing.
-**Per backend the answers differed and that is the interesting part**: armv7m moved its `CONTROL`
-restore off `r1`; armv6m could NOT mirror it (with the pair reserved, only two scratch registers
-remain, one short of the old bit-clear) and uses a shift pair instead; rv32imac needed a frame
-store because `mret` restores the frame; **rxv3 needed NO change at all**, since `rte` pops only PC
-and PSW; and lx6 needed none either, having no trap and no ring split. **`rxv3` and `lx6` are
-BUILD-VERIFIED ONLY and owe silicon.**
+**TWO THINGS ABOUT THE CARVE ITSELF, because no command re-derives them.** The `KOS_SYS_BENCH`
+number and its `kos_bench_op` enum physically landed on M5 inside a commit about widening the
+syscall return to 64 bits, which is a different topic and is NOT here; they are folded into the
+bench commit instead, which is what its own message always claimed. And the sweep commit that
+carried the ACQUIRE/RELEASE orders also carried a live DIAG probe in `selftest/main.cc` that
+reddened `call_infoless_revert`; that probe is deliberately absent, so this tree's selftest is the
+state the probe was later reverted TO.
 
-**WHAT M5 HAS LANDED IN THE WORKING TREE, all uncommitted.** Static gates are green over the
-whole of it (`doc_names` 92 docs / 1237 paths, `ascii`, `spdx` 877 files, `atomic_rmw` 453 files,
-`include_guards` 207 headers, `forever_loop`, `extern_c_linkage`, `seam_defaults` per board) and
-`sim` is 235/235.
-
-- The renumber, the ledger sync, and three tree-derived corrections to records that had rotted:
-  the console-seam counts here and in `roadmap.md` (**EIGHT** chips carry `arch_console_reclaim`
-  and `_reclaim_window`, **NINE** carry `arch_console_flush_sync`, where both files said four and
-  two), and G5 in `design-driver-era-scope.md`, which named `kickos_rx_dev_pending_line` -- a
-  symbol that exists in no source file and was replaced by `kickos_rx_dev_dispatch`.
-- **ONE atomic mechanism.** `<atomic>` now appears in EXACTLY ONE FILE. The two C-facing atomic
-  macros are gone (not spelled here, because they no longer exist in the tree),
-  `kos_uart_stats` is nine plain `uint32_t` behind `kos_counter_*`,
-  `stats_unpack` is one `mem_copy`, and it is proven C-callable with real codegen.
-- The bench syscall, the phase instrument, and `arch_cpu_id()` folding to a literal by
-  PREPROCESSOR, with byte-identity proven object-by-object rather than asserted.
-- Three new records: `design-m5-ipc-fastpath.md`, `design-m5-kickcat-reality-check.md`,
-  `design-m6-state-inventory.md`.
-
-**THE ATOMICS COLLAPSE TRADED TWO THINGS AND BOTH ARE NOW CLOSED, by ruling.** It first gave up
-DEFINEDNESS on the reader side (`stats_pack` reads while the IRQ thread writes) and lost the RMW
-gate's guard on those fields (its harvest fell from 14 identifiers to 1, so `stats.tx_bytes++`
-compiled). Both are fixed:
-- the nine fields are `kos_counter_t`, a ONE-MEMBER STRUCT, so `++`, `+=`, a bare read and a bare
-  write are COMPILE errors in C11 and C++20 alike. The type enforces it, not a gate and not a
-  convention, which is the same move as nesting `kos_recv_info` inside `kos_recv_timed_opts`;
-- the two helper BODIES use `__atomic_load_n` / `__atomic_store_n` at RELAXED, so the read is
-  defined. An abstraction exists exactly so the mechanism can be swapped without spreading the
-  change, and no call site spells a load, a store or an order.
-**Two codegen costs to know before anyone simplifies it back**: on Xtensa GCC's default
-`-mserialize-volatile` emits a `MEMW` before every atomic access whatever the order (and
-`-mno-serialize-volatile` is not a free fix, it would also drop `MEMW` before `volatile` MMIO), and
-an atomic access is an OPTIMISATION BARRIER that can flip an inlining decision. A minimal probe TU
-is byte-identical; real drivers grow by 0 to 52 bytes of `.text`, rxv3 being the 0.
-**And the premise that the RMW gate banned `__atomic_` by PREFIX was FALSE** -- only the prose said
-so, in the gate header and `style.md`. The gate always listed the RMW builtins by name. That is now
-a checked property rather than an accident: a plain-access line sits in the gate's own NEGATIVE
-self-test corpus, so widening the alternation to a wildcard fails the gate's self-test.
-
-**WHAT M5 STILL OWES**, in the order the milestone states it: the driver set (the tree-derived gap
-is 3 STM32 UART drivers, a UART driver for the RP parts, SPI on rx72m and esp32c6, and
-`arch_console_retune` on the six chips that gained a driver but have only 2 bodies fleet-wide);
-KickCAT (SURVEYED and RULED, not ported -- see below); `KICKOS_MULTI_INSTANCE`; the fastpath;
-ACQUIRE and RELEASE orders; the section-8 uniprocessor bugs; and the fleet re-witness, which
-should be LAST because everything above moves shipped code.
-
-**THE KICKCAT RULING, and it is the inverse of what the reality check was set up to produce.**
-KickCAT's `AbstractSPI` holds chip select across two `transfer()` calls and KickOS refuses that at
-two levels on purpose. **KickOS is right and the demand is DECLINED**: `nseg` under one CS bracket
-already expresses the LAN9252 shape, and the split form only suits a memory-mapped
-single-address-space backend -- KickCAT's own NuttX and Linux backends would both be better served
-by the segmented form. `KOS_EP_MSG_MAX` is NOT a constraint (every LAN9252 transfer is at most
-about 35 bytes against a 212-byte limit), so nobody should widen it for this. The open question is
-LATENCY, not shape, and it needs a measurement.
-
-**RECOVERED, and it was one day from being unrecoverable.** The two KickCAT commits this file
-credits with the master-relaunch fix (`8bc3d63`, `cf7ec6f`) were reachable from ZERO branches --
-the `kickos-backend` branch was rewritten and squashed them away -- surviving only in a reflog
-whose unreachable expiry is 30 days, at exactly 30 days old. They are now held by
-`backup/k64f-master-relaunch-20260817` in the KickCAT repo, local and unpushed. The behaviour is
-back in KickCAT HEAD: all three `freedom_k64f_*_map_example.cc` call a bare `bus.init(100ms)` with
-no retry wrapper.
-**DO NOT RESTORE THEM, and this is a ruling rather than a deferral.** A retry around `bus.init` on
-the MASTER, and widening its link timeout, are both workarounds for a defect that lives in the
-SLAVE: the standard requires a slave to handle a return to INIT properly, and one raising
-`INVALID_MAILBOX_CONFIGURATION` because it validated its mailbox SyncManager mid-reset is not doing
-that. The two commits are kept as EVIDENCE of the failure mode and of what was measured, not as the
-fix. The real work is slave-side ESM, it is KickCAT's, and it is out of scope here.
+**WITNESSED HERE:** `sim` 238/238 and `qemu` 40/40, both green, and every static gate exits 0.
+The count is BELOW M5's because tests added by later topics are not on this branch.
 
 **`pizero2350` IS RE-WITNESSED AT `ce34ac66`, BOTH ARMS, and it is the only board reachable
 without an operator** (BOOTSEL in, `KICKOS_SHUTDOWN_TO_BOOTLOADER` out, so the loop is unattended).

@@ -13,10 +13,10 @@
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
-#include <kickos/sync.h> // wq_confirm_resume: the two parks below read waker-set state
+#include <kickos/sync.h> // wq_confirm_resume
 #include <kickos/task.h>
 #include <kickos/thread.h>
-#include <kickos/time.h> // ktime_deadline_arm: join's optional bound
+#include <kickos/time.h> // ktime_deadline_arm
 
 #include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
@@ -27,16 +27,14 @@ namespace kickos
 {
     namespace
     {
-        // Resolve a thread handle against the pool, or nullptr for a slot that was never
-        // allocated or was reclaimed under this handle. An EXITED slot RESOLVES here: the
-        // generation bumps at reclaim and not at exit, and only the caller can say whether
-        // that state is a refusal (thread_kill) or the answer (thread_join). Caller holds
-        // IrqLock.
+        // Resolve a thread handle against the pool, or nullptr for a slot never allocated
+        // or reclaimed under this handle. An EXITED slot RESOLVES here: the generation bumps
+        // at reclaim and not at exit, so only the caller can say whether that state is a
+        // refusal (thread_kill) or the answer (thread_join). Caller holds IrqLock.
         //
         // NO SIGN TEST. A slot aged past 32768 reclaims mints a handle with bit 31 set, so
         // rejecting "negative" handles would refuse live threads. KOS_THREAD_NONE and every
-        // other malformed word is caught by the index range check, the pool never seating
-        // the all-ones index.
+        // other malformed word is caught by the index range check.
         Thread* thread_resolve(kos_thread_t thread)
         {
             Kernel& k = kernel();
@@ -54,11 +52,10 @@ namespace kickos
             return &k.threads.slots[index];
         }
 
-        // Spawn parenthood: the whole gate on both thread_kill and thread_join. It is
-        // NON-TRANSFERABLE, there being no table entry for a cap_grant to copy, and it
-        // grants the caller nothing it did not already hold. kill_tag_of never answers
-        // KILL_TAG_NONE, so an orphan (a child whose spawner's slot changed hands) matches
-        // nobody at all. Caller holds IrqLock.
+        // Spawn parenthood: the whole gate on both thread_kill and thread_join, and
+        // NON-TRANSFERABLE, there being no table entry for a cap_grant to copy. kill_tag_of
+        // never answers KILL_TAG_NONE, so an orphan (a child whose spawner's slot changed
+        // hands) matches nobody at all. Caller holds IrqLock.
         bool caller_spawned(Thread const* t, Thread const* c)
         {
             if (c == nullptr or t->spawner_tag == ThreadPool::KILL_TAG_NONE)
@@ -69,23 +66,20 @@ namespace kickos
         }
     }
 
-    // Slot reuse is safe because thread_create re-inits the TCB and re-fabricates the arch
-    // context from scratch, so a reclaimed slot's privilege posture is a clean reset (the
-    // sim's mid-syscall `raised`, the ARM CONTROL.nPRIV, the RX PSW). Any syscall that
-    // resolves a thread BY HANDLE must additionally reject state == EXITED: the generation
-    // bumps at reclaim, not at exit, so an exited slot still gen-matches.
+    // Any syscall that resolves a thread BY HANDLE must additionally reject
+    // state == EXITED: the generation bumps at reclaim, not at exit, so an exited slot
+    // still gen-matches.
     int thread_spawn(kos_thread_params const* p, kos_thread_t* out_thread)
     {
         IrqLock lock;
         *out_thread = KOS_THREAD_NONE; // every early return below leaves the sentinel seated
         if (p == nullptr)
         {
-            return -KOS_EINVAL; // null params
+            return -KOS_EINVAL;
         }
-        // Every field below is read from the kernel-owned copy, never from *p: an
-        // unprivileged caller must not hand the kernel a pointer it could not itself read,
-        // or a kernel address gets dereferenced privileged. The name pointer inside the
-        // copy is STILL user memory and is walked under a per-byte check further down.
+        // Every field below is read from the kernel-owned copy, never from *p. The name
+        // pointer inside the copy is STILL user memory and is walked under a per-byte check
+        // further down.
         // user_readable_ok, not user_range_ok: the struct may be an app global, which on a
         // backend modelling no static-data region lies in no granted region, and
         // arch_user_text_readable is the arm that recognises it.
@@ -94,11 +88,11 @@ namespace kickos
         uintptr_t const pu = reinterpret_cast<uintptr_t>(p);
         if ((pu & (alignof(kos_thread_params) - 1)) != 0)
         {
-            return -KOS_EINVAL; // misaligned params struct
+            return -KOS_EINVAL;
         }
         if (not user_readable_ok(pu, sizeof(*p)))
         {
-            return -KOS_EFAULT; // params not readable by the caller
+            return -KOS_EFAULT;
         }
         kos_thread_params params;
         kaccess_from_user(&params, pu, sizeof(params));
@@ -107,18 +101,16 @@ namespace kickos
         // out-of-range value is an OOB write and UB. Priority 0 is idle's alone.
         if (p->prio < KICKOS_PRIO_MIN or p->prio > KICKOS_PRIO_MAX)
         {
-            return -KOS_EINVAL; // out-of-range priority
+            return -KOS_EINVAL;
         }
-        // No privilege escalation: only a privileged thread may spawn one, a privileged
-        // thread being granted the whole arena.
+        // No privilege escalation: only a privileged thread may spawn one.
         if (p->privileged != 0 and not sched::current()->privileged)
         {
-            return -KOS_EPERM; // unprivileged caller cannot spawn a privileged child
+            return -KOS_EPERM;
         }
-        // Validated BEFORE a slot is allocated, so a bad stack is a clean spawn error
-        // rather than a leaked slot or a silent overflow. stack_base == 0 asks for the
-        // kernel default. Base AND size must be KICKOS_STACK_ALIGN-aligned, or the initial
-        // stack top is not.
+        // Validated BEFORE a slot is allocated, so a bad stack is a clean spawn error and
+        // not a leaked slot. stack_base == 0 asks for the kernel default. Base AND size must
+        // be KICKOS_STACK_ALIGN-aligned, or the initial stack top is not.
         if (p->stack_base != nullptr)
         {
             uintptr_t const base = reinterpret_cast<uintptr_t>(p->stack_base);
@@ -127,7 +119,7 @@ namespace kickos
                 or (p->stack_size & (KICKOS_STACK_ALIGN - 1)) != 0
                 or base + p->stack_size < base) // base+size must not wrap the address space
             {
-                return -KOS_EINVAL; // bad caller stack: size / alignment / wrap
+                return -KOS_EINVAL;
             }
             // An unprivileged thread's stack is committed as ONE R|W MPU region, so the
             // block must be nameable by one descriptor on this arch; otherwise PMSA/NAPOT
@@ -140,11 +132,10 @@ namespace kickos
                 size_t const rsz = arch_ram_region_size(p->stack_size);
                 if (not arch_ram_region_admissible(base, rsz))
                 {
-                    return -KOS_EINVAL; // stack block not nameable by one descriptor
+                    return -KOS_EINVAL;
                 }
-                // The stack takes the same Rule 7 admission as any grant: arena-confined
-                // for EVERY caller with no privileged waiver, and reserved-block-clear.
-                // Without this an out-of-arena stack_base grants an R|W window over
+                // Rule 7 admission, arena-confined for EVERY caller with no privileged
+                // waiver: without it an out-of-arena stack_base grants an R|W window over
                 // peripheral or kernel SRAM. The RAM arm ignores the authorization flag.
                 if (not grant_region_admissible(base, rsz, ARCH_MPU_R | ARCH_MPU_W,
                                                 cap_check_authority(sched::current(),
@@ -156,22 +147,22 @@ namespace kickos
 #endif
         }
         // mem_base's arena-confinement and Rule 7 admission belong to domain_for, which
-        // reports -KOS_EPERM directly, so nothing here re-checks them to recover an errno.
-        // Only the wrap test is duplicated, UNGATED, so a wrapping mem_base is a clean
-        // -KOS_EINVAL even on a no-MPU part where domain_for's predicate is a stub.
+        // reports -KOS_EPERM directly. Only the wrap test is duplicated, UNGATED, so a
+        // wrapping mem_base is a clean -KOS_EINVAL even on a no-MPU part where domain_for's
+        // predicate is a stub.
         if (p->mem_base != nullptr and p->mem_size != 0)
         {
             uintptr_t const dbase = reinterpret_cast<uintptr_t>(p->mem_base);
             if (dbase + p->mem_size < dbase)
             {
-                return -KOS_EINVAL; // mem_base window wraps the address space
+                return -KOS_EINVAL;
             }
         }
-        // THE admission boundary for a DEV window, because the window is the asking THREAD's
-        // own region and no task or domain ever carries it: authority (EPERM), exact shape
-        // (EINVAL for zero-size, wrap or non-encodable), Rule 7 (EPERM) and exclusivity
-        // (EBUSY). Both this and the commit, thread_create composing the region, run
-        // inside this function's IrqLock, so the pair is atomic.
+        // THE admission boundary for a DEV window, which is the asking THREAD's own region
+        // and is carried by no task or domain: authority (EPERM), exact shape (EINVAL for
+        // zero-size, wrap or non-encodable), Rule 7 (EPERM) and exclusivity (EBUSY). This
+        // and the commit, thread_create composing the region, both run inside this
+        // function's IrqLock, so the pair is atomic.
         if (p->mmio_base != nullptr)
         {
             if (not cap_check_authority(sched::current(), AUTH_MEMORY))
@@ -181,14 +172,14 @@ namespace kickos
             uintptr_t const mbase = reinterpret_cast<uintptr_t>(p->mmio_base);
             if (p->mmio_size == 0 or mbase + p->mmio_size < mbase)
             {
-                return -KOS_EINVAL; // zero-size or wrapping MMIO window
+                return -KOS_EINVAL;
             }
             if (not arch_mpu_region_encodable(mbase, p->mmio_size))
             {
                 return -KOS_EINVAL; // window one MPU descriptor cannot cover exactly
             }
-            // A privileged child carries the whole-arena region and the background map, so it
-            // is granted no window descriptor and there is nothing here to admit.
+            // A privileged child carries the whole-arena region and the background map, so
+            // it is granted no window descriptor and there is nothing here to admit.
             if (p->privileged == 0)
             {
                 if (not grant_region_admissible(mbase, p->mmio_size,
@@ -204,8 +195,6 @@ namespace kickos
                 }
             }
         }
-        // Validated here with the other boundary checks, so a bad request is a clean spawn
-        // refusal rather than a half-built child.
         if (p->authority != 0)
         {
             if ((p->authority & ~CAP_AUTH_ALL) != 0)
@@ -213,27 +202,24 @@ namespace kickos
                 // A bit no gate reads is refused, never silently masked off. The authority
                 // word has its own numbering, so this catches only bits above the defined
                 // authorities; an object right is not distinguishable here.
-                return -KOS_EINVAL; // non-authority bits in the authority mask
+                return -KOS_EINVAL;
             }
             // Narrow-only, like a cap_grant mask: the caller must already hold every bit it
             // hands on.
             if (not cap_check_authority(sched::current(), p->authority))
             {
-                return -KOS_EPERM; // cannot grant an authority the caller does not hold
+                return -KOS_EPERM;
             }
         }
         // The WHOLE grant list is validated BEFORE anything is claimed: every source cap
         // must resolve in the CALLER's table, carry CAP_TRANSFER, and narrow only. Installs
-        // and ref bumps happen only after every check passes, so a mid-install failure
-        // cannot leave a half-populated child with dangling ref bumps.
+        // and ref bumps happen only after every check passes.
         // Sized by the GRANT bound, NOT by the table ceiling: these, plus gbuf and dbuf
-        // below, live on the CALLER's stack, which can be 1 KiB. At KICKOS_MAX_HANDLES they
-        // would be 16 bytes per table slot, a stack overflow mid-syscall on any board with
-        // a large table.
+        // below, live on the CALLER's stack, which can be 1 KiB.
         int deleg_obj[KICKOS_MAX_SPAWN_GRANTS];
         uint8_t deleg_type[KICKOS_MAX_SPAWN_GRANTS];
         uint8_t deleg_rights[KICKOS_MAX_SPAWN_GRANTS];
-        // uint16_t: a destination is a capability-table index and a table is up to
+        // uint16_t: a destination is a capability-table index, and a table is up to
         // KICKOS_MAX_HANDLES == 65535 slots wide, which a byte cannot name.
         uint16_t deleg_dest[KICKOS_MAX_SPAWN_GRANTS];
         int const ncaps = static_cast<int>(p->cap_count);
@@ -242,30 +228,27 @@ namespace kickos
         if (ncaps > 0)
         {
             // Delegated cap i lands at child index i+1 by DEFAULT, index 0 being the
-            // kernel's stdout slot, and each grant may name its own index instead. That
-            // default packing is independent of the reserved cap-index range; what makes
-            // the default indices fit is KICKOS_MAX_SPAWN_GRANTS < KICKOS_CAP_CHILD_WIDTH,
-            // static_asserted in cap.h. A caller-NAMED destination is not covered by it and
-            // is refused at the bound below.
+            // kernel's stdout slot, and each grant may name its own index instead. The
+            // default indices fit because KICKOS_MAX_SPAWN_GRANTS < KICKOS_CAP_CHILD_WIDTH;
+            // a caller-NAMED destination is not covered by that and is refused at the bound
+            // below.
             if (ncaps > KICKOS_MAX_SPAWN_GRANTS)
             {
-                return -KOS_EINVAL; // more grants than one spawn may carry
+                return -KOS_EINVAL;
             }
             uintptr_t const cu = reinterpret_cast<uintptr_t>(p->caps);
             if (p->caps == nullptr or (cu & (alignof(kos_cap_grant) - 1)) != 0)
             {
-                return -KOS_EINVAL; // null / misaligned grant array
+                return -KOS_EINVAL;
             }
             // user_readable_ok for the same reason as the params struct above: the array
             // may be a global.
             if (not user_readable_ok(cu, sizeof(kos_cap_grant) * static_cast<size_t>(ncaps)))
             {
-                return -KOS_EFAULT; // grant array not readable by the caller
+                return -KOS_EFAULT;
             }
-            // Snapshotted in one pass right after the range check and validated from the
-            // copy, so no peer core can rewrite p->caps[ci] between check and read. The
-            // single-core IrqLock closes that seam today; the copy is what keeps it closed
-            // under SMP.
+            // Snapshotted in one pass and validated from the copy: no double fetch of
+            // p->caps[ci] between the check and the read.
             kos_cap_grant gbuf[KICKOS_MAX_SPAWN_GRANTS];
             for (int ci = 0; ci < ncaps; ci++)
             {
@@ -280,15 +263,15 @@ namespace kickos
             {
                 uintptr_t const du = reinterpret_cast<uintptr_t>(p->cap_dest);
                 // The misalignment reject precedes the copy for the params struct's reason:
-                // kaccess_from_user loads privileged, and a misaligned halfword load traps in
-                // the kernel on a strict-align arch.
+                // kaccess_from_user loads privileged, and a misaligned halfword load traps
+                // in the kernel on a strict-align arch.
                 if ((du & (alignof(uint16_t) - 1)) != 0)
                 {
-                    return -KOS_EINVAL; // misaligned destination array
+                    return -KOS_EINVAL;
                 }
                 if (not user_readable_ok(du, sizeof(uint16_t) * static_cast<size_t>(ncaps)))
                 {
-                    return -KOS_EFAULT; // destination array not readable by the caller
+                    return -KOS_EFAULT;
                 }
                 for (int ci = 0; ci < ncaps; ci++)
                 {
@@ -303,23 +286,23 @@ namespace kickos
                 CapEntry* se = cap_lookup(spawner, g.source_cap);
                 if (se == nullptr)
                 {
-                    return -KOS_EBADF; // source cap names nothing valid
+                    return -KOS_EBADF;
                 }
                 if ((se->rights & CAP_TRANSFER) != CAP_TRANSFER)
                 {
-                    return -KOS_EPERM; // source cap is not delegable (no TRANSFER right)
+                    return -KOS_EPERM; // no TRANSFER right
                 }
                 uint8_t const mask = g.rights_mask;
                 if ((mask & se->rights) != mask) // mask must be a subset: no widening
                 {
-                    return -KOS_EINVAL; // grant mask widens beyond the source rights
+                    return -KOS_EINVAL;
                 }
                 deleg_obj[ci] = se->obj;
                 deleg_type[ci] = se->type;
                 deleg_rights[ci] = static_cast<uint8_t>(se->rights & mask);
-                // An absent array, or a 0 entry, means default placement. 0 costs no
-                // expressiveness as a sentinel: index 0 is the kernel's stdout slot and
-                // cap_install_at refuses it anyway.
+                // An absent array, or a 0 entry, means default placement. 0 costs nothing
+                // as a sentinel: index 0 is the kernel's stdout slot, which cap_install_at
+                // refuses anyway.
                 unsigned dest = dbuf[ci];
                 if (dest == 0u)
                 {
@@ -329,29 +312,28 @@ namespace kickos
                 deleg_dest[ci] = static_cast<uint16_t>(dest);
             }
             // No two grants may land on the same slot, defaulted ones included: the second
-            // install would silently overwrite the first and leak its reference. Runs
-            // before the child exists, so a colliding list costs only a return.
+            // install would silently overwrite the first and leak its reference.
             for (int ci = 1; ci < ncaps; ci++)
             {
                 for (int cj = 0; cj < ci; cj++)
                 {
                     if (deleg_dest[ci] == deleg_dest[cj])
                     {
-                        return -KOS_EINVAL; // two grants named one destination
+                        return -KOS_EINVAL;
                     }
                 }
             }
         }
         Kernel& k = kernel();
         // Must precede the slot claim, so a task- or domain-pool exhaustion is a clean spawn
-        // failure rather than a leaked thread slot. Neither arm takes a reference; a task
+        // failure and not a leaked thread slot. Neither arm takes a reference: a task
         // task_for creates but nobody references stays at refcount 0 with no creator, which
         // is a free slot, and the domain under it likewise.
         Task* tk = nullptr;
         if (p->task != KOS_TASK_NONE)
         {
-            // JOIN a group the caller created. The memory the group shares is the TASK's, so
-            // a member bringing its own data grant is refused rather than silently ignored:
+            // JOIN a group the caller created. The memory the group shares is the TASK's,
+            // so a member bringing its own data grant is refused, not silently ignored:
             // there would be no domain for it to land in.
             if (p->privileged != 0)
             {
@@ -380,19 +362,17 @@ namespace kickos
                           cap_check_authority(sched::current(), AUTH_MEMORY), &derr);
             if (tk == nullptr)
             {
-                // task_for already distinguished the refusal, so forward it rather than
-                // flattening it: EPERM inadmissible grant, ENOMEM domain or task pool full.
+                // EPERM inadmissible grant, ENOMEM domain or task pool full.
                 return -derr;
             }
         }
-        // Reclaiming an EXITED slot is safe on single core: such a thread parked in
+        // Reclaiming an EXITED slot is safe on SINGLE CORE only: such a thread parked in
         // exit_current until its switch-away committed, so it is off-CPU and off every
-        // ready/wait/timer list by the time another thread gets here. current() is RUNNING,
-        // never EXITED, so it can never be picked.
+        // ready/wait/timer list by the time another thread gets here.
         int const i = k.threads.alloc();
         if (i < 0)
         {
-            return -KOS_ENOMEM; // thread pool exhausted
+            return -KOS_ENOMEM;
         }
 
         ThreadAttr attr;
@@ -400,8 +380,8 @@ namespace kickos
         // EACH source byte is checked caller-readable before the privileged copy
         // dereferences it: the kernel must neither fault on a bad name pointer nor leak
         // another domain's page through it. That also BOUNDS the walk, so a string with no
-        // NUL inside a granted region stops at the first unreachable byte. An unreachable
-        // first byte drops the name and leaves the "user" default.
+        // NUL stops at the first unreachable byte, and an unreachable first byte leaves the
+        // "user" default.
         char namebuf[KICKOS_THREAD_NAME_MAX]; // thread_create re-clamps regardless
         if (p->name != nullptr)
         {
@@ -412,7 +392,7 @@ namespace kickos
             {
                 if (not user_readable_ok(np + ni, 1))
                 {
-                    break; // unreachable byte: bound the walk here
+                    break;
                 }
                 kaccess_from_user(&namebuf[ni], np + ni, 1);
                 if (namebuf[ni] == '\0')
@@ -446,9 +426,8 @@ namespace kickos
         attr.task = tk;
         attr.spawner_tag = k.threads.kill_tag_of(spawner);
 
-        // With no caller stack, reuse a reclaimed block from the free list, else bump a
-        // fresh one from the arena. BOTH failing must release the slot just claimed, or the
-        // spawn leaks a TCB and burns the prior occupant's join handle.
+        // BOTH sources failing must release the slot just claimed, or the spawn leaks a TCB
+        // and burns the prior occupant's join handle.
         void* stack = p->stack_base;
         size_t stack_size = p->stack_size;
         if (p->stack_base == nullptr)
@@ -461,16 +440,12 @@ namespace kickos
             if (stack == nullptr)
             {
                 k.threads.release(i);
-                return -KOS_ENOMEM; // stack arena exhausted
+                return -KOS_ENOMEM;
             }
             stack_size = KICKOS_USER_STACK_SIZE;
             attr.kstack_owned = true;
         }
-        // Taken BEFORE the reference loop so one unwind path serves both failures. This
-        // cannot actually fail: every spawn asks for KICKOS_CAP_CHILD_WIDTH, the slab
-        // guarantees KCAP_CHILD_CHUNKS to every run holder (cap.h), and k.threads.alloc()
-        // above already claimed this spawn's slot, whose own run its reclaim arm gave back,
-        // so the pool always fills first.
+        // Taken BEFORE the reference loop so one unwind path serves both failures.
         if (not cap_slab_attach(&attr.cap_run, KICKOS_CAP_CHILD_WIDTH, &attr.cap_free_head,
                                 &attr.cap_width))
         {
@@ -493,15 +468,15 @@ namespace kickos
                     k.threads.stack_push(stack);
                 }
                 k.threads.release(i);
-                return -KOS_EINVAL; // destination past the child's table
+                return -KOS_EINVAL;
             }
         }
 
         // EVERY delegated object reference is taken before the child exists. obj_ref_inc is
         // the last fallible step in the spawn (a uint8_t refcount at its ceiling is refused,
-        // not wrapped), and at this point the only state to give back is the slot and the
-        // demand-allocated stack. Moving this after thread_create would make the unwind
-        // additionally owe the task reference and the child's already-seated caps.
+        // not wrapped), and the only state to give back here is the slot and the
+        // demand-allocated stack. After thread_create the unwind would additionally owe the
+        // task reference and the child's already-seated caps.
         for (int ci = 0; ci < ncaps; ci++)
         {
             if (obj_ref_inc(static_cast<CapType>(deleg_type[ci]), deleg_obj[ci],
@@ -525,8 +500,7 @@ namespace kickos
         thread_create(&k.threads.slots[i], p->entry, p->arg, stack, stack_size, attr);
         // Nothing below here may fail: the validation above guarantees each install
         // succeeds, and the reference loop above already holds a reference for every cap
-        // seated here. The child table is fresh, so a delegated cap i lands at index i+1
-        // with handle value i+1.
+        // seated here.
         Thread* const child = &k.threads.slots[i];
         cap_install_defaults(child);
         cap_seat_authority(child, p->authority);
@@ -539,14 +513,12 @@ namespace kickos
         return 0;
     }
 
-    // NOT a destroy. This MARKS the target and breaks whatever park it is in; the target then
-    // reaches its own death point (the syscall boundary) and runs its own exit_current, and
-    // the existing cap_teardown does the rest. The only survivor is a thread that never
-    // enters the kernel again, which no caller may assume it will not be.
+    // NOT a destroy. This MARKS the target and breaks whatever park it is in; the target
+    // then reaches its own death point (the syscall boundary) and runs its own exit_current.
+    // The only survivor is a thread that never enters the kernel again, which no caller may
+    // assume it will not be.
     //
-    // The gate is PARENTHOOD, not an authority bit and not a capability, which makes it
-    // NON-TRANSFERABLE: there is no table entry for a cap_grant to copy, so a driver
-    // cannot hand its children's lives to a client.
+    // The gate is PARENTHOOD (caller_spawned), not an authority bit and not a capability.
     int thread_kill(kos_thread_t thread)
     {
         IrqLock lock;
@@ -574,20 +546,15 @@ namespace kickos
         return 0;
     }
 
-    // The FORCIBLE half. Same gate, same reach, different thing done along the edge: the
-    // target's resume is CLAIMED (switch_to rebuilds its context into kickos_thread_slay_exit
-    // before arch_switch), so unlike a kill it never returns to userspace at all and never
-    // gets the window in which a driver would have quieted its device. That is the meaning of
-    // the call, and the caller chose it over kill.
+    // The FORCIBLE half, same gate and same reach as thread_kill. The target's resume is
+    // CLAIMED (switch_to rebuilds its context into kickos_thread_slay_exit before
+    // arch_switch), so unlike a kill it never returns to userspace at all and never gets the
+    // window in which a driver would have quieted its device. The victim still runs its own
+    // cap_teardown, in its own context, through exit_current.
     //
-    // Nobody runs a stranger's cap_teardown: the victim runs its own, in its own context,
-    // through the exit_current every other death already uses.
-    //
-    // The termination argument, and why no timer is needed to reach a spinning victim: on one
-    // core, switch_to writes RUNNING for exactly one thread and a thread executing a syscall
-    // IS that thread. A target distinct from the caller is therefore READY, BLOCKED, or
-    // refused below, and both live states are claimed at the resume rather than at the
-    // request. The victim being off-CPU is a PRECONDITION of this request existing.
+    // No timer is needed to reach a spinning victim: on one core a target distinct from the
+    // caller is READY, BLOCKED or refused below, and both live states are claimed at the
+    // resume rather than at the request.
     int thread_slay(kos_thread_t thread, uint32_t timeout_us)
     {
         Thread* const c = sched::current();
@@ -607,11 +574,9 @@ namespace kickos
             {
                 return -KOS_EINVAL; // ending yourself is kos_exit; this path must return
             }
-            // REFUSED rather than masked, and idle for the plainer reason that killing it
-            // ends the scheduler's fallback. A privileged thread is not a privilege
-            // escalation to rebuild, since it is already privileged, but it may be inside
-            // kernel work holding kernel invariants, and discarding its frames discards
-            // them mid-flight. Same rule kickos_fault_kill_thread states for itself.
+            // Slaying idle ends the scheduler's fallback. A privileged thread may be inside
+            // kernel work holding kernel invariants, and discarding its frames discards them
+            // mid-flight. Same rule kickos_fault_kill_thread states for itself.
             if (t == sched::idle() or t->privileged)
             {
                 return -KOS_EINVAL;
@@ -620,25 +585,24 @@ namespace kickos
             {
                 return -KOS_EPERM;
             }
-            // THE CALLER PARKS FIRST, and the order is load-bearing. thread_cancel_kind
-            // breaks the victim's park, and a victim that outranks the caller is switched to
-            // from inside that call; on a backend that swaps inline it can reach EXITED
-            // before this line would otherwise have run, and its exit sweep, the only thing
-            // that wakes a WAIT_JOIN waiter, would find nobody parked on it. park_queueless
-            // also detaches `current`, which the cancel may already have republished.
+            // THE CALLER PARKS FIRST, and the order is load-bearing: thread_cancel_kind
+            // switches to a victim that outranks the caller, and on a backend that swaps
+            // inline that victim can reach EXITED before this line would otherwise have run,
+            // its exit sweep then finding nobody parked on it. park_queueless also detaches
+            // `current`, which the cancel may already have republished.
             park_queueless(c, WAIT_JOIN, t);
             if (timeout_us != KOS_TIMEOUT_NONE)
             {
-                // 0 is the arm-and-return form: the deadline is already behind the min-delta
-                // floor, so the timer releases this park at the first opportunity and the
-                // answer is -KOS_ETIMEDOUT unless the victim got there first.
+                // 0 is the arm-and-return form: the deadline is already behind the
+                // min-delta floor, so the timer releases this park at the first opportunity
+                // and the answer is -KOS_ETIMEDOUT unless the victim got there first.
                 ktime_deadline_arm(c, timeout_us);
             }
-            // SAMPLED BEFORE THE CANCEL, unlike thread_join's, and that is not cosmetic: the
-            // cancel can switch, and on a backend that swaps INLINE the victim may run, die
-            // and wake this thread back up inside that call. An epoch read afterwards would
-            // already carry the resume it is meant to wait for, and wq_confirm_resume would
-            // spin to KICKOS_POLL_SPIN_MAX and panic.
+            // SAMPLED BEFORE THE CANCEL, unlike thread_join's: the cancel can switch, and on
+            // a backend that swaps INLINE the victim may run, die and wake this thread back
+            // up inside that call. An epoch read afterwards would already carry the resume it
+            // is meant to wait for, and wq_confirm_resume would spin to
+            // KICKOS_POLL_SPIN_MAX and panic.
             epoch = c->switch_count;
             thread_cancel_kind(t, CANCEL_SLAY);
             sched::reschedule();
@@ -651,8 +615,8 @@ namespace kickos
     }
 
     // Create a task: an empty group that exists before any of its threads, holding a domain
-    // built from THIS grant. The creator is the only thread that may seat members into it or
-    // end it, on the same non-transferable parenthood gate as thread_kill.
+    // built from THIS grant. Only the creator may seat members into it or end it, on the
+    // same non-transferable parenthood gate as thread_kill.
     int task_create_call(void* mem_base, size_t mem_size, kos_task_t* out_task)
     {
         IrqLock lock;
@@ -677,10 +641,10 @@ namespace kickos
         return 0;
     }
 
-    // End a group: every live member is cancelled, and the creator's hold goes with it so the
-    // handle stops naming anything. Cooperative in exactly the way thread_kill is, so a member
-    // that never enters the kernel again is never reached, and it is not a destroy: the
-    // members run their own exits, so the slot goes back when the last one is gone.
+    // End a group: every live member is cancelled, and the creator's hold goes with it so
+    // the handle stops naming anything. Cooperative exactly as thread_kill is, so a member
+    // that never enters the kernel again is never reached; and not a destroy, the members
+    // running their own exits, so the slot goes back when the last one is gone.
     int task_kill(kos_task_t task)
     {
         IrqLock lock;
@@ -701,13 +665,13 @@ namespace kickos
     }
 
     // The group form. Every live member is SLAIN rather than cancelled, and the caller waits
-    // for the group to be empty, a different condition from any member's death and
-    // is why this park has its own kind.
+    // for the group to be empty, which is a different condition from any member's death and
+    // has its own park kind.
     //
-    // The creator's hold is dropped only on the way out of a successful wait, and never
-    // before it: dropping it first frees the slot the moment the group empties, and `t` is
-    // then a dangling name in a wait edge. On a timeout the hold survives with the group, so
-    // the handle still names something and a second call is possible.
+    // The creator's hold is dropped only on the way out of a successful wait, never before
+    // it: dropping it first frees the slot the moment the group empties, leaving `t` a
+    // dangling name in a wait edge. On a timeout the hold survives with the group, so the
+    // handle still names something and a second call is possible.
     int task_slay(kos_task_t task, uint32_t timeout_us)
     {
         Thread* const c = sched::current();
@@ -738,7 +702,7 @@ namespace kickos
                 task_drop_hold(t);
                 return 0;
             }
-            // Parked before the group cancel, and the epoch sampled before it, for the two
+            // Parked before the group cancel, and the epoch sampled before it, for the
             // reasons thread_slay above states: a member that outranks this thread can reach
             // its own exit from inside that call on a backend that swaps inline.
             park_queueless(c, WAIT_TASK_EMPTY, t);
@@ -785,8 +749,8 @@ namespace kickos
             }
             // THE state join exists to observe, and the one thread_kill refuses: the
             // generation bumps at RECLAIM and not at exit, so a handle to an
-            // exited-but-unreclaimed slot still resolves, and the target IS gone. Refusing
-            // it here would hang a joiner on an already-dead thread.
+            // exited-but-unreclaimed slot still resolves and the target IS gone. Refusing it
+            // here would hang a joiner on an already-dead thread.
             if (t->state == ThreadState::EXITED)
             {
                 return 0;
@@ -805,15 +769,14 @@ namespace kickos
         return static_cast<int>(c->wait_result);
     }
 
-    // Park until the CALLER is the last live thread. Takes NO deadline: this is the
-    // shutdown condition itself rather than a wait for an event, so there is no bound a
-    // caller could know. It is also the only shutdown primitive that covers a main's
-    // GRANDCHILDREN, which no handle it holds can name.
+    // Park until the CALLER is the last live thread. Takes NO deadline, and it is the only
+    // shutdown primitive that covers a main's GRANDCHILDREN, which no handle it holds can
+    // name.
     //
-    // ROOT ONLY. It observes, and waits on, threads outside the caller's own spawn
-    // subtree, and it is single-seat: whoever parks here first denies the primitive to
-    // everyone else for as long as it waits. Root being the sole caller is also what makes
-    // a second waiter impossible, since root cannot be inside two syscalls at once.
+    // ROOT ONLY. It observes, and waits on, threads outside the caller's own spawn subtree,
+    // and it is single-seat: whoever parks here first denies the primitive to everyone else
+    // for as long as it waits. Root cannot be inside two syscalls at once, so there is never
+    // a second waiter.
     int thread_wait_last()
     {
         Thread* const c = sched::current();
@@ -833,8 +796,8 @@ namespace kickos
             sched::reschedule();
         }
         wq_confirm_resume(c, epoch);
-        // The exit sweep is the only waker and it releases this park only when the caller
-        // IS the last live thread, so there is no other outcome to report.
+        // The exit sweep is the only waker and it releases this park only when the caller IS
+        // the last live thread, so there is no other outcome to report.
         return 0;
     }
 }

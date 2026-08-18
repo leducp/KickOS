@@ -2,9 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // A single-word cross-thread field whose memory ordering is part of its TYPE.
-//
-// There is NO read-modify-write surface: no fetch_add, no operator++, no operator+=, no
-// compare_exchange. A counter with a single writer is a load, an add and a store.
+// No read-modify-write surface: no fetch_add, no operator++, no operator+=, no
+// compare_exchange.
 
 #ifndef KICKOS_SYS_ATOMIC_H
 #define KICKOS_SYS_ATOMIC_H
@@ -18,16 +17,9 @@
 namespace kickos
 {
 
-// No default: every declaration names its ordering.
-//
-// ACQUIRE and RELEASE are separate bits because they order OPPOSITE ACCESSES of the same
-// field: ACQUIRE is spent by the load, RELEASE by the store. A field one thread publishes
-// and another consumes needs BOTH, and names both. Either alone is legal and buys nothing
-// on its own, since an acquire with no release behind it synchronizes with nothing; the
-// split exists so a declaration cannot pay for the half it does not use.
-//
-// There is no spelling for seq_cst, and no way to override the ordering at a call site: an
-// order omitted at one access out of ten is silent, so it is fixed by the TYPE.
+// A bitmask, not a choice of one: ACQUIRE and RELEASE order OPPOSITE ACCESSES of the same
+// field, so a field one thread publishes and another consumes names both. No seq_cst, and no
+// per-call-site override.
 enum class Order : uint8_t
 {
     RELAXED = 0u,
@@ -72,7 +64,7 @@ public:
     Atomic() = default;
     constexpr Atomic(T v) : v_{v} {}
 
-    // always_inline is load-bearing, not a hint: at -Os GCC emits an out-of-line copy and
+    // always_inline is load-bearing: at -Os GCC otherwise emits an out-of-line copy and
     // every access becomes a call.
     KICKOS_ATOMIC_INLINE operator T() const { return v_.load(LOAD_MO); }
 
@@ -87,8 +79,7 @@ public:
 
 private:
     static_assert(sizeof(T) <= 4, "wider than a word: keep the field volatile, not atomic");
-    // Descriptors reach these fields by byte offset (KOS_UART_READY_OFFSET), so the wrapper
-    // must not grow or realign what it wraps.
+    // Descriptors reach these fields by byte offset (KOS_UART_READY_OFFSET).
     static_assert(sizeof(std::atomic<T>) == sizeof(T)
                       and alignof(std::atomic<T>) == alignof(T),
                   "std::atomic must be a drop-in for the plain field");

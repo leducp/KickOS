@@ -2,34 +2,25 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Compiles every C-facing header as a standalone C11 translation unit.
-#
-# The tree tracks no .c file and CMake compiles none, so until this gate existed the C claim
-# those headers make was honoured by discipline: break it and it surfaces in a consumer's
-# tree, not in ours. The claim costs real complexity here, every split condition written
-# around C++-only syntax, so it is either enforced or dropped.
+# Compiles every C-facing header as a standalone C11 translation unit. The tree tracks no .c
+# file and CMake compiles none, so a break in the C claim these headers make surfaces in a
+# consumer's tree and nowhere else.
 #
 # Run from the repo root:
 #   tests/static/check_c_headers.sh <c-compiler> <include-root>...
 #
 #   corpus    a header is C-facing when it guards `extern "C"` with __cplusplus, plus every
-#             header such a header includes, transitively. That guard is the standard
-#             spelling of "a C TU may include this"; an UNGUARDED `extern "C"` is a C syntax
-#             error, so a header that means C++ only says so by leaving the guard off
-#             (kernel/include/kickos/kernel.h and arch/arm/common/mpu.h do). Nothing is
-#             listed by name, so a header that grows the guard, or that a guarded header
-#             starts including, joins the corpus on that commit and not on the day someone
-#             remembers this file.
-#             The seed scan reads `git ls-files`. The CLOSURE resolves through the include
-#             roots and takes what it finds there tracked or not: the generated
-#             kickos/config/cap_width.h is installed into the package, so a consumer's C TU
-#             reaches it and its verdict belongs here.
+#             header such a header includes, transitively. An UNGUARDED `extern "C"` is a C
+#             syntax error, so a C++-only header says so by leaving the guard off. Nothing is
+#             listed by name.
+#             The seed scan reads `git ls-files`; the CLOSURE resolves through the include
+#             roots and takes what it finds there tracked or not, so the generated and
+#             installed kickos/config/cap_width.h is in the corpus.
 #
 #   comments  tests/lib/strip_comments.awk blanks them before the claim is read, and the raw
-#             line supplies the string literal the stripper takes with them. Not optional: the
-#             note in arch/include/kickos/arch/arch.h says the words __cplusplus and
-#             `extern "C"` in prose while making no claim, and a plain grep enlists it. A file
-#             whose comment or literal is still open at EOF is REFUSED by name, because
+#             line supplies the string literal the stripper takes with them. Not optional: a
+#             header naming __cplusplus and `extern "C"` in prose only is a hit to a plain
+#             grep. A file whose comment or literal is still open at EOF is REFUSED by name:
 #             whether it is C-facing was then read off a partial file.
 #
 #   standalone one TU per header. A header that compiles only after another has supplied
@@ -40,40 +31,34 @@
 #             them all on one -I line resolves to whichever came first. The caller passes the
 #             one this board builds, with the generated directory and the chip and board ones.
 #
-#   compiler  passed in, and it is the board's own CMAKE_C_COMPILER: a consumer's C main is
-#             compiled by exactly that, so the verdict is that consumer's, and each board
-#             checks the arch header it actually ships. There is no search and no default. A
-#             gate that hunted for a compiler and found none would report clean, and
-#             project() already declares LANGUAGES C, so a tree that configured has one.
-#             It is PROVEN BOTH WAYS below before the corpus is read, and one that cannot be
-#             proven is refused by name.
+#   compiler  passed in, and it is the board's own CMAKE_C_COMPILER; there is no search and no
+#             default. It is PROVEN BOTH WAYS below before the corpus is read, and one that
+#             cannot be proven is refused by name.
 #
-#   std       -std=c11, never the compiler's default. C11 is the floor these headers already
-#             target (`_Static_assert`, `_Atomic`, <stdatomic.h>), and C23, which is the gcc
-#             15 default, adopts `bool`, `alignas`, `static_assert` and `nullptr` as keywords.
-#             A default-std probe therefore accepts four spellings that are C++ only under
-#             this rule, and the negative probes fail the compiler if the pin did not take.
+#   std       -std=c11, never the compiler's default. C23, the gcc 15 default, adopts `bool`,
+#             `alignas`, `static_assert` and `nullptr` as keywords, so a default-std probe
+#             accepts four spellings that are C++ only under this rule. The negative probes
+#             fail the compiler if the pin did not take.
 #
 #   refusal   a header whose own #include cannot be found is REFUSED by name, not reported as
 #             invalid C: the compiler judged nothing, so the verdict is UNKNOWN. Fix is a
 #             missing root on the command line, or a freestanding header the compiler lacks.
 #
 # THEREFORE NOT CAUGHT. Know these before trusting a green run:
-#   - `//` comments, compound literals and designated initialisers. All legal C99, none of
-#     them a C++-only construct, and the positive probe pins `//` as accepted.
+#   - `//` comments, compound literals and designated initialisers. All legal C99, and the
+#     positive probe pins `//` as accepted.
 #   - a quoted include that resolves next to the including file rather than under a root. It
 #     is compiled as part of its includer and never standalone.
 #   - anything behind a preprocessor conditional this gate does not define. It compiles with
-#     NO -D at all, so a header is checked in its default posture only, and the C branch of a
-#     `#ifdef __cplusplus` is the only branch read.
+#     NO -D at all, so the C branch of a `#ifdef __cplusplus` is the only branch read.
 #   - a GNU extension. The probe TUs use `__asm volatile`, so -pedantic-errors is deliberately
-#     absent and a GNU-only spelling passes as C here exactly as it does in a consumer build.
+#     absent and a GNU-only spelling passes as C here as it does in a consumer build.
 #   - LINKING. -fsyntax-only proves a C TU parses and type-checks against the header; it
 #     proves nothing about a symbol the consumer then has to find.
-#   - a C++ construct that is ALSO valid C with different meaning. A cast-expression spelled
-#     `(T)x`, or a struct tag reused as a type name, compiles both ways and means two things.
-#   - the arch, chip and board headers of every board but this one. That is per-configuration
-#     by construction, and the fleet sweep is what covers the rest.
+#   - a C++ construct that is ALSO valid C with different meaning: a cast-expression spelled
+#     `(T)x`, or a struct tag reused as a type name.
+#   - the arch, chip and board headers of every board but this one; the fleet sweep covers the
+#     rest.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -114,8 +99,7 @@ while IFS= read -r r; do
 done < "$TMP/roots.tree"
 
 for r in "$@"; do
-    # A root that does not exist yet would turn every include under it into an UNKNOWN, so it
-    # is refused here rather than reported one header at a time.
+    # A root that does not exist turns every include under it into an UNKNOWN.
     [ -d "$r" ] || fail "include root passed on the command line does not exist: $r"
     ROOTS="$ROOTS $r"
 done
@@ -125,10 +109,9 @@ for r in $ROOTS; do
     INCARGS="$INCARGS -I$r"
 done
 
-# --- the selector and the compile, as functions, so the self-test below runs the SAME code
-# --- the corpus does. Two copies would let the tested one stay right while the used one rotted.
+# --- the selector and the compile, as functions, so the self-test runs the SAME code -------
 
-# ROOTS is read by resolve_header, so the self-test points it at a synthetic tree and back.
+# resolve_header reads the global ROOTS, which the self-test repoints and restores.
 resolve_header() { # <relative include path> -> the resolved path, or 1
     for _r in $ROOTS; do
         if [ -f "$_r/$1" ]; then
@@ -139,11 +122,10 @@ resolve_header() { # <relative include path> -> the resolved path, or 1
     return 1
 }
 
-# Both readers below judge a file by its CODE, pairing the stripped copy with the raw line: a
-# header that only NAMES __cplusplus or extern "C" in a comment is not making the claim, and
-# this gate's own arch.h note is such a comment. The stripper blanks string literals as well,
-# so `extern "C"` and `#include "x.h"` survive it only as `extern ` and `#include `; the raw
-# line supplies the literal and the stripped line proves the line was code.
+# Both readers below judge a file by its CODE, pairing the stripped copy with the raw line.
+# The stripper blanks string literals as well, so `extern "C"` and `#include "x.h"` survive it
+# only as `extern ` and `#include `: the raw line supplies the literal and the stripped line
+# proves the line was code.
 STRIPPED="$TMP/stripped"
 strip_into() { # <file>; 0 -> $STRIPPED holds it, 1 -> refused and named in $TMP/unstrippable
     if awk -f "$STRIP" "$1" > "$STRIPPED" 2>> "$TMP/strip.err"; then
@@ -203,9 +185,9 @@ close_over_includes() { # <seed list file> <workdir> -> <workdir>/corpus and <wo
 }
 
 # 0 valid C11, 1 a language error, 2 an #include was not found. The TU comes from stdin so a
-# quoted include resolves against the repo root, which is where every corpus path is relative
-# to; a TU written into $TMP would resolve them against $TMP instead.
-# $CFLAGS and $INCARGS are unquoted BECAUSE they must word-split into separate arguments.
+# quoted include resolves against the repo root, which every corpus path is relative to; a TU
+# written into $TMP would resolve them against $TMP.
+# $CFLAGS and $INCARGS are unquoted so that they word-split into separate arguments.
 compile_as_c() { # <header path> <stderr file>
     # shellcheck disable=SC2086
     if printf '#include "%s"\n' "$1" | "$CC" $CFLAGS $INCARGS -x c - 2>"$2"; then
@@ -218,8 +200,6 @@ compile_as_c() { # <header path> <stderr file>
 }
 
 # --- the compiler, proven both ways --------------------------------------------------------
-# A compiler in the wrong mode, an -std that did not take, or a flag typo would each report
-# the whole corpus clean, and NONE of that is visible from a green run.
 
 mkdir -p "$TMP/p"
 cat > "$TMP/p/ok.h" <<'EOF'
@@ -245,8 +225,8 @@ if ! compile_as_c "$TMP/p/ok.h" "$TMP/p/ok.err"; then
 fi
 
 # Each of these is valid C++ and invalid C11, one construct per TU so a compiler blind to one
-# of them cannot hide behind the others. `bool`, `alignas`, `static_assert` and `nullptr` are
-# C23 keywords, so they also pin the -std=c11 above: they pass under the gcc 15 default.
+# cannot hide behind the others. `bool`, `alignas`, `static_assert` and `nullptr` are C23
+# keywords, so they also pin the -std=c11 above.
 : > "$TMP/p/neg.list"
 neg() { # <tag> <one line of C++>
     printf '%s\n' "$2" > "$TMP/p/neg_$1.h"
@@ -268,8 +248,6 @@ while IFS= read -r tag; do
 done < "$TMP/p/neg.list"
 
 # --- the selector, proven both ways --------------------------------------------------------
-# A seed scan that matched nothing, or a closure that followed nothing, would leave the whole
-# corpus empty and every absence-assertion vacuous.
 
 mkdir -p "$TMP/st/inc/kickos"
 cat > "$TMP/st/inc/kickos/probe_seed.h" <<'EOF'
@@ -320,9 +298,9 @@ struct kos_probe_prose
 };
 EOF
 
-# resolve_header reads ROOTS and compile_as_c reads INCARGS, so both are pointed at the
-# synthetic tree and restored. The tree roots stay OFF the path here: a kickos/probe_*.h that
-# resolved out of the real tree would make this self-test test that instead.
+# resolve_header reads ROOTS and compile_as_c reads INCARGS: both are repointed at the
+# synthetic tree and restored. The tree roots stay OFF the path, or a kickos/probe_*.h could
+# resolve out of the real tree.
 ls "$TMP/st/inc/kickos/"*.h | sort > "$TMP/st/headers"
 SAVED_ROOTS="$ROOTS"
 SAVED_INCARGS="$INCARGS"
@@ -331,9 +309,9 @@ INCARGS="-I$TMP/st/inc"
 seeds_of "$TMP/st/headers" > "$TMP/st/seeds"
 close_over_includes "$TMP/st/seeds" "$TMP/st/w"
 
-# probe_seed carries the guard; probe_cxx has an extern "C" with no guard and is C++ only;
-# probe_leaf and probe_deep arrive by include, one and two hops out; probe_orphan is included
-# by nobody; probe_prose names both spellings and an #include in COMMENTS only. Names, not a
+# probe_seed carries the guard; probe_cxx has an extern "C" with no guard; probe_leaf and
+# probe_deep arrive by include, one and two hops out; probe_orphan is included by nobody;
+# probe_prose names both spellings and an #include in COMMENTS only. Compared as names, not a
 # count: a count passes while the wrong three files are selected.
 SEL="$(sed 's|.*/||' "$TMP/st/w/corpus" | sort | tr '\n' ' ' | sed 's/ $//')"
 [ "$SEL" = "probe_deep.h probe_leaf.h probe_seed.h" ] || {
@@ -345,8 +323,7 @@ if [ -s "$TMP/unstrippable" ]; then
     fail "the stripper refused a synthetic probe header: $(tr '\n' ' ' < "$TMP/unstrippable")"
 fi
 
-# And end to end on a selected header: clean passes, the same header with one C++-only line
-# fails. The two halves above are useless if the verdict never reaches the report.
+# End to end on a selected header: clean passes, the same header with one C++-only line fails.
 compile_as_c "$TMP/st/inc/kickos/probe_seed.h" "$TMP/st/e.err" \
     || fail "the synthetic C-facing header does not compile as C11; the corpus verdicts are its own"
 printf 'namespace kos_probe_tail { }\n' >> "$TMP/st/inc/kickos/probe_seed.h"
@@ -373,7 +350,6 @@ N="$(wc -l < "$TMP/w/corpus" | tr -d ' ')"
 
 echo "== $N C-facing header(s) of $HDRS tracked: $SEEDS guard an extern \"C\" block, $ADDED reached by include =="
 echo "== compiled standalone with $CC ($("$CC" -dumpversion 2>/dev/null)) at $CFLAGS =="
-# Printed on every run: the include-closure half is the part no reader can guess from a name.
 if [ -s "$TMP/w/added" ]; then
     echo "== in the corpus by include only, not by a guard of their own =="
     sort "$TMP/w/added" | sed 's/^/   /'
@@ -399,8 +375,8 @@ done < "$TMP/corpus.s"
 
 RC=0
 
-# A file the stripper could not finish is UNKNOWN, not clean: its claim was read off a partial
-# file, so it may be a C-facing header this run never selected.
+# A file the stripper could not finish is UNKNOWN, not clean: it may be a C-facing header this
+# run never selected.
 if [ -s "$TMP/unstrippable" ]; then
     echo "" >&2
     sed -n '1,6p' "$TMP/strip.err" >&2

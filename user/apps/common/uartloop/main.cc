@@ -2,18 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // End-to-end exercise of the buffered userspace UART: a client drives the
-// <kickos/sys/uart.h> wire ABI against the REAL two-thread driver (not a mock), over the
-// sim's loopback "device" (system/init/sim/service_list_uart.cc). What the run proves,
-// beyond the mock-driven selftest case:
-//
-//   - the TX doorbell crosses threads: nothing but the service thread's kos_irq_notify
-//     raises the line, so only that wake of the IRQ thread can move a byte;
-//   - both rings stay SPSC across a real preemptible boundary, one writer per index and
-//     each in a different thread;
-//   - the loopback returns exactly what was sent, in order, so a mask or wrap bug in the
-//     ring shows up as wrong CONTENT rather than a wrong count;
-//   - the service thread was spawned with no window at all, so it cannot reach a register
-//     even by mistake.
+// <kickos/sys/uart.h> wire ABI against the REAL two-thread driver, over the sim's loopback
+// "device" (system/init/sim/service_list_uart.cc).
 //
 // The client must be a spawned thread: a kos_call parks its caller, and root has to stay
 // alive to report the verdict.
@@ -40,8 +30,7 @@ namespace
     constexpr int CH_EP = 2;   // delegated SIGNAL-only cap on the service endpoint
 
     kos_cap_t g_done = KOS_CAP_NONE;
-    // Root is the only reader and reads after the CH_DONE handshake, so no barrier beyond
-    // the semaphore is needed.
+    // Read by root, only after the CH_DONE handshake.
     Atomic<int, Order::RELAXED> g_wrote{-99};
     Atomic<int, Order::RELAXED> g_read{-99};
     Atomic<int, Order::RELAXED> g_match{-99};
@@ -50,8 +39,7 @@ namespace
     Atomic<int, Order::RELAXED> g_sustained{-99};
 
     // Several laps of the 512-byte TX ring, so it reaches FULL repeatedly and the client
-    // is forced onto the short-accept retry path. One lap would not reach it, and the
-    // defect this arm exists for only appears once a write is refused outright.
+    // is forced onto the short-accept retry path. One lap would not reach it.
     constexpr uint32_t SUSTAIN_TOTAL = 4096;
     constexpr uint32_t SUSTAIN_CHUNK = 200;
     // A zero accept is normal back-pressure; only a RUN of them with no progress between
@@ -122,11 +110,10 @@ namespace
         return static_cast<int>(rsp.len);
     }
 
-    // The short payload never fills the ring, so only this arm can catch a producer that
-    // stops ringing the doorbell once the ring is full: the consumer is parked and the
-    // producer is the only thing that can wake it, so one silent zero-accept ends the
-    // stream for good. Reported as bytes ACCEPTED, so a wedged channel fails the gate as
-    // a number instead of timing it out.
+    // The consumer is parked and the producer is the only thing that can wake it, so a
+    // producer that stops ringing the doorbell on a full ring ends the stream for good.
+    // Reported as bytes ACCEPTED, so a wedged channel fails the gate as a number rather
+    // than as a timeout.
     void sustain()
     {
         unsigned char chunk[SUSTAIN_CHUNK];
@@ -154,8 +141,7 @@ namespace
             if (took > 0)
             {
                 zeros = 0;
-                // Drain the loopback's RX ring so that IT is never what saturates: this
-                // arm is about the TX path.
+                // Drain the loopback's RX ring so that IT is never what saturates.
                 unsigned char sink[240];
                 (void)uart_call(KOS_UART_READ, 0, 240, nullptr, sink, sizeof(sink));
                 continue;
@@ -178,8 +164,8 @@ namespace
                             reinterpret_cast<unsigned char const*>(PAYLOAD), nullptr, 0);
 
         // The write returns when the SERVICE thread replies, which can precede the IRQ
-        // thread's drain, so the read has to be polled rather than read once. The retry is
-        // bounded so a genuine failure fails the gate instead of hanging it.
+        // thread's drain, so the read must be polled. Bounded, so a genuine failure fails
+        // the gate instead of hanging it.
         unsigned char back[64];
         int got = 0;
         for (int spin = 0; spin < 100 and got < n; spin++)
@@ -216,8 +202,8 @@ namespace
         }
         g_match = match;
 
-        // AFTER the content check, never before: this leaves the rings deliberately
-        // backed up, which would make the ordered-loopback assertion above meaningless.
+        // AFTER the content check, never before: it leaves the rings backed up, which
+        // would make the ordered-loopback check above meaningless.
         sustain();
 
         unsigned char st[sizeof(struct kos_uart_stats)];

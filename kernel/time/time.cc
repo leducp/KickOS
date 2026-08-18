@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Tickless time. A delta list of absolute deadlines (sorted ascending) drives
-// a single one-shot next-event timer armed for min(nearest sleeper, running-RR
-// slice), with a minimum-delta guard so we never program a compare already in
-// the past. Nothing time-pending => timer disarmed (zero timer interrupts).
-// CONFIG_SCHED_PERIODIC_TICK forces a classic periodic tick instead.
+// Tickless time. A delta list of absolute deadlines (sorted ascending) drives a single
+// one-shot next-event timer armed for min(nearest sleeper, running-RR slice), with a
+// minimum-delta guard against programming a compare already in the past. Nothing
+// time-pending leaves the timer disarmed. KICKOS_SCHED_PERIODIC_TICK forces a periodic
+// tick instead.
 
 #include <kickos/time.h>
 #include <kickos/bench.h>
-#include <kickos/endpoint.h> // endpoint_wait_abort: park.cc owns every EP unwind
+#include <kickos/endpoint.h> // endpoint_wait_abort
 #include <kickos/sched.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
@@ -17,7 +17,7 @@
 #include <kickos/kernel.h>
 #include <kickos/ktrace.h>
 
-#include <kickos/sys/errno.h> // KOS_ETIMEDOUT: the value every expiry arm delivers
+#include <kickos/sys/errno.h> // KOS_ETIMEDOUT
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 #include <kickos/trace/record.h>
@@ -27,8 +27,7 @@ namespace kickos
 {
     namespace
     {
-        // Sorted ascending by deadline, singly-linked through tnext, rooted at
-        // kernel().sleepq.
+        // Sorted ascending by deadline, singly-linked through tnext, rooted at the kernel.
 
         void sleepq_insert(Thread* t)
         {
@@ -102,15 +101,10 @@ namespace kickos
             return;
         }
 
-        // NO min-delta floor here, deliberately. This runs on EVERY context switch, and a
-        // floor re-derived from the clock would make `next` a different value on every
-        // call, which is the quantity the backends dedup their arm on. The dedup would
-        // never hit, the one-shot would restart from zero before reaching its compare, and
-        // a deadline inside the min-delta window would starve for as long as switches keep
-        // arriving. The floor belongs where the deadline is BORN, against ONE clock
-        // reading: ktime_sleep_until below for a sleeper, arm_slice for an RR quantum.
-        // An already-past deadline is an immediate fire; each backend floors its programmed
-        // delta at one tick to get that.
+        // NO min-delta floor here, deliberately: this runs on EVERY context switch, and a
+        // floor re-derived from the clock would change `next` on every call, which is the
+        // quantity the backends dedup their arm on. The floor belongs where the deadline is
+        // BORN, against ONE clock reading (ktime_sleep_until, arm_slice).
         arch_timer_arm(next);
     }
 
@@ -126,9 +120,8 @@ namespace kickos
         }
         c->deadline_ns = deadline_ns;
         c->state = ThreadState::BLOCKED;
-        // All three fields, like every other park: a sleeper is on no wait queue, and
-        // leaving the field unwritten would make this park correct only by virtue of
-        // whoever cleared it last.
+        // All three fields, like every other park: one left unwritten makes this park
+        // correct only by virtue of whoever cleared it last.
         c->wait_queue = nullptr;
         c->wait_kind = WAIT_SLEEP;
         c->wait_obj = nullptr; // the delta list is rooted in the Kernel, not in an object
@@ -164,9 +157,8 @@ namespace kickos
 
     void ktime_sleep_ns(uint64_t ns)
     {
-        // sleep(0) yields instead of parking. Deliberately NOT extended to
-        // 0 < ns < min-delta, which still rounds UP to the min slice: a delay promises time
-        // off-CPU, whereas yield() returns at once when there is no peer.
+        // sleep(0) yields instead of parking, and 0 < ns < min-delta still rounds UP to the
+        // min slice: a delay promises time off-CPU, yield() returns at once with no peer.
         if (ns == 0)
         {
             sched::yield();
@@ -189,19 +181,18 @@ namespace kickos
         uint64_t now = ktime_now();
 
         // MUST precede the wake loop: sched::wake reassigns kernel().current and tick_rr
-        // reads it, so running it after silently drops any slice expiry landing on the same
-        // interrupt as a sleeper wake. On a coarse clock the two deadlines quantise
-        // together, so that is the common case, not a corner.
+        // reads it, so running it after drops any slice expiry landing on the same interrupt
+        // as a sleeper wake.
         sched::tick_rr(now);
 
         while (kernel().sleepq != nullptr and kernel().sleepq->deadline_ns <= now)
         {
             Thread* t = kernel().sleepq;
             sleepq_remove(t);
-            // The tag is cleared HERE and never in sleepq_remove: a timed wait is on the
-            // sleepq AND a wait queue at once, so a clear there would erase the very edge
-            // this dispatch has to read. sched::wake reuses `link` for the ready list, so a
-            // thread still linked on a wait queue must leave it BEFORE the wake.
+            // The tag is cleared HERE, never in sleepq_remove: a timed wait is on the sleepq
+            // AND a wait queue at once, so a clear there would erase the edge this dispatch
+            // reads. sched::wake reuses `link`, so a thread still linked on a wait queue must
+            // leave it BEFORE the wake.
             switch (t->wait_kind)
             {
                 case WAIT_SLEEP:
@@ -213,8 +204,8 @@ namespace kickos
                 case WAIT_JOIN:
                 case WAIT_TASK_EMPTY:
                 {
-                    // On no list at all, so clearing the tag IS the whole unwind. It also
-                    // makes exit_current's sweep miss a waiter that has already given up.
+                    // On no list at all, so clearing the tag IS the whole unwind, and it is
+                    // what makes exit_current's sweep miss a waiter that has given up.
                     t->clear_wait_edge();
                     t->wait_result = -KOS_ETIMEDOUT;
                     sched::wake(t);
@@ -224,9 +215,8 @@ namespace kickos
                 case WAIT_EP_RECV:
                 case WAIT_EP_REPLY:
                 {
-                    // Delegated whole: which list to unlink from and which priority
-                    // donation to revert are endpoint internals, and this file must not
-                    // learn them. See endpoint_wait_abort (kickos/endpoint.h).
+                    // Which list to unlink from and which priority donation to revert are
+                    // endpoint internals.
                     endpoint_wait_abort(t, -KOS_ETIMEDOUT);
                     break;
                 }

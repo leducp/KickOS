@@ -7,7 +7,7 @@
 > accessor, so the question is answerable by reading one header. It is produced in M5 and consumed
 > in M6.
 
-Companion to `design-m6-smp.md` (the staged model and the candidate ranking) and to
+Companion to `design-m5-smp.md` (the staged model and the candidate ranking) and to
 `design-capability-table.md` section 8 (the uniprocessor hazards in the capability path). Neither
 of those carries an inventory; this does.
 
@@ -150,7 +150,7 @@ CCU40 slices into ONE free-running 64-bit HARDWARE counter precisely so that "th
 wrap word, so no read can manufacture a wrap" -- and it did that to dodge an unreliable DWT, not
 for SMP, which is why it is an existence proof rather than a plan. **Prefer a hardware 64-bit
 counter on every chip that can build one.** Where the silicon genuinely cannot, a seqlock over the
-pair is the fallback, and a per-core anchor is the other option `design-m6-smp.md` already names.
+pair is the fallback, and a per-core anchor is the other option `design-m5-smp.md` already names.
 
 This is the same residue that document lists under the atomics conversion, and the reason it is
 listed as ordering work rather than type work: the pair being two relaxed atomics instead of two

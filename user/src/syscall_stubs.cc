@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Userspace syscall stubs. Identical source across arches; only arch_syscall()
-// differs (sim trampoline vs SVC on ARM).
+// Userspace syscall stubs. Identical source across arches; only arch_syscall() differs.
 
 #include <kickos/sys.h>
 #include <kickos/libc/string.h>
@@ -11,9 +10,8 @@
 extern "C"
 {
 
-// The byte-count returns are pinned at 4 bytes on every target (see sys.h). sizeof on a
-// call expression is unevaluated, so these pin the DECLARED return type without emitting
-// a trap.
+// The byte-count returns are pinned at 4 bytes on every target (see sys.h). sizeof on a call
+// expression is unevaluated, so these pin the DECLARED return type without emitting a trap.
 static_assert(sizeof(kos_kconsole_write(nullptr, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_send(0, nullptr, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_send_timed(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
@@ -278,10 +276,9 @@ void kos_panic(char const* msg)
     __builtin_unreachable();
 }
 
-// Planted by the arch as the return address of an UNPRIVILEGED thread's entry: a worker
-// that returns must reach the kernel exit path through the syscall trap, never by
-// calling kickos_thread_return from unprivileged mode. Privileged threads use
-// kickos_thread_return; unused on the sim, which has no real privilege.
+// Planted by the arch as the return address of an UNPRIVILEGED thread's entry: such a worker
+// must reach the kernel exit path through the syscall trap, never by calling
+// kickos_thread_return, which is the privileged threads' path. Unused on the sim.
 void kickos_user_thread_return(void)
 {
     kos_exit(0);
@@ -368,8 +365,8 @@ int kos_irq_unmask(int line)
 uint64_t kos_clock_now(void)
 {
     uint64_t out = 0;
-    // On a reject (bad or misaligned out-ptr) the kernel never writes `out`, so the
-    // status must be checked or the caller gets an uninitialized time.
+    // On a reject (bad or misaligned out-ptr) the kernel never writes `out`, so the status
+    // must be checked or the caller gets an uninitialized time.
     long const rc = static_cast<long>(
         arch_syscall(KOS_SYS_CLOCK_NOW, reinterpret_cast<uintptr_t>(&out), 0, 0, 0));
     if (rc < 0)

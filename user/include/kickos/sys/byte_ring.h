@@ -12,16 +12,8 @@
 
 #include <kickos/sys/atomic.h>
 
-// `size` MUST be a power of two; usable capacity is size-1, because one slot is reserved
-// so that head == tail means EMPTY unambiguously rather than either empty or full.
-//
-// Both indexes carry the publication: each is stored by the side that advances it and read
-// by the other, so the store releases the payload it exposes and the load acquires it. That
-// is what makes a byte written before `head` moves readable after the consumer has seen the
-// move; a compiler barrier only orders the emitted code and says nothing a second core
-// honours. One access per operation pays for an ordering it does not need (the producer's
-// read of its own head, the consumer's of its own tail), which is the price of the ordering
-// living in the type rather than at the call site.
+// `size` MUST be a power of two; usable capacity is size-1, one slot being reserved so that
+// head == tail means EMPTY and never full.
 struct kos_byte_ring
 {
     unsigned char* buf;
@@ -67,8 +59,7 @@ static inline uint32_t kos_byte_ring_space(struct kos_byte_ring const* r)
     return r->mask - kos_byte_ring_used(r);
 }
 
-// Producer side. Returns the bytes ACCEPTED, which may be less than n on a full ring; the
-// policy for a short accept belongs to the caller.
+// Producer side. Returns the bytes ACCEPTED, which may be less than n on a full ring.
 static inline uint32_t kos_byte_ring_push(struct kos_byte_ring* r,
                                           unsigned char const* src, uint32_t n)
 {
@@ -83,7 +74,7 @@ static inline uint32_t kos_byte_ring_push(struct kos_byte_ring* r,
         r->buf[idx] = src[i];
         idx = (idx + 1u) & r->mask;
     }
-    r->head.store(idx); // releases every payload byte the new head exposes
+    r->head.store(idx);
     return n;
 }
 
@@ -102,13 +93,12 @@ static inline uint32_t kos_byte_ring_pop(struct kos_byte_ring* r, unsigned char*
         dst[i] = r->buf[idx];
         idx = (idx + 1u) & r->mask;
     }
-    r->tail.store(idx); // releases the reads above, so no slot is freed before it is copied
+    r->tail.store(idx);
     return n;
 }
 
 // Consumer side, non-destructive: copies up to n bytes from the tail WITHOUT advancing it.
-// Pair it with kos_byte_ring_drop once the sink has said how many it took; a pop into a
-// device that then refuses them has nowhere to put them back.
+// Pair it with kos_byte_ring_drop once the sink has said how many it took.
 static inline uint32_t kos_byte_ring_peek(struct kos_byte_ring const* r, unsigned char* dst,
                                           uint32_t n)
 {
@@ -136,7 +126,6 @@ static inline void kos_byte_ring_drop(struct kos_byte_ring* r, uint32_t n)
         n = used;
     }
     uint32_t const tail = r->tail.load();
-    // Releases the preceding peek's reads, so no slot is freed before it is copied.
     r->tail.store((tail + n) & r->mask);
 }
 
@@ -149,7 +138,7 @@ static inline int kos_byte_ring_pop_one(struct kos_byte_ring* r, unsigned char* 
     }
     uint32_t const tail = r->tail.load();
     *out = r->buf[tail];
-    r->tail.store((tail + 1u) & r->mask); // releases the read above
+    r->tail.store((tail + 1u) & r->mask);
     return 1;
 }
 

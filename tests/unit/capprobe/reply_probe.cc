@@ -2,18 +2,12 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // cap_can_take_reply is the ENTIRE check behind KICKOS_ASSERT(minted == 0) at both reply-mint
-// sites (kernel/syscall/syscall_ipc.cc). The probe runs on the target's table, the mint that
-// follows is asserted rather than tested, and the assert is sound only while the probe refuses
-// in exactly the states the mint refuses in. Nothing gated that equivalence before this file.
-//
-// The cost of drift is not a wrong return value. KICKOS_ASSERT is live in every posture
-// (kernel/include/kickos/kernel.h has two arms and both panic), so a probe that admits one
-// state the mint refuses is a kernel panic in a shipped image.
+// sites (kernel/syscall/syscall_ipc.cc), and KICKOS_ASSERT panics in every posture: the probe
+// must refuse in exactly the states cap_install_reply refuses in.
 //
 // Each arm builds ONE of the two states the mint can refuse in and leaves the other clause
-// satisfied, so a probe that lost either clause fails an arm rather than being covered by the
-// other. Host-only: no cap-table free list or reply count is observable from userspace, and
-// the mint is driven on a PEER's table, which no single-threaded on-target arm can set up.
+// satisfied, so a probe that lost either clause fails an arm. Host-only: no cap-table free
+// list or reply count is observable from userspace, and the mint is driven on a PEER's table.
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>
@@ -38,21 +32,19 @@ namespace kickos
             constexpr int SLOT_CLIENT = 1;
             constexpr uint8_t PRIO = 5;
 
-            // Unsigned alias for the generated macro: the gtest comparison helpers take their
-            // operands by reference, so a macro expanding to a signed literal reaches
-            // -Wsign-compare as a non-constant.
+            // The gtest comparison helpers take their operands by reference, so the signed
+            // literal the macro expands to reaches -Wsign-compare as a non-constant.
             constexpr uint32_t REPLY_MAX = KICKOS_CAP_REPLY_MAX;
 
-            // Two spare dynamic slots past the reply bound, so the bound is reachable with the
-            // free list still non-empty. Without that slack the two clauses of the probe could
-            // only ever refuse together and no arm could isolate either.
+            // Two spare dynamic slots past the reply bound, so the bound is reachable with
+            // the free list still non-empty; without the slack no arm can isolate one clause.
             constexpr uint32_t TABLE_WIDTH = KICKOS_CAP_FIRST_DYNAMIC + REPLY_MAX + 2;
             static_assert(TABLE_WIDTH <= KICKOS_MAX_HANDLES,
                           "the arms below ask the slab for a table wider than the codec's "
                           "ceiling, which cap_slab_attach asserts on");
 
-            // THE CLAIM, read at whatever state the arm has built: the probe's answer and the
-            // mint's are one answer. Consumes a slot when it succeeds, so an arm calls it last.
+            // THE CLAIM: the probe's answer and the mint's are one answer. Consumes a slot
+            // when it succeeds, so an arm calls it last.
             void expect_probe_answers_mint(Thread* server, Thread* client, bool expected)
             {
                 bool const probe = cap_can_take_reply(server);
@@ -72,7 +64,7 @@ namespace kickos
             }
         }
 
-        // The baseline, so a later arm's refusal is the state that arm built and not the
+        // The baseline, so a later arm's refusal is the state that arm built, not the
         // fixture's.
         TEST_F(CapProbe, a_fresh_table_takes_a_reply)
         {
@@ -112,8 +104,7 @@ namespace kickos
             attach_caps(server, TABLE_WIDTH);
             int sem_handle = 0;
             (void)semaphore(&sem_handle);
-            // A real object handle, because a mint is the only thing under test: cap_install
-            // takes no reference, so the semaphore outlives the arm untouched.
+            // cap_install takes no reference, so the semaphore outlives the arm untouched.
             while (server->cap_free_head != KCAP_FREE_NONE)
             {
                 uint32_t cap = KCAP_INVALID;

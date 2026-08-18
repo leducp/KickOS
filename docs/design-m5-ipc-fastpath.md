@@ -88,11 +88,15 @@ measurable at about 4 percent.
 
 ### 1.2 It also sizes the SMP decision
 
-`design-m6-smp.md` states that a shared kernel's payoff is Amdahl-bounded by the fraction of a
+`design-m5-smp.md` states that a shared kernel's payoff is Amdahl-bounded by the fraction of a
 round trip spent inside `IrqLock`, and that its "about 2x" figure is unproven. The bound cannot be
 computed from the numbers above, because the fixed term is not yet split into locked and unlocked
 parts -- that is section 3. What section 1 already settles is that the fraction is NOT dominated
 by the copy, which is the part a big lock is usually argued about.
+
+**Section 3.0.4 now carries the number: 53 percent measured, at least 43 percent as a floor,
+bounding a two-core big lock at 1.31x and 1.40x respectively.** Section 3.0.1's earlier 31 percent
+is superseded rather than wrong; it omitted two locked legs.
 
 ## 1.3 `xmc4800-relax` CANNOT measure cycles, and this is settled rather than suspected
 
@@ -299,6 +303,12 @@ which sits above the 31 percent floor section 3.0.1 derives from leaves alone, e
 should. Both figures are inflated by the instrument and by different amounts, so treat 31 to 38
 percent as the band and not either end as exact.
 
+> **The 38 percent is WITHDRAWN and the paragraph above is the record of it, not a live figure.**
+> It divides an UNCORRECTED composite by an INSTRUMENTED round trip, and 4.10 shows the correction
+> it lacked is worth about 57 cycles for every bracket nested inside it. The live number is 3.0.4,
+> measured on `esp32c6-wroom` with both controls in the table. Nothing else in this section is
+> affected: the per-span figures are the measurement and stand.
+
 **The instrument is far more expensive on this board than on the LX6**: the round trip goes from
 4736 cycles uninstrumented to 7859 instrumented, where `PH_NULL` reads 1. The DWT sits in the PPB
 and an M7 access there is not a core-register read, and the brackets are optimisation barriers in a
@@ -307,17 +317,126 @@ carries the cheaper absolute numbers.
 
 ### 3.0.1 The Amdahl number, at last
 
+> **SUPERSEDED by 3.0.4.** The route this section takes -- sum the leaves, refuse the composites
+> -- is still the right one, and the 31 percent it produced was honestly labelled a floor. Two
+> things it could not see have since been measured: the correction rule it read the table under
+> was wrong for composites (4.10), and a call/reply round trip has a THIRD locked leg, the
+> server's own `kos_recv` park, which this section never counted. Kept unedited because 31
+> percent is the number `design-m5-smp.md` and `STATE.md` planned against.
+
 Summing only the leaves that sit INSIDE `IrqLock` -- `CALL_RESOLVE`, `CALL_PROBE`, `CALL_COPY`,
 `CALL_MINT`, `CALL_PARK` on the call side, and `REPLY_LOOKUP`, `REPLY_COPY`, `REPLY_FUNNEL`,
 `REPLY_WAKE` on the reply side -- gives 1517 cycles of 4818.
 
 **At least 31 percent of a call/reply round trip is spent under the kernel lock.** It is a FLOOR:
 the wake path's ready-queue work is inside the lock and is not separately bracketed, and
-`CALL_VALIDATE` and `CALL_RESUME` are correctly outside it. `design-m6-smp.md` states that a shared
+`CALL_VALIDATE` and `CALL_RESUME` are correctly outside it. `design-m5-smp.md` states that a shared
 kernel's payoff is Amdahl-bounded by exactly this fraction and that its "about 2x" figure is
 unproven. A floor of 31 percent bounds the speedup of a two-core big-lock kernel at
 1 / (0.31 + 0.69/2), about **1.45x**, before any contention -- which is materially below 2x and is
 now a measured input to that decision rather than an assumption.
+
+### 3.0.4 The Amdahl number, re-derived where the composites are honest
+
+`esp32c6-wroom`, rv32imac at 160 MHz, ENFORCING (PMP NAPOT), tree `22379320`, log
+`.session/logs/m5nest2-esp32c6-wroom-bench.log`. Minimums, n as tabled. Chosen because
+`arch_switch` PENDS on rv32imac, so a span closes before the lock does rather than when the
+thread is next resumed, which is what makes the LX6's composites unusable (3.0).
+
+Its cycle source is NOT `rdcycle`: the C6 traps on that instruction, so `chip_esp32c6.cc` points
+the instrument at the core-clocked CLINT MTIME low word. That is an MMIO load, so the instrument
+is dearer here than on any board measured before it: **`PH_NULL` is 2 cycles and `PH_NEST` is 51**,
+against 1 and about 57 on the LX6.
+
+**The instrument now carries both controls, and the correction rule is the one in 4.10.** A leaf is
+`leaf - PH_NULL`. A composite holding `k` brackets at any depth is `composite - k * PH_NEST`, and
+what that produces is the sum of the children's CORRECTED values plus the parent's own unbracketed
+work. Two reconstructions check it on this capture:
+
+- `CALL_MINT` reads 494 over two children. `494 - 2 * 51 = 392` against corrected children
+  `283 + 108 = 391`. **One cycle in 392.** The old rule would have said `494 - 2 * 2 = 490`, which
+  is 99 cycles of work that is not there.
+- `REPLY_TOTAL` reads 1296 over eight brackets. `1296 - 8 * 51 = 888` against corrected
+  `REPLY_LOCKED` 738 plus corrected `REPLY_VALIDATE` 132, leaving 18 cycles for the
+  `sched::current()` call and the `IrqLock` between them.
+
+#### A round trip has THREE locked legs, not two
+
+`SWITCH_TO` reports `n = 280021` and `PICK_NEXT` reports `n = 400028` over 140000 round trips:
+**two switches and three reschedules per round trip**, which is not the shape section 3.0.1
+assumed. With equal-priority peers the reply's wake does NOT switch -- `pick_next` returns the
+still-running server -- so the two switches are the call's wake and the server's own `kos_recv`
+park. That park holds `IrqLock` and nothing had ever bracketed it. It is now `RECV_LOCKED`.
+
+#### The direct number
+
+| locked leg | composite | brackets inside | corrected | its leaves, corrected |
+|---|---|---|---|---|
+| `CALL_LOCKED` (fastpath arm) | 2790 | 19 | **1821** | 1560 |
+| `RECV_LOCKED` (parking arm) | 1551 | 9 | **1092** | 845 |
+| `REPLY_LOCKED` | 1044 | 6 | **738** | 552 |
+| **per round trip** | | **34** | **3651** | **2957** |
+
+The bracket counts are read off the source and every one of them is confirmed by an `n` column:
+`CALL_LOCKED` and `CALL_MINT` both report 120000, `RECV_LOCKED` 120000, `REPLY_LOCKED` 140000,
+and the shared wake-path phases report exactly two switches and three reschedules per trip.
+
+The leaves that make up the 2957, each net of `PH_NULL`:
+
+| leg | leaves |
+|---|---|
+| call | `CALL_RESOLVE` 134, `CALL_PEEK` 16, `CALL_PROBE` 17, `CALL_POP` 51, `CALL_COPY` 94, `CALL_MINT_CAP` 283, `CALL_MINT_INFO` 108, `CALL_PARK` 149, `WAKE_UNPARK` 48, `PICK_NEXT` 59, `SWITCH_BOOK` 70, `MPU_APPLY` 443, `KTIME_REARM` 67, `ARCH_SWITCH` 21 |
+| recv | `RECV_RESOLVE` 150, `RECV_SCAN` 35, `PICK_NEXT` 59, `SWITCH_BOOK` 70, `MPU_APPLY` 443, `KTIME_REARM` 67, `ARCH_SWITCH` 21 |
+| reply | `REPLY_LOOKUP` 266, `REPLY_COPY` 94, `REPLY_FUNNEL` 85, `WAKE_UNPARK` 48, `PICK_NEXT` 59 |
+
+**The 694-cycle gap between the floor and the direct number is identified, not residual.** It is
+26 cycles of unbracketed body in `CALL_LOCKED`, 6 in `REPLY_LOCKED`, 0 in `RECV_LOCKED`, plus 44
+inside `SWITCH_TO` and about 617 in the `sched::wake` / `wq_block` plumbing: four nested `IrqLock`
+constructions per wake, `resched_after_wake`'s two state tests and `reschedule`'s
+`next == current` test. That is lock and call-frame overhead, not hidden algorithmic cost, and it
+is why the two ends differ by as much as they do rather than by nothing.
+
+#### The denominator, and why its uncertainty does not matter
+
+The instrumented 8 B round trip is 55555 ns, which at 160 MHz is 8889 cycles. Forty-two brackets
+execute per equal-priority round trip (23 call, 10 recv, 9 reply), and a bracket costs the path it
+sits in `PH_NEST - PH_NULL` = 49 cycles.
+
+That constant is not taken on faith. **Two captures on this board differ by exactly four brackets**
+-- `m5nest` at 38, `m5nest2` at 42 -- and their 8 B round trips differ by 55555 - 54392 = 1163 ns,
+which is 186 cycles, or **46.5 cycles per bracket measured differentially**. So the uninstrumented
+8 B round trip is 8889 - 42 * 46.5 = 6936 cycles, or 6831 using the 49. Take **6830 to 6940**.
+
+| | locked cycles | of 6936 | of 6831 |
+|---|---|---|---|
+| leaf floor | 2957 | 42.6% | 43.3% |
+| direct, corrected composites | 3651 | 52.6% | 53.5% |
+
+**At least 43 percent of a call/reply round trip is spent under the kernel lock, and the direct
+measurement puts it at 53 percent.** The two do not coincide and are not meant to: the floor omits
+the 694 cycles of lock plumbing itemised above, all of which is inside the lock. The floor is the
+number that survives if the correction constant is wrong by any amount; the direct number is the
+one to plan against, and the two reconstructions above are what license it.
+
+A two-core big lock is Amdahl-bounded at `1 / (f + (1 - f) / 2)`:
+
+- `f = 0.526` gives `1 / (0.526 + 0.237)` = **1.31x**
+- the floor `f = 0.426` gives `1 / (0.426 + 0.287)` = **1.40x**, an upper bound on the speedup
+
+The denominator's own 1.6 percent spread moves either figure by under 0.01x, so an exact
+uninstrumented capture would not change the decision and is not worth a second knob.
+
+**This is an ENFORCING board, and that is not what carries the result.** `MPU_APPLY` is 443 cycles
+per switch and both switches are inside the lock, so the PMP reprogram alone is 886 of the 3651.
+Removing it entirely gives 2765 locked of 6050, `f = 0.457`, and **1.37x**. So no posture of this
+board reaches the "about 2x" `design-m5-smp.md` assumes.
+
+**What this replaces, and by how much.** Section 3.0.1's floor was 31 percent bounding 1.45x. The
+new floor is 43 percent bounding 1.40x, and the direct number is 53 percent giving 1.31x. The
+floor moved because two whole locked legs were missing from it: the wake path's ready-queue work
+and the entire `kos_recv` park. The withdrawn 38 percent from 3.0.3 is not resurrected -- it came
+from an uncorrected composite on `teensy41` and the correction it lacked is worth about 57 cycles
+per bracket there.
 
 ### 3.1 The same answer, reached independently
 
@@ -481,5 +600,30 @@ switch pends too.
 a band whose 31 percent end is a LEAF floor and survives, and whose 38 percent end came from a
 composite on `teensy41` and does not. The band's upper end is therefore unproven and the honest
 reading today is "at least 31 percent". Since that number is what sizes the M6 big-lock Amdahl
-bound, **it should be re-derived from leaves before anyone plans against it**, and section 1.2's
+bound, **it should be re-derived from leaves before anyone plans against it**, and section 3.0.3's
 "31 to 38 percent" should be read as "31 percent measured, upper end withdrawn" until then.
+
+#### FIXED, and the fix found a second defect of the same family
+
+`PH_NEST` is `PH_NULL` with an enclosing span wrapped around it, so it prices exactly what a
+complete nested bracket costs its parent: the inner mark, the inner closing read AND the inner
+accumulator call. The correction rule in `bench.h` and in the printed table header is now
+`leaf - PH_NULL` and `composite - k * PH_NEST`, and 3.0.4 checks it two ways on silicon.
+
+The rule leaves `(k - 1) * PH_NULL` on the table for a parent with `k` children in series, because
+one counter read serves as the close of one bracket and the open of the next. On `esp32c6-wroom`
+that is 2 cycles against a 392-cycle `CALL_MINT`, and it is the correction's own floor.
+
+**The second defect: a composite shared between two code paths reports the cheaper path's
+minimum.** `bench.h` already forbade this for the slowpath LEAVES -- "a shared accumulator would
+let one slowpath sample move the fastpath's min with nothing in the table saying it had" -- and
+`CALL_LOCKED` and `CALL_TOTAL` did it anyway. The first `esp32c6-wroom` capture showed
+`CALL_LOCKED` at `n = 140000` against `CALL_MINT` at `n = 120000`, and its minimum of 1652 was
+below the 1571 its own fastpath leaves already sum to: the 20000 slowpath calls of the donating
+step, which park without ever reaching the mint, owned the minimum. **A composite smaller than its
+own leaves is the tell, and matching `n` against a leaf only that arm executes is the check.** The
+two arms now close different phases, and `endpoint_recv` gained the same treatment.
+
+**A bracket count is a source fact and must be stated with the number it corrects.** 3.0.4 states
+19, 9 and 6 for the three locked legs and 42 for the whole round trip, each confirmed by an `n`
+column rather than asserted.

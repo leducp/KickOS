@@ -183,10 +183,31 @@ one kernel instance per core over disjoint memory -- "because they are simpler a
 closer to the current sequential seL4 proofs." The project this document cites as
 the big-lock precedent has aimed its own assurance roadmap away from the big lock.
 
-The number that should decide it is not in this document and is cheap to get: what
-fraction of a call/reply round-trip is spent inside `IrqLock` today, measured
-single-core on the bench. A shared kernel's payoff is Amdahl-bounded by exactly that
-fraction, and the "about 2x" figure below is unproven.
+The number that should decide it is no longer missing. `design-m5-ipc-fastpath.md`
+section 3.0.4 measures it on `esp32c6-wroom` (rv32imac, enforcing, 160 MHz): **53
+percent of a call/reply round trip is spent inside `IrqLock`, with a leaf floor of 43
+percent.** A shared kernel's payoff is Amdahl-bounded by exactly that fraction, so a
+two-core big lock is bounded at `1 / (0.53 + 0.47 / 2)` = **1.31x**, and even the floor
+caps it at 1.40x. **The "about 2x" figure below is not merely unproven, it is out of
+reach**, and it is out of reach before any contention, cache-line bouncing or lock
+handoff cost is counted.
+
+Three things about that number bear on the choices here rather than merely sizing them:
+
+- **It is not an MPU artifact.** The PMP reprogram is 443 cycles per switch and both
+  switches are inside the lock, so it is 886 of the 3651 locked cycles. Delete it
+  entirely and the fraction is still 46 percent, bounding 1.37x.
+- **The round trip has THREE locked legs**, not the two a call-and-reply reading
+  suggests: the server's own `kos_recv` park holds `IrqLock` across a context switch and
+  is one of the two switches per trip. A big lock serialises that leg too.
+- **What sits in the critical section is mostly not the copy.** It is the reply-cap mint,
+  the two ready-queue reschedules, the MPU reprogram and the lock plumbing itself. So
+  shrinking the HOLD TIME is a different piece of work from the fastpath, and neither
+  substitutes for the other.
+
+An earlier reading of this page planned against "at least 31 percent" bounding 1.45x,
+from `design-m5-ipc-fastpath.md` section 3.0.1. That was a floor taken over two of the
+three locked legs with the wake path unbracketed, and it is superseded rather than wrong.
 
 ## M6 lands the MMU, so do not design M5 into a corner
 
@@ -386,6 +407,8 @@ happens-before edge, so the secondary must NOT re-init them.
   - Static partition sizes (per-core arena versus shared window, slot count and size)
     against real app and console-ring footprints, and the PMSAv6 grant of the window
     on BOTH cores under an MPU build (natural alignment, no arena overlap).
-  - BKL contention and the ~2x claim, measured on a real 2-core workload.
+  - BKL contention on a real 2-core workload. The ~2x claim is already refused
+    single-core (1.31x, `design-m5-ipc-fastpath.md` section 3.0.4); what is still open is
+    how much BELOW that figure contention drives it.
   - Cross-ISA parity: one SMP image as dual-M33 versus dual-Hazard3 producing
     identical scheduler behaviour on one RP2350 board.

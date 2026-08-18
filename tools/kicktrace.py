@@ -7,20 +7,16 @@
 # record stream produced by the kernel frontend (see include/kickos/trace/record.h)
 # and the RTT ch1 sink; the sim flushes that ring to a file at shutdown.
 #
-# What it does, and why:
-#   * self-delimiting parse: type -> length, never guesses; an unknown type
-#     triggers a resync scan for the next SESSION magic.
-#   * two-anchor resync: two SESSION records each pair a u32 trace stamp with a
-#     u64 ns clock anchor; two points define the tick->ns rate AND let us unwrap
-#     the u32 trace clock across its ~wrap without knowing the frequency a priori.
-#   * loss accounting: the seq number is monotonic per record; a gap means the
-#     sink dropped (ring full) or the link lost records. Cross-checked against the
-#     SESSION records_attempted count.
+# The decoding rules:
+#   * two-anchor clock: two SESSION records each pair a u32 trace stamp with a
+#     u64 ns clock anchor; two points define the tick->ns rate AND unwrap the u32
+#     trace clock across its wrap without knowing the frequency a priori.
+#   * loss accounting: the seq number is monotonic per record. Cross-checked
+#     against the SESSION records_attempted count.
 #   * rule (f): a seq gap POISONS any open ENTER/EXIT pair straddling it (the pair
 #     is discarded, not mis-measured) and EXCLUDES that time span from CPU%.
 #   * CPU%: from the SWITCH chain (tid 0 == idle); ISR time that ran while idle
-#     was current is subtracted from idle (the CPU was busy in the ISR).
-#   * latency stats for switch / syscall / IRQ, and a Chrome-trace JSON dump.
+#     was current is subtracted from idle.
 
 import sys
 import struct
@@ -53,22 +49,19 @@ REC_LEN = {
     EV_IRQ_EXIT: 9,
 }
 
-# TODO(de-drift): ARCH_NAME is a hand-maintained mirror of the C++ source of truth
-# (kickos::trace::ArchId in include/kickos/trace/record.h). The number is the WIRE
-# contract; the string here is a human label. The tests/unit/telemetry idmap cross-check
-# fails the build if the number set drifts. The durable fix is to GENERATE this from
-# the C++ enum (nanobind / a codegen step); that is future-milestone work.
+# TODO(de-drift): generate ARCH_NAME from kickos::trace::ArchId
+# (include/kickos/trace/record.h), which it mirrors by hand. The number is the WIRE
+# contract, the string here a human label, and the tests/unit/telemetry idmap
+# cross-check fails the build if the number set drifts.
 ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv"}
 
-# syscall numbers -> names. Used to break syscall cost down per-call. *sleep_ns* and
-# *sem_wait* are BLOCKING: their ENTER..EXIT span includes intended block time, so
-# judge them by on-CPU overhead.
+# syscall numbers -> names. *sleep_ns* and *sem_wait* are BLOCKING: their ENTER..EXIT
+# span includes intended block time, so judge them by on-CPU overhead.
 #
-# TODO(de-drift): this is a hand-maintained mirror of enum kos_syscall_nr
-# (user/include/kickos/sys/abi.h). The tests/unit/telemetry idmap gate parses abi.h and
-# fails if a number is missing or stale here, or if a label is not the enumerator
-# suffix lowercased, so keep the names mechanical. The durable fix is to GENERATE
-# this from the C++ enum (nanobind / a codegen step); that is future-milestone work.
+# TODO(de-drift): generate this from enum kos_syscall_nr (user/include/kickos/sys/abi.h),
+# which it mirrors by hand. The tests/unit/telemetry idmap gate parses abi.h and fails if
+# a number is missing or stale here, or if a label is not the enumerator suffix
+# lowercased, so keep the names mechanical.
 SYSCALL_NAME = {
     1: "kconsole_write", 2: "yield", 3: "sleep_ns", 4: "sem_create", 5: "sem_wait",
     6: "sem_post", 7: "thread_spawn", 8: "exit", 9: "irq_inject", 10: "guard_addr",
@@ -90,9 +83,9 @@ SYSCALL_NAME = {
 TRACE_MAGIC = 0x4B545243
 TIMER_LINE = 0xFFFE
 NO_THREAD = 0xFFFF
-# Note: KOS_SYS_EXIT is a no-return syscall, recorded as SYSCALL_ENTER with no
-# matching EXIT (one per exiting thread). The structural check tolerates unmatched
-# ENTERs (exit(), or threads blocked at shutdown) and flags only orphan EXITs.
+# KOS_SYS_EXIT is a no-return syscall, recorded as SYSCALL_ENTER with no matching
+# EXIT (one per exiting thread). The structural check tolerates unmatched ENTERs and
+# flags only orphan EXITs.
 SEQ_MOD = 1 << 16
 TS_MOD = 1 << 32
 
@@ -226,8 +219,8 @@ def clock_model(records):
             return (rate, a.abs_t, a.fields["t_anchor"])
     if len(sess) == 1:
         # Single anchor: arch_trace_now (the tick counter) and arch_clock_now (the
-        # t_anchor ns) read the SAME clock zeroed at the same origin, so the anchor's
-        # ns/tick = t_anchor / abs_t: a real rate from one SESSION (no delta needed).
+        # t_anchor ns) read the SAME clock zeroed at the same origin, so ns/tick is
+        # t_anchor / abs_t.
         a = sess[0]
         if a.abs_t > 0:
             return (a.fields["t_anchor"] / a.abs_t, a.abs_t, a.fields["t_anchor"])
@@ -272,11 +265,10 @@ def stats(vals):
 def syscall_overheads(records, slices, ns, gaps, probe_ns=0.0):
     """True on-CPU cost of each syscall: the issuing thread's RUNNING time within
     its SYSCALL_ENTER..EXIT window. A blocking syscall (sleep_ns, sem_wait) yields
-    the CPU to idle/others and resumes later, so its raw enter->exit SPAN includes
-    that block, not a cost. Intersecting the window with the thread's run slices
-    (the SWITCH-derived on-CPU intervals) subtracts the blocked-away time, leaving
-    the real overhead. Returns [(nr, overhead_ns)] (ENTER/EXIT matched per tid, FIFO;
-    pairs straddling a seq gap dropped)."""
+    the CPU and resumes later, so its raw enter->exit SPAN includes that block and is
+    not a cost; the window is intersected with the thread's run slices instead.
+    Returns [(nr, overhead_ns)] (ENTER/EXIT matched per tid, FIFO; pairs straddling a
+    seq gap dropped)."""
     pending = {}  # tid -> [(idx, nr, t_enter)]
     out = []
     for idx, r in enumerate(records):
@@ -311,10 +303,8 @@ def analyze(records, model, gaps):
             return float(r.abs_t)
         return to_ns(model, r.abs_t)
 
-    # probe_overhead (from the first SESSION) is the cost of one arch_trace_now
-    # read, in TRACE TICKS. Convert to ns via the clock model and subtract it once
-    # per measured interval (each interval spans two reads; one read's bias is the
-    # dominant correction) so reported latencies approach the true cost.
+    # probe_overhead (from the first SESSION) is the cost of one arch_trace_now read,
+    # in TRACE TICKS. Converted to ns and subtracted once per measured interval.
     probe_ns = 0.0
     sess = [r for r in records if r.type == EV_SESSION]
     if sess:
@@ -352,8 +342,8 @@ def analyze(records, model, gaps):
     idle = run_ns.get(0, 0.0)
 
     # ISR-during-idle: IRQ enter/exit while idle (tid 0) was current -> not idle.
-    # Union the spans (an IRQ pair nesting inside another must be counted once,
-    # not summed twice: summing overstates ISR time and thus CPU%).
+    # UNION of the spans: an IRQ pair nesting inside another counts once, and summing
+    # would overstate ISR time and thus CPU%.
     idle_isr_spans = []
     for line, dur, start, tid_at in irq_pairs(records, switches, ns, gaps, probe_ns):
         if tid_at == 0:
@@ -367,10 +357,9 @@ def analyze(records, model, gaps):
     # --- latency stats (probe-overhead-corrected) -----------------------------
     sys_lat = pair_latencies(records, EV_SYSCALL_ENTER, EV_SYSCALL_EXIT, "tid", "nr",
                              ns, gaps, probe_ns)
-    # true on-CPU cost (block time subtracted), overall + per syscall number. The
-    # CPU% `slices` cover only switch-to-switch runs; add the leading + trailing
-    # runs (before the first / after the last SWITCH) so a syscall in the boundary
-    # run is still counted. These are local to the overhead calc, not CPU%.
+    # The CPU% `slices` cover only switch-to-switch runs; the leading and trailing
+    # runs are added here so a syscall in a boundary run is still counted. Local to
+    # the overhead calc, not CPU%.
     over_slices = list(slices)
     if switches and len(records) >= 2:
         _, first_sw = switches[0]
@@ -514,12 +503,8 @@ def wake_latencies(records, ns, gaps, probe_ns=0.0):
     IRQ_EXIT *immediately* followed by SWITCH. Anchor on the SWITCH and require its
     immediate predecessor to be IRQ_EXIT (else the switch was cooperative / syscall-
     driven, not a wake); then walk back through the possibly-nested ISR group to its
-    outermost IRQ_ENTER and measure from there.
-
-    Anchoring on the switch (rather than scanning forward from each IRQ_ENTER) is
-    what keeps a non-waking IRQ (an idle timer tick, or a console TX-drain IRQ) from
-    being paired with a far-later switch: such an IRQ's EXIT is NOT immediately
-    before a SWITCH, so it is simply never counted.
+    outermost IRQ_ENTER and measure from there. A non-waking IRQ (an idle timer tick,
+    a console TX-drain) is never counted: its EXIT is not immediately before a SWITCH.
     Gap-guarded, probe-overhead-corrected."""
     lat = []
     for j, r in enumerate(records):
@@ -527,11 +512,10 @@ def wake_latencies(records, ns, gaps, probe_ns=0.0):
             continue
         if records[j - 1].type != EV_IRQ_EXIT:
             continue  # cooperative / syscall-driven switch, not ISR-caused
-        # A non-waking IRQ (e.g. a bare SysTick) can tail-chain immediately ahead
-        # of a switch the outgoing thread requested from inside a syscall (a
-        # blocking sem_wait/sleep). That switch is cooperative, not ISR-caused: if
-        # the `from` thread has a SYSCALL_ENTER still open (no matching EXIT) at
-        # this point, exclude it.
+        # A non-waking IRQ (e.g. a bare SysTick) can tail-chain immediately ahead of
+        # a switch the outgoing thread requested from inside a blocking syscall. That
+        # switch is cooperative: a still-open SYSCALL_ENTER on the `from` thread
+        # excludes it.
         frm = records[j].fields["from"]
         if frm != NO_THREAD and _syscall_open_at(records, frm, j):
             continue
@@ -586,10 +570,9 @@ def cmd_summary(records, model, lost, gaps, errors):
         print("arch            : %s (id %d)  ver %d  ts_bits %d"
               % (ARCH_NAME.get(s0["arch"], "?"), s0["arch"], s0["ver"], s0["ts_bits"]))
         print("probe overhead  : %d ticks" % s0["probe_overhead"])
-        # The cross-check reconciles decoded+lost against the CLOSING SESSION's final
-        # records_attempted. Only meaningful with a clean shutdown (>=2 SESSIONs).
-        # A running capture has just the opening SESSION (attempted=1, stale), so
-        # skip it there rather than always report a false MISMATCH.
+        # decoded+lost against the CLOSING SESSION's records_attempted. Only meaningful
+        # with a clean shutdown (>=2 SESSIONs): a running capture has just the opening
+        # SESSION, whose attempted=1 is stale.
         if len(sess) >= 2:
             attempted = sess[-1].fields["records_attempted"]
             print("records_attempted (final SESSION): %d" % attempted)
@@ -597,7 +580,7 @@ def cmd_summary(records, model, lost, gaps, errors):
                   % (len(records), lost, len(records) + lost, attempted,
                      "OK" if len(records) + lost == attempted else "MISMATCH"))
         else:
-            print("cross-check     : (no closing SESSION -- needs a clean shutdown)")
+            print("cross-check     : (no closing SESSION; needs a clean shutdown)")
     print("seq gaps        : %d (records lost: %d)" % (len(gaps), lost))
     if model is not None:
         print("clock rate      : %.4f ns/tick" % model[0])
@@ -612,7 +595,7 @@ def cmd_summary(records, model, lost, gaps, errors):
         label = "idle" if tid == 0 else ("tid %d" % tid)
         print("  %-8s %.1f %s" % (label, a["run_ns"][tid], unit))
     # On-CPU overhead is the real syscall cost; the raw enter->exit SPAN includes
-    # intended block time for blocking calls (sleep_ns/sem_wait) and is not a cost.
+    # intended block time for blocking calls (sleep_ns/sem_wait).
     print("syscall overhead (on-CPU) :")
     print(_fmt_stat(a["syscall_overhead"], unit))
     if a["syscall_by_nr"]:
@@ -707,10 +690,9 @@ def cmd_assert(records, model, lost, gaps, errors):
         if len(records) + lost != attempted:
             problems.append("cross-check: decoded+lost=%d != attempted=%d"
                             % (len(records) + lost, attempted))
-    # 4. pairing: no ORPHAN EXIT (an EXIT with no prior matching ENTER == stream
-    # corruption). Unmatched ENTERs are legitimate (a no-return exit() syscall,
-    # or a thread blocked mid-syscall when the system shut down), so they are not
-    # errors. Orphan exits are.
+    # 4. pairing: an ORPHAN EXIT (no prior matching ENTER) is stream corruption.
+    # Unmatched ENTERs are legitimate: a no-return exit() syscall, or a thread blocked
+    # mid-syscall at shutdown.
     orphan_sys = _orphan_exits(records, EV_SYSCALL_ENTER, EV_SYSCALL_EXIT, ("tid", "nr"))
     if orphan_sys != 0:
         problems.append("%d orphan SYSCALL_EXIT (no matching ENTER)" % orphan_sys)
@@ -792,11 +774,10 @@ _LOCK_RUN = 3  # consecutive valid, seq-contiguous records needed to lock alignm
 
 def _lock_offset(buf):
     """Find the smallest offset where a run of _LOCK_RUN self-delimiting, seq-
-    contiguous records begins. This aligns a live stream WITHOUT needing a SESSION
-    record: SESSION is emitted only at boot/shutdown, so a capture that starts (or
-    resyncs) mid-stream must lock onto the record grid itself: valid type bytes +
-    a u16 seq that increments by 1. Returns the offset, or None if no run is
-    confirmable in the current buffer (wait for more bytes)."""
+    contiguous records begins. SESSION is emitted only at boot/shutdown, so a capture
+    that starts or resyncs mid-stream locks onto the record grid itself: valid type
+    bytes plus a u16 seq that increments by 1. Returns the offset, or None if no run
+    is confirmable in the current buffer (wait for more bytes)."""
     n = len(buf)
     for off in range(n):
         i = off
@@ -822,15 +803,14 @@ def _lock_offset(buf):
 def follow(src):
     """Live per-record decode of a STREAMING ch1 capture (e.g.
     `JLinkRTTLogger -RTTChannel 1 <fifo> | kicktrace --follow <fifo>`). Records are
-    self-delimiting, so each is decoded + printed (canonical form, same as --csv) as
-    its bytes arrive; a partial record at the tail waits for more. Alignment is by
-    seq-contiguity (see _lock_offset), so it locks onto a mid-stream capture and
-    re-locks after any desync. It does NOT depend on a SESSION marker. A seq GAP
-    after locking is fine (dropped records under ring overflow leave the byte grid
-    intact: emit is whole-record-atomic); only an invalid type byte forces a
-    re-lock. Time stays in raw ticks (the ns model needs both SESSION anchors, the
-    last only at shutdown); aggregate views (--summary/--chrome/--assert) are
-    batch-only. Ctrl-C or stream close ends it."""
+    self-delimiting, so each is printed (canonical form, same as --csv) as its bytes
+    arrive; a partial record at the tail waits for more. Alignment is by
+    seq-contiguity (see _lock_offset), not by a SESSION marker, so it locks onto a
+    mid-stream capture and re-locks after a desync. A seq GAP after locking is fine:
+    emit is whole-record-atomic, so a drop leaves the byte grid intact, and only an
+    invalid type byte forces a re-lock. Time stays in raw ticks (the ns model needs
+    both SESSION anchors, the last only at shutdown); aggregate views
+    (--summary/--chrome/--assert) are batch-only. Ctrl-C or stream close ends it."""
     buf = bytearray()
     synced = False
     try:
@@ -879,7 +859,7 @@ def main():
     ap.add_argument("--summary", action="store_true", help="CPU%%/latency summary")
     ap.add_argument("--clock-hz", type=float, metavar="HZ",
                     help="trace-clock frequency (armv7m: the DWT/core clock, i.e. "
-                         "SystemCoreClock) -- converts ticks to ns even with no "
+                         "SystemCoreClock), converting ticks to ns even with no "
                          "SESSION anchor in the capture; overrides the derived rate")
     ap.add_argument("--chrome", metavar="OUT.json", help="write Chrome-trace JSON")
     ap.add_argument("--assert-structural", action="store_true",
@@ -900,7 +880,7 @@ def main():
     model = clock_model(records)
     if args.clock_hz:
         # Explicit trace-clock frequency: ns = tick * 1e9 / hz, from the clock
-        # origin. Exact, and works with zero SESSION anchors (mid-stream capture).
+        # origin. Works with zero SESSION anchors (mid-stream capture).
         model = (1e9 / args.clock_hz, 0.0, 0.0)
     lost, gaps = loss_scan(records)
 

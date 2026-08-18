@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The tree's only .c, so the only build that compiles the C-facing headers as C.
-// Rewriting it as C++, or including a C++-only header from it, leaves
-// check_extern_c_linkage.sh with no exercised instance.
+// Rewriting it as C++, or including a C++-only header, leaves check_extern_c_linkage.sh
+// with no exercised instance.
 
 #include <stdbool.h>
 
@@ -12,11 +12,10 @@
 
 static uint64_t const BEAT_NS = 400000000ull; // 0.4 s between hits
 
-static kos_cap_t g_ping = KOS_CAP_NONE; // token held by 'ping' first (MAIN's cap)
+static kos_cap_t g_ping = KOS_CAP_NONE; // MAIN's cap
 static kos_cap_t g_pong = KOS_CAP_NONE;
 
-// Both sems are delegated on every spawn, so default placement seats them at
-// child indices 1 and 2 (a fresh child table makes handle == index).
+// Both sems are delegated on every spawn; a fresh child table makes handle == index.
 static kos_cap_t const CH_PING = 1;
 static kos_cap_t const CH_PONG = 2;
 
@@ -58,8 +57,7 @@ static int spawn(void (*entry)(void*), char const* name)
     struct kos_cap_grant caps[] = {{g_ping, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER},
                                    {g_pong, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}};
     struct kos_thread_params p = {0};
-    // A null out-pointer is refused -KOS_EINVAL, so the sink is not optional even
-    // though nothing here reads it.
+    // A null out-pointer is refused -KOS_EINVAL, so the sink is not optional.
     kos_thread_t h = KOS_THREAD_NONE;
 
     p.entry = entry;
@@ -78,7 +76,7 @@ int main(int argc, char** argv)
     (void)argv;
 
     kos_print("hello from KickOS userspace!\n");
-    kos_print("two threads play ping-pong -- press Ctrl+C to stop.\n\n");
+    kos_print("two threads play ping-pong. Press Ctrl+C to stop.\n\n");
 
     (void)kos_sem_create(1, &g_ping); // ping serves first
     (void)kos_sem_create(0, &g_pong);
@@ -86,7 +84,7 @@ int main(int argc, char** argv)
     spawn(ping, "ping");
     spawn(pong, "pong");
 
-    // A daemon: main never returns; park forever on a semaphore nobody posts.
+    // A daemon: main never returns.
     (void)kos_sem_create(0, &idle);
     while (true)
     {

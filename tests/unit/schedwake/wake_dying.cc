@@ -4,10 +4,9 @@
 // What sched::wake() does with a woken peer while the CURRENT thread is dying, and what
 // sched::exit_current() does with the waiters it wakes after its own teardown.
 //
-// The whole subject is a switch DECISION, which on target has exactly one observable, run
-// order, and only under a scheduler that is already running. Here the decision is the
-// observable: karch_seam.cc records every arch_switch, so an arm asserts which switch
-// happened and WHEN relative to the others, and can seat a state no run reaches.
+// The observable is the switch DECISION: karch_seam.cc records every arch_switch, so an arm
+// asserts which switch happened and WHEN relative to the others, and can seat a state no run
+// reaches.
 //
 // The two phases of a dying thread are NOT the same and the arms keep them apart:
 //   sweep phase   current->dying, state RUNNING, still on the ready structure. A preempting
@@ -28,13 +27,13 @@ using namespace kickos::testfix;
 
 namespace
 {
-    // The dying thread's own priority in every arm below, chosen mid-range so a peer can sit
-    // on either side of it.
+    // The dying thread's own priority in every arm below, mid-range so a peer can sit on
+    // either side of it.
     constexpr uint8_t PRIO_DYING = 5;
 
-    // current, RUNNING, at PRIO_DYING, picked by the real scheduler rather than seated by
-    // hand: reschedule() is what leaves idle correctly READY behind it. That setup switch is
-    // then dropped from the counters, so every arm below counts only its own.
+    // current, RUNNING, at PRIO_DYING, picked by the real scheduler: reschedule() is what
+    // leaves idle correctly READY behind it. The setup switch is dropped from the counters,
+    // so every arm below counts only its own.
     Thread* running_thread()
     {
         Thread* c = spawn(0, PRIO_DYING);
@@ -58,8 +57,7 @@ class SchedWake : public kickos::testfix::KSeam
 {
 };
 
-// gtest runs a *DeathTest suite ahead of the others, which is the documented placement for a
-// forking case.
+// gtest runs a *DeathTest suite ahead of the others, which is where a forking case belongs.
 class SchedWakeDeathTest : public kickos::testfix::KSeam
 {
 };
@@ -99,8 +97,7 @@ TEST_F(SchedWake, a_lower_priority_peer_does_not_preempt_a_live_thread)
     EXPECT_EQ(g_switches, 0u) << "a lower-priority wake does not preempt";
 }
 
-// The pair that matters: the guard is a priority comparison, not a blanket refusal. The
-// equal-priority arm below it is a CONTROL for the same reason the lower-priority one is.
+// The guard is a priority comparison, not a blanket refusal.
 TEST_F(SchedWake, a_dying_thread_defers_an_equal_priority_peer)
 {
     Thread* c = running_thread();
@@ -114,11 +111,10 @@ TEST_F(SchedWake, a_dying_thread_defers_an_equal_priority_peer)
     EXPECT_EQ(kernel().current, c) << "the dying thread keeps the CPU";
 }
 
-// The arm that separates the guard from its absence. The two above pass with no guard at
-// all, because pick_next declines an equal-priority peer while the dying thread is still
-// the HEAD of its ready list. It is not always the head: the list is FIFO and an RR slice
-// expiry rotates the running thread behind its equals. So the guard is a decision, not an
-// optimisation, and this seats the one state where the decision is visible.
+// The arm that separates the guard from its absence: the two above pass with no guard at all,
+// since pick_next declines an equal-priority peer while the dying thread is the HEAD of its
+// ready list. The list is FIFO and an RR slice expiry rotates it behind its equals, and there
+// the guard is what decides.
 TEST_F(SchedWake, a_dying_thread_defers_an_equal_priority_peer_that_pick_next_would_take)
 {
     Thread* c = running_thread();
@@ -135,10 +131,8 @@ TEST_F(SchedWake, a_dying_thread_defers_an_equal_priority_peer_that_pick_next_wo
     EXPECT_EQ(ahead->state, ThreadState::READY) << "the thread ahead of it did not run";
 }
 
-// A CONTROL, not a discriminator: it passes with no guard at all, because pick_next
-// declines a lower-priority peer on its own. The arm above is the one that separates the
-// guard from its absence, and it covers this case too, since the guard suppresses the
-// reschedule whatever pick_next would have returned.
+// A CONTROL, not a discriminator: it passes with no guard at all, since pick_next declines a
+// lower-priority peer on its own.
 TEST_F(SchedWake, a_dying_thread_defers_a_lower_priority_peer)
 {
     Thread* c = running_thread();
@@ -161,9 +155,8 @@ TEST_F(SchedWake, a_dying_thread_yields_to_a_higher_priority_peer)
 
     EXPECT_EQ(g_switches, 1u) << "a higher-priority peer preempts the sweep";
     EXPECT_EQ(kernel().current, p) << "the woken peer is current";
-    // The sweep must be RESUMABLE, which is the whole reason the interleaving is
-    // admissible: cap_teardown drops IrqLock between chunks and c is still on the ready
-    // structure, so pick_next can return it again.
+    // The sweep must be RESUMABLE: cap_teardown drops IrqLock between chunks and c is still
+    // on the ready structure, so pick_next can return it again.
     EXPECT_EQ(c->state, ThreadState::READY) << "the dying thread stays runnable";
     EXPECT_TRUE(c->dying) << "the dying marker survives the preemption";
 }
@@ -171,18 +164,17 @@ TEST_F(SchedWake, a_dying_thread_yields_to_a_higher_priority_peer)
 // --- what a PENDED switch does to the two reads above -------------------------------------
 
 // On ARM, RISC-V and RX arch_switch only PENDS, so the sweep keeps the CPU with `current`
-// already naming the peer, to the end of the chunk holding the lock. The stub here returns for
-// the same reason, so these arms sit in that state exactly: a second wake in it reads the PEER,
-// both guard clauses are dead, and what holds the decision is pick_next rather than the
-// clauses. These pin that, in both directions, and the price paid for it.
+// already naming the peer, to the end of the chunk holding the lock. The stub here returns, so
+// these arms sit in that state exactly: a second wake in it reads the PEER, both guard clauses
+// are dead, and what holds the decision is pick_next.
 
 TEST_F(SchedWake, a_second_wake_under_the_pended_peer_does_not_switch_again)
 {
     Thread* c = running_thread();
     Thread* first = blocked_peer(1, PRIO_DYING + 2);
     Thread* under = blocked_peer(2, PRIO_DYING);
-    // Rotated off the ready head, as in the guard arms above: without it pick_next declines
-    // an equal-priority peer on its own and the second wake proves nothing.
+    // Rotated off the ready head: without it pick_next declines an equal-priority peer on its
+    // own and the second wake proves nothing.
     Thread* ahead = spawn(3, PRIO_DYING);
     kernel().policy->on_slice_expire(c);
     c->dying = true;
@@ -209,18 +201,16 @@ TEST_F(SchedWake, a_second_wake_above_the_pended_peer_supersedes_it)
     sched::wake(above);
 
     // The outgoing side of the second switch is the peer, not the sweep whose stack this runs
-    // on. Every backend that can be in this state ignores that argument and saves the thread
-    // its own switcher finds, so the token below is not a lost context.
+    // on, so the token below is not a lost context.
     EXPECT_STREQ(trace(), "switch1>2 switch2>3") << "the higher peer supersedes the pended one";
     EXPECT_EQ(kernel().current, above) << "the switch lands on the highest-priority thread";
     EXPECT_EQ(first->state, ThreadState::READY) << "the superseded peer is runnable, not RUNNING";
     EXPECT_EQ(c->state, ThreadState::READY) << "the sweep is still runnable";
 }
 
-// The price of that supersede, pinned rather than asserted away: a peer that never ran keeps the
-// switch_count and the RR slice its publication armed, so its first quantum starts short.
-// Undoing either needs the one fact kernel C cannot have, whether the pended switch has fired,
-// so REWRITE this arm rather than delete it on the day the arch reports that.
+// The price of that supersede: a peer that never ran keeps the switch_count and the RR slice
+// its publication armed, so its first quantum starts short. Undoing either needs a fact the
+// kernel does not have, whether the pended switch has already fired.
 TEST_F(SchedWake, a_superseded_peer_keeps_the_switch_in_it_never_ran)
 {
     Thread* c = running_thread();
@@ -260,9 +250,8 @@ TEST_F(SchedWake, an_already_ready_peer_is_left_alone_but_loses_its_deadline)
 TEST_F(SchedWake, a_wake_before_the_first_pick_does_not_switch)
 {
     Thread* p = blocked_peer(1, PRIO_DYING);
-    // sched::init leaves current null and sched::start seats it. No reachable pre-start
-    // waker was found in the tree, so this pins the ASYMMETRY rather than a live path:
-    // tick_rr guards the same pointer and this funnel must too.
+    // sched::init leaves current null and sched::start seats it: tick_rr guards the same
+    // pointer and this funnel must too.
     kernel().current = nullptr;
 
     sched::wake(p);
@@ -272,10 +261,8 @@ TEST_F(SchedWake, a_wake_before_the_first_pick_does_not_switch)
 }
 
 // EXITED is the ThreadPool's free marker (thread.h): the slot is reclaimable BECAUSE the state
-// says so, and nothing else records it. So readying an exited thread does not merely resurrect
-// it, it takes the slot out of the pool with no way back. No caller reaches this today, since an
-// exiting thread is on no queue and carries WAIT_NONE, and the funnel is where it is closed
-// because `state == EXITED` is load-bearing two lines further down.
+// says so, and nothing else records it, so readying an exited thread does not merely resurrect
+// it, it takes the slot out of the pool with no way back.
 TEST_F(SchedWake, an_exited_thread_is_not_woken_and_its_slot_stays_free)
 {
     Thread* c = running_thread();
@@ -292,15 +279,15 @@ TEST_F(SchedWake, an_exited_thread_is_not_woken_and_its_slot_stays_free)
     EXPECT_EQ(kernel().threads.alloc(), 0) << "the pool still reads the slot as free";
 }
 
-// The guard compares the EFFECTIVE priority, and nothing else would do: a dying thread
-// routinely carries a priority-inheritance boost above its own anchor, and comparing the
-// anchor would admit every peer sitting between the two. Seats exactly that gap.
+// The guard compares the EFFECTIVE priority: a dying thread routinely carries a
+// priority-inheritance boost above its own anchor, and comparing the anchor would admit every
+// peer sitting between the two.
 TEST_F(SchedWake, the_guard_compares_the_effective_priority_not_the_anchor)
 {
     Thread* c = running_thread();
     c->base_prio = PRIO_DYING - 2; // boosted: prio 5, anchor 3
-    // Rotated off the ready head for the same reason as the arm above: without it a
-    // reschedule declines on its own and the comparison is unobservable.
+    // Rotated off the ready head: without it a reschedule declines on its own and the
+    // comparison is unobservable.
     Thread* ahead = spawn(2, PRIO_DYING);
     Thread* p = blocked_peer(1, PRIO_DYING - 1); // between the anchor and the boost
     kernel().policy->on_slice_expire(c);
@@ -315,21 +302,18 @@ TEST_F(SchedWake, the_guard_compares_the_effective_priority_not_the_anchor)
 
 // --- the exit path, run for real ----------------------------------------------------------
 
-// The sharpest arm in the gate. exit_current wakes its join waiters AFTER its own
-// on_remove, when it can never be scheduled again, and its final reschedule is meant to
-// be the ONE switch. A guard narrowed on priority alone lets the first higher-priority
-// joiner switch away mid-loop: on every hardware port the switch is deferred to the
-// IrqLock release and the loop survives, on the sim swapcontext takes the CPU there and
-// then, and the remaining waiters are never woken and kickos_terminate never runs. Both
-// orders leave every waiter READY, so only the trace separates them.
+// exit_current wakes its join waiters AFTER its own on_remove, when it can never be scheduled
+// again, and its final reschedule is meant to be the ONE switch. A guard narrowed on priority
+// alone lets the first higher-priority joiner switch away mid-loop: on the sim swapcontext
+// takes the CPU there and then, the remaining waiters are never woken and kickos_terminate
+// never runs. Both orders leave every waiter READY, so only the trace separates them.
 TEST_F(SchedWake, the_exit_sweep_wakes_every_joiner_before_its_single_switch)
 {
     Thread* c = running_thread();
     Thread* w_lower = seat_pool(0, PRIO_DYING + 1);
     Thread* w_higher = seat_pool(1, PRIO_DYING + 4);
-    // A joiner of a DIFFERENT thread, in the same pool scan. The sweep keys on the wait
-    // edge, not on being parked, so a scan that matched any waiter would forge its
-    // completion.
+    // A joiner of a DIFFERENT thread, in the same pool scan: the sweep keys on the wait edge,
+    // not on being parked.
     Thread* other = seat_pool(2, PRIO_DYING + 2);
     park_join(w_lower, c);
     park_join(w_higher, c);
@@ -342,9 +326,8 @@ TEST_F(SchedWake, the_exit_sweep_wakes_every_joiner_before_its_single_switch)
     // the waiter loop, so a switch AFTER it is a switch that waited for the whole loop.
     EXPECT_STREQ(trace(), "reclaim switch1>11")
         << "the single switch is the last thing exit_current does";
-    // The wake evidence is the cleared edge, not the run state: the final reschedule
-    // picks the higher joiner, so one of the two is RUNNING rather than READY and a
-    // state-only assertion would read as a missed wake.
+    // The wake evidence is the cleared edge, not the run state: the final reschedule picks
+    // the higher joiner, so one of the two is RUNNING rather than READY.
     EXPECT_EQ(w_lower->wait_join_target(), nullptr) << "the first joiner's edge was cleared";
     EXPECT_EQ(w_higher->wait_join_target(), nullptr) << "the second joiner's edge was cleared";
     EXPECT_EQ(w_lower->state, ThreadState::READY) << "the joiner not picked is left READY";
@@ -357,17 +340,16 @@ TEST_F(SchedWake, the_exit_sweep_wakes_every_joiner_before_its_single_switch)
     EXPECT_EQ(g_parked, 1u) << "the exited thread parked once";
 }
 
-// THE arm the repair exists for, and the only one that drives the real cap_teardown. Every
-// arm above calls sched::wake directly; this one puts a live CAP_WAIT entry through
-// obj_close_protocol's endpoint branch, so the wake comes from inside the sweep, from the
-// one site whose woken peer is NOT priority-bounded: a PLAIN sender boosts nothing, where
-// the mutex force-unlock and the reply EPIPE both leave the dying thread boosted at or
-// above the peer they wake.
+// The only arm that drives the real cap_teardown: every arm above calls sched::wake directly,
+// this one puts a live CAP_WAIT entry through obj_close_protocol's endpoint branch, so the wake
+// comes from inside the sweep, from the one site whose woken peer is NOT priority-bounded. A
+// PLAIN sender boosts nothing, where the mutex force-unlock and the reply EPIPE both leave the
+// dying thread boosted at or above the peer they wake.
 //
-// The ORDER is the whole assertion, and it needs the reclaim token to state it: the switch
-// count is 1 either way, and its from/to pair is the same pair either way, because after a
-// mid-sweep switch the final reschedule finds the sender already current and declines.
-// Only "switch before reclaim" says the sweep was interrupted rather than completed.
+// The ORDER is the whole assertion and it needs the reclaim token to state it: the switch count
+// is 1 either way, and the from/to pair is the same either way, because after a mid-sweep
+// switch the final reschedule finds the sender already current and declines. Only "switch
+// before reclaim" says the sweep was interrupted rather than completed.
 TEST_F(SchedWake, a_plain_sender_epiped_by_the_sweep_preempts_it_mid_sweep)
 {
     Thread* c = running_thread();
@@ -379,8 +361,8 @@ TEST_F(SchedWake, a_plain_sender_epiped_by_the_sweep_preempts_it_mid_sweep)
     int const ep_handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
     endpoint_server_set(ep, c);
     // The WAIT right, not the type, is what makes this the last receiver: the sweep's
-    // endpoint arm fires the EPIPE drain when recv_holders reaches 0, and only a
-    // WAIT-bearing cap counts toward it.
+    // endpoint arm fires the EPIPE drain when recv_holders reaches 0, and only a WAIT-bearing
+    // cap counts toward it.
     ep->recv_holders = 1;
     cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_WAIT);
     park_plain_sender(sender, ep);
@@ -398,10 +380,9 @@ TEST_F(SchedWake, a_plain_sender_epiped_by_the_sweep_preempts_it_mid_sweep)
     EXPECT_FALSE(cap_teardown_active()) << "the sweep still balanced its depth";
 }
 
-// The site design section 8.2 first called "bounded by construction" and is NOT. The bound
-// is a snapshot taken when the waiter parked: mutex_lock raised the owner then, and
-// sched::set_prio on a BLOCKED thread propagates nothing, so a later boost of the waiter
-// never reaches the owner. mutex_force_unlock then wakes a peer that outranks the dying
+// The owner's boost is a SNAPSHOT taken when the waiter parked: mutex_lock raised the owner
+// then, and sched::set_prio on a BLOCKED thread propagates nothing, so a later boost of the
+// waiter never reaches the owner. mutex_force_unlock then wakes a peer that outranks the dying
 // thread, and the real sweep is what gets preempted.
 TEST_F(SchedWake, a_mutex_waiter_boosted_past_the_dying_owner_preempts_the_sweep)
 {
@@ -426,11 +407,10 @@ TEST_F(SchedWake, a_mutex_waiter_boosted_past_the_dying_owner_preempts_the_sweep
     EXPECT_EQ(c->held_list, nullptr) << "the dying thread released the mutex it held";
 }
 
-// Every other sweep arm fits in ONE teardown chunk, which leaves the guard's own safety
-// argument ungated: the sweep drops IrqLock between chunks and RESUMES. This one puts a
-// live cap on each side of a chunk boundary and wakes from the FIRST, so there is real
-// work left after the preemption. cap_teardown's own totality asserts fire if it does not
-// finish, so reaching the end at all is half the oracle.
+// A live cap on each side of a chunk boundary, woken from the FIRST, so there is real work
+// left after the preemption: the sweep drops IrqLock between chunks and RESUMES. cap_teardown's
+// own totality asserts fire if it does not finish, so reaching the end at all is half the
+// oracle.
 TEST_F(SchedWake, a_preempted_sweep_resumes_and_finishes_the_next_chunk)
 {
     Thread* c = running_thread();
@@ -466,8 +446,7 @@ TEST_F(SchedWake, a_preempted_sweep_resumes_and_finishes_the_next_chunk)
     EXPECT_FALSE(cap_teardown_active()) << "the sweep balanced its depth across the boundary";
 }
 
-// Two negative controls for the drain, because the positive arm alone leaves the
-// conditions it fires on unpinned: with one holder and one WAIT-bearing cap, deleting the
+// Two negative controls for the drain: with one holder and one WAIT-bearing cap, deleting the
 // WAIT test or the recv_holders test changes nothing observable.
 TEST_F(SchedWake, a_sender_is_not_epiped_while_another_receiver_holds_the_endpoint)
 {
@@ -544,8 +523,8 @@ TEST_F(SchedWake, the_drain_epipes_every_parked_sender_not_just_the_first)
 TEST_F(SchedWake, the_exit_sweep_reclaims_the_console_once)
 {
     running_thread();
-    // Keeps k.live above zero. Without it exit_current reaches kickos_terminate, which
-    // the fixture refuses by name rather than ending the process with a status.
+    // Keeps k.live above zero: without it exit_current reaches kickos_terminate, which the
+    // fixture refuses by name.
     seat_pool(0, PRIO_DYING + 1);
 
     run_exit(0);
@@ -557,9 +536,9 @@ TEST_F(SchedWake, the_exit_sweep_reclaims_the_console_once)
 
 // --- the one invariant enforced by a panic ------------------------------------------------
 
-// detach_current is the whole blocking funnel's entry, and from ISR context arch_switch
-// defers while the supposedly blocked thread keeps running, so the kernel refuses with a
-// kpanic instead of a return code. g_in_isr exists for exactly this.
+// detach_current is the whole blocking funnel's entry, and from ISR context arch_switch defers
+// while the supposedly blocked thread keeps running, so the kernel refuses with a kpanic
+// instead of a return code.
 TEST_F(SchedWakeDeathTest, blocking_from_isr_context_panics)
 {
     running_thread();

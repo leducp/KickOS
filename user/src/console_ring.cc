@@ -29,8 +29,7 @@ int32_t mode_apply(Atomic<uint32_t, Order::RELAXED>* mode, uint32_t flags, uint3
     return 0;
 }
 
-// The struct IS the wire image: same order, same width, and the assert leaves it no padding
-// to hide. That is what lets the unpack below be one copy.
+// The struct IS the wire image: same order, same width, no padding, so unpack is one copy.
 constexpr uint32_t KOS_UART_STATS_WORDS = 9;
 static_assert(KOS_UART_STATS_WORDS * sizeof(uint32_t) == sizeof(struct kos_uart_stats),
               "kos_uart_stats gained or lost a field; pack and unpack must follow");
