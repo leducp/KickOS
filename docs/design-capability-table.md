@@ -602,14 +602,34 @@ Three assumptions in the current subsystem are uniprocessor and bear on this des
   all (`docs/reference/architecture.md`, "How KickOS differs from its inspirations"). A spinlock is
   the right cost because attach and detach happen at spawn and reclaim -- they are not a hot path.
 
+**READ THIS BEFORE ACTING ON ANY ENTRY BELOW.** This section enumerates what a SECOND CORE would
+break. Three of its entries read as uniprocessor defects and are not. The claim-then-commit window, the non-atomic `uint8_t` refcounts and the probe/install
+TOCTOU were each re-derived against the tree and each is UNREACHABLE on a uniprocessor, because the
+test is not "is `IrqLock` held" but "is there a SWITCH POINT inside the window", and none of the
+three windows contains one. Expanding every callee between claim and commit yields no scheduler
+entry point; every refcount read-modify-write is a single statement with no call between load and
+store, no ISR touches any of them, and a bumped generation closes the double-free a second time.
+
+**The switch-point test is the useful part of that, and it is not uniform across backends.**
+`arch_switch` PENDS on armv7m, rv32imac and rxv3, but the sim and LX6 swap INLINE, so a wake inside
+a held lock really does hand the CPU to a peer there. An entry below is reachable on one core only
+if its window contains such a point. Check that before believing any of them names a live bug.
+
 **That list is incomplete, and the rest is an M6 catalogue this rework does not answer.** Recorded
 here because they are all in the capability path and all invisible from a uniprocessor reading:
 
 - **The cross-task reply mint has a probe/install TOCTOU.** `cap_install` on another thread's table
   (`cap_install_reply` in `kernel/syscall/syscall_ipc.cc`, both call sites) is preceded by a probe
   on the target, and the `KICKOS_ASSERT(minted == 0)` that follows is what stands in for a check.
-  With another core minting between the probe and the install, that assert becomes a **hang in
-  release** -- a caller parked with no reply capability and no error return.
+  With another core minting between the probe and the install, that assert FIRES and the system
+  panics: `KICKOS_ASSERT` has exactly two definitions in `kernel/include/kickos/kernel.h`, selected
+  by `KICKOS_DIAG_TERSE`, and BOTH panic. `KICKOS_DEBUG_ASSERT` is the one that compiles out, and
+  there is no `NDEBUG` arm. So the defect is a denial of service a peer can provoke.
+  **On ONE core it is not reachable at all**: nothing separates the probe from the install but a
+  queue pop, a clamp, a copy and a sequence bump, and the two `sched::wake` calls nearby sit in
+  bounce branches that `continue` a loop which re-evaluates the probe. `cap_can_take_reply` and
+  `cap_install_reply`'s own refusal are exact complements over the same state, which
+  `tests/unit/capprobe` gates from both sides.
 - **The `w->dying` check** in `endpoint_call` (`kernel/syscall/syscall_ipc.cc`). Its own comment
   already states the uniprocessor dependency: the sweep drops `IrqLock` between chunks and this
   check is what covers the gap.

@@ -117,7 +117,7 @@ namespace usic
 
     // PSR.BUSY (RM p.18-70): a data transfer is in progress. **ASC MODE ONLY.**
     // RM 18.4.5.2 lists PSR[9:5] as reserved and read-as-0 in SSC, and in IIC bit 9
-    // is ACK -- so a port that trusts this name outside ASC reads the wrong bit.
+    // is ACK; a port that trusts this name outside ASC reads the wrong bit.
     // With PCR.TSTEN=1 it reflects true TX end-of-frame, unlike TCSR.TDV which
     // clears one frame early at the buffer->shifter handoff (RM p.18-189).
     constexpr uint32_t PSR_BUSY = 1u << 9;

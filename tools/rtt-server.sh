@@ -14,7 +14,7 @@
 #
 # The image must be built KICKOS_CONSOLE=rtt|both (else the _SEGGER_RTT block is
 # gc'd and there is nothing to serve). For the binary TELEMETRY (channel 1) use
-# JLinkRTTLogger -RTTChannel 1 instead (its own connection -- not alongside this).
+# JLinkRTTLogger -RTTChannel 1 instead (its own connection, not alongside this).
 #
 # Usage: tools/rtt-server.sh [board]   (board: k64f (default) | xmc4800)
 set -eu
@@ -26,7 +26,7 @@ case "$board" in
     *) echo "rtt-server: unknown board '$board' (known: k64f, xmc4800)" >&2; exit 1 ;;
 esac
 
-echo "rtt-server: $board [$dev] -- RTT on localhost:19021 (Ctrl-C to stop)"
+echo "rtt-server: $board [$dev]: RTT on localhost:19021 (Ctrl-C to stop)"
 echo "rtt-server: then attach the console in another terminal:  JLinkRTTClient"
 
 # `g` resumes the core after the attach-time halt; `cat` holds stdin open so

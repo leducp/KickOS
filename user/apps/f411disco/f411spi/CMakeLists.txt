@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # STM32F411 SPI1 loopback driver over the MMIO-grant seam (task #9 Stage 5): the
-# CANONICAL per-thread peripheral-MMIO isolation reference on ARMv7-M PMSA -- a real
+# CANONICAL per-thread peripheral-MMIO isolation reference on ARMv7-M PMSA: a real
 # SPI1 window granted to an unprivileged thread, proven both ways (granted works,
 # ungranted faults MemManage). Diagnostic app: built only under KICKOS_ENABLE_SELFTEST
 # (never a production image). Registered only for the f411disco board (chip-specific

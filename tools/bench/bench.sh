@@ -50,7 +50,7 @@ rig_load "$(cd "$HERE/../.." && pwd)"
 rig_need RIG_SESSION "the session directory holding env.sh and receiving logs/"
 rig_need RIG_TREE "the tree to build when the caller sets no TREE"
 SESSION="$RIG_SESSION"
-[ -f "$SESSION/env.sh" ] || { echo "REFUSING: no $SESSION/env.sh -- the cross toolchains are not on the default PATH and the build would fail as a missing compiler" >&2; exit 2; }
+[ -f "$SESSION/env.sh" ] || { echo "REFUSING: no $SESSION/env.sh: the cross toolchains are not on the default PATH and the build would fail as a missing compiler" >&2; exit 2; }
 source "$SESSION/env.sh" >/dev/null 2>&1
 TREE="${TREE:-$RIG_TREE}"
 [ -e "$TREE/CMakePresets.json" ] || { echo "REFUSING: $TREE is not a KickOS tree" >&2; exit 2; }
@@ -256,7 +256,7 @@ if [ "$RC" -ne 0 ]; then
   # only changes what there is to read. A refusal that fired before the capture wrote
   # anything legitimately has no log, so a failed fetch here is not a second defect.
   if [ "$FETCHED" -eq 1 ]; then
-    echo "log: $LOG  ($LBYTES bytes, fetched despite the refusal -- read it before re-running)" >&2
+    echo "log: $LOG  ($LBYTES bytes, fetched despite the refusal; read it before re-running)" >&2
   else
     echo "no log fetched: the refusal fired before $RLOG was written" >&2
   fi

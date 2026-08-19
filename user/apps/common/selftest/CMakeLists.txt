@@ -201,7 +201,7 @@ endif()
 
 if(_selftest_split)
   message(STATUS
-    "selftest: split into two images -- selftest plans ${_tap_arms_p1} arms, "
+    "selftest: split into two images: selftest plans ${_tap_arms_p1} arms, "
     "selftest_p2 plans ${_tap_arms_p2} (${_tap_arms} together)")
 endif()
 
@@ -284,7 +284,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   # only add armv6m-without-a-ring at MAX_THREADS=2. The escape hatch if that stops being true
   # is the KICKOS_SELFTEST_PART split above, which the 64 KiB FLASH parts already use: two
   # images here would let one carry the UART ring and the other the arena probes. Take it when
-  # this list grows an arm no OTHER board runs -- that is a coverage loss, where a longer list
+  # this list grows an arm no OTHER board runs; that is a coverage loss, where a longer list
   # of duplicates is not.
   # Three more arms run their invariant and drop a sub-case, reporting PARTIAL: they count
   # as passes, not skips, and carry their own permission set.

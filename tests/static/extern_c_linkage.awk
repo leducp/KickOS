@@ -44,7 +44,7 @@ BEGIN { depth = 0; ext = 0; buf = ""; state = 0; refuse = "" }
         if (state == 3 || state == 4) {
             # A string's BODY is appended, not skipped: dropping it turns `extern "C"` into
             # `extern ""` and the tag regex below stops matching, which reads as clean.
-            # A brace inside a string cannot be mistaken for a real one -- it is consumed
+            # A brace inside a string cannot be mistaken for a real one; it is consumed
             # here, in state 3, and never reaches the `{` branch.
             if (c == "\\") { buf = buf c substr($0, i + 1, 1); i++; continue }
             if (state == 3 && c == "\"") { buf = buf c; state = 0; continue }

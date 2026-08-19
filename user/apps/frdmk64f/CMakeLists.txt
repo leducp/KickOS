@@ -8,11 +8,11 @@
 # on KICKOS_ENABLE_SELFTEST in its own CMakeLists.
 add_subdirectory(k64drv)
 
-# K64F/DSPI0 unprivileged SPI driver -- the MMIO-grant seam is an M2 construct, so
+# K64F/DSPI0 unprivileged SPI driver: the MMIO-grant seam is an M2 construct, so
 # enforcement builds only; also self-gates on KICKOS_ENABLE_SELFTEST.
 if(KICKOS_HAVE_MPU)
   add_subdirectory(k64dspi)
 endif()
 
-# K64F console handover demo -- self-gates on enforcement in its own CMakeLists.
+# K64F console handover demo; self-gates on enforcement in its own CMakeLists.
 add_subdirectory(k64console)

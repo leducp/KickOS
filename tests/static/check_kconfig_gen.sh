@@ -119,7 +119,7 @@ refuse() {
 }
 
 refuse "CONFIG_KICKOS_MAX_THREADS=999" \
-       "outside the declared range \[2, 64\] -- resolved to '16'"
+       "outside the declared range \[2, 64\]: resolved to '16'"
 refuse "CONFIG_KICKOS_MAX_HANDLES=12" "no such symbol"
 # The same fact from the other side: there is no symbol to set, so an attempt to
 # configure the interrupt-line count is refused outright rather than shrinking both

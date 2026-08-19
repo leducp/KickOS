@@ -57,7 +57,7 @@ rig_need() {
     eval "_rig_v=\${$1:-}"
     if [ -z "$_rig_v" ]; then
         {
-            echo "REFUSING: $1 is unset in $RIG_CONF -- $2"
+            echo "REFUSING: $1 is unset in $RIG_CONF: $2"
             echo "  That names something about this rig, so no tracked default can stand in"
             echo "  for it. See tools/bench/rig.conf.example."
         } >&2

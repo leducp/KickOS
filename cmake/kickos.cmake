@@ -226,7 +226,7 @@ function(kickos_emit_image target)
         COMMENT "esptool elf2image -> ${target}.app.bin (bootable ${KICKOS_CHIP} image)"
         VERBATIM)
     else()
-      message(STATUS "KickOS: esptool not found -- ${target}.app.bin (bootable "
+      message(STATUS "KickOS: esptool not found: ${target}.app.bin (bootable "
         "${KICKOS_CHIP} image) not produced. Activate the esp-idf env, or run: "
         "esptool --chip ${KICKOS_CHIP} elf2image --output ${target}.app.bin <elf>  "
         "(the raw ${target}.bin is NOT bootable).")

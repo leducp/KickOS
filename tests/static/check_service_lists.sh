@@ -221,7 +221,7 @@ while read -r prov preset how extra; do
         continue
     fi
     if [ "$home" != common ] && [ "$BOARD" != "$home" ]; then
-        report "$prov lives under init/$home/ but names preset '$preset', whose board is $BOARD -- that configuration never reaches the provider"
+        report "$prov lives under init/$home/ but names preset '$preset', whose board is $BOARD; that configuration never reaches the provider"
     fi
 
     if [ "$how" = default ]; then
@@ -244,7 +244,7 @@ DUP="$(sort "$TMP/declared.txt" | uniq -d)"
 while IFS= read -r line; do
     prov="${line%%$TAB*}"
     if ! grep -qxF "$prov" "$TMP/declared.txt"; then
-        report "$prov exists in this tree and $DECL does not declare it -- name a preset that compiles it, and say default or select"
+        report "$prov exists in this tree and $DECL does not declare it; name a preset that compiles it, and say default or select"
     fi
 done < "$TMP/providers"
 

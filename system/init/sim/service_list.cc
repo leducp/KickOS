@@ -300,7 +300,7 @@ extern "C"
     // residual in TODO.md.
     void simconsole_driver(void*)
     {
-        kos::print("[simcon] kos::print diagnostic (kernel console path -- dropped post-publish)\n");
+        kos::print("[simcon] kos::print diagnostic (kernel console path, dropped post-publish)\n");
         wire_puts("[simcon] driver up (host fd 1)\n");
 
 #if defined(KICKOS_SIMCON_DIE_AT_BRINGUP) && KICKOS_SIMCON_DIE_AT_BRINGUP

@@ -121,10 +121,10 @@ printf '%s\n' "$OUT"
 has '\[simcon\] driver dying during bring-up' \
   || fail "case 2: the driver never reached its bring-up death"
 has '\[simcon\] ERROR: a driver thread died during bring-up' \
-  || fail "case 2: the failed handover was NOT reported -- either the probe missed the dead driver, or the console never came back to report on"
+  || fail "case 2: the failed handover was NOT reported; either the probe missed the dead driver, or the console never came back to report on"
 # The app must not have run at all: a nonzero service-list result aborts init before it.
 if has '\[drvdeath\]'; then
-    fail "case 2: the app ran anyway, on a console with no driver -- the failure was not loud"
+    fail "case 2: the app ran anyway, on a console with no driver; the failure was not loud"
 fi
 [ "$RC" -ne 0 ] || fail "case 2: expected a nonzero exit from a failed bring-up, got 0"
 
@@ -182,7 +182,7 @@ fi
 
 # THE new assertion. Absent == the reclaim deferred to the register owner.
 if has '\[drvdeath\] kernel console AFTER death, window HELD'; then
-    fail "case 3: the console came BACK while a live thread still held the UART register window -- reclaim is keyed on the last receiver, not on the device"
+    fail "case 3: the console came BACK while a live thread still held the UART register window; reclaim is keyed on the last receiver, not on the device"
 fi
 
 # The kill primitive did its job: cancelled, exited, window released.

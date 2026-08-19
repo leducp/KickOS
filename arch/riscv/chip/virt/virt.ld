@@ -264,7 +264,7 @@ KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 
 KICKOS_POOL_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
-       "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
+       "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
 #if KICKOS_HAVE_MPU
 /* Real code+rodata must fit the pow2 code region (raise _code_size to the next pow2
@@ -281,7 +281,7 @@ ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
    means the selectors matched nothing (a renamed lib), which would leak kernel writable
    state into the app catch-all. */
 ASSERT(__kernel_bss_end > __kernel_bss_start,
-       "KickOS: kernel .bss empty -- closed-set archive selector matched nothing (renamed lib?)")
+       "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
 /* The gp small-data window must fit __global_pointer$ +/- 0x800 (psABI reach): a future
    runtime that grows its small-data past the window fails loudly here rather than
    silently mis-addressing gp-relative loads. */

@@ -3,7 +3,7 @@
 
 # Reboot-to-bootloader witness, and the unattended-reflash affordance (flash without a
 # button press). Diagnostic app: kos_reboot is compiled out of the production ABI.
-# Board-agnostic -- on a chip with an arch_reboot backend it hands the board over, and
+# Board-agnostic: on a chip with an arch_reboot backend it hands the board over, and
 # everywhere else the fallback declines, which is what the gates below assert.
 kickos_add_diagnostic_app(rebootdemo
   SOURCES main.cc

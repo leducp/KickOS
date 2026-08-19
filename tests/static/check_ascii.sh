@@ -110,8 +110,9 @@ if [ -s "$TMP/findings" ]; then
     cut -d: -f1 "$TMP/findings" | sort | uniq -c | sort -rn >&2
     echo "" >&2
     echo "FAIL: $(wc -l < "$TMP/findings" | tr -d ' ') line(s) hold a byte above 0x7F." >&2
-    echo "      Spell it in ASCII: -- for an em dash, -> for an arrow, straight quotes," >&2
-    echo "      \"section\" for a section sign. The M-x pairs above are how cat -v shows the byte." >&2
+    echo "      Spell it in ASCII: a comma or a single - for an em dash, -> for an arrow," >&2
+    echo "      straight quotes, \"section\" for a section sign. Never a double hyphen:" >&2
+    echo "      check_dash_punct.sh refuses that. The M-x pairs above are how cat -v shows the byte." >&2
     RC=1
 fi
 

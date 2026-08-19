@@ -5,7 +5,7 @@
 # bring-up plus two unprivileged threads on the <kickos/sys/usb_cdc_service.h>
 # substrate). REGDIR is THIS build's chip directory, which is what makes the shared
 # body resolve irq.h and mmap.h for the right part. No class leaf: the USB register
-# map is the driver's alone -- the kernel side owns only RESETS, CLOCKS and PLL_USB.
+# map is the driver's alone; the kernel side owns only RESETS, CLOCKS and PLL_USB.
 kickos_add_driver(rpusb REGDIR arch/arm/chip/${KICKOS_CHIP})
 
 # The per-chip delta selector rp_usb_chip.h reads. Uppercased chip id rather than a

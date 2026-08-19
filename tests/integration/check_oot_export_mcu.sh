@@ -114,7 +114,7 @@ SZ_PLAIN=$(wc -c < "$TMP/build/oot_mcu_app.bin")
 SZ_SUGAR=$(wc -c < "$TMP/build/oot_mcu_app_sugar.bin")
 [ "$SZ_PLAIN" = "$SZ_SUGAR" ] \
   || fail "plain add_executable ($SZ_PLAIN B) and kickos_add_application() \
-($SZ_SUGAR B) images differ in size -- the plain path is missing something the \
+($SZ_SUGAR B) images differ in size; the plain path is missing something the \
 wrapper supplies"
 
 echo "== our warning policy must not reach the consumer's TUs =="
@@ -129,7 +129,7 @@ if [ -f "$CDB" ]; then
     fail "KickOS warning flags leaked onto an out-of-tree consumer's compile line"
   fi
 else
-  fail "no compile_commands.json -- cannot check the consumer's flag posture"
+  fail "no compile_commands.json: cannot check the consumer's flag posture"
 fi
 
 # The regression gate for the stale-image bug. -T reaches the linker as an opaque
@@ -141,13 +141,13 @@ echo "== an edited linker script must relink (not leave a stale image) =="
 # which is the "correct" answer before the edit and the assertion's own failure after it.
 tool_out "$TMP/syms_before" "$READELF_SYM_RE" "$READELF" -sW "$APP"
 if grep -q 'kickos_relink_probe' "$TMP/syms_before"; then
-  fail "probe symbol already present before the edit -- the check proves nothing"
+  fail "probe symbol already present before the edit: the check proves nothing"
 fi
 printf '\n_kickos_relink_probe = 0xDEADBEEF;\n' >> "$LD"
 "$CMAKE" --build "$TMP/build" >/dev/null || fail "rebuild after the .ld edit failed"
 tool_out "$TMP/syms_after" "$READELF_SYM_RE" "$READELF" -sW "$APP"
 grep -q 'kickos_relink_probe' "$TMP/syms_after" \
-  || fail "an edited linker script did NOT relink the out-of-tree app -- a stale \
+  || fail "an edited linker script did NOT relink the out-of-tree app: a stale \
 image would be flashed (INTERFACE_LINK_DEPENDS missing from the exported target?)"
 
 echo "== single-board guard: a cross-board request must be rejected =="

@@ -223,7 +223,7 @@ def check_assignments(kconf, wanted):
                       high.str_value + "]")
         else:
             reason = "unmet dependency: " + kconfiglib.expr_str(sym.direct_dep)
-        reason = reason + " -- resolved to '" + got + "'"
+        reason = reason + ": resolved to '" + got + "'"
         # The declaration's own help, so a refusal explains itself instead of leaving a
         # hand-written hint to be maintained somewhere else and go stale.
         reason = reason + sym_help(sym)

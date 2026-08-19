@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # ESP32-C6 GPIO10 blink over the MMIO-grant seam: the CANONICAL per-thread
-# peripheral-MMIO isolation reference on RISC-V PMP -- a real GPIO window granted to
+# peripheral-MMIO isolation reference on RISC-V PMP: a real GPIO window granted to
 # an unprivileged thread (granted blink works, ungranted same-block poke faults
 # mcause=7), layered over a one-time TEE-mode APM REE0 background open. Diagnostic
 # app: built only under KICKOS_ENABLE_SELFTEST (never a production image). Registered
@@ -15,8 +15,7 @@ if(NOT TARGET c6blink)
 endif()
 
 # Rule 6 (M4, decision R-A): the GPIO output-latch readback is shared register
-# logic, so it comes from the freestanding kickos_class_esp32c6 leaf -- the same
-# object the kernel timebase will link in Phase A -- not a local copy.
+# logic, so it comes from the freestanding kickos_class_esp32c6 leaf.
 target_link_libraries(c6blink PRIVATE kickos_class_esp32c6)
 
 # No CTest gate: this app answers a HARDWARE question (C6 PMP + APM peripheral

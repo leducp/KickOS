@@ -48,7 +48,7 @@ export PATH
 
 refuse() { printf 'REFUSING: %s\n' "$*" >&2; exit 1; }
 
-[ -x "$ROOT/tools/flash.sh" ] || refuse "no $ROOT/tools/flash.sh -- ROOT does not hold the flash recipes"
+[ -x "$ROOT/tools/flash.sh" ] || refuse "no $ROOT/tools/flash.sh: ROOT does not hold the flash recipes"
 [ -f "$ROOT/boards/$BOARD/board.cmake" ] || refuse "no $ROOT/boards/$BOARD/board.cmake"
 [ -e "$IMG" ] || [ -e "$IMG.hex" ] || refuse "no image at $IMG or $IMG.hex"
 
@@ -103,7 +103,7 @@ resolve_console() {
   fi
   [ -n "$PATTERN" ] || refuse "$BOARD's console cable is not named: set $RIGKEY in $RIG_CONF
   (see tools/bench/rig.conf.example). There is deliberately no vendor-pattern fallback
-  here -- it resolves to somebody else's cable and the capture still looks right."
+  here; it resolves to somebody else's cable and the capture still looks right."
   shopt -s nullglob
   MATCHES=($PATTERN)
   shopt -u nullglob
@@ -462,7 +462,7 @@ esac
 # A capture that produced nothing must FAIL. An empty log and a board that printed
 # nothing are indistinguishable, and an exit code of 0 turns either into a pass.
 BYTES=$(wc -c < "$LOG")
-[ "$BYTES" -gt 0 ] || refuse "$LOG is 0 bytes -- the capture produced nothing"
+[ "$BYTES" -gt 0 ] || refuse "$LOG is 0 bytes: the capture produced nothing"
 
 # NEVER count across plan lines. A log holding two runs sums into something that reads as one
 # clean pass, measured on f302nucleo as 51 ok against a 1..51 plan, which is exactly right for
@@ -548,7 +548,7 @@ if [ -z "$LAST" ]; then
     if [ "$OKC" -eq 0 ]; then
       refuse "$LOG carries no plan line AND no ok lines: nothing of the suite arrived"
     fi
-    echo "NOTE: no plan line -- a USB CDC console loses the head of every capture, this one" >&2
+    echo "NOTE: no plan line; a USB CDC console loses the head of every capture, this one" >&2
     echo "  included. $OKC ok line(s) and the arms below the first one are NOT accounted for;" >&2
     echo "  derive the expected count and check it by hand." >&2
   elif [ "$WANT_TAP" -eq 1 ]; then

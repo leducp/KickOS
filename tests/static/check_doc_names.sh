@@ -82,7 +82,7 @@ scratch_dir
 # --- corpus -------------------------------------------------------------------
 git ls-files -z '*.md' | tr '\0' '\n' > "$TMP/docs.txt"
 DOCS=$(wc -l < "$TMP/docs.txt" | tr -d ' ')
-[ "$DOCS" -gt 0 ] || fail "no tracked *.md found -- wrong directory? (gate would pass vacuously)"
+[ "$DOCS" -gt 0 ] || fail "no tracked *.md found: wrong directory? (gate would pass vacuously)"
 
 # --- valid identifier set, scanned from the tree ------------------------------
 # Every such token appearing in a tracked NON-markdown file: CMake option()/set()/
@@ -99,7 +99,7 @@ DOCS=$(wc -l < "$TMP/docs.txt" | tr -d ' ')
 # exclusion is NOT: the next .html, .svg or .json committed under docs/ reopens it. The
 # corpus being CHECKED is unaffected: docs/*.md is still every bit of it.
 git ls-files -z | tr '\0' '\n' | grep -v '\.md$' | grep -v '^docs/' | grep -v '^tests/static/check_doc_names\.sh$' > "$TMP/src.txt"
-[ -s "$TMP/src.txt" ] || fail "no tracked non-markdown sources -- cannot build the valid identifier set"
+[ -s "$TMP/src.txt" ] || fail "no tracked non-markdown sources: cannot build the valid identifier set"
 # The alphabet here MUST match the one the doc scan below uses, lowercase included:
 # a source-side scan that stopped at the first lowercase letter would put `KOS_E` in
 # the valid set and then report the tree's own `KOS_Exxx` metasyntax as dangling.
@@ -275,13 +275,13 @@ awk -F/ '{ print $1 }' "$TMP/tracked.txt" | sort -u > "$TMP/toplevel.txt"
 # ARTIFACT (.hex/.uf2/.elf/.log) or a linker section (.bss/.eh_frame) is never
 # mistaken for a source reference: no such extension is tracked.
 sed 's|.*/||' "$TMP/tracked.txt" | grep '\.' | sed 's|.*\.||' | sort -u > "$TMP/exts.txt"
-[ -s "$TMP/exts.txt" ] || fail "derived no file extensions from the tree -- path shape rule is broken"
+[ -s "$TMP/exts.txt" ] || fail "derived no file extensions from the tree; path shape rule is broken"
 
 # --- syscall numbers, from the ABI header itself ------------------------------
 ABI="user/include/kickos/sys/abi.h"
-[ -f "$ABI" ] || fail "$ABI not found -- cannot cross-check syscall numbers"
+[ -f "$ABI" ] || fail "$ABI not found; cannot cross-check syscall numbers"
 sed -n 's/^ *\(KOS_SYS_[A-Z0-9_]*\) *= *\([0-9][0-9]*\).*/\1 \2/p' "$ABI" > "$TMP/sysnum.txt"
-[ -s "$TMP/sysnum.txt" ] || fail "parsed zero syscall numbers out of $ABI -- number cross-check is broken"
+[ -s "$TMP/sysnum.txt" ] || fail "parsed zero syscall numbers out of $ABI; number cross-check is broken"
 
 
 # =============================================================================
@@ -292,7 +292,7 @@ sed -n 's/^ *\(KOS_SYS_[A-Z0-9_]*\) *= *\([0-9][0-9]*\).*/\1 \2/p' "$ABI" > "$TM
 # pipeline sees only awk. A grep that cannot read a file would then feed awk short
 # input and the gate would report PASS on a corpus it never read.
 tr '\n' '\0' < "$TMP/docs.txt" | xargs -0 grep -an '' /dev/null > "$TMP/corpus.txt" 2>/dev/null
-[ -s "$TMP/corpus.txt" ] || fail "read zero lines out of $DOCS doc file(s) -- extraction is broken"
+[ -s "$TMP/corpus.txt" ] || fail "read zero lines out of $DOCS doc file(s); extraction is broken"
 # Non-emptiness alone is satisfied by ONE readable doc: xargs splits the corpus into
 # several grep invocations and keeps going after one of them dies, so a doc the scan
 # never reached would simply contribute no findings. Reconcile file for file. A doc that
@@ -348,7 +348,7 @@ BEGIN {
   for (i = 4; i <= NF; i++) { text = text ":" $i }
 
   if (file != prevfile) {
-    if (prevfile != "" && infence) { report(prevfile, fenceline, "unbalanced ``` fence opened here and never closed -- extraction cannot trust this file") }
+    if (prevfile != "" && infence) { report(prevfile, fenceline, "unbalanced ``` fence opened here and never closed; extraction cannot trust this file") }
     prevfile = file; infence = 0; fenceline = 0
     n = split(file, fc, "/"); dir = ""
     for (i = 1; i < n; i++) {
@@ -393,7 +393,7 @@ BEGIN {
         report(file, lineno, "identifier does not exist anywhere in the tree: " tok)
         continue
       }
-      report(file, lineno, "identifier is mis-cased and cannot be grepped: " tok " -- the tree spells it " up)
+      report(file, lineno, "identifier is mis-cased and cannot be grepped: " tok ", the tree spells it " up)
       name = up
     }
 
@@ -468,14 +468,14 @@ BEGIN {
     kind = "file"; if (slash) { kind = "directory" }
     hint = ""
     if (!havedir1 && !havedir2) {
-      hint = " (its parent directory does not exist either -- an out-of-tree citation?)"
+      hint = " (its parent directory does not exist either: an out-of-tree citation?)"
     }
     report(file, lineno, kind " path does not exist: " p hint)
   }
 }
 
 END {
-  if (prevfile != "" && infence) { report(prevfile, fenceline, "unbalanced ``` fence opened here and never closed -- extraction cannot trust this file") }
+  if (prevfile != "" && infence) { report(prevfile, fenceline, "unbalanced ``` fence opened here and never closed; extraction cannot trust this file") }
   exit (findings > 0)
 }' < "$TMP/corpus.txt" > "$TMP/findings.txt"
 RC=$?

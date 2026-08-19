@@ -6,7 +6,7 @@
 #   extern "C" char const kickos_build_commit[]
 #
 # Why not __DATE__/__TIME__: those bake into whichever TU is compiled, so on an
-# incremental build the banner shows the time that TU last compiled -- NOT the time the
+# incremental build the banner shows the time that TU last compiled, NOT the time the
 # flashed image was linked. Regenerating this stamp each build (the target has no OUTPUT,
 # so it is always out of date) makes the banner reflect the image actually on the chip.
 # Requires -DOUT=<file.cc> -DSRC=<source dir>.
@@ -27,7 +27,7 @@ if(_rc EQUAL 0 AND NOT _d STREQUAL "")
 endif()
 
 # Two symbols: the build time (its own banner line) and the commit (a dedicated line).
-# Always rewrite -- a fresh timestamp each build is the whole point (image relinks, banner
+# Always rewrite: a fresh timestamp each build is the whole point (image relinks, banner
 # stays truthful about what is on the chip).
 file(WRITE "${OUT}"
     "extern \"C\" char const kickos_build_time[] = \"${_t} ${_z}\";\n"

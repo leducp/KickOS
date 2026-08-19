@@ -3,7 +3,7 @@
 
 # XMC4800 USIC0-CH1 SSC hardware chip-select HOLD bench: proves on silicon whether
 # MSLS/SELO stays asserted across a software-paced multi-word frame, and that
-# PCR.FEM governs it -- the gate for a hardware CS in the XMC SPI service.
+# PCR.FEM governs it: the gate for a hardware CS in the XMC SPI service.
 # Diagnostic app: built only under KICKOS_ENABLE_SELFTEST (never a production
 # image). Registered only for the xmc4800-relax board (chip-specific USIC bring-up).
 kickos_add_diagnostic_app(xmccshold
@@ -14,7 +14,7 @@ if(NOT TARGET xmccshold)
 endif()
 
 # The chip register dir carries regs/usic.h (the shared USIC offset+bit-field
-# header) -- definitions only, no code.
+# header), definitions only, no code.
 target_include_directories(xmccshold PRIVATE
   "${PROJECT_SOURCE_DIR}/arch/arm/chip/xmc4800")
 

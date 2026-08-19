@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Cross toolchain for the KickOS ESP32 (Xtensa LX6) target -- the first non-ARM
+# Cross toolchain for the KickOS ESP32 (Xtensa LX6) target: the first non-ARM
 # ISA. Sibling of toolchain-arm-none-eabi.cmake; the ISA-agnostic parts (the
 # board-descriptor include, the LINK_GROUP RESCAN feature, the static-library
 # try-compile, the bare-metal find rules) mirror that file.
@@ -11,7 +11,7 @@
 # chip-family-specific (xtensa-esp32-elf-* is the classic ESP32 LX6 overlay) and
 # there is no per-board -mcpu. We use the toolchain's DEFAULT (windowed) ABI: the
 # prebuilt esp32 multilib ships ONLY a windowed-ABI libgcc/libc, so windowed code
-# links against it cleanly -- notably the 64-bit divide/modulo helpers
+# links against it cleanly, notably the 64-bit divide/modulo helpers
 # (_udivdi3/_umoddi3) the ns<->cycle clock math pulls in. (The earlier call0 draft
 # hit a hard wall here: `-mabi=call0 -print-multi-directory` still resolves to the
 # windowed `esp32` multilib, so call0 code + windowed libgcc mismatched at link and
@@ -64,7 +64,7 @@ find_program(CMAKE_OBJCOPY      xtensa-esp32-elf-objcopy HINTS "${KICKOS_XTENSA_
 find_program(CMAKE_SIZE         xtensa-esp32-elf-size    HINTS "${KICKOS_XTENSA_BIN}")
 
 # No linker script + startup during CMake's compiler probe (the board supplies
-# them at the app-link step), so probe with a static library -- a step boundary
+# them at the app-link step), so probe with a static library; a step boundary
 # must always configure standalone.
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 

@@ -118,4 +118,5 @@ real code.
   Reference; a chapter that needs the exact current contract links into `../reference/`.
 - **Terse, invariant-first.** Same rule as code comments: explain hidden constraints and
   contracts, not what the code plainly does.
-- **ASCII only.** `--` not em-dash, `->` not arrow, straight quotes, "section"/"microkernel".
+- **ASCII only.** A comma or a single `-` for an em dash, `->` not arrow, straight quotes,
+  "section"/"microkernel".

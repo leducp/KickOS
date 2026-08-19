@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # CI gate 1: golden-vector encode->decode round-trip. A host program drives the
-# pure encoders (include/kickos/trace/record.h -- header-only, no KickOS libs);
+# pure encoders (include/kickos/trace/record.h, header-only, no KickOS libs);
 # kicktrace.py decodes and must match exactly. Host-only (must run on the build
 # host), so it is registered on the sim build only.
 add_executable(kicktrace_gen_golden gen_golden.cc)

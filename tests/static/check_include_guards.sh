@@ -181,7 +181,7 @@ if [ -s "$TMP/findings" ]; then
     echo "" >&2
     echo "FAIL: $(wc -l < "$TMP/findings" | tr -d ' ') guard(s) do not follow the path." >&2
     echo "      The derivation is stated at the top of this script. Rename the guard, or" >&2
-    echo "      change the rule in docs/reference/style.md -- not this gate." >&2
+    echo "      change the rule in docs/reference/style.md, not this gate." >&2
     RC=1
 fi
 

@@ -15,7 +15,7 @@ if(NOT TARGET xmcspi)
 endif()
 
 # The chip register dir carries regs/usic.h (the shared USIC offset+bit-field
-# header) -- definitions only, no code.
+# header), definitions only, no code.
 target_include_directories(xmcspi PRIVATE
   "${PROJECT_SOURCE_DIR}/arch/arm/chip/xmc4800")
 

@@ -84,7 +84,8 @@ See *Prose is regenerable, a measurement is not* under Conventions.
 - **Two sync contracts.** The **Reference** is code-synced: if a page and the code disagree, the
   code wins and the page is a bug. The **Book** is durable narrative: reviewed occasionally, not
   pinned to each diff.
-- **ASCII only.** Plain ASCII in docs and code: `--` not em-dash, `->` not arrow, straight quotes,
-  "section"/"microkernel" not the glyphs.
+- **ASCII only.** Plain ASCII in docs and code: a comma or a single `-` for an em dash, `->` not
+  arrow, straight quotes, "section"/"microkernel" not the glyphs. A doubled hyphen is never
+  punctuation in code; `reference/style.md` states the rule and a gate holds it.
 - **Code style** is `reference/style.md`: layout, language rules, corpus rules, and what earns a
   comment. There is no formatter.

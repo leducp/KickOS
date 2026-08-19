@@ -9,12 +9,13 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**THIS TREE IS `M5.1.4`, THE FOURTH REVIEWABLE M5 PR, CARVED OFF `master` (`ed34c6e7`).** It
-carries the I2C seam, the I2C class contract, the rx72m RIICa engine and one unrelated xmc4800 SPI
-fix. Nothing else from M5 is here. Everything below about the arch and ABI groundwork, the
-instance-local seam, the IPC measurement chain and the atomics is `M5.1.1` through `M5.1.3`,
-already merged and still true of this tree; a record naming the stm32f411 console, the IPC
-fastpath implementation or S7 is describing a later PR and not this tree.
+**THIS TREE IS `M5.1.7`, THE LAST REVIEWABLE M5 PR CARVED OFF `M5` ITSELF, TAKEN FROM `master`
+(`098385c3`).** It carries the S7 DESIGN page, the `dash_punct` gate together with the tree-wide
+sweep that lets it land green, and three record corrections. Everything below about the arch and
+ABI groundwork, the instance-local seam, the IPC measurement chain, the atomics, the I2C seam, the
+stm32f411 console and the IPC fastpath is `M5.1.1` through `M5.1.6`, already merged and still true
+of this tree. What remains of M5 comes from topic branches: the S7 IMPLEMENTATION, the fastpath on
+the remaining ISAs, the encoded MPU/PMP precompute and the word-wise copy path.
 
 **I2C HAS A CLASS CONTRACT AND ONE ENGINE, AND THE ENGINE IS BUILD-VERIFIED ONLY.**
 `user/include/kickos/driver/i2c.h` sits beside `spi.h` with the same four-symbol shape, and it
@@ -147,6 +148,23 @@ assumed, and the gap between floor and direct is itemised rather than left as a 
 that number is what sizes the M6 big-lock decision, per-core run queues and finer locks are not a
 later optimisation but where most of the payoff actually is.
 
+**THE COPY PATH IS 3.6x FASTER (`topic/wordwise-memcpy`, not merged).** 10.0 to 2.75 cycles per
+byte. A 256-byte round trip goes 13883 to 9555 cycles, **31 percent**; 8 bytes goes 9.7 percent. The
+fix was NOT libc: `ep_copy` and the `kaccess_*` pair are private byte loops in `syscall_mem.cc` and
+`memcpy` was never on the measured copy path, so deleting or rewriting libc would have moved zero
+cycles. The word path is gated on `(dst ^ src) & (WORD-1)` and a two-word minimum, so no target ever
+sees an unaligned access and `-mno-unaligned-access` is satisfied without per-ISA divergence.
+
+**Two things that fell out.** `MPU_APPLY` dropped 452 to 277 cycles per switch because
+`arch_mpu_apply` emits a `memcpy` per region, so context-switch throughput rose 11.7 percent for
+free. And `lib/CMakeLists.txt` needs `-fno-tree-loop-distribute-patterns` on that file: the word
+loops ARE the memcpy idiom, and the pass that recognises it would rewrite each into a call to itself.
+
+**A cost and a caveat.** Fixed cost per copy rose 14 to 49 cycles, so a copy under about five bytes
+is now slower; the 8-byte IPC case improved. And `wcase-irq[1024B]` did NOT move, correctly: it
+measures the bench harness's OWN inline byte loop, not `ep_copy`. That row now overstates the
+kernel's longest copy by 3.6x.
+
 **ONE ATOMIC MECHANISM TREE-WIDE, AND THE ORDER IS CARRIED IN THE TYPE.** `<atomic>` now appears
 in EXACTLY ONE FILE, `system/include/kickos/sys/atomic.h`. The C-facing atomic macros are gone;
 `kos_uart_stats` is nine plain words behind `kos_counter_*`, a ONE-MEMBER STRUCT, so `++`, `+=`, a
@@ -169,17 +187,15 @@ a race rather than a resolution limit; its cycle figures are fine. `teensy41` is
 gives the full nested decomposition, having a proven-live DWT and a switch that PENDS, so unlike
 the LX6 its composite spans are honest.
 
-**ONE THING ABOUT THE CARVE ITSELF, because no command re-derives it.** The renumber commit as it
-stands on `M5` leaves SEVEN dangling `design-m5-smp.md` references in
-`docs/book/an-atomic-buys-definedness-not-atomicity.md` and `docs/reference/style.md`, which
-`doc_names` catches and which a much later M5 commit repaired in passing. They are repaired HERE,
-so a later carve of that commit finds those two files already correct.
+**WITNESSED HERE:** `sim` 242/242, `qemu` 42/42 and `qemu-riscv` 36/36, all green, every static
+gate exits 0 and `dash_punct` is one of them. Each denominator is one above `M5.1.6`'s, the new
+gate being the one added test. `teensy41`, `rx72m`, `esp32c6-wroom` and `microbit` build. No
+silicon run belongs to this tree.
 
-**WITNESSED HERE:** `sim` 239/239, `qemu` 41/41 and `qemu-riscv` 35/35, all green, and every
-static gate exits 0. The counts are BELOW M5's because tests added by later topics are not on this
-branch, and there is no `dash_punct` gate here: it arrives with a later PR and lands red on
-pre-existing lines, so M5's one red test has no counterpart here. No silicon run belongs to this
-tree.
+**THE GATE AND ITS SWEEP SHIP TOGETHER, and that was the decision.** `dash_punct` found 196 lines
+on `master`; four of them are real shell option terminators, which the gate's separator clause now
+recognises, and the other 192 across 107 files are rewritten here. Landing the gate on its own
+would have handed `master` a red test with no owner.
 
 **`pizero2350` IS RE-WITNESSED AT `ce34ac66`, BOTH ARMS, and it is the only board reachable
 without an operator** (BOOTSEL in, `KICKOS_SHUTDOWN_TO_BOOTLOADER` out, so the loop is unattended).
@@ -457,9 +473,9 @@ unattended pass cannot clear a once-a-day dialog, and the cost of working around
 worth paying. **Read `INCOMPLETE` on this fleet as the expected result, and read the per-list table
 instead** -- the exit status is non-zero by construction, so treating it as a failure signal will
 mislead every future pass. The board stays a supported port and a fleet BUILD target; what it no
-longer has is a route to silicon. **Two things now have no instrument at all**: the segmented
-capability table (`KCAP_RUN_CHUNKS > 1`, which no host arm reaches, see the coverage list below) and
-the SYSMPU enforcement class.
+longer has is a route to silicon. **One thing now has no instrument at all**, the SYSMPU
+enforcement class. The segmented capability table was listed here as a second; that was BACKWARDS
+and is corrected below.
 
 Behind it, **M4.8.3 (PR #21)**: the task layer -- a task is a set of threads that dies as one unit,
 the address space stays on `Domain`, and the group gate is CREATORSHIP rather than possession. It
@@ -1332,11 +1348,19 @@ Per-board chips, cores and the fact that decides each class: `docs/reference/boa
 
 **WHAT M4.8.4 LEFT UNCOVERED, carried past the merge.** None of it is a defect and none of it blocks
 anything; it is the list of things nothing currently measures.
-- **`KCAP_RUN_CHUNKS > 1` reaches no host arm.** The K-seam fixture compiles the SIM posture only,
-  so the segmented capability table is `frdmk64f`-only. **It is witnessed again at `m492k`** (see
-  above), because the fleet ruling is about UNATTENDED passes and a person can clear the OpenSDA
-  dialog in ten seconds. So the instrument exists whenever someone is at the desk, and the durable
-  fix is still to teach the K-seam fixture the segmented posture rather than to find another board.
+- **THIS WAS BACKWARDS THE WHOLE TIME: the host compiles the SEGMENTED path, and it is the FLAT
+  path that reaches no host arm.** Derive it, do not read it here: the sim's
+  generated `config/cap_width.h` carries `KICKOS_MAX_HANDLES 10` against `KCAP_CHUNK_TARGET 8`, so
+  `cap.h`'s `KICKOS_MAX_HANDLES <= KCAP_CHUNK_TARGET` is FALSE and the host takes the `#else` arm at
+  `KCAP_RUN_CHUNKS == 2`. So `KCAP_RUN_CHUNKS > 1` is what every host arm has been exercising all
+  along, and `frdmk64f` was never the only instrument for it.
+  **What genuinely reaches no host arm is the FLAT path**, which belongs to the 7-handle boards:
+  `microbit`, `bluepill-c8` and `f302nucleo`. Two of those three have no runner at all and the
+  third cannot produce a clean witness, so the uncovered side is the harder one to reach, not the
+  easier. Note the two paths differ where it matters: `cap_reply_live` SCANS the run on the flat
+  path and reads a stored counter on the segmented one.
+  It was load-bearing: it is why `frdmk64f` losing its route to silicon read as losing a coverage
+  class.
 - **The SYSMPU enforcement class has an instrument only while someone is present**, for the same
   reason, and `m492k` is one.
 - **`picopi` owes a slay capture.** It is the fleet's only armv6m enforcement unit, and it was on no

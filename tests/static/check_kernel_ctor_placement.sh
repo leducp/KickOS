@@ -69,11 +69,11 @@ tool_out "$TMP/nm_elf" '^[0-9a-fA-F]+ [A-Za-z] ' "$NM" "$ELF"
 START="$(awk '$3=="__kickos_app_init_array_start"{print $1}' "$TMP/nm_elf")"
 END="$(  awk '$3=="__kickos_app_init_array_end"  {print $1}' "$TMP/nm_elf")"
 if [ -z "$START" ] || [ -z "$END" ]; then
-  fail "ELF has no __kickos_app_init_array_{start,end} -- not an enforced ELF with the ctor split (wrong target?)"
+  fail "ELF has no __kickos_app_init_array_{start,end}: not an enforced ELF with the ctor split (wrong target?)"
 fi
 SDEC=$((0x$START))
 EDEC=$((0x$END))
-[ "$EDEC" -ge "$SDEC" ] || fail "app window end (0x$END) is below start (0x$START) -- corrupt ELF"
+[ "$EDEC" -ge "$SDEC" ] || fail "app window end (0x$END) is below start (0x$START); corrupt ELF"
 
 # 4 bytes per pointer: registered on armv7m only (see the CMakeLists guard).
 APP_ENTRIES=$(((EDEC - SDEC) / 4))
@@ -90,7 +90,7 @@ ctor_targets() { # <section> <entries> <outfile>
     || fail "objcopy could not extract $1"
   NREAD=$(( $(wc -c < "$TMP/sect.bin") / 4 ))
   [ "$NREAD" -eq "$2" ] \
-    || fail "$1: the window symbols span $2 entr(y/ies) but objcopy read $NREAD -- output section renamed or NOBITS"
+    || fail "$1: the window symbols span $2 entr(y/ies) but objcopy read $NREAD: output section renamed or NOBITS"
   od -An -tx4 "$TMP/sect.bin" | tr ' ' '\n' | grep -E '^[0-9a-fA-F]{8}$' | while read -r W; do
     even_hex "$W"
   done | sort -u > "$3"
@@ -135,7 +135,7 @@ done < "$TMP/ctor_even.txt" > "$TMP/kernel_ctor_addrs.txt"
 PSTART="$(awk '$3=="__init_array_start"{print $1}' "$TMP/nm_elf")"
 PEND="$(  awk '$3=="__init_array_end"  {print $1}' "$TMP/nm_elf")"
 if [ -z "$PSTART" ] || [ -z "$PEND" ]; then
-  fail "ELF has no __init_array_{start,end} -- cannot verify the privileged ctor window"
+  fail "ELF has no __init_array_{start,end}: cannot verify the privileged ctor window"
 fi
 PSDEC=$((0x$PSTART))
 PEDEC=$((0x$PEND))
@@ -168,7 +168,7 @@ while read -r TGT; do
 done < "$TMP/priv_targets.txt"
 
 if [ -n "$FOREIGN" ]; then
-  echo "FAIL: non-kernel ctor(s) landed in the PRIVILEGED .init_array --" >&2
+  echo "FAIL: non-kernel ctor(s) landed in the PRIVILEGED .init_array:" >&2
   echo "      that window runs from Reset_Handler with full privilege, before kmain," >&2
   echo "      so these entries are inside the TCB. Check that the chip linker script" >&2
   echo "      still partitions .init_array by ARCHIVE and has not regressed to a" >&2
@@ -200,7 +200,7 @@ while read -r ADDR NAME; do
 done < "$TMP/kernel_ctor_addrs.txt"
 
 if [ -n "$LEAK" ]; then
-  echo "FAIL: kernel-owned global ctor(s) landed in .kickos_app_init_array --" >&2
+  echo "FAIL: kernel-owned global ctor(s) landed in .kickos_app_init_array:" >&2
   echo "      these run in root_entry AFTER kmain, so kmain uses an unconstructed object." >&2
   echo "      Add the offending archive to the .init_array closed set in EVERY chip linker script.$LEAK" >&2
   exit 1
@@ -229,7 +229,7 @@ while read -r ADDR NAME; do
 done < "$TMP/elf_ctors.txt"
 
 if [ -n "$ORPHAN" ]; then
-  echo "FAIL: global ctor(s) survive in the image but are in NEITHER init array --" >&2
+  echo "FAIL: global ctor(s) survive in the image but are in NEITHER init array:" >&2
   echo "      nothing will ever run them. A third .init_array-like bucket in the chip" >&2
   echo "      linker script, or an entry dropped while its code was kept.$ORPHAN" >&2
   exit 1

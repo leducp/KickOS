@@ -112,7 +112,7 @@ int main(int, char**)
     kos::print("a lower-priority trasher clobbers them. Result lines follow.\n\n");
 
 #if !defined(__ARM_FP)
-    kos::print("  (no hardware FPU on this target -- nothing to test)\n");
+    kos::print("  (no hardware FPU on this target; nothing to test)\n");
 #endif
 
     kos::thread::spawn(checker, nullptr, "checker", 20);

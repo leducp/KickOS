@@ -74,7 +74,7 @@ if [ -f "$CDB" ]; then
     fail "KickOS warning flags leaked onto an out-of-tree consumer's compile line"
   fi
 else
-  fail "no compile_commands.json -- cannot check the consumer's flag posture"
+  fail "no compile_commands.json: cannot check the consumer's flag posture"
 fi
 
 echo "== running out-of-tree app =="

@@ -218,7 +218,7 @@ namespace kickos
                 << "an ordinary exit ends its group cooperatively; only a slain member "
                    "escalates its peers";
             EXPECT_EQ(slots_holding(CANCEL_KILL), 2)
-                << "and the sweep is not vacuous -- the direct kill and the group's both landed";
+                << "and the sweep is not vacuous; the direct kill and the group's both landed";
         }
 
         // The kind travels with the death, which is the whole of "the group dies by ONE rule".

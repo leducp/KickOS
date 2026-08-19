@@ -10,7 +10,7 @@ inputs:
     description: >
       Directory the tarball unpacks to. The tarball is named xtensa-esp-elf but
       installs the per-chip xtensa-esp32-elf-* program names the toolchain file looks
-      for, and unpacks to a version-less xtensa-esp-elf/ -- hence the separate tag
+      for, and unpacks to a version-less xtensa-esp-elf/, hence the separate tag
       below, which the cache key needs.
     required: false
     default: xtensa-esp-elf

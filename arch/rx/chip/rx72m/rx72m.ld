@@ -286,7 +286,7 @@ KICKOS_BOOT_ARENA_ASSERT(___kickos_ram_start, ___kickos_ram_end)
 
 KICKOS_POOL_ARENA_ASSERT(___kickos_ram_start, ___kickos_ram_end)
 ASSERT(___kickos_app_fini_array_end == ___kickos_app_fini_array_start,
-       "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
+       "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
 /* App globals must fit the pow2 region. If this trips, raise _appdata_size to the
    next power of two (it is the app's MPU-granted .data/.bss window). */
@@ -303,7 +303,7 @@ ASSERT(ADDR(.appbss) >= ___kickos_appdata_start,
    loud signal the colon selectors matched nothing (a renamed lib). NOT app-side: an
    empty .appdata is legitimate (a minimal freestanding app --gc-sections'd bare). */
 ASSERT(__ebss > __sbss,
-       "KickOS: kernel .bss empty -- closed-set archive selector matched nothing (renamed lib?)")
+       "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
 #endif
 
 /* Opt-in link-time heap floor (undefined by default). Double underscore per RX psABI. */

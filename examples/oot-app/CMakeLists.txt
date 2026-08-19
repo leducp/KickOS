@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# A standalone downstream project consuming the installed KickOS package -- not
+# A standalone downstream project consuming the installed KickOS package, not
 # part of the KickOS tree. Plain modern CMake: add_executable + kickos link.
 
 cmake_minimum_required(VERSION 3.24)
