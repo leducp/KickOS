@@ -88,7 +88,7 @@ measurable at about 4 percent.
 
 ### 1.2 It also sizes the SMP decision
 
-`design-m5-smp.md` states that a shared kernel's payoff is Amdahl-bounded by the fraction of a
+`design-m6-smp.md` states that a shared kernel's payoff is Amdahl-bounded by the fraction of a
 round trip spent inside `IrqLock`, and that its "about 2x" figure is unproven. The bound cannot be
 computed from the numbers above, because the fixed term is not yet split into locked and unlocked
 parts -- that is section 3. What section 1 already settles is that the fraction is NOT dominated
@@ -233,7 +233,7 @@ exception entry and exit, so two of those plus the two switch bodies accounts fo
 remainder and leaves ~1730 for syscall entry and exit and the scheduler. That agrees with 3.1
 below, which was derived a completely different way.
 
-### 3.0.2 D1 IS STRUCTURALLY UNREACHABLE, and that decides the donation question
+### 3.0.2 D1 does not fire under SUSTAINED load, which is narrower than it first read
 
 The bench gained a step whose caller runs one priority level ABOVE its server, which is the only
 shape `endpoint_call`'s D1 branch admits. **`CALL_DONATE` still reports `n = 0`.** What fires
@@ -270,6 +270,13 @@ Consequences, and they settle an open question:
 D1 is not dead code -- a server parked in recv when a higher-priority client arrives is a real
 shape, and it is what a request-response service under bursty load looks like. What is now measured
 is that a SUSTAINED high-priority caller cannot produce it.
+
+**This section was headed "D1 IS STRUCTURALLY UNREACHABLE" and that was an overstatement**, which
+the paragraph above contradicted on its own page. The measurement covers a saturated ping-pong and
+nothing else. Under think-time between calls the lower-priority server DOES reach `kos_recv` and
+park, and the next call from the higher-priority client finds the rendezvous and admits D1. So the
+reachable set is "bursty request-response", which is not an exotic workload -- it is what a driver
+service under real traffic looks like, and it is the traffic the fastpath exists for.
 
 ### 3.0.3 The nested decomposition, on the one board where spans are honest
 
@@ -322,7 +329,7 @@ carries the cheaper absolute numbers.
 > things it could not see have since been measured: the correction rule it read the table under
 > was wrong for composites (4.10), and a call/reply round trip has a THIRD locked leg, the
 > server's own `kos_recv` park, which this section never counted. Kept unedited because 31
-> percent is the number `design-m5-smp.md` and `STATE.md` planned against.
+> percent is the number `design-m6-smp.md` and `STATE.md` planned against.
 
 Summing only the leaves that sit INSIDE `IrqLock` -- `CALL_RESOLVE`, `CALL_PROBE`, `CALL_COPY`,
 `CALL_MINT`, `CALL_PARK` on the call side, and `REPLY_LOOKUP`, `REPLY_COPY`, `REPLY_FUNNEL`,
@@ -330,7 +337,7 @@ Summing only the leaves that sit INSIDE `IrqLock` -- `CALL_RESOLVE`, `CALL_PROBE
 
 **At least 31 percent of a call/reply round trip is spent under the kernel lock.** It is a FLOOR:
 the wake path's ready-queue work is inside the lock and is not separately bracketed, and
-`CALL_VALIDATE` and `CALL_RESUME` are correctly outside it. `design-m5-smp.md` states that a shared
+`CALL_VALIDATE` and `CALL_RESUME` are correctly outside it. `design-m6-smp.md` states that a shared
 kernel's payoff is Amdahl-bounded by exactly this fraction and that its "about 2x" figure is
 unproven. A floor of 31 percent bounds the speedup of a two-core big-lock kernel at
 1 / (0.31 + 0.69/2), about **1.45x**, before any contention -- which is materially below 2x and is
@@ -429,7 +436,7 @@ uninstrumented capture would not change the decision and is not worth a second k
 **This is an ENFORCING board, and that is not what carries the result.** `MPU_APPLY` is 443 cycles
 per switch and both switches are inside the lock, so the PMP reprogram alone is 886 of the 3651.
 Removing it entirely gives 2765 locked of 6050, `f = 0.457`, and **1.37x**. So no posture of this
-board reaches the "about 2x" `design-m5-smp.md` assumes.
+board reaches the "about 2x" `design-m6-smp.md` assumes.
 
 **What this replaces, and by how much.** Section 3.0.1's floor was 31 percent bounding 1.45x. The
 new floor is 43 percent bounding 1.40x, and the direct number is 53 percent giving 1.31x. The
@@ -530,10 +537,12 @@ This section previously said the choice between making donation cheap and having
 refuse it could not be settled without a measurement. The measurement exists now and it settles it,
 though not the way it was framed. Section 3.0.2 has the evidence.
 
-**Refuse.** D1 is admissible only when the caller outranks the server, and a caller that outranks
-its server never finds a parked receiver in sustained traffic, because it re-calls before the
-server can loop back and park. So the fastpath refusing donation costs nothing measurable and
-removes a branch plus a `sched::set_prio` from the hot path.
+**Refuse -- but on a NARROWER argument than this section first gave, and see 4.9.** D1 is
+admissible only when the caller outranks the server, and a caller that outranks its server never
+finds a parked receiver *in sustained traffic*, because it re-calls before the server can loop back
+and park. The refusal therefore costs nothing IN THAT WORKLOAD. It does not follow that donation
+never reaches the fastpath: under bursty load the server does park, and then the D1 rendezvous is
+exactly the shape the fastpath serves. Section 4.9 is what that costs.
 
 **The harder consequence is about WHICH path the fastpath should be.** The rendezvous fastpath
 serves equal-priority peers; the slowpath serves the priority-inverted case, which is the one with
@@ -541,7 +550,181 @@ latency to save. A work fastpath that only handles the parked-receiver rendezvou
 traffic that has no inversion to fix. Whatever section 4 eventually specifies has to say what it
 does for a high-priority client, or it is aimed at the wrong half.
 
-### 4.4 The mint, split -- and the instrument was lying about composites
+### 4.4 The budget, and what a fastpath can and cannot take
+
+Section 3.0's ~4818 cycles at 8 B on the LX6, sorted into what a fastpath may attack and what it
+may not.
+
+| part | cycles | attackable |
+|---|---|---|
+| hardware exception entry and exit, twice | ~696 | **no**, this is the silicon |
+| the two `arch_switch` bodies | 290 | **no**, two threads must actually swap |
+| `MPU_APPLY`, twice | 26 here | **no**, and this board understates it |
+| IPC leaves (mint, lookup, validate, park, resolve, funnel, copy, probe, resume) | ~1800 | partly |
+| `KTIME_REARM`, twice | 208 | partly |
+| syscall entry and exit, and the scheduler | ~1730 | **yes, and this is the prize** |
+
+**The floor is about 1000 cycles plus the MPU**, so the whole exercise is bounded at roughly 4.8x on
+this board and less on any board with a real MPU. That is the number to hold a design against, and
+it is worth having before writing code rather than after.
+
+`MPU_APPLY` reads as 13 cycles only because `esp32-wroom` has no MPU. On every board that has one it
+is a real region reprogram, it is per-round-trip twice, and **the fastpath may not skip it**: a
+client and a driver service live in different domains by construction, which is the whole point of
+the isolation. The one case where it collapses is IPC between threads of the SAME task, which is a
+pointer compare and worth taking, but it is not the driver traffic.
+
+### 4.5 The first structural decision is the switch, not the copy
+
+`arch_switch` PENDS on armv7m, rv32imac and rxv3, and swaps INLINE on sim and Xtensa LX6. A fastpath
+that returns to user from inside the exception handler, which is where the ~1730 cycles live, cannot
+pend: pending means returning to the generic exit path and letting it reschedule, which is precisely
+the machinery being bypassed. So the fastpath has to perform the switch itself.
+
+That is a new arch seam, not a tweak to an existing one, and it is the first thing to specify. seL4
+answers it by writing the fastpath per-architecture in assembly. KickOS does not have to go that
+far, but it does have to answer the same question, and the answer determines whether the fastpath is
+one portable C body with a small arch hook or five arch bodies. **Nothing else in section 4 can be
+sized until this is decided.**
+
+### 4.6 The mint is the next measurement, not yet a ruling
+
+`CALL_MINT` is 400 cycles, the largest leaf, and constant in the payload, so at real driver traffic
+it is roughly twice the copy. It is also **two different things measured as one**:
+`cap_install_reply` and `write_recv_info`. `write_recv_info` writes the receiver's `kos_recv_info`
+in USER memory; `cap_install_reply` walks the free list and seats a generation. They have nothing in
+common and only one of them is a capability operation. **Split the phase before designing around
+either number.**
+
+Two facts to carry into that measurement, both read off the tree rather than measured:
+
+- `cap_reply_live` (`kernel/syscall/cap.cc:743`) is an O(capacity) SCAN on the flat path
+  (`KCAP_RUN_CHUNKS == 1`) and an O(1) counter on the segmented path, and the call path runs it
+  TWICE, once in `cap_can_take_reply` and once inside `cap_install_reply`. `esp32-wroom`'s
+  `CALL_PROBE` of 22 cycles says that board is not paying for a scan, so the boards that DO take the
+  flat path are the ones to measure. Which board takes which path is a build fact
+  (`KICKOS_MAX_HANDLES <= KCAP_CHUNK_TARGET`), and it has been recorded backwards before.
+- The reply capability is minted with **rights 0**, and `cap.cc:749` states that this makes it
+  undelegable. Its count is separately bounded by `KICKOS_CAP_REPLY_MAX`.
+
+That second fact is the interesting one, and it suggests a direction rather than settling it. **A
+capability that cannot be delegated and whose live count is already bounded does not obviously need
+a slot in the general table.** seL4 does not put it there; the reply lives in the caller's TCB. If
+KickOS reserved `KICKOS_CAP_REPLY_MAX` slots per thread instead of minting into the general run,
+the free-list walk goes away, the probe goes away, `-KOS_EMFILE` stops being a reachable outcome of
+the reply path, and `CALL_MINT` plus `REPLY_LOOKUP` -- 703 cycles, about 15 percent of a round trip
+-- come under attack together.
+
+**It is NOT ruled here**, for two reasons. The split measurement might show most of the 400 is
+`write_recv_info`, in which case the slot buys much less than it looks like. And the reply path's
+correctness lives in the stale-resolve and the teardown, which are exactly what the generation and
+the general table give it for free; a reserved slot has to re-earn both. That is a design question
+with a real refusal available, and it deserves its own pass.
+
+### 4.7 What the fastpath does for a high-priority client, which 4.3 left open
+
+Section 4.3 ended by warning that a rendezvous fastpath might be aimed at the wrong half of the
+traffic, because the rendezvous is the equal-priority case and the inversion is where the latency
+is. That warning is answerable, and the answer is that there is no second fastpath to write.
+
+When the caller outranks the server, section 3.0.2 measured that **no receiver is parked**: the
+caller re-issues before the server can loop back and park. So at the moment the high-priority caller
+traps, there is nothing to hand off to. Its latency is not path length through the kernel, it is how
+long until the server is SCHEDULED, and no amount of shortening the call path changes that. What
+changes it is the boost, D2, which already fires and is already measured at 149 cycles on the M7 and
+160 on the lx6.
+
+So the two halves are served by two different mechanisms, and both exist: **the fastpath serves the
+rendezvous, and D2 serves the inversion.** The fastpath is not aimed at the wrong half; it is aimed
+at the only half where path length is the cost. This is the answer 4.3 asked for, and it means the
+fastpath's refusal list in 4.1 can keep "no parked receiver" as a plain fall-through with no guilt
+attached to it.
+
+### 4.8 The seam, located: KickOS already LEAVES the handler before it dispatches
+
+Section 4.5 said the switch is the first thing to specify and that the answer decides whether the
+fastpath is one portable C body or five arch bodies. Reading the armv7m trap path answers it, and
+the answer is sharper than "the switch pends".
+
+`arch/arm/armv7m/switch.S` routes a syscall like this: the user's `arch_syscall` issues `SVC`,
+`SVC_Handler` runs, and it **exception-returns into `svc_trampoline`, which runs in PRIVILEGED
+THREAD MODE on the calling thread's own PSP**. Only then does `bl syscall_dispatch` happen. The
+comment states the intent outright: dispatch runs in thread mode so that a blocking syscall is an
+ordinary synchronous PendSV switch, with the mid-dispatch continuation frozen on that thread's own
+stack and resumed inline when it is next scheduled.
+
+**That is the opposite structure to seL4's fastpath**, which never leaves the handler: it completes
+the transfer and exception-returns straight into the receiving thread. KickOS pays a full exception
+return, a thread-mode call frame, the generic dispatch, and then a PendSV round trip to switch --
+and section 4.4 already measured that region at about 1730 cycles, the largest attackable block in
+the round trip.
+
+So the seam is not a new `arch_switch` variant. **It is a decision point inside `SVC_Handler`,
+before the exception return.** If the fastpath conditions hold, that code completes the IPC and
+rewrites the exception return so it lands in the TARGET thread, never entering `svc_trampoline` and
+never calling `syscall_dispatch`. If they do not, it falls through to exactly today's path.
+
+Three consequences follow, and they are what makes this worth writing down now.
+
+- **The frame surgery is inherently per-arch**, because it edits the saved exception frame and the
+  stack pointer of the incoming thread. On armv7m that means the `{r4-r11, EXC_RETURN}` block and
+  the hardware frame, with the FP conditionality on `EXC_RETURN` bit 4 that `switch.S` already
+  handles. That part cannot be portable C, and it is why seL4 writes its fastpath in assembly per
+  architecture.
+- **The capability work above it CAN be one shared C leaf** -- resolve, probe, mint, copy, the
+  refusals. So the split is not "one body or five": it is ONE C leaf plus a small arch prologue
+  and epilogue per backend, which is the shape to aim for and is much cheaper than five bodies.
+- **The two inline-switch backends (sim, Xtensa LX6) need a different epilogue**, not a smaller
+  one. They have no pended switch to redirect, so their fastpath completes the swap inline exactly
+  as `arch_switch` does today. That asymmetry is the same one that made the LX6's composite bench
+  spans unusable in section 3.0, and it will show up again here.
+
+**What this does NOT change is the refusal list.** Correctness still lives in the slowpath, and the
+fastpath must fall through rather than reimplement any refusal -- which is now a stronger constraint
+than it sounds, because falling through from inside the handler means unwinding to the normal
+exception return with nothing committed. **The fastpath must therefore decide BEFORE it mutates
+anything.** That ordering requirement is the first thing to write into the implementation, and it is
+the reason the probe (`cap_can_take_reply`, 22 cycles) exists as a separate step from the mint.
+
+### 4.9 Refusing donation is a real concession, and the prior art says why
+
+Sections 3.0.2 and 4.3 concluded "refuse donation" from a saturated ping-pong, where D1 never fires.
+Under BURSTY load it does fire, and it fires in precisely the rendezvous the fastpath is built for:
+a server parked in `kos_recv` when a higher-priority client arrives. So the refusal is not free in
+general -- it drops exactly the high-priority-client case to the slowpath, which is the case with
+latency to save. **That is a concession, and this page previously read as though it were not one.**
+
+The reason it is hard here is what donation COSTS in this design, and the contrast with the prior
+art is the useful part rather than the ranking.
+
+- **KickOS donates a PRIORITY.** D1 raises the server's effective priority, which goes through
+  `sched::set_prio`, which is a ready-queue re-seat plus a bitmap update (`sched.cc` states it is
+  the sole writer of an effective priority, for exactly this reason). That is real work on a path
+  whose whole purpose is to do almost none, and D2 measures the same family at 149 cycles on the M7
+  and 160 on the lx6.
+- **seL4 (MCS) donates a SCHEDULING CONTEXT** -- a budget and a period -- and it does so ON its
+  fastpath (`../nuttx/seL4/src/fastpath/fastpath.c`, and `schedContext_donate` in
+  `src/object/schedcontext.c`). It is cheap there because the receiving thread is required to have
+  NO scheduling context of its own, so the transfer is a pointer move rather than a recomputation.
+  That is the "passive server" model: the server owns no CPU time at all and runs only on time a
+  client lends it.
+- **Inherit-on-receive**, where a server adopts the priority of the message it accepts, is the
+  classic message-passing answer and is what KickOS's D2 already is. It fires, it is measured, and
+  it is not the thing under discussion.
+
+**So the question is not whether donation is feasible -- it is implemented here and it works. It is
+which currency is donated.** A priority must be recomputed against a run queue; a budget can be
+moved by assignment when the receiver is guaranteed to hold none. If the fastpath is ever to admit
+donation, the seL4 shape is the one to study, and the precondition to look for is the equivalent
+guarantee: a server that cannot already hold the thing being handed to it, so the handoff is a
+store and not a re-seat.
+
+**Not decided here.** Admitting donation to the fastpath is a design change with a real refusal
+available, and it interacts with D3's revert-by-recompute, which is the half that would still have
+to run somewhere. What IS decided is that "donation never arrives" is not a valid reason, and this
+page no longer offers it as one.
+
+### 4.10 The mint, split -- and the instrument was lying about composites
 
 `CALL_MINT`'s 400 cycles are now two numbers. `esp32-wroom`, LX6 at 240 MHz, minimums, n = 120000,
 log `.session/logs/m5mintsplit-esp32-wroom-bench.log`:
@@ -555,7 +738,8 @@ They sum to 399 against the pre-split 400, which is `PH_NULL` exactly, and twelv
 the same capture are byte-identical to the section 3.0 pass. So the split is placed honestly: the
 two operations are strictly sequential, with only an assert between them.
 
-**The mint does NOT walk the free list.** There is no walk on this path: `cap_run_peek_free` (`kernel/include/kickos/cap.h:454`) is a head peek that
+**Section 4.6's premise was wrong and is withdrawn.** It said the mint "walks the free list". There
+is NO walk on this path: `cap_run_peek_free` (`kernel/include/kickos/cap.h:454`) is a head peek that
 returns on its first test, and the unlink beside it is an O(1) doubly-linked removal. The 290 is not
 a search. It is mint MACHINERY -- a pointer-to-pool-index division out of `index_of`, `handle_for`,
 three out-of-line call frames on Xtensa's windowed ABI, the chunk indirection, the generation seat
@@ -627,3 +811,106 @@ two arms now close different phases, and `endpoint_recv` gained the same treatme
 **A bracket count is a source fact and must be stated with the number it corrects.** 3.0.4 states
 19, 9 and 6 for the three locked legs and 42 for the whole round trip, each confirmed by an `n`
 column rather than asserted.
+
+## 5. MEASURED: the fastpath works, and section 4.4's budget was wrong
+
+Built for rv32imac and measured on `esp32c6-wroom`, same tree, same board, only an A/B knob
+differing. Both captures reproduced byte-for-byte across independent flash cycles.
+
+| payload | fastpath off | fastpath on | apparent delta |
+|---|---|---|---|
+| **8 B** | 55586 ns | **46998 ns** | -8588 ns (-1374 cycles) |
+| **16 B** | 56581 ns | **48344 ns** | -8237 ns (-1318 cycles) |
+| 32 B and above | unchanged | +175 ns | buffer form, not taken |
+
+**The apparent delta lies, and correcting it is the point of section 4.10.** Both builds carry the
+bench instrument, and the fastpath executes none of the call-side brackets. The instrument's own `n`
+columns say how many: bracket executions fell by 760000 over 40000 fastpath calls, which is
+**exactly 19.00 brackets per round trip** -- an integer, which is how the accounting is known to have
+closed. At this board's calibrated 46.5 to 50 cycles per bracket that is 880 to 950 cycles of pure
+instrument inside the apparent gain.
+
+**Corrected: about 425 to 490 cycles, 6 to 7 percent end to end.** Two independent cross-checks
+license the correction: the corrected off-side baseline lands at 6872 to 7014 cycles, inside the
+6830 to 6940 that section 3.0.4 derived a completely different way; and the phase `n` columns
+reconcile to the exact number of sub-20-byte calls.
+
+### 5.1 Section 4.4 predicted ~1730 cycles attackable. We got about a quarter of it.
+
+Stating that plainly rather than dressing it up. **The budget analysis was wrong, and the way it was
+wrong is the transferable lesson.**
+
+- **The ~1730 figure was an LX6 RESIDUAL, not a measurement, and residuals do not port.** It was
+  whatever remained after subtracting named rows from a 4818-cycle round trip on Xtensa -- a
+  WINDOWED ABI, where a syscall entry spills register windows, on a board with NO MPU. rv32imac has
+  a flat 32-register file and a fixed 128-byte frame. There was never any reason for that leftover
+  to describe this chip, and section 4.4 presented it as if there were.
+- **On this board the round trip is dominated by what a fastpath may NOT touch**, exactly as section
+  4.4's own floor argued but in a much larger proportion than it assumed. `MPU_APPLY` alone is 450
+  cycles times two switches -- **900 cycles, 13.8 percent** -- and its sample count is IDENTICAL in
+  both builds, confirming the fastpath removed no switch. Switch machinery that may not be skipped
+  totals about 1428 cycles, 21.9 percent.
+- **Only one of the round trip's THREE locked legs was attacked.** Section 3.0.4 established that a
+  round trip holds the lock three times, not twice; the recv park and the reply still take the full
+  generic path with two more trap round trips between them.
+
+### 5.2 What phase 1 found, which was better news than expected
+
+The rv32imac trap path is the structural twin of armv7m's -- the trap rewrites the return address to
+a trampoline and returns into it on the caller's own stack, dispatching only afterwards -- so section
+4.8's seam exists here unchanged. It is **cheaper** than armv7m: one frame format for every path, so
+no split hardware and software frame and no floating-point conditionality; a single-word context; and
+a switch that is a stack-pointer swap plus a deferred protection commit.
+
+### 5.3 Where the remaining headroom actually is
+
+- **`CALL_MINT_CAP` is 287 cycles -- more than half the entire measured gain, in one leaf.** The
+  reserved per-thread reply slot of sections 4.6 and 4.10 is now clearly the highest-value next
+  move, AHEAD of more frame surgery. That is a reversal of this page's earlier ordering and it is
+  the measurement that reversed it.
+- The stub copies the full register-form payload regardless of the requested length, worth about 30
+  cycles; the kernel reads only what was asked for, so the zero-fill buys nothing.
+- The buffer path pays a constant **+28 cycles** for the stub's two size compares. That is a real
+  cost borne by every large-payload caller so that small ones need not choose a path, and section
+  4.1 accepted exactly that trade when it ruled the caller never chooses.
+
+### 5.4 The witness, because a green suite proved nothing
+
+The fastpath and the buffer form answer IDENTICALLY by construction, so the existing suite passing
+was not evidence the fastpath was ever taken. A dedicated arm now forces it: the server XORs its
+reply rather than echoing it, so a byte-identical answer cannot pass by accident, and the assertion
+was proven to bite by a negative control. `sim` 241, `qemu` armv7m 41, `qemu-riscv` 35, zero
+failures; the selftest plan moves 104 to 105.
+
+## 6. The instrument is too heavy at the source level, and that is a decision not a complaint
+
+The bracket pairs reach four kernel files beyond `kernel/bench/`, and they sit in the hottest paths
+by construction. **They cost nothing when compiled out and they cost readability and maintenance
+always.** That second cost is the one that matters and it is accepted for M5, not defended.
+
+What the in-tree instrument bought, so a replacement is judged against it rather than against
+nothing: it found its own documented correction rule wrong by a factor of about 56; it found a
+composite reporting a DIFFERENT code path's minimum; it found half the protection cost unbracketed
+because that half runs in assembly; and it showed the fastpath delivering roughly a quarter of its
+prediction. A replacement that cannot find those is not a replacement.
+
+**The direction after M5 is external tooling.** A hardware trace path writes one word to a stimulus
+port and lets the probe timestamp it, against the current mark, span, subtract and accumulate. The
+fleet has a J-Link and `xmc4800` carries a J-Link OB, so the experiment is cheap.
+
+Two constraints to size that experiment honestly:
+
+- **ARM only.** Trace of that kind is a Cortex-M feature with a trace unit behind it, absent on the
+  armv6m parts and on the RISC-V, RX and Xtensa backends. Every number on this page was taken on
+  `esp32c6-wroom`, which such a path CANNOT reach, so a fleet-wide story would be two instruments.
+- **It is not free of code either.** The tree's RTT path is a memory protocol and still needs a
+  write per record. What moves off-target is the timestamp arithmetic and the accumulator, not the
+  call site.
+
+So the target is FEWER AND CHEAPER call sites with the arithmetic off-target, not an
+instrument-free kernel.
+
+**WHEN: settled during SMP or between SMP and the MMU work, not in M5.** SMP is when the question
+gets its hardest input, because a per-core instrument must answer what a shared accumulator across
+cores means, and the state inventory already rules the bench accumulators per-core. Deciding the
+shape before that constraint is known would decide it twice.
