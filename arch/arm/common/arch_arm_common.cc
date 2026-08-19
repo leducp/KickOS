@@ -16,7 +16,6 @@
 
 #include <kickos/sys/atomic.h>
 
-#include <bit>
 
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the ns/cycle conversions
 
@@ -173,53 +172,31 @@ void arch_timer_disarm(void)
 
 // --- MPU: ARM PMSA backend (v6-M/v7-M share the register map) ----------------
 #if KICKOS_HAVE_MPU
-// Max per-thread regions the deferred-commit stash carries (must be >= the kernel's
-// KICKOS_MPU_MAX_REGIONS; both are 8). Hoisted here so the fixed-region init can
-// bound-check against it. Sizes g_pend_regions below.
-static constexpr size_t MAX_PEND_REGIONS = 8; // == KICKOS_MPU_MAX_REGIONS (kernel config)
+// Descriptor slots a per-thread image can occupy, above the chip's fixed rows. The
+// fixed-region init bound-checks the silicon against it.
+static constexpr size_t MAX_PEND_REGIONS = ARCH_MPU_ENCODED_SLOTS;
 
 // Count of chip fixed regions occupying the LOW MPU slots [0, g_fixed_count).
 // Set once by kickos_arm_mpu_fixed_init; per-thread grants are programmed ABOVE it.
 // 0 for every chip without a fixed-region hook -> those chips are byte-identical.
 static size_t g_fixed_count = 0;
 
-// Encode one region into an MPU_RASR value. attr is the UNPRIVILEGED access
-// (supervisor comes from the PRIVDEFENA background region): a code region is
-// R+X (RO, executable); data / stack / device is RW + execute-never. Device
-// memory gets the ordered device type. `size` is a power of two >= 32, and the
-// region base is naturally aligned to it (arch_ram_region_size / the linker).
-static uint32_t mpu_rasr(size_t size, uint32_t attr)
-{
-    using namespace kickos::arm;
-    uint32_t const size_field = static_cast<uint32_t>(std::countr_zero(size)) - 1u;
-    uint32_t rasr = MPU_RASR_ENABLE | (size_field << 1);
-    if (attr & ARCH_MPU_X)
-    {
-        rasr |= MPU_RASR_AP_RO | MPU_RASR_MEM_NORMAL; // code: RO + executable
-    }
-    else if (attr & ARCH_MPU_DEV)
-    {
-        rasr |= MPU_RASR_AP_RW | MPU_RASR_XN | MPU_RASR_MEM_DEVICE; // MMIO
-    }
-    else if (attr & ARCH_MPU_NOCACHE)
-    {
-        rasr |= MPU_RASR_AP_RW | MPU_RASR_XN | MPU_RASR_MEM_NORMAL_NC; // bus-master shared
-    }
-    else
-    {
-        rasr |= MPU_RASR_AP_RW | MPU_RASR_XN | MPU_RASR_MEM_NORMAL; // data/stack
-    }
-    return rasr;
-}
-
 // The MPU hardware-programming step (disable / reprogram descriptors / re-enable).
 // Split out of arch_mpu_apply so the PendSV epilogue can run it atomically with the
 // physical context switch. An eager apply reprograms the MPU for the incoming thread
 // while the outgoing thread is still running (PendSV not fired yet), faulting it on
 // its own stack.
-extern "C" void kickos_arm_mpu_program(struct arch_mpu_region const* regions, size_t n)
+//
+// PMSAv7 only: a chip whose MPU is the crossbar SYSMPU or a v8-M PMSAv8 programs a
+// different descriptor from its own commit, and its image has different words.
+#if KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV7
+extern "C" void kickos_arm_mpu_program(struct arch_mpu_encoded const* img)
 {
     using namespace kickos::arm;
+    if (img == nullptr)
+    {
+        return;
+    }
     // MEMFAULTENA and BUSFAULTENA keep an isolation violation and a bus abort as MemManage and
     // BusFault instead of letting either escalate to HardFault.
     //
@@ -243,20 +220,12 @@ extern "C" void kickos_arm_mpu_program(struct arch_mpu_region const* regions, si
         // Disable THIS descriptor before its base moves, or it would briefly pair the new
         // base with the old size and attributes.
         reg32(MPU_RASR) = 0;
-        // PMSA requires a power-of-two size with a naturally-aligned base. Encode
-        // ONLY such regions; a non-pow2 region is fail-closed (descriptor disabled),
-        // never silently mis-encoded (ctz would under-size it and the base would
-        // snap). Unprivileged regions are pow2 by construction (arch_ram_region_*
-        // + the pow2 linker code/data sections); a privileged thread's non-pow2
-        // whole-arena grant is simply dropped here and runs on the PRIVDEFENA
-        // background. Linker contract: code/data regions must be pow2.
-        if (j < n and regions[j].size >= 32
-            and (regions[j].size & (regions[j].size - 1)) == 0)
+        if (j < ARCH_MPU_ENCODED_SLOTS)
         {
-            reg32(MPU_RBAR) = static_cast<uint32_t>(regions[j].base) & ~0x1Fu;
-            reg32(MPU_RASR) = mpu_rasr(regions[j].size, regions[j].attr);
+            reg32(MPU_RBAR) = img->rbar[j];
+            reg32(MPU_RASR) = img->rasr[j];
         }
-        // No else: an unused or non-pow2 slot keeps the RASR = 0 written above.
+        // No else: a slot past the image keeps the RASR = 0 written above.
     }
     __asm volatile("dsb" ::: "memory");
     // Do not drop this because kickos_arm_mpu_fixed_init also enables the MPU: only imxrt1062
@@ -266,6 +235,8 @@ extern "C" void kickos_arm_mpu_program(struct arch_mpu_region const* regions, si
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
 }
+
+#endif // KICKOS_ARM_MPU_PMSAV7
 
 // One-time: program the chip's fixed regions into the LOW slots [0, k), cache k, and
 // enable the MPU (with the PRIVDEFENA background). Call from the chip arch_init BEFORE
@@ -311,42 +282,43 @@ void kickos_arm_mpu_fixed_init(void)
 // INCOMING thread's regions until PendSV fires -> a fault on its own stack (proven on
 // RP2040; docs/design-mpu-commit-deferred.md). So arch_mpu_apply only STASHES the
 // region set here; kickos_arch_mpu_commit programs the hardware, called from each
-// deferred arch's PendSV epilogue AFTER the physical swap. A private copy (not a
-// pointer) means the commit never chases a TCB whose region set changed after the stash.
-static arch_mpu_region g_pend_regions[MAX_PEND_REGIONS]; // MAX_PEND_REGIONS hoisted above
-static size_t g_pend_count = 0;
+// deferred arch's PendSV epilogue AFTER the physical swap.
+//
+// A POINTER into the incoming thread's TCB, not a copy. The image is re-encoded by its
+// owner alone, and that owner is the thread the pended switch will land on, so a
+// re-encode between the stash and the commit programs the set that thread actually has.
+// Thread slots come from a static pool and are never returned to an allocator, so a
+// pointer left over from an earlier switch still addresses valid storage; two switch_book
+// calls under one lock leave the second, which is the thread the switch lands on.
+static struct arch_mpu_encoded const* g_pend_image = nullptr;
 
-// Read the pending stash. Lets a chip whose MPU is NOT PMSAv7 (K64F SYSMPU) program
-// its own hardware from the SAME stash by defining only the commit.
-size_t kickos_arm_mpu_pending(struct arch_mpu_region const** out)
+// Read the pending stash. Lets a chip whose MPU is NOT PMSAv7 (K64F SYSMPU, PMSAv8)
+// program its own hardware from the SAME stash by defining only the commit.
+struct arch_mpu_encoded const* kickos_arm_mpu_pending(void)
 {
-    *out = g_pend_regions;
-    return g_pend_count;
+    return g_pend_image;
 }
 
-// STASH-ONLY apply: record the incoming set, no hardware write. Shared by every ARM
+// STASH-ONLY apply: record the incoming image, no hardware write. Shared by every ARM
 // backend, PMSAv7 (v6-M/v7-M) and K64F SYSMPU and PMSAv8 alike; a chip replaces only the
 // commit, never this, so this definition is not overridable.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
+                    struct arch_mpu_encoded const* image)
 {
-    if (n > MAX_PEND_REGIONS)
-    {
-        n = MAX_PEND_REGIONS;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        g_pend_regions[i] = regions[i];
-    }
-    g_pend_count = n;
+    (void)regions;
+    (void)n;
+    g_pend_image = image;
 }
 
 #else
 // No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + SVC only. The stash has
 // no reader, but the apply symbol must still resolve.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
+                    struct arch_mpu_encoded const* image)
 {
     (void)regions;
     (void)n;
+    (void)image;
 }
 #endif
 

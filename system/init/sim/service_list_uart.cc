@@ -34,8 +34,9 @@ namespace uart = kickos::uart;
 
 namespace
 {
-    // Lines taken elsewhere: 30 (sim console ring), 28 (simcon window thread), 5..14 and
-    // 20 (selftest arms). Nothing but the doorbell raises this one.
+    // Lines taken elsewhere: 30 (sim console ring), 28 (simcon window thread), 6..16 (the
+    // selftest arms, KICKOS_SELFTEST_IRQ_BASE 6 plus offsets 0 to 10 on a sim build, which
+    // defines no KICKOS_IRQ_SOFT_ONLY_BASE). Nothing but the doorbell raises this one.
     constexpr int SIMUART_LINE = 29;
 
     // Bytes the modelled device accepts on a pass that finds it ready.

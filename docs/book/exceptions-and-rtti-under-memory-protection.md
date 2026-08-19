@@ -4,7 +4,7 @@ Copyright (c) 2026 Philippe Leduc
 -->
 # Exceptions and RTTI under memory protection
 
-> A Chapter-7 companion (prereq: the C++ runtime chapter 0.4,
+> A Chapter-7 companion (prereq: the C++ runtime chapter 0.6,
 > [`whats-under-include-libc-and-the-cxx-runtime.md`](whats-under-include-libc-and-the-cxx-runtime.md),
 > and the memory-protection idea of Chapter 7). That chapter taught *what* the C++
 > runtime is made of -- three stacked libraries -- and ended on a one-paragraph "MPU
@@ -57,7 +57,7 @@ vs writable**:
 
 Hold that split, because it is the whole design under protection: **the read-only two
 (tables + RTTI) ride the app's code region for free; the writable two (heap + unwinder
-state) must be placed, deliberately, in the app's granted data region.** Chapter 0.4
+state) must be placed, deliberately, in the app's granted data region.** Chapter 0.6
 named these; here they earn their placement.
 
 ## Three exception models, and how each is reached unprivileged
@@ -133,7 +133,7 @@ regions. Now the placement of every writable byte is load-bearing:
    code region (RX)  ----------------->  .eh_frame / .exidx / .gcc_except_table   (read)
                                          type_info, vtables (.rodata)             (read)
                                          landing pads (.text)                     (execute)
-   data region (RW)  ----------------->  s_heap (libc arena)                      (write)
+   data region (RW)  ----------------->  the libc heap arena (a bump span)         (write)
                                          _impure_ptr, malloc bins (newlib reent)  (write)
                                          eh_globals, emergency pool               (write)
                                          FDE registry heads + node (DWARF only)   (write)
@@ -142,7 +142,7 @@ regions. Now the placement of every writable byte is load-bearing:
 
 The read-only tables and RTTI **already** live inside the per-app code region that is
 granted read+execute, so unwinding reads them at no extra cost -- **zero additional
-regions**. The trap is the writable column: if any of `s_heap`, the newlib reent, or the
+regions**. The trap is the writable column: if any of the heap span, the newlib reent, or the
 libsupc++ globals lands **kernel-side**, the unprivileged thread faults the first time the
 runtime touches it -- and the first touch is early (the reent is read by almost any stdio
 or math call, the heap by the first `new`). The engineering is therefore not "add regions

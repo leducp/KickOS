@@ -22,16 +22,20 @@ Each mechanism's exact contract is `reference/architecture.md`, `console.md`, `i
 
 - **Endpoint/IPC** (syscalls 26/27/28): arch-independent, no per-chip gap. K64F + XMC 39/39 under
   enforcement, rest build-only.
-- **Console handover**: userspace drivers on two chips (`system/driver/xmc4800/xmcuart`,
-  `system/driver/mk64f/k64uart`), so on every other board the mechanism exists with no driver to hand
-  to (G1).
-- **Panic reclaim**: real bodies on XMC (USIC) and K64F (UART0) only. Elsewhere
-  `arch/common/arch_console_reclaim_default.cc` is a SILENT reclaim failure and a driver-garbled UART
-  eats the panic banner (G2). The porting invariant forbidding that is `invariants.md`,
-  `panic-console-probe-independent`, the spine of the fleet-wide reclaim gap.
+- **Console handover**: this entry recorded userspace drivers on two chips
+  (`system/driver/xmc4800/xmcuart`, `system/driver/mk64f/k64uart`). The set has since grown to ten
+  driver directories, polled and IRQ-driven UARTs plus two USB CDC consoles; it is whatever
+  `grep -rln KOS_SVC_CONSOLE system/driver/` reports, counted per driver directory rather than per
+  file. G1 survives only for the boards the 2.1 table below still marks GAP.
+- **Panic reclaim**: most of the fleet now carries a real body. The set is whatever
+  `grep -rln '^void arch_console_reclaim(void)' arch/*/chip/` lists; every chip NOT in it falls back
+  to `arch/common/arch_console_reclaim_default.cc`, which is a SILENT reclaim failure, so a
+  driver-garbled UART eats the panic banner on those chips only (G2). The porting invariant
+  forbidding that is `invariants.md`, `panic-console-probe-independent`.
 - **Clock-select** (`arch_cpu_clock_set`, #30): XMC full (144/48), K64F staged (120/20.97), every
-  other chip returns 0 from the fallback TU (G4). **Retune coherence**
-  (`arch_console_flush_sync`, `arch_console_retune`) matches it: XMC and K64F, no-ops elsewhere.
+  other chip returns 0 from the fallback TU (G4). **Retune coherence** SPLITS: `arch_console_retune`
+  matches it (XMC and K64F, no-op elsewhere), while `arch_console_flush_sync` has since grown a real
+  body on ten chips (`grep -rln '^void arch_console_flush_sync(void)' arch/*/chip/`).
 
 ---
 
@@ -41,7 +45,8 @@ Effort scale: S = a day-ish, M = a few days, L = a week+ / needs a design gate.
 Silicon-gating: **HW** = needs the board on a bench; **NOW** = doable in-tree / QEMU.
 
 ### G1. Fleet-wide userspace UART / console drivers (OPEN)
-Two chips have one; section 2.1 lists every other board as GAP. Each driver = {claim the DEV window
+Section 2.1 is the live per-board status, and the boards it still marks GAP are what is left. Each
+driver = {claim the DEV window
 via the MMIO grant, poll TX-ready, drive the ASC/UART, answer the stdout endpoint}, and `xmcuart` is
 the template. Effort **M per chip family**, less within a family (the 3-4 STM32 USART parts share one
 driver).
@@ -52,38 +57,44 @@ and no-isolation parts (STM32 family, RP2040) where the driver still buys functi
 polled-family reference. Rejected: easiest-first, which spends the era re-proving the mechanism on
 boards that cannot enforce it.
 
-### G2. Per-chip `arch_console_reclaim` (OPEN; XMC, K64F, esp32c6 and esp32 have a body)
+### G2. Per-chip `arch_console_reclaim` (MOSTLY CLOSED)
 Every board that ENABLES the handover needs a body or it violates the porting invariant. The contract
-is `invariants.md` (`panic-console-probe-independent`) and `console.md`; the two shipped bodies are
-the worked examples (`arch/arm/chip/xmc4800/usic_uart.cc`, `arch/arm/chip/mk64f/chip_mk64f.cc`).
+is `invariants.md` (`panic-console-probe-independent`) and `console.md`. The bodies that exist are
+whatever `grep -rln '^void arch_console_reclaim(void)' arch/*/chip/` lists; run it against the chip
+list under `arch/*/chip/` and the difference is what is still open. Read
+`arch/arm/chip/xmc4800/usic_uart.cc` and `arch/arm/chip/mk64f/chip_mk64f.cc` as the worked examples.
 
-**The unfinished work is per-chip register homework**: enumerate the registers a hostile or buggy
-driver can set to cause TRUE SILENT LOSS, i.e. those whose reset default is benign, so rewriting the
-registers init sets does not cover them. A module clock gate left off (XMC `KSCFG.MODEN`) silently
-drops every later store; a flow-control enable with no wired counterpart (K64F `MODEM.TXCTSE`) parks
-the polled writer forever. Every chip has that pair in its own spelling, and these are the registers
-a porter needs:
+The chips still on the fallback are QEMU semihosting parts with no console peripheral to reclaim
+(`mps2`, `virt`, `nrf51`), the retired `sam3x8e`, and the two STM32 USART parts (`stm32f103`,
+`stm32f302`), which are also the only chips section 2.1 marks GAP that have no console driver of any
+kind. So G2 is no longer a fleet-wide gap: it closes when the STM32 driver lands, and its body is the
+only register homework left.
 
-- **RX72M SCI**: `SCR` (TE/RE/clock-src), `SMR`, `BRR` re-derive, `SPMR` (CTS/RTS enable; SS/CTSE is
-  the silent-loss twin of K64F `TXCTSE`), `SEMR` (baud-rate-generator mode / MDDR), `FCR` if the FIFO
-  SCI.
-- **ESP32-C6 UART**: `CONF0` (tx flow-control / loopback / txd_inv), `CLKDIV` re-derive, `CLK_CONF`
-  gate, RS485 and AT-command modes off, TXFIFO reset.
-- **ESP32 LX6 UART**: same UART IP family as the C6, so `CONF0`/`CLKDIV`/txd_inv plus FIFO reset.
+**The homework each body is**: enumerate the registers a hostile or buggy driver can set to cause
+TRUE SILENT LOSS, i.e. those whose reset default is benign, so rewriting the registers init sets does
+not cover them. A module clock gate left off (XMC `KSCFG.MODEN`) silently drops every later store; a
+flow-control enable with no wired counterpart (K64F `MODEM.TXCTSE`) parks the polled writer forever.
+Every chip has that pair in its own spelling. For the one port still owing a body:
+
 - **STM32 USART**: `CR1` (UE/TE, and LOOP), `CR3` (CTSE the silent-loss twin, HDSEL half-duplex),
   `BRR` re-derive from PCLK, `CR2` (LINEN/CLKEN synchronous).
-- **RP2040 PL011**: `UARTCR` (CTSEN/RTSEN/LBE loopback), `UARTLCR_H` (line control / FIFO enable),
-  `UARTIBRD`/`UARTFBRD` re-derive, `UARTDMACR` off.
 
-Effort **S-M per chip** once that chip's driver exists; the register list is the work.
+The equivalents the shipped bodies already cover, kept because they are what the STM32 list is
+patterned on: RX72M SCI `SCR`/`SMR`/`BRR`/`SPMR` (SS/CTSE is the `TXCTSE` twin)/`SEMR`; ESP32-C6 and
+ESP32 LX6 UART `CONF0` (tx flow-control / loopback / txd_inv), `CLKDIV` re-derive, `CLK_CONF` gate,
+RS485 and AT-command modes off, TXFIFO reset; RP2040 PL011 `UARTCR` (CTSEN/RTSEN/LBE loopback),
+`UARTLCR_H`, `UARTIBRD`/`UARTFBRD` re-derive, `UARTDMACR` off.
+
+Effort **S-M** for the remaining port; the register list is the work.
 
 ### G3. Handover validation per board (PARTLY CLOSED)
 Functional handover wherever a driver exists; ISOLATION only where the MPU permits.
 - **K64F functional half CLOSED** (frdmk64f, 2026-07-30): the full service list (`k64uart` +
   `k64dspi`) reported `[k64uart] driver up (polled TX)` and ran the whole 66-case TAP suite through
   the driver. Its reclaim body is written and still UNWITNESSED, the open remainder here.
-- **Real per-thread peripheral isolation** (grant = a security boundary), OPEN on RX72M and ESP32-C6
-  (needing the G5 IRQ-demux body and the APM open respectively). XMC is proven (xmcspi).
+- **Real per-thread peripheral isolation** (grant = a security boundary), OPEN on RX72M and ESP32-C6:
+  both G5 prereqs (the RX IRQ demux, the C6 APM open) are CLOSED, and what is still missing is the
+  on-silicon isolation witness. XMC is proven (xmcspi).
 - **Coarse-AIPS (K64F)**: the grant is DOCUMENTATION, not enforcement, because SYSMPU does not gate
   peripherals and the AIPS bridge is all-user once a slot is opened (`reference/architecture.md`, the
   peripheral-MMIO matrix). **No-MPU (STM32F103, ESP32-LX6, nRF51)**: functional handover only;
@@ -183,7 +194,7 @@ runs.
 - **CTS/CTSE is the recurring silent-loss trap** (K64F `MODEM.TXCTSE`, STM32 `CR3.CTSE`, RX `SPMR`,
   PL011 `UARTCR.CTSEN`), which is why G2's register set is per-chip.
 - **RX and ESP TX paths are unproven for handover**: SCI and ESP UART TX-idle plus FIFO semantics
-  under a userspace driver, and RX has no IRQ-demux body (G5).
+  under a userspace driver. The RX IRQ-demux body it used to also wait on has landed (G5).
 - **Line-idle transient on reclaim.** XMC's documented spurious leading byte comes from pinning TX
   low past a frame boundary, and whether it appears depends on each chip's passive-level handling, so
   each reclaim needs the same known-artifact honesty check.
@@ -196,17 +207,20 @@ status.
 |---|---|---|---|---|---|
 | XMC4800 | XMC USIC0-ch0 (U0C0) ASC @0x40030000 | PMSA per-thread (REAL) | ring + sync | **DONE (xmcuart)** | -- |
 | K64F | Kinetis UART0 @0x4006A000 | coarse-AIPS (doc only) | ring + sync | **DONE (k64uart)**, reclaim unwitnessed | -- |
-| RX72M | Renesas SCI6 @0x0008A0C0 | RX-MPU per-thread (REAL) | ring | GAP | 1 (real isolation; needs the G5 IRQ-demux body; TIE-prime HW-unverified) |
-| ESP32-C6 | C6 UART0 @0x60000000 (128-FIFO) | PMP per-thread (REAL) | ring | GAP | 1 (real isolation) |
-| ESP32-WROOM (LX6) | Xtensa UART0 @0x3FF40000 (128-FIFO) | none (no MPU) | ring | GAP | 3 (functional only) |
-| STM32F411 (disco/blackpill) | USART2 @0x40004400 (old SR/DR), PA2 | PMSA (build-only HW) | polled | GAP | 3 (STM32 old-model reference driver) |
-| STM32F302 (nucleo) | USART2 @0x40004400 (NEW ISR/TDR), VCP | PMSA (RAM-tight) | polled | GAP | 4 (STM32 NEW-model variant) |
-| STM32F103 (bluepill-c8) | USART1 @0x40013800 (old SR/DR), PA9 | none | polled | GAP | 4 (shares the F411 old-model driver) |
-| RP2040 (picopi) | ARM PL011 UART0 @0x40034000 (FIFO) | v6-M PMSA per-thread | polled | GAP | 3 (PL011 reference; SMP board) |
+| RX72M | Renesas SCI6 @0x0008A0C0 | RX-MPU per-thread (REAL) | ring | **DONE (`rxsci`)** | -- (G5 IRQ demux closed with it) |
+| ESP32-C6 | C6 UART0 @0x60000000 (128-FIFO) | PMP per-thread (REAL) | ring | **DONE (`c6uart`)** | -- |
+| ESP32-WROOM (LX6) | Xtensa UART0 @0x3FF40000 (128-FIFO) | none (no MPU) | ring | **DONE (`lx6uart`)** | -- |
+| STM32F411 (disco/blackpill) | USART2 @0x40004400 (old SR/DR), PA2 | PMSA (build-only HW) | ring | **DONE (`f4uartirq`)** | -- |
+| STM32F302 (nucleo) | USART2 @0x40004400 (NEW ISR/TDR), VCP | PMSA (RAM-tight) | ring | GAP | 4 (STM32 NEW-model variant) |
+| STM32F103 (bluepill-c8) | USART1 @0x40013800 (old SR/DR), PA9 | none | ring | GAP | 4 (shares the F411 old-model driver) |
+| RP2040 (picopi) | ARM PL011 UART0 @0x40034000 (FIFO) | v6-M PMSA per-thread | ring | GAP for UART; a USB CDC console (`rpusb`) exists, `select`-only | 3 (PL011 reference; SMP board) |
 | SAM3X (due) | SAM3X UART @0x400E0800 | none | RETIRED | skip | -- (unit retired, HW fault) |
-| imxrt1062 (teensy) | NXP LPUART6 @0x40198000 (FIFO) | MPU deferred | build-only | skip for now | -- (not in the silicon fleet) |
-| rp2350 | ARM PL011 UART0 @0x40070000 | PMSAv8 (deferred) | build-only | skip for now | -- (SMP-era board) |
+| imxrt1062 (teensy41) | NXP LPUART6 @0x40198000 (FIFO) | PMSAv7 per-thread (REAL) | ring + sync | GAP for UART; a USB CDC console (`rt1062usb`) exists, `select`-only | -- (on the bench; `STATE.md` witness ledger) |
+| rp2350 (pizero2350) | ARM PL011 UART1 @0x40078000 | PMSAv8 per-thread (REAL) | ring + sync | GAP for UART; a USB CDC console (`rpusb`) exists, `select`-only | -- (on the bench; `STATE.md` witness ledger) |
 | mps2 / virt / microbit | semihosting (no peripheral) | QEMU | polled (semihosting) | N/A | -- |
+
+`select`-only: no board names that service list as its default, so the image runs the kernel-owned
+console unless configured with `-DKICKOS_SERVICE_LIST=<provider>` (`tests/static/service_lists.txt`).
 
 STM32 driver note: the family splits into TWO register models, **old SR/DR** (F411 USART2, F103
 USART1) and **NEW ISR/TDR** (F302 USART2). One STM32 driver with a compile or runtime model select
@@ -474,8 +488,9 @@ prerequisites rather than steps.
 5. **DMA** (3.4): DEFERRED sub-topic, polled and IRQ drivers first.
 
 Silicon-gated: G1 per-chip drivers, G2 reclaim validation, G3 handover validation, G4 clock-select,
-G5's rx72m IRQ-demux body, and all HW re-validation. Doable NOW: the G6 design work and lib/demo
-split, the m2-review-followups read, and every register-homework enumeration in G2.
+and all HW re-validation (G5's rx72m IRQ-demux body was on this list and is CLOSED). Doable
+NOW: the G6 design work and lib/demo split, the m2-review-followups read, and every
+register-homework enumeration in G2.
 
 ### 5.1 Prereq / blocker summary
 Each blocker is stated with its gap: the RX72M IRQ dispatch seam (G5, since CLOSED by
@@ -493,7 +508,7 @@ above where they differ.
 
 - **Clock: there IS an M4 service, scoped to the SAFE parts, and only the live cascade defers.** The
   G7 power-manager decision, in three parts. (1) A clock ORACLE, so a driver can query its PARENT or
-  BRANCH clock (a UART needs its fPERIPH for baud, SPI its prescaler); `sys_cpu_clock_hz()` gives
+  BRANCH clock (a UART needs its fPERIPH for baud, SPI its prescaler); `kos_cpu_clock_hz()` gives
   only the CORE clock, so this is a real read-only cascade-free need AND it is the seam a later
   rate-change notify walks. (2) One-shot BOOT tree config/select/gate per branch, pinmux-shaped
   privileged pokes behind the kernel seam. (3) The live DVFS rate-change CASCADE (cross-domain
@@ -517,10 +532,15 @@ above where they differ.
   large-transfer request speaks `{region-cap, offset, len}` and never a raw pointer: cheap now, an
   ABI break at M7 when a domain becomes a page-table root. This pulls the QW-3 DISCIPLINE, not the
   ring implementation, into the call/reply contract.
-- **Timed / abortable IPC -> EARLY-M4: OPEN.** No timed or abortable receive/call exists. It gates
-  BOTH the clock-cascade quiesce-timeout and a driver-death waiter wake, and call/reply made it
-  load-bearing. What it is really asking for is named in `design-m4.6-irq-driver.md` section 7.5
-  (receive-from-either-of-two-sources, an M6 kernel object).
+- **Timed / abortable IPC -> EARLY-M4: CLOSED.** The primitive ships: `KOS_SYS_SEND_TIMED`,
+  `KOS_SYS_RECV_TIMED` and `KOS_SYS_CALL_TIMED` (`user/include/kickos/sys/abi.h`), dispatched in
+  `kernel/syscall/syscall.cc`, with the park unwind in `kernel/thread/park.cc`
+  (`endpoint_wait_abort`). **The two items this entry named as blocked on it are no longer blocked
+  by it**: the clock-cascade quiesce-timeout (the deferred part 3 of the clock entry above) and the
+  driver-death waiter wake (the entry below) each now stand on their own remaining work rather than
+  on a missing primitive. Their status is otherwise unchanged. What is still absent is the wider
+  object `design-m4.6-irq-driver.md` section 7.5 names, receive-from-either-of-two-sources, which
+  stays an M6 kernel object.
 - **Driver crash/restart plus resource reclaim: OPEN.** Pin caps, clock-gate refcounts, AIPS slots and
   endpoint holders all leak on driver death; only the panic-path console reclaim exists. `TODO.md`
   carries the `kos_cap_narrow` endpoint-rights gap that blocks a real driver-death story.

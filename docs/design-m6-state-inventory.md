@@ -65,7 +65,7 @@ This is the half an inventory of the struct does not see. Classification as abov
 |---|---|---|
 | `g_cap` (`kernel/syscall/cap.cc`) | global | the capability slab: chunks, free list, teardown depth. One capability namespace |
 | `g_stdout_target` (same file) | global | one published console driver per system |
-| `g_idle_tcb` (`kernel/init/kmain.cc`) | **per-core**, and it must move INTO `Kernel` first | the one thread the pool does not seat; its own comment already tags it instance-scoping residue |
+| `g_idle_tcb` (`kernel/init/kmain.cc`) | **per-core**, and it had to move INTO `Kernel` first. **RESOLVED, section 6**: it is `Kernel::idle_tcb` (`kernel/include/kickos/instance.h`) | the one thread the pool does not seat; its own comment already tagged it instance-scoping residue |
 | `g_fault` (`kernel/init/fault.cc`) | **per-core** | two cores can fault at once, and the record assumes one faulting thread |
 | `g_tx` (`kernel/init/console_tx.cc`) | global | one physical UART; the ring is the arbitration point and needs a lock, not replication |
 | `g_console_panicking` | global | a panic on either core must force every core polled |
@@ -74,7 +74,7 @@ This is the half an inventory of the struct does not see. Classification as abov
 | `g_chip_writers` | global | **and it is the one to look at twice**: it counts writers ACROSS cores, which is what makes the drain-to-zero handshake mean anything. It is `Order::RELAXED` today and that is CORRECT today -- `console.cc` requires every access, mutator and reader alike, to run under `IrqLock`, and on one core that is exclusion. Under a shared kernel the lock stops excluding and the handshake needs release/acquire. **A present-tense reading of this row is wrong**; it is M6 work, not a bug |
 | `g_handover_tried` | global | exactly-once reboot, system-wide |
 | `g_led_on` | global | one LED |
-| `g_kernel`, `g_default_user` (`kernel/domain/domain.cc`) | global | cached pointers into the global `domains[]` |
+| `g_kernel`, `g_default_user` (`kernel/domain/domain.cc`) | global | they were cached pointers into the global `domains[]`. **RESOLVED, section 6**: both caches were deleted, and `domain_kernel()` / `domain_default_user()` index `kernel().domains[]` on each call |
 | the `KICKOS_BENCH` accumulators (`kernel/bench/`) | **per-core** | a shared accumulator across cores produces a number that describes nothing |
 | `g_fifo_rr` (`kernel/sched/policy_fifo_rr.cc`) | neither | a `const` vtable. It is in `.data` for relocations, not because it is mutable |
 
@@ -165,9 +165,10 @@ Three consequences that are cheaper to know now than to discover during M6.
 - **Splitting `Kernel` moves `microbit`'s arena base**, per the `task_holds`/`sleepq` adjacency
   assert. That board's `_ebss` IS its arena base, so any movement costs a full 32-byte granule and
   flips an arm. It is caught by a build, not silently.
-- **`g_idle_tcb` has to move into `Kernel` before it can be made per-core**, and it is outside the
-  struct today. That is a small change and it should be made in M5 rather than M6, because it is
-  correct on its own terms: the idle TCB is instance state sitting outside the instance.
+- **`g_idle_tcb` has to move into `Kernel` before it can be made per-core**, and it was outside the
+  struct when this was written. That is a small change and it should be made in M5 rather than M6,
+  because it is correct on its own terms: the idle TCB is instance state sitting outside the
+  instance. **It went in; see section 6.**
 - **The sim's `altstack` is a bug now**, not an SMP hazard. It blocks the multi-instance sim the
   moment two host threads exist, and the multi-instance sim is an M5 requirement rather than an M6
   one.

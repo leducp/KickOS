@@ -4,10 +4,11 @@
 #
 # Configures every visible configure preset and runs `ctest -L host` on each.
 #
-# An OPERATOR TOOL and deliberately not a gate. It configures and builds 51 trees, needs
-# all four cross toolchain families on the box, and runs for hours; a ctest entry doing
-# that would invoke ctest from inside ctest, and since the source-tree gates register on
-# every board it would be registered 51 times, each copy sweeping the whole fleet.
+# An OPERATOR TOOL and deliberately not a gate. It configures and builds one tree per
+# visible configure preset, needs all four cross toolchain families on the box, and runs
+# for hours; a ctest entry doing that would invoke ctest from inside ctest, and since the
+# source-tree gates register on every board it would be registered once per preset, each
+# copy sweeping the whole fleet.
 # tests/static/ is for checks that are cheap, build nothing and can run everywhere.
 #
 # WHY -L host AND NOTHING ELSE. `-L host` is the batchable set BY DESIGN: those tests
@@ -33,10 +34,11 @@
 #   SWEEP_FORCE=1         redo presets a previous run already passed
 #
 # THE GTEST PREFIX IS NOT OPTIONAL ON THE SIM. find_package(GTest) is reached on the sim
-# arch and nowhere else, so the prefix is inert on the other 49 presets and load-bearing
-# on two: without it the sim registers a fraction of its tests, every host unit arm is
-# silently ABSENT, and the suite still reports 100% pass. The tool refuses a prefix that
-# is not on disk rather than sweeping a suite with the arms cut out.
+# arch and nowhere else, so the prefix is inert on every preset whose board is not the
+# sim and load-bearing on the two that are: without it the sim registers a fraction of its
+# tests, every host unit arm is silently ABSENT, and the suite still reports 100% pass.
+# The tool refuses a prefix that is not on disk rather than sweeping a suite with the
+# arms cut out.
 #
 # THEREFORE NOT CAUGHT:
 #   - the whole `-LE host` half. Every gate that boots an image, natively or under an

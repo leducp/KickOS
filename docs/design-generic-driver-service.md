@@ -7,7 +7,8 @@
 > the ruling M4.8.1's own conclusion ("a service is a transport over a class") forces once you
 > count the instances rather than the classes. Written against `a1220233` on
 > `M4.8.1-driver-class`. **Four corrections are folded in below and are not rewritten away**: leg L7
-> as first ruled was unsatisfiable; the instance count is TWELVE, not nine; leg **L8 applied
+> as first ruled was unsatisfiable; the instance count at that tree was TWELVE, not nine, and it
+> grows with every new driver (`grep -rln 'drv::valid' system user`); leg **L8 applied
 > HANDOVER-only reasoning to RETAIN** and refused two legitimate shapes (section 3.3.1); and the
 > validator accepted thirteen defective shapes an adversarial pass proved by compilation, closed as
 > two new legs plus new arms on L3, L4 and L8 and a rewritten class-side check (section 3.3.2).
@@ -323,10 +324,12 @@ anyway because it proves the thread is SERVING where a latch proves only that it
 repair is narrow, and that was checked: `rpusb` at two threads still fails L7 without a ready
 offset.
 
-**The root cause of that error is the count below.** This document says nine instances. There are
-TWELVE: the three one-thread console drivers are missing from the inventory, which is also why
-section 8 claims `driver_bringup.h` has one remaining user when it in fact had four. Every "nine"
-in this file should be read as "nine of the twelve I had counted".
+**The root cause of that error is the count below.** This document was written saying nine
+instances; the three one-thread console drivers were missing from the inventory, which is also why
+section 8 claims `driver_bringup.h` has one remaining user when it in fact had four. **Every bare
+instance count in this file is a snapshot and none of them is authoritative**: the live list is
+`grep -rln 'drv::valid' system user`, and it has kept growing since (nine, then twelve, fourteen at
+the time of this edit). Read any "nine" below as "nine of the set I had counted".
 
 #### 3.3.1 L8 CARRIED THE SAME BUG, and an adversarial pass is what found it
 
@@ -424,7 +427,7 @@ The worst of the thirteen: swap `rxsci`'s two relay line caps and it waits on TX
 threads then wait on TXI, RXI is never waited on so it stays masked forever, and **every received
 byte is silently lost, with no diagnostic.** Which line is transmit and which is receive is
 per-chip knowledge neither layer holds, and the obvious answer -- a `role` byte on `struct Line` --
-was **rejected**: it adds a field, needs a per-chip value on all twelve descriptors, and encodes a
+was **rejected**: it adds a field, needs a per-chip value on every descriptor in the tree, and encodes a
 fact the swap does not actually require.
 
 L12 is purely structural and needs no new field. The swap breaks the count on BOTH lines at once:
@@ -1025,8 +1028,10 @@ the write path:
   `check_class_backend.sh` derives no USB symbols and the class-versus-service split is
   unenforced for USB. Orthogonal to this ruling, and unchanged by it.
 
-**Summary table.** **CORRECTED to TWELVE**; the three one-thread `HANDOVER` consoles the count of
-nine hid are the last three rows. Twelve instances, twelve descriptors, no exceptions:
+**Summary table.** The instance list is `grep -rln 'drv::valid' system user`; read that first,
+because the table below is a snapshot and the set grows with every new driver. It was **CORRECTED
+from nine to twelve** when the three one-thread `HANDOVER` consoles turned up missing, and has since
+grown to FOURTEEN with `f4uartirq` and `rt1062usb`. One descriptor per instance, no exceptions:
 
 | instance | thr | lines | block | barrier | ep | base guard | window |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1042,6 +1047,8 @@ nine hid are the last three rows. Twelve instances, twelve descriptors, no excep
 | `k64uart` | 1 | 0 | none | none | HANDOVER | none | thread 0 |
 | `xmcuart` | 1 | 0 | none | none | HANDOVER | none | thread 0 |
 | `simcon` | 1 | 0 | none | none | HANDOVER | none | none |
+| `f4uartirq` | 2 | 1 LEVEL | 1024 | after 1 | HANDOVER | USART2 | thread 0 |
+| `rt1062usb` | 2 | 1 LEVEL | 4096 | after 1 | HANDOVER | USB1 | thread 0 |
 
 ## 5. The tail, and the Task
 
@@ -1128,7 +1135,7 @@ are converted.
 | `sys/usb_cdc_service.h` | 780 -> ~790 | gains `KOS_USB_READY_OFFSET` and `desc_ok` |
 
 **Shrinks to a descriptor.** File names are unchanged: the rename is subsumed by this change,
-and the class backends (`uart_c6.cc`, `uart_lx6.cc`, `uart_k64.cc`, `uart_xmc.cc`,
+and the class backends (`uart_c6.cc`, `uart_lx6.cc`, `uart_k64.cc`, `uart_usic.cc`,
 `uart_sci.cc`, `spi_dspi.cc`, `spi_usic.cc`) keep their names, which are already right.
 
 | file | now | after | what remains |
@@ -1235,9 +1242,11 @@ one is a special case in disguise. Two are legitimate today and both are named: 
 A third appearing during steps 4 to 6 is the signal to stop.
 
 **CORRECTED count for `arg`.** This section said "seven `BLOCK`, two `WINDOW`", which predates the
-nine-to-twelve correction of section 3.3 and never reached twelve. Over the twelve instances it is
-**seven `BLOCK`** (`c6uart`, `lx6uart`, `k64uartirq`, `xmcuartirq`, `rxsci`, `simuart`, `rpusb`),
-**four `WINDOW`** (`k64dspi`, `k64uart`, `xmcssc`, `xmcuart`) and **one `NONE`** (`simcon`);
+nine-to-twelve correction of section 3.3. Re-derive it with
+`grep -o 'KOS_DRV_ARG_[A-Z]*' <each descriptor file>`; over the fourteen instances that stands today
+it is **nine `BLOCK`** (`c6uart`, `lx6uart`, `k64uartirq`, `xmcuartirq`, `rxsci`, `simuart`, `rpusb`,
+`f4uartirq`, `rt1062usb`), **four `WINDOW`** (`k64dspi`, `k64uart`, `xmcssc`, `xmcuart`) and **one
+`NONE`** (`simcon`);
 `rxsci`'s relay thread is `NONE` too, which is why the field varies WITHIN an instance as well as
 across them. Three distinct values makes it more clearly not a special case, not less.
 
@@ -1252,7 +1261,7 @@ across them. Three distinct values makes it more clearly not a special case, not
   runtime data keeps a runtime `valid()` call at the top of `bring_up`, which should exist as a
   belt anyway.
 - **R1.1. The belt R2 called for did NOT exist, and now does.** `valid()` was enforced only by a
-  `static_assert` each of the twelve drivers writes BY HAND, while `bring_up` indexes
+  `static_assert` each driver writes BY HAND, while `bring_up` indexes
   `kos_cap_t line[KOS_DRV_LINES_MAX]` by `d.line_count` and `ThreadSet::t[KOS_DRV_THREADS_MAX]` by
   the spawn count. A driver that omitted the assert, or a descriptor that stopped being `constexpr`
   (exactly R2's case), got an out-of-bounds WRITE on ROOT's stack. It is now the first statement of

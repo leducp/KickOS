@@ -96,8 +96,8 @@ namespace kickos
         // the rest are refcounted mem_base domains. All access via domain_*().
         Domain domains[KICKOS_MAX_DOMAINS];
         // Task pool (see task.h): the groups that hold those domains. No immortal slot
-        // and no pinned index; a slot is free iff its refcount is 0. All access via
-        // task_*().
+        // and no pinned index; a slot is free iff its refcount is 0 AND it has no creator.
+        // All access via task_*().
         Task tasks[KICKOS_MAX_TASKS];
 
         // --- interrupt dispatch + IRQ-as-event bindings (irq.cc) ---

@@ -7,8 +7,9 @@
 // Clocking: the Blue Pill carries an 8 MHz HSE crystal, so clock_init() runs the PLL
 // (HSE x9) to 72 MHz, the F103 max, instead of the imprecise HSI RC.
 // SYSCLK = HCLK = PCLK2 = 72 MHz, PCLK1 = 36 MHz (its max). Console = USART1 on
-// PA9(TX)/PA10(RX), polled TX, on APB2 (72 MHz). F103 uses the older CRL/CRH GPIO
-// model (not MODER/AFR) and has no FPU. No watchdog runs at reset, so the reset
+// PA9(TX)/PA10(RX) on APB2 (72 MHz), buffered TX drained by the USART1 TXE interrupt;
+// arch_console_write_sync is the polled writer for panic/fault. F103 uses the older
+// CRL/CRH GPIO model (not MODER/AFR) and has no FPU. No watchdog runs at reset, so the reset
 // path is just C-runtime. Every RCC/HSE/PLL poll is bounded: a missing or dead
 // crystal degrades to the reset HSI clock rather than hanging the boot.
 
@@ -194,9 +195,10 @@ namespace
     }
 
     // --- TIM2->TIM3 chain: the monotonic time base (RM0008 sec.15) --------------
-    // The v7-M default clock is the DWT cycle counter (core debug power domain),
-    // which intermittently returns aliased garbage on parts in this fleet; the
-    // software 32->64 wrap-extension turns one bad read into a phantom 2^32 jump
+    // arch_clock_now is a REQUIRED chip contract: the armv7m layer ships no clock
+    // fallback. The obvious source, the DWT cycle counter, sits in the core debug
+    // power domain and intermittently returns aliased garbage on parts in this fleet;
+    // the software 32->64 wrap-extension turns one bad read into a phantom 2^32 jump
     // that strands every timed wait. The F1 has no 32-bit timer (all GP timers are
     // 16-bit), so a single free-runner would wrap every ~0.9 ms and lose whole wraps
     // between clock reads.
@@ -205,7 +207,7 @@ namespace
     // clock mode 1 off ITR1=TIM2) counts those overflows -> {TIM3:TIM2} is one
     // 32-bit counter that wraps every ~59 s. Neither timer collides with the
     // one-shot tickless timer (SysTick, core-generic) nor any driver (none on this
-    // port). ONLY the monotonic clock moves off DWT; arch_trace_now stays on DWT.
+    // port). arch_trace_now stays on raw DWT_CYCCNT, where a glitch costs one sample.
     constexpr uintptr_t RCC_APB1ENR = RCC_BASE + 0x1C;
     constexpr uint32_t APB1ENR_TIM2EN = 1u << 0;
     constexpr uint32_t APB1ENR_TIM3EN = 1u << 1;
@@ -254,8 +256,8 @@ namespace
     void timer_clock_init()
     {
         // Boot-order: nothing before arch_init may read the clock. A static ctor
-        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on the
-        // ungated APB1 access (it was a harmless DWT read before this override).
+        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on
+        // the ungated APB1 access.
         r32(RCC_APB1ENR) |= APB1ENR_TIM2EN | APB1ENR_TIM3EN;
 
         // TIM2 master: free-run 16-bit, emit TRGO on each overflow.
@@ -368,7 +370,7 @@ void arch_init(void)
 {
     // Clock first (HSE/PLL -> 72 MHz), then the console derives its BRR from PCLK2.
     clock_init();
-    timer_clock_init(); // monotonic time base (replaces the unreliable DWT clock)
+    timer_clock_init(); // monotonic time base: the required arch_clock_now source
     // Anchor the clock ONCE, from the FINAL rate: the chained counter's LSB increments
     // at TIM2's kernel clock and, with HPRE=/1 and PPRE1 in {/1,/2}, the STM32 APB
     // timer-clock doubler makes that equal HCLK == SystemCoreClock.
@@ -384,9 +386,9 @@ size_t arch_mpu_min_region(void)
     return 0u;
 }
 
-// Monotonic clock override: free-running TIM2->TIM3 chain ticks -> ns, replacing the
-// required per-chip arch_clock_now (the DWT is unreliable on this silicon). Pure epoch read: the
-// anchor holds the rate, so no divide and no rate derivation happens here.
+// Monotonic clock: free-running TIM2->TIM3 chain ticks -> ns, the required per-chip
+// arch_clock_now. Pure epoch read: the anchor holds the rate, so no divide and no rate
+// derivation happens here.
 uint64_t arch_clock_now(void)
 {
     return g_clk.ns_from(timer_ticks());

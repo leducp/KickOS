@@ -10,9 +10,10 @@
 // arch_init and bounded-polls every ready flag, so a dead/missing crystal degrades
 // to the reset-default HSI 16 MHz instead of hanging (the BRR is recomputed from
 // whichever APB1 clock we end up on). Console = USART2 on PA2(TX)/PA3(RX), AF7,
-// polled TX. STM32 keeps peripheral clocks running in WFI, so no TX drain is needed
-// (unlike the XMC). STM32 has no watchdog running at reset (unlike the K64F), so
-// the reset path is FPU + C-runtime + clocks.
+// buffered TX drained by the USART2 TXE interrupt; arch_console_write_sync is the
+// polled writer for panic/fault. STM32 keeps peripheral clocks running in WFI, so the
+// TXE drain continues while the core sleeps (unlike the XMC). STM32 has no watchdog
+// running at reset (unlike the K64F), so the reset path is FPU + C-runtime + clocks.
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include <kickos/chip_mmap.h>
@@ -157,11 +158,12 @@ namespace
     }
 
     // --- TIM2: the monotonic time base (RM0383 sec.13) --------------------------
-    // The v7-M default clock is the DWT cycle counter (core debug power domain),
-    // but that DWT intermittently returns aliased garbage on parts in this fleet,
+    // arch_clock_now is a REQUIRED chip contract: the armv7m layer ships no clock
+    // fallback. The obvious source, the DWT cycle counter, sits in the core debug
+    // power domain and intermittently returns aliased garbage on parts in this fleet,
     // which the software 32->64 wrap-extension turns into a phantom 2^32 jump that
     // strands every timed wait. TIM2 is a plain 32-bit general-purpose timer on
-    // APB1 (not the debug domain): free-run it and use it as arch_clock_now.
+    // APB1: free-run it and use it as arch_clock_now.
     // arch_trace_now stays on raw DWT_CYCCNT, where a glitch costs one telemetry
     // sample. TIM2 does not collide with the one-shot tickless timer
     // (SysTick, core-generic) nor any driver (none use TIM2 on this port).
@@ -185,8 +187,8 @@ namespace
     void tim2_clock_init()
     {
         // Boot-order: nothing before arch_init may read the clock. A static ctor
-        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on the
-        // ungated APB1 access (it was a harmless DWT read before this override).
+        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on
+        // the ungated APB1 access.
         r32(rcc::APB1ENR) |= rcc::APB1ENR_TIM2EN;
         // Keep TIM2 clocked in Sleep mode (WFI). TIM2LPEN resets to 1; clearing it
         // would freeze the clock the instant the idle thread executes WFI.
@@ -283,7 +285,7 @@ void arch_init(void)
     // on the HSE crystal + PLL first, then configure the console at the resulting
     // APB1 clock (clock_init leaves us on HSI 16 MHz if the crystal is absent).
     clock_init();
-    tim2_clock_init(); // monotonic time base (replaces the unreliable DWT clock)
+    tim2_clock_init(); // monotonic time base: the required arch_clock_now source
     // Anchor the clock ONCE, from the FINAL rate: TIM2 is on APB1 and, with HPRE=/1
     // and PPRE1 in {/1,/2}, the STM32 APB timer-clock doubler makes the timer kernel
     // clock equal HCLK == SystemCoreClock (retuning PPRE1 to /4+ would break that).
@@ -292,9 +294,9 @@ void arch_init(void)
     kickos_armv7m_init();
 }
 
-// Monotonic clock: free-running TIM2 ticks -> ns, the required per-chip source (the
-// DWT-backed arch_clock_now (unreliable on this silicon). Pure epoch read: the anchor
-// holds the rate, so no divide and no rate derivation happens here.
+// Monotonic clock: free-running TIM2 ticks -> ns, the required per-chip arch_clock_now.
+// Pure epoch read: the anchor holds the rate, so no divide and no rate derivation
+// happens here.
 uint64_t arch_clock_now(void)
 {
     return g_clk.ns_from(tim2_ticks());

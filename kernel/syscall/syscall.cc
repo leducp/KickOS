@@ -266,7 +266,7 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_HANDLE_CLOSE:
         {
-            // Type-agnostic close: drop THIS task's cap (a cap knows its own type).
+            // Type-agnostic close: drop THIS thread's cap (a cap knows its own type).
             // Refcounted: the object is freed only at the last close.
             IrqLock lock;
             return static_cast<uint64_t>(handle_close(sched::current(), static_cast<uint32_t>(a0)));
@@ -562,9 +562,11 @@ uint64_t syscall_body(uintptr_t nr,
         {
             Thread* c = sched::current();
             // Root's exit ends the SYSTEM, through the same terminal path a returning main
-            // takes. Root's slot must never reach EXITED: the pool, the domain table and the
-            // boot arena are all sized for root holding it for the whole run, and the
-            // reclaim sweep would strip the spawner_tag off every child root ever spawned.
+            // takes. Root's slot must not reach EXITED on THIS path: the pool, the domain table
+            // and the boot arena are all sized for root holding it for the whole run, and the
+            // reclaim sweep would strip the spawner_tag off every child root ever spawned. The
+            // fault-kill path (kernel/init/fault.cc) does retire root, deliberately, and
+            // tests/integration/check_rootfault.sh is what holds that arm.
             if (kernel().threads.is_root(c))
             {
                 if (not cap_check_authority(c, AUTH_SYSTEM))
@@ -897,22 +899,20 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
             }
-            // Full budget is a returned error; truncating the set would fault the thread on
-            // memory it was told it had. NOT -KOS_EMFILE: that code names the capability
-            // table, and the knob here is KICKOS_MPU_MAX_REGIONS.
-            if (c->region_count >= KICKOS_MPU_MAX_REGIONS)
+            // Full budget, or a region this backend seats no descriptor for, is a
+            // returned error; either truncating the set or carrying the grant unenforced
+            // would fault the thread on memory it was told it had. NOT -KOS_EMFILE: that
+            // code names the capability table, and the knob here is
+            // KICKOS_MPU_MAX_REGIONS.
+            if (not c->mpu.add_enforced(base, rsz, attr))
             {
                 return static_cast<uint64_t>(-KOS_ENOMEM);
             }
-            c->regions[c->region_count].base = base;
-            c->regions[c->region_count].size = rsz;
-            c->regions[c->region_count].attr = attr;
-            c->region_count++;
             // Must be effective BEFORE the return: the caller's next instruction may
             // dereference the region, and on a deferred-switch arch apply() only STASHES,
             // the commit being what programs the hardware
             // (docs/design-mpu-commit-deferred.md).
-            arch_mpu_apply(c->regions, c->region_count);
+            c->mpu.apply();
             kickos_arch_mpu_commit();
             return 0;
         }

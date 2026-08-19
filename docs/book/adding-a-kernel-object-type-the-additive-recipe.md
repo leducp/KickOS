@@ -76,14 +76,17 @@ the small `CapType` enum:
 // Reference up. Called from the delegation site for ANY type -- no per-type test
 // at the call site anymore. (Carries the delegated rights, which most types
 // ignore; a type that gates state on a right, e.g. an endpoint counting its
-// receivers, reads it here.)
-void obj_ref_inc(CapType type, int obj, uint8_t rights);
+// receivers, reads it here.) FALSE refuses: a counter is at its ceiling and
+// NOTHING moved, which the caller reports as -KOS_EOVERFLOW.
+[[nodiscard]] bool obj_ref_inc(CapType type, int obj, uint8_t rights);
 
 // Reference down. Called from handle_close and from cap_teardown.
 void obj_ref_drop(CapEntry const& e, bool teardown);
 
 // The type-specific close/exit protocol, run BEFORE the ref drop at both call
-// sites. Returns 0, or -1 to refuse the close (voluntary close only).
+// sites. Returns 0, or a negative -KOS_E* to refuse the close (voluntary close
+// only), in the same taxonomy every syscall answers in, so the refusal travels
+// out unchanged.
 int  obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown);
 ```
 
@@ -122,8 +125,9 @@ reference drop:
 ```
 handle_close(c, cap):
     e = lookup(c, cap)
-    if obj_close_protocol(c, *e, /*teardown=*/false) != 0:
-        return -1                 // refused (e.g. closing a mutex you own)
+    rc = obj_close_protocol(c, *e, /*teardown=*/false)
+    if rc != 0:
+        return rc                 // -KOS_EBUSY: closing a mutex you own
     detach the cap entry          // bump cap-gen, empty the slot
     obj_ref_drop(detached, false)
 
@@ -191,9 +195,14 @@ Given the three switches, adding a new capability type `CAP_X` is exactly:
 1. **A pool and a refcount array** (in the kernel instance): a monomorphic
    `SlotPool<X, KICKOS_MAX_X>` plus a parallel `uint8_t x_refs[KICKOS_MAX_X]`.
 2. **A config knob** `KICKOS_MAX_X`, board-overridable so tiny targets can shrink it.
-3. **An index helper and three arms** in `cap.cc`: `x_index_of`, plus one arm in each
-   of `obj_ref_inc`, `obj_ref_drop`, and `obj_close_protocol` (the last may be an empty
-   `return 0`).
+3. **An index helper and three arms** in `cap.cc`: `x_index_of`, plus one arm on each
+   of the three lifecycle concerns (the close protocol's may be an empty `return 0`).
+   The reference-up arm is not written inside `obj_ref_inc` itself: it goes in the small
+   locator that arm-per-type *finds the counters* a capability of that type moves, and
+   both the bump and its undo are then written once over whatever the locator returned.
+   That is the same additive shape with one extra guarantee, that an increment and the
+   unwind of a partly-taken batch cannot drift apart, or move one of an endpoint's two
+   counters without the other.
 4. **One resolve case** in `cap_resolve` (Chapter 8.1): `if (want == CAP_X) return
    pool.resolve(...)`.
 

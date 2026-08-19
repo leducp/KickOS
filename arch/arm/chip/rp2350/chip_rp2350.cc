@@ -9,11 +9,13 @@
 // clk_sys
 // is raised to 150 MHz off PLL_SYS (12 MHz XOSC x125 /5 /2, the datasheet default
 // max, 8.6); SystemCoreClock tracks it so the SysTick ns<->cycle math
-// (arch_arm_common) stays coherent. clk_ref stays on the 12 MHz XOSC and drives
-// the TICKS TIMER0 generator (/12 -> 1 MHz), so the 64-bit system TIMER0
-// (arch_clock_now / arch_trace_now) is PLL-independent. clk_peri follows clk_sys,
-// so the UART baud divisors are recomputed for 150 MHz. If the crystal or the PLL
-// never comes up the board degrades to XOSC/ROSC timing instead of hanging.
+// (arch_arm_common) stays coherent. clk_ref is the XOSC divided by CLK_REF_DIV (8.1),
+// which the bootrom leaves at something other than the reset 1, so clk_ref is NOT the
+// crystal frequency and the divisor is read at boot. The TICKS TIMER0 generator divides
+// clk_ref again to the 1 MHz the 64-bit system TIMER0 (arch_clock_now / arch_trace_now)
+// is read at, PLL-independent. clk_peri follows clk_sys, so the UART baud divisors are
+// recomputed for 150 MHz. If the crystal or the PLL never comes up the board degrades to
+// ROSC timing instead of hanging.
 //
 // Key deltas from the RP2040 (all APB peripheral bases relocated; datasheet 2.2.4):
 //   - No boot2/CRC stage: the bootrom does XIP setup + reads SP/PC from the vector
@@ -71,9 +73,9 @@ void kickos_arm_pmsav8_init(void);
 extern void (*__init_array_start[])();
 extern void (*__init_array_end[])();
 
-// Pre-init value (12 MHz XOSC, reset). clocks_init() raises this to 150 MHz
-// once clk_sys is on PLL_SYS; SysTick (processor clock) reads it live.
-uint32_t SystemCoreClock = 12000000u;
+// Pre-init value: clk_sys as the bootrom leaves it. clocks_init() overwrites this on
+// every path; SysTick (processor clock) reads it live.
+uint32_t SystemCoreClock = reg::clocks::ROSC_NOMINAL_HZ;
 }
 
 namespace
@@ -197,10 +199,34 @@ namespace
     }
 #endif
 
-    // Start the TICKS TIMER0 generator so the 64-bit system TIMER0 counts. The
-    // generator must be stopped before CYCLES is changed (datasheet 8.5.1).
-    void ticks_timer0_start(uint32_t cycles)
+    // clk_ref is the selected source AFTER CLK_REF_DIV (datasheet 8.1). The register
+    // resets to INT=1 but the bootrom overwrites it, so the divisor is read, never assumed.
+    uint32_t clk_ref_hz(uint32_t src_hz)
     {
+        uint32_t div = (r32(reg::clocks::CLK_REF_DIV) & reg::clocks::CLK_REF_DIV_INT_MASK) >>
+                       reg::clocks::CLK_REF_DIV_INT_SHIFT;
+        if (div == 0u)
+        {
+            div = reg::clocks::CLK_REF_DIV_INT_ZERO;
+        }
+        return src_hz / div;
+    }
+
+    // Start the TICKS TIMER0 generator so the 64-bit system TIMER0 counts. arch_clock_now
+    // reads that counter as microseconds, so CYCLES has to land the tick on TICK_HZ for the
+    // given clk_ref; a wrong divisor scales every sleep, timeout and timestamp on the board.
+    // The generator must be stopped before CYCLES is changed (datasheet 8.5.1).
+    void ticks_timer0_start(uint32_t ref_hz)
+    {
+        uint32_t cycles = (ref_hz + (reg::ticks::TICK_HZ / 2u)) / reg::ticks::TICK_HZ;
+        if (cycles == 0u)
+        {
+            cycles = 1u;
+        }
+        if (cycles > reg::ticks::CYCLES_MAX)
+        {
+            cycles = reg::ticks::CYCLES_MAX;
+        }
         r32(reg::ticks::TIMER0_CTRL) = 0; // disable while reprogramming
         r32(reg::ticks::TIMER0_CYCLES) = cycles;
         r32(reg::ticks::TIMER0_CTRL) = reg::ticks::CTRL_ENABLE;
@@ -220,8 +246,9 @@ namespace
         bool xosc_ok = wait_mask(reg::xosc::STATUS, reg::xosc::STATUS_STABLE);
         if (xosc_ok)
         {
-            // clk_ref <- XOSC (glitchless mux); clk_sys follows to 12 MHz via its
-            // SRC=clk_ref reset default. Poll the one-hot SELECTED before proceeding.
+            // clk_ref <- XOSC (glitchless mux). clk_sys does NOT follow: the bootrom
+            // leaves it on the ROSC through its aux mux, so only the switch below moves it.
+            // Poll the one-hot SELECTED before proceeding.
             r32(reg::clocks::CLK_REF_CTRL) = reg::clocks::CLK_REF_SRC_XOSC;
             xosc_ok = wait_mask(reg::clocks::CLK_REF_SELECTED, reg::clocks::CLK_REF_SELECTED_XOSC);
         }
@@ -230,14 +257,14 @@ namespace
         {
             SystemCoreClock = reg::clocks::ROSC_NOMINAL_HZ;            // clk_sys stayed on ROSC
             r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_CLK_SYS; // UART clock <- clk_sys
-            ticks_timer0_start(reg::ticks::CYCLES_ROSC);              // ~6.5 MHz / 7 ~= 1 MHz
+            ticks_timer0_start(reg::clocks::CLK_REF_ROSC_NOMINAL_HZ);
             return;
         }
 
-        // clk_ref stays on the 12 MHz XOSC: the TICKS TIMER0 /12 tick and thus the
-        // 1 MHz system TIMER0 (arch_clock_now / arch_trace_now) derive from clk_ref
-        // and MUST NOT track the PLL.
-        ticks_timer0_start(reg::ticks::CYCLES_12MHZ); // 12 MHz / 12 = 1 MHz tick
+        // clk_ref stays on the XOSC: the TICKS TIMER0 tick and thus the 1 MHz system
+        // TIMER0 (arch_clock_now / arch_trace_now) derive from clk_ref and MUST NOT track
+        // the PLL.
+        ticks_timer0_start(clk_ref_hz(reg::xosc::FREQ_HZ));
 
         if (pll_sys_lock())
         {
@@ -256,8 +283,10 @@ namespace
         }
         else
         {
-            // PLL never locked: clk_sys still follows clk_ref (12 MHz). SystemCoreClock
-            // and the UART divisors keep their 12 MHz defaults.
+            // PLL never locked, so clk_sys is untouched and stays on the ROSC the bootrom
+            // left it on. clk_peri is taken off the crystal instead, which is what the
+            // 12 MHz UART divisor defaults are for.
+            SystemCoreClock = reg::clocks::ROSC_NOMINAL_HZ;
             r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_XOSC; // UART clock <- XOSC 12 MHz
         }
     }
@@ -324,11 +353,15 @@ namespace
                   "arch_console_reclaim writes outside the window it reports");
 
     // Which of the two divisor pairs clk_peri needs. clocks_init leaves clk_peri on either
-    // PLL_SYS at 150 MHz or a 12 MHz-class fallback, and CLK_SYS_SELECTED is the hardware's
-    // own one-hot record of which.
+    // PLL_SYS at 150 MHz or a slower fallback source, and CLOCKS is the hardware's own
+    // record of which. The aux mux alone does not answer it: the bootrom already parks
+    // clk_sys on the ROSC through that same mux, so the aux SOURCE has to be PLL_SYS too.
     bool console_clk_on_pll()
     {
-        return (r32(reg::clocks::CLK_SYS_SELECTED) & reg::clocks::CLK_SYS_SELECTED_AUX) != 0;
+        bool const on_aux = (r32(reg::clocks::CLK_SYS_SELECTED) & reg::clocks::CLK_SYS_SELECTED_AUX) != 0;
+        bool const aux_is_pll = (r32(reg::clocks::CLK_SYS_CTRL) & reg::clocks::CLK_SYS_AUXSRC_MASK) ==
+                                reg::clocks::CLK_SYS_AUXSRC_PLL;
+        return on_aux and aux_is_pll;
     }
 }
 

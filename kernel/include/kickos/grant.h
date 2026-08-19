@@ -20,7 +20,7 @@
 #include <kickos/config.h>    // KICKOS_HAVE_MPU
 
 // Fill target for arch_reserved_blocks: must stay >= the most blocks any chip declares
-// (mk64f = 6 today).
+// (imxrt1062 = 7 today). Every body truncates silently once it hits this cap.
 #define KICKOS_MAX_RESERVED 8u
 
 namespace kickos

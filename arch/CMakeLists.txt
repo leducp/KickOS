@@ -74,9 +74,12 @@ set(KICKOS_SEAM_DEFAULTS_ARM
   arm/common/arch_mpu_region_pow2_default.cc
   arm/common/arch_shutdown_default.cc
   arm/common/kickos_arch_mpu_commit_default.cc)
-# The fixed-region hook exists only where the region type and its caller do.
+# The fixed-region hook and the region encoder exist only where the region type and their
+# callers do.
 if(KICKOS_HAVE_MPU)
-  list(APPEND KICKOS_SEAM_DEFAULTS_ARM arm/common/kickos_arm_mpu_fixed_default.cc)
+  list(APPEND KICKOS_SEAM_DEFAULTS_ARM
+    arm/common/arch_mpu_encode_default.cc
+    arm/common/kickos_arm_mpu_fixed_default.cc)
 endif()
 
 if(KICKOS_ARCH STREQUAL "sim")
@@ -149,7 +152,8 @@ elseif(KICKOS_ARCH STREQUAL "armv6m")
   # Cortex-M0/M0+ (RP2040). PRIMASK crit + v6-M-subset switch.S; the
   # chip supplies arch_clock_now (no DWT) + arch_init/console + linker script.
   # No arch_trace_now fallback: v6-M has no DWT, so the trace clock is a chip contract.
-  # A Cortex-M0 has no privilege ring and keeps the declining fault fallbacks instead.
+  # Fault isolation has a real v6-M backend (it reads CONTROL.nPRIV), linked in place of
+  # the declining fallbacks removed from KICKOS_SEAM_DEFAULTS_COMMON under the same gate.
   set(KICKOS_ARMV6M_FAULT "")
   if(KICKOS_FAULT_ISOLATION)
     set(KICKOS_ARMV6M_FAULT arm/armv6m/arch_armv6m_fault.cc)

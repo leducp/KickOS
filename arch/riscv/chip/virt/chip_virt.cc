@@ -201,7 +201,9 @@ void kfault_terminate(void)
 
 void Reset_Handler(void)
 {
-    // QEMU loads segments in place, so LMA == VMA and this copy is a no-op.
+    // QEMU places each segment at its PhysAddr, so the LMA really holds the image bytes.
+    // Under KICKOS_HAVE_MPU .data's VMA is pinned past the code pad, so LMA != VMA and
+    // this copy is real; without enforcement LMA == VMA and it is a no-op.
     uint32_t* src = &_sidata;
     uint32_t* dst = &_sdata;
     while (dst < &_edata)

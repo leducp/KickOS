@@ -26,7 +26,7 @@ set(CMAKE_SYSTEM_PROCESSOR arm)
 # not the arch. The board descriptor states arch + chip, and a CPU flag only where the
 # board itself differs from its chip; both are read here pre-project() and by the build's
 # board resolver (cmake/kickos.cmake), so the toolchain and the build cannot disagree.
-set(KICKOS_BOARD "frdmk64f" CACHE STRING "Target board: qemu|frdmk64f|f411disco|bluepill-c8|picopi")
+set(KICKOS_BOARD "frdmk64f" CACHE STRING "Target board (see boards/)")
 
 # In-tree the descriptor is boards/<board>/board.cmake relative to the repo root
 # (this file lives in <repo>/cmake). An installed MCU package ships the one board

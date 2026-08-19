@@ -33,9 +33,9 @@ endif()
 # QEMU RISC-V gate: the same demo on a QEMU `virt` (RV32IMAC, M-mode bare metal),
 # end-to-end proof of the rv32imac reset/scheduler(msip)/ecall/CLINT-timer path.
 # `-bios none` runs our image directly in M-mode (no OpenSBI).
-# NOT under enforcement: hello shares its two semaphores (main()'s stack locals) with the
-# ping/pong child threads, so a child's deref is a cross-domain read of the root thread's
-# private stack; PMP/PMSA correctly faults it. Enforcement-safe demos are the gated ones.
+# Registered on the FLAT variant only. Nothing in main.cc excludes enforcement: the players
+# name both semaphores by DELEGATED CAP INDEX (ping@1, pong@2) and dereference nothing of
+# main's. The enforcement arm is simply unwitnessed here.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE_MPU)
   kickos_add_qemu_test(NAME qemu_riscv_hello TARGET hello BOARD qemu-riscv
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_hello.sh")

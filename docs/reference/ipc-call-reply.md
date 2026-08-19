@@ -5,7 +5,8 @@
 The exact contract for the L4-style call/reply fastpath layered on the endpoint
 rendezvous (`../book/endpoints-synchronous-ipc-by-rendezvous.md` narrates the endpoint;
 `../book/synchronous-call-and-reply.md` narrates the why of this layer). Code source of
-truth: `kernel/syscall/syscall.cc` (`endpoint_call` / `endpoint_reply` / `endpoint_recv`),
+truth: `kernel/syscall/syscall_ipc.cc` (`endpoint_call` / `endpoint_reply` /
+`endpoint_recv`),
 `kernel/syscall/cap.cc` (the `CAP_REPLY` arm + `cap_reply_caller`), `kernel/sync/sync.cc`
 (`thread_effective_prio`), `user/include/kickos/sys/abi.h` (numbers + `kos_recv_info`),
 `user/include/kickos/sys.h` (the C stubs). If a page and the code disagree, the page is
@@ -66,7 +67,7 @@ requires, under one `IrqLock`: index in range, thread-slot gen match, `state == 
 
 ## `KOS_SYS_CALL = 34`
 
-    kos_call(int ep, void* buf, size_t send_len, size_t recv_cap) -> long
+    kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap) -> int32_t
 
 One buffer carries the request out and receives the reply back (**in-place**): the
 request is fully copied at rendezvous before the caller parks, so overwriting `buf` with
@@ -234,7 +235,7 @@ sole effective-priority writer):
   immediate. Symmetric with D1.
 
 A donation that is never reverted changes no return code, so the revert is invisible to
-any arm that only reads results: dropping the `sched::set_prio` in `endpoint_wait_timeout`
+any arm that only reads results: dropping the `sched::set_prio` in `endpoint_wait_abort`
 leaves the whole timed-call family green. What holds it is a scheduling ORDER --
 `call_timeout_revert` in `user/apps/common/selftest/main.cc` runs a medium-priority
 spoiler against a boosted server and requires it to run between the expiry and the

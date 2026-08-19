@@ -40,7 +40,10 @@ in the system. All six current fault reporters satisfy this; a new arch port mus
 too. Additionally, before a board turns on handover it must supply a real
 `arch_console_reclaim` body (the generic fallback,
 `arch/common/arch_console_reclaim_default.cc`, is a no-op -- a silent
-reclaim failure otherwise); today only XMC (USIC) and K64F (UART0) have one.
+reclaim failure otherwise). Every chip in the tree has one except `mps2`, `nrf51`,
+`sam3x8e`, `stm32f103`, `stm32f302` and `virt`; the current set is whatever
+`grep -rn "^void arch_console_reclaim(void)" arch/` reports, minus the declaration in
+`arch/include/kickos/arch/arch.h`.
 
 **Reclaim depth is a full in-window REWRITE, not a re-run of `*_init`.** A body must drive
 EVERY writable register inside the driver's granted window to a known polled-ready value,
@@ -431,7 +434,7 @@ C-only twin on `PATH` to fall through to, so `find_program(... REQUIRED)` is alr
 One-shot init-time pin muxing is an arch/chip-seam entry
 (`arch/include/kickos/arch/arch.h`): `int arch_pinmux_set(uint32_t port, uint32_t
 pin, uint32_t func)`, reached from userspace as syscall `KOS_SYS_PINMUX_SET` (33),
-privileged-only. `func` is a **chip-opaque** function code (the PORT/PCR/IOCR
+gated on `AUTH_PINMUX`. `func` is a **chip-opaque** function code (the PORT/PCR/IOCR
 encoding), so the ABI `{port, pin, func}` stays vendor-neutral while each backend
 owns its own encoding. Returns 0, `-KOS_EINVAL` (out of range), or `-KOS_EBUSY` (a
 kernel-owned pin the backend refuses). The **declining fallback**
@@ -508,20 +511,27 @@ adding one must check this before the datasheet. The K64F PIT is the worked case
 which `arch_reserved_blocks` protects by address. So the PIT gets no entry and
 `pit_clock_init` gates it at boot instead (`arch/arm/chip/mk64f/chip_mk64f.cc:498`).
 
-Backends exist for **two** chips; every other chip keeps the fallback, deliberately
+Backends exist for **four** chips; every other chip keeps the fallback, deliberately
 including `esp32c6` (its one-time bus-side APM open is programmed by `arch_init`, not
-per block) and `rx72m`:
+per block):
 
 | Chip | Block | Clock gate | Bus protect |
 |------|-------|------------|-------------|
 | `mk64f` | UART0 `0x4006A000` | `SIM_SCGC4` bit 10 | `AIPS0` slot 106, PACR `0x40000064` bit 22 |
 | `mk64f` | DSPI0 `0x4002C000` | `SIM_SCGC6` bit 12 | `AIPS0` slot 44, PACR `0x40000044` bit 14 |
 | `stm32f411` | SPI1 `0x40013000` | `RCC_APB2ENR` bit 12 | -- none exists for this bus |
+| `rx72m` | RIIC0 `0x00088300` | `MSTPCRB` bit 21 | -- none exists for this bus |
+| `rx72m` | RIIC1 `0x00088320` | `MSTPCRB` bit 20 | -- none exists for this bus |
+| `rx72m` | RIIC2 `0x00088340` | `MSTPCRC` bit 17 | -- none exists for this bus |
+| `imxrt1062` | USB1 `0x402E0000` | already done by `usb_clock_init` | `AIPSTZ3` OPACR, the USB1 slot's SP bit |
 
 The `mk64f` PACR register and bit are **computed** from `base` (`slot_of` / `pacr_of` /
 `pacr_sp_bit`, `arch/arm/chip/mk64f/regs/aips.h`) rather than tabled, and the clock is
-ungated before the protect is dropped. `stm32f411` is clock-only: no
-privilege-classification register exists for that bus in this tree. That is a
+ungated before the protect is dropped. `stm32f411` and `rx72m` are clock-only: no
+privilege-classification register exists for those buses in this tree. `imxrt1062` is the
+mirror image, protect-only: `usb_clock_init` has already done USB1's clock half, so the
+entry clears the USB1 slot's Supervisor-Protect bit in the AIPSTZ bridge's OPACR and
+nothing else. The bridge's unit is 16 KiB, so that necessarily opens OTG2 and USBNC too. That is a
 legitimate backend shape -- the seam does not promise both halves, only that whatever
 the chip has for that block is done.
 
@@ -798,7 +808,7 @@ defconfig, and a porter had to read both. So "KickOS runs here", "KickOS is vali
 validated here with none" are three different claims about one board.
 
 A **named** reduced suite is a supported posture, not a degraded one. `microbit` (nRF51,
-16 KiB SRAM) declares the eleven cases it cannot host as an expected-skip list checked by
+16 KiB SRAM) declares the cases it cannot host as an expected-skip list checked by
 name in CI (`KICKOS_EXPECT_SKIPS` in `../../user/apps/common/selftest/CMakeLists.txt`,
 rationale in `boards.md` under *Per-board caveats*): a skip not on that list fails the gate.
 `f302nucleo` has no gate of any kind, so its 5 skips are enumerated below instead.
@@ -1084,7 +1094,10 @@ Four readings, and they are the point of the section:
   which is what N=0 predicts. Raising `KICKOS_MAX_THREADS` to 4 alone moved the tally not
   at all: the arena bound, not the pool. Surrendering the 2K heap carve and halving
   `KICKOS_USER_STACK_SIZE` to 1,024 takes the arena to 5,664 and N to 3, and the same
-  part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways.
+  part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways,
+  measured at `124b68c`. That reading predates `9da898e`, which builds this board's suite as
+  TWO images, so the board emits no single `1..63` plan today; read the plan sizes off the
+  configure line (see `boards.md`, *The 64 KiB parts run the selftest as TWO images*).
 - **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than `f302nucleo`
   and used to host *fewer* threads, missing `hello`'s second stack by 96 bytes, purely
   because its heap carve was 8K against f302's 2K. That 8K was the `CHIP_STM32F103`
@@ -1109,14 +1122,14 @@ requirement, for a zero-skip run:
 
 | Knob | Default | Pool | Suite needs | Tight-board value |
 | --- | --- | --- | --- | --- |
-| `KICKOS_MAX_THREADS` | 16 (`config/system.h:41`) | `thread.h:332` | **>= 4** | 2 |
-| `KICKOS_MAX_SEMAPHORES` | 16 (`system.h:22`) | `instance.h:65` | **>= 6** | 4 (f302) |
+| `KICKOS_MAX_THREADS` | 16 (`config/system.h`) | `thread.h` (`ThreadPool`) | **>= 4** | 2 |
+| `KICKOS_MAX_SEMAPHORES` | 16 (`system.h`) | `instance.h` (`sems`) | **>= 6** | 4 (f302) |
 | `KICKOS_CAP_TABLE_SUPPLY` | 16 (`system.h`) | per-thread cap table | **>= 10** | 7 |
-| `KICKOS_MAX_MUTEXES` | 8 (`system.h:27`) | `instance.h:75` | >= 2 | 4 (c8) |
-| `KICKOS_MAX_ENDPOINTS` | 4 (`system.h:34`) | `instance.h:83` | >= 1 | 4 |
-| `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h:100`) | `instance.h:99` | >= 1 | 4 (f302) |
-| `KICKOS_MAX_DOMAINS` | `MAX_THREADS + 2` (`system.h:67`) | `instance.h:95` | derived | 4 |
-| `KICKOS_MAX_TASKS` | `THREAD_SLOTS + 1` (`system.h:76`) | `instance.h:95` | derived | one per live thread under the implicit default, so the floor is `KICKOS_THREAD_SLOTS + 1`; a `static_assert` in `kernel/task/task.cc` refuses less. An EXPLICIT task (`kos_task_create`) that holds no thread is a slot this floor does NOT budget, so an app that creates groups and never populates them makes a spawn answer -KOS_ENOMEM one earlier. A group with N members repays N-1 |
+| `KICKOS_MAX_MUTEXES` | 8 (`system.h`) | `instance.h` (`mutexes`) | >= 2 | 4 (c8) |
+| `KICKOS_MAX_ENDPOINTS` | 4 (`system.h`) | `instance.h` (`endpoints`) | >= 1 | 4 |
+| `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h`) | `instance.h` (`irq_bindings`) | >= 1 | 4 (f302) |
+| `KICKOS_MAX_DOMAINS` | `MAX_THREADS + 2` (`system.h`) | `instance.h` (`domains`) | derived | 4 |
+| `KICKOS_MAX_TASKS` | `THREAD_SLOTS + 1` (`system.h`) | `instance.h` (`tasks`) | derived | one per live thread under the implicit default, so the floor is `KICKOS_THREAD_SLOTS + 1`; a `static_assert` in `kernel/task/task.cc` refuses less. An EXPLICIT task (`kos_task_create`) that holds no thread is a slot this floor does NOT budget, so an app that creates groups and never populates them makes a spawn answer -KOS_ENOMEM one earlier. A group with N members repays N-1 |
 
 The `Tight-board value` column is the chip default. The `f302nucleo` `st` variant
 overrides semaphores to 6 and threads to **3** -- not 4: it was
@@ -1177,8 +1190,8 @@ exists. Eight of `f302nucleo`'s nine pre-`124b68c` skips were arena starvation l
 knob (`KICKOS_THREAD_SLOTS`, `kernel/include/kickos/config/system.h`): root holds one for the
 life of the system and never reaches `EXITED`, so a spawn still draws the full stated count.
 That is why `f302nucleo` runs a two-thread app at `KICKOS_MAX_THREADS 2`. Idle is the one
-thread the pool does not seat; it runs on a file-static TCB handed to `thread_create` by
-pointer. The knob dominates static RAM: on `f302nucleo` `selftest` at
+thread the pool does not seat; it runs on `Kernel::idle_tcb`
+(`kernel/include/kickos/instance.h`), handed to `thread_create` by pointer. The knob dominates static RAM: on `f302nucleo` `selftest` at
 `KICKOS_MAX_HANDLES=9` and heap 0, `g_instance` measures 2,448 bytes at 2 threads,
 3,296 at 4, 4,152 at 6 and 5,000 at 8 -- **about 424 bytes per slot**, because each slot
 buys a `Domain` too (`system.h:67`). **Those four figures hold one slot fewer than the same
@@ -1227,7 +1240,8 @@ overshoots by roughly 165 bytes.
 That arena pays `align(512) + align(2,048) = 2,560` for the boot stacks and then holds
 `floor((5,664 - 2,560) / 1,024) = 3` user stacks with 32 bytes to spare, so
 N = min(3, 4) = **3**. That is the whole result and the right-size did not move it: **the
-suite passes on 16 KiB of SRAM**, 63 ok / 0 not ok / 5 skipped, because the cases that do
+suite passes on 16 KiB of SRAM**, 63 ok / 0 not ok / 5 skipped (measured at `124b68c`,
+before `9da898e` split this board's suite into two images), because the cases that do
 not need a 4th worker all run at N = 3. This arithmetic is exactly what
 `KICKOS_POOL_ARENA_ASSERT` now replays at link time for this chip, with the run-ups paid
 against the real arena base instead of a quoted one.

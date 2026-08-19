@@ -5,8 +5,8 @@
 // are clean-room from the RP2040 datasheet (RP-008371-DS); hand-rolled, no vendor
 // SDK sources, consistent with the arch layer's regs.h.
 //
-// M1 scope: privilege + SVC, no hardware MPU. clk_sys is raised to 125 MHz off
-// PLL_SYS (12 MHz XOSC x125 /6 /2); SystemCoreClock tracks it so the SysTick
+// Privilege + SVC, and the PMSAv6 MPU is enforced (mpu.cmake). clk_sys is raised to
+// 125 MHz off PLL_SYS (12 MHz XOSC x125 /6 /2); SystemCoreClock tracks it so the SysTick
 // ns<->cycle math (arch_arm_common) stays coherent. clk_ref stays on the 12 MHz
 // XOSC and the WATCHDOG /12 tick is untouched, so the 1 MHz system TIMER
 // (arch_clock_now / arch_trace_now; arch.h requires a 64-bit monotonic clock and

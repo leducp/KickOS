@@ -4,7 +4,7 @@
 
 > Where an interrupt that arrives while its line is masked has to go, and why the
 > only answer that keeps a userspace driver's `wait` honest is *latch it and deliver
-> it at unmask* -- never drop it. This chapter builds on Chapter 8 (the blocking
+> it at unmask* -- never drop it. This chapter builds on Chapter 2.2 (the blocking
 > substrate: one wait/wake primitive) and the tier-1 IRQ model, and points into
 > `../reference/invariants.md` (`isr-mask-then-wake-wait-rearm`) and
 > `../reference/porting.md` (the per-controller `arch_irq_*` contract) for the exact

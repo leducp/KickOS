@@ -163,7 +163,7 @@ namespace usic
     // above, not measured on a scope.
     //
     // 115200 baud from fPERIPH = 48 MHz (fCPU=96 MHz, KOS_PSTATE_MID):
-    // STEP=354, PDIV+1=9, DCTQ+1=16 -> 48e6*354/1024/9/16 = 115237 baud (+0.03%).
+    // STEP=354, PDIV+1=9, DCTQ+1=16 -> 48e6*354/1024/9/16 = 115234.375 baud (+0.03%).
     constexpr Baud BAUD_115200_48MHZ = { 354u, 8u, 0u, 15u };
 
     // 115200 baud from fPERIPH = 24 MHz (fCPU=48 MHz, KOS_PSTATE_LOW):

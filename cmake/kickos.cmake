@@ -17,11 +17,12 @@
 # ---------------------------------------------------------------------------
 # Board -> {arch, chip} resolution.
 #
-# The single source of truth for a board's arch/chip/-mcpu is one descriptor,
-# boards/<board>/board.cmake (also included pre-project by the ARM toolchain file
-# for the CPU baseline). Here we include it to read arch + chip. The chip is the
-# arch/arm/chip/<chip> backend (startup, linker script, clocks, console); the sim
-# has none (KICKOS_CHIP == "").
+# The single source of truth for a board's arch and chip is one descriptor,
+# boards/<board>/board.cmake (also included pre-project by the ARM toolchain file,
+# which then takes the -mcpu baseline from arch/<family>/chip/<chip>/cpu.cmake unless
+# the descriptor overrides it; only the four ARM qemu boards do). Here we include it to
+# read arch + chip. The chip is the arch/arm/chip/<chip> backend (startup, linker script,
+# clocks, console); the sim has none (KICKOS_CHIP == "").
 #
 # Captured at include time (a called function sees the caller's list dir, not this
 # file's): the in-tree boards/ dir. It is <repo>/boards in a source tree; an
@@ -634,6 +635,8 @@ endfunction()
 # kickos_board_names(<out>)
 #   The fleet's board names, from the SOLE source of truth: boards/*/board.cmake.
 #   Used for the KICKOS_BOARD cache-var help so it can never go stale. Sorted for a stable string.
+#   A cross build never sees that help: the toolchain file creates the cache entry
+#   pre-project(), and CMake keeps an existing entry's docstring.
 function(kickos_board_names out)
   file(GLOB _descs "${KICKOS_BOARDS_DIR}/*/board.cmake")
   set(_names "")

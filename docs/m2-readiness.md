@@ -157,21 +157,26 @@ path. POLLED stays for the semihosting dev vehicles (mps2, virt, microbit) -- sy
 no TX-empty IRQ to drain. `arch_console_write` -> the ring; `arch_console_write_sync` ->
 the polled writer (panic/fault path).
 
-On the ring today: **K64F, XMC4800, ESP32-WROOM, RX72M, and ESP32-C6** -- all
-silicon-validated (the C6 via its own UART0 peripheral-IRQ path added 2026-07-14, a
-2048-byte ring). The STM32 fleet (f411disco, blackpill, f302nucleo, bluepill-c8) and
-picopi (RP2040) stay polled: real UART, `arch_console_write_sync` bounded per board, but
-no IRQ-drained receive path wired onto the template yet (a driver-era, non-M2 task).
+On the ring, silicon-validated: **K64F, XMC4800, ESP32-WROOM, RX72M, and ESP32-C6** (the C6
+via its own UART0 peripheral-IRQ path added 2026-07-14, a 2048-byte ring). The STM32 fleet
+(f411disco, blackpill, f302nucleo, bluepill-c8) and picopi (RP2040) were recorded here as
+polled; they are on the ring too now, each chip defining `arch_console_tx_backend` with a real
+IRQ line (`arch/arm/chip/stm32f411/chip_stm32f411.cc`, `.../stm32f302/chip_stm32f302.cc`,
+`.../stm32f103/chip_stm32f103.cc`, `arch/arm/chip/rp2040/chip_rp2040.cc`). What those five have
+not had is a silicon witness of the ring arm.
 
 **Dependency:** the ring needs a working device-interrupt RECEIVE path per arch. ARM (NVIC)
 + RX (INTB) have it -> mechanical. The **ESP32-C6 now has one** (UART0 TX -> interrupt matrix
--> CPU int 30 -> `switch.S` `.Lextdev`); the RX `kickos_rx_default_irq` demux is still a stub.
+-> CPU int 30 -> `switch.S` `.Lextdev`); the RX demux is no longer a stub either:
+`kickos_rx_default_irq` (`arch/rx/rxv3/arch_rxv3.cc`) calls `kickos_rx_dev_dispatch`, whose body
+is in `arch/rx/chip/rx72m/chip_rx72m.cc`.
 
 ### M1-uniformity gaps -- all closed
 - Ring console generalised + re-validated on silicon (2026-07-09): RX72M and
   ESP32-WROOM (UART0) onto the K64F/XMC template, 14/14 + fault dump through the armed
   ring; ESP32-C6 also on the ring (its own UART0 peripheral-IRQ path, silicon-validated
-  2026-07-14). The STM32/RP2040 fleet stays polled by policy (see Console policy above).
+  2026-07-14). The STM32/RP2040 fleet was polled by policy at the time; it has since been
+  brought onto the ring (see Console policy above).
   sim ring done (2026-07-09): a synthetic TX peripheral (SIGUSR1-delivered TX-empty line
   + per-delivery slot budget) arms the buffered path in-tree, so ctest now exercises the
   SPSC ring/drain/wrap/overflow paths the HW-gated MCU backends never run in-tree.

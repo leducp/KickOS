@@ -470,9 +470,10 @@ void kickos_rx_dev_dispatch(void)
 // an SCI window has no way to read the select itself. A block this chip does not model
 // returns 0, which the contract makes the caller refuse on rather than guess.
 //
-// This definition MUST stay in this TU: the member is always anchored (-u g_isr_vector
-// reaches it through startup.S), and a dedicated TU nothing else references would leave the
-// arch/common fallback answering with 0 and no link error at all.
+// This definition MUST stay in this TU: the member is always anchored (arch_init lives
+// here and the kernel references it; RX gets no -u force-ref), and a dedicated TU nothing
+// else references would leave the arch/common fallback answering with 0 and no link error
+// at all.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
     if (base == mmap::SCI6)

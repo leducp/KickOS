@@ -18,3 +18,8 @@
 # Validation status of this port: see docs/reference/boards.md.
 set(KICKOS_CHIP_ENFORCES_MPU ON)
 set(KICKOS_ARM_PMSAV8_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../common/arch_arm_pmsav8.cc")
+
+# PMSAv8 writes an RBAR/RLAR pair per region where the v7-M PMSA writes RBAR/RASR. The top
+# CMakeLists turns this into the KICKOS_ARM_MPU value armv7m kickos/arch/mpu_encoded.h lays
+# the image out from.
+set(KICKOS_ARM_MPU_BACKEND PMSAV8)

@@ -37,9 +37,9 @@ namespace kickos
     // (invariant timer-min-delta-guard). Caller holds IrqLock.
     void ktime_deadline_arm(Thread* t, uint32_t timeout_us);
 
-    // Drop `t`'s deadline, if it has one. Called from sched::wake and nowhere else: an
-    // unpark IS a wake, while a pop is not necessarily one, and a park-to-park migration
-    // must keep its deadline. Caller holds IrqLock.
+    // Drop `t`'s deadline, if it has one. Called from sched::wake_no_resched (THE unpark
+    // funnel) and nowhere else: a pop is not necessarily an unpark, and a park-to-park
+    // migration must keep its deadline. Caller holds IrqLock.
     void ktime_deadline_cancel(Thread* t);
 
     // Recompute and (re)arm the one-shot timer. Called after any change that can

@@ -8,8 +8,9 @@
 // wait-queue corruption shows up as either a hang (the join never completes -> the
 // harness times out) or a final count mismatch (STRESS FAIL). Terminates cleanly
 // (every worker exits, main verifies and returns its failure count), so it doubles
-// as a CTest gate the way selftest does. Prints "# stress complete" only after a
-// full clean run.
+// as a CTest gate the way selftest does. "# stress complete" marks the end of the run,
+// PASS, FAIL or SKIP alike; the verdict is the STRESS PASS line, which is what the
+// registered ctest keys on.
 //
 // Pool use scales to the board: the soak first PROBES the concurrent thread budget
 // (spawn parked threads until one is refused), then sizes the ping-pong pairs and

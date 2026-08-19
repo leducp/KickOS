@@ -22,17 +22,16 @@
 
 extern "C"
 {
-    size_t kickos_arm_mpu_pending(struct arch_mpu_region const** out);
-    void kickos_arm_mpu_program(struct arch_mpu_region const* regions, size_t n);
+    struct arch_mpu_encoded const* kickos_arm_mpu_pending(void);
+    void kickos_arm_mpu_program(struct arch_mpu_encoded const* img);
 
     void kickos_arch_mpu_commit(void)
     {
-        struct arch_mpu_region const* regions = nullptr;
-        size_t const n = kickos_arm_mpu_pending(&regions);
+        struct arch_mpu_encoded const* const img = kickos_arm_mpu_pending();
         uint32_t primask;
         __asm volatile("mrs %0, primask" : "=r"(primask));
         __asm volatile("cpsid i" ::: "memory");
-        kickos_arm_mpu_program(regions, n);
+        kickos_arm_mpu_program(img);
         __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
     }
 }

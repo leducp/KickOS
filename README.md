@@ -107,7 +107,7 @@ cmake --preset frdmk64f-st     # + the self-test (TAP) suite
 cmake --preset frdmk64f-flat   # the non-enforcing posture, on a board that can enforce
 ```
 
-50 presets over 20 boards, defined in [`cmake/presets/`](cmake/presets/) and each building into
+52 presets over 20 boards, defined in [`cmake/presets/`](cmake/presets/) and each building into
 its own directory under `build/`. The memory posture is part of the variant, so there is no
 `-D` for it: the 14 enforcing boards state enforcement in their base defconfig and carry a
 `<board>-flat` preset beside it, which is what the ring-only gates build. `sim` has no flat

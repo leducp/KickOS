@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6 RMT registers (TRM v1.2 ch.30). Drives the onboard WS2812B diag LED
+// ESP32-C6 RMT registers (TRM v1.2 ch.37). Drives the onboard WS2812B diag LED
 // (GPIO8): GPIO bit-bang cannot meet the ~400 ns bit high-time even at 160 MHz, so
 // the RMT clocks the pulse train in hardware. Channel 0 (TX). The channel clock is
 // muxed/divided in PCR on the C6 (see regs/pcr.h), NOT in RMT_SYS_CONF.

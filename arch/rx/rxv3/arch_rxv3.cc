@@ -643,20 +643,70 @@ void arch_timer_disarm(void)
 // swap. Eager apply on RX's deferred SWINT switch would load the incoming region set while
 // the OUTGOING user thread is still physically running -> it faults on its own stack.
 #if KICKOS_HAVE_MPU
-static struct arch_mpu_region g_pend_regions[MPU_REGION_COUNT];
-static size_t g_pend_count = 0;
+// Pack the region set into the RSPAGEn/REPAGEn pair per slot. The page masks are field
+// encoding, not rounding: a region the 16-byte pages cannot represent EXACTLY gets REPAGE
+// 0 (V clear), never a window widened by up to 15 bytes on each side.
+uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
+                         struct arch_mpu_encoded* out)
+{
+    if (n > ARCH_MPU_ENCODED_SLOTS)
+    {
+        n = ARCH_MPU_ENCODED_SLOTS;
+    }
+    uint32_t seated = 0;
+    size_t i = 0;
+    for (; i < n; i++)
+    {
+        out->rspage[i] = 0;
+        out->repage[i] = 0;
+        if (arch_mpu_region_encodable(regions[i].base, regions[i].size))
+        {
+            uintptr_t const base = regions[i].base;
+            uintptr_t const end = base + regions[i].size - 1; // inclusive last byte
+            uint32_t uac = 0;
+            if (regions[i].attr & ARCH_MPU_R)
+            {
+                uac |= MPU_UAC_R;
+            }
+            if (regions[i].attr & ARCH_MPU_W)
+            {
+                uac |= MPU_UAC_W;
+            }
+            if (regions[i].attr & ARCH_MPU_X)
+            {
+                uac |= MPU_UAC_X;
+            }
+            out->rspage[i] = static_cast<uint32_t>(base) & MPU_PAGE_MASK;
+            out->repage[i] =
+                (static_cast<uint32_t>(end) & MPU_PAGE_MASK) | uac | MPU_REPAGE_V;
+            seated |= static_cast<uint32_t>(1) << i;
+        }
+    }
+    for (; i < ARCH_MPU_ENCODED_SLOTS; i++)
+    {
+        out->rspage[i] = 0;
+        out->repage[i] = 0;
+    }
+    return seated;
+}
 
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+// The raw set travels beside the image because the same-set skip below compares region
+// extents: an image POINTER cannot answer that question, since a self-grant re-encodes in
+// place and leaves the pointer unchanged.
+static struct arch_mpu_region const* g_pend_regions = nullptr;
+static size_t g_pend_count = 0;
+static struct arch_mpu_encoded const* g_pend_image = nullptr;
+
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
+                    struct arch_mpu_encoded const* image)
 {
     if (n > MPU_REGION_COUNT)
     {
         n = MPU_REGION_COUNT;
     }
-    for (size_t i = 0; i < n; i++)
-    {
-        g_pend_regions[i] = regions[i];
-    }
+    g_pend_regions = regions;
     g_pend_count = n;
+    g_pend_image = image;
 }
 
 // Program the RX MPU from the stash. Called from the SWINT switcher (kickos_rx_pendsw
@@ -668,6 +718,12 @@ void kickos_arch_mpu_commit(void)
     arch_irq_state_t const irq = arch_irq_save();
     struct arch_mpu_region const* const regions = g_pend_regions;
     size_t const n = g_pend_count;
+    struct arch_mpu_encoded const* const img = g_pend_image;
+    if (img == nullptr)
+    {
+        arch_irq_restore(irq);
+        return;
+    }
     if (g_in_isr)
     {
         rx_mpu_mark('['); // localizer: entering the MPU register writes from ISR ctx
@@ -702,37 +758,16 @@ void kickos_arch_mpu_commit(void)
     }
     if (not same)
     {
-        // Load regions[0..n) into slots 0..n-1; invalidate the rest. Write RSPAGEn
-        // (start) BEFORE REPAGEn, and put V in the REPAGEn write so a slot is never
-        // momentarily valid with a stale end/attr.
-        // A region the 16-byte pages cannot represent EXACTLY is fail-closed (slot left
-        // V=0), never masked wider: rounding base/end to page bounds would grant up to
-        // 15 bytes beyond the region on each side.
+        // Write RSPAGEn (start) BEFORE REPAGEn, and put V in the REPAGEn write so a slot
+        // is never momentarily valid with a stale end/attr.
         for (size_t i = 0; i < MPU_REGION_COUNT; i++)
         {
             uintptr_t const rsp = MPU_RSPAGE_BASE + i * MPU_REGION_STRIDE;
             uintptr_t const rep = MPU_REPAGE_BASE + i * MPU_REGION_STRIDE;
-            if (i < n and arch_mpu_region_encodable(regions[i].base, regions[i].size))
+            if (i < ARCH_MPU_ENCODED_SLOTS and (img->repage[i] & MPU_REPAGE_V))
             {
-                uintptr_t const base = regions[i].base;
-                uintptr_t const end = base + regions[i].size - 1; // inclusive last byte
-                uint32_t uac = 0;
-                if (regions[i].attr & ARCH_MPU_R)
-                {
-                    uac |= MPU_UAC_R;
-                }
-                if (regions[i].attr & ARCH_MPU_W)
-                {
-                    uac |= MPU_UAC_W;
-                }
-                if (regions[i].attr & ARCH_MPU_X)
-                {
-                    uac |= MPU_UAC_X;
-                }
-                // The low-nibble masks are RSPAGE/REPAGE field encoding (page-exact by
-                // the encodable gate above; REPAGE[3:0] carry UAC/V), not rounding.
-                reg32(rsp) = static_cast<uint32_t>(base) & MPU_PAGE_MASK;
-                reg32(rep) = (static_cast<uint32_t>(end) & MPU_PAGE_MASK) | uac | MPU_REPAGE_V;
+                reg32(rsp) = img->rspage[i];
+                reg32(rep) = img->repage[i];
             }
             else
             {
@@ -757,10 +792,12 @@ void kickos_arch_mpu_commit(void)
     arch_irq_restore(irq);
 }
 #else
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
+                    struct arch_mpu_encoded const* image)
 {
     (void)regions;
     (void)n;
+    (void)image;
 }
 // PendSV/SWINT epilogue calls this unconditionally; provide an empty no-MPU commit.
 void kickos_arch_mpu_commit(void) {}

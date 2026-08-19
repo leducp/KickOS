@@ -16,8 +16,9 @@
 #
 # <expected-arms> is what makes the suite non-vacuous. tap.cc plans `1..N` from the
 # RUNTIME registry, so a deleted arm shrinks the plan and the case count in lockstep and
-# no self-consistent parse can see it. The caller owns the number because five arms are
-# #if-conditional and the total is therefore per-posture.
+# no self-consistent parse can see it. The caller owns the number because a large minority
+# of the arms are #if-conditional (posture, MPU, self-test syscalls) and the split image
+# cuts the set again by KICKOS_SELFTEST_PART, so the total is per-posture AND per-image.
 #
 # usage: <tap stream> | check_tap_stream.sh <label> <expected-arms>
 

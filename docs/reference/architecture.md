@@ -338,8 +338,9 @@ KickOS/
                                     #   per-board pinmap and service-list providers
     cxx/                            # verbose-terminate handler
     driver/<chip>/<driver>/         # the driver LIBS, per chip: esp32/lx6uart, esp32c6/c6uart,
-                                    #   mk64f/{k64dspi,k64uart,k64uartirq}, rp2xxx/rpusb,
-                                    #   rx72m/rxsci, xmc4800/{xmcssc,xmcuart,xmcuartirq}.
+                                    #   imxrt1062/rt1062usb, mk64f/{k64dspi,k64uart,k64uartirq},
+                                    #   rp2xxx/rpusb, rx72m/rxsci, stm32f411/f4uartirq,
+                                    #   xmc4800/{xmcssc,xmcuart,xmcuartirq}.
                                     #   Unprivileged, linked by an app.
   user/
     include/                        # userspace API (kos.h, sys.h, app.h) + driver/ client headers
@@ -502,9 +503,9 @@ the kernel is unreachable without preemption. `docs/design-task-layer.md` is the
   out-parameter. So every handle class spends all 32 bits and a live handle may have bit 31 set:
   `cap.h`'s `KCAP_INDEX_BITS` / `KCAP_GEN_BITS`, the "NO SIGN TEST" notes on `free()` and
   `resolve()` in `kernel/include/kickos/slotpool.h`, and `ThreadPool::INDEX_BITS`. The code set
-  mirrors POSIX magnitudes -- `EPERM` `ESRCH` `EBADF` `ENOMEM` `EFAULT` `EBUSY` `EINVAL` `EMFILE`
-  `EPIPE` `EDEADLK` `ENOSYS` `EOVERFLOW` `ETIMEDOUT` `ECANCELED` -- plus **`EOWNERDEAD`**, the
-  robust-mutex case: a mutex *acquired*
+  mirrors POSIX magnitudes -- `EPERM` `ESRCH` `EIO` `EBADF` `ENOMEM` `EFAULT` `EBUSY` `EINVAL`
+  `EMFILE` `EPIPE` `EDEADLK` `ENOSYS` `EOVERFLOW` `ENOTSUP` `ETIMEDOUT` `ECANCELED` -- plus
+  **`EOWNERDEAD`**, the robust-mutex case: a mutex *acquired*
   while its prior owner died holding it, still returned negative (`-KOS_EOWNERDEAD`) for the
   caller to special-case as HELD. Six of those carry a kernel-specific meaning that has to be
   stated, because the POSIX name does not give it:
@@ -525,10 +526,10 @@ the kernel is unreachable without preemption. `docs/design-task-layer.md` is the
   `KOS_SYS_CALL_TIMED` and `KOS_SYS_THREAD_JOIN` given a `timeout_us` other than
   `KOS_TIMEOUT_NONE` expire with no peer, move no bytes, return no reply, and leave the joined
   thread running. `kernel/time/time.cc` decides only THAT a deadline
-  expired and delegates each endpoint park's unwind to `endpoint_wait_timeout`
-  (`kernel/syscall/syscall_ipc.cc`), which unlinks the right queue and reverts the right
-  donation; the deadline is cancelled in `sched::wake`, the one unpark funnel, so a rendezvous
-  that beats it can never also report it. ONE caveat, and it is the reason the promise is
+  expired and delegates each endpoint park's unwind to `endpoint_wait_abort`
+  (`kernel/thread/park.cc`), which unlinks the right queue and reverts the right
+  donation; the deadline is cancelled in `sched::wake_no_resched`, the one unpark funnel, so a
+  rendezvous that beats it can never also report it. ONE caveat, and it is the reason the promise is
   worded per-caller: a `KOS_SYS_CALL_TIMED` whose request a server had already taken leaves
   that server holding its reply capability, whose eventual `KOS_SYS_REPLY` answers `ESRCH`;
   and
@@ -898,12 +899,13 @@ feeds the slave app.
   (`init.h`) and the two board-provider seams (`pinmap.h`, `service.h`); and the home of the
   class/service driver layer plus the per-board bring-up descriptor, both **populated**.
   `system/driver/<chip>/<name>/` carries the driver libs -- `esp32/lx6uart`, `esp32c6/c6uart`,
-  `mk64f/{k64dspi,k64uart,k64uartirq}`, `rp2xxx/rpusb`, `rx72m/rxsci`,
-  `xmc4800/{xmcssc,xmcuart,xmcuartirq}` -- and `system/init/` carries the bring-up descriptors:
+  `imxrt1062/rt1062usb`, `mk64f/{k64dspi,k64uart,k64uartirq}`, `rp2xxx/rpusb`, `rx72m/rxsci`,
+  `stm32f411/f4uartirq`, `xmc4800/{xmcssc,xmcuart,xmcuartirq}` -- and `system/init/` carries the
+  bring-up descriptors:
   `common/` (the passthrough init provider, the empty pinmap and the empty service list) plus a
   per-board directory of `pinmap.cc` and `service_list*.cc` providers for `f302nucleo`,
-  `frdmk64f`, `picopi`, `pizero2350`, `xmc4800-relax`, `rx72m`, `esp32-wroom`, `esp32c6-wroom`
-  and `sim`. `kickos_system` carries no archive, so it links separately (never in a RESCAN
+  `f411disco`, `frdmk64f`, `picopi`, `pizero2350`, `teensy41`, `xmc4800-relax`, `rx72m`,
+  `esp32-wroom`, `esp32c6-wroom` and `sim`. `kickos_system` carries no archive, so it links separately (never in a RESCAN
   group) and is propagated to every app via `kickos_core`.
 - **Init provider (the entry seam target).** The target supplying `kickos_init_entry` is a
   separate library selected by the `KICKOS_INIT_PROVIDER` cache var (default `kickos_default_init`,
@@ -1100,7 +1102,7 @@ closes the confused-deputy path a whole-arena syscall raise would leave open.
 drivers cannot share one peripheral, a three-state ownership axis `g_console_state`
 (KERNEL_OWNED / USER_OWNED / RECLAIMED) gates `console_emit` ahead of its buffered-vs-sync
 decision: in USER_OWNED the kernel touches the device on no path (RTT still carries kernel
-output). The privileged syscall `kos_console_publish` performs the handover -- it
+output). The syscall `kos_console_publish`, gated on `AUTH_CONSOLE`, performs the handover -- it
 **relinquishes** the buffered path via `console_tx_deinit` (flush, disable the TX interrupt,
 detach/NVIC-mask, disarm), takes a kernel ref on the userspace driver's stdout endpoint, then
 flips the state to USER_OWNED last; a stale chip writer that raced the flip is drained (via the
@@ -1110,11 +1112,12 @@ writer can finish) before publish returns. The **field panic path reclaims** the
 funnels through `kpanic_enter` so a terminal fault in the driver still reclaims and polled-prints;
 the diag LED stays the always-present 1-bit last resort. A chip `arch_console_reclaim` body
 force-retakes the peripheral and rewrites every in-window register to a known baud/state, since
-userspace config is untrusted; four exist (`arch/arm/chip/xmc4800/usic_uart.cc`,
-`arch/arm/chip/mk64f/chip_mk64f.cc`, `arch/riscv/chip/esp32c6/chip_esp32c6.cc` and
-`arch/xtensa/chip/esp32/chip_esp32.cc`; the xmc4800 one is silicon-witnessed) and the remaining
-chips keep the no-op fallback TU, so on those the reclaim is wiring with nothing behind it (see
-[console.md](console.md)). Routing userspace output through a kernel syscall to "share" the device is
+userspace config is untrusted; every chip has one except `mps2`, `nrf51`, `sam3x8e`,
+`stm32f103`, `stm32f302` and `virt` (the live set is
+`grep -rn "^void arch_console_reclaim(void)" arch/` minus the declaration in
+`arch/include/kickos/arch/arch.h`; the `arch/arm/chip/xmc4800/usic_uart.cc` one is
+silicon-witnessed), and those six keep the no-op fallback TU, so on them the reclaim is wiring
+with nothing behind it (see [console.md](console.md)). Routing userspace output through a kernel syscall to "share" the device is
 rejected -- an ambient-authority console service contradicts the microkernel split.
 
 **Service publication.** A published userspace driver = **endpoint capability (control) +

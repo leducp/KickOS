@@ -69,8 +69,12 @@ This costs almost nothing and breaks no existing invariant:
 
 The caller does not park on a wait queue the way a plain sender does. Once its request has
 been picked up it is blocked but *queue-less*, bound to the reply capability rather than to
-the endpoint. That is a small new thread state, and the one place the kernel had to check
-that "blocked" no longer implies "on a queue."
+the endpoint. Parking on no list at all is a general primitive rather than a special case
+built for this path: a thread waiting for another to exit, or for a task to empty, is
+queue-less in the same way. What they share is that the only thing able to find such a
+thread again is its wait edge (Chapter 2.2), so the edge has to name a kind that some waker
+actually sweeps for. "Blocked" therefore does not imply "on a queue" anywhere in this
+kernel, and code that walks waiters must ask the edge rather than assume a list.
 
 ## Why the fast path is the isolation
 
@@ -141,11 +145,22 @@ Two failure shapes have to be honest, and both are resolved by probing before co
 Everything else is the death matrix in the Reference: a server that dies mid-transaction,
 a reply capability closed instead of replied, a stale caller -- each wakes the caller with
 a broken-pipe error or is a cheap no-op, and each consumes the capability exactly once. The
-guarantee a client relies on is simple: a call returns, one way or another. It is never
-left blocked forever by a server's misbehavior. Cycles a client builds itself -- calling
-itself, or two servers calling each other -- are the one shape the kernel does not
-diagnose: there is no cycle detection on this path, so a client that wants a bound on
-one has to supply a deadline, which ends the wedge without ever naming its cause.
+guarantee a client gets from that matrix is narrower than "a call always returns", and the
+difference matters: every way the reply capability can be *destroyed* wakes the caller. A
+server that dies, a table swept at exit, a capability closed rather than replied through:
+each of those is a wake with a broken-pipe error.
+
+What the kernel does not do is bound a server that stays alive and simply holds the
+capability. Nothing in the call path arms a timer of its own, so a server stuck in a loop,
+or one whose error path forgets to reply, leaves its caller parked with no bound at all.
+The same is true of a cycle a client builds itself, calling itself or two servers calling
+each other: there is no cycle detection on this path. The one bound over all of these is
+the caller's own deadline, which is optional and which ends the wedge without ever naming
+its cause. That is a deliberate division of labour rather than an omission (the kernel
+cannot tell a slow transaction from a wedged one), but it puts a real obligation on both
+sides: a client that cannot afford to wait forever passes a deadline, and a server replies
+on every path. The next section states the server half again, because it is the rule most
+often broken.
 
 ## The service model: a class, and a thread that speaks the wire
 

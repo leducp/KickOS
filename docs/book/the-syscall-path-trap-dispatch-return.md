@@ -120,17 +120,46 @@ mode, and leaves the handler immediately.**
 | Port | Trap | How the handler reaches dispatch |
 |---|---|---|
 | armv7m / armv6m | `svc #0` | `SVC_Handler` rewrites the *stacked* PC in the hardware exception frame to `svc_trampoline`, clears `CONTROL.nPRIV`, and exception-returns -- so the trampoline runs in privileged **thread** mode on the caller's own process stack |
-| rv32imac | `ecall` | one common trap entry saves the integer file, demuxes `mcause` (`ecall`-from-U is 8, from-M is 11), then `.Lecall` points `mepc` at `svc_trampoline`, sets `MPP=M` and `MPIE=1`, and `mret`s |
+| rv32imac | `ecall` | one common trap entry saves the integer file, demuxes `mcause` (`ecall`-from-U is 8, from-M is 11), then `.Lecall_slow` points `mepc` at `svc_trampoline`, sets `MPP=M` and `MPIE=1`, and `mret`s |
 | rxv3 | `int #1` | the handler stashes the user PC and PSW on the thread's own user stack, rewrites the stacked PC to `svc_trampoline` and the stacked PSW to supervisor-on-USP, and `RTE`s |
 | lx6 (Xtensa) | none | the core has no ring split, so `arch_syscall` is a plain call to `syscall_dispatch`; the contract is satisfied trivially |
 | host sim | none | also a plain call, bracketed by an `mprotect` posture raise for the duration |
 
 Read the three trap-bearing rows together and the pattern is unmistakable. The trap
 handler's entire job is to **arrange a privileged thread-mode continuation on the
-caller's own stack, and get out of the handler**. It does not dispatch, it does not
-decode the request, it does not touch a kernel data structure. It moves the return
-target and the mode, and returns. Whatever the ISA calls its trap and its
-exception-return, that is the shape.
+caller's own stack, and get out of the handler**. For the general syscall it does not
+dispatch, it does not decode the request beyond what the demux needs, and it does not
+touch a kernel data structure. It moves the return target and the mode, and returns.
+Whatever the ISA calls its trap and its exception-return, that is the shape.
+
+The rule that forces that shape is narrower than "no kernel work in a handler", though,
+and it is worth stating precisely, because one path deliberately sits on the other side
+of it. What is forbidden is *requesting a deferred switch from the handler*, since the
+deferral is what lets the caller run on after it believed it had blocked. A handler that
+performs the switch **itself**, in its own epilogue, before it ever returns to
+unprivileged code, breaks no such promise. That is the licence **every** trap-bearing
+port takes, and each takes it for exactly *one* syscall number: the trap entry tests for
+the register-form call before taking the trampoline, and on a match runs the whole
+rendezvous in the handler, then rewrites the frame pointers so the exception return
+lands in the *server* rather than the caller. It really does touch kernel structures
+there: it pops the endpoint's receive queue, copies the payload, mints the reply
+capability, and parks the caller. Two properties are what keep that honest. The leaf
+decides everything it can refuse *before* it mutates anything, so a refusal falls
+through to the ordinary trampoline path with nothing committed. And it performs the
+context switch inline instead of asking for one later, so the caller genuinely does not
+execute again until it is replied to.
+
+That the licence generalises is itself the lesson. The shape is an opt-in an arch
+declares for itself (`arch/*/*/ipc_fastpath.cmake`, which sets
+`KICKOS_ARCH_HAS_IPC_FASTPATH`), and what decides whether an arch *can* opt in is not
+the ISA's temperament but whether it has an exception entry worth skipping. The two
+backends with no trap have nothing to gain: their dispatch is already a plain call on
+the caller's own stack, with no saved register frame for a reply to land in and no
+stacked return address to redirect, so a fast path there would be the ordinary path
+wearing another name. Every other syscall number, on every port, takes the plain shape
+above. Read this as what it is: a measured exception to a rule, bought with hand-written
+assembly on the one path where the round trip is the whole point (Chapter 8.5), and not
+as permission to do kernel work in a handler generally.
 
 Three details in that table are worth pulling out, because each teaches something the
 others do not.
@@ -166,12 +195,38 @@ switch and a later resume.)
 
 ## The number and the arguments: a register ABI
 
-The stub side is one function on every port:
+The stub side is one trap on every port, entered through a small family of declarations
+that differ only in the width of what comes back:
 
 ```
 uintptr_t arch_syscall(uintptr_t nr, uintptr_t a0, uintptr_t a1,
                        uintptr_t a2, uintptr_t a3);
+uint64_t  arch_syscall64(uintptr_t nr, uintptr_t a0, uintptr_t a1,
+                         uintptr_t a2, uintptr_t a3);
+int32_t   arch_syscall_reg(uint32_t* io);
 ```
+
+The first two are the *same* trap: the pair of registers the platform ABI uses for a
+`long long` return (`r0:r1` on ARM, `a0:a1` on RISC-V, `R1:R2` on RX), read as one half
+or as both, which is why this is a widening and not a second entry point. On a backend
+whose entry is hand-written assembly the widening is free, and one body carries both
+symbols: the trap already leaves the pair intact, so the narrow declaration simply
+ignores the high half. A backend whose "trap" is a C++ function has no register pair to
+preserve, so it writes the two as two functions, the narrow one truncating what the wide
+one returns. The declarations are the contract either way; how many instructions honour
+them is a backend's business.
+
+The third declaration is the register-form call of the previous section, whose arguments
+and results live in one caller-provided register window. It exists **only** where the
+fast path does: it is declared under `KICKOS_ARCH_HAS_IPC_FASTPATH`, so on a backend
+without the opt-in there is no such symbol to call and no stub arm that could call it.
+That is deliberate. A missing fast path is not a runtime condition to be detected and
+recovered from; it is a build in which the whole register form was never compiled, and
+the ordinary call is the only path there has ever been. The retry code
+(`KOS_CALL_REG_FALLBACK`) answers a different question, and belongs to ports that *do*
+have the machinery: it is what the generic dispatch returns when the handler leaf
+declined *this particular* call for a reason of state, so the stub re-issues the same
+request through the ordinary number with nothing committed.
 
 The syscall number and four arguments travel in the ISA's own argument registers by
 the platform ABI, so there is nothing to marshal: on ARM they are already in `r0`-`r3`
@@ -192,8 +247,11 @@ append-only: never renumber an existing entry, and a number is allocated when a 
 is *built*, not when one is designed. The numbers are the ABI between a compiled
 application and the kernel; renumbering is a silent, spectacular failure mode.
 
-**A 64-bit value is split into halves, deliberately.** `sleep_ns` takes low and high
-words; a 64-bit result is written through a caller-supplied out-pointer. The reason is
+**A 64-bit argument is split into halves, deliberately.** `sleep_ns` takes low and high
+words. A 64-bit *result* needs no such treatment: it rides the ABI's own return-register
+pair through `arch_syscall64`, so the monotonic clock read has no out-pointer at all,
+and none of the pointer hazards below apply to it (Chapter 7.1 makes that the worked
+example of a guard with no subject). The reason for splitting the arguments is
 not the MCU's word size, it is *uniformity*: the fleet includes a 64-bit host sim, so an
 ABI that relied on `uintptr_t` being 64 bits wide would be a different ABI on different
 targets. Splitting at the boundary makes the register layout identical everywhere, and

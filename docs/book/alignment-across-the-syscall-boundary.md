@@ -38,18 +38,35 @@ The C++ abstract machine says an object of type `T` lives at an address that is 
 `alignof(T)`; a typed access to a misaligned address is undefined. What the hardware *does* with a
 misaligned access varies by ISA, and so does `alignof(T)` itself:
 
-- On a **strict-alignment** ISA a misaligned load/store **traps**. RV32IMAC is the fleet's
-  example: a misaligned word access raises an exception. Issued from *kernel* context on a pointer
-  the *user* supplied, that trap is a user-triggerable kernel fault -- a denial-of-service, not a
-  mere wrong answer.
-- A **relaxed-alignment** ISA (RXv3, most ARM data accesses) completes a misaligned access, but
-  that does not make it free or always safe: some instructions still require alignment, and the
-  compiler is only obligated to emit a working access when the pointer meets `alignof(T)`.
-- Crucially, **`alignof(uint64_t)` is not the same everywhere**. It is 8 on ARMv7-M, ARMv6-M,
-  RV32IMAC, Xtensa LX6, and the x86-64 host sim -- but **4 on RXv3** (the RX psABI aligns 64-bit
-  scalars to 4, and KickOS's thread stacks are 4-byte aligned). So a `uint64_t` local on RX is
-  *correctly* aligned at a 4-byte boundary the compiler is happy to generate two 32-bit stores
-  for; it is simply not 8-aligned.
+- On a **strict-alignment** ISA a misaligned load or store **traps**. Issued from *kernel*
+  context on a pointer the *user* supplied, that trap is a user-triggerable kernel fault --
+  a denial-of-service, not a mere wrong answer. RV32IMAC behaves this way, and so do
+  ARMv6-M, RXv3 and Xtensa LX6: a 32-bit load through a pointer that is not 4-aligned
+  faults on each of them.
+- A **relaxed-alignment** ISA completes the access instead. ARMv7-M does so for ordinary
+  data loads and stores, and so does the x86-64 host the sim runs on.
+- The split is worth internalising in that order, rather than as "RISC-V is the strict
+  one", because the intuition most people arrive with is backwards. "ARM" is widely read
+  as the relaxed case, yet Cortex-M0 and M0+ support no unaligned data access at all, and
+  unlike their bigger siblings they have no configuration bit that could relax it. The
+  fleet's `microbit` and `picopi` boards are both ARMv6-M, so the denial-of-service this
+  chapter exists to prevent is reachable on ARM hardware and not only on RISC-V. Nor is
+  the relaxed side safe merely because it is relaxed: some ARMv7-M instructions still
+  require alignment whatever the data, an aperture mapped as Device rather than Normal
+  memory makes an unaligned access UNPREDICTABLE even on the cores that tolerate one
+  elsewhere, and the compiler is only ever obligated to emit a working access when the
+  pointer meets `alignof(T)`.
+- The ARM toolchain file passes `-mno-unaligned-access` fleet-wide. That stops the
+  *compiler* emitting an unaligned access on its own account, and does nothing whatever
+  about a misaligned pointer the caller chose, which is the only pointer this chapter is
+  about.
+- Crucially, **`alignof(uint64_t)` is not the same everywhere**, and it is a separate
+  question from whether the hardware traps. It is 8 on ARMv7-M, ARMv6-M, RV32IMAC,
+  Xtensa LX6, and the x86-64 host sim -- but **4 on RXv3** (the RX psABI aligns 64-bit
+  scalars to 4, and KickOS's thread stacks are 4-byte aligned). So a `uint64_t` local on
+  RX is *correctly* aligned at a 4-byte boundary the compiler is happy to generate two
+  32-bit stores for; it is simply not 8-aligned, and RX traps on a misaligned access all
+  the same.
 
 The takeaway: "aligned enough for a `uint64_t`" is a per-target fact the *compiler* knows and the
 programmer usually should not hardcode.

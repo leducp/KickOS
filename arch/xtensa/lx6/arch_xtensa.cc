@@ -522,10 +522,12 @@ void arch_timer_disarm(void)
 }
 
 // --- MPU: no hardware per-task protection on the classic ESP32 ---------------
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
+                    struct arch_mpu_encoded const* image)
 {
     (void)regions;
     (void)n;
+    (void)image;
 }
 
 // LX6 has neither an MPU nor a ring split; the self-grant path still calls this.

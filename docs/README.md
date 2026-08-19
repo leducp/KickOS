@@ -50,10 +50,11 @@ for; nothing below is a prerequisite for reading the Reference.
 Per-board wiring and validation status is `reference/boards.md`, not any of the above.
 
 ### `design-*.md` -- design records and spikes
-Per-topic design documents in this directory, each tagged in its header with a status
-marker: **LANDED** (shipped; kept as the why), **ACTIVE** (work in flight),
-**SUPERSEDED** (a later document or decision replaced it), **EXPLORATORY** (a spike; no
-commitment). `design/README.md` indexes them by status. A LANDED record is history plus
+Per-topic design documents in this directory, each carrying a status line in its header.
+Most use one of four markers: **LANDED** (shipped; kept as the why), **ACTIVE** (work in
+flight), **SUPERSEDED** (a later document or decision replaced it), **EXPLORATORY** (a spike;
+no commitment). The newest records state their status in prose instead.
+`design/README.md` indexes them all by status. A LANDED record is history plus
 rationale, not a contract: for the current contract go to `reference/`.
 
 ### How-to / ops

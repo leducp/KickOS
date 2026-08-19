@@ -36,7 +36,7 @@ namespace kickos
 
         // Kernel critical-section IPL: raising PSW.IPL to this level via MVTIPL
         // masks every source at or below it, leaving a higher band + NMI (IPL 15)
-        // live. Device lines are programmed BELOW this level (see PRIO_DEVICE); the
+        // live. Device lines are programmed BELOW this level (see IPL_DEVICE); the
         // timer sits just under the lock too.
         constexpr uint32_t IPL_LOCK = 12;   // crit-section mask level
         constexpr uint32_t IPL_DEVICE = 4;  // default device/timer priority (< lock)
@@ -61,8 +61,8 @@ namespace kickos
         // programs directly (the CMTW timer + SWINT) use the documented index.
         constexpr uintptr_t ICU_IPR_BASE = 0x00087300;
         // Software interrupt generation (UM sec.15.2.5 p.484): writing 1 to SWINTR.SWINT
-        // pends the software interrupt (SWINT, vector 27), the only line software can
-        // raise (edge sources accept only a 0 write to IRn.IR).
+        // pends the software interrupt (SWINT, vector 27). SWINT and SWINT2 are the only
+        // lines software can raise (edge sources accept only a 0 write to IRn.IR).
         constexpr uintptr_t ICU_SWINTR = 0x000872E0;
         constexpr uint8_t SWINTR_SWINT = 1u << 0;
         constexpr int SWINT_VECTOR = 27; // ICU.SWINTR -> IR027 (UM sec.15.2.5)

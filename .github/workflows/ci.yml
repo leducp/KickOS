@@ -49,11 +49,13 @@ jobs:
   # Authoritative deterministic gate: the full ctest suite on the host sim.
   sim:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
-      - name: Install build deps
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build g++
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build g++
       # Before the configure, and NOT optional: KICKOS_BUILD_UNIT_TESTS defaults to whether
       # find_package(GTest) succeeded, so a runner without it drops the whole host unit layer
       # and still reports green.
@@ -79,14 +81,16 @@ jobs:
   # preset's build/sim; ctest is driven by --test-dir (no sanitizer test preset).
   sim-ubsan:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     env:
       CFLAGS: "-fsanitize=undefined -fno-sanitize-recover=all"
       CXXFLAGS: "-fsanitize=undefined -fno-sanitize-recover=all"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
-      - name: Install build deps
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build g++
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build g++
       # GTest itself is built by Conan WITHOUT the job's CFLAGS (Conan uses its own profile),
       # so the instrumented tree links an uninstrumented gtest. That is the same arrangement
       # every UBSan build has with libstdc++ and it is what keeps the subject instrumented.
@@ -98,6 +102,7 @@ jobs:
   # armv7m (mps2-an386) + armv6m (microbit) under QEMU, on the pinned Arm GNU toolchain.
   qemu-arm:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     # The mps2/nrf51 QEMU targets clock off semihosting SYS_CLOCK, which QEMU <= 10
     # (ubuntu-latest ships 8.2) freezes while the core is halted in WFI, so a timed
     # sleep with every thread idle never wakes. The arch idle path spins on these
@@ -108,8 +113,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
-      - name: Install QEMU + build tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-arm curl xz-utils
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/arm-toolchain
       # --repeat until-pass:4: the mps2 QEMU timer is coarse (DWT frozen; ~100 Hz
       # semihosting clock), so the run gates can transiently miss their output
@@ -173,19 +179,21 @@ jobs:
           cmake --build --preset microbit
           ctest --preset microbit --no-tests=error --output-on-failure --repeat until-pass:4
 
-  # rv32imac (virt) under QEMU, plus build-only checks of the other two rv32 boards,
+  # rv32imac (virt) under QEMU, plus build-only checks of three more rv32 presets,
   # on the pinned RISCstar toolchain (newlib, soft-float rv32imac/ilp32 multilib).
   # No idle fix needed here: RISC-V clocks off the CLINT mtime, which keeps ticking
   # during WFI (unlike the ARM semihosting clock). QEMU_TIMEOUT is failure headroom.
   qemu-riscv:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     env:
       QEMU_TIMEOUT: "30"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
-      - name: Install QEMU + build tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-misc curl xz-utils
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build qemu-system-misc curl xz-utils
       - uses: ./.github/actions/riscv-toolchain
       # The ring-only posture: this board's flat variant is what the freestanding
       # PMP-less hello and cxxtest gates are registered on.
@@ -194,20 +202,20 @@ jobs:
           cmake --preset qemu-riscv-flat -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-flat
           ctest --preset qemu-riscv-flat --no-tests=error --output-on-failure --repeat until-pass:4
-      # seam_defaults is registered on every board and reads only nm/readelf output, so a
-      # board with no machine model still gets it. Named explicitly rather than running a
-      # bare ctest: qemu-riscv-bench also registers boot gates that belong to the run gate
-      # above, and a suite whose every case skipped reads like a suite that ran.
+      # -L host is the set that reads a build tree without executing an image, so a board
+      # with no machine model still gets it. Not a bare ctest: qemu-riscv-bench registers the
+      # boot gates of the run gate above, and this job's emulator time belongs there.
       - name: build-only rv32 boards
         run: |
           cmake --preset esp32c6-wroom -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset esp32c6-wroom
-          ctest --test-dir build/esp32c6-wroom -R seam_defaults --no-tests=error --output-on-failure
+          ctest --test-dir build/esp32c6-wroom -L host --no-tests=error --output-on-failure
           cmake --preset esp32c6-wroom-flat -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset esp32c6-wroom-flat
+          ctest --test-dir build/esp32c6-wroom-flat -L host --no-tests=error --output-on-failure
           cmake --preset qemu-riscv-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-bench
-          ctest --test-dir build/qemu-riscv-bench -R seam_defaults --no-tests=error --output-on-failure
+          ctest --test-dir build/qemu-riscv-bench -L host --no-tests=error --output-on-failure
 
   # rv32imac (virt) UNDER PMP ENFORCEMENT, which is this board's base variant: runs the full-C++
   # throw under PMP + the gp-in-appdata CI gates (riscv_no_smalldata, qemu_riscv_cxxtest,
@@ -215,13 +223,15 @@ jobs:
   # Deterministic (~3s, no silicon). Same RISCstar toolchain as the non-enforcement job.
   qemu-riscv-mpu:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     env:
       QEMU_TIMEOUT: "30"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
-      - name: Install QEMU + build tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-misc curl xz-utils
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build qemu-system-misc curl xz-utils
       - uses: ./.github/actions/riscv-toolchain
       - name: rv32imac (virt) enforcement gate
         run: |
@@ -233,41 +243,47 @@ jobs:
           ctest --preset qemu-riscv -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
 
   # Xtensa LX6 (esp32-wroom) gate: upstream QEMU ships no ESP32 machine model, so this
-  # proves build/link/linker-script + windowed-ABI asm and never boots the image. It does
-  # run the one registered gate that needs no machine model, seam_defaults, which is the
-  # only CI execution of any gate on Xtensa.
+  # proves build/link/linker-script + windowed-ABI asm and never boots the image. It runs
+  # the `host` label, which needs no machine model: seam_defaults and class_backend, whose
+  # verdict is PER-LINK, plus cpu_id_fold, c_headers and test_labels, which read THIS tree
+  # (the generated board_config.h, this board's C compiler and include roots, this build's
+  # own test registrations) and are covered by no other job.
   # The selftest config is built too (much more link surface). esptool is NOT
   # installed: it only serves the bootable .app.bin post-step, which CI cannot boot
   # anyway; CMake reports the skip without failing.
   xtensa:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils file
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build curl xz-utils file
       - uses: ./.github/actions/xtensa-toolchain
-      # seam_defaults reads nm/readelf output only, so it runs here despite there being no
-      # machine model. This is the ONLY CI execution of a gate on Xtensa, and the archive
-      # -extraction rule it enforces is per-link: no other job's tree can cover this one.
+      # These gates read this tree's own output and never a booted image, so they run here
+      # despite there being no machine model. This is the ONLY CI execution of a gate on the
+      # Xtensa TREE, and the archive-extraction rule seam_defaults enforces is per-link: no
+      # other job's tree covers this one.
       - name: xtensa lx6 (esp32-wroom) build gate
         run: |
           cmake --preset esp32-wroom -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
           cmake --build --preset esp32-wroom
-          ctest --test-dir build/esp32-wroom -R seam_defaults --no-tests=error --output-on-failure
+          ctest --test-dir build/esp32-wroom -L host --no-tests=error --output-on-failure
       - name: xtensa lx6 + selftest config
         run: |
           cmake --preset esp32-wroom-st -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
           cmake --build --preset esp32-wroom-st
-          ctest --test-dir build/esp32-wroom-st -R seam_defaults --no-tests=error --output-on-failure
+          ctest --test-dir build/esp32-wroom-st -L host --no-tests=error --output-on-failure
 
   # Build sweep of the remaining ARM boards (catches build/link/linker-script
   # regressions). No BOOT step: these need silicon or a machine model CI does not carry.
-  # The machine-model-free gate they register, seam_defaults, does run. RX omitted (no
+  # The `host` label runs, which is every gate reading this board's own tree. RX omitted (no
   # hosted-runner toolchain; see the header). Xtensa is the job above; RISC-V is the
   # qemu-riscv job.
   build-boards:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -277,18 +293,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build curl xz-utils
       - uses: ./.github/actions/arm-toolchain
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
-      # The one gate these boards register that needs neither silicon nor an emulator:
-      # seam_defaults reads nm/readelf output, and the resolution it checks is per-link,
-      # so a board is only covered by its OWN tree. Named explicitly, not a bare ctest:
-      # qemu-telem registers the full QEMU boot suite and this job installs no emulator,
-      # so those cases would report as skips and a green run would read as a suite that
-      # ran. They stay unrun in CI; the qemu-arm job covers the an386 tree instead.
-      - run: ctest --test-dir build/${{ matrix.preset }} -R seam_defaults --no-tests=error --output-on-failure
+      # -L host is every gate that reads this build tree without executing an image:
+      # seam_defaults and class_backend read nm/readelf output and their verdict is per-link,
+      # while cpu_id_fold, c_headers and test_labels read this board's generated config, its
+      # own C compiler and this build's test registrations. A board is covered only by its
+      # OWN tree. Not a bare ctest: qemu-telem registers the full QEMU boot suite, this job
+      # installs no emulator, and a suite whose every case skipped reads like a suite that
+      # ran. The qemu-arm job covers the an386 tree instead.
+      - run: ctest --test-dir build/${{ matrix.preset }} -L host --no-tests=error --output-on-failure
 
   # ARM MPU-ENFORCEMENT build gate: the enforcement-capable ARM boards (those
   # shipping arch/arm/chip/<chip>/mpu.cmake) on their base variant, which states the
@@ -316,11 +334,13 @@ jobs:
   # leaves the core to the chip. The gate installs the package and cross-builds an
   # out-of-tree app with the shipped toolchain, which this job already has.
   #
-  # No `ctest --preset` (arm.json defines test presets only for qemu/qemu-telem/
-  # microbit): --test-dir on the preset's binaryDir. picopi links under enforcement
+  # No `ctest --preset` (arm.json defines test presets for the qemu images, their flat
+  # variants, qemu-telem and microbit, and for no board in this matrix): --test-dir on the
+  # preset's binaryDir. picopi links under enforcement
   # but registers no ctor gate (armv7m-only check).
   build-boards-mpu:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -329,8 +349,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build curl xz-utils
       - uses: ./.github/actions/arm-toolchain
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}

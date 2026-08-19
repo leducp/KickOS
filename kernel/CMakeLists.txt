@@ -36,11 +36,12 @@ endif()
 add_library(kickos_kernel STATIC ${KICKOS_KERNEL_SOURCES})
 kickos_apply_freestanding(kickos_kernel)
 
-# Build-time stamp (kickos_build_stamp[], read by the kmain banner). Regenerated on
-# EVERY build so the banner reflects the image actually linked; __DATE__/__TIME__ bakes
-# per-TU and goes stale on incremental builds (see cmake/build_stamp.cmake). The custom
-# target has no OUTPUT, so it is always out of date and reruns each build; the kernel lib
-# recompiles the tiny generated TU and dependents relink, keeping the stamp truthful.
+# Build-time stamp (kickos_build_time[]/kickos_build_commit[], read by the kmain banner).
+# Regenerated on EVERY build so the banner reflects the image actually linked;
+# __DATE__/__TIME__ bakes per-TU and goes stale on incremental builds (see
+# cmake/build_stamp.cmake). The custom target has no OUTPUT, so it is always out of date
+# and reruns each build; the kernel lib recompiles the tiny generated TU and dependents
+# relink, keeping the stamp truthful.
 set(_kos_build_stamp "${CMAKE_BINARY_DIR}/kickos_build_stamp.cc")
 add_custom_target(kickos_build_stamp_gen
   BYPRODUCTS "${_kos_build_stamp}"

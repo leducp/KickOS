@@ -5,6 +5,11 @@
 // TICK generator is used here: it divides clk_ref down to feed the 1 MHz system
 // TIMER. clk_ref is 12 MHz (XOSC) normally, ~6.5 MHz (ROSC) in the fallback, so
 // CYCLES is chosen to land near 1 MHz either way.
+//
+// Those two figures hold only while CLK_REF_DIV.INT is 1. That is this chip's reset
+// value and nothing on the RP2040 writes it, so it is safe to leave the divider out
+// of the tick arithmetic HERE and nowhere else: the RP2350 bootrom does write that
+// register, and its port reads it (arch/arm/chip/rp2350).
 
 #ifndef KICKOS_ARCH_ARM_CHIP_RP2040_REGS_WATCHDOG_H
 #define KICKOS_ARCH_ARM_CHIP_RP2040_REGS_WATCHDOG_H

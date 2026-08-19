@@ -447,6 +447,36 @@ endif()
 
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
+# Which MPU design the v6-M/v7-M arch is built for, as ONE selector rather than two
+# independent booleans: nothing stopped a chip raising both, or neither and relying on an
+# unwritten "PMSAv7 if not the others" default. A chip's mpu.cmake above names its backend
+# by setting KICKOS_ARM_MPU_BACKEND; PMSAv7 is the fallback for the core v6-M/v7-M fleet.
+# The selector is TOTAL: a build with no MPU at all resolves to NONE instead of falling
+# through to a backend it does not program, so every comparison below and in
+# arch/arm/{armv6m,armv7m}/include/kickos/arch/mpu_encoded.h and arch/arm/common/ means
+# exactly what it says, with no KICKOS_HAVE_MPU conjunction needed to make it true. A TU
+# that missed KICKOS_ARM_MPU would read a different image than the one the commit path
+# writes.
+if(NOT KICKOS_HAVE_MPU)
+  set(_kickos_arm_mpu 0) # KICKOS_ARM_MPU_NONE
+elseif(KICKOS_ARM_MPU_BACKEND STREQUAL "SYSMPU")
+  set(_kickos_arm_mpu 3) # KICKOS_ARM_MPU_SYSMPU
+elseif(KICKOS_ARM_MPU_BACKEND STREQUAL "PMSAV8")
+  set(_kickos_arm_mpu 2) # KICKOS_ARM_MPU_PMSAV8
+elseif(NOT KICKOS_ARM_MPU_BACKEND OR KICKOS_ARM_MPU_BACKEND STREQUAL "PMSAV7")
+  set(_kickos_arm_mpu 1) # KICKOS_ARM_MPU_PMSAV7
+else()
+  message(FATAL_ERROR
+    "KICKOS_ARM_MPU_BACKEND must be unset, PMSAV7, PMSAV8 or SYSMPU on board "
+    "'${KICKOS_BOARD}' (got '${KICKOS_ARM_MPU_BACKEND}')")
+endif()
+add_compile_definitions(
+  KICKOS_ARM_MPU_NONE=0
+  KICKOS_ARM_MPU_PMSAV7=1
+  KICKOS_ARM_MPU_PMSAV8=2
+  KICKOS_ARM_MPU_SYSMPU=3
+  KICKOS_ARM_MPU=${_kickos_arm_mpu})
+
 # --- Trap-handler IPC fastpath (KICKOS_ARCH_HAS_IPC_FASTPATH) ---------------
 # Set by an arch backend that completes the register-carrying kos_call inside the syscall
 # trap, redirecting the exception return into the target thread instead of into the
@@ -749,8 +779,18 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   add_subdirectory(tests/unit/slotpool)
 endif()
 
-# Host-only of necessity: the deadline the arch backends dedup on never crosses the arch
-# seam, so an on-target arm can only time a wake and race the host scheduler for the answer.
+# Host-only word-wise mem primitive gate. Host-only of necessity: the compiler emits the
+# calls implicitly, so no target arm can choose an alignment pair or see an overrun, and
+# the sim build defines these away in favour of the host libc.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/kstring/CMakeLists.txt")
+  add_subdirectory(tests/unit/kstring)
+endif()
+
+# Host-only next-event-deadline gate. Host-only of necessity too: the deadline the
+# arch backends dedup on never crosses the arch seam, so an on-target arm can only
+# time a wake and race the host scheduler for the answer. Compiles the real
+# kernel/time/time.cc against a fake clock instead.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/ktime/CMakeLists.txt")
   add_subdirectory(tests/unit/ktime)
@@ -856,8 +896,10 @@ if(TARGET kickos_kernel)
   target_compile_definitions(kickos_core INTERFACE main=kickos_app_main)
   # ODR: an out-of-tree TU including a kernel-internal header must see the same posture as
   # the prebuilt libs. KICKOS_TELEMETRY gates fields in struct Kernel (instance.h) and
-  # arch_context (context.h), KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h), and without
-  # KICKOS_ARCH_SIM a sim package (which ships no chip_limits.h) hits config/board.h's #error.
+  # arch_context (context.h), KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h),
+  # KICKOS_ARM_MPU (plus the four name constants it is compared against) picks the
+  # arch_mpu_encoded layout, and without KICKOS_ARCH_SIM a sim package (which ships no
+  # chip_limits.h) hits config/board.h's #error.
   set(_kos_iface_sim 0)
   if(KICKOS_ARCH STREQUAL "sim")
     set(_kos_iface_sim 1)
@@ -866,6 +908,11 @@ if(TARGET kickos_kernel)
     KICKOS_TELEMETRY=${_telem} KICKOS_TELEMETRY_RTT=${_telem}
     KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
     KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU}
+    KICKOS_ARM_MPU_NONE=0
+    KICKOS_ARM_MPU_PMSAV7=1
+    KICKOS_ARM_MPU_PMSAV8=2
+    KICKOS_ARM_MPU_SYSMPU=3
+    KICKOS_ARM_MPU=${_kickos_arm_mpu}
     KICKOS_ARCH_SIM=${_kos_iface_sim}
     KICKOS_MULTI_INSTANCE=$<BOOL:${KICKOS_MULTI_INSTANCE}>
     KICKOS_DEBUG=$<BOOL:${KICKOS_DEBUG}>)

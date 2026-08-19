@@ -211,9 +211,14 @@ has to absorb before an unfamiliar RISC-V core runs:
 
 ## 7. What you end up with
 
-The finished port is nine files: the arch core (context struct, the C seam, the
-switch/trap assembly), two chips (the QEMU `virt` verification target and the
-ESP32-C6 silicon target), and their boards. Everything above the seam -- the
+Count the finished port by files and it runs to a few dozen; count it by *what you had
+to understand*, and it is three: the context struct, the C seam, and the switch/trap
+assembly. Everything else is bulk: optional-feature defaults, a chip's registers and
+linker script, a board's configuration. How much of that a given chip needs is a property
+of the chip, not of the port. That distribution is itself the lesson: the part
+of a port that needs an ISA manual open is small and bounded.
+
+Everything above the seam -- the
 scheduler, semaphores, the syscall table, the tickless timer wheel -- is untouched
 ISA-independent C. That ratio is the whole thesis of a portable microkernel: the
 ISA-specific surface is small, well-defined, and the same shape on every

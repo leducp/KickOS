@@ -3,7 +3,7 @@
 # What's under #include: the C library and the C++ runtime
 
 > A Part-0 concept chapter (prereq: minimal C/C++ + the
-> compile/link/flash pipeline of 0.3). It teaches *what a C library actually is* --
+> compile/link/flash pipeline of 0.5). It teaches *what a C library actually is* --
 > a bag of functions plus a bottom edge -- and *what the C++ runtime is made of* --
 > three stacked libraries -- so a reader understands why "just `#include <vector>`"
 > is a decision with a cost, not a given. KickOS is the worked example. Points into
@@ -58,19 +58,36 @@ That is the entire porting seam. Everything else in the C library is written abo
 platform-independent. Get these right and `#include <cstdio>` works; the library never
 knew it moved.
 
-## KickOS's bottom edge, in one file
+## KickOS's bottom edge
 
-The seam lives in `user/src/newlib_stubs.cc`. It is small on purpose -- each stub is
-the thinnest possible bridge from a newlib expectation to a KickOS syscall:
+The seam lives in `user/src/newlib_stubs.cc`, with one deliberate exile in
+`user/src/newlib_sbrk.cc` that the heap bullet below explains. It is small on purpose --
+each stub is the thinnest possible bridge from a newlib expectation to a KickOS syscall:
 
 - **`_write` -> the debug console.** Pre-driver, all stdio (any `fd`) falls to
   `kos_kconsole_write`; KickOS has no `fd` namespace yet, so `fd` is ignored. Once a
   userspace console driver exists, stdout routes to it instead.
-- **`_sbrk` over a fixed arena.** The heap is a single static buffer,
-  `static char s_heap[64 * 1024]`, handed out by a **bump** pointer -- move `s_brk`
-  forward on request, refuse (return `-1`) if it would leave the arena. There is no
-  `free` back to the OS; `malloc`'s own free list reuses within the arena. The 64 KiB
-  is a provisioning number, sized to the app, not a law.
+- **`_sbrk` over a bump arena whose bounds are linker symbols.** The heap is not a
+  static array. `_kickos_heap_start` and `_kickos_heap_limit` are defined by the chip's
+  linker script, and `_sbrk` bumps a pointer between them, refusing (`-1`) when the next
+  bump would leave the span. There is no `free` back to the OS; `malloc`'s own free list
+  reuses within the arena. Where those two symbols come from is the whole story, and
+  Chapter 7.3 tells it: on a protected chip the heap is the *unused pad* of the one
+  window already granted to the app, so a bigger heap is a bigger grant rather than a
+  bigger array. That is also why this one stub lives in its own translation unit, and the
+  reasoning is worth following because it is a design *choice* about where a heapless
+  board should hear about it. The stubs file proper is force-linked into every image, so
+  a strong reference to `_kickos_heap_start` from there would resolve-or-fail in every
+  link, heap or no heap. Kept apart, `_sbrk`'s object is pulled only by a real allocator
+  reference, which leaves the diagnosis to the linker script: a script that defines
+  neither bound turns an allocating app into a **link** error on an undefined
+  `_kickos_heap_start`, and a script that defines an empty span lets the same app link
+  and take a NULL from `malloc` at run time. The chip scripts in this tree all take the
+  second option, the zero-heap board explicitly so
+  (`../../arch/arm/chip/nrf51/nrf51.ld` keeps a zero-length `.userheap` section for no
+  other reason than to define the two symbols). Either answer is defensible; what the
+  separate translation unit buys is that the board gets to pick one, rather than having
+  the link error forced on every image or made unreachable for all of them.
 - **`__malloc_lock` as a no-op -- and the footgun.** newlib brackets every arena
   mutation with `__malloc_lock`/`__malloc_unlock`. The pinned vendor toolchains are all
   built single-thread (`--disable-threads`), so KickOS provides **weak, empty** stubs:
@@ -283,7 +300,7 @@ runtime global was placed inside one of its granted regions; a full-C++ app (lin
 `kickos_cxx`) runs out of its own granted regions with the protection unit enforcing on
 every access.
 
-- **Writable, must be in the granted data region:** the libc heap arena (`s_heap`), the
+- **Writable, must be in the granted data region:** the libc heap arena, the
   newlib malloc bins and reent (`_impure_*`), libgcc's FDE registry list heads, and
   libsupc++'s `eh_globals` + emergency pool. If any of these land kernel-side, the
   unprivileged thread faults the first time the runtime touches them.
@@ -300,7 +317,7 @@ closed KickOS-owned archive set (`libkickos_{kernel,arch,chip,lib}.a`) is captur
 take *everything else* -- the app's own objects, the toolchain runtime (newlib, libgcc,
 libstdc++, libsupc++), and KickCAT. An unmatched archive therefore lands app-side
 (reachable, it works), never kernel-side (where it would fault). The app-granted
-`.appdata` window ends up holding exactly the runtime's writable state -- `s_heap`,
+`.appdata` window ends up holding exactly the runtime's writable state -- the heap,
 newlib's `_impure_ptr`/`__malloc_av_`, and libsupc++'s `eh_globals` + emergency pool --
 while the read-only EH tables (`.ARM.exidx`/`.ARM.extab`), `type_info`, and vtables ride
 flash. Isolation is checkable with `nm`: no kernel writable symbol may sit inside the app
@@ -312,10 +329,14 @@ colon-inclusion, `*libkickos_kernel.a:*(...)`, which selects members by archive;
 rest fall through." Same isolation, opposite selector.
 
 Two arch wrinkles worth naming:
-- **DWARF vs ARM-EHABI FDE registration.** On DWARF arches (RISC-V, RX) the `.eh_frame`
+- **DWARF vs ARM-EHABI FDE registration.** On the DWARF arches the `.eh_frame`
   table must be *registered* at runtime via `__register_frame` -- KickOS does it at boot
   in the privileged reset handler, so the registry node is allocated while privileged and
-  lands in the granted heap. ARM-EHABI needs **no runtime registration at all**:
+  lands in the granted heap. That is the RISC-V story, and it is the story any other
+  DWARF-unwinding arch would take; RX is not a case of it at all, because the GNURX
+  toolchain unwinds by setjmp/longjmp and has no `.eh_frame` to register
+  (Chapter 7.2 has all three models side by side). ARM-EHABI needs **no
+  runtime registration at all**:
   `.ARM.exidx` is found through linker-defined symbols, sidestepping the whole issue --
   the K64F proof leaned on exactly this, with no boot `__register_frame` in the picture.
 - **The RISC-V `gp` wrinkle.** RISC-V's small-data optimization addresses globals relative

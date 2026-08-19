@@ -125,9 +125,12 @@ and none of which regresses the single-core builds.
    four words, any extra capability, an ASID allocation, and a partner on another
    core, leaving a critical section of one capability lookup, a queue pop, four
    REGISTER moves and one address-space register write. There is no memory copy in
-   its fastpath at all. KickOS today has one IPC path that copies up to
+   its fastpath at all. When this was written KickOS had one IPC path, which copies up to
    `KOS_EP_MSG_MAX` bytes, mints a reply capability into a PEER task's table and
-   reinserts into the ready queue -- the shape of seL4's SLOWPATH. Adopting the lock
+   reinserts into the ready queue -- the shape of seL4's SLOWPATH. A register-carrying
+   fastpath has since landed (`kernel/syscall/syscall_ipc_fast.cc`,
+   `design-m5-ipc-fastpath.md`), which is what the recommendation below asks for; the generic
+   path is still what everything outside its guards takes. Adopting the lock
    without the fastpath/slowpath split adopts the serialisation and none of the
    mitigation. Note also that a CLH queue lock, the algorithm seL4 chose for bounded
    FIFO fairness, needs atomic exchange and so is not reachable on RP2040 at all.

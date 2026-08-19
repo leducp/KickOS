@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Per-task capability table: a typed, rights-bearing, refcounted handle NAMING a global
+// Per-thread capability table: a typed, rights-bearing, refcounted handle NAMING a global
 // generational object (semaphore, PI mutex, IPC endpoint, IRQ binding). A CapEntry stores
 // (global-object-handle, type, rights) and cap_resolve is two-level: the per-thread cap-gen
 // guard here, then the object pool's own object-gen guard. Object liveness is a global
@@ -40,8 +40,8 @@ static_assert(KICKOS_CAP_CHILD_WIDTH > KICKOS_CAP_FIRST_DYNAMIC,
 // Delegated cap i lands at child index i+1, so a child taking d of them keeps
 // KICKOS_CAP_CHILD_WIDTH - 1 - max(d, KICKOS_CAP_FIRST_DYNAMIC-1) own slots: delegates spend
 // the reserved plane rather than being handed it on top, and an app declares for the delegates
-// and not just for the creates. This assert is the ONLY bound thread_spawn's grant loop relies
-// on for a DEFAULTED destination; a caller-named one is bound-tested at runtime.
+// and not just for the creates. This assert is what keeps a full DEFAULTED grant list inside
+// the child width; thread_spawn bound-tests every destination against the run the child got.
 static_assert(KICKOS_MAX_SPAWN_GRANTS < KICKOS_CAP_CHILD_WIDTH,
               "a full grant list must fit the child table at indices 1..cap_count");
 
@@ -189,9 +189,9 @@ namespace kickos
         return static_cast<uint32_t>(e.obj);
     }
 
-    // A task's table is up to KCAP_RUN_CHUNKS chunks of KCAP_CHUNK_SLOTS entries with a
+    // A thread's table is up to KCAP_RUN_CHUNKS chunks of KCAP_CHUNK_SLOTS entries with a
     // thread-relative index, taken all-or-nothing at spawn and returned at slot reclaim. How
-    // many chunks is PER TASK: root takes KCAP_ROOT_CHUNKS, every child KCAP_CHILD_CHUNKS.
+    // many chunks is PER THREAD: root takes KCAP_ROOT_CHUNKS, every child KCAP_CHILD_CHUNKS.
     //
     // cap_install NEVER allocates: a client mints reply capabilities into a SERVER's table
     // (syscall_ipc.cc), so an install that could take a chunk would drain the arena at the

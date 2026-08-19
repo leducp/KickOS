@@ -283,8 +283,8 @@ void arch_console_retune(void)
 
 // Non-blocking RX drain: copy up to n received words into buf, return the count
 // read. The DX0 input (P1.4) is already routed to the ASC pre-processor by
-// kickos_xmc_usic_init(). No FIFO: the single-word standard receive buffer means a
-// caller that does not keep up loses bytes.
+// kickos_xmc_usic_init(). No FIFO: the standard receive buffer holds two words
+// (RDV0/RDV1), so a caller that does not keep up loses bytes.
 size_t kickos_xmc_usic_read(char* buf, size_t n)
 {
     size_t got = 0;

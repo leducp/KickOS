@@ -105,7 +105,7 @@ int main(int, char**)
     }
 
     // Route stdout to the endpoint (kernel chip path drops; children spawned AFTER
-    // this get cap 0 seated to it). Privileged syscall; root is privileged.
+    // this get cap 0 seated to it). Gated on AUTH_CONSOLE, which root holds.
     if (kos_console_publish(ep) != 0)
     {
         kos::print("[initdemo] ERROR: console_publish failed\n");

@@ -67,7 +67,8 @@ The object/credential model on top of M2's enforcement:
 - **Console *device* handover** -- a userspace UART driver takes the peripheral as a capability;
   the kernel relinquishes it and the panic path reclaims + re-inits it.
   **LANDED**, silicon-proven on XMC: `docs/design-m3-console-handover-stageii.md`. What remains is
-  fleet coverage, not the mechanism -- eight chips carry a per-chip `arch_console_reclaim` body.
+  fleet coverage, not the mechanism; the chips that carry a per-chip `arch_console_reclaim` body
+  are whatever `grep -rln '^void arch_console_reclaim(void)' arch/*/chip/` lists, now most of them.
 - **Low-barrier hard constraint** -- a plain app never writes a capability manifest; the runtime
   wires a sane default cap set (never resurrect CapDL-to-boot friction).
 - **User-selectable CPU clock / low-power mode.** **LANDED, both sides**: the read is
@@ -104,10 +105,14 @@ a driver framework on top. Single-core throughout. Full gap list + sequencing in
   have NO usable debug probe, so bring-up there is print-debug only. The services must therefore
   be console-observable, or two of the four matrix boards cannot be brought up at all.
 - **Fleet userspace UART / console drivers + per-chip `arch_console_reclaim` + handover
-  validation** -- UART console drivers exist for xmc4800, mk64f, esp32c6, esp32 and rx72m (the
-  polled pair plus the `*uartirq` set, `system/driver/<chip>/`); every other board is still
-  kernel-owned, and EIGHT chips ship a reclaim body (the fault-funnel porting invariant: no real reclaim
-  => a driver-garbled UART silently eats the panic banner). The panic path now reclaims from ANY
+  validation** -- the userspace console drivers that exist are whatever
+  `grep -rln KOS_SVC_CONSOLE system/driver/` lists: UART on xmc4800, mk64f, esp32c6, esp32, rx72m and
+  stm32f411 (the polled pair plus the `*uartirq` set), and USB CDC on imxrt1062 and rp2xxx
+  (the `select`-only lists `system/init/{picopi,pizero2350,teensy41}/service_list_usbcdc.cc`, which
+  reach an image only under `-DKICKOS_SERVICE_LIST`). Every other board is kernel-owned, and so are
+  those three in their default posture. The chips shipping a reclaim body are
+  `grep -rln '^void arch_console_reclaim(void)' arch/*/chip/`, now most of the fleet (the fault-funnel
+  porting invariant: no real reclaim => a driver-garbled UART silently eats the panic banner). The panic path now reclaims from ANY
   state rather than only after a handover, which widened that invariant rather than retiring it:
   every chip body must be idempotent absolute stores. A board can still lose its dump for some
   other reason, and **no emulated gate can catch that class, because every fault-dump gate in the
@@ -160,7 +165,9 @@ what is next; this carries the numbering.
 
 M4.9.3 closes the M4 wave. What was the unnumbered `M4.9.x..N` tail is now **M5**, a milestone of
 its own rather than a sub-milestone, and it carries the rest of the driver era plus the single-core
-groundwork the SMP milestone needs. Its ledger is the M5 table below.
+groundwork the SMP milestone needs. **M5 has no ledger table here yet**, so its sub-milestone
+numbers currently live only in the merge history, which is exactly the situation the paragraph
+above calls a bug. Writing that table is owed.
 
 **M4.7.x is kernel-core work carrying an M4 number on purpose.** The banner and package versions are
 `0.<milestone>.<submilestone>` and must stay monotonic, so a capability rework cannot be numbered

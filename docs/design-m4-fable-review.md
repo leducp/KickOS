@@ -121,13 +121,14 @@ because **root keeps a WAIT-bearing cap on that endpoint** (it holds it to hand 
 so `recv_holders >= 1` no matter how the server dies. A client parked in `kos_call` would have blocked
 forever, with the system otherwise healthy. Fixed by making the failure path **panic** instead: a
 bring-up refusal is a port/silicon fault, not a runtime condition
-(`system/driver/xmc4800/xmcssc/xmcssc.cc:334-354`, which carries the rule as a comment so the next
-driver does not re-derive it). Two things this cost is worth noting for the M4.6 death story:
+(`system/driver/xmc4800/xmcssc/xmcssc.cc`, `bus_thread`, which carries the rule as a comment so the
+next driver does not re-derive it; the baud and protocol code has since moved to
+`system/driver/xmc4800/xmcssc/spi_usic.cc`). Two things this cost is worth noting for the M4.6 death story:
 - **A retained keeper cap defeats the only wake we have.** "Last receiver gone" is not "server gone"
   whenever the spawner keeps a recv-bearing cap, which is the normal shape for a service whose
   endpoint root must delegate from.
 - **The API gap the finding predicted is real and still open.** `kos_cap_narrow` is
-  `cap_narrow_authority` -- it narrows the authority word only (`kernel/syscall/cap.cc:489`). There
+  `cap_narrow_authority` -- it narrows the authority word only (`kernel/syscall/cap.cc`, `cap_narrow_authority`). There
   is no endpoint-rights narrow, so "hold the cap but drop WAIT" was not an option, and panicking was
   the only correct move available. An endpoint-rights narrow is the cheap enabler for a real
   driver-death story.

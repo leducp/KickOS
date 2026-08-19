@@ -17,6 +17,7 @@ namespace kickos::rp2350::reg::xosc
     constexpr uintptr_t STATUS = mmap::XOSC_BASE + 0x4u;
     constexpr uintptr_t STARTUP = mmap::XOSC_BASE + 0xcu;
 
+    constexpr uint32_t FREQ_HZ = 12000000u;        // the crystal this chip is specified for
     constexpr uint32_t FREQ_1_15MHZ = 0xaa0u;      // CTRL.FREQ_RANGE (1..15 MHz, 12 MHz)
     constexpr uint32_t ENABLE = 0xfabu << 12;      // CTRL.ENABLE magic
     constexpr uint32_t STATUS_STABLE = 1u << 31;   // STATUS.STABLE

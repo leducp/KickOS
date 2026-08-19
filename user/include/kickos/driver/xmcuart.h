@@ -39,8 +39,9 @@ extern "C"
     // a consumer that wants its own orchestration.
     void xmcuart_console_driver(void* arg);
 
-    // Privileged one-shot console-handover bring-up (call ONCE from the privileged
-    // app main, BEFORE spawning any app that should print through the driver):
+    // One-shot console-handover bring-up (call ONCE from the app main, BEFORE spawning
+    // any app that should print through the driver). The caller needs KOS_AUTH_CONSOLE
+    // and KOS_AUTH_MEMORY:
     //   1. create a console endpoint E,
     //   2. kos_console_publish(E)  (relinquishes the kernel UART, routes stdout to E),
     //   3. spawn the UNPRIVILEGED driver granted the USIC0 CH0 window + {E | WAIT},

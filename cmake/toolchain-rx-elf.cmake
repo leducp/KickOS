@@ -69,7 +69,7 @@ set(KICKOS_MCPU_FLAGS "${_kos_cpu}" CACHE INTERNAL "Per-board RX ISA baseline")
 # The prebuilt GNU RX toolchain location, seeded from the environment so no
 # contributor's home directory is baked into the repo (export KICKOS_RX_TOOLCHAIN_BIN
 # once, or pass -D). Left empty, HINTS contributes nothing and PATH decides. RX72M
-# needs the RENESAS GNURX build: -misa=v3 and -mdfpu (boards/rx72m/board.cmake) do
+# needs the RENESAS GNURX build: -misa=v3 and -mdfpu (arch/rx/chip/rx72m/cpu.cmake) do
 # not exist in upstream GCC's rx-elf, which is also why RX has no CI gate.
 set(KICKOS_RX_TOOLCHAIN_BIN
     "$ENV{KICKOS_RX_TOOLCHAIN_BIN}"

@@ -12,6 +12,7 @@
 #include <kickos/config.h>
 #include <kickos/endpoint.h> // EP_SERVED_NONE
 #include <kickos/list.h>
+#include <kickos/mpuset.h>
 
 #include <kickos/sys/abi.h> // KOS_THREAD_NONE
 #include <kickos/sys/atomic.h>
@@ -58,7 +59,7 @@ namespace kickos
         WAIT_NONE = 0,
         WAIT_MUTEX,     // wait_obj: the Mutex. The PI chain-walk edge.
         WAIT_SEM,       // wait_obj: the Semaphore
-        WAIT_IRQ,       // wait_obj: the IrqBinding. The one park a cancel may end.
+        WAIT_IRQ,       // wait_obj: the IrqBinding. A sem queue; this park reads wait_result.
         WAIT_EP_SEND,   // wait_obj: the Endpoint; on its send_waiters
         WAIT_EP_RECV,   // wait_obj: the Endpoint; on its recv_waiters
         WAIT_EP_REPLY,  // wait_obj: the SERVER thread; queue-less on its reply_waiters
@@ -171,14 +172,13 @@ namespace kickos
         // These three fit the padding before `task`; moving them grows every TCB.
 
         // The task this thread belongs to (task.h), owner of the memory domain the group
-        // shares. That domain's regions are copied into regions[] below at create, plus this
+        // shares. That domain's regions are copied into `mpu` below at create, plus this
         // thread's own private regions, its stack and any DEV window it asked for; the
-        // effective set is what arch_mpu_apply loads per switch-in. A POINTER and not an
+        // effective set is what a switch-in loads. A POINTER and not an
         // index: an index beside it would land past the saturated padding above and cost 8
         // bytes on every 32-bit TCB.
         Task* task = nullptr;
-        arch_mpu_region regions[KICKOS_MPU_MAX_REGIONS] = {};
-        size_t region_count = 0;
+        MpuSet mpu;
 
         intptr_t wait_result = 0; // wake-status channel (mutex: 0 / -KOS_EOWNERDEAD;
                                   // endpoint: byte count >= 0, or -KOS_EPIPE); the waker
@@ -330,18 +330,18 @@ namespace kickos
         return members + (alignof(uint64_t) - members % alignof(uint64_t)) % alignof(uint64_t);
     }
 
-    // deadline_ns onwards, minus the region array and the capability directory. RXv3 aligns
+    // deadline_ns onwards, minus the MPU set and the capability directory. RXv3 aligns
     // uint64_t to 4 and so spends less padding here than every other 32-bit target.
     constexpr size_t thread_scalar_bytes()
     {
-        size_t bytes = 116;
+        size_t bytes = 116 - sizeof(size_t);
         if (sizeof(void*) == 8)
         {
-            bytes = 180;
+            bytes = 180 - sizeof(size_t);
         }
         else if (alignof(uint64_t) == 4)
         {
-            bytes = 112;
+            bytes = 112 - sizeof(size_t);
         }
 #if KCAP_RUN_CHUNKS > 1
         bytes = bytes + 2 * sizeof(uint16_t); // cap_width + cap_reply_live
@@ -350,8 +350,7 @@ namespace kickos
     }
 
     constexpr size_t KICKOS_THREAD_EXPECTED_SIZE =
-        thread_head_bytes() + KICKOS_MPU_MAX_REGIONS * sizeof(arch_mpu_region)
-        + sizeof(CapRun) + thread_scalar_bytes();
+        thread_head_bytes() + sizeof(MpuSet) + sizeof(CapRun) + thread_scalar_bytes();
 
     static_assert(sizeof(Thread) == KICKOS_THREAD_EXPECTED_SIZE,
                   "sizeof(Thread) moved. Either drop the member that grew the TCB, or re-measure "
@@ -455,8 +454,10 @@ namespace kickos
     // privilege posture included, from scratch.
     //
     // KICKOS_THREAD_SLOTS, not KICKOS_MAX_THREADS: kmain claims one slot for root before any
-    // spawn can run, and root never reaches EXITED, so a spawn still draws the full
-    // KICKOS_MAX_THREADS the board states.
+    // spawn can run, and no voluntary exit retires root, so a spawn still draws the full
+    // KICKOS_MAX_THREADS the board states. The fault-kill path is the one that DOES set root
+    // EXITED (kernel/init/fault.cc excludes only null / idle / privileged / dying), and root's
+    // slot is reclaimable from then on.
     struct ThreadPool
     {
         // The uint16_t generation takes the other 16, so the handle spends the whole word: a
@@ -553,7 +554,7 @@ namespace kickos
                     // cannot double-free one, and it clears the free-list head, which by then
                     // names a slot in a chunk this call gives away.
                     thread_cap_release(&slots[s]);
-                    // A slot's kill tag is its INDEX and so outlives its occupant: a child
+                    // A slot's kill tag is INDEX-DERIVED and so outlives its occupant: a child
                     // still naming this tag must be orphaned before the slot changes hands, or
                     // the new occupant inherits cancel authority over threads it never spawned.
                     // Reuse is the only event that makes the tag ambiguous, so this belongs
@@ -632,8 +633,8 @@ namespace kickos
             return t == &slots[ROOT_INDEX];
         }
 
-        // The kill tag naming `t`: its slot index if it is one of ours, else the boot tag.
-        // Never KILL_TAG_NONE, so a thread with no spawner matches nobody.
+        // The kill tag naming `t`: kill_tag_for_index of its slot if it is one of ours, else
+        // the boot tag. Never KILL_TAG_NONE, so a thread with no spawner matches nobody.
         uint16_t kill_tag_of(Thread const* t) const
         {
             int const index = index_of(t);

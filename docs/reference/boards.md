@@ -56,9 +56,11 @@ code wins, then this file.
 
 **"Full selftest" rather than N/N.** The TAP suite emits its own plan line (`1..N`) and a closing
 `# all tests passed`, and the gates key off *those*, never a number written down here
-(`tests/integration/check_qemu_selftest.sh`). N is not a constant: the suite registers ~56 tests on the sim
-today and the total moves with `KICKOS_HAVE_MPU` and `KICKOS_ENABLE_SELFTEST`, each of which
-compiles in tests that cannot run without it (the IRQ suite, the enforcement bound-checks).
+(`tests/integration/check_qemu_selftest.sh`). N is not a constant: it moves with
+`KICKOS_HAVE_MPU` and `KICKOS_ENABLE_SELFTEST`, each of which compiles in tests that cannot
+run without it (the IRQ suite, the enforcement bound-checks). The one authority for a given
+posture is the `_tap_arms` expression in `../../user/apps/common/selftest/CMakeLists.txt`,
+which is the value the gates are handed.
 Where a dated silicon record below still names a count -- "14/14", "17/17",
 "43/43" -- that is the plan size *on the date of that run*, not a target to reproduce. Run the
 board's `-st` preset and read the plan it prints.
@@ -321,13 +323,21 @@ reserved-block entry for one of these covers `0x4000` and not `0x1000`.
 hanging): XOSC `CTRL.FREQ_RANGE = 0xaa0` (the 1-15 MHz range, for the 12 MHz crystal), then the
 `CTRL.ENABLE` magic `0xfab` in a SEPARATE store so `ENABLE` never latches before `FREQ_RANGE` is
 set, poll `STATUS.STABLE`; `clk_ref <- XOSC`, poll the one-hot `CLK_REF_SELECTED`;
-start the **TICKS TIMER0** generator with `CYCLES = 12` for a 1 MHz tick (this is the new common
-tick block, NOT RP2040's watchdog tick, and TIMER0 does not count until it runs -- kept on
-`clk_ref` so the monotonic clock is PLL-independent); PLL_SYS to 150 MHz as
-`12 MHz / REFDIV=1 x FBDIV=125 = 1500 MHz VCO / POSTDIV1=5 / POSTDIV2=2`, poll `CS.LOCK`;
-`clk_sys <- PLL` with `SystemCoreClock = 150e6` in the same step; `clk_peri <- clk_sys` and
-recompute the UART divisors. Fallbacks: no XOSC leaves ROSC (~6.5 MHz) with `CYCLES = 7`; no PLL
-lock stays on `clk_ref` at 12 MHz. The board always reaches a console.
+start the **TICKS TIMER0** generator with the `CYCLES` that lands a 1 MHz tick on the live
+`clk_ref` (this is the new common tick block, NOT RP2040's watchdog tick, and TIMER0 does not
+count until it runs -- kept on `clk_ref` so the monotonic clock is PLL-independent); PLL_SYS to
+150 MHz as `12 MHz / REFDIV=1 x FBDIV=125 = 1500 MHz VCO / POSTDIV1=5 / POSTDIV2=2`, poll
+`CS.LOCK`; `clk_sys <- PLL` with `SystemCoreClock = 150e6` in the same step; `clk_peri <- clk_sys`
+and recompute the UART divisors. Fallbacks: no XOSC, and no PLL lock, both leave `clk_sys` on the
+ROSC where the bootrom parked it, the second with `clk_peri` on the crystal. The board always
+reaches a console.
+
+**`clk_ref` is NOT the crystal frequency, and this cost a 4x-wrong wall clock.** `CLK_REF_DIV`
+divides the selected source before the `clk_ref` net that feeds TICKS (datasheet 8.1). The
+register resets to `INT = 1`, but the bootrom writes it and leaves 4 there, so a `CYCLES` picked
+for 12 MHz gives a 250 kHz tick while `arch_clock_now` reads the counter as microseconds. The
+backend reads the divisor at boot and derives `CYCLES` from it. The RP2040 has no such bootrom
+write, which is why its port can leave the divider out of the arithmetic.
 
 **The PADS.ISO gotcha, and it differs from RP2040.** RP2350 pads reset **ISOLATED** --
 `PADS.ISO` is **bit 8** and resets SET -- so a pad stays electrically disconnected until it is
@@ -464,10 +474,11 @@ the board".
   build -- upstream `rx-elf` GCC rejects them. That toolchain cannot be fetched anonymously on a
   hosted runner, so RX is bench-validated only. A change that touches the arch seam is *not*
   covered for RX by a green CI run; build it locally.
-- **`f302nucleo` has no AUTOMATED gate of any kind.** It is in the `build-boards` sweep and nothing
-  else: no CTest, and no QEMU run gate because **no emulator models the part**. So the only thing CI
-  says about this board is that it links, and a regression that stops it booting is invisible until
-  somebody flashes it. That matters more now than it did, because it is a bench board and the
+- **`f302nucleo` has no RUN gate of any kind.** It is in the `build-boards` sweep and nothing
+  else: the `host`-labelled gates over its own build tree, and no QEMU run gate because **no
+  emulator models the part**. So what CI says about this board is that it links and that its seams
+  and classes resolve, and a regression that stops it booting is invisible until somebody flashes
+  it. That matters more now than it did, because it is a bench board and the
   fleet's only physically-present no-MPU ARM part (see *Unprivileged root* below).
 
   **Unwitnessed is not the same as ungated, and the ring arm is the case that separates them.** The
@@ -518,7 +529,7 @@ the board".
   cores and nothing in the tree distinguishes them. See `design-unprivileged-root.md` section 2.
 - **microbit is the armv6m run gate, and the fleet's only board that is allowed to skip anything.**
   16 KiB SRAM and a 2-slot pool mean part of the suite genuinely cannot run here, so
-  `microbit_selftest` sets `EXPECT_SKIPS` to the eleven test **names** it cannot host; every other
+  `microbit_selftest` sets `EXPECT_SKIPS` to the test **names** it cannot host; every other
   board keeps the script's default of "nothing may skip". The list is a **measurement, not slack**
   -- each name and why it skips is at the call site
   (`../../user/apps/common/selftest/CMakeLists.txt`), so growing it should mean a board capability
@@ -592,11 +603,11 @@ two self-contained images that partition the arms between them.
 - **Flash and run them one after the other. Order does not matter.** Each initialises the board,
   runs its own arms and self-terminates; they share no state and there is no handover between them.
 - **TAP numbering RESTARTS at 1 in each part.** `tap.cc` plans `1..N` from its own runtime registry,
-  so part 1 emits `1..43` and part 2 `1..30` under `KICKOS_ENABLE_SELFTEST`. **A pass is BOTH parts
-  green** -- a single `1..43` stream is half a run, not a short one, and reading it as a pass is the
+  so each part announces its OWN N and the two are unrelated numbers. **A pass is BOTH parts
+  green** -- one part's stream is half a run, not a short one, and reading it as a pass is the
   obvious way to be fooled here.
-- Configure prints what to expect:
-  `-- selftest: split into two images -- selftest plans 43 arms, selftest_p2 plans 30 (73 together)`
+- Configure prints what to expect, off the same two expressions:
+  `-- selftest: split into two images: selftest plans <N1> arms, selftest_p2 plans <N2> (<N1+N2> together)`
 - These two boards run the FULL arm set: `cap_dest` and `irq_discard` are not excluded on them.
 - Which arm sits in which part is decided by POSITION in the registration list at the bottom of
   `user/apps/common/selftest/main.cc`, not by an annotation; the boundary is the `#undef TAP_ADD`.

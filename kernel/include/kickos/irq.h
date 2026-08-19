@@ -91,8 +91,9 @@ namespace kickos
     // OPTIONAL. Needs CAP_WAIT on the cap.
     //
     // -KOS_ECANCELED means the caller was cancelled (thread_kill): the wait was abandoned
-    // and the line NOT rearmed, and every later irq_wait answers the same. The one
-    // cancellation point in the kernel, and the only park a third party may end.
+    // and every later irq_wait answers the same. The line is left as the last rearm set it,
+    // and the exiting thread's cap drop is what detaches and masks it. The one cancellation
+    // point in the kernel: the one primitive that REFUSES to re-block a cancelled caller.
     int irq_wait(Thread* c, uint32_t cap_handle);
     // Unmask the previously-consumed line so it can fire again; 0, or -KOS_E*.
     // OPTIONAL and idempotent: the next irq_wait rearms anyway, and a redundant

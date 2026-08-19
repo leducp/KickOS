@@ -528,7 +528,43 @@ int arch_periph_enable(uintptr_t base)
 #if KICKOS_HAVE_MPU
 // Shared pending-region stash written by the ARM-common arch_mpu_apply (stash-only).
 // K64F overrides only the commit, so there is no duplicate arch_mpu_apply symbol.
-extern "C" size_t kickos_arm_mpu_pending(struct arch_mpu_region const** out);
+extern "C" struct arch_mpu_encoded const* kickos_arm_mpu_pending(void);
+
+// Pack the region set into the three RGD words a commit writes. SRTADDR/ENDADDR are
+// addr[31:5], so a region whose base or end is not 32-byte aligned would be programmed as
+// a window rounded outward from what was asked; such a region gets WORD2 0 instead, which
+// the commit reads as "invalidate this descriptor".
+extern "C" uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
+                                    struct arch_mpu_encoded* out)
+{
+    if (n > ARCH_MPU_ENCODED_SLOTS)
+    {
+        n = ARCH_MPU_ENCODED_SLOTS;
+    }
+    uint32_t seated = 0;
+    size_t i = 0;
+    for (; i < n; i++)
+    {
+        out->word0[i] = 0;
+        out->word1[i] = 0;
+        out->word2[i] = 0;
+        if (arch_mpu_region_encodable(regions[i].base, regions[i].size))
+        {
+            uintptr_t const base = regions[i].base;
+            out->word0[i] = static_cast<uint32_t>(base);
+            out->word1[i] = static_cast<uint32_t>(base + regions[i].size - 1);
+            out->word2[i] = sysmpu_word2(regions[i].attr);
+            seated |= static_cast<uint32_t>(1) << i;
+        }
+    }
+    for (; i < ARCH_MPU_ENCODED_SLOTS; i++)
+    {
+        out->word0[i] = 0;
+        out->word1[i] = 0;
+        out->word2[i] = 0;
+    }
+    return seated;
+}
 
 // SYSMPU commit: replaces the PMSAv7 kickos_arch_mpu_commit fallback (K64F has no ARM
 // core MPU). Programs the running thread's per-thread USER grants (RGD1..) from the
@@ -538,8 +574,11 @@ extern "C" size_t kickos_arm_mpu_pending(struct arch_mpu_region const** out);
 // descriptor set.
 extern "C" void kickos_arch_mpu_commit(void)
 {
-    struct arch_mpu_region const* regions;
-    size_t const n = kickos_arm_mpu_pending(&regions);
+    struct arch_mpu_encoded const* const img = kickos_arm_mpu_pending();
+    if (img == nullptr)
+    {
+        return;
+    }
     uint32_t primask;
     __asm volatile("mrs %0, primask" : "=r"(primask));
     __asm volatile("cpsid i" ::: "memory");
@@ -572,14 +611,12 @@ extern "C" void kickos_arch_mpu_commit(void)
     for (size_t i = 0; i + 1 < reg::sysmpu::RGD_COUNT; i++)
     {
         uintptr_t const rgd = reg::sysmpu::RGD + (i + 1) * reg::sysmpu::RGD_STRIDE;
-        if (i < n and regions[i].size >= 32)
+        if (i < ARCH_MPU_ENCODED_SLOTS and img->word2[i] != 0u)
         {
-            uintptr_t const base = regions[i].base;
-            uintptr_t const end = base + regions[i].size - 1;
-            r32(rgd + 0x0) = static_cast<uint32_t>(base);              // WORD0 SRTADDR[31:5]
-            r32(rgd + 0x4) = static_cast<uint32_t>(end);              // WORD1 ENDADDR[31:5]
-            r32(rgd + reg::sysmpu::RGD_WORD2) = sysmpu_word2(regions[i].attr); // WORD2 (clears VLD)
-            r32(rgd + reg::sysmpu::RGD_WORD3) = reg::sysmpu::RGD_WORD3_VLD;    // WORD3 VLD=1
+            r32(rgd + 0x0) = img->word0[i];                                 // SRTADDR[31:5]
+            r32(rgd + 0x4) = img->word1[i];                                 // ENDADDR[31:5]
+            r32(rgd + reg::sysmpu::RGD_WORD2) = img->word2[i];              // clears VLD
+            r32(rgd + reg::sysmpu::RGD_WORD3) = reg::sysmpu::RGD_WORD3_VLD; // VLD=1
         }
         else
         {

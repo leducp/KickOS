@@ -98,14 +98,15 @@ enum kos_syscall_nr
     KOS_SYS_SEND = 27,          // (cap, buf, len) -> bytes transferred, or -KOS_E*, parking
                                 //   indefinitely
     KOS_SYS_RECV = 28,          // (cap, buf, cap_len, kos_recv_info* out) -> bytes received, or -KOS_E*
-    KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (not priv), -KOS_EBADF (bad
-                                  //   cap), -KOS_EOVERFLOW (endpoint refcount at its ceiling)
+    KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (no KOS_AUTH_CONSOLE),
+                                  //   -KOS_EBADF (bad cap), -KOS_EOVERFLOW (endpoint
+                                  //   refcount at its ceiling)
     KOS_SYS_CPU_CLOCK_SET = 30,  // (kos_pstate_t as u32) -> landed core Hz (u32); 0 == cannot-change
     KOS_SYS_GRANT_PROBE = 31,    // (op, base, size) -> Rule 7 grant predicate 0/1, or for ops 6/7
                                  //   the raw reserved-block base/size; a BAD op returns -KOS_EINVAL
                                  //   (self-test only; compiled out unless KICKOS_HAVE_MPU)
     KOS_SYS_PERIPH_CLOCK_HZ = 32, // (base) -> peripheral branch clock in Hz (u32), 0 if unknown (NO KOS_E*)
-    KOS_SYS_PINMUX_SET = 33,  // (port, pin, func) -> 0, -KOS_EPERM (not priv), -KOS_EINVAL (range), -KOS_EBUSY (kernel-owned pin), -KOS_ENOSYS (no backend)
+    KOS_SYS_PINMUX_SET = 33,  // (port, pin, func) -> 0, -KOS_EPERM (no KOS_AUTH_PINMUX), -KOS_EINVAL (range), -KOS_EBUSY (kernel-owned pin), -KOS_ENOSYS (no backend)
     KOS_SYS_CALL = 34,        // (ep_cap, buf, send_len, recv_cap) -> reply bytes (>= 0), or -KOS_E* (EINVAL/EFAULT/EBADF/EPERM/EPIPE/ENOSYS,
                               //   EMFILE the SERVER's cap table has no slot for the reply cap)
     KOS_SYS_REPLY = 35,       // (reply_cap, buf, len) -> 0, or -KOS_E* (EBADF bad/non-reply cap, ESRCH stale caller, EFAULT bad buffer)
@@ -119,8 +120,9 @@ enum kos_syscall_nr
     KOS_SYS_PERIPH_ENABLE = 39, // (base) -> 0, -KOS_EPERM (caller holds no window at that base),
                                 //   -KOS_EINVAL (no table entry), -KOS_ENOSYS (no backend).
                                 //   Gated on possession, not on an authority bit.
-    KOS_SYS_CAP_NARROW = 40,   // (cap, mask) -> 0, -KOS_EBADF (bad cap), -KOS_EINVAL (not the
-                               //   authority cap). UNGATED by authority.
+    KOS_SYS_CAP_NARROW = 40,   // (cap, mask) -> 0, -KOS_EBADF (the caller holds no authority
+                               //   to give up), -KOS_EINVAL (not the authority cap).
+                               //   UNGATED by authority.
     KOS_SYS_PANIC = 41,        // (msg) -> does not return. UNGATED by authority. msg is
                                //   copied into kernel memory bounded + byte-checked; a
                                //   message the kernel cannot read is replaced, never
@@ -149,7 +151,8 @@ enum kos_syscall_nr
                                //   null opts, which carries the deadline.
     KOS_SYS_THREAD_JOIN = 48,  // (kos_thread_t, timeout_us) -> 0 (the target is gone,
                                //   INCLUDING a target that had already exited),
-                               //   -KOS_ETIMEDOUT, -KOS_EBADF (never allocated / reclaimed
+                               //   -KOS_ETIMEDOUT, -KOS_ECANCELED (the CALLER was cancelled
+                               //   while waiting), -KOS_EBADF (never allocated / reclaimed
                                //   under this handle), -KOS_EPERM (the caller did not spawn
                                //   it), -KOS_EDEADLK (naming yourself).
     KOS_SYS_WAIT_LAST = 49,    // () -> 0 once the caller is the last live thread, or
@@ -443,7 +446,8 @@ struct kos_thread_params
     void* mem_base;      // domain data region granted to the thread (0 => none)
     uint32_t mem_size;   // size of that region (bytes)
     void* mmio_base;     // device/MMIO region granted to the thread (0 => none); attr implied R|W|DEV
-                         // EXCLUSIVE: overlapping a window a live thread holds -> -KOS_EBUSY
+                         // EXCLUSIVE for an unprivileged child: overlapping a window a live
+                         // thread holds -> -KOS_EBUSY
     uint32_t mmio_size;  // size of that region (bytes)
     void* stack_base;    // caller-owned thread stack; 0 => kernel default (KICKOS_USER_STACK_SIZE)
     uint32_t stack_size; // size of the caller stack (bytes); ignored when stack_base == 0
@@ -461,9 +465,9 @@ struct kos_thread_params
     // it names a destination here.
     //
     // -KOS_EINVAL, checked before the child exists, unless no two grants land on the same
-    // index (the defaulted ones counted) and every index is below KICKOS_CAP_CHILD_WIDTH,
-    // the width every spawned child gets. That is NARROWER than KICKOS_MAX_HANDLES, the
-    // summed width root alone gets.
+    // index (the defaulted ones counted) and every index is below the width the child's
+    // table ACTUALLY gets: KICKOS_CAP_CHILD_WIDTH where the table is chunked, and
+    // KICKOS_MAX_HANDLES on a build whose whole table is one chunk.
     //
     // The array must be uint16_t-aligned; the kernel refuses it otherwise rather than take
     // a misaligned privileged load on a strict-align arch.

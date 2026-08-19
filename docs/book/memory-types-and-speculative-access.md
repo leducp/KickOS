@@ -8,7 +8,7 @@
 > addresses are safe to touch that way. Get the *type* of a region wrong -- even
 > with the permissions right -- and the core can wedge with no fault to point at.
 > This chapter builds on Chapter 3.5 (the silicon contract a port must satisfy)
-> and sits beside Chapter 7.3 (read the hardware honestly) and Chapter 7.5
+> and sits beside Chapter 3.7 (read the hardware honestly) and Chapter 7.5
 > (protection follows the CPU). It points into `../reference/architecture.md`
 > (Memory domains -- the background region and the region-set contract) and
 > `../reference/boards.md` (per-chip memory-map quirks) for the exact contract.
@@ -152,7 +152,7 @@ independently, a behavioral contract aimed at the *core* -- what it may do on it
 own initiative, before the program asks. Speculation is the core exercising the
 second contract, and a region's type is the clause that governs it.
 
-So the same honesty Chapter 7.3 demands about what the hardware can *enforce*,
+So the same honesty Chapter 3.7 demands about what the hardware can *enforce*,
 this chapter demands about what the hardware will *do unbidden*: read the core's
 speculation rules, describe the real memory map to it, and never assume the
 architecture's default address space matches the board. A permission bug faults
@@ -164,7 +164,7 @@ and tells you where. A memory-type bug over unbacked space does not fault at all
 - The contract a port must satisfy, of which the memory map is one clause:
   Chapter 3.5, *Context switching and the silicon contract*.
 - What the protection unit can and cannot enforce, and reading the hardware
-  honestly: Chapter 7.3, *Peripheral isolation and the hardware ceiling*.
+  honestly: Chapter 3.7, *Peripheral isolation and the hardware ceiling*.
 - The ordering between the chip-invariant background and the per-thread grants,
   and why a resource keyed to the current context switches at the physical
   switch: Chapter 7.5, *Protection follows the CPU, not the scheduler's intent*.

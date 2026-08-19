@@ -292,22 +292,39 @@ forcing the software extension of failure modes (a)/(b)). A debug-domain read
 that aliases a neighbour delivers exactly the one-bad-high-reading that failure
 (a) turns into a permanent 2^32 jump; that jump strands every timed wait per the
 "Why" section. The fix is not to harden the extension -- it is to change the
-authority: every chip defines `arch_clock_now()` over a reliable free-running
-peripheral, and the `CYCCNT` read is demoted to the telemetry timestamp seam
+authority: on ARM the clock is a per-chip contract, and each chip names a source that
+meets the checklist rather than inheriting the core's, while the `CYCCNT` read is
+demoted to the telemetry timestamp seam
 (`arch_trace_now`), where a wrap costs a mislabelled trace rather than a
 stranded thread. (An emulated target goes one step further and displaces even
 that telemetry read, because the model freezes or omits `CYCCNT` -- the same
 lesson from the emulator side: the cycle counter is not a dependable authority.)
 
+What "meets the checklist" admits is wider than one kind of peripheral, and the
+emulated boards are the instructive case. A board whose whole purpose is to exercise
+the kernel under an emulator can answer `arch_clock_now` from the *host*, through the
+semihosting clock the model already provides: no counter is programmed, no divider is
+derived, and the granularity is 10 ms rather than nanoseconds. That is a legitimate
+answer because the checklist asks for width, for a reading that does not stop when the
+core does, and for a source outside the debug block, and not for a particular unit. The
+coarse tick is honest about what an emulated board can measure anyway. It does drag one
+requirement into the open that a
+real peripheral satisfies for free: a host-provided reading can *glitch*, so the seam
+clamps it against the last value it returned, since a single low reading would regress
+the clock and a single bogus high one would strand every armed sleeper. The clamp is a
+read-modify-write on a 64-bit variable that both thread and interrupt context touch, so
+it runs with interrupts masked; a torn store latched by the clamp would jump the clock
+forward permanently, which is failure (a) arriving by another road.
+
 ### Per-arch realisations
 
-Each ISA satisfies the requirements with whatever wide, reliable counter its
-silicon offers. The shape is uniform; the peripheral differs.
+Each ISA satisfies the requirements with whatever wide, reliable counter is in
+reach. The shape is uniform; the source differs.
 
 | ISA / core         | Authoritative `now()` source                                   |
 |--------------------|----------------------------------------------------------------|
 | RISC-V (RV32IMAC)  | CLINT `mtime` -- wide, reliable, memory-mapped                  |
-| ARM Cortex-M       | a free-running peripheral timer (the M0+ boards already do this)|
+| ARM Cortex-M       | a free-running peripheral timer, or the host's semihosting clock on an emulated board |
 | RX (RXv3)          | CMTW compare-match unit on a derived PCLKB rate                |
 | Xtensa LX6         | a wide peripheral timer, chosen over the narrow core `CCOUNT`  |
 

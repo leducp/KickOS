@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Compiles every C-facing header as a standalone C11 translation unit. The tree tracks no .c
-# file and CMake compiles none, so a break in the C claim these headers make surfaces in a
-# consumer's tree and nowhere else.
+# Compiles every C-facing header as a standalone C11 translation unit. The tree tracks ONE
+# .c file (apps/hello_c), which reaches only the headers it includes, so a break in the C
+# claim any other one makes surfaces in a consumer's tree and nowhere else.
 #
 # Run from the repo root:
 #   tests/static/check_c_headers.sh <c-compiler> <include-root>...

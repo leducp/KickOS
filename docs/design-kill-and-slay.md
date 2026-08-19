@@ -348,7 +348,7 @@ not happened. Naming it is the point; it needs no machinery.
   currency: it "grants the caller nothing it did not already have and cannot be delegated"
   (`STATE.md`, the console-reclaim blocker).
 - **Refuse rather than silently mask.** Slay refuses a privileged target and refuses idle, mirroring
-  the core rule `kickos_fault_kill_thread` states for itself (`kernel/init/fault.cc:94`). Rebuilding
+  the core rule `kickos_fault_kill_thread` states for itself (`kernel/init/fault.cc`). Rebuilding
   a privileged thread's context is not a privilege escalation -- it is already privileged -- but a
   privileged thread may be inside kernel work holding kernel invariants, and discarding its frames
   discards them mid-flight. `-KOS_EINVAL`, loudly.

@@ -43,7 +43,7 @@ namespace kickos
             kernel().policy->on_switch_in(next);
             KICKOS_BENCH_SPAN(PH_SWITCH_BOOK, bm_book);
             KICKOS_BENCH_MARK(bm_mpu);
-            arch_mpu_apply(next->regions, next->region_count);
+            next->mpu.apply();
             KICKOS_BENCH_SPAN(PH_MPU_APPLY, bm_mpu);
             // Must arm for the INCOMING thread before the jump: nothing else will program
             // its policy deadline (RR slice).
@@ -123,7 +123,7 @@ namespace kickos
             kernel().current = first;
             first->state = ThreadState::RUNNING;
             kernel().policy->on_switch_in(first);
-            arch_mpu_apply(first->regions, first->region_count);
+            first->mpu.apply();
             ktime_rearm();
             arch_start(&kernel().boot, &first->ctx);
         }

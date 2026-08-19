@@ -195,10 +195,11 @@ namespace
             kos::print("[xmcspi] loopback FAIL (word mismatch)\n");
         }
 
-        // Negative test: on PMSA this ungranted access faults BEFORE any bus access, so
-        // the armv7m fault handler prints "=== MPU FAULT ===" with MMFAR=0x50004648.
-        // Terminal, so it must stay the LAST thing this thread does, and the announce
-        // must precede the poke or the console shows only the fault.
+        // Negative test: on PMSA this ungranted access faults BEFORE any bus access.
+        // armv7m opted into fault isolation, so this KILLS the thread
+        // ("=== THREAD FAULT === thread 'xmcspi' killed", ADDR=0x50004648) rather than
+        // panicking. Terminal for this thread, so it must stay the LAST thing it does,
+        // and the announce must precede the poke or the console shows only the fault.
         kos::print("[xmcspi] poking UNGRANTED SCU @ 0x50004648 (expect MPU FAULT)\n");
         uint32_t leaked = r32(SCU_CGATCLR0);
 

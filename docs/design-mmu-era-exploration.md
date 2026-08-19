@@ -52,10 +52,10 @@ view of memory. This one fact is baked into five places:
   physical-allocator constraint that a paging allocator would not have.
 
 - **Pointer validation is a physical range containment test.**
-  `user_range_ok` (`kernel/syscall/syscall.cc:127-161`) walks the current
+  `user_range_ok` (`kernel/syscall/syscall_mem.cc`) walks the current
   thread's `arch_mpu_region` set and accepts `[ptr, ptr+len)` iff it lies inside
   one granted region with the needed rights. `user_readable_ok`
-  (`syscall.cc:172-179`) adds `arch_user_text_readable` for app code/rodata the
+  (`kernel/syscall/syscall_mem.cc`) adds `arch_user_text_readable` for app code/rodata the
   backend does not model as a region. Both treat the user pointer as a PHYSICAL
   address the kernel can dereference directly once the range check passes -- no
   per-address-space translation, no copy_from_user walk.
@@ -298,10 +298,11 @@ news).
 
 These are cheap seam/groundwork changes worth making WHILE M3/M4 code is being
 written, so the MMU era does not force a breaking rewrite. Each was a PROPOSAL;
-QW-2 has since LANDED and the rest are tracked in `TODO.md`. Ordered by leverage.
+QW-2 and the accessor half of QW-1 have since LANDED and the rest are tracked in
+`TODO.md`. Ordered by leverage.
 
 **QW-1. Give `Domain` an opaque backend field instead of a bare region array --
-or at least route ALL region access through accessors.**
+or at least route ALL region access through accessors. -- THE ACCESSOR HALF LANDED.**
 What: today `struct Domain` exposes `arch_mpu_region regions[]` directly, and
 callers (`domain_for` dedup, `thread.cc` compose, and any future reader) touch it
 as a raw array. The reshape: keep it MPU-only in BEHAVIOR, but funnel every read
@@ -312,7 +313,10 @@ Once caps, IPC endpoints, MMIO grants, and the console-handover work all read
 `regions[]` directly, swapping the representation touches every one of them under
 pressure. A one-file accessor now contains the blast radius of section 2's single
 biggest below-seam change.
-PROPOSAL -- schedule, do not implement here.
+LANDED as `domain_region_count` / `domain_region_at` (`kernel/domain/domain.cc`), which state
+at their definition that every reader outside that file must come through them;
+`kernel/thread/thread.cc` composes a thread's region set through them. The opaque backend
+field is still a PROPOSAL, and it is what the accessors were put there to make cheap.
 
 **QW-2. Name the "physical == the address you dereference" assumption in
 `user_range_ok` / `user_readable_ok` with a single choke helper. -- LANDED.**
@@ -326,7 +330,7 @@ kernel-side user-pointer dereference already goes through ONE helper, that becom
 one function to implement per arch; if not, it is a hunt across every syscall.
 LANDED as `kaccess_from_user` / `kaccess_to_user`
 (`kernel/syscall/syscall_mem.cc`), identity today, with the callers-must-validate-first
-rule stated at the definition. Every remaining QW here is still a PROPOSAL.
+rule stated at the definition. QW-3 and everything below it are still PROPOSALs.
 
 **QW-3. Keep the shared-IPC ring contract PHYSICALLY addressed from day one.**
 What: when the M6 IPC ring lands (design-m6-smp), specify that ring

@@ -892,7 +892,9 @@ everything else, which is the check that the factor is real. A 16 B generic roun
 context switch becomes 1632 cycles against the M7's 1998; the copy slope becomes 14 cycles per byte
 against 18 on the M4 and 8 on the M7; and the control becomes 20 cycles against 23, 27 and 53.
 Uncorrected, all four were absurd. **The percentage column needs none of this**, because both arms
-are timed by the same clock, which is why it is the column to trust.
+are timed by the same clock, which is why it is the column to trust. The backend now reads
+`CLK_REF_DIV` and derives the TICKS `CYCLES` from it, so a later capture on this board needs no
+correction; the figures above stay as measured.
 
 Its control is the weakest of the four rows and is reported rather than smoothed. Two of the three
 captures are acceptable (+31, +45, +35, +29 and +33, +45, +23, +30 reported, so about 20 cycles
@@ -999,6 +1001,8 @@ wrong is the transferable lesson.**
   cycles times two switches -- **900 cycles, 13.8 percent** -- and its sample count is IDENTICAL in
   both arms, confirming the fastpath removed no switch. Switch machinery that may not be skipped
   totals about 1428 cycles, 21.9 percent.
+  **Section 7 shows the 900 was itself an undercount, and that most of the rest was not switch
+  machinery at all.**
 - **Only one of the round trip's THREE locked legs was attacked.** Section 3.0.4 established that a
   round trip holds the lock three times, not twice; the recv park and the reply still take the full
   generic path with two more trap round trips between them.
@@ -1064,3 +1068,269 @@ instrument-free kernel.
 gets its hardest input, because a per-core instrument must answer what a shared accumulator across
 cores means, and the state inventory already rules the bench accumulators per-core. Deciding the
 shape before that constraint is known would decide it twice.
+
+## 7. The protection commit: 2054 cycles a round trip, and none of it was encoding
+
+Section 5.1 priced per-switch protection at `MPU_APPLY`'s 450. That bracket wraps
+`arch_mpu_apply` and nothing else, and on every arch whose switch is DEFERRED that call only
+STASHES. The hardware programming runs afterwards in the switch epilogue, from assembly, where
+`KICKOS_BENCH_SPAN` cannot reach -- so **half the cost had no bracket on it.** `PH_MPU_COMMIT`
+now brackets `kickos_arch_mpu_commit` itself, fed through an `extern "C"` sink the way `switch.S`
+feeds `kickos_bench_switch_done`.
+
+`esp32c6-wroom`, minimums, n = 280021 (identical in both knob positions, which is what says the
+fastpath removes no commit), corrected as leaves by `PH_NULL` = 2:
+
+| leaf | before | after | what it is |
+|---|---|---|---|
+| `MPU_APPLY` | **444** | **21** | the stash |
+| `MPU_COMMIT` | **583** | **247** | the PMP programming |
+| per switch | **1027** | **268** | |
+| per round trip | **2054** | **536** | two switches |
+
+2054 cycles is **22.5 percent** of the 9131-cycle round trip, not 13.8.
+
+### 7.1 The cost was libc, called with a compile-time size
+
+Read from the emitted code, not inferred:
+
+- `arch_mpu_apply` copied the region descriptors into a private stash one `struct` at a time, and
+  GCC at `-Os` turns a 12-byte struct assignment into a `memcpy` CALL. **This image's freestanding
+  `memcpy` is a byte loop** -- six instructions per byte. Four regions is four such calls.
+- `kickos_arch_mpu_commit` opened with `uint32_t addr[8] = {0}`, which is a `memset(32)` call
+  through the same byte loop, and closed with eight INDEXED `pmpaddr` writes: `csrw` takes an
+  immediate CSR number, so the indexed form compiled to a jump table taken eight times.
+- The NAPOT arithmetic the whole path is named for -- `pmp_napot_addr` plus `pmp_cfg` -- is four
+  instructions per region. It was never the cost. **A recomputed encoding was the wrong suspect,
+  and precomputing it was not what the fix needed.**
+
+### 7.2 The fix, and why it cannot go stale
+
+- **The stash is a POINTER, not a copy.** Every commit on this arch is preceded by an apply inside
+  the SAME `MIE=0` window: the msip trap, the `.Lecall` fastpath tail, `arch_start`, and
+  `KOS_SYS_MEM_SELF_GRANT`, which commits before it returns. `Thread::regions` has exactly two
+  writers, `thread_create` and that syscall, and neither can run inside that window against the
+  stashed thread. Thread slots come from a static pool and are never returned to an allocator, so
+  a pointer left over from an earlier switch still addresses valid region storage: the failure
+  mode a copy was guarding against is a stale SET either way, and the copy did not prevent it.
+  A superseded publication -- two `switch_book` calls under one lock -- overwrites the stash with
+  the second, which is the thread the switch will actually land on.
+- The commit assigns every element of `addr[]`/`cfg[]` instead of zero-initialising them, which is
+  what pulled in `memset`, and the eight `pmpaddr` writes are spelled out.
+
+Both the generic switch and the IPC fastpath reach `arch_mpu_apply` through the one `switch_book`
+and reach the commit through their own assembly epilogue, so ONE change covers both paths. The 2x2
+below is what proves it rather than the argument.
+
+### 7.3 The 2x2, because the change touches both paths
+
+Same board, same tree, one commit apart; `PH_MPU_COMMIT` present in all four so the instrument is
+constant. 8 B round trip, the payload where the fastpath is taken:
+
+| | fastpath OFF | fastpath ON |
+|---|---|---|
+| **before** (`d478b6e0`) | 57067 ns | 47717 ns |
+| **after** (`aea37049`) | **47492 ns** | **38092 ns** |
+| delta | **-9575 ns (-1532 cyc)** | **-9625 ns (-1540 cyc)** |
+
+**The two gains are equal to within 0.5 percent, which is the result that says both commit paths
+were caught.** A change that landed in one path only would show a smaller gain in the fastpath
+column. The phase table closes the same accounting independently: 759 cycles per switch times two
+switches is 1518 predicted against 1532 measured.
+
+The slowpath column is the honest headline, because most calls in this tree exceed the 20-byte
+register budget and never take the fastpath: **-16.8 percent end to end on the path almost every
+call uses.**
+
+The fastpath's OWN worth is unchanged by cheaper protection, which is what it should be. Comparing
+ACROSS columns needs the instrument correction first: the `n` columns say bracket executions fall
+by 760000 over 40000 fastpath calls, **19.00 per round trip exactly**, in both rows. At this
+board's 46.5 to 50 cycles per bracket that is 883 to 950 cycles of pure instrument inside an
+apparent 1496 (before) and 1504 (after) cycle delta, leaving 546 to 616 before and 554 to 624
+after. Equal within 8 cycles.
+
+### 7.4 What is left, and what it would cost
+
+`MPU_COMMIT` is still **247 cycles a switch, 494 a round trip, 6.5 percent** of the round trip that
+remains. That residual IS the encode loop plus ten CSR writes, and precomputing each thread's eight
+`pmpaddr` words and two `pmpcfg` words would take it to about 40.
+
+That is not free and it is not obviously right. It would put a CACHED DUPLICATE of the
+authoritative region set inside enforcement code, where a missed refresh is a protection hole
+rather than a wrong answer, and it costs 40 bytes on every rv32imac TCB. The two writers that
+would have to refresh it are known and few, which is what makes it tractable; the project's own
+"no second truth" rule is what makes it a decision rather than an obvious next step. **Recorded as
+priced, not taken.** Section 8 takes it, on a seam that answers the objection instead of accepting
+it, and finds the price of 40 was in the right direction but the estimate of the residual wrong.
+
+## 8. The encoded image: the switch stops encoding, and section 7.4's price was pessimistic
+
+Section 7.4 priced precomputing the PMP words at "about 40" cycles a switch and recorded it as not
+taken, on the grounds that a cached duplicate of the region set inside enforcement code is a
+protection hole rather than a wrong answer when a refresh is missed. That objection is answered by
+making the duplicate UNREACHABLE rather than by trusting a refresh, and the same seam then pays on
+five backends instead of one.
+
+### 8.1 WHOLE-SET, and that is hardware talking rather than taste
+
+A per-region `encoded` member cannot carry the derivation on any of the three ISAs in the fleet:
+
+- **PMP packs the cfg BYTES four to a word.** `pmpcfg0` holds regions 0 to 3 and `pmpcfg1` holds 4
+  to 7, so the word a region contributes to is a property of the SET. A per-region member would
+  leave the packing on the switch path, which is the work being removed.
+- **A PMSA descriptor's slot is positional.** `MPU_RNR` selects it, and on a chip with fixed rows
+  (`arch/arm/common/mpu.h`, the i.MX RT1062 anti-speculation wrap) the per-thread slot is the image
+  index plus the chip's fixed count. The index is not the region's to know.
+- **Disabling the descriptors past `n` is a set-level fact.** Every backend writes the unused slots
+  inactive on every switch, and nothing per-region says how many there are.
+
+So the image is one object per thread, and `kernel/include/kickos/mpuset.h` is where it lives.
+
+### 8.2 How "no second truth" is satisfied: the wrong expression does not exist
+
+`MpuSet` holds the region array PRIVATE. `add`, `add_enforced`, `append_statics` and `clear` are the
+only ways in, and each re-encodes before it returns; `apply` is the only way out to the hardware.
+There is no expression that writes a base, a size or an attribute and leaves the image behind, so
+the rule is enforced by the type rather than by a convention a future caller has to keep. Zero state
+is fail-closed by the same construction: `thread_create` memsets the TCB, and an all-zero image
+grants nothing on every backend.
+
+`arch/include/kickos/arch/arch.h` is C++ only (its `extern "C"` is deliberately unguarded), so
+private members with accessors cost nothing at the seam.
+
+The seam itself is one function beside the existing apply:
+
+```
+uint32_t arch_mpu_encode(struct arch_mpu_region const*, size_t n, struct arch_mpu_encoded* out);
+void     arch_mpu_apply(struct arch_mpu_region const*, size_t n, struct arch_mpu_encoded const*);
+```
+
+`struct arch_mpu_encoded` comes from a per-arch `<kickos/arch/mpu_encoded.h>`, resolved by include
+path exactly as `context.h` is. `arch_mpu_apply` keeps the raw set beside the image because two
+backends need the addresses themselves: the sim calls `mprotect` with them, and RX compares them to
+skip a rewrite when the incoming set is the one already loaded.
+
+The return is a SEATED BITMASK, bit `i` for `regions[i]`. It is what `add_enforced` reads:
+`KOS_SYS_MEM_SELF_GRANT` returns `-KOS_ENOMEM` rather than hand back a grant no descriptor covers.
+An ordinary `add` keeps an unseated region in the set, because a privileged thread's whole-arena
+grant is not nameable by one descriptor on a power-of-two backend and is still what the kernel's own
+range checks read.
+
+### 8.3 Refuse, not mask, and two backends were masking
+
+PMSAv8 and SYSMPU gated a descriptor on `size >= 32` alone and then wrote the base through a field
+mask, `RBAR_BASE_MASK` on one and `SRTADDR[31:5]` on the other. A base that was not 32-byte aligned
+therefore rounded DOWNWARD and granted more than the caller asked for. RX-MPU already refused, and
+its comment already said why. Both now gate on `arch_mpu_region_encodable`, which is the same
+predicate the grant path admits with, and a region that fails it gets an inactive descriptor.
+
+The correction costs nothing per switch: the encode seam is where it belongs precisely because it
+runs once per mutation, where the old gate ran once per switch per region.
+
+**What can and cannot witness it.** No user-space call reaches the old masking path, and that is
+worth stating rather than leaving as an unexamined claim: `arch_ram_region_admissible` reduces to
+`arch_mpu_region_encodable` on every base-and-limit backend, and the spawn boundary calls the
+predicate directly for a DEV window, so both grant paths already refused a misaligned request with
+`-KOS_EINVAL` before it could reach a descriptor. What the correction closes is the commit path's
+own gap, for a region that arrives from a source admission does not cover: the linker's app code and
+app-data extents, and a domain region composed at `thread_create`.
+
+That is what the `frdmk64f` run below actually proves. A region the new gate cannot name gets NO
+descriptor, so a misaligned linker extent would now drop the app-data grant and fault the thread on
+its own globals, loudly, on the first switch. 105 of 105 arms pass, so every region SYSMPU is handed
+on that board is exactly encodable. The old code would have widened a misaligned one instead and
+passed the same suite.
+
+### 8.4 The memory budget, which was the real risk
+
+The image is `#if KICKOS_HAVE_MPU`. Unconditional it would be dead weight on every no-MPU board,
+and PMSA's 64 bytes would eat 256 of `f302nucleo`'s margin for nothing.
+
+| backend | image | per TCB |
+|---|---|---|
+| RISC-V PMP | 8 `pmpaddr` + 2 `pmpcfg` | **40 B** |
+| ARM PMSAv7 | 8 x (RBAR, RASR) | **64 B** |
+| ARM PMSAv8 | 8 x (RBAR, RLAR) | **64 B** |
+| RX-MPU | 8 x (RSPAGE, REPAGE) | **64 B** |
+| K64F SYSMPU | 8 x (WORD0, WORD1, WORD2) | **96 B** |
+| sim | the seated mask | **4 B** |
+
+The count is a `uint8_t` and not a `size_t`, which is what keeps the image inside the padding the
+region array already spends: the TCB grows by the image and by nothing else.
+
+`frdmk64f` is the tightest enforcing board and it is the one that pays most. Measured on the linked
+image, its post-boot arena went from 114208 to 112960 bytes against a boot-plus-pool demand of
+107008, so the margin went from 7200 to **5952 bytes**. `pizero2350` paid 1056. Every board in the
+fleet links, and the M4.9.3 pool assert in the linker script is what would have refused one that did
+not.
+
+### 8.5 MEASURED: 249 to 75 cycles a switch, below the predicted floor
+
+`esp32c6-wroom`, minimums, same board and same instrument on both sides, one commit range apart:
+
+| leaf | before | after |
+|---|---|---|
+| `MPU_APPLY` | 23 | **19** |
+| `MPU_COMMIT` | 249 | **75** |
+| per switch | 272 | **94** |
+| per round trip | 544 | **188** |
+
+Instruction accounting predicted a floor of about 90 to 115 cycles for `MPU_COMMIT` alone, from ten
+CSR writes plus the fence plus the loads plus the call. **The floor was pessimistic by roughly 20
+percent** and the honest reading is that the CSR writes and the loads overlap better than counting
+them one at a time suggests. The saving is 174 cycles a switch and 348 a round trip.
+
+`MPU_APPLY` falling from 23 to 19 is the ARM-style copy leaving this arch too: the stash was already
+a pointer here, and what went is the count.
+
+### 8.6 The combined capture, because two changes overlapped
+
+`topic/pmp-precompute` and `topic/wordwise-memcpy` were measured separately against separate bases
+and double-counted roughly 350 cycles between them, so neither number survives. **One capture on the
+finished branch is the only figure this page carries.** `esp32c6-wroom`, both arms in one binary,
+one run, no instrument change:
+
+| payload | fast arm before | fast arm after | delta |
+|---|---|---|---|
+| 8 B | 38767 ns | **35761 ns** | -7.8 percent |
+| 16 B | 40113 ns | **36381 ns** | -9.3 percent |
+| 32 B | 50969 ns | **45819 ns** | -10.1 percent |
+| 64 B | 54969 ns | **46919 ns** | -14.6 percent |
+| 128 B | 62969 ns | **49119 ns** | -22.0 percent |
+| 256 B | 78975 ns | **53525 ns** | -32.2 percent |
+
+The slowpath column moves with it, which is the one that matters because most calls in this tree
+exceed the register budget: 8 B goes 47856 to 44881 ns and 256 B goes 78863 to 53413 ns. Endpoint
+copy minimums go `CALL_COPY` 97 to 72 and `REPLY_COPY` 97 to 74; at 256 B the same leaves go 2577 to
+754 and 2577 to 756. Context-switch throughput goes 63015 to 68115 per second.
+
+**THE CONTROL, and it is what makes the capture readable.** Above `KOS_CALL_REG_BYTES` both arms
+issue the same trap and do identical work, so their difference must be one flat constant: the
+register-form length test `kos_call` runs before it tail-calls the generic entry. Measured, in both
+captures independently:
+
+| payload | before | after |
+|---|---|---|
+| 32 B | 113 ns | 113 ns |
+| 64 B | 113 ns | 113 ns |
+| 128 B | 113 ns | 113 ns |
+| 256 B | 112 ns | 112 ns |
+
+113 ns is 18 cycles at 160 MHz, which is a compare, a branch and a call. Flat across four payloads
+and identical across two trees a whole rewrite apart: the arms were measured under the same
+conditions and the capture stands. A ragged column there would have voided it.
+
+### 8.7 What is witnessed
+
+**Every backend is exercised by the 105-arm selftest under enforcement, on real silicon**: PMP on
+`esp32c6-wroom`, PMSAv7 on `xmc4800-relax`, PMSAv8 on `pizero2350`, SYSMPU on `frdmk64f` and RX-MPU
+on `rx72m`, all 105 of 105. Emulated beside them: `qemu-riscv`, `qemu`, `qemu-m7`, `qemu-m3`,
+`microbit` and `qemu-m33`.
+
+The K64F is the run that matters most, because SYSMPU carries the widest image and is one of the two
+backends the masking correction lands on. It is also the tightest arena in the fleet, and it links
+with 5952 bytes to spare.
+
+Not witnessed at runtime: `teensy41`, the one board with chip FIXED MPU rows, where the per-thread
+slot is the image index plus the fixed count. It builds and links; its console cable was on another
+board.

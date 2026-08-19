@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The fleet silicon pass: every board that is ON THE BUS RIGHT NOW, one at a time.
+# The fleet silicon pass: the boards enumerated in ALL below, one at a time.
 #
 #   TAG=<tag> tools/bench/bench-fleet.sh              # everything enumerated
 #   TAG=<tag> tools/bench/bench-fleet.sh rx72m xmc4800-relax

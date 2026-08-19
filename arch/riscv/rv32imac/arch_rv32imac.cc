@@ -50,9 +50,11 @@ extern "C" void kickos_isr_fault(uintptr_t addr, int is_write);
 // (on the thread's own stack, ctx.sp = its base, low->high) is 32 words / 128 bytes:
 //   [0 mepc][1 mstatus][2 ra][3 t0][4 t1][5 t2][6 s0][7 s1][8 a0]..[15 a7]
 //   [16 s2]..[25 s11][26 t3][27 t4][28 t5][29 t6][30,31 pad]
-// gp/tp are NOT saved: they are link-time-constant across all threads (set once in
-// _start), so the switch leaves them untouched. A silent reorder here or in
-// arch_context_init would corrupt the switch.
+// gp/tp are not in the frame. tp is set once in _start and no path touches it. gp is
+// NOT self-preserving: .Lrestore re-anchors it from __global_pointer$ on every switch,
+// because a U-mode thread can write it and the anchor sits inside the live app
+// small-data window (switch.S). A silent reorder here or in arch_context_init would
+// corrupt the switch.
 namespace
 {
     enum : uint32_t
@@ -209,11 +211,13 @@ int arch_in_isr(void)
     return g_isr_depth != 0;
 }
 
-// --- Trace clock: the cycle CSR (rdcycle), always present, 32-bit raw ---------
+// --- Trace clock: the cycle CSR (rdcycle), 32-bit raw ------------------------
 // Reads its own low 32 bits (wraps; the host reconstructs absolute time from the SESSION
 // clock_hz anchors). No ns conversion, no wrap-extend and no crit section, so it is safe
-// on the switch path. mcounteren.CY is enabled in kickos_rv32_init so a U-mode thread can
-// read it too.
+// on the switch path. kickos_rv32_init enables mcounteren.CY only where the core has the
+// CSR (arch_rv_has_mcounteren), so a U-mode thread can read it there. A core with no
+// Zicntr counters traps on rdcycle (the ESP32-C6 HP core is one) and has to override
+// this with its own counter.
 uint32_t arch_trace_now(void)
 {
     uint32_t v;
@@ -248,42 +252,79 @@ static uint8_t pmp_cfg(uint32_t attr)
     return static_cast<uint8_t>(c);
 }
 
-// csrw takes an immediate CSR number, so the 8 pmpaddr writes are unrolled.
-static void write_pmpaddr(size_t i, uint32_t v)
+// Pack the region set into the ten CSR words a commit writes. The cfg BYTES ride four to
+// a pmpcfg word, so the packing is a property of the whole set. A region PMP cannot name
+// (arch_mpu_region_encodable: a power-of-two size >= 8, naturally aligned) is left cfg 0,
+// which is no access at all rather than a NAPOT window somewhere near it.
+uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
+                         struct arch_mpu_encoded* out)
 {
-    switch (i)
+    if (n > ARCH_MPU_ENCODED_SLOTS)
     {
-        case 0: { __asm volatile("csrw pmpaddr0, %0" ::"r"(v) : "memory"); break; }
-        case 1: { __asm volatile("csrw pmpaddr1, %0" ::"r"(v) : "memory"); break; }
-        case 2: { __asm volatile("csrw pmpaddr2, %0" ::"r"(v) : "memory"); break; }
-        case 3: { __asm volatile("csrw pmpaddr3, %0" ::"r"(v) : "memory"); break; }
-        case 4: { __asm volatile("csrw pmpaddr4, %0" ::"r"(v) : "memory"); break; }
-        case 5: { __asm volatile("csrw pmpaddr5, %0" ::"r"(v) : "memory"); break; }
-        case 6: { __asm volatile("csrw pmpaddr6, %0" ::"r"(v) : "memory"); break; }
-        case 7: { __asm volatile("csrw pmpaddr7, %0" ::"r"(v) : "memory"); break; }
-        default: { break; }
+        n = ARCH_MPU_ENCODED_SLOTS;
     }
+    uint32_t seated = 0;
+    uint8_t cfg[ARCH_MPU_ENCODED_SLOTS];
+    size_t i = 0;
+    for (; i < n; i++)
+    {
+        out->addr[i] = 0;
+        cfg[i] = 0;
+        if (arch_mpu_region_encodable(regions[i].base, regions[i].size))
+        {
+            out->addr[i] = pmp_napot_addr(regions[i].base, regions[i].size);
+            cfg[i] = pmp_cfg(regions[i].attr);
+            seated |= static_cast<uint32_t>(1) << i;
+        }
+    }
+    for (; i < ARCH_MPU_ENCODED_SLOTS; i++)
+    {
+        out->addr[i] = 0;
+        cfg[i] = 0;
+    }
+    out->cfg[0] = static_cast<uint32_t>(cfg[0]) | (static_cast<uint32_t>(cfg[1]) << 8)
+                | (static_cast<uint32_t>(cfg[2]) << 16) | (static_cast<uint32_t>(cfg[3]) << 24);
+    out->cfg[1] = static_cast<uint32_t>(cfg[4]) | (static_cast<uint32_t>(cfg[5]) << 8)
+                | (static_cast<uint32_t>(cfg[6]) << 16) | (static_cast<uint32_t>(cfg[7]) << 24);
+    return seated;
 }
 
-static struct arch_mpu_region g_pend_regions[8];
-static size_t g_pend_count = 0;
+// The image the next commit programs. A POINTER into the caller's TCB, not a copy: every
+// commit on this arch is preceded by an apply inside the SAME MIE=0 window (the msip
+// trap, the .Lecall fastpath tail, arch_start, and the self-grant syscall, which commits
+// before it returns), so nothing can rewrite the image in between. Thread slots come from
+// a static pool and are never returned to an allocator, so a pointer left over from an
+// earlier switch still addresses valid storage.
+static struct arch_mpu_encoded const* g_pend_image = nullptr;
+
+#if KICKOS_BENCH
+// The kernel's phase accumulator, reached the way switch.S reaches
+// kickos_bench_switch_done: this TU is below <kickos/bench.h>.
+extern "C" void kickos_bench_mpu_commit(uint32_t delta);
+
+static uint32_t mpu_bench_cyc(void)
+{
+    if (::g_bench_cycle_src != nullptr)
+    {
+        return *::g_bench_cycle_src;
+    }
+    uint32_t v;
+    __asm volatile("rdcycle %0" : "=r"(v));
+    return v;
+}
+#endif
 
 // STASH-ONLY apply (deferred-commit seam, docs/design-mpu-commit-deferred.md): record
 // the incoming set; kickos_arch_mpu_commit writes the PMP CSRs from the .Lswitch switch
 // epilogue (switch.S) AFTER the physical msip-driven swap. Eager apply on the deferred
 // switch would run the OUTGOING user thread under the incoming PMP set until msip fires,
 // so it would fault on its own stack.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
+                    struct arch_mpu_encoded const* image)
 {
-    if (n > 8)
-    {
-        n = 8;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        g_pend_regions[i] = regions[i];
-    }
-    g_pend_count = n;
+    (void)regions;
+    (void)n;
+    g_pend_image = image;
 }
 
 // Program the 8 PMP entries from the stash. Called from .Lswitch / arch_start after the
@@ -291,48 +332,48 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 // already atomic vs interrupts and must NOT toggle MIE here.
 void kickos_arch_mpu_commit(void)
 {
-    struct arch_mpu_region const* const regions = g_pend_regions;
-    size_t const n = g_pend_count;
-    // Build 8 PMP entries (0..7). A region is NAPOT-encoded only if its size is a
-    // power of two >= 8 (unprivileged regions come from the pow2 allocator); a non-pow2
-    // region (e.g. a privileged thread's whole-arena grant) is left OFF, which is
-    // harmless since that thread runs in M-mode and bypasses PMP.
-    uint32_t addr[8] = {0};
-    uint8_t cfg[8] = {0};
-    for (size_t i = 0; i < 8; i++)
+#if KICKOS_BENCH
+    uint32_t const bench_start = mpu_bench_cyc();
+#endif
+    struct arch_mpu_encoded const* const img = g_pend_image;
+    if (img == nullptr)
     {
-        if (i < n and regions[i].size >= 8 and std::has_single_bit(regions[i].size))
-        {
-            addr[i] = pmp_napot_addr(regions[i].base, regions[i].size);
-            cfg[i] = pmp_cfg(regions[i].attr);
-        }
+        return;
     }
+    uint32_t const* const addr = img->addr;
     // Write the addresses, then the two cfg words (which activate the entries).
     // This overwrites the permissive bootstrap TOR entry (kickos_rv32_init); the
     // kernel is in M-mode here and bypasses PMP, so the transient is safe.
-    for (size_t i = 0; i < 8; i++)
-    {
-        write_pmpaddr(i, addr[i]);
-    }
-    uint32_t const cfg0 = static_cast<uint32_t>(cfg[0]) | (static_cast<uint32_t>(cfg[1]) << 8)
-                        | (static_cast<uint32_t>(cfg[2]) << 16) | (static_cast<uint32_t>(cfg[3]) << 24);
-    uint32_t const cfg1 = static_cast<uint32_t>(cfg[4]) | (static_cast<uint32_t>(cfg[5]) << 8)
-                        | (static_cast<uint32_t>(cfg[6]) << 16) | (static_cast<uint32_t>(cfg[7]) << 24);
-    __asm volatile("csrw pmpcfg0, %0" ::"r"(cfg0) : "memory");
-    __asm volatile("csrw pmpcfg1, %0" ::"r"(cfg1) : "memory");
+    // csrw takes an immediate CSR number, so an indexed write needs a dispatch; spelled
+    // out, the eight writes are eight instructions.
+    __asm volatile("csrw pmpaddr0, %0" ::"r"(addr[0]) : "memory");
+    __asm volatile("csrw pmpaddr1, %0" ::"r"(addr[1]) : "memory");
+    __asm volatile("csrw pmpaddr2, %0" ::"r"(addr[2]) : "memory");
+    __asm volatile("csrw pmpaddr3, %0" ::"r"(addr[3]) : "memory");
+    __asm volatile("csrw pmpaddr4, %0" ::"r"(addr[4]) : "memory");
+    __asm volatile("csrw pmpaddr5, %0" ::"r"(addr[5]) : "memory");
+    __asm volatile("csrw pmpaddr6, %0" ::"r"(addr[6]) : "memory");
+    __asm volatile("csrw pmpaddr7, %0" ::"r"(addr[7]) : "memory");
+    __asm volatile("csrw pmpcfg0, %0" ::"r"(img->cfg[0]) : "memory");
+    __asm volatile("csrw pmpcfg1, %0" ::"r"(img->cfg[1]) : "memory");
     // Order the PMP update before the mret (arch_switch) that drops to U-mode, so the
     // incoming thread's fetches/loads see the new entries. The priv spec says the writing
     // hart sees PMP changes on its next access; the fence is the conservative guarantee
     // across the M->U transition.
     __asm volatile("fence" ::: "memory");
+#if KICKOS_BENCH
+    kickos_bench_mpu_commit(mpu_bench_cyc() - bench_start);
+#endif
 }
 #else
 // No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + syscall only. The
 // permissive bootstrap PMP stays in place.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
+                    struct arch_mpu_encoded const* image)
 {
     (void)regions;
     (void)n;
+    (void)image;
 }
 // .Lswitch/arch_start call this unconditionally; provide an empty no-MPU commit.
 void kickos_arch_mpu_commit(void) {}
@@ -701,11 +742,11 @@ void kickos_rv32_init(void)
     // U-mode access with NO matching entry FAULTS, so an unprivileged thread cannot even
     // fetch its first instruction without this entry. It grants U-mode full access, with
     // no isolation until arch_mpu_apply refines per-thread PMP. Use TOR (A=01, top =
-    // pmpaddr0<<2) rather than the
-    // all-ones NAPOT idiom: the ESP32-C6 PMP does not honor the all-ones-NAPOT
-    // match-everything special case (U-mode still takes an instruction-access fault),
-    // whereas TOR with pmpaddr0 = 0xFFFFFFFF covers [0, 0x4_00000000) on both it and
-    // QEMU virt. pmpcfg0 byte0 = A=TOR(0x08) | X(0x4) | W(0x2) | R(0x1) = 0x0F.
+    // pmpaddr0<<2) rather than the all-ones NAPOT idiom: the ESP32-C6 PMP does not honor
+    // the all-ones-NAPOT match-everything special case (U-mode still takes an
+    // instruction-access fault), whereas TOR with pmpaddr0 = 0xFFFFFFFF covers every
+    // 32-bit address on both it and QEMU virt. pmpcfg0 byte0 = A=TOR(0x08) | X(0x4) |
+    // W(0x2) | R(0x1) = 0x0F.
     __asm volatile("csrw pmpaddr0, %0" ::"r"(0xFFFFFFFFu) : "memory");
     __asm volatile("csrw pmpcfg0, %0" ::"r"(0x0Fu) : "memory");
 }

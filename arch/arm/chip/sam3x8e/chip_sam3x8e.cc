@@ -232,15 +232,15 @@ namespace
     constexpr uint32_t BRGR_115200 = 46;
 
     // --- TC0 channel 0: the monotonic time base (SAM3X datasheet sec.37) --------
-    // The v7-M default clock is the DWT cycle counter (core debug power domain),
-    // which intermittently returns aliased garbage on parts in this fleet; the
-    // software 32->64 wrap-extension turns one bad read into a phantom 2^32 jump
+    // arch_clock_now is a REQUIRED chip contract: the armv7m layer ships no clock
+    // fallback. The obvious source, the DWT cycle counter, sits in the core debug
+    // power domain and intermittently returns aliased garbage on parts in this fleet;
+    // the software 32->64 wrap-extension turns one bad read into a phantom 2^32 jump
     // that strands every timed wait. A TC channel is a plain 32-bit peripheral
-    // counter (not the debug domain): free-run TC0 ch0 in capture mode (WAVE=0,
-    // CPCTRG=0 so RC never resets it) off TIMER_CLOCK1 = MCK/2, and use it as
-    // arch_clock_now. TC0 ch0 does not collide with the one-shot tickless timer
-    // (SysTick, core-generic) nor any driver (none on this port). ONLY the
-    // monotonic clock moves off DWT; arch_trace_now stays on raw DWT_CYCCNT.
+    // counter: free-run TC0 ch0 in capture mode (WAVE=0, CPCTRG=0 so RC never resets
+    // it) off TIMER_CLOCK1 = MCK/2, and use it as arch_clock_now. TC0 ch0 does not
+    // collide with the one-shot tickless timer (SysTick, core-generic) nor any driver
+    // (none on this port). arch_trace_now stays on raw DWT_CYCCNT.
     constexpr uintptr_t TC0_BASE = 0x40080000;
     constexpr uintptr_t TC0_CCR0 = TC0_BASE + 0x00; // channel control
     constexpr uintptr_t TC0_CMR0 = TC0_BASE + 0x04; // channel mode
@@ -273,8 +273,8 @@ namespace
     void tc_clock_init()
     {
         // Boot-order: nothing before arch_init may read the clock. A static ctor
-        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on the
-        // ungated TC access (it was a harmless DWT read before this override).
+        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on
+        // the ungated TC access.
         // WFI-clocking constraint: TC0 keeps counting in WFI only in Sleep mode
         // (PMC_FSMR.LPM=0, the default). If Wait mode is ever selected MCK stops,
         // freezing TC0 AND SysTick: the whole time base halts, not just this clock.
@@ -341,7 +341,7 @@ extern "C"
 void arch_init(void)
 {
     clock_init(); // crystal + PLLA -> 84 MHz (watchdog already disabled in Reset_Handler)
-    tc_clock_init(); // monotonic time base (replaces the unreliable DWT clock)
+    tc_clock_init(); // monotonic time base: the required arch_clock_now source
     // Anchor the clock ONCE, from the FINAL rate: TC0 ch0 runs on TIMER_CLOCK1 = MCK/2
     // and MCK == SystemCoreClock, so the ticks advance at half the core clock.
     g_clk.init(SystemCoreClock / 2u);
@@ -349,9 +349,9 @@ void arch_init(void)
     kickos_armv7m_init();
 }
 
-// Monotonic clock: free-running TC0 ch0 ticks -> ns, the required per-chip source (the
-// DWT-backed arch_clock_now (unreliable on this silicon). Pure epoch read: the anchor
-// holds the rate, so no divide and no rate derivation happens here.
+// Monotonic clock: free-running TC0 ch0 ticks -> ns, the required per-chip
+// arch_clock_now. Pure epoch read: the anchor holds the rate, so no divide and no rate
+// derivation happens here.
 uint64_t arch_clock_now(void)
 {
     return g_clk.ns_from(tc_ticks());

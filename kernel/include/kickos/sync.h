@@ -110,9 +110,10 @@ namespace kickos
     // or call_state, waking it): the caller is still parked there and `link` is that list's.
     bool reply_donor_unpark(Thread* server, Thread* caller);
 
-    // The ONLY writers of Endpoint::server, keeping that field and the server's
-    // served-endpoint chain in step. set() re-seats: it unlinks `ep` from a previous server
-    // first, so recv may call it on every arrival. Caller holds IrqLock.
+    // The only writers of Endpoint::server on a live endpoint, keeping that field and the
+    // server's served-endpoint chain in step; endpoint_create seats both itself. set()
+    // re-seats: it unlinks `ep` from a previous server first, so recv may call it on every
+    // arrival. Caller holds IrqLock.
     void endpoint_server_set(Endpoint* ep, Thread* t);
     void endpoint_server_clear(Endpoint* ep);
 

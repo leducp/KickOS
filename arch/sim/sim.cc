@@ -1107,8 +1107,8 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
         stack_size = host_size;
     }
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // arch_context_init memsets the whole SimContext, and the trace id is stamped once at
-    // thread_create; without this the rebuilt thread switches in as an unknown tid.
+    // arch_context_init re-initialises the whole SimContext, and the trace id is stamped
+    // once at thread_create; without this the rebuilt thread switches in as an unknown tid.
     uint16_t const tid = c->tid;
 #endif
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
@@ -1268,8 +1268,10 @@ void arch_timer_disarm(void)
 // is applied on ITS OWN stack at its return-to-user boundary (arena_lower_to_applied
 // from the syscall unwind, or the trampoline for a fresh thread). The regions pointer
 // is the caller's TCB regions[], stable while the thread runs.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
+                    struct arch_mpu_encoded const* image)
 {
+    (void)image;
     if (sim().arena == nullptr)
     {
         return;
@@ -1277,6 +1279,28 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     sim().applied = regions;
     sim().applied_n = n;
     arena_raise_all();
+}
+
+// mprotect takes the addresses themselves, so there is nothing to pre-encode: the image
+// records only which regions the arena can enforce, which is the answer arena_lower_to_applied
+// reaches independently on the thread's own stack.
+uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
+                         struct arch_mpu_encoded* out)
+{
+    if (n > ARCH_MPU_ENCODED_SLOTS)
+    {
+        n = ARCH_MPU_ENCODED_SLOTS;
+    }
+    uint32_t seated = 0;
+    for (size_t i = 0; i < n; i++)
+    {
+        if (arena_region_valid(regions[i].base, regions[i].size))
+        {
+            seated |= static_cast<uint32_t>(1) << i;
+        }
+    }
+    out->seated = seated;
+    return seated;
 }
 
 // Empty: arch_mpu_apply above already programs mprotect as it records, and the host
@@ -1417,9 +1441,10 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 //
 // This definition MUST stay in this TU. sim.cc is always extracted (it carries
 // arch_init and the context switch) and is the FIRST member of kickos_arch_sim, so it
-// resolves the symbol before common/arch_periph_reg_write_default.cc (in the same
-// archive) can be pulled in. Moving it to a dedicated TU nothing else references would
-// resolve the declining default instead, with no link error.
+// resolves the symbol before common/arch_periph_reg_write_default.cc could be pulled in,
+// which is why that fallback is dropped from this archive (arch/CMakeLists.txt). Moving
+// it to a dedicated TU nothing else references is a loud link error, not a silent
+// decline.
 int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
 {
     if (sim().pvreg == nullptr)
