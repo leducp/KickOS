@@ -43,9 +43,11 @@ RIG_PYBIN=
 RIG_CONSOLE_RX72M=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_XXXXXXXX*
 RIG_CONSOLE_PICOPI=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
 RIG_CONSOLE_PIZERO2350=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
-# teensy41's console is LPUART6 ("Serial1"): the FTDI's RX goes to the board's TX, PIN 1.
-# Pin 0 is the board's own RX and reading it captures nothing. The swap is silent, and
-# an empty log looks exactly like a board that printed nothing.
+# Where one cable serves several boards, THE PIN IS THE BOARD'S, NOT THE CABLE'S, and an
+# empty log looks exactly like a board that printed nothing:
+#   picopi      GP0/GP1, UART0. FTDI RX on GP0.
+#   pizero2350  GP4/GP5, UART1. FTDI RX on GP4; UART0 is not on the Pi-Zero header.
+#   teensy41    LPUART6 ("Serial1"). FTDI RX on PIN 1; pin 0 is the board's own RX.
 RIG_CONSOLE_TEENSY41=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
 #
 # SEVERAL ROWS MAY NAME ONE CABLE, as the two above do: a bench with fewer FTDIs than
