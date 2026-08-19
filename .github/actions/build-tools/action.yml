@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+# Build tools from apt, for the packages the runner image does not already carry. The
+# runner ships most of them, so the common path installs nothing and never reaches the
+# network: apt-get update is what hangs, and a job that does not call it cannot hang in it.
+name: Install build tools
+description: apt only the packages whose command is missing, with a bounded retry.
+
+inputs:
+  packages:
+    description: Space-separated apt package names.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      # A package name is not its command; the four that differ are spelled out. A package
+      # added here whose command differs and is NOT listed reinstalls on every run, which
+      # is slow rather than wrong.
+      run: |
+        set -eu
+        command_for() {
+          case "$1" in
+            ninja-build)      echo ninja ;;
+            xz-utils)         echo xz ;;
+            qemu-system-misc) echo qemu-system-riscv32 ;;
+            python3-venv)     echo python3 ;;
+            *)                echo "$1" ;;
+          esac
+        }
+        need=""
+        for p in $PACKAGES; do
+          if ! command -v "$(command_for "$p")" > /dev/null 2>&1; then
+            need="$need $p"
+          fi
+        done
+        if [ -z "$need" ]; then
+          echo "runner already carries: $PACKAGES"
+          exit 0
+        fi
+        echo "installing:$need"
+        # Every apt call is bounded. Unbounded, this step has been observed at 25 minutes
+        # against a slow mirror, and the job budget is what noticed rather than the step.
+        for attempt in 1 2 3; do
+          if sudo timeout 120 apt-get update -qq; then
+            break
+          fi
+          echo "apt-get update timed out or failed, attempt $attempt"
+          sleep $((attempt * 5))
+        done
+        # Attempted even when every update failed: the image ships package lists, and a
+        # stale list that still resolves these versions installs fine.
+        sudo timeout 300 apt-get install -y --no-install-recommends $need

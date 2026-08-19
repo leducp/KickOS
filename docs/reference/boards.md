@@ -474,10 +474,11 @@ the board".
   build -- upstream `rx-elf` GCC rejects them. That toolchain cannot be fetched anonymously on a
   hosted runner, so RX is bench-validated only. A change that touches the arch seam is *not*
   covered for RX by a green CI run; build it locally.
-- **`f302nucleo` has no AUTOMATED gate of any kind.** It is in the `build-boards` sweep and nothing
-  else: no CTest, and no QEMU run gate because **no emulator models the part**. So the only thing CI
-  says about this board is that it links, and a regression that stops it booting is invisible until
-  somebody flashes it. That matters more now than it did, because it is a bench board and the
+- **`f302nucleo` has no RUN gate of any kind.** It is in the `build-boards` sweep and nothing
+  else: the `host`-labelled gates over its own build tree, and no QEMU run gate because **no
+  emulator models the part**. So what CI says about this board is that it links and that its seams
+  and classes resolve, and a regression that stops it booting is invisible until somebody flashes
+  it. That matters more now than it did, because it is a bench board and the
   fleet's only physically-present no-MPU ARM part (see *Unprivileged root* below).
 
   **Unwitnessed is not the same as ungated, and the ring arm is the case that separates them.** The
