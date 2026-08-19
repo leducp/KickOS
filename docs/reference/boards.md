@@ -323,13 +323,21 @@ reserved-block entry for one of these covers `0x4000` and not `0x1000`.
 hanging): XOSC `CTRL.FREQ_RANGE = 0xaa0` (the 1-15 MHz range, for the 12 MHz crystal), then the
 `CTRL.ENABLE` magic `0xfab` in a SEPARATE store so `ENABLE` never latches before `FREQ_RANGE` is
 set, poll `STATUS.STABLE`; `clk_ref <- XOSC`, poll the one-hot `CLK_REF_SELECTED`;
-start the **TICKS TIMER0** generator with `CYCLES = 12` for a 1 MHz tick (this is the new common
-tick block, NOT RP2040's watchdog tick, and TIMER0 does not count until it runs -- kept on
-`clk_ref` so the monotonic clock is PLL-independent); PLL_SYS to 150 MHz as
-`12 MHz / REFDIV=1 x FBDIV=125 = 1500 MHz VCO / POSTDIV1=5 / POSTDIV2=2`, poll `CS.LOCK`;
-`clk_sys <- PLL` with `SystemCoreClock = 150e6` in the same step; `clk_peri <- clk_sys` and
-recompute the UART divisors. Fallbacks: no XOSC leaves ROSC (~6.5 MHz) with `CYCLES = 7`; no PLL
-lock stays on `clk_ref` at 12 MHz. The board always reaches a console.
+start the **TICKS TIMER0** generator with the `CYCLES` that lands a 1 MHz tick on the live
+`clk_ref` (this is the new common tick block, NOT RP2040's watchdog tick, and TIMER0 does not
+count until it runs -- kept on `clk_ref` so the monotonic clock is PLL-independent); PLL_SYS to
+150 MHz as `12 MHz / REFDIV=1 x FBDIV=125 = 1500 MHz VCO / POSTDIV1=5 / POSTDIV2=2`, poll
+`CS.LOCK`; `clk_sys <- PLL` with `SystemCoreClock = 150e6` in the same step; `clk_peri <- clk_sys`
+and recompute the UART divisors. Fallbacks: no XOSC, and no PLL lock, both leave `clk_sys` on the
+ROSC where the bootrom parked it, the second with `clk_peri` on the crystal. The board always
+reaches a console.
+
+**`clk_ref` is NOT the crystal frequency, and this cost a 4x-wrong wall clock.** `CLK_REF_DIV`
+divides the selected source before the `clk_ref` net that feeds TICKS (datasheet 8.1). The
+register resets to `INT = 1`, but the bootrom writes it and leaves 4 there, so a `CYCLES` picked
+for 12 MHz gives a 250 kHz tick while `arch_clock_now` reads the counter as microseconds. The
+backend reads the divisor at boot and derives `CYCLES` from it. The RP2040 has no such bootrom
+write, which is why its port can leave the divider out of the arithmetic.
 
 **The PADS.ISO gotcha, and it differs from RP2040.** RP2350 pads reset **ISOLATED** --
 `PADS.ISO` is **bit 8** and resets SET -- so a pad stays electrically disconnected until it is

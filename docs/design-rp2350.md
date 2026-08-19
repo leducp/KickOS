@@ -48,14 +48,17 @@ BOOTSEL-recoverable, so a wrong clock or boot config cannot brick it.
    MSP stack.
 
 6. **Keep the monotonic clock PLL-independent.** The 64-bit TIMER0 is fed by the TICKS generator
-   on `clk_ref`, so a PLL change cannot move it and `arch_clock_now` needs no re-anchor. Read via
+   on `clk_ref`, so a PLL change cannot move it and `arch_clock_now` needs no re-anchor. `clk_ref`
+   is the source divided by `CLK_REF_DIV`, which the bootrom leaves at 4, so the generator's
+   `CYCLES` is derived from that divisor rather than from the crystal frequency. Read via
    the non-latching `TIMERAWH`/`TIMERAWL` halves with a hi/lo/hi re-read (core-safe). The chip also
    defines `arch_trace_now` (`TIMERAWL`), displacing the armv7m DWT `CYCCNT` fallback, which does
    not exist usefully here.
 
-7. **Every clock poll is BOUNDED and degrades instead of hanging.** No XOSC leaves ROSC with a
-   lowered `SystemCoreClock`; no PLL lock stays on `clk_ref` with the UART on XOSC. The board
-   always reaches a console.
+7. **Every clock poll is BOUNDED and degrades instead of hanging.** Neither a dead XOSC nor a
+   dead PLL moves `clk_sys` off the ROSC the bootrom parked it on, so `SystemCoreClock` takes the
+   ROSC nominal in both; the dead-PLL case still has a crystal, so the UART goes on XOSC. The
+   board always reaches a console.
 
 8. **Release UART reset AFTER `clocks_init`.** It is on `clk_peri`, and releasing before that
    clock is live hangs forever on `RESET_DONE` -- the RP2040 lesson, unchanged here.

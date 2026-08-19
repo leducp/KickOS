@@ -892,7 +892,9 @@ everything else, which is the check that the factor is real. A 16 B generic roun
 context switch becomes 1632 cycles against the M7's 1998; the copy slope becomes 14 cycles per byte
 against 18 on the M4 and 8 on the M7; and the control becomes 20 cycles against 23, 27 and 53.
 Uncorrected, all four were absurd. **The percentage column needs none of this**, because both arms
-are timed by the same clock, which is why it is the column to trust.
+are timed by the same clock, which is why it is the column to trust. The backend now reads
+`CLK_REF_DIV` and derives the TICKS `CYCLES` from it, so a later capture on this board needs no
+correction; the figures above stay as measured.
 
 Its control is the weakest of the four rows and is reported rather than smoothed. Two of the three
 captures are acceptable (+31, +45, +35, +29 and +33, +45, +23, +30 reported, so about 20 cycles

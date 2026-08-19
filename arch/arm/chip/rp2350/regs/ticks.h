@@ -21,10 +21,10 @@ namespace kickos::rp2350::reg::ticks
     constexpr uintptr_t TIMER0_COUNT = mmap::TICKS_BASE + 0x20u;
 
     constexpr uint32_t CTRL_ENABLE = 1u << 0;
-    // tick = clk_ref / CYCLES. clk_ref is 12 MHz (XOSC) normally, ~6.5 MHz (ROSC) in
-    // the fallback -> pick CYCLES to land near 1 MHz either way.
-    constexpr uint32_t CYCLES_12MHZ = 12u;
-    constexpr uint32_t CYCLES_ROSC = 7u;
+    // tick = clk_ref / CYCLES, and clk_ref is whatever CLK_REF_DIV leaves, so CYCLES is
+    // derived from the live divisor rather than written as a constant.
+    constexpr uint32_t TICK_HZ = 1000000u; // arch_clock_now reads the count as microseconds
+    constexpr uint32_t CYCLES_MAX = 0x1ffu; // CYCLES is 9 bits (DS 8.5.1)
 }
 
 #endif
