@@ -74,6 +74,11 @@ namespace kickos
         PH_SWITCH_TO,
         PH_SWITCH_BOOK,
         PH_MPU_APPLY,
+        // The DEFERRED half. arch_mpu_apply only stashes on a pending-switch arch; the
+        // switch epilogue programs the hardware afterwards, from assembly, where no
+        // KICKOS_BENCH_SPAN can reach. Fed through kickos_bench_mpu_commit, so it is a
+        // LEAF and corrects by PH_NULL. Zero on a backend whose commit is empty.
+        PH_MPU_COMMIT,
         PH_KTIME_REARM,
         // A leaf only where arch_switch PENDS (armv7m, rv32imac, rxv3). On the LX6 and the
         // sim it swaps inline, and this one closes when the thread is next resumed.

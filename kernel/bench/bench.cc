@@ -90,7 +90,8 @@ namespace
         "REPLY_TOTAL     ", "REPLY_VALIDATE  ",
         "REPLY_LOCKED    ", "REPLY_LOOKUP    ", "REPLY_COPY      ", "REPLY_FUNNEL    ",
         "REPLY_WAKE      ", "WAKE_UNPARK     ", "PICK_NEXT       ", "SWITCH_TO       ",
-        "SWITCH_BOOK     ", "MPU_APPLY       ", "KTIME_REARM     ", "ARCH_SWITCH     "};
+        "SWITCH_BOOK     ", "MPU_APPLY       ", "MPU_COMMIT      ", "KTIME_REARM     ",
+        "ARCH_SWITCH     "};
     static_assert(sizeof(PHASE_NAME) / sizeof(PHASE_NAME[0]) == kickos::PH_COUNT,
                   "one name per phase, in enum order");
 }
@@ -106,6 +107,14 @@ extern "C"
     // Xtensa only: the windowed exit can't host a call, so switch.S stamps the switch
     // END here and accumulates (end-start) at the NEXT switch entry (a safe call site).
     constinit uint32_t g_bench_sw_end = 0;
+
+    // The arch's deferred MPU commit runs from the switch epilogue, below the kernel
+    // headers, so it reaches the accumulator through this the way switch.S reaches
+    // kickos_bench_switch_done.
+    void kickos_bench_mpu_commit(uint32_t delta)
+    {
+        kickos::bench_phase_add(kickos::PH_MPU_COMMIT, delta);
+    }
 
     void kickos_bench_switch_done(uint32_t delta)
     {

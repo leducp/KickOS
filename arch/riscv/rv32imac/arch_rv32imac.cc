@@ -248,25 +248,31 @@ static uint8_t pmp_cfg(uint32_t attr)
     return static_cast<uint8_t>(c);
 }
 
-// csrw takes an immediate CSR number, so the 8 pmpaddr writes are unrolled.
-static void write_pmpaddr(size_t i, uint32_t v)
-{
-    switch (i)
-    {
-        case 0: { __asm volatile("csrw pmpaddr0, %0" ::"r"(v) : "memory"); break; }
-        case 1: { __asm volatile("csrw pmpaddr1, %0" ::"r"(v) : "memory"); break; }
-        case 2: { __asm volatile("csrw pmpaddr2, %0" ::"r"(v) : "memory"); break; }
-        case 3: { __asm volatile("csrw pmpaddr3, %0" ::"r"(v) : "memory"); break; }
-        case 4: { __asm volatile("csrw pmpaddr4, %0" ::"r"(v) : "memory"); break; }
-        case 5: { __asm volatile("csrw pmpaddr5, %0" ::"r"(v) : "memory"); break; }
-        case 6: { __asm volatile("csrw pmpaddr6, %0" ::"r"(v) : "memory"); break; }
-        case 7: { __asm volatile("csrw pmpaddr7, %0" ::"r"(v) : "memory"); break; }
-        default: { break; }
-    }
-}
-
-static struct arch_mpu_region g_pend_regions[8];
+// The set the next commit programs. A POINTER into the caller's region set, not a copy:
+// every commit on this arch is preceded by an apply inside the SAME MIE=0 window (the
+// msip trap, the .Lecall fastpath tail, arch_start, and the self-grant syscall, which
+// commits before it returns), so nothing can rewrite the set in between. Thread slots
+// come from a static pool and are never returned to an allocator, so a pointer left over
+// from an earlier switch still addresses valid region storage.
+static struct arch_mpu_region const* g_pend_regions = nullptr;
 static size_t g_pend_count = 0;
+
+#if KICKOS_BENCH
+// The kernel's phase accumulator, reached the way switch.S reaches
+// kickos_bench_switch_done: this TU is below <kickos/bench.h>.
+extern "C" void kickos_bench_mpu_commit(uint32_t delta);
+
+static uint32_t mpu_bench_cyc(void)
+{
+    if (::g_bench_cycle_src != nullptr)
+    {
+        return *::g_bench_cycle_src;
+    }
+    uint32_t v;
+    __asm volatile("rdcycle %0" : "=r"(v));
+    return v;
+}
+#endif
 
 // STASH-ONLY apply (deferred-commit seam, docs/design-mpu-commit-deferred.md): record
 // the incoming set; kickos_arch_mpu_commit writes the PMP CSRs from the .Lswitch switch
@@ -279,10 +285,7 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     {
         n = 8;
     }
-    for (size_t i = 0; i < n; i++)
-    {
-        g_pend_regions[i] = regions[i];
-    }
+    g_pend_regions = regions;
     g_pend_count = n;
 }
 
@@ -291,33 +294,50 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 // already atomic vs interrupts and must NOT toggle MIE here.
 void kickos_arch_mpu_commit(void)
 {
+#if KICKOS_BENCH
+    uint32_t const bench_start = mpu_bench_cyc();
+#endif
     struct arch_mpu_region const* const regions = g_pend_regions;
     size_t const n = g_pend_count;
     // Build 8 PMP entries (0..7). A region is NAPOT-encoded only if its size is a
     // power of two >= 8 (unprivileged regions come from the pow2 allocator); a non-pow2
     // region (e.g. a privileged thread's whole-arena grant) is left OFF, which is
     // harmless since that thread runs in M-mode and bypasses PMP.
-    uint32_t addr[8] = {0};
-    uint8_t cfg[8] = {0};
-    for (size_t i = 0; i < 8; i++)
+    // An aggregate initialiser here compiles to a memset call, and this image's memset
+    // is a byte loop; assign every element instead.
+    uint32_t addr[8];
+    uint32_t cfg[8];
+    size_t i = 0;
+    for (; i < n; i++)
     {
-        if (i < n and regions[i].size >= 8 and std::has_single_bit(regions[i].size))
+        addr[i] = 0;
+        cfg[i] = 0;
+        if (regions[i].size >= 8 and std::has_single_bit(regions[i].size))
         {
             addr[i] = pmp_napot_addr(regions[i].base, regions[i].size);
             cfg[i] = pmp_cfg(regions[i].attr);
         }
     }
+    for (; i < 8; i++)
+    {
+        addr[i] = 0;
+        cfg[i] = 0;
+    }
     // Write the addresses, then the two cfg words (which activate the entries).
     // This overwrites the permissive bootstrap TOR entry (kickos_rv32_init); the
     // kernel is in M-mode here and bypasses PMP, so the transient is safe.
-    for (size_t i = 0; i < 8; i++)
-    {
-        write_pmpaddr(i, addr[i]);
-    }
-    uint32_t const cfg0 = static_cast<uint32_t>(cfg[0]) | (static_cast<uint32_t>(cfg[1]) << 8)
-                        | (static_cast<uint32_t>(cfg[2]) << 16) | (static_cast<uint32_t>(cfg[3]) << 24);
-    uint32_t const cfg1 = static_cast<uint32_t>(cfg[4]) | (static_cast<uint32_t>(cfg[5]) << 8)
-                        | (static_cast<uint32_t>(cfg[6]) << 16) | (static_cast<uint32_t>(cfg[7]) << 24);
+    // csrw takes an immediate CSR number, so an indexed write needs a dispatch; spelled
+    // out, the eight writes are eight instructions.
+    __asm volatile("csrw pmpaddr0, %0" ::"r"(addr[0]) : "memory");
+    __asm volatile("csrw pmpaddr1, %0" ::"r"(addr[1]) : "memory");
+    __asm volatile("csrw pmpaddr2, %0" ::"r"(addr[2]) : "memory");
+    __asm volatile("csrw pmpaddr3, %0" ::"r"(addr[3]) : "memory");
+    __asm volatile("csrw pmpaddr4, %0" ::"r"(addr[4]) : "memory");
+    __asm volatile("csrw pmpaddr5, %0" ::"r"(addr[5]) : "memory");
+    __asm volatile("csrw pmpaddr6, %0" ::"r"(addr[6]) : "memory");
+    __asm volatile("csrw pmpaddr7, %0" ::"r"(addr[7]) : "memory");
+    uint32_t const cfg0 = cfg[0] | (cfg[1] << 8) | (cfg[2] << 16) | (cfg[3] << 24);
+    uint32_t const cfg1 = cfg[4] | (cfg[5] << 8) | (cfg[6] << 16) | (cfg[7] << 24);
     __asm volatile("csrw pmpcfg0, %0" ::"r"(cfg0) : "memory");
     __asm volatile("csrw pmpcfg1, %0" ::"r"(cfg1) : "memory");
     // Order the PMP update before the mret (arch_switch) that drops to U-mode, so the
@@ -325,6 +345,9 @@ void kickos_arch_mpu_commit(void)
     // hart sees PMP changes on its next access; the fence is the conservative guarantee
     // across the M->U transition.
     __asm volatile("fence" ::: "memory");
+#if KICKOS_BENCH
+    kickos_bench_mpu_commit(mpu_bench_cyc() - bench_start);
+#endif
 }
 #else
 // No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + syscall only. The

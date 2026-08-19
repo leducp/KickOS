@@ -999,6 +999,8 @@ wrong is the transferable lesson.**
   cycles times two switches -- **900 cycles, 13.8 percent** -- and its sample count is IDENTICAL in
   both arms, confirming the fastpath removed no switch. Switch machinery that may not be skipped
   totals about 1428 cycles, 21.9 percent.
+  **Section 7 shows the 900 was itself an undercount, and that most of the rest was not switch
+  machinery at all.**
 - **Only one of the round trip's THREE locked legs was attacked.** Section 3.0.4 established that a
   round trip holds the lock three times, not twice; the recv park and the reply still take the full
   generic path with two more trap round trips between them.
@@ -1064,3 +1066,96 @@ instrument-free kernel.
 gets its hardest input, because a per-core instrument must answer what a shared accumulator across
 cores means, and the state inventory already rules the bench accumulators per-core. Deciding the
 shape before that constraint is known would decide it twice.
+
+## 7. The protection commit: 2054 cycles a round trip, and none of it was encoding
+
+Section 5.1 priced per-switch protection at `MPU_APPLY`'s 450. That bracket wraps
+`arch_mpu_apply` and nothing else, and on every arch whose switch is DEFERRED that call only
+STASHES. The hardware programming runs afterwards in the switch epilogue, from assembly, where
+`KICKOS_BENCH_SPAN` cannot reach -- so **half the cost had no bracket on it.** `PH_MPU_COMMIT`
+now brackets `kickos_arch_mpu_commit` itself, fed through an `extern "C"` sink the way `switch.S`
+feeds `kickos_bench_switch_done`.
+
+`esp32c6-wroom`, minimums, n = 280021 (identical in both knob positions, which is what says the
+fastpath removes no commit), corrected as leaves by `PH_NULL` = 2:
+
+| leaf | before | after | what it is |
+|---|---|---|---|
+| `MPU_APPLY` | **444** | **21** | the stash |
+| `MPU_COMMIT` | **583** | **247** | the PMP programming |
+| per switch | **1027** | **268** | |
+| per round trip | **2054** | **536** | two switches |
+
+2054 cycles is **22.5 percent** of the 9131-cycle round trip, not 13.8.
+
+### 7.1 The cost was libc, called with a compile-time size
+
+Read from the emitted code, not inferred:
+
+- `arch_mpu_apply` copied the region descriptors into a private stash one `struct` at a time, and
+  GCC at `-Os` turns a 12-byte struct assignment into a `memcpy` CALL. **This image's freestanding
+  `memcpy` is a byte loop** -- six instructions per byte. Four regions is four such calls.
+- `kickos_arch_mpu_commit` opened with `uint32_t addr[8] = {0}`, which is a `memset(32)` call
+  through the same byte loop, and closed with eight INDEXED `pmpaddr` writes: `csrw` takes an
+  immediate CSR number, so the indexed form compiled to a jump table taken eight times.
+- The NAPOT arithmetic the whole path is named for -- `pmp_napot_addr` plus `pmp_cfg` -- is four
+  instructions per region. It was never the cost. **A recomputed encoding was the wrong suspect,
+  and precomputing it was not what the fix needed.**
+
+### 7.2 The fix, and why it cannot go stale
+
+- **The stash is a POINTER, not a copy.** Every commit on this arch is preceded by an apply inside
+  the SAME `MIE=0` window: the msip trap, the `.Lecall` fastpath tail, `arch_start`, and
+  `KOS_SYS_MEM_SELF_GRANT`, which commits before it returns. `Thread::regions` has exactly two
+  writers, `thread_create` and that syscall, and neither can run inside that window against the
+  stashed thread. Thread slots come from a static pool and are never returned to an allocator, so
+  a pointer left over from an earlier switch still addresses valid region storage: the failure
+  mode a copy was guarding against is a stale SET either way, and the copy did not prevent it.
+  A superseded publication -- two `switch_book` calls under one lock -- overwrites the stash with
+  the second, which is the thread the switch will actually land on.
+- The commit assigns every element of `addr[]`/`cfg[]` instead of zero-initialising them, which is
+  what pulled in `memset`, and the eight `pmpaddr` writes are spelled out.
+
+Both the generic switch and the IPC fastpath reach `arch_mpu_apply` through the one `switch_book`
+and reach the commit through their own assembly epilogue, so ONE change covers both paths. The 2x2
+below is what proves it rather than the argument.
+
+### 7.3 The 2x2, because the change touches both paths
+
+Same board, same tree, one commit apart; `PH_MPU_COMMIT` present in all four so the instrument is
+constant. 8 B round trip, the payload where the fastpath is taken:
+
+| | fastpath OFF | fastpath ON |
+|---|---|---|
+| **before** (`d478b6e0`) | 57067 ns | 47717 ns |
+| **after** (`aea37049`) | **47492 ns** | **38092 ns** |
+| delta | **-9575 ns (-1532 cyc)** | **-9625 ns (-1540 cyc)** |
+
+**The two gains are equal to within 0.5 percent, which is the result that says both commit paths
+were caught.** A change that landed in one path only would show a smaller gain in the fastpath
+column. The phase table closes the same accounting independently: 759 cycles per switch times two
+switches is 1518 predicted against 1532 measured.
+
+The slowpath column is the honest headline, because most calls in this tree exceed the 20-byte
+register budget and never take the fastpath: **-16.8 percent end to end on the path almost every
+call uses.**
+
+The fastpath's OWN worth is unchanged by cheaper protection, which is what it should be. Comparing
+ACROSS columns needs the instrument correction first: the `n` columns say bracket executions fall
+by 760000 over 40000 fastpath calls, **19.00 per round trip exactly**, in both rows. At this
+board's 46.5 to 50 cycles per bracket that is 883 to 950 cycles of pure instrument inside an
+apparent 1496 (before) and 1504 (after) cycle delta, leaving 546 to 616 before and 554 to 624
+after. Equal within 8 cycles.
+
+### 7.4 What is left, and what it would cost
+
+`MPU_COMMIT` is still **247 cycles a switch, 494 a round trip, 6.5 percent** of the round trip that
+remains. That residual IS the encode loop plus ten CSR writes, and precomputing each thread's eight
+`pmpaddr` words and two `pmpcfg` words would take it to about 40.
+
+That is not free and it is not obviously right. It would put a CACHED DUPLICATE of the
+authoritative region set inside enforcement code, where a missed refresh is a protection hole
+rather than a wrong answer, and it costs 40 bytes on every rv32imac TCB. The two writers that
+would have to refresh it are known and few, which is what makes it tractable; the project's own
+"no second truth" rule is what makes it a decision rather than an obvious next step. **Recorded as
+priced, not taken.**
