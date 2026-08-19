@@ -1568,6 +1568,12 @@ uintptr_t arch_mpu_probe_addr(void)
 }
 
 // --- Syscall trap -----------------------------------------------------------
+// Named a trap for the seam's sake; it is a direct call, and the privilege raise below is
+// emulated rather than taken. So this backend ships no ipc_fastpath.cmake, for the same
+// reason arch/xtensa/lx6 does not: there is no exception entry, no trampoline and no
+// deferred switch back for a fastpath to skip, and a caller's continuation here is a host
+// return address on its own stack, not a saved register frame the reply could land in.
+// Thread::call_frame_parked is unimplementable on that shape rather than unwritten.
 uint64_t arch_syscall64(uintptr_t nr,
                         uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
 {
