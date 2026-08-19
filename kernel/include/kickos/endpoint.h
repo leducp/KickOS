@@ -53,8 +53,9 @@ namespace kickos
         // is documented, not enforced. Also the boost target when a caller parks on
         // send_waiters. MUST be cleared in the endpoint close/teardown arm when the server
         // drops its WAIT cap, else this raw pointer dangles onto a reused TCB.
-        // Write it ONLY through endpoint_server_set/endpoint_server_clear (sync.h); the
-        // chain above indexes this field, and a bare store leaves that chain stale.
+        // Write it ONLY through endpoint_server_set/endpoint_server_clear (sync.h) once the
+        // endpoint is live; the chain above indexes this field, and a bare store leaves that
+        // chain stale. endpoint_create is the one bare store, and it seats next_served too.
         Thread* server = nullptr;
     };
 

@@ -72,7 +72,7 @@ Where the instance comes from depends on the board:
   it needs no config.
 - an **ST-Link or CH34x** has a by-id prefix that names the probe on its own, so the
   script carries the pattern.
-- an **FTDI console** (`rx72m`, `picopi`, `pizero2350`) has NO tracked pattern and refuses
+- an **FTDI console** (`rx72m`, `picopi`, `pizero2350`, `teensy41`) has NO tracked pattern and refuses
   by name until `RIG_CONSOLE_<BOARD>` says which cable. A bench carries other people's
   FT232s and CP210x cables, so a vendor-keyed glob resolves to whichever enumerated first,
   and the capture that follows is complete, plausible, and the wrong board.

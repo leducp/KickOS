@@ -5,15 +5,22 @@
 // complement of apps/mpu_fault (which confines a spawned CHILD): here the child's
 // write is the control that must succeed, and ROOT's write is the one that must
 // fault. Root holds only [app code RX, app static data RW, its own stack], so region A
-// is in no region of root's: under enforcement the write traps and the kernel reports
-// "MPU FAULT: thread 'root' attempted write at <A>". Without enforcement it completes,
-// and the run ends with the "not confined" line and a clean exit.
+// is in no region of root's: under enforcement the write traps. What that DOES depends
+// on the posture (KICKOS_FAULT_OUTCOME): with no fault isolation the kernel reports
+// "MPU FAULT: thread 'root' attempted write at <A>" and shuts down; where the arch opted
+// in, root itself is killed ("=== THREAD FAULT === thread 'root' killed") and the parked
+// child keeps the system alive. Without enforcement the write completes, and the run ends
+// with the "not confined" line and a clean exit.
 //
 // Region A is genuinely another DOMAIN's, not merely unmapped: the child is still
 // alive and parked when root writes it, so its region descriptor is live.
 //
-// The fault report survives a console handover: kickos_isr_fault funnels through
-// kpanic_enter, which reclaims the UART from the userspace driver before printing.
+// The fault report survives a console handover either way: the panic arm goes through
+// kickos_isr_fault, whose kpanic_enter reclaims the UART from the userspace driver before
+// printing; the thread-kill arm prints with kprintf_fault, whose kernel-path write runs
+// FIRST and unconditionally (the chip backend DROPS it while a driver owns the UART, RTT
+// does not), then delivers to the published endpoint and forces the chip path back open
+// only when that delivery reaches nobody.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

@@ -20,7 +20,9 @@ namespace tap
 {
     using TestFn = void (*)();
 
-    // Register a test. Call before run_all(); silently ignored past capacity.
+    // Register a test. Call before run_all(). A registration past MAX_TESTS is dropped,
+    // and run_all() then emits an extra `not ok - tap_registry_overflow` and fails the
+    // suite, so a truncated registry can never read as a clean run.
     void add(char const* name, TestFn fn);
 
     // Mark the CURRENT test failed with a printf-style diagnostic. First failure

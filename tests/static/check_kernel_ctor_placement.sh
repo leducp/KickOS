@@ -7,9 +7,9 @@
 # libkickos_arch_<arch>.a / libkickos_chip_<chip>.a / libkickos_lib.a) into
 # .init_array (Reset_Handler runs those before kmain) and send every OTHER
 # ctor (app / libstdc++ / libsupc++ / newlib / KickCAT) into .kickos_app_init_array,
-# which root_entry runs LATER, kernel-live. That set is duplicated across 13 linker
-# scripts; a future kernel-side archive whose ctor is NOT added to the set would
-# silently fall into .kickos_app_init_array and run too late: kmain would use an
+# which root_entry runs LATER, kernel-live. That set is duplicated across every chip
+# linker script in the tree; a future kernel-side archive whose ctor is NOT added to
+# it would silently fall into .kickos_app_init_array and run too late: kmain would use an
 # unconstructed kernel object. This gate catches exactly that regression.
 #
 # The gate enforces the partition in BOTH directions, because the two failures are

@@ -59,7 +59,7 @@ namespace kickos
         WAIT_NONE = 0,
         WAIT_MUTEX,     // wait_obj: the Mutex. The PI chain-walk edge.
         WAIT_SEM,       // wait_obj: the Semaphore
-        WAIT_IRQ,       // wait_obj: the IrqBinding. The one park a cancel may end.
+        WAIT_IRQ,       // wait_obj: the IrqBinding. A sem queue; this park reads wait_result.
         WAIT_EP_SEND,   // wait_obj: the Endpoint; on its send_waiters
         WAIT_EP_RECV,   // wait_obj: the Endpoint; on its recv_waiters
         WAIT_EP_REPLY,  // wait_obj: the SERVER thread; queue-less on its reply_waiters
@@ -454,8 +454,10 @@ namespace kickos
     // privilege posture included, from scratch.
     //
     // KICKOS_THREAD_SLOTS, not KICKOS_MAX_THREADS: kmain claims one slot for root before any
-    // spawn can run, and root never reaches EXITED, so a spawn still draws the full
-    // KICKOS_MAX_THREADS the board states.
+    // spawn can run, and no voluntary exit retires root, so a spawn still draws the full
+    // KICKOS_MAX_THREADS the board states. The fault-kill path is the one that DOES set root
+    // EXITED (kernel/init/fault.cc excludes only null / idle / privileged / dying), and root's
+    // slot is reclaimable from then on.
     struct ThreadPool
     {
         // The uint16_t generation takes the other 16, so the handle spends the whole word: a
@@ -552,7 +554,7 @@ namespace kickos
                     // cannot double-free one, and it clears the free-list head, which by then
                     // names a slot in a chunk this call gives away.
                     thread_cap_release(&slots[s]);
-                    // A slot's kill tag is its INDEX and so outlives its occupant: a child
+                    // A slot's kill tag is INDEX-DERIVED and so outlives its occupant: a child
                     // still naming this tag must be orphaned before the slot changes hands, or
                     // the new occupant inherits cancel authority over threads it never spawned.
                     // Reuse is the only event that makes the tag ambiguous, so this belongs
@@ -631,8 +633,8 @@ namespace kickos
             return t == &slots[ROOT_INDEX];
         }
 
-        // The kill tag naming `t`: its slot index if it is one of ours, else the boot tag.
-        // Never KILL_TAG_NONE, so a thread with no spawner matches nobody.
+        // The kill tag naming `t`: kill_tag_for_index of its slot if it is one of ours, else
+        // the boot tag. Never KILL_TAG_NONE, so a thread with no spawner matches nobody.
         uint16_t kill_tag_of(Thread const* t) const
         {
             int const index = index_of(t);

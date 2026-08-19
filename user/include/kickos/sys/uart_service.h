@@ -250,9 +250,8 @@ void console_thread(void* arg);
 // 1, so a descriptor that grants the right caps in the wrong ORDER passes valid() and stalls
 // silently. Nothing else in the tree checks this.
 //
-// valid() only RANGE-checks ready_offset, so a literal 0 there points at the ring head, which
-// is non-zero after shared_init: wait_ready returns true on its first read and THE BARRIER
-// SILENTLY BECOMES A NO-OP.
+// valid() only RANGE-checks ready_offset, so a literal there can land on a field already
+// non-zero when the poll first reads it, which turns the barrier into a silent no-op.
 constexpr bool desc_ok(driver::Descriptor const& d)
 {
     return driver::ring_doorbell_shape_ok(d, KOS_UART_READY_OFFSET,

@@ -41,8 +41,9 @@
     /* SPI_CTRLR0 = 0x03000218: XIP_CMD=0x03, INST_L=8b(2<<8), ADDR_L=24b(6<<2),
      * TRANS_TYPE=1C1A(0): command+address both in standard 1-bit SPI. */
     .equ SPI_CTRLR0_XIP, 0x03000218
-    /* SCK = clk_sys / BAUDR. clk_sys is the ~6.5 MHz ROSC at boot (and 12 MHz XOSC
-     * after chip init); /4 keeps SCK comfortably within any flash's 03h limit. */
+    /* SCK = clk_sys / BAUDR. clk_sys is the ~6.5 MHz ROSC while this runs, and nothing
+     * rewrites BAUDR afterwards, so SCK settles at 31.25 MHz once chip init puts clk_sys
+     * on the 125 MHz PLL: the flash must accept 03h reads at that rate. */
     .equ BAUDR_DIV,      4
 
     .equ M0PLUS_VTOR,    0xe000ed08

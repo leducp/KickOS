@@ -107,16 +107,17 @@ length-sensitive target needs (e.g. LAN9252) is `nseg = 2` under ONE CS bracket:
 phase then a read phase. `word_bits > 8` frames require each `seg.len` to be a whole-word
 multiple (native word layout).
 
-## I2C (contract only -- no driver body ships yet)
+## I2C (wire contract only: no I2C bus service ships yet)
 
 The canonical register access is a write-then-read: `nseg = 2`, segment 0
 `{ len = reg-addr bytes, flags = 0 }` (write), segment 1
 `{ len = n, flags = KOS_BUS_SEG_RD | KOS_BUS_SEG_STOP }` (read-then-STOP), with a repeated
 START between them (STOP absent on segment 0). A NACK aborts the transaction and surfaces
 as a negative `kos_bus_rsp.status` with `len` = bytes actually transferred before the NACK
-(partial). No CS concept exists on I2C. Controllers that realise this contract are the
-same many-modes blocks the SPI services use (XMC USIC IIC mode, RX SCI simple-I2C);
-mode-select resolves inside the class, not the wire.
+(partial). No CS concept exists on I2C. The one controller realised in tree is the RX72M's
+dedicated RIICa block (`system/driver/rx72m/i2c_riic.cc`), a local backend of the I2C class
+rather than a service. The many-modes blocks the SPI services use (XMC USIC IIC mode, RX SCI
+simple-I2C) can carry it too, and there mode-select resolves inside the class, not the wire.
 
 **`kos_bus_rsp.len` is read against the SIGN of `status`, and an error reply carries no
 payload.** On the error path (`status < 0`) the reply carries NO rx bytes and `len` is the
@@ -144,12 +145,12 @@ points the other way**, so this section is the authority for I2C: `kos_spi_seg_c
 a whole zero-length transfer (`len == 0`), and a service written from the SPI template will
 refuse the probe unless it reads this.
 
-> **Taxonomy gap (flagged).** The bus design intends an EIO-class code for a NACK, but the
-> current `system/include/kickos/sys/errno.h` taxonomy has no I/O-error code at all. Because
-> no I2C driver body exists yet, nothing defines one. The code that lands the first I2C service
-> must add an EIO-class code to the taxonomy (or map NACK onto an existing code) and this
-> page must be updated to name it exactly. Until then "a negative service status" is the
-> honest contract.
+> **A NACK is `-KOS_EIO`.** `system/include/kickos/sys/errno.h` defines `KOS_EIO` as the
+> device on the far side of a bus refusing or failing the transfer, which is exactly a NACK;
+> nothing about the request is malformed and no deadline passed, so neither `KOS_EINVAL` nor
+> `KOS_ETIMEDOUT` fits. The shipped RIICa engine already returns it on `ICSR2.NACKF`
+> (`system/driver/rx72m/i2c_riic.cc`), and a bus service serialising this contract puts the
+> same code in `kos_bus_rsp.status`.
 
 ## Chip-select policy (SPI, driver-internal)
 

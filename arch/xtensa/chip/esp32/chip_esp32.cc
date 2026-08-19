@@ -234,7 +234,7 @@ namespace
     // Prescaler off the 80 MHz APB (fixed on the PLL for both 160/240 MHz CPU; see
     // clock_init_240mhz). reg::timg::DIVIDER=2 gives the highest resolution while
     // dodging the field's special-cased 0/1: 80/2 = 40 MHz -> 25 ns/tick. A 64-bit
-    // counter at 40 MHz wraps in ~4600 years, so there is no wrap concern at all.
+    // counter at 40 MHz wraps in ~14600 years, so there is no wrap concern at all.
     constexpr uint32_t TIMG_HZ = reg::system::APB_CLOCK_HZ / reg::timg::DIVIDER; // 40 MHz
 
     // ticks -> ns reciprocal multiply: ns = ticks*1e9/HZ via mult = (1e9<<32)/HZ,

@@ -85,11 +85,19 @@ namespace kickos
 }
 ```
 
-`wq_block` is the parking half: detach the current thread from the run queue, set its
-state to `BLOCKED`, remember which queue it is on, push it onto that queue, and call
-`sched::reschedule()` to switch away. The caller must already hold the `IrqLock` that
-also covered the predicate -- that is the lost-wakeup fix, and it is a *precondition*
-of `wq_block`, not something it does for you.
+`wq_block` is the parking half: set the current thread's state to `BLOCKED`, detach it
+from the run queue, remember which queue it is on, push it onto that queue, and call
+`sched::reschedule()` to switch away. Those first two steps are in that order on
+purpose. The removal reads `state` to tell a park from a priority re-seat (Chapter 2.3),
+which is the difference between forfeiting the rest of a round-robin slice and keeping
+it, so `BLOCKED` has to be true before the removal runs. The detach then has to happen
+before the queue push, because the ready list and the wait queues share one link node in
+the thread control block, and the push would clobber links the removal still has to
+read.
+
+The caller must already hold the `IrqLock` that also covered the predicate -- that is
+the lost-wakeup fix, and it is a *precondition* of `wq_block`, not something it does for
+you.
 
 `wq_pop_highest` is the selection half: scan the queue, pick the highest-priority
 thread, and unlink it. It does **not** wake the thread, deliver it a result, or
@@ -161,9 +169,25 @@ Some blocking calls return a value: a mutex lock reports whether the previous ow
 died holding it; an endpoint receive reports the byte count or an error. The waker
 delivers that value through a single per-thread field, `Thread::wait_result`, written
 in step 2 (before `sched::wake`) and read by the woken thread after it resumes. The
-values form a **per-type namespace** -- the mutex's `1 = owner died` and the
-endpoint's `-1 = broken pipe` never collide, because only that type's own resume code
-ever reads the field. A semaphore wait returns `void`, so it never reads it.
+values are **one fleet-wide namespace**, not a namespace per object type: a non-negative
+value is a success payload (a byte count, or plain `0`), and a failure is the negation
+of a code from the single error enum every syscall in the system shares. The mutex's
+owner-died status is `-KOS_EOWNERDEAD`, the endpoint's dead-peer status is `-KOS_EPIPE`,
+and they cannot collide because they are two entries in one enum. A semaphore wait
+returns `void`, so it never reads the field.
+
+Per-type namespaces would have been the easier design, and they are the wrong one. The
+field is shared, the wakers are shared, and the unwind paths that end a park from
+outside (a deadline, a cancellation) do not know which object the thread was parked on
+when they write their status into it. A private meaning for `1` on one object type is
+then a meaning that some other object's waker can produce by accident. One taxonomy
+removes the question by construction, and it costs nothing: the codes were needed at the
+syscall boundary anyway (Chapter 3.9), so the park reuses them rather than inventing a
+second convention that has to be translated on the way out.
+
+There is exactly one wrinkle, and it belongs to the mutex: `-KOS_EOWNERDEAD` is
+negative and still means the lock was **acquired**. Chapter 2.3 spends a section on why,
+and on the `if (rc < 0)` that strands a mutex forever.
 
 One rule makes this safe: **the waker writes `wait_result`; the sleeper never writes
 it.** The sleeper only reads, and only after it has genuinely resumed -- which brings

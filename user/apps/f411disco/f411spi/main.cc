@@ -193,10 +193,11 @@ namespace
             kos::print("[f411spi] loopback FAIL (word mismatch)\n");
         }
 
-        // Negative test: on PMSA this ungranted access faults BEFORE any bus access, so
-        // the fault handler prints "MPU FAULT" with MMFAR=0x40020400. Terminal, so it
-        // must stay the LAST thing this thread does, and the announce must precede the
-        // poke or the console shows only the fault.
+        // Negative test: on PMSA this ungranted access faults BEFORE any bus access.
+        // armv7m opted into fault isolation, so this KILLS the thread
+        // ("=== THREAD FAULT === thread 'f411spi' killed", ADDR=0x40020400) rather than
+        // panicking. Terminal for this thread, so it must stay the LAST thing it does,
+        // and the announce must precede the poke or the console shows only the fault.
         kos::print("[f411spi] poking UNGRANTED GPIOB @ 0x40020400 (expect MPU FAULT)\n");
         uint32_t leaked = r32(GPIOB_BASE);
 

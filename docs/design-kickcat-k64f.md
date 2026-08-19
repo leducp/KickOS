@@ -12,13 +12,14 @@
 Scoping for the north-star integration (see `reference/architecture.md`, "Sim end-goal"):
 run KickCAT's `freedom-k64f` EtherCAT slave example on KickOS -- first on the sim over
 `EmulatedESC`, then on K64F over a real LAN9252 ESC via the unprivileged DSPI0 driver.
-KickCAT lives at `../KickCAT` (used, not vendored). Stage A (the sim slave) has LANDED as
-`user/apps/kickcat_slave` (a CI test); the K64F hardware path below is still the plan.
+KickCAT lives at `../KickCAT` (used, not vendored). Stage A (the sim slave) was recorded here as
+LANDED under the name `user/apps/kickcat_slave`; **no such app is in the tree** (see the status
+block above). The K64F hardware path below is still the plan.
 
 ## Verdict
 
-The sim path has LANDED (Stage A, `user/apps/kickcat_slave`). The K64F hardware path is not
-runnable today. The de-risking fact: KickCAT already cross-compiles for
+The sim path was recorded as LANDED (Stage A, under the name `user/apps/kickcat_slave`), and that
+app is not in the tree. The K64F hardware path is not runnable today. The de-risking fact: KickCAT already cross-compiles for
 Cortex-M4F (its own `examples/slave/nuttx/lan9252/freedom-k64f` target), so the library builds
 for our exact chip. The blockers below were the original KickOS gaps; all are now resolved
 (recorded here as the design record). The consumer app itself now lives in the KickCAT tree
@@ -28,10 +29,13 @@ for our exact chip. The blockers below were the original KickOS gaps; all are no
    C++17. Full C++ is now a per-app opt-in: an app links the exported `kickos_cxx` target
    (`-fexceptions -frtti`, `libstdc++`/`libsupc++` kept) instead of the freestanding `kickos`.
    Proven on real K64F silicon -- the slave reached `OPERATIONAL` under SYSMPU enforcement.
-2. **The `k64dspi` driver is a real transport (RESOLVED).** It exposes callable
-   `spi_transfer`/`spi_enable_cs`/`spi_disable_cs` (+ `spi_driver_start`), exported as the
-   `kickos_k64dspi` lib with the public header `<kickos/driver/k64dspi.h>` (source at
+2. **The `k64dspi` driver is a real transport (RESOLVED).** The four `spi_*` names this entry
+   listed are gone with the app that exported them. What ships is the SPI CLASS
+   (`kos_spi_bus_open` / `kos_spi_device_open` / `kos_spi_transfer` / `kos_spi_bus_close`,
+   `user/include/kickos/driver/spi.h`), with the DSPI engine behind it exported as the
+   `kickos_k64dspi` lib and the public header `<kickos/driver/k64dspi.h>` (source at
    `system/driver/mk64f/k64dspi`). An out-of-tree consumer links it on top of the OS.
+   `design-m5-kickcat-reality-check.md` section 1 is what re-derived this against both trees.
 3. **`k64dspi` silicon (RESOLVED).** The polled-FIFO transport (~10 MHz) reached `OPERATIONAL`
    against a real LAN9252. K64F peripheral isolation stays coarse (AIPS ceiling --
    driver-in-userspace holds, but no per-thread peripheral boundary): an accepted, documented
@@ -170,7 +174,8 @@ ceiling the flash reclaim does not touch.
 
 ## Staged plan
 
-- **A -- Sim slave on `EmulatedESC` (no hardware, CI-provable, smallest) -- LANDED (`user/apps/kickcat_slave`).** Add the Time-only
+- **A -- Sim slave on `EmulatedESC` (no hardware, CI-provable, smallest). Recorded as LANDED under
+  the name `user/apps/kickcat_slave`, which the tree does not contain.** Add the Time-only
   KickOS backend; enable full C++ on the sim app (host libstdc++, near-free); a sim app that
   builds `EmulatedESC` + `PDO` + `slave::Slave` and runs `routine()`. Proves OS-abstraction +
   KickCAT-on-KickOS-libc + the slave state machine, under CTest. (Single instance first;
@@ -179,7 +184,7 @@ ceiling the flash reclaim does not touch.
   libstdc++/libsupc++ over newlib in the `kickos` package (libstdc++ ships with the pinned vendor
   toolchain -- no install, so this is opt-in plumbing only). Prove with a tiny throw/catch K64F
   image; measure/raise the `_sbrk` arena.
-- **C -- Real `spi_transfer` + `AbstractSPI` backend.** Build the enqueue-and-block transport +
+- **C -- Real SPI transport + `AbstractSPI` backend.** Build the enqueue-and-block transport +
   CS-hold + null-buffer + multi-frame; write KickCAT's `AbstractSPI` KickOS impl. Prove on bench:
   raw loopback (SOUT<->SIN jumper) first, then `Lan9252::init()` against a wired LAN9252
   (BYTE_TEST reads 0x87654321).

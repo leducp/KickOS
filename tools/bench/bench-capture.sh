@@ -400,8 +400,9 @@ case $BOARD in
     # ~/.config/SEGGER/SEGGER_REG_HKEY_CURRENT_USER.xml as LicenseOpenSDA_DontShowAgainToday.
     # The first JLinkExe of a day waits on it, and every J-Link call here sends output to
     # /dev/null, so it surfaces as a hang or as "Failed to halt CPU" and reads as dead
-    # silicon. Two seconds of probing turns that into a refusal that names the cure, and
-    # catches a genuinely absent probe BEFORE the flash instead of after the capture is spent.
+    # silicon. The descending-speed probe below turns that into a refusal that names the
+    # cure, and catches a genuinely absent probe BEFORE the flash instead of after the
+    # capture is spent. It is bounded, not quick: three attempts under `timeout 30`.
     # SPEED IS TRIED DESCENDING, and 4000 alone was a MISDIAGNOSIS ENGINE. Measured
     # 2026-08-13 on frdmk64f SN 000621000000: at `-speed 4000` the connect stops right after
     # InitTarget() and never prints "identified.", while at 1000 the SAME probe on the SAME

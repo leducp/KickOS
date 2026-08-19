@@ -2,9 +2,10 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Deliberate CPU-fault gate, in its own binary because it ends the process: main
-// (root thread, privileged) executes an undefined/illegal instruction so the arch
-// fault reporter runs its dump and hands off to kfault_terminate (exit 132 on the
-// host/QEMU targets). This is the automated fault-dump gate. Its point is not that
+// (the root thread, which kmain spawns unprivileged in every posture) executes an
+// undefined/illegal instruction. Which dump and which exit status follow is the
+// posture's, not this file's: CMakeLists.txt picks the marker and the status the gate
+// pins. This is the automated fault-dump gate. Its point is not that
 // a fault halts; it is that the DUMP comes out: on a chip whose console ring is
 // armed (the sim arms one), the reporter must force the synchronous writer, or the
 // dump is enqueued into a ring whose drain interrupt is masked and lost. A silent

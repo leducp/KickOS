@@ -56,9 +56,11 @@ code wins, then this file.
 
 **"Full selftest" rather than N/N.** The TAP suite emits its own plan line (`1..N`) and a closing
 `# all tests passed`, and the gates key off *those*, never a number written down here
-(`tests/integration/check_qemu_selftest.sh`). N is not a constant: the suite registers ~56 tests on the sim
-today and the total moves with `KICKOS_HAVE_MPU` and `KICKOS_ENABLE_SELFTEST`, each of which
-compiles in tests that cannot run without it (the IRQ suite, the enforcement bound-checks).
+(`tests/integration/check_qemu_selftest.sh`). N is not a constant: it moves with
+`KICKOS_HAVE_MPU` and `KICKOS_ENABLE_SELFTEST`, each of which compiles in tests that cannot
+run without it (the IRQ suite, the enforcement bound-checks). The one authority for a given
+posture is the `_tap_arms` expression in `../../user/apps/common/selftest/CMakeLists.txt`,
+which is the value the gates are handed.
 Where a dated silicon record below still names a count -- "14/14", "17/17",
 "43/43" -- that is the plan size *on the date of that run*, not a target to reproduce. Run the
 board's `-st` preset and read the plan it prints.
@@ -518,7 +520,7 @@ the board".
   cores and nothing in the tree distinguishes them. See `design-unprivileged-root.md` section 2.
 - **microbit is the armv6m run gate, and the fleet's only board that is allowed to skip anything.**
   16 KiB SRAM and a 2-slot pool mean part of the suite genuinely cannot run here, so
-  `microbit_selftest` sets `EXPECT_SKIPS` to the eleven test **names** it cannot host; every other
+  `microbit_selftest` sets `EXPECT_SKIPS` to the test **names** it cannot host; every other
   board keeps the script's default of "nothing may skip". The list is a **measurement, not slack**
   -- each name and why it skips is at the call site
   (`../../user/apps/common/selftest/CMakeLists.txt`), so growing it should mean a board capability
@@ -592,11 +594,11 @@ two self-contained images that partition the arms between them.
 - **Flash and run them one after the other. Order does not matter.** Each initialises the board,
   runs its own arms and self-terminates; they share no state and there is no handover between them.
 - **TAP numbering RESTARTS at 1 in each part.** `tap.cc` plans `1..N` from its own runtime registry,
-  so part 1 emits `1..43` and part 2 `1..30` under `KICKOS_ENABLE_SELFTEST`. **A pass is BOTH parts
-  green** -- a single `1..43` stream is half a run, not a short one, and reading it as a pass is the
+  so each part announces its OWN N and the two are unrelated numbers. **A pass is BOTH parts
+  green** -- one part's stream is half a run, not a short one, and reading it as a pass is the
   obvious way to be fooled here.
-- Configure prints what to expect:
-  `-- selftest: split into two images -- selftest plans 43 arms, selftest_p2 plans 30 (73 together)`
+- Configure prints what to expect, off the same two expressions:
+  `-- selftest: split into two images: selftest plans <N1> arms, selftest_p2 plans <N2> (<N1+N2> together)`
 - These two boards run the FULL arm set: `cap_dest` and `irq_discard` are not excluded on them.
 - Which arm sits in which part is decided by POSITION in the registration list at the bottom of
   `user/apps/common/selftest/main.cc`, not by an annotation; the boundary is the `#undef TAP_ADD`.

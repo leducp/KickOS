@@ -13,7 +13,7 @@
 
 namespace kickos::esp32c6::reg::io_mux
 {
-    constexpr uintptr_t GPIO8 = mmap::IO_MUX_BASE + 0x24u; // == GPIO_BASE-relative 0x04 + 0x4*8
+    constexpr uintptr_t GPIO8 = mmap::IO_MUX_BASE + 0x24u; // == IO_MUX_GPIOn_REG 0x04 + 0x4*8
 
     // Per-pin IO_MUX_GPIOn_REG address.
     inline constexpr uintptr_t gpio(uint32_t pin)

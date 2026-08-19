@@ -5,12 +5,12 @@
 // generic (present on every v7-M part, chip-independent). The context switch +
 // syscall trap assembly lives in switch.S; the chip layer (arch/arm/chip/*)
 // supplies the truly hardware-specific edges (arch_init: clocks + console +
-// exception-priority install; arch_console_write: UART) and the linker script
-// that defines the user-RAM region and SystemCoreClock.
+// exception-priority install; arch_console_write: UART), SystemCoreClock, and the
+// linker script that defines the user-RAM region.
 
 #include <kickos/arch/arch.h>
 #include <kickos/diag.h>
-#include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
+#include <kickos/units.h> // _s literal (== 1e9 ns)
 
 #include "regs.h"
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
@@ -424,7 +424,7 @@ __attribute__((naked)) void HardFault_Handler(void)
 
 // --- One-time core bring-up, called by the chip's arch_init -----------------
 // Installs the system-handler priorities the BASEPRI crit section depends on and
-// starts the DWT cycle counter that backs the monotonic clock.
+// starts the DWT cycle counter that backs arch_trace_now.
 void kickos_armv7m_init(void)
 {
     // SHPR2[31:24] = SVCall (#11); SHPR3[23:16] = PendSV (#14), [31:24] = SysTick.

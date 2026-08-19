@@ -8,7 +8,7 @@
 # hosting the RTT telnet server on localhost:19021. No GDB needed.
 #
 # One J-Link probe = one connection at a time, so the loop is SEQUENTIAL:
-#   1. tools/flash-jlink.sh <image> [board]   # JLinkExe flashes + quits (frees the probe)
+#   1. tools/flash-jlink.sh <board> [app]     # JLinkExe flashes + quits (frees the probe)
 #   2. tools/rtt-server.sh [board]            # this (leave running; Ctrl-C to stop)
 #   3. JLinkRTTClient                          # another terminal: channel 0 (console)
 #

@@ -42,7 +42,7 @@ namespace
     }
 #endif
 
-    // Higher priority than the checker -> runs whenever the checker is asleep, so
+    // Lower priority than the checker -> runs whenever the checker is asleep, so
     // it is guaranteed to overwrite s16-s31 during every checker sleep window.
     void trasher(void*)
     {

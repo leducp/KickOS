@@ -152,7 +152,8 @@ elseif(KICKOS_ARCH STREQUAL "armv6m")
   # Cortex-M0/M0+ (RP2040). PRIMASK crit + v6-M-subset switch.S; the
   # chip supplies arch_clock_now (no DWT) + arch_init/console + linker script.
   # No arch_trace_now fallback: v6-M has no DWT, so the trace clock is a chip contract.
-  # A Cortex-M0 has no privilege ring and keeps the declining fault fallbacks instead.
+  # Fault isolation has a real v6-M backend (it reads CONTROL.nPRIV), linked in place of
+  # the declining fallbacks removed from KICKOS_SEAM_DEFAULTS_COMMON under the same gate.
   set(KICKOS_ARMV6M_FAULT "")
   if(KICKOS_FAULT_ISOLATION)
     set(KICKOS_ARMV6M_FAULT arm/armv6m/arch_armv6m_fault.cc)

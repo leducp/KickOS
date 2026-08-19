@@ -2,7 +2,9 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Design: the I2C seam, judged against three controllers and nine parts
 
-> **Status: DESIGNED AND PAPER-CHECKED BEFORE ANY ENGINE IS WRITTEN.** The hardware facts below are
+> **Status: DESIGNED AND PAPER-CHECKED BEFORE ANY ENGINE WAS WRITTEN**, and the first engine has
+> since been written against it: `user/include/kickos/driver/i2c.h` is the class header and
+> `system/driver/rx72m/i2c_riic.cc` the RIICa backend. The hardware facts below are
 > read from the reference manuals and datasheets on this box and cited by section. The three target
 > controllers are `mk64f` (NXP I2C), `xmc4800` (I2C as a USIC protocol mode) and `rx72m` (RIICa):
 > two ISAs, three unrelated designs. Nine parts across nine vendors are judged against the seam,
@@ -15,8 +17,9 @@
 `docs/design-m5-driver-set.md` section 4 carries the survey: `user/include/kickos/sys/bus.h` was
 authored for both protocols and already specifies I2C in detail, the proto discriminator,
 `KOS_BUS_SEG_RD` for per-segment direction, `KOS_BUS_SEG_STOP` whose ABSENCE is repeated START,
-10-bit addressing, and the request and reply payload rules. What is owed is a class header beside `spi.h`, an engine
-per chip, the proxy, and a service.
+10-bit addressing, and the request and reply payload rules. What was owed is a class header beside `spi.h`, an engine
+per chip, the proxy, and a service; the header and the RIICa engine have landed, the proxy and the
+service have not.
 
 **The segment list is the right abstraction, and the strongest evidence is that it is ISOMORPHIC to
 one of the three controllers' native form.** The XMC4800 drives I2C by writing an opcode plus a byte

@@ -16,10 +16,12 @@
 // Isolation reality (honest, coarse-AIPS): unlike the XMC PMSA case, the K64F
 // per-thread SYSMPU grant over the UART0 window is INERT for the peripheral. AIPS
 // peripheral bridges are NOT SYSMPU slave ports (RM 3.3.6.2), so peripheral MMIO is
-// not per-thread MPU-gated; the real enabler is the AIPS PACR open in the start
-// shim (which makes UART0 reachable by EVERY unprivileged thread). Handover here is
-// FUNCTIONAL + RECLAIM-PROOF, not per-thread peripheral isolation. SYSMPU still
-// enforces MEMORY (stack/data) isolation, which is why enforcement is still needed.
+// not per-thread MPU-gated; the real enabler is the AIPS PACR open the driver's own
+// kos_uart_open asks for through kos_periph_enable, which makes UART0 reachable by
+// EVERY unprivileged thread. Holding the window is the sole authorisation for that
+// call. Handover here is FUNCTIONAL + RECLAIM-PROOF, not per-thread peripheral
+// isolation. SYSMPU still enforces MEMORY (stack/data) isolation, which is why
+// enforcement is still needed.
 
 #ifndef KICKOS_DRIVER_K64UART_H
 #define KICKOS_DRIVER_K64UART_H
@@ -41,13 +43,13 @@ extern "C"
     // Spawned by k64uart_console_start(), or directly by a consumer.
     void k64uart_console_driver(void* arg);
 
-    // Privileged one-shot console-handover bring-up (call ONCE from the privileged
-    // app main, BEFORE spawning any app that should print through the driver):
+    // One-shot console-handover bring-up (call ONCE from the app main, BEFORE spawning
+    // any app that should print through the driver). The caller needs KOS_AUTH_CONSOLE
+    // and KOS_AUTH_MEMORY:
     //   1. create a console endpoint E,
     //   2. kos_console_publish(E)  (relinquishes the kernel UART, routes stdout to E),
-    //   3. open UART0's AIPS PACR slot to user mode (the ACTUAL enabler on K64F),
-    //   4. spawn the UNPRIVILEGED driver granted the UART0 window + {E | WAIT},
-    //   5. close root's own WAIT-bearing cap on E (S4: else driver death cannot EPIPE
+    //   3. spawn the UNPRIVILEGED driver granted the UART0 window + {E | WAIT},
+    //   4. close root's own WAIT-bearing cap on E (S4: else driver death cannot EPIPE
     //      and clients hang).
     // `cfg` carries the UART0 window base/size and the driver priority as data (a
     // KOS_SVC_CONSOLE service entry); cfg->prio must be >= every client's priority

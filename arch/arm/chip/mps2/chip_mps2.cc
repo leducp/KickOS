@@ -41,8 +41,9 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    // CMSIS convention: core clock in Hz. QEMU's Cortex-M4 has no real PLL; the
-    // DWT-based clock only needs a consistent value. 25 MHz is the MPS2 default.
+    // CMSIS convention: core clock in Hz. QEMU's Cortex-M4 has no real PLL; the SysTick
+    // ns<->cycle math (arch_arm_common) only needs a consistent value, and arch_clock_now
+    // here is semihosting-based. 25 MHz is the MPS2 default.
     uint32_t SystemCoreClock = 25000000u;
 }
 

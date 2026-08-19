@@ -98,7 +98,7 @@ The `KERNEL_OWNED` sub-decision is the load-bearing invariant of the whole desig
 only ever entered in ordinary thread context.** Any ISR/fault caller, a panic in
 progress, and all pre-arm boot output take the polled path. That is what lets the
 ring be a true single-producer / single-consumer structure without a general lock
-(see below). All four of `kconsole_write`'s chip-side calls go through
+(see below). Every one of `kconsole_write`'s chip-side calls goes through
 `console_emit` -- there is no other caller of `arch_console_write` in the tree, so
 the guard has complete coverage.
 
@@ -138,8 +138,9 @@ bounded stall.** Both poll loops are nonetheless bounded by `DRAIN_POLL_CAP`: a
 channel that never frees a slot makes `drain_sync` reset the ring and the burst loop
 return mid-buffer, dropping silently and without a counter. That is the one case this
 path does lose bytes, and it is the case where the wire is already dead. Ring
-sizing is per-chip (>= `kprintf`'s 256 B buffer; e.g. 512 B on most parts, 2048 on the
-ESP32-C6) and keeps this path rare.
+sizing is per-chip: 512 B on every chip that carries one, over `kprintf`'s 256 B
+buffer. The sim's ring is deliberately 128 B, below that buffer, so ordinary
+console traffic wraps it.
 
 ## The synchronous path and the panic-safe seam
 
@@ -174,8 +175,8 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 backend; if present it binds `console_tx_isr` to `irq_line`, unmasks the line
 (priority lands in the `IrqLock`-maskable band), and arms the ring. The generic
 ring never names a register; the chip supplies only these pokes. The backend is
-implemented across the fleet (K64F, XMC4800, the STM32 F1/F3/F4 parts, RP2040, SAM3X,
-RX72M, ESP32, ESP32-C6, and the sim); three illustrative ones:
+implemented across the fleet (K64F, XMC4800, the STM32 F1/F3/F4 parts, RP2040, RP2350,
+i.MX RT1062, SAM3X, RX72M, ESP32, ESP32-C6, and the sim); three illustrative ones:
 
 - **K64F (Kinetis UART0)** -- `slot_free` = `S1.TDRE`, `push` = `D`, the IRQ gate =
   `C2.TIE`, line = **IRQ 31** (UART0 RX/TX combined). `arch/arm/chip/mk64f/chip_mk64f.cc`.
@@ -253,8 +254,9 @@ Details specific to the sim:
 
 The kernel-side handover mechanism is **landed**. `console_tx_deinit` (flush -> disable
 TX IRQ -> `irq_detach`/NVIC-mask -> disarm the ring, all under one `IrqLock`) relinquishes
-the buffered path, and the privileged syscall `kos_console_publish` (29) calls it, takes a
-kernel ref on the stdout endpoint, and flips `g_console_state` to `USER_OWNED` last. A
+the buffered path, and the syscall `kos_console_publish` (29), gated on `AUTH_CONSOLE`,
+calls it, takes a kernel ref on the stdout endpoint, and flips `g_console_state` to
+`USER_OWNED` last. A
 stale in-flight chip writer that raced the flip is drained via the `g_chip_writers` count
 before publish returns (it lowers its own priority and yields so a lower-priority writer
 can finish -- the scheduler is strict-priority). The panic path funnels through
@@ -275,19 +277,22 @@ in the shift register cannot cut the banner it just printed; and a synchronous f
 *inside* the body re-enters `kpanic_enter` and stops rather than recursing with the old
 state -- a pre-existing recursion hazard that the widening closed. The safety of reclaiming
 a device no driver ever touched rests entirely on every chip body being **idempotent
-absolute stores**, which `arch.h` requires; every implementation was audited against
-it (`xmc4800` `usic_uart.cc`, `mk64f` `chip_mk64f.cc`, `esp32c6` `chip_esp32c6.cc`,
-`esp32` `chip_esp32.cc`, and the no-op fallback `arch/common/arch_console_reclaim_default.cc`).
+absolute stores**, which `arch.h` requires; every implementation in the tree was audited
+against it, the no-op fallback `arch/common/arch_console_reclaim_default.cc` included.
+`esp32c6` is the one body that is not pure straight-line: its `_SYNC` stores land only on
+the closing `REG_UPDATE` write, so it first waits out the previous synchronisation. That
+wait is bounded and read-only, so re-entry from a nested fault still repeats harmlessly.
 
 Known artifact (XMC4800 ASC): if the crashed driver cleared `SCTR.PDL`, the TX pin is
 held low across the fault, and reclaim's return to idle-high frames exactly one spurious
 leading byte (~`0xC0`) before the panic banner. It is a physical UART line-recovery
 transient (not lost/garbled output); the banner and fault dump that follow are byte-clean.
 
-Still **not built**: a real `arch_console_reclaim` body on the chips that have none. Four
-exist (`xmc4800` `usic_uart.cc`, `mk64f` `chip_mk64f.cc`, `esp32c6` `chip_esp32c6.cc`,
-`esp32` `chip_esp32.cc`); every other chip keeps the no-op
-fallback, so on those boards the reclaim is wiring with nothing behind it. The real bodies
+Still **not built**: a real `arch_console_reclaim` body on the chips that have none, which
+today are `mps2`, `nrf51`, `sam3x8e`, `stm32f103`, `stm32f302` and `virt`. Those keep the
+no-op fallback, so on their boards the reclaim is wiring with nothing behind it. The chips
+that do have one are what `grep -rn "^void arch_console_reclaim(void)" arch/` reports, minus
+the declaration in `arch/include/kickos/arch/arch.h`. The real bodies
 are silicon-only -- no emulated board carries one -- and the `xmc4800` one is witnessed by
 `conreclaim` (`c5d9b0d`). See
 [architecture.md](architecture.md), "Object model, capabilities & IPC" ->
@@ -297,9 +302,12 @@ are silicon-only -- no emulated board carries one -- and the `xmc4800` one is wi
 
 `kos_console_publish` hands the device away but cannot police what the publishing task does
 next. Three properties of the published console are therefore contracts on the PUBLISHER, not
-things the kernel enforces; the two console drivers (`system/driver/xmc4800/xmcuart`,
-`system/driver/mk64f/k64uart`) implement all three in their `*_console_start` helper, and
-`user/apps/common/initdemo` mirrors them.
+things the kernel enforces. No driver honours them in its own `*_console_start`: nine of the ten
+are a one-line delegation to `drv::bring_up`, and the tenth, `rtusb_console_start`
+(`system/driver/imxrt1062/rt1062usb`), wraps that same call in a failure-path print of the IRQ
+thread's stage. All three obligations live in `drv::bring_up`, in `user/src/driver_service.cc`.
+`user/apps/common/initdemo` open-codes the same sequence instead, being the handover demo
+rather than a driver.
 
 **Publish and driver-spawn are ONE atomic act.** Nothing may be spawned that depends on the
 console between the two. `kos_console_publish` returning has already flipped the state to

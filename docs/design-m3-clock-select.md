@@ -13,8 +13,8 @@
 > `clock-anchor-sole-writer-at-rate-edge` (the epoch anchor), `timer-arm-dedup-needs-disarm`.
 > This note is the decision record behind them.
 
-The READ side landed first: `sys_cpu_clock_hz()` (`KOS_SYS_CPU_CLOCK_HZ`,
-`user/include/kickos/sys/abi.h`) returns `arch_cpu_clock_hz()`, each backend reporting its CMSIS
+The READ side landed first: `kos_cpu_clock_hz()` (`KOS_SYS_CPU_CLOCK_HZ`,
+`user/include/kickos/sys.h`) returns `arch_cpu_clock_hz()`, each backend reporting its CMSIS
 `SystemCoreClock`. This note settles the WRITE side.
 
 ---

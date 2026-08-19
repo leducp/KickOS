@@ -35,12 +35,12 @@ Counting by CHIP (16 of them, since `mps2` serves four boards and `stm32f411` tw
 | timer/clock (arch) | **16 of 16** | none |
 | pinmux | 12 | `mps2`, `nrf51`, `virt`, `sim` |
 | diag LED | 11 | `mps2`, `nrf51`, `rp2350`, `virt`, `sim` |
-| UART as a SERVICE | 8 chips have one | `stm32f103`, `stm32f302`, `sam3x8e`, `nrf51`, `mps2`, `virt` have no directory at all |
+| UART as a SERVICE | **6**: `mk64f`, `xmc4800`, `stm32f411`, `rx72m`, `esp32c6`, `esp32`, the same six section 3 names | `stm32f103`, `stm32f302`, `sam3x8e`, `nrf51`, `mps2`, `virt` have no directory at all |
 | USB (console carrier only) | `imxrt1062`, `rp2040`, `rp2350` | not a generic peripheral class anywhere |
 | SPI as a registered service | **2**: `mk64f`, `xmc4800` | everywhere else |
 | GPIO | **4**: `mk64f`, `xmc4800`, `esp32c6`, `rx72m`, by THREE unrelated mechanisms | 12 chips |
 | reboot / bootloader handover | **3**: `rp2040`, `rp2350`, `imxrt1062` | 13 chips return `-KOS_ENOSYS` |
-| **I2C** | **0** | **16 of 16** |
+| **I2C** | **0** as a registered service, and that is still true; the class header and the first engine have since landed (`user/include/kickos/driver/i2c.h`, `system/driver/rx72m/i2c_riic.cc`) | **16 of 16** |
 
 Two rows deserve their own reading rather than a count.
 
@@ -86,8 +86,10 @@ reality check needed from SPI, and the ABI already grants it.
 What is genuinely missing is smaller than "a seam": an i2c class header beside `spi.h` in the same
 driver include directory, mirroring its four-symbol shape; a per-chip engine; the proxy that
 marshals onto a service endpoint; and a service driver. **That is porting work against a designed
-ABI**, not architecture. `KOS_SVC_I2C` being unassigned means no DRIVER has been written, not that
-nothing was thought through.
+ABI**, not architecture. The first two have since landed against `design-m5-i2c-seam.md`
+(`user/include/kickos/driver/i2c.h` and the RIICa engine `system/driver/rx72m/i2c_riic.cc`,
+target `kickos_i2c_rxriic`); the proxy and the service driver are still owed, and no driver
+registers `KOS_SVC_I2C` even though the kind is spelled in `system/include/kickos/sys/service.h`.
 
 Several chips already driven here have an I2C-capable peripheral beside the block the tree already
 drives (`xmc4800`'s USIC and `rx72m`'s SCI are multi-protocol), so the silicon is not the obstacle.
@@ -121,7 +123,7 @@ several chips.
   driver-equipped chips in the fleet and each still costs a button press per bench capture, so this
   one pays for itself in the bench loop immediately.
 - **UART service on `stm32f103`, `stm32f302`, `sam3x8e`, `nrf51`.** The `system/driver` chain and
-  the `<kickos/driver/uart.h>` backend already generalise across eight chips; a ninth is mechanical.
+  the `<kickos/driver/uart.h>` backend already generalise across six chips; a seventh is mechanical.
 - **SPI as a service on `stm32f411`.** The register code EXISTS and is proven on silicon; it just
   lives inside a one-off diagnostic app (`user/apps/f411disco/f411spi/`), registered for
   `f411disco` only, so `blackpill` cannot use it despite sharing the chip. Turning it into a

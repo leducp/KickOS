@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Memory-domain isolation gate. Its own binary because it ends the process: an
-// unprivileged domain-A thread writes its own granted region (OK), then writes domain B's
-// region, which must fault. The kernel reports "MPU FAULT" and shuts down.
-// tests/integration/check_mpu_fault.sh owns the verdict.
+// Memory-domain isolation gate. Its own binary because the run never reaches a clean
+// exit: an unprivileged domain-A thread writes its own granted region (OK), then writes
+// domain B's region, which must fault. What the trap DOES depends on the posture
+// (KICKOS_FAULT_OUTCOME): with no fault isolation the kernel reports "MPU FAULT: thread
+// 'domainA'" and shuts down; where the arch opted in, domainA alone is killed
+// ("=== THREAD FAULT === thread 'domainA' killed") and root parks forever.
+// tests/integration/check_mpu_fault.sh owns the verdict and takes the posture as an arg.
 //
 // Static-data-free by construction: the worker takes its region base through its thread
 // ARG, by value, and derives both cells from it. The only memory it touches is its code

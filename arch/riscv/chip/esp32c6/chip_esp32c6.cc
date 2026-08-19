@@ -60,9 +60,9 @@ extern "C"
     void __register_frame(void*) __attribute__((weak));
 #if KICKOS_HAVE_MPU
     // App-data NAPOT region (esp32c6.ld). .appdata holds the app + C++-runtime .data and
-    // the gp small-data window; its VMA jumps to the pow2 window base above the NOLOAD
-    // kernel .bss, so LMA != VMA and it needs a copy (like .data) before .appbss + pad
-    // are zeroed.
+    // the gp small-data window. No AT clause on any loadable section of this chip (the ROM
+    // loader places every segment at its VMA), so LMA == VMA is pinned by an ASSERT and the
+    // copy is a no-op, like .data's; the .appbss + pad zero after it is the real work.
     extern uint32_t _appdata_lma, __kickos_appdata_start, __kickos_appbss_start,
         __kickos_appdata_end;
 #endif
@@ -191,7 +191,7 @@ namespace
     // the switch.S demux (3=msip, 7=mtip). Shared with switch.S's .Lext arm via
     // rv_trap_ids.h.
     constexpr uint32_t DOORBELL_CPU_INT = KICKOS_RV_INJECT_DOORBELL_CPU_INT;
-    constexpr uint32_t DOORBELL_PRIO = 7; // 1..15; sole external source, so uncontended
+    constexpr uint32_t DOORBELL_PRIO = 7; // 1..15; same level as the device routes below
 
     // --- Real-device line routing. One entry per logical line that reaches hardware; a
     //     line absent from the table has no routing and stays on the software doorbell.
@@ -850,7 +850,7 @@ void arch_init(void)
     arch_timer_disarm();               // MTIMECMP = max: no timer fire until armed
     r32(reg::clint::MTIMECTL) = reg::clint::MTIMECTL_MTCE | reg::clint::MTIMECTL_MTIE; // start the counter + enable
 
-    kickos_rv32_init();  // vectored mtvec + mie(MSIE|MTIE|SSIE) + mcounteren + PMP
+    kickos_rv32_init();  // vectored mtvec + mie(MSIE|MTIE|SSIE) + PMP (no mcounteren here)
     apm_open_ree0();     // bus-side gate: REE0 permit outside the Rule 7 HP blocks
     c6_early_mark('F');  // mtvec + mie + permissive bootstrap PMP installed
     inject_doorbell_init(); // wire the interrupt matrix FROM_CPU doorbell (device IRQs)
@@ -919,7 +919,7 @@ void Reset_Handler(void)
 #if KICKOS_HAVE_MPU
     uint32_t* asrc = &_appdata_lma;
     uint32_t* adst = &__kickos_appdata_start;
-    while (adst < &__kickos_appbss_start) // .appdata: LMA != VMA (see decl)
+    while (adst < &__kickos_appbss_start) // .appdata: LMA == VMA on this chip (see decl)
     {
         *adst++ = *asrc++;
     }

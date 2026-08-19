@@ -266,7 +266,7 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_HANDLE_CLOSE:
         {
-            // Type-agnostic close: drop THIS task's cap (a cap knows its own type).
+            // Type-agnostic close: drop THIS thread's cap (a cap knows its own type).
             // Refcounted: the object is freed only at the last close.
             IrqLock lock;
             return static_cast<uint64_t>(handle_close(sched::current(), static_cast<uint32_t>(a0)));
@@ -562,9 +562,11 @@ uint64_t syscall_body(uintptr_t nr,
         {
             Thread* c = sched::current();
             // Root's exit ends the SYSTEM, through the same terminal path a returning main
-            // takes. Root's slot must never reach EXITED: the pool, the domain table and the
-            // boot arena are all sized for root holding it for the whole run, and the
-            // reclaim sweep would strip the spawner_tag off every child root ever spawned.
+            // takes. Root's slot must not reach EXITED on THIS path: the pool, the domain table
+            // and the boot arena are all sized for root holding it for the whole run, and the
+            // reclaim sweep would strip the spawner_tag off every child root ever spawned. The
+            // fault-kill path (kernel/init/fault.cc) does retire root, deliberately, and
+            // tests/integration/check_rootfault.sh is what holds that arm.
             if (kernel().threads.is_root(c))
             {
                 if (not cap_check_authority(c, AUTH_SYSTEM))

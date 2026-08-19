@@ -230,7 +230,7 @@ namespace
 
     void clock_init()
     {
-        // Flash read wait-states MUST be raised to the 120 MHz value BEFORE the
+        // Flash read wait-states MUST be raised to the 144 MHz value BEFORE the
         // CPU clock is scaled up, else instruction fetches from flash fault (RM
         // flash chapter: widen the access window before increasing fCPU).
         uint32_t fcon = r32(flash::FCON);

@@ -50,10 +50,14 @@ seL4 endpoint shape.
 ## KickOS's choice: synchronous rendezvous
 
 KickOS uses the synchronous rendezvous, for one decisive reason: **the parked side's
-own buffer is the storage.** A blocked thread is not running, so its message buffer
-does not change and -- because a thread's MPU regions are fixed for its lifetime
-(Chapter 7) -- that buffer stays valid and reachable. The kernel needs no message
-memory of its own; it needs only two wait queues and a small count. That matches the
+own buffer is the storage.** A blocked thread is not running, so its message buffer does
+not change, and its memory cannot be taken away underneath the copy either. That second
+half rests on a property of the region set worth stating exactly (Chapter 7): a thread's
+regions only ever **grow**, and only by a syscall the thread makes *itself*. Nothing
+shrinks a live thread's window, and no other thread can edit it. A parked thread makes no
+syscalls, so for as long as it sits on a queue its region set is frozen, and a buffer that
+was inside it when the park began is inside it when the copy runs. The kernel needs no
+message memory of its own; it needs only two wait queues and a small count. That matches the
 minimalism of the two-object synchronization surface (Chapter 2.3) and reuses the
 blocking substrate wholesale.
 
@@ -62,13 +66,20 @@ The object is correspondingly tiny:
 ```
 struct Endpoint
 {
-    List    send_waiters;   // senders parked waiting for a receiver
-    List    recv_waiters;   // receivers parked waiting for a sender
-    uint8_t recv_holders;   // live capabilities that carry the receive right
+    List     send_waiters;   // senders parked waiting for a receiver
+    List     recv_waiters;   // receivers parked waiting for a sender
+    uint8_t  recv_holders;   // live capabilities that carry the receive right
+    uint16_t next_served;    // intrusive link in that server's served-endpoint chain
+    Thread*  server;         // the conventional single receiver, re-set at every recv
 };
 ```
 
-Two wait queues, and one count whose job appears below. There is a structural
+Two wait queues, and one count whose job appears below. The last two fields do not
+belong to the rendezvous at all and are worth naming so their absence from the rest of
+this chapter is not read as a claim: they record *who last received here*, which is the
+handle the call/reply layer of Chapter 8.5 needs to find a server from the outside. The
+link is intrusive so that finding every endpoint one thread serves costs a chain walk
+rather than a sweep of the endpoint pool with interrupts masked. There is a structural
 invariant worth stating: **the two queues are never both non-empty.** If a receiver is
 parked, an arriving sender hands off to it immediately rather than parking -- and vice
 versa -- so at most one side ever waits. A waiting sender means "no receiver was
@@ -90,14 +101,19 @@ Why this is safe is the elegant part. At the moment of copy, both buffers are st
 - The **running** thread's buffer is stable because it is the one running -- nothing
   else can touch it.
 - The **parked** thread's buffer is stable because that thread is `BLOCKED` (it is not
-  running, so it cannot mutate the buffer) and its MPU regions are immutable for its
-  lifetime (so the memory cannot be remapped underneath the copy).
+  running, so it can neither mutate the buffer nor issue the one syscall that could
+  change its own region set), and no other thread can shrink or move that set for it, so
+  the memory cannot go away underneath the copy.
 
-There is no time-of-check-to-time-of-use gap, either. A KickOS thread only ever goes away
-by exiting itself: cancellation is cooperative, marking the target and letting it run its
-own exit at its next cancellation point, so nothing can tear a thread down from outside
-while it sits parked in a rendezvous. And the resolve, the peer check, and the copy-or-park
-all happen inside *one* continuous `IrqLock`, so no third party interleaves.
+There is no time-of-check-to-time-of-use gap, either, and the reason is the lock rather
+than any promise about who may end a park. A park *can* be ended from outside: a deadline
+expires, a cancellation arrives, or a forcible kill condemns the thread, and each of those
+unwinds the park, unlinks the thread from this endpoint's queue, and wakes it with a
+failure status. What makes that harmless here is that every one of those unwinds runs
+under the same `IrqLock` as the copy, and so does the resolve, the peer check, and the
+copy-or-park. The running thread that finds a peer on a queue holds the lock from the
+moment it looks until the moment the copy is done. There is no instant in between for an
+unwind to remove the peer it is copying to.
 
 The copy is a bounded `memcpy` between the two user buffers. The size is `n = min(sender
 length, receiver capacity)`: a receiver with a smaller buffer *truncates* the message
@@ -220,11 +236,15 @@ omissions are deliberate, not unfinished:
 
 - **No priority inheritance.** A thread parked on an endpoint carries an endpoint-kind
   wait edge, not a mutex one, so the PI chain walk (Chapter 2.3) correctly stops at it -- a
-  high-priority sender does *not* lend its urgency to a low-priority receiver. There is no
-  owner to boost; an endpoint is a rendezvous, not a lock. The mitigation is configuration:
-  a server that must be responsive should out-rank its clients, so it is scheduled promptly
-  when a client sends. Donation does exist for the *call/reply* layer built on top of this
-  primitive, where a transaction genuinely has a server to lend to.
+  high-priority sender does *not* lend its urgency to a low-priority receiver. An endpoint
+  is a rendezvous, not a lock: a plain send is owed nothing, so there is no transaction on
+  whose behalf urgency could be lent. The mitigation is configuration: a server that must
+  be responsive should out-rank its clients, so it is scheduled promptly when a client
+  sends. Donation does exist for the *call/reply* layer built on top of this primitive,
+  where a transaction genuinely has a server to lend to, and that is what the `server`
+  field above is for: a caller parked in the send half of a call donates to it, while a
+  plain sender parked on the very same queue does not. The distinction is the caller's own
+  state, not the queue it is on.
 - **No call/reply in the primitive itself.** Send and receive are one-way, and neither
   carries the notion of a reply owed. Request-then-await-response is a *separate* layer
   with its own syscalls and its own reply capability (Chapter 8.5); what the endpoint
@@ -269,7 +289,7 @@ The requirement this creates: **a future memory-protection backend that does not
 the kernel privileged background access to a parked peer's memory must arrange
 equivalent access before this pattern is sound.** A cross-domain rendezvous test, run
 under enforcement, is the guard that a new backend has not silently broken it. (See
-`../reference/porting.md` and Chapter 7.3, *Peripheral isolation & the hardware
+`../reference/porting.md` and Chapter 3.7, *Peripheral isolation & the hardware
 ceiling*, for where protection backends differ.)
 
 ## Where to go next

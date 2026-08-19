@@ -20,8 +20,9 @@
 // The driver sets its own direction (PDR), blinks LED6 (PODR), reads the pad back
 // (PIDR), then pokes UNGRANTED PORT8.PMR (0008_C068h): the mux escalation surface
 // arch_pinmux_set now owns, OUTSIDE the window -> RX access exception (fixed vector
-// +0x54) with MPESTS.DMPER set and MPDEA holding the address -> the kernel names the
-// thread ("MPU FAULT: thread 'rxdrv'"). So the negative test proves the driver cannot
+// +0x54) with MPESTS.DMPER set and MPDEA holding the address -> rxv3 opted into fault
+// isolation, so the thread is KILLED ("=== THREAD FAULT === thread 'rxdrv' killed") and
+// the system continues. So the negative test proves the driver cannot
 // re-mux its own pin behind pinmux's back.
 //
 // LED6 (P80, active-low, board UM r12uz0098ej0110 Table 5-9) is the CPU Card's only
@@ -109,12 +110,12 @@ namespace
 
         // Possession probe, positive arm. This thread holds `win` as a live ARCH_MPU_DEV
         // region whose base is EXACTLY `win`, so caller_holds_mmio_block passes and the
-        // call reaches arch_periph_enable. No rx72m backend defines that symbol, so the
-        // fallback TU (arch/common) answers -KOS_ENOSYS, which means the
-        // kernel touched no register: the window state below is untouched either way.
+        // call reaches arch_periph_enable. chip_rx72m answers only for RIIC0/1/2 and
+        // refuses this port block with -KOS_EINVAL, which means the kernel touched no
+        // register: the window state below is untouched either way.
         // First act, so the capture shows it ahead of any MMIO.
         int const pe = kos_periph_enable(win);
-        int const pe_want = -KOS_ENOSYS;
+        int const pe_want = -KOS_EINVAL;
         char const* pe_verdict = "FAIL";
         if (pe == pe_want)
         {

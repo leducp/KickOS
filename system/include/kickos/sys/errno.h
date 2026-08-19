@@ -33,7 +33,7 @@ enum kos_errno
     KOS_EFAULT = 14,     // user buffer/pointer not owned by the caller (isolation reject)
     KOS_EBUSY = 16,      // resource held/in-use: close a mutex you own; claim an owned irq line
     KOS_EINVAL = 22,     // malformed argument: bad prio/stack/mask/count/irq line/alignment/size
-    KOS_EMFILE = 24,     // ONE task's capability table has no free slot; nothing was allocated.
+    KOS_EMFILE = 24,     // ONE thread's capability table has no free slot; nothing was allocated.
                          //   Table width is declared demand summed at configure
                          //   (cmake/cap_table.cmake). From kos_call this names the SERVER's
                          //   table, not the caller's: the reply cap is minted into the receiver.

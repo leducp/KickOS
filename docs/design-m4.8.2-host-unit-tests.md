@@ -237,11 +237,12 @@ trace buffer, and the sharpest arm in the gate would become a truncation.
 
 ## 5. The proof of concept: `bring_up`'s unwind, exercised
 
-`tests/unit/drvbringup/`, one ctest case `drv_bringup`, registered on the sim build beside the other
-five host gates.
+`tests/unit/drvbringup/`, one gate binary `drv_bringup`, registered on the sim build beside the other
+five host gates. `gtest_discover_tests` registers no `TEST_PREFIX`, so each case reaches ctest under
+its gtest name, `DrvBringup.<case>`.
 
 ```
-cmake --preset sim && cmake --build build/sim && ctest --test-dir build/sim -R '^drv_bringup$'
+cmake --preset sim && cmake --build build/sim && ctest --test-dir build/sim -R '^DrvBringup\.'
 ```
 
 ### 5.1 Why this subject
@@ -261,12 +262,16 @@ before this gate, and three separate reasons they could not get any:
 
 ### 5.2 The shape
 
+Line counts and arm counts below are a snapshot; `wc -l tests/unit/drvbringup/*` and
+`grep -c '^TEST_F' tests/unit/drvbringup/bringup_unwind.cc` are the live figures, and the gate has
+grown since it landed.
+
 | file | lines | what |
 |---|---|---|
-| `tests/unit/drvbringup/kos_seam.h` | 65 | the control block and the trace accessors |
-| `tests/unit/drvbringup/kos_seam.cc` | 243 | the eleven faked syscalls, recording |
-| `tests/unit/drvbringup/bringup_unwind.cc` | 384 | 13 arms over 2 synthetic descriptors |
-| `tests/unit/drvbringup/CMakeLists.txt` | 25 | one executable |
+| `tests/unit/drvbringup/kos_seam.h` | 67 | the control block and the trace accessors |
+| `tests/unit/drvbringup/kos_seam.cc` | 302 | the faked syscalls, recording |
+| `tests/unit/drvbringup/bringup_unwind.cc` | 595 | 25 `TEST_F` arms over synthetic descriptors |
+| `tests/unit/drvbringup/CMakeLists.txt` | 21 | one executable |
 
 Three decisions inside that are worth stating because the obvious alternative is worse.
 
@@ -276,8 +281,11 @@ peers, and all of it before the diagnostic print. A counter oracle cannot fail o
 two of the seven mutants in section 5.4 are pure reorderings. A complete bring-up renders as
 
 ```
-alloc grant ep10 pub10 claim11 claim12 spawn50 spawn51 close11 close12 close10 probe
+alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn50 spawn51 close11 close12 close10 probe
 ```
+
+The `taskmem90` token is the task-group memory grant M4.8.3 added; `bringup_unwind.cc`'s
+`a_complete_bring_up_touches_no_unwind` arm is the authority on the exact string.
 
 Caps come from one monotonic range and thread ids from a disjoint one, so a token names WHICH
 resource it is talking about and not merely which call produced it.
@@ -307,7 +315,10 @@ the same scrutiny as the subject.** It is not test scaffolding exempt from revie
 
 ### 5.3 The arms
 
-Thirteen, of which one is a positive control and twelve are failure paths.
+Thirteen here, of which one is a positive control and twelve are failure paths. The table below
+is the set this design ruled; `grep '^TEST_F' tests/unit/drvbringup/bringup_unwind.cc` is what the gate actually runs
+today, and it is larger. `git log tests/unit/drvbringup/bringup_unwind.cc` names the milestones that
+added the rest (the task layer and the block memory-type arms), none of which is described here.
 
 | arm | what it pins |
 |---|---|
@@ -319,10 +330,10 @@ Thirteen, of which one is a positive control and twelve are failure paths.
 | the SECOND `kos_irq_claim` fails | exactly the one line that WAS claimed is closed. This is the only arm that separates `claimed` from `line_count` |
 | the first spawn fails | both lines close, nobody is cancelled |
 | a later spawn fails | one live peer: the endpoint close BEFORE the cancel becomes observable |
-| peers are cancelled in reverse spawn order | two live peers, on the three-thread descriptor |
+| two live peers are ended by ONE kill that names the task, not the threads | two live peers, on the three-thread descriptor |
 | a thread never reaches its loop | the readiness poll spends its full shipped budget, then unwinds one live peer |
 | the barrier sits between the spawns | the poll runs AFTER the first spawn, never before it |
-| the handover probe reports a dead driver | `-KOS_EPIPE` cancels every peer in reverse order and returns the code unchanged |
+| the handover probe reports a dead driver | `-KOS_EPIPE` ends the group and returns the code unchanged |
 | a timed-out handover probe cancels nothing | `-KOS_ETIMEDOUT` leaves the service thread alive, so it cancels nobody and prints nothing |
 
 The last two are a pair, and they are the sharpest thing in the gate after the reorderings: the
@@ -390,7 +401,9 @@ is cheap groundwork M4.8.2 should carry.
 
 ### 6.3 The open question that replaces the prior spike's
 
-`tests/unit/drvbringup/kos_seam.cc` defines **eleven public `kos_*` names**. That is section 2's disease
+`tests/unit/drvbringup/kos_seam.cc` defines a set of public `kos_*` names (the faked syscalls plus
+the three `kos_seam_*` accessors; `grep -oE '\bkos_[a-z_0-9]+\(' tests/unit/drvbringup/kos_seam.cc`
+is the live list, eighteen names at the time of this edit). That is section 2's disease
 one level up from a driver class, and the gate that exists for it does not cover it:
 `check_class_backend.sh` derived its symbol set from `user/include/kickos/driver/*.h` only, so no
 syscall name was in the set.
@@ -474,12 +487,16 @@ because it TRADES: `cap_teardown` and `cap_teardown_active` stop being stubs and
 set on its own. A fixture whose `cap_teardown` is empty cannot host this milestone's subject at all,
 and there was no width to pay for the real one.
 
-**The membership is not stable across kernel refactors, and the width is.** The task layer
-(`design-task-layer.md` step 9.3) moved `sched::exit_current`'s reference drop from the thread's
-domain to its task, so the seam traded `kickos::domain_release(Domain*)` for
-`kickos::task_release(Task*)`: still sixteen, still seven `arch_*`, one member different. Re-derive
-with the recipe in `tests/unit/kfixture/karch_seam.cc` rather than reading the count off this table, and
-expect the SET to drift where the number does not.
+**The membership is not stable across kernel refactors, and neither is the width.** The prediction
+recorded here was that the task layer (`design-task-layer.md` step 9.3), which moved
+`sched::exit_current`'s reference drop from the thread's domain to its task, would trade
+`kickos::domain_release(Domain*)` for `kickos::task_release(Task*)` at an unchanged width. **It did
+not go that way**: `kernel/task/task.cc` was pulled INTO the compiled set instead, so
+`task_release` is a real body in the gate and `domain_release` stayed a stub. The source set has
+kept growing with it (`tests/unit/kfixture/CMakeLists.txt` now compiles `park.cc`, `task.cc`,
+`irq.cc` and `fault.cc` as well), and `tests/unit/kfixture/karch_seam.cc` now defines twenty-four
+symbols, thirteen of them `arch_*`, plus two more under `KICKOS_TELEMETRY`. Re-derive with the
+recipe at the head of that file rather than reading any number off this table.
 
 **Correction to section 1, item 4.** "`kernel() = Kernel{}` plus `sched::init()` is the entire
 reset" is FALSE once the real `cap.cc` is in the gate. `cap.cc` keeps **three** data in a TU-local
@@ -545,7 +562,7 @@ wake at most one thread each, so by woken-thread count the "narrow" site may wel
 has been measured either way. What is now established is only the direction: the win is available at
 all three sites, not one.
 
-**The interaction that is not independent.** `endpoint_wait_timeout` (`kernel/syscall/syscall_ipc.cc`,
+**The interaction that is not independent.** `endpoint_wait_abort` (`kernel/thread/park.cc`,
 the `WAIT_EP_SEND` and `WAIT_EP_REPLY` arms) calls `sched::set_prio(server, thread_effective_prio(server))`
 with no `dying` test, from the timer, in the interrupt window between chunks, where `server` may BE the
 dying thread and `thread_effective_prio` walks its half-swept `held_list`, `reply_waiters` and

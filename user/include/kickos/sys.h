@@ -39,7 +39,7 @@ void kos_sleep_ns(uint64_t ns);
 // another thread, so a child gets it by delegation through kos_thread_params.caps (see
 // kos_cap_grant). Create grants WAIT|SIGNAL|TRANSFER.
 // The two exhaustion codes are NOT interchangeable: -KOS_ENOMEM is the object's own shared
-// pool (here KICKOS_MAX_SEMAPHORES), -KOS_EMFILE is THIS task's capability table. Every
+// pool (here KICKOS_MAX_SEMAPHORES), -KOS_EMFILE is THIS thread's capability table. Every
 // create below can return either.
 // -> 0; -KOS_ENOMEM; -KOS_EMFILE; -KOS_EINVAL (`initial` outside [0, KOS_SEM_COUNT_MAX], or a
 // null/misaligned out_cap); -KOS_EFAULT (out_cap is not writable by the caller).
@@ -128,12 +128,13 @@ int32_t kos_call_timed(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap
 int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len);
 
 // Hand the kernel console UART over to a userspace driver serving endpoint `ep`.
-// Privileged-only. After this the kernel chip path drops (RTT, if built, still carries
-// kernel output) and libc stdout routes through the driver via cap index 0, seated both into
-// children spawned AFTER the publish and into the CALLER's own table. Re-callable to
-// re-point at a fresh driver, caller's cap 0 included. -> 0, -KOS_EPERM (unprivileged),
-// -KOS_EBADF (bad / non-endpoint / stale cap), or -KOS_EOVERFLOW (the endpoint's reference
-// count is at its ceiling; nothing was published and the kernel console is untouched).
+// Needs KOS_AUTH_CONSOLE. After this the kernel chip path drops (RTT, if built, still
+// carries kernel output) and libc stdout routes through the driver via cap index 0, seated
+// both into children spawned AFTER the publish and into the CALLER's own table. Re-callable
+// to re-point at a fresh driver, caller's cap 0 included. -> 0, -KOS_EPERM (no
+// KOS_AUTH_CONSOLE), -KOS_EBADF (bad / non-endpoint / stale cap), or -KOS_EOVERFLOW (the
+// endpoint's reference count is at its ceiling; nothing was published and the kernel
+// console is untouched).
 int kos_console_publish(kos_cap_t ep);
 
 // Drop THIS thread's capability. Type-agnostic and refcounted: the underlying object is
@@ -227,9 +228,10 @@ int kos_task_slay(kos_task_t task, uint32_t timeout_us);
 
 // Wait for a thread YOU spawned to be gone, giving up after `timeout_us` RELATIVE
 // microseconds, or never if that is KOS_TIMEOUT_NONE. Returns 0 (the target is gone),
-// -KOS_ETIMEDOUT (it outlived the deadline and is still running), -KOS_EBADF (a handle
-// naming no slot, or one reclaimed under this handle, KOS_THREAD_NONE included),
-// -KOS_EPERM (you did not spawn it) or -KOS_EDEADLK (naming yourself).
+// -KOS_ETIMEDOUT (it outlived the deadline and is still running), -KOS_ECANCELED (the
+// CALLER was cancelled while waiting), -KOS_EBADF (a handle naming no slot, or one
+// reclaimed under this handle, KOS_THREAD_NONE included), -KOS_EPERM (you did not spawn it)
+// or -KOS_EDEADLK (naming yourself).
 //
 // A target that had ALREADY exited returns 0, not -KOS_EBADF: a thread handle stays valid
 // until its slot is reused. Only a spawn that has since REUSED the slot invalidates the
@@ -245,8 +247,8 @@ int kos_wait_last(void);
 
 // End the WHOLE system with `status`: drain the buffered console, then hand over to the
 // chip's shutdown, which is also what a returning kickos_init_entry does (see
-// <kickos/sys/init.h>). Privileged-only, so it is NOT noreturn: it returns -KOS_EPERM to a
-// caller that may not end the system, and does not return at all on success.
+// <kickos/sys/init.h>). Needs KOS_AUTH_SYSTEM, so it is NOT noreturn: it returns -KOS_EPERM
+// to a caller that may not end the system, and does not return at all on success.
 int kos_shutdown(int status);
 
 // End the system through the kernel's panic path, printing `msg`: mask interrupts, force the
@@ -261,7 +263,7 @@ void kos_panic(char const* msg) __attribute__((noreturn));
 void kos_irq_inject(int irq);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-// Reboot into the chip's bootloader (firmware-download mode). Privileged-only, so like
+// Reboot into the chip's bootloader (firmware-download mode). Needs KOS_AUTH_SYSTEM, so like
 // kos_shutdown it is NOT noreturn: the gate can refuse with -KOS_EPERM, and a chip with no
 // bootloader entry returns -KOS_ENOSYS. Does not return on success.
 int kos_reboot(void);
@@ -286,8 +288,8 @@ uint32_t kos_ipc_fast_taken(void);
 // grant module).
 uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size);
 // Test-only: enable a controller line directly, so an injected raise reaches the
-// default handler on masked-by-default controllers (ARM NVIC, RX). Privileged.
-int kos_irq_unmask(int line); // 0, or -KOS_EPERM (unprivileged) / -KOS_EINVAL (bad line)
+// default handler on masked-by-default controllers (ARM NVIC, RX). Needs KOS_AUTH_IRQ.
+int kos_irq_unmask(int line); // 0, or -KOS_EPERM (no KOS_AUTH_IRQ) / -KOS_EINVAL (bad line)
 #endif
 
 // Bind device line `irq` so that firing it posts the semaphore `sem_cap` names, from ISR
@@ -356,8 +358,9 @@ int kos_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value);
 // Irreversible for the caller: nothing widens an authority word, and only a spawning parent
 // can seat one.
 //
-// Needs no authority itself. Returns 0, -KOS_EBADF (cap does not resolve), or -KOS_EINVAL
-// (cap is not an authority cap: narrowing object rights is not supported).
+// Needs no authority itself. Returns 0, -KOS_EBADF (the caller holds no authority to give
+// up), or -KOS_EINVAL (cap is not an authority cap: narrowing object rights is not
+// supported).
 int kos_cap_narrow(kos_cap_t cap, uint8_t mask);
 
 // One-shot init-time pin-function config: point pin `pin` of port `port` at raw
@@ -367,9 +370,9 @@ int kos_cap_narrow(kos_cap_t cap, uint8_t mask);
 int kos_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 
 // Retune the core clock to a P-state. Returns the ACTUALLY-LANDED core Hz, which the caller
-// must compare against what the requested point implies. Returns 0 when the chip cannot
-// change its clock, the caller is unprivileged, or a userspace driver owns the console (a
-// retune would garble a baud the kernel cannot relocate). Privileged.
+// must compare against what the requested point implies. Needs KOS_AUTH_PSTATE. Returns 0
+// when the chip cannot change its clock, the caller lacks that authority, or a userspace
+// driver owns the console (a retune would garble a baud the kernel cannot relocate).
 uint32_t kos_cpu_clock_set(kos_pstate_t pstate);
 
 // Set the Unix-epoch wall clock: unix_ns is the current time, and the offset

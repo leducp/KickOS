@@ -3,8 +3,9 @@
 
 # The runnable QEMU MPS2 boards: ONE chip backend (mps2) behind four FPGA images:
 # an386/M4 (`qemu`), an505/M33 (`qemu-m33`, PMSAv8), an500/M7 (`qemu-m7`, 16 MPU
-# regions) and an385/M3 (`qemu-m3`, no FPU). They share a memory map, a console and a
-# clock, so a gate that holds on one image holds on all of them. Inherited by every
+# regions) and an385/M3 (`qemu-m3`, no FPU). They share a console and a clock, so a gate
+# that holds on one image holds on all of them. The memory map is NOT shared: qemu-m33
+# carries its own boards/qemu-m33/mps2.ld. Inherited by every
 # add_subdirectory below. Exception: qemu-m3 is soft-float, so fp_switch is not built
 # for it (see its inclusion list further down).
 set(KICKOS_QEMU_MPS2_BOARDS qemu qemu-m33 qemu-m7 qemu-m3)
@@ -22,7 +23,7 @@ add_subdirectory(rootauth)
 # The CPU privilege RING, the one confinement axis an MPU trap cannot reach (so the only
 # one a no-MPU board can witness). ARM-only and self-gated; see its CMakeLists.
 add_subdirectory(ringpriv)
-# kos_panic on the wire: three images, one per message-pointer class. Self-gated.
+# kos_panic on the wire: one image per case, because a run observes one panic. Self-gated.
 add_subdirectory(panicgate)
 # The same wire, POST-HANDOVER: kos_panic and a CPU fault with a userspace driver owning
 # the console. Sim-only and self-gated; its gate builds its own published tree.
@@ -48,8 +49,8 @@ add_subdirectory(selftest)
 add_subdirectory(stress)
 
 # GPIO pin-allocator demo (M4.3): board-agnostic (the pin is two compile defs), so
-# built for every board - on a chip with no GPIO backend claim returns -KOS_ENOSYS
-# and the app parks.
+# built for every board - a chip whose register layout is not known there compiles to a
+# park-only stub, since the kernel has no GPIO syscall to decline.
 add_subdirectory(gpioblink)
 
 # Diagnostic apps, self-gated on KICKOS_ENABLE_SELFTEST via kickos_add_diagnostic_app
@@ -65,8 +66,8 @@ add_subdirectory(rebootdemo)
 # Per-thread stdout classification regression (M4.3): a root pre-publish printf must
 # not poison a post-publish worker's route to the console endpoint. Software-only
 # (no MMIO) counting console driver; the verdict rides the exit status. Self-gates on
-# the qemu (mps2) board in its own CMakeLists (the only place newlib_stubs is compiled
-# AND the run is automatable; sim never compiles newlib_stubs, XMC has no QEMU model).
+# the qemu (mps2) boards in its own CMakeLists: they are the automatable armv7m gates,
+# and the sim never compiles newlib_stubs.cc, which holds the _write under test.
 add_subdirectory(initdemo)
 
 # Privileged runtime clock-retune HW harness, self-gates on KICKOS_CLOCK_RETUNE_TEST

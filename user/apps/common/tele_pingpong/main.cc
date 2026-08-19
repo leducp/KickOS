@@ -7,10 +7,9 @@
 // one timer ISR wakes them together -> many reschedules collapse to a SINGLE
 // physical switch). The workers are DAEMONS (they never return); only the root
 // thread ends, by returning from main, which makes the boot path call
-// arch_shutdown directly. This deliberately avoids a spawned thread calling
-// exit(): on the ARM port a non-last thread exit is currently broken (the
-// deferred PendSV switch cannot fire under exit_current's held IrqLock), a
-// pre-existing scheduler limitation unrelated to telemetry. arch_shutdown flushes
+// arch_shutdown directly. The daemon shape keeps the capture free of a spawned
+// thread's exit, which is a different code path (the deferred switch out of
+// exit_current) with its own gate in apps/sched_exit. arch_shutdown flushes
 // the ch1 ring (sim: to a file; qemu: via semihosting) for the decoder to assert.
 
 #include <kickos/kos.h>

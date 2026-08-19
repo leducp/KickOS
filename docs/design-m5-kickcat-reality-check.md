@@ -180,10 +180,15 @@ injection. It is driven by `simulation/network_simulator.cc` from JSON configs w
 include a `freedom-k64f` one.
 
 So the blocker is entirely on the KickOS side, and it is the one `design-m6-state-inventory.md`
-describes: the seam is authored (`kernel()` and `SimInstance`) but unreachable, the two pointers it
-selects do not exist, there is no thread-local storage of any kind in the tree, and around twenty
-file-scope mutable objects sit outside `Kernel` and `SimInstance`. The sim's shared `sigaltstack`
-is the sharpest of them, because `sigaltstack` is a per-thread POSIX property.
+describes. **That blocker has since been taken down for the sim**: `KICKOS_MULTI_INSTANCE` is a
+real build knob (`Kconfig`, `CMakeLists.txt`), the selector is a thread-local
+(`include/kickos/instance_local.h`), `arch/sim/sim.cc` carries the guarded per-instance state, and
+`tests/integration/check_sim_multi_instance.sh` is a registered gate. Read
+`design-m6-state-inventory.md` section 6 for what implementing it corrected, including the shared
+`sigaltstack` this paragraph called the sharpest item, which was a live bug and is fixed.
+What this section recorded as the state before that work: the seam was authored (`kernel()` and
+`SimInstance`) but unreachable, no thread-local storage existed anywhere in the tree, and around
+twenty file-scope mutable objects sat outside `Kernel` and `SimInstance`.
 
 ## 6. Recovered history, and a regression in KickCAT HEAD
 
@@ -247,7 +252,7 @@ Section 3 needs one correction and section 1 needs one retraction.
 
 Three findings are about KickOS rather than KickCAT, which is what the reality check was for.
 
-1. **`spawn_caps` cannot take a custom stack** (`user/include/kickos/kos.h:440`). It hard-passes
+1. **`spawn_caps` cannot take a custom stack** (`user/include/kickos/kos.h`, `spawn_caps`). It hard-passes
    `nullptr, 0` for both mmio and stack, so a consumer wanting delegated caps AND a custom stack has
    to abandon the helper and call `spawn` positionally through all eighteen arguments. The in-tree
    `k64dspi` app never hit this because it takes the default stack; KickCAT needs 16 KB, so it does.

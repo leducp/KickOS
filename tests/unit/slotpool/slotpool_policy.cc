@@ -151,19 +151,20 @@ namespace
     }
 }
 
-// N=4: microbit sems/endpoints/irq_bindings, bluepill-c8 sems/mutexes/irq_bindings.
+// N=4: the endpoint-pool default, and the floor the 16-20 KiB boards cut their
+// semaphore and IRQ-handle pools to.
 TEST(SlotPool, spread_pure_churn_tiny_board_pool)
 {
     spread_pure_churn<4>("tiny-board pool");
 }
 
-// N=8: mutexes fleet-wide, frdmk64f irq_bindings.
+// N=8: the mutex and IRQ-handle default (config/system.h).
 TEST(SlotPool, spread_pure_churn_mid_pool)
 {
     spread_pure_churn<8>("mid pool");
 }
 
-// N=16: frdmk64f sems (the system.h default).
+// N=16: the semaphore default (config/system.h).
 TEST(SlotPool, spread_pure_churn_default_sem_pool)
 {
     spread_pure_churn<16>("default sem pool");

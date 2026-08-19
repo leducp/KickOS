@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The tree's only .c, so the only build that compiles the C-facing headers as C.
-// Rewriting it as C++, or including a C++-only header, leaves check_extern_c_linkage.sh
-// with no exercised instance.
+// The tree's only .c, so the only BUILD that compiles the C-facing headers as C with the
+// real flags. Rewriting it as C++, or including a C++-only header, leaves the C claim
+// those headers make resting on check_c_headers.sh's standalone compile alone.
 
 #include <stdbool.h>
 

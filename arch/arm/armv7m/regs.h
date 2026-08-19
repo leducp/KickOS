@@ -4,7 +4,7 @@
 // Minimal ARMv7-M core peripheral register definitions, arch-internal, NOT
 // part of the porting ABI (kept out of the installed kickos/ headers). Only the
 // registers the arch backend actually touches: SCB (ICSR/SHPR/CCR), SysTick,
-// NVIC (enable/pending), and DWT (cycle counter) for the tickless clock.
+// NVIC (enable/pending), and DWT (cycle counter) for the telemetry trace clock.
 //
 // Deliberately hand-rolled instead of pulling a vendor CMSIS pack: the surface
 // is tiny and clean-room (register offsets from the ARMv7-M Architecture
@@ -28,7 +28,7 @@ namespace kickos
         // --- NVIC (arch-specific: byte-addressable per-line priority) ---
         constexpr uintptr_t NVIC_IPR0 = 0xE000E400;
 
-        // --- DWT / DCB (cycle counter for the monotonic clock) ---
+        // --- DWT / DCB (cycle counter behind arch_trace_now) ---
         constexpr uintptr_t DWT_CTRL = 0xE0001000;
         constexpr uintptr_t DWT_CYCCNT = 0xE0001004;
         constexpr uintptr_t DCB_DEMCR = 0xE000EDFC;

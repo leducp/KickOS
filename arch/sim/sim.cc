@@ -1107,8 +1107,8 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
         stack_size = host_size;
     }
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // arch_context_init memsets the whole SimContext, and the trace id is stamped once at
-    // thread_create; without this the rebuilt thread switches in as an unknown tid.
+    // arch_context_init re-initialises the whole SimContext, and the trace id is stamped
+    // once at thread_create; without this the rebuilt thread switches in as an unknown tid.
     uint16_t const tid = c->tid;
 #endif
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
@@ -1441,9 +1441,10 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 //
 // This definition MUST stay in this TU. sim.cc is always extracted (it carries
 // arch_init and the context switch) and is the FIRST member of kickos_arch_sim, so it
-// resolves the symbol before common/arch_periph_reg_write_default.cc (in the same
-// archive) can be pulled in. Moving it to a dedicated TU nothing else references would
-// resolve the declining default instead, with no link error.
+// resolves the symbol before common/arch_periph_reg_write_default.cc could be pulled in,
+// which is why that fallback is dropped from this archive (arch/CMakeLists.txt). Moving
+// it to a dedicated TU nothing else references is a loud link error, not a silent
+// decline.
 int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
 {
     if (sim().pvreg == nullptr)

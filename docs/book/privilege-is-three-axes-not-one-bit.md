@@ -511,10 +511,29 @@ makes the trap it does hit *unambiguous*.
 
 `selftest` carries the positive companion to `mpu_fault`'s negative: `domain_share`
 (two unprivileged threads granted the *same* region read/write it and see each other's
-stores), the privileged-guard and confused-deputy checks, and the unprivileged
-IRQ-as-event driver that reads only its granted MMIO. Together the positive (allowed
-accesses succeed from the checked side) and the negative (a disallowed access traps)
-are what make "protected" a claim and not a hope.
+stores), the confused-deputy check, and the unprivileged IRQ-as-event driver that reads
+only its granted MMIO. What it deliberately does *not* carry is an arm asserting
+something about a privileged caller, and the reason is the axis split itself: with the
+privileged population fixed at boot to the one thread that runs no tests, a test needing
+a privileged caller has nobody to run as. The claim it would have made is made from the
+other side instead, by an app that watches an unprivileged worker trap on a cross-domain
+write. When a test cannot exist by construction, replacing it with a weaker one is worse
+than admitting the shape of the gap.
+
+Resist the temptation to call that worker, or any thread, the system's *least
+privileged*. There is no such thread, and the phrase is this chapter's own error in
+miniature: a superlative over "privilege" presumes the three axes collapse into one
+ordering, and they do not. The thread the system starts userspace with is the sharpest
+demonstration available. It runs unprivileged on axis 1, exactly like every thread it
+goes on to spawn, and it holds *every* authority bit on axis 3, necessarily so: a spawn
+may only narrow the authority word it passes down, never widen it, so the root of the
+tree has to start holding everything any descendant will ever need. Ranked on the
+CPU-mode axis that thread is indistinguishable from a leaf worker; ranked on the
+authority axis nothing in the system outranks it. Any single ordering claiming to place
+it has quietly picked one axis and discarded the other two.
+
+Together the positive (allowed accesses succeed from the checked side) and the negative
+(a disallowed access traps) are what make "protected" a claim and not a hope.
 
 ### Coexistence vs confinement -- do not conflate them
 

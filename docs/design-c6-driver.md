@@ -127,5 +127,5 @@ region 0 still the deny catch-all.
    IRQ path otherwise reaches `kickos_isr_irq` only via the software-inject doorbell (test
    scaffolding, not a device). A systimer or TIMG userspace driver requires generalizing
    `kickos_rv_ext_dispatch_dev` to PLIC-claim-demux a logical line (or a second device CPU int plus
-   a `switch.S` vector) so `kos_irq_register`/`wait`/`ack` reaches a REAL device. Then the
+   a `switch.S` vector) so `kos_irq_claim`/`kos_irq_wait`/`kos_irq_ack` reaches a REAL device. Then the
    W1C-before-re-arm storm rule applies as usual.

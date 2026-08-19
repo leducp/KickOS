@@ -6,11 +6,13 @@
 // the USIC0 CH1 SSC bus up; the two are alternatives, never both linked (EXACTLY ONE
 // kickos_board_services per image).
 //
-// This list is the board default at enforcement (root CMakeLists.txt), where the combined
-// list is refused until the xmcssc-as-a-service posture is witnessed on silicon
-// (docs/design-unprivileged-root.md section 9). The bring-up is pure syscall and touches
-// no register from the calling thread, so AUTH_MEMORY + AUTH_CONSOLE on an unprivileged
-// root is enough.
+// An opt-in alternative, never the board default: boards/xmc4800-relax/Kconfig defaults
+// KICKOS_SERVICE_LIST to the combined kickos_services_xmc4800relax at enforcement, so this
+// one needs -DKICKOS_SERVICE_LIST=kickos_services_xmc4800relax_console. The SSC bring-up
+// needs a privileged root, so an image for an unprivileged root must not link that driver
+// at all rather than link it and not call it. The console bring-up is pure syscall and
+// touches no register from the calling thread, so AUTH_MEMORY + AUTH_CONSOLE on an
+// unprivileged root is enough.
 
 #include <kickos/sys/service.h>
 #include <kickos/chip_mmap.h>

@@ -786,8 +786,9 @@ int arch_reboot(void)
 
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (RT1060 RM). Owns-for-life: the GPT1 monotonic time base and
-// the CCM (CCGR clock-gate roots). Bases are the constants above; sizes one 4 KB AIPS
-// slot each. M7 has NO bit-band, so arch_bitband_present keeps the fallback 0.
+// the CCM (CCGR clock-gate roots). Bases are the constants above; sizes are the 4 KB
+// register block of each peripheral (an AIPS slot itself is 16 KiB). M7 has NO
+// bit-band, so arch_bitband_present keeps the fallback 0.
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {

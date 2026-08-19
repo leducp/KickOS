@@ -81,7 +81,7 @@ int main(int, char**)
     uint32_t const cpuid = load32(SCB_CPUID);
 
     // Reached only if the PPB did NOT refuse the access. "NOT confined" is the FAIL
-    // marker in tests/integration/check_qemu_ringppb.sh and in this app's CMakeLists.
+    // marker in tests/integration/check_qemu_ringppb.sh.
     ksnprintf(msg, sizeof(msg),
               "[ringppb] CPUID read completed: 0x%x - the ring is NOT confined\n",
               static_cast<unsigned int>(cpuid));

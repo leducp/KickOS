@@ -18,8 +18,9 @@
 //
 // The driver sets its own direction, blinks, then pokes UNGRANTED
 // GPIO_FUNC10_OUT_SEL_CFG (0x6009_157C): same GPIO block, APM-permitted, but
-// OUTSIDE the 64 B PMP window -> PMP store fault (mcause=7) -> the kernel names the
-// thread ("MPU FAULT: thread 'c6blink'"). That register is the matrix escalation surface
+// OUTSIDE the 64 B PMP window -> PMP store fault (mcause=7) -> rv32imac opted into
+// fault isolation, so the thread is KILLED ("=== THREAD FAULT === thread 'c6blink'
+// killed") and the system continues. That register is the matrix escalation surface
 // arch_pinmux_set now owns, so the negative test proves the driver cannot re-route
 // its pad behind pinmux's back. The isolation proof rides the PMP fault, NOT APM: an
 // APM denial does NOT trap (TRM 16.5: read returns 0 / write dropped + a separate
@@ -161,9 +162,14 @@ namespace
         // Negative test (the per-thread isolation proof): poke UNGRANTED
         // GPIO_FUNC10_OUT_SEL_CFG: same GPIO block, APM-permitted for REE0, but
         // OUTSIDE the 64 B window. PMP is checked FIRST and is fail-closed -> store
-        // access fault, mcause=7, mtval=0x6009_157C -> kickos_rv_fault_report routes it
-        // (from_user and mcause 7) to "MPU FAULT: thread 'c6blink'". Announce-before-poke;
-        // terminal, so it is LAST. An APM denial would NOT trap (TRM 16.5).
+        // access fault, mcause=7, mtval=0x6009_157C. kickos_rv_fault_report's FIRST
+        // statement is kickos_fault_kill_thread, which never reads mcause: any trap
+        // taken by an unprivileged live thread is redirected to the exit stub, which
+        // prints "=== THREAD FAULT === thread 'c6blink' killed" and ADDR=0x6009157c.
+        // The from_user/mcause clause after it is the PANIC reporter, reached only
+        // when the kill declines.
+        // Announce-before-poke; terminal for this thread, so it is LAST. An APM denial
+        // would NOT trap (TRM 16.5).
         kos::print("[c6blink] poking UNGRANTED out-sel @ 0x6009157c (expect MPU FAULT)\n");
         r32(GPIO_FUNC_OUT_SEL_CFG + 0x4u * BLINK_PIN) = OUT_SEL_SIMPLE;
 

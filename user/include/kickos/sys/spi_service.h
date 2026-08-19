@@ -229,7 +229,7 @@ inline void serve_loop(struct kos_spi_bus* bus)
         long const n = kos_recv(ep, msg, sizeof(msg), &info);
         if (n < 0)
         {
-            break; // EPIPE / dead endpoint: exit, let root respawn
+            break; // the recv cap no longer serves: exit, let root respawn
         }
         if (info.reply_cap == KOS_CAP_NONE)
         {

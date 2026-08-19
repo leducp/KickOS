@@ -39,8 +39,8 @@ namespace kickos::esp32::irq
         SW_INT_L1 = 7,     // arch/xtensa/lx6-owned (doorbell); reference only
     };
 
-    // Logical kernel IRQ lines. Kept clear of the selftest's injected lines
-    // (5/6/7/9/11) and the bench line (20).
+    // Logical kernel IRQ lines. Kept clear of the selftest's injected lines (6..16, from
+    // KICKOS_SELFTEST_IRQ_BASE) and the bench line (20).
     enum kernel_line
     {
         CONSOLE_TX_LINE = 30, // UART0 TX-empty drain ISR binding

@@ -120,7 +120,9 @@ SECTIONS
        _code_used_end and __kickos_code_end is unused SRAM left inside the RX grant. */
     __kickos_code_end = __kickos_code_start + _code_size;
 
-    _sidata = LOADADDR(.data);          /* == VMA here (RAM image), so the copy is a no-op */
+    /* != VMA under enforcement: .data's VMA is pinned at __kickos_code_end, past the code
+       pad, while its LMA follows the code. The Reset_Handler copy is real (see .data). */
+    _sidata = LOADADDR(.data);
 
     /* Enforcement layout. Writable state SPLIT kernel-side vs app-side with an INVERTED
        selection: the CLOSED KickOS-owned set (kernel/arch/chip/lib) is captured FIRST via

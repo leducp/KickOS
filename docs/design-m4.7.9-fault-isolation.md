@@ -55,17 +55,17 @@ Every fault entry point on every backend was terminal. Two shapes:
 
 | backend | entry | terminal call |
 | --- | --- | --- |
-| armv7m (also every M33 board) | `HardFault_Handler`, `arch/arm/armv7m/arch_armv7m.cc:277` | `kfault_terminate()` |
-| armv6m | `HardFault_Handler`, `arch/arm/armv6m/arch_armv6m.cc:191` | `kfault_terminate()` |
-| rv32imac | `.Lfault`, `arch/riscv/rv32imac/switch.S:360` | `kickos_isr_fault()` on a user PMP fault, else `kfault_terminate()` |
-| rxv3 | fixed vectors, `arch/rx/chip/rx72m/startup.S:107` | `kickos_isr_fault()` on a user MPU fault, else `kfault_terminate()` |
-| lx6 | `_kickos_lx6_fault`, `arch/xtensa/chip/esp32/startup.S:136` | `kfault_terminate()` |
-| sim | `on_sigsegv`, `arch/sim/sim.cc:551` | `kickos_isr_fault()` then `arch_shutdown(2)` |
+| armv7m (also every M33 board) | `HardFault_Handler`, `arch/arm/armv7m/arch_armv7m.cc` | `kfault_terminate()` |
+| armv6m | `HardFault_Handler`, `arch/arm/armv6m/arch_armv6m.cc` | `kfault_terminate()` |
+| rv32imac | `.Lfault`, `arch/riscv/rv32imac/switch.S` | `kickos_isr_fault()` on a user PMP fault, else `kfault_terminate()` |
+| rxv3 | fixed vectors, `arch/rx/chip/rx72m/startup.S` | `kickos_isr_fault()` on a user MPU fault, else `kfault_terminate()` |
+| lx6 | `_kickos_lx6_fault`, `arch/xtensa/chip/esp32/startup.S` | `kfault_terminate()` |
+| sim | `on_sigsegv`, `arch/sim/sim.cc` | `kickos_isr_fault()` then `arch_shutdown(2)` |
 
 `kfault_terminate` blinks forever or shuts the host process down with status 132
-(`arch/common/kfault_terminate_default.cc:53`). `kickos_isr_fault` is the only path that names the
+(`arch/common/kfault_terminate_default.cc`). `kickos_isr_fault` is the only path that names the
 faulting task, and it too ends the system, via `kickos_terminate(0)`
-(`kernel/init/console.cc:318`). No fault handler on any backend can return: each one tail-calls a
+(`kernel/init/console.cc`). No fault handler on any backend can return: each one tail-calls a
 `[[noreturn]]`, and none of them rewrites `mepc` / the stacked PC / `EXC_RETURN` to resume anything.
 
 There is no armv8m backend. M33 parts build as armv7m and share that fault handler.
@@ -78,22 +78,28 @@ domain and behaving correctly keeps it; a domain nobody holds is reclaimed by th
 That is exactly what `Domain::refcount` already implements.
 
 - `Domain` carries `refcount` and `immortal` and no owner pointer
-  (`kernel/include/kickos/domain.h:29`).
-- `domain_ref` runs once, at thread create (`kernel/thread/thread.cc:87`).
-- `domain_release` runs once, in `sched::exit_current` (`kernel/sched/sched.cc:202`), and only
-  decrements (`kernel/domain/domain.cc:259`).
+  (`kernel/include/kickos/domain.h`).
+- `domain_ref` runs once when a holder is created and `domain_release` runs once when it dies,
+  and the release only decrements (`kernel/domain/domain.cc`, `domain_release`).
+  **The holder was the THREAD when this was written. M4.8.3 moved both calls to the TASK**
+  (`kernel/task/task.cc`; `kernel/include/kickos/domain.h` states it), so `sched::exit_current`
+  drops a task reference and a domain survives a thread whose siblings are still live. What the
+  clause below rests on is unchanged: the refcount is still what decides when a domain comes back.
 - A slot with `refcount == 0 and not immortal` is free, and the next `domain_for` overwrites it
-  wholesale (`kernel/domain/domain.cc:34`, `:216`).
+  wholesale (`kernel/domain/domain.cc`, `domain_for`).
 - The regions a thread actually runs on are its own copy, taken at create
-  (`kernel/thread/thread.cc:123`), so releasing the domain reference does not disturb a co-tenant
+  (`kernel/thread/thread.cc`), so releasing the domain reference does not disturb a co-tenant
   and does not disturb the dying thread either.
-- An MMIO grant is never shared: `has_mmio` skips the dedup scan (`kernel/domain/domain.cc:194`),
-  so a DEV window has exactly one holder and comes back automatically when that holder dies.
+- An MMIO grant is never shared, so a DEV window has exactly one holder and comes back
+  automatically when that holder dies. **The mechanism has since changed and the property has
+  not**: when this was written a `has_mmio` predicate skipped the dedup scan for such a grant;
+  the DEV window is no longer carried by the domain at all, and `kernel/thread/thread.cc`
+  composes it per-thread beside the domain's regions (`kernel/include/kickos/domain.h`).
 
 **Consequence, and the central simplification of this milestone: fault-death needs no new domain
 code, no new teardown code and no new ownership rule. It needs to reach the teardown that already
-exists.** `sched::exit_current` (`kernel/sched/sched.cc:186`) is already total: it releases the
-domain, runs `cap_teardown` (mutex force-unlock, endpoint EPIPE to parked senders, IRQ line detach
+exists.** `sched::exit_current` (`kernel/sched/sched.cc`) is already total: it releases the
+holder's reference, runs `cap_teardown` (mutex force-unlock, endpoint EPIPE to parked senders, IRQ line detach
 and mask, reply-cap EPIPE), wakes joiners and the wait-until-last waiter, and ends the process only
 when it was the last live thread. M4.7.9 is therefore a routing problem, not a teardown problem.
 
@@ -110,7 +116,7 @@ The discriminator is the privilege the CPU was in when it faulted, not the threa
 not which stack the frame came from.
 
 It cannot be "was this a pool thread", because KickOS runs syscall dispatch in **privileged thread
-mode on the thread's own stack** (`arch/arm/armv7m/switch.S:6`, `svc_trampoline` at `:157`). A fault
+mode on the thread's own stack** (`arch/arm/armv7m/switch.S`, `svc_trampoline`). A fault
 there is a kernel bug in code the thread merely called, and it must still panic. Privilege
 separates the two cleanly: user code runs with `CONTROL.nPRIV = 1`, kernel code on its behalf runs
 with `nPRIV = 0`.
@@ -123,10 +129,10 @@ Per backend, the bit already exists:
 
 | backend | discriminator | present today |
 | --- | --- | --- |
-| armv7m / armv6m | `CONTROL.nPRIV == 1`. Exception entry does not modify `CONTROL`, so reading it in the handler gives the thread-mode privilege at fault time. `arch_context` already carries `npriv` and `resting_npriv` (`arch/arm/armv7m/arch_armv7m.cc:28`) | **no**: the handler prints an MSP/PSP label and consults nothing (`arch_armv7m.cc:232`) |
-| rv32imac | `(mstatus and MSTATUS_MPP_M) == 0`, MPP being the privilege before the trap | **yes**, `arch/riscv/rv32imac/arch_rv32imac.cc:507` |
-| rxv3 | `PSW.PM != 0`, PM being the previous processor mode | **yes**, `arch/rx/rxv3/arch_rxv3.cc:325` |
-| lx6 | `PS.UM` | **no**, `PS` is dumped but not tested (`arch/xtensa/lx6/arch_xtensa.cc:399`) |
+| armv7m / armv6m | `CONTROL.nPRIV == 1`. Exception entry does not modify `CONTROL`, so reading it in the handler gives the thread-mode privilege at fault time. `arch_context` already carries `npriv` and `resting_npriv` (`arch/arm/armv7m/arch_armv7m.cc`, `arch_context`) | **no**: the handler prints an MSP/PSP label and consults nothing (`arch/arm/armv7m/arch_armv7m.cc`, the fault dump) |
+| rv32imac | `(mstatus and MSTATUS_MPP_M) == 0`, MPP being the privilege before the trap | **yes**, `arch/riscv/rv32imac/arch_rv32imac.cc` |
+| rxv3 | `PSW.PM != 0`, PM being the previous processor mode | **yes**, `arch/rx/rxv3/arch_rxv3.cc` |
+| lx6 | `PS.UM` | **no**, `PS` is dumped but not tested (`arch/xtensa/lx6/arch_xtensa.cc`) |
 | sim | no real privilege; host signal only | n/a, see 6.3 |
 
 Two backends therefore already compute the exact bit this milestone needs, and already reach a
@@ -154,7 +160,7 @@ it, since a trap handler runs at M-mode / supervisor mode.
 
 ### 3.3 Not already dying
 
-`Thread::dying` (`kernel/include/kickos/thread.h:120`) is set at the top of `exit_current` and never
+`Thread::dying` (`kernel/include/kickos/thread.h`) is set at the top of `exit_current` and never
 cleared. A fault taken while it is set escalates to the old panic path.
 
 This clause is what bounds the whole design. It is also the answer to the one case section 4 cannot
@@ -163,7 +169,7 @@ otherwise survive: a stack overflow. See 4.2.
 ## 4. How the thread dies
 
 `exit_current` is an ordinary kernel function. It takes `IrqLock`, calls `cap_teardown`, which
-**releases `IrqLock` between chunks** (`kernel/syscall/cap.cc:838`) so interrupts run and other
+**releases `IrqLock` between chunks** (`kernel/syscall/cap.cc`, `cap_teardown`) so interrupts run and other
 threads are scheduled during the sweep, and it ends in `reschedule()` plus an `arch_idle_wait()`
 loop. None of that can run from a fault exception handler: on ARM a HardFault runs at priority -1,
 where `IrqLock` gates nothing it needs to gate and a pending PendSV can never be taken, so
@@ -268,9 +274,9 @@ shape M4.7.8 already recorded as wanted for other reasons (`TODO.md`, reaper cla
 The mechanisms already exist and this milestone should add none.
 
 - A peer parked sending on the dead thread's endpoint is woken with `-KOS_EPIPE` when the last
-  WAIT-bearing cap goes (`kernel/syscall/cap.cc:283`).
-- A peer holding a mutex the dead thread owned gets `MUTEX_OWNER_DIED` (`kernel/sync/sync.cc:457`).
-- A peer that joined it with a deadline is woken with 0 (`kernel/sched/sched.cc:228`).
+  WAIT-bearing cap goes (`kernel/syscall/cap.cc`).
+- A peer holding a mutex the dead thread owned gets `MUTEX_OWNER_DIED` (`kernel/sync/sync.cc`).
+- A peer that joined it with a deadline is woken with 0 (`kernel/sched/sched.cc`).
 
 That last one is the watchdog the brief describes, and M4.7.8 is what made it a watchdog: a join
 that can time out. The motor thread joins the com thread with a bounded deadline; a return of 0
@@ -280,8 +286,8 @@ without a new primitive.
 ### 5.1 The latency hazard, which is the actual safety question
 
 `cap_teardown` runs **in the dying thread's own context, at its own priority**, and the dying
-thread's priority is deliberately not deflated during the sweep (`kernel/sync/sync.cc:459`,
-`kernel/syscall/cap.cc:260`). If the com thread is higher priority than the motor thread, the motor
+thread's priority is deliberately not deflated during the sweep (`kernel/sync/sync.cc`,
+`kernel/syscall/cap.cc`). If the com thread is higher priority than the motor thread, the motor
 thread is delayed by the whole sweep of a thread that is already dead.
 
 For the stated use case that is the thing that matters, so it needed a number and a decision, not a
@@ -366,7 +372,7 @@ becomes false on an enforcing one. Each gate must therefore become posture-aware
 arm must assert the opposite of what it asserts now.
 
 `user/apps/common/rootfault` needs particular care: root is unprivileged
-(`kernel/init/kmain.cc:247`), so under this rule root itself dies thread-scoped. That is coherent
+(`kernel/init/kmain.cc`, `root_attr.privileged`), so under this rule root itself dies thread-scoped. That is coherent
 (if root was the last live thread, `exit_current` reaches `live == 0` and ends the process with the
 code), but it is a real semantic change to a gate that currently expects a panic, and it is worth
 stating in the milestone rather than discovering in a capture.
@@ -392,17 +398,17 @@ fault. Mutation proof: break the discriminator and confirm the gate fails.
 
 Separate from the fault work and much smaller than it looks.
 
-`kos_exit` already exists and works (`KOS_SYS_EXIT = 8`, `user/include/kickos/sys/abi.h:57`,
-dispatch at `kernel/syscall/syscall.cc:526`), and `_exit` already reaches it
-(`user/src/newlib_stubs.cc:126`), which is why `abort()` and a failed `assert` already terminate
+`kos_exit` already exists and works (`KOS_SYS_EXIT = 8`, `user/include/kickos/sys/abi.h`,
+dispatched in `kernel/syscall/syscall.cc`), and `_exit` already reaches it
+(`user/src/newlib_stubs.cc`), which is why `abort()` and a failed `assert` already terminate
 correctly.
 
 What does not work is standard `exit()`. It does not **link**: newlib's `exit` pulls
 `__libc_fini_array`, which needs `_fini`, and no linker script in the tree defines one
-(`user/apps/common/sched_exit/main.cc:30` states this).
+(`user/apps/common/sched_exit/main.cc` states this).
 
 Every linker script already partitions the app `.fini_array` into its own section and then asserts
-it empty (`boards/qemu-m33/mps2.ld:74`, `:253`, and the same pair in every other chip script). So
+it empty (`boards/qemu-m33/mps2.ld`, the `.fini_array` partition and its emptiness assert, and the same pair in every other chip script). So
 the array `__libc_fini_array` would walk is guaranteed empty, and an empty `_fini` is not a stub
 that hides something: it is the truth the linker already enforces. Defining it makes `exit()` link
 and behave exactly like `_exit`, with the assert left in place as the thing that keeps that true.
@@ -473,9 +479,9 @@ in `.bss` and one comparison.
 ### 9.4 Still open
 
 4. **Resource leak under a crash loop.** `kos_ram_alloc` never gives memory back (there is no
-   `arch_ram_free` anywhere, `kernel/include/kickos/cap.h:198`), so a thread that is respawned and
+   `arch_ram_free` anywhere, `kernel/include/kickos/cap.h`), so a thread that is respawned and
    crashes repeatedly exhausts the arena. Access rights are not leaked (the TCB regions are wiped at
-   slot reuse, `kernel/thread/thread.cc:37`), only memory. Out of scope here; worth a `TODO.md` line.
+   slot reuse, `kernel/thread/thread.cc`), only memory. Out of scope here; worth a `TODO.md` line.
 5. **The peripheral is left live.** `cap_teardown` masks and detaches the IRQ line, but the device
    itself keeps whatever the dead driver programmed into it (TE/RE still set, a DMA channel still
    armed). Harmless while the line is masked. Whether a respawned driver must be able to assume a
@@ -496,8 +502,9 @@ was lost is the one line naming the dead thread, on every realistic image.
 ONLY agent permitted to put a byte on that device is the driver. So either the record travels to the
 driver, or the kernel takes the device back. There is no third transport.
 
-Taking it back was rejected on register facts. Every one of the four `arch_console_reclaim` bodies
-clears a UART TX interrupt enable and reprograms baud, so a reclaim is not reversible from the kernel
+Taking it back was rejected on register facts. Every `arch_console_reclaim` body in the tree
+(`grep -rln '^void arch_console_reclaim(void)' arch/*/chip/`, re-checked one by one) clears a UART TX
+interrupt enable and reprograms baud, so a reclaim is not reversible from the kernel
 side and a SCOPED one -- reclaim, print, hand back -- would restore the state variable while leaving
 a live IRQ-driven driver's TX source silenced and its service thread parked forever. That is the
 hazard `console_on_driver_death` already defers around. A PERMANENT reclaim additionally violates
@@ -510,7 +517,7 @@ reclaiming is the cheapest option of all and is rejected on the isolation princi
 bytes into a frame the driver is shifting out, and on a chip where the driver holds the window as a
 granted capability it is the kernel writing a device it has handed away.
 
-So: **`kprintf_fault`, and only the four fault-record sites use it.** It is `kprintf` plus one thing.
+So: **`kprintf_fault`, and only the fault-record sites in `kernel/init/fault.cc` use it.** It is `kprintf` plus one thing.
 While the state is `USER_OWNED` it also hands the formatted line to the published endpoint's
 ALREADY-PARKED receiver through `cap_console_deliver`, which is `endpoint_send`'s parked-receiver arm
 and lives beside it so the two cannot drift. It reaches the endpoint through the KERNEL's own

@@ -5,9 +5,10 @@
 // resume a thread. ALL register state lives in a flat save frame on the thread's own
 // stack (switch.S), so a thread is fully described by one pointer, the top of that
 // frame. There is ONE frame format for both a voluntary block and a preemptive wake:
-// the msip switcher always saves the complete interrupted context (all GPRs + mepc +
-// mstatus), so a thread preempted at an arbitrary PC and one that blocked in a syscall
-// are indistinguishable to the resume path.
+// the msip switcher always saves the complete interrupted context (every GPR except
+// gp/tp, plus mepc + mstatus; sp is the frame base held in ctx.sp), so a thread
+// preempted at an arbitrary PC and one that blocked in a syscall are indistinguishable
+// to the resume path.
 //
 // There is no npriv/resting_npriv field: a thread's privilege lives in the saved
 // frame's mstatus.MPP, restored by the mret at frame-restore.

@@ -135,7 +135,8 @@ namespace kickos
     //
     // Waits for a thread the caller spawned to be gone, up to `timeout_us` relative
     // microseconds (KOS_TIMEOUT_NONE: no bound). Returns 0 (including for a target that had
-    // already exited), -KOS_ETIMEDOUT, -KOS_EBADF, -KOS_EPERM or -KOS_EDEADLK.
+    // already exited), -KOS_ETIMEDOUT, -KOS_ECANCELED, -KOS_EBADF, -KOS_EPERM or
+    // -KOS_EDEADLK.
     int thread_join(kos_thread_t thread, uint32_t timeout_us);
     // Waits until the caller is the last live thread. ROOT ONLY: returns 0, or -KOS_EPERM
     // to any other caller.

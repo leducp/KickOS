@@ -4,7 +4,7 @@ Copyright (c) 2026 Philippe Leduc
 -->
 # Where your RAM goes: the full-C++ memory floor and splitting kernel from app in the linker
 
-> A Chapter-7 companion, downstream of the C++ runtime chapter 0.4
+> A Chapter-7 companion, downstream of the C++ runtime chapter 0.6
 > ([`whats-under-include-libc-and-the-cxx-runtime.md`](whats-under-include-libc-and-the-cxx-runtime.md))
 > and the runtime-memory chapter
 > ([*Exceptions and RTTI under memory protection*](exceptions-and-rtti-under-memory-protection.md),
@@ -89,7 +89,7 @@ window's end, is the heap:
 - `_kickos_heap_limit = __kickos_appdata_end` -- the window's end (its padded, grantable
   edge on the pow2 arches).
 
-`_sbrk` ([`../../user/src/newlib_stubs.cc`](../../user/src/newlib_stubs.cc)) bumps a single
+`_sbrk` ([`../../user/src/newlib_sbrk.cc`](../../user/src/newlib_sbrk.cc)) bumps a single
 break pointer between that pair and never frees back to the OS, so `malloc`'s own free list
 reuses within the pad. The heap is the pad. Grow the window and the heap grows with it; add
 statics and the heap shrinks by exactly that much.
@@ -144,7 +144,9 @@ memory-protection unit then needs that one image partitioned so an unprivileged 
 reaches its own code and data but never the kernel's. The linker script is where that
 partition is authored. Read
 [`../../arch/arm/chip/mk64f/mk64f.ld`](../../arch/arm/chip/mk64f/mk64f.ld) alongside this
-section; it is the reference scheme and every other chip mirrors it.
+section; it is the worked example this chapter quotes, and every other chip's script is
+recognisably the same scheme. Where they differ is the granularity of the protected
+window, which the next sections show changing the shape of one check.
 
 ### The inverted colon selector: capture the kernel, let the rest fall through
 
@@ -256,11 +258,17 @@ the real statics, pads up to the granted window size, and hands the gap to the h
     _kickos_heap_limit = __kickos_appdata_end;
 ```
 
-The `ASSERT` fires *before* the pad assignment on purpose: a bare pad to an
-already-overflowed window is `ld`'s cryptic "location counter backwards," so the actionable
-message must be evaluated first. On a non-enforcement chip there is no window, and the same
-symbol pair instead brackets a standalone `.userheap` block reserved ahead of the
-thread-stack arena:
+That `_appdata_fits` line is the pow2-window chips' form, and the placement is the lesson.
+The `ASSERT` is bound to a symbol purely so it is *evaluated inside the section*, before
+the pad assignment: a bare pad to an already-overflowed window makes the location counter
+move backwards, and `ld` reports that in its own cryptic terms rather than in yours. Put
+the check after the section and the useful message never gets the chance to print. The
+SYSMPU chip quoted throughout this chapter states the same bound at the bottom of the
+script instead of inside the section, which is the arrangement that loses the message, so
+copy the in-section form when authoring a new one.
+
+On a non-enforcement chip there is no window, and the same symbol pair instead brackets
+a standalone `.userheap` block reserved ahead of the thread-stack arena:
 
 ```
     .userheap (NOLOAD) :
@@ -308,7 +316,7 @@ singletons `kmain` needs are constructed first. Every *other* constructor (the a
 `libstdc++`/`libsupc++`'s, KickCAT's) lands in `.kickos_app_init_array` and runs later
 from `root_entry`, the kernel's first thread, with the scheduler and clock fully live --
 because such a constructor may call a KickOS syscall (`kos_clock_now`), which needs a
-current thread to exist. The full "why" is in the boot-order section of Chapter 0.4; the
+current thread to exist. The full "why" is in the boot-order section of Chapter 0.6; the
 linker's job is just to give the two groups separate homes with bracketing symbols the C
 runtime can walk.
 

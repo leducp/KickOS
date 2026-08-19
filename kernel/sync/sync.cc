@@ -24,7 +24,7 @@ namespace kickos
             best->clear_wait_edge();
             // No deadline cancel here: a pop is not an unpark, since endpoint_recv pops a
             // CALL_SEND_WAIT caller straight into reply_donor_park and the deadline must
-            // span both call phases. sched::wake owns the cancel.
+            // span both call phases. sched::wake_no_resched owns the cancel.
         }
         return best;
     }

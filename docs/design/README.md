@@ -10,9 +10,9 @@ cannot tell whether a document describes the current system, a plan, or a road n
 separate call for the maintainer to make; this index exists so they can be found by status without
 moving anything.
 
-**Coverage is total: 34 documents = 25 LANDED + 5 ACTIVE + 4 EXPLORATORY + 0 SUPERSEDED.** Every
+**Coverage is total: 39 documents = 25 LANDED + 10 ACTIVE + 4 EXPLORATORY + 0 SUPERSEDED.** Every
 `../design-*.md` appears in exactly one table, and no table names a file that does not exist.
-`ls ../design-*.md | wc -l` is the check.
+`ls ../design-*.md | wc -l` is the check; run it before trusting the number.
 
 The 2026-07-29 footprint capture the R2/R3/R4 rulings rest on is
 [`archive/M4.5_footprint_meas.md`](../archive/M4.5_footprint_meas.md): a dated measurement record,
@@ -20,7 +20,9 @@ not a current footprint, and never in the re-grounding path.
 
 ## The markers
 
-Every `design-*.md` now carries one status marker in its header:
+Every `design-*.md` carries a status line in its header. Most open with one of the four markers
+below; the newest M5/M6 records state their status in prose on that line instead, and this index
+files each of those under the marker that fits it:
 
 | Marker | Means | How to read the document |
 |---|---|---|
@@ -80,6 +82,11 @@ Two things follow from this that are easy to get wrong:
 | [`design-kickcat-k64f.md`](../design-kickcat-k64f.md) | Running the KickCAT EtherCAT slave on KickOS. The K64F hardware path is still the plan; the tree links no KickCAT app, so the Stage A sim slave the body calls landed is not in `user/apps/` |
 | [`design-style-enforcement.md`](../design-style-enforcement.md) | One mechanism enforcing house style across code, markdown and build files: the rule inventory bucketed by decidability, and why a formatter and a count gate both lose. Proposed, not built -- there is no `check_style.py` |
 | [`design-m4.6.2-usb-cdc.md`](../design-m4.6.2-usb-cdc.md) | USB CDC console driver, the current M4.9.1 work. The number in the filename is the superseded one; `../../roadmap.md`'s ledger assigns M4.9.1 |
+| [`design-m5-driver-set.md`](../design-m5-driver-set.md) | What "complete the driver set" owes, enumerated from the build system rather than from the plan: the per-chip capability matrix and the gaps it names. Header status: surveyed, scope not yet approved |
+| [`design-m5-i2c-seam.md`](../design-m5-i2c-seam.md) | The I2C class contract, judged against three unrelated controllers and nine parts before an engine existed. The class header and the RX72M RIICa backend came out of it; the proxy and the service have not |
+| [`design-m5-ipc-fastpath.md`](../design-m5-ipc-fastpath.md) | Bounding the IPC critical section: the measured call/reply baseline, which section 1 fixes as a measurement, and the fastpath judged against it |
+| [`design-m5-kickcat-reality-check.md`](../design-m5-kickcat-reality-check.md) | KickCAT brought back at the end of the driver era to JUDGE the driver APIs rather than consume them: the SPI-class collision, the ruling, and what writing the backend found. Header status: written and compiled, never linked, never run |
+| [`design-m6-state-inventory.md`](../design-m6-state-inventory.md) | Kernel state classified per-core versus genuinely global, and what the multi-instance sim corrected about that classification once part of it became executable. Read section 6 before the tables |
 
 ## EXPLORATORY
 

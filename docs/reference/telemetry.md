@@ -292,9 +292,8 @@ per-`SimInstance`. There is **no on-target CPU% accumulator** (host-derived).
 `arch_trace_now` is a true global (one clock per core). The RTT block is a
 process-global `_SEGGER_RTT`, so **telemetry on the sim is single-instance-only**
 (stated constraint; per-instance sinks are later). Root's TCB is an ordinary
-thread-pool slot inside `g_instance`, so `g_idle_tcb` is the last file-static TCB;
-"each Kernel's idle = tid 0" fully holds only once that one is instance-scoped too,
-and single-instance is correct now.
+thread-pool slot inside `g_instance` and idle's is `Kernel::idle_tcb`, so
+"each Kernel's idle = tid 0" holds per instance.
 
 ## 6. Config
 

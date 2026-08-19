@@ -211,7 +211,7 @@ The property axis to hold onto: **volatile vs non-volatile** (does it survive
 power-off), **speed / wait states** (how many cycles a read costs), and
 **execute-in-place** (can the core fetch instructions from it directly).
 
-*Further reading: Hennessy and Patterson, Computer Organization and Design, ch.2
+*Further reading: Hennessy and Patterson, Computer Organization and Design, ch.5
 (the memory hierarchy -- why memories trade speed against size and cost).*
 
 Put every memory and every peripheral aperture side by side, each at its fixed

@@ -22,8 +22,9 @@ is decided once at `thread_create` and never revisited.
 ## 2. Why it needs no new assembly on any port
 
 Every ISA with a ring split already encodes privilege in the fabricated first frame and restores it on
-the first switch-in. This table is the per-board ring classification a new armv6m board must state in
-`user/apps/common/ringpriv/CMakeLists.txt`.
+the first switch-in. This table is the per-board ring classification a new armv6m board must state in the root
+`CMakeLists.txt`, which derives `KICKOS_HAVE_PRIV_RING` and `FATAL_ERROR`s on an unclassified
+armv6m board. `user/apps/common/ringpriv/CMakeLists.txt` only consumes that value.
 
 | Port | Where privilege lives in the fabricated frame |
 |---|---|
@@ -244,8 +245,11 @@ Two records outlive them:
 - **The CPU/peripheral clock coupling is over-generalised, and should be a question asked of the chip.
   M4.6 work.** `cpu_clock_set` refuses outright while a userspace driver owns the console, on the
   grounds that the kernel cannot re-derive a baud it no longer owns. That veto generalises from a
-  biased sample: five chips implement `arch_periph_clock_hz` and the two this argument rested on are coupled, so the
-  decoupled case has never had to be stated. The right shape is a **notification to the affected
+  biased sample: only the chips listed by
+  `grep -rln arch_periph_clock_hz arch/*/chip/ | cut -d/ -f4 | sort -u` implement
+  `arch_periph_clock_hz` at all (six of the fifteen, the rest taking
+  `arch/common/arch_periph_clock_hz_default.cc`), and the two this argument
+  rested on are coupled, so the decoupled case has never had to be stated. The right shape is a **notification to the affected
   services**, and the console is not the only one.
 - **`arch_reserved_blocks` reasons about addresses, and interrupt routing is not an address.** A
   granted USIC channel can re-point `INPR` at a service-request node the kernel owns, invisible to any

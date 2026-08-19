@@ -11,7 +11,8 @@
 // so it is identical on every board): HSI/2 (4 MHz) x16 = 64 MHz
 // SYSCLK. HCLK=64, PCLK2=64, PCLK1=32 (its 36 MHz max). USART2 is on APB1, so its
 // BRR is derived from the achieved PCLK1. Console = USART2 on PA2/PA3 (AF7, the
-// ST-LINK VCP), polled TX. No watchdog runs at reset. Every HSI/PLL poll is
+// ST-LINK VCP), buffered TX drained by the USART2 TXE interrupt; arch_console_write_sync
+// is the polled writer for panic/fault. No watchdog runs at reset. Every HSI/PLL poll is
 // bounded: if the PLL never locks the boot degrades to the reset HSI 8 MHz clock
 // rather than hanging. Flash to confirm, or watch LD2 (PB13) blink.
 
@@ -191,12 +192,12 @@ namespace
     }
 
     // --- TIM2: the monotonic time base (RM0365 sec.21) --------------------------
-    // The v7-M default clock is the DWT cycle counter (core debug power domain),
-    // which intermittently returns aliased garbage on parts in this fleet; the
-    // software 32->64 wrap-extension turns one bad read into a phantom 2^32 jump
+    // arch_clock_now is a REQUIRED chip contract: the armv7m layer ships no clock
+    // fallback. The obvious source, the DWT cycle counter, sits in the core debug
+    // power domain and intermittently returns aliased garbage on parts in this fleet;
+    // the software 32->64 wrap-extension turns one bad read into a phantom 2^32 jump
     // that strands every timed wait. On the F3, TIM2 is a 32-bit general-purpose
-    // timer on APB1 (not the debug domain): free-run it and use it as
-    // arch_clock_now. ONLY the monotonic clock moves off DWT; arch_trace_now stays
+    // timer on APB1: free-run it and use it as arch_clock_now. arch_trace_now stays
     // on raw DWT_CYCCNT. TIM2 does not collide with the one-shot tickless timer
     // (SysTick, core-generic) nor any driver (none use TIM2 on this port).
     constexpr uintptr_t TIM2_BASE = 0x40000000;
@@ -233,8 +234,8 @@ namespace
     void tim2_clock_init()
     {
         // Boot-order: nothing before arch_init may read the clock. A static ctor
-        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on the
-        // ungated APB1 access (it was a harmless DWT read before this override).
+        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on
+        // the ungated APB1 access.
         // The F3 has no APB1LPENR: TIM2 keeps counting in WFI by default.
         r32(RCC_APB1ENR) |= APB1ENR_TIM2EN;
         r32(TIM2_CR1) = 0;             // stop; upcount, defaults
@@ -312,7 +313,7 @@ void arch_init(void)
     // FPU enabled earlier (Reset_Handler). Clock first (HSI/2 -> PLL -> 64 MHz),
     // then the console derives its BRR from the achieved PCLK1.
     clock_init();
-    tim2_clock_init(); // monotonic time base (replaces the unreliable DWT clock)
+    tim2_clock_init(); // monotonic time base: the required arch_clock_now source
     // Anchor the clock ONCE, from the FINAL rate: TIM2 is on APB1 and, with HPRE=/1
     // and PPRE1 in {/1,/2}, the STM32 APB timer-clock doubler makes the timer kernel
     // clock equal HCLK == SystemCoreClock (retuning PPRE1 to /4+ would break that).
@@ -328,9 +329,9 @@ size_t arch_mpu_min_region(void)
     return 0u;
 }
 
-// Monotonic clock: free-running TIM2 ticks -> ns, the required per-chip source (the
-// DWT-backed arch_clock_now (unreliable on this silicon). Pure epoch read: the anchor
-// holds the rate, so no divide and no rate derivation happens here.
+// Monotonic clock: free-running TIM2 ticks -> ns, the required per-chip arch_clock_now.
+// Pure epoch read: the anchor holds the rate, so no divide and no rate derivation
+// happens here.
 uint64_t arch_clock_now(void)
 {
     return g_clk.ns_from(tim2_ticks());

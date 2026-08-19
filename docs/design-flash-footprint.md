@@ -9,7 +9,7 @@
 > Two items below are open records rather than shipped work: R3 and the LTO defect.
 
 The build-type recovery is taken: every configure preset sets `CMAKE_BUILD_TYPE=MinSizeRel` and `-g`
-is re-added under it (`CMakeLists.txt:139`), because an image with no debug info cannot be witnessed
+is re-added under it (`CMakeLists.txt`, the `MinSizeRel` `add_compile_options` line), because an image with no debug info cannot be witnessed
 on silicon. What follows is what was decided around that, and what is still open.
 
 ## R2. It has to be `-Os`, not `-O1` and not `-O2`
@@ -36,7 +36,7 @@ not a flag. Not scheduled here.
 8,192 bytes of SRAM on `bluepill-c8`, 40 percent of the part's RAM, and no app on the freestanding
 leaf references it. It is kept anyway because it buys stdio BUFFERING and `malloc`, and surrendering
 it costs exactly those. It is not required for `printf` or `std::cout`: newlib falls back to
-unbuffered stdio when the buffer malloc fails (`arch/arm/chip/stm32f302/stm32f302.ld:24-26`), which
+unbuffered stdio when the buffer malloc fails (`arch/arm/chip/stm32f302/stm32f302.ld`, the `.userheap` carve), which
 is why `nrf51` ships a zero carve and still prints. The standard-API rule therefore survives a
 heapless profile; see `reference/porting.md`. The ruling is per board through the existing
 `KICKOS_USER_HEAP_SIZE` knob, at the price of the buffering guarantee.
@@ -52,8 +52,8 @@ fixes silence it and the param addresses the cause more directly, yet the pragma
 **the param cannot be scoped in-source at all.** GCC rejects it in `#pragma GCC optimize` and in the
 `optimize` function attribute, so its only home is the compile line, where it blinds roughly 450
 lines of chip driver to every value-range null-page diagnostic. The pragma covers two one-line
-function bodies (`arch/arm/chip/rp2040/chip_rp2040.cc:81-85`,
-`arch/arm/chip/rp2350/chip_rp2350.cc:97-101`).
+function bodies (the `-Warray-bounds` push/pop around `r8`/`r16` in
+`arch/arm/chip/rp2040/chip_rp2040.cc` and `arch/arm/chip/rp2350/chip_rp2350.cc`).
 
 Demonstrated rather than argued: a null-page dereference introduced elsewhere in the same TU is
 still caught with the pragma in place and is silently missed under the param.

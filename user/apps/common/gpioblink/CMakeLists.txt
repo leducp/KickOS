@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# GPIO direct-MMIO demo (M4.3): the kernel does NOT do GPIO. A privileged bring-up main
-# grants the LED port's register block to an UNPRIVILEGED worker as a spawn MMIO window;
+# GPIO direct-MMIO demo (M4.3): the kernel does NOT do GPIO. A bring-up main grants the
+# LED port's register block to an UNPRIVILEGED worker as a spawn MMIO window;
 # the worker toggles the pin by writing that window DIRECTLY (no syscall per edge). The
 # pin is muxed by the default init's pin-map step (the clock->pinmux->gpio DAG); this app
 # only drives it. Board-agnostic C++: it builds on EVERY arch; a chip whose register

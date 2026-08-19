@@ -86,12 +86,13 @@ to all 20.
       load-bearing for them and `option()` must defer via CMP0077. Converting the emitter to
       `#if`-style booleans retires the fragment lines, the deference and the
       `check_kconfig_gen.sh:101-106` presence assert together.
-- [ ] **A board's provisioning is repeated once per variant and nothing compares the copies.** 51
-      defconfigs over 20 boards (20 `base`, 14 `flat`, 13 `st`, 2 `telem`, 2 `bench`), each a
+- [ ] **A board's provisioning is repeated once per variant and nothing compares the copies.** The
+      corpus is `git ls-files '*/configs/*/defconfig'`, 52 defconfigs over 20 boards at the time of
+      writing (20 `base`, 14 `flat`, 13 `st`, 3 `bench`, 2 `telem`), each a
       COMPLETE statement rather than a delta on `base` -- which is the Kconfig model and what
       `savedefconfig` writes back. A board with `base`, `st` and `flat` states
       `KICKOS_MAX_THREADS` three times and an edit to one is silent in the other two.
-      `check_kconfig_gen.sh:183-201` iterates all 51 but only asserts each RESOLVES; it never
+      `check_kconfig_gen.sh` leg 6 iterates every one of them but only asserts each RESOLVES; it never
       diffs a variant against its base, and `savedefconfig` regenerates one variant from the live
       `.config`, so it cannot catch a divergence either. Cheap first cut: a gate asserting every
       variant agrees with its board's `base` outside a per-variant allowlist of the symbols that
@@ -850,9 +851,10 @@ triggers `push` only on `master`).
       accepting either board as suite-exempt, is the maintainer's call.**
       Unchanged: `TAP_CHECK` embeds `__FILE__` plus its stringified condition, so assertion
       count is a flash cost; CI does not catch any of this, because its ARM matrix builds the
-      PLAIN board presets, not the `-st` ones. Same class as `tests/tap/tap.cc`'s
-      `MAX_TESTS = 64` (`tap::add` drops silently past the ceiling rather than failing the
-      build).
+      PLAIN board presets, not the `-st` ones. Same class as `tests/tap/tap.cc`'s `MAX_TESTS`
+      ceiling, which is a per-board RAM cost the smallest board pays for the whole fleet. It is no
+      longer a SILENT ceiling: registrations dropped past it are counted and `tap::run_all` emits a
+      failing `tap_registry_overflow` line.
 ## M4.5.1 -- found during the kernel-audit batch (2026-07-27)
 
 - [ ] **The resume barrier has never been observed to spin.** Bounding
@@ -1371,7 +1373,7 @@ Blockers and limits:
   list under enforcement, and `xmcssc` AS A SERVICE is WITNESSED -- both driver banners on the wire
   at `commit 270b6fa`, no dark board. Recorded in full under M4.5.6. The analysis below is kept
   because it is what the seam had to satisfy.
-  `system/driver/xmc4800/xmcssc/xmcssc.cc:281-324` (USIC kernel clock, baud, protocol) -- on
+  `system/driver/xmc4800/xmcssc/spi_usic.cc` (USIC kernel clock, baud, protocol) -- on
   `xmc4800-relax`, the enforcement flagship. The two K64F bodies were **retired by stage 3**:
   `system/driver/mk64f/k64uart/k64uart.cc` (AIPS PACR) and
   `system/driver/mk64f/k64dspi/k64dspi.cc` (clock gates, pin mux, GPIO, DSPI config) each call
@@ -1445,11 +1447,15 @@ Blockers and limits:
   board, **no privileged thread can come into existence after boot**.
 - **`idle` stays privileged and holds no capabilities** -- it runs no app code, and RXv3 `WAIT` is a
   privileged instruction while RISC-V U-mode `WFI` is optional per spec.
-- **The reserved cap index range is full after this** (0 stdout, 1 clock, 2 authority, 3 spare --
-  reboot shares shutdown's bit, so index 3 stays free). **The five-bit authority ceiling is gone**:
-  the word now lives in the poolless `CapEntry.obj`, `CapEntry` is still 8 bytes, and the width is
-  bounded by `kos_thread_params::authority` (a `uint8_t` in padding) rather than by the entry. Two
-  more authorities cost nothing; a ninth needs that params field widened.
+- **The reserved cap index range was to be full after this** (0 stdout, 1 clock, 2 authority,
+  3 spare -- reboot shares shutdown's bit, so index 3 stays free). **It did not end there**: the
+  authority cap type was deleted and the word moved to `Thread::authority`, so the reserved range
+  is `KOS_CAP_STDOUT = 0` and `KOS_CAP_CLOCK = 1` only, with `KICKOS_CAP_FIRST_DYNAMIC` at 2
+  (`system/include/kickos/sys/cap_index.h`, `cmake/cap_geometry.cmake`); see the `kos_reboot`
+  bullet above and the SUPERSEDED-in-mechanism note below. **The five-bit authority ceiling is
+  gone**: the width is bounded by `kos_thread_params::authority` (a `uint8_t` in padding) rather
+  than by a capability entry. Two more authorities cost nothing; a ninth needs that params field
+  widened.
 - **Delegation packing collides with reserved names** -- spawn delegation puts cap *i* at child
   index *i+1*, so a delegated cap lands at index 1 (`KOS_CAP_CLOCK`) and a second at index 2. The
   authority cap can no longer be the one that collides (refused by type at the delegation site), but
@@ -2188,10 +2194,10 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
       re-init the UART while the dying driver's IRQ cap is still live and its line still armed.
       Gated by `tests/integration/check_sim_drvdeath.sh`, the only hardware-free witness in the fleet, whose
       assertion is one `kos_print` call site absent before the death and present after. **Not
-      closed**: a per-chip `arch_console_reclaim` body exists on FOUR chips -- `mk64f`, `xmc4800`,
-      `esp32` and `esp32c6`, the last added after this was written --
-      so elsewhere the polled route returns but the DEVICE is whatever the driver left. Per-chip
-      bodies are fleet work; see `roadmap.md`'s sub-milestone ledger for the number.
+      closed**: a per-chip `arch_console_reclaim` body existed on FOUR chips when this item was
+      closed (`mk64f`, `xmc4800`, `esp32`, `esp32c6`) and the set has grown since. On a chip WITHOUT
+      one the polled route returns but the DEVICE is whatever the driver left. The live set is
+      `grep -rln '^void arch_console_reclaim(void)' arch/*/chip/`; per-chip bodies are fleet work.
 - [x] **Console visibility and handover ordering. LANDED**, by the second of the two remedies the
       finding offered -- root VERIFIES, rather than the publish being reordered.
       `console_handover_finish` (`user/include/kickos/sys/driver_service.h`) closes root's own WAIT
@@ -2244,7 +2250,7 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
       so it can hand `SIGNAL` copies to clients, so `recv_holders >= 1` however the server dies and a
       client parked in `kos_call` would block forever. `xmcssc` therefore has to panic on a bring-up
       failure rather than exit, and carries the rule as a comment
-      (`system/driver/xmc4800/xmcssc/xmcssc.cc:333-354`). **Recommendation as recorded**: an
+      (`system/driver/xmc4800/xmcssc/xmcssc.cc`, `bus_thread`). **Recommendation as recorded**: an
       endpoint-rights narrow is the cheap enabler for a real driver-death story. The generalisation
       is already ABI-free (the handle argument takes any cap); the work is the `recv_holders`
       accounting `obj_close_protocol` does, which the `cap.cc` refusal names as the reason it was
@@ -2928,8 +2934,9 @@ result by the table above; kept for the two findings under it that are still ope
       so those still reach RTT -- but never the serial log, which is exactly how a working driver
       can be mistaken for a dead one.
 - [x] **FIXED and witnessed at `c82cc63`: the published console cooks CRLF like the kernel does.**
-      Ruled: the console abstraction cooks, the transport does not -- `console_write_all` is the
-      console arm and expands, `serve_one`'s WRITE op stays byte-transparent. The original finding
+      Ruled: the console abstraction cooks, the transport does not -- `console_write`
+      (`user/include/kickos/sys/uart_service.h`, spelled `console_write_all` then) is the console arm
+      and expands, `serve_one`'s WRITE op stays byte-transparent. The original finding
       follows.
       Measured on this capture: the kernel banner ends `\r\n` (`kconsole_write` cooks), every
       driver-carried line ends with a BARE `\n`. On a raw terminal that staircases, and it makes
@@ -2977,8 +2984,8 @@ Filed by `ef14ab2`, which fixed the defect in one driver and named the other thr
       neither be told about a short accept nor retry it -- the retry has to live driver-side or the
       stream is spliced mid-token, a line prefix followed by the prefix of a later line. That is the
       measured `domoook##` signature `ef14ab2` chased on `esp32c6-wroom`. The pump that does it
-      right is `kickos::uart::console_write_all`
-      (`user/include/kickos/sys/uart_service.h`), already used by `lx6uart` and `rxsci`.
+      right is `kickos::uart::console_write` (`user/include/kickos/sys/uart_service.h`, spelled
+      `console_write_all` then), already used by `lx6uart` and `rxsci`.
       **`k64uartirq` and `xmcuartirq` do open-code a retry loop of their own**, which is why they
       had not spliced yet; `c6uart` called `tx_write` bare with no loop at all. All three now go
       through the shared pump: one budget, one doorbell policy, and for `k64uartirq` 10x finer
@@ -3096,7 +3103,7 @@ Captures: old `.session/logs/m461-rx-fixed-selftest.log`, `m461-rx-led.log`; new
       The 5.43 s window is dominated by the tests' own wall time -- `t_rr`'s burns,
       `t_irq_stale_register`'s 2 ms sleep, every semaphore and endpoint handshake. 1624 bytes at
       wire rate is 141 ms of those 5.43 s. And one byte per doorbell would not produce this
-      signature anyway: `console_write_all` rings on every pass at a 100 us sleep, so one byte per
+      signature anyway: `console_write` rings on every pass at a 100 us sleep, so one byte per
       doorbell is ~10,000 B/s, 87% of wire rate -- marginally slow but complete, never a dead stop.
       Nor could it produce **50 unspliced lines**: the ring would have filled inside 22 and every
       later line would carry the `ef14ab2` splice signature.
@@ -5229,12 +5236,15 @@ below where they were previously mislabeled.
   - Fits the seL4 endgame (seL4 ships a big-lock SMP variant). See `roadmap.md` (M6).
   - **AMP-first on RP2040 (an OPTION, not a spike verdict -- the spike does not contain one).**
     Two core-private `Kernel` instances. The `KICKOS_MULTI_INSTANCE` per-instance seam in
-    `instance.h` was described here as "the ~80% substrate"; it is not. It is a dead hole:
-    `detail::g_instance_tls` and `arch/sim/sim.cc`'s `g_sim_tls` are USED inside the branch and
-    declared nowhere in the tree, and no build file defines the macro, so it would not compile if
-    enabled. `docs/design-m4.8.2-host-unit-tests.md` already says it is not a prerequisite for a
-    Kernel fixture. Fix it or delete it; either way it is single-core work. What IS real substrate
-    is that all shared state already sits in one `struct Kernel` behind one accessor, `kernel()`.
+    `instance.h` was described here as "the ~80% substrate", and then as a dead hole that would not
+    compile if enabled. **Neither reading holds any more**: the knob is real (`Kconfig`, the root
+    `CMakeLists.txt`), the selector is a thread-local in `include/kickos/instance_local.h`,
+    `arch/sim/sim.cc` carries the guarded per-instance state, and
+    `tests/integration/check_sim_multi_instance.sh` is a registered gate. The two symbols this
+    entry named as used-but-undeclared are in no source file in the tree. It is still single-core
+    work, and `docs/design-m4.8.2-host-unit-tests.md` still says it is not a prerequisite for a
+    Kernel fixture. What IS real substrate is that all shared state already sits in one
+    `struct Kernel` behind one accessor, `kernel()`.
     Re-key on SIO CPUID instead of host-TLS. Each core keeps its own run queue + `IrqLock`==PRIMASK, so NO mutual-exclusion
     refactor: AMP de-risks the shared mechanics (core-1 launch, IPC, console arbitration) that
     SMP also needs, and sidesteps the no-atomics problem entirely.

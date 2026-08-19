@@ -50,9 +50,11 @@ extern "C" void kickos_isr_fault(uintptr_t addr, int is_write);
 // (on the thread's own stack, ctx.sp = its base, low->high) is 32 words / 128 bytes:
 //   [0 mepc][1 mstatus][2 ra][3 t0][4 t1][5 t2][6 s0][7 s1][8 a0]..[15 a7]
 //   [16 s2]..[25 s11][26 t3][27 t4][28 t5][29 t6][30,31 pad]
-// gp/tp are NOT saved: they are link-time-constant across all threads (set once in
-// _start), so the switch leaves them untouched. A silent reorder here or in
-// arch_context_init would corrupt the switch.
+// gp/tp are not in the frame. tp is set once in _start and no path touches it. gp is
+// NOT self-preserving: .Lrestore re-anchors it from __global_pointer$ on every switch,
+// because a U-mode thread can write it and the anchor sits inside the live app
+// small-data window (switch.S). A silent reorder here or in arch_context_init would
+// corrupt the switch.
 namespace
 {
     enum : uint32_t
@@ -209,11 +211,13 @@ int arch_in_isr(void)
     return g_isr_depth != 0;
 }
 
-// --- Trace clock: the cycle CSR (rdcycle), always present, 32-bit raw ---------
+// --- Trace clock: the cycle CSR (rdcycle), 32-bit raw ------------------------
 // Reads its own low 32 bits (wraps; the host reconstructs absolute time from the SESSION
 // clock_hz anchors). No ns conversion, no wrap-extend and no crit section, so it is safe
-// on the switch path. mcounteren.CY is enabled in kickos_rv32_init so a U-mode thread can
-// read it too.
+// on the switch path. kickos_rv32_init enables mcounteren.CY only where the core has the
+// CSR (arch_rv_has_mcounteren), so a U-mode thread can read it there. A core with no
+// Zicntr counters traps on rdcycle (the ESP32-C6 HP core is one) and has to override
+// this with its own counter.
 uint32_t arch_trace_now(void)
 {
     uint32_t v;
@@ -738,11 +742,11 @@ void kickos_rv32_init(void)
     // U-mode access with NO matching entry FAULTS, so an unprivileged thread cannot even
     // fetch its first instruction without this entry. It grants U-mode full access, with
     // no isolation until arch_mpu_apply refines per-thread PMP. Use TOR (A=01, top =
-    // pmpaddr0<<2) rather than the
-    // all-ones NAPOT idiom: the ESP32-C6 PMP does not honor the all-ones-NAPOT
-    // match-everything special case (U-mode still takes an instruction-access fault),
-    // whereas TOR with pmpaddr0 = 0xFFFFFFFF covers [0, 0x4_00000000) on both it and
-    // QEMU virt. pmpcfg0 byte0 = A=TOR(0x08) | X(0x4) | W(0x2) | R(0x1) = 0x0F.
+    // pmpaddr0<<2) rather than the all-ones NAPOT idiom: the ESP32-C6 PMP does not honor
+    // the all-ones-NAPOT match-everything special case (U-mode still takes an
+    // instruction-access fault), whereas TOR with pmpaddr0 = 0xFFFFFFFF covers every
+    // 32-bit address on both it and QEMU virt. pmpcfg0 byte0 = A=TOR(0x08) | X(0x4) |
+    // W(0x2) | R(0x1) = 0x0F.
     __asm volatile("csrw pmpaddr0, %0" ::"r"(0xFFFFFFFFu) : "memory");
     __asm volatile("csrw pmpcfg0, %0" ::"r"(0x0Fu) : "memory");
 }

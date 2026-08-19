@@ -314,12 +314,12 @@ namespace
         TAP_CHECK(bad_pin < 0 and bad_pin != -KOS_EPERM);
     }
 
-    // kos_cpu_clock_set is PRIVILEGED: the gate returns the sentinel 0 ("cannot change")
-    // to an unprivileged caller, with NO retune. This MUST run from a spawned UNPRIVILEGED
-    // child: from a privileged root it would really retune on a chip with a real backend
-    // (XMC/K64F) and leave the core clock moved for the rest of the suite. The privileged
-    // retune tail is covered by the clockretune harness; see docs/design-m3-clock-select.md
-    // sec 6.
+    // kos_cpu_clock_set is gated on AUTH_PSTATE: the gate returns the sentinel 0 ("cannot
+    // change") to a caller that does not hold it, with NO retune. This MUST run from a
+    // spawned child holding no authority: from root, which holds every bit, it would really
+    // retune on a chip with a real backend (XMC/K64F) and leave the core clock moved for
+    // the rest of the suite. The accepting arm is covered by the clockretune harness; see
+    // docs/design-m3-clock-select.md sec 6.
     uint32_t g_clkset_low = 1;
     uint32_t g_clkset_mid = 1;
     uint32_t g_clkset_max = 1;
@@ -1224,7 +1224,7 @@ namespace
         kos_sem_destroy(holds);
     }
 
-    // --- Deadlock refused with -2 (H6): self-lock + a two-mutex wait cycle ------
+    // --- Deadlock refused -KOS_EDEADLK (H6): self-lock + a two-mutex wait cycle -
     int g_cyc_rb = -99;
     void cyc_a(void*) // caps: done@1, M1@2, M2@3, have1@4, goA@5
     {
@@ -1318,7 +1318,7 @@ namespace
         kos_sem_wait(have1); // A owns M1
         kos_sem_wait(have2); // B owns M2
         kos_sem_post(goA);   // A tries M2 -> blocks (B owns it)
-        kos_sem_post(goB);   // B tries M1 -> would cycle -> -2, not parked
+        kos_sem_post(goB);   // B tries M1 -> would cycle -> -KOS_EDEADLK, not parked
         wait_n(2);
         TAP_CHECK(g_cyc_rb == -KOS_EDEADLK);
         TAP_CHECK(kos_handle_close(m1) == 0 and kos_handle_close(m2) == 0);
@@ -1673,7 +1673,8 @@ namespace
         TAP_CHECK(cooked > 0u and cooked <= sizeof(rbuf));
         // The return is INPUT bytes and the counter is COOKED bytes, so these differ under
         // KICKOS_CONSOLE_CRLF. Asserting equality here would pass on the sim, the ONLY
-        // crlf=0 tree, and fail on all thirteen boards.
+        // crlf=0 tree (the root CMakeLists sets crlf=1 for every arch that is not sim),
+        // and fail on every other board.
         TAP_CHECK(cooked >= nb);
     }
 
@@ -2314,8 +2315,8 @@ namespace
     // syscall_dispatch runs privileged and bypasses the MPU, so a user pointer it READS (the
     // kconsole_write buffer, a thread name) must lie in memory the UNPRIVILEGED caller could
     // itself reach. A rodata string literal MUST be accepted; a pointer into no granted
-    // region (the un-owned guard page) MUST be rejected, never read. All checks run from an
-    // UNPRIVILEGED worker (main is privileged and bypasses the floor).
+    // region (the un-owned guard page) MUST be rejected, never read. All checks run from a
+    // spawned UNPRIVILEGED worker, whose granted set is the narrow one the floor is about.
     // The positive half proves only that the floor ACCEPTED the pointer, not that bytes
     // reached a console. It is non-vacuous only when PAIRED with the guard-page negative
     // below.
@@ -2557,7 +2558,7 @@ namespace
         TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
 
-    // --- EPIPE: a parked sender is woken -1 when the last WAIT-cap holder drops it -
+    // --- EPIPE: a parked sender is woken -KOS_EPIPE when the last WAIT holder drops it
     // A SIGNAL-only delegation does NOT bump recv_holders, so main's cap is the sole
     // WAIT holder: closing it takes recv_holders 1->0 and EPIPEs the parked sender.
     Atomic<int32_t, Order::RELAXED> g_ep_epipe_rc{-99};
@@ -2581,7 +2582,7 @@ namespace
         TAP_CHECK(ep_epipe_rc == -KOS_EPIPE);
     }
 
-    // --- Dead endpoint (unparked): send after the last WAIT cap is gone -> -1 -----
+    // --- Dead endpoint (unparked): send after the last WAIT cap is gone -> -KOS_EPIPE
     // Distinct from the parked-then-EPIPE case: the sender never parks (F1 dead-check).
     Atomic<int32_t, Order::RELAXED> g_ep_dead_rc{-99};
     kos_cap_t g_ep_go = KOS_CAP_NONE;
@@ -4384,7 +4385,7 @@ namespace
 #endif
 
 #if KICKOS_HAVE_MPU && defined(KICKOS_ENABLE_SELFTEST)
-    // --- Bound-check: a recv/send pointer outside the caller's regions -> -1 ------
+    // --- Bound-check: a recv/send pointer outside the caller's regions -> -KOS_EFAULT
     // The write-oracle / cross-domain-read is closed the same way as the console
     // buffer: an unprivileged caller cannot launder an un-owned page through IPC.
     Atomic<int32_t, Order::RELAXED> g_ep_badrecv_rc{-99};
@@ -5143,8 +5144,9 @@ namespace
     }
 
     // --- The authority capability: the non-privileged arm of the authority gates ------
-    // Each authority gate is `privileged OR holds this AUTH_* bit`; root is privileged,
-    // so the rest of the suite only exercises the privileged arm.
+    // Each authority gate is `privileged OR holds this AUTH_* bit`; root is unprivileged
+    // and seated with CAP_AUTH_ALL, so the rest of the suite only exercises the
+    // every-bit-held arm.
     //
     // The child is UNPRIVILEGED and holds AUTH_PINMUX and nothing else, so exactly one gate
     // must accept it and the rest must refuse. Acceptance reads as "not -KOS_EPERM": a gate

@@ -91,15 +91,20 @@ maintenance.
   anchor) and `prio` (its *effective* priority). The scheduler, the policy, and the
   wait-queue scan read **only** `prio`. Inheritance raises `prio`; it never touches
   `base_prio`.
-- **I2 -- the inheritance value.** At every scheduling point, a lock owner's effective
-  priority equals `max(base_prio, the highest priority among all threads currently
-  parked on any mutex this thread holds)`. Boosting and reverting are both just
-  re-establishing I2.
+- **I2 -- the inheritance value.** At every scheduling point, a thread's effective
+  priority equals the max of its `base_prio` and of every *donor* currently lending to
+  it. A donor is any thread parked on a mutex this thread holds, any caller parked
+  waiting for this thread's reply, and any caller parked in a send-wait on an endpoint
+  this thread serves. Mutex waiters are the donor this chapter walks; the other two are
+  call/reply donation (Chapter 8.5), and one recompute funnel takes the max over all
+  three. Boosting and reverting are both just re-establishing I2.
 - **I3 -- ready-list integrity.** The ready structure files a thread by its `prio`
-  (Chapter 2). So no code may change a `READY` thread's `prio` in place: it must be
-  removed from the ready structure, have its priority changed, and be re-added -- or
-  the per-priority lists and the priority bitmap corrupt silently. There is **one
-  writer** of effective priority, and it obeys this.
+  (Chapter 2), and it holds the `RUNNING` thread as well as the `READY` ones. So no
+  code may change the `prio` of a thread in either of those states in place: it must be
+  removed from the ready structure, have its priority changed, and be re-added, or the
+  per-priority lists and the priority bitmap corrupt silently. `RUNNING` is not the
+  exotic case here: on a boost the target is very often the thread that is running.
+  There is **one writer** of effective priority, and it obeys this.
 - **I4 -- atomicity.** Every boost, revert, and chain walk runs entirely inside the
   same one `IrqLock` critical section as the block or transfer it accompanies. On a
   single core that makes the whole priority manipulation indivisible.
@@ -117,22 +122,23 @@ void set_prio(Thread* t, uint8_t p)
     {
         return;
     }
-    if (t->state == ThreadState::READY)
+    if (t->state == ThreadState::READY or t->state == ThreadState::RUNNING)
     {
         kernel().policy->on_remove(t);   // I3: pull it out first
         t->prio = p;
         kernel().policy->on_ready(t);    // ...then re-file at the new priority
+        return;
     }
-    else
-    {
-        t->prio = p;   // BLOCKED and RUNNING just take the value
-    }
+    t->prio = p;   // BLOCKED only: on no ready list, and on no prio-ordered queue
 }
 ```
 
-A `BLOCKED` thread can take the new value in place precisely because wait queues are
-unsorted and scanned at pop (Chapter 2.2) -- a parked thread whose priority rises needs
-no re-queue. This is the lazy-scan payoff cashing in.
+Only a `BLOCKED` thread takes the new value in place, and it may precisely because
+neither structure it can be on is priority-ordered: wait queues are unsorted and scanned
+at pop (Chapter 2.2), and the timer list is sorted by deadline. A parked thread whose
+priority rises needs no re-queue. This is the lazy-scan payoff cashing in. Everything
+else goes through remove-change-re-add, and reading that branch as "READY only" is the
+mistake that corrupts the bitmap.
 
 ## Boosting: the lock path
 
@@ -155,12 +161,12 @@ Two things can go wrong on that walk, and they force it to be **two passes**:
 
 ```
 c = current
-if m->owner == c:  return -2      // locking a mutex you already hold: self-deadlock
+if m->owner == c:  return -KOS_EDEADLK   // locking a mutex you hold: self-deadlock
 
 // PASS 1 -- detect a cycle, write nothing:
 t = m->owner
 while t != nullptr:
-    if t == c:  return -2         // the chain loops back to us: locking would deadlock
+    if t == c:  return -KOS_EDEADLK   // the chain loops back to us: it would deadlock
     if t->wait_mutex() == nullptr:  break
     t = t->wait_mutex()->owner
 
@@ -172,8 +178,31 @@ while t != nullptr:
     if t->wait_mutex() == nullptr:  break
     t = t->wait_mutex()->owner
 
-wq_block(m->waiters, WAIT_MUTEX, m)   // parks AND seats the wait edge; we own it on return
+wq_block(m->waiters, WAIT_MUTEX, m)   // parks AND seats the wait edge
+return current's wait_result           // what the waker wrote: the grant, or a refusal
 ```
+
+Returning from `wq_block` is not itself the acquire. The waker writes the outcome into
+`wait_result` (below), and a cancel ends the same park *without* transferring ownership:
+that unwind unlinks the waiter and recomputes the owner's inherited priority without it,
+and the lock call reports the failure. Only a status that says the mutex was granted
+means the mutex is held.
+
+A cancel is the *only* way out of this park that is not a grant, and that is structural
+rather than a gap in the interface. Locking a mutex takes no deadline argument, so no
+timer is ever armed against a mutex wait; correspondingly, the timer expiry dispatch
+carries an arm for each kind of wait a deadline *can* be attached to and none for this
+one, and would treat a mutex waiter arriving there as a kernel invariant violation
+rather than something to unwind. The absence is enforced from both ends, not merely
+unexposed at the syscall.
+
+The contrast with the endpoint parks of Chapter 8.3 is the thing to take away. A message
+may never come at all, so waiting for one has to be bounded by something outside the
+wait. A *contended* mutex always has a live owner, and the boost above is the mechanism
+pushing that owner through its critical section; the wait is bounded by the owner's
+remaining section rather than by the clock. A deadline would hand the caller a way to
+abandon a wait it is simultaneously lending its urgency to, which is close to the
+opposite of what the boost exists to do.
 
 The park and the edge are seated by the same call, and the waker clears both when it hands
 the mutex over. Neither may be left to the parked thread to do after it resumes: on an
@@ -217,8 +246,8 @@ else:
     m->owner = w                           // step 2: transfer ownership
     w->wait_result = 0                      // step 2: normal grant (see below)
     held_list_push(w, m)
-    // the new owner inherits the REMAINING waiters immediately -- they blocked
-    // before w owned m, so no future lock() call will ever boost w for them:
+    // the new owner inherits the REMAINING waiters at transfer time, since no
+    // future lock() call will ever boost w for waiters that parked before it:
     set to max(w->prio, highest prio still parked on m->waiters)
 
 recompute current's prio over its remaining held list   // re-establish I2 for the releaser
@@ -236,26 +265,64 @@ Restore-to-base would be a real bug here. And lowering a priority can make a
 previously-shadowed thread the highest ready one, so a self-lowering must be followed
 by a reschedule.
 
-The new owner inheriting the *remaining* waiters at transfer time (rather than waiting
-for a future lock call) is the non-obvious step: those waiters parked before this
-thread owned the mutex, so nothing else will ever boost the new owner on their behalf.
-Transfer is the only moment to establish I2 for them.
+The new owner inheriting the *remaining* waiters at transfer time is the step to think
+carefully about, because it is where the two halves of the design meet. Those waiters
+parked before this thread owned the mutex, so no future lock call will ever boost the
+new owner on their behalf: transfer is the only moment left to establish I2 for them.
+And yet, as written, the boost computes to nothing. The pop hands over the *highest*
+priority waiter, so every waiter still on the queue is at or below the new owner
+already, and the max is the new owner's own priority. It is I2 stated where it belongs
+rather than an operation that changes a value, and it stops being vacuous the moment the
+pop stops being a priority pop. Write it, and know that under a priority pop it computes
+no change.
 
 ## Owner-died: the mutex's status value
 
-The mutex is the first real user of the `wait_result` status channel (Chapter 2.2).
-Its value namespace is two values: `0` (locked normally) and `1` (locked, but the
-previous owner died while holding it).
+The mutex is the first real user of the `wait_result` status channel (Chapter 2.2). Its
+values are drawn from the one fleet-wide error taxonomy every syscall returns from
+(Chapter 3.9): `0` for a normal grant, and otherwise a negated `KOS_E*` code. Some of
+those end the park without the mutex, `-KOS_EDEADLK` for the refusals the walk above
+found, `-KOS_ECANCELED` for a waiter cancelled while parked. And one does not.
 
-The second case arises at thread exit. If a thread exits while owning a mutex, its
-teardown (Chapter 8.2, the exit path that closes a thread's capabilities)
-**force-unlocks** each owned mutex: pop the highest waiter, transfer ownership to it,
-set its `wait_result = 1`, boost it from the remaining waiters, and wake it. The woken
-thread's lock call returns `1` -- telling it the data the mutex protected may be
+That one arises at thread exit. If a thread exits while owning a mutex, its teardown
+(Chapter 8.2, the exit path that closes a thread's capabilities) **force-unlocks** each
+owned mutex: pop the highest waiter, transfer ownership to it, set its `wait_result` to
+`-KOS_EOWNERDEAD`, boost it from the remaining waiters, and wake it. The woken thread's
+lock call returns that code, telling it the data the mutex protected may be
 inconsistent, because the previous holder died mid-critical-section. This is the POSIX
 `EOWNERDEAD` idea reduced to one return value, with no robust-list machinery. What the
 woken thread does about it is its own policy; the kernel's job is only to never strand
 the waiter and to tell it the truth.
+
+Read that value carefully, because it is the one place in the whole API where a
+negative return means the operation **succeeded**. Everywhere else, negative means the
+call did nothing and the caller owns nothing. Here the mutex *is* held, so the reflex
+test
+
+```
+if (rc < 0) { return rc; }   // WRONG for a mutex lock
+```
+
+walks away from a mutex it is holding and strands every waiter behind it, permanently.
+The correct shape tests that code by name:
+
+```
+int const rc = kos_mutex_lock(m);
+if (rc == -KOS_EOWNERDEAD)
+{
+    // HELD. Repair or discard whatever the mutex protected, then carry on and unlock.
+}
+else if (rc < 0)
+{
+    return rc;   // genuinely not held
+}
+```
+
+The alternative would be a positive success-variant, which is exactly the per-object
+value namespace the substrate refuses to have (Chapter 2.2): every wake reports through
+one taxonomy so that no waker has to know which object woke a thread. The price of that
+uniformity is this single special case, and it is written down at the top of the error
+header rather than left for a caller to discover.
 
 The mirror rule is that closing the capability to a mutex *you currently own* is
 refused: the capability is the only unlock authority, so letting an owner drop it

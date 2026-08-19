@@ -4,11 +4,12 @@
 
 > **Status: LANDED** -- console device handover shipped and is silicon-proven on XMC: an app
 > `printf` reaches the wire through IPC and an unprivileged userspace driver, under enforcement,
-> and the panic path reclaims a driver-garbled UART so the banner survives. UART console drivers
-> exist for five chips under `system/driver/<chip>/` -- the polled pair (`xmcuart`, `k64uart`)
-> plus the IRQ-driven set (`xmcuartirq`, `k64uartirq`, `c6uart`, `lx6uart`, `rxsci`) -- and four
-> chips ship an `arch_console_reclaim` body; fleet-wide rollout is M4 work
-> (`design-driver-era-scope.md` G1).
+> and the panic path reclaims a driver-garbled UART so the banner survives. The console drivers that
+> exist are whatever `grep -rln KOS_SVC_CONSOLE system/driver/` lists: the polled UART pair
+> (`xmcuart`, `k64uart`), the IRQ-driven UART set (`xmcuartirq`, `k64uartirq`, `c6uart`, `lx6uart`,
+> `rxsci`, `f4uartirq`) and the USB CDC pair (`rt1062usb`, `rpusb`). The chips shipping an
+> `arch_console_reclaim` body are `grep -rln '^void arch_console_reclaim(void)' arch/*/chip/`, now
+> most of the fleet. Fleet-wide rollout is M4 work (`design-driver-era-scope.md` G1).
 > **The contract now lives in the Reference**: `reference/console.md` (the routing guard, the
 > handover mechanism, the reclaim, and "The publisher's obligations" for the root-side rules) plus
 > `reference/invariants.md` (the three `console-*` invariants). This note is the decision record

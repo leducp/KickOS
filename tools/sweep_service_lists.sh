@@ -4,9 +4,10 @@
 #
 # Links every declared kickos_services_* provider into an image.
 #
-# Ten of the thirteen reach an image only under an explicit -DKICKOS_SERVICE_LIST, so a
-# fleet build compiles them without ever linking one. user/apps/common/usbcdcwit is gated
-# on KICKOS_SERVICE_LIST matching _usbcdc and is built by no default configuration.
+# Most of them, the `select` rows of tests/static/service_lists.txt, reach an image only
+# under an explicit -DKICKOS_SERVICE_LIST, so a fleet build compiles them without ever
+# linking one. user/apps/common/usbcdcwit is gated on KICKOS_SERVICE_LIST matching
+# _usbcdc and is built by no default configuration.
 #
 # An operator tool, not a gate: cross toolchains, minutes per entry.
 #

@@ -25,12 +25,12 @@
 #
 # THE CENSUS, AND WHY IT IS TAKEN TWICE. Which tests a preset registers is decided at
 # CONFIGURE time, so `ctest -N -LE host` on a configured tree already reports a count and a
-# preset with no image gate can be answered without building it. That is what makes 51
-# presets affordable. But an UNBUILT tree does not report the same set as a built one:
-# gtest_discover_tests writes its add_test calls at BUILD time, and until then CMake's
-# GoogleTest module stands in one `<target>_NOT_BUILT` entry per target which does NOT
-# inherit the `LABELS host` the real cases carry. Sixteen of them land in `-LE host` on an
-# unbuilt sim tree, measured. So:
+# preset with no image gate can be answered without building it. That is what makes the
+# whole visible preset set affordable. But an UNBUILT tree does not report the same set as a
+# built one: gtest_discover_tests writes its add_test calls at BUILD time, and until then
+# CMake's GoogleTest module stands in one `<target>_NOT_BUILT` entry per target which does
+# NOT inherit the `LABELS host` the real cases carry, so on an unbuilt sim tree one lands in
+# `-LE host` for every GoogleTest target in the build. So:
 #   - the pre-build census discounts the build fixture and any `*_NOT_BUILT` placeholder, and
 #     decides only whether there is anything here to build.
 #   - the count REPORTED is re-taken after the build, where no placeholder exists and the set
@@ -125,10 +125,11 @@ command -v ctest >/dev/null 2>&1 || die "ctest not found"
 [ -f "$ROOT/CMakePresets.json" ] || die "no CMakePresets.json under $ROOT"
 [ -f "$MPS2_SRC" ] || die "no $MPS2_SRC to read the MPS2 board set from"
 
-# Five sim image gates spawn a CHILD cmake configure, which needs an interpreter that can
-# import kconfiglib, resolved the way cmake/kconfig.cmake resolves it. Without one they fail
-# on "kconfiglib is not importable" and read as code regressions. Refused here rather than
-# reported as five findings.
+# Seven sim image gates re-configure THIS tree in a child cmake, which needs an interpreter
+# that can import kconfiglib, resolved the way cmake/kconfig.cmake resolves it. Without one
+# they fail on "kconfiglib is not importable" and read as code regressions. Refused here
+# rather than reported as seven findings. `oot_export` spawns a child configure too, but of
+# `examples/oot-app` against the installed package, which runs no Kconfig.
 KPY="${KICKOS_KCONFIG_PY:-}"
 if [ -z "$KPY" ]; then
     KPY="$(command -v python3 2>/dev/null)" || KPY=""

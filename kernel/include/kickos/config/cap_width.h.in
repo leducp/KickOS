@@ -12,11 +12,11 @@
 #define KICKOS_CAP_CHUNK_SLOTS @KICKOS_CAP_TABLE_CHUNK@
 
 // What EVERY spawned child gets; only root holds KICKOS_MAX_HANDLES. It is the GRANT-LIST
-// FLOOR and not a tuning knob: delegated cap i lands at child index i+1 with no runtime
-// check, so a narrower child table makes a full grant list unrepresentable.
+// FLOOR and not a tuning knob: delegated cap i lands at child index i+1 by default, so a
+// narrower child table makes a full grant list unrepresentable and thread_spawn refuses it.
 #define KICKOS_CAP_CHILD_WIDTH @KICKOS_CAP_TABLE_CHILD_WIDTH@
 
-// The most CONCURRENT inbound CAP_REPLY entries one task may hold. Never below 1, or no
+// The most CONCURRENT inbound CAP_REPLY entries one thread may hold. Never below 1, or no
 // kos_call in the fleet could complete. It reserves NO slot: it bounds, it does not carve.
 #define KICKOS_CAP_REPLY_MAX @KICKOS_CAP_TABLE_REPLY_MAX@
 

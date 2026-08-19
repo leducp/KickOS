@@ -161,7 +161,9 @@ none of them is vacuous given only its predecessor.
 4. **`Thread::cap_class`.** Its only reader is the slab detach path; with one class it is a
    constant.
 5. **The per-board default spawn capacity knob.** It exists only to name a board default for the
-   field deleted in (2), and `mps2` is the only board that overrides it.
+   field deleted in (2), and when this was written the only override in the tree came from the
+   `mps2` chip, which serves all four `qemu*` boards (`boards/Kconfig`), so it was one declaration
+   and not one board.
 6. **`KICKOS_MAX_HANDLES` as a board knob.** The per-task width becomes a configure-time sum of
    four declarations (section 6). The codec stops deriving `KCAP_INDEX_BITS` from it, which is what
    couples the handle bit-layout to a per-board RAM decision (section 5).
@@ -445,12 +447,12 @@ root's.
 **The board declares supply only** -- its arena, and which peripherals exist. It contributes no
 demand figure at all.
 
-**The old scheme failed structurally, not through carelessness.**
-`boards/xmc4800-relax/configs/base/defconfig` carries the arithmetic in its own comment:
-"2 reserved + 2 permanent selftest caps + 1 retained SPI ep + 6 concurrent in `t_mutex_deadlock`".
-That is a **board header summing an app's working set and a chosen service list's retention** --
-two addends it cannot know. Change the app, change the service list, and the number is silently
-stale with nothing to notice.
+**The old scheme failed structurally, not through carelessness.** Under it a board's supply figure
+was justified by arithmetic of the form "2 reserved + 2 permanent selftest caps + 1 retained SPI ep
++ 6 concurrent in `t_mutex_deadlock`". That is a **board header summing an app's working set and a
+chosen service list's retention**, two addends it cannot know. Change the app, change the service list, and
+the number is silently stale with nothing to notice. (That comment is no longer in any defconfig;
+`grep -rn KICKOS_CAP_TABLE_SUPPLY boards/` is the live list of boards still declaring a supply.)
 
 What the sum buys:
 
@@ -473,7 +475,8 @@ configure-time sum that skip is not visible, and the two honest options are that
 declares a reduced footprint for 16 KiB parts, or configure states plainly that the board cannot
 host the full suite. Nothing here lets 7 satisfy a declared 6-plus-reserved demand.
 
-`mps2` is the other board that must be reconciled: it declares both a class mix **and** a
+`mps2` is the other declaration that must be reconciled, and it is a chip serving all four `qemu*`
+boards rather than a board: it declares both a class mix **and** a
 non-default spawn capacity, and its own comment calls it a deliberate runnable CI gate -- "because
 it is a RUNNABLE gate: a mis-sized count fails loudly in CI instead of on somebody's bench". Both
 declarations go with sections 3 and 7; the gate intent has to be re-expressed against the sum, not
