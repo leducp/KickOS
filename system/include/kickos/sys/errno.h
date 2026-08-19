@@ -21,6 +21,10 @@ enum kos_errno
 {
     KOS_EPERM = 1,       // privilege denied / missing cap right / not the owner
     KOS_ESRCH = 3,       // reply target gone: a one-shot reply cap's caller is stale (aborted/reused)
+    KOS_EIO = 5,         // the DEVICE on the far side of a bus refused or failed the transfer:
+                         //   an I2C NACK, a peripheral reporting a wire-level error. Nothing
+                         //   about the request is malformed and no deadline passed; the peer
+                         //   did not play its part.
     KOS_EBADF = 9,       // handle names nothing valid: bad index, empty, stale gen, wrong type
     KOS_ENOMEM = 12,     // something had to be ALLOCATED and could not be: an object pool, the
                          //   thread pool, the RAM arena, the capability-chunk slab, the caller's

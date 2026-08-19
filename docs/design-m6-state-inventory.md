@@ -2,12 +2,14 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Design -- kernel state, per-core versus genuinely global
 
-> **Status: ON PAPER.** No code change. This is the classification a shared kernel needs, made
-> while it is still cheap to make: `struct Kernel` is the inventory and `kernel()` is the single
-> accessor, so the question is answerable by reading one header. It is produced in M5 and consumed
-> in M6.
+> **Status: ON PAPER for the SMP half; the SIM half is now implemented.** This is the classification
+> a shared kernel needs, made while it is still cheap to make: `struct Kernel` is the inventory and
+> `kernel()` is the single accessor, so the question is answerable by reading one header. Sections 2
+> to 5 are the paper classification, produced in M5 and consumed in M6. **Section 6 is what happened
+> when the multi-instance sim made part of it executable**, including the one classification it
+> corrected and the class of state it missed entirely -- read it before trusting the tables above.
 
-Companion to `design-m5-smp.md` (the staged model and the candidate ranking) and to
+Companion to `design-m6-smp.md` (the staged model and the candidate ranking) and to
 `design-capability-table.md` section 8 (the uniprocessor hazards in the capability path). Neither
 of those carries an inventory; this does.
 
@@ -69,7 +71,7 @@ This is the half an inventory of the struct does not see. Classification as abov
 | `g_console_panicking` | global | a panic on either core must force every core polled |
 | `g_console_state` | global | ownership of one device |
 | `g_console_driver_died` | global | a property of one endpoint |
-| `g_chip_writers` | global | **and it is the one to look at twice**: it counts writers ACROSS cores, which is what makes the drain-to-zero handshake mean anything, and a relaxed counter cannot carry that handshake. It needs release/acquire, not just atomicity |
+| `g_chip_writers` | global | **and it is the one to look at twice**: it counts writers ACROSS cores, which is what makes the drain-to-zero handshake mean anything. It is `Order::RELAXED` today and that is CORRECT today -- `console.cc` requires every access, mutator and reader alike, to run under `IrqLock`, and on one core that is exclusion. Under a shared kernel the lock stops excluding and the handshake needs release/acquire. **A present-tense reading of this row is wrong**; it is M6 work, not a bug |
 | `g_handover_tried` | global | exactly-once reboot, system-wide |
 | `g_led_on` | global | one LED |
 | `g_kernel`, `g_default_user` (`kernel/domain/domain.cc`) | global | cached pointers into the global `domains[]` |
@@ -150,7 +152,7 @@ CCU40 slices into ONE free-running 64-bit HARDWARE counter precisely so that "th
 wrap word, so no read can manufacture a wrap" -- and it did that to dodge an unreliable DWT, not
 for SMP, which is why it is an existence proof rather than a plan. **Prefer a hardware 64-bit
 counter on every chip that can build one.** Where the silicon genuinely cannot, a seqlock over the
-pair is the fallback, and a per-core anchor is the other option `design-m5-smp.md` already names.
+pair is the fallback, and a per-core anchor is the other option `design-m6-smp.md` already names.
 
 This is the same residue that document lists under the atomics conversion, and the reason it is
 listed as ordering work rather than type work: the pair being two relaxed atomics instead of two
@@ -169,3 +171,46 @@ Three consequences that are cheaper to know now than to discover during M6.
 - **The sim's `altstack` is a bug now**, not an SMP hazard. It blocks the multi-instance sim the
   moment two host threads exist, and the multi-instance sim is an M5 requirement rather than an M6
   one.
+
+## 6. The paper classification met an implementation, and mostly survived
+
+`KICKOS_MULTI_INSTANCE` landed in M5 and made this page's classification executable for the sim
+half. Recorded here because the question an M6 reader will have is **how far to trust a paper
+inventory**, and there is now evidence rather than an opinion.
+
+**What section 5 predicted and the implementation confirmed.** `g_idle_tcb` did have to move into
+`Kernel` before it could be keyed, and it went in against the 8-aligned `ThreadPool` so it adds no
+fill. The sim's alternate signal stack was a live bug. `microbit`'s arena base was the thing to
+watch -- and it did NOT move, because `.bss` SHRANK by 8 bytes (the two deleted domain caches
+outweigh the idle-TCB move) and the 32-byte alignment run-up absorbed the difference. So the warning
+was right about where to look and wrong about the direction.
+
+**One classification was corrected by contact.** This page keys everything to a CORE. The sim needs
+a third answer, because N instances can share one host thread, so the implementation keys on an
+INDEX -- a literal `0u` by preprocessor at one instance, a `__thread` word at N, the same word
+rewritten by a selector when N instances share a thread, and `arch_cpu_id()` under a shared kernel.
+**That last line is why the index is the right shape for M6 too**: the SMP move becomes a
+substitution of one macro rather than a new mechanism. An index also lets a module's private state
+stay private to its TU, which is how the capability slab, the fault record and the console TX ring
+were keyed without entering a shared header -- something a per-core POINTER could not have done.
+
+**Three bugs the inventory did not predict, all in one class**: state that is neither per-core nor
+global but keyed to something this page never asked about, the HOST PROCESS. The sim's timer was
+process-directed, so one instance's tick was serviced on another's thread; `arch_shutdown` killed
+every co-resident; and the per-byte console write interleaved instances mid-line. **The lesson for
+M6 is that "per-core versus global" is not exhaustive.** A third column -- per-host-thread, or more
+generally per-execution-context-below-the-kernel -- catches what the two-way split hides, and the
+alternate signal stack is the proof: it is per-thread by POSIX, so keying it to the instance would
+have been wrong even though the instance is what this page would have said.
+
+**What the mutation test could NOT catch, stated because a green gate implies otherwise.** Restoring
+each object to shared, one at a time, was caught for the arch instance and the console ring every
+time, and for the capability slab only at 50 instances, since a shared slab ALIASES rather than
+exhausts and small N passes. **The shared alternate signal stack was not caught at all**, because no
+instance in the acceptance app faults. That hole is owed an app that faults in every instance.
+
+**`console.cc`'s five statics remain shared, and that is a known boundary rather than an oversight.**
+It is benign while every instance stays kernel-owned, and it breaks the moment one publishes a
+console: every instance then reads the user-owned state and abandons the chip path, and a driver
+death in one silences the others. That blocks precisely the fleet case KickCAT wants, so it is the
+next piece of this work.

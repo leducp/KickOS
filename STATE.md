@@ -9,12 +9,34 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**THIS TREE IS `M5.1.3`, THE THIRD REVIEWABLE M5 PR, CARVED OFF `master` (`ee2b2323`).** It
-carries the instance-local seam, the multi-instance sim and the console reclaim ordering. Nothing
-else from M5 is here. Everything below about the arch and ABI groundwork, the IPC measurement
-chain and the atomics is `M5.1.1` and `M5.1.2`, already merged and still true of this tree; a
-record naming I2C, the stm32f411 console, the IPC fastpath implementation or S7 is describing a
-later PR and not this tree.
+**THIS TREE IS `M5.1.4`, THE FOURTH REVIEWABLE M5 PR, CARVED OFF `master` (`ed34c6e7`).** It
+carries the I2C seam, the I2C class contract, the rx72m RIICa engine and one unrelated xmc4800 SPI
+fix. Nothing else from M5 is here. Everything below about the arch and ABI groundwork, the
+instance-local seam, the IPC measurement chain and the atomics is `M5.1.1` through `M5.1.3`,
+already merged and still true of this tree; a record naming the stm32f411 console, the IPC
+fastpath implementation or S7 is describing a later PR and not this tree.
+
+**I2C HAS A CLASS CONTRACT AND ONE ENGINE, AND THE ENGINE IS BUILD-VERIFIED ONLY.**
+`user/include/kickos/driver/i2c.h` sits beside `spi.h` with the same four-symbol shape, and it
+writes down FOUR REFUSALS: no late ACK decision, no hardware timeout, no address-versus-data NACK
+bit, no bus-busy call. Each is a promise at least one of `mk64f`, `xmc4800` and `rx72m` cannot
+keep. The third is CONDITIONAL: the discriminator is the POSITION of the NACK, so `xferred` is
+mandatory and written before every return, and an implementation that reports 0 there on every
+error withdraws the grounds the refusal stands on. The transaction deadline is a mandatory
+SOFTWARE argument capped by `KOS_I2C_TIMEOUT_MAX_US`, because held SCL is the whole bus stopped
+for every device on it. `KOS_EIO = 5` is new. `system/driver/rx72m/i2c_riic.cc` is the polled
+RIICa master over one granted channel window; NOTHING IS WIRED TO THOSE PINS ON ANY BOARD HERE, so
+it compiles and links and has no silicon witness. `kos_i2c_bus_config.irq` must be `KOS_CAP_NONE`:
+RIICa's EEI is a grouped source whose IR flag lives in the kernel-reserved ICU, so a window holder
+cannot retire a stale pending for it. The rate is SEARCHED against `achieved_hz` rather than
+solved, and the reported rate substitutes the I2C specification's rise/fall maxima, so the real
+bus is slower than the number, never faster.
+
+**THE XMC4800 SPI REPORTED A SHIFT CLOCK 16 TIMES TOO LOW, AND IT IS UNRELATED TO THE I2C WORK.**
+`achieved_hz` in `xmcssc/spi_usic.cc` divided by `(PCTQ+1)*(DCTQ+1)`, which the SSC baud generator
+has no time-quanta counter for (RM 18.4.3.1): those two fields feed the slave-select delays of
+eq.18.9, and only the ASC path next door is a time-quanta formula. `PSR_BUSY` is now marked ASC
+mode only, `PSR[9:5]` being reserved in SSC and bit 9 being ACK in IIC.
 
 **A KERNEL IS INSTANCE LOCAL, AND THE SIM HOSTS FIFTY AT ONCE.** `InstanceLocal<T>` in
 `include/kickos/instance_local.h` is `KICKOS_MAX_INSTANCES` copies behind one index, and that

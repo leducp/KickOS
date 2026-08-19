@@ -118,6 +118,32 @@ as a negative `kos_bus_rsp.status` with `len` = bytes actually transferred befor
 same many-modes blocks the SPI services use (XMC USIC IIC mode, RX SCI simple-I2C);
 mode-select resolves inside the class, not the wire.
 
+**`kos_bus_rsp.len` is read against the SIGN of `status`, and an error reply carries no
+payload.** On the error path (`status < 0`) the reply carries NO rx bytes and `len` is the
+bytes transferred before the failure; a reader must branch on the sign of `status` before
+sizing any copy. The two readings of that field, "rx bytes following" and "bytes transferred
+before the NACK", disagree outright on a write-only transaction, where three bytes can be
+transferred with no rx byte to follow. The consequence is deliberate rather than overlooked:
+an aborted transaction discards whatever an earlier read segment had already stored, because
+the transaction and not the segment is the unit the client asked for, and the alternative
+costs the 4-byte reply header a second count it has no room for.
+
+**The count is PAYLOAD bytes.** A segment's address byte is not payload and is never
+included, and neither is the byte the NACK refused: the count is the position OF the NACK,
+so a NACK in the address phase is 0. A datasheet describing three acknowledged bytes before
+the refusal (a device-select byte plus two address bytes) therefore corresponds to `len` = 2.
+The same count is what a local engine hands back through the `xferred` out-parameter of
+`kos_i2c_transfer`.
+
+**A zero-length WRITE segment is legal; a zero-length READ segment is not.** The zero-length
+write is the address-only presence probe: the address byte is clocked and its acknowledgement
+is the whole result, which is the acknowledge-polling idiom a part needs to report the end of
+an internal write cycle. A zero-length read has no meaning, there being no way to address a
+device for reading and then clock nothing, and `kos_i2c_seg_check` refuses it. **The SPI side
+points the other way**, so this section is the authority for I2C: `kos_spi_seg_check` refuses
+a whole zero-length transfer (`len == 0`), and a service written from the SPI template will
+refuse the probe unless it reads this.
+
 > **Taxonomy gap (flagged).** The bus design intends an EIO-class code for a NACK, but the
 > current `system/include/kickos/sys/errno.h` taxonomy has no I/O-error code at all. Because
 > no I2C driver body exists yet, nothing defines one. The code that lands the first I2C service
