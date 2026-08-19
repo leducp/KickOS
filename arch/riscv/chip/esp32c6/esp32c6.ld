@@ -267,10 +267,10 @@ KICKOS_POOL_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
    corrupting whatever global lands there. Any `AT` clause on a loadable section trips
    this. */
 ASSERT(_sidata == _sdata,
-       "KickOS: .data LMA != VMA -- the ROM loader places segments at their VMAs, so the LMA holds no image bytes (drop the AT clause)")
+       "KickOS: .data LMA != VMA: the ROM loader places segments at their VMAs, so the LMA holds no image bytes (drop the AT clause)")
 
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
-       "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
+       "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
 #if KICKOS_HAVE_MPU
 /* Real code+rodata must fit the pow2 code region (raise _code_size to the next pow2
@@ -287,7 +287,7 @@ ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
    means the selectors matched nothing (a renamed lib), which would leak kernel writable
    state into the app catch-all. */
 ASSERT(__kernel_bss_end > __kernel_bss_start,
-       "KickOS: kernel .bss empty -- closed-set archive selector matched nothing (renamed lib?)")
+       "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
 /* The gp small-data window must fit __global_pointer$ +/- 0x800 (psABI reach): a future
    runtime that grows its small-data past the window fails loudly here rather than
    silently mis-addressing gp-relative loads. */
@@ -297,7 +297,7 @@ ASSERT(__sdata_start >= __global_pointer$ - 0x800,
        "KickOS: runtime small-data underflows the gp - 0x800 reach")
 /* Same VMA-only load rule as the .data ASSERT above. */
 ASSERT(_appdata_lma == __kickos_appdata_start,
-       "KickOS: .appdata LMA != VMA -- the ROM loader places segments at their VMAs, so the LMA holds no image bytes (drop the AT clause)")
+       "KickOS: .appdata LMA != VMA: the ROM loader places segments at their VMAs, so the LMA holds no image bytes (drop the AT clause)")
 #endif
 
 /* Opt-in link-time heap floor (undefined by default). */

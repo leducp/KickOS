@@ -57,7 +57,7 @@ namespace
 int main(int, char**)
 {
     kos::print("hello from KickOS userspace!\n");
-    kos::print("two threads play ping-pong -- press Ctrl+C to stop.\n\n");
+    kos::print("two threads play ping-pong; press Ctrl+C to stop.\n\n");
 
     kos::Semaphore ping_sem(1); // ping serves first
     kos::Semaphore pong_sem(0);

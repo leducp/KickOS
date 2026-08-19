@@ -48,7 +48,7 @@ for A in "$@"; do
 done
 
 if [ -n "$leaks" ]; then
-  echo "FAIL: KickOS RISC-V archive(s) emit gp small-data (.sdata/.sbss) --" >&2
+  echo "FAIL: KickOS RISC-V archive(s) emit gp small-data (.sdata/.sbss):" >&2
   echo "      these land in the app-granted gp window (privilege-escalation vector)." >&2
   echo "      Ensure every KickOS RISC-V lib is built -msmall-data-limit=0.$leaks" >&2
   exit 1

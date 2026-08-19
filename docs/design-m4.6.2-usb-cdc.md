@@ -946,3 +946,43 @@ missing witness (`docs/reference/boards.md` is where a witness would land, and
 silicon consumer still owed by M4.6.1's second half on `xmc4800-relax` (`STATE.md`) -- M4.6.2
 must not start before that closes, because it is the only thing that proves the substrate this
 document builds on against real hardware.
+
+## S7 designed, not built: where a non-cacheable attribute belongs
+
+The stage table lists S7 as "a non-cacheable attribute on a dynamic grant". **The design is settled and
+one word of that sentence is wrong: it belongs on the ALLOCATION, not on the grant.** Recorded here so
+it is not re-derived. No code exists; the CMake containment is deliberately untouched.
+
+**The attribute: Normal, Outer-and-Inner Non-cacheable, Shareable. NOT Device.** Device forbids
+speculation and makes any unaligned access UNPREDICTABLE, including a multi-word load or store that
+spans a Normal/Device boundary. That rules it out here, because the shared 4 KiB block is not only
+descriptor lists: the USB driver puts its console byte rings and its breadcrumb words in the SAME
+block, and walks the rings with `memcpy`. Coherency needs only "not cached"; Device would additionally
+make the driver's own ring copies undefined. The existing barrier before the doorbell is still
+required either way.
+
+**Why the allocation and not the grant.** The block is created in three steps -- reserve arena, grant
+it to root's own domain, then hand it to the task -- and root writes the block through that first
+mapping to initialise it. Both grants are hard-coded read-write, which is CACHEABLE. So an attribute
+riding on the individual grant would leave the bring-up path itself creating dirty lines for the
+block, later evicted over descriptors the controller wrote. It would also permit two mappings of one
+block to DISAGREE, which is the exact corruption being fixed. Attaching it to the allocation means no
+cacheable mapping of the block ever exists -- and therefore **no cache-maintenance primitive is ever
+needed**, which is what section 4.3 was trying to avoid inventing.
+
+**The seam must be THREE-valued, and this is what a naive version gets wrong.** Not "honour or
+refuse": a chip with NO data cache in the path trivially satisfies a non-cacheable request and must
+ACCEPT it, or every armv6m and cacheless armv7m board breaks the day the flag appears. So: can
+program it, honour; has no cache, accept as already satisfied; has a cache and cannot express it,
+REFUSE. That is a per-CHIP property rather than a per-arch one. Refusal must happen at ADMISSION,
+beside the existing region-encodable check, because every commit backend today fails CLOSED AND
+SILENT -- a region that cannot be encoded is simply not programmed, with no path reporting upward.
+Silently ignoring a non-cacheable request on a bus-mastering peripheral is a data-corruption bug.
+
+**Cost: zero bytes.** The region descriptor's attribute word has only its low bits defined, so a new
+bit moves no structure size and perturbs no layout assert.
+
+**One audit point for whoever lands it**, because a new bit changes two exact-equality tests: the
+domain layer dedups regions by comparing the attribute word against a literal read-write pair, and
+one backend detects region changes by exact equality. A non-cacheable region correctly stops deduping
+with a cacheable one, which is the desired behaviour, but both sites want eyes rather than assumption.

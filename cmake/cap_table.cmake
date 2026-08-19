@@ -256,7 +256,7 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
   set(_floor_note "")
   if(_floor GREATER _req)
     set(_req "${_floor}")
-    set(_floor_note " -- BINDING, wider than the demand above")
+    set(_floor_note ", BINDING, wider than the demand above")
   endif()
   if(_floor GREATER _want)
     set(_want "${_floor}")
@@ -278,7 +278,7 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
       "KickOS: a full spawn grant list cannot fit root's capability table on board "
       "'${KICKOS_BOARD}': KICKOS_MAX_SPAWN_GRANTS=${_grants} needs ${_floor} slot(s) (grant i "
       "lands at child index i+1, and nothing checks it at runtime), and the board supplies "
-      "${_supply} -- short by ${_short}.\n" ${_terms}
+      "${_supply}; short by ${_short}.\n" ${_terms}
       "The grant list and the reserved plane are most of this floor and no app declaration "
       "moves them; the inbound-reply term IS an app or service-list declaration, and it is "
       "${_reply} here. Lower KICKOS_MAX_SPAWN_GRANTS, lower the declared INBOUND_REPLY_CAPS / "
@@ -295,7 +295,7 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
     math(EXPR _short "${_req} - ${_supply}")
     message(FATAL_ERROR
       "KickOS: root's capability table needs ${_req} slot(s), but board "
-      "'${KICKOS_BOARD}' supplies ${_supply} -- short by ${_short} slot(s) "
+      "'${KICKOS_BOARD}' supplies ${_supply}; short by ${_short} slot(s) "
       "(${_req_chunks} chunk(s) per widest run, ${_slab_chunks} chunk(s) of slab = "
       "${_bytes} B of Kernel .bss).\n"
       ${_terms}
@@ -324,7 +324,7 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
                  "${_bytes} B .bss")
   # A run is reserved in whole chunks, so the last one's tail is paid for and unaddressable.
   if(_chunks EQUAL 1)
-    message(STATUS "KickOS: cap table: 1 chunk of ${_res_slots} -- the flat run, no directory, "
+    message(STATUS "KickOS: cap table: 1 chunk of ${_res_slots}: the flat run, no directory, "
                    "no shift, nothing rounded up")
   else()
     math(EXPR _tail "${_res_slots} - ${_slots}")
@@ -334,7 +334,7 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
   if(_want GREATER _supply)
     math(EXPR _opt "${_full} - ${_peak}")
     message(STATUS "KickOS: cap table: ${_opt} optional slot(s) of ${_full_by} NOT granted "
-                   "(${_want} > supply ${_supply}) -- an arm that needs them reclaims and "
+                   "(${_want} > supply ${_supply}); an arm that needs them reclaims and "
                    "skips at runtime")
   elseif(_full GREATER _peak)
     math(EXPR _opt "${_full} - ${_peak}")

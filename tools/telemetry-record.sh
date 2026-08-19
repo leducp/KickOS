@@ -4,7 +4,7 @@
 #
 # Record the KickOS binary telemetry (RTT channel 1) to a file. Needs a
 # KICKOS_TELEMETRY=rtt image flashed + running, and JLinkRTTLogger (SEGGER J-Link
-# pack) on PATH. JLinkRTTLogger opens its OWN J-Link connection -- do NOT run
+# pack) on PATH. JLinkRTTLogger opens its OWN J-Link connection; do NOT run
 # rtt-server.sh at the same time (one probe). Ctrl-C stops the capture.
 #
 # Usage: tools/telemetry-record.sh <out.bin> [board]   (board: k64f (default) | xmc4800)

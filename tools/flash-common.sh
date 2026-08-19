@@ -17,7 +17,7 @@ run()  { say "+ $*"; [ -n "${DRY_RUN:-}" ] || "$@"; }
 
 # first present serial device (override with FLASH_PORT); empty + nonzero if none
 pick_port() {
-    # An explicit FLASH_PORT is STRICT: use it, or fail -- NEVER fall through to
+    # An explicit FLASH_PORT is STRICT: use it, or fail; NEVER fall through to
     # another board's port. (Falling through once sent esptool at the wrong device
     # on a multi-board bench.) Only auto-scan when FLASH_PORT is unset.
     if [ -n "${FLASH_PORT:-}" ]; then
@@ -59,11 +59,11 @@ flash_resolve() {
 
     # QEMU / host targets are not flashed.
     case "$FL_ARCH:$FL_CHIP" in
-        sim:*) die "'$FL_BOARD' is the host sim -- run it: ctest --preset sim" ;;
+        sim:*) die "'$FL_BOARD' is the host sim; run it: ctest --preset sim" ;;
     esac
     case "$FL_CHIP" in
-        mps2) die "'$FL_BOARD' is a QEMU target -- run it: ctest --preset qemu" ;;
-        virt) die "'$FL_BOARD' is a QEMU target -- run it: ctest --preset qemu-riscv" ;;
+        mps2) die "'$FL_BOARD' is a QEMU target; run it: ctest --preset qemu" ;;
+        virt) die "'$FL_BOARD' is a QEMU target; run it: ctest --preset qemu-riscv" ;;
     esac
 
     # Build dir defaults to build/<board>; override with FLASH_BUILD to flash a
@@ -72,7 +72,7 @@ flash_resolve() {
     local bd="${FLASH_BUILD:-$FL_ROOT/build/$FL_BOARD}"
     # kickos_emit_image outputs: ELF, .hex, .bin, and .app.bin for Espressif.
     # In-tree apps are looked up with _app_base (board-specific dir, then common/).
-    # FLASH_IMAGE points the flasher directly at an image instead -- an out-of-tree
+    # FLASH_IMAGE points the flasher directly at an image instead; an out-of-tree
     # find_package(KickOS) consumer emits outside that layout, so name its image
     # explicitly rather than guessing a path. A trailing .hex/.bin/.elf is stripped to
     # a base; the siblings derive from it (jlink loads .hex, st-flash the .bin,
@@ -81,7 +81,7 @@ flash_resolve() {
     if [ -n "${FLASH_IMAGE:-}" ]; then
         base=${FLASH_IMAGE%.hex}; base=${base%.bin}; base=${base%.elf}
     elif ! base=$(_app_base "$bd" "$FL_BOARD" "$FL_APP"); then
-        die "not built: app '$FL_APP' for board '$FL_BOARD' -- no image under either
+        die "not built: app '$FL_APP' for board '$FL_BOARD': no image under either
        board-specific: $bd/user/apps/$FL_BOARD/$FL_APP/
        fleet-wide:     $bd/user/apps/common/$FL_APP/
        in-tree:     cmake --preset $FL_BOARD && cmake --build $bd --target $FL_APP
@@ -91,5 +91,5 @@ flash_resolve() {
     FL_ELF="$base"; FL_BIN="$base.bin"; FL_HEX="$base.hex"; FL_APPBIN="$base.app.bin"
     # Only reachable with FLASH_IMAGE: _app_base already proved the in-tree image.
     [ -e "$FL_ELF" ] || [ -e "$FL_HEX" ] || die "not built: ${FLASH_IMAGE:-$FL_ELF}
-       (FLASH_IMAGE names neither an ELF nor a .hex -- pass the image your build emitted)"
+       (FLASH_IMAGE names neither an ELF nor a .hex; pass the image your build emitted)"
 }

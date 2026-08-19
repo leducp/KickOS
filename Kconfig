@@ -30,9 +30,9 @@ config KICKOS_TRACE_CLOCK_DECLARED
 	default 0
 	help
 	  HAS_TRACE_CLOCK as a number the generated fragment can carry. The capability
-	  is stated twice -- here, and by arch/<family>/chip/<chip>/caps.cmake plus the
-	  arch ladder in CMakeLists.txt -- and this is the half CMake cannot compute, so
-	  it is what the agreement check there compares against.
+	  is stated twice: here, and by arch/<family>/chip/<chip>/caps.cmake plus the
+	  arch ladder in CMakeLists.txt. This is the half CMake cannot compute, so it is
+	  what the agreement check there compares against.
 
 source "boards/Kconfig"
 source "boards/*/Kconfig"

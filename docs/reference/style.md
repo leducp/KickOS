@@ -128,8 +128,8 @@ because they are written here and read in review.
 
 ## Corpus
 
-- **ASCII only**, in every tracked file. `--` not an em dash, `->` not an arrow, straight quotes,
-  "section" spelled out. **gated**
+- **ASCII only**, in every tracked file. A comma or a single `-` for an em dash, `->` not an arrow,
+  straight quotes, "section" spelled out. **gated**
 - **SPDX header** within the first five lines, with the copyright line beside it. **gated**
 - No trailing whitespace, no CRLF, a final newline.
 - `set -u` in a gate script.
@@ -141,8 +141,10 @@ constraint, a subtle invariant, a specific workaround, behaviour that would surp
 restate the code, explain a naming or wrapper choice, or recount how the code came to be that way.
 
 - **No narration.** No dates, no "measured on", no "this used to", no war stories. Git holds that.
-- **No ` -- ` in a code comment.** It is a docs separator; in code, use a comma, a colon or a
-  second sentence.
+- **No ` -- ` in software**, in a comment, in a string literal a user reads, or in a commit
+  message. It is essay punctuation; use a comma, a colon, a single ` - ` or a second sentence.
+  A flag (`--help`), an end-of-options separator (`git ls-files --`), the decrement operator and
+  a banner run (`# ---- box ----`) are not punctuation and are untouched. **gated**
 - Prefer one line. Length is not the metric, but a paragraph should be carrying a constraint that
   needs one.
 

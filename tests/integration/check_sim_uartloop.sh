@@ -56,7 +56,7 @@ printf '%s\n' "$OUT"
 has '\[simuart\] UART service up' \
   || fail "the UART service never came up (bring-up failed, or the wrong service list linked)"
 if has '\[uartloop\] ERROR'; then
-    fail "the app could not reach the service -- see its ERROR line above"
+    fail "the app could not reach the service: see its ERROR line above"
 fi
 
 # The payload itself must appear on the wire: the IRQ thread write(2)s each byte it drains,
@@ -70,10 +70,10 @@ has 'KickOS UART loopback' \
 # on the reported byte count rather than on a timeout: a wedged channel must FAIL the
 # gate, not hang it.
 printf '%s\n' "$OUT" | grep -q '\[uartloop\] sustained=4096 of 4096' \
-  || fail "sustained output stopped short -- the channel wedged with a full ring and never restarted; see the sustained= line above"
+  || fail "sustained output stopped short: the channel wedged with a full ring and never restarted; see the sustained= line above"
 
 has '\[uartloop\] PASS (loopback in order; sustained output past a full ring)' \
-  || fail "the loopback did not return the payload intact -- see the wrote/read/match line above"
+  || fail "the loopback did not return the payload intact: see the wrote/read/match line above"
 
 # irq_wakes counts every irq_wait return. Zero of them means the IRQ thread never woke at
 # all, which would make a PASS above impossible; assert it anyway, because it is the

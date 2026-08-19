@@ -42,7 +42,7 @@ elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/board.cmake")
   if(NOT KICKOS_BOARD STREQUAL "frdmk64f"
      AND NOT KICKOS_BOARD STREQUAL "${KICKOS_BOARD_ID}")
     message(FATAL_ERROR "KickOS: this package provides board '${KICKOS_BOARD_ID}', "
-      "not '${KICKOS_BOARD}' -- a KickOS MCU package is single-board")
+      "not '${KICKOS_BOARD}': a KickOS MCU package is single-board")
   endif()
   set(KICKOS_BOARD "${KICKOS_BOARD_ID}" CACHE STRING "Target board" FORCE)
 else()

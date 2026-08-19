@@ -17,7 +17,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(hello_demo PROPERTIES TIMEOUT 15)
 endif()
 
-# QEMU armv7m gate: boot each MPS2 image and assert the userspace ping-pong runs --
+# QEMU armv7m gate: boot each MPS2 image and assert the userspace ping-pong runs,
 # end-to-end proof of the reset/scheduler/SVC/timer path.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_hello TARGET hello BOARD ${KICKOS_BOARD}
@@ -30,12 +30,12 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_hello.sh")
 endif()
 
-# QEMU RISC-V gate: the same demo on a QEMU `virt` (RV32IMAC, M-mode bare metal) --
+# QEMU RISC-V gate: the same demo on a QEMU `virt` (RV32IMAC, M-mode bare metal),
 # end-to-end proof of the rv32imac reset/scheduler(msip)/ecall/CLINT-timer path.
 # `-bios none` runs our image directly in M-mode (no OpenSBI).
 # NOT under enforcement: hello shares its two semaphores (main()'s stack locals) with the
 # ping/pong child threads, so a child's deref is a cross-domain read of the root thread's
-# private stack -- PMP/PMSA correctly faults it. Enforcement-safe demos are the gated ones.
+# private stack; PMP/PMSA correctly faults it. Enforcement-safe demos are the gated ones.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE_MPU)
   kickos_add_qemu_test(NAME qemu_riscv_hello TARGET hello BOARD qemu-riscv
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_hello.sh")

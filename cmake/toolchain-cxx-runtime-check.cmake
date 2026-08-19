@@ -41,7 +41,7 @@ function(kickos_require_usable_cross_cxx _label _cxx _override_var _tc_url)
     return()
   endif()
 
-  # Which multilib do these flags select? Diagnostic only -- a compiler that
+  # Which multilib do these flags select? Diagnostic only: a compiler that
   # cannot answer is not fatal here; the library probe below is the verdict.
   execute_process(COMMAND "${_cxx}" ${_flags} -print-multi-directory
                   OUTPUT_VARIABLE _multilib OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -126,7 +126,7 @@ function(kickos_require_usable_cross_cxx _label _cxx _override_var _tc_url)
     "does not exist on this host), so find_program kept searching and settled on a "
     "distro cross gcc that is C-only (no libstdc++/libsupc++) and/or picolibc-based. "
     "Nothing here is wrong with your checkout.\n"
-    "Fix -- install the official toolchain KickOS builds with and point the build at "
+    "Fix: install the official toolchain KickOS builds with and point the build at "
     "its bin/ directory, by either route:\n"
     "  ${_tc_url}\n"
     "  cmake --preset <preset> -D${_override_var}=/path/to/toolchain/bin\n"

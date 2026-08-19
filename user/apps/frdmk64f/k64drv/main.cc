@@ -9,7 +9,7 @@
 // AIPS bridge (PACR) rather than by SYSMPU, so its window grant is genuinely inert and an
 // MMIO grant is not a per-thread peripheral capability on this chip. The register-level
 // argument and the one test that decides whether any given grant may be deleted are in
-// docs/reference/boards.md, "When an MMIO grant is INERT" -- PACRG for PIT slot 55 is the
+// docs/reference/boards.md, "When an MMIO grant is INERT": PACRG for PIT slot 55 is the
 // slot at issue here (RM 20.2.3). The PIT_MCR read at the end sits outside the SYSMPU
 // window and is EXPECTED to succeed; that success is the demonstration, not a bug to fix.
 //

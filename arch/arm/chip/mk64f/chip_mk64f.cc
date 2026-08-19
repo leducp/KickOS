@@ -660,7 +660,7 @@ void arch_fault_report_extra(void)
     uint32_t sperr = cesr >> 27; // CESR[31:27]; bit 31 -> port 0
     if (sperr == 0)
     {
-        kickos::kprintf("  SYSMPU: no protection error latched (CESR=0x%x) -- a bus "
+        kickos::kprintf("  SYSMPU: no protection error latched (CESR=0x%x): a bus "
                         "fault outside an MPU slave port (peripheral bridge?)\n", cesr);
         return;
     }

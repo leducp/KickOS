@@ -65,7 +65,7 @@ printf '%s\n' "$OUT"
 has '\[simcon\] driver up (host fd 1)' \
   || fail "the console driver never reached the wire (service bring-up failed?)"
 if has 'kos::print diagnostic'; then
-    fail "the kernel debug console is STILL live -- no real handover, so this gate proved nothing"
+    fail "the kernel debug console is STILL live: no real handover, so this gate proved nothing"
 fi
 has '^# tap route: stdout endpoint' || fail "TAP did not take the published endpoint route"
 

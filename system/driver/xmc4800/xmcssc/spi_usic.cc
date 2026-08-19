@@ -81,7 +81,7 @@ namespace
     // "U, PV"); only their write side is privileged.
     //
     // RM eq.18.8 off the fractional divider of RM eq.18.2: fSCLK = fPERIPH * STEP/1024 /
-    // (2 * (PDIV+1)). PCTQ and DCTQ are NOT in it -- RM 18.4.3.1 states the SSC baud generator
+    // (2 * (PDIV+1)). PCTQ and DCTQ are NOT in it: RM 18.4.3.1 states the SSC baud generator
     // has no time-quanta counter, and those two feed the slave-select delays of eq.18.9
     // instead. The ASC path next door DOES divide by them, eq.18.6 being a time-quanta
     // formula, and the two divider readings must not be unified.

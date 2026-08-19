@@ -267,7 +267,7 @@ KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 
 KICKOS_POOL_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
-       "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
+       "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
 /* App globals must fit _appdata_size, the app's MPU-granted .data/.bss window.
    SYSMPU is 32-byte granular, so any 32-byte multiple works here; there is no
@@ -288,7 +288,7 @@ ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
    not assert. The tight invariant (a kernel sentinel below __kickos_appdata_start)
    is a CI nm check. */
 ASSERT(_ebss > _sbss,
-       "KickOS: kernel .bss empty -- closed-set archive selector matched nothing (renamed lib?)")
+       "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
 #endif
 
 /* Opt-in link-time heap floor (undefined by default). */

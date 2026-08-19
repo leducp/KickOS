@@ -6,7 +6,7 @@ add_subdirectory(common)
 
 # Board-specific apps: the directory IS the board gate. Boards without a
 # per-board app subdir (sim, qemu, microbit, qemu-riscv, picopi, blackpill,
-# due, ...) simply skip -- add_subdirectory on a missing dir is a hard error.
+# due, ...) simply skip; add_subdirectory on a missing dir is a hard error.
 if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_BOARD}")
   add_subdirectory("${KICKOS_BOARD}")
 endif()

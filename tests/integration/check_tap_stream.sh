@@ -87,7 +87,7 @@ if [ -n "${TAP_HEADLESS_LAST:-}" ]; then
   out-of-order line, either of which a span test cannot see"
     fi
     plan="$last"
-    echo "NOTE: no plan line -- head-truncated transport. Arms 1..$((first - 1)) are NOT" >&2
+    echo "NOTE: no plan line; head-truncated transport. Arms 1..$((first - 1)) are NOT" >&2
     echo "  covered by this verdict; $first..$last are." >&2
 else
     if [ -z "$plan" ]; then

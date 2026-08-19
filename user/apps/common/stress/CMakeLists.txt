@@ -12,7 +12,7 @@ if(KICKOS_STRESS_FOREVER)
   target_compile_definitions(stress PRIVATE KICKOS_STRESS_FOREVER)
 endif()
 
-# Bounded, self-verifying concurrency stress -- exercises scheduler + semaphores +
+# Bounded, self-verifying concurrency stress: exercises scheduler + semaphores +
 # the tickless timer under many mixed-priority threads, then asserts conservation.
 # The sim has NO virtual clock: arch_clock_now reads CLOCK_MONOTONIC and the one-shot is a
 # real timer_create delivering SIGALRM, so this gate is wall-clock timed like the MCU runs

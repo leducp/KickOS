@@ -32,8 +32,7 @@ set -eu
 
 AWK_PROG="$(dirname "$0")/extern_c_linkage.awk"
 [ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree --
-# and this project runs parallel tracks in them. check_doc_names.sh already tests both.
+# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
 [ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
 [ -f "$AWK_PROG" ] || fail "scanner missing: $AWK_PROG"
 command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
@@ -86,7 +85,7 @@ if [ -s "$TMP/refused" ]; then
 fi
 
 if [ -s "$TMP/hits" ]; then
-    echo "FAIL: anonymous namespace inside an extern \"C\" block --" >&2
+    echo "FAIL: anonymous namespace inside an extern \"C\" block:" >&2
     echo "      C language linkage overrides it, so every entity declared there gets an" >&2
     echo "      UNMANGLED GLOBAL symbol instead of internal linkage. Put \`static\` on each" >&2
     echo "      entity (it keeps internal linkage under C language linkage). If a symbol IS" >&2

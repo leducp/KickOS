@@ -19,7 +19,7 @@ struct arch_context
     uint32_t sp;
 
     // CONTROL.nPRIV for this thread: 0 = privileged (kernel), 1 = unprivileged
-    // (user). Saved on switch-out and restored on switch-in like a register --
+    // (user). Saved on switch-out and restored on switch-in like a register;
     // NOT just the resting privilege: a thread blocked mid-syscall runs
     // privileged (the SVC trampoline raised it), so its saved nPRIV is 0 and it
     // must resume privileged (the ARM twin of the sim's SimContext::raised).

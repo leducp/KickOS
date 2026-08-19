@@ -673,6 +673,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(forever_loop PROPERTIES TIMEOUT 120 LABELS host)
 
+  _add_test(NAME dash_punct
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_dash_punct.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(dash_punct PROPERTIES TIMEOUT 120 LABELS host)
+
   _add_test(NAME atomic_rmw
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_atomic_rmw.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")

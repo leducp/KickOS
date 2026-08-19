@@ -24,7 +24,7 @@
 //      of the NACK and the caller derives the meaning from the segment layout it submitted.
 //      That derivation only works while the position is CARRIED: it is the `xferred` count
 //      of kos_i2c_transfer below, and an implementation that reports 0 there on every error
-//      withdraws the grounds this refusal stands on -- an absent device and a device that
+//      withdraws the grounds this refusal stands on: an absent device and a device that
 //      refused a data byte become one answer, with nothing to catch it. There is no bit;
 //      there is a count, and it is not optional (docs/design-m5-i2c-seam.md section 9.1).
 //   4. NO BUS-BUSY CALL. One of the three controllers has no such bit at all, so a
@@ -255,8 +255,8 @@ extern "C"
     // WHERE `xferred` LIVES ON THE WIRE, AND THE CONTRADICTION A SERVICE MUST NOT SPLIT THE
     // DIFFERENCE ON. bus.h names kos_bus_rsp.len "rx bytes following"; the NACK rule in
     // docs/reference/bus-service.md names it "bytes actually transferred before the NACK".
-    // A write-only transaction makes the two disagree outright -- three bytes transferred and
-    // no rx byte to follow -- so the sign of `status` is the discriminator:
+    // A write-only transaction makes the two disagree outright (three bytes transferred and
+    // no rx byte to follow), so the sign of `status` is the discriminator:
     //
     //   status >= 0   len is rx bytes following, and they follow. Unchanged.
     //   status <  0   NO reply payload follows at all, and len is `xferred`.

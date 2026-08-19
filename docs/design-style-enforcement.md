@@ -49,8 +49,12 @@ classified first; two also need paren-depth tracking. The naive column is a raw 
 ### Bucket 3 -- not mechanically decidable, never gated
 
 Comment narrates instead of stating a constraint; comment restates the code; comment justifies a
-naming or design choice; ` -- ` clause chains; a doc stating a path instead of a state; doc-tier
-placement (teaching -> Book, contract -> Reference); a comment that is an invariant's only guard.
+naming or design choice; a doc stating a path instead of a state; doc-tier placement (teaching ->
+Book, contract -> Reference); a comment that is an invariant's only guard.
+
+A doubled hyphen used as sentence punctuation was listed here and does not belong: it IS decidable
+once flags, end-of-options separators, the decrement operator, banner runs and heredoc bodies are
+excluded first, and `tests/static/check_dash_punct.sh` gates it over the non-markdown corpus.
 
 ## 3. Proposed mechanism
 

@@ -3,7 +3,7 @@
 
 # Clock-hardening SILICON soak harness. OFF by default; enable with
 # -DKICKOS_CLOCKSOAK_TEST=ON. It idles past >1 counter wrap period and across
-# several wraps, then reports monotonicity + rate on the operator's console -- the
+# several wraps, then reports monotonicity + rate on the operator's console; the
 # "silicon-test-later" checklist that no emulator exercises (a wide free-running
 # peripheral counter behaves the same in QEMU regardless of the wrap/WFI hazard).
 # Arch-neutral (clock_now + sleep_ns only), so it builds for any board; the per-board

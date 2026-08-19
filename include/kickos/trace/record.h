@@ -11,7 +11,7 @@
 // host decoder/test can share ONE source of truth for the wire format.
 //
 // Wire format: little-endian (all KickOS targets are LE), fixed length per event
-// type (self-delimiting -- the decoder maps type -> length, never guesses). A
+// type (self-delimiting: the decoder maps type -> length, never guesses). A
 // half-written record would desynchronize the decoder permanently, so the
 // frontend checks free space for the WHOLE record and drops it atomically.
 //

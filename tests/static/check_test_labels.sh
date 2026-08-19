@@ -139,7 +139,7 @@ while IFS="$TAB" read -r name labels disabled prog; do
 
     case "$prog" in
         @none)
-            report "$name: ctest reports no command, so its program cannot be classified -- build the tree first"
+            report "$name: ctest reports no command, so its program cannot be classified; build the tree first"
             continue
             ;;
         "$BUILD"/*)
@@ -180,14 +180,14 @@ while IFS="$TAB" read -r name labels disabled prog; do
             report "$name: DISABLED with nothing in this tree to disable it"
         fi
     else
-        report "$name: runs $root/$rel, which $DECL does not classify -- add a host or image line for it"
+        report "$name: runs $root/$rel, which $DECL does not classify; add a host or image line for it"
     fi
 done < "$TMP/table"
 
 # A suite the gate could not read leaves every assertion above unexecuted.
 [ "$N_TOTAL" -gt 0 ] || fail "read zero tests out of $BUILD"
 [ "$SAW_FIXTURE" = 1 ] || fail "no $FIXTURE fixture in this suite, so every test here may have run a stale binary"
-[ "$N_HOST" -gt 0 ] || fail "not one host test in this suite -- the source-tree gates register on every board, so the mapping is broken"
+[ "$N_HOST" -gt 0 ] || fail "not one host test in this suite; the source-tree gates register on every board, so the mapping is broken"
 
 # --- the other direction, on the one tree that can read it --------------------
 # A `src` declaration is pinned to a file above and rots visibly on every board. A `build`

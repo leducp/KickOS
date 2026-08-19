@@ -5,7 +5,7 @@
 # script carves the KICKOS_HAVE_MPU .appdata window (so arch_domain_static_regions
 # grants a real app-data region instead of reading the WEAK __kickos_appdata_*
 # symbols as 0). Unlike the M4/M7 boards, the M33 implements PMSAv8 (not the v7-M
-# PMSA), so it CANNOT use the shared armv7m arch_mpu_apply/commit -- it pulls the
+# PMSA), so it CANNOT use the shared armv7m arch_mpu_apply/commit; it pulls the
 # dedicated PMSAv8 backend below, whose strong kickos_arch_mpu_commit +
 # arch_mpu_region_encodable replace the v7-M fallback TUs. See
 # docs/design-rp2350-mpu-armv8m.md.

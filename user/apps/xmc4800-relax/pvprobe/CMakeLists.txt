@@ -13,8 +13,8 @@ if(NOT TARGET pvprobe)
   return() # diagnostics off -> app not built
 endif()
 
-# The chip register dir carries regs/usic.h (the shared USIC offset+bit-field header)
-# -- definitions only, no code.
+# The chip register dir carries regs/usic.h (the shared USIC offset+bit-field header),
+# definitions only, no code.
 target_include_directories(pvprobe PRIVATE
   "${PROJECT_SOURCE_DIR}/arch/arm/chip/xmc4800")
 

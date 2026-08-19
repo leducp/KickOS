@@ -16,14 +16,14 @@ if(NOT TARGET drvdeath)
 endif()
 
 # Case 3 of the gate: the console driver is TWO threads and the second one holds the
-# register window. The same knob the service list reads (system/CMakeLists.txt) -- the app
+# register window. The same knob the service list reads (system/CMakeLists.txt); the app
 # needs it because the deferred-reclaim assertion and the cancel that ends it live here.
 if(KICKOS_SIMCON_WINDOW_THREAD)
   target_compile_definitions(drvdeath PRIVATE KICKOS_SIMCON_WINDOW_THREAD=1)
 endif()
 
 # The gate builds its OWN tree (one service-list provider links per image, and this one
-# also needs the bounded-serve knob), so register the test only in the ordinary tree --
+# also needs the bounded-serve knob), so register the test only in the ordinary tree;
 # registering it in the tree the script configures would recurse.
 if(KICKOS_BUILD_TESTS AND KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
   add_test(

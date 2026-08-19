@@ -23,7 +23,7 @@
 
 int main(int, char**)
 {
-    kos_print("[specfault] reading unbacked wrapped FlexSPI -- expect a clean MPU FAULT\n");
+    kos_print("[specfault] reading unbacked wrapped FlexSPI: expect a clean MPU FAULT\n");
     volatile uint32_t const* p = reinterpret_cast<volatile uint32_t const*>(KICKOS_SPECFAULT_ADDR);
     volatile uint32_t v = *p; // denied by the wrap -> MemManage; never returns
     (void)v;

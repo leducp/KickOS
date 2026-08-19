@@ -110,7 +110,7 @@ extern "C" void console_on_driver_death(void)
     // Reclaiming on the note alone would reprogram the UART under a live IRQ thread that
     // owns those registers and silence its source (INT_ENA=0), parking it forever. So the
     // precondition is asked of the DEVICE: nobody may still hold the window
-    // arch_console_reclaim is about to write. A cancelled peer is still a holder here --
+    // arch_console_reclaim is about to write. A cancelled peer is still a holder here:
     // thread_cancel marks it, and only its own exit sets `dying`, so the note stays set
     // across the refusal and the LAST holder's own exit_current reclaims.
     uintptr_t win_base = 0;

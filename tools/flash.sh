@@ -3,13 +3,13 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Magic flasher: the thin front-end over the flash-<tool>.sh backends. It resolves
-# the board -> chip (from board.cmake), then dispatches to the right backend script
-# -- the first one whose tool is on PATH, or one you force with FLASH_TOOL. Every
+# the board -> chip (from board.cmake), then dispatches to the right backend script:
+# the first one whose tool is on PATH, or one you force with FLASH_TOOL. Every
 # backend is also directly runnable on its own (tools/flash-jlink.sh <board>, ...).
 #
 # The ONLY assumption is that the flasher is on PATH (no hardcoded install dirs).
 # A chip may have several valid backends (e.g. an STM32 -> stlink OR jlink); the
-# first present wins, unless FLASH_TOOL picks one -- e.g. use your own J-Link on a
+# first present wins, unless FLASH_TOOL picks one; e.g. use your own J-Link on a
 # Blue Pill instead of an ST-Link:  FLASH_TOOL=jlink tools/flash.sh bluepill-c8
 #
 # Usage:
@@ -60,7 +60,7 @@ if [ "${1:-}" = "--list" ]; then
     for d in "$FL_ROOT"/boards/*/; do
         b=$(basename "$d"); c=$(_bf "$b" KICKOS_CHIP); cand=$(candidates_for "$c")
         if [ -n "$cand" ]; then disp="${cand// / | }"     # join real backend keys
-        else case "$c" in mps2|virt) disp="(QEMU -- not flashed)" ;; *) disp="(sim/host -- not flashed)" ;; esac; fi
+        else case "$c" in mps2|virt) disp="(QEMU, not flashed)" ;; *) disp="(sim/host, not flashed)" ;; esac; fi
         printf '%-16s %-10s %-9s %s\n' "$b" "$c" "$(_bf "$b" KICKOS_ARCH)" "$disp"
     done
     exit 0
@@ -83,7 +83,7 @@ else
     for m in $cands; do
         [ -n "$(tool_bin "$m")" ] && { pick=$m; break; }
     done
-    [ -n "$pick" ] || die "no flasher on PATH for chip '$FL_CHIP' -- need one of: $cands
+    [ -n "$pick" ] || die "no flasher on PATH for chip '$FL_CHIP': need one of: $cands
        (install it/add to PATH, or force with FLASH_TOOL=<name>)"
 fi
 

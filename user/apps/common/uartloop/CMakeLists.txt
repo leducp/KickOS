@@ -10,7 +10,7 @@ endif()
 
 # BUILD only in the posture that provides the service. The app calls
 # kickos_sim_uart_take_endpoint, which kickos_services_simuart defines, so linking it
-# against any other service list is an undefined reference -- fail-loud by construction,
+# against any other service list is an undefined reference; fail-loud by construction,
 # and the reason this is a build condition rather than a weak fallback (no KickOS seam is
 # a weak symbol).
 if(KICKOS_SERVICE_LIST STREQUAL "kickos_services_simuart")

@@ -16,7 +16,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(telemetry_structural PROPERTIES TIMEOUT 40)
 endif()
 
-# CI gate 4: the same bounded workload booted under QEMU -- the only automated
+# CI gate 4: the same bounded workload booted under QEMU, the only automated
 # coverage of the PendSV-tail switch-hook ASM. Trace captured via semihosting.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
   kickos_add_qemu_test(NAME telemetry_qemu_structural TARGET tele_pingpong BOARD qemu
