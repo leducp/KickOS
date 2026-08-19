@@ -40,6 +40,7 @@ kickos_services_xmc4800relax_uartirq xmc4800-relax      select
 
 # --- the boards whose only list is an alternative ----------------------------
 kickos_services_esp32c6_uartirq     esp32c6-wroom       select
+kickos_services_f411disco_uartirq   f411disco           select
 kickos_services_rx72m_uartirq       rx72m               select
 kickos_services_esp32_uartirq       esp32-wroom         select
 kickos_services_pizero2350_usbcdc   pizero2350          select

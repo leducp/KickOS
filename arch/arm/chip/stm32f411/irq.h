@@ -11,7 +11,7 @@ namespace kickos::stm32f411::irq
     enum irq_num
     {
         TIM2_IRQ = 28,   // TIM2 global (update/overflow observer)
-        USART2_IRQ = 38, // USART2 global (RX/TX combined); only TXEIE armed
+        USART2_IRQ = 38, // USART2 global: every enabled source ORed onto one line
     };
 }
 

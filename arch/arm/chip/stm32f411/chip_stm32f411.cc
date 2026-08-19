@@ -253,6 +253,25 @@ namespace
     console_tx_backend const f4_console_backend = {
         f4_tx_slot_free, f4_tx_push, f4_tx_irq_enable, f4_tx_irq_disable};
 
+    // The window arch_console_reclaim rewrites. ONE constant: a reclaim reaching outside
+    // the window it reports would rewrite registers whose holder was never checked. The
+    // USART register file ends at 0x1B (RM0383 sec.19.6.8 Table 88), so this covers every
+    // register that exists on the channel, and it need not equal the service list's grant:
+    // dev_window_free tests OVERLAP, so any holder able to reach a register below also
+    // overlaps this.
+    constexpr uintptr_t CONSOLE_WIN_BASE = mmap::USART2_BASE;
+    constexpr size_t CONSOLE_WIN_SIZE = usart::BLOCK_SIZE;
+
+    // Every register the reclaim body writes must lie inside that window; adding a store
+    // outside it fails to build rather than silently widening the reclaim's reach.
+    static_assert(usart::CR1 >= CONSOLE_WIN_BASE
+                  and usart::CR1 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and usart::CR2 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and usart::CR3 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and usart::GTPR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and usart::BRR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
+                  "arch_console_reclaim writes outside the window it reports");
+
 }
 
 extern "C"
@@ -312,12 +331,67 @@ void arch_console_write_sync(char const* buf, size_t n)
     }
 }
 
+// SR.TC, not SR.TXE: TXE says DR handed the byte to the shift register, TC says the shift
+// register finished clocking it out, stop bit included (RM0383 sec.19.3.2). kickos_terminate
+// stops the core right after this, so waiting on TXE would still lose the last character.
+void arch_console_flush_sync(void)
+{
+    uint32_t spin = 0;
+    while ((r32(usart::SR) & usart::SR_TC) == 0)
+    {
+        if (++spin > KICKOS_POLL_SPIN_MAX)
+        {
+            return; // bounded, as arch.h requires: a wedged UART drops the tail, never hangs
+        }
+    }
+}
+
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = console_tx_buf;
     *size = CONSOLE_TX_SIZE;
     *irq_line = irq::USART2_IRQ;
     return &f4_console_backend;
+}
+
+// USART2 (RM0383 sec.19, APB1). On f4uartirq the IRQ thread holds this grant, not the
+// service thread whose death notes the console dead.
+void arch_console_reclaim_window(uintptr_t* base, size_t* size)
+{
+    *base = CONSOLE_WIN_BASE;
+    *size = CONSOLE_WIN_SIZE;
+}
+
+// Panic-path reclaim (console.cc D6): force USART2 back to a known polled-ready 8N1 TX
+// channel after a userspace driver may have garbled EVERY writable register in its granted
+// window. Runs with IRQs masked, privileged; MUST be idempotent + re-entrant, so it is
+// straight-line ABSOLUTE stores only, NO read-modify-write: an RMW on a garbled value is not
+// safe to repeat from a nested-fault re-entry.
+//
+// Reclaim depth = what usart2_init sets (BRR, CR1) plus the registers init leaves at reset
+// default that a driver can set to cause SILENT LOSS, each cleared to 0 below with the
+// failure it prevents. The clock gate (RCC_APB1ENR.USART2EN) and the pin mux (GPIOA MODER
+// and AFRL for PA2/PA3) sit outside the window: RCC is an arch_reserved_blocks entry, and
+// arch_pinmux_set refuses PA2/PA3 as kernel-owned.
+void arch_console_reclaim(void)
+{
+    // FIRST, and the order is load-bearing: CR2's CPOL, CPHA and LBCL must not be written
+    // while the transmitter is enabled (RM0383 sec.19.6.5), and this is what clears TE.
+    r32(usart::CR1) = 0; // UE=0: channel off, every interrupt source disarmed
+    // CTSE postpones every byte until an unwired CTS is asserted, which is the true
+    // silent-loss case here; IREN modulates the TX pin; HDSEL ties TX to RX; SCEN/NACK add
+    // smartcard framing; DMAT/DMAR hand the data register to a DMA request instead of ours.
+    r32(usart::CR3) = 0;
+    r32(usart::CR2) = 0;  // STOP=00 (1 stop bit), no LIN, no synchronous clock on the pin
+    r32(usart::GTPR) = 0; // guard time + smartcard/IrDA prescaler
+
+    // Re-derive the divisor from the live APB1 clock, as usart2_init does: 42 MHz on the
+    // PLL, or the 16 MHz HSI fallback when the crystal never came up.
+    r32(usart::BRR) = usart_brr(pclk1_hz, usart::BAUD_115200);
+
+    // 8N1, OVER8=0, TXEIE clear: the polled writer in arch_console_write_sync is what has to
+    // work after this, and console_tx re-arms TXEIE itself when the ring is used again.
+    r32(usart::CR1) = usart::CR1_UE | usart::CR1_TE | usart::CR1_RE;
 }
 
 // Kernel diagnostic LED: the pin/port/polarity are board facts (KICKOS_DIAG_LED_*,
@@ -426,6 +500,20 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     v |= af << shift;
     r32(afr) = v;
     return 0;
+}
+
+// Read-only branch-clock oracle (KOS_SYS_PERIPH_CLOCK_HZ). USART2 is on APB1 (RM0383 sec.2.3
+// Table 1), whose rate clock_init() landed in pclk1_hz, so a userspace UART driver derives
+// its own divisor instead of carrying a copy of the PLL plan. 0 for every other block: a
+// WRONG branch clock silently garbles the wire, so an unknown must not answer with the core
+// clock. USART1/USART6 are APB2 and would need their own entry, which no service list grants.
+uint32_t arch_periph_clock_hz(uintptr_t base)
+{
+    if (base == mmap::USART2_BASE)
+    {
+        return pclk1_hz;
+    }
+    return 0u;
 }
 
 // Per-block enable table (KOS_SYS_PERIPH_ENABLE), keyed on the EXACT block base.
