@@ -74,7 +74,7 @@ namespace kickos
         [[nodiscard]] bool wake_no_resched(Thread* t);
         void resched_after_wake(Thread const* t);
 
-#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
         // The bookkeeping half of switch_to, for the IPC fastpath, which runs inside the
         // trap handler and performs the register swap itself instead of pending one. Every
         // state change switch_to makes happens here; what is left out is arch_switch.

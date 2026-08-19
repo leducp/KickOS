@@ -268,7 +268,6 @@ trap_entry:
 /* the caller's own stack. Args are already in the frame's a0-a4 slots. The      */
 /* frame keeps the USER mstatus (MPP=caller priv) for the eventual return.       */
 .Lecall:
-#if KICKOS_ARCH_HAS_IPC_FASTPATH
     /* THE SEAM. KOS_SYS_CALL_REG completes here, before the exception return that
        would otherwise land in svc_trampoline and run the generic dispatch. The leaf
        decides before it mutates, so a null return means nothing was committed and the
@@ -298,7 +297,6 @@ trap_entry:
     call    kickos_arch_mpu_commit
     j       .Lrestore
 .Lecall_slow:
-#endif
     lw      a0, F_A0(sp)            /* nr */
     lw      a1, F_A1(sp)
     lw      a2, F_A2(sp)
@@ -452,7 +450,6 @@ arch_syscall64:
     ecall
     ret
 
-#if KICKOS_ARCH_HAS_IPC_FASTPATH
 /* ------------------------------------------------------------------------- */
 /* int32_t arch_syscall_reg(uint32_t* io): the register-carrying IPC trap.      */
 /* io[0..7] load a0-a7; on return io[1..5] take back a1-a5 (the reply) and a0    */
@@ -477,4 +474,3 @@ arch_syscall_reg:
     sw      a4, 16(t0)
     sw      a5, 20(t0)
     ret
-#endif

@@ -3303,6 +3303,189 @@ namespace
         TAP_CHECK(echo_rc_b == 5 and memcmp(g_echo_rplbuf, "pong!", 5) == 0);
     }
 
+#if defined(KICKOS_ENABLE_SELFTEST) // kos_ipc_fast_taken is a selftest-only syscall
+    // --- Call/reply: the trap-handler register fastpath ------------------------------
+    // The fastpath and the buffer form answer a caller IDENTICALLY, so no return value can
+    // tell them apart and kos_ipc_fast_taken is the only witness that the arm under test
+    // ran at all. Every assertion below pairs a content check with a counter delta.
+    //
+    // The peers run at EQUAL priority: the fastpath refuses when the caller outranks the
+    // server, so a caller above its server would measure the refusal and pass with the
+    // fastpath never once taken.
+    //
+    // The reply travels back through the CALLER'S SAVED TRAP FRAME rather than its buffer,
+    // so a wrong frame offset surfaces as wrong bytes and not as a fault. That is why the
+    // server transforms the request instead of echoing it: a reply that is byte-identical
+    // to the request cannot distinguish a correct copy from a buffer the kernel left alone.
+    constexpr unsigned char FP_XOR = 0xA5;
+    constexpr size_t FP_MAX = 20; // KOS_CALL_REG_BYTES
+    // The content checks hold either way, so the arm also covers the buffer form where the
+    // backend has no fastpath and the counter cannot move.
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+    constexpr uint32_t FP_EXPECT_TAKEN = 1;
+#else
+    constexpr uint32_t FP_EXPECT_TAKEN = 0;
+#endif
+    Atomic<int32_t, Order::RELAXED> g_fp_reqn{-99};
+    Atomic<int32_t, Order::RELAXED> g_fp_rc{-99};
+    unsigned char g_fp_rpl[FP_MAX];
+    size_t g_fp_send_len = 0;
+    size_t g_fp_recv_cap = 0;
+
+    void fp_server(void*) // caps: done@1, E(WAIT)@2
+    {
+        unsigned char buf[64];
+        struct kos_recv_info info = {0, KOS_CAP_NONE};
+        int32_t const n = kos_recv(2, buf, sizeof(buf), &info);
+        g_fp_reqn = n;
+        if (info.reply_cap != KOS_CAP_NONE and n >= 0)
+        {
+            for (int32_t i = 0; i < n; i++)
+            {
+                buf[i] = static_cast<unsigned char>(buf[i] ^ FP_XOR);
+            }
+            kos_reply(info.reply_cap, buf, static_cast<size_t>(n));
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void fp_caller(void*) // caps: done@1, E(SIGNAL)@2
+    {
+        unsigned char buf[64];
+        for (size_t i = 0; i < sizeof(buf); i++)
+        {
+            buf[i] = static_cast<unsigned char>(i + 1); // no zero byte: a cleared buffer shows
+        }
+        g_fp_rc = kos_call(2, buf, g_fp_send_len, g_fp_recv_cap);
+        int32_t const rc = g_fp_rc;
+        if (rc > 0)
+        {
+            size_t k = static_cast<size_t>(rc);
+            if (k > FP_MAX)
+            {
+                k = FP_MAX;
+            }
+            memcpy(g_fp_rpl, buf, k);
+        }
+        kos_sem_post(CH_DONE);
+    }
+    // Runs one call at the given lengths and reports how far the fastpath counter moved.
+    // Takes no TAP_CHECK: that returns from its enclosing function, which here would
+    // abandon the peers mid-transaction and strand the caller's semaphore posts.
+    enum FpStatus
+    {
+        FP_RAN = 0,
+        FP_NO_POOL = 1,  // the pool could not seat both peers
+        FP_EP_REFUSED = 2 // endpoint create or close refused
+    };
+    int fp_run(size_t send_len, size_t recv_cap, uint32_t* taken_delta)
+    {
+        kos_cap_grant scaps[] = {{g_done, CH_FULL}, {0, EP_WAIT_ONLY}};   // done@1, E(WAIT)@2
+        kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {0, EP_SIGNAL_ONLY}}; // done@1, E(SIGNAL)@2
+        g_fp_send_len = send_len;
+        g_fp_recv_cap = recv_cap;
+        g_fp_reqn = -99;
+        g_fp_rc = -99;
+        memset(g_fp_rpl, 0, sizeof(g_fp_rpl));
+        if (kos_endpoint_create(&g_ep) != 0)
+        {
+            return FP_EP_REFUSED;
+        }
+        scaps[1].source_cap = g_ep;
+        ccaps[1].source_cap = g_ep;
+        uint32_t const before = kos_ipc_fast_taken();
+        auto sv = kos::thread::spawn_caps(fp_server, nullptr, "fpS", 11, scaps, 2);
+        kos::thread::Handle cl;
+        if (sv.valid())
+        {
+            kos_sleep_ns(3000000ull); // the server must be PARKED in recv before the call
+            cl = kos::thread::spawn_caps(fp_caller, nullptr, "fpC", 11, ccaps, 2);
+        }
+        if (not sv.valid() or not cl.valid())
+        {
+            kos_handle_close(g_ep);
+            return FP_NO_POOL;
+        }
+        wait_n(2);
+        *taken_delta = kos_ipc_fast_taken() - before;
+        if (kos_handle_close(g_ep) != 0)
+        {
+            return FP_EP_REFUSED;
+        }
+        return FP_RAN;
+    }
+    void t_call_reg_fastpath()
+    {
+        uint32_t taken = 0;
+
+        // (A) both lengths inside the register budget: the fastpath runs.
+        int st = fp_run(8, 8, &taken);
+        if (st == FP_NO_POOL)
+        {
+            tap::skip("pool too small for 2 threads");
+            return;
+        }
+        TAP_CHECK(st == FP_RAN);
+        int32_t const rc_a = g_fp_rc;
+        TAP_CHECK(g_fp_reqn == 8);
+        TAP_CHECK(rc_a == 8);
+        bool ok_a = true;
+        for (size_t i = 0; i < 8; i++)
+        {
+            if (g_fp_rpl[i] != static_cast<unsigned char>((i + 1) ^ FP_XOR))
+            {
+                ok_a = false;
+            }
+        }
+        TAP_CHECK(ok_a); // every reply byte, through the caller's saved trap frame
+        TAP_CHECK(taken == FP_EXPECT_TAKEN);
+
+        // (B) the boundary, exactly KOS_CALL_REG_BYTES each way.
+        st = fp_run(FP_MAX, FP_MAX, &taken);
+        if (st == FP_NO_POOL)
+        {
+            tap::partial("boundary half not run (pool too small)");
+            return;
+        }
+        TAP_CHECK(st == FP_RAN);
+        int32_t const rc_b = g_fp_rc;
+        TAP_CHECK(g_fp_reqn == static_cast<int32_t>(FP_MAX));
+        TAP_CHECK(rc_b == static_cast<int32_t>(FP_MAX));
+        bool ok_b = true;
+        for (size_t i = 0; i < FP_MAX; i++)
+        {
+            if (g_fp_rpl[i] != static_cast<unsigned char>((i + 1) ^ FP_XOR))
+            {
+                ok_b = false;
+            }
+        }
+        TAP_CHECK(ok_b);
+        TAP_CHECK(taken == FP_EXPECT_TAKEN);
+
+        // (C) a reply capacity ABOVE the budget keeps the buffer form, and the counter is
+        // what says so: the bytes alone would look the same either way.
+        st = fp_run(8, 64, &taken);
+        if (st == FP_NO_POOL)
+        {
+            tap::partial("buffer-form half not run (pool too small)");
+            return;
+        }
+        TAP_CHECK(st == FP_RAN);
+        int32_t const rc_c = g_fp_rc;
+        TAP_CHECK(g_fp_reqn == 8);
+        TAP_CHECK(rc_c == 8);
+        bool ok_c = true;
+        for (size_t i = 0; i < 8; i++)
+        {
+            if (g_fp_rpl[i] != static_cast<unsigned char>((i + 1) ^ FP_XOR))
+            {
+                ok_c = false;
+            }
+        }
+        TAP_CHECK(ok_c);
+        TAP_CHECK(taken == 0);
+    }
+#endif // KICKOS_ENABLE_SELFTEST (register-fastpath witness)
+
     // --- Call/reply: root calls like any other thread --------------------------------
     // The orchestrator IS root, and root holds an ordinary thread-pool slot, so a reply
     // capability can name it. Both dispatch sites run against one spawned echo server: (A)
@@ -6267,6 +6450,9 @@ int main(int, char**)
     TAP_ADD("call_infoless_revert", t_call_infoless_revert); // info-less bounce reverts the D2 boost
     TAP_ADD("call_close_reply", t_call_close_reply);         // close-instead-of-reply EPIPEs + yields
     TAP_ADD("call_happy", t_call_happy);                     // request delivered + reply in-place (fast+slow)
+#if defined(KICKOS_ENABLE_SELFTEST)
+    TAP_ADD("call_reg_fastpath", t_call_reg_fastpath);       // register form taken; buffer form above the budget
+#endif
     TAP_ADD("call_from_root", t_call_from_root);             // root is a pool slot, so it may call (fast+slow)
     TAP_ADD("call_truncation", t_call_truncation);           // request + reply datagram clamp
     TAP_ADD("call_double_reply", t_call_double_reply);       // one-shot cap -> second reply -KOS_EBADF

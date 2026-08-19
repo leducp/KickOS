@@ -31,7 +31,23 @@
 
 #include "syscall_internal.h"
 
-#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
+namespace kickos
+{
+    namespace
+    {
+        // Bumped at the commit point below. Single-writer under the trap's own interrupt
+        // mask, so a plain type. Defined OUTSIDE the arch guard, so a backend with no
+        // fastpath reads 0 rather than failing to link.
+        uint32_t g_ipc_fast_taken = 0;
+    }
+
+    uint32_t ipc_fast_taken_count()
+    {
+        return g_ipc_fast_taken;
+    }
+}
+
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
 
 namespace kickos
 {
@@ -105,6 +121,7 @@ namespace kickos
         }
 
         // Every refusal is behind us. From here the call completes.
+        g_ipc_fast_taken++;
         (void)wq_pop_highest(e->recv_waiters); // == w, nothing mutates under this mask
         size_t n = send_len;
         if (w->ipc.len < n)

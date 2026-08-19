@@ -500,7 +500,7 @@ uint64_t arch_syscall64(uintptr_t nr,
 //
 // KOS_CALL_REG_FALLBACK is not an error: the fastpath declined and the caller must
 // re-issue through KOS_SYS_CALL.
-#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
 int32_t arch_syscall_reg(uint32_t* io);
 
 // Store a syscall result into a SAVED context, for a thread the fastpath parked with no

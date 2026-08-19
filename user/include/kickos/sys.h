@@ -266,6 +266,10 @@ void* kos_guard_addr(void);
 // Test-only: count of IRQs that fired on a line with no driver (masked by the
 // default handler).
 uint32_t kos_irq_spurious_count(void);
+// Test-only: count of calls the trap-handler IPC fastpath COMPLETED. It is the only
+// thing that tells a test which of the two call paths ran, since they answer a caller
+// identically. Reads 0 where the backend has no fastpath.
+uint32_t kos_ipc_fast_taken(void);
 // Test-only: exercise a Rule 7 grant predicate directly (no descriptor forged).
 // `op` is an enum kos_grant_op (abi.h):
 //   HITS_RESERVED -> grant_hits_reserved(base,size)                  (0/1)

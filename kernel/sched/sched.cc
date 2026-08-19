@@ -58,7 +58,7 @@ namespace kickos
                 arch_ctx_redirect(&next->ctx, kickos_thread_slay_exit, next->stack_base,
                                   next->stack_size);
             }
-#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
             // A fastpath-parked thread has no kernel continuation to hand wait_result back
             // through, so the switch that resumes it is the last place the result can reach
             // its saved frame. Every waker (the reply, the timeout unwind, the cancel, the
@@ -143,7 +143,7 @@ namespace kickos
             KICKOS_BENCH_SPAN(PH_SWITCH_TO, bm_switch);
         }
 
-#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
         struct arch_context* switch_prepare(Thread* next)
         {
             switch_book(next);

@@ -63,6 +63,11 @@ namespace kickos
     // out-ptr, or nothing when out == 0. KCAP_INVALID marks a plain send.
     void write_recv_info(uintptr_t out, uint32_t badge, uint32_t reply_cap);
 
+    // How many calls the trap-handler IPC fastpath COMPLETED; a refusal does not count.
+    // The two paths answer a caller identically, so this is the only thing that separates
+    // them from userspace. Reads 0 on a backend with no fastpath.
+    uint32_t ipc_fast_taken_count();
+
     // --- Cap-object creators (syscall_obj.cc) ----------------------------------
     // Every minting call has one shape: a status return plus a handle out-parameter,
     // which is written on EVERY path (KCAP_INVALID on failure). A handle spends all 32

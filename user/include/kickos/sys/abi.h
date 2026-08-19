@@ -182,13 +182,18 @@ enum kos_syscall_nr
                                //   or -KOS_EINVAL (bad op). UNGATED by authority; the
                                //   dispatch arm is compiled out unless KICKOS_BENCH, so a
                                //   normal image returns -KOS_EINVAL.
-    KOS_SYS_CALL_REG = 56      // (ep_cap, kos_call_lens_pack(send_len, recv_cap), payload in
+    KOS_SYS_CALL_REG = 56,     // (ep_cap, kos_call_lens_pack(send_len, recv_cap), payload in
                                //   the remaining argument registers) -> as KOS_SYS_CALL, with
                                //   the reply delivered in registers too. INTERNAL: no stub
                                //   spells it, kos_call selects it on size alone. Implemented
                                //   ONLY in the trap-handler fastpath; the generic dispatch
                                //   answers KOS_CALL_REG_FALLBACK, the stub's cue to re-issue
                                //   as KOS_SYS_CALL.
+    KOS_SYS_IPC_FAST_TAKEN = 57 // ()  -> count of calls the trap-handler IPC fastpath
+                               //   COMPLETED (self-test only). The fastpath and the buffer
+                               //   form answer a caller identically, so this counter is the
+                               //   only thing that separates them. Reads 0 on a backend with
+                               //   no fastpath.
 };
 
 // The generic dispatch's answer for KOS_SYS_CALL_REG: retry through KOS_SYS_CALL. Outside
