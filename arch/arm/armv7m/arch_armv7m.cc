@@ -33,6 +33,10 @@ static_assert(offsetof(struct arch_context, resting_npriv) == 8,
 static_assert(offsetof(struct arch_context, trace_tid) == 12,
               "switch.S telemetry hook expects ctx.trace_tid @12");
 #endif
+#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
+static_assert(kickos::armv7m::PRIO_LOCK_BASEPRI == 0x20,
+              "SVC_Handler's fastpath raises this level as a literal");
+#endif
 
 namespace
 {
@@ -112,6 +116,18 @@ void arch_context_init(struct arch_context* ctx,
     ctx->npriv = npriv;
     ctx->resting_npriv = npriv;
 }
+
+#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
+// The fastpath parks a caller on its own trap frame with no kernel continuation, so the
+// result has to be seated where the restore reloads r4 from. ctx->sp is the base of the
+// {r4-r11, EXC_RETURN} block and the thread is not running, so this is a plain store to
+// memory nothing else holds. r4 is the register the trap's own ABI answers in
+// (arch_syscall_reg in switch.S), not the AAPCS r0.
+void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
+{
+    reinterpret_cast<uint32_t*>(ctx->sp)[0] = result;
+}
+#endif
 
 // The whole seam on this backend. The fabricated frame carries EXC_RETURN 0xFFFFFFFD
 // (thread mode, PSP, NON-FP frame), so the rebuild also RESETS the frame format: a

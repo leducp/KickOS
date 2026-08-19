@@ -13,6 +13,11 @@
  *
  * Saved frame, low->high on PSP:  [r4 r5 r6 r7 r8 r9 r10 r11][hw frame].
  * ctx.sp -> r4. ctx = {sp@0, npriv@4, resting_npriv@8}.
+ *
+ * The IPC fastpath seam sits inside SVC_Handler, with arch_syscall_reg at the end.
+ * The saved block IS the leaf's argument array on this arch too, but the v6-M store
+ * of it shuffles r8-r11 through r4-r7, so a refusal must put r4-r7 back before the
+ * generic path resumes on the real register file.
  */
 
     .syntax unified
@@ -107,6 +112,108 @@ PendSV_Handler:
     .global SVC_Handler
 SVC_Handler:
     mrs     r0, psp
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+    /* THE SEAM. KOS_SYS_CALL_REG completes here, before the exception return that would
+       otherwise land in svc_trampoline and run the generic dispatch. The leaf decides
+       before it mutates, so a null return means nothing was committed and the
+       fall-through below is today's path exactly. */
+    ldr     r1, [r0]                /* the stacked r0 is the syscall number */
+    cmp     r1, #56                 /* KOS_SYS_CALL_REG (sys/abi.h) */
+    bne     .Lsvc_slow
+    /* Two refusals the leaf cannot see, both about the trap rather than the IPC.
+       A mask already raised would have to be reinstated on a thread that carries none,
+       and a pended PendSV means kernel().current has already moved off the thread whose
+       registers are live here, with an uncommitted region stash behind it. SVCall
+       tail-chains ahead of PendSV, so entry in that state is reachable. */
+    mrs     r1, primask
+    cmp     r1, #0
+    bne     .Lsvc_slow
+    ldr     r1, =0xE000ED04         /* SCB->ICSR */
+    ldr     r1, [r1]
+    ldr     r2, =0x10000000         /* PENDSVSET */
+    tst     r1, r2
+    bne     .Lsvc_slow
+    /* The kernel lock IS PRIMASK on v6-M, so masking at the one level there is nests
+       exactly: each IrqLock inside the leaf saves 1, masks, and restores 1. */
+    cpsid   i
+    /* Save the callee block exactly as PendSV does. That block IS the leaf's argument
+       array: args[0] = r4 (the result slot the resuming switch writes), args[1] = r5
+       (endpoint cap), args[2] = r6 (packed lengths), args[3..7] = r7-r11 (the payload).
+       PSP is not moved, so a refusal below leaves the words as dead scratch under the
+       thread's own stack pointer. */
+    subs    r0, #32
+    stmia   r0!, {r4-r7}
+    mov     r4, r8
+    mov     r5, r9
+    mov     r6, r10
+    mov     r7, r11
+    stmia   r0!, {r4-r7}
+    subs    r0, #32                 /* r0 = the block base = args */
+    push    {r0, lr}                /* the frame base and EXC_RETURN, across the bl */
+    bl      kickos_ipc_fastpath
+    pop     {r1, r2}
+    mov     lr, r2                  /* v6-M pop cannot target LR */
+    cmp     r0, #0
+    beq     .Lsvc_fp_refused
+    /* Taken. r0 = the incoming thread's arch_context*, r1 = the outgoing block base. The
+       stacked PC already points past the SVC, so the caller's resume is a plain exception
+       return and the switch that resumes it seats the result (sched.cc switch_book).
+       The physical swap and the region commit are ONE pair, exactly as in the PendSV
+       epilogue: an interrupt between them would resume a thread under another thread's
+       regions. PRIMASK was 0 at entry (refused otherwise), so the cpsie below restores it. */
+    ldr     r2, =g_arch_current
+    ldr     r3, [r2]                /* outgoing ctx* (the caller) */
+    str     r1, [r3]                /* outgoing->sp = this block */
+    str     r0, [r2]                /* g_arch_current = incoming */
+    mrs     r1, control
+    movs    r2, #1
+    ands    r1, r2                  /* the caller's own nPRIV: this path never raised it */
+    str     r1, [r3, #4]
+#if KICKOS_TELEMETRY
+    push    {r2, r3}                /* outgoing ctx*, across the restore below */
+#endif
+    ldr     r1, [r0]                /* incoming block base */
+    adds    r1, #16
+    ldmia   r1!, {r4-r7}            /* r8-r11 values -> r4-r7, r1 -> base+32 */
+    mov     r8, r4
+    mov     r9, r5
+    mov     r10, r6
+    mov     r11, r7
+    msr     psp, r1                 /* PSP = base+32 = the hw frame */
+    ldr     r1, [r0]                /* reload base */
+    ldmia   r1!, {r4-r7}
+    ldr     r1, [r0, #4]            /* incoming npriv */
+    mrs     r2, control
+    movs    r3, #1
+    bics    r2, r3
+    orrs    r2, r1
+    msr     control, r2
+    isb
+#if KICKOS_TELEMETRY
+    /* SWITCH completion hook, as in the PendSV epilogue: a physically swapped pair that
+       emitted nothing would break the decoder's from == previous.to continuity check. The
+       outgoing ctx* is never 0 here, so there is no first-switch case to default. lr is
+       clobbered by the bl but rebuilt below. */
+    pop     {r2, r3}                /* r3 = outgoing ctx* */
+    ldr     r1, [r0, #12]           /* to_tid (incoming.trace_tid) */
+    ldr     r0, [r3, #12]           /* from_tid */
+    bl      kickos_trace_switch_done
+#endif
+    /* Deferred MPU commit for the incoming thread, the same seam and the same reason as
+       the PendSV epilogue: the physical swap is done and the mask is still up. */
+    bl      kickos_arch_mpu_commit
+    cpsie   i                       /* the pair is consumed */
+    ldr     r0, =0xFFFFFFFD         /* EXC_RETURN: thread mode, PSP */
+    mov     lr, r0
+    bx      lr
+.Lsvc_fp_refused:
+    /* The block store above shuffled r8-r11 through r4-r7, so the caller's r4-r7 survive
+       only in the dead words below PSP. The generic path resumes on the register file. */
+    ldmia   r1!, {r4-r7}
+    cpsie   i
+    mrs     r0, psp                 /* PSP never moved; the redirect below wants it back */
+.Lsvc_slow:
+#endif
     ldr     r1, =svc_trampoline
     movs    r2, #1
     bics    r1, r2                  /* stacked PC must be halfword-aligned (bit0=0;
@@ -180,5 +287,60 @@ arch_syscall:
     pop     {r4}                    /* restore r4 + SP (8B aligned again) */
     svc     #0
     bx      lr
+
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+/* ------------------------------------------------------------------------- */
+/* int32_t arch_syscall_reg(uint32_t* io): the register-carrying IPC trap.    */
+/* The hardware frame holds only five words, so the payload rides the CALLEE  */
+/* block instead: io[1..7] load r5-r11, which SVC_Handler stores contiguously */
+/* below the frame for the kernel leaf to read and write. r0 keeps the number */
+/* so a refusal reaching syscall_dispatch still answers on it; r4 is left     */
+/* alone because it is the result slot. On return io[1..5] take back r5-r9.   */
+/* v6-M reaches r8-r11 only through low registers, so both the save and the   */
+/* payload load go via r2/r3 and the reply store comes back the same way.     */
+/* ------------------------------------------------------------------------- */
+    .thumb_func
+    .global arch_syscall_reg
+arch_syscall_reg:
+    push    {r4-r7, lr}
+    mov     r4, r8
+    mov     r5, r9
+    mov     r6, r10
+    mov     r7, r11
+    push    {r0, r4-r7}             /* [sp] = io, then the caller's r8-r11 */
+    adds    r1, r0, #4              /* one walk up io: the 3-in-1 T1 add reaches #4, not #16 */
+    ldmia   r1!, {r5, r6, r7}       /* io[1], io[2], io[3] */
+    ldmia   r1!, {r2, r3}           /* io[4], io[5] */
+    mov     r8, r2
+    mov     r9, r3
+    ldmia   r1!, {r2, r3}           /* io[6], io[7] */
+    mov     r10, r2
+    mov     r11, r3
+    ldr     r0, [r0]                /* nr */
+    /* The two outcomes land at two different addresses, and nothing may run between the
+       SVC and the declined one: svc_trampoline exits to the STACKED LR, not past the SVC,
+       so a wrapper cannot resume in line the way the RISC-V trampoline lets it. The taken
+       path restores the hardware frame and so resumes at the SVC's own return address. */
+    ldr     r1, =.Lreg_declined
+    adds    r1, #1                  /* the trampoline exits with bx: Thumb bit required */
+    mov     lr, r1
+    svc     #0
+    ldr     r1, [sp]                /* taken: r4 = result, r5-r9 = the reply */
+    adds    r1, #4
+    stmia   r1!, {r5, r6, r7}
+    mov     r5, r8
+    mov     r6, r9
+    stmia   r1!, {r5, r6}
+    mov     r0, r4
+.Lreg_declined:                     /* r0 = the generic dispatch's KOS_CALL_REG_FALLBACK */
+    pop     {r1, r4-r7}             /* r1 discards io; r4-r7 carry the caller's r8-r11 */
+    mov     r8, r4
+    mov     r9, r5
+    mov     r10, r6
+    mov     r11, r7
+    pop     {r4-r7}
+    pop     {r1}
+    bx      r1
+#endif
 
     .end
