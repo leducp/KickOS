@@ -150,6 +150,15 @@ elseif(KICKOS_CHIP STREQUAL "imxrt1062")
     LINK kickos_rt1062usb)
   target_include_directories(kickos_services_teensy41_usbcdc PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
+elseif(KICKOS_CHIP STREQUAL "stm32f411")
+  # IRQ-console alternative and the board's ONLY service list, so the default stays
+  # kickos_services_none. The driver is per-chip and blackpill shares it; the window base
+  # and rate are board facts, so they live in this per-board provider.
+  kickos_add_board_provider(services_f411disco_uartirq
+    SOURCE init/f411disco/service_list_uartirq.cc
+    LINK kickos_f4uartirq)
+  target_include_directories(kickos_services_f411disco_uartirq PRIVATE
+    "${PROJECT_SOURCE_DIR}/user/include")
 endif()
 # Not the sim default: the ordinary sim gate must keep covering the pre-publish route.
 # Unlike the pure-data providers above it calls kos_*, so it needs user/include.
