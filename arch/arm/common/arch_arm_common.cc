@@ -75,7 +75,18 @@ int arch_in_isr(void)
     __asm volatile("mrs %0, ipsr" : "=r"(ipsr));
     // 9-bit exception-number mask (v7-M IPSR width). Correct on v6-M too: a
     // v6-M IPSR never exceeds 0x3F, so the wider mask yields the same result.
-    return (ipsr & 0x1FF) != 0;
+    uint32_t const exc = ipsr & 0x1FFu;
+    // 11 is SVCall. This predicate is asked whether a switch requested here would DEFER,
+    // and inside the syscall trap it would not: the trap runs on behalf of the thread that
+    // issued the SVC, and the IPC fastpath blocks and performs the switch there. Ungated by
+    // the fastpath because no backend runs any C at all in SVCall without one, so no reader
+    // can observe the difference, and a predicate that answered differently per build knob
+    // would be a second truth.
+    if (exc == 11u)
+    {
+        return 0;
+    }
+    return exc != 0;
 }
 
 uint32_t arch_cpu_clock_hz(void)

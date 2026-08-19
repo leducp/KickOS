@@ -459,6 +459,17 @@ add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 # plain set is what it reads. There is no -D: the value must be the one the backend's trap
 # implements, so a board can neither ask for a fastpath its arch lacks nor drop the one it
 # has.
+#
+# THE 0 ARM IS PERMANENT, AND NAMES EXACTLY TWO ARCHES: sim and xtensa/lx6. Neither has a
+# syscall TRAP at all, so there is no seam to take: arch_syscall is a direct call to
+# syscall_dispatch on both, and what the fastpath removes (exception entry, the
+# privileged-thread trampoline, and the deferred switch back) is machinery they never
+# execute. Thread::call_frame_parked has no meaning where the caller's continuation is a C
+# return address on its own stack rather than a saved register frame, so it is
+# unimplementable on either rather than merely unwritten. Every arch that DOES trap now
+# carries the file. So this knob is not a migration in progress and the 0 arm is not
+# waiting for anyone: it is the two-arch statement above, and the seven #if sites it gates
+# shrink to those two rather than going away.
 set(KICKOS_ARCH_HAS_IPC_FASTPATH 0)
 set(_ipc_fastpath_optin
   "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/ipc_fastpath.cmake")

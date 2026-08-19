@@ -812,34 +812,177 @@ two arms now close different phases, and `endpoint_recv` gained the same treatme
 19, 9 and 6 for the three locked legs and 42 for the whole round trip, each confirmed by an `n`
 column rather than asserted.
 
-## 5. MEASURED: the fastpath works, and section 4.4's budget was wrong
+## 5. MEASURED: what the saving is, and what it tracks
 
-Built for rv32imac and measured on `esp32c6-wroom`, same tree, same board, one image per arm and
-a build-time knob between them. Both captures reproduced byte-for-byte across independent flash
-cycles. **The numbers below stand; the method that produced them is gone.**
-`KICKOS_ARCH_HAS_IPC_FASTPATH` is now the arch backend's own declaration
-(`arch/riscv/rv32imac/ipc_fastpath.cmake`) and takes no `-D` in either direction. A repeat
-capture uses ONE image: the caller-side selection is size only and the kernel's refusal falls
-through at runtime, so `kos_call_generic` reaches the generic path from userspace, and
-`user/apps/common/bench` runs both arms over the spans the register form can carry.
+Five ISAs span **177 to 476 cycles** (2.7x) and **3.8 to 7.9 percent** of a round trip
+(2.1x). The percentage is the tighter column and the one that transfers between clocks,
+but it is not constant, and section 4.4 could not have guessed either.
 
-| payload | fastpath off | fastpath on | apparent delta |
-|---|---|---|---|
-| **8 B** | 55586 ns | **46998 ns** | -8588 ns (-1374 cycles) |
-| **16 B** | 56581 ns | **48344 ns** | -8237 ns (-1318 cycles) |
-| 32 B and above | unchanged | +175 ns | buffer form, not taken |
+**What the spread tracks is how much register state the trap had already stacked before
+the fastpath got there.** armv7m and rv32imac arrive with a block the shared leaf can point
+into. RX's `INT` stacks only PC and PSW on the ISP, so the rxv3 arm builds the whole switch
+frame itself, `pushm r1-r14` plus FPSW, the accumulators and 140 bytes of DPFPU bank, before
+it can call the leaf. That work is relocated rather than removed, and rxv3 sits below every
+other row on both columns. The M33 stacks eight words in hardware and keeps the most. Read
+5.0 for the number and 5.0.1 for the superseded first attempt at it, which is kept because the way
+it was wrong is instructive.
 
-**The apparent delta lies, and correcting it is the point of section 4.10.** Both arms carry the
-bench instrument, and the fastpath executes none of the call-side brackets. The instrument's own `n`
-columns say how many: bracket executions fell by 760000 over 40000 fastpath calls, which is
-**exactly 19.00 brackets per round trip** -- an integer, which is how the accounting is known to have
-closed. At this board's calibrated 46.5 to 50 cycles per bracket that is 880 to 950 cycles of pure
-instrument inside the apparent gain.
+### 5.0 The cross-ISA table
 
-**Corrected: about 425 to 490 cycles, 6 to 7 percent end to end.** Two independent cross-checks
-license the correction: the corrected off-side baseline lands at 6872 to 7014 cycles, inside the
-6830 to 6940 that section 3.0.4 derived a completely different way; and the phase `n` columns
-reconcile to the exact number of sub-20-byte calls.
+**One binary, one run, both arms, no instrument.** The caller-side selection is size only and the
+kernel's refusal falls through at runtime, so `kos_call_generic` reaches the generic path from
+userspace and `user/apps/common/bench` sweeps every payload twice in a single image. Built OUTSIDE
+a `KICKOS_BENCH` build, so neither arm carries a bracket and section 4.10's correction does not
+apply to anything below. `KICKOS_ARCH_HAS_IPC_FASTPATH` is the arch backend's own declaration
+(`arch/<family>/<arch>/ipc_fastpath.cmake`) and takes no `-D` in either direction, so both arms are
+the same image by construction rather than by discipline.
+
+| board | ISA | clock | payload | saving, cycles | as % of the generic round trip |
+|---|---|---|---|---:|---:|
+| `xmc4800-relax` | armv7m M4 | 144 MHz | 8 B | **357** | **6.2%** |
+| `esp32c6-wroom` | rv32imac | 160 MHz | 8 B | **348** | **5.3%** |
+| `teensy41` | armv7m M7 | 396 MHz | 16 B | **264 to 284** | **5.3 to 5.7%** |
+| `pizero2350` | armv7m M33 | 150 MHz | 16 B | **466 to 476** | **7.7 to 7.9%** |
+| `rx72m` | rxv3 | 240 MHz | 8 B | **208** | **4.6%** |
+| `rx72m` | rxv3 | 240 MHz | 16 B | **177** | **3.8%** |
+
+`teensy41` in full, since it is the row this page took directly: 12513 ns generic against 11803 ns
+register, a 710 ns saving, at a core clock of 396 MHz that the chip backend derives from the boot
+ROM's CCM tree rather than the part's 600 MHz rating (`chip_imxrt1062.cc`, RM Table 9-7).
+
+**That row is a BAND and the width of it is the useful part.** Fourteen captures give 666 to 718 ns.
+Two things move inside it and neither is random noise. Captures taken close together agree to a few
+nanoseconds on every row while consecutive ones across a session climb monotonically (11800, 11821,
+11836, 11887 ns at 16 B over four alternating flash cycles), which is a warm-up signature: take a
+board's captures back to back or not at all. And the bench app's OWN code changes the figure. The
+same board, same kernel, reads 671 to 718 ns (mean 706) with the app printing through `kos_print` and
+666 to 700 ns (mean 676) with it printing through `kickos::emit`, a shift of about 4 percent that is
+the same size as the run-to-run spread and not separable from it at this sample count. The prints sit
+outside every timed span, so what moved is code layout in the app, not work inside the measurement.
+
+**The control is what says the change did not break anything**: it reads +68.4 ns averaged over the
+`kos_print` captures and +66.1 over the `kickos::emit` ones, unchanged inside its own spread, and it
+is flat within every single capture (63, 63, 63, 64 in one; 69, 65, 69, 69 in another). A bench edit
+that had perturbed the measurement rather than merely relocated it would have shown up there first.
+
+The `xmc4800-relax` and `esp32c6-wroom` rows predate the `kickos::emit` change, so a strict
+three-board comparison wants them re-taken on the shipped app. The percentages are what survive
+either way, which is this section's whole point.
+
+**`pizero2350` widens the claim rather than confirming it.** Four cores now span 264 to 476 cycles,
+a factor of 1.8, against 5.3 to 7.9 percent, a factor of 1.5. So the percentage is still the more
+portable of the two and the section heading stands, but "a portable 5 to 6 percent" was the reading
+of three boards and the honest range is **5 to 8**. The M33 sits at the top of both columns and the
+shape is consistent: it is the slowest core here per unit work, its generic round trip is 6061
+cycles, and it removes the most cycles doing it. Three captures, tree `06b0bed9`, `kickos_services_none`
+on the UART1 pin console, 8 B reads 8.4 to 8.7 percent and 16 B is quoted because it is the payload
+the other rows can be read against.
+
+**Its wall-clock figures are corrected by 4x and the reason is a chip defect this capture found.**
+`arch_clock_now` on rp2350 reads TIMER0 and multiplies by 1000, which assumes the TICKS TIMER0
+generator produces a 1 MHz tick. It does not. Read off the silicon: `CLK_REF_DIV` is `0x00040000`,
+so clk_ref is XOSC/4 = 3 MHz rather than the 12 MHz every comment in `chip_rp2350.cc` assumes, and
+with `TIMER0_CYCLES` = 12 the tick is 250 kHz. The backend never writes `CLK_REF_DIV`, whose reset
+value differs from the RP2040's. **Every wall-clock reading on this board is therefore 4x short**,
+which reaches sleeps, timeouts and telemetry timestamps and not only this bench. Measured two ways
+that agree: the host clock says a sweep the board reports as 3.108 s takes 12.487 s, a ratio of
+4.02 over a whole run; and the register arithmetic gives exactly 4. The corrections reconcile
+everything else, which is the check that the factor is real. A 16 B generic round trip becomes
+6061 cycles, joining 5508 on `xmc4800-relax` enforcing and about 6560 on `esp32c6-wroom`; the
+context switch becomes 1632 cycles against the M7's 1998; the copy slope becomes 14 cycles per byte
+against 18 on the M4 and 8 on the M7; and the control becomes 20 cycles against 23, 27 and 53.
+Uncorrected, all four were absurd. **The percentage column needs none of this**, because both arms
+are timed by the same clock, which is why it is the column to trust.
+
+Its control is the weakest of the four rows and is reported rather than smoothed. Two of the three
+captures are acceptable (+31, +45, +35, +29 and +33, +45, +23, +30 reported, so about 20 cycles
+corrected, the right magnitude for the stub's two size compares); the third carries one bad point,
++50, +44, +24, **-82**, a sign flip at the largest payload. Against `teensy41`'s 63, 63, 63, 64 that
+is an order of magnitude looser. The cause is not timer quantisation, which is 0.2 ns per iteration
+over a 20000-call step. Treat the M33 row as sound to about a cycle in twenty and not better.
+
+### 5.0.0 Which arches have it, and the two that never will
+
+Four backends take the seam: `rv32imac`, `armv7m` (which is also the M33 boards' arch), `armv6m` and
+`rxv3`. Each declares it by shipping `ipc_fastpath.cmake` beside its `switch.S`, so the capability
+is the backend's own statement and no name list can drift from it.
+
+**`sim` and `xtensa/lx6` refuse it permanently, and that is a property of the shape rather than a
+port left undone.** Neither has a syscall trap at all: `arch_syscall` is a direct call to
+`syscall_dispatch` on both. The fastpath's whole saving is the exception entry, the
+privileged-thread trampoline and the deferred switch back, and those two arches execute none of the
+three, so a fastpath there would be the generic path wearing another name. `Thread::call_frame_parked`
+also has no meaning where a caller's continuation is a return address on its own stack rather than a
+saved register frame the reply can land in. So the 0 arm of the knob names exactly those two, for
+good, and the `#if` sites it gates shrink to them rather than going away.
+
+The three trap backends differ in how much frame surgery the seam costs, and RX is the interesting
+one. On ARM and RISC-V the trap already saves a register block the leaf's `args` can point into. RX
+saves no GPR at all and traps onto the ISP, so its arm BUILDS the switch frame on the caller's USP
+first and hands the leaf the R1 slot inside it. That sounds like the expensive case and is not: only
+a `KOS_SYS_CALL_REG` trap reaches the build, every other syscall pays one `cmp`, and a refusal pops
+the frame back with nothing committed. RX also needs no second return address, where both ARM
+backends do: `RTE` lands after the `INT` whether the trap took the fastpath or the trampoline ran the
+generic dispatch, so there is no declined-path label to arrange.
+
+### 5.0.1 SUPERSEDED: the two-image measurement, and why it read high
+
+The first pass built one image per arm with a build-time knob between them, measured on
+`esp32c6-wroom`, and corrected for the instrument afterwards. It landed on **425 to 490 cycles, 6 to
+7 percent**. The direct one-binary reading above is **348 cycles, 5.3 percent**, so the corrected
+range was high by roughly a fifth to two fifths. Kept because the correction was honest work and
+because the residual error is the point: both arms carried the bench instrument, the fastpath
+executed none of the call-side brackets, and the `n` columns priced the difference at exactly 19.00
+brackets per round trip, an integer, which is how the accounting was known to have closed. The
+correction was arithmetically sound and still landed a fifth high, because 46.5 to 50 cycles per
+bracket is itself a calibration and 19 of them multiply its error. **An instrument you must
+subtract is worse than one you can leave out**, which is the argument section 6 makes on other
+grounds.
+
+### 5.0.2 A bench capture needs a console with no resident driver
+
+`user/apps/common/bench` writes through `kickos::emit`, so its lines survive a published userspace
+console instead of being dropped at the kernel console (`sys/emit.h`). **That fixes the reporting and
+does not make such a capture VALID.** A console driver is a thread and its device is an interrupt
+source, and both compete with the two bench peers for exactly the window the sweep times.
+
+Measured twice rather than argued. On `pizero2350` over its own USB CDC the sweep completes and
+prints, and its above-budget control, which is a fixed handful of stub instructions and must be one
+constant, reads **+4, +10, +30, +36, +44, +54, +65, +109 ns** across three captures. On `teensy41`
+over USB CDC the same experiment is unmissable: the round trip goes from 12 us to **330 to 550 us**,
+several payload steps report the two arms IDENTICAL to the nanosecond, and at 16 B the register arm
+comes out 60 percent SLOWER than the generic one. A number whose control is not flat is not a
+result, so neither board yields an M33 or a cache-off M7 figure here.
+
+So the three rows in 5.0 were all taken with `kickos_services_none` on a polled pin UART, and any
+board added to that table has to be. `boards/*/configs/bench/defconfig` pins the empty service list
+for this reason, which is a stronger reason than the one those files used to give.
+
+**A faster core saves FEWER CYCLES for the same fraction of the round trip.** The M7 runs at 2.75x
+the M4's clock with caches and tightly-coupled memory, and it removes 281 cycles where the M4
+removes 357, because the path the fastpath deletes is the same instructions on both, and the M7
+executes them in fewer cycles. What survives the change of silicon is the ratio: 5.3 to 6.2 percent
+across three cores of two ISAs at three clocks. **So the fastpath is worth a fixed fraction of a
+round trip and quoting it as a cycle count invites exactly the porting error section 5.1 describes.**
+
+The M7 is quoted at 16 B rather than 8 B, and the reason is a measurement fact rather than a
+preference: its 8 B row is the first step of the sweep and lands in one of TWO deterministic states
+across flash cycles, 11706/12362 ns or 19788/39749 ns, byte-for-byte repeatable in either. Every
+other row, on both trees it was captured on, is byte-for-byte identical between the two states. So
+the first step of this sweep is perturbed by something that has not been identified, the rows after
+it are not, and 16 B is the first trustworthy one. **It is this BOARD and not the sweep**: three
+clean `pizero2350` captures running the same app put 8 B below 16 B on both arms, as an ordinary
+payload sweep should, and the artefact never appeared in any of the six `kickos::emit` captures on
+`teensy41` either. `xmc4800-relax` and `esp32c6-wroom` were read at
+8 B before this was known; whether their first step carries the same artefact is untested.
+
+**The control that makes the table readable.** Above `KOS_CALL_REG_BYTES` (20) both arms issue the
+same trap and do the same work, so they must differ by a CONSTANT and a payload-dependent
+difference there would mean the method is broken. On `teensy41` the register arm costs
+**+69 ns (+27 cycles)**, flat within +65 to +76 over 32, 64, 128 and 256 B and over six captures,
+while the round trip itself grows 4500 ns across that span. It is the stub's two size compares,
+which section 5.3 priced independently at +28 cycles on rv32imac: two ISAs agreeing to one cycle on
+a constant nobody tuned.
 
 ### 5.1 Section 4.4 predicted ~1730 cycles attackable. We got about a quarter of it.
 
@@ -885,8 +1028,9 @@ a switch that is a stack-pointer swap plus a deferred protection commit.
 The fastpath and the buffer form answer IDENTICALLY by construction, so the existing suite passing
 was not evidence the fastpath was ever taken. A dedicated arm now forces it: the server XORs its
 reply rather than echoing it, so a byte-identical answer cannot pass by accident, and the assertion
-was proven to bite by a negative control. `sim` 241, `qemu` armv7m 41, `qemu-riscv` 35, zero
-failures; the selftest plan moves 104 to 105.
+was proven to bite by a negative control. It asserts a counter delta of exactly 1, so it is also
+what witnesses each new backend: `call_reg_fastpath` passing on `microbit` is how armv6m is known to
+take the seam on real Cortex-M0 dispatch rather than merely to compile.
 
 ## 6. The instrument is too heavy at the source level, and that is a decision not a complaint
 

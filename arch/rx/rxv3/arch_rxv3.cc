@@ -290,6 +290,23 @@ void arch_context_init(struct arch_context* ctx,
     ctx->sp = reinterpret_cast<uint32_t>(sp);
 }
 
+#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
+// The fastpath parks a caller on the frame the trap built for it, with no kernel
+// continuation, so the result has to be seated where the restore reloads R1 from. R1 is
+// the register the RX psABI answers in, and its slot sits above the DPFPU bank and the
+// accumulators; switch.S spells the same offset as FRAME_R1_OFF.
+#if defined(__RX_DFPU_INSNS__)
+constexpr uint32_t FRAME_R1_OFF = 168;
+#else
+constexpr uint32_t FRAME_R1_OFF = 28;
+#endif
+
+void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
+{
+    reinterpret_cast<uint32_t*>(ctx->sp + FRAME_R1_OFF)[0] = result;
+}
+#endif
+
 // The whole seam on this backend: the fabricated frame's PSW word is PSW_THREAD_KERNEL,
 // which the RTE pops. The MPU_MPECLR latch arch_fault_redirect_to_exit clears is global
 // and belongs to a fault, so a rebuild must not touch it.

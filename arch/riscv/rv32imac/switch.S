@@ -292,6 +292,14 @@ trap_entry:
     sw      sp, 0(t2)               /* outgoing->sp = this frame */
     sw      a0, 0(t1)               /* g_arch_current = incoming */
     lw      sp, 0(a0)               /* sp = incoming->sp */
+#if KICKOS_TELEMETRY
+    /* SWITCH completion hook, as in .Lswitch: a physically swapped pair that emitted
+       nothing would break the decoder's from == previous.to continuity check. The outgoing
+       ctx* is never 0 here, so there is no first-switch case to default. */
+    lw      a1, 4(a0)               /* to_tid = incoming->trace_tid */
+    lw      a0, 4(t2)               /* from_tid = outgoing->trace_tid */
+    call    kickos_trace_switch_done
+#endif
     /* Deferred PMP commit for the incoming thread, the same seam and the same reason as
        .Lswitch: the physical swap is complete and MIE is still 0. */
     call    kickos_arch_mpu_commit

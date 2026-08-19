@@ -705,6 +705,14 @@ void arch_idle_wait(void)
 
 // --- Syscall: a plain call, since there is no CPU ring split and so no trap ---
 // A blocking syscall blocks by an ordinary synchronous arch_switch.
+//
+// So this backend ships no ipc_fastpath.cmake, and that is a property of the silicon
+// rather than a port left undone. The trap-handler IPC fastpath exists to skip an
+// exception entry, a privileged-thread trampoline and a deferred switch back; none of the
+// three happens below, where the dispatch is a call the caller makes itself. There is also
+// no saved register frame for the reply to land in and no return address to redirect, so
+// Thread::call_frame_parked cannot be given a meaning here. A fastpath on this arch would
+// be the generic path wearing another name.
 uint64_t arch_syscall64(uintptr_t nr,
                         uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
 {

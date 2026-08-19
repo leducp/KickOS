@@ -15,14 +15,20 @@
 // .data and core peripherals, and root is unprivileged on every board except the LX6, which
 // has no privilege ring.
 //
-// The KERNEL prints the switch line and the phase table, so this app must run with the
-// kernel console, which the `bench` config variant pins with kickos_services_none.
+// The app's own lines go through kickos::emit, which reaches a published console driver
+// over IPC and falls back to the kernel console when index 0 is empty. kos_print alone
+// would be dropped outright once a service list publishes the UART (sys/emit.h).
+//
+// What emit CANNOT rescue is the switch line and the phase table: the KERNEL prints those
+// from inside kos_bench, straight at the kernel console. So an instrumented run still
+// wants kickos_services_none, which the `bench` config variant pins.
 //
 // The reporter is woken by the workload, not by a timer. Telemetry OFF for clean numbers.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/atomic.h>
+#include <kickos/sys/emit.h>
 #include <kickos/libc/fmt.h>
 
 namespace
@@ -135,7 +141,7 @@ namespace
                       static_cast<unsigned>(sw_per_s), static_cast<unsigned>(ns_per_sw),
                       static_cast<unsigned>(switches),
                       static_cast<unsigned>(d_ns / 1000000ull));
-            kos::print(s);
+            kickos::emit(s);
 
             // Cycles only where switch.S bracketed them. The kernel writes the switch
             // line itself and hands back the sample count.
@@ -176,7 +182,7 @@ namespace
                       static_cast<unsigned>(imax), static_cast<unsigned>(to_ns(imin, hz)),
                       static_cast<unsigned>(to_ns(iavg, hz)),
                       static_cast<unsigned>(to_ns(imax, hz)), static_cast<unsigned>(icnt));
-            kos::print(s);
+            kickos::emit(s);
 
             // Worst-case inject->entry: the line is raised at the START of a masked span
             // of the given size (0 = fixed cost; 256 = endpoint-copy max). A frozen counter
@@ -210,7 +216,7 @@ namespace
                           static_cast<unsigned>(to_ns(wmin, hz)),
                           static_cast<unsigned>(to_ns(wavg, hz)),
                           static_cast<unsigned>(to_ns(wmax, hz)), static_cast<unsigned>(wcnt));
-                kos::print(s);
+                kickos::emit(s);
             }
 
             // AFTER the report, so the next window excludes this report's own
@@ -321,7 +327,7 @@ namespace
                 static_cast<unsigned>(len), static_cast<unsigned>(ns_per_rt),
                 static_cast<unsigned>(rt_per_s), static_cast<unsigned>(CALLREPLY_REPS),
                 static_cast<unsigned>(d_ns / 1000000ull), path, shape);
-            kos::print(s);
+            kickos::emit(s);
         }
         kos_sem_post(2);
     }
@@ -342,7 +348,7 @@ namespace
         kos_cap_t ep = KOS_CAP_NONE;
         if (kos_endpoint_create(&ep) != 0)
         {
-            kos::print("  call/reply: SKIP (no endpoint)\n");
+            kickos::emit("  call/reply: SKIP (no endpoint)\n");
             return;
         }
         kos::Semaphore done(0);
@@ -366,7 +372,7 @@ namespace
             {
                 done.wait();
             }
-            kos::print("  call/reply: SKIP (thread pool too small)\n");
+            kickos::emit("  call/reply: SKIP (thread pool too small)\n");
             return;
         }
         done.wait(); // caller finished + printed
@@ -384,15 +390,15 @@ namespace
 
 int main(int, char**)
 {
-    kos::print("microbenchmark: context-switch throughput (all arches) + per-switch cost\n");
-    kos::print("+ IRQ-entry latency where a cycle counter exists. Reporter woken by the\n");
-    kos::print("workload, not a timer. Telemetry OFF for clean numbers.\n");
+    kickos::emit("microbenchmark: context-switch throughput (all arches) + per-switch cost\n");
+    kickos::emit("+ IRQ-entry latency where a cycle counter exists. Reporter woken by the\n");
+    kickos::emit("workload, not a timer. Telemetry OFF for clean numbers.\n");
 
     uint32_t const hz = bench_u32(KOS_BENCH_OP_CORE_HZ, 0, 0);
     char hzline[80];
     ksnprintf(hzline, sizeof(hzline), "core clock: %u Hz (0 = the chip backend does not say)\n\n",
               static_cast<unsigned>(hz));
-    kos::print(hzline);
+    kickos::emit(hzline);
 
     (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0); // the phase table below covers the sweep only
 
@@ -417,7 +423,7 @@ int main(int, char**)
     // Read the phase table's donate row against the equal-priority rows above.
     measure_callreply(CR_DONATE_SPAN, CR_PRIO + 1u, CR_PRIO, 0);
     (void)kos_bench(KOS_BENCH_OP_PHASE_PRINT, 0, 0); // the kernel writes the table
-    kos::print("\n");
+    kickos::emit("\n");
 
     kos::Semaphore a(0), b(0), gate(0);
     g_a = &a;
@@ -434,11 +440,11 @@ int main(int, char**)
     {
         // Do not park here: on a bootloader-handover board a parked app costs a physical
         // button press, which the bounded reporter exists to avoid.
-        kos::print("bench: FAILED to spawn players (thread pool too small?)\n");
+        kickos::emit("bench: FAILED to spawn players (thread pool too small?)\n");
         return 1;
     }
 
     reporter_loop(hz);
-    kos::print("bench: done\n");
+    kickos::emit("bench: done\n");
     return 0;
 }

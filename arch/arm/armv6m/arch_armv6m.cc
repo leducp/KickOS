@@ -104,6 +104,18 @@ void arch_context_init(struct arch_context* ctx,
 }
 
 // The whole seam on this backend: the fabricated first frame already lands at the stack
+#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
+// The fastpath parks a caller on its own trap frame with no kernel continuation, so the
+// result has to be seated where the restore reloads r4 from. ctx->sp is the base of the
+// {r4-r11} block and the thread is not running, so this is a plain store to memory
+// nothing else holds. r4 is the register the trap's own ABI answers in (arch_syscall_reg
+// in switch.S), not the AAPCS r0.
+void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
+{
+    reinterpret_cast<uint32_t*>(ctx->sp)[0] = result;
+}
+#endif
+
 // top with CONTROL.nPRIV expressing privilege, so a rebuild is that same fabrication.
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)

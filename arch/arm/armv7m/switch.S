@@ -7,6 +7,8 @@
  *      THREAD mode, so a blocking syscall is an ordinary synchronous PendSV switch
  *      resumed inline (arch.h arch_syscall contract).
  *   3. arch_start / arch_syscall: first-thread entry and the user-side trap.
+ *   4. The IPC fastpath seam inside SVC_Handler, and arch_syscall_reg, which carries
+ *      its payload in the callee block because the hardware frame is only five words.
  *
  * Saved-frame layout (must match arch_context_init in arch_armv7m.cc), low->high
  * address on the thread's PSP:
@@ -142,6 +144,107 @@ PendSV_Handler:
     .global SVC_Handler
 SVC_Handler:
     mrs     r0, psp                 /* r0 -> user hardware frame */
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+    /* THE SEAM. KOS_SYS_CALL_REG completes here, before the exception return that would
+       otherwise land in svc_trampoline and run the generic dispatch. The leaf decides
+       before it mutates, so a null return means nothing was committed and the
+       fall-through below is today's path exactly. */
+    ldr     r1, [r0]                /* the stacked r0 is the syscall number */
+    cmp     r1, #56                 /* KOS_SYS_CALL_REG (sys/abi.h) */
+    bne     .Lsvc_slow
+    /* Two refusals the leaf cannot see, both about the trap rather than the IPC.
+       A mask already raised would have to be reinstated on a thread that carries none,
+       and a pended PendSV means kernel().current has already moved off the thread whose
+       registers are live here, with an uncommitted region stash behind it. SVCall (0xE0)
+       tail-chains ahead of PendSV (0xF0), so entry in that state is reachable. */
+    mrs     r1, primask
+    mrs     r2, basepri
+    orrs    r1, r1, r2
+    bne     .Lsvc_slow
+    ldr     r1, =0xE000ED04         /* SCB->ICSR */
+    ldr     r1, [r1]
+    tst     r1, #0x10000000         /* PENDSVSET */
+    bne     .Lsvc_slow
+    /* BASEPRI at the kernel-lock level, not PRIMASK: arch_irq_save takes its nested fast
+       path at exactly this value, so the IrqLocks inside the leaf neither raise nor DROP
+       the mask. A PRIMASK-only bracket would have the first of them restore BASEPRI to 0
+       and unmask the rest of the leaf. */
+    mov     r1, #0x20               /* PRIO_LOCK_BASEPRI (regs.h) */
+    msr     basepri, r1
+    dsb
+    isb
+    /* Save the callee block exactly as PendSV does. That block IS the leaf's argument
+       array, because stmdb seats r4 lowest: args[0] = r4 (the result slot the resuming
+       switch writes), args[1] = r5 (endpoint cap), args[2] = r6 (packed lengths),
+       args[3..7] = r7-r11 (the payload). PSP is not moved, so a refusal below leaves the
+       words as dead scratch under the thread's own stack pointer. */
+#if defined(__ARM_FP)
+    tst     lr, #0x10               /* EXC_RETURN bit4 == 0 => FP frame active */
+    it      eq
+    vstmdbeq r0!, {s16-s31}
+#endif
+    stmdb   r0!, {r4-r11, lr}
+    push    {r0, lr}                /* the frame base and EXC_RETURN, across the bl */
+    bl      kickos_ipc_fastpath
+    pop     {r1, lr}
+    cmp     r0, #0
+    beq     .Lsvc_fp_refused
+    /* Taken. r0 = the incoming thread's arch_context*, r1 = the outgoing frame base. The
+       stacked PC already points past the SVC, so the caller's resume is a plain exception
+       return and the switch that resumes it seats the result (sched.cc switch_book). */
+    /* The physical swap and the region commit are ONE pair, exactly as in the PendSV
+       epilogue: an interrupt between them would resume a thread under another thread's
+       regions. PRIMASK was 0 at entry (refused otherwise), so the cpsie below restores it. */
+    cpsid   i
+    ldr     r2, =g_arch_current
+    ldr     r3, [r2]                /* outgoing ctx* (the caller) */
+    str     r1, [r3]                /* outgoing->sp = this frame */
+    mrs     r1, control
+    and     r1, r1, #1              /* the caller's own nPRIV: this path never raised it */
+    str     r1, [r3, #4]
+    str     r0, [r2]                /* g_arch_current = incoming */
+    ldr     r1, [r0]                /* incoming->sp */
+#if KICKOS_TELEMETRY
+    push    {r3, r12}               /* outgoing ctx*, across the CONTROL write below */
+#endif
+    ldmia   r1!, {r4-r11, lr}
+#if defined(__ARM_FP)
+    tst     lr, #0x10
+    it      eq
+    vldmiaeq r1!, {s16-s31}
+#endif
+    msr     psp, r1
+    ldr     r2, [r0, #4]            /* incoming->npriv */
+    mrs     r3, control
+    bfi     r3, r2, #0, #1
+    msr     control, r3
+    isb
+#if KICKOS_TELEMETRY
+    /* SWITCH completion hook, as in the PendSV epilogue: a physically swapped pair that
+       emitted nothing would break the decoder's from == previous.to continuity check. The
+       outgoing ctx* is never 0 here, so there is no first-switch case to default. */
+    pop     {r2, r12}               /* r2 = outgoing ctx* */
+    ldr     r1, [r0, #12]           /* to_tid (incoming.trace_tid) */
+    ldr     r0, [r2, #12]           /* from_tid */
+    push    {r0, lr}                /* save EXC_RETURN; r0 pad keeps MSP 8-byte aligned */
+    bl      kickos_trace_switch_done
+    pop     {r0, lr}
+#endif
+    /* Deferred MPU commit for the incoming thread, the same seam and the same reason as
+       the PendSV epilogue: the physical swap is done and the mask is still up. */
+    push    {r0, lr}
+    bl      kickos_arch_mpu_commit
+    pop     {r0, lr}
+    cpsie   i                       /* the pair is consumed */
+    mov     r1, #0
+    msr     basepri, r1             /* never resume a thread under the kernel lock */
+    bx      lr
+.Lsvc_fp_refused:
+    mov     r1, #0
+    msr     basepri, r1
+    mrs     r0, psp                 /* PSP never moved; the redirect below wants it back */
+.Lsvc_slow:
+#endif
     ldr     r1, =svc_trampoline
     bic     r1, r1, #1              /* stacked PC must be halfword-aligned (bit0=0;
                                        the T-bit comes from the stacked xPSR) */
@@ -219,5 +322,38 @@ arch_syscall:
     ldr     r12, [sp]               /* a3 (5th arg) -> stacked r12 */
     svc     #0
     bx      lr
+
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+/* ------------------------------------------------------------------------- */
+/* int32_t arch_syscall_reg(uint32_t* io): the register-carrying IPC trap.    */
+/* The hardware frame holds only five words, so the payload rides the CALLEE  */
+/* block instead: io[1..7] load r5-r11, which SVC_Handler pushes contiguously */
+/* below the frame for the kernel leaf to read and write. r0 keeps the number */
+/* so a refusal reaching syscall_dispatch still answers on it. On return      */
+/* io[1..5] take back r5-r9 (the reply) and r4 is the result.                 */
+/* ------------------------------------------------------------------------- */
+    .thumb_func
+    .global arch_syscall_reg
+arch_syscall_reg:
+    push    {r3-r11, lr}            /* the r3 slot holds `io` across the trap */
+    str     r0, [sp]
+    adds    r1, r0, #4
+    ldr     r0, [r0]                /* nr */
+    ldm     r1, {r5-r11}
+    /* The two outcomes land at two different addresses, and nothing may run between the
+       SVC and the declined one: svc_trampoline exits to the STACKED LR, not past the SVC,
+       so a wrapper cannot resume in line the way the RISC-V trampoline lets it. The taken
+       path restores the hardware frame and so resumes at the SVC's own return address. */
+    adr     r1, .Lreg_declined
+    orr     r1, r1, #1              /* the trampoline exits with bx: Thumb bit required */
+    mov     lr, r1
+    svc     #0
+    ldr     r3, [sp]                /* taken: r4 = result, r5-r9 = the reply */
+    adds    r2, r3, #4
+    stmia   r2, {r5-r9}
+    mov     r0, r4
+.Lreg_declined:                     /* r0 = the generic dispatch's KOS_CALL_REG_FALLBACK */
+    pop     {r3-r11, pc}
+#endif
 
     .end

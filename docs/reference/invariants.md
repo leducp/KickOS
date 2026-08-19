@@ -86,9 +86,9 @@
   - *applies:* capability teardown, scheduler core; every arch
   - *source:* kernel/syscall/cap.cc (cap_teardown's chunk loop, obj_close_protocol's wake sites); kernel/include/kickos/cap.h (the cap_teardown declaration); kernel/sync/sync.cc (mutex_force_unlock); tests/unit/schedwake/wake_dying.cc (the chunk-boundary resume arm)
 
-- **`arch-in-isr-truth`** -- arch_in_isr() must read true in ISR/handler context and false throughout syscall_dispatch and ordinary thread context. RX has no IPSR: its g_in_isr counter is bumped ONLY by the device-IRQ/timer first-level dispatchers, never by the syscall INT path, so dispatch reads false as the contract requires.
-  - *applies:* deferred-switch model, syscall contract; all arches (rx software counter)
-  - *source:* arch/include/kickos/arch/arch.h (arch_in_isr, and the arch_syscall dispatch contract); arch/rx/rxv3/arch_rxv3.cc (g_in_isr, arch_in_isr, and the first-level dispatchers that bump it -- kickos_rx_timer_isr / kickos_rx_default_irq / kickos_rx_swint2); arch/arm/common/arch_arm_common.cc (arch_in_isr's IPSR read)
+- **`arch-in-isr-truth`** -- arch_in_isr() must read true in ISR/handler context and false throughout syscall_dispatch and ordinary thread context. RX has no IPSR: its g_in_isr counter is bumped ONLY by the device-IRQ/timer first-level dispatchers, never by the syscall INT path, so dispatch reads false as the contract requires. **The SYSCALL TRAP is not ISR context for this purpose on any arch**, because the trap-handler IPC fastpath blocks and performs its own switch there: rv32imac and rxv3 satisfy that by not bumping their software counter on the trap path, and ARM by reading exception 11 (SVCall) as thread context.
+  - *applies:* deferred-switch model, syscall contract, IPC fastpath; all arches (rx software counter)
+  - *source:* arch/include/kickos/arch/arch.h (arch_in_isr, and the arch_syscall dispatch contract); arch/rx/rxv3/arch_rxv3.cc (g_in_isr, arch_in_isr, and the first-level dispatchers that bump it -- kickos_rx_timer_isr / kickos_rx_default_irq / kickos_rx_swint2); arch/arm/common/arch_arm_common.cc (arch_in_isr's IPSR read and its SVCall carve-out); kernel/syscall/syscall_ipc_fast.cc (the leaf that parks from inside the trap)
 
 ## Syscall, privilege & the user/kernel boundary
 
