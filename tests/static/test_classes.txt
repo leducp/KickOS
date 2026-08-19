@@ -56,6 +56,7 @@ host   build  tests/unit/captable/captable_segmented
 host   build  tests/unit/drvbringup/drv_bringup
 host   build  tests/unit/faultband/fault_band
 host   build  tests/unit/grantnocache/grant_nocache
+host   build  tests/unit/kstring/kstring_words
 host   build  tests/unit/ktime/ktime_rearm
 host   build  tests/unit/parkresult/park_result
 host   build  tests/unit/schedwake/sched_wake

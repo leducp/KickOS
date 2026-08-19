@@ -9,6 +9,10 @@ add_library(kickos_lib STATIC
   strerror.cc
   rtt.cc)
 kickos_apply_freestanding(kickos_lib)
+# The word loops in string.cc are the memcpy/memset idiom, and the pass that rewrites
+# that idiom into a library call would turn each of them into a call to itself.
+set_source_files_properties(libc/string.cc PROPERTIES
+  COMPILE_OPTIONS "-fno-tree-loop-distribute-patterns")
 # errno.h / strerror.h live in the kickos_system header home.
 target_include_directories(kickos_lib PRIVATE "${PROJECT_SOURCE_DIR}/system/include")
 

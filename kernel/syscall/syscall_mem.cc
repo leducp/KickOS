@@ -10,7 +10,10 @@
 // place a kernel-side user-pointer dereference lives.
 
 #include <kickos/arch/arch.h>
+#include <kickos/kernel.h>
 #include <kickos/sched.h>
+
+#include <kickos/libc/string.h>
 
 #include <kickos/sys/abi.h>
 
@@ -206,42 +209,39 @@ namespace kickos
     // dereference funnels here, so that becomes one function to change, not a
     // hunt across syscalls. Callers MUST validate first (user_range_ok /
     // user_readable_ok / user_writable_ok): this is the ACCESS, never the check.
-    // Byte loops, not memcpy: freestanding, and the arch rewrite hooks here.
+    //
+    // THE SEAM DOES NOT COPY OVERLAPPING RANGES, and the primitive below is the
+    // ascending-only memcpy, not memmove. A caller that needs overlap reaches for
+    // memmove here rather than widening a range.
+
+    // kdst is kernel storage (a stack local or a kernel global) and usrc is user
+    // memory, so the two ends are disjoint by construction.
     void kaccess_from_user(void* kdst, uintptr_t usrc, size_t n)
     {
-        char* d = static_cast<char*>(kdst);
-        char const* s = reinterpret_cast<char const*>(usrc);
-        for (size_t i = 0; i < n; i++)
-        {
-            d[i] = s[i];
-        }
+        memcpy(kdst, reinterpret_cast<void const*>(usrc), n);
     }
 
+    // ksrc is kernel storage, udst is user memory: disjoint for the same reason.
     void kaccess_to_user(uintptr_t udst, void const* ksrc, size_t n)
     {
-        char* d = reinterpret_cast<char*>(udst);
-        char const* s = static_cast<char const*>(ksrc);
-        for (size_t i = 0; i < n; i++)
-        {
-            d[i] = s[i];
-        }
+        memcpy(reinterpret_cast<void*>(udst), ksrc, n);
     }
 
-    // Bounded byte copy (<= KOS_EP_MSG_MAX). Both endpoints do it under IrqLock,
+    // Bounded copy (<= KOS_EP_MSG_MAX). Both endpoints do it under IrqLock,
     // one side of which is a PARKED peer's user buffer (see endpoint.h): the
     // waker's own MPU regions are loaded, so it reaches the peer's memory only via
     // privileged background access (arch contract, design section 3.1). This is
     // the user<->user peer of the kaccess_*_user seam above (both ends are user
     // memory, not one kernel side): the ONE endpoint access the MMU era rewrites
     // as a cross-aspace copy. All endpoint payload movement funnels here already.
+    //
+    // The two ends belong to DIFFERENT threads, one running and one parked, and a
+    // thread is never both, so they cannot alias. The assert is checked in every
+    // build because no preset defines KICKOS_DEBUG.
     void ep_copy(uintptr_t dst, uintptr_t src, size_t n)
     {
-        char* d = reinterpret_cast<char*>(dst);
-        char const* s = reinterpret_cast<char const*>(src);
-        for (size_t i = 0; i < n; i++)
-        {
-            d[i] = s[i];
-        }
+        KICKOS_ASSERT(dst + n <= src or src + n <= dst);
+        memcpy(reinterpret_cast<void*>(dst), reinterpret_cast<void const*>(src), n);
     }
 
     // Deliver a receiver's kos_recv_info (badge + reply_cap) into its parked out-ptr,

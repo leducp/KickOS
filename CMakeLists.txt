@@ -749,8 +749,18 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   add_subdirectory(tests/unit/slotpool)
 endif()
 
-# Host-only of necessity: the deadline the arch backends dedup on never crosses the arch
-# seam, so an on-target arm can only time a wake and race the host scheduler for the answer.
+# Host-only word-wise mem primitive gate. Host-only of necessity: the compiler emits the
+# calls implicitly, so no target arm can choose an alignment pair or see an overrun, and
+# the sim build defines these away in favour of the host libc.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/kstring/CMakeLists.txt")
+  add_subdirectory(tests/unit/kstring)
+endif()
+
+# Host-only next-event-deadline gate. Host-only of necessity too: the deadline the
+# arch backends dedup on never crosses the arch seam, so an on-target arm can only
+# time a wake and race the host scheduler for the answer. Compiles the real
+# kernel/time/time.cc against a fake clock instead.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/ktime/CMakeLists.txt")
   add_subdirectory(tests/unit/ktime)
