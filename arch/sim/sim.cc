@@ -1451,6 +1451,12 @@ int arch_mpu_region_pow2(void)
     return 0;
 }
 
+// Nothing but the CPU reads the arena here, and mprotect carries no memory type.
+int arch_mpu_nocache_support(void)
+{
+    return ARCH_MPU_NOCACHE_ALREADY;
+}
+
 // Rule 7: the sim owns no MPU-governable peripheral (its "devices" are arena-backed
 // fakes reached via a data grant), so it reserves nothing and only the arena /
 // encodability rules apply.

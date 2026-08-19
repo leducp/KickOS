@@ -178,7 +178,7 @@ namespace kickos
     // return the shared default-user singleton for a no-grant unprivileged task. That is
     // deliberate: it is what lets an arm read one task's reference count without another
     // task's holds in it.
-    Domain* domain_for(bool, void*, size_t, bool, int* err)
+    Domain* domain_for(bool, void*, size_t, uint32_t, bool, int* err)
     {
         *err = 0;
         for (int i = 0; i < KICKOS_MAX_TASKS; i++)

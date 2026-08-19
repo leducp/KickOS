@@ -147,9 +147,17 @@ extern "C"
         return g_arena;
     }
 
-    int kos_mem_self_grant(void*, size_t)
+    int kos_mem_self_grant(void*, size_t, uint32_t flags)
     {
-        note("grant");
+        // The flag goes in the TOKEN: an arm reads which of the block's two grants carried it.
+        if (flags == KOS_MEM_NOCACHE)
+        {
+            note("grantnc");
+        }
+        else
+        {
+            note("grant");
+        }
         if (g_seam.self_grant_fails)
         {
             return -KOS_EINVAL;
@@ -231,7 +239,8 @@ extern "C"
         return 0;
     }
 
-    int kos_task_create(void* mem_base, uint32_t mem_size, kos_task_t* out_task)
+    int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
+                        kos_task_t* out_task)
     {
         *out_task = KOS_TASK_NONE;
         if (g_seam.task_create_fails)
@@ -245,7 +254,14 @@ extern "C"
         // the group is the whole of what moved from the spawn to the task.
         if (mem_base != nullptr and mem_size != 0)
         {
-            note_id("taskmem", *out_task);
+            if (mem_flags == KOS_MEM_NOCACHE)
+            {
+                note_id("taskmemnc", *out_task);
+            }
+            else
+            {
+                note_id("taskmem", *out_task);
+            }
         }
         else
         {

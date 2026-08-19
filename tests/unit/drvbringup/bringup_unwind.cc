@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Failure-path gate for kickos::driver::bring_up and its unwind, driven against the real
-// header over the recording seam in kos_seam.h.
+// Failure-path gate for kickos::driver::bring_up and its unwind, over the recording seam
+// in kos_seam.h.
 //
-// Every arm compares the FULL ordered trace as one string. Weakening one into a set of
-// counters, a substring test or per-token assertions silently drops the only check on
-// `unwind`'s three orderings: lines then endpoint, endpoint close before any cancel, both
-// before the diagnostic print.
+// Every arm compares the FULL ordered trace as one string. Counters, substring tests or
+// per-token assertions would drop the only check on `unwind`'s three orderings: lines then
+// endpoint, endpoint close before any cancel, both before the diagnostic print.
 //
-// What this gate CANNOT witness: whether kos_thread_kill was honoured. Cancellation is
-// cooperative and honoured only inside kos_irq_wait, so no spawned thread runs here and a
-// peer's death stays a silicon question (tests/integration/check_sim_drvdeath.sh). Nor does
-// it witness that a close reclaims the console: only the order of the calls that would.
+// NOT witnessed here: that kos_thread_kill was honoured (cancellation is cooperative and
+// taken only inside kos_irq_wait, and no spawned thread runs here; see
+// tests/integration/check_sim_drvdeath.sh), nor that a close reclaims the console.
 
 #include <kickos/sys/driver_service.h>
 
@@ -29,8 +27,6 @@ namespace drv = kickos::driver;
 
 namespace
 {
-    // A predicate, not a helper that asserts: EXPECT_PRED2 fails on the caller's line and
-    // prints the diagnostic it searched.
     bool says(char const* msg, char const* needle)
     {
         return strstr(msg, needle) != nullptr;
@@ -51,20 +47,20 @@ namespace
 
     int block_init(void* blk, struct kos_service_cfg const*)
     {
-        // The latch ADDRESS is published here and the latch is SET by the spawn fake: no
-        // child runs in this gate, so nothing else can stand in for reaching the loop.
+        // The latch ADDRESS is published here; the spawn fake SETS it, as no child runs.
         g_seam.latch = reinterpret_cast<volatile uint32_t*>(
             static_cast<unsigned char*>(blk) + K_READY_OFF);
         *g_seam.latch = 0u;
         return g_block_init_rc;
     }
 
-    // Two lines: dropping to one makes a partial claim indistinguishable from none, which
-    // retires the arm that separates `claimed` from `line_count`.
+    // Two lines: with one, a partial claim is indistinguishable from none and the arm that
+    // separates `claimed` from `line_count` dies with it.
     constexpr drv::Descriptor k_two = {
         .tag = "[drvfake] ",
         .expected_base = K_BASE,
         .block_size = K_BLOCK,
+        .block_flags = 0,
         .ready_offset = K_READY_OFF,
         .ep_posture = drv::KOS_DRV_EP_HANDOVER,
         .svc_kind = KOS_SVC_CONSOLE,
@@ -90,12 +86,44 @@ namespace
         .block_init = block_init
     };
 
-    // Three threads leave TWO live peers at a third-spawn failure, which is what shows that
-    // ONE group kill ends them: a per-thread sweep would have to name each.
+    // k_two with the block declared non-cacheable, and NOTHING else changed.
+    constexpr drv::Descriptor k_two_nocache = {
+        .tag = "[drvfakenc] ",
+        .expected_base = K_BASE,
+        .block_size = K_BLOCK,
+        .block_flags = KOS_MEM_NOCACHE,
+        .ready_offset = K_READY_OFF,
+        .ep_posture = drv::KOS_DRV_EP_HANDOVER,
+        .svc_kind = KOS_SVC_CONSOLE,
+        .line_count = 2,
+        .thread_count = 2,
+        .barrier_after = 1,
+        .lines = {{16, KOS_IRQ_LEVEL}, {17, KOS_IRQ_LEVEL}},
+        .threads = {{.entry = t_irq,
+                     .name = "drvirq",
+                     .prio_delta = 1,
+                     .arg = drv::KOS_DRV_ARG_BLOCK,
+                     .window_grant = true,
+                     .cap_count = 2,
+                     .caps = {{drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT},
+                              {drv::KOS_DRV_RES_LINE1, KOS_CAP_WAIT}}},
+                    {.entry = t_console,
+                     .name = nullptr,
+                     .prio_delta = 0,
+                     .arg = drv::KOS_DRV_ARG_BLOCK,
+                     .window_grant = false,
+                     .cap_count = 1,
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+        .block_init = block_init
+    };
+
+    // Three threads leave TWO live peers at a third-spawn failure: what shows one group
+    // kill ends both.
     constexpr drv::Descriptor k_three = {
         .tag = "[drvfake3] ",
         .expected_base = K_BASE,
         .block_size = K_BLOCK,
+        .block_flags = 0,
         .ready_offset = K_READY_OFF,
         .ep_posture = drv::KOS_DRV_EP_HANDOVER,
         .svc_kind = KOS_SVC_CONSOLE,
@@ -128,13 +156,13 @@ namespace
         .block_init = block_init
     };
 
-    // barrier_after == thread_count, the position only RETAIN admits: a one-thread service
-    // whose latch is polled after its only spawn and before the endpoint reaches the app.
-    // Under HANDOVER leg L8 refuses this shape, so no console descriptor can reach it.
+    // barrier_after == thread_count, the position only RETAIN admits: under HANDOVER, leg
+    // L8 refuses this shape, so no console descriptor can reach it.
     constexpr drv::Descriptor k_tail_barrier = {
         .tag = "[drvtail] ",
         .expected_base = K_BASE,
         .block_size = K_BLOCK,
+        .block_flags = 0,
         .ready_offset = K_READY_OFF,
         .ep_posture = drv::KOS_DRV_EP_RETAIN,
         .svc_kind = KOS_SVC_SPI,
@@ -152,13 +180,13 @@ namespace
         .block_init = block_init
     };
 
-    // No block at all: the polled shape (k64uart, xmcuart, xmcssc, k64dspi, simcon). It is
-    // the ONLY way a driver's threads share no memory, because a block that exists reaches
-    // every member of the group.
+    // No block at all: the polled shape (k64uart, xmcuart, xmcssc, k64dspi, simcon). The
+    // only way a driver's threads share no memory.
     constexpr drv::Descriptor k_blockless = {
         .tag = "[drvbare] ",
         .expected_base = 0,
         .block_size = 0,
+        .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = drv::KOS_DRV_EP_HANDOVER,
         .svc_kind = KOS_SVC_CONSOLE,
@@ -176,13 +204,13 @@ namespace
         .block_init = nullptr
     };
 
-    // The same shape carrying a block no thread ever takes. L4 refuses it: the block would
-    // land as a region on every member for nobody to read, which is the widest grant a
-    // descriptor can ask for and the one nothing else would catch.
+    // The same shape carrying a block no thread ever takes. L4 refuses it: the region lands
+    // on every member for nobody to read.
     constexpr drv::Descriptor k_unread_block = {
         .tag = "[drvunread] ",
         .expected_base = 0,
         .block_size = K_BLOCK,
+        .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = drv::KOS_DRV_EP_HANDOVER,
         .svc_kind = KOS_SVC_CONSOLE,
@@ -208,13 +236,13 @@ namespace
     static_assert(not drv::valid_l4(k_unread_block),
                   "L4 must refuse a block granted to the whole group that no thread reads");
 
-    // A descriptor no static_assert vetted: the belt at the top of bring_up is what keeps the
-    // spawn loop from writing past ThreadSet::t[]. Not constexpr, so no leg runs at compile
-    // time.
+    // NOT constexpr, so no leg runs at compile time: the subject is the run-time belt at the
+    // top of bring_up, which keeps the spawn loop off the end of ThreadSet::t[].
     drv::Descriptor const k_overwide = {
         .tag = "[drvwide] ",
         .expected_base = K_BASE,
         .block_size = 0,
+        .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = drv::KOS_DRV_EP_HANDOVER,
         .svc_kind = KOS_SVC_CONSOLE,
@@ -245,8 +273,7 @@ namespace
     }
 }
 
-// The seam's arena and cap counter are static, so an arm that inherited them would have its
-// oracle depend on the arms before it.
+// The seam's arena and cap counter are static, so every arm must start from a reset.
 class DrvBringup : public ::testing::Test
 {
 protected:
@@ -257,8 +284,7 @@ protected:
     }
 };
 
-// THE POSITIVE CONTROL, and it may not be removed: a fake that refused everything makes
-// every failure arm below pass while proving nothing about the failure paths.
+// THE POSITIVE CONTROL, and it may not be removed.
 TEST_F(DrvBringup, a_complete_bring_up_touches_no_unwind)
 {
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
@@ -270,10 +296,8 @@ TEST_F(DrvBringup, a_complete_bring_up_touches_no_unwind)
     EXPECT_STREQ(kos_seam_msg(), "") << "a complete bring-up prints no diagnostic";
 }
 
-// WHAT THE GROUP SHARES, and it is `taskmem` versus `task` in one token. A driver with a
-// block hands the whole of it to the task, so every member's region set covers it. k_three's
-// worker takes no block argument and is a member all the same. There is no per-thread subset
-// to declare: a task owns one Domain and a member may bring no grant of its own.
+// A task owns ONE Domain, so a driver's block covers every member's region set whatever a
+// given thread's arg says.
 TEST_F(DrvBringup, a_block_reaches_the_group_even_where_a_thread_takes_no_block_argument)
 {
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
@@ -283,8 +307,56 @@ TEST_F(DrvBringup, a_block_reaches_the_group_even_where_a_thread_takes_no_block_
         << "the block is the group's region, whatever any one thread's arg says";
 }
 
-// The other direction, and without it the token above would be satisfied by a bring-up that
-// always shares: a driver with no block creates a group that is only a kill group.
+// BOTH mappings or neither. The bring-up WRITES the block through its own self-grant before
+// handing it to the task, so a type on the task grant alone leaves those initialising writes
+// sitting in dirty lines under whatever bus master then reads the block.
+TEST_F(DrvBringup, a_non_cacheable_block_carries_the_flag_on_BOTH_of_its_grants)
+{
+    struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
+    EXPECT_EQ(drv::bring_up(k_two_nocache, &cfg, nullptr), 0);
+    EXPECT_STREQ(kos_seam_trace(),
+                 "alloc grantnc taskmemnc90 ep10 pub10 claim11 claim12 spawn50 spawn51"
+                 " close11 close12 close10 probe")
+        << "the self-grant and the task grant must both carry KOS_MEM_NOCACHE";
+}
+
+// The negative control for the arm above: the tokens must READ block_flags, not be constants.
+TEST_F(DrvBringup, an_ordinary_block_asks_for_no_memory_type)
+{
+    struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), 0);
+    EXPECT_PRED2(says, kos_seam_trace(), "alloc grant taskmem90")
+        << "a cacheable block must reach neither grant with a memory type";
+}
+
+// EXPECT_FALSE over the whole conjunction, so every OTHER leg must pass or the arm proves
+// nothing: a declared line with no waiter would have L12 refuse this descriptor first.
+TEST_F(DrvBringup, flags_on_a_block_that_does_not_exist_are_refused_by_the_validator)
+{
+    constexpr drv::Descriptor d = {
+        .tag = "[drvfake] ",
+        .expected_base = K_BASE,
+        .block_size = 0,
+        .block_flags = KOS_MEM_NOCACHE,
+        .ready_offset = drv::KOS_DRV_READY_NONE,
+        .ep_posture = drv::KOS_DRV_EP_HANDOVER,
+        .svc_kind = KOS_SVC_CONSOLE,
+        .line_count = 0,
+        .thread_count = 1,
+        .barrier_after = 1,
+        .lines = {},
+        .threads = {{.entry = t_console,
+                     .name = nullptr,
+                     .prio_delta = 0,
+                     .arg = drv::KOS_DRV_ARG_NONE,
+                     .window_grant = false,
+                     .cap_count = 1,
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+        .block_init = nullptr
+    };
+    EXPECT_FALSE(drv::valid(d)) << "flags with no block would be ignored in silence";
+}
+
 TEST_F(DrvBringup, a_driver_with_no_block_creates_a_group_that_shares_nothing)
 {
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
@@ -293,8 +365,6 @@ TEST_F(DrvBringup, a_driver_with_no_block_creates_a_group_that_shares_nothing)
         << "no alloc, no grant, and a task with no shared region";
 }
 
-// L4's narrowing arm, as a ctest entry beside the static_assert on it: a descriptor may not
-// carry a block nobody reads, because the region lands on every member regardless.
 TEST_F(DrvBringup, a_block_no_thread_reads_is_not_a_driver_shape)
 {
     EXPECT_FALSE(drv::valid(k_unread_block))
@@ -302,9 +372,8 @@ TEST_F(DrvBringup, a_block_no_thread_reads_is_not_a_driver_shape)
     EXPECT_TRUE(drv::valid(k_blockless)) << "and dropping the block is what makes it valid";
 }
 
-// A refusal must leave NO trace at all: no arena block, no endpoint, no publish. The rc
-// alone would pass on a guard that refused after allocating. Three shapes are refused, and
-// each is a separate arm because each is a separate leg of the guard.
+// A refusal must leave NO trace: no arena block, no endpoint, no publish. One arm per leg
+// of the guard.
 TEST_F(DrvBringup, a_wrong_kind_cfg_has_no_effect)
 {
     struct kos_service_cfg const wrong = cfg_of(KOS_SVC_SPI, K_BASE);
@@ -342,8 +411,7 @@ TEST_F(DrvBringup, the_first_irq_claim_fails)
         << "the diagnostic names the failed claim";
 }
 
-// The second claim fails, so EXACTLY the first line is closed. This is the arm that
-// separates `claimed` from `line_count`.
+// EXACTLY the first line is closed: the arm that separates `claimed` from `line_count`.
 TEST_F(DrvBringup, the_second_irq_claim_fails)
 {
     g_seam.irq_claim_fail_at = 2;
@@ -381,8 +449,7 @@ TEST_F(DrvBringup, a_later_spawn_fails_and_the_peer_is_cancelled)
         << "a refused later spawn closes the endpoint BEFORE ending the group";
 }
 
-// TWO live peers, ended by ONE call. The count is the subject: the cancel no longer scales
-// with the number of live threads, and it names no thread at all.
+// TWO live peers, ended by ONE call that names no thread.
 TEST_F(DrvBringup, two_live_peers_are_ended_by_one_group_kill)
 {
     g_seam.spawn_fail_at = 3;
@@ -395,8 +462,7 @@ TEST_F(DrvBringup, two_live_peers_are_ended_by_one_group_kill)
         << "two live peers are ended by one kill naming the task, not the threads";
 }
 
-// The group is created BEFORE the endpoint and before any line, so a refused task leaves
-// nothing at all to give back.
+// The group is created BEFORE the endpoint and before any line.
 TEST_F(DrvBringup, a_refused_task_takes_nothing_else)
 {
     g_seam.task_create_fails = true;
@@ -423,8 +489,7 @@ TEST_F(DrvBringup, a_thread_that_never_reaches_its_loop)
         << "the diagnostic names the readiness timeout";
 }
 
-// The barrier is STRICTLY between the spawns: the poll must not run before the first
-// spawn, where no thread could yet have latched.
+// The barrier sits STRICTLY between the spawns: no poll before the first spawn.
 TEST_F(DrvBringup, the_barrier_sits_between_the_spawns)
 {
     g_seam.latch_on_spawn = false;
@@ -439,10 +504,9 @@ TEST_F(DrvBringup, the_barrier_sits_between_the_spawns)
         << "the readiness poll runs after the first spawn, never before it: " << trace;
 }
 
-// The LAST barrier position, which only a one-thread service uses. Both arms are needed:
-// the rc alone cannot tell "polled after the spawn" from "never polled", so the
-// discriminating witness is the timeout below, whose sleep token can only appear after
-// spawn50.
+// The LAST barrier position, which only a one-thread service uses. The rc alone cannot tell
+// "polled after the spawn" from "never polled"; the timeout arm below is the discriminating
+// witness, its sleep token being reachable only after spawn50.
 TEST_F(DrvBringup, the_barrier_can_sit_after_the_last_spawn)
 {
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_SPI, K_BASE);
@@ -502,8 +566,7 @@ TEST_F(DrvBringup, the_publish_fails)
         << "a refused publish closes the endpoint it could not publish";
 }
 
-// This arm and the next differ only in their SIDE EFFECTS: both refusals return a
-// negative code, so no rc assertion can tell them apart.
+// This arm and the next differ only in their SIDE EFFECTS: both return a negative code.
 TEST_F(DrvBringup, the_handover_probe_reports_a_dead_driver)
 {
     g_seam.send_timed_rc = -KOS_EPIPE;

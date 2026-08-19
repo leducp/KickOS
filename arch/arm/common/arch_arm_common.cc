@@ -190,6 +190,10 @@ static uint32_t mpu_rasr(size_t size, uint32_t attr)
     {
         rasr |= MPU_RASR_AP_RW | MPU_RASR_XN | MPU_RASR_MEM_DEVICE; // MMIO
     }
+    else if (attr & ARCH_MPU_NOCACHE)
+    {
+        rasr |= MPU_RASR_AP_RW | MPU_RASR_XN | MPU_RASR_MEM_NORMAL_NC; // bus-master shared
+    }
     else
     {
         rasr |= MPU_RASR_AP_RW | MPU_RASR_XN | MPU_RASR_MEM_NORMAL; // data/stack

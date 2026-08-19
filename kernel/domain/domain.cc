@@ -92,7 +92,7 @@ namespace kickos
         return &kernel().domains[KDOM_DEFAULT_USER_INDEX];
     }
 
-    Domain* domain_for(bool privileged, void* mem_base, size_t mem_size,
+    Domain* domain_for(bool privileged, void* mem_base, size_t mem_size, uint32_t mem_attr,
                        bool caller_authorized, int* err)
     {
         *err = 0;
@@ -106,28 +106,28 @@ namespace kickos
         }
         uintptr_t const base = reinterpret_cast<uintptr_t>(mem_base);
         size_t const rsz = arch_ram_region_size(mem_size);
+        // Access is the grant's own; only the memory-type bits come from the caller.
+        uint32_t const attr = ARCH_MPU_R | ARCH_MPU_W | (mem_attr & ARCH_MPU_NOCACHE);
         // Rule 7 admits the PROSPECTIVE COMMITTED geometry, and must run before a slot is
-        // allocated so a refusal is a clean failure, not a half-built domain.
-        if (not grant_region_admissible(base, rsz, ARCH_MPU_R | ARCH_MPU_W,
-                                        caller_authorized))
+        // allocated: a refusal must leave no half-built domain.
+        if (not grant_region_admissible(base, rsz, attr, caller_authorized))
         {
-            *err = KOS_EPERM; // out-of-arena / reserved-block hit: never admissible
+            *err = KOS_EPERM; // out-of-arena / reserved block / unhonourable memory type
             return nullptr;
         }
         Kernel& k = kernel();
-        // Groups sharing one region share a domain, so a live unprivileged domain describing
-        // exactly this region is reused. The match is on the ROUNDED size, so a re-grant of
-        // the same block dedups. It is a slot economy and NOT an expression of intent: which
-        // threads form a group is what a Task says, and two tasks landing on one domain here
-        // stay two tasks (docs/design-task-layer.md open question 2).
+        // A live unprivileged domain describing exactly this region is reused. The key is
+        // the ROUNDED size and the FULL attribute word, so a non-cacheable grant of a block
+        // never lands on a domain that maps it cacheably. Slot economy and NOT an expression
+        // of intent: two tasks landing on one domain here stay two tasks
+        // (docs/design-task-layer.md open question 2).
         for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)
         {
             Domain& d = k.domains[i];
             if (d.refcount > 0 and not d.privileged and domain_region_count(&d) == 1)
             {
                 arch_mpu_region const* r0 = domain_region_at(&d, 0);
-                if (r0->base == base and r0->size == rsz
-                    and r0->attr == (ARCH_MPU_R | ARCH_MPU_W))
+                if (r0->base == base and r0->size == rsz and r0->attr == attr)
                 {
                     return &d;
                 }
@@ -143,7 +143,7 @@ namespace kickos
         d->privileged = false;
         d->regions[0].base = base;
         d->regions[0].size = rsz;
-        d->regions[0].attr = ARCH_MPU_R | ARCH_MPU_W;
+        d->regions[0].attr = attr;
         d->region_count = 1;
         return d;
     }

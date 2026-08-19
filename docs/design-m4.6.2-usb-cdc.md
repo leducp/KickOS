@@ -864,7 +864,7 @@ rows say so.
 | **S4** | the console-disjointness delta of sec.6.2 and the three `arch_console_reclaim` bodies, plus the panic-path constants of sec.5.4 | **Must not land after S3 in a separate release.** S3 without it publishes a console that blinds the pin UART and has no reclaim body -- the exact combination `docs/reference/porting.md` forbids. If they cannot be one commit they must be one merge |
 | **S5** | `picopi`: the same backend behind the per-chip delta list, plus the 128 KiB window and the RP2040-E5 stepping question | armv6m, so it is also the fleet's cheapest check that the window encodes on PMSAv6 |
 | **S6** | `teensy41`: the RT1062 backend, the 4 KiB descriptor block, `KICKOS_IMXRT_DCACHE=OFF` as the stage posture, the setup tripwire and the ATDTW append loop | the largest single piece of new register work in the milestone |
-| **S7** | the D-cache follow-up: a non-cacheable attribute on a dynamic grant, so `teensy41` gets its D-cache back | separable, and the precedent DMA inherits |
+| **S7** | the D-cache follow-up: a non-cacheable attribute on the block's ALLOCATION, so `teensy41` gets its D-cache back. **Built; UNWITNESSED on silicon** | separable, and the precedent DMA inherits |
 
 `pizero2350` before `picopi` inverts the obvious ordering, deliberately: the RP2350 has zero USB
 errata of its own beyond the clock-ratio one that its 150 MHz already satisfies, while the RP2040
@@ -947,11 +947,11 @@ silicon consumer still owed by M4.6.1's second half on `xmc4800-relax` (`STATE.m
 must not start before that closes, because it is the only thing that proves the substrate this
 document builds on against real hardware.
 
-## S7 designed, not built: where a non-cacheable attribute belongs
+## S7 built, and not witnessed: where a non-cacheable attribute belongs
 
-The stage table lists S7 as "a non-cacheable attribute on a dynamic grant". **The design is settled and
-one word of that sentence is wrong: it belongs on the ALLOCATION, not on the grant.** Recorded here so
-it is not re-derived. No code exists; the CMake containment is deliberately untouched.
+The stage table listed S7 as "a non-cacheable attribute on a dynamic grant". **One word of that
+sentence was wrong: it belongs on the ALLOCATION, not on the grant.** The design below is what was
+built; the record of what the code does, and of what it has NOT proved, is at the end of the section.
 
 **The attribute: Normal, Outer-and-Inner Non-cacheable, Shareable. NOT Device.** Device forbids
 speculation and makes any unaligned access UNPREDICTABLE, including a multi-word load or store that
@@ -986,3 +986,86 @@ bit moves no structure size and perturbs no layout assert.
 domain layer dedups regions by comparing the attribute word against a literal read-write pair, and
 one backend detects region changes by exact equality. A non-cacheable region correctly stops deduping
 with a cacheable one, which is the desired behaviour, but both sites want eyes rather than assumption.
+
+### What landed, and the one thing the design did not say
+
+The shape is the one above. `ARCH_MPU_NOCACHE` is bit 4 of the region attribute word; PMSAv7 encodes
+it `TEX=0b001, C=0, B=0, S=1` and PMSAv8 takes a third MAIR slot at `0x44`. The user-facing flag is
+`KOS_MEM_NOCACHE`, and it rides `Descriptor::block_flags`, which the generic bring-up passes to BOTH
+`kos_mem_self_grant` and `kos_task_create` from one place. The three-valued seam is
+`arch_mpu_nocache_support()`, answered per chip and per enforcement posture; admission refuses only
+`ARCH_MPU_NOCACHE_REFUSED`, in `grant_region_admissible`, and that arm of the predicate is the ONE
+part of the grant module still live at `KICKOS_HAVE_MPU=0` -- an ignored non-cacheable request
+corrupts data rather than merely weakening isolation, so it cannot be stubbed out with the rest.
+
+**The design missed one thing, and it is the whole reason the bring-up path stays clean.**
+`KOS_SYS_MEM_SELF_GRANT` short-circuits on "already reachable", and root is PRIVILEGED, so that test
+passed unconditionally and added no descriptor at all. Root therefore reached the block through the
+PRIVDEFENA background map, which is CACHEABLE -- exactly the first mapping the design set out to
+eliminate. The short-circuit now asks the typed question when the chip programs the attribute: is
+there a region the caller already carries that describes this range with this memory type. Privileged
+reach is no answer to it, because the background map carries the chip's default type. Where the chip
+answers `INHERENT` the plain question is kept, or the call would spend one of eight region slots to
+say nothing.
+
+**Where the three-valued seam is answered, and where the design's phrasing is too strong.** The rule
+is right: can program it, honour; has no cache, accept; has a cache and cannot express it, refuse.
+Reading that as "PMP, the RX MPU and SYSMPU refuse" is NOT right, because none of the chips on those
+backends has a data cache over its arena -- a K64F is a Cortex-M4, an RX72M and an ESP32-C6 reach
+internal SRAM uncached -- and refusing there would break a cacheless board for nothing. Each of those
+backends therefore answers `INHERENT`, and the standing obligation is recorded here rather than in
+the code: a future chip on one of those backends that DOES cache its arena must change the answer to
+`REFUSED`, because its region descriptor carries no memory type at all and a commit backend drops
+what it cannot encode in silence.
+Two ARM chips override the PMSA default rather than inherit it. `mk64f` for exactly that reason:
+SYSMPU is access permissions only, so the PMSA answer would have been a lie about the mechanism even
+where it lands on the right outcome. And `imxrt1062`, the one ARM part in tree with a data cache,
+because the fallback's answer would otherwise depend on a fact invisible from `arch/arm/common` --
+that `arch_init` enables the cache only under `KICKOS_HAVE_MPU`, so a build that programs no region
+has no cache in the path either. Moving that enable out of its guard would silently make the seam
+lie, so the chip states its own answer where the enable lives.
+
+The consequence is that **no configuration in the tree reaches the `REFUSED` arm today**. It is
+covered by construction, not by a board: the self-test pairs `KOS_GRANT_OP_NOCACHE_SUPPORT` against
+`KOS_GRANT_OP_RAM_NOCACHE` and asserts the verdict follows the tri-state, so a chip that ever answers
+`REFUSED` is checked the moment it exists.
+
+**Why no cache-maintenance primitive is still needed, with the cache ON.** The block is never
+written through a cacheable mapping: `arch_ram_alloc` only moves a bump pointer and touches no byte
+of it, the D-cache enable invalidates the whole cache once at boot before any thread runs, and the
+bring-up's FIRST write to the block happens after the non-cacheable self-grant is committed. The M7
+may still speculatively pull a line covering the block while the default map is in force, but
+speculation produces only CLEAN lines and a clean line is never written back, so nothing can land on
+top of what the controller writes. That argument is what the whole design rests on, and it is the
+first thing to re-check if the falsification list below ever fires.
+
+### The owed witness
+
+Nothing here has run on silicon. No `teensy41` is on this bench, so the whole of S7 is a build-time
+and host-time claim.
+
+**The measurement that would settle it.** Flash a `teensy41` `_usbcdc` image configured with
+`-DKICKOS_IMXRT_DCACHE=ON`, enumerate it on a host, and run the IPC bench across the CDC console.
+Against the two captures already tagged in the bench record -- `m493dcon` (D-cache ON, no USB
+console: 61,124 ns per call/reply round-trip, 32 B payload) and `m493dcoff` (D-cache OFF, the posture
+S6 shipped: 363,005 ns) -- the fix is confirmed only if the round-trip lands at roughly `m493dcon`,
+about 61 us, while the console stays up. The point of S7 is buying back the 6x, so a figure near
+363 us means the cache is not actually being used and the fix bought nothing even if the console
+works.
+
+**What would FALSIFY it, stated before the run:**
+
+- Round-trip near 363 us with the console alive. The image is not getting the cache back; either the
+  fixed anti-speculation rows or the block's own descriptor is covering more than intended.
+- Enumeration fails, or the CDC endpoint stalls or drops bytes, with the cache ON but succeeds with
+  it OFF. That is coherency, not USB: the controller is reading a descriptor list the core left in a
+  dirty line, which means a mapping of the block is still cacheable somewhere.
+- A MemManage fault in the driver's first block write. The block is being described by no descriptor
+  at all rather than by a non-cacheable one.
+- The round-trip is fast AND the console works, but only until the ring wraps. The `Shared` rings are
+  walked with `memcpy` and a Normal region tolerates the unaligned accesses that produces; a fault or
+  corruption that appears only on a wrap would say the region was encoded as Device rather than as
+  Normal non-cacheable, which is the specific mistake the attribute choice above exists to avoid.
+
+Until one of those runs, `arch/CMakeLists.txt` names the combination UNWITNESSED at configure time
+and the default for a USB-console image stays `KICKOS_IMXRT_DCACHE=OFF`.

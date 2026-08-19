@@ -110,7 +110,9 @@ enum kos_syscall_nr
                               //   EMFILE the SERVER's cap table has no slot for the reply cap)
     KOS_SYS_REPLY = 35,       // (reply_cap, buf, len) -> 0, or -KOS_E* (EBADF bad/non-reply cap, ESRCH stale caller, EFAULT bad buffer)
     KOS_SYS_SHUTDOWN = 36,    // (status) -> does not return; -KOS_EPERM if refused
-    KOS_SYS_MEM_SELF_GRANT = 37, // (base, size) -> 0, or -KOS_E* (EPERM/EINVAL/ENOMEM)
+    KOS_SYS_MEM_SELF_GRANT = 37, // (base, size, kos_mem_flags) -> 0, or -KOS_E*
+                              //   (EPERM/EINVAL/ENOMEM). EPERM also covers a memory type
+                              //   this chip cannot honour; EINVAL an undefined flag bit.
     KOS_SYS_REBOOT = 38,      // () -> does not return; -KOS_EPERM if refused, -KOS_ENOSYS (no backend)
                               //   (self-test only: the dispatch arm is compiled out unless
                               //   KICKOS_ENABLE_SELFTEST, so a production image returns -KOS_EINVAL)
@@ -154,11 +156,13 @@ enum kos_syscall_nr
                                //   -KOS_EPERM to any thread but root. Takes NO deadline.
     KOS_SYS_SEND_TIMED = 50,   // (cap, buf, len, timeout_us) -> as KOS_SYS_SEND, plus
                                //   -KOS_ETIMEDOUT
-    KOS_SYS_TASK_CREATE = 51,  // (mem_base, mem_size, kos_task_t* out) -> 0, or -KOS_E*:
-                               //   EPERM (inadmissible shared grant, or a caller no member
-                               //   could name), EINVAL (the window wraps), ENOMEM (task or
-                               //   domain pool full), EFAULT (bad out-pointer). The task is
-                               //   EMPTY: kos_thread_params::task is what seats members.
+    KOS_SYS_TASK_CREATE = 51,  // (mem_base, mem_size, kos_task_t* out, kos_mem_flags) -> 0,
+                               //   or -KOS_E*: EPERM (inadmissible shared grant, a memory
+                               //   type this chip cannot honour, or a caller no member could
+                               //   name), EINVAL (the window wraps, or an undefined flag
+                               //   bit), ENOMEM (task or domain pool full), EFAULT (bad
+                               //   out-pointer). The task is EMPTY:
+                               //   kos_thread_params::task is what seats members.
     KOS_SYS_TASK_KILL = 52,    // (kos_task_t) -> 0, -KOS_EBADF (never created / freed under
                                //   this handle / an implicit task, which is unnameable),
                                //   -KOS_EPERM (the caller did not create it). Cancels every
@@ -221,8 +225,28 @@ enum kos_grant_op
     KOS_GRANT_OP_DEV_UNPRIVILEGED = 4, // grant_region_admissible DEV, unprivileged caller
     KOS_GRANT_OP_RESERVED_COUNT = 5,  // count of arch_reserved_blocks
     KOS_GRANT_OP_RESERVED_BASE = 6,   // reserved block[base].base (base indexes the block)
-    KOS_GRANT_OP_RESERVED_SIZE = 7    // reserved block[base].size (base indexes the block)
+    KOS_GRANT_OP_RESERVED_SIZE = 7,   // reserved block[base].size (base indexes the block)
+    KOS_GRANT_OP_NOCACHE_SUPPORT = 8, // arch_mpu_nocache_support() (enum arch_mpu_nocache)
+    KOS_GRANT_OP_RAM_NOCACHE = 9      // grant_region_admissible RAM|NOCACHE, unprivileged
 };
+
+// `flags` for the two calls that create a MAPPING of an arena block: KOS_SYS_MEM_SELF_GRANT
+// and KOS_SYS_TASK_CREATE. They select the memory TYPE the region is committed with; access
+// is always read-write and is not expressible here. An undefined bit is -KOS_EINVAL, never
+// masked off.
+//
+// The flag belongs to the BLOCK: pass it identically to EVERY call that maps it, or two live
+// mappings end up disagreeing about its type.
+enum kos_mem_flags
+{
+    // Map the block Normal non-cacheable, for a block a bus master reads or writes. A chip
+    // whose region descriptors carry no memory type and whose data cache sits over the arena
+    // REFUSES it with -KOS_EPERM; a chip with no cache in that path accepts it. There is no
+    // cache-maintenance call anywhere in this tree, so an unhonoured request would be silent
+    // data corruption.
+    KOS_MEM_NOCACHE = 1u << 0
+};
+#define KOS_MEM_FLAGS_ALL (KOS_MEM_NOCACHE)
 
 // `op` selector for KOS_SYS_BENCH (KICKOS_BENCH images only). Values are a frozen
 // contract: append, never reorder. A BAD op returns -KOS_EINVAL.

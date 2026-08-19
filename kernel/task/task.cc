@@ -113,10 +113,10 @@ namespace kickos
     Task* task_for(bool privileged, void* mem_base, size_t mem_size,
                    bool caller_authorized, int* err)
     {
-        // FIRST, so every domain refusal keeps its own code and its own position: the dedup
-        // scan must run before a task slot is spent, or a refused grant leaves debris the
-        // next scan has to reason about.
-        Domain* const d = domain_for(privileged, mem_base, mem_size, caller_authorized, err);
+        // FIRST: the dedup scan must run before a task slot is spent, or a refused grant
+        // leaves debris the next scan has to reason about.
+        // 0 memory type: the spawn ABI has no field to ask for another.
+        Domain* const d = domain_for(privileged, mem_base, mem_size, 0u, caller_authorized, err);
         if (d == nullptr)
         {
             return nullptr;
@@ -135,7 +135,7 @@ namespace kickos
     }
 
     Task* task_create(uint16_t creator_tag, void* mem_base, size_t mem_size,
-                      bool caller_authorized, int* err)
+                      uint32_t mem_attr, bool caller_authorized, int* err)
     {
         *err = 0;
         if (creator_tag == ThreadPool::KILL_TAG_NONE)
@@ -143,8 +143,7 @@ namespace kickos
             *err = KOS_EPERM; // a creator that matches nobody could never name the result
             return nullptr;
         }
-        Domain* const d =
-            domain_for(/*privileged=*/false, mem_base, mem_size, caller_authorized, err);
+        Domain* const d = domain_for(/*privileged=*/false, mem_base, mem_size, mem_attr, caller_authorized, err);
         if (d == nullptr)
         {
             return nullptr;

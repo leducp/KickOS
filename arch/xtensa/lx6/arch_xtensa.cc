@@ -555,6 +555,13 @@ int arch_mpu_region_pow2(void)
     return 1;
 }
 
+// Internal SRAM, where the arena lives, is not cached on the classic ESP32: the cache
+// covers external flash and PSRAM only.
+int arch_mpu_nocache_support(void)
+{
+    return ARCH_MPU_NOCACHE_ALREADY;
+}
+
 
 
 // --- The kernel-owned mask for a REAL device line (RULE L1) -------------------

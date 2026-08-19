@@ -77,6 +77,7 @@ namespace
         // against.
         .expected_base = 0,
         .block_size = 0, // polled and TX-only: no ring, no doorbell, no readiness latch
+        .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = drv::KOS_DRV_EP_HANDOVER,
         .svc_kind = KOS_SVC_CONSOLE,

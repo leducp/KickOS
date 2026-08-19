@@ -401,6 +401,7 @@ namespace
         // number, so a cfg naming another window would grant one region and poke another.
         .expected_base = reg::DPRAM_BASE,
         .block_size = usb::KOS_USB_BLOCK_SIZE,
+        .block_flags = 0,
         .ready_offset = usb::KOS_USB_READY_OFFSET,
         // HANDOVER is the WRONG posture here on both boards: the kernel console is a pin
         // UART, a DIFFERENT peripheral from the one taken here, so the publish blinds a

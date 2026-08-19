@@ -617,7 +617,8 @@ namespace kickos
     // Create a task: an empty group that exists before any of its threads, holding a domain
     // built from THIS grant. Only the creator may seat members into it or end it, on the
     // same non-transferable parenthood gate as thread_kill.
-    int task_create_call(void* mem_base, size_t mem_size, kos_task_t* out_task)
+    int task_create_call(void* mem_base, size_t mem_size, uint32_t mem_attr,
+                         kos_task_t* out_task)
     {
         IrqLock lock;
         *out_task = KOS_TASK_NONE; // every early return below leaves the sentinel seated
@@ -632,7 +633,7 @@ namespace kickos
         }
         int derr = 0;
         Task* const t = task_create(kernel().threads.kill_tag_of(c), mem_base, mem_size,
-                                    cap_check_authority(c, AUTH_MEMORY), &derr);
+                                    mem_attr, cap_check_authority(c, AUTH_MEMORY), &derr);
         if (t == nullptr)
         {
             return -derr; // EPERM inadmissible grant, ENOMEM domain or task pool full

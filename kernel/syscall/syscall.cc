@@ -520,8 +520,14 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(rc);
             }
+            uint32_t attr = 0u;
+            if (not mem_flags_to_attr(a3, &attr))
+            {
+                return static_cast<uint64_t>(-KOS_EINVAL);
+            }
             kos_task_t h = KOS_TASK_NONE;
-            rc = task_create_call(reinterpret_cast<void*>(a0), static_cast<size_t>(a1), &h);
+            rc = task_create_call(reinterpret_cast<void*>(a0), static_cast<size_t>(a1), attr,
+                                  &h);
             return cap_out_deliver(a2, rc, h);
         }
         case KOS_SYS_TASK_KILL:
@@ -663,6 +669,17 @@ uint64_t syscall_body(uintptr_t nr,
                 case KOS_GRANT_OP_DEV_UNPRIVILEGED:
                 {
                     result = grant_region_admissible(base, size, dev, false);
+                    break;
+                }
+                case KOS_GRANT_OP_NOCACHE_SUPPORT:
+                {
+                    // A raw enum arch_mpu_nocache, not the 0/1 predicate every other op
+                    // answers.
+                    return static_cast<uint64_t>(arch_mpu_nocache_support());
+                }
+                case KOS_GRANT_OP_RAM_NOCACHE:
+                {
+                    result = grant_region_admissible(base, size, rw | ARCH_MPU_NOCACHE, false);
                     break;
                 }
                 case KOS_GRANT_OP_RESERVED_COUNT:
@@ -836,9 +853,26 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EINVAL);
             }
-            // Already reachable costs no descriptor: the call is idempotent, and a
-            // privileged caller (whole-arena region) always lands here.
-            if (user_range_ok(base, size, ARCH_MPU_R | ARCH_MPU_W))
+            uint32_t attr = ARCH_MPU_R | ARCH_MPU_W;
+            if (not mem_flags_to_attr(a2, &attr))
+            {
+                return static_cast<uint64_t>(-KOS_EINVAL);
+            }
+            // BEFORE the already-reachable short-circuit: a chip that cannot honour the
+            // memory type would otherwise answer 0 to a request it silently drops.
+            if (not grant_nocache_admissible(attr))
+            {
+                return static_cast<uint64_t>(-KOS_EPERM);
+            }
+            // Already reachable costs no descriptor. EXCEPT where the chip PROGRAMS the
+            // memory type: privileged reach comes from the CACHEABLE background map, so a
+            // block initialised through it keeps dirty lines a bus master then reads.
+            bool already = user_range_ok(base, size, ARCH_MPU_R | ARCH_MPU_W);
+            if ((attr & ARCH_MPU_NOCACHE) != 0 and arch_mpu_nocache_support() == ARCH_MPU_NOCACHE_PROGRAMMED)
+            {
+                already = user_range_typed_ok(base, size, attr);
+            }
+            if (already)
             {
                 return 0;
             }
@@ -858,7 +892,7 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EINVAL);
             }
-            if (not grant_region_admissible(base, rsz, ARCH_MPU_R | ARCH_MPU_W,
+            if (not grant_region_admissible(base, rsz, attr,
                                             cap_check_authority(c, AUTH_MEMORY)))
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
@@ -872,7 +906,7 @@ uint64_t syscall_body(uintptr_t nr,
             }
             c->regions[c->region_count].base = base;
             c->regions[c->region_count].size = rsz;
-            c->regions[c->region_count].attr = ARCH_MPU_R | ARCH_MPU_W;
+            c->regions[c->region_count].attr = attr;
             c->region_count++;
             // Must be effective BEFORE the return: the caller's next instruction may
             // dereference the region, and on a deferred-switch arch apply() only STASHES,

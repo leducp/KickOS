@@ -404,7 +404,8 @@ namespace kickos
             }
             int err = 0;
             Task* const tk =
-                task_create(FIXTURE_TASK_TAG, nullptr, 0, /*caller_authorized=*/false, &err);
+                task_create(FIXTURE_TASK_TAG, nullptr, 0, /*mem_attr=*/0u,
+                            /*caller_authorized=*/false, &err);
             if (tk == nullptr)
             {
                 printf("FIXTURE FAIL: task_create refused (%d)\n", err);

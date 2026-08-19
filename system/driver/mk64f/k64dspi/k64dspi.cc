@@ -72,6 +72,7 @@ namespace
         // leg L9 demand one.
         .expected_base = 0,
         .block_size = 0, // no Shared, no ring, no doorbell, no readiness latch
+        .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = drv::KOS_DRV_EP_RETAIN,
         .svc_kind = KOS_SVC_SPI,

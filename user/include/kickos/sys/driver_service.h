@@ -99,6 +99,10 @@ struct Descriptor
     // exactly one Domain and a member may bring no grant of its own. Keep here only state the
     // whole driver may touch; a DEV window, which has one holder, is per-thread instead.
     uint32_t block_size;
+    // kos_mem_flags passed identically to the bring-up's own self-grant AND to the task
+    // grant, so no cacheable mapping of a KOS_MEM_NOCACHE block ever exists. 0 for ordinary
+    // memory; a driver whose controller is a bus master over this block sets KOS_MEM_NOCACHE.
+    uint32_t block_flags;
     uint16_t ready_offset;   // byte offset of the readiness latch inside the block
     uint8_t ep_posture;      // enum kos_drv_ep
     uint8_t svc_kind;        // enum kos_svc_kind
@@ -250,6 +254,11 @@ constexpr bool valid_l4(Descriptor const& d)
         }
     }
     if (d.block_size != 0u and not reader)
+    {
+        return false;
+    }
+    // Flags on a block that does not exist reach no grant and would be ignored in silence.
+    if (d.block_size == 0u and d.block_flags != 0u)
     {
         return false;
     }

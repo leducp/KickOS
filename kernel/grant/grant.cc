@@ -88,6 +88,12 @@ namespace kickos
         {
             return false;
         }
+        // Memory TYPE, ahead of either geometry arm: a backend that cannot encode the type
+        // drops the descriptor silently at commit, so the refusal happens here or nowhere.
+        if (not grant_nocache_admissible(attr))
+        {
+            return false;
+        }
         if ((attr & ARCH_MPU_DEV) != 0)
         {
             // Choice 5A: an MMIO/device grant needs the caller's AUTH_MEMORY, and must

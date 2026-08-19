@@ -79,6 +79,7 @@ namespace
         // window and interrupt on the other. The console owns U0C0; SPI is U0C1.
         .expected_base = mmap::USIC0_CH1_BASE,
         .block_size = 0, // no Shared, no ring, no doorbell, no readiness latch
+        .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = drv::KOS_DRV_EP_RETAIN,
         .svc_kind = KOS_SVC_SPI,

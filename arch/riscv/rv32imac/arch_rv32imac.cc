@@ -359,6 +359,13 @@ int arch_mpu_region_pow2(void)
     return 1;
 }
 
+// No data cache between the core and the arena on the RISC-V parts in tree, and a PMP
+// entry holds permissions only with no memory type.
+int arch_mpu_nocache_support(void)
+{
+    return ARCH_MPU_NOCACHE_ALREADY;
+}
+
 // Rule 7 (arch.h): RISC-V has no Cortex-M bit-band alias, so the grant path never tests
 // an alias image here. No arch fallback TU exists in a RISC-V link.
 int arch_bitband_present(void)

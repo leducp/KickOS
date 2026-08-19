@@ -774,6 +774,13 @@ int arch_mpu_region_pow2(void)
     return 0;
 }
 
+// No data cache between the core and the arena on the RX parts in tree, and an RX MPU
+// region pair holds permissions only with no memory type.
+int arch_mpu_nocache_support(void)
+{
+    return ARCH_MPU_NOCACHE_ALREADY;
+}
+
 // Rule 7 (arch.h): RX has no Cortex-M bit-band alias. No ARM-common fallback
 // default exists in an RX link.
 int arch_bitband_present(void)

@@ -139,6 +139,7 @@ namespace
         // the cfg against.
         .expected_base = 0,
         .block_size = uart::KOS_UART_BLOCK_SIZE,
+        .block_flags = 0,
         .ready_offset = uart::KOS_UART_READY_OFFSET,
         .ep_posture = drv::KOS_DRV_EP_RETAIN, // no kos_console_publish, no handover tail
         .svc_kind = KOS_SVC_UART,             // not KOS_SVC_CONSOLE

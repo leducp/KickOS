@@ -563,7 +563,7 @@ namespace
         }
         // Without this grant the writes below fault: root does not reach its own arena
         // allocations.
-        TAP_CHECK(kos_mem_self_grant(g_mmio, 4096) == 0);
+        TAP_CHECK(kos_mem_self_grant(g_mmio, 4096, 0) == 0);
         *static_cast<volatile int*>(g_mmio) = 0;
         kos_sem_create(0, &g_irqdrv_done);
         kos_sem_create(0, &g_irq_ready);
@@ -2075,6 +2075,26 @@ namespace
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, 0xFFFFFFF0u, 0x20u) == 0);    // wrap (32-bit) / out-of-arena (64-bit) refused
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, 0x20000000u, 0u) == 0);       // size 0 refused
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_DEV_UNPRIVILEGED, 0x40000000u, 0x1000u) == 0);  // DEV grant, unprivileged caller: refused
+
+        // --- Non-cacheable admission is THREE-valued: PROGRAMMED and INHERENT both admit,
+        // REFUSED must refuse HERE, since every commit backend drops a region it cannot
+        // encode in silence.
+        uintptr_t const nc = kos_grant_probe(KOS_GRANT_OP_NOCACHE_SUPPORT, 0, 0);
+        TAP_CHECK(nc <= 2); // enum arch_mpu_nocache; a bad op would answer -KOS_EINVAL cast up
+        if (raw != nullptr)
+        {
+            uintptr_t const a = reinterpret_cast<uintptr_t>(raw);
+            uintptr_t expect = 1;
+            if (nc == 0)
+            {
+                expect = 0; // ARCH_MPU_NOCACHE_REFUSED
+            }
+            TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_NOCACHE, a, g) == expect);
+        }
+        else
+        {
+            tap::partial("non-cacheable RAM admission not run (granule alloc failed)");
+        }
 
         // --- End-to-end errno coherence: an unprivileged child whose mem_base lies OUTSIDE
         // the arena is refused with -KOS_EPERM (policy refusal), NOT -KOS_ENOMEM. The code
@@ -4300,7 +4320,7 @@ namespace
             tap::skip("arena cannot spare the 1 KiB UART block, board too small");
             return;
         }
-        TAP_CHECK(kos_mem_self_grant(blk, sizeof(kickos::uart::Shared)) == 0);
+        TAP_CHECK(kos_mem_self_grant(blk, sizeof(kickos::uart::Shared), 0) == 0);
         kickos::uart::Shared* sh = static_cast<kickos::uart::Shared*>(blk);
         kickos::uart::shared_init(sh);
         // Stand in for the IRQ thread: put four bytes in the RX ring so the READ below
@@ -5266,7 +5286,7 @@ namespace
         // Smallest region this backend can describe, so the arena spend is one block
         // (kos_ram_alloc is a bump allocator with no free).
         void* p = kos_ram_alloc(1);
-        if (p != nullptr and kos_mem_self_grant(p, 1) == 0)
+        if (p != nullptr and kos_mem_self_grant(p, 1, 0) == 0)
         {
             g_pe_ram = kos_periph_enable(reinterpret_cast<uintptr_t>(p));
             g_pe_ram_ran = 1;
@@ -5721,9 +5741,9 @@ namespace
         // The out-pointer is validated BEFORE the group exists: a null one is malformed and a
         // misaligned one would take a privileged store the kernel must not make. Checked first,
         // because a mint that cannot deliver its handle leaves a task nothing can name.
-        TAP_CHECK(kos_task_create(nullptr, 0, nullptr) == -KOS_EINVAL);
+        TAP_CHECK(kos_task_create(nullptr, 0, 0, nullptr) == -KOS_EINVAL);
         kos_task_t task = KOS_TASK_NONE;
-        TAP_CHECK(kos_task_create(nullptr, 0, &task) == 0);
+        TAP_CHECK(kos_task_create(nullptr, 0, 0, &task) == 0);
         TAP_CHECK(task != KOS_TASK_NONE); // the bias is what makes this assertion possible
         // The two words nothing can mint: the sentinel, and a generation the slot never held.
         TAP_CHECK(kos_task_kill(KOS_TASK_NONE) == -KOS_EBADF);
@@ -5798,7 +5818,7 @@ namespace
             return;
         }
         kos_task_t task = KOS_TASK_NONE;
-        TAP_CHECK(kos_task_create(nullptr, 0, &task) == 0);
+        TAP_CHECK(kos_task_create(nullptr, 0, 0, &task) == 0);
         kos_cap_grant const caps[1] = {{ep, CH_FULL}};
         auto stranger = kos::thread::spawn(
             task_stranger, reinterpret_cast<void*>(static_cast<uintptr_t>(task)), "tstr", 10,
@@ -5830,7 +5850,7 @@ namespace
     void t_task_member_refusals()
     {
         kos_task_t task = KOS_TASK_NONE;
-        TAP_CHECK(kos_task_create(nullptr, 0, &task) == 0);
+        TAP_CHECK(kos_task_create(nullptr, 0, 0, &task) == 0);
         void* const blk = kos_ram_alloc(64);
         TAP_CHECK(blk != nullptr);
         struct kos_thread_params p = {};
@@ -5872,7 +5892,7 @@ namespace
             return;
         }
         kos_task_t task = KOS_TASK_NONE;
-        TAP_CHECK(kos_task_create(nullptr, 0, &task) == 0);
+        TAP_CHECK(kos_task_create(nullptr, 0, 0, &task) == 0);
         kos_cap_grant const caps[1] = {{park, KOS_CAP_WAIT}};
         auto member = kos::thread::spawn(task_member, nullptr, "tmbr", 10, KOS_POLICY_FIFO, 0,
                                          /*privileged=*/false, nullptr, 0, nullptr, 0,
@@ -6013,7 +6033,7 @@ namespace
             return;
         }
         kos_task_t task = KOS_TASK_NONE;
-        TAP_CHECK(kos_task_create(nullptr, 0, &task) == 0);
+        TAP_CHECK(kos_task_create(nullptr, 0, 0, &task) == 0);
         g_slay_window = 0;
         kos_cap_grant const caps[2] = {{g_done, CH_FULL}, {park, CH_FULL}};
         auto member = kos::thread::spawn(slay_window_worker, nullptr, "tsly", 10,
@@ -6055,7 +6075,7 @@ namespace
         log_reset();
         TAP_CHECK(kos_task_slay(KOS_TASK_NONE, JOIN_GENEROUS_US) == -KOS_EBADF);
         kos_task_t task = KOS_TASK_NONE;
-        TAP_CHECK(kos_task_create(nullptr, 0, &task) == 0);
+        TAP_CHECK(kos_task_create(nullptr, 0, 0, &task) == 0);
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}};
         auto s = kos::thread::spawn_caps(task_slay_stranger,
                                          reinterpret_cast<void*>(static_cast<uintptr_t>(task)),
@@ -6205,7 +6225,7 @@ namespace
         // Size-0 refusal costs no arena and no descriptor. The address is a valid
         // stack local, so the refusal is about the SIZE alone.
         int probe = 0;
-        g_sg_badsize = kos_mem_self_grant(&probe, 0);
+        g_sg_badsize = kos_mem_self_grant(&probe, 0, 0);
         for (int i = 0; i < SG_MAX; i++)
         {
             void* p = kos_ram_alloc(1);
@@ -6214,7 +6234,7 @@ namespace
                 g_sg_refusal = 0; // arena, not budget: the parent skips rather than fails
                 break;
             }
-            int32_t const rc = kos_mem_self_grant(p, 1);
+            int32_t const rc = kos_mem_self_grant(p, 1, 0);
             if (rc != 0)
             {
                 g_sg_refusal = rc;
@@ -6298,7 +6318,7 @@ namespace
         }
         if (pick != nullptr)
         {
-            g_sgnp_rc = kos_mem_self_grant(pick, want);
+            g_sgnp_rc = kos_mem_self_grant(pick, want, 0);
             g_sgnp_ran = 1;
         }
         kos_sem_post(CH_DONE);

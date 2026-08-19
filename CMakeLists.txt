@@ -768,6 +768,13 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   add_subdirectory(tests/unit/capreply)
 endif()
 
+# Host-only of necessity: no chip in tree can reach ARCH_MPU_NOCACHE_REFUSED, so no target
+# image can exercise the refusal.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/grantnocache/CMakeLists.txt")
+  add_subdirectory(tests/unit/grantnocache)
+endif()
+
 # Host-only of necessity: every arm needs a syscall to FAIL on demand and the readiness poll
 # needs its full sleep budget to cost nothing, and no target image can do either.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"

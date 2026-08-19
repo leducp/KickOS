@@ -198,7 +198,11 @@ int kos_thread_slay(kos_thread_t thread, uint32_t timeout_us);
 //
 // A member may bring NO mem_base of its own and may not be privileged; an mmio_base still
 // belongs to the one member that asks for it.
-int kos_task_create(void* mem_base, uint32_t mem_size, kos_task_t* out_task);
+//
+// `mem_flags` is kos_mem_flags, and MUST match the flags the same block was self-granted
+// with: a mismatch leaves the block with two live mappings that disagree.
+int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
+                    kos_task_t* out_task);
 
 // End a task YOU created: every live member is cancelled, exactly as kos_thread_kill
 // cancels one thread and with the same asynchrony, and the handle stops naming anything.
@@ -276,6 +280,8 @@ uint32_t kos_ipc_fast_taken(void);
 //   RAM_PRIVILEGED/RAM_UNPRIVILEGED -> grant_region_admissible RAM   (0/1)
 //   DEV_PRIVILEGED/DEV_UNPRIVILEGED -> grant_region_admissible DEV   (0/1)
 //   RESERVED_COUNT -> reserved-block count; RESERVED_BASE/RESERVED_SIZE -> block[base].{base,size}
+//   NOCACHE_SUPPORT -> arch_mpu_nocache_support() as a raw enum, not a predicate
+//   RAM_NOCACHE -> grant_region_admissible RAM|NOCACHE, unprivileged             (0/1)
 // Only meaningful under enforcement (returns -KOS_EINVAL where the kernel has no
 // grant module).
 uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size);
@@ -394,15 +400,20 @@ void* kos_ram_alloc(size_t size);
 // KICKOS_MPU_MAX_REGIONS on code, static data, its domain and its stack, so self-grants draw
 // on a small remainder. This is not a general mapping call.
 //
-// Returns 0 on success (including when the range is ALREADY reachable, which costs
-// no descriptor), or:
-//   -KOS_EPERM   no AUTH_MEMORY, or the range is inadmissible (outside the arena,
-//                or overlapping a reserved block)
-//   -KOS_EINVAL  size 0, the range wraps, or (under an MPU) the base is not
-//                naturally aligned to the rounded region size (a base from
+// `flags` is kos_mem_flags: the memory TYPE to commit the region with. Where the chip
+// PROGRAMS that type, asking for it spends a descriptor even on a block the caller can
+// already reach cacheably, a privileged caller's whole-arena background-map reach included.
+//
+// Returns 0 on success (including when the range is ALREADY reachable with the same memory
+// type, which costs no descriptor), or:
+//   -KOS_EPERM   no AUTH_MEMORY, the range is inadmissible (outside the arena, or
+//                overlapping a reserved block), or this chip cannot honour the memory
+//                type asked for
+//   -KOS_EINVAL  size 0, the range wraps, an undefined flag bit, or (under an MPU) the
+//                base is not naturally aligned to the rounded region size (a base from
 //                kos_ram_alloc never trips this)
 //   -KOS_ENOMEM  the caller's region budget is full
-int kos_mem_self_grant(void* base, size_t size);
+int kos_mem_self_grant(void* base, size_t size, uint32_t flags);
 
 // Borrow the KERNEL'S single diagnostic LED, which the kernel also drives for itself (solid
 // on panic). No-op on boards with no known LED.

@@ -176,7 +176,7 @@ int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* 
         }
         // Reach it before writing it: kos_ram_alloc grants nothing, and under enforcement
         // root's own region set does not cover the arena.
-        if (kos_mem_self_grant(blk, d.block_size) != 0)
+        if (kos_mem_self_grant(blk, d.block_size, d.block_flags) != 0)
         {
             return fail(d.tag, "ERROR: mem_self_grant of the ring block refused\n");
         }
@@ -189,7 +189,7 @@ int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* 
     // THE GROUP. Every thread of this driver joins it, so a peer's death ends the rest and
     // one call ends them all.
     kos_task_t task = KOS_TASK_NONE;
-    if (kos_task_create(blk, d.block_size, &task) != 0)
+    if (kos_task_create(blk, d.block_size, d.block_flags, &task) != 0)
     {
         return fail(d.tag, "ERROR: task_create failed\n");
     }
