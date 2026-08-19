@@ -1268,8 +1268,10 @@ void arch_timer_disarm(void)
 // is applied on ITS OWN stack at its return-to-user boundary (arena_lower_to_applied
 // from the syscall unwind, or the trampoline for a fresh thread). The regions pointer
 // is the caller's TCB regions[], stable while the thread runs.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
+                    struct arch_mpu_encoded const* image)
 {
+    (void)image;
     if (sim().arena == nullptr)
     {
         return;
@@ -1277,6 +1279,28 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     sim().applied = regions;
     sim().applied_n = n;
     arena_raise_all();
+}
+
+// mprotect takes the addresses themselves, so there is nothing to pre-encode: the image
+// records only which regions the arena can enforce, which is the answer arena_lower_to_applied
+// reaches independently on the thread's own stack.
+uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
+                         struct arch_mpu_encoded* out)
+{
+    if (n > ARCH_MPU_ENCODED_SLOTS)
+    {
+        n = ARCH_MPU_ENCODED_SLOTS;
+    }
+    uint32_t seated = 0;
+    for (size_t i = 0; i < n; i++)
+    {
+        if (arena_region_valid(regions[i].base, regions[i].size))
+        {
+            seated |= static_cast<uint32_t>(1) << i;
+        }
+    }
+    out->seated = seated;
+    return seated;
 }
 
 // Empty: arch_mpu_apply above already programs mprotect as it records, and the host

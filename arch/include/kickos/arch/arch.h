@@ -27,6 +27,16 @@
 // the arch). Resolved to arch/<arch>/include/kickos/arch/context.h.
 #include <kickos/arch/context.h>
 
+// Per-arch definition of `struct arch_mpu_encoded`, the descriptor words a switch
+// programs. Resolved to arch/<arch>/include/kickos/arch/mpu_encoded.h, and shipped only
+// by an arch some board enforces on: elsewhere the type stays incomplete and every use
+// of it is a pointer.
+#if KICKOS_HAVE_MPU
+#include <kickos/arch/mpu_encoded.h>
+#else
+struct arch_mpu_encoded;
+#endif
+
 // C++ ONLY: the extern "C" below is deliberately UNGUARDED, so a C includer breaks here.
 extern "C"
 {
@@ -265,11 +275,26 @@ struct arch_mpu_region
     uint32_t attr; // OR of the ARCH_MPU_* bits
 };
 
+// Encode `n` regions into the descriptor words this backend programs, and report which
+// of them got a descriptor as a bitmask (bit i for regions[i]). A region that fails
+// arch_mpu_region_encodable gets none: the image never rounds a base or a size, so a
+// misaligned request is refused here rather than widened in hardware. Slots past `n`
+// are written inactive, so an image encoded from a zero-length set grants nothing.
+//
+// Called at MUTATION, never on a switch path. Defined only where KICKOS_HAVE_MPU.
+uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
+                         struct arch_mpu_encoded* out);
+
 // Load the running thread's regions on switch-in (replaces the whole active
 // set). sim: mprotect over the user-RAM arena, granting the listed regions and
 // no-access everywhere else. Regions are non-overlapping; attr is the
 // UNPRIVILEGED access (supervisor comes from the background region / SYSMPU RGD0).
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n);
+//
+// `image` is what the hardware is programmed from and is `regions` already encoded;
+// the raw set travels beside it for the backends that need the addresses themselves
+// (sim mprotect, RX same-set skip). It is null only where KICKOS_HAVE_MPU is 0.
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
+                    struct arch_mpu_encoded const* image);
 
 // Program the hardware from what arch_mpu_apply last recorded. On every arch whose
 // context switch is DEFERRED (ARM PendSV, RX/RISC-V software interrupt) arch_mpu_apply

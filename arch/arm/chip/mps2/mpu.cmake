@@ -26,4 +26,8 @@ if(KICKOS_BOARD STREQUAL "qemu-m33")
   # referencing it, anchor the PMSAv8 archive member into the link; an unreferenced
   # member would never be pulled and the v7-M commit fallback would answer instead.
   add_compile_definitions(KICKOS_MPS2_PMSAV8=1)
+  # PMSAv8 writes an RBAR/RLAR pair per region where the v7-M PMSA writes RBAR/RASR. The
+  # top CMakeLists turns this into the KICKOS_ARM_MPU value armv7m kickos/arch/mpu_encoded.h
+  # lays the image out from.
+  set(KICKOS_ARM_MPU_BACKEND PMSAV8)
 endif()

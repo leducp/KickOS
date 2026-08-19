@@ -409,15 +409,14 @@ int main(int, char**)
         measure_callreply(CR_SPANS[i], CR_PRIO, CR_PRIO, 0);
     }
 
-    // The generic arm of the spans the register form can carry, so one run holds both sides
-    // of the fastpath comparison. Above KOS_CALL_REG_BYTES kos_call already issues this same
-    // trap, and on a backend with no fastpath the two arms are the same code either way.
+    // The generic arm of EVERY span, so one run holds both sides of the fastpath comparison
+    // and its own control. Above KOS_CALL_REG_BYTES kos_call already issues this same trap,
+    // so those rows must differ by one flat constant, the failed register-form attempt; a
+    // ragged difference there says the two arms were not measured under the same conditions
+    // and the whole capture is void.
     for (unsigned i = 0; i < sizeof(CR_SPANS) / sizeof(CR_SPANS[0]); i++)
     {
-        if (CR_SPANS[i] <= static_cast<uint32_t>(KOS_CALL_REG_BYTES))
-        {
-            measure_callreply(CR_SPANS[i], CR_PRIO, CR_PRIO, 1);
-        }
+        measure_callreply(CR_SPANS[i], CR_PRIO, CR_PRIO, 1);
     }
 
     // Read the phase table's donate row against the equal-priority rows above.

@@ -897,22 +897,20 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
             }
-            // Full budget is a returned error; truncating the set would fault the thread on
-            // memory it was told it had. NOT -KOS_EMFILE: that code names the capability
-            // table, and the knob here is KICKOS_MPU_MAX_REGIONS.
-            if (c->region_count >= KICKOS_MPU_MAX_REGIONS)
+            // Full budget, or a region this backend seats no descriptor for, is a
+            // returned error; either truncating the set or carrying the grant unenforced
+            // would fault the thread on memory it was told it had. NOT -KOS_EMFILE: that
+            // code names the capability table, and the knob here is
+            // KICKOS_MPU_MAX_REGIONS.
+            if (not c->mpu.add_enforced(base, rsz, attr))
             {
                 return static_cast<uint64_t>(-KOS_ENOMEM);
             }
-            c->regions[c->region_count].base = base;
-            c->regions[c->region_count].size = rsz;
-            c->regions[c->region_count].attr = attr;
-            c->region_count++;
             // Must be effective BEFORE the return: the caller's next instruction may
             // dereference the region, and on a deferred-switch arch apply() only STASHES,
             // the commit being what programs the hardware
             // (docs/design-mpu-commit-deferred.md).
-            arch_mpu_apply(c->regions, c->region_count);
+            c->mpu.apply();
             kickos_arch_mpu_commit();
             return 0;
         }

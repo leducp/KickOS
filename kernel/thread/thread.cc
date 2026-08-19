@@ -54,14 +54,13 @@ namespace kickos
             {
                 continue;
             }
-            for (size_t r = 0; r < t.region_count; r++)
+            for (arch_mpu_region const& r : t.mpu)
             {
-                if ((t.regions[r].attr & ARCH_MPU_DEV) == 0)
+                if ((r.attr & ARCH_MPU_DEV) == 0)
                 {
                     continue;
                 }
-                if (grant_ranges_overlap(base, last, t.regions[r].base,
-                                         t.regions[r].base + t.regions[r].size - 1u))
+                if (grant_ranges_overlap(base, last, r.base, r.base + r.size - 1u))
                 {
                     return false;
                 }
@@ -105,7 +104,7 @@ namespace kickos
         t->stack_base = stack_base;
         t->stack_size = stack_size;
         t->kstack_owned = attr.kstack_owned;
-        t->region_count = 0;
+        t->mpu.clear();
         // slice_deadline_ns is policy-owned: the RR policy arms it on switch-in,
         // before the thread runs; the core carries no slice sentinel.
 
@@ -139,13 +138,11 @@ namespace kickos
         // On the host sim, app code/data live outside the mprotect'd arena so the sim skips
         // those regions, but a kernel-default stack is arena-resident, so the sim DOES
         // enforce the private-stack region: a sibling faults on another's stack.
-        size_t nr = 0;
         if (not attr.privileged)
         {
             // App-wide code + static-data regions (linker-defined; empty on no-MPU
             // arches and the sim).
-            nr += arch_domain_static_regions(&t->regions[nr],
-                                             KICKOS_MPU_MAX_REGIONS - nr);
+            t->mpu.append_statics();
         }
         bool const wants_stack =
             (not attr.privileged and stack_base != nullptr and stack_size != 0);
@@ -154,24 +151,17 @@ namespace kickos
         // The whole set MUST fit: a truncated set (especially one that drops the thread's
         // OWN stack) would fault the thread on its own memory, or hand it a hardware
         // window snapped to the wrong span. Worst case today is 5 of 8 (code + appdata +
-        // task-domain data + own DEV window + stack).
-        unsigned own_regions = 0u;
-        if (wants_stack)
-        {
-            own_regions++;
-        }
-        if (wants_window)
-        {
-            own_regions++;
-        }
+        // task-domain data + own DEV window + stack), and the assert below reads what the
+        // appends actually did rather than a second count of what they were going to do.
+        bool fitted = true;
         Domain const* const dom = task_domain(t->task);
-        KICKOS_ASSERT(nr + domain_region_count(dom) + own_regions <= KICKOS_MPU_MAX_REGIONS);
         if (dom != nullptr)
         {
             size_t const dn = domain_region_count(dom);
             for (size_t i = 0; i < dn; i++)
             {
-                t->regions[nr++] = *domain_region_at(dom, i);
+                arch_mpu_region const* const dr = domain_region_at(dom, i);
+                fitted = t->mpu.add(dr->base, dr->size, dr->attr) and fitted;
             }
         }
         if (wants_window)
@@ -180,28 +170,26 @@ namespace kickos
             // NEVER rounded: rounding would over-grant the neighbouring registers. It is
             // this thread's alone, since a task-wide window would hand registers to a peer that
             // never asked (docs/design-task-layer.md section 5.2).
-            t->regions[nr].base = reinterpret_cast<uintptr_t>(attr.mmio_base);
-            t->regions[nr].size = attr.mmio_size;
-            t->regions[nr].attr = ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV;
-            nr++;
+            fitted = t->mpu.add(reinterpret_cast<uintptr_t>(attr.mmio_base), attr.mmio_size,
+                                ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV)
+                and fitted;
         }
         if (wants_stack)
         {
-            t->regions[nr].base = reinterpret_cast<uintptr_t>(stack_base);
-            t->regions[nr].size = arch_ram_region_size(stack_size);
-            t->regions[nr].attr = ARCH_MPU_R | ARCH_MPU_W;
-            nr++;
+            fitted = t->mpu.add(reinterpret_cast<uintptr_t>(stack_base),
+                                arch_ram_region_size(stack_size), ARCH_MPU_R | ARCH_MPU_W)
+                and fitted;
         }
-        t->region_count = nr;
+        KICKOS_ASSERT(fitted);
 
         // Rule 7 backstop: no assembled region may overlap a kernel-reserved block. Catches
         // a region source that bypasses domain_for's admission, at composition, before the
         // thread ever runs. Privileged threads carry the whole-arena region, which
         // grant_reserved_validate proved reserved-disjoint at boot.
 #if KICKOS_HAVE_MPU
-        for (size_t i = 0; i < nr; i++)
+        for (arch_mpu_region const& r : t->mpu)
         {
-            KICKOS_ASSERT(not grant_hits_reserved(t->regions[i].base, t->regions[i].size));
+            KICKOS_ASSERT(not grant_hits_reserved(r.base, r.size));
         }
 #endif
 

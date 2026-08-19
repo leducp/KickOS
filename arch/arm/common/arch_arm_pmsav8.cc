@@ -80,7 +80,7 @@ extern "C"
 {
 
 // Read the shared pending stash written by arch_mpu_apply (arch_arm_common.cc).
-size_t kickos_arm_mpu_pending(struct arch_mpu_region const** out);
+struct arch_mpu_encoded const* kickos_arm_mpu_pending(void);
 
 // One-time PMSAv8 setup: the MAIR attribute indirection + MemManage enable. Called
 // from the chip arch_init (chip_rp2350.cc) BEFORE the scheduler starts. This is also
@@ -104,6 +104,41 @@ void kickos_arm_pmsav8_init(void)
     // PRIVDEFENA. Until then the privileged boot runs on the default memory map.
 }
 
+// Pack the region set into the RBAR/RLAR pair per slot. RBAR masks the base to a 32-byte
+// boundary and RLAR the limit, so a region PMSAv8 cannot name exactly gets RLAR 0 (EN=0)
+// rather than a window rounded outward from what was asked.
+uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
+                         struct arch_mpu_encoded* out)
+{
+    if (n > ARCH_MPU_ENCODED_SLOTS)
+    {
+        n = ARCH_MPU_ENCODED_SLOTS;
+    }
+    uint32_t seated = 0;
+    size_t i = 0;
+    for (; i < n; i++)
+    {
+        out->rbar[i] = 0;
+        out->rlar[i] = 0;
+        if (arch_mpu_region_encodable(regions[i].base, regions[i].size))
+        {
+            uintptr_t const base = regions[i].base;
+            uintptr_t const limit = base + regions[i].size - 1; // inclusive top
+            out->rbar[i] = (static_cast<uint32_t>(base) & RBAR_BASE_MASK)
+                | pmsav8_rbar_attr(regions[i].attr);
+            out->rlar[i] = (static_cast<uint32_t>(limit) & RLAR_LIMIT_MASK)
+                | pmsav8_rlar_attr(regions[i].attr) | RLAR_EN;
+            seated |= static_cast<uint32_t>(1) << i;
+        }
+    }
+    for (; i < ARCH_MPU_ENCODED_SLOTS; i++)
+    {
+        out->rbar[i] = 0;
+        out->rlar[i] = 0;
+    }
+    return seated;
+}
+
 // Replaces the PMSAv7 kickos_arch_mpu_commit fallback. Programs the running
 // thread's per-thread regions from the shared stash into RBAR/RLAR, disabling the
 // unused descriptors up to MPU_TYPE.DREGION. Called from the armv7m PendSV epilogue
@@ -115,8 +150,11 @@ void kickos_arm_pmsav8_init(void)
 // is a per-thread grant.
 void kickos_arch_mpu_commit(void)
 {
-    struct arch_mpu_region const* regions;
-    size_t const n = kickos_arm_mpu_pending(&regions);
+    struct arch_mpu_encoded const* const img = kickos_arm_mpu_pending();
+    if (img == nullptr)
+    {
+        return;
+    }
 
     uint32_t primask;
     __asm volatile("mrs %0, primask" : "=r"(primask));
@@ -130,14 +168,10 @@ void kickos_arch_mpu_commit(void)
     for (size_t i = 0; i < hw_regions; i++)
     {
         reg32(MPU_RNR) = static_cast<uint32_t>(i);
-        if (i < n and regions[i].size >= 32)
+        if (i < ARCH_MPU_ENCODED_SLOTS)
         {
-            uintptr_t const base = regions[i].base;
-            uintptr_t const limit = base + regions[i].size - 1; // inclusive top
-            reg32(MPU_RBAR) =
-                (static_cast<uint32_t>(base) & RBAR_BASE_MASK) | pmsav8_rbar_attr(regions[i].attr);
-            reg32(MPU_RLAR) = (static_cast<uint32_t>(limit) & RLAR_LIMIT_MASK)
-                | pmsav8_rlar_attr(regions[i].attr) | RLAR_EN;
+            reg32(MPU_RBAR) = img->rbar[i];
+            reg32(MPU_RLAR) = img->rlar[i];
         }
         else
         {

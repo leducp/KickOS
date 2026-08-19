@@ -12,6 +12,7 @@
 #include <kickos/config.h>
 #include <kickos/endpoint.h> // EP_SERVED_NONE
 #include <kickos/list.h>
+#include <kickos/mpuset.h>
 
 #include <kickos/sys/abi.h> // KOS_THREAD_NONE
 #include <kickos/sys/atomic.h>
@@ -171,14 +172,13 @@ namespace kickos
         // These three fit the padding before `task`; moving them grows every TCB.
 
         // The task this thread belongs to (task.h), owner of the memory domain the group
-        // shares. That domain's regions are copied into regions[] below at create, plus this
+        // shares. That domain's regions are copied into `mpu` below at create, plus this
         // thread's own private regions, its stack and any DEV window it asked for; the
-        // effective set is what arch_mpu_apply loads per switch-in. A POINTER and not an
+        // effective set is what a switch-in loads. A POINTER and not an
         // index: an index beside it would land past the saturated padding above and cost 8
         // bytes on every 32-bit TCB.
         Task* task = nullptr;
-        arch_mpu_region regions[KICKOS_MPU_MAX_REGIONS] = {};
-        size_t region_count = 0;
+        MpuSet mpu;
 
         intptr_t wait_result = 0; // wake-status channel (mutex: 0 / -KOS_EOWNERDEAD;
                                   // endpoint: byte count >= 0, or -KOS_EPIPE); the waker
@@ -330,18 +330,18 @@ namespace kickos
         return members + (alignof(uint64_t) - members % alignof(uint64_t)) % alignof(uint64_t);
     }
 
-    // deadline_ns onwards, minus the region array and the capability directory. RXv3 aligns
+    // deadline_ns onwards, minus the MPU set and the capability directory. RXv3 aligns
     // uint64_t to 4 and so spends less padding here than every other 32-bit target.
     constexpr size_t thread_scalar_bytes()
     {
-        size_t bytes = 116;
+        size_t bytes = 116 - sizeof(size_t);
         if (sizeof(void*) == 8)
         {
-            bytes = 180;
+            bytes = 180 - sizeof(size_t);
         }
         else if (alignof(uint64_t) == 4)
         {
-            bytes = 112;
+            bytes = 112 - sizeof(size_t);
         }
 #if KCAP_RUN_CHUNKS > 1
         bytes = bytes + 2 * sizeof(uint16_t); // cap_width + cap_reply_live
@@ -350,8 +350,7 @@ namespace kickos
     }
 
     constexpr size_t KICKOS_THREAD_EXPECTED_SIZE =
-        thread_head_bytes() + KICKOS_MPU_MAX_REGIONS * sizeof(arch_mpu_region)
-        + sizeof(CapRun) + thread_scalar_bytes();
+        thread_head_bytes() + sizeof(MpuSet) + sizeof(CapRun) + thread_scalar_bytes();
 
     static_assert(sizeof(Thread) == KICKOS_THREAD_EXPECTED_SIZE,
                   "sizeof(Thread) moved. Either drop the member that grew the TCB, or re-measure "

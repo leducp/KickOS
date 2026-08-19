@@ -19,7 +19,6 @@
 
 #include "syscall_internal.h"
 
-#include <span>
 
 namespace kickos
 {
@@ -52,8 +51,7 @@ namespace kickos
         {
             return false; // address-space wrap
         }
-        std::span const regions{c->regions, c->region_count};
-        for (arch_mpu_region const& r : regions)
+        for (arch_mpu_region const& r : c->mpu)
         {
             if ((r.attr & need) != need)
             {
@@ -80,8 +78,7 @@ namespace kickos
         {
             return false; // address-space wrap
         }
-        std::span const regions{c->regions, c->region_count};
-        for (arch_mpu_region const& r : regions)
+        for (arch_mpu_region const& r : c->mpu)
         {
             // EXACT, not a superset: a region carrying a memory type the caller did not ask
             // for is a different mapping of the block, not a wider one.
@@ -107,8 +104,7 @@ namespace kickos
         // member is a read.
         arch_mpu_region const* mmio_block_of(Thread const* c, uintptr_t base)
         {
-            std::span const regions{c->regions, c->region_count};
-            for (arch_mpu_region const& r : regions)
+            for (arch_mpu_region const& r : c->mpu)
             {
                 uint32_t const need = ARCH_MPU_DEV | ARCH_MPU_R | ARCH_MPU_W;
                 if ((r.attr & need) != need)

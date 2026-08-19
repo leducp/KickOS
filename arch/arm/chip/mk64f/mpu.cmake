@@ -10,3 +10,9 @@
 # mpu.cmake is rejected there, so capability is an explicit opt-in, never inferred.
 # Validation status of this port: see docs/reference/boards.md.
 set(KICKOS_CHIP_ENFORCES_MPU ON)
+
+# This chip's MPU is the crossbar SYSMPU, not the core PMSA, so its descriptor is three
+# words per region and its encoder is the one in chip_mk64f.cc. The top CMakeLists turns
+# this into the KICKOS_ARM_MPU value armv7m kickos/arch/mpu_encoded.h lays the image out
+# from.
+set(KICKOS_ARM_MPU_BACKEND SYSMPU)

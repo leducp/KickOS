@@ -43,8 +43,13 @@ under enforcement. A short green selftest run is not sufficient.
 Split the one eager call into **stash** (eager, harmless) plus **commit** (deferred, atomic with
 the physical swap). The decisions inside that split:
 
-- **The stash is a COPY, not a pointer.** The commit must never chase a TCB whose region set
-  changed after the stash.
+- **The stash is a POINTER to the incoming thread's encoded image** (`MpuSet`,
+  `kernel/include/kickos/mpuset.h`), superseding the copy this seam shipped with. The image is
+  re-encoded by its owner alone, and that owner is the thread the pended switch lands on, so a
+  re-encode between the stash and the commit programs the set that thread actually has. Thread
+  slots come from a static pool and are never returned to an allocator, so a pointer left over
+  from an earlier switch still addresses valid storage; two publications under one lock leave the
+  second, which is the thread that runs.
 - **`arch_mpu_apply` has one plain shared definition and is not customisable; only
   `kickos_arch_mpu_commit` is per-target.** A chip whose MPU is not PMSAv7 defines the commit
   itself, in an always-anchored member reading the same stash, which keeps the fallback member

@@ -74,9 +74,12 @@ set(KICKOS_SEAM_DEFAULTS_ARM
   arm/common/arch_mpu_region_pow2_default.cc
   arm/common/arch_shutdown_default.cc
   arm/common/kickos_arch_mpu_commit_default.cc)
-# The fixed-region hook exists only where the region type and its caller do.
+# The fixed-region hook and the region encoder exist only where the region type and their
+# callers do.
 if(KICKOS_HAVE_MPU)
-  list(APPEND KICKOS_SEAM_DEFAULTS_ARM arm/common/kickos_arm_mpu_fixed_default.cc)
+  list(APPEND KICKOS_SEAM_DEFAULTS_ARM
+    arm/common/arch_mpu_encode_default.cc
+    arm/common/kickos_arm_mpu_fixed_default.cc)
 endif()
 
 if(KICKOS_ARCH STREQUAL "sim")

@@ -57,7 +57,7 @@ extern "C"
         return 0;
     }
 
-    void arch_mpu_apply(struct arch_mpu_region const*, size_t)
+    void arch_mpu_apply(struct arch_mpu_region const*, size_t, struct arch_mpu_encoded const*)
     {
     }
 

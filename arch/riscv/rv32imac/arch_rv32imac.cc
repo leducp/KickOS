@@ -248,14 +248,50 @@ static uint8_t pmp_cfg(uint32_t attr)
     return static_cast<uint8_t>(c);
 }
 
-// The set the next commit programs. A POINTER into the caller's region set, not a copy:
-// every commit on this arch is preceded by an apply inside the SAME MIE=0 window (the
-// msip trap, the .Lecall fastpath tail, arch_start, and the self-grant syscall, which
-// commits before it returns), so nothing can rewrite the set in between. Thread slots
-// come from a static pool and are never returned to an allocator, so a pointer left over
-// from an earlier switch still addresses valid region storage.
-static struct arch_mpu_region const* g_pend_regions = nullptr;
-static size_t g_pend_count = 0;
+// Pack the region set into the ten CSR words a commit writes. The cfg BYTES ride four to
+// a pmpcfg word, so the packing is a property of the whole set. A region PMP cannot name
+// (arch_mpu_region_encodable: a power-of-two size >= 8, naturally aligned) is left cfg 0,
+// which is no access at all rather than a NAPOT window somewhere near it.
+uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
+                         struct arch_mpu_encoded* out)
+{
+    if (n > ARCH_MPU_ENCODED_SLOTS)
+    {
+        n = ARCH_MPU_ENCODED_SLOTS;
+    }
+    uint32_t seated = 0;
+    uint8_t cfg[ARCH_MPU_ENCODED_SLOTS];
+    size_t i = 0;
+    for (; i < n; i++)
+    {
+        out->addr[i] = 0;
+        cfg[i] = 0;
+        if (arch_mpu_region_encodable(regions[i].base, regions[i].size))
+        {
+            out->addr[i] = pmp_napot_addr(regions[i].base, regions[i].size);
+            cfg[i] = pmp_cfg(regions[i].attr);
+            seated |= static_cast<uint32_t>(1) << i;
+        }
+    }
+    for (; i < ARCH_MPU_ENCODED_SLOTS; i++)
+    {
+        out->addr[i] = 0;
+        cfg[i] = 0;
+    }
+    out->cfg[0] = static_cast<uint32_t>(cfg[0]) | (static_cast<uint32_t>(cfg[1]) << 8)
+                | (static_cast<uint32_t>(cfg[2]) << 16) | (static_cast<uint32_t>(cfg[3]) << 24);
+    out->cfg[1] = static_cast<uint32_t>(cfg[4]) | (static_cast<uint32_t>(cfg[5]) << 8)
+                | (static_cast<uint32_t>(cfg[6]) << 16) | (static_cast<uint32_t>(cfg[7]) << 24);
+    return seated;
+}
+
+// The image the next commit programs. A POINTER into the caller's TCB, not a copy: every
+// commit on this arch is preceded by an apply inside the SAME MIE=0 window (the msip
+// trap, the .Lecall fastpath tail, arch_start, and the self-grant syscall, which commits
+// before it returns), so nothing can rewrite the image in between. Thread slots come from
+// a static pool and are never returned to an allocator, so a pointer left over from an
+// earlier switch still addresses valid storage.
+static struct arch_mpu_encoded const* g_pend_image = nullptr;
 
 #if KICKOS_BENCH
 // The kernel's phase accumulator, reached the way switch.S reaches
@@ -279,14 +315,12 @@ static uint32_t mpu_bench_cyc(void)
 // epilogue (switch.S) AFTER the physical msip-driven swap. Eager apply on the deferred
 // switch would run the OUTGOING user thread under the incoming PMP set until msip fires,
 // so it would fault on its own stack.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
+                    struct arch_mpu_encoded const* image)
 {
-    if (n > 8)
-    {
-        n = 8;
-    }
-    g_pend_regions = regions;
-    g_pend_count = n;
+    (void)regions;
+    (void)n;
+    g_pend_image = image;
 }
 
 // Program the 8 PMP entries from the stash. Called from .Lswitch / arch_start after the
@@ -297,32 +331,12 @@ void kickos_arch_mpu_commit(void)
 #if KICKOS_BENCH
     uint32_t const bench_start = mpu_bench_cyc();
 #endif
-    struct arch_mpu_region const* const regions = g_pend_regions;
-    size_t const n = g_pend_count;
-    // Build 8 PMP entries (0..7). A region is NAPOT-encoded only if its size is a
-    // power of two >= 8 (unprivileged regions come from the pow2 allocator); a non-pow2
-    // region (e.g. a privileged thread's whole-arena grant) is left OFF, which is
-    // harmless since that thread runs in M-mode and bypasses PMP.
-    // An aggregate initialiser here compiles to a memset call, and this image's memset
-    // is a byte loop; assign every element instead.
-    uint32_t addr[8];
-    uint32_t cfg[8];
-    size_t i = 0;
-    for (; i < n; i++)
+    struct arch_mpu_encoded const* const img = g_pend_image;
+    if (img == nullptr)
     {
-        addr[i] = 0;
-        cfg[i] = 0;
-        if (regions[i].size >= 8 and std::has_single_bit(regions[i].size))
-        {
-            addr[i] = pmp_napot_addr(regions[i].base, regions[i].size);
-            cfg[i] = pmp_cfg(regions[i].attr);
-        }
+        return;
     }
-    for (; i < 8; i++)
-    {
-        addr[i] = 0;
-        cfg[i] = 0;
-    }
+    uint32_t const* const addr = img->addr;
     // Write the addresses, then the two cfg words (which activate the entries).
     // This overwrites the permissive bootstrap TOR entry (kickos_rv32_init); the
     // kernel is in M-mode here and bypasses PMP, so the transient is safe.
@@ -336,10 +350,8 @@ void kickos_arch_mpu_commit(void)
     __asm volatile("csrw pmpaddr5, %0" ::"r"(addr[5]) : "memory");
     __asm volatile("csrw pmpaddr6, %0" ::"r"(addr[6]) : "memory");
     __asm volatile("csrw pmpaddr7, %0" ::"r"(addr[7]) : "memory");
-    uint32_t const cfg0 = cfg[0] | (cfg[1] << 8) | (cfg[2] << 16) | (cfg[3] << 24);
-    uint32_t const cfg1 = cfg[4] | (cfg[5] << 8) | (cfg[6] << 16) | (cfg[7] << 24);
-    __asm volatile("csrw pmpcfg0, %0" ::"r"(cfg0) : "memory");
-    __asm volatile("csrw pmpcfg1, %0" ::"r"(cfg1) : "memory");
+    __asm volatile("csrw pmpcfg0, %0" ::"r"(img->cfg[0]) : "memory");
+    __asm volatile("csrw pmpcfg1, %0" ::"r"(img->cfg[1]) : "memory");
     // Order the PMP update before the mret (arch_switch) that drops to U-mode, so the
     // incoming thread's fetches/loads see the new entries. The priv spec says the writing
     // hart sees PMP changes on its next access; the fence is the conservative guarantee
@@ -352,10 +364,12 @@ void kickos_arch_mpu_commit(void)
 #else
 // No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + syscall only. The
 // permissive bootstrap PMP stays in place.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
+                    struct arch_mpu_encoded const* image)
 {
     (void)regions;
     (void)n;
+    (void)image;
 }
 // .Lswitch/arch_start call this unconditionally; provide an empty no-MPU commit.
 void kickos_arch_mpu_commit(void) {}
