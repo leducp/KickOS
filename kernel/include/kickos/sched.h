@@ -74,6 +74,15 @@ namespace kickos
         [[nodiscard]] bool wake_no_resched(Thread* t);
         void resched_after_wake(Thread const* t);
 
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+        // The bookkeeping half of switch_to, for the IPC fastpath, which runs inside the
+        // trap handler and performs the register swap itself instead of pending one. Every
+        // state change switch_to makes happens here; what is left out is arch_switch.
+        // Returns the incoming context for the arch epilogue to restore. Caller holds
+        // IrqLock (the fastpath is entered with interrupts already masked by the trap).
+        struct arch_context* switch_prepare(Thread* next);
+#endif
+
         // The SOLE writer of a thread's effective priority: no other code may write
         // t->prio. A READY or RUNNING thread is re-seated through the policy hooks, since
         // rq_remove locates its list by reading t->prio and a bare field write would

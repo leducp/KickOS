@@ -17,6 +17,7 @@ static_assert(sizeof(kos_send(0, nullptr, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_send_timed(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_recv(0, nullptr, 0, nullptr)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_call(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
+static_assert(sizeof(kos_call_generic(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_call_timed(0, nullptr, 0, 0, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_recv_timed(0, nullptr, 0, nullptr)) == 4, "must be exactly 4 bytes");
 
@@ -137,7 +138,7 @@ int32_t kos_recv_timed(kos_cap_t ep, void* buf, size_t cap_len,
 
 int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap)
 {
-#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
     // The caller-side selection is SIZE only; the kernel's refusals are about STATE and
     // live in the fastpath.
     if (send_len <= (size_t)KOS_CALL_REG_BYTES and recv_cap <= (size_t)KOS_CALL_REG_BYTES)
@@ -173,6 +174,11 @@ int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap)
         }
     }
 #endif
+    return kos_call_generic(ep, buf, send_len, recv_cap);
+}
+
+int32_t kos_call_generic(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap)
+{
     return static_cast<int32_t>(arch_syscall(KOS_SYS_CALL,
                                              static_cast<uintptr_t>(ep),
                                              reinterpret_cast<uintptr_t>(buf),
@@ -342,6 +348,11 @@ void* kos_guard_addr(void)
 uint32_t kos_irq_spurious_count(void)
 {
     return static_cast<uint32_t>(arch_syscall(KOS_SYS_IRQ_SPURIOUS, 0, 0, 0, 0));
+}
+
+uint32_t kos_ipc_fast_taken(void)
+{
+    return static_cast<uint32_t>(arch_syscall(KOS_SYS_IPC_FAST_TAKEN, 0, 0, 0, 0));
 }
 
 uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size)

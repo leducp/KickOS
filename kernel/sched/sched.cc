@@ -24,7 +24,12 @@ namespace kickos
         // The one place a switch happens. Caller holds IrqLock.
         // `prev` is the PUBLISHED thread, not necessarily the executing one: a switch pended
         // earlier under this same lock has already moved off it.
-        void switch_to(Thread* next)
+        //
+        // Everything switch_to does EXCEPT arch_switch. Split out for the IPC fastpath, which
+        // swaps registers itself from inside the trap handler and so must make the same state
+        // changes without pending anything. always_inline keeps the split from moving a call
+        // frame into or out of the brackets below.
+        inline __attribute__((always_inline)) void switch_book(Thread* next)
         {
             KICKOS_BENCH_MARK(bm_book);
             Thread* prev = kernel().current;
@@ -53,6 +58,25 @@ namespace kickos
                 arch_ctx_redirect(&next->ctx, kickos_thread_slay_exit, next->stack_base,
                                   next->stack_size);
             }
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+            // A fastpath-parked thread has no kernel continuation to hand wait_result back
+            // through, so the switch that resumes it is the last place the result can reach
+            // its saved frame. Every waker (the reply, the timeout unwind, the cancel, the
+            // teardown EPIPE) keeps writing wait_result and waking as before; this is the
+            // one reader.
+            if (next->call_frame_parked != 0)
+            {
+                next->call_frame_parked = 0;
+                arch_ctx_set_syscall_result(&next->ctx,
+                                            static_cast<uint32_t>(next->wait_result));
+            }
+#endif
+        }
+
+        void switch_to(Thread* next)
+        {
+            Thread* prev = kernel().current;
+            switch_book(next);
             KICKOS_BENCH_MARK(bm_arch);
             arch_switch(&prev->ctx, &next->ctx);
             KICKOS_BENCH_SPAN(PH_ARCH_SWITCH, bm_arch);
@@ -118,6 +142,14 @@ namespace kickos
             switch_to(next);
             KICKOS_BENCH_SPAN(PH_SWITCH_TO, bm_switch);
         }
+
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+        struct arch_context* switch_prepare(Thread* next)
+        {
+            switch_book(next);
+            return &next->ctx;
+        }
+#endif
 
         void yield()
         {

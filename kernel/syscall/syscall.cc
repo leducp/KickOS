@@ -617,6 +617,10 @@ uint64_t syscall_body(uintptr_t nr,
         {
             return arch_mpu_probe_addr();
         }
+        case KOS_SYS_IPC_FAST_TAKEN:
+        {
+            return ipc_fast_taken_count();
+        }
         case KOS_SYS_IRQ_SPURIOUS:
         {
             return static_cast<uint64_t>(irq_spurious_count());

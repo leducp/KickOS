@@ -108,6 +108,10 @@ int32_t kos_recv_timed(kos_cap_t ep, void* buf, size_t cap_len,
 // endpoint or server died mid-call), EMFILE (the SERVER's cap table is full, so the reply cap
 // cannot be minted), ENOSYS (server took an info-less recv, so it hosts no calls).
 int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap);
+// The same call, always through the buffer-carrying KOS_SYS_CALL trap: identical arguments,
+// identical result, identical in-place reply, and the register form never attempted. It is the
+// arm kos_call itself falls through to.
+int32_t kos_call_generic(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap);
 // The same call, giving up after `timeout_us` RELATIVE microseconds, or never if that is
 // KOS_TIMEOUT_NONE. The deadline bounds the WHOLE call, both phases: the wait for a server
 // to take the request AND the wait for its reply.
@@ -262,6 +266,10 @@ void* kos_guard_addr(void);
 // Test-only: count of IRQs that fired on a line with no driver (masked by the
 // default handler).
 uint32_t kos_irq_spurious_count(void);
+// Test-only: count of calls the trap-handler IPC fastpath COMPLETED. It is the only
+// thing that tells a test which of the two call paths ran, since they answer a caller
+// identically. Reads 0 where the backend has no fastpath.
+uint32_t kos_ipc_fast_taken(void);
 // Test-only: exercise a Rule 7 grant predicate directly (no descriptor forged).
 // `op` is an enum kos_grant_op (abi.h):
 //   HITS_RESERVED -> grant_hits_reserved(base,size)                  (0/1)

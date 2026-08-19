@@ -447,6 +447,31 @@ endif()
 
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
+# --- Trap-handler IPC fastpath (KICKOS_ARCH_HAS_IPC_FASTPATH) ---------------
+# Set by an arch backend that completes the register-carrying kos_call inside the syscall
+# trap, redirecting the exception return into the target thread instead of into the
+# privileged-thread trampoline. It gates three things at once and they must not drift
+# apart: the stub's register arm, arch_syscall_reg with its result-store seam, and the
+# kernel's shared leaf.
+#
+# The backend that takes the seam declares it by shipping ipc_fastpath.cmake beside its
+# switch.S, on the model of the mpu.cmake opt-in. It is included here in this scope, so a
+# plain set is what it reads. There is no -D: the value must be the one the backend's trap
+# implements, so a board can neither ask for a fastpath its arch lacks nor drop the one it
+# has.
+set(KICKOS_ARCH_HAS_IPC_FASTPATH 0)
+set(_ipc_fastpath_optin
+  "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/ipc_fastpath.cmake")
+if(KICKOS_ARCH_FAMILY STREQUAL KICKOS_ARCH)
+  # The sim is its own family, and its backend sits at arch/sim with no family level.
+  set(_ipc_fastpath_optin
+    "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH}/ipc_fastpath.cmake")
+endif()
+if(EXISTS "${_ipc_fastpath_optin}")
+  include("${_ipc_fastpath_optin}")
+endif()
+add_compile_definitions(KICKOS_ARCH_HAS_IPC_FASTPATH=${KICKOS_ARCH_HAS_IPC_FASTPATH})
+
 # --- Per-arch caller-provided-stack floor (KICKOS_MIN_STACK_SIZE) -----------
 # The floor must cover the arch's deepest dispatch, the thread-exit teardown, which runs on
 # the CALLING thread's stack: a caller-provided stack below it passes the spawn check in

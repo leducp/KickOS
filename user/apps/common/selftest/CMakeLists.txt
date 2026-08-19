@@ -149,6 +149,7 @@ list(JOIN KICKOS_EXPECT_PARTIALS "," KICKOS_EXPECT_PARTIALS)
 set(_tap_arms 86) # unconditional, incl. endpoint_send_timeout, recv_timeout, timed_arg_refusals, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
+  math(EXPR _tap_arms "${_tap_arms} + 1") # call_reg_fastpath (region 1)
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 3") # endpoint_bound, grant_reserved, dev_window_exclusive
@@ -168,6 +169,9 @@ endif()
 # equality asserted below is only a check while both sides are stated separately, and a
 # new arm has to move a clause on each side.
 set(_tap_arms_p1 51) # region 1, unconditional, incl. endpoint_send_timeout, recv_timeout, timed_arg_refusals, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap
+if(KICKOS_ENABLE_SELFTEST)
+  math(EXPR _tap_arms_p1 "${_tap_arms_p1} + 1") # call_reg_fastpath: reads the fastpath counter
+endif()
 
 set(_tap_arms_p2 35) # region 2, unconditional, incl. thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
 if(KICKOS_ENABLE_SELFTEST)

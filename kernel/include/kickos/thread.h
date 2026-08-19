@@ -203,7 +203,16 @@ namespace kickos
         // IrqLock, single-writer at every stage.
         size_t call_rx_cap = 0;
         uint16_t call_seq = 0;
-        uint8_t call_state = CALL_NONE;
+        // A BITFIELD PAIR, and it has to stay one: the four bytes here are saturated against
+        // `wait_obj`'s alignment, so a separate byte for the flag would cost every TCB four.
+        // CallState spends two bits of the seven.
+        uint8_t call_state : 7 = CALL_NONE;
+        // Set ONLY by the trap-handler IPC fastpath, which parks a caller with no kernel
+        // continuation to return through: its whole resume is the arch restoring the saved
+        // syscall frame. So nothing will ever read wait_result on that thread's behalf, and
+        // the switch that resumes it has to store the result into the frame instead. Cleared
+        // there, by the one writer, so a thread carries it for exactly one park.
+        uint8_t call_frame_parked : 1 = 0;
         WaitKind wait_kind = WAIT_NONE;
 
         // The object the wait edge names, valid only for the kinds that document one.
