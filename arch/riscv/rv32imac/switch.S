@@ -268,6 +268,37 @@ trap_entry:
 /* the caller's own stack. Args are already in the frame's a0-a4 slots. The      */
 /* frame keeps the USER mstatus (MPP=caller priv) for the eventual return.       */
 .Lecall:
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+    /* THE SEAM. KOS_SYS_CALL_REG completes here, before the exception return that
+       would otherwise land in svc_trampoline and run the generic dispatch. The leaf
+       decides before it mutates, so a null return means nothing was committed and the
+       fall-through below is today's path exactly.
+       MIE is 0 (hardware cleared it at the vector), which is the interrupt mask the
+       leaf's IPC work needs, so it takes no IrqLock. g_isr_depth is NOT bumped: the
+       leaf calls scheduler code that must read arch_in_isr() false, as dispatch does. */
+    lw      t0, F_A0(sp)
+    li      t1, 56                  /* KOS_SYS_CALL_REG (sys/abi.h) */
+    bne     t0, t1, .Lecall_slow
+    addi    a0, sp, F_A0            /* the saved a0-a7, contiguous and writable */
+    call    kickos_ipc_fastpath
+    beqz    a0, .Lecall_slow        /* refused: nothing committed, take the trampoline */
+    /* Taken. a0 = the incoming thread's arch_context*. The caller is parked on its own
+       frame with mepc past the ecall, so its resume is a plain .Lrestore and its result
+       is stored into the frame by the switch that resumes it (sched.cc switch_book). */
+    lw      t0, F_MEPC(sp)
+    addi    t0, t0, 4
+    sw      t0, F_MEPC(sp)
+    la      t1, g_arch_current
+    lw      t2, 0(t1)               /* t2 = outgoing ctx* (the caller) */
+    sw      sp, 0(t2)               /* outgoing->sp = this frame */
+    sw      a0, 0(t1)               /* g_arch_current = incoming */
+    lw      sp, 0(a0)               /* sp = incoming->sp */
+    /* Deferred PMP commit for the incoming thread, the same seam and the same reason as
+       .Lswitch: the physical swap is complete and MIE is still 0. */
+    call    kickos_arch_mpu_commit
+    j       .Lrestore
+.Lecall_slow:
+#endif
     lw      a0, F_A0(sp)            /* nr */
     lw      a1, F_A1(sp)
     lw      a2, F_A2(sp)
@@ -420,3 +451,30 @@ arch_syscall:
 arch_syscall64:
     ecall
     ret
+
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+/* ------------------------------------------------------------------------- */
+/* int32_t arch_syscall_reg(uint32_t* io): the register-carrying IPC trap.      */
+/* io[0..7] load a0-a7; on return io[1..5] take back a1-a5 (the reply) and a0    */
+/* is the result. t0 holds `io` across the ecall because the trap frame saves     */
+/* and restores it, while a0-a5 are exactly what the kernel answers in.           */
+/* ------------------------------------------------------------------------- */
+    .global arch_syscall_reg
+arch_syscall_reg:
+    mv      t0, a0
+    lw      a0,  0(t0)
+    lw      a1,  4(t0)
+    lw      a2,  8(t0)
+    lw      a3, 12(t0)
+    lw      a4, 16(t0)
+    lw      a5, 20(t0)
+    lw      a6, 24(t0)
+    lw      a7, 28(t0)
+    ecall
+    sw      a1,  4(t0)
+    sw      a2,  8(t0)
+    sw      a3, 12(t0)
+    sw      a4, 16(t0)
+    sw      a5, 20(t0)
+    ret
+#endif

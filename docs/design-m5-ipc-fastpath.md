@@ -814,8 +814,14 @@ column rather than asserted.
 
 ## 5. MEASURED: the fastpath works, and section 4.4's budget was wrong
 
-Built for rv32imac and measured on `esp32c6-wroom`, same tree, same board, only an A/B knob
-differing. Both captures reproduced byte-for-byte across independent flash cycles.
+Built for rv32imac and measured on `esp32c6-wroom`, same tree, same board, one image per arm and
+a build-time knob between them. Both captures reproduced byte-for-byte across independent flash
+cycles. **The numbers below stand; the method that produced them is gone.**
+`KICKOS_ARCH_HAS_IPC_FASTPATH` is now the arch backend's own declaration
+(`arch/riscv/rv32imac/ipc_fastpath.cmake`) and takes no `-D` in either direction. A repeat
+capture uses ONE image: the caller-side selection is size only and the kernel's refusal falls
+through at runtime, so `kos_call_generic` reaches the generic path from userspace, and
+`user/apps/common/bench` runs both arms over the spans the register form can carry.
 
 | payload | fastpath off | fastpath on | apparent delta |
 |---|---|---|---|
@@ -823,7 +829,7 @@ differing. Both captures reproduced byte-for-byte across independent flash cycle
 | **16 B** | 56581 ns | **48344 ns** | -8237 ns (-1318 cycles) |
 | 32 B and above | unchanged | +175 ns | buffer form, not taken |
 
-**The apparent delta lies, and correcting it is the point of section 4.10.** Both builds carry the
+**The apparent delta lies, and correcting it is the point of section 4.10.** Both arms carry the
 bench instrument, and the fastpath executes none of the call-side brackets. The instrument's own `n`
 columns say how many: bracket executions fell by 760000 over 40000 fastpath calls, which is
 **exactly 19.00 brackets per round trip** -- an integer, which is how the accounting is known to have
@@ -848,7 +854,7 @@ wrong is the transferable lesson.**
 - **On this board the round trip is dominated by what a fastpath may NOT touch**, exactly as section
   4.4's own floor argued but in a much larger proportion than it assumed. `MPU_APPLY` alone is 450
   cycles times two switches -- **900 cycles, 13.8 percent** -- and its sample count is IDENTICAL in
-  both builds, confirming the fastpath removed no switch. Switch machinery that may not be skipped
+  both arms, confirming the fastpath removed no switch. Switch machinery that may not be skipped
   totals about 1428 cycles, 21.9 percent.
 - **Only one of the round trip's THREE locked legs was attacked.** Section 3.0.4 established that a
   round trip holds the lock three times, not twice; the recv park and the reply still take the full

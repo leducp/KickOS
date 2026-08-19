@@ -159,6 +159,16 @@ void arch_context_init(struct arch_context* ctx,
     ctx->sp = reinterpret_cast<uint32_t>(f);
 }
 
+#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
+// The fastpath parks a caller on its own syscall frame with no kernel continuation, so
+// the result has to be seated where .Lrestore reloads a0 from. ctx->sp is the frame base
+// and the thread is not running, so this is a plain store to memory nothing else holds.
+void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
+{
+    reinterpret_cast<uint32_t*>(ctx->sp)[F_A0] = result;
+}
+#endif
+
 // The whole seam on this backend: the fabricated frame's F_MSTATUS carries MPP=M, so
 // the mret that resumes it lands in M-mode. Nothing here touches a live CSR, which is
 // the half of arch_fault_redirect_to_exit that is not relocatable to a saved context.

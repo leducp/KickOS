@@ -236,6 +236,10 @@ namespace
     // Same write discipline as g_cr_len.
     Atomic<uint32_t, Order::RELAXED> g_cr_donating{0};
 
+    // Non-zero puts the caller on kos_call_generic, which issues KOS_SYS_CALL without
+    // attempting the register form. Same write discipline as g_cr_len.
+    Atomic<uint32_t, Order::RELAXED> g_cr_generic{0};
+
     void callreply_server(void*) // caps: E(WAIT)@1, done@2
     {
         unsigned char buf[KOS_EP_MSG_MAX];
@@ -261,16 +265,32 @@ namespace
         {
             buf[i] = static_cast<unsigned char>(i);
         }
+        // Selected OUTSIDE the timed loop, so neither arm carries the other's branch.
+        bool const generic = (g_cr_generic != 0);
         uint64_t t0 = kos::clock_now();
         uint32_t reps = 0;
-        while (reps < CALLREPLY_REPS)
+        if (generic)
         {
-            // In place: the reply lands back in the request buffer.
-            if (kos_call(1, buf, len, len) < 0)
+            while (reps < CALLREPLY_REPS)
             {
-                break;
+                if (kos_call_generic(1, buf, len, len) < 0)
+                {
+                    break;
+                }
+                reps++;
             }
-            reps++;
+        }
+        else
+        {
+            while (reps < CALLREPLY_REPS)
+            {
+                // In place: the reply lands back in the request buffer.
+                if (kos_call(1, buf, len, len) < 0)
+                {
+                    break;
+                }
+                reps++;
+            }
         }
         uint64_t d_ns = kos::clock_now() - t0;
 
@@ -289,13 +309,18 @@ namespace
             {
                 shape = " [caller outranks server, D1 donates]";
             }
-            char s[192];
+            char const* path = "";
+            if (generic)
+            {
+                path = " [generic path]";
+            }
+            char s[256];
             ksnprintf(
                 s, sizeof(s),
-                "  call/reply: %u B  %u ns/round-trip  (%u round-trips/s over %u calls / %u ms)%s\n",
+                "  call/reply: %u B  %u ns/round-trip  (%u round-trips/s over %u calls / %u ms)%s%s\n",
                 static_cast<unsigned>(len), static_cast<unsigned>(ns_per_rt),
                 static_cast<unsigned>(rt_per_s), static_cast<unsigned>(CALLREPLY_REPS),
-                static_cast<unsigned>(d_ns / 1000000ull), shape);
+                static_cast<unsigned>(d_ns / 1000000ull), path, shape);
             kos::print(s);
         }
         kos_sem_post(2);
@@ -303,7 +328,8 @@ namespace
     // endpoint_call's D1 donation is guarded on caller_prio strictly greater than
     // server_prio, so an equal-priority step leaves that phase row with zero samples.
     // Both must stay above root (see CR_PRIO).
-    void measure_callreply(uint32_t len, uint8_t caller_prio, uint8_t server_prio)
+    void measure_callreply(uint32_t len, uint8_t caller_prio, uint8_t server_prio,
+                           uint32_t generic)
     {
         g_cr_len = len;
         uint32_t donating = 0;
@@ -312,6 +338,7 @@ namespace
             donating = 1;
         }
         g_cr_donating = donating;
+        g_cr_generic = generic;
         kos_cap_t ep = KOS_CAP_NONE;
         if (kos_endpoint_create(&ep) != 0)
         {
@@ -373,11 +400,22 @@ int main(int, char**)
     // root's carry the whole sweep.
     for (unsigned i = 0; i < sizeof(CR_SPANS) / sizeof(CR_SPANS[0]); i++)
     {
-        measure_callreply(CR_SPANS[i], CR_PRIO, CR_PRIO);
+        measure_callreply(CR_SPANS[i], CR_PRIO, CR_PRIO, 0);
+    }
+
+    // The generic arm of the spans the register form can carry, so one run holds both sides
+    // of the fastpath comparison. Above KOS_CALL_REG_BYTES kos_call already issues this same
+    // trap, and on a backend with no fastpath the two arms are the same code either way.
+    for (unsigned i = 0; i < sizeof(CR_SPANS) / sizeof(CR_SPANS[0]); i++)
+    {
+        if (CR_SPANS[i] <= static_cast<uint32_t>(KOS_CALL_REG_BYTES))
+        {
+            measure_callreply(CR_SPANS[i], CR_PRIO, CR_PRIO, 1);
+        }
     }
 
     // Read the phase table's donate row against the equal-priority rows above.
-    measure_callreply(CR_DONATE_SPAN, CR_PRIO + 1u, CR_PRIO);
+    measure_callreply(CR_DONATE_SPAN, CR_PRIO + 1u, CR_PRIO, 0);
     (void)kos_bench(KOS_BENCH_OP_PHASE_PRINT, 0, 0); // the kernel writes the table
     kos::print("\n");
 
@@ -394,6 +432,8 @@ int main(int, char**)
     auto rb = kos::thread::spawn_caps(player_b, nullptr, "bench_b", 1, bcaps, 3);
     if (not ra.valid() or not rb.valid())
     {
+        // Do not park here: on a bootloader-handover board a parked app costs a physical
+        // button press, which the bounded reporter exists to avoid.
         kos::print("bench: FAILED to spawn players (thread pool too small?)\n");
         return 1;
     }
