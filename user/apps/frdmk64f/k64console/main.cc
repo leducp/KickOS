@@ -10,9 +10,8 @@
 // FUNCTIONAL + RECLAIM-PROOF, NOT per-thread peripheral ownership: this app's window
 // grant is one of the three genuinely inert ones (docs/reference/boards.md, "When an
 // MMIO grant is INERT"). What SYSMPU DOES still enforce is MEMORY isolation (each
-// thread's stack/data), and that is exactly what the scramble test faults against to
-// trigger the panic-path console reclaim. That is why the KICKOS_HAVE_MPU gate stays:
-// without SYSMPU the memory-fault trigger cannot fire.
+// thread's stack/data), which is what confines the unprivileged driver that owns the
+// published console. The flat variant is a different demo, not this one with a knob off.
 //
 // Flow:
 //   * Before main: a global constructor emits one line via printf. Constructors run
@@ -31,8 +30,7 @@
 //     worker is spawned AFTER publish), rendezvous-delivered to the driver, then
 //     poll-written to UART0. No knowledge of endpoints/drivers/MMIO in the worker.
 //
-// Requires enforcement (the board's base variant): SYSMPU memory isolation is what the
-// scramble test's ungranted-memory write faults against to trigger the reclaim path.
+// Requires enforcement: the board's base variant.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -95,13 +93,10 @@ namespace
 
     // Unprivileged, granted NO MMIO window at all. It reaches UART0 anyway through the
     // AIPS slot the bring-up opened, which IS the coarse-AIPS point being shown: a
-    // peripheral window grant would not have contained it. `arg` is an SRAM cell root
-    // allocated but did NOT grant to this thread (the fault target). It (1) garbles
-    // UART0 to the silent-loss state via byte writes; (2) logs a marker via kos::print
-    // (RTT / kernel debug path, NOT the dark chip path, NOT stdio) so the scramble is
-    // provably ordered before the fault; (3) provokes a fault via that UN-GRANTED
-    // MEMORY write. Step 3 strictly follows steps 1-2 in this straight-line thread.
-    void scrambler(void* arg)
+    // peripheral window grant would not have contained it. The marker goes out on kos::print
+    // (RTT / kernel debug path, NOT the dark chip path, NOT stdio), and the panic strictly
+    // follows the garble in this straight-line thread.
+    void scrambler(void*)
     {
         uintptr_t const uart = UART0_BASE;
         r8(uart + OFF_MODEM) = MODEM_TXCTSE; // absent-CTS silent loss (the king)
@@ -110,23 +105,24 @@ namespace
         r8(uart + OFF_C3) = C3_TXINV;        // invert the TX line
         r8(uart + OFF_C2) = 0;               // TX/RX off LAST -> UART fully dead
 
-        kos::print("[scramble] UART0 garbled (TXCTSE/baud/TXINV, TX off); forcing memory fault\n");
+        kos::print("[scramble] UART0 garbled (TXCTSE/baud/TXINV, TX off); ending the system\n");
 
-        // Fault via an UN-GRANTED MEMORY write (the mpu_fault mechanism). A past-the-
-        // window PERIPHERAL write does NOT fault on coarse-AIPS (peripherals are not
-        // SYSMPU slave ports), so the trigger MUST be memory. `arg` points into an SRAM
-        // region root allocated but never granted to this thread, so this store raises a
-        // SYSMPU protection error -> bus/HardFault (MMFSR=0 on K64F) ->
-        // kickos_armv7m_fault_report -> kpanic_enter -> arch_console_reclaim (the real
-        // K64F reclaim body runs, undoing the garble) -> the fault report prints THROUGH
-        // the reclaimed UART. Expected on-wire banner: "=== HARD FAULT ===" plus the
-        // "SYSMPU ISOLATION FAULT" capture line (NOT "MPU FAULT": that label needs a core
-        // MMFSR byte, which K64F does not set for a bus-side SYSMPU trap).
-        volatile int* bad = static_cast<volatile int*>(arg);
-        *bad = 0xDEAD;
-
-        kos::print("[scramble] ERROR: memory write did not fault (SYSMPU not enforcing?)\n");
-        kos_exit(1);
+        // THE TERMINAL EVENT MUST BE A PANIC AND NOT A FAULT. An unprivileged thread's
+        // fault is answered by kickos_fault_kill_thread before kpanic_enter runs:
+        // arch_fault_is_user_thread says yes for an unprivileged thread whose frame is its
+        // own, so the thread dies, the system lives, and the thread-kill path deliberately
+        // does not reclaim the console (the ruling is stated in kpanic_enter,
+        // kernel/init/console.cc). Nothing would then reach the wire at all: the chip path
+        // is dropped while the console is published, and the record routed to the driver is
+        // poll-written into the UART this thread just killed. So no fault banner is
+        // reachable from an app here, and a privileged thread is no way out either, because
+        // PRIVDEFENA is on.
+        //
+        // kos_panic is the terminal path an unprivileged thread still has, and it reaches
+        // kpanic_enter through the same call the fault reporter used, so the reclaim body
+        // under test is unchanged. Kept well inside user_panic's 64-byte buffer, so the
+        // verdict is not truncated.
+        kos_panic("[k64console] PASS: the dead channel came back");
     }
 #endif
 }
@@ -139,18 +135,11 @@ int main(int, char**)
     // call here: doing one would DOUBLE publish (a second endpoint + a second driver,
     // both granted UART0, the first driver parked forever).
 #if K64CONSOLE_SCRAMBLE_TEST
-    // Scramble-then-panic test: the driver is up. Allocate an SRAM cell that we do NOT
-    // grant to the scrambler; its write there faults (the mpu_fault mechanism). Give the
-    // driver a beat to emit its first-light banner, then spawn the scrambler (NO MMIO
-    // grant, NO memory grant) that garbles UART0 and faults.
-    void* const fault_target = kos_ram_alloc(4096);
-    if (fault_target == nullptr)
-    {
-        kos::print("[k64console] ERROR: fault-target ram_alloc failed\n");
-    }
+    // Scramble-then-panic test: the driver needs a beat to emit its first-light banner
+    // before the scrambler (NO MMIO grant, NO memory grant) garbles UART0 under it.
     kos_sleep_ns(200000000ull); // 200 ms
     auto const s = kos::thread::spawn(
-        scrambler, fault_target, "scrambler",
+        scrambler, nullptr, "scrambler",
         /*prio=*/SCRAMBLER_PRIO, KOS_POLICY_FIFO, /*quantum_ns=*/0,
         /*privileged=*/false);
     if (not s.valid())

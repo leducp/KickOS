@@ -87,7 +87,8 @@ fractured along this line at M1. The implementations:
 | sim | `arch_clock_now` -> **us** as u32 (ns/1000) | 32 | 1 MHz | us not ns, so it wraps at ~71 min not 4.29 s (CI runs never alias). Logic/structural only, not a timing benchmark. |
 | xtensa / esp32 | `CCOUNT` (RSR) -- free-running, independent of the kernel timer (`arch_xtensa.cc`) | 32 | CPU clk | cycle-accurate. |
 | rx / rx72m | the free-running **CMTW1** the RX port already runs for `arch_clock_now` (one `CMWCNT` read; CMTW min prescaler is PCLK/8) (`arch_rxv3.cc`) | 32 | ~PCLK/8 | **not** a "cycle counter" -- RXv3 has none. |
-| riscv / rv32imac | `rdcycle` CSR, low 32 bits (`arch_rv32imac.cc`; `mcounteren.CY` is opened in `kickos_rv32_init` so U-mode can read it too) | 32 | CPU clk | cycle-accurate. |
+| riscv / rv32imac, chip `virt` (`qemu-riscv`) | `rdcycle` CSR, low 32 bits (`arch_rv32imac.cc`; `mcounteren.CY` is opened in `kickos_rv32_init` so U-mode can read it too) | 32 | CPU clk | emulated, so structural coverage only. |
+| riscv / rv32imac, chip `esp32c6` (`esp32c6-wroom`) | **none.** The HP core implements no Zicntr counter (C6 TRM v1.2 s1.5.1), so the arch `rdcycle` reader is an illegal instruction there, in M-mode as well as U-mode. `HAS_TRACE_CLOCK` is n and telemetry is refused at configure. | -- | -- | the part's own counters (custom `mpccr`, CLINT `MTIME`) are not wired to `arch_trace_now`; `KICKOS_BENCH` uses the latter through its own seam. |
 
 **Why RP2040 stays at 1 us.** SysTick **is** the kernel's tickless one-shot timer
 on this port (`arch_armv6m.cc`; re-armed every switch via `ktime_rearm`), so it

@@ -32,6 +32,15 @@ struct arch_context
     // hard-codes it at OFFSET 4.
     uint32_t trace_tid;
 #endif
+
+    // Stack bounds trap_entry (switch.S) checks the interrupted U-mode sp against
+    // before it stores a frame through it: a U-mode thread owns its sp and can aim it
+    // at kernel memory, which the software M-mode prologue would otherwise write. Set
+    // once by arch_context_init; read as plain words at the offsets F_CTX_STACK_LO /
+    // F_CTX_STACK_HI hard-coded in switch.S. A sp outside [stack_lo, stack_hi] routes
+    // the trap to the fault reporter instead of storing.
+    uint32_t stack_lo;
+    uint32_t stack_hi;
 };
 
 #endif

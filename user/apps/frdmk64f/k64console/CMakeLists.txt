@@ -22,10 +22,21 @@ kickos_add_application(k64console
 # Scramble-then-panic reclaim test mode. OFF by default: this is a deliberate HARDWARE
 # test, not the normal handover demo. When ON, k64console spawns an unprivileged
 # scrambler (NO MMIO grant) that garbles UART0 through the open AIPS slot to the silent-
-# loss state (TXCTSE/baud/TXINV, TX off) and then forces a SYSMPU memory fault, so an
-# operator can confirm the "=== HARD FAULT ===" banner STILL reaches the wire
-# (arch_console_reclaim recovered the UART). Enable with -DK64CONSOLE_SCRAMBLE_TEST=ON.
-# PASS is silicon-observable.
+# loss state (TXCTSE/baud/TXINV, TX off) and then panics, so an operator can confirm the
+# "KERNEL PANIC: [k64console] PASS: the dead channel came back" line STILL reaches the
+# wire (arch_console_reclaim recovered the UART out of the PUBLISHED state, with the
+# userspace driver still holding it). Enable with -DK64CONSOLE_SCRAMBLE_TEST=ON.
+#
+# No fault banner is reachable here: fault isolation answers the scrambler's fault by killing
+# the thread, and the thread-kill path does not reclaim, so the run goes dark. main.cc records
+# why kos_panic is the only terminal path an app has left. This criterion has never been
+# witnessed on K64F silicon; take the capture on the next pass.
+#
+# NOT RETIRED, though conreclaim shows the same reclaim body: that app runs with
+# kickos_services_none, so its console is KERNEL_OWNED and never published. This is the only
+# arm in the tree that reclaims out of USER_OWNED, the state a real board with a console
+# driver actually panics in, and the only one whose garbler reaches the device with no MMIO
+# grant at all (coarse AIPS). Deleting it would drop both.
 option(K64CONSOLE_SCRAMBLE_TEST "k64console: scramble-then-panic console-reclaim test mode" OFF)
 if(K64CONSOLE_SCRAMBLE_TEST)
   target_compile_definitions(k64console PRIVATE K64CONSOLE_SCRAMBLE_TEST=1)
@@ -33,6 +44,7 @@ else()
   target_compile_definitions(k64console PRIVATE K64CONSOLE_SCRAMBLE_TEST=0)
 endif()
 
-# No CTest gate: this app answers a HARDWARE question (userspace UART ownership +
-# the client->driver->wire path + panic-path reclaim) and is validated by the operator
-# on K64F silicon, not by the in-env sim (a live publish silences the sim TAP).
+# No CTest gate, and no way to add one: this app answers a HARDWARE question (userspace
+# UART ownership + the client->driver->wire path + panic-path reclaim). K64F has no QEMU
+# model and the in-env sim has no UART to garble, nor a TAP stream to read once a live
+# publish silences it, so the operator on silicon is the only reader either arm can have.

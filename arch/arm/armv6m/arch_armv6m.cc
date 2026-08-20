@@ -34,8 +34,8 @@ namespace kickos
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
-// Verbose CPU-context dump. Default on; -DKICKOS_PANIC_DUMP=0 keeps only the
-// one-line fault marker. Same knob and default on every arch reporter.
+// 0 keeps only the one-line fault marker; set it in the board defconfig or with
+// cmake -DKICKOS_PANIC_DUMP=0.
 #ifndef KICKOS_PANIC_DUMP
 #define KICKOS_PANIC_DUMP 1
 #endif
@@ -46,10 +46,28 @@ static_assert(offsetof(struct arch_context, sp) == 0, "switch.S expects ctx.sp @
 static_assert(offsetof(struct arch_context, npriv) == 4, "switch.S expects ctx.npriv @4");
 static_assert(offsetof(struct arch_context, resting_npriv) == 8,
               "switch.S expects ctx.resting_npriv @8");
+// The PSP bounds guard reads these two as plain displacements, so a reorder would have it
+// compare a PSP against the wrong words and pass one with no room below it. Both offsets are
+// UNCONDITIONAL: the telemetry field is last so no build posture moves them.
+static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_ARMV6M_CTX_OFF_STACK_LO,
+              "switch.S reads ctx.stack_lo at F_CTX_STACK_LO");
+static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_ARMV6M_CTX_OFF_STACK_HI,
+              "switch.S reads ctx.stack_hi at F_CTX_STACK_HI");
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-static_assert(offsetof(struct arch_context, trace_tid) == 12,
-              "switch.S telemetry hook expects ctx.trace_tid @12");
+static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_ARMV6M_CTX_OFF_TRACE_TID,
+              "switch.S telemetry hook expects ctx.trace_tid at F_CTX_TRACE_TID");
 #endif
+
+namespace
+{
+    // The {r4-r11} block the two software pushes write below the live PSP, and the block
+    // arch_context_init fabricates for a first switch-in. Drives both the fabrication loop
+    // and the assertion that F_TRAP_FRAME prices exactly this register list: gas cannot
+    // count the registers in an stmia.
+    constexpr size_t CALLEE_BLOCK_WORDS = 8;
+}
+static_assert(CALLEE_BLOCK_WORDS * sizeof(uint32_t) == KICKOS_ARMV6M_TRAP_FRAME,
+              "PSP_GUARD's F_TRAP_FRAME prices {r4-r11}: eight words");
 
 namespace
 {
@@ -88,7 +106,7 @@ void arch_context_init(struct arch_context* ctx,
     *(--sp) = 0;                                        // r1
     *(--sp) = reinterpret_cast<uint32_t>(arg);          // r0 = arg
     // PendSV-saved block {r4-r11} (no EXC_RETURN word on v6-M).
-    for (int i = 0; i < 8; i++)
+    for (size_t i = 0; i < CALLEE_BLOCK_WORDS; i++)
     {
         *(--sp) = 0;
     }
@@ -101,6 +119,12 @@ void arch_context_init(struct arch_context* ctx,
     }
     ctx->npriv = npriv;
     ctx->resting_npriv = npriv;
+
+    // PendSV and the SVC fastpath check the live PSP against these before either pushes
+    // {r4-r11} through it. `top` is the 8-byte-aligned high edge the first frame sits
+    // below, so a running thread's PSP stays in [stack_lo, stack_hi).
+    ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
+    ctx->stack_hi = static_cast<uint32_t>(top);
 }
 
 // The whole seam on this backend: the fabricated first frame already lands at the stack
@@ -230,6 +254,55 @@ __attribute__((naked)) void HardFault_Handler(void)
         // --gc-sections the reporter can land farther than that from this handler.
         "ldr  r2, =kickos_armv6m_fault_report \n"
         "bx   r2              \n");
+}
+
+// Called from switch.S when the running thread's live PSP has no room BELOW it for the
+// {r4-r11} block the push is about to write there. Exception entry stacks the hardware
+// frame ABOVE the PSP under the pre-exception privilege, so the MPU refuses only that
+// half: a PSP aimed a few words above a stack's base passes entry and lands the software
+// block in the NEIGHBOURING thread's own granted memory, where r10 and r11 overwrite that
+// thread's stacked PC and xPSR.
+//
+// Runs in handler mode on the MSP. Contains the system rather than the write: there is no
+// frame to trust and no PSP a resume could be handed.
+void kickos_armv6m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi)
+{
+    kpanic_enter();
+#if KICKOS_PANIC_DUMP
+    // WHICH bound refused, re-derived from the values: the three legs share one guard.
+    char const* why = "no room below";
+    if (psp < lo)
+    {
+        why = "under stack_lo";
+    }
+    else if (psp >= hi)
+    {
+        why = "at or above stack_hi";
+    }
+    // WHICH guarded push refused, read from ICSR.VECTACTIVE rather than passed in: both
+    // reach here through one guard, and nothing in the arguments separates them.
+    uint32_t const vect = reg32(0xE000ED04) & 0x1FFu;
+    char const* site = "handler";
+    if (vect == 11u)
+    {
+        site = "SVCall";
+    }
+    else if (vect == 14u)
+    {
+        site = "PendSV";
+    }
+    ::kickos::kprintf("\n=== ARMV6M EXCEPTION (wild PSP: %s) ===\n", why);
+    ::kickos::kprintf("  in %s PSP=0x%x need=%u stack=[0x%x,0x%x)\n", site,
+                      static_cast<unsigned>(psp), static_cast<unsigned>(need),
+                      static_cast<unsigned>(lo), static_cast<unsigned>(hi));
+#else
+    (void)psp;
+    (void)need;
+    (void)lo;
+    (void)hi;
+    ::kickos::kprintf("\n=== ARMV6M EXCEPTION (wild PSP) ===\n");
+#endif
+    kfault_terminate();
 }
 
 // Install the system-handler priorities (SHPR is word-access only on v6-M).

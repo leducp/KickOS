@@ -112,6 +112,7 @@ config CHIP_VIRT
 	bool
 	select ARCH_RV32IMAC
 	select HAS_MPU
+	select HAS_TRACE_CLOCK
 
 config CHIP_RX72M
 	bool

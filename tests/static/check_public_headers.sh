@@ -72,10 +72,16 @@ echo "PASS: $n installed headers compile standalone at $STD"
 #           adopted `bool`, `alignas`, `static_assert` and `nullptr` as keywords, so a
 #           default-std run accepts four C++-only spellings and reports them clean.
 #
-# NOT CAUGHT: anything behind a preprocessor conditional these -D's do not select; a GNU
-# extension (no -pedantic, matching a real consumer build); LINKING, since -fsyntax-only
-# proves only that a C TU parses against the header. Nor does the selector check that the
-# __cplusplus it found is what GUARDS the `extern "C"`; co-occurrence is what it tests.
+#   pedantic a SECOND pass over the same corpus at -pedantic-errors. The first is not
+#           pedantic: it mirrors a real consumer build, extensions on. This one is what
+#           fails a GNU-only construct before a consumer compiling strictly conforming C11
+#           does. Its TU carries a trailing typedef, because -pedantic-errors forbids the
+#           empty translation unit a macros-only header would otherwise produce.
+#
+# NOT CAUGHT: anything behind a preprocessor conditional these -D's do not select; LINKING,
+# since -fsyntax-only proves only that a C TU parses against the header. Nor does the selector
+# check that the __cplusplus it found is what GUARDS the `extern "C"`; co-occurrence is what
+# it tests.
 # ===========================================================================
 
 CSTD=c11
@@ -84,6 +90,7 @@ STRIP="$(dirname "$0")/../lib/strip_comments.awk"
 
 # $CFLAGS is deliberately unquoted at the call sites so it word-splits.
 CFLAGS="-std=$CSTD -ffreestanding -fsyntax-only"
+PEDFLAGS="$CFLAGS -pedantic-errors"
 
 compile_as_c() { # <include-spelling> <stderr file>; 0 ok, 1 not valid C, 2 an include was missing
   # The TU comes from stdin so nothing resolves relative to a scratch directory.
@@ -92,6 +99,13 @@ compile_as_c() { # <include-spelling> <stderr file>; 0 ok, 1 not valid C, 2 an i
   fi
   grep -q 'No such file or directory' "$2" && return 2
   return 1
+}
+
+# The trailing typedef keeps the TU non-empty: -pedantic-errors forbids an empty translation
+# unit, which is what a macros-only header would otherwise produce.
+compile_pedantic_c() { # <include-spelling> <stderr file>
+  printf '#include <%s>\ntypedef int kos_gate_pedantic_tu;\n' "$1" \
+    | "$CC" $PEDFLAGS "${DEFS[@]}" -I"$INC" -I"$TMP/p" -x c - 2>"$2"
 }
 
 # --- the compiler and the pin, proven both ways ----------------------------
@@ -122,6 +136,34 @@ probe_neg nullptr       'static inline void* f(void) { return nullptr; }'
 probe_neg bool          'bool kos_probe_b(void);'
 probe_neg static_assert 'static_assert(1, "the C++ spelling");'
 probe_neg alignas       'struct s { alignas(8) unsigned char b[8]; };'
+
+# Strictly conforming C11 and nothing else: a red at PEDFLAGS must never be the probe's own.
+cat > "$TMP/p/ped_ok.h" <<'EOF'
+#include <stdint.h>
+_Static_assert(sizeof(uint32_t) == 4, "the C11 spelling");
+EOF
+compile_pedantic_c ped_ok.h "$TMP/p/ped_ok.err" || {
+  sed -n '1,4p' "$TMP/p/ped_ok.err" >&2
+  fail "$CC refuses strictly conforming C11 at $PEDFLAGS, so every pedantic finding below
+      would be its own"
+}
+
+# Each is a GNU extension the first pass accepts, so the pedantic pass is the one that has to
+# reject it.
+probe_ped() { # <tag> <one line of GNU-extension C>
+  printf '%s\n' "$2" > "$TMP/p/ped.h"
+  if ! compile_as_c ped.h "$TMP/p/ped.err"; then
+    sed -n '1,4p' "$TMP/p/ped.err" >&2
+    fail "the first pass rejects \`$1\`, so it is no longer the extension-tolerant pass the
+      pedantic one is meant to sit beside"
+  fi
+  if compile_pedantic_c ped.h "$TMP/p/ped.err"; then
+    fail "$CC accepts \`$1\` at $PEDFLAGS, which is a GNU extension and not ISO C11, so the
+      pedantic pass is blind to it and -pedantic-errors did not take"
+  fi
+}
+probe_ped fixed_enum 'enum kos_probe_fe : unsigned { KOS_PROBE_FE = 0 };'
+probe_ped zero_array 'struct kos_probe_za { unsigned n; int v[0]; };'
 
 # --- the selector -----------------------------------------------------------
 # The stripper blanks string literals as well as comments, so `extern "C"` survives it only
@@ -222,4 +264,21 @@ if [ -s "$TMP/cbad" ]; then
       C++ only and leaves this corpus."
 fi
 
-echo "PASS: $CN C-facing installed header(s) compile standalone at $CFLAGS"
+: > "$TMP/pedbad"
+: > "$TMP/pedbad.err"
+while IFS= read -r h; do
+  if ! compile_pedantic_c "$h" "$TMP/ped.err"; then
+    printf '%s\n' "$h" >> "$TMP/pedbad"
+    { printf '%s\n' "$h"; sed -n '1,6p' "$TMP/ped.err"; } >> "$TMP/pedbad.err"
+  fi
+done < "$TMP/ccorpus.s"
+
+if [ -s "$TMP/pedbad" ]; then
+  cat "$TMP/pedbad.err" >&2
+  echo "" >&2
+  fail "$(wc -l < "$TMP/pedbad" | tr -d ' ') C-facing installed header(s) compile as C11 only
+      with GNU extensions on. A consumer building strictly conforming C11 gets a hard error
+      out of a shipped header, so write the ISO C11 spelling of what it needs."
+fi
+
+echo "PASS: $CN C-facing installed header(s) compile standalone at $CFLAGS, and at $PEDFLAGS"

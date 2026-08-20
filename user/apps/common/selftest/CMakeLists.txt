@@ -162,18 +162,24 @@ if(KICKOS_ARCH STREQUAL "sim")
 endif()
 
 # The same count, per region of the split list, mirroring the #if guards inside each
-# region. Region 1 ends at the `#undef TAP_ADD` after call_donation_pending in main.cc;
+# region. Region 1 ends at the `#undef TAP_ADD` after call_donation in main.cc;
 # region 2 is everything below it.
 #
 # These two MUST stay independent expressions, never derived from _tap_arms above: the
 # equality asserted below is only a check while both sides are stated separately, and a
 # new arm has to move a clause on each side.
-set(_tap_arms_p1 51) # region 1, unconditional, incl. endpoint_send_timeout, recv_timeout, timed_arg_refusals, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap
+#
+# THE TWO-IMAGE SCHEME IS NEAR SATURATION ON THE 64 KiB PARTS, and moving this boundary only
+# redistributes that: both images together hold about 3 percent slack and an arm of this family
+# costs about 930 bytes, so roughly two more arms fit REGARDLESS of where the boundary sits.
+# Past that it takes a third part. --gc-sections is already on fleet-wide; -flto is the other
+# lever and it fights the enforcing scripts' archive:member selectors.
+set(_tap_arms_p1 48) # region 1, unconditional, incl. endpoint_send_timeout, recv_timeout, timed_arg_refusals, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p1 "${_tap_arms_p1} + 1") # call_reg_fastpath: reads the fastpath counter
 endif()
 
-set(_tap_arms_p2 35) # region 2, unconditional, incl. thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
+set(_tap_arms_p2 38) # region 2, unconditional, incl. 3 x call_donation_*, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
 endif()
@@ -273,11 +279,13 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   # the whole TAP output and not the verdict: the arm that flips is the cause.
   #
   # "CLOSE TO THE EDGE" IS AN UNDERSTATEMENT: `__kickos_ram_start` IS `_ebss` on this board, so
-  # the arena begins exactly where .bss ends and there is NO slack at all. The granule is 32
+  # the arena begins exactly where .bss ends and there is NO slack at all. The granule is 16
   # bytes, so ANY non-zero .bss addition, even four bytes, moves the arena base a full granule
   # and costs one kos_ram_alloc grain. That is not a budget a change can fit inside: on this
-  # board the question is never "how many bytes" but "any bytes at all". mem_self_grant is the
-  # arm that grain belongs to.
+  # board the question is never "how many bytes" but "any bytes at all". Two grains are already
+  # spent: mem_self_grant, and region_mode for the eight bytes of stack bounds arch_context
+  # carries per thread. The next per-thread field costs a third arm, which is the signal to
+  # take the split instead.
   #
   # LETTING IT SKIP IS THE RULING, not an omission: picopi runs mem_self_grant on a real RP2040
   # under PMSAv6, so the armv6m enforcement class is witnessed on silicon and this board would
@@ -295,7 +303,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a semicolon
   # would split the value into a second bogus environment entry.
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,call_timeout_revert,call_donation_hold,call_donation_slow,call_donation_pending,domain_share,irq_as_event,uart_service,cap_reply_bound_fast,cap_reply_bound_slow,cap_reply_release_close,mem_self_grant"
+    "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,call_timeout_revert,call_donation_hold,call_donation_slow,call_donation_pending,domain_share,irq_as_event,uart_service,cap_reply_bound_fast,cap_reply_bound_slow,cap_reply_release_close,mem_self_grant,region_mode"
     "EXPECT_PARTIALS=caller_stack,confused_deputy,cap_chunk_span,cap_child_width")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
@@ -413,4 +421,24 @@ if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "rv32imac")
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
             "$<TARGET_FILE:kickos_lib>")
   set_tests_properties(riscv_no_smalldata PROPERTIES TIMEOUT 60 LABELS host)
+endif()
+
+# App-window leak guard for the inverted .appdata scheme: the enforcing linker scripts name
+# the CLOSED privileged set (kernel/arch/chip/lib) and .appdata/.appbss catch everything
+# else, so ONE renamed selector drops a whole archive into a window domain.cc grants R+W to
+# every unprivileged thread, with the script's own ASSERT(_ebss > _sbss) still true. Not
+# registered on sim: KICKOS_HAVE_MPU is on there but no linker script carves the window, and
+# the gate refuses an image with no __kickos_appdata_start.
+if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND NOT KICKOS_ARCH STREQUAL "sim")
+  add_test(
+    NAME    appdata_no_kernel
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_appdata_no_kernel.sh"
+            "${CMAKE_NM}"
+            "$<TARGET_FILE:selftest>"
+            "${_selftest_map}"
+            "$<TARGET_FILE:kickos_kernel>"
+            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
+            "$<TARGET_FILE:kickos_lib>")
+  set_tests_properties(appdata_no_kernel PROPERTIES TIMEOUT 60 LABELS host)
 endif()

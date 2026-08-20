@@ -30,4 +30,12 @@ namespace kickos
     }
 }
 
+// Arm a REAL ICU vector's IPR/IER, without the group dispatch that arch_irq_mask and
+// arch_irq_unmask do first. kickos_rx_group_arm arms the group's own vector and must come
+// through here: routing it back through the seam is a cycle to any call-graph analysis,
+// terminating only on the value-range invariant that a group vector is below
+// GROUP_LINE_BASE, which no graph can see. Caller holds arch_irq_save; `line` must be a
+// real vector, neither a soft line nor a group line.
+extern "C" void kickos_rx_icu_line_arm(int line, int on);
+
 #endif

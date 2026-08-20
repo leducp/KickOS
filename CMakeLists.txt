@@ -4,10 +4,10 @@
 cmake_minimum_required(VERSION 3.24)
 # write_basic_package_version_file demands a numeric version; find_package(KickOS) matches
 # against it.
-project(KickOS VERSION 0.4.7 LANGUAGES C CXX ASM)
-# KICKOS_VERSION takes the point-release suffix project() would reject:
-# 0.<milestone>.<submilestone>[-<point>].
-set(KICKOS_VERSION "0.4.7-1")
+project(KickOS VERSION 0.5.1 LANGUAGES C CXX ASM)
+# A point release spells 0.<milestone>.<submilestone>-<point>, which project() rejects, so
+# KICKOS_VERSION has to be set outright once there is one.
+set(KICKOS_VERSION "${PROJECT_VERSION}")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(cmake/kickos.cmake)
@@ -77,7 +77,7 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
                 KICKOS_ROOT_STACK_SIZE KICKOS_MAX_SEMAPHORES KICKOS_MAX_MUTEXES
                 KICKOS_MAX_ENDPOINTS KICKOS_CAP_TABLE_SUPPLY KICKOS_MAX_SPAWN_GRANTS
                 KICKOS_MAX_IRQ_HANDLES KICKOS_RTT_CH1_SIZE KICKOS_USER_HEAP_SIZE
-                KICKOS_MAX_INSTANCES)
+                KICKOS_MAX_INSTANCES KICKOS_PANIC_DUMP KICKOS_DIAG_TERSE)
     if(DEFINED ${_knob})
       list(APPEND _kcfg_req "CONFIG_${_knob}=${${_knob}}")
     endif()
@@ -395,12 +395,14 @@ if(NOT DEFINED KICKOS_TRACE_ARCH)
     set(KICKOS_TRACE_ARCH 5)
   endif()
 endif()
+# rv32imac and armv6m are deliberately absent: on both, whether the arch reader has a
+# counter to read is a fact about the CHIP, stated in its own caps.cmake. The rv32imac
+# reader is rdcycle, which the ESP32-C6 HP core traps on.
 if(NOT DEFINED KICKOS_HAVE_TRACE_CLOCK)
   set(KICKOS_HAVE_TRACE_CLOCK 0)
   if(KICKOS_ARCH STREQUAL "sim" OR KICKOS_ARCH STREQUAL "armv7m"
-     OR KICKOS_ARCH STREQUAL "rxv3" OR KICKOS_ARCH STREQUAL "lx6"
-     OR KICKOS_ARCH STREQUAL "rv32imac")
-    set(KICKOS_HAVE_TRACE_CLOCK 1) # sim clock/1000; armv7m DWT fallback; rxv3 CMTW1; lx6 CCOUNT; rv32imac rdcycle
+     OR KICKOS_ARCH STREQUAL "rxv3" OR KICKOS_ARCH STREQUAL "lx6")
+    set(KICKOS_HAVE_TRACE_CLOCK 1) # sim clock/1000; armv7m DWT fallback; rxv3 CMTW1; lx6 CCOUNT
   endif()
 endif()
 
@@ -719,6 +721,52 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(dash_punct PROPERTIES TIMEOUT 120 LABELS host)
 
+  # tests/lib/panic.ere is also read by KICKOS_PANIC_REGEX above and by tests/lib/gate.sh: a
+  # banner the ERE misses turns every assert_no_panic into a pass on a board that died.
+  _add_test(NAME panic_banners
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_panic_banners.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(panic_banners PROPERTIES TIMEOUT 120 LABELS host)
+
+  # --- The trap red-zone gate --------------------------------------------------
+  # tests/static/check_trap_redzone.sh re-derives the kernel stack descent the red zone in
+  # arch/*/{rv_trap_stack.h,rx_trap_stack.h,armv7m_trap_stack.h} reserves, and fails when the
+  # measurement exceeds it.
+  #
+  # It configures and cross-builds a scratch tree of its own, so it is keyed on the PRESET
+  # (board plus variant) and not on this build directory. A pair it does not declare is
+  # refused by the gate itself, so an unlisted variant registers nothing rather than
+  # measuring the wrong configuration.
+  #
+  # The armv7m entries cover the FP-live posture, the soft-float one, and a live console
+  # backend (the deepest dispatch in the fleet). trap_redzone_roots.txt declares the other
+  # armv7m presets for a hand run; pizero2350 is absent from it because its reboot path
+  # calls into the bootrom through a pointer no call graph can follow.
+  set(_fs_redzone_preset "")
+  if(KICKOS_BOARD STREQUAL "qemu-riscv" AND KICKOS_CONFIG_VARIANT STREQUAL "base")
+    set(_fs_redzone_preset qemu-riscv)
+  elseif(KICKOS_BOARD STREQUAL "esp32c6-wroom" AND KICKOS_CONFIG_VARIANT STREQUAL "st")
+    set(_fs_redzone_preset esp32c6-wroom-st)
+  elseif(KICKOS_BOARD STREQUAL "rx72m" AND KICKOS_CONFIG_VARIANT STREQUAL "st")
+    set(_fs_redzone_preset rx72m-st)
+  elseif(KICKOS_BOARD STREQUAL "qemu" AND KICKOS_CONFIG_VARIANT STREQUAL "base")
+    set(_fs_redzone_preset qemu)
+  elseif(KICKOS_BOARD STREQUAL "qemu-m3" AND KICKOS_CONFIG_VARIANT STREQUAL "base")
+    set(_fs_redzone_preset qemu-m3)
+  elseif(KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_CONFIG_VARIANT STREQUAL "st")
+    set(_fs_redzone_preset frdmk64f-st)
+  endif()
+  if(NOT _fs_redzone_preset STREQUAL "")
+    # _add_test, not the wrapper: the gate builds a tree of its own, so the kickos_build
+    # fixture would only build one it never opens.
+    _add_test(NAME trap_redzone
+              COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_trap_redzone.sh"
+                      "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}"
+                      "${_fs_redzone_preset}" "${KICKOS_ARCH}")
+    # Runs no image, so `host`; the timeout covers a cold cross build of the scratch tree.
+    set_tests_properties(trap_redzone PROPERTIES TIMEOUT 1800 LABELS host)
+  endif()
+
   _add_test(NAME atomic_rmw
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_atomic_rmw.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -736,6 +784,13 @@ if(KICKOS_BUILD_TESTS)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_gen.sh"
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(kconfig_gen PROPERTIES TIMEOUT 120 LABELS host)
+
+  # Reads the forwarding lists above out of this very file, so it is registered from every
+  # board and never from a generated copy.
+  _add_test(NAME kconfig_forwarding
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_forwarding.sh"
+                    "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(kconfig_forwarding PROPERTIES TIMEOUT 120 LABELS host)
 
   # Unlike the gates above this one DOES require the build fixture: it classifies each test
   # by the program ctest resolved for it, and ctest emits no command at all for a program
@@ -833,6 +888,13 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   add_subdirectory(tests/unit/drvbringup)
 endif()
 
+# Host-only of necessity: the console publish race needs the ownership flip to land inside a
+# writer's own masking, which no image can schedule on demand.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/consoleown/CMakeLists.txt")
+  add_subdirectory(tests/unit/consoleown)
+endif()
+
 # The K-seam host fixture must precede its consumers below: they call the function it
 # defines.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
@@ -862,6 +924,15 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/slayhook/CMakeLists.txt")
     add_subdirectory(tests/unit/slayhook)
   endif()
+endif()
+
+# Host-only of necessity: the subject is how many bytes console_tx_write pushes to the TX
+# data register inside ONE interrupt-masked span, which a board cannot report without an
+# instrumented mask. Not a K-seam consumer: it compiles kernel/init/console_tx.cc with its
+# own arch seam, and the K-seam's would be a second definition of arch_irq_save.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/consoletx/CMakeLists.txt")
+  add_subdirectory(tests/unit/consoletx)
 endif()
 
 # Set before kickos_core below, whose LINK_GROUP pulls the provider archive.
@@ -1138,10 +1209,14 @@ configure_package_config_file(
   "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfig.cmake"
   INSTALL_DESTINATION "${KICKOS_CMAKE_DIR}")
 
+# EXACT, not SameMajorVersion: at 0.x CMake treats the whole 0 series as one compatibility
+# bucket, so a request for an older 0.x configures green against this one. The ABI moves at
+# SUBMILESTONE granularity before the freeze, so no two versions are interchangeable and a
+# consumer must pin the one it built against; relax at the freeze.
 write_basic_package_version_file(
   "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfigVersion.cmake"
   VERSION "${PROJECT_VERSION}"
-  COMPATIBILITY SameMajorVersion)
+  COMPATIBILITY ExactVersion)
 
 # kickos.cmake include()s cap_table.cmake list-dir-relative, so that must land beside it.
 install(FILES

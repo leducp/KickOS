@@ -104,12 +104,13 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     {
         return bad_cfg;
     }
-    // A rate request is refused by the handover, not by the silicon: CLKDIV is writable, but
-    // rewriting it re-times a byte still in flight and this backend cannot tell that byte has
-    // left, the FIFO count going to zero one frame early.
-    if (cfg->baud != 0u)
+    // Refused by the handover, not by the silicon: CLKDIV is writable, but rewriting it
+    // re-times a byte still in flight and this backend cannot tell that byte has left, the
+    // FIFO count going to zero one frame early.
+    int32_t const fixed_rate = kos_uart_cfg_check_fixed_rate(cfg);
+    if (fixed_rate != 0)
     {
-        return -KOS_ENOTSUP;
+        return fixed_rate;
     }
     // CONF0 is not rewritten either, so the frame stays the 8N1 the ROM runs.
     if (cfg->data_bits != 8u or cfg->parity != KOS_UART_PARITY_NONE or cfg->stop_bits != 1u)

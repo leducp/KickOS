@@ -58,6 +58,14 @@ add_subdirectory(gpioblink)
 # illegal instruction; it is never built into a production image.
 add_subdirectory(fault)
 add_subdirectory(faultsurvive)
+# The PSP-bounds security regression: a thread aims its PSP just above its own stack
+# base, where the hardware frame fits and the switcher's software block does not.
+# armv7m-only and self-gated; see its CMakeLists.
+add_subdirectory(pspguard)
+# The nested-trap security regression: an interrupt taken while the kernel is already
+# running a thread's syscall dispatch must not put its frame on that thread's stack.
+# rv32imac-only and self-gated; see its CMakeLists.
+add_subdirectory(trapnest)
 add_subdirectory(specfault)
 # kos_reboot plumbing witness + the unattended-reflash affordance. Board-agnostic;
 # its ctest arms are the declining-fallback targets only (see its CMakeLists).

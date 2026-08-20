@@ -205,9 +205,9 @@ SECTIONS
         *(B B_1 B_2)           /* RX-native bss */
         . = ALIGN(4);
         _appdata_used_end = .;
-        _appdata_fits = ASSERT(_appdata_used_end <= ___kickos_appdata_start + _appdata_size,
-               "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
-        . = ___kickos_appdata_start + _appdata_size; /* pad the block up to pow2 */
+        /* MAX, not a bare set: ASSERTs are evaluated after layout, so a backwards move
+           fails the link before the overflow ASSERT below can print. */
+        . = MAX(., ___kickos_appdata_start + _appdata_size); /* pad the block up to pow2 */
         ___kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). Double
            underscore: C `_kickos_heap_*` gains the RX one-underscore psABI prefix. */

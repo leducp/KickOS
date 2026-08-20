@@ -13,9 +13,11 @@
 #include <kickos/units.h> // _s literal (== 1e9 ns)
 
 #include "regs.h"
+#include <kickos/arch/armv7m_trap_stack.h> // the figures switch.S's PSP guard enforces
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 
 #include <stddef.h> // offsetof
+#include <stdint.h>
 
 // The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
 // for the arch this backend implements, or a SESSION record mislabels the trace.
@@ -29,9 +31,53 @@ static_assert(offsetof(struct arch_context, sp) == 0, "switch.S expects ctx.sp @
 static_assert(offsetof(struct arch_context, npriv) == 4, "switch.S expects ctx.npriv @4");
 static_assert(offsetof(struct arch_context, resting_npriv) == 8,
               "switch.S expects ctx.resting_npriv @8");
+// The PSP bounds guard reads these two, so a silent reorder would let it compare against
+// the wrong words and pass a PSP with no room below it. Both offsets are unconditional:
+// the telemetry field is last so no build posture moves them.
+static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_ARMV7M_CTX_OFF_STACK_LO,
+              "switch.S reads ctx.stack_lo at KICKOS_ARMV7M_CTX_OFF_STACK_LO");
+static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_ARMV7M_CTX_OFF_STACK_HI,
+              "switch.S reads ctx.stack_hi at KICKOS_ARMV7M_CTX_OFF_STACK_HI");
+
+// The red-zone figures switch.S enforces. gas cannot count the registers in an stmdb, so
+// the frame halves are asserted here against the register lists the two pushes carry.
+static_assert(KICKOS_ARMV7M_TRAP_FRAME == 9u * sizeof(uint32_t),
+              "PSP_GUARD prices {r4-r11, EXC_RETURN}: nine words");
+static_assert(KICKOS_ARMV7M_TRAP_FRAME_FP == 16u * sizeof(uint32_t),
+              "the FP term prices {s16-s31}: sixteen words");
+static_assert(KICKOS_ARMV7M_TRAP_FRAME_MAX
+                  == KICKOS_ARMV7M_TRAP_FRAME + KICKOS_ARMV7M_TRAP_FRAME_FP,
+              "FRAME_MAX is the worst-case push and is what the red-zone gate scrapes");
+// The two figures the gate scrapes as a class's non-measured half. PENDSV's is the push
+// alone; the SVC site's is the push's FP term plus the nested-exception terms, and the
+// 36-byte push does NOT appear because it is an alternative to that descent rather than
+// something below it.
+static_assert(KICKOS_ARMV7M_TRAP_ZONE_FIXED_PENDSV == KICKOS_ARMV7M_TRAP_FRAME_MAX,
+              "the switcher reserves the worst-case push and nothing else");
+static_assert(KICKOS_ARMV7M_TRAP_ZONE_FIXED_SVC
+                  == KICKOS_ARMV7M_TRAP_NEST_SVC + KICKOS_ARMV7M_TRAP_FRAME_FP,
+              "the SVC red zone is the nested-exception terms plus the run-time FP term");
+static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC >= KICKOS_ARMV7M_TRAP_FRAME,
+              "NEST_SVC must dominate the software push it stands in for");
+// The PENDSV class charges no descent at all, which is a claim about handler mode rather
+// than a measurement: ARMv7-M forces SP_main in handler mode, so nothing PendSV_Handler
+// calls runs on the thread's stack.
+static_assert(KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV == 0,
+              "a nonzero PendSV descent needs roots in tests/static/trap_redzone_roots.txt");
+static_assert(KICKOS_ARMV7M_TRAP_NEED_SVC > KICKOS_ARMV7M_TRAP_NEED_PENDSV,
+              "the SVC site must charge more than the switcher: it keeps running on the PSP");
+// The floor must DOMINATE the worst-case red zone, or a thread spawned at the floor passes
+// the spawn check and is then refused by the guard on every syscall it makes. The gate
+// checks it only for the presets it is registered on; this assertion covers every armv7m
+// board.
+static_assert(KICKOS_MIN_STACK_SIZE
+                  >= KICKOS_ARMV7M_TRAP_ZONE_FIXED_SVC
+                         + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC,
+              "KICKOS_MIN_STACK_SIZE is below the armv7m syscall red zone: raise the "
+              "per-arch default in Kconfig, never the red zone, which is a measurement");
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-static_assert(offsetof(struct arch_context, trace_tid) == 12,
-              "switch.S telemetry hook expects ctx.trace_tid @12");
+static_assert(offsetof(struct arch_context, trace_tid) == 20,
+              "switch.S telemetry hook expects ctx.trace_tid @20");
 #endif
 #if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
 static_assert(kickos::armv7m::PRIO_LOCK_BASEPRI == 0x20,
@@ -115,6 +161,12 @@ void arch_context_init(struct arch_context* ctx,
     }
     ctx->npriv = npriv;
     ctx->resting_npriv = npriv;
+
+    // PendSV and SVC_Handler check the live PSP against these before either pushes the
+    // {r4-r11, EXC_RETURN} block through it. `top` is the 8-byte-aligned high edge the
+    // first frame sits below, so a running thread's PSP stays in [stack_lo, stack_hi).
+    ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
+    ctx->stack_hi = static_cast<uint32_t>(top);
 }
 
 #if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
@@ -346,6 +398,62 @@ void arch_fault_redirect_to_exit(void* frame)
     __asm volatile("mrs %0, control" : "=r"(control));
     __asm volatile("msr control, %0" ::"r"(control & ~1u));
     __asm volatile("isb" ::: "memory");
+}
+
+// Called from switch.S (PendSV and SVC_Handler) when the running thread's live PSP has no
+// room BELOW it for the {r4-r11, EXC_RETURN} block the switcher is about to push there.
+// Exception entry stacks the hardware frame ABOVE the PSP under the pre-exception
+// privilege, so the MPU refuses only that half. A PSP aimed a few words above a stack's
+// base therefore passes MSTKERR and lands the software block in the NEIGHBOURING thread's
+// own granted memory, EXC_RETURN topmost; a neighbour that rewrites that word to
+// 0xFFFFFFF1 resumes the victim in handler mode, privileged.
+//
+// armv6m deliberately carries no such check: its residual is {r4-r11} with no EXC_RETURN,
+// which the epilogue rebuilds from a literal, so nothing a thread can reach steers
+// privilege there.
+//
+// Runs in handler mode on the MSP, trusted, with no stack swap to arrange. Contains the
+// system rather than the write: there is no frame to trust and no PSP a resume could be
+// handed.
+void kickos_armv7m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi)
+{
+    kpanic_enter();
+#if KICKOS_PANIC_DUMP
+    // WHICH bound refused, classified from the values: one guard serves all three legs and
+    // the branch that took it is not passed in.
+    char const* why = "no room below";
+    if (psp < lo)
+    {
+        why = "under stack_lo";
+    }
+    else if (psp >= hi)
+    {
+        why = "at or above stack_hi";
+    }
+    // WHICH guarded push refused, read from ICSR.VECTACTIVE: nothing in the arguments
+    // separates the two sites.
+    uint32_t const vect = kickos::arm::reg32(0xE000ED04) & 0x1FFu;
+    char const* site = "handler";
+    if (vect == 11u)
+    {
+        site = "SVCall";
+    }
+    else if (vect == 14u)
+    {
+        site = "PendSV";
+    }
+    ::kickos::kprintf("\n=== ARMV7M EXCEPTION (wild PSP: %s) ===\n", why);
+    ::kickos::kprintf("  in %s PSP=0x%x need=%u stack=[0x%x,0x%x)\n", site,
+                      static_cast<unsigned>(psp), static_cast<unsigned>(need),
+                      static_cast<unsigned>(lo), static_cast<unsigned>(hi));
+#else
+    (void)psp;
+    (void)need;
+    (void)lo;
+    (void)hi;
+    ::kickos::kprintf("\n=== ARMV7M EXCEPTION (wild PSP) ===\n");
+#endif
+    kfault_terminate();
 }
 
 // C side of the fault handler: `frame` points at the hardware-stacked exception

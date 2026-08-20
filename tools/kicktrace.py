@@ -78,6 +78,7 @@ SYSCALL_NAME = {
     48: "thread_join", 49: "wait_last", 50: "send_timed",
     51: "task_create", 52: "task_kill", 53: "thread_slay",
     54: "task_slay", 55: "bench", 56: "call_reg", 57: "ipc_fast_taken",
+    58: "nest_witness",
 }
 
 TRACE_MAGIC = 0x4B545243

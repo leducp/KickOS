@@ -69,3 +69,11 @@ RIG_REMOTE_ROOT=kickos_bench
 # is passed through as a literal, so a `$HOME` here would not expand. Required there
 # for the Espressif boards only.
 RIG_REMOTE_PYBIN=/home/USER/.local/share/uv/tools/esptool/bin/python
+
+# --- ST-Link probes ---------------------------------------------------------------
+# Only needed once MORE THAN ONE ST-Link is on the bus, which is when st-flash stops
+# being deterministic. tools/flash-stlink.sh refuses instead of picking. Key is
+# RIG_STLINK_<BOARD> with the board upper-cased and '-' as '_'. st-info --probe prints
+# the serials next to the chip each one is attached to.
+#RIG_STLINK_F411DISCO=30FF6C065647373735081143
+#RIG_STLINK_F302NUCLEO=0675FF494849887767183343

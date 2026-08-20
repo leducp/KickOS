@@ -5,8 +5,17 @@
 # hardware status has one home, docs/reference/boards.md.
 #
 # ISA coverage: sim (host), armv7m + armv6m + armv8m (QEMU run), rv32imac (QEMU run,
-# plain and under PMP), Xtensa LX6 (build-only). Renesas RX has no gate: RX72M needs
-# -misa=v3/-mdfpu, which exist only in the registration-gated Renesas GNURX build.
+# plain and under PMP), Xtensa LX6 (build-only).
+#
+# Renesas RX has NO JOB AT ALL, not even a build one: rx72m, rx72m-st and rx72m-flat are
+# in cmake/presets/rx.json and no job below configures any of them, so the RXv3 switch and
+# trap assembly, the RX MPU backend, the RX IPC fastpath and the RIICa engine are never
+# compiled here and a green run says NOTHING about them, the trap entry included; the bench
+# is the only witness. Cause: rx72m asks for -misa=v3/-mdfpu (arch/rx/chip/rx72m/cpu.cmake),
+# a spelling accepted only by the registration-gated Renesas GNURX build, which cannot be
+# fetched anonymously. Upstream rx-elf reaches the same RXv3+DFPU ISA as -mcpu=rxv3-dfpu but
+# ships no prebuilt tarball, so a hosted job would have to build its own toolchain AND gate
+# one the fleet does not use. RX is bench-validated only (docs/reference/boards.md).
 #
 # MPU enforcement runs at RUNTIME on all three ISA families: sim (host mprotect),
 # rv32imac (PMP, qemu-riscv-mpu), ARM on both PMSA revisions (the four mps2 run gates
@@ -110,6 +119,14 @@ jobs:
     # is failure headroom on a loaded runner; passing gates exit early.
     env:
       QEMU_TIMEOUT: "30"
+      # The POLLED gates, named once and split out with -E/-R at every ctest below.
+      # poll_image (tests/lib/gate.sh) boots an image that never exits, kills it after
+      # QEMU_TIMEOUT * 5 polls at 5 Hz and judges the log it captured, so a merely SLOW
+      # guest fails the gate; every other gate runs to completion with its timeout as a
+      # hang backstop. Members: check_qemu_hello.sh, check_qemu_fp.sh, check_mpu_fault.sh,
+      # check_rootfault.sh (thread-kill arm, what KICKOS_FAULT_OUTCOME resolves to on every
+      # board in this job) and check_reclaimwit.sh (park arm only; drain runs to completion).
+      POLLED: "hello|fp_switch|mpu_fault|rootfault|reclaimwit_park"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -117,10 +134,13 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/arm-toolchain
-      # --repeat until-pass:4: the mps2 QEMU timer is coarse (DWT frozen; ~100 Hz
-      # semihosting clock), so the run gates can transiently miss their output
-      # window under CI-host load. Retry rides that out; a real hang still fails
-      # (each attempt is bounded by the gate's own timeout).
+      # --repeat until-pass:2 rides the POLLED gates and NOTHING else. The mps2/nrf51
+      # clock is the ~100 Hz semihosting SYS_CLOCK (chip_mps2.cc arch_clock_now, DWT
+      # frozen), so every timed sleep before an awaited line is stretched to a 10 ms
+      # granule and a loaded runner can push the last pattern past the poll bound. A real
+      # hang still fails, each attempt being bounded by the gate's own timeout. The rest of
+      # the suite gets ONE attempt: a retry on every test lets a genuinely broken gate pass
+      # on a later attempt with nothing recording that it needed the earlier ones.
       # ARM MPU enforcement at RUNTIME, which is what the base variant of these four
       # boards states: the full TAP suite as unprivileged threads plus a real MemManage
       # denial in mpu_fault, over both PMSA revisions: v7 on the M4/M7/M3, v8 on the M33
@@ -129,39 +149,44 @@ jobs:
         run: |
           cmake --preset qemu -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu
-          ctest --preset qemu --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset qemu -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
           # Posture pin. The enforcing posture is a line in this board's base defconfig
           # and those two gates are REGISTERED only when it resolves on, so deleting it
           # would shrink the suite above in silence and leave the run green. Naming them
-          # makes an empty selection the failure (--no-tests=error). Same --repeat as the
-          # suite: the coarse mps2 clock is why it is there.
-          ctest --preset qemu -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
+          # makes an empty selection the failure (--no-tests=error), which the -R "$POLLED"
+          # run above cannot do (hello matches it either way). Both gates poll, so they
+          # keep the retry.
+          ctest --preset qemu -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:2
       # Coverage the an386 cannot buy: the M33 is armv8-M (PMSAv8), the M7 has 16 MPU
       # regions to the M4's 8, and the M3 has no FPU so the soft-float switch path runs.
       - name: armv8-m mainline (mps2-an505, Cortex-M33)
         run: |
           cmake --preset qemu-m33 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m33
-          ctest --preset qemu-m33 --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-m33 -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset qemu-m33 -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
           # Posture pin, as on the an386: each mps2 board carries its own base
           # defconfig, so one pin does not cover the other three.
-          ctest --preset qemu-m33 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-m33 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:2
       - name: armv7m (mps2-an500, Cortex-M7)
         run: |
           cmake --preset qemu-m7 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m7
-          ctest --preset qemu-m7 --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-m7 -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset qemu-m7 -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
           # Posture pin, as on the an386: each mps2 board carries its own base
           # defconfig, so one pin does not cover the other three.
-          ctest --preset qemu-m7 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-m7 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:2
       - name: armv7m soft-float (mps2-an385, Cortex-M3)
         run: |
           cmake --preset qemu-m3 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m3
-          ctest --preset qemu-m3 --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-m3 -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset qemu-m3 -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
           # Posture pin, as on the an386: each mps2 board carries its own base
           # defconfig, so one pin does not cover the other three.
-          ctest --preset qemu-m3 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-m3 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:2
       # The ring-only posture of the same four boards, which is what ringpriv and
       # ringppb assert against: the privilege ring holds with the MPU absent. Its own
       # preset and its own build directory, because the posture is a configuration
@@ -171,18 +196,22 @@ jobs:
           for b in qemu qemu-m33 qemu-m7 qemu-m3; do
             cmake --preset "$b-flat" -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
             cmake --build --preset "$b-flat"
-            ctest --preset "$b-flat" --no-tests=error --output-on-failure --repeat until-pass:4
+            ctest --preset "$b-flat" -E "$POLLED" --no-tests=error --output-on-failure
+            ctest --preset "$b-flat" -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
           done
       - name: armv6m (microbit)
         run: |
           cmake --preset microbit -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset microbit
-          ctest --preset microbit --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset microbit -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset microbit -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
 
   # rv32imac (virt) under QEMU, plus build-only checks of three more rv32 presets,
   # on the pinned RISCstar toolchain (newlib, soft-float rv32imac/ilp32 multilib).
   # No idle fix needed here: RISC-V clocks off the CLINT mtime, which keeps ticking
   # during WFI (unlike the ARM semihosting clock). QEMU_TIMEOUT is failure headroom.
+  # No polled-gate --repeat here: that retry answers the coarse mps2 semihosting clock,
+  # which this ISA does not have. A transient on this job wants root-causing, not a retry.
   qemu-riscv:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -201,7 +230,7 @@ jobs:
         run: |
           cmake --preset qemu-riscv-flat -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-flat
-          ctest --preset qemu-riscv-flat --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-riscv-flat --no-tests=error --output-on-failure
       # -L host is the set that reads a build tree without executing an image, so a board
       # with no machine model still gets it. Not a bare ctest: qemu-riscv-bench registers the
       # boot gates of the run gate above, and this job's emulator time belongs there.
@@ -237,10 +266,10 @@ jobs:
         run: |
           cmake --preset qemu-riscv -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv
-          ctest --preset qemu-riscv --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-riscv --no-tests=error --output-on-failure
           # Posture pin, as in qemu-arm: PMP enforcement is a line in this board's base
           # defconfig, and dropping it de-registers these gates instead of failing them.
-          ctest --preset qemu-riscv -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-riscv -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure
 
   # Xtensa LX6 (esp32-wroom) gate: upstream QEMU ships no ESP32 machine model, so this
   # proves build/link/linker-script + windowed-ABI asm and never boots the image. It runs

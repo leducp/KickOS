@@ -196,12 +196,24 @@ enum kos_syscall_nr
                                //   ONLY in the trap-handler fastpath; the generic dispatch
                                //   answers KOS_CALL_REG_FALLBACK, the stub's cue to re-issue
                                //   as KOS_SYS_CALL.
-    KOS_SYS_IPC_FAST_TAKEN = 57 // ()  -> count of calls the trap-handler IPC fastpath
+    KOS_SYS_IPC_FAST_TAKEN = 57, // ()  -> count of calls the trap-handler IPC fastpath
                                //   COMPLETED (self-test only). The fastpath and the buffer
                                //   form answer a caller identically, so this counter is the
                                //   only thing that separates them. Reads 0 on a backend with
                                //   no fastpath.
+    KOS_SYS_NEST_WITNESS = 58  // (which) -> one nested-trap counter (self-test only), or
+                               //   KOS_NEST_UNSET for a figure nothing recorded. A COUNTER
+                               //   READ and not a report: a kernel-side report puts the
+                               //   console's varargs route inside the SYSCALL red zone.
 };
+
+// Selectors for KOS_SYS_NEST_WITNESS. NEST_ROOM is the bytes between the lowest nested frame
+// seen on a thread stack and that stack's base; compare it against the arch's own interrupt
+// red zone, since less than that means the ISR below the frame had no bound.
+#define KOS_NEST_TRAPS   0
+#define KOS_NEST_ONSTACK 1
+#define KOS_NEST_ROOM    2
+#define KOS_NEST_UNSET   0xFFFFFFFFu
 
 // The generic dispatch's answer for KOS_SYS_CALL_REG: retry through KOS_SYS_CALL. Outside
 // the result range by construction, a kos_call answering a byte count in [0, KOS_EP_MSG_MAX]
@@ -309,12 +321,17 @@ _Static_assert(offsetof(struct kos_recv_timed_opts, info) == 4,
 // P-state selector for KOS_SYS_CPU_CLOCK_SET, NOT a raw Hz: the landed Hz is the syscall's
 // return value. Carried as a plain u32 in the syscall register, so the width is the stable
 // ABI: append new states, never reorder.
-typedef enum kos_pstate_e : uint32_t
+enum kos_pstate_e
 {
     KOS_PSTATE_MAX = 0, // full PLL (the boot clock: XMC 144 / K64F 120 MHz)
     KOS_PSTATE_MID,     // a reduced locked-PLL / staged point (chip rounds to nearest)
     KOS_PSTATE_LOW      // deep power saving (crystal/RC direct or a low staged point)
-} kos_pstate_t;
+};
+// An enum's own width is implementation-defined before C23 (arm-none-eabi short-enums this
+// one to a single byte; GNURX does not), and a fixed underlying type is not ISO C11, so the
+// ABI type is the u32 and not the enum. A caller wanting -Wswitch exhaustiveness back
+// switches on `(enum kos_pstate_e)x`; the u32 alone carries no enumerator set.
+typedef uint32_t kos_pstate_t;
 
 // Shared payload bound: send REJECTS a len above this; recv clamps its capacity to it.
 #define KOS_EP_MSG_MAX 256

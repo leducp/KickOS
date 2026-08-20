@@ -8,12 +8,16 @@
 // KICKOS_DIAG_TERSE picks the column. It is off everywhere but the 64 KiB parts, which
 // set it in their board defconfig.
 //
-// The FAULT BANNERS tests/lib/panic.ere matches are NOT entries here. All but one are raw
-// kprintf literals at their emit sites ("KERNEL PANIC: ", the ARM "=== %s ===" line and its
-// HARD / MPU labels, "=== SIM FAULT", "=== RISC-V TRAP", "=== RX EXCEPTION",
-// "=== XTENSA EXCEPTION", "ISOLATION FAULT:") and never reach KICKOS_DIAG_PICK, so no terse
-// variant of them exists to go looking for. The exception is "MPU FAULT: thread", the fixed
-// prefix of KDIAG_F_MPU_FAULT, spelled identically in both its columns.
+// The FAULT BANNERS tests/lib/panic.ere matches are almost all raw kprintf literals at
+// their emit sites (one is a runtime-picked label), never reach KICKOS_DIAG_PICK, and so
+// have no terse variant to go looking for. Do not restate that set here:
+// tests/static/check_panic_banners.sh derives it from the emit sites and is the only place
+// it is written down.
+//
+// Two entries below bear on that set. KDIAG_F_MPU_FAULT's fixed prefix IS matched, spelled
+// identically in both its columns. KDIAG_F_THREAD_FAULT deliberately is NOT: it reports a
+// thread that died while the system lived, and gates assert it is present while asserting
+// no panic occurred.
 //
 
 #ifndef KICKOS_DIAG_H

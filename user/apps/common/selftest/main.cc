@@ -6481,9 +6481,6 @@ int main(int, char**)
     TAP_ADD("call_server_death", t_call_server_death);       // die mid-xact -> caller EPIPE (teardown arm)
     TAP_ADD("call_prepop_death", t_call_prepop_death);       // die pre-pop -> caller EPIPE (recv_holders 0)
     TAP_ADD("call_donation", t_call_donation);               // D1 donation keeps the spoiler off the xact
-    TAP_ADD("call_donation_hold", t_call_donation_hold);     // D3: a reply donor survives an unrelated recompute
-    TAP_ADD("call_donation_slow", t_call_donation_slow);     // D3: same, via the recv-side mint
-    TAP_ADD("call_donation_pending", t_call_donation_pending); // D3: a SEND_WAIT donor does too
 #undef TAP_ADD
 // Region 2.
 #if KICKOS_SELFTEST_PART == 0 || KICKOS_SELFTEST_PART == 2
@@ -6491,6 +6488,9 @@ int main(int, char**)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
+    TAP_ADD("call_donation_hold", t_call_donation_hold);     // D3: a reply donor survives an unrelated recompute
+    TAP_ADD("call_donation_slow", t_call_donation_slow);     // D3: same, via the recv-side mint
+    TAP_ADD("call_donation_pending", t_call_donation_pending); // D3: a SEND_WAIT donor does too
 #if defined(KICKOS_ENABLE_SELFTEST)
     TAP_ADD("bus_device_slots", t_bus_device_slots); // per-device profiles do not clobber
     TAP_ADD("uart_service", t_uart_service);         // the UART wire ABI over the rings

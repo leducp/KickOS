@@ -118,7 +118,12 @@ namespace
         {
             return -KOS_ENOTSUP; // USARTDIV below 1 is not a rate (RM0383 sec.19.3.4)
         }
-        return static_cast<int32_t>(clk / brr);
+        uint32_t const rate = clk / brr;
+        if (rate == 0u)
+        {
+            return -KOS_ENOTSUP; // the class contract admits no rate of 0
+        }
+        return static_cast<int32_t>(rate);
     }
 }
 
@@ -143,14 +148,20 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     u->stats = cfg->stats;
 
     // A divisor or frame change with a byte still in the shifter corrupts it on the wire,
-    // and TC is what says the shifter is idle (RM0383 sec.19.3.2). Bounded: a channel that
-    // never completes costs a truncated first frame, not the bring-up.
+    // and TC is what says the shifter is idle (RM0383 sec.19.3.2).
+    bool drained = false;
     for (uint32_t i = 0; i < POLL_MAX; i++)
     {
         if (tx_idle(u->base))
         {
+            drained = true;
             break;
         }
+    }
+    if (not drained)
+    {
+        // Nothing in the channel has been written yet, so this leaves it as it was found.
+        return -KOS_EBUSY;
     }
     r32(u->base + ru::CR1_OFFSET) = 0u; // UE=0: channel off, every source disarmed
 

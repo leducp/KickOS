@@ -1,0 +1,302 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Per-call-site resolution of every indirect call the trap-path measurement walks through.
+#
+# WHY PER SITE AND NOT PER POINTER. gcc's -fcallgraph-info emits one edge to the literal
+# node `__indirect_call` per site, and nothing more, so the depth through it is whatever
+# this file says it is. Charging a site the maximum over the UNION of everything the
+# pointer's type could hold invents paths that do not exist: the SchedPolicy table below
+# would then let sched::reschedule reach policy_on_ready, which queues and can reschedule,
+# and the tool would report a cycle through the scheduler that the deferred rv32imac/rxv3
+# arch_switch cannot take. Each site is bound to the ONE slot the source at that line
+# calls, so the depth is the depth of the real edge.
+#
+# An indirect site reachable from a root and NOT declared here is a HARD FAILURE, because
+# an unbound site makes the whole figure a lower bound rather than a bound. A declaration
+# whose site or whose named callee is not in the graph is a hard failure too: a stale
+# binding rots exactly the way a stale margin does.
+#
+# FILE FORMAT, one record per line, '#' starts a comment, a trailing '\' continues:
+#   site <arch> <scope> <basename>:<line>:<col> <callee>...
+#   site <arch> <scope> <basename>:<line>:<col> NONE
+# <scope> is a configure-preset name, or '*' for every preset of the arch. A record out of
+# scope is not read at all, which is how one arch carries two boards with different
+# backends. NONE declares a site with no reachable callee AT ALL; the tool accepts it and
+# charges 0, and it is deliberately not the same thing as an omitted record.
+#
+# A <callee> is either a bare global symbol, or `<basename>:<needle>` for a file-scoped
+# one, where <needle> must appear in the mangled tail and the match must be UNIQUE. The
+# needle form is there because the two toolchains in this fleet do not spell internal
+# linkage the same way: riscv32-none-elf-gcc 16 emits
+# _ZN6kickos12_GLOBAL__N_1L15policy_on_readyEPNS_6ThreadE and rx-elf-gcc 14.2 emits the
+# same name without the L. A '?' before a callee marks it OPTIONAL: compiled out under
+# some option, so absent from the graph is not a stale binding.
+
+# --- POINTER A: the SchedPolicy hook table, Kernel::policy ----------------------
+# Exactly one SchedPolicy exists in the tree, kickos::(anonymous)::g_fifo_rr in
+# kernel/sched/policy_fifo_rr.cc, and sched::set_policy has no callers, so the table's
+# contents are fixed at link time and each site is bound to its own slot.
+site rv32imac * sched.cc:43:42   policy_fifo_rr.cc:policy_on_switch_in
+site rv32imac * sched.cc:108:38  policy_fifo_rr.cc:policy_on_ready
+site rv32imac * sched.cc:122:55  policy_fifo_rr.cc:policy_pick_next
+site rv32imac * sched.cc:125:42  policy_fifo_rr.cc:policy_on_switch_in
+site rv32imac * sched.cc:135:54  policy_fifo_rr.cc:policy_pick_next
+site rv32imac * sched.cc:157:38  policy_fifo_rr.cc:policy_on_yield
+site rv32imac * sched.cc:170:39  policy_fifo_rr.cc:policy_on_remove
+site rv32imac * sched.cc:202:38  policy_fifo_rr.cc:policy_on_ready
+site rv32imac * sched.cc:253:43  policy_fifo_rr.cc:policy_on_remove
+site rv32imac * sched.cc:255:42  policy_fifo_rr.cc:policy_on_ready
+site rv32imac * sched.cc:323:36  policy_fifo_rr.cc:policy_on_remove
+site rv32imac * sched.cc:390:53  policy_fifo_rr.cc:policy_next_timed_event
+site rv32imac * sched.cc:402:56  policy_fifo_rr.cc:policy_next_timed_event
+site rv32imac * sched.cc:406:45  policy_fifo_rr.cc:policy_on_slice_expire
+site rv32imac * syscall_ipc_fast.cc:164:50 policy_fifo_rr.cc:policy_pick_next
+
+site rxv3 * sched.cc:43:42   policy_fifo_rr.cc:policy_on_switch_in
+site rxv3 * sched.cc:108:38  policy_fifo_rr.cc:policy_on_ready
+site rxv3 * sched.cc:122:55  policy_fifo_rr.cc:policy_pick_next
+site rxv3 * sched.cc:125:42  policy_fifo_rr.cc:policy_on_switch_in
+site rxv3 * sched.cc:135:54  policy_fifo_rr.cc:policy_pick_next
+site rxv3 * sched.cc:157:38  policy_fifo_rr.cc:policy_on_yield
+site rxv3 * sched.cc:170:39  policy_fifo_rr.cc:policy_on_remove
+site rxv3 * sched.cc:202:38  policy_fifo_rr.cc:policy_on_ready
+site rxv3 * sched.cc:253:43  policy_fifo_rr.cc:policy_on_remove
+site rxv3 * sched.cc:255:42  policy_fifo_rr.cc:policy_on_ready
+site rxv3 * sched.cc:323:36  policy_fifo_rr.cc:policy_on_remove
+site rxv3 * sched.cc:390:53  policy_fifo_rr.cc:policy_next_timed_event
+site rxv3 * sched.cc:402:56  policy_fifo_rr.cc:policy_next_timed_event
+site rxv3 * sched.cc:406:45  policy_fifo_rr.cc:policy_on_slice_expire
+site rxv3 * syscall_ipc_fast.cc:164:50 policy_fifo_rr.cc:policy_pick_next
+
+# --- POINTER B: ConsoleTxRing::backend, console_tx_backend const* ---------------
+# Four slots (slot_free/push/irq_enable/irq_disable), set once in console_tx_init from the
+# arch seam arch_console_tx_backend(), of which exactly ONE definition links per image.
+# So the tuple is per board, and the scope column carries that. All four are shallow MMIO
+# leaves on every board that has them.
+#
+# qemu-riscv resolves the seam to the arch/common fallback
+# (arch/common/arch_console_tx_backend_default.cc), which returns nullptr; console_tx_init
+# then never arms the ring and no site can run. NONE, declared, not omitted.
+site rv32imac qemu-riscv console_tx.cc:69:37  NONE
+site rv32imac qemu-riscv console_tx.cc:91:28  NONE
+site rv32imac qemu-riscv console_tx.cc:141:30 NONE
+site rv32imac qemu-riscv console_tx.cc:155:63 NONE
+site rv32imac qemu-riscv console_tx.cc:157:28 NONE
+site rv32imac qemu-riscv console_tx.cc:259:35 NONE
+site rv32imac qemu-riscv console_tx.cc:267:32 NONE
+site rv32imac qemu-riscv console_tx.cc:284:49 NONE
+site rv32imac qemu-riscv console_tx.cc:286:24 NONE
+site rv32imac qemu-riscv console_tx.cc:294:31 NONE
+site rv32imac qemu-riscv console_tx.cc:310:27 NONE
+site rv32imac qemu-riscv console_tx.cc:357:27 NONE
+
+site rv32imac esp32c6-wroom-st console_tx.cc:69:37  chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-st console_tx.cc:91:28  chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-st console_tx.cc:141:30 chip_esp32c6.cc:c6_tx_irq_enable
+site rv32imac esp32c6-wroom-st console_tx.cc:155:63 chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-st console_tx.cc:157:28 chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-st console_tx.cc:259:35 chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-st console_tx.cc:267:32 chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-st console_tx.cc:284:49 chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-st console_tx.cc:286:24 chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-st console_tx.cc:294:31 chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-st console_tx.cc:310:27 chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-st console_tx.cc:357:27 chip_esp32c6.cc:c6_tx_irq_disable
+
+site rxv3 rx72m-st console_tx.cc:69:37  chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m-st console_tx.cc:91:28  chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-st console_tx.cc:141:30 chip_rx72m.cc:rx_tx_irq_enable
+site rxv3 rx72m-st console_tx.cc:155:63 chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m-st console_tx.cc:157:28 chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-st console_tx.cc:259:35 chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-st console_tx.cc:267:32 chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-st console_tx.cc:284:49 chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m-st console_tx.cc:286:24 chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-st console_tx.cc:294:31 chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-st console_tx.cc:310:27 chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-st console_tx.cc:357:27 chip_rx72m.cc:rx_tx_irq_disable
+
+# --- POINTER C: Kernel::irq_table[irq].handler, one site -----------------------
+# The table is TOTAL (irq_init seeds every slot with irq_default_handler) and the callee
+# set is CLOSED: user code cannot register a function pointer, and the kos_irq_attach
+# syscall only ever installs the fixed kernel thunk irq_sem_post. bench_irq_handler exists
+# only in a KICKOS_BENCH build.
+#
+# NO CYCLE IS DECLARED HERE, and that is a claim about these two architectures, not about
+# the kernel. irq_event_isr and irq_sem_post reach kickos::sem_post -> sched::wake ->
+# resched_after_wake -> reschedule -> switch_to -> arch_switch, and on rv32imac and rxv3
+# arch_switch only PENDS the switch (msip / ICU.SWINTR) and returns, so it is a leaf: the
+# chain does not re-enter the scheduler on this stack. On an arch whose arch_switch swaps
+# inline it would, and this binding would have to change with it.
+site rv32imac * irq.cc:320:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+                              syscall.cc:irq_sem_post \
+                              console_tx.cc:console_tx_isr_trampoline \
+                              ?bench.cc:bench_irq_handler
+site rxv3 * irq.cc:320:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+                          syscall.cc:irq_sem_post \
+                          console_tx.cc:console_tx_isr_trampoline \
+                          ?bench.cc:bench_irq_handler
+
+# --- armv7m: the same two arch-wide pointers ------------------------------------
+site armv7m * sched.cc:43:42       policy_fifo_rr.cc:policy_on_switch_in
+site armv7m * sched.cc:108:38      policy_fifo_rr.cc:policy_on_ready
+site armv7m * sched.cc:122:55      policy_fifo_rr.cc:policy_pick_next
+site armv7m * sched.cc:125:42      policy_fifo_rr.cc:policy_on_switch_in
+site armv7m * sched.cc:135:54      policy_fifo_rr.cc:policy_pick_next
+site armv7m * sched.cc:157:38      policy_fifo_rr.cc:policy_on_yield
+site armv7m * sched.cc:170:39      policy_fifo_rr.cc:policy_on_remove
+site armv7m * sched.cc:202:38      policy_fifo_rr.cc:policy_on_ready
+site armv7m * sched.cc:253:43      policy_fifo_rr.cc:policy_on_remove
+site armv7m * sched.cc:255:42      policy_fifo_rr.cc:policy_on_ready
+site armv7m * sched.cc:323:36      policy_fifo_rr.cc:policy_on_remove
+site armv7m * sched.cc:390:53      policy_fifo_rr.cc:policy_next_timed_event
+site armv7m * sched.cc:402:56      policy_fifo_rr.cc:policy_next_timed_event
+site armv7m * sched.cc:406:45      policy_fifo_rr.cc:policy_on_slice_expire
+site armv7m * syscall_ipc_fast.cc:164:50 policy_fifo_rr.cc:policy_pick_next
+
+# NO CYCLE, and on this backend that is a claim about arch_switch too: armv7m pends
+# PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
+# re-enter the scheduler on this stack. An arch whose arch_switch swapped inline
+# would need this binding changed with it.
+site armv7m * irq.cc:320:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+                            syscall.cc:irq_sem_post \
+                            console_tx.cc:console_tx_isr_trampoline \
+                            ?bench.cc:bench_irq_handler
+
+# --- armv7m: ConsoleTxRing::backend, per board ----------------------------------
+# The MPS2 boards resolve arch_console_tx_backend to the arch/common fallback, which
+# returns nullptr, so console_tx_init never arms the ring and no site can run. NONE,
+# declared, not omitted. Every other board here has a real backend, and the scope
+# column is per preset precisely so that a '*' record cannot silently bind a board
+# that HAS one to nothing.
+
+site armv7m qemu             console_tx.cc:69:37   NONE
+site armv7m qemu             console_tx.cc:91:28   NONE
+site armv7m qemu             console_tx.cc:141:30  NONE
+site armv7m qemu             console_tx.cc:155:63  NONE
+site armv7m qemu             console_tx.cc:157:28  NONE
+site armv7m qemu             console_tx.cc:259:35  NONE
+site armv7m qemu             console_tx.cc:267:32  NONE
+site armv7m qemu             console_tx.cc:284:49  NONE
+site armv7m qemu             console_tx.cc:286:24  NONE
+site armv7m qemu             console_tx.cc:294:31  NONE
+site armv7m qemu             console_tx.cc:310:27  NONE
+site armv7m qemu             console_tx.cc:357:27  NONE
+
+site armv7m qemu-m3          console_tx.cc:69:37   NONE
+site armv7m qemu-m3          console_tx.cc:91:28   NONE
+site armv7m qemu-m3          console_tx.cc:141:30  NONE
+site armv7m qemu-m3          console_tx.cc:155:63  NONE
+site armv7m qemu-m3          console_tx.cc:157:28  NONE
+site armv7m qemu-m3          console_tx.cc:259:35  NONE
+site armv7m qemu-m3          console_tx.cc:267:32  NONE
+site armv7m qemu-m3          console_tx.cc:284:49  NONE
+site armv7m qemu-m3          console_tx.cc:286:24  NONE
+site armv7m qemu-m3          console_tx.cc:294:31  NONE
+site armv7m qemu-m3          console_tx.cc:310:27  NONE
+site armv7m qemu-m3          console_tx.cc:357:27  NONE
+
+site armv7m qemu-m7          console_tx.cc:69:37   NONE
+site armv7m qemu-m7          console_tx.cc:91:28   NONE
+site armv7m qemu-m7          console_tx.cc:141:30  NONE
+site armv7m qemu-m7          console_tx.cc:155:63  NONE
+site armv7m qemu-m7          console_tx.cc:157:28  NONE
+site armv7m qemu-m7          console_tx.cc:259:35  NONE
+site armv7m qemu-m7          console_tx.cc:267:32  NONE
+site armv7m qemu-m7          console_tx.cc:284:49  NONE
+site armv7m qemu-m7          console_tx.cc:286:24  NONE
+site armv7m qemu-m7          console_tx.cc:294:31  NONE
+site armv7m qemu-m7          console_tx.cc:310:27  NONE
+site armv7m qemu-m7          console_tx.cc:357:27  NONE
+
+site armv7m qemu-m33         console_tx.cc:69:37   NONE
+site armv7m qemu-m33         console_tx.cc:91:28   NONE
+site armv7m qemu-m33         console_tx.cc:141:30  NONE
+site armv7m qemu-m33         console_tx.cc:155:63  NONE
+site armv7m qemu-m33         console_tx.cc:157:28  NONE
+site armv7m qemu-m33         console_tx.cc:259:35  NONE
+site armv7m qemu-m33         console_tx.cc:267:32  NONE
+site armv7m qemu-m33         console_tx.cc:284:49  NONE
+site armv7m qemu-m33         console_tx.cc:286:24  NONE
+site armv7m qemu-m33         console_tx.cc:294:31  NONE
+site armv7m qemu-m33         console_tx.cc:310:27  NONE
+site armv7m qemu-m33         console_tx.cc:357:27  NONE
+
+site armv7m frdmk64f-st      console_tx.cc:69:37   chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f-st      console_tx.cc:91:28   chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-st      console_tx.cc:141:30  chip_mk64f.cc:k64_tx_irq_enable
+site armv7m frdmk64f-st      console_tx.cc:155:63  chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f-st      console_tx.cc:157:28  chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-st      console_tx.cc:259:35  chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-st      console_tx.cc:267:32  chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-st      console_tx.cc:284:49  chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f-st      console_tx.cc:286:24  chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-st      console_tx.cc:294:31  chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-st      console_tx.cc:310:27  chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-st      console_tx.cc:357:27  chip_mk64f.cc:k64_tx_irq_disable
+
+site armv7m teensy41-st      console_tx.cc:69:37   chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41-st      console_tx.cc:91:28   chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-st      console_tx.cc:141:30  chip_imxrt1062.cc:lp6_tx_irq_enable
+site armv7m teensy41-st      console_tx.cc:155:63  chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41-st      console_tx.cc:157:28  chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-st      console_tx.cc:259:35  chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-st      console_tx.cc:267:32  chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-st      console_tx.cc:284:49  chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41-st      console_tx.cc:286:24  chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-st      console_tx.cc:294:31  chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-st      console_tx.cc:310:27  chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-st      console_tx.cc:357:27  chip_imxrt1062.cc:lp6_tx_irq_disable
+
+site armv7m xmc4800-relax-st console_tx.cc:69:37   usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-st console_tx.cc:91:28   usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-st console_tx.cc:141:30  usic_uart.cc:xmc_tx_irq_enable
+site armv7m xmc4800-relax-st console_tx.cc:155:63  usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-st console_tx.cc:157:28  usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-st console_tx.cc:259:35  usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-st console_tx.cc:267:32  usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-st console_tx.cc:284:49  usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-st console_tx.cc:286:24  usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-st console_tx.cc:294:31  usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-st console_tx.cc:310:27  usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-st console_tx.cc:357:27  usic_uart.cc:xmc_tx_irq_disable
+
+site armv7m f411disco-st     console_tx.cc:69:37   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-st     console_tx.cc:91:28   chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-st     console_tx.cc:141:30  chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m f411disco-st     console_tx.cc:155:63  chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-st     console_tx.cc:157:28  chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-st     console_tx.cc:259:35  chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-st     console_tx.cc:267:32  chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-st     console_tx.cc:284:49  chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-st     console_tx.cc:286:24  chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-st     console_tx.cc:294:31  chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-st     console_tx.cc:310:27  chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-st     console_tx.cc:357:27  chip_stm32f411.cc:f4_tx_irq_disable
+
+site armv7m blackpill-st     console_tx.cc:69:37   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill-st     console_tx.cc:91:28   chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-st     console_tx.cc:141:30  chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m blackpill-st     console_tx.cc:155:63  chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill-st     console_tx.cc:157:28  chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-st     console_tx.cc:259:35  chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-st     console_tx.cc:267:32  chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-st     console_tx.cc:284:49  chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill-st     console_tx.cc:286:24  chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-st     console_tx.cc:294:31  chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-st     console_tx.cc:310:27  chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-st     console_tx.cc:357:27  chip_stm32f411.cc:f4_tx_irq_disable
+
+site armv7m due-st           console_tx.cc:69:37   chip_sam3x8e.cc:sam_tx_slot_free
+site armv7m due-st           console_tx.cc:91:28   chip_sam3x8e.cc:sam_tx_push
+site armv7m due-st           console_tx.cc:141:30  chip_sam3x8e.cc:sam_tx_irq_enable
+site armv7m due-st           console_tx.cc:155:63  chip_sam3x8e.cc:sam_tx_slot_free
+site armv7m due-st           console_tx.cc:157:28  chip_sam3x8e.cc:sam_tx_push
+site armv7m due-st           console_tx.cc:259:35  chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due-st           console_tx.cc:267:32  chip_sam3x8e.cc:sam_tx_push
+site armv7m due-st           console_tx.cc:284:49  chip_sam3x8e.cc:sam_tx_slot_free
+site armv7m due-st           console_tx.cc:286:24  chip_sam3x8e.cc:sam_tx_push
+site armv7m due-st           console_tx.cc:294:31  chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due-st           console_tx.cc:310:27  chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due-st           console_tx.cc:357:27  chip_sam3x8e.cc:sam_tx_irq_disable

@@ -202,7 +202,9 @@ SECTIONS
         *(.bss .bss.* COMMON)
         . = ALIGN(4);
         _appdata_used_end = .;
-        . = __kickos_appdata_start + _appdata_size; /* pad the granted window */
+        /* MAX, not a bare set: ASSERTs are evaluated after layout, so a backwards move
+           fails the link before the overflow ASSERT below can print. */
+        . = MAX(., __kickos_appdata_start + _appdata_size); /* pad the granted window */
         __kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
         _kickos_heap_start = ALIGN(_appdata_used_end, 8);
@@ -285,8 +287,9 @@ ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
    silently leaked into the app window); that is the failure to catch, and an empty
    .bss is the loud signal. NOT app-side: an empty .appdata is legitimate (a minimal
    freestanding app whose only app-side state was --gc-sections'd away), so it must
-   not assert. The tight invariant (a kernel sentinel below __kickos_appdata_start)
-   is a CI nm check. */
+   not assert. What this ASSERT cannot see, that no privileged archive is placed inside
+   the granted window at all, is the appdata_no_kernel ctest
+   (tests/static/check_appdata_no_kernel.sh). */
 ASSERT(_ebss > _sbss,
        "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
 #endif

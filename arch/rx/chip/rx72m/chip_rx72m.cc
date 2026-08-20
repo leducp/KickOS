@@ -410,7 +410,7 @@ void kickos_rx_group_arm(int line, int on)
         r32(GROUPS[g].enable) = en | mask;
         if (en == 0u)
         {
-            arch_irq_unmask(GROUPS[g].vector); // IPR + IER for the group vector itself
+            kickos_rx_icu_line_arm(GROUPS[g].vector, 1); // IPR + IER for the group vector itself
         }
     }
     else
@@ -418,7 +418,7 @@ void kickos_rx_group_arm(int line, int on)
         uint32_t const next = en & ~mask;
         if (next == 0u)
         {
-            arch_irq_mask(GROUPS[g].vector);
+            kickos_rx_icu_line_arm(GROUPS[g].vector, 0);
         }
         r32(GROUPS[g].enable) = next;
     }

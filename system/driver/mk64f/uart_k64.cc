@@ -118,7 +118,12 @@ namespace
         {
             return -KOS_ENOTSUP; // SBR 0 disables the generator (RM 52.3.1)
         }
-        return static_cast<int32_t>((clk * 2u) / div32);
+        uint32_t const rate = (clk * 2u) / div32;
+        if (rate == 0u)
+        {
+            return -KOS_ENOTSUP; // the class contract admits no rate of 0
+        }
+        return static_cast<int32_t>(rate);
     }
 }
 
@@ -152,12 +157,19 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
 
     // PFIFO is writable only while TE and RE are clear (RM 52.3.16), and a byte still in the
     // shifter would be truncated on the wire.
+    bool drained = false;
     for (uint32_t i = 0; i < POLL_MAX; i++)
     {
         if (tx_idle(u->base))
         {
+            drained = true;
             break;
         }
+    }
+    if (not drained)
+    {
+        // Nothing in the channel has been written yet, so this leaves it as it was found.
+        return -KOS_EBUSY;
     }
     r8(u->base + ru::C2_OFFSET) = 0u;
 

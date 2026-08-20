@@ -357,6 +357,12 @@ uint32_t kos_ipc_fast_taken(void)
     return static_cast<uint32_t>(arch_syscall(KOS_SYS_IPC_FAST_TAKEN, 0, 0, 0, 0));
 }
 
+uint32_t kos_nest_witness(int which)
+{
+    return static_cast<uint32_t>(
+        arch_syscall(KOS_SYS_NEST_WITNESS, static_cast<uintptr_t>(which), 0, 0, 0));
+}
+
 uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size)
 {
     return arch_syscall(KOS_SYS_GRANT_PROBE, op, base, size, 0);

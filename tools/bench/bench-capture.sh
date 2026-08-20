@@ -72,7 +72,7 @@ case $BOARD in
   f302nucleo)             PATTERN="/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_*-if02" ;;
   esp32c6-wroom)          PATTERN="/dev/serial/by-id/usb-1a86_USB_Single_Serial_*" ;;
   esp32-wroom)            PATTERN="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0" ;;
-  rx72m|picopi|pizero2350|teensy41) ;;
+  f411disco|rx72m|picopi|pizero2350|teensy41) ;;
   *) refuse "no console row for $BOARD; add one rather than guessing its probe" ;;
 esac
 RIGKEY="RIG_CONSOLE_$(printf '%s' "$BOARD" | tr 'a-z-' 'A-Z_')"
@@ -229,8 +229,11 @@ case $BOARD in
     FLASH_PORT="$PORT" FLASH_IMAGE="$IMG" "$ROOT/tools/flash.sh" "$BOARD" "$APP" || refuse "the flash failed"
     "$PYBIN" "$HERE/cap_esp.py" "$PORT" "$LOG" "${CAP_SECS:-40}" '^1\.\.[0-9]+' > /dev/null 2>&1
     ;;
-  f302nucleo)
-    # THERE IS NO SEPARATE RESET STEP, AND REMOVING IT IS WHAT MADE THIS BOARD A RELIABLE
+  f302nucleo|f411disco)
+    # One arm, two consoles. f302nucleo's is the ST-Link V2.1's own VCOM; f411disco's probe
+    # is a V2 with NO VCP, so its console is a separate FTDI named by RIG_CONSOLE_F411DISCO
+    # and the stty re-arm below is what keeps that cable from returning EOF at once.
+    # THERE IS NO SEPARATE RESET STEP, AND REMOVING IT IS WHAT MADE THE f302 A RELIABLE
     # INSTRUMENT (measured 2026-08-13). Releasing NRST at the end of the write already starts
     # the image, so the write's own boot IS the authoritative run. This branch used to follow
     # the write with `st-flash reset` to guarantee a single boot; what that actually did was cut

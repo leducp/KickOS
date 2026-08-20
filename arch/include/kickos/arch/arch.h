@@ -161,10 +161,12 @@ int arch_periph_enable(uintptr_t base);
 // `base` must match a per-chip ALLOWLIST entry EXACTLY and `offset` must be one that
 // entry names. A backend never range-matches and never admits a whole block.
 //
-// An entry's block MUST be CLOCKED whenever the syscall can reach it: the store runs in
-// the kernel's frame, so a fault on a gated block reaches kfault_terminate and ends the
-// system. XMC4800's USIC0 qualifies only because kickos_xmc_usic_init() ungates it from
-// arch_init; a U1C0/U2C0 entry behind CGATCLR1 would not.
+// An entry's block MUST be CLOCKED, POWERED and out of RESET whenever the syscall can
+// reach it. THE SEAM CHECKS NONE OF THAT: it validates alignment, wrap and possession and
+// consults no clock, power or reset state. The store runs in the kernel's frame, so a
+// fault on an unready block reaches kfault_terminate and ends the system. XMC4800's USIC0
+// qualifies only because kickos_xmc_usic_init() ungates it from arch_init; a U1C0/U2C0
+// entry behind CGATCLR1 would not.
 //
 // Returns 0, -KOS_EINVAL (not on the allowlist, or `value` has a bit outside the entry's
 // mask; the store is skipped, never masked) or -KOS_ENOSYS (no backend). The default
@@ -732,6 +734,27 @@ bool kickos_fault_below_stack(uintptr_t addr);
 // `addr_valid`, since a fault-address register holds stale contents otherwise.
 void kickos_fault_record(char const* status_name, uint32_t status,
                          uintptr_t pc, uintptr_t addr, int addr_valid);
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+// Trap-stack regression: names kickos_trapstack_witness if an unprivileged thread's trap
+// frame reached that kernel word. A backend calls it on its PANIC path, after
+// kpanic_enter, so the faultsurvive `kwrite' gate can prove the trap prologue did NOT
+// store through a U-mode sp into kernel memory. Silent when intact.
+void kickos_trapstack_witness_report(void);
+
+// NESTED-TRAP regression, and a different claim from the one above: not where a wild sp
+// pointed, but which stack the kernel picked for an interrupt taken while the kernel was
+// ALREADY running. On a backend with a software trap prologue the interrupted sp is the
+// calling thread's own whenever what got interrupted was that thread's syscall dispatch, and
+// no bound was applied to it, so a frame built there lands wherever the dispatch had
+// descended to. A backend calls this once per such trap with the frame it built and the
+// interrupted thread's stack bounds (`lo` 0 when there is no current thread). The counters
+// are kernel-side so one syscall serves every backend, and KOS_SYS_NEST_WITNESS reads them.
+// A COUNTER READ and not a print: a kprintf on the shutdown path would put the console's
+// varargs route inside the SYSCALL red zone.
+void kickos_nestwitness_note(uintptr_t frame, uintptr_t lo, uintptr_t hi);
+uint32_t kickos_nestwitness_count(int which);
+#endif
 
 // Where arch_fault_redirect_to_exit points the faulting thread. Runs privileged, in
 // thread mode, on that thread's own stack.

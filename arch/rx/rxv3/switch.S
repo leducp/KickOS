@@ -41,6 +41,8 @@
  * adjusts the pointer first, never uses a negative displacement.
  */
 
+#include <kickos/arch/rx_trap_stack.h>
+
     .text
 
 /* PSW bit masks (ISA UM sec.1.2.2.4): I=b16, U=b17, PM=b20. NB: RX gas lexes a
@@ -50,12 +52,24 @@
     .equ ICU_SWINTR,  0x000872E0   /* ICU.SWINTR: bit0 pends SWINT (vector 27) */
     .equ ICU_IR_SWINT, 0x0008701B  /* ICU.IR027: the SWINT request flag (0x87000+27) */
     .equ BIT_I,       0x00010000   /* PSW.I (interrupt enable) */
+/* struct arch_context field offsets read by the USP bounds checks. Taken from
+   rx_trap_stack.h, which arch_rxv3.cc static_asserts offsetof against. */
+    .equ F_CTX_STACK_LO, KICKOS_RX_CTX_OFF_STACK_LO
+    .equ F_CTX_STACK_HI, KICKOS_RX_CTX_OFF_STACK_HI
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
 /* Byte offset of the R1 slot from the frame base, which is the DPFPU bank's lowest
    word where that bank exists and A0LO where it does not. It is the leaf's args and
    the slot arch_ctx_set_syscall_result writes; arch_rxv3.cc asserts the same value. */
 #if defined(__RX_DFPU_INSNS__)
     .equ FRAME_R1_OFF, 168
+/* Above the R1 slot sit R1 itself (4), R2-R14 (52) and the [R15][PC][PSW] head (12), so the
+   frame the guard prices is exactly 68 bigger. gas has no static_assert, and RX gas takes no
+   `!=` in .if, so the test is a difference against zero. A DFPU-less build writes 96 instead
+   and the guard's figure is then the safe over-reserve rx_trap_stack.h names, so this holds
+   only where the bank exists. */
+    .if FRAME_R1_OFF + 68 - KICKOS_RX_TRAP_FRAME_PENDSW
+    .error "FRAME_R1_OFF disagrees with KICKOS_RX_TRAP_FRAME_PENDSW (rx_trap_stack.h)"
+    .endif
 #else
     .equ FRAME_R1_OFF, 28
 #endif
@@ -91,6 +105,35 @@ _kickos_rx_pendsw:
        stale SWINT and the switcher live-locks. R15 is free here (reloaded by the mvfc
        below). */
     push.l  r15                /* [ISP]=R15, 4[ISP]=PC, 8[ISP]=PSW */
+    /* SWINT preempts the outgoing thread at an arbitrary PC, so validate its live USP
+       before the save builds a frame through it: a thread that set a wild USP and waited
+       for the tick would otherwise have the switcher store through it. On the ISP
+       (trusted); R14 is still live here, so bank it while R15 (already saved) is scratch. */
+    push.l  r14
+    mvfc    usp, r15
+    mov.l   r15, r14
+    and     #KICKOS_RX_TRAP_SP_ALIGN - 1, r14
+    bne     .Lpendsw_bad_usp       /* misaligned USP: every word store below it would be */
+    mov.l   #_g_arch_current, r14
+    mov.l   [r14], r14
+    mov.l   F_CTX_STACK_HI[r14], r14
+    cmp     r14, r15               /* USP - stack_hi */
+    bgtu    .Lpendsw_bad_usp
+    mov.l   #_g_arch_current, r14
+    mov.l   [r14], r14
+    mov.l   F_CTX_STACK_LO[r14], r14
+    cmp     r14, r15               /* USP - stack_lo */
+    bltu    .Lpendsw_bad_usp
+    /* The pointer tests say nothing about the frame's EXTENT: the save below builds
+       DOWNWARD from here and the restore epilogue then calls C beneath it, supervisor, which
+       the RX MPU does not check. So what has to be bounded is the room BELOW the USP.
+       Written as room-remaining, taken only after the test above proved USP >= stack_lo, so
+       a low USP cannot pass by wrapping the subtraction. rx_trap_stack.h carries the
+       derivation; check_trap_redzone.sh re-measures it. */
+    sub     r14, r15               /* r15 = writable bytes below the USP */
+    cmp     #KICKOS_RX_TRAP_REDZONE_PENDSW, r15
+    bltu    .Lpendsw_bad_usp       /* frame + kernel descent would run off the bottom */
+    pop     r14                    /* restore the outgoing thread's R14 */
     mov.l   #ICU_IR_SWINT, r15
     mov.b   #0, [r15]
 #if KICKOS_BENCH
@@ -214,6 +257,14 @@ _kickos_rx_restore:
     popm    r1-r15             /* R1..R15 (R0/SP is not in the frame) */
     rte                        /* pops PC then PSW -> resume incoming */
 
+/* A tick pended the switch on a thread whose USP the guard refused: outside its stack,
+   misaligned, or with too little room below it for the frame plus the kernel descent. R14 is
+   banked on the ISP above; drop it and hand the USP to the panic helper (noreturn). */
+.Lpendsw_bad_usp:
+    mvfc    usp, r1
+    pop     r14
+    bsr.a   _kickos_rx_bad_usp
+
 /* ------------------------------------------------------------------------- */
 /* arch_start(boot, first): R1=boot (ignored; the ISP/boot stack is abandoned), */
 /* R2=first. No outgoing context to save; select the USP and enter first via the */
@@ -249,6 +300,33 @@ _arch_start:
 /* ------------------------------------------------------------------------- */
     .global _kickos_rx_syscall_trap
 _kickos_rx_syscall_trap:
+    /* On the ISP (INT cleared U). Validate the live USP against the running thread's
+       stack before any path writes a frame through it: R0 is the USP in user mode and a
+       thread owns it, so a wild USP would run privileged dispatch on a caller-chosen
+       stack. R14/R15 are caller-saved at the syscall boundary, so scratching them here is
+       safe (the generic path already does). */
+    mvfc    usp, r15
+    mov.l   r15, r14
+    and     #KICKOS_RX_TRAP_SP_ALIGN - 1, r14
+    bne     .Lsys_bad_usp           /* misaligned USP: every word store below it would be */
+    mov.l   #_g_arch_current, r14
+    mov.l   [r14], r14
+    mov.l   F_CTX_STACK_HI[r14], r14
+    cmp     r14, r15                /* USP - stack_hi */
+    bgtu    .Lsys_bad_usp
+    mov.l   #_g_arch_current, r14
+    mov.l   [r14], r14
+    mov.l   F_CTX_STACK_LO[r14], r14
+    cmp     r14, r15                /* USP - stack_lo */
+    bltu    .Lsys_bad_usp
+    /* Extent, not pointer: both arms below build downward from this USP and then run C on it
+       in supervisor, which the RX MPU does not check, so the room BELOW the USP is what has
+       to be bounded. One figure for both arms, because this sits above the `cmp #56, r1`
+       that picks one. Room-remaining after the USP >= stack_lo test, so a low USP cannot
+       pass by wrapping the subtraction. */
+    sub     r14, r15                /* r15 = writable bytes below the USP */
+    cmp     #KICKOS_RX_TRAP_REDZONE_SYS, r15
+    bltu    .Lsys_bad_usp           /* frame + dispatch would run off the bottom */
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
     /* THE SEAM. KOS_SYS_CALL_REG completes here, before the RTE that would otherwise
        land in svc_trampoline and run the generic dispatch.
@@ -368,6 +446,13 @@ _kickos_rx_syscall_trap:
     or      #BIT_U, r14    /* set U -> the thread's own USP */
     mov.l   r14, 4[r0]         /* stacked PSW := supervisor-on-USP */
     rte                        /* -> svc_trampoline, PM=0 U=1, on the USP */
+
+/* A syscall whose USP the guard refused: outside the thread's stack, misaligned, or with too
+   little room below it for the frame plus the dispatch. Nothing was written through it; the
+   ISP still carries [PC][PSW]. Hand the USP to the panic helper (noreturn). */
+.Lsys_bad_usp:
+    mvfc    usp, r1
+    bsr.a   _kickos_rx_bad_usp
 
 /* Runs privileged (PM=0) on the calling thread's USP. [R0]=userPC,[R0+4]=userPSW */
 /* (stashed above), a3 at [R0+12]; R1-R4 = nr,a0,a1,a2. A blocking syscall_dispatch */

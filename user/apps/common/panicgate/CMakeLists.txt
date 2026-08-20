@@ -13,8 +13,16 @@
 # greps with -F.
 set(_pg_re_1 "KERNEL PANIC: \\[panicgate\\] message on the wire")
 set(_pg_txt_1 "KERNEL PANIC: [panicgate] message on the wire")
-set(_pg_re_2 "KERNEL PANIC: user panic \\(no readable message\\)")
-set(_pg_txt_2 "KERNEL PANIC: user panic (no readable message)")
+# Cases 2 and 3 are the only ones whose text the KERNEL supplies, so they are the only
+# ones KICKOS_DIAG_TERSE rewrites: kUserPanicNoMsg is P08 in diag.h. The other three
+# carry the caller's own message, which terse does not touch.
+if(KICKOS_DIAG_TERSE)
+  set(_pg_re_2 "KERNEL PANIC: P08")
+  set(_pg_txt_2 "KERNEL PANIC: P08")
+else()
+  set(_pg_re_2 "KERNEL PANIC: user panic \\(no readable message\\)")
+  set(_pg_txt_2 "KERNEL PANIC: user panic (no readable message)")
+endif()
 set(_pg_re_3 "${_pg_re_2}")
 set(_pg_txt_3 "${_pg_txt_2}")
 # Case 4 ends in the literal truncation marker, so the dots are escaped in the regex:

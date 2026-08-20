@@ -67,10 +67,16 @@ H="$TMP/ok/include/kickos/board_config.h"
 grep -qE '^#define KICKOS_MAX_IRQ ' "$H" \
     && fail "a chip constant reached the generated knob header"
 grep -q '^#define KICKOS_MAX_THREADS 8$' "$H" || fail "header lost MAX_THREADS=8"
-# Stated in no defconfig: it comes from `default 640 if ARCH_ARMV7M`, which the board
-# reached through its chip. A copied value would not prove the select chain resolved.
-grep -q '^#define KICKOS_MIN_STACK_SIZE 640$' "$H" \
-    || fail "MIN_STACK_SIZE did not resolve to the armv7m floor"
+# Stated in no defconfig: it comes from KICKOS_MIN_STACK_SIZE's `default <n> if
+# ARCH_ARMV7M`, which the board reached through its chip. The expected value is READ OUT OF
+# Kconfig rather than written here: a copy would not prove the select chain resolved.
+_floor="$(sed -n 's/^[[:space:]]*default[[:space:]]\{1,\}\([0-9]\{1,\}\)[[:space:]]\{1,\}if[[:space:]]\{1,\}ARCH_ARMV7M[[:space:]]*$/\1/p' \
+          "$SRC/Kconfig")"
+[ "$(printf '%s\n' "$_floor" | wc -l | tr -d ' ')" = 1 ] && [ -n "$_floor" ] \
+    || fail "Kconfig does not carry exactly one 'default <n> if ARCH_ARMV7M', so this leg
+    has nothing to compare the generated floor against"
+grep -q "^#define KICKOS_MIN_STACK_SIZE $_floor\$" "$H" \
+    || fail "MIN_STACK_SIZE did not resolve to the armv7m floor ($_floor per Kconfig)"
 grep -q '^#define KICKOS_BOARD_CONFIG_H$' "$H" \
     || fail "generated header carries no include guard, so it cannot shadow the board's"
 
@@ -81,7 +87,7 @@ grep -q '^set(KICKOS_ARCH_FAMILY "arm")$' "$F" || fail "fragment lost the arch f
 grep -q '^set(KICKOS_CHIP "xmc4800")$' "$F" || fail "fragment lost the chip"
 grep -q '^set(KICKOS_CONSOLE "both")$' "$F" || fail "fragment lost the console backend"
 grep -q '^set(KICKOS_TELEMETRY "off")$' "$F" || fail "fragment lost the telemetry sink"
-grep -q '^set(KICKOS_MIN_STACK_SIZE 640)$' "$F" || fail "fragment lost the stack floor"
+grep -q "^set(KICKOS_MIN_STACK_SIZE $_floor)\$" "$F" || fail "fragment lost the stack floor"
 grep -q '^set(KICKOS_HAVE_MPU 1)$' "$F" \
     || fail "the base variant of an enforcing board did not resolve the enforcing posture"
 # What it read, named file by file rather than matched on the list's SHAPE. A shape match

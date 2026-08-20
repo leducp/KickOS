@@ -40,6 +40,13 @@
 #             accepts four spellings that are C++ only under this rule. The negative probes
 #             fail the compiler if the pin did not take.
 #
+#   pedantic  a SECOND pass over the same corpus at -pedantic-errors. The main pass is not
+#             pedantic, so a construct that is a GNU extension rather than ISO C11 passes it
+#             exactly as it passes a consumer build with extensions on; this pass is what
+#             fails it before a consumer compiling strictly conforming C11 does. Its TU
+#             carries a trailing typedef: an include-only TU of a macros-only header is
+#             EMPTY, which -pedantic-errors forbids on its own.
+#
 #   refusal   a header whose own #include cannot be found is REFUSED by name, not reported as
 #             invalid C: the compiler judged nothing, so the verdict is UNKNOWN. Fix is a
 #             missing root on the command line, or a freestanding header the compiler lacks.
@@ -51,8 +58,7 @@
 #     is compiled as part of its includer and never standalone.
 #   - anything behind a preprocessor conditional this gate does not define. It compiles with
 #     NO -D at all, so the C branch of a `#ifdef __cplusplus` is the only branch read.
-#   - a GNU extension. The probe TUs use `__asm volatile`, so -pedantic-errors is deliberately
-#     absent and a GNU-only spelling passes as C here as it does in a consumer build.
+#   - a GNU extension, in the MAIN pass only: the pedantic pass fails it.
 #   - LINKING. -fsyntax-only proves a C TU parses and type-checks against the header; it
 #     proves nothing about a symbol the consumer then has to find.
 #   - a C++ construct that is ALSO valid C with different meaning: a cast-expression spelled
@@ -74,6 +80,7 @@ shift
 command -v "$CC" >/dev/null 2>&1 || fail "not an executable C compiler: $CC"
 
 CFLAGS="-std=c11 -ffreestanding -fsyntax-only"
+PEDFLAGS="$CFLAGS -pedantic-errors"
 
 STRIP="$(dirname "$0")/../lib/strip_comments.awk"
 [ -r "$STRIP" ] || fail "tests/lib/strip_comments.awk is unreadable; nothing below can read code apart from prose"
@@ -199,6 +206,14 @@ compile_as_c() { # <header path> <stderr file>
     return 1
 }
 
+# The trailing typedef keeps the TU non-empty: -pedantic-errors forbids an empty translation
+# unit, which is what a macros-only header would otherwise produce.
+compile_pedantic_c() { # <header path> <stderr file>
+    # shellcheck disable=SC2086
+    printf '#include "%s"\ntypedef int kos_gate_pedantic_tu;\n' "$1" \
+        | "$CC" $PEDFLAGS $INCARGS -x c - 2>"$2"
+}
+
 # --- the compiler, proven both ways --------------------------------------------------------
 
 mkdir -p "$TMP/p"
@@ -246,6 +261,45 @@ while IFS= read -r tag; do
       the compiler is in the wrong mode or the -std=c11 in CFLAGS did not take"
     fi
 done < "$TMP/p/neg.list"
+
+# --- the pedantic pass, proven both ways ---------------------------------------------------
+
+# Strictly conforming C11 and nothing else: a red here must never be the probe's own.
+cat > "$TMP/p/ped_ok.h" <<'EOF'
+#include <stdint.h>
+struct kos_probe_ped
+{
+    uint32_t v;
+};
+_Static_assert(sizeof(uint32_t) == 4, "the C11 spelling");
+EOF
+compile_pedantic_c "$TMP/p/ped_ok.h" "$TMP/p/ped_ok.err" || {
+    sed -n '1,4p' "$TMP/p/ped_ok.err" >&2
+    fail "$CC refuses strictly conforming C11 at $PEDFLAGS, so every pedantic finding below
+      would be its own"
+}
+
+# Each is a GNU extension the main pass accepts, so the pedantic pass is the one that has to
+# reject it.
+: > "$TMP/p/ped.list"
+ped_neg() { # <tag> <one line of GNU-extension C>
+    printf '%s\n' "$2" > "$TMP/p/ped_$1.h"
+    printf '%s\n' "$1" >> "$TMP/p/ped.list"
+}
+ped_neg fixed_enum 'enum kos_probe_fe : unsigned { KOS_PROBE_FE = 0 };'
+ped_neg zero_array 'struct kos_probe_za { unsigned n; int v[0]; };'
+
+while IFS= read -r tag; do
+    if ! compile_as_c "$TMP/p/ped_$tag.h" "$TMP/p/ped.err"; then
+        sed -n '1,4p' "$TMP/p/ped.err" >&2
+        fail "the main pass rejects \`$tag\`, so it is no longer the extension-tolerant pass
+      the pedantic one is meant to sit beside"
+    fi
+    if compile_pedantic_c "$TMP/p/ped_$tag.h" "$TMP/p/ped.err"; then
+        fail "$CC accepts \`$tag\` at $PEDFLAGS, which is a GNU extension and not ISO C11,
+      so the pedantic pass is blind to it and -pedantic-errors did not take"
+    fi
+done < "$TMP/p/ped.list"
 
 # --- the selector, proven both ways --------------------------------------------------------
 
@@ -373,6 +427,17 @@ while IFS= read -r f; do
     { printf '%s\n' "$f"; sed -n '1,6p' "$TMP/c.err"; } >> "$TMP/bad.err"
 done < "$TMP/corpus.s"
 
+: > "$TMP/ped.bad"
+: > "$TMP/ped.bad.err"
+while IFS= read -r f; do
+    grep -Fxq "$f" "$TMP/bad" 2>/dev/null && continue
+    grep -Fxq "$f" "$TMP/refused" 2>/dev/null && continue
+    if ! compile_pedantic_c "$f" "$TMP/ped.err"; then
+        printf '%s\n' "$f" >> "$TMP/ped.bad"
+        { printf '%s\n' "$f"; sed -n '1,6p' "$TMP/ped.err"; } >> "$TMP/ped.bad.err"
+    fi
+done < "$TMP/corpus.s"
+
 RC=0
 
 # A file the stripper could not finish is UNKNOWN, not clean: it may be a C-facing header this
@@ -409,6 +474,16 @@ if [ -s "$TMP/bad" ]; then
     RC=1
 fi
 
+if [ -s "$TMP/ped.bad" ]; then
+    echo "" >&2
+    cat "$TMP/ped.bad.err" >&2
+    echo "" >&2
+    echo "FAIL: $(wc -l < "$TMP/ped.bad" | tr -d ' ') C-facing header(s) compile as C11 only with GNU" >&2
+    echo "      extensions on. A consumer building strictly conforming C11 gets a hard error out" >&2
+    echo "      of a shipped header, so write the ISO C11 spelling of what it needs." >&2
+    RC=1
+fi
+
 [ "$RC" -eq 0 ] || exit 1
 
-echo "PASS: $N C-facing header(s) compile standalone as C11"
+echo "PASS: $N C-facing header(s) compile standalone as C11, and as strictly conforming C11"

@@ -164,6 +164,15 @@ namespace kickos
         exit(1);
     }
 
+#if KICKOS_DIAG_TERSE
+    void kpanic_at(char const* file, unsigned line)
+    {
+        printf("KERNEL PANIC: %s:%u\n", file, line);
+        fflush(stdout);
+        exit(1);
+    }
+#endif
+
     // Never called: no arm here drives kickos_thread_fault_exit, which is the only caller.
     void kprintf_fault(char const*, ...)
     {

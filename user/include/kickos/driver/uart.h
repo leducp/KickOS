@@ -30,7 +30,7 @@
 #ifndef KICKOS_DRIVER_UART_H
 #define KICKOS_DRIVER_UART_H
 
-#include <kickos/sys/errno.h> // KOS_EINVAL, for the shared cfg check below
+#include <kickos/sys/errno.h> // KOS_EINVAL, KOS_ENOTSUP, for the shared cfg checks below
 #include <kickos/sys/uart.h>  // kos_uart_stats, kos_uart_parity: the wire contract's own
 
 #include <stdint.h>
@@ -85,9 +85,27 @@ extern "C"
         return 0;
     }
 
+    // The rate clause a backend that CANNOT REPROGRAM ITS DIVISOR refuses. Returns 0, or
+    // -KOS_ENOTSUP. Called right after kos_uart_cfg_check, and ONLY by such a backend: one
+    // that can program a rate must not call it.
+    //
+    // -KOS_ENOTSUP WHATEVER THE LOCAL REASON, write-protected divider included. -KOS_EPERM
+    // is a register write the platform actually denied, and answering it here reads as a
+    // misconfigured grant, so a consumer retries a request no grant can satisfy.
+    static inline int32_t kos_uart_cfg_check_fixed_rate(struct kos_uart_config const* cfg)
+    {
+        if (cfg->baud != 0u)
+        {
+            return -KOS_ENOTSUP;
+        }
+        return 0;
+    }
+
     // Bind the object to a channel, program baud and frame, and put the line live.
-    // Returns THE BAUD THE CHANNEL IS ACTUALLY RUNNING AT as a positive value, or a
-    // negative kos_errno.
+    // Returns THE BAUD THE CHANNEL IS ACTUALLY RUNNING AT as a STRICTLY POSITIVE value, or a
+    // negative kos_errno. 0 IS NEITHER: a divisor whose achieved rate truncates to zero is
+    // refused rather than reported, or a consumer testing the return for failure reads a dead
+    // line as a live one.
     //
     // THE RETURN IS NEVER AN ECHO OF cfg->baud. A backend that can neither program the
     // rate nor read it back REFUSES: a consumer that cannot tell "programmed" from
@@ -97,20 +115,30 @@ extern "C"
     //
     // cfg->baud == 0 asks for no rate change: the channel keeps whatever divisor it already
     // has and open reports that rate. It is not a licence to return an unknown rate; a
-    // backend that cannot read its divisor back still refuses.
+    // backend that cannot read its divisor back still refuses. A backend that cannot
+    // reprogram its divisor at all serves cfg->baud == 0 and nothing else, refusing every
+    // other rate through kos_uart_cfg_check_fixed_rate.
+    //
+    // A BACKEND THAT DOES REPROGRAM WAITS FOR ITS TRANSMIT PATH TO GO IDLE FIRST, and refuses
+    // -KOS_EBUSY when its own bound expires with the path still busy. Writing the divisor or
+    // the frame into a live shifter corrupts that byte on the wire, and on several parts the
+    // write is discarded instead, leaving a channel whose real rate nothing knows. The wait
+    // precedes every channel-register write, so this refusal leaves the channel exactly as
+    // open found it and a caller may retry.
     //
     // -KOS_EINVAL is a cfg kos_uart_cfg_check rejects, and every backend runs that check
-    // first. -KOS_ENOTSUP is the frame format this controller has no encoding for, or a rate
-    // outside its divider's reach. -KOS_ENOSYS is a rate the chip could not report at
-    // runtime. -KOS_EPERM is a register the platform will not let this caller write.
+    // first. -KOS_ENOTSUP is the frame format this controller has no encoding for, a rate
+    // outside its divider's reach, or any rate request at all on a backend that cannot
+    // reprogram. -KOS_ENOSYS is a rate the chip could not report at runtime. -KOS_EBUSY is a
+    // transmit path that would not go idle inside the backend's own bound. -KOS_EPERM is a
+    // register the platform will not let this caller write.
     //
     // cfg->stats is validated ONCE here and never again: a consumer that wants no counters
     // supplies a private struct rather than a null pointer. The service route points it at
     // the shared ring block, where the counters outlive the driver thread.
     //
-    // Nothing may transfer before open returns non-negative. A divisor or frame change with
-    // a byte in the shifter corrupts it on the wire, and several parts make the divisor
-    // unwritable while the transmitter is enabled.
+    // Nothing may transfer before open returns non-negative. Several parts also make the
+    // divisor unwritable while the transmitter is enabled.
     int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg);
 
     // Take up to n bytes from the receiver and return how many arrived, 0 when nothing is

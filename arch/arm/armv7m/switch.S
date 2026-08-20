@@ -20,8 +20,54 @@
  * conditionally on EXC_RETURN bit4.
  */
 
+#include <kickos/arch/armv7m_trap_stack.h>
+
     .syntax unified
     .thumb
+
+/* struct arch_context field offsets read by the PSP bounds guard below. Taken from
+   armv7m_trap_stack.h, which arch_armv7m.cc static_asserts offsetof against. */
+    .equ F_CTX_STACK_LO, KICKOS_ARMV7M_CTX_OFF_STACK_LO
+    .equ F_CTX_STACK_HI, KICKOS_ARMV7M_CTX_OFF_STACK_HI
+
+/* PSP bounds guard, used by both software pushes in this file.
+   In:  \need = the room this site's class needs below the PSP, before the FP term;
+        r0 = the live PSP, r2 = the running thread's arch_context*, lr = EXC_RETURN.
+   Clobbers r1 and r12, both already in the hardware frame and so free here.
+   Falls through only when \need bytes, plus {s16-s31} when the FP frame is live, fit
+   between stack_lo and the PSP.
+
+   Exception entry stacks the hardware frame ABOVE the PSP with the PRE-EXCEPTION
+   privilege, so the MPU refuses that half and a kernel-aimed PSP faults as MSTKERR
+   before any handler runs. The block pushed BELOW the PSP is written in handler mode
+   and is refused by nothing, so a PSP 32 bytes above a stack's base clears the
+   hardware check and still writes into the block below. The last word pushed is
+   EXC_RETURN.
+
+   \need covers the software push AND whatever kernel C then descends below it on this
+   same stack, which armv7m_trap_stack.h derives per class. The two sites pass DIFFERENT
+   figures: only the SVC slow path leaves handler mode and keeps running on the thread's
+   PSP. */
+    .macro PSP_GUARD need
+    movw    r1, #\need
+#if defined(__ARM_FP)
+    tst     lr, #0x10               /* bit4 == 0 => {s16-s31} goes below the PSP too */
+    it      eq
+    addeq   r1, r1, #KICKOS_ARMV7M_TRAP_FRAME_FP
+#endif
+    ldr     r12, [r2, #F_CTX_STACK_LO]
+    cmp     r0, r12
+    blo     .Lpsp_wild
+    sub     r12, r0, r12            /* the room REMAINING below the PSP: a bound written
+                                       as psp - need could wrap under stack_lo instead */
+    cmp     r12, r1
+    blo     .Lpsp_wild
+    ldr     r12, [r2, #F_CTX_STACK_HI]
+    cmp     r0, r12
+    bhs     .Lpsp_wild              /* a PSP above the stack would push into whatever
+                                       granted region carried the hardware frame */
+    .endm
+
     .text
 
 /* ------------------------------------------------------------------------- */
@@ -51,6 +97,7 @@ PendSV_Handler:
 #endif
     cbz     r2, 1f                  /* nothing to save on the first entry */
     mrs     r0, psp
+    PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_PENDSV
 #if defined(__ARM_FP)
     tst     lr, #0x10               /* EXC_RETURN bit4 == 0 => FP frame active */
     it      eq
@@ -104,15 +151,15 @@ PendSV_Handler:
 #if KICKOS_TELEMETRY
     /* SWITCH completion hook. Emit {from,to} from the PHYSICALLY-swapped contexts:
        r1 is the incoming ctx* we loaded above; r2 (popped) is the outgoing ctx*
-       we spilled at entry. trace_tid lives at offset 12. from = 0xFFFF on the
+       we spilled at entry. trace_tid lives at offset 20. from = 0xFFFF on the
        first switch (outgoing ctx* was 0). EXC_RETURN (lr) is saved across the bl,
        MSP kept 8-byte aligned. */
     pop     {r2, r3}                /* r2 = outgoing ctx* (r3 = alignment pad) */
-    ldr     r1, [r1, #12]           /* r1 = to_tid (incoming.trace_tid) */
+    ldr     r1, [r1, #20]           /* r1 = to_tid (incoming.trace_tid) */
     movw    r0, #0xFFFF             /* default from = no-thread */
     cmp     r2, #0
     beq     4f
-    ldr     r0, [r2, #12]           /* from_tid = outgoing.trace_tid */
+    ldr     r0, [r2, #20]           /* from_tid = outgoing.trace_tid */
 4:
     push    {r0, lr}                /* save EXC_RETURN; r0 pad keeps 8B alignment */
     bl      kickos_trace_switch_done /* (r0=from_tid, r1=to_tid) */
@@ -132,6 +179,13 @@ PendSV_Handler:
     cpsie   i                       /* pair consumed; never resume a thread masked */
     bx      lr                      /* EXC_RETURN -> resume incoming on PSP */
 
+/* The PSP has no room for the software block. r3 is loaded FIRST because r2 is the ctx*
+   both loads read. Never returns. */
+.Lpsp_wild:
+    ldr     r3, [r2, #F_CTX_STACK_HI]
+    ldr     r2, [r2, #F_CTX_STACK_LO]
+    b       kickos_armv7m_bad_psp   /* (r0=PSP, r1=need, r2=stack_lo, r3=stack_hi) */
+
 /* ------------------------------------------------------------------------- */
 /* SVC_Handler: redirect the exception return into svc_trampoline, which runs */
 /* in PRIVILEGED THREAD mode. It does NOT dispatch (that would run in handler */
@@ -144,6 +198,17 @@ PendSV_Handler:
     .global SVC_Handler
 SVC_Handler:
     mrs     r0, psp                 /* r0 -> user hardware frame */
+    /* Guards BOTH exits from here, and at the SVC figure, which is the larger: the
+       fastpath below pushes the callee block through this PSP and returns in handler mode,
+       but the slow path exception-returns into svc_trampoline, which runs PRIVILEGED IN
+       THREAD MODE on this same PSP and calls syscall_dispatch below it. The guard sits
+       above the `cmp #56` that picks the arm, so it cannot know which one will run and
+       must charge the one that descends further. */
+    ldr     r2, =g_arch_current
+    ldr     r2, [r2]
+    cbz     r2, .Lsvc_nothread     /* no thread running: nothing to bound against */
+    PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_SVC
+.Lsvc_nothread:
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
     /* THE SEAM. KOS_SYS_CALL_REG completes here, before the exception return that would
        otherwise land in svc_trampoline and run the generic dispatch. The leaf decides
@@ -224,8 +289,8 @@ SVC_Handler:
        emitted nothing would break the decoder's from == previous.to continuity check. The
        outgoing ctx* is never 0 here, so there is no first-switch case to default. */
     pop     {r2, r12}               /* r2 = outgoing ctx* */
-    ldr     r1, [r0, #12]           /* to_tid (incoming.trace_tid) */
-    ldr     r0, [r2, #12]           /* from_tid */
+    ldr     r1, [r0, #20]           /* to_tid (incoming.trace_tid) */
+    ldr     r0, [r2, #20]           /* from_tid */
     push    {r0, lr}                /* save EXC_RETURN; r0 pad keeps MSP 8-byte aligned */
     bl      kickos_trace_switch_done
     pop     {r0, lr}

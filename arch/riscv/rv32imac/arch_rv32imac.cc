@@ -10,12 +10,14 @@
 // script + startup vectors.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/rv_trap_stack.h> // the trap guard's derived figures + ctx offsets
 #include <kickos/diag.h>
 #include <kickos/sys/atomic.h>
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 
 #include <bit>
 
+#include <stddef.h>
 #include <stdint.h>
 
 // The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
@@ -40,8 +42,8 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 // marker the sim (SIGSEGV over the guard page) and the reference backends emit.
 extern "C" void kickos_isr_fault(uintptr_t addr, int is_write);
 
-// Verbose CPU-context dump. Default on; -DKICKOS_PANIC_DUMP=0 keeps only the
-// one-line fault marker. Same knob and default on every arch reporter.
+// 0 keeps only the one-line fault marker; set it in the board defconfig or with
+// cmake -DKICKOS_PANIC_DUMP=0.
 #ifndef KICKOS_PANIC_DUMP
 #define KICKOS_PANIC_DUMP 1
 #endif
@@ -60,8 +62,11 @@ namespace
     enum : uint32_t
     {
         F_MEPC = 0, F_MSTATUS = 1, F_RA = 2, F_A0 = 8, // word indices
+        F_SP = KICKOS_RV_TRAP_F_SP / 4,
         FRAME_WORDS = 32
     };
+    static_assert(KICKOS_RV_TRAP_F_SP % 4 == 0, "F_SP is not a word offset");
+    static_assert(F_SP < FRAME_WORDS, "F_SP lies outside the frame");
 
     // mstatus bits (RISC-V Privileged ISA v1.10).
     constexpr uint32_t MSTATUS_MIE  = 1u << 3;
@@ -69,6 +74,39 @@ namespace
     constexpr uint32_t MSTATUS_MPP_M = 3u << 11; // MPP = machine (U = 0)
 
 }
+
+// switch.S hard-codes each offset below as a literal displacement. Nothing in the language
+// ties them to the struct, so a field inserted ahead of the bounds leaves the trap guard
+// comparing sp against trace_tid, and that still assembles, still links, and still passes
+// on QEMU. rv_trap_stack.h holds the single definition; these assert the struct agrees
+// with it.
+static_assert(offsetof(struct arch_context, sp) == KICKOS_RV_CTX_OFF_SP,
+              "switch.S expects ctx.sp @0");
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_RV_CTX_OFF_TRACE_TID,
+              "switch.S reads trace_tid at 4(ctx)");
+#endif
+static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_RV_CTX_OFF_STACK_LO,
+              "switch.S reads stack_lo at F_CTX_STACK_LO");
+static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_RV_CTX_OFF_STACK_HI,
+              "switch.S reads stack_hi at F_CTX_STACK_HI");
+static_assert(sizeof(struct arch_context) >= KICKOS_RV_CTX_OFF_STACK_HI + sizeof(uint32_t),
+              "the guard reads a word past the end of struct arch_context");
+
+// The frame the prologue builds and the frame arch_context_init fabricates are one object,
+// and the guard prices the prologue's own descent at KICKOS_RV_TRAP_FRAME.
+static_assert(FRAME_WORDS * 4 == KICKOS_RV_TRAP_FRAME,
+              "the fabricated frame and the trap guard disagree on the frame size");
+// The syscall zone's structural half is the ecall frame plus the msip frame the deferred
+// switcher builds at whatever depth the dispatch reached.
+static_assert(KICKOS_RV_TRAP_FRAME_SYS == 2 * KICKOS_RV_TRAP_FRAME,
+              "the syscall zone must hold exactly two frames");
+// The floor must DOMINATE the worst-case red zone, or a thread spawned at the floor passes
+// the spawn check and is then refused by the guard on every syscall it makes. The gate
+// checks it only for the presets it is registered on; this covers every rv32imac board.
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RV_TRAP_REDZONE_SYS,
+              "KICKOS_MIN_STACK_SIZE is below the rv32imac syscall red zone: raise the "
+              "per-arch default in Kconfig, never the red zone, which is a measurement");
 
 extern "C"
 {
@@ -88,6 +126,20 @@ extern "C"
 
     // switch.S bumps it with lw/sw at offset 0. Nothing else enforces the width.
     static_assert(sizeof(g_isr_depth) == 4, "asm reads one word");
+
+    // Trusted per-hart trap stack. mscratch holds its top while a thread runs, so
+    // trap_entry (switch.S) swaps onto it before it touches the interrupted sp, and a
+    // U-mode thread's sp never selects where the prologue's own scratch lands. It also
+    // CARRIES the frame of every M-mode trap whose frame is not a thread's saved context,
+    // and the kernel C that runs below it, so a tick taken mid-dispatch never descends on
+    // the calling thread's stack. rv_trap_stack.h derives the size and
+    // check_trap_redzone.sh re-measures the depth half of it.
+    alignas(16) uint8_t g_rv_trap_stack[KICKOS_RV_TRAP_STACK_SIZE];
+    static_assert(KICKOS_RV_TRAP_STACK_SIZE % KICKOS_RV_TRAP_SP_ALIGN == 0,
+                  "the trap-stack top must land on the alignment the prologue requires");
+    static_assert(KICKOS_RV_TRAP_STACK_SIZE > KICKOS_RV_TRAP_FRAME,
+                  "a nested frame would fill the whole trap stack, leaving nowhere for the "
+                  "kernel C below it; how much is enough is what the gate measures");
 
     // CLINT machine-software-interrupt-pending register for this hart, set by the
     // chip's arch_init. arch_switch writes 1 to pend the deferred switch; the msip
@@ -158,7 +210,16 @@ void arch_context_init(struct arch_context* ctx,
     f[F_MSTATUS] = mstatus;
     f[F_RA] = ret;                              // entry() returns here
     f[F_A0] = reinterpret_cast<uint32_t>(arg);  // first C argument
+    // The sp .Lrestore leaves on. Zero here would mret the first switch-in onto a null sp,
+    // and this frame is not one the prologue built, so nothing else seats it.
+    f[F_SP] = static_cast<uint32_t>(top);
     ctx->sp = reinterpret_cast<uint32_t>(f);
+
+    // trap_entry validates the interrupted U-mode sp against these before it stores a
+    // frame through it. `top` is the 16-byte-aligned high edge the first frame base
+    // sits below, so a running thread's sp stays in [stack_lo, stack_hi].
+    ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
+    ctx->stack_hi = static_cast<uint32_t>(top);
 }
 
 // The fastpath parks a caller on its own syscall frame with no kernel continuation, so
@@ -215,9 +276,13 @@ int arch_in_isr(void)
 // Reads its own low 32 bits (wraps; the host reconstructs absolute time from the SESSION
 // clock_hz anchors). No ns conversion, no wrap-extend and no crit section, so it is safe
 // on the switch path. kickos_rv32_init enables mcounteren.CY only where the core has the
-// CSR (arch_rv_has_mcounteren), so a U-mode thread can read it there. A core with no
-// Zicntr counters traps on rdcycle (the ESP32-C6 HP core is one) and has to override
-// this with its own counter.
+// CSR (arch_rv_has_mcounteren), so a U-mode thread can read it there.
+//
+// NOT EVERY rv32imac CORE HAS THE COUNTER. Without Zicntr this instruction is illegal in
+// M-mode too, so the trap lands in the kernel: the ESP32-C6 HP core is one such part and
+// its caps.cmake declares KICKOS_HAVE_TRACE_CLOCK 0, which refuses telemetry at configure
+// rather than leaving this reachable. A chip that grows a counter states the capability in
+// its own caps.cmake and, if the counter is not rdcycle, overrides this function.
 uint32_t arch_trace_now(void)
 {
     uint32_t v;
@@ -568,6 +633,34 @@ void arch_idle_wait(void)
     __asm volatile("wfi");
 }
 
+// NOT in a bench build, even though it is selftest-only: the call site is inside .Lintr,
+// which is inside what kernel/bench/bench.cc's injected-IRQ arm measures.
+#if defined(KICKOS_ENABLE_SELFTEST) && !KICKOS_BENCH
+// Nested-trap witness (arch.h), called from switch.S's .Lintr demux once msip is out and
+// the whole frame is saved at `frame`. An interrupt taken with mstatus.MPP=M interrupted
+// the kernel, and if what it interrupted was a syscall dispatch then the sp it found is
+// the CALLING THREAD'S, at whatever depth the dispatch had reached, with no bound applied
+// to it. mstatus comes out of the frame rather than the live CSR because .Lrestore is what
+// will consume it.
+void kickos_rv_nested_witness(void* frame)
+{
+    uint32_t const* const f = static_cast<uint32_t const*>(frame);
+    if ((f[F_MSTATUS] & MSTATUS_MPP_M) == 0)
+    {
+        return; // interrupted U-mode: the bounds-checked thread stack is where it belongs
+    }
+    struct arch_context* const c = g_arch_current;
+    uintptr_t lo = 0;
+    uintptr_t hi = 0;
+    if (c != nullptr)
+    {
+        lo = c->stack_lo;
+        hi = c->stack_hi;
+    }
+    kickos_nestwitness_note(reinterpret_cast<uintptr_t>(frame), lo, hi);
+}
+#endif
+
 // --- Fault isolation ----------------------------------------------------------
 // mstatus.MPP is the privilege BEFORE the trap and lives in a CSR, so it is valid
 // whatever the stack did; nothing between the vector and here writes it. NOT the
@@ -623,8 +716,9 @@ void arch_fault_redirect_to_exit(void* frame)
 // .Lfault must mret instead of dumping: the redirect above already re-pointed
 // mepc/mstatus at the stub. Otherwise dump the context, then hand off to the shared
 // dead-end (blink on real HW, exit with a fault status on QEMU/virt so a CTest run
-// reports it rather than hanging). ecall (mcause 8/11) is demuxed before .Lfault, so it
-// never reaches this reporter.
+// reports it rather than hanging). ecall-from-M (mcause 11) is demuxed before .Lfault and
+// never reaches here; ecall-from-U (8) does, but only from .Ltrap_wild, when the trap
+// guard refused the caller's sp before any frame was built.
 bool kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
                             uint32_t mstatus, void* frame)
 {
@@ -635,6 +729,9 @@ bool kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
         return true;
     }
     kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
+#if defined(KICKOS_ENABLE_SELFTEST)
+    kickos_trapstack_witness_report(); // names a U-mode sp that reached kernel memory
+#endif
     // An access fault taken FROM U-mode (mstatus.MPP==0) is a PMP domain violation by an
     // unprivileged thread, on instruction fetch (mcause 1) as well as load (5) / store
     // (7); a fetch from an ungranted region must report the same as a data access. Route
@@ -680,6 +777,12 @@ bool kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
     {
         what = "store access fault";
     }
+    else if (mcause == 8)
+    {
+        // Only .Ltrap_wild sends an ecall here: the demux routes every accepted ecall
+        // to .Lecall, so the cause is the refused sp and not the syscall.
+        what = "ecall on a refused stack";
+    }
     else if (mcause == 12)
     {
         what = "instruction page fault";
@@ -719,6 +822,11 @@ void kickos_rv32_init(void)
     uintptr_t tv = reinterpret_cast<uintptr_t>(kickos_rv_mtvec) | 1u;
     __asm volatile("csrw mtvec, %0" ::"r"(tv) : "memory");
     (void)trap_entry; // referenced by the asm vector table, not directly here
+
+    // The trusted trap stack top. trap_entry swaps sp with mscratch on entry, so it
+    // must hold this before the first trap (and thus before the first mret to U-mode).
+    uintptr_t const trap_sp = reinterpret_cast<uintptr_t>(&g_rv_trap_stack[sizeof(g_rv_trap_stack)]);
+    __asm volatile("csrw mscratch, %0" ::"r"(trap_sp) : "memory");
 
     // Enable the machine software (msip, bit 3 = the deferred switch), machine timer
     // (mtip, bit 7 = the tickless clock), and supervisor software (ssip, bit 1 = the

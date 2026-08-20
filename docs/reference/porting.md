@@ -139,9 +139,27 @@ believe before it reads them, and this is the part that is easy to get wrong.
   frame the hardware wrote in full at an SP the thread had no business holding, which sets no
   CFSR bit at all. A core with no fault-status register (v6-M) has only the bounds test.
   rv32imac has no stacking abort to detect (its trap prologue is software and runs M-mode,
-  which bypasses the unlocked PMP entries), which is exactly what makes the bounds test
-  load-bearing there: an overflowed thread's frame is written SUCCESSFULLY below its own
-  stack, and nothing else would say so.
+  which bypasses the unlocked PMP entries), so on that backend an overflowed thread's frame
+  is written SUCCESSFULLY below its own stack and nothing on the fault path would say so.
+- **THE FAULT-PATH TESTS ARE THE SECOND LINE, NEVER THE FIRST, AND A PORT THAT STOPS HERE
+  SHIPS A PRIVILEGE ESCALATION.** Everything above runs AFTER a write has landed, and only
+  when the trap was a fault. A software prologue also stores on the ecall and interrupt
+  paths, where nothing faults and none of these tests run. So a port whose prologue is
+  software owes an ENTRY-path check, before its first store, and it owes three things the
+  fault-path tests do not:
+    1. the interrupted stack pointer must be in the running thread's stack AND aligned;
+    2. the check must be an EXTENT in the direction the frame grows, not a pointer test.
+       `sp == stack_lo` passes a range test and then puts the whole frame outside the grant,
+       and a bump allocator with no padding puts a NEIGHBOUR thread's granted region there;
+    3. the extent must cover the kernel's own descent and not just the frame, because
+       `syscall_dispatch` runs on the caller's continuation (`arch.h`, the `arch_syscall`
+       contract). That figure is measured per build, never written by hand: see
+       `tests/static/check_trap_redzone.sh` and the per-arch trap-stack headers.
+  Order the arithmetic so it cannot wrap, which means taking the subtraction only after the
+  lower bound is proven; `kickos_fault_frame_trusted` in `kernel/init/fault.cc` is the shape
+  to copy. A core that stacks in HARDWARE at the pre-exception privilege gets leg 1 free for
+  the hardware frame only: any registers the port pushes itself go BELOW the checked range
+  and need the same treatment. See `docs/book/whoever-stacks-the-trap-frame-owns-the-bounds-check.md`.
 - **A core whose exception CANCELS the faulting instruction has NO moved SP to read, and needs a
   third test.** Both tests above rest on an SP that moved: armv7m's on a stacking abort, rv32imac's
   on a software prologue that wrote the frame at one. RXv3 restores the architectural state of the
@@ -721,9 +739,13 @@ outside `tests/static/weak_allowlist.txt`.
 | `xmc4800` | USIC0 CH1 `0x40030200` | `BRG` `0x014` | `0xF3FF7FDB` (every writable field) | same table row; only read-only and reserved bits are withheld |
 | `xmc4800` | USIC0 CH1 `0x40030200` | `CCR` `0x040` | `0x0000C00F` (`MODE[3:0]`, `RIEN`, `AIEN`) | same table row; the mask is what keeps the channel's other interrupt enables out of the grant |
 
-`xmc4800`'s U0C0 (`0x40030000`) has **no** entry: the kernel owns the console channel's
-baud and enable (`usic_uart.cc`), and an absent entry is a refusal, not an omission --
-the same rule as the K64F PIT above.
+`xmc4800`'s U0C0 (`0x40030000`) has ONE entry and only one, its `CCR` at mask `0x0000E00F`
+(`MODE[3:0]`, `TBIEN`, `RIEN`, `AIEN`), which is the CH1 mask plus `TBIEN`
+(`chip_xmc4800.cc`, `CCR_CONSOLE_GRANT`, `static_assert`ed against that literal). The extra
+bit is what lets a userspace driver arm the console channel's transmit-buffer interrupt. Its
+baud and enable stay the kernel's (`usic_uart.cc`), so `FDR`, `BRG` and every other U0C0
+register have no entry, and an absent entry is a refusal rather than an omission, the same
+rule as the K64F PIT above.
 
 A porter's in-env check is `periph_reg_write_unheld` (`selftest`, unguarded), THREE arms:
 
@@ -1811,8 +1833,11 @@ save-frame, deferred switch.
 - **Critical section** = `mstatus.MIE` (clear via `csrrci`, restore via `csrs`);
   `arch_in_isr` reads `g_isr_depth` (bumped only by the timer/external paths).
   `arch_idle_wait` = `wfi`.
-- **Trace clock** = the `rdcycle` CSR (always present, 32-bit raw; `mcounteren`
-  lets U-mode read it). **Clock/one-shot timer** are chip-provided (virt: CLINT
+- **Trace clock** = the `rdcycle` CSR (32-bit raw; `mcounteren` lets U-mode read
+  it) **where the core implements Zicntr, which is a per-CHIP fact**: legal on
+  `virt`, an illegal instruction on the ESP32-C6 HP core in every mode, so
+  `esp32c6/caps.cmake` declares no trace clock and telemetry there is refused at
+  configure. **Clock/one-shot timer** are chip-provided (virt: CLINT
   `mtime`/`mtimecmp`; C6: SYSTIMER -- TODO(HW)).
 - **PMP** -- a **permissive bootstrap entry** (pmpaddr0 NAPOT-all, pmpcfg0 = RWX,
   U-accessible) is set in `kickos_rv32_init`. RISC-V is fail-CLOSED: once PMP is

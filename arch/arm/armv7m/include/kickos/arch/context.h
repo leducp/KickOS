@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// armv7m: struct arch_context is just the saved thread stack pointer plus the
-// thread's CONTROL.nPRIV posture. On Cortex-M the register state lives on the
-// thread's own PSP stack (hardware exception frame + the PendSV-saved callee
-// registers); the TCB only needs the top-of-saved-frame pointer to resume it.
+// armv7m: struct arch_context is the saved thread stack pointer, the thread's
+// CONTROL.nPRIV posture, and the bounds of the stack that pointer must stay inside.
+// On Cortex-M the register state lives on the thread's own PSP stack (hardware
+// exception frame + the PendSV-saved callee registers); the TCB only needs the
+// top-of-saved-frame pointer to resume it.
 
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
@@ -33,9 +34,21 @@ struct arch_context
     // exactly its entry posture.
     uint32_t resting_npriv;
 
+    // The thread's stack, checked by PendSV and by SVC_Handler before either pushes
+    // {r4-r11, EXC_RETURN} through the live PSP. Exception entry stacks the HARDWARE
+    // frame above the PSP with the pre-exception privilege, so the MPU refuses that
+    // half; the software block below it is pushed in handler mode and is refused by
+    // nothing, and its top word is the EXC_RETURN the resume branches through. Set
+    // once by arch_context_init; read as plain words at F_CTX_STACK_LO /
+    // F_CTX_STACK_HI in switch.S, which are UNCONDITIONAL offsets: a telemetry-
+    // dependent pair would make the guard read trace_tid as a bound in one build
+    // posture and pass a PSP it must refuse.
+    uint32_t stack_lo;
+    uint32_t stack_hi;
+
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     // Owning thread's trace id (stamped once in thread_create). switch.S reads it
-    // at offset 12 from the PHYSICALLY-swapped contexts to emit the SWITCH record
+    // at offset 20 from the PHYSICALLY-swapped contexts to emit the SWITCH record
     // without re-reading g_arch_next. Elided (with the whole telemetry path) when
     // telemetry is off, so the OFF layout is byte-unchanged.
     uint32_t trace_tid;

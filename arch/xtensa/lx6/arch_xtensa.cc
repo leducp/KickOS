@@ -24,7 +24,8 @@ namespace kickos
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
-// -DKICKOS_PANIC_DUMP=0 keeps only the one-line fault marker.
+// 0 keeps only the one-line fault marker; set it in the board defconfig or with
+// cmake -DKICKOS_PANIC_DUMP=0.
 #ifndef KICKOS_PANIC_DUMP
 #define KICKOS_PANIC_DUMP 1
 #endif

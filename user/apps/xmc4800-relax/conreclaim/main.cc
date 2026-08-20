@@ -2,35 +2,44 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // XMC4800 console-reclaim test (design D-test 3): an unprivileged thread holding the
-// U0C0 DEV grant drives the console UART into the true silent-loss state, then faults.
-// PASS is the FAULT DUMP still reaching the wire, which proves arch_console_reclaim
-// re-initialised the UART from the panic path.
+// U0C0 DEV grant drives the console UART into the true silent-loss state, then ends the
+// system. PASS is the TERMINAL REPORT still reaching the wire, which proves
+// arch_console_reclaim re-initialised the UART from inside kpanic_enter.
 //
-// The expected wire text is "=== MPU FAULT ===" plus the register block, NOT
-// "KERNEL PANIC": a MemManage lands in kickos_armv7m_fault_report (the XMC vector table
-// routes MemManage to HardFault_Handler), which dumps and calls kfault_terminate
-// without going through kickos::kpanic. "KERNEL PANIC" on this app's wire is a FAILURE
-// report from one of the kos_panic calls below.
+// The expected wire text is "KERNEL PANIC: [conreclaim] PASS: the dead channel came back"
+// plus the marker line above it, both arriving on a channel that was fully dead when they
+// were written.
+//
+// THE TERMINAL EVENT MUST BE A PANIC AND NOT A FAULT. Under fault isolation an unprivileged
+// thread's fault is answered by kickos_fault_kill_thread BEFORE kpanic_enter runs: the
+// thread dies, the system lives, and the thread-kill path deliberately does not reclaim the
+// console (see kpanic_enter in kernel/init/console.cc, which states that ruling). A wild
+// write here would kill the scrambler, leave the channel dead and take the whole run dark. A
+// privileged thread is no way out either, because PRIVDEFENA is on and privileged accesses
+// do not MemManage. kos_panic is the one terminal path an unprivileged thread still has, and
+// it reaches kpanic_enter through exactly the same call the fault reporter used, so the
+// reclaim body under test is unchanged. The fault-isolation side of the same event is covered
+// by rootfault / mpu_fault / faultsurvive, which assert the thread died and nothing panicked.
 //
 // Sequence in one straight-line thread, so step 3 strictly follows steps 1-2:
 //   1. garble the in-window registers, GATING the channel kernel clock last
 //      (KSCFG.BPMODEN=1 with MODEN=0, RM p.18-165) so the channel is left fully dead;
-//   2. log a marker through the kernel debug path, ordering the scramble before the fault.
+//   2. log a marker through the kernel debug path, ordering the scramble before the end.
 //      The channel is already dead, so this marker cannot reach the wire until the
 //      reclaim, and it comes out of the console ring on the panic flush instead;
-//   3. write one word PAST the granted window (U0C1 base, ungranted) -> MemManage ->
-//      kickos_armv7m_fault_report -> kpanic_enter -> arch_console_reclaim -> polled dump.
+//   3. kos_panic -> user_panic -> kickos::kpanic -> kpanic_enter -> arch_console_reclaim
+//      -> the banner and the queued marker on a polled, re-initialised channel.
 //
 // kpanic_enter reclaims from ANY console-ownership state (kernel/init/console.cc): this
 // app runs with kickos_services_none, so the console is KERNEL_OWNED, never published,
-// and a reclaim gated on USER_OWNED would skip and lose the dump.
+// and a reclaim gated on USER_OWNED would skip and lose the report.
 //
 // U0C0 admits ONE holder (the one-holder-per-window rule in domain_for), so this test
 // requires a service list that publishes no userspace console driver: with
 // KICKOS_SERVICE_LIST=kickos_services_none the kernel owns the UART, the kernel domain
 // carries no DEV region, and this scrambler is the sole holder. The property under test
 // does not depend on WHO garbled the UART, so the scrambler stands in for a console
-// driver that faults with its device misconfigured.
+// driver that dies with its device left misconfigured.
 //
 // Register addresses / bit fields are clean-room from the XMC4700/XMC4800 Reference
 // Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. Diagnostic app
@@ -83,12 +92,13 @@ namespace
         r32(win + OFF_PCR) = 0;  // wreck the ASC protocol config
         r32(win + OFF_KSCFG) = KSCFG_BPMODEN_ONLY; // gate the clock LAST
 
-        kos::print("[conreclaim] U0C0 garbled (clock gated); forcing MPU fault\n");
+        kos::print("[conreclaim] U0C0 garbled (clock gated); ending the system\n");
 
-        // One word past the granted window: U0C1 (0x4003_0200), ungranted.
-        r32(win + U0C0_WINDOW) = 0;
-
-        kos_panic("[conreclaim] FAILURE: wild write did not fault");
+        // The line an operator reads as PASS: the kernel prints it after its own trusted
+        // "KERNEL PANIC: " prefix, on a channel this thread killed a moment ago. Kept well
+        // inside user_panic's 64-byte buffer, because a truncated verdict reads as a cut-off
+        // run.
+        kos_panic("[conreclaim] PASS: the dead channel came back");
     }
 }
 

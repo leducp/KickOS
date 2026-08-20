@@ -34,5 +34,9 @@ if(NOT TARGET conreclaim)
   return() # diagnostics off -> app not built
 endif()
 
-# No CTest gate: PASS is an operator reading the panic banner on silicon (XMC has no
-# QEMU model), which the in-env sim cannot reproduce.
+# No CTest gate, and no way to add one: PASS is an operator reading, on silicon, the
+# "KERNEL PANIC: [conreclaim] PASS: the dead channel came back" line and the queued marker
+# above it, both written while the channel was dead. XMC4800 has no QEMU model and the in-env
+# sim has no UART to garble, so nothing in CI can reach the property. The criterion IS
+# reachable on the board and witnessed on the XMC4800-relax; main.cc records why kos_panic is
+# the only terminal path left to an app here.

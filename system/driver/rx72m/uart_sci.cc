@@ -174,12 +174,19 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
 
     // Wait out the byte in flight: a divisor or frame change with a frame still shifting
     // corrupts it on the wire, and the kernel banner is normally still draining here.
+    bool drained = false;
     for (uint32_t i = 0; i < POLL_MAX; i++)
     {
         if (tx_idle(u->base))
         {
+            drained = true;
             break;
         }
+    }
+    if (not drained)
+    {
+        // Nothing in the channel has been written yet, so this leaves it as it was found.
+        return -KOS_EBUSY;
     }
     r8(u->base + rs::SCR_OFFSET) = 0u; // TE, RE, TIE, RIE off; CKE = 00 = on-chip BRG
 

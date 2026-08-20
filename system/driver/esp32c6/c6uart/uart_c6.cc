@@ -221,7 +221,9 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
         return -KOS_EBUSY;
     }
 
-    // The last step that can refuse, so nothing is armed yet and a refusal needs no undo.
+    // RX_INT_MASK is armed only BELOW this, which is what lets every refusal above return
+    // bare where the other backends call kos_uart_close: INT_ENA is still 0, and close on
+    // this part clears no enable bit because the part has none.
     int32_t const rate = achieved_baud(u->base);
     if (rate < 0)
     {

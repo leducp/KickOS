@@ -60,6 +60,14 @@ namespace kickos
         ADD_FAILURE() << "kernel panic: " << msg;
         abort();
     }
+
+#if KICKOS_DIAG_TERSE
+    void kpanic_at(char const* file, unsigned line)
+    {
+        ADD_FAILURE() << "kernel panic: " << file << ":" << line;
+        abort();
+    }
+#endif
 }
 
 namespace

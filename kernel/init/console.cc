@@ -50,6 +50,9 @@ namespace
     enum class ConsoleState : uint8_t
     {
         KERNEL_OWNED, // boot default; kernel drives the UART (buffered ring or polled)
+        HANDING_OFF,  // a publish is in progress: NEW kernel writers are refused, the UART is
+                      // still the kernel's, and a writer already inside the bracket finishes
+                      // on it
         USER_OWNED,   // a userspace driver owns the UART; kernel chip path DROPS
         RECLAIMED     // the kernel forcibly took the UART back (panic, or driver death);
                       // polled-only
@@ -57,31 +60,81 @@ namespace
     constinit Atomic<ConsoleState, Order::RELAXED> g_console_state = ConsoleState::KERNEL_OWNED;
 
     // Set by the cap layer when the published console endpoint loses its last WAIT-bearing
-    // cap. Sticky across a refused reclaim, which is the only reason it is a flag and not the
-    // reclaim itself; see console_tx.h.
+    // cap. Sticky across a refused reclaim (see console_tx.h). It names ONE published
+    // console, so a re-publish retires it (console_owner_set_user).
     constinit Atomic<bool, Order::RELAXED> g_console_driver_died = false;
 
-    // In-flight kernel chip writers: incremented under the same state read that decided
-    // to poke the device while KERNEL_OWNED, decremented after. kos_console_publish flips
-    // the state first and then spins on this, so a writer that raced past a stale
-    // KERNEL_OWNED read is off the device before the userspace driver touches it. Nothing
-    // increments it after the flip, so it strictly drains to 0.
+    // In-flight kernel chip writers. kos_console_publish enters HANDING_OFF first and then
+    // spins on this, so a writer that raced past a stale device-owning read is off the
+    // device before the userspace driver touches it. That argument holds ONLY because
+    // nothing increments after that flip, which is what chip_writer_enter enforces.
     constinit Atomic<int, Order::RELAXED> g_chip_writers = 0;
+
+    // The state read and the increment are ONE masked operation, or publish's drain is
+    // blind to a writer that read a device-owning state just before the flip: the drain
+    // sees 0, the driver starts, and the woken writer then bit-bangs a UART it no longer
+    // owns. Refuses HANDING_OFF as well as USER_OWNED: a publish that admitted new writers
+    // would have nothing left to make its drain converge. `out_state` IS the decisive read:
+    // a caller must not re-read the state.
+    bool chip_writer_enter(ConsoleState* out_state)
+    {
+        kickos::IrqLock lock;
+        ConsoleState const state = g_console_state;
+        if (state == ConsoleState::USER_OWNED or state == ConsoleState::HANDING_OFF)
+        {
+            return false;
+        }
+        *out_state = state;
+        g_chip_writers = g_chip_writers + 1;
+        return true;
+    }
 }
 
-// Every access to the chip-writer count, mutators and reader alike, MUST run under
-// IrqLock: console_emit can run in ISR/fault context, so an unlocked read-modify-write
-// tears against a thread producer's and an unlocked reader can observe the intermediate.
 extern "C" int console_owner_is_kernel(void)
 {
     return static_cast<int>(g_console_state == ConsoleState::KERNEL_OWNED);
 }
 
+// Not console_owner_is_kernel: that one is false throughout the handover, and the writer the
+// handover is waiting for must still reach a device no driver has yet.
+extern "C" int console_chip_writable(void)
+{
+    return static_cast<int>(g_console_state != ConsoleState::USER_OWNED);
+}
+
+// Publish's first half. Leaves the UART kernel-owned so a writer already inside the bracket
+// can finish on it. The caller MUST drain console_chip_writers to zero before
+// console_owner_set_user, else that writer lands on the driver's UART, and the drain
+// converges only because of the refusal installed here. Idempotent.
+extern "C" void console_handover_begin(void)
+{
+    kickos::IrqLock lock;
+    if (g_console_state == ConsoleState::USER_OWNED)
+    {
+        return;
+    }
+    g_console_state = ConsoleState::HANDING_OFF;
+    console_tx_deinit();
+}
+
+// Publish's LAST step. A writer still counted here is one the drain was meant to wait for,
+// and it would finish its message on the driver's UART.
 extern "C" void console_owner_set_user(void)
 {
+    KICKOS_ASSERT(console_chip_writers() == 0);
+    // Voids any pending death note: it belongs to the console being replaced, and
+    // USER_OWNED is the only thing console_on_driver_death checks, so a note left standing
+    // here reclaims the NEW driver's UART when the OLD driver's last thread exits.
+    g_console_driver_died = false;
     g_console_state = ConsoleState::USER_OWNED;
 }
 
+// Every access to the chip-writer count, mutators and reader alike, MUST run under IrqLock:
+// console_emit can run in ISR/fault context, so an unlocked read-modify-write tears against
+// a thread producer's and an unlocked reader can observe the intermediate. This increment is
+// unconditional, so it must only ever nest inside a chip_writer_enter bracket that already
+// passed the state gate (console_tx.cc's write_unbuffered is the one caller); reached on its
+// own it would keep publish's drain from converging.
 extern "C" void console_chip_writer_enter(void)
 {
     kickos::IrqLock lock;
@@ -105,14 +158,14 @@ extern "C" void console_on_driver_death(void)
     {
         return;
     }
-    // The note fires on the endpoint's last RECEIVER, which is the service thread, not
-    // necessarily the thread holding the registers: a driver is a THREAD GROUP.
-    // Reclaiming on the note alone would reprogram the UART under a live IRQ thread that
-    // owns those registers and silence its source (INT_ENA=0), parking it forever. So the
-    // precondition is asked of the DEVICE: nobody may still hold the window
-    // arch_console_reclaim is about to write. A cancelled peer is still a holder here:
-    // thread_cancel marks it, and only its own exit sets `dying`, so the note stays set
-    // across the refusal and the LAST holder's own exit_current reclaims.
+    // The note fires on the endpoint's last RECEIVER, the service thread, not necessarily
+    // the thread holding the registers: a driver is a THREAD GROUP. Reclaiming on the note
+    // alone would reprogram the UART under a live IRQ thread that owns those registers and
+    // silence its source (INT_ENA=0), parking it forever. So the precondition is asked of
+    // the DEVICE: nobody may still hold the window arch_console_reclaim is about to write.
+    // A cancelled peer is still a holder: thread_cancel marks it, and only its own exit sets
+    // `dying`, so the note stays set across the refusal and the LAST holder's exit_current
+    // reclaims.
     uintptr_t win_base = 0;
     size_t win_size = 0;
     arch_console_reclaim_window(&win_base, &win_size);
@@ -121,10 +174,11 @@ extern "C" void console_on_driver_death(void)
         return;
     }
     g_console_driver_died = false;
-    // Only a PUBLISHED console can lose its driver, so any other state means the flag
-    // outlived what set it (a re-publish, or a panic that already reclaimed). RECLAIMED is
-    // stored before the body so a fault inside that body cannot recurse, and so the body
-    // runs exactly once.
+    // Only a PUBLISHED console can lose its driver, so any other state means a panic
+    // already reclaimed. A re-publish cannot reach here with a stale note: it clears the
+    // note itself, because USER_OWNED alone does not say WHICH console it refers to.
+    // RECLAIMED is stored before the body so a fault inside that body cannot recurse, and
+    // so the body runs exactly once.
     if (g_console_state != ConsoleState::USER_OWNED)
     {
         return;
@@ -150,40 +204,33 @@ namespace kickos
     // keeps the ring a true single-producer, so no other site may enqueue.
     static void console_emit(char const* buf, size_t n, bool force_sync)
     {
-        switch (g_console_state)
+        // The count is taken under the same masked read that selects the transport, so
+        // publish either drains this writer or the writer never reaches the device. The
+        // polled poke has no other serialisation, and RECLAIMED needs the bracket as much as
+        // KERNEL_OWNED does: a console published again after a reclaim flips straight out
+        // of it.
+        ConsoleState state = ConsoleState::KERNEL_OWNED;
+        if (chip_writer_enter(&state))
         {
-        case ConsoleState::KERNEL_OWNED:
-        {
-            // The poke must be bracketed by the in-flight count under the SAME state read
-            // that selected this branch. The polled poke has no other serialisation, so
-            // this count is what publish drains against.
-            console_chip_writer_enter();
-            if (console_tx_armed() != 0 and arch_in_isr() == 0 and not g_console_panicking)
+            if (state == ConsoleState::KERNEL_OWNED and console_tx_armed() != 0
+                and arch_in_isr() == 0 and not g_console_panicking)
             {
                 arch_console_write(buf, n);
             }
             else
             {
+                // RECLAIMED, or kernel-owned with no usable ring (unarmed, ISR, panicking).
                 arch_console_write_sync(buf, n);
             }
             console_chip_writer_leave();
             return;
         }
-        case ConsoleState::USER_OWNED:
+        // USER_OWNED: DROP, the driver owns the UART (RTT still carries it, see
+        // kconsole_write). force_sync accepts interleaving with the driver's in-flight
+        // bytes, and is set only after the published route has already refused these ones.
+        if (force_sync)
         {
-            // force_sync accepts interleaving with the driver's in-flight bytes, and is set
-            // only after the published route has already refused these ones.
-            if (force_sync)
-            {
-                arch_console_write_sync(buf, n);
-            }
-            return; // DROP: the driver owns the UART (RTT still carries it, see kconsole_write)
-        }
-        case ConsoleState::RECLAIMED:
-        {
-            arch_console_write_sync(buf, n); // polled only, whatever the ring's state
-            return;
-        }
+            arch_console_write_sync(buf, n);
         }
     }
 #endif
@@ -334,9 +381,9 @@ extern "C" void kpanic_enter(void)
     // byte in the shift register and cut the banner it just printed. Every chip body is
     // idempotent absolute stores (arch.h), safe on a device no driver ever touched.
     // Must run BEFORE the flush.
-    // Only a TERMINAL fault exit may reclaim. When a kill-and-resume fault path arrives,
-    // gate this on "this fault terminates the system", not on "a fault happened": the
-    // driver keeps the device and a dark report there is correct.
+    // Only a TERMINAL fault exit may reclaim. A kill-and-resume fault path must gate this on
+    // "this fault terminates the system", not on "a fault happened": there the driver keeps
+    // the device and a dark report is correct.
     if (g_console_state != ConsoleState::RECLAIMED)
     {
         g_console_state = ConsoleState::RECLAIMED;
@@ -412,7 +459,7 @@ extern "C" void kickos_isr_fault(uintptr_t addr, int is_write)
     // The denied address alone cannot say whether this thread ran off its own stack or wrote
     // somewhere it has no business being, and that is the difference between a provisioning
     // bug in the image and one thread misbehaving. It is also what sizes
-    // KICKOS_FAULT_STACK_GUARD_BAND, which no capture in the tree recorded before this line.
+    // KICKOS_FAULT_STACK_GUARD_BAND.
     if (c != nullptr and c->stack_base != nullptr)
     {
         uintptr_t const lo = reinterpret_cast<uintptr_t>(c->stack_base);

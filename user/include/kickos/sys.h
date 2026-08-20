@@ -272,6 +272,10 @@ void* kos_guard_addr(void);
 // Test-only: count of IRQs that fired on a line with no driver (masked by the
 // default handler).
 uint32_t kos_irq_spurious_count(void);
+// Test-only: one nested-trap counter, selected by a KOS_NEST_* constant (sys/abi.h).
+// KOS_NEST_UNSET for a figure nothing recorded, and for an unknown selector. The CALLER
+// prints: a kernel-side report would put the console writer inside the syscall red zone.
+uint32_t kos_nest_witness(int which);
 // Test-only: count of calls the trap-handler IPC fastpath COMPLETED. It is the only
 // thing that tells a test which of the two call paths ran, since they answer a caller
 // identically. Reads 0 where the backend has no fastpath.

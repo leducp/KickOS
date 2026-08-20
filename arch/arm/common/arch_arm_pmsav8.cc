@@ -28,6 +28,7 @@
 
 #include <kickos/arch/arch.h>
 
+#include "mpu.h"
 #include "regs_v8m.h"
 
 #include <stddef.h>
@@ -93,6 +94,19 @@ struct arch_mpu_encoded const* kickos_arm_mpu_pending(void);
 // The MPU is per-core banked, so this must run once PER CORE at bring-up.
 void kickos_arm_pmsav8_init(void)
 {
+    // kickos_arch_mpu_commit zeroes MPU_CTRL and reprograms per-thread rows ONLY, so a chip
+    // fixed row would be dropped on every switch and never rewritten. Refuse such a chip at
+    // boot rather than dropping it silently. No kernel assert on the arch path, so spin as
+    // kickos_arm_mpu_fixed_init does.
+    struct kickos_arm_mpu_fixed_region const* fixed = nullptr;
+    if (kickos_arm_mpu_fixed(&fixed) != 0)
+    {
+        while (true)
+        {
+            __asm volatile("wfi");
+        }
+    }
+
     // slot0 Normal cacheable, slot1 Device, slot2 Normal non-cacheable
     reg32(MPU_MAIR0) =
         MAIR_NORMAL_WBWA | (MAIR_DEVICE_nGnRE << 8) | (MAIR_NORMAL_NC << 16);
@@ -160,6 +174,10 @@ void kickos_arch_mpu_commit(void)
     __asm volatile("mrs %0, primask" : "=r"(primask));
     __asm volatile("cpsid i" ::: "memory");
 
+    // Zeroing MPU_CTRL also suspends any chip fixed row for the whole reprogram window, and
+    // the loop below rewrites per-thread rows only. Sound ONLY because this backend has no
+    // fixed row to lose, which kickos_arm_pmsav8_init enforces. PMSAv7 must NOT do this
+    // (imxrt1062's anti-speculation wrap).
     reg32(MPU_CTRL) = 0; // disable while reprogramming (a switch must take effect atomically)
     __asm volatile("dsb" ::: "memory");
 

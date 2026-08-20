@@ -12,7 +12,82 @@
 #include <kickos/sched.h>
 #include <kickos/thread.h>
 
-#include <kickos/sys/abi.h> // KOS_EXIT_FAULT
+#include <kickos/sys/abi.h> // KOS_EXIT_FAULT, the KOS_NEST_* selectors
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+// Trap-stack regression witness. A kernel .data word an unprivileged thread's trap
+// frame must never be able to reach: the faultsurvive `kwrite' arm aims an out-of-bounds
+// sp at it and traps. A backend whose software trap prologue stored through the U-mode sp
+// would overwrite this in privileged mode; the report below runs on the panic path and
+// names the corruption, and is silent when the word is intact.
+extern "C" { volatile uint32_t kickos_trapstack_witness = 0x5A5A5A5Au; }
+
+extern "C" void kickos_trapstack_witness_report(void)
+{
+    uint32_t const v = kickos_trapstack_witness;
+    if (v != 0x5A5A5A5Au)
+    {
+        ::kickos::kprintf_fault("[trapwitness] CORRUPTED 0x%x\n", static_cast<unsigned>(v));
+    }
+}
+
+// Nested-trap witness (arch.h). Written from ISR context, read through a syscall, so plain
+// counters and no lock: every writer runs with interrupts masked by the trap entry itself,
+// and a torn read of a monotone counter costs an arm one count and never a verdict.
+//
+// rv32imac ONLY: the only backend whose trap prologue can place a nested frame on a thread
+// stack, so the only one the arm can run on. Ungated, its 16 bytes of kernel .bss land on
+// every board, which is enough to push microbit off the arena cliff.
+#if defined(KICKOS_ENABLE_SELFTEST) && defined(__riscv)
+namespace
+{
+    uint32_t g_nest_traps = 0;
+    uint32_t g_nest_onstack = 0;
+    uint32_t g_nest_minroom = 0;
+    bool g_nest_minroom_set = false;
+}
+
+extern "C" void kickos_nestwitness_note(uintptr_t frame, uintptr_t lo, uintptr_t hi)
+{
+    g_nest_traps = g_nest_traps + 1;
+    if (lo == 0 or frame < lo or frame >= hi)
+    {
+        return;
+    }
+    g_nest_onstack = g_nest_onstack + 1;
+    uint32_t const room = static_cast<uint32_t>(frame - lo);
+    if (not g_nest_minroom_set or room < g_nest_minroom)
+    {
+        g_nest_minroom = room;
+        g_nest_minroom_set = true;
+    }
+}
+
+// A plain read and NOT a print: a kprintf here puts kvprintf_route and the console writer
+// under the SHUTDOWN syscall and moves the red zone this instrument stands beside. The
+// caller prints.
+extern "C" uint32_t kickos_nestwitness_count(int which)
+{
+    if (which == KOS_NEST_TRAPS)
+    {
+        return g_nest_traps;
+    }
+    if (which == KOS_NEST_ONSTACK)
+    {
+        return g_nest_onstack;
+    }
+    if (which == KOS_NEST_ROOM)
+    {
+        if (not g_nest_minroom_set)
+        {
+            return KOS_NEST_UNSET;
+        }
+        return g_nest_minroom;
+    }
+    return KOS_NEST_UNSET;
+}
+#endif
+#endif
 
 namespace
 {

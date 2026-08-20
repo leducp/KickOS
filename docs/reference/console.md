@@ -87,11 +87,17 @@ otherwise                                         ->  arch_console_write_sync (p
 ```
 
 `g_console_state` starts `KERNEL_OWNED` (every board that never hands over stays here,
-so the sub-decision is the whole story for them); `kos_console_publish` flips it to
-`USER_OWNED`, and a panic flips it to `RECLAIMED` **from any prior state, `KERNEL_OWNED`
-included** -- the axis records a publish, never whether the device is garbled, and a
+so the sub-decision is the whole story for them); `kos_console_publish` moves it to
+`HANDING_OFF`, drains the in-flight chip writers, and only then flips `USER_OWNED`; and a
+panic flips it to `RECLAIMED` **from any prior state, `KERNEL_OWNED` included** -- the axis records a publish, never whether the device is garbled, and a
 thread granted the console window can wreck the channel without ever publishing. See
 [architecture.md](architecture.md), "Console device handover".
+
+`HANDING_OFF` exists because the two halves of a publish cannot be one instant. It refuses
+NEW chip writers while leaving the UART the kernel's, so a writer already counted in the
+in-flight bracket can finish on a device it still owns. Flipping `USER_OWNED` in the same
+masked region as the ring teardown instead makes an in-flight chunked writer resume, find
+the device no longer the kernel's, and drop the rest of its message with nothing said.
 
 The `KERNEL_OWNED` sub-decision is the load-bearing invariant of the whole design:
 **the buffered producer is

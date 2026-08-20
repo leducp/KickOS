@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/rx_trap_stack.h> // the USP guards' derived figures + ctx offsets
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
 
 #include "regs.h"
@@ -22,8 +23,8 @@ namespace kickos
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
-// Verbose CPU-context dump. Default on; -DKICKOS_PANIC_DUMP=0 keeps only the
-// one-line fault marker. Same knob and default on every arch reporter.
+// 0 keeps only the one-line fault marker; set it in the board defconfig or with
+// cmake -DKICKOS_PANIC_DUMP=0.
 #ifndef KICKOS_PANIC_DUMP
 #define KICKOS_PANIC_DUMP 1
 #endif
@@ -32,13 +33,33 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 static_assert(sizeof(double) == 8, "-mdfpu should give 64-bit doubles");
 #endif
 
-// switch.S hard-codes ctx.sp @0 (the saved SP). A silent reorder would corrupt
-// the switch.
-static_assert(offsetof(struct arch_context, sp) == 0, "switch.S expects ctx.sp @0");
+// switch.S hard-codes each offset below as a literal displacement, and rx_trap_stack.h is
+// the single definition both sides take it from. Nothing in the language ties them to the
+// struct, so a field inserted ahead of the bounds leaves a USP guard comparing against
+// trace_tid, and that still assembles and still links. This ISA has no emulator and no CI
+// job, so these assertions are the whole defence.
+static_assert(offsetof(struct arch_context, sp) == KICKOS_RX_CTX_OFF_SP,
+              "switch.S expects ctx.sp @0");
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 // The SWINT switcher reads the trace id at 4[ctx] (the `4[r15]` loads in switch.S).
-static_assert(offsetof(struct arch_context, trace_tid) == 4, "switch.S expects trace_tid @4");
+static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_RX_CTX_OFF_TRACE_TID,
+              "switch.S expects trace_tid @4");
 #endif
+static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_RX_CTX_OFF_STACK_LO,
+              "switch.S reads stack_lo at F_CTX_STACK_LO");
+static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_RX_CTX_OFF_STACK_HI,
+              "switch.S reads stack_hi at F_CTX_STACK_HI");
+static_assert(sizeof(struct arch_context) >= KICKOS_RX_CTX_OFF_STACK_HI + sizeof(uint32_t),
+              "a guard reads a word past the end of struct arch_context");
+
+// The syscall guard runs above the arm selection, so its one figure has to dominate both
+// arms, which is asserted here in both directions.
+static_assert(KICKOS_RX_TRAP_REDZONE_SYS
+                  >= KICKOS_RX_TRAP_FRAME_SYS + KICKOS_RX_TRAP_KERNEL_DEPTH_SYS,
+              "the syscall red zone does not cover the generic arm");
+static_assert(KICKOS_RX_TRAP_REDZONE_SYS
+                  >= KICKOS_RX_TRAP_FRAME_SYS_FAST + KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST,
+              "the syscall red zone does not cover the fastpath arm");
 
 // arch_irq_save raises PSW.IPL to the lock level with an MVTIPL immediate; keep
 // the literal in the asm string in sync with the constant.
@@ -288,6 +309,12 @@ void arch_context_init(struct arch_context* ctx,
 #endif
 
     ctx->sp = reinterpret_cast<uint32_t>(sp);
+
+    // The syscall trap and SWINT switcher validate the live USP against these before they
+    // store a frame through it. `top` is the 4-byte-aligned high edge, so a running
+    // thread's USP stays in [stack_lo, stack_hi].
+    ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
+    ctx->stack_hi = static_cast<uint32_t>(top);
 }
 
 #if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
@@ -465,6 +492,22 @@ void arch_fault_redirect_to_exit(void* frame)
     }
 }
 
+// The syscall trap and SWINT switcher (switch.S) call this when the live USP is outside
+// the running thread's stack: R0 is the USP in user mode, so a wild USP would run
+// privileged dispatch on a caller-chosen stack. Runs on the ISP (trusted). Contains the
+// system rather than the write: there is no frame to trust and no safe USP to hand the
+// exit stub, so panic.
+void kickos_rx_bad_usp(uint32_t usp)
+{
+    kpanic_enter();
+#if defined(KICKOS_ENABLE_SELFTEST)
+    kickos_trapstack_witness_report();
+#endif
+    ::kickos::kprintf("\n=== RX EXCEPTION (wild stack) ===\n  USP=0x%x\n",
+                      static_cast<unsigned>(usp));
+    kfault_terminate();
+}
+
 // C side of the RX exception handler (startup.S .fvectors shims branch here with
 // r1=cause [the fixed-vector offset], r2=the saved PC/PSW pair on the ISP). Dump the
 // context, then hand off to the shared dead-end (blink on real HW). Runs on the
@@ -486,6 +529,9 @@ void kickos_rx_fault_report(uint32_t cause, uint32_t* saved)
     uint32_t const psw = saved[1];
     rx_mpu_mark('F'); // localizer: an exception fired (a FAULT, not a hang), raw, pre-console
     kpanic_enter();
+#if defined(KICKOS_ENABLE_SELFTEST)
+    kickos_trapstack_witness_report(); // names a U-mode USP that reached kernel memory
+#endif
 #if KICKOS_HAVE_MPU
     // The access exception (fixed vector +0x54) IS the RX MPU violation, and the RX MPU
     // checks user mode only (UM sec.17.1.1), so one taken with the faulting PSW.PM set is
@@ -858,6 +904,21 @@ int arch_bitband_present(void)
 // vector itself belong to the chip; the core owns only the line-space split.
 void kickos_rx_dev_dispatch(void);
 void kickos_rx_group_arm(int line, int on);
+
+// Contract in rx_group.h. kickos_rx_group_arm arms a group's own VECTOR through here and
+// not back through arch_irq_unmask: that route terminates only on a value-range invariant
+// no call-graph analysis can see, so the trap red-zone measurement reads it as unbounded
+// recursion. Caller holds arch_irq_save.
+void kickos_rx_icu_line_arm(int line, int on)
+{
+    if (on != 0)
+    {
+        reg8(ICU_IPR_BASE + vector_to_ipr(line)) = static_cast<uint8_t>(IPL_DEVICE);
+        icu_ier_set(line, true);
+        return;
+    }
+    icu_ier_set(line, false);
+}
 
 // Self-bracketed (arch_irq_save/restore) so the soft-line g_irq_masked/g_irq_pending
 // RMWs are atomic against a device ISR regardless of the caller: kos_irq_inject/unmask
