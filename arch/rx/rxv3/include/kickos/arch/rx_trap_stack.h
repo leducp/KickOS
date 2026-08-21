@@ -89,10 +89,27 @@
  * The syscall figure is ONE constant covering both arms: the guard sits at the top of
  * kickos_rx_syscall_trap, above the `cmp #56, r1` that chooses the arm, so it runs before the
  * arm is known. It is a literal that DOMINATES both arms, and arch_rxv3.cc static_asserts the
- * domination in both directions, so a component that grows past it breaks the build. */
+ * domination in both directions, so a component that grows past it breaks the build.
+ *
+ * THE SYSCALL FIGURE ALSO CARRIES A WHOLE PENDSW ZONE, and that is the difference between
+ * 704 and 1004. Interrupt ACCEPTANCE lands on the ISP, but kickos_rx_pendsw then rebuilds
+ * its context save on the USP by hand (mvfc usp / sub #12 / mvtc usp / setpsw u / pushm),
+ * and it does that below wherever the dispatch it interrupted had already descended. So a
+ * timer ISR pending SWINT over a running syscall composes the two zones on one stack:
+ *
+ *   12 (the generic arm's frame) + 692 (its descent) + 300 (a PENDSW zone) = 1004
+ *
+ * RESERVED RATHER THAN ARGUED DOWN. At the point the 692 is actually reached the dispatch
+ * holds thread_spawn's function-scope IrqLock, which raises PSW.IPL to 12 and so masks both
+ * the timer (IPL 4) and SWINT (IPL 1), making that exact composition unreachable. What is
+ * NOT measured is the deepest point reachable with no dispatch lock held: the blocking
+ * send/recv/join handlers take none, and this gate measures depth without regard to
+ * locking. 692 bounds every path, locked or not, so the sum above bounds the compound case
+ * whichever way that question falls, and per-thread kernel stacks delete the arithmetic
+ * rather than refine it. */
 #define KICKOS_RX_TRAP_REDZONE_PENDSW \
     (KICKOS_RX_TRAP_FRAME_PENDSW + KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW)
-#define KICKOS_RX_TRAP_REDZONE_SYS 704
+#define KICKOS_RX_TRAP_REDZONE_SYS 1004
 
 /* Alignment the guards require of a live USP. Every store in both frame builds is a word
  * store (mov.l, push.l, pushm, and the DPFPU bank on top of them), and arch_context_init

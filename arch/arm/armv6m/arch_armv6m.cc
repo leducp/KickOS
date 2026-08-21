@@ -8,6 +8,7 @@
 // per-chip.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/armv6m_trap_stack.h> // the figures switch.S's PSP guard enforces
 #include <kickos/diag.h>
 
 #include "regs.h"
@@ -65,6 +66,35 @@ namespace
 }
 static_assert(CALLEE_BLOCK_WORDS * sizeof(uint32_t) == KICKOS_ARMV6M_TRAP_FRAME,
               "PSP_GUARD's F_TRAP_FRAME prices {r4-r11}: eight words");
+// The figure the red-zone gate scrapes as the SVC class's non-measured half: the
+// trampoline prologue plus the nested-exception terms, less the frame its own exception
+// return unstacks. PENDSV's half is KICKOS_ARMV6M_TRAP_FRAME itself.
+static_assert(KICKOS_ARMV6M_TRAP_NEST_SVC
+                  == 8 + 8 + 36 + KICKOS_ARMV6M_TRAP_FRAME - 32,
+              "the SVC zone is the unstack credit, the trampoline prologue, a preempting "
+              "hardware frame and the PendSV block that tail-chains below it");
+// The PENDSV class charges the push alone. A claim about handler mode rather than a
+// measurement: ARMv6-M forces SP_main there, so everything PendSV_Handler calls runs on
+// the MSP.
+static_assert(KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_PENDSV == 0,
+              "a nonzero PendSV descent needs roots in tests/static/trap_redzone_roots.txt");
+static_assert(KICKOS_ARMV6M_TRAP_NEED_SVC > KICKOS_ARMV6M_TRAP_NEED_PENDSV,
+              "SVC_Handler charges the larger of the two figures for both of its arms, so "
+              "it must dominate the fastpath arm's own {r4-r11} push");
+// The floor must DOMINATE the worst-case red zone, or a thread spawned at the floor passes
+// the spawn check and is then refused by the guard on every syscall it makes. This
+// assertion covers every armv6m board.
+//
+// STRICTER THAN THE RED-ZONE GATE'S OWN FLOOR CLAUSE, and it has to be: the guard bounds
+// the room below the PSP, and the hardware has already spent bytes ABOVE it before any
+// handler runs. A thread trapping with an empty floor-sized stack therefore offers the
+// guard only KICKOS_MIN_STACK_SIZE minus that frame. 32 is the basic frame, and STKALIGN
+// washes out: a 4-mod-8 SP makes entry spend 36 but hands the trampoline back the same 36.
+// The gate models no such term, which is why it lives here.
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV6M_TRAP_NEED_SVC + 32,
+              "KICKOS_MIN_STACK_SIZE is below the armv6m syscall red zone plus the "
+              "exception frame entry spends above it: raise the per-arch default in "
+              "Kconfig, never the red zone, which is a measurement");
 
 namespace
 {

@@ -206,6 +206,17 @@ namespace kickos
         console_buffer_init(); // arm the buffered console TX drain (after irq_init)
         ktrace_init();       // measure probe overhead + emit the opening SESSION (no-op when off)
 
+        // Root runs userspace's ctors and then main, and every syscall it makes descends on
+        // this stack, so it is bound by the same floor a caller-provided stack is checked
+        // against. thread_create takes it with no check of its own, root being created here
+        // and not through the spawn syscall, so the relation is asserted rather than tested.
+        // Idle is exempt: it is privileged, its body is arch_idle_wait alone, and it never
+        // enters the syscall path, so what binds it is the preemption red zone and not this
+        // one (see KICKOS_IDLE_STACK_SIZE in Kconfig).
+        static_assert(KICKOS_ROOT_STACK_SIZE >= KICKOS_MIN_STACK_SIZE,
+                      "KICKOS_ROOT_STACK_SIZE is below the arch's syscall stack floor: root "
+                      "makes syscalls, so it would be refused by the trap prologue");
+
         // Idle (the smaller stack on every board) FIRST: against the bump allocator
         // the small block then sits inside the large block's natural-alignment run-up
         // instead of after it. Worth up to one root-stack's width of arena on every

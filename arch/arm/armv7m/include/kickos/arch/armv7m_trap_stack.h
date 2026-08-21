@@ -119,18 +119,25 @@
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV 0
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC 656
 
-/* The whole red zone MINUS the measured descent, per class, which is what the gate adds the
- * measurement back onto and compares against KICKOS_MIN_STACK_SIZE. Plain integers for the
- * same scrape reason as FRAME_MAX; arch_armv7m.cc asserts both against their parts. The FP
- * term is inside them because the floor has to hold the worst posture, while the guard adds it
- * at run time only when EXC_RETURN says the FP frame is live. */
-#define KICKOS_ARMV7M_TRAP_ZONE_FIXED_PENDSV 100
-#define KICKOS_ARMV7M_TRAP_ZONE_FIXED_SVC 244
-
-/* What each guarded push enforces: room below the live PSP, in bytes, before the FP term the
- * macro in switch.S adds when EXC_RETURN says the FP frame is live. Both are loaded with
+/* What each guarded site enforces: room below the live PSP, in bytes. Both are loaded with
  * movw, whose imm16 range covers anything the floor can hold, so a figure that outgrew the
- * encoding fails to assemble rather than truncating. */
+ * encoding fails to assemble rather than truncating. These are also the figures the red-zone
+ * gate scrapes as each class's non-measured half plus its measured one.
+ *
+ * ONLY PENDSV TAKES A RUN-TIME FP TERM, and the SVC site must not. Its push IS the {s16-s31}
+ * block, so the term is the difference between what it stores with a live FP frame and
+ * without. NEST_SVC is a structural constant that already bounds both entry postures, which
+ * is what the -32 credit above means: walk the descent from P0 for each one and the FP-absent
+ * entry is the worse of the two, because the 72 extra bytes the hardware consumes ABOVE P0 on
+ * an FP-live entry are 72 bytes the trampoline then starts higher by.
+ *
+ *   entry frame 32:   trampoline at P0+32,  descend 8+656 to P0-632,  +104, +100 -> P0-836
+ *   entry frame 104:  trampoline at P0+104, descend 8+656 to P0-560,  +104, +100 -> P0-764
+ *
+ * So 836 covers both, exactly for the first and with 72 bytes spare for the second. Adding
+ * FRAME_FP on top of it charged the same pessimism twice and made the SVC site demand 900 of
+ * an FP-active thread that has only 960-104 = 856 below its PSP, so the guard refused a legal
+ * empty thread spawned at the floor on every syscall it made. */
 #define KICKOS_ARMV7M_TRAP_NEED_PENDSV \
     (KICKOS_ARMV7M_TRAP_FRAME + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV)
 #define KICKOS_ARMV7M_TRAP_NEED_SVC \

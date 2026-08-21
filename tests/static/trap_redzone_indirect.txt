@@ -300,3 +300,68 @@ site armv7m due-st           console_tx.cc:286:24  chip_sam3x8e.cc:sam_tx_push
 site armv7m due-st           console_tx.cc:294:31  chip_sam3x8e.cc:sam_tx_irq_disable
 site armv7m due-st           console_tx.cc:310:27  chip_sam3x8e.cc:sam_tx_irq_disable
 site armv7m due-st           console_tx.cc:356:27  chip_sam3x8e.cc:sam_tx_irq_disable
+
+# --- armv6m: the same two arch-wide pointers ------------------------------------
+site armv6m * sched.cc:43:42       policy_fifo_rr.cc:policy_on_switch_in
+site armv6m * sched.cc:108:38      policy_fifo_rr.cc:policy_on_ready
+site armv6m * sched.cc:122:55      policy_fifo_rr.cc:policy_pick_next
+site armv6m * sched.cc:125:42      policy_fifo_rr.cc:policy_on_switch_in
+site armv6m * sched.cc:135:54      policy_fifo_rr.cc:policy_pick_next
+site armv6m * sched.cc:157:38      policy_fifo_rr.cc:policy_on_yield
+site armv6m * sched.cc:170:39      policy_fifo_rr.cc:policy_on_remove
+site armv6m * sched.cc:202:38      policy_fifo_rr.cc:policy_on_ready
+site armv6m * sched.cc:253:43      policy_fifo_rr.cc:policy_on_remove
+site armv6m * sched.cc:255:42      policy_fifo_rr.cc:policy_on_ready
+site armv6m * sched.cc:323:36      policy_fifo_rr.cc:policy_on_remove
+site armv6m * sched.cc:390:53      policy_fifo_rr.cc:policy_next_timed_event
+site armv6m * sched.cc:402:56      policy_fifo_rr.cc:policy_next_timed_event
+site armv6m * sched.cc:406:45      policy_fifo_rr.cc:policy_on_slice_expire
+site armv6m * syscall_ipc_fast.cc:164:50 policy_fifo_rr.cc:policy_pick_next
+
+# NO CYCLE, and on this backend that is a claim about arch_switch too: armv6m pends
+# PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
+# re-enter the scheduler on this stack.
+site armv6m * irq.cc:320:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+                            syscall.cc:irq_sem_post \
+                            console_tx.cc:console_tx_isr_trampoline \
+                            ?bench.cc:bench_irq_handler
+
+# --- armv6m: ConsoleTxRing::backend, per board ----------------------------------
+# nrf51 resolves arch_console_tx_backend to the arch/common fallback, which returns
+# nullptr, so console_tx_init never arms the ring and no site can run. rp2040 has a real
+# PL011 backend, so picopi-st binds each site to the slot its line calls.
+
+site armv6m microbit         console_tx.cc:69:37   NONE
+site armv6m microbit         console_tx.cc:91:28   NONE
+site armv6m microbit         console_tx.cc:141:30  NONE
+site armv6m microbit         console_tx.cc:155:63  NONE
+site armv6m microbit         console_tx.cc:157:28  NONE
+site armv6m microbit         console_tx.cc:259:35  NONE
+site armv6m microbit         console_tx.cc:267:32  NONE
+site armv6m microbit         console_tx.cc:284:49  NONE
+site armv6m microbit         console_tx.cc:286:24  NONE
+site armv6m microbit         console_tx.cc:294:31  NONE
+site armv6m microbit         console_tx.cc:310:27  NONE
+site armv6m microbit         console_tx.cc:356:27  NONE
+
+site armv6m picopi-st        console_tx.cc:69:37   chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi-st        console_tx.cc:91:28   chip_rp2040.cc:rp_tx_push
+site armv6m picopi-st        console_tx.cc:141:30  chip_rp2040.cc:rp_tx_irq_enable
+site armv6m picopi-st        console_tx.cc:155:63  chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi-st        console_tx.cc:157:28  chip_rp2040.cc:rp_tx_push
+site armv6m picopi-st        console_tx.cc:259:35  chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi-st        console_tx.cc:267:32  chip_rp2040.cc:rp_tx_push
+site armv6m picopi-st        console_tx.cc:284:49  chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi-st        console_tx.cc:286:24  chip_rp2040.cc:rp_tx_push
+site armv6m picopi-st        console_tx.cc:294:31  chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi-st        console_tx.cc:310:27  chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi-st        console_tx.cc:356:27  chip_rp2040.cc:rp_tx_irq_disable
+
+# --- armv6m: the RP2040 bootrom entry, picopi only ------------------------------
+# arch_reboot reads two function pointers out of ROM and calls through them: the table
+# lookup, and then usb_boot, which does not return. No call graph can follow either, and
+# the datasheet gives no stack figure for the bootrom, so what these charge is 0 and the
+# residual is that a reboot syscall descends an unknown depth of ROM code on the calling
+# thread's stack. Declared rather than omitted so the residual is stated somewhere.
+site armv6m picopi-st        chip_rp2040.cc:523:45 NONE
+site armv6m picopi-st        chip_rp2040.cc:531:13 NONE

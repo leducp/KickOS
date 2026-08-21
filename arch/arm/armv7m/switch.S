@@ -46,13 +46,21 @@
    \need covers the software push AND whatever kernel C then descends below it on this
    same stack, per class, as armv7m_trap_stack.h derives it. The two sites pass DIFFERENT
    figures because only the SVC slow path leaves handler mode and keeps running on the
-   thread's PSP. */
-    .macro PSP_GUARD need
+   thread's PSP.
+
+   \fp says whether the {s16-s31} block is charged AT RUN TIME on an FP-live entry. Only
+   PendSV takes it: its push is the block itself, so the term is the difference between
+   what it stores with and without one. The SVC figure is a structural constant that
+   already dominates BOTH entry postures (armv7m_trap_stack.h derives why), and adding the
+   term there charged it twice and refused a legal floor-sized FP-active thread. */
+    .macro PSP_GUARD need, fp
     movw    r1, #\need
 #if defined(__ARM_FP)
+    .if \fp
     tst     lr, #0x10               /* bit4 == 0 => {s16-s31} goes below the PSP too */
     it      eq
     addeq   r1, r1, #KICKOS_ARMV7M_TRAP_FRAME_FP
+    .endif
 #endif
     ldr     r12, [r2, #F_CTX_STACK_LO]
     cmp     r0, r12
@@ -96,7 +104,7 @@ PendSV_Handler:
 #endif
     cbz     r2, 1f                  /* nothing to save on the first entry */
     mrs     r0, psp
-    PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_PENDSV
+    PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_PENDSV, 1
 #if defined(__ARM_FP)
     tst     lr, #0x10               /* EXC_RETURN bit4 == 0 => FP frame active */
     it      eq
@@ -204,7 +212,7 @@ SVC_Handler:
     ldr     r2, =g_arch_current
     ldr     r2, [r2]
     cbz     r2, .Lsvc_nothread     /* no thread running: nothing to bound against */
-    PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_SVC
+    PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_SVC, 0
 .Lsvc_nothread:
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
     /* THE SEAM. KOS_SYS_CALL_REG completes here, ahead of the exception return that

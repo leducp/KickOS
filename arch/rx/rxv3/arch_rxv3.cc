@@ -59,6 +59,21 @@ static_assert(KICKOS_RX_TRAP_REDZONE_SYS
 static_assert(KICKOS_RX_TRAP_REDZONE_SYS
                   >= KICKOS_RX_TRAP_FRAME_SYS_FAST + KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST,
               "the syscall red zone does not cover the fastpath arm");
+// It must also carry a whole PENDSW zone, a SWINT pended over a running dispatch building
+// its save on the same USP below it (rx_trap_stack.h derives the composition).
+static_assert(KICKOS_RX_TRAP_REDZONE_SYS
+                  >= KICKOS_RX_TRAP_FRAME_SYS + KICKOS_RX_TRAP_KERNEL_DEPTH_SYS
+                         + KICKOS_RX_TRAP_REDZONE_PENDSW,
+              "the syscall red zone does not cover a SWINT arriving mid-dispatch");
+
+// The floor must DOMINATE the red zone, or a thread spawned at the floor passes the spawn
+// check and is then refused by the guard on every syscall it makes. This arch had no such
+// assertion, so the relation held only where check_trap_redzone.sh ran, and the RX reaches
+// no hosted CI. Unlike the two ARM backends this needs no entry-frame term: RX accepts
+// interrupts on the ISP, so nothing is spent above the USP the guard validates.
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RX_TRAP_REDZONE_SYS,
+              "KICKOS_MIN_STACK_SIZE is below the rxv3 syscall red zone: raise the "
+              "per-arch default in Kconfig, never the red zone, which is a measurement");
 
 // arch_irq_save raises PSW.IPL to the lock level with an MVTIPL immediate; keep
 // the literal in the asm string in sync with the constant.

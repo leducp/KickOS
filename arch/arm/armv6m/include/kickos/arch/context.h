@@ -3,20 +3,11 @@
 //
 // armv6m (Cortex-M0/M0+): the register state lives on the thread's own PSP stack, so the
 // context holds the saved SP, the privilege posture, and the bounds that SP must stay
-// inside. switch.S includes this for the field offsets.
+// inside. The offsets switch.S reads them at live in armv6m_trap_stack.h, beside the
+// figures the guard that reads them enforces.
 
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
-
-// The offsets switch.S reads as plain displacements, and the width of the block its two
-// software pushes write below the live PSP. switch.S .equ's from these and arch_armv6m.cc
-// static_asserts offsetof against them, so neither side can drift alone.
-#define KICKOS_ARMV6M_CTX_OFF_STACK_LO 12
-#define KICKOS_ARMV6M_CTX_OFF_STACK_HI 16
-#define KICKOS_ARMV6M_CTX_OFF_TRACE_TID 20
-#define KICKOS_ARMV6M_TRAP_FRAME 32
-
-#ifndef __ASSEMBLER__
 
 #include <stdint.h>
 
@@ -50,7 +41,5 @@ struct arch_context
     uint32_t trace_tid;
 #endif
 };
-
-#endif // __ASSEMBLER__
 
 #endif

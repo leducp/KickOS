@@ -152,7 +152,7 @@ meets four different amounts of help from the silicon.
 | Port | Who stacks the entry frame | Who checks the pointer | What is left unchecked without a kernel guard |
 |---|---|---|---|
 | armv7m | hardware, through PSP, at the pre-exception privilege | the MPU, reported as `MSTKERR` | the kernel's own `{r4-r11, EXC_RETURN}` push below it, and the privileged descent below that |
-| armv6m | hardware, through PSP, at the pre-exception privilege | the MPU (no fault-status register to say so) | the kernel's `{r4-r11}` push, which carries no return descriptor |
+| armv6m | hardware, through PSP, at the pre-exception privilege | the MPU where the part has one, and nothing where it does not (no fault-status register to say which) | the kernel's `{r4-r11}` push, which carries no return descriptor, and the privileged descent below it |
 | rv32imac | software, in machine mode | nothing | the entire frame, and the privileged descent below it |
 | rxv3 | software, in supervisor mode | nothing | the entire frame, and a supervisor trampoline running on that same stack |
 | lx6, host sim | not applicable | not applicable | nothing: there is no privileged level to escalate *to* |

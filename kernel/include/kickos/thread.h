@@ -510,6 +510,16 @@ namespace kickos
 #endif
         static_assert(KICKOS_USER_STACK_SIZE >= sizeof(void*),
                       "a reclaimed stack block must be able to hold the free-list link");
+        // A KERNEL-DEFAULT stack has no caller to refuse it. The caller-provided path tests
+        // p->stack_size against this floor at run time (syscall_thread.cc), but a spawn that
+        // passes stack_base == nullptr takes the constant below unconditionally, so the only
+        // place the same relation can be enforced is here. Without it a legal Kconfig
+        // setting produces threads the trap prologue refuses on every syscall they make:
+        // the floor is not a preference, it is the arch's measured red zone.
+        static_assert(KICKOS_USER_STACK_SIZE >= KICKOS_MIN_STACK_SIZE,
+                      "KICKOS_USER_STACK_SIZE is below the arch's syscall stack floor: raise "
+                      "it in the board defconfig, or the default spawn makes threads that "
+                      "cannot make a syscall");
 
         void stack_push(void* block)
         {

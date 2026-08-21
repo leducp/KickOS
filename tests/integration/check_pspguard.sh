@@ -22,17 +22,23 @@
 # branch that fired, so "under stack_lo" and "at or above stack_hi" are reachable only by arms
 # that no in-stack PSP can produce.
 #
-# usage: check_pspguard.sh <pspguard.elf> <mode> <need> <site> <why>
+# <banner> names the backend whose fault reporter must print the refusal: each spells its own
+# arch into the panic line (kickos_armv7m_bad_psp -> ARMV7M, kickos_armv6m_bad_psp ->
+# ARMV6M). Carried by the caller and not matched loosely, so an image whose refusal came out
+# of another backend's reporter fails here instead of passing on the shared wording.
+#
+# usage: check_pspguard.sh <pspguard.elf> <mode> <need> <site> <why> <banner>
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-_usage="usage: check_pspguard.sh <pspguard.elf> <mode> <need-bytes> <site> <why>"
+_usage="usage: check_pspguard.sh <pspguard.elf> <mode> <need-bytes> <site> <why> <banner>"
 elf="${1:?$_usage}"
 mode="${2:?$_usage}"
 need="${3:?$_usage}"
 site="${4:?$_usage}"
 why="${5:?$_usage}"
+banner="${6:?$_usage}"
 
 need_qemu_machine
 run_image "$elf"
@@ -48,8 +54,8 @@ fi
 if ! has "\[pspguard\] arm: mode=$mode "; then
     fail "the wild thread never announced arm mode=$mode (faulted earlier?)"
 fi
-if ! has "=== ARMV7M EXCEPTION (wild PSP: $why) ==="; then
-    fail "no refusal classified '$why' reached the wire: the PSP was accepted, or another bound fired"
+if ! has "=== $banner EXCEPTION (wild PSP: $why) ==="; then
+    fail "no $banner refusal classified '$why' reached the wire: the PSP was accepted, or another bound fired"
 fi
 if ! has "in $site PSP=" ; then
     fail "the refusal did not come from $site: the other guarded push is the one that fired"

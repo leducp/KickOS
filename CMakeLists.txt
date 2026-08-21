@@ -713,6 +713,11 @@ if(KICKOS_BUILD_TESTS)
   # backend (the deepest dispatch in the fleet). trap_redzone_roots.txt declares the other
   # armv7m presets for a hand run. pizero2350 is measured by hand alone: its reboot path
   # calls into the bootrom through a pointer no call graph can follow.
+  #
+  # microbit is the armv6m entry because it is the emulator-runnable one. picopi-st is
+  # declared for a hand run and measures DEEPER, which is the figure the header carries:
+  # it has an MPU, so its dispatch reaches the reserved-block walk that microbit's does
+  # not.
   set(_fs_redzone_preset "")
   if(KICKOS_BOARD STREQUAL "qemu-riscv" AND KICKOS_CONFIG_VARIANT STREQUAL "base")
     set(_fs_redzone_preset qemu-riscv)
@@ -726,6 +731,8 @@ if(KICKOS_BUILD_TESTS)
     set(_fs_redzone_preset qemu-m3)
   elseif(KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_CONFIG_VARIANT STREQUAL "st")
     set(_fs_redzone_preset frdmk64f-st)
+  elseif(KICKOS_BOARD STREQUAL "microbit" AND KICKOS_CONFIG_VARIANT STREQUAL "base")
+    set(_fs_redzone_preset microbit)
   endif()
   if(NOT _fs_redzone_preset STREQUAL "")
     # _add_test, not the wrapper: the gate builds a tree of its own, so the kickos_build

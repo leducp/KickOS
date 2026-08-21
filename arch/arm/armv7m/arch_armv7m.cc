@@ -47,13 +47,10 @@ static_assert(KICKOS_ARMV7M_TRAP_FRAME_FP == 16u * sizeof(uint32_t),
 static_assert(KICKOS_ARMV7M_TRAP_FRAME_MAX
                   == KICKOS_ARMV7M_TRAP_FRAME + KICKOS_ARMV7M_TRAP_FRAME_FP,
               "FRAME_MAX is the worst-case push and is what the red-zone gate scrapes");
-// The two figures the gate scrapes as a class's non-measured half: PENDSV's is the push
-// alone, the SVC site's the push's FP term plus the nested-exception terms.
-static_assert(KICKOS_ARMV7M_TRAP_ZONE_FIXED_PENDSV == KICKOS_ARMV7M_TRAP_FRAME_MAX,
-              "the switcher reserves the worst-case push and nothing else");
-static_assert(KICKOS_ARMV7M_TRAP_ZONE_FIXED_SVC
-                  == KICKOS_ARMV7M_TRAP_NEST_SVC + KICKOS_ARMV7M_TRAP_FRAME_FP,
-              "the SVC red zone is the nested-exception terms plus the run-time FP term");
+// The SVC figure must dominate the fastpath arm's own worst-case push, since the one
+// hoisted guard charges the same figure for both arms.
+static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC >= KICKOS_ARMV7M_TRAP_FRAME_MAX,
+              "the SVC site must cover the fastpath arm's FP-live push, which it guards too");
 static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC >= KICKOS_ARMV7M_TRAP_FRAME,
               "NEST_SVC must dominate the software push it stands in for");
 // The PENDSV class charges the push alone. A claim about handler mode rather than a
@@ -66,11 +63,18 @@ static_assert(KICKOS_ARMV7M_TRAP_NEED_SVC > KICKOS_ARMV7M_TRAP_NEED_PENDSV,
 // The floor must DOMINATE the worst-case red zone, or a thread spawned at the floor passes
 // the spawn check and is then refused by the guard on every syscall it makes. This
 // assertion covers every armv7m board.
-static_assert(KICKOS_MIN_STACK_SIZE
-                  >= KICKOS_ARMV7M_TRAP_ZONE_FIXED_SVC
-                         + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC,
-              "KICKOS_MIN_STACK_SIZE is below the armv7m syscall red zone: raise the "
-              "per-arch default in Kconfig, never the red zone, which is a measurement");
+//
+// STRICTER THAN THE RED-ZONE GATE'S OWN FLOOR CLAUSE, and it has to be: the guard bounds
+// the room below the PSP, and on this arch the hardware has already spent bytes ABOVE it
+// before any handler runs. A thread trapping with an empty floor-sized stack therefore
+// offers the guard only KICKOS_MIN_STACK_SIZE minus that frame. 32 is the basic frame; the
+// FP-live posture spends 104 but hands the trampoline back the same 72 bytes it took, so
+// both postures land on the same requirement (armv7m_trap_stack.h walks the two). The gate
+// models no such term, which is why it lives here.
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV7M_TRAP_NEED_SVC + 32,
+              "KICKOS_MIN_STACK_SIZE is below the armv7m syscall red zone plus the "
+              "exception frame entry spends above it: raise the per-arch default in "
+              "Kconfig, never the red zone, which is a measurement");
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 static_assert(offsetof(struct arch_context, trace_tid) == 20,
               "switch.S telemetry hook expects ctx.trace_tid @20");

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Trap red-zone gate. A trap prologue on rv32imac, rxv3 and armv7m reserves a RED ZONE at
+# Trap red-zone gate. A trap prologue on rv32imac, rxv3, armv7m and armv6m reserves a RED ZONE at
 # the bottom of the interrupted unprivileged stack and refuses the trap when less room
 # than that remains below sp. The red zone has to cover the frame the prologue stores PLUS
 # the worst-case depth of the kernel C dispatch that then runs below that frame,
@@ -149,6 +149,18 @@ CGFLAGS="-fcallgraph-info=su,da"
 # ISA baseline in CMAKE_<LANG>_FLAGS_INIT, and a -D on the command line REPLACES the cache
 # value that comes from it. CFLAGS/CXXFLAGS are combined with it instead, so the scratch
 # tree compiles the same ISA the image does.
+# `cmake --fresh` drops the cache and CMakeFiles, and NOTHING ELSE: the generated Kconfig
+# state under $BUILD/generated survives it, and tools/kconfig/genconfig.py then reads the
+# live .config plus the .defconfig stamp naming the checkout that wrote it. From another
+# source tree that stamp names another absolute path, so the configure is REFUSED
+# ("REFUSED variant change") and the recovery this gate promises never happens. Removing
+# the generated state is what makes --fresh actually fresh; a defconfig is re-read from the
+# source tree on the next configure, so nothing is lost with it.
+fresh_configure() {
+    rm -rf "$BUILD/generated"
+    configure_scratch --fresh
+}
+
 configure_scratch() { # <extra cmake arg>...
     CFLAGS="$CGFLAGS" CXXFLAGS="$CGFLAGS" \
     "$CMAKE" -S "$SRC" -B "$BUILD" --preset "$PRESET" "$@" > "$TMP/cfg.log" 2>&1 \
@@ -203,7 +215,7 @@ else
             echo "trap_redzone: reconfiguring $BUILD from scratch; its flags are not the ones"
             echo "trap_redzone: this measurement needs, so what it holds is another ISA's depths"
         fi
-        configure_scratch --fresh
+        fresh_configure
     else
         echo "trap_redzone: configuring scratch tree $BUILD"
         configure_scratch
@@ -217,7 +229,7 @@ fi
 # the build gets exactly one --fresh retry before it counts as a failure.
 if ! "$CMAKE" --build "$BUILD" > "$TMP/build.log" 2>&1; then
     echo "trap_redzone: the scratch build failed; reconfiguring $BUILD from scratch and retrying once"
-    configure_scratch --fresh
+    fresh_configure
     "$CMAKE" --build "$BUILD" > "$TMP/build.log" 2>&1 \
         || { sed -n '$!d;1,60p' "$TMP/build.log" >&2
              grep -E 'error|Error' "$TMP/build.log" | sed -n '1,20p' >&2

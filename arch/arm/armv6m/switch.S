@@ -19,7 +19,7 @@
  * resumes on the real register file.
  */
 
-#include <kickos/arch/context.h>
+#include <kickos/arch/armv6m_trap_stack.h>
 
     .syntax unified
     .thumb
@@ -36,35 +36,40 @@
 
 /* The software block both guarded pushes write below the live PSP: {r4-r11}, eight
    words. A REGISTER COUNT, not a measured depth, and arch_armv6m.cc asserts it against
-   the register list it prices. Nothing is charged below it: v6-M has no FP frame, and
-   both pushes run in handler mode, where the core forces SP_main, so nothing either site
-   calls descends on the thread's stack. movs takes an imm8, so a width above 255 fails
-   to assemble rather than truncate. */
+   the register list it prices. */
     .equ F_TRAP_FRAME, KICKOS_ARMV6M_TRAP_FRAME
 
-/* PSP bounds guard, used by both software pushes in this file.
-   In:  r0 = the live PSP, r3 = the running thread's arch_context*.
-   Clobbers r1 and r2, both already in the hardware frame and so free here.
-   Falls through only when F_TRAP_FRAME bytes fit between stack_lo and the PSP.
+/* PSP bounds guard, used by both trap sites in this file.
+   In:  \need = the room this site's class needs below the PSP;
+        r0 = the live PSP, r3 = the running thread's arch_context*.
+   Clobbers r1 and r2, both already in the hardware frame and so free here. Leaves \need
+   in r2, which .Lpsp_wild reports.
+   Falls through only when \need bytes fit between stack_lo and the PSP.
 
    Exception entry stacks the hardware frame ABOVE the PSP with the PRE-exception
-   privilege, so the MPU refuses that half and a kernel-aimed PSP faults on entry before
-   any handler runs. The block pushed BELOW that frame is written in handler mode and is
-   refused by nothing, so a PSP 32 bytes above a stack's base clears the hardware check
-   and still writes under the stack, where r10 and r11 land on the neighbouring thread's
-   stacked PC and xPSR.
+   privilege, so on a chip with an MPU that half is refused and a kernel-aimed PSP faults
+   on entry before any handler runs. The block pushed BELOW that frame is written in
+   handler mode and is refused by nothing, so a PSP 32 bytes above a stack's base clears
+   the hardware check and still writes under the stack, where r10 and r11 land on the
+   neighbouring thread's stacked PC and xPSR.
+
+   \need covers the software push AND whatever kernel C then descends below it on this
+   same stack, per class, as armv6m_trap_stack.h derives it. The two sites pass DIFFERENT
+   figures because only the SVC slow path leaves handler mode and keeps running on the
+   thread's PSP. The figure comes out of the literal pool: a v6-M movs carries an imm8,
+   and the SVC figure is well past 255.
 
    NO ALIGNMENT LEG. CCR.STKALIGN is Read-As-One on ARMv6-M (ARMv6-M ARM B3.2.8, D3.6.1),
    so exception entry clears bit 2 of the banked SP before stacking the frame and r0 here
    is an 8-byte-aligned frame base whatever the thread wrote to SP. Such a leg could
    refuse nothing. */
-    .macro PSP_GUARD
+    .macro PSP_GUARD need
+    ldr     r2, =\need
     ldr     r1, [r3, #F_CTX_STACK_LO]
     cmp     r0, r1
     blo     9f
     subs    r1, r0, r1              /* the room REMAINING below the PSP: a bound written
                                        as psp - need could wrap under stack_lo instead */
-    movs    r2, #F_TRAP_FRAME
     cmp     r1, r2
     blo     9f
     ldr     r1, [r3, #F_CTX_STACK_HI]
@@ -90,7 +95,7 @@ PendSV_Handler:
     beq     1f
     /* --- save outgoing --- */
     mrs     r0, psp
-    PSP_GUARD
+    PSP_GUARD KICKOS_ARMV6M_TRAP_NEED_PENDSV
     subs    r0, #F_TRAP_FRAME       /* room for r4-r11 */
     str     r0, [r3]                /* outgoing->sp = base */
     stmia   r0!, {r4-r7}            /* [base..+12] = r4-r7 */
@@ -158,8 +163,10 @@ PendSV_Handler:
    with stack_hi. Never returns, so r4 is free to carry the target: a v6-M ldr literal
    cannot reach r12, and a plain b is a +-2 KB reach that --gc-sections can outrun. */
 .Lpsp_wild:
+    mov     r1, r2                  /* the figure THIS site asked for, which the guard left
+                                       in r2. A literal here would report the switcher's 32
+                                       for an SVC refusal that charged the whole extent. */
     ldr     r2, [r3, #F_CTX_STACK_LO]
-    movs    r1, #F_TRAP_FRAME
     ldr     r3, [r3, #F_CTX_STACK_HI]
     ldr     r4, =kickos_armv6m_bad_psp
     bx      r4                      /* (r0=PSP, r1=need, r2=stack_lo, r3=stack_hi) */
@@ -169,6 +176,18 @@ PendSV_Handler:
     .global SVC_Handler
 SVC_Handler:
     mrs     r0, psp
+    /* Guards BOTH exits from here, at the SVC figure, which is the larger of the two:
+       the fastpath below pushes the callee block through this PSP and returns in handler
+       mode, while the slow path exception-returns into svc_trampoline, which runs
+       PRIVILEGED IN THREAD MODE on this same PSP and calls syscall_dispatch below it.
+       The guard sits above the `cmp #56` that picks the arm, so it charges whichever
+       descends further. */
+    ldr     r3, =g_arch_current
+    ldr     r3, [r3]
+    cmp     r3, #0
+    beq     .Lsvc_nothread          /* no thread running: nothing to bound against */
+    PSP_GUARD KICKOS_ARMV6M_TRAP_NEED_SVC
+.Lsvc_nothread:
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
     /* THE SEAM. KOS_SYS_CALL_REG completes here, ahead of the exception return that
        lands in svc_trampoline for the generic dispatch. The leaf decides before it
@@ -190,15 +209,10 @@ SVC_Handler:
     ldr     r2, =0x10000000         /* PENDSVSET */
     tst     r1, r2
     bne     .Lsvc_slow
-    /* The bounds live in the caller's context, so a trap taken with no thread running has
-       nothing to check the PSP against; the generic path it falls to pushes nothing below
-       the PSP. Guarded HERE and not at entry: this arm is the only one in this handler
-       that writes below the PSP. */
-    ldr     r3, =g_arch_current
-    ldr     r3, [r3]
+    /* This arm swaps g_arch_current and seats the result in the outgoing context, so it
+       needs a running thread. r3 still carries the pointer the guard above loaded. */
     cmp     r3, #0
     beq     .Lsvc_slow
-    PSP_GUARD
     /* The kernel lock IS PRIMASK on v6-M, so masking at the one level there is nests
        exactly: each IrqLock inside the leaf saves 1, masks, and restores 1. */
     cpsid   i

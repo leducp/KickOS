@@ -172,16 +172,32 @@ config KICKOS_USER_STACK_SIZE
 	int "Default spawned-thread stack"
 	range 512 262144
 	default 65536
+	help
+	  What a spawn with no stack_base gets. Threads on it make syscalls, so it
+	  must clear KICKOS_MIN_STACK_SIZE; the range floor here cannot say that,
+	  the floor being per-arch, so thread.h asserts the relation instead and a
+	  setting below it fails the build rather than the thread.
 
 config KICKOS_IDLE_STACK_SIZE
 	int "Idle thread stack"
-	range 256 262144
+	range 512 262144
 	default 65536
+	help
+	  Idle is privileged and its body is arch_idle_wait alone, so it never enters
+	  the syscall path and KICKOS_MIN_STACK_SIZE does not bind it. What does is
+	  the PREEMPTION red zone, the frame a tick or a device IRQ builds on the
+	  stack it interrupted plus whatever the kernel runs below that: 384 on
+	  rv32imac, the deepest in the fleet. The range floor is 512 rather than 256
+	  for exactly that reason, so no setting this accepts can have idle killed by
+	  the trap prologue on its first preemption.
 
 config KICKOS_ROOT_STACK_SIZE
 	int "Root thread stack"
 	range 512 262144
 	default 65536
+	help
+	  Root runs userspace's ctors and main, so it makes syscalls and is bound by
+	  KICKOS_MIN_STACK_SIZE the way a spawned thread is. kmain.cc asserts it.
 
 config KICKOS_USER_HEAP_SIZE
 	int "Userspace heap the linker script carves"
@@ -200,9 +216,9 @@ config KICKOS_USER_HEAP_SIZE
 
 config KICKOS_MIN_STACK_SIZE
 	int
-	default 512 if ARCH_ARMV6M
+	default 896 if ARCH_ARMV6M
 	default 960 if ARCH_ARMV7M
-	default 768 if ARCH_RXV3
+	default 1024 if ARCH_RXV3
 	default 1024 if ARCH_RV32IMAC
 	default 896 if ARCH_LX6
 	default 1024
@@ -214,12 +230,18 @@ config KICKOS_MIN_STACK_SIZE
 	  On a backend whose trap prologue enforces a red zone below the interrupted
 	  sp, this floor must also DOMINATE that red zone. A thread whose whole stack
 	  is smaller cannot satisfy the prologue at all, so it does not overflow on a
-	  syscall, it is refused every time. check_trap_redzone.sh enforces the
-	  relation; rxv3 sat at 640 against a 704-byte syscall red zone, and was
-	  already 32 bytes under the 672 its generic arm needs. armv7m sat at the same
-	  640 against a 900-byte one, because its syscall dispatch runs privileged in
-	  THREAD mode on the caller's own PSP and a preempting exception stacks one
-	  more frame under it (armv7m_trap_stack.h).
+	  syscall, it is refused every time. Four backends enforce one: rv32imac,
+	  rxv3, armv7m and armv6m, each deriving its figures in its own
+	  <arch>_trap_stack.h, which is where to read them. No figure is repeated
+	  here, because a copy of a measurement is a copy that goes stale.
+
+	  Two things check the relation, and they are not the same check.
+	  check_trap_redzone.sh compares this floor against every class's red zone,
+	  per board, on the presets it is registered for. Each arch backend ALSO
+	  static_asserts it, on every build of every board, and on the two ARM
+	  backends that assertion is the stricter one: it adds the exception frame
+	  entry stacks ABOVE the pointer the guard validates, which the gate does not
+	  model and which a floor-sized thread pays before the guard ever runs.
 
 endmenu
 
