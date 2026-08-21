@@ -87,6 +87,12 @@ static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_RV_CTX_OFF_STACK
               "switch.S reads stack_hi at F_CTX_STACK_HI");
 static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_RV_CTX_OFF_KERNEL_SP,
               "a trusted entry loads ctx.kernel_sp at F_CTX_KERNEL_SP");
+// THE CEILING'S ALIGNMENT is checkable even though its SIZE is not yet measurable: the
+// same figure the trap prologue already requires of a stack pointer it builds on.
+static_assert(KICKOS_KERNEL_STACK_SIZE % KICKOS_RV_TRAP_SP_ALIGN == 0,
+              "KICKOS_KERNEL_STACK_SIZE must be a multiple of KICKOS_RV_TRAP_SP_ALIGN, "
+              "or a kernel stack's top does not land on the alignment the prologue "
+              "requires");
 static_assert(sizeof(struct arch_context) >= KICKOS_RV_CTX_OFF_KERNEL_SP + sizeof(uint32_t),
               "the guard reads a word past the end of struct arch_context");
 

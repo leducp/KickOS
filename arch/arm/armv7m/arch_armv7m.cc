@@ -84,6 +84,13 @@ static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV7M_TRAP_NEED_SVC + 104,
               "KICKOS_MIN_STACK_SIZE is below the armv7m syscall red zone plus the "
               "FP-live exception frame entry spends above it: raise the per-arch default in "
               "Kconfig, never the red zone, which is a measurement");
+// THE CEILING'S ALIGNMENT is checkable even though its SIZE is not yet measurable:
+// ARMv7-M keeps SP 8-byte aligned at every public interface (AAPCS), so a kernel stack
+// whose SIZE is not a multiple of 8 puts its top off that boundary.
+static_assert(KICKOS_KERNEL_STACK_SIZE % 8 == 0,
+              "KICKOS_KERNEL_STACK_SIZE must be a multiple of 8 on this arch, or a "
+              "kernel stack's top does not land on the alignment every frame on it "
+              "assumes");
 #else
 static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV7M_TRAP_NEED_SVC + 32,
               "KICKOS_MIN_STACK_SIZE is below the armv7m syscall red zone plus the "

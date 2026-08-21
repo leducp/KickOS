@@ -223,14 +223,28 @@ config KICKOS_KERNEL_STACK_SIZE
 	  transfers to it instead of continuing on the thread's own. One size class
 	  per board, so it is a constant here and not a per-thread field.
 
-	  1024 is derived rather than picked. A kernel stack must hold the frame the
-	  trap entry saves plus the deepest the dispatch descends, and unlike a
-	  thread's red zone it must include the panic tail: that tail is excluded
-	  from a red zone only to keep it under the spawn floor, and a kernel array
-	  has no floor to clear (trap_redzone_roots.txt says so for stack=trap).
-	  Frame plus without-exclusions depth is 32 + 808 on armv6m, 100 + 736 on
-	  armv7m and 236 + 760 on rxv3, so 840, 836 and 996. Nested interrupts do
-	  not add a term: they stay on the per-core handler stack.
+	  A BUDGET CEILING, NOT MEASURED GEOMETRY, and the distinction is the whole
+	  of this entry. What a kernel stack must hold cannot be measured yet: the
+	  path does not exist until the trap entry transfers to it, and how much
+	  lands there depends on decisions the entry work still has to make. So this
+	  is a bound to allocate against and to tighten later against a real
+	  measurement, never a claim about what the kernel uses.
+
+	  What IS derived is a LOWER bound, from the current path: the frame the trap
+	  entry saves plus the deepest the dispatch descends, counting the panic tail
+	  because a kernel array has no spawn floor to clear (trap_redzone_roots.txt
+	  says so for stack=trap). That gives 32 + 808 on armv6m, 100 + 736 on
+	  armv7m, 236 + 760 on rxv3 and 256 + 816 on rv32imac: 840, 836, 996, 1072.
+
+	  TERMS THAT LOWER BOUND DOES NOT COUNT, each conditional on an entry design
+	  not yet fixed. A nested switch frame, if the switcher's trap lands on the
+	  interrupted thread's kernel stack rather than on the per-core handler
+	  stack. A first-preemption frame on ARM, if the software context save moves
+	  off the user PSP onto the kernel stack. The fault reporter, if it ever runs
+	  there rather than in handler mode on the MSP. An independent review derives
+	  892, 948, 1056 and 1072 counting some of these, which is above this lower
+	  bound on three arches and below it on one: the spread is the argument for a
+	  ceiling rather than for either set of digits.
 
 	  Nothing allocates this yet, so no board pays for it at this size.
 
@@ -247,6 +261,19 @@ config KICKOS_TLS_SIZE
 	  thread pointer (tp, THREADPTR); every ARM part in this fleet is M-profile
 	  and has none, so its compiler emits a call to __aeabi_read_tp for each
 	  access and the kernel has to answer it; RX has neither.
+
+	  DERIVED FROM THE LINKER, not stated here, once a template exists: the
+	  block is .tdata plus .tbss at the thread pointer's alignment, and the ABI
+	  may reserve words BELOW the pointer that the block has to carry as well.
+	  A number typed into a defconfig cannot track a template the linker lays
+	  out.
+
+	  AND ON RISC-V `tp` IS USER-WRITABLE, which makes it the same class of
+	  hazard this milestone exists for. An unprivileged thread can put anything
+	  in tp, so privileged code that reads thread-local state through the
+	  incoming tp trusts a value the thread chose. The trap entry has to
+	  RE-ANCHOR tp from the thread's own control block before any privileged
+	  access, exactly as it validates a stack pointer rather than trusting one.
 
 config KICKOS_MIN_STACK_SIZE
 	int
