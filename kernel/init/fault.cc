@@ -35,9 +35,9 @@ extern "C" void kickos_trapstack_witness_report(void)
 // counters and no lock: every writer runs with interrupts masked by the trap entry itself,
 // and a torn read of a monotone counter costs an arm one count and never a verdict.
 //
-// rv32imac ONLY: the only backend whose trap prologue can place a nested frame on a thread
-// stack, so the only one the arm can run on. Ungated, its 16 bytes of kernel .bss land on
-// every board, which is enough to push microbit off the arena cliff.
+// rv32imac ONLY: its trap prologue is the one that can place a nested frame on a thread
+// stack, so the arm runs there. Gated because the 16 bytes of kernel .bss are enough to push
+// microbit off the arena cliff.
 #if defined(KICKOS_ENABLE_SELFTEST) && defined(__riscv)
 namespace
 {
@@ -91,13 +91,13 @@ extern "C" uint32_t kickos_nestwitness_count(int which)
 
 namespace
 {
-    // The window between the redirect and the stub is PREEMPTIBLE (`dying` is not set until exit_current runs), so a second
-    // thread's fault can overwrite this before the first stub reads it. The print itself is
-    // one such point and not merely an async tick: on a published console kprintf_fault wakes
-    // the console driver, which outranks every stdout client by provisioning rule. `owner` is what
-    // keeps that honest: a stub that does not own the record prints no fault facts
-    // instead of printing another thread's. Both threads still die correctly; the cost
-    // is that the first one's PC is lost.
+    // The window between the redirect and the stub is PREEMPTIBLE (`dying` is not set until
+    // exit_current runs), so a second thread's fault can overwrite this before the first stub
+    // reads it. The print itself is one such point and not merely an async tick: on a
+    // published console kprintf_fault wakes the console driver, which outranks every stdout
+    // client by provisioning rule. `owner` is what keeps that honest: a stub that does not own
+    // the record prints no fault facts instead of printing another thread's. Both threads
+    // still die correctly; the cost is that the first one's PC is lost.
     struct FaultRecord
     {
         ::kickos::Thread const* owner;
@@ -158,17 +158,18 @@ extern "C" bool kickos_fault_frame_trusted(void const* frame, size_t bytes)
 //
 // The width is a RULING, not a derivation, and its ceiling is a MEASUREMENT: it must stay
 // below the distance from a thread's stack base to the nearest legitimate cross-domain target
-// beneath it. Widening it past that gap re-creates the false positive the narrowing removes;
-// narrowing it below 4 stops attributing overflows at all, since the denied push an RXv3
-// overflow leaves behind lands at base - 4.
+// beneath it. Widening it past that gap makes a legitimate cross-domain access read as an
+// overflow; narrowing it below 4 stops attributing overflows at all, since the denied push an
+// RXv3 overflow leaves behind lands at base - 4.
 #ifndef KICKOS_FAULT_STACK_GUARD_BAND
 #define KICKOS_FAULT_STACK_GUARD_BAND 16u
 #endif
 
 // Where a backend's redirect puts the SP, so the stub runs with the whole stack under it
-// rather than at the depth the fault reached. 0 means DO NOT RELOCATE: there is no stack
-// established as this thread's own, so a reset would aim the stub at memory nobody says it
-// may use. See arch.h for the contract the five backends implement against.
+// rather than at the depth the fault reached. A nonzero answer names the top of the current
+// thread's own stack; 0 means DO NOT RELOCATE, leaving the stub at the depth the fault
+// reached rather than aiming it at memory nobody says it may use. See arch.h for the contract
+// the backends implement against.
 extern "C" uintptr_t kickos_fault_stack_top(void)
 {
     ::kickos::Thread* const c = ::kickos::sched::current();
@@ -255,7 +256,7 @@ extern "C" void kickos_thread_fault_exit(void)
         r.valid = false;
         if (r.status_name == nullptr)
         {
-            // v6-M has no fault-status register at all, so there is no word to name.
+            // status_name is null on v6-M, whose profile supplies the PC alone.
             ::kickos::kprintf_fault(KDIAG_F_FAULT_PC, reinterpret_cast<void*>(r.pc));
         }
         else

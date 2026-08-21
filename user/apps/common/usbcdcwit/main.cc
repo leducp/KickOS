@@ -30,7 +30,7 @@ namespace
     constexpr int CH_EP = 0;
 
     // Eight laps of the 1024-byte TX ring, so it reaches FULL repeatedly and the client is
-    // forced onto the short-accept retry path. One lap would not reach it.
+    // forced onto the short-accept retry path.
     constexpr uint32_t TOTAL = 8192;
     constexpr uint32_t CHUNK = 200;
     // A zero accept is ordinary back-pressure; only a RUN of them with no progress is a

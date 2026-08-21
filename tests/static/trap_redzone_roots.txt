@@ -175,9 +175,9 @@ unsized rxv3 __clzsi2     4 reason: measured from libgcc.a, frameless leaf so th
 # a device IRQ or SysTick stacks on the PSP when it preempts the trampoline, and the PendSV
 # push below that. armv7m_trap_stack.h derives every term.
 arch    armv7m header=arch/arm/armv7m/include/kickos/arch/armv7m_trap_stack.h
-# The presets this arch can be measured on. Three of them (qemu, qemu-m3, frdmk64f-st) are
-# registered as a ctest by the top-level CMakeLists; the rest are declared so a hand run
-# covers them without inventing bindings on the spot.
+# Three of these (qemu, qemu-m3, frdmk64f-st) are registered as a ctest by the top-level
+# CMakeLists; the rest are declared so a hand run covers them without inventing bindings on
+# the spot.
 preset  armv7m qemu
 preset  armv7m qemu-m3
 preset  armv7m qemu-m7

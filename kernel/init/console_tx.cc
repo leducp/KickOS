@@ -85,7 +85,7 @@ namespace
         {
             if (not wait_slot())
             {
-                r.tail = head; // stuck TX: drop the undrained bytes, don't hang
+                r.tail = head;
                 return;
             }
             r.backend->push(static_cast<uint8_t>(r.buf[tail]));
@@ -150,7 +150,7 @@ namespace
         //               p.18-18), so an idle channel produces no event at all.
         //   K64F TDRE:  harmless immediate send, level-asserted while the buffer is empty
         //               (RM Rev.4 52.3.5; S1 resets to 0xC0 untransmitted).
-        //   PL011 FEN=0: unconfirmed; do not read the three above as settling it.
+        //   PL011 FEN=0: the priming runs there on the analogy above, not on a citation.
         uint32_t const tail = r.tail;
         if (was_empty and idx != tail and r.backend->slot_free() != 0)
         {
@@ -161,9 +161,9 @@ namespace
     }
 
     // Runs with interrupts UNMASKED: a synchronous write is the long operation this file
-    // keeps out of a masked span. The re-read (B1) is console_chip_writable and NOT
-    // console_owner_is_kernel: this caller can be the in-flight writer a publish is
-    // draining, and refusing it truncates the message it is finishing.
+    // keeps out of a masked span. The re-read (B1) is console_chip_writable, which stays true
+    // through a handover: this caller can be the in-flight writer a publish is draining, and
+    // refusing it truncates the message it is finishing.
     void write_unbuffered(char const* buf, size_t n)
     {
         if (console_chip_writable() == 0)
@@ -272,10 +272,10 @@ void console_tx_write(char const* buf, size_t n)
     write_unbuffered(buf + off, n - off);
 }
 
-// Deliberately NOT bracketed by the chip-writer count. console_tx_deinit detaches the
-// handler and NVIC-masks the TX line under the same IrqLock that enters HANDING_OFF, strictly
-// before kos_console_publish flips to USER_OWNED, so this ISR cannot fire once a driver owns
-// the console: there is no stale-writer window for the count to guard.
+// console_tx_deinit detaches the handler and NVIC-masks the TX line under the same IrqLock
+// that enters HANDING_OFF, strictly before kos_console_publish flips to USER_OWNED, so this
+// ISR has already stopped by the time a driver owns the console. That ordering is what stands
+// in for the chip-writer bracket every other device poke takes.
 void console_tx_isr(void)
 {
     ConsoleTxRing& r = tx();
@@ -339,12 +339,11 @@ void console_buffer_init(void)
 }
 
 // Relinquish the buffered TX path so a userspace driver can take the UART (D2). One IrqLock
-// makes the four steps atomic against the drain ISR and against a producer that holds the
-// lock for its whole write. console_tx_write is NOT such a producer, so it re-reads `armed`
-// under the same lock as each enqueue. The disarmed guard also covers polled-only chips
-// (mps2/virt/nrf51 never arm) and a re-publish. The caller holds the state at HANDING_OFF
-// across this, never USER_OWNED, so the flush here and a synchronous fault mid-deinit both
-// act on a kernel-owned, kernel-inited UART.
+// makes the four steps atomic against the drain ISR. console_tx_write holds the lock one
+// chunk at a time, so it re-reads `armed` under the same lock as each enqueue. The disarmed
+// guard also covers polled-only chips (mps2/virt/nrf51 never arm) and a re-publish. The
+// caller holds the state at HANDING_OFF across this, never USER_OWNED, so the flush here and
+// a synchronous fault mid-deinit both act on a kernel-owned, kernel-inited UART.
 void console_tx_deinit(void)
 {
     ConsoleTxRing& r = tx();

@@ -565,9 +565,8 @@ uint64_t syscall_body(uintptr_t nr,
             // Root's exit ends the SYSTEM, through the same terminal path a returning main
             // takes. Root's slot must not reach EXITED on THIS path: the pool, the domain table
             // and the boot arena are all sized for root holding it for the whole run, and the
-            // reclaim sweep would strip the spawner_tag off every child root ever spawned. The
-            // fault-kill path (kernel/init/fault.cc) does retire root, deliberately, and
-            // tests/integration/check_rootfault.sh is what holds that arm.
+            // reclaim sweep would strip the spawner_tag off every child root ever spawned.
+            // The fault-kill path (kernel/init/fault.cc) retires root instead.
             if (kernel().threads.is_root(c))
             {
                 if (not cap_check_authority(c, AUTH_SYSTEM))
@@ -601,19 +600,16 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
             }
-            // Flush synchronously or the buffered console loses its tail.
             console_tx_flush_sync(); // empties the ring only
-            // A byte still in the UART FIFO / shift register outruns the reset (the
-            // RP2350 bootrom reboots after ~10 ms), truncating the tail.
-            arch_console_flush_sync();
+            arch_console_flush_sync(); // FIFO and shift register: a byte here outruns the reset
             return static_cast<uint64_t>(arch_reboot());
         }
         case KOS_SYS_IRQ_INJECT:
         {
             // Test scaffolding, compiled out of the production ABI. Never
             // KICKOS_UNREACHABLE a user-supplied number: that would let a user halt the
-            // kernel. NOT privilege-gated, unlike irq_unmask/irq_attach: this simulates a
-            // DEVICE firing, and selftest injects it from an unprivileged thread.
+            // kernel. Ungated: this simulates a DEVICE firing, and selftest injects it from
+            // an unprivileged thread.
             int irq = static_cast<int>(a0);
             if (irq < 0 or irq >= KICKOS_MAX_IRQ)
             {

@@ -38,8 +38,7 @@ struct console_tx_backend
 // Arm the buffered path. `size` MUST be a power of two (index masking); usable
 // capacity is size-1. Called once from console_buffer_init after irq_init has
 // seeded the dispatch table. Until then, writes route to the synchronous path.
-// `irq_line` is stashed for console_tx_deinit and set BEFORE armed flips, so no
-// window has the ring armed with a stale (-1) line.
+// `irq_line` is the line console_tx_deinit detaches.
 void console_tx_init(struct console_tx_backend const* be, char* storage, uint32_t size,
                      int irq_line);
 

@@ -6,10 +6,10 @@
 // the client owns the U0C1 window and the USIC0 SR1 line and does its own bring-up,
 // otherwise the same calls marshal onto the board's SSC service endpoint.
 //
-// Data path is the driver's INTERNAL LOOP-BACK (DX0 = own transmitter): there is no external
-// SPI device on the bench, so every byte echoes.
+// Data path is the driver's INTERNAL LOOP-BACK (DX0 = own transmitter), so every byte
+// echoes with no external SPI device on the bench.
 //
-// Build-only diagnostic: the operator flashes and validates on silicon, so no CTest gate.
+// Build-only diagnostic: never a production image.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -33,8 +33,7 @@ namespace
     // choice: the service endpoint's SIGNAL copy, or the USIC0 SR1 line.
     constexpr kos_cap_t CLIENT_CAP0 = KOS_SPAWN_DELEGATED_CAP0;
 
-    // The single device on the bench's bus. A client with several devices gives each its own
-    // slot (< KOS_BUS_DEV_MAX) and opens each once.
+    // The single device on the bench's bus; a slot is per device and stays < KOS_BUS_DEV_MAX.
     constexpr uint8_t SPI_SLOT = 0u;
 
 #if KICKOS_SPI_LOCAL
@@ -131,7 +130,6 @@ namespace
         }
         report("device open", hz > 0);
 
-        // 1) Single bytes echo through the on-chip loopback.
         {
             unsigned char const pattern[] = {0xA5u, 0x3Cu, 0x00u, 0xFFu};
             struct kos_bus_seg seg = {1u, 0u, 0u};
@@ -148,8 +146,8 @@ namespace
             report("single-byte loopback", ok);
         }
 
-        // 2) Multi-byte transfer (exercises the per-word IRQ-paced loop and, for CS_HW, the
-        //    SOF..EOF frame spanning all words in one MSLS bracket).
+        // Exercises the per-word IRQ-paced loop and, for CS_HW, the SOF..EOF frame spanning
+        // all words in one MSLS bracket.
         {
             unsigned char const tx[5] = {0x11u, 0x22u, 0x33u, 0x44u, 0x55u};
             unsigned char buf[5] = {0x11u, 0x22u, 0x33u, 0x44u, 0x55u};
@@ -159,7 +157,6 @@ namespace
                    n == static_cast<int32_t>(sizeof(buf)) and buffers_equal(tx, buf, sizeof(buf)));
         }
 
-        // 3) All-zero tx: the loopback returns 0x00.
         {
             unsigned char buf[4] = {0u, 0u, 0u, 0u};
             struct kos_bus_seg seg = {static_cast<uint16_t>(sizeof(buf)), 0u, 0u};
@@ -168,8 +165,8 @@ namespace
                    n == static_cast<int32_t>(sizeof(buf)) and buffer_is(buf, 0x00u, sizeof(buf)));
         }
 
-        // 4) Two segments in ONE CS bracket. The class returns EVERY full-duplex byte, so
-        //    the read phase is the tail of the same buffer.
+        // Two segments in ONE CS bracket. The class returns EVERY full-duplex byte, so the
+        // read phase is the tail of the same buffer.
         {
             unsigned char const cmd[3] = {0x03u, 0x00u, 0x64u};
             unsigned char buf[7] = {0x03u, 0x00u, 0x64u, 0u, 0u, 0u, 0u};
@@ -180,7 +177,7 @@ namespace
                        and buffer_is(buf + 3, 0x00u, 4));
         }
 
-        // 5) The API's own ceiling: refused, in every implementation, without clocking.
+        // The API's own ceiling: refused, in every implementation, without clocking.
         {
             unsigned char buf[8] = {0};
             struct kos_bus_seg seg = {static_cast<uint16_t>(KOS_SPI_XFER_MAX + 1), 0u, 0u};

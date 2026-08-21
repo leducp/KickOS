@@ -2,20 +2,20 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Shutdown-flush gate for the default init body (system/init/common/default_init_run.cc).
-// The run body calls a handful of extern "C" seams and nothing else, so the real body runs
-// here over the recording fakes below: no kernel, no scheduler, no image.
+// The run body calls four extern "C" seams and nothing else, so the real body runs here over
+// the recording fakes below.
 //
-// An UNTIMED probe on a console service that is alive but not back in kos_recv parks root
-// forever (recv_holders stays nonzero, so the endpoint never reads as dead) and root never
-// reaches kos_shutdown. A fake cannot park, so what is checked here is structural instead:
-// every probe carries a real deadline, and a refused probe is not followed by a second one.
+// What this gate checks is STRUCTURAL: every probe carries a real deadline, and a refused
+// probe is not followed by a second one. The park behind that rule is one a fake cannot
+// stage: an untimed probe on a console service that is alive but not back in kos_recv keeps
+// recv_holders nonzero, so the endpoint never reads as dead, root parks forever and never
+// reaches kos_shutdown.
 //
-// kos_send is deliberately NOT faked here: a body that goes back to the untimed send stops
-// linking, so the regression is caught before any arm runs. Do not add it.
+// Leaving kos_send unfaked is the enforcement: a body that goes back to the untimed send
+// fails to LINK, before any arm runs. Do not add it.
 //
-// HOST-ONLY, like the bring-up gate beside it: this TU defines public kos_* names, and a
-// target image linking it would satisfy them from the executable and keep the real syscall
-// stubs' archive member out of the link.
+// HOST-ONLY: this TU defines public kos_* names, so a target image linking it would satisfy
+// them from the executable and keep the real syscall stubs' archive member out of the link.
 
 #include <kickos/sys.h>
 #include <kickos/sys/abi.h>
@@ -91,8 +91,7 @@ extern "C"
 
 namespace
 {
-    // Every probe must name the console index, carry the zero length that MEANS flush, and
-    // bound its park. KOS_TIMEOUT_NONE arms no deadline.
+    // Zero length MEANS flush, and KOS_TIMEOUT_NONE arms no deadline.
     void expect_well_formed(std::vector<Probe> const& probes)
     {
         for (Probe const& p : probes)

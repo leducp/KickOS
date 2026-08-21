@@ -42,9 +42,9 @@ _kernel_stack_size = 8K;               /* ISP (boot/ISR) stack reservation */
    bounds, but the shared alloc/linker path shapes regions as a power of two, so the
    app data is padded up to this pow2 size; a real app whose globals exceed it trips
    the ASSERT below. Keep it pow2. Gated on KICKOS_HAVE_MPU (the script is
-   cpp-preprocessed): a non-enforcement build reserves no app-data block.
-   The window pad (window minus app statics + runtime) IS the newlib heap: a 32K
-   window leaves ~14K, which cxxtest's measured peak (~4.2K-5.9K) and printf fit. */
+   cpp-preprocessed). The window pad (window minus app statics + runtime) IS the newlib
+   heap: a 32K window leaves ~14K, which cxxtest's measured peak (~4.2K-5.9K) and
+   printf fit. */
 #if KICKOS_HAVE_MPU
 #ifndef KICKOS_APPDATA_SIZE
 #define KICKOS_APPDATA_SIZE 32K
@@ -236,11 +236,9 @@ SECTIONS
 #endif
 
 #if !KICKOS_HAVE_MPU
-    /* Non-enforcement build: no .appdata window, so the newlib heap is an explicit
-       section carved from RAM before the thread arena. Double underscore per the RX
-       psABI (C `_kickos_heap_*`). */
-    /* RX prepends one underscore, so the C `_kickos_heap_*` resolves to the
-       double-underscore symbols defined here. */
+    /* Non-enforcement build: the newlib heap is an explicit section carved from RAM
+       before the thread arena. RX prepends one underscore, so the C `_kickos_heap_*`
+       resolves to the double-underscore symbols defined here. */
     .userheap (NOLOAD) :
     {
         . = ALIGN(8);

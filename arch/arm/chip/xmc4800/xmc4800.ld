@@ -169,8 +169,9 @@ SECTIONS
         *(.bss .bss.* COMMON)
         . = ALIGN(4);
         _appdata_used_end = .;
-        /* MAX, not a bare set: ASSERTs are evaluated after layout, so a backwards move
-           fails the link before the overflow ASSERT below can print. */
+        /* ld evaluates ASSERTs after layout, so a bare `. = start + size` that moved
+           backwards would fail the link ahead of the overflow ASSERT below. MAX keeps
+           that ASSERT the thing that prints. */
         . = MAX(., __kickos_appdata_start + _appdata_size); /* pad the granted window */
         __kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
@@ -251,8 +252,9 @@ ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
    into kernel .data/.bss and lets .appdata/.appbss catch the rest, so a broken selector
    shows up as an EMPTY KERNEL side (kernel writable state silently leaked into the app
    window). libkickos_kernel.a always contributes .bss, so an empty kernel .bss is the
-   loud signal the colon selectors matched nothing (a renamed lib). NOT app-side: an
-   empty .appdata is legitimate (a minimal freestanding app --gc-sections'd bare). */
+   loud signal the colon selectors matched nothing (a renamed lib). Only the kernel side
+   is asserted: an empty .appdata is legitimate, a minimal freestanding app being
+   --gc-sections'd bare. */
 ASSERT(_ebss > _sbss,
        "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
 #endif

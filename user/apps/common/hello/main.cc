@@ -3,7 +3,6 @@
 //
 // KickOS "hello" (C++ flavor), against the ergonomic C++ API (kos::). The
 // byte-for-byte identical program in the plain-C API lives in apps/hello_c.
-// (The exhaustive M0 verification lives in apps/selftest, not here.)
 
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
@@ -12,13 +11,13 @@ namespace
 {
     constexpr uint64_t BEAT_NS = 400000000ull; // 0.4 s between hits
 
-    // Shared by both players; bound in main() once the kernel is up. (A global
-    // kos::Semaphore would run its ctor, a syscall, before the scheduler.)
+    // Bound in main(): a global kos::Semaphore would run its ctor, a syscall, before the
+    // scheduler.
     kos::Semaphore* g_ping = nullptr;
     kos::Semaphore* g_pong = nullptr;
 
-    // B1 well-known child cap indices (fresh child table => handle == index). Both sems
-    // are delegated to each player in the order (ping_sem, pong_sem) -> ping@1, pong@2.
+    // B1 well-known child cap indices (fresh child table => handle == index). Both players
+    // get (ping_sem, pong_sem) delegated in that order -> ping@1, pong@2.
     constexpr int CH_PING = 1;
     constexpr int CH_PONG = 2;
     constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
@@ -64,13 +63,12 @@ int main(int, char**)
     g_ping = &ping_sem;
     g_pong = &pong_sem;
 
-    // Both players get (ping_sem, pong_sem) delegated -> ping@1, pong@2 (CH_PING/CH_PONG).
     kos_cap_grant caps[] = {{ping_sem.id(), CH_FULL}, {pong_sem.id(), CH_FULL}};
     kos::thread::spawn_caps(ping, nullptr, "ping", 10, caps, 2);
     kos::thread::spawn_caps(pong, nullptr, "pong", 10, caps, 2);
 
-    // A daemon: main never returns (returning would exit), so the two players
-    // run until interrupted. Park at low priority on a semaphore nobody posts.
+    // A daemon: returning from main would exit, so root parks on a semaphore nobody posts
+    // and the two players run until interrupted.
     kos::Semaphore idle(0);
     while (true)
     {

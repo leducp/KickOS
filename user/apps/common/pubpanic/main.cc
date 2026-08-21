@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Panic/fault reporting on a PUBLISHED console, in its own binary because it ends the
-// system. One source, two images selected by KICKOS_PUBPANIC_CASE, since a run observes
-// only one terminal event:
+// Panic/fault reporting on a PUBLISHED console. One source, two images selected by
+// KICKOS_PUBPANIC_CASE, since a run observes only one terminal event:
 //   1  kos_panic -> kickos::kpanic: the "KERNEL PANIC" banner must reach the wire
 //   2  an illegal instruction -> the arch fault reporter: the dump must reach the wire
 //
@@ -11,9 +10,9 @@
 // already disarmed by console_tx_deinit, so the banner can only come out over the
 // RECLAIMED polled route (kernel/init/console.cc).
 //
-// The kos_print below is the anti-vacuity witness: console_emit DROPS it while the
-// console is USER_OWNED, so the gate asserting its absence is what proves the handover
-// really happened and the banner did not come out of a kernel-owned console.
+// Anti-vacuity: console_emit DROPS the kos_print below while the console is USER_OWNED,
+// so its absence proves the handover happened and the banner did not come out of a
+// kernel-owned console.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

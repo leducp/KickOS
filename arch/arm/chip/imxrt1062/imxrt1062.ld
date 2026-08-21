@@ -196,8 +196,9 @@ SECTIONS
         *(.bss .bss.* COMMON)
         . = ALIGN(4);
         _appdata_used_end = .;
-        /* MAX, not a bare set: ASSERTs are evaluated after layout, so a backwards move
-           fails the link before the overflow ASSERT below can print. */
+        /* ld evaluates ASSERTs after layout, so a bare `. = start + size` that moved
+           backwards would fail the link ahead of the overflow ASSERT below. MAX keeps
+           that ASSERT the thing that prints. */
         . = MAX(., __kickos_appdata_start + _appdata_size);
         __kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */

@@ -61,9 +61,8 @@ namespace tap
     int run_all();
 }
 
-// Assert `cond`; on failure record "<file>:<line>: <expr>" and RETURN from the
-// current test (so later steps don't run on bad state; the harness marks it
-// "not ok"). Only valid inside a registered test function (returns void).
+// Assert `cond`; on failure record "<file>:<line>: <expr>" and RETURN from the current test,
+// which the harness marks "not ok". Only valid inside a registered test function (void).
 #define TAP_CHECK(cond)                                          \
     do                                                           \
     {                                                            \

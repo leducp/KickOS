@@ -4,42 +4,30 @@
 #
 # Gate on the HAND-MAINTAINED forwarding lists in the root CMakeLists.txt. Kconfig owns
 # the knobs, but a `cmake -DKICKOS_X=...` only becomes a CONFIG_X= request if X is named
-# in one of those lists. A prompted symbol missing from all of them is not an error: CMake
-# reports it under "Manually-specified variables were not used", which is a WARNING, the
-# configure goes green, and the generated board_config.h carries the symbol's DEFAULT.
-# That default can be the opposite of what was asked for, and the build never says so. A
-# forwarded knob with a bad value is a FATAL_ERROR by contrast (genconfig.py reads every
-# request back), so the two failure modes are not comparable: this one is silent.
+# in one of those lists. A prompted symbol missing from all of them is SILENT: CMake reports
+# it under "Manually-specified variables were not used", a warning, the configure goes green,
+# and the generated board_config.h carries the symbol's DEFAULT, which can be the opposite of
+# what was asked for. A forwarded knob with a BAD VALUE is loud instead, a FATAL_ERROR, since
+# genconfig.py reads every request back.
 #
-# Two legs, both over the same two sets:
-#   1. every PROMPTED, non-choice symbol appears in a forwarding list;
-#   2. every name IN a typed list is a declared, prompted symbol of that list's type.
-# Leg 2 is what makes a symbol forwarded through the WRONG list visible: the three lists
-# emit three different request syntaxes (`=N`, `="text"`, `=y|n`), so an int in the bool
-# list would forward `CONFIG_X=y` and be refused at configure time on a value nobody typed.
+# The type leg makes a symbol forwarded through the WRONG list visible: the three lists emit
+# three request syntaxes (`=N`, `="text"`, `=y|n`), so an int in the bool list forwards
+# `CONFIG_X=y` and is refused at configure time on a value nobody typed.
 #
-# The forwarding lists are PARSED OUT OF CMakeLists.txt, never copied here. What the gate
-# does carry is the loop variable -> Kconfig type map for the three lists, which the type
-# leg cannot do without; a fourth forwarding list is REFUSED rather than assumed.
-#
-# What this gate CANNOT see:
+# SCOPE. Read are the prompted non-choice symbols kconfiglib resolves, and the forwarding
+# lists parsed out of the region between `set(_kcfg_req "")` and the kickos_kconfig_generate()
+# call, which is refused if the parse cannot find it. Outside it:
 #   - Choice members (BOARD_*, CONSOLE_*, TELEMETRY_*, MEMORY_MODEL_*). They are prompted
 #     but are not set by a -D of their own name: the board defconfig picks them, and the
 #     two the command line does reach go through the bespoke KICKOS_CONSOLE and
 #     KICKOS_TELEMETRY blocks, which project a string onto a choice member. Those two
 #     blocks are read only as "this name is forwarded"; their projection is not checked.
-#   - Whether a forwarded knob's value survives resolution. That is check_kconfig_gen.sh.
+#   - Whether a forwarded knob's value survives resolution, which is check_kconfig_gen.sh.
 #   - -D knobs that are not Kconfig symbols at all (KICKOS_RX_MPU_TRACE and friends). They
 #     live outside the parsed region and are a different mechanism.
-#   - Anything outside the region between `set(_kcfg_req "")` and the
-#     kickos_kconfig_generate() call. A forwarding list moved out of it is not read, and
-#     the gate refuses rather than reporting on a region it did not find.
 #
-# There is no allowlist. Every prompted non-choice symbol in the tree is forwarded today.
-# If one ever legitimately must not be, add it here as a named exemption WITH its reason,
-# rather than loosening a leg.
-#
-# usage: check_kconfig_forwarding.sh <python> <srcdir>
+# Every prompted non-choice symbol in the tree is forwarded, so one that legitimately must
+# not be belongs here as a named exemption WITH its reason, not as a loosened leg.
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
@@ -62,8 +50,8 @@ export LC_ALL=C
 scratch_dir
 
 # --- The prompted set, from kconfiglib ---------------------------------------
-# INT and HEX both fold to `int` and BOOL and TRISTATE both to `bool`, because the
-# forwarding lists distinguish only the three REQUEST SYNTAXES, not the Kconfig types.
+# INT and HEX fold to `int`, BOOL and TRISTATE to `bool`: the forwarding lists distinguish
+# the three request syntaxes, not the Kconfig types.
 cat > "$TMP/prompted.py" <<'PYEOF'
 import os
 import sys
@@ -97,9 +85,8 @@ for sym in kconf.unique_defined_syms:
                      % (prompted, kind, CLASS.get(sym.type, "unknown"), sym.name))
 PYEOF
 
-# A Kconfig that resolved to nothing at all would leave leg 1 with an empty left-hand side
-# and pass over zero symbols, so tool_out turns an empty or unparseable read into an exit
-# rather than a pass.
+# A Kconfig that resolved to nothing leaves leg 1 with an empty left-hand side and passes
+# over zero symbols, so the landmark refuses an empty or unparseable read.
 tool_out "$TMP/syms" '^prompted plain (int|bool|string) KICKOS_' \
          "$PY" "$TMP/prompted.py" "$SRC"
 
@@ -115,9 +102,9 @@ want_n="$(wc -l < "$TMP/want" | tr -d ' ')"
     || fail "no prompted non-choice symbol found in $SRC/Kconfig (leg 1 would pass vacuously)"
 
 # --- The forwarding lists, parsed out of CMakeLists.txt ----------------------
-# `foreach(<var> NAME NAME ...)` wraps, so the name list is accumulated until the closing
-# paren. `if(DEFINED ${_knob})` inside a loop body does not match the bespoke rule below:
-# an uppercase letter is required immediately after DEFINED, and `${` is not one.
+# `foreach(<var> NAME NAME ...)` wraps, so the name list accumulates until the closing paren.
+# The bespoke rule below requires an uppercase letter immediately after DEFINED, which keeps
+# `if(DEFINED ${_knob})` in a loop body out of it.
 awk '
 /set\(_kcfg_req ""\)/            { inreg = 1; next }
 /kickos_kconfig_generate\(/      { if (inreg) { print "ENDREG"; inreg = 0 } }
@@ -149,10 +136,9 @@ match(line, /foreach\([A-Za-z_][A-Za-z0-9_]*/) {
     }
     next
 }
-# The bespoke projections are NAMED, never matched by shape. A bare if(DEFINED X) is an
-# ordinary thing to write in this region (a validation message, a deprecation warning), and
-# treating any of them as a forwarding would let one silently satisfy leg 1 for a knob that
-# no list forwards.
+# The bespoke projections are NAMED, never matched by shape: a bare if(DEFINED X) is an
+# ordinary thing to write in this region, and reading one as a forwarding would satisfy leg 1
+# for a knob no list forwards.
 match(line, /if\(DEFINED [A-Z][A-Z0-9_]*\)/) {
     tok = substr(line, RSTART, RLENGTH)
     sub(/if\(DEFINED /, "", tok)
@@ -179,8 +165,8 @@ if grep -q '^OPENREG$' "$TMP/parse"; then
     fail "$CML: the forwarding region never closes; the parse ran past it"
 fi
 
-# The one thing this gate holds a copy of: which Kconfig type each forwarding list emits.
-# A list the gate does not know the type of gets no type leg, so it is refused instead.
+# The lists themselves are parsed out of CMakeLists.txt; this map is the only copy the gate
+# holds. A list whose type is not named here is refused, never given a silent pass.
 list_class() {
     case "$1" in
         _knob) echo int ;;
@@ -238,9 +224,9 @@ if [ -n "$missing" ]; then
 fi
 
 # --- Leg 2: a forwarded name is a prompted symbol of that list's type --------
-# @bespoke is exempt: KICKOS_CONSOLE and KICKOS_TELEMETRY are promptless projections onto
-# a choice, so neither the prompt nor the type test applies to them. They are the only two,
-# by name: a third needs adding above WITH its reason, which is the point of naming them.
+# @bespoke is exempt: KICKOS_CONSOLE and KICKOS_TELEMETRY are promptless projections onto a
+# choice, so neither the prompt nor the type test applies. A third belongs above WITH its
+# reason.
 awk '$1 != "@bespoke" { print $1, $2 }' "$TMP/fwd" | sort > "$TMP/fwd_typed"
 typed_n="$(wc -l < "$TMP/fwd_typed" | tr -d ' ')"
 [ "$typed_n" -gt 0 ] || fail "every forwarded name parsed is bespoke; the typed lists were not read"

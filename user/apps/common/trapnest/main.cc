@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// NESTED-TRAP witness (rv32imac). Not about a wild sp, but about which stack the kernel
-// picks for an interrupt taken while the kernel is ALREADY running on a thread's own stack.
+// NESTED-TRAP witness (rv32imac): which stack the kernel picks for an interrupt taken
+// while it is ALREADY running on a thread's own stack.
 //
 // rv32imac runs syscall_dispatch privileged, in thread mode, on the CALLER's continuation
 // (arch.h arch_syscall contract). An interrupt taken there arrives with mstatus.MPP=M, so
@@ -23,10 +23,8 @@
 // header derives.
 //
 // The verdict is the kernel's tally, read back through KOS_SYS_NEST_WITNESS and printed by
-// ROOT, then checked by tests/integration/check_trapnest.sh: traps > 0 (the positive
-// control: nothing provoked proves nothing) and onstack == 0. The kernel only counts,
-// because a report written from kernel code has to sit on some syscall's path, and on
-// kickos_terminate it put the console's varargs route inside the syscall red zone.
+// ROOT: traps > 0, the positive control, since nothing provoked proves nothing, and
+// onstack == 0.
 
 #include <kickos/arch/rv_trap_stack.h>
 #include <kickos/kos.h>

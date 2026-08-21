@@ -13,9 +13,8 @@
 // EXACTLY ONE DEFINITION PER IMAGE, and the build selects it: a per-chip local backend, or a
 // proxy marshalling onto a service endpoint. An image carrying a SECOND definition does not
 // report a duplicate symbol; it keeps the real backend's archive member out of the link and
-// drives the other definition instead. That is why the host contract gate's mock
-// (tests/unit/uartclass) is kept off every target image, and tests/static/check_class_backend.sh is what
-// enforces it.
+// drives the other definition instead. The host contract mock (tests/unit/uartclass) therefore
+// stays off every target image.
 //
 // THE CLASS MOVES BYTES AND NOTHING ELSE. CRLF expansion, retry-on-full and the console's
 // line discipline belong to each consumer: <kickos/sys/uart_service.h> for the service
@@ -147,8 +146,8 @@ extern "C"
     // an uncleared framing or overrun flag inhibits all further reception.
     //
     // Counts stats.rx_bytes (bytes taken off the wire) and stats.rx_overrun / rx_framing /
-    // rx_parity. rx_dropped is NOT counted here: bytes lost to a full ring are the
-    // consumer's loss, and the class has no ring.
+    // rx_parity. rx_dropped belongs to the consumer that owns the ring, this class moving
+    // bytes without one.
     uint32_t kos_uart_read(struct kos_uart* u, unsigned char* dst, uint32_t n);
 
     // Hand up to n bytes to the transmitter and return how many it took, 0 when the
@@ -165,7 +164,7 @@ extern "C"
     //
     // The count is what the DEVICE accepted, so a caller staging out of a ring must release
     // exactly that many (kos_byte_ring_peek then kos_byte_ring_drop) rather than popping
-    // first. Does NOT touch stats.tx_bytes; the producer that queued the bytes owns it.
+    // first. stats.tx_bytes belongs to the producer that queued the bytes.
     uint32_t kos_uart_write(struct kos_uart* u, unsigned char const* src, uint32_t n);
 
     // Wait until the transmit path has drained, then return 0. -KOS_EBUSY when the backend's
@@ -177,7 +176,8 @@ extern "C"
     // that must not clip the final byte needs its own delay. Each backend states which it
     // is at its definition.
     //
-    // Bytes a consumer still holds in a ring of its own are NOT covered.
+    // The scope is the device's transmit path; a consumer holding bytes in a ring of its own
+    // drains that first.
     int32_t kos_uart_flush(struct kos_uart* u);
 
     // Quiesce the channel: transmit and receive off, every interrupt source this backend

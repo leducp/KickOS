@@ -8,32 +8,21 @@
 // 0x00C, INPR 0x018, DX0CR 0x01C, SCTR 0x034, TCSR 0x038, PCR 0x03C, PSCR 0x04C) is
 // U,PV for both read and write.
 //
-// Everything runs in ONE unprivileged thread holding the channel grant, so the results
-// are directly comparable:
-//   * a DIRECT store to FDR/BRG/CCR must be DROPPED (the RM Table 18-20 reading);
-//   * the SAME register written through kos_periph_reg_write must LAND. Every pattern
-//     here is chosen inside the seam's per-entry value mask, so "landed exactly" stays
-//     a real observation rather than a mask artefact;
-//   * a value with a bit OUTSIDE that mask, on the same tabled register in the same held
-//     window, must be refused -KOS_EINVAL and leave the register UNCHANGED;
-//   * SCTR (U,PV) written directly must LAND. That is the POSITIVE control: it proves
-//     the grant and the MMIO path work, so a dropped store is about privilege;
-//   * an UNGRANTED SCU poke must MemManage. That is the NEGATIVE control, without which
-//     the MPU might not be enforcing and the run would say nothing.
-// The baseline value each direct store is compared against is itself installed through
-// the seam, so a "DROPPED" verdict cannot come from writing what was already there.
+// Everything runs in ONE unprivileged thread holding the channel grant, so the results are
+// directly comparable. Two controls carry the run:
+//   * SCTR (U,PV) written directly must LAND. That POSITIVE control proves the grant and
+//     the MMIO path work, so a dropped store is about privilege;
+//   * an UNGRANTED SCU poke must MemManage. Without that NEGATIVE control the MPU might
+//     not be enforcing and the run would say nothing.
+// The baseline value each direct store is compared against is itself installed through the
+// seam, so a "DROPPED" verdict cannot come from writing what was already there.
 //
 // The probe target is USIC0 channel 1 (0x4003_0200). U0C0 (0x4003_0000) is the console
-// UART: garbling it destroys the only output channel at the bench.
-//
-// Each write is announced BEFORE it is issued, so a bus fault identifies which
-// register faulted rather than losing the whole sequence.
+// UART, and garbling it destroys the only output channel at the bench.
 //
 // Register addresses / bit fields are clean-room from the Reference Manual; no
-// XMCLib/DAVE/CMSIS vendor source.
-//
-// Diagnostic app (kickos_add_diagnostic_app): build-only here, validated by the
-// operator on silicon.
+// XMCLib/DAVE/CMSIS vendor source. Diagnostic app (kickos_add_diagnostic_app): never a
+// production image.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -58,8 +47,8 @@ namespace
     // Ungranted SCU clock-gate register (RM 11.*), the negative control.
     constexpr uintptr_t SCU_CGATCLR0 = 0x50004648u;
 
-    // Pattern A (what the direct unprivileged store attempts) and pattern B (the
-    // baseline the seam installs first, so a dropped A is visible as an unchanged B).
+    // Pattern A is what the direct unprivileged store attempts; pattern B is the baseline
+    // the seam installs first, so a dropped A is visible as an unchanged B.
     //
     // FDR: DM[15:14]=00B keeps the divider OFF so the read-only RESULT[25:16] field
     // cannot drift between the two reads; A and B differ only in STEP[9:0].
@@ -74,8 +63,8 @@ namespace
     // routed to a pin; with MODE=0 pattern B can raise no receive event at all.
     //
     // Every pattern above lies inside the seam's per-entry value mask, which the seam
-    // refuses rather than silently trims. CCR's mask is MODE[3:0]|RIEN|AIEN, so
-    // CCR_TBIEN is NOT available as a pattern here; it is the out-of-mask probe below.
+    // refuses whole rather than silently trims. CCR's mask is MODE[3:0]|RIEN|AIEN, which
+    // leaves CCR_TBIEN for the out-of-mask probe below.
     constexpr uint32_t CCR_A = CCR_MODE_SSC | CCR_RIEN | CCR_AIEN;
     constexpr uint32_t CCR_B = CCR_RIEN;
     // SCTR (the positive control): A and B differ in WLE[27:24], FLE[21:16] and SDIR.
@@ -95,10 +84,10 @@ namespace
         kos::print(s);
     }
 
-    // Write through the privileged-write seam + read back: the reference for what a
-    // write that DID land looks like, reserved and read-only bits included. The errno
-    // is reported so a refusal (-KOS_EPERM lost grant, -KOS_EINVAL off the allowlist,
-    // -KOS_ENOSYS no backend) is never read as a discarded store.
+    // Write through the privileged-write seam + read back: the reference for what a write
+    // that DID land looks like, reserved and read-only bits included. The errno is reported
+    // so a refusal (-KOS_EPERM lost grant, -KOS_EINVAL off the allowlist, -KOS_ENOSYS no
+    // backend) is never read as a discarded store.
     void seam_write(char const* reg, uintptr_t win, uintptr_t off_reg, uint32_t val)
     {
         int const rc = kos_periph_reg_write(win, off_reg, val);
@@ -198,8 +187,7 @@ namespace
         kos::print(s1);
 
         // Off the allowlist: same held window, an offset the chip does not table. SCTR is
-        // U,PV, so a seam entry for it would be pointless, and its absence is exactly what
-        // the refusal contract is about.
+        // U,PV, so it is writable directly and the seam tables it nowhere.
         int const off_list = kos_periph_reg_write(win, off::SCTR, SCTR_B);
         // The sibling channel, whose window this thread does NOT hold: the possession
         // gate must refuse before the chip table is consulted.
@@ -237,17 +225,16 @@ int main(int, char**)
                                       U0C1_WINDOW);
     if (not p.valid())
     {
-        // -KOS_EBUSY: a live domain already holds U0C1. The probe question (does an
-        // unprivileged HOLDER's PV write land?) is unanswerable without the grant. The
-        // kernel console path drops every byte once a driver has published, so the errno
-        // goes out through the panic path.
+        // -KOS_EBUSY: a live domain already holds U0C1, and without the grant the probe
+        // question is unanswerable. The errno goes out through the panic path because the
+        // kernel console path drops every byte once a driver has published.
         char e[64];
         ksnprintf(e, sizeof(e), "[pvprobe] U0C1 probe spawn refused, errno %d", -p.error());
         kos_panic(e);
     }
 
-    // Park: fall back to a sleep park if the semaphore could not be created (else an
-    // unmintable handle spins a hot loop of failing sem_wait syscalls).
+    // Park. The sleep fallback covers a semaphore that could not be created, since an
+    // unmintable handle would spin a hot loop of failing sem_wait syscalls.
     kos_cap_t idle = KOS_CAP_NONE;
     (void)kos_sem_create(0, &idle);
     while (true)

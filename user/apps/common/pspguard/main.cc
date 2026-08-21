@@ -25,8 +25,7 @@
 // MODE 2: the SECOND site. SVC_Handler pushes the same block through the same PSP for the
 // register-carrying IPC trap, and its slow path hands that PSP to svc_trampoline, which runs
 // PRIVILEGED on it. Refusal: SVCall, "no room below". This PSP is short of room for even the
-// push, so the arm establishes only that the site is guarded at all; mode 5 establishes the
-// figure.
+// push, so what the arm establishes is that the site is guarded at all; mode 5 pins the figure.
 //
 // MODE 5: the SVC slow path's KERNEL DESCENT. The PSP is placed so that the push FITS: the
 // SVC's own hardware frame takes the top 32 bytes and leaves the handler a PSP 40 bytes above
@@ -54,7 +53,7 @@
 #include <kickos/libc/fmt.h>
 #include <kickos/sys/emit.h>
 
-// Undefined would silently select mode 0 rather than fail.
+// An undefined macro evaluates as 0 in the #if ladder below, i.e. as mode 0.
 #ifndef KICKOS_PSPGUARD_MODE
 #error "KICKOS_PSPGUARD_MODE must be set by this app's CMakeLists"
 #endif

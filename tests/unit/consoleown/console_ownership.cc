@@ -24,7 +24,7 @@ namespace
     int g_tx_armed = 0;
     bool g_window_free = true;
     // One-shot: the flip lands as a racing writer masks interrupts, the last instant that
-    // writer can still be caught. arch_irq_save is that instant.
+    // writer can still be caught.
     bool g_flip_at_mask = false;
 
     void note_poke()
@@ -122,7 +122,7 @@ namespace
         ASSERT_EQ(WEXITSTATUS(status), 0) << "see the arm's own failure text above";
     }
 
-    // Anti-vacuity premise for every arm below.
+    // Anti-vacuity premise for the arms that assert NO poke reached the device.
     TEST(ConsoleOwnership, KernelOwnedWriteReachesTheDeviceAndReleasesTheBracket)
     {
         run_isolated([]() {

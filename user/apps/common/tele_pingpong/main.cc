@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Telemetry structural gate workload (spike CI gates 3 + 4). Exercises every
-// telemetry hook: real ping-pong (context switches + semaphore syscalls) and a
-// multi-wake-in-one-ISR (several periodic sleepers whose deadlines coalesce, so
-// one timer ISR wakes them together -> many reschedules collapse to a SINGLE
-// physical switch). The workers are DAEMONS (they never return); only the root
-// thread ends, by returning from main, which makes the boot path call
-// arch_shutdown directly. The daemon shape keeps the capture free of a spawned
-// thread's exit, which is a different code path (the deferred switch out of
-// exit_current) with its own gate in apps/sched_exit. arch_shutdown flushes
-// the ch1 ring (sim: to a file; qemu: via semihosting) for the decoder to assert.
+// Telemetry structural gate workload. Exercises every telemetry hook: real ping-pong
+// (context switches + semaphore syscalls) and a multi-wake-in-one-ISR (several
+// periodic sleepers whose deadlines coalesce, so one timer ISR wakes them together
+// -> many reschedules collapse to a SINGLE physical switch). The workers are DAEMONS
+// (they never return); only the root thread ends, by returning from main, which makes
+// the boot path call arch_shutdown directly. That keeps the capture free of a spawned
+// thread's exit, which is the deferred switch out of exit_current and a path of its
+// own. arch_shutdown flushes the ch1 ring (sim: to a file; qemu: via semihosting) for
+// the decoder to assert.
 
 #include <kickos/kos.h>
 
@@ -66,7 +65,7 @@ int main(int, char**)
     g_ping = &ping_s;
     g_pong = &pong_s;
 
-    kos_cap_grant caps[] = {{ping_s.id(), CH_FULL}, {pong_s.id(), CH_FULL}}; // ping@1, pong@2
+    kos_cap_grant caps[] = {{ping_s.id(), CH_FULL}, {pong_s.id(), CH_FULL}};
     kos::thread::spawn_caps(ping, nullptr, "ping", 10, caps, 2);
     kos::thread::spawn_caps(pong, nullptr, "pong", 10, caps, 2);
     for (int i = 0; i < SLEEPERS; i++)

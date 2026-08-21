@@ -9,7 +9,7 @@
 //   DEFAULT: LAN9252 BYTE_TEST probe, EasyCAT shield on the Arduino header.
 //   K64DSPI_LOOPBACK=ON: SOUT(PTD2)->SIN(PTD3) loopback (jumper, no shield).
 //
-// Build-only diagnostic: the operator flashes and validates on silicon, so no CTest gate.
+// Build-only diagnostic: the operator flashes and validates on silicon.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -31,12 +31,11 @@ namespace
     // The delegated endpoint SIGNAL cap lands at the client's child table index 1.
     constexpr kos_cap_t SPI_EP = KOS_SPAWN_DELEGATED_CAP0;
 
-    // The single device on the bench's bus. A client with several devices gives each its own
-    // slot (< KOS_BUS_DEV_MAX) and opens each once.
+    // The single device on the bench's bus; a slot is per device and opened once.
     constexpr uint8_t SPI_SLOT = 0;
 
     // Open the bus over the service endpoint and issue the one device handle this app uses.
-    // Returns the achieved bit clock, or a negative kos_errno; *dev is valid only on success.
+    // Returns the achieved bit clock, or a negative kos_errno; *dev is valid on success only.
     int32_t open_device(struct kos_spi_bus* bus, struct kos_spi_device* dev, uint32_t hz,
                         uint8_t cs_policy)
     {
@@ -156,8 +155,8 @@ namespace
                    n == static_cast<int32_t>(sizeof(buf)) and buffer_is(buf, 0x00u, sizeof(buf)));
         }
 
-        // 4) Two segments in ONE CS bracket. The class returns EVERY full-duplex byte, so
-        //    the read phase is the tail of the same buffer.
+        // 4) Two segments in ONE CS bracket. The class returns EVERY full-duplex byte, so the
+        //    read phase is the tail of the same buffer.
         {
             unsigned char const cmd[3] = {0x03u, 0x00u, 0x64u};
             unsigned char buf[7] = {0x03u, 0x00u, 0x64u, 0u, 0u, 0u, 0u};

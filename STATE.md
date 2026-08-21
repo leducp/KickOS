@@ -12,7 +12,17 @@ straight to the record you need. No history and no task lists -- granular items 
 **M5 IS DONE AND MERGED: ten PRs, `M5.1.1` through `M5.1.10`, master at `a41856d6`.** The driver
 era plus everything for SMP that is not SMP. `M5` the integration branch is fully carved and can be
 deleted, along with `M5.1.1`, `M5.1.4-docrewrite`, `hotfix/wake-parks-wrong-thread` and every
-`topic/*`. **M5.2.1 is COMPLETE and awaiting the maintainer's merge**; master is still `a41856d6`.
+`topic/*`. Master is still `a41856d6`.
+
+**M5.2.1 IS REOPENED AND ABSORBS M5.2.2: THE TRAP-STACK MECHANISM IS REWORKED ONCE, IN THIS
+MILESTONE, ON A FRESH SESSION.** Decided 2026-08-21, the user's words: *"Let's do M5.2.2 in M5.2.1.
+We have no user, no need to push a fixed version ASAP. Let's just do the job once so I'll not
+review a code that will change just after. BUT let's do that on a fresh session"*. So M5.2.1 is NOT
+complete and must NOT be squashed or merged until the rework lands. The per-backend guard work
+already on the branch is the INPUT to that rework, not the deliverable. Scope, the current
+four-backend inventory, and the one hole still open are in
+`~/.claude/projects/-home-leduc-projets-KickOS/docs/m5.2.1-trusted-context-plan.md`; read it
+before touching `arch/*/switch.S`.
 
 **AN EXTERNAL AUDIT FOUND TWO REAL PRIVILEGE ESCALATIONS. BOTH ARE FIXED, BOTH ARE WITNESSED ON
 SILICON, AND ALL TEN CONFIRMED FINDINGS ARE DONE -- ON FOUR BRANCHES, NONE PUSHED.** A cold external
@@ -89,8 +99,11 @@ made earlier.
 
 Audit fixes, the f411disco bench on GlaDOS, and the banner -- all done. The plan, the 19 findings,
 their verdicts and the audit's calibration are in
-`~/.claude/projects/-home-leduc-projets-KickOS/docs/`: `m5.2.1-plan.md`, `external-audit.md`,
-`external-audit-verdict.md`. The post-train backlog is in `deferred-after-pr-train.md`: the
+`~/.claude/projects/-home-leduc-projets-KickOS/docs/`: `external-audit.md`,
+`external-audit-verdict.md`. The original M5.2.1 plan was retired 2026-08-21: every fact in it was
+duplicated (the F1/F2 anatomy above, the verdict's sections 6 and 8.7 for the calibration, and
+`CONTEXT.local.md` for the f411disco rig, which carries it more completely), and its one open item,
+`imxrt1062`/`rp2350` missing the in-section appdata assert, is closed on all three scripts. The post-train backlog is in `deferred-after-pr-train.md`: the
 driver-class validation hoist (SPI first, it has a runtime witness), four UART defects, nine SPI
 divergences, and the fleet sensor witness now that the K64F carries an FXOS8700CQ.
 
@@ -106,6 +119,19 @@ and NO sim arm -- adding one needs a second driver bring-up in the sim service l
 service machinery rather than a gate extension. F18's wedged-console case has no image-level
 witness at all, only the unit gate; producing one needs an app that publishes a console and never
 returns to `kos_recv`.
+
+**The ARMv6-M SVC hole is KNOWN-OPEN and deferred INTO the rework, deliberately.** Found while
+trimming comments: `SVC_Handler` guards the PSP on one arm only, and `.Lsvc_slow` exception-returns
+into `svc_trampoline`, which runs privileged in thread mode on that same unvalidated PSP. Reachable
+by any syscall number other than 56. Full analysis, the four-backend inventory it has to unify, and
+the saved partial fix are in `m5.2.1-trusted-context-plan.md`. A half-finished per-backend patch was
+reverted on purpose so this milestone stays reviewable.
+
+**No silicon witness is owed for it either.** Verbatim: *"honestly the witness I don't care: we are
+going to redo the mechanism just after"*. picopi could carry one, so a later session will find it
+missing and must NOT chase it. Emulator arms on `microbit`/`picopi-st` still count and still gate.
+The rv32imac and rxv3 silicon witnesses stay VALID for this tree: those arches differ from their
+witnessed trees in comments only.
 
 **Read the audit's calibration before trusting any severity label**: it grades the shape of a
 missing check, never whether the consequence reaches, and it cited no mitigating fact from
@@ -986,69 +1012,63 @@ in git and in `docs/design-m4.8.2-host-unit-tests.md`, `docs/design-task-layer.m
 `docs/design-kill-and-slay.md`; it does not belong in a re-grounding note. Only the DEBTS it
 carried are kept below, because a command cannot re-derive those.
 
-**M5.2.2 = TRUSTED EXECUTION CONTEXT. RESEQUENCED 2026-08-20 after the external audit, and this
-reverses what this file said earlier.** It previously scheduled per-thread kernel stacks at M7 and
-had TLS riding M6's thread-pointer seam. Both were wrong, and the argument that changed it is
-evidence rather than preference: every finding of the second audit pass was red-zone arithmetic
-COMPOSITION (the RX SWINT save, the armv7m FP floor, `KICKOS_USER_STACK_SIZE`'s range), so the
-milestone kept buying margin in a scheme the next architecture deletes. Scope: per-thread kernel
-stacks from kernel-owned RAM, trusted entry and dispatch on every trapping ISA, blocking that
-keeps its continuation on the kernel stack, minimal static TLS, and then DELETE the measured
-red zones and the panic-tail exclusions.
+**THE ORDER IS FIXED, 2026-08-21, and it reverses two earlier plans.** The user's reasoning,
+verbatim: *"we need a proper foundation and driver era is just improving support, but I would rather
+get a good and 'finished' kernel before"*. So: **M5.2.1** escalation + TLS, **M6** the MMU (unicore
+A53 on QEMU `virt`), **M7** multicore (SMP/AMP), **M8** IPC/IRQ optimisation, **M9** back to the
+driver era. `roadmap.md` is the authority and carries the scope of each.
 
-  - **Two decision gates, or the sizing is a guess.** Measure kernel-stack high-water on the
-    deepest syscall path per arch BEFORE committing sizes, using the same `-fcallgraph-info`
-    instrument now sizing a kernel array instead of policing a user one. Then decide per board.
-  - **The tight-board decision is explicit and per board.** 16 threads times a kernel stack does
-    not fit microbit's 16 KiB or bluepill-c8's 20 KiB. Lower that board's thread ceiling, or
-    continuation-style blocking. **Never fall back to privileged execution on user stacks.**
-  - **microbit is ALREADY at the arena cliff**, before this milestone adds anything: `_ebss` IS
-    `__kickos_ram_start` there, and the eight bytes of stack bounds armv6m just gained cost it
-    one selftest arm. The next per-thread field costs a third, which is the signal to take the
-    two-image split.
-  - **Flash, not just RAM**: `bluepill-c8-st` and `f302nucleo-st` sit at about 3 percent slack
-    after the split rebalance, and trusted entry adds text.
+What reversed: **the MMU now PRECEDES multicore** (it was M6=SMP, M7=MMU), because a first
+A-profile port and a first SMP port are too many firsts in one bite; and **optimisation now FOLLOWS
+multicore**, because a fastpath tuned before the exclusion contract exists is shaped for one core
+and then reshaped for the lock. Note the numbers M6 and M7 SWAPPED MEANING: a doc saying "at M7"
+about page tables means M6 now.
 
-**M5.2.3 = the TLS consumers**: per-thread newlib `_reent` and `errno`, C++ exception globals,
-thread identity, a recursive malloc owner lock, and a kernel-mediated heap break. This is what
-finally closes `heap_bump`, which M5.2.1 documented rather than fixed because no userspace fix
-exists (no atomic RMW on ARMv6-M or RX, and a per-thread cap table makes a lazily-minted lock
-unshareable by construction).
+**M5.2.1 absorbed the old M5.2.2 and M5.2.3.** One milestone, one review, because the trusted-stack
+half DELETES the red zones and panic-tail exclusions the guard half would otherwise ship and have
+reviewed. Its two decision gates and the per-board tight-board rule are in `roadmap.md`; the
+trap-stack analysis and the four-backend inventory are in `m5.2.1-trusted-context-plan.md`.
 
-**M5.2.4 = the IPC round trip**, plan at `m5.2.4-ipc-plan.md`. **It moved here from M5.2.2 and the
-reason is not scheduling**: trusted-stack transitions change the FIXED TERM every percentage in
-that plan is measured against, so its estimates, `CALL_MINT`'s 290/109 split and the ranking
-between reply-recv fusion, the reserved slot and lock work all have to be re-taken first.
-`m6-fastpath-retake` lands at the head of it, master being unable to build an uninstrumented
-bench image at all.
+**THE COMMIT TARGET IS THE AUDIT'S NINE-PR PLAN**, from `kickos-codebase-audit.canvas.tsx`
+`planRows`, written out in the plan doc. Nine commits each independently green, so `git bisect`
+means something. **PR 1 is containment and it carries the ARMv6-M extent guard** -- that supersedes
+the 2026-08-21 decision to defer it, which was taken believing the rework followed immediately
+rather than spanning nine PRs. The work exists: `m5.2.1-armv6m-partial.patch` and
+`m5.2.1-armv6m-trap-stack-header.h`. Stage `close` deletes it again, by design.
 
-**The SPI class work** (items 1 and 3 of `deferred-after-pr-train.md`, the validation hoist and
-the nine divergences) is orthogonal to all of the above and can ride any of them. Do not let it
-block the architecture work.
+**TLS AND PER-THREAD KERNEL STACKS ARE THE SAME SHAPE OF PROBLEM**, which is why they share
+M5.2.1. Both are per-thread storage needing a per-arch seam and costing memory the small boards do
+not have. TLS is not optional: `TODO.md`'s per-thread-libc-state item is the one mechanism that
+fixes `errno`, newlib reent, `thread_local` AND `malloc` together, and it REFUSES a `_REENT`-swap
+hack because that leaves `thread_local` broken, so there is no cheap half-measure. Its thread
+pointer is `TPIDRURW` on ARM, `tp` on RISC-V, `THREADPTR` on Xtensa, and **RX has no TLS register at
+all**, so that backend needs a software-tp spike on the one arch with no emulator and no CI.
 
-**M6 = SMP** (`docs/design-m6-smp.md`). **The INTENTION is that it is the last big reshape, and
-that is a hope rather than a plan** (user, 2026-08-20): if the design needs reshaping after it,
-it gets reshaped until the user is satisfied. Do NOT read it as a constraint that forbids a
-later one, and do not decline a reshape M7 or M8 turns out to need on the grounds that M6 was
-supposed to be the last. It inherits two things from M5.2.1 and neither is a guess: the locked fraction is 53 percent with a 43 percent leaf floor, which Amdahl-bounds a
-two-core big lock at **1.31x** and caps it at 1.40x, so per-core run queues are where the
-payoff is rather than a later optimisation; and the single `g_rv_trap_stack` must become
-per-core. **Per-thread kernel stacks are NOT M6's**, see `TODO.md`: SMP does not force the
-question, and a page granule at M7 removes the pow2 tax.
+**What M7 inherits, and neither figure is a guess.** The locked fraction is 53 percent with a 43
+percent leaf floor, which Amdahl-bounds a two-core big lock at **1.31x** and caps it at 1.40x, so
+per-core run queues are where the payoff is rather than a later optimisation. **Do not judge M7 by
+its speedup**: the hold-shortening that moves those numbers is M8, so re-derive both after M8
+rather than freezing a verdict. The single `g_rv_trap_stack` must become per-core, and M5.2.1 cuts
+that seam at `[0]` so M7 is a substitution rather than a four-backend change. A page granule at M6
+removes the pow2 tax.
 
-**M7 = the seam rework.** Per-thread kernel stacks are NO LONGER here; M5.2.2 has them. What
-remains is the seam work proper.
+**"The last big reshape" is a HOPE, not a plan** (user, 2026-08-20). If the design needs reshaping
+after M7, it gets reshaped until the user is satisfied. Do not decline a reshape M8 turns out to
+need on the grounds that an earlier milestone was supposed to be the last.
 
-**TLS AND PER-THREAD KERNEL STACKS ARE THE SAME SHAPE OF PROBLEM, and they are now BOTH in
-M5.2.2/M5.2.3 rather than deferred behind M6.** Both are per-thread storage needing a per-arch
-seam and costing memory the small boards do not have. TLS is not optional: `TODO.md`'s
-per-thread-libc-state item is the one mechanism that fixes `errno`, newlib reent, `thread_local`
-AND `malloc` together, and it REFUSES a `_REENT`-swap hack because that leaves `thread_local`
-broken, so there is no cheap half-measure. Its thread pointer is `TPIDRURW` on ARM, `tp` on
-RISC-V, `THREADPTR` on Xtensa, and **RX has no TLS register at all**, so that backend needs a
-software-tp spike on the one arch with no emulator and no CI. **M6 now INHERITS that seam rather
-than providing it**, which is the correction: the earlier note had TLS waiting on M6, when it is
-cheaper for M6 to inherit TLS's plumbing than to build entry twice.
+**M8 carries the old M5.2.4 IPC plan**, now `m8-ipc-plan.md`. Its estimates are NOT planning inputs
+yet: trusted-stack transitions and then page tables both change the FIXED TERM every percentage in
+it is measured against, so `CALL_MINT`'s 290/109 split and the ranking between reply-recv fusion,
+the reserved slot and lock work all have to be re-taken first. `m6-fastpath-retake` lands at the
+head of it, **master being unable to build an uninstrumented bench image at all**. Protection is
+not assumed cheap there either: `MPU_APPLY` is 443 cycles per switch on `esp32c6-wroom`, 886 of a
+3651-cycle locked round trip, and removing it is priced at `f = 0.457`, 1.37x. A canvas claiming
+about 94 cycles post-precompute misread the adjacent `CALL_COPY` cell; there is no such
+measurement.
+
+**The SPI class work** (items 1 and 3 of `deferred-after-pr-train.md`, the validation hoist and the
+nine divergences) is orthogonal to all of the above and can ride any milestone. It belongs with M9
+but must not block the architecture work.
 
 Consequence for `heap_bump` (`user/src/newlib_sbrk.cc`): it is written down rather than fixed,
 and the reason is in the file. A kernel-mediated brk would close that one race and **would NOT

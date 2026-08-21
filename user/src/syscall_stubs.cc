@@ -322,7 +322,7 @@ void kos_panic(char const* msg)
 
 // Planted by the arch as the return address of an UNPRIVILEGED thread's entry: such a worker
 // must reach the kernel exit path through the syscall trap, never by calling
-// kickos_thread_return, which is the privileged threads' path. Unused on the sim.
+// kickos_thread_return, which is the privileged threads' path.
 void kickos_user_thread_return(void)
 {
     kos_exit(0);

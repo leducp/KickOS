@@ -120,16 +120,16 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
 
 uint32_t kos_uart_read(struct kos_uart*, unsigned char*, uint32_t)
 {
-    // TX-only channel: CCR carries neither RIEN nor AIEN, so no byte is ever latched for this
-    // side to collect and 0 is the true count.
+    // TX-only channel: CCR_WORD arms MODE_ASC and TBIEN alone, so nothing latches a received
+    // byte and 0 is the true count.
     return 0;
 }
 
 uint32_t kos_uart_write(struct kos_uart* u, unsigned char const* src, uint32_t n)
 {
-    // Neither arms nor disarms TBIEN: the transmit-buffer event is edge-per-word, raised when
-    // a word is loaded from TBUF into the shift register (RM 18.2.2.4, p.18-18; ASC-specific
-    // p.18-64), so an idle channel raises nothing.
+    // TBIEN stays as CCR_WORD left it: the transmit-buffer event is edge-per-word, raised
+    // when a word is loaded from TBUF into the shift register (RM 18.2.2.4, p.18-18;
+    // ASC-specific p.18-64), so an idle channel raises nothing.
     //
     // TCSR.TDV == 1 means TBUF still HOLDS a word (RM p.18-189), so a store without testing
     // it first overwrites the byte still queued.

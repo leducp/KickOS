@@ -1,31 +1,27 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * The extent the two RXv3 USP frame builders (switch.S) reserve at the BOTTOM of a
- * thread's stack before they agree to build a frame on it. Plain #defines so switch.S and
- * arch_rxv3.cc read ONE source of truth.
+ * The extent the two RXv3 USP frame builders (switch.S) reserve at the BOTTOM of a thread's
+ * stack before they agree to build a frame on it.
  *
  * WHY AN EXTENT AND NOT A POINTER TEST. kickos_rx_pendsw and kickos_rx_syscall_trap both
  * validate the live USP and then build DOWNWARD from it, and the kernel's C dispatch then
- * runs below that on the same USP (svc_trampoline calls syscall_dispatch; the fastpath arm
- * calls kickos_ipc_fastpath; the restore epilogue calls kickos_arch_mpu_commit). All of it
- * runs SUPERVISOR, and the RX MPU checks user mode only (RX72M UM sec.17.1.1), so
- * supervisor bypasses it entirely. A test that only asks whether the USP is inside
- * [stack_lo, stack_hi) therefore lets a user thread park the USP one word above stack_lo
- * and have the kernel write supervisor, at an address the thread chose, into whatever sits
- * below: with no padding between pool stacks that is the NEIGHBOUR's saved frame, and the
- * rte that resumes the neighbour pops PC then PSW from it, so clearing PSW.PM there hands
- * the neighbour supervisor.
- * So the bound is on the room REMAINING below the USP, and it must cover the frame PLUS
- * the deepest kernel descent that entry point can reach.
+ * runs below that on the same USP. All of it runs SUPERVISOR, and the RX MPU checks user mode
+ * only (RX72M UM sec.17.1.1), so supervisor bypasses it entirely. A test that only asked
+ * whether the USP lies inside [stack_lo, stack_hi) would let a user thread park the USP one
+ * word above stack_lo and have the kernel write supervisor, at an address the thread chose,
+ * into whatever sits below: with no padding between pool stacks that is the NEIGHBOUR's saved
+ * frame, and the rte that resumes the neighbour pops PC then PSW from it, so clearing PSW.PM
+ * there hands the neighbour supervisor. So the bound is on the room REMAINING below the USP,
+ * and it covers the frame PLUS the deepest kernel descent that entry point can reach.
  *
- * tests/static/check_trap_redzone.sh re-measures the depth figures below and fails if the
- * worst case exceeds what they reserve.
+ * tests/static/check_trap_redzone.sh re-measures the depth figures below and fails if a worst
+ * case exceeds what they reserve.
  *
- * NOT covered here, by construction: every RX INTERRUPT, which INT takes on the ISP
- * (acceptance clears PSW.U regardless of the interrupted stack), so no interrupt builds a
- * frame on a thread-chosen stack and none needs this. Hence NO ISR class here, where
- * rv32imac has one.
+ * RX INTERRUPTS are accepted on the ISP: acceptance clears PSW.U whatever stack was
+ * interrupted, so an interrupt frame lands on the ISP and never on a thread-chosen stack. The
+ * three classes below are therefore the three SOFTWARE entry points, and they are all of the
+ * sites that build on a USP.
  */
 
 #ifndef KICKOS_ARCH_RX_TRAP_STACK_H
@@ -40,16 +36,16 @@
  *     push.l x7 (FPSW, A1 gu/hi/lo, A0 gu/hi/lo)      96
  *     dpushm.d dr0-dr15                      128 ->  224
  *     dpushm.l dpsw-decnt                     12 ->  236
- *   Cross-checked against FRAME_R1_OFF = 168 in arch_rxv3.cc (12 + 128 + 28) and the
- *   `add #168, r1, r1` the fastpath arm emits: 168 + 56 + 12 = 236.
+ *   switch.S checks this itself: FRAME_R1_OFF (168, the `add #FRAME_R1_OFF, r1` the fastpath
+ *   arm emits) plus the 68 above r1 is the 236 below.
  *
  *   the syscall trap's generic arm:
  *     sub #8 ([userPC][userPSW] stashed for svc_trampoline's rte)   8
  *     svc_trampoline's own `sub #4, r0` (the 5th-arg slot)   4 ->  12
  *   and syscall_dispatch then runs below THAT.
  *
- * A DFPU-less build writes 96 rather than 236, so these figures are the -mdfpu worst case
- * and stay correct when the DPFPU bank is absent. */
+ * A DFPU-less build writes 96 rather than 236, so these figures are the -mdfpu worst case and
+ * stay correct when the DPFPU bank is absent. */
 #define KICKOS_RX_TRAP_FRAME_PENDSW 236
 #define KICKOS_RX_TRAP_FRAME_SYS 12
 #define KICKOS_RX_TRAP_FRAME_SYS_FAST 236
@@ -72,13 +68,13 @@
  *                    call at sched.cc:43:42 -> policy_on_switch_in[24] -> arm_slice[20]
  *                    -> ktime_now[4] -> arch_clock_now[32] -> __divdi3[32]
  *
- * Excluded, and the residual it leaves: the noreturn kpanic tail, which every
- * KICKOS_ASSERT in the dispatch reaches (kpanic -> kputs -> kconsole_write_impl[152] ->
- * console_emit -> arch_console_write -> console_tx_write[32] -> drain_sync -> wait_slot).
- * Including it takes _SYS to 760 and _SYS_FAST to 428. It is excluded because the RX floor
- * cannot hold it, not because it cannot happen: if a kernel assertion fires while a thread
- * is parked at the very bottom of its red zone, the console writer descends up to 92 bytes
- * below stack_lo, supervisor. check_trap_redzone.sh prints both figures.
+ * ALL THREE EXCLUDE the noreturn kpanic tail, which every KICKOS_ASSERT in the dispatch
+ * reaches (kpanic -> kputs -> kconsole_write_impl[152] -> console_emit -> arch_console_write
+ * -> console_tx_write[32] -> drain_sync -> wait_slot). Including it takes _SYS to 760 and
+ * _SYS_FAST to 428, which the RX floor cannot hold. The residual that leaves: a kernel
+ * assertion firing while a thread is parked at the very bottom of its red zone has the
+ * console writer descend up to 92 bytes below stack_lo, supervisor.
+ * check_trap_redzone.sh prints both figures.
  *
  * ENFORCED figures are those measurements rounded up: 32 -> 64, 664 -> 692, 164 -> 192.
  * A re-measurement MUST carry this board's -misa=v3 -mdfpu baseline; at the compiler's
@@ -90,10 +86,9 @@
 
 /* What each guard enforces: room below the USP, in bytes.
  *
- * The syscall figure is ONE constant and not a per-arm pair: the guard sits at the top of
- * kickos_rx_syscall_trap, above the `cmp #56, r1` that chooses the arm, so it cannot know
- * which arm will run. A literal that DOMINATES both arms, not a max() of them, because a max
- * macro is a ternary and the house rules forbid one. arch_rxv3.cc static_asserts the
+ * The syscall figure is ONE constant covering both arms: the guard sits at the top of
+ * kickos_rx_syscall_trap, above the `cmp #56, r1` that chooses the arm, so it runs before the
+ * arm is known. It is a literal that DOMINATES both arms, and arch_rxv3.cc static_asserts the
  * domination in both directions, so a component that grows past it breaks the build. */
 #define KICKOS_RX_TRAP_REDZONE_PENDSW \
     (KICKOS_RX_TRAP_FRAME_PENDSW + KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW)
@@ -104,16 +99,16 @@
  * aligns the stack top to 4, so this is the minimum a legitimate USP already satisfies.
  *
  * It is enforced because an in-bounds MISALIGNED USP makes every one of those stores
- * misaligned. On a core that traps them the nested trap re-enters the same prologue,
- * rebuilds one frame lower, faults again, and descends per iteration with no watchdog: no
- * write lands and the kernel live-locks on an unprivileged thread's say-so. */
+ * misaligned. On a core that traps them the nested trap re-enters the same prologue, rebuilds
+ * one frame lower, faults again, and descends per iteration with no watchdog: no write lands
+ * and the kernel live-locks on an unprivileged thread's say-so. */
 #define KICKOS_RX_TRAP_SP_ALIGN 4
 
-/* struct arch_context field offsets the guards read as plain displacements. ONE definition
- * rather than a literal in switch.S and a mirror in arch_rxv3.cc: switch.S .equ's from
- * these, arch_rxv3.cc static_asserts offsetof against them. Without that, a field inserted
- * ahead of the bounds makes a guard read trace_tid as stack_hi, and this is the one ISA in
- * the fleet with no emulator and no CI job, so that is the failure that ships. */
+/* struct arch_context field offsets the guards read as plain displacements. switch.S .equ's
+ * from these and arch_rxv3.cc static_asserts offsetof against them, so a field inserted ahead
+ * of the bounds breaks the build. That assert is the whole check for this ISA: the RX reaches
+ * a witness only on the bench, so a guard reading trace_tid as stack_hi has to be caught at
+ * compile time. */
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 #define KICKOS_RX_CTX_OFF_SP 0
 #define KICKOS_RX_CTX_OFF_TRACE_TID 4

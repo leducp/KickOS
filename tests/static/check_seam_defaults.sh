@@ -5,10 +5,7 @@
 # Seam-fallback gate. KickOS resolves an optional arch/chip seam by ARCHIVE MEMBER
 # EXTRACTION, not by __attribute__((weak)): the fallback body sits alone in a
 # <symbol>_default.cc translation unit, and a backend that defines the symbol keeps that
-# member out of the link. arch/CMakeLists.txt states the rule; this script enforces it.
-#
-# Usage:
-#   check_seam_defaults.sh <nm> <readelf> <elf> <map> <allowlist> <archive>...
+# member out of the link. arch/CMakeLists.txt states the rule.
 #
 # Legs 1, 2 and 3 count STRONG definitions only. A COMDAT (vague-linkage) definition is
 # emitted in EVERY translation unit that needs it out of line, so it can never be the
@@ -16,15 +13,13 @@
 # Whether an inline function, template or implicit member lands out of line at all is an
 # optimization-level and compiler-version artifact (-Os inlines kickos::arm::reg32 away,
 # -O0 emits it), so counting one is a false positive. Leg 3 still catches extraction for
-# the wrong symbol whatever its linkage. Leg 4 still requires every weak C++ symbol to BE
-# COMDAT, so a deliberate weak attribute is not exempted anywhere.
+# the wrong symbol whatever its linkage, and leg 4 still requires every weak C++ symbol to
+# BE COMDAT, so a deliberate weak attribute is not exempted anywhere.
 #
 # Four legs:
-#   1. Each fallback member defines EXACTLY ONE strong global symbol, no other member of
-#      the same archive defines that symbol, and no fallback sits in kickos_kernel. A
-#      second strong symbol would drag the member in unconditionally and collide with
-#      every backend; a kernel-resident fallback is extracted before the chip archive is
-#      even scanned.
+#   1. Each fallback member defines EXACTLY ONE strong global symbol, since a second drags
+#      the member in unconditionally and collides with every backend; no other member of
+#      the same archive defines that symbol; and no fallback sits in kickos_kernel.
 #   2. For a seam a backend DOES define, the link resolved it from that backend's member
 #      and no fallback member for it entered the image. This is the leg that catches a
 #      backend definition placed in an archive member nothing anchors: such a board links
@@ -32,11 +27,10 @@
 #   3. For a seam NO backend defines, the link resolved it from the fallback member. Keeps
 #      a no-backend board from resolving somewhere unintended, and keeps leg 2 honest by
 #      proving the fallback path is really exercised on this board.
-#   4. Zero weak symbols outside tests/static/weak_allowlist.txt. In an archive a C++ mangled
-#      weak symbol is additionally required to be COMDAT (vague linkage, which the
-#      language mandates); a deliberate weak attribute on a C++ function is not COMDAT and
-#      still fails. Section groups are resolved away in the final ELF, so there the
-#      mangled names are taken on trust and the archive leg is what covers our code.
+#   4. Zero weak symbols outside tests/static/weak_allowlist.txt, and in an archive a C++
+#      mangled weak symbol must additionally be COMDAT, so a deliberate weak attribute on a
+#      C++ function still fails. Section groups are resolved away in the final ELF, so there
+#      the mangled names are taken on trust and the archive leg is what covers our code.
 
 set -u
 # Every path arrives as an argument and is re-split unquoted below; a glob character in a
@@ -65,7 +59,7 @@ ALLOWLIST="$1"; shift
 #
 # Split on ';' as well as on argument boundaries: add_test does NOT split a
 # $<TARGET_OBJECTS:> expansion, so the app's whole object list arrives as ONE
-# semicolon-joined argument (verified in the generated CTestTestfile.cmake).
+# semicolon-joined argument.
 #
 # A path that does not exist is not the same thing as a source with no definitions, and
 # downstream the two are the same empty result, so it is a hard failure here.
@@ -98,8 +92,8 @@ done
 
 scratch_dir
 rc=0
-# A seam violation is accumulated, so one run names every one of them; a BROKEN TOOL is
-# not, and takes gate.sh's fail()/tool_out() hard exit instead.
+# A seam violation is accumulated, so one run names every one of them. A BROKEN TOOL is
+# not: it takes the hard exit.
 bad() { echo "FAIL: $*" >&2; rc=1; }
 
 # `grep -c .` exits 1 on zero matches, so counting that way makes the count depend on this
@@ -127,8 +121,8 @@ allowed() { grep -qxF "$1" "$TMP/allow"; }
 
 # --- inventory: every defined symbol of every archive, member by member -------
 # `nm -A` on an archive prints "<path>:<member>:<addr> <type> <symbol>". A local symbol
-# carries a lowercase type; only the uppercase ones can take part in cross-member
-# resolution. N (debug) and U (undefined) are neither.
+# carries a lowercase type, and of the uppercase ones only a real definition can take part
+# in cross-member resolution.
 : > "$TMP/defs"
 for a in $ARCHIVES; do
     if [ ! -r "$a" ]; then

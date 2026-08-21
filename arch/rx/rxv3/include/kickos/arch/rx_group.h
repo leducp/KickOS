@@ -5,10 +5,10 @@
 // core branches arch_irq_mask / arch_irq_unmask / arch_irq_clear_pending on the split, the
 // chip owns the group -> register mapping behind kickos_rx_group_arm.
 //
-// An RX group vector collapses up to 32 sources onto ONE vector (RX72M UM sec.15.4.4),
-// so a group source has no vector of its own, no ICU.IR flag of its own and no ICU.IER
-// bit of its own: its kernel-owned mask is GENxxx.ENj. It cannot be numbered inside the
-// 256-entry vector space, so it is numbered above it:
+// An RX group vector collapses up to 32 sources onto ONE vector (RX72M UM sec.15.4.4).
+// The vector owns the ICU.IR flag and the ICU.IER bit for the whole group, and a group
+// source's own kernel-owned mask is GENxxx.ENj. Numbering therefore starts above the
+// 256-entry vector space:
 //
 //     line = GROUP_LINE_BASE + group_index * GROUP_LINE_STRIDE + bit
 //

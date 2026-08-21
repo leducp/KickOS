@@ -9,9 +9,6 @@
 # privileged, on the same thread stack. This script re-measures that depth and fails when
 # it exceeds what the prologue enforces.
 #
-# Usage:
-#   check_trap_redzone.sh <src-dir> <cmake> <preset> <arch>
-#
 # HOW IT MEASURES. It configures a SCRATCH tree of its own with
 # -fcallgraph-info=su,da, which makes gcc drop a .ci file next to every object carrying
 # that translation unit's frame sizes, alloca counts and call edges. tests/static/
@@ -52,21 +49,20 @@
 # and spends no thread stack at all; trap_redzone_roots.txt states what that flag means and
 # the other consequence it carries.
 #
-# THEREFORE NOT CAUGHT. Know these before trusting a green run:
-#   - ONE BOARD PER RUN. The measurement is over the objects THIS preset compiles, and
-#     the console backend is per board. A board nobody runs this on is unmeasured.
+# SCOPE. Know these before trusting a green run:
+#   - ONE BOARD PER RUN. The measurement covers the objects THIS preset compiles, and the
+#     console backend is per board, so a board is measured on the runs it gets.
 #   - COMPILED IS NOT LINKED. The compiler writes a .ci for every TU, including the seam
 #     fallbacks an extraction kept out of the image. trap_redzone.py drops those by the
-#     rule arch/CMakeLists.txt states, but that rule is keyed on the _default.cc naming
-#     and covers nothing else.
-#   - THE ROOT SET IS A DECLARATION. If switch.S starts calling something the roots file
-#     does not name, the depth below that call is not in the number. The roots are the one
-#     part of this gate that a reader has to keep honest against the assembly.
+#     rule arch/CMakeLists.txt states, which is keyed on the _default.cc naming.
+#   - THE ROOT SET IS A DECLARATION. The depth below a call switch.S makes is in the
+#     number when the roots file names it, so the roots are the part of this gate a reader
+#     keeps honest against the assembly.
 #   - THE COMPILER'S OWN FRAME NUMBERS ARE TAKEN ON TRUST, and they are per translation
-#     unit, so they hold for the objects this configuration produced and not for another
+#     unit, so they hold for the objects this configuration produced and for the same
 #     optimization level. The gate builds MinSizeRel because the presets do.
 #   - INLINING IS ALREADY IN THEM, and a callee gcc inlined has no node and no edge. That
-#     is correct for the depth (its locals are in the caller's frame) and it is why the
+#     is correct for the depth, its locals being in the caller's frame, and it is why the
 #     winning chain printed below can be shorter than the source reads.
 
 set -u

@@ -3,8 +3,8 @@
 //
 // Host seam for kernel/init/console.cc AND kernel/init/console_tx.cc compiled TOGETHER: a
 // counted interrupt mask with a gap hook, a mock TX edge, and a drain ISR that runs only
-// while the mask is open. Neither ownership state nor ring state is stubbed here, so the
-// handover protocol runs as it ships.
+// while the mask is open. Ownership state and ring state are the real ones, so the handover
+// protocol runs as it ships.
 
 #ifndef KICKOS_TESTS_UNIT_CONSOLEOWN_PUBLISH_SEAM_H
 #define KICKOS_TESTS_UNIT_CONSOLEOWN_PUBLISH_SEAM_H

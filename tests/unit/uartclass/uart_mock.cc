@@ -52,7 +52,6 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
             return fixed;
         }
     }
-    // 8N1 only: any other frame is refused.
     if (cfg->data_bits != 8u or cfg->parity != KOS_UART_PARITY_NONE or cfg->stop_bits != 1u)
     {
         return -KOS_ENOTSUP;

@@ -3392,7 +3392,7 @@ exists at all it is per-**domain** and writable by every member -- carving per-t
 of a region other tasks can write is unsound on sharing grounds before MPU geometry even enters.
 And the geometry is against it too: on the power-of-two backends (PMSAv7, RISC-V NAPOT) shaving
 kernel state off the top of a granted region forces the remainder down to the next lower power of
-two. A design whose isolation property is arch-dependent is the worst outcome. **Revisit at M7**,
+two. A design whose isolation property is arch-dependent is the worst outcome. **Revisit at M6**,
 when a page is the granule and the shape becomes available without the tax.
 
 **THE GATE CORPUS WANTS A LOOK AT M7, and M7 does its own homework on it.** No analysis is
@@ -3403,7 +3403,7 @@ three of those declarations numerically inert today by their own mutation testin
 is proportionate is the question; the growth is not uniform, one 185-line gate covering a whole
 escalation class while another 1563 lines cover one number per backend.
 
-**A PER-THREAD KERNEL STACK IS NO LONGER SCHEDULED HERE. RESEQUENCED 2026-08-20 to M5.2.2** after an external audit pass; the reasoning below is kept because the pow2-tax and arch-dependence arguments still hold, but they lost to the fact that every finding of that pass was red-zone arithmetic composition in a scheme M5.2.2 deletes. What follows is the ORIGINAL note.
+**A PER-THREAD KERNEL STACK IS NO LONGER SCHEDULED HERE. RESEQUENCED to M5.2.1** (2026-08-20 to the then-M5.2.2, folded into M5.2.1 on 2026-08-21) after an external audit pass; the reasoning below is kept because the pow2-tax and arch-dependence arguments still hold, but they lost to the fact that every finding of that pass was red-zone arithmetic composition in a scheme M5.2.1 deletes. What follows is the ORIGINAL note, VERBATIM: its milestone numbers predate the 2026-08-21 swap, when M6 meant SMP and M7 meant the MMU. Both moved, so inside this note read "M6" as multicore (now M7) and "M7" as page tables (now M6).
 
 **(superseded) A per-thread kernel stack was scheduled here, decided 2026-08-20, and NOT at M6.** The
 syscall contract (`arch/include/kickos/arch/arch.h:512-518`) requires dispatch to run in privileged
@@ -5217,7 +5217,7 @@ below where they were previously mislabeled.
   of this family LANDED (M4.3): the `_write` stdout re-probe -- deleted the process-global sticky
   `g_stdout_probe` (per-invocation classify against the calling thread's own cap 0; no per-thread
   storage needed for it).
-- **M6 -- multicore (AMP versus a shared kernel is OPEN; see the OPEN section of the spike).**
+- **M7 -- multicore (the AMP-versus-shared-kernel question closes PER CLASS; see the OPEN section of the spike).**
   This heading previously read "AMP first on RP2040, SMP-BKL endgame on RP2350" and attributed
   that verdict to the spike. The spike does not contain it and `roadmap.md` says the opposite
   ("not two AMP instances"), so the three records disagreed. Settle it before writing SMP code.
@@ -5684,7 +5684,7 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       `arch_mpu_apply` to mean "load a page table". A sentence of foresight prevents a wrong-shaped
       first MMU port.
 
-## M6 -- SMP
+## M7 -- multicore (SMP on the A53 port, AMP where cores are heterogeneous)
 
 - [ ] **Give the converted fields their real ORDER.** M4.9.2 turned every cross-thread field
       into a relaxed `std::atomic`, which is a type change and nothing more: relaxed says
@@ -5695,7 +5695,11 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       the ring publication barrier, then still a consumer `-D` rather than a release
       store on the ring's now-atomic index. `docs/design-m6-smp.md` carries the reasoning.
 
-## M7
+## Gate-surface re-inventory (anytime coherence, not scheduled)
+
+Parked by the user as "at M7" when M7 meant the seam rework; M7 is multicore now, and this is
+orthogonal to every milestone rather than gated by one. The user's framing, 2026-08-21: the gate
+surface grows exponentially and may not be worth its size.
 
 - [ ] **Re-inventory the test-gate surface.** M4.5.9 root-caused the binary-introspection gates'
       silent-failure paths without rewriting them; whatever is still oversized then is this pass.

@@ -18,9 +18,9 @@
 # check_oot_export_mcu.sh are siblings with the same shape on opposite sides. A new test gets
 # a line here or the gate refuses it.
 #
-# A `build` path is relative to the CMake binary directory. A dead `build` line is caught only
-# on a sim tree with the host unit binaries built; no MCU board registers any, so a fleet run
-# without that configuration checks the `build` half nowhere.
+# A `build` path is relative to the CMake binary directory. A dead `build` line is caught on
+# a sim tree with the host unit binaries built, which is the configuration that registers
+# them.
 
 # --- source-tree and host-program gates --------------------------------------
 host   src    tests/integration/check_oot_export_mcu.sh
@@ -44,8 +44,8 @@ host   src    tests/static/check_seam_defaults.sh
 host   src    tests/static/check_service_lists.sh
 host   src    tests/static/check_spdx.sh
 host   src    tests/static/check_test_labels.sh
-# Cross-builds a tree of its own to re-measure kernel stack depth and reads the .ci files
-# that build emits. It never runs the image, so it is `host`.
+# Cross-builds a tree of its own and reads the .ci files that build emits, never running
+# the image, so it is `host`.
 host   src    tests/static/check_trap_redzone.sh
 host   src    tests/unit/telemetry/check_golden.py
 host   src    tests/unit/telemetry/check_idmap.py

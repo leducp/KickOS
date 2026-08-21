@@ -163,8 +163,7 @@ extern "C"
     }
 
     // Both ownership reads are pinned kernel-owned: this seam measures the RING, and the
-    // publish sequence that moves them is gated in tests/unit/consoleown/publish_handoff.cc
-    // against the real console.cc.
+    // publish sequence is gated in tests/unit/consoleown/publish_handoff.cc.
     int console_owner_is_kernel(void)
     {
         return 1;
@@ -205,9 +204,8 @@ namespace kickos
         __builtin_trap();
     }
 
-    // console_buffer_init is never called here (the gate arms the ring through
-    // console_tx_init), but the deinit cases do reach irq_detach; the drain ISR it nulls is
-    // modelled by set_isr_runs_in_gap, not by this stub.
+    // The deinit cases reach irq_detach; set_isr_runs_in_gap models the drain ISR it nulls,
+    // so this stub only has to link.
     bool irq_attach(int, IrqHandler, void*)
     {
         return true;

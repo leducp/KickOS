@@ -24,12 +24,9 @@ if(NOT "${_mpu_min_region_cfg}" STREQUAL "" AND NOT "${_mpu_region_pow2_cfg}" ST
     KICKOS_MPU_REGION_POW2_CFG=${_mpu_region_pow2_cfg})
 endif()
 
-# microbit is the fleet's only armv6m no-ring CI gate, and its 16 KiB arena cannot hold both
-# the UART service's 1 KiB shared ring block and the four shape-specific arena probes
-# (endpoint_crossdomain, mem_self_grant_nonpow2, region_mode, mem_self_grant). uart_service is
-# already covered on sim and on every larger board, so running it here would buy duplicate
-# coverage and cost four gated cases. Refuse it BY NAME rather than let the arena decide: left
-# to the allocator it flips with a few tens of bytes of unrelated static demand.
+# microbit's 16 KiB arena holds either the UART service's 1 KiB ring or the arena probes;
+# uart_service is covered on sim and every larger board. Pinned by name rather than left to
+# the allocator (see the ARENA CLIFF note at the microbit gate below).
 if(KICKOS_BOARD STREQUAL "microbit")
   list(APPEND _selftest_defs KICKOS_SELFTEST_NO_UART_SERVICE=1)
 endif()
@@ -65,9 +62,8 @@ set(_selftest_srcs main.cc "${PROJECT_SOURCE_DIR}/tests/tap/tap.cc")
 # the SPI SERVICE drivers rename their class symbols; this mock holds the public names alone.
 # tests/static/check_class_backend.sh asserts it per link.
 #
-# There is no uart_mock.cc here on purpose. The UART class contract is measured on the host
-# (tests/unit/uartclass), so no target image defines the public kos_uart_* names and every board
-# links exactly one UART backend.
+# The UART class contract is measured on the host (tests/unit/uartclass), so every board links
+# exactly one UART backend and the public kos_uart_* names stay the backend's.
 if(KICKOS_ENABLE_SELFTEST)
   list(APPEND _selftest_srcs spi_mock.cc)
 endif()
@@ -100,9 +96,8 @@ set(_selftest_map "$<TARGET_FILE:selftest>.map")
 target_link_options(selftest PRIVATE "-Wl,-Map=${_selftest_map}")
 set_property(TARGET selftest APPEND PROPERTY ADDITIONAL_CLEAN_FILES "${_selftest_map}")
 
-# The expected-skip list every gate below carries (EXPECT_SKIPS, checked by name in
-# tests/integration/check_tap_stream.sh). Empty means "no test may skip", which is every board here
-# except microbit (its own hardcoded list further down).
+# The expected-skip list every gate below carries; checked by name in
+# tests/integration/check_tap_stream.sh.
 set(KICKOS_EXPECT_SKIPS "")
 
 # The same, for the arms that report PARTIAL: they ran their invariant and left a sub-case
@@ -294,14 +289,12 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   # images here would let one carry the UART ring and the other the arena probes. Take it when
   # this list grows an arm no OTHER board runs; that is a coverage loss, where a longer list
   # of duplicates is not.
-  # Three more arms run their invariant and drop a sub-case, reporting PARTIAL: they count
+  # Four more arms run their invariant and drop a sub-case, reporting PARTIAL: they count
   # as passes, not skips, and carry their own permission set.
   #   caller_stack: the arena cannot spare a caller-owned stack
   #   confused_deputy: the arena cannot spare the grandchild's stack
   #   cap_chunk_span: a 7-slot table compiles the flat decode, so no segmented index exists
   #   cap_child_width: at 7 the child width IS root's summed width
-  # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a semicolon
-  # would split the value into a second bogus environment entry.
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,call_timeout_revert,call_donation_hold,call_donation_slow,call_donation_pending,domain_share,irq_as_event,uart_service,cap_reply_bound_fast,cap_reply_bound_slow,cap_reply_release_close,mem_self_grant,region_mode"
     "EXPECT_PARTIALS=caller_stack,confused_deputy,cap_chunk_span,cap_child_width")
@@ -352,7 +345,7 @@ endif()
 # Seam-fallback gate: every optional arch/chip seam resolves by archive-member
 # extraction, not by __attribute__((weak)). Runs on every board, because the resolution it
 # checks is per-link and a board is only covered by its OWN build tree. Reads this
-# selftest ELF plus its link map (only the map names the member each symbol came from).
+# selftest ELF plus its link map.
 if(KICKOS_BUILD_TESTS AND TARGET selftest)
   # Every archive of the rescan group, so the gate sees the WHOLE set of definitions the
   # link had to choose from; a partial list would read a backend as absent. The app's own
@@ -387,10 +380,9 @@ if(KICKOS_BUILD_TESTS AND TARGET selftest)
   # Driver-class shadowing gate, on the SAME inventory: the seam gate asks which member
   # answered an optional arch/chip seam, this one asks whether a real backend's public
   # class symbols were answered by the mocks instead. Same failure shape (an archive member
-  # that is never extracted, and no duplicate symbol to report it), different symbol set,
-  # so it is a second script rather than a fifth leg. The last argument before the
-  # inventory is 1 when this image compiles the mocks, which is the gate's positive
-  # control: it must SEE a class definition on the link line.
+  # that is never extracted, and no duplicate symbol to report it), different symbol set. The
+  # last argument before the inventory is 1 when this image compiles the mocks, which is the
+  # gate's positive control: it must SEE a class definition on the link line.
   set(_class_expect_app 0)
   if(KICKOS_ENABLE_SELFTEST)
     set(_class_expect_app 1)

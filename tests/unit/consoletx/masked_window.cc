@@ -16,7 +16,7 @@
 
 namespace
 {
-    constexpr uint32_t kRing = 512u; // 511 usable
+    constexpr uint32_t kRing = 512u;
     constexpr uint32_t kCapacity = kRing - 1u;
 
     std::string pattern(size_t n, char first)

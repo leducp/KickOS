@@ -7,14 +7,8 @@
 # exported targets carry cxx_std_17. A C++20 construct in a public header compiles under
 # the kernel's own flags and fails only in the consumer's build.
 #
-# Usage: check_public_headers.sh <install-prefix> <c++-compiler> <std> <c-compiler>
-#
 # Standalone also means self-contained: a header that compiles only after some other header
 # has been included has a wrong include list.
-#
-# The C arm at the bottom: a header guarding `extern "C"` with __cplusplus tells a consumer
-# their C translation unit may include it, so it has to compile as C. The C compiler is a
-# REQUIRED argument, never defaulted.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -61,27 +55,25 @@ echo "PASS: $n installed headers compile standalone at $STD"
 # ===========================================================================
 # The C arm.
 #
+# A header guarding `extern "C"` with __cplusplus tells a consumer their C translation unit
+# may include it, so it has to compile as C, and the C compiler is a REQUIRED argument.
+#
 #   corpus  DERIVED, never listed: an installed header whose CODE both names __cplusplus
 #           and carries an `extern "C"`, plus every installed header such a header
-#           includes, transitively.
-#           The installed prefix is ONE merged include root, so this needs none of the
-#           per-arch root disambiguation the same rule needs against the source tree (six
-#           directories there provide kickos/arch/context.h).
+#           includes, transitively. The installed prefix is ONE merged include root.
 #
 #   std     -std=c11, never the compiler's default. gcc 15 defaults to gnu23, and C23
 #           adopted `bool`, `alignas`, `static_assert` and `nullptr` as keywords, so a
 #           default-std run accepts four C++-only spellings and reports them clean.
 #
-#   pedantic a SECOND pass over the same corpus at -pedantic-errors. The first is not
-#           pedantic: it mirrors a real consumer build, extensions on. This one is what
-#           fails a GNU-only construct before a consumer compiling strictly conforming C11
-#           does. Its TU carries a trailing typedef, because -pedantic-errors forbids the
-#           empty translation unit a macros-only header would otherwise produce.
+#   pedantic a SECOND pass over the same corpus at -pedantic-errors. The first mirrors a
+#           real consumer build, extensions on; this one fails a GNU-only construct before
+#           a consumer compiling strictly conforming C11 does.
 #
-# NOT CAUGHT: anything behind a preprocessor conditional these -D's do not select; LINKING,
-# since -fsyntax-only proves only that a C TU parses against the header. Nor does the selector
-# check that the __cplusplus it found is what GUARDS the `extern "C"`; co-occurrence is what
-# it tests.
+# SCOPE. What both passes read is whether a TU including the header PARSES: the selector
+# tests that __cplusplus and `extern "C"` co-occur in code rather than that the one guards
+# the other, a preprocessor conditional these -D's do not select stays unparsed, and
+# -fsyntax-only says nothing about LINKING.
 # ===========================================================================
 
 CSTD=c11
@@ -168,7 +160,7 @@ probe_ped zero_array 'struct kos_probe_za { unsigned n; int v[0]; };'
 # --- the selector -----------------------------------------------------------
 # The stripper blanks string literals as well as comments, so `extern "C"` survives it only
 # as `extern `: the STRIPPED line proves the text was code, the RAW line supplies the
-# literal. Not optional: a header naming both spellings in prose is a hit to a plain grep.
+# literal. A header naming both spellings in prose is a hit to a plain grep.
 c_facing() { # <path>; 0 names __cplusplus and has a non-comment extern "C", 1 not, 2 refused
   LC_ALL=C awk -f "$STRIP" "$1" > "$TMP/stripped" 2>>"$TMP/strip.err" || return 2
   grep -q '__cplusplus' "$TMP/stripped" || return 1

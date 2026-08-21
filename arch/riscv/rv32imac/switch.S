@@ -1,40 +1,32 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * RV32IMAC context switch + trap entry + syscall trampoline. Every mtvec vector slot
- * enters trap_entry, which demuxes on mcause:
- *   1. trap_entry     saves the FULL interrupted context (all GPRs + mepc + mstatus)
- *                     on the running thread's OWN stack, then demuxes. ONE frame
- *                     format for every path, so a preempted thread and a
- *                     blocked-in-syscall thread resume identically.
- *   2. .Lswitch       the deferred switcher (mcause = machine software / msip).
- *                     arch_switch pends msip; the physical swap ALWAYS happens here.
- *                     Saves outgoing, restores incoming, mret. Runs with MIE=0.
- *   3. .Lecall + svc_trampoline: the syscall trap. ecall rewrites the return so mret
- *                     lands in svc_trampoline running M-mode (privileged) on the
- *                     calling thread's OWN stack, so a blocking dispatch's
- *                     continuation is per-thread (arch.h arch_syscall contract).
- *   4. arch_start     enter the first thread: no outgoing to save, jump straight into
- *                     the shared restore epilogue.
- *   5. arch_syscall   the userspace trap stub (args already in a0-a4).
+ * RV32IMAC context switch, trap entry and syscall trampoline. Every mtvec slot enters
+ * trap_entry, which saves the FULL interrupted context (every GPR bar gp/tp, plus mepc and
+ * mstatus) and demuxes on mcause. ONE frame format for every path, so a preempted thread and
+ * a blocked-in-syscall thread resume identically.
+ *   .Lswitch     the deferred switcher (mcause = msip). arch_switch pends msip; the
+ *                physical swap ALWAYS happens here, with MIE=0.
+ *   .Lecall      the syscall trap. mret lands in svc_trampoline running M-mode on the
+ *                CALLING THREAD'S stack, so a blocking dispatch's continuation is
+ *                per-thread (arch.h arch_syscall contract).
+ *   arch_start   enters the first thread through the shared restore epilogue.
  *
  * WHICH STACK A FRAME GOES ON. A frame that is a thread's saved context has to be on that
  * thread's own stack: the U-mode entries (bounds-checked), plus the two M-mode causes whose
  * frame the switcher stores as outgoing->sp (msip, ecall-from-M). Every other M-mode trap
  * pops its frame and mrets, so its frame and the C below it go on the trusted per-hart trap
- * stack instead of descending on whatever kernel sp it interrupted. The frame's F_SP slot
- * carries the sp .Lrestore leaves on, which is what lets one epilogue serve both.
+ * stack. The frame's F_SP slot carries the sp .Lrestore leaves on, which is what lets one
+ * epilogue serve both.
  *
  * MSCRATCH INVARIANT: outside the prologue, mscratch holds the trap-stack TOP. That is what
  * makes trap_entry's first instruction a swap onto a trusted sp, and it holds through the
  * nested path (which never adopts the interrupted sp) and through .Ltrap_wild.
  *
  * Save frame (128 B, low->high; ctx.sp = its base). Must match arch_context_init
- * (arch_rv32imac.cc). gp/tp are NOT saved (link-time constant
- * across threads); gp is instead force-reloaded to __global_pointer$ in .Lrestore so a
- * U-mode thread cannot corrupt it for the next thread, since the gp anchor sits inside
- * the live app small-data window. ecall is always 4 bytes (no compressed form), so the
- * user return is mepc+4.
+ * (arch_rv32imac.cc). gp and tp are link-time constants across threads and stay out of the
+ * frame; .Lrestore re-anchors gp on every resume. ecall is always 4 bytes (no compressed
+ * form), so the user return is mepc+4.
  */
 
 #include <kickos/arch/rv_trap_ids.h>
@@ -72,17 +64,12 @@
     .equ F_T6,     116
     .equ F_SP,     KICKOS_RV_TRAP_F_SP
     .equ FRAME,    128
-/* The one figure the guard below and arch_rv32imac.cc both price the frame at. gas has
-   no static_assert, so the C++ side asserts FRAME_WORDS*4 against the same macro. */
     .if FRAME != KICKOS_RV_TRAP_FRAME
     .error "FRAME disagrees with KICKOS_RV_TRAP_FRAME (rv_trap_stack.h)"
     .endif
     .if F_S2 != KICKOS_RV_TRAP_F_S2
     .error "F_S2 disagrees with KICKOS_RV_TRAP_F_S2 (the faultsurvive kwrite arm aims at it)"
     .endif
-/* F_SP has to sit in the spare words above the last saved GPR and inside the frame. Below
-   F_T6 it would shadow a register the epilogue reloads; at or past FRAME it would write
-   into whatever the frame was built under. */
     .if F_SP <= F_T6
     .error "F_SP overlaps a saved GPR slot"
     .endif
@@ -90,8 +77,7 @@
     .error "F_SP lies outside the frame"
     .endif
 
-/* struct arch_context field offsets read by trap_entry's U-mode sp bounds check. Taken
-   from rv_trap_stack.h, which arch_rv32imac.cc static_asserts offsetof against. */
+/* struct arch_context field offsets read by trap_entry's U-mode sp bounds check. */
     .equ F_CTX_STACK_LO, KICKOS_RV_CTX_OFF_STACK_LO
     .equ F_CTX_STACK_HI, KICKOS_RV_CTX_OFF_STACK_HI
 
@@ -99,12 +85,10 @@
 
 /* ------------------------------------------------------------------------- */
 /* Vectored mtvec table. The ESP32-C6 core supports ONLY vectored mtvec (TRM:  */
-/* "Only vectored mode 0x1 is available"); QEMU virt supports it too, so both   */
-/* chips share this. Hardware vectors an INTERRUPT of cause i to BASE + 4*i and */
-/* any EXCEPTION to BASE (slot 0). Every slot jumps to the one demux handler    */
-/* (trap_entry), so we satisfy the C6's vectored-only requirement while keeping */
-/* the single-handler mcause demux below. Base is 256-byte aligned (required in */
-/* vectored mode); each slot MUST be a 4-byte entry (BASE+4*i), so norvc.       */
+/* "Only vectored mode 0x1 is available"). Hardware vectors an INTERRUPT of      */
+/* cause i to BASE + 4*i and any EXCEPTION to BASE (slot 0), so the base must    */
+/* be 256-byte aligned and each slot must be a 4-byte entry, hence norvc.        */
+/* Every slot jumps to the one mcause demux (trap_entry).                        */
 /* ------------------------------------------------------------------------- */
     .balign 256
     .global kickos_rv_mtvec
@@ -117,18 +101,18 @@ kickos_rv_mtvec:
     .option pop
 
 /* ------------------------------------------------------------------------- */
-/* trap_entry: save the full context on the interrupted stack, then demux      */
-/* mcause. Reached from every mtvec vector slot. Entered with MIE=0 (hw).       */
+/* trap_entry: save the full context, then demux mcause. Reached from every     */
+/* mtvec vector slot. Entered with MIE=0 (hardware).                            */
 /* ------------------------------------------------------------------------- */
     .balign 4
     .global trap_entry
 trap_entry:
     /* Swap onto the trusted per-hart trap stack (mscratch) before touching the
-       interrupted sp. A U-mode thread owns its sp and can aim it at kernel memory;
-       the software M-mode prologue below would store 28 GPRs + mepc + mstatus
-       through it, bypassing the unlocked PMP entries. mscratch holds the trap-stack
-       top while a thread runs (kickos_rv32_init); after this swap sp is trusted and
-       mscratch holds the interrupted sp. */
+       interrupted sp. A U-mode thread owns its sp and can aim it at kernel memory, and the
+       software prologue below stores 28 GPRs + mepc + mstatus through it in M-mode, which
+       bypasses the unlocked PMP entries. mscratch holds the trap-stack top while a thread
+       runs (kickos_rv32_init); after this swap sp is trusted and mscratch holds the
+       interrupted sp. */
     csrrw   sp, mscratch, sp
     sw      t0, -4(sp)              /* stash two scratch regs on the trusted stack */
     sw      t1, -8(sp)
@@ -136,15 +120,12 @@ trap_entry:
     srli    t1, t0, 11             /* MPP is mstatus[12:11]; 0x1800 exceeds andi's imm */
     andi    t1, t1, 3
     bnez    t1, .Ltrap_from_m      /* MPP nonzero => interrupted M-mode (trusted sp) */
-    /* Interrupted U-mode: the interrupted sp (in mscratch) has to be checked as an
-       EXTENT, not as a pointer. The frame is built downward from it and the kernel's C
-       dispatch then runs below the frame on the same stack, all M-mode, so a pointer test
-       leaves a thread free to park sp one word above stack_lo and have the kernel write
-       privileged into whatever is beneath. rv_trap_stack.h carries the derivation and the
-       figures; check_trap_redzone.sh re-measures them. */
+    /* Interrupted U-mode: the interrupted sp (in mscratch) is checked as an EXTENT, not as
+       a pointer. rv_trap_stack.h carries the derivation and the figures;
+       check_trap_redzone.sh re-measures them. */
     csrr    t1, mscratch           /* t1 = interrupted user sp */
     andi    t0, t1, KICKOS_RV_TRAP_SP_ALIGN - 1
-    bnez    t0, .Ltrap_wild        /* misaligned sp: every frame store below it would be */
+    bnez    t0, .Ltrap_wild        /* misaligned sp */
     la      t0, g_arch_current
     lw      t0, 0(t0)              /* t0 = current ctx* (the running thread) */
     lw      t0, F_CTX_STACK_HI(t0)
@@ -153,9 +134,8 @@ trap_entry:
     lw      t0, 0(t0)
     lw      t0, F_CTX_STACK_LO(t0)
     bltu    t1, t0, .Ltrap_wild    /* sp < stack_lo -> wild */
-    /* Room remaining below sp, not sp - REDZONE: the subtraction is taken only after the
-       test above proved sp >= stack_lo, so a low sp cannot pass by wrapping it. Same
-       reasoning as kickos_fault_frame_trusted (kernel/init/fault.cc). */
+    /* The subtraction runs only after the test above proved sp >= stack_lo, so it cannot
+       wrap. */
     sub     t1, t1, t0             /* t1 = writable bytes below sp */
     csrr    t0, mcause
     addi    t0, t0, -8             /* ecall-from-U is the deepest descent of the two */
@@ -165,22 +145,19 @@ trap_entry:
 .Ltrap_lo_isr:
     li      t0, KICKOS_RV_TRAP_REDZONE
 .Ltrap_lo_test:
-    bltu    t1, t0, .Ltrap_wild    /* frame + kernel descent would run off the bottom */
-    lw      t1, -8(sp)             /* valid: restore scratch, adopt the user sp */
+    bltu    t1, t0, .Ltrap_wild
+    lw      t1, -8(sp)
     lw      t0, -4(sp)
     csrrw   sp, mscratch, sp       /* sp = user sp; mscratch = trap-stack top */
     j       .Ltrap_build
 .Ltrap_from_m:
     /* Interrupted M-mode, so the sp is the kernel's and needs no bounds check. What it
        still needs is a DECISION, because two of these causes produce a frame that IS a
-       thread's saved context and cannot live anywhere but that thread's own stack:
-       msip, whose frame .Lswitch stores as outgoing->sp, and ecall-from-M, whose frame
-       svc_trampoline runs the dispatch on and .Lecall's fastpath also stores as
-       outgoing->sp. Every other M-mode trap pops its frame and mrets, so it takes the
-       trusted trap stack, and neither its frame nor the C below it descends on the stack
-       it interrupted. Without that split a tick taken mid-dispatch builds 128 bytes plus
-       its ISR's descent below whatever depth the dispatch had reached, unchecked, which
-       for a thread that parked sp at the red-zone edge is a neighbour's granted region. */
+       thread's saved context and can live only on that thread's own stack: msip, whose
+       frame .Lswitch stores as outgoing->sp, and ecall-from-M, whose frame svc_trampoline
+       runs the dispatch on and .Lecall's fastpath also stores as outgoing->sp. Every other
+       M-mode trap pops its frame and mrets, so it takes the trusted trap stack and neither
+       its frame nor the C below it descends on the stack it interrupted. */
     csrr    t0, mcause
     li      t1, KICKOS_RV_MCAUSE_MSIP
     beq     t0, t1, .Ltrap_from_m_ctx
@@ -194,9 +171,9 @@ trap_entry:
     lw      t0, -4(sp)
     csrrw   sp, mscratch, sp       /* sp = interrupted kernel sp; mscratch = trap top */
     j       .Ltrap_build
-/* Both builders seat F_SP, the sp .Lrestore returns with. On this path it is the stack the
-   frame is on; on the nested path below it is a different stack entirely. ra is free scratch
-   from the moment its own slot is written. */
+/* Both builders seat F_SP, the sp .Lrestore returns with: here the stack the frame is on,
+   on the nested path below a different stack entirely. ra is free scratch from the moment
+   its own slot is written. */
 .Ltrap_build:
     addi    sp, sp, -FRAME
     sw      ra,  F_RA(sp)
@@ -205,12 +182,12 @@ trap_entry:
     j       .Ltrap_regs
 /* The frame goes on the trusted trap stack and the interrupted sp is only remembered, never
    written through. mscratch holds the interrupted sp from trap_entry's swap until the csrrw
-   below, which is the ONE window where a trap would swap onto a thread stack instead of the
-   trap top. Nothing in it can trap: MIE is 0 from the vector, and every memory access in
-   between is an aligned word on the trap stack. */
-/* F_SP here IS the -8(sp) slot trap_entry stashed t1 in, since this frame starts one FRAME
-   below the trap-stack top. Sound only because .Ltrap_from_m has already loaded that word
-   back into t1; do not move the reload after this store. */
+   below, the ONE window where a trap would swap onto a thread stack instead of the trap top.
+   Nothing in it can trap: MIE is 0 from the vector, and every memory access in between is an
+   aligned word on the trap stack.
+   F_SP here IS the -8(sp) slot trap_entry stashed t1 in, since this frame starts one FRAME
+   below the trap-stack top. Sound only because .Ltrap_from_m has already reloaded that word
+   into t1; do not move the reload after this store. */
 .Ltrap_nested:
     addi    sp, sp, -FRAME
     sw      ra,  F_RA(sp)
@@ -263,10 +240,9 @@ trap_entry:
     li      t1, 3
     beq     t0, t1, .Lswitch        /* machine software (msip) -> the switcher */
 #if defined(KICKOS_ENABLE_SELFTEST) && !KICKOS_BENCH
-    /* Nested-trap witness, sited here and not earlier so msip is already out: that frame is
-       a saved context and belongs on the thread's stack. Every caller-saved register it
-       clobbers is in the frame, and mcause is re-read below because t0/t1 are not. Out of a
-       bench build: this is inside what the injected-IRQ arm measures. */
+    /* Nested-trap witness, sited after msip is out: that frame is a saved context and
+       belongs on the thread's stack. Every caller-saved register the call clobbers is in the
+       frame; mcause is re-read below because t0/t1 do not survive it. */
     mv      a0, sp
     call    kickos_rv_nested_witness
     csrr    t0, mcause
@@ -283,8 +259,9 @@ trap_entry:
     /* spurious: just return */
     j       .Lrestore
 
-/* --- Timer (mtip): tick in ISR context. kickos_isr_timer re-arms/disarms      */
-/* mtimecmp (clearing mtip) and may arch_switch (pends msip -> fires on mret).   */
+/* --- Timer (mtip): tick in ISR context. kickos_isr_timer re-arms or disarms   */
+/* mtimecmp, which is what clears mtip, and may arch_switch (pends msip, so the  */
+/* switch fires on mret).                                                        */
 .Ltimer:
     la      t0, g_isr_depth
     lw      t1, 0(t0)
@@ -299,7 +276,7 @@ trap_entry:
 
 /* --- Supervisor software (ssip): a software-injected IRQ in ISR context, the      */
 /* arch_irq_inject test/bench channel. kickos_rv_dispatch_soft (arch .cc) clears    */
-/* ssip and runs the injected line's kickos_isr_irq.                               */
+/* ssip, then runs the injected line's kickos_isr_irq.                             */
 .Lssoft:
     la      t0, g_isr_depth
     lw      t1, 0(t0)
@@ -312,11 +289,11 @@ trap_entry:
     sw      t1, 0(t0)
     j       .Lrestore
 
-/* --- External inject doorbell (a real machine interrupt via the C6 interrupt      */
-/* matrix; the C6 reports mcause = the CPU interrupt ID, here 31). Same ISR-context  */
-/* discipline as .Lssoft: kickos_rv_ext_dispatch EOIs the chip source, then runs the */
-/* injected line's kickos_isr_irq. MIE=0 throughout the trap, so a wake's pended     */
-/* msip switch fires only after mret, with g_isr_depth back to 0 (deterministic).    */
+/* --- External inject doorbell: a real machine interrupt through the C6 interrupt  */
+/* matrix, and the C6 reports mcause = the CPU interrupt ID, here 31.               */
+/* kickos_rv_ext_dispatch EOIs the chip source, then runs the injected line's       */
+/* kickos_isr_irq. MIE=0 throughout the trap, so a wake's pended msip switch fires   */
+/* only after mret, with g_isr_depth back to 0.                                     */
 .Lext:
     la      t0, g_isr_depth
     lw      t1, 0(t0)
@@ -330,8 +307,8 @@ trap_entry:
     j       .Lrestore
 
 /* --- Real device external IRQ (C6: UART0 TX-empty, routed via the interrupt matrix to */
-/* KICKOS_RV_DEV_CPU_INT). Same ISR-context discipline as .Lext; kickos_rv_ext_dispatch_ */
-/* dev acks the level source + runs the device line's ISR (no-op fallback off the C6).  */
+/* KICKOS_RV_DEV_CPU_INT), ISR context. kickos_rv_ext_dispatch_dev acks the level        */
+/* source, then runs the device line's ISR.                                              */
 .Lextdev:
     la      t0, g_isr_depth
     lw      t1, 0(t0)
@@ -344,9 +321,9 @@ trap_entry:
     sw      t1, 0(t0)
     j       .Lrestore
 
-/* --- The deferred switcher (msip). g_arch_current is always valid here (the    */
-/* first switch goes through arch_start, not this path). s0/s1 are free scratch: */
-/* the outgoing thread's s0/s1 are already saved to its frame above.             */
+/* --- The deferred switcher (msip). g_arch_current is always valid here: the    */
+/* first switch goes through arch_start. s0/s1 are free scratch, the outgoing     */
+/* thread's copies being already saved to its frame above.                        */
 .Lswitch:
 #if KICKOS_BENCH
     /* stamp switch entry. g_bench_cycle_src != 0 -> read that MMIO counter (a core
@@ -393,11 +370,10 @@ trap_entry:
     mv      a1, s1
     call    kickos_trace_switch_done   /* (from,to) from the swapped contexts */
 #endif
-    /* Deferred MPU commit: program the incoming thread's PMP now that the physical
-       swap (g_arch_current = incoming, sp = incoming->sp) is complete, so the commit is
-       atomic with the switch and NOT eager in switch_to (see arch_rv32imac.cc /
-       docs/design-mpu-commit-deferred.md). Runs here in the M-mode msip trap with
-       MIE=0, before .Lrestore pops the frame and mret drops to U-mode. sp survives the
+    /* Deferred MPU commit: program the incoming thread's PMP now that the physical swap
+       (g_arch_current = incoming, sp = incoming->sp) is complete, so the commit is atomic
+       with the switch (docs/design-mpu-commit-deferred.md). Runs in the M-mode msip trap
+       with MIE=0, before .Lrestore pops the frame and mret drops to U-mode. sp survives the
        call (callee-saved); every caller-saved clobber is reloaded by .Lrestore next. */
     call    kickos_arch_mpu_commit
     j       .Lrestore
@@ -406,12 +382,10 @@ trap_entry:
 /* the caller's own stack. Args are already in the frame's a0-a4 slots. The      */
 /* frame keeps the USER mstatus (MPP=caller priv) for the eventual return.       */
 .Lecall:
-    /* THE SEAM. KOS_SYS_CALL_REG completes here, before the exception return that
-       would otherwise land in svc_trampoline and run the generic dispatch. The leaf
-       decides before it mutates, so a null return means nothing was committed and the
-       fall-through below is today's path exactly.
-       MIE is 0 (hardware cleared it at the vector), which is the interrupt mask the
-       leaf's IPC work needs, so it takes no IrqLock. g_isr_depth is NOT bumped: the
+    /* THE SEAM. KOS_SYS_CALL_REG completes here, before the exception return into
+       svc_trampoline. The leaf decides before it mutates, so a null return means nothing
+       was committed. MIE is 0 (hardware cleared it at the vector), which is the interrupt
+       mask the leaf's IPC work needs, so it takes no IrqLock. g_isr_depth stays put: the
        leaf calls scheduler code that must read arch_in_isr() false, as dispatch does. */
     lw      t0, F_A0(sp)
     li      t1, 56                  /* KOS_SYS_CALL_REG (sys/abi.h) */
@@ -431,9 +405,9 @@ trap_entry:
     sw      a0, 0(t1)               /* g_arch_current = incoming */
     lw      sp, 0(a0)               /* sp = incoming->sp */
 #if KICKOS_TELEMETRY
-    /* SWITCH completion hook, as in .Lswitch: a physically swapped pair that emitted
-       nothing would break the decoder's from == previous.to continuity check. The outgoing
-       ctx* is never 0 here, so there is no first-switch case to default. */
+    /* SWITCH completion hook, as in .Lswitch: the decoder checks from == previous.to, so
+       every physically swapped pair has to emit one. The outgoing ctx* is always valid
+       here. */
     lw      a1, 4(a0)               /* to_tid = incoming->trace_tid */
     lw      a0, 4(t2)               /* from_tid = outgoing->trace_tid */
     call    kickos_trace_switch_done
@@ -461,8 +435,8 @@ trap_entry:
 /* Runs M-mode (privileged) on the calling thread's stack, sp = its saved frame. */
 /* A blocking syscall_dispatch here blocks by an ordinary arch_switch (pends     */
 /* msip); the msip switcher freezes the mid-dispatch continuation on THIS stack  */
-/* and resumes it inline when the thread is rescheduled. sp (callee-saved)       */
-/* survives the call, so it still points at the frame afterwards.                */
+/* and resumes it inline when the thread is rescheduled. sp is callee-saved, so  */
+/* it still points at the frame afterwards.                                      */
     .global svc_trampoline
 svc_trampoline:
     call    syscall_dispatch        /* (a0..a4) -> result in a0:a1 */
@@ -475,27 +449,25 @@ svc_trampoline:
     sw      t0, F_MEPC(sp)
     j       .Lrestore               /* restore frame -> mret to user (MPP=caller) */
 
-/* --- Shared restore epilogue: pop the frame at sp, mret. (t0 is scratch for    */
-/* the CSR loads, then reloaded with the rest.)                                  */
+/* --- Shared restore epilogue: pop the frame at sp, mret.                       */
 .Lrestore:
     /* Force gp to its canonical link-time value before returning to any (re)dispatched
-       thread. gp is NOT per-thread (see the frame comment), but __global_pointer$ is
-       anchored inside the LIVE app small-data window, so a U-mode thread can write gp
-       arbitrarily and the next thread's gp-relative small-data loads would resolve at
-       attacker-chosen addresses. Every dispatch path funnels here, so gp is self-healing
-       per switch. norelax: the assembler would otherwise relax `la gp, __global_pointer$`
-       to a no-op that assumes gp already holds it. The kernel uses no gp-relative code,
-       so clobbering gp here is safe. See docs/design-riscv-gp-split.md. */
+       thread. __global_pointer$ is anchored inside the LIVE app small-data window, so a
+       U-mode thread can write gp arbitrarily and the next thread's gp-relative small-data
+       loads would resolve at attacker-chosen addresses. Every dispatch path funnels here,
+       so gp is self-healing per switch. norelax: the assembler would otherwise relax
+       `la gp, __global_pointer$` into a no-op that assumes gp already holds it. See
+       docs/design-riscv-gp-split.md. */
     .option push
     .option norelax
     la      gp, __global_pointer$
     .option pop
-    /* Restore mstatus (saved with MIE=0) BEFORE mepc. The ecall-return path reaches
-       here from svc_trampoline with MIE=1 (.Lecall set MPIE=1); a trap taken between
-       the mepc and mstatus writes would clobber mepc (the nested trap overwrites it),
-       and the final mret would then jump back into this epilogue at the caller's
-       privilege with the frame half-popped. Writing mstatus first (MIE->0) closes
-       that window before mepc is set. Other entries reach here with MIE already 0. */
+    /* Restore mstatus (saved with MIE=0) BEFORE mepc. The ecall-return path reaches here
+       from svc_trampoline with MIE=1 (.Lecall set MPIE=1); a trap taken between the mepc
+       and mstatus writes would overwrite mepc, and the final mret would then jump back
+       into this epilogue at the caller's privilege with the frame half-popped. Writing
+       mstatus first (MIE->0) closes that window before mepc is set. Other entries reach
+       here with MIE already 0. */
     lw      t0, F_MSTATUS(sp)
     csrw    mstatus, t0
     lw      t0, F_MEPC(sp)
@@ -528,12 +500,23 @@ svc_trampoline:
     lw      t4,  F_T4(sp)
     lw      t5,  F_T5(sp)
     lw      t6,  F_T6(sp)
-    /* The frame says which sp to leave on: for a frame built on the stack it is resumed
-       on, the frame base plus FRAME; for one the nested path built on the trap stack, the
-       interrupted sp, and the frame is simply abandoned. Last, because every load above
+    /* The frame names the sp to leave on: for a frame built on the stack it is resumed on,
+       the frame base plus FRAME; for one the nested path built on the trap stack, the
+       interrupted sp, the frame itself being abandoned. Last, because every load above
        reads through the frame base. */
     lw      sp,  F_SP(sp)
     mret
+
+/* A U-mode trap the guard refused: sp outside the stack, misaligned, or with too little
+   room below it for the frame plus the kernel descent. Nothing was stored through it. sp is
+   the trusted trap-stack top, so restore the mscratch invariant and hand the live trap CSRs
+   to the shared reporter, whose frame-trusted test refuses this (trap-stack) frame and
+   panics, except a U-mode access fault (1/5/7), which it credits to the thread and exits.
+   This is the one path that reaches .Lfault with an ECALL cause, so the reporter's cause
+   ladder handles mcause 8. */
+.Ltrap_wild:
+    csrw    mscratch, sp
+    j       .Lfault
 
 /* --- Unhandled exception: dump the trap CSRs + hand off to the shared dead-end.    */
 /* mcause/mepc/mtval/mstatus are still live (no trap has been taken since the        */
@@ -543,23 +526,10 @@ svc_trampoline:
 /* kickos_thread_fault_exit (M-mode, this thread's own thread-mode stack, exactly as */
 /* .Lecall enters svc_trampoline), so mret rather than dump. On zero the reporter     */
 /* never returns; the spin is a backstop.                                            */
-/* The frame is NOT popped on the isolation path and sp is NOT left on it: the stub   */
-/* runs at the TOP of the dying thread's stack so exit_current, cap_teardown and the  */
-/* fault print have the whole stack under them instead of whatever depth the thread   */
-/* had reached. It must be done HERE and not in the C seam, whose own frame lives on  */
-/* the very sp being replaced. Zero means no stack to name; sp then stays on the      */
-/* frame, which is what the C seam alone used to give.                                */
-/* A U-mode trap the guard refused: sp outside the stack, misaligned, or with too little
-   room below it for the frame plus the kernel descent. Nothing was stored through it. sp
-   is the trusted trap-stack top; restore the mscratch invariant and hand the live trap
-   CSRs to the shared reporter, whose frame-trusted test refuses this (trap-stack) frame
-   and panics, except a U-mode access fault (1/5/7) which it credits to the thread and
-   exits. An ECALL can arrive here now, which no other path sends to .Lfault, so the
-   reporter's cause ladder has to survive mcause 8. */
-.Ltrap_wild:
-    csrw    mscratch, sp
-    j       .Lfault
-
+/* On the isolation path the frame stays in place and sp moves to the TOP of the      */
+/* dying thread's stack, so exit_current, cap_teardown and the fault print get the    */
+/* whole stack under them. It happens HERE because the C seam's own frame lives on    */
+/* the very sp being replaced. Zero means no stack to name, and sp stays on the frame.*/
 .Lfault:
     csrr    a0, mcause
     csrr    a1, mepc
@@ -576,10 +546,10 @@ svc_trampoline:
 3:  mret
 
 /* ------------------------------------------------------------------------- */
-/* arch_start(boot, first): a0=boot (ignored), a1=first. No outgoing to save;   */
-/* seed g_arch_current and enter the first thread via the shared restore. The    */
-/* fabricated frame's mstatus (MPIE=1) turns MIE on, releasing the crit level     */
-/* the scheduler held. Never returns (boot stack abandoned).                     */
+/* arch_start(boot, first): a0=boot (ignored), a1=first. Seed g_arch_current and */
+/* enter the first thread via the shared restore. The fabricated frame's mstatus  */
+/* (MPIE=1) turns MIE on, releasing the crit level the scheduler held. Never      */
+/* returns; the boot stack is abandoned.                                         */
 /* ------------------------------------------------------------------------- */
     .global arch_start
 arch_start:
@@ -592,17 +562,17 @@ arch_start:
     li      a0, 0xFFFF              /* from = no-thread (decoder's first-switch) */
     call    kickos_trace_switch_done   /* sp (callee-saved) survives */
 #endif
-    /* Deferred MPU commit for the first thread: program its PMP after g_arch_current
-       is seeded and sp = first->sp, before .Lrestore mrets into U-mode (same seam as
-       .Lswitch). MIE is still 0 here (the fabricated mstatus enables it only on mret). */
+    /* Deferred MPU commit for the first thread, the same seam as .Lswitch: g_arch_current
+       is seeded and sp = first->sp, and .Lrestore mrets into U-mode after it. MIE is still
+       0 here; the fabricated mstatus enables it on the mret. */
     call    kickos_arch_mpu_commit
     j       .Lrestore
 
 /* ------------------------------------------------------------------------- */
 /* arch_syscall(nr, a0, a1, a2, a3): args already in a0-a4 per the psABI; ecall  */
 /* traps to .Lecall, svc_trampoline runs dispatch and returns here (post-ecall)  */
-/* with a0:a1 = result. ra is preserved across the trap (saved/restored in       */
-/* frame). arch_syscall64 is the SAME trap: a0:a1 is the psABI's 64-bit pair.    */
+/* with a0:a1 = result. ra survives the trap in the frame. arch_syscall64 is the */
+/* SAME trap: a0:a1 is the psABI's 64-bit pair.                                  */
 /* ------------------------------------------------------------------------- */
     .global arch_syscall
     .global arch_syscall64

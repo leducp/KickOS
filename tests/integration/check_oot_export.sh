@@ -2,13 +2,11 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# CI gate for the dependency-inversion acceptance criterion: install the
-# KickOS sim package, then configure + build + run a standalone out-of-tree app
-# against it via find_package(KickOS) + plain add_executable, linking the
-# exported `kickos` usage target. No KickOS-specific macro is involved, which is
-# the point: that is the supported downstream shape, so it is what gets gated.
-# (The MCU half of the same criterion is check_oot_export_mcu.sh, which covers
-# the bare-metal machinery this package has none of.)
+# CI gate for the dependency-inversion acceptance criterion: install the KickOS sim package,
+# then configure + build + run a standalone out-of-tree app against it via
+# find_package(KickOS) + plain add_executable, linking the exported `kickos` usage target.
+# No KickOS-specific macro is involved, which is the supported downstream shape. The MCU half
+# of the same criterion is check_oot_export_mcu.sh.
 #
 # usage: check_oot_export.sh <kickos-build-dir> <kickos-source-dir> <cmake> <generator>
 
@@ -22,10 +20,10 @@ GEN="${4:-Ninja}"
 
 scratch_dir
 
-# The provisioning THIS build resolved, read from the header it generated. Handed to the
-# child configure so the example can static_assert the installed headers state the same:
-# without that, a deleted board_config.h install rule leaves config/system.h's fleet
-# defaults standing and the app compiles against a geometry the libraries do not have.
+# The provisioning THIS build resolved, read from the header it generated, and handed to the
+# child configure so the example can static_assert the installed headers state the same. A
+# deleted board_config.h install rule otherwise leaves config/system.h's fleet defaults
+# standing and the app compiles against a geometry the libraries do not have.
 BOARD_CFG="$KICKOS_BUILD/generated/include/kickos/board_config.h"
 [ -f "$BOARD_CFG" ] || fail "no generated board_config.h at $BOARD_CFG"
 knob() {
@@ -33,8 +31,8 @@ knob() {
 }
 EXPECT_MAX_THREADS="$(knob KICKOS_MAX_THREADS)"
 EXPECT_USER_STACK_SIZE="$(knob KICKOS_USER_STACK_SIZE)"
-# An empty value would be passed as a -D nothing defines, and the example's #ifdef would
-# then skip the assertion in silence.
+# An empty value passes as a -D nothing defines, and the example's #ifdef then skips the
+# assertion in silence.
 [ -n "$EXPECT_MAX_THREADS" ] || fail "$BOARD_CFG states no KICKOS_MAX_THREADS"
 [ -n "$EXPECT_USER_STACK_SIZE" ] || fail "$BOARD_CFG states no KICKOS_USER_STACK_SIZE"
 
@@ -62,9 +60,8 @@ echo "== building out-of-tree app =="
 APP="$TMP/build/oot_app"
 [ -x "$APP" ] || fail "out-of-tree app binary not produced"
 
-# Our warning flags are this project's hygiene policy, not part of the interface:
-# a consumer's own diagnostics are their call, and ours can contradict theirs or
-# simply break their build. Nothing on the exported targets may carry one.
+# Our warning flags are this project's hygiene policy and not part of the interface, so
+# nothing on the exported targets may carry one.
 echo "== our warning policy must not reach the consumer's TUs =="
 CDB="$TMP/build/compile_commands.json"
 if [ -f "$CDB" ]; then

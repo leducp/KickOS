@@ -39,7 +39,7 @@ namespace
     Atomic<int, Order::RELAXED> g_sustained{-99};
 
     // Several laps of the 512-byte TX ring, so it reaches FULL repeatedly and the client
-    // is forced onto the short-accept retry path. One lap would not reach it.
+    // is forced onto the short-accept retry path.
     constexpr uint32_t SUSTAIN_TOTAL = 4096;
     constexpr uint32_t SUSTAIN_CHUNK = 200;
     // A zero accept is normal back-pressure; only a RUN of them with no progress between

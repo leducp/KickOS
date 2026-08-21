@@ -27,8 +27,8 @@ def main():
 
     proc = subprocess.Popen([elf], stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
-    # Poll for a couple of exchanges rather than sleeping a fixed time (robust on
-    # a loaded CI box), then Ctrl+C. Cap the wait.
+    # Polled for a couple of exchanges rather than sleeping a fixed time, so a loaded box
+    # only makes it slower, then Ctrl+C on a capped wait.
     fd = proc.stdout.fileno()
     fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK)
     seen = ""
@@ -47,7 +47,7 @@ def main():
     except subprocess.TimeoutExpired:
         proc.kill()
         fail("hello did not exit after Ctrl+C")
-    out = seen + (rest or "")  # `seen` holds what we polled before the signal
+    out = seen + (rest or "")
 
     print(out, end="")
     for bad in ("PANIC", "FAULT", "ERROR"):

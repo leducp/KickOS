@@ -4,8 +4,8 @@
 #
 # CI gate for KICKOS_MULTI_INSTANCE: build the sim with several independent kernels
 # provisioned and require FIFTY of them, on fifty host threads, to run one app to
-# completion without seeing each other. Every other sim gate runs one kernel, so the class
-# of "two instances share a file-scope object" is invisible to all of them.
+# completion without seeing each other. This is the one gate running more than one kernel,
+# so it is where "two instances share a file-scope object" is caught.
 #
 # The comparison is against a ONE-instance run of the SAME image, not a fixed expected
 # list: it asserts that co-residence changed nothing, and it needs no edit when the app
@@ -16,7 +16,7 @@
 # What it does NOT cover, so read it narrowly:
 #   - a SHARED SIGALTSTACK. That only corrupts when two host threads fault at the same
 #     time, and this app takes no fault at all. Covering it needs an app that faults in
-#     every instance, and that is owed.
+#     every instance.
 #   - instances multiplexed on ONE host thread. That needs a yield-to-host in the
 #     scheduler, which does not exist.
 #   - the app's OWN file-scope state, which is one copy per process. sched_exit keeps no
@@ -48,8 +48,8 @@ echo "== building sched_exit =="
 APP="$TMP/build/user/apps/common/sched_exit/sched_exit"
 [ -x "$APP" ] || fail "sched_exit binary not produced at $APP"
 
-# The reference run. Same image, one instance, so any difference below is co-residence
-# and nothing else.
+# The reference run: the same image at one instance, so any difference below is
+# co-residence and nothing else.
 set +e
 KICKOS_SIM_INSTANCES=1 timeout "${SIM_TIMEOUT:-60}" "$APP" > "$TMP/one.log" 2>&1
 RC_ONE=$?
@@ -68,7 +68,7 @@ if [ "$RC_MANY" -ne "$RC_ONE" ]; then
 fi
 
 # A shared arena, a shared capability slab and a shared sigaltstack all present as a fault
-# rather than as missing output, so this is checked before the content.
+# rather than as missing output, so this comes before the content checks.
 if grep -qE 'SIGSEGV|SIGILL|MPU FAULT|PANIC|KERNEL PANIC' "$TMP/many.log"; then
     echo "--- offending output ---"
     grep -E 'SIGSEGV|SIGILL|MPU FAULT|PANIC|KERNEL PANIC' "$TMP/many.log" | head -5

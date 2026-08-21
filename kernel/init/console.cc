@@ -40,8 +40,7 @@ namespace
     using kickos::Order;
 
     // Forces the polled path once a panic has started: the ring's drain ISR is masked
-    // from that point on. Only carries a panic that does NOT reclaim, since RECLAIMED
-    // already routes polled.
+    // from that point on.
     constinit Atomic<bool, Order::RELAXED> g_console_panicking = false;
 
     // Who owns the UART TX register. Must be consulted BEFORE the buffered/sync
@@ -49,7 +48,7 @@ namespace
     // See docs/design-m3-console-handover-stageii.md.
     enum class ConsoleState : uint8_t
     {
-        KERNEL_OWNED, // boot default; kernel drives the UART (buffered ring or polled)
+        KERNEL_OWNED, // boot default; buffered ring or polled
         HANDING_OFF,  // a publish is in progress: NEW kernel writers are refused, the UART is
                       // still the kernel's, and a writer already inside the bracket finishes
                       // on it
@@ -95,8 +94,8 @@ extern "C" int console_owner_is_kernel(void)
     return static_cast<int>(g_console_state == ConsoleState::KERNEL_OWNED);
 }
 
-// Not console_owner_is_kernel: that one is false throughout the handover, and the writer the
-// handover is waiting for must still reach a device no driver has yet.
+// TRUE through a handover as well as at rest: the writer a handover is draining must still
+// reach the device, which no driver has taken yet.
 extern "C" int console_chip_writable(void)
 {
     return static_cast<int>(g_console_state != ConsoleState::USER_OWNED);
@@ -198,10 +197,8 @@ extern "C" int console_chip_writers(void)
 namespace kickos
 {
 #if KICKOS_CONSOLE_CHIP
-    // Takes an already-CRLF-expanded chunk. The buffered path is reachable only from
-    // ordinary thread context with the ring armed; panic, ISR/fault context and pre-arm
-    // boot fall back to the bounded polled writer. This is the single choke point that
-    // keeps the ring a true single-producer, so no other site may enqueue.
+    // Takes an already-CRLF-expanded chunk. This is the single choke point that keeps the
+    // ring a true single-producer, so no other site may enqueue.
     static void console_emit(char const* buf, size_t n, bool force_sync)
     {
         // The count is taken under the same masked read that selects the transport, so
@@ -219,7 +216,6 @@ namespace kickos
             }
             else
             {
-                // RECLAIMED, or kernel-owned with no usable ring (unarmed, ISR, panicking).
                 arch_console_write_sync(buf, n);
             }
             console_chip_writer_leave();
@@ -243,8 +239,8 @@ namespace kickos
     {
         (void)force_sync;
 #if !KICKOS_CONSOLE_CHIP && !KICKOS_CONSOLE_RTT
-        // KICKOS_CONSOLE=none: every backend is compiled out and this is deliberately a
-        // sink. Panic, fault and boot behaviour is unchanged; they just say nothing.
+        // KICKOS_CONSOLE=none: the writer is a sink. Panic, fault and boot still run their
+        // full paths and terminate the same way.
         (void)buf;
         (void)n;
 #endif
@@ -342,8 +338,8 @@ namespace kickos
     }
 
 #if KICKOS_DIAG_TERSE
-    // Deliberately not kprintf: an assert fires in whatever thread context tripped it,
-    // and kvsnprintf's 256-byte frame does not fit the 512-byte idle stack the boards
+    // kputs plus a hand-rolled decimal: an assert fires in whatever thread context tripped
+    // it, and kvsnprintf's 256-byte frame does not fit the 512-byte idle stack the boards
     // that select this posture provision.
     void kpanic_at(char const* file, unsigned line)
     {
@@ -380,10 +376,9 @@ extern "C" void kpanic_enter(void)
     // of recursing, and so the body runs exactly once: a second run could truncate the
     // byte in the shift register and cut the banner it just printed. Every chip body is
     // idempotent absolute stores (arch.h), safe on a device no driver ever touched.
-    // Must run BEFORE the flush.
-    // Only a TERMINAL fault exit may reclaim. A kill-and-resume fault path must gate this on
-    // "this fault terminates the system", not on "a fault happened": there the driver keeps
-    // the device and a dark report is correct.
+    // Only a TERMINAL fault exit may reclaim: a kill-and-resume path must gate this on "this
+    // fault terminates the system", where the driver keeps the device and a dark report is
+    // correct.
     if (g_console_state != ConsoleState::RECLAIMED)
     {
         g_console_state = ConsoleState::RECLAIMED;
@@ -456,10 +451,9 @@ extern "C" void kickos_isr_fault(uintptr_t addr, int is_write)
         dir = "write";
     }
     ::kickos::kprintf(KDIAG_F_MPU_FAULT, who, dir, reinterpret_cast<void*>(addr));
-    // The denied address alone cannot say whether this thread ran off its own stack or wrote
-    // somewhere it has no business being, and that is the difference between a provisioning
-    // bug in the image and one thread misbehaving. It is also what sizes
-    // KICKOS_FAULT_STACK_GUARD_BAND.
+    // The bounds are what separate a thread running off its own stack from a wild write,
+    // which is the difference between a provisioning bug in the image and one thread
+    // misbehaving.
     if (c != nullptr and c->stack_base != nullptr)
     {
         uintptr_t const lo = reinterpret_cast<uintptr_t>(c->stack_base);

@@ -2,10 +2,10 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // ARMv6-M (Cortex-M0/M0+) arch backend: the Cortex-M0 core-generic half of the
-// arch.h seam. Context switch + syscall trap are in switch.S. Versus armv7m:
-// the critical section is PRIMASK (mask ALL configurable interrupts; v6-M has
-// no BASEPRI), and there is no DWT cycle counter, so arch_clock_now is supplied
-// by the chip (like arch_console_write), not here.
+// arch.h seam. Context switch + syscall trap are in switch.S. The critical section
+// is PRIMASK, which masks every configurable interrupt, and arch_clock_now is a chip
+// contract here, as arch_console_write is, because the cycle source on this core is
+// per-chip.
 
 #include <kickos/arch/arch.h>
 #include <kickos/diag.h>
@@ -15,18 +15,15 @@
 
 #include <stddef.h> // offsetof
 
-// The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
-// for the arch this backend implements, or a SESSION record mislabels the trace.
-// A wrong caps.cmake value breaks the build here instead of drifting silently.
+// The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId for
+// the arch this backend implements, or a SESSION record mislabels the trace.
 static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_ARMV6M,
               "KICKOS_TRACE_ARCH does not match ArchId::ARCH_ARMV6M for armv6m");
 
-// Fault reporting (the shared HardFault handler below): the reporter calls
-// kpanic_enter first, which masks IRQs, forces the synchronous polled writer, and
-// flushes the ring, so the dump is safe from fault context whether or not the
-// chip armed the buffered console (rp2040 does, nrf51 does not). kfault_terminate
-// is the shared panic/fault dead-end (kernel.h; nrf51 overrides it to exit under
-// QEMU, rp2040 uses the blink fallback).
+// Fault reporting (the shared HardFault handler below): the reporter calls kpanic_enter
+// first, which masks IRQs, forces the synchronous polled writer and flushes the ring, so
+// the dump is safe from fault context on a chip with a buffered console as well as one
+// without. kfault_terminate is the shared panic/fault dead-end (kernel.h).
 namespace kickos
 {
     void kprintf(char const* fmt, ...);
@@ -40,15 +37,15 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 #define KICKOS_PANIC_DUMP 1
 #endif
 
-// Deferred MPU commit is shared; see arch/arm/common.
+// Deferred MPU commit lives in arch/arm/common.
 
 static_assert(offsetof(struct arch_context, sp) == 0, "switch.S expects ctx.sp @0");
 static_assert(offsetof(struct arch_context, npriv) == 4, "switch.S expects ctx.npriv @4");
 static_assert(offsetof(struct arch_context, resting_npriv) == 8,
               "switch.S expects ctx.resting_npriv @8");
 // The PSP bounds guard reads these two as plain displacements, so a reorder would have it
-// compare a PSP against the wrong words and pass one with no room below it. Both offsets are
-// UNCONDITIONAL: the telemetry field is last so no build posture moves them.
+// compare a PSP against the wrong words and pass one with no room below it. The telemetry
+// field is last, which keeps both offsets the same in every build posture.
 static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_ARMV6M_CTX_OFF_STACK_LO,
               "switch.S reads ctx.stack_lo at F_CTX_STACK_LO");
 static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_ARMV6M_CTX_OFF_STACK_HI,
@@ -61,9 +58,9 @@ static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_ARMV6M_CTX_OFF_
 namespace
 {
     // The {r4-r11} block the two software pushes write below the live PSP, and the block
-    // arch_context_init fabricates for a first switch-in. Drives both the fabrication loop
-    // and the assertion that F_TRAP_FRAME prices exactly this register list: gas cannot
-    // count the registers in an stmia.
+    // arch_context_init fabricates for a first switch-in. It drives the fabrication loop
+    // and the assertion below, which prices F_TRAP_FRAME against the register list
+    // because gas cannot count the registers in an stmia.
     constexpr size_t CALLEE_BLOCK_WORDS = 8;
 }
 static_assert(CALLEE_BLOCK_WORDS * sizeof(uint32_t) == KICKOS_ARMV6M_TRAP_FRAME,
@@ -105,7 +102,7 @@ void arch_context_init(struct arch_context* ctx,
     *(--sp) = 0;                                        // r2
     *(--sp) = 0;                                        // r1
     *(--sp) = reinterpret_cast<uint32_t>(arg);          // r0 = arg
-    // PendSV-saved block {r4-r11} (no EXC_RETURN word on v6-M).
+    // PendSV-saved block {r4-r11}.
     for (size_t i = 0; i < CALLEE_BLOCK_WORDS; i++)
     {
         *(--sp) = 0;
@@ -127,7 +124,6 @@ void arch_context_init(struct arch_context* ctx,
     ctx->stack_hi = static_cast<uint32_t>(top);
 }
 
-// The whole seam on this backend: the fabricated first frame already lands at the stack
 #if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
 // The fastpath parks a caller on its own trap frame with no kernel continuation, so the
 // result has to be seated where the restore reloads r4 from. ctx->sp is the base of the
@@ -140,7 +136,8 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 }
 #endif
 
-// top with CONTROL.nPRIV expressing privilege, so a rebuild is that same fabrication.
+// The fabricated first frame already lands at the stack top with CONTROL.nPRIV carrying
+// privilege, so a rebuild is that same fabrication.
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
@@ -162,10 +159,9 @@ void arch_irq_restore(arch_irq_state_t state)
     __asm volatile("msr primask, %0" ::"r"(state) : "memory");
 }
 
-// --- Interrupt controller (NVIC). No priority band: the crit section is
-// PRIMASK (masks all), so device-IRQ priorities don't gate it as on v7-M. The
-// mask/inject halves are core-generic and live in arch_arm_common.cc; only the
-// v6-M "enable, no priority-band program" unmask is here. ---------------------
+// --- Interrupt controller (NVIC). The crit section is PRIMASK and masks every
+// configurable line, so a device line's priority does not gate it and unmask enables the
+// line alone. mask/inject are core-generic (arch_arm_common.cc). -------------------
 void arch_irq_unmask(int line)
 {
     if (line < 0)
@@ -173,10 +169,10 @@ void arch_irq_unmask(int line)
         return;
     }
     unsigned l = static_cast<unsigned>(line);
-    // Latch-and-coalesce: PRESERVE any latched NVIC pending across enable. A raise
-    // taken while the line was masked fires through the normal ISR path the instant
-    // ISER is set (see the v7-M note). Drain a preceding device-flag clear (dsb) so
-    // a genuinely deasserted level source does not re-latch.
+    // Latch-and-coalesce: any NVIC pending latched while the line was masked is
+    // PRESERVED across enable and fires through the normal ISR path the instant ISER is
+    // set. The dsb drains a preceding device-flag clear, so a level source that is
+    // genuinely deasserted does not re-latch.
     __asm volatile("dsb" ::: "memory");
     reg32(NVIC_ISER0 + (l >> 5) * 4) = 1u << (l & 31);
 }
@@ -204,10 +200,9 @@ void kickos_armv6m_default_irq(void)
     }
 }
 
-// --- Fault reporting: the shared HardFault handler. HardFault is the ONLY fault
-// exception on v6-M (no MemManage/BusFault/UsageFault, and no CFSR/HFSR/MMFAR/BFAR
-// fault-status registers), so the dump is the stacked frame only. Replaces the
-// per-chip stubs that discarded everything. ----------------------------------------
+// --- Fault reporting: the shared HardFault handler. HardFault is the whole fault
+// taxonomy on v6-M and the core exposes no fault-status registers, so the stacked frame
+// is the entire dump. ------------------------------------------------------------
 void kickos_armv6m_fault_report(uint32_t* frame, uint32_t exc_return)
 {
     // The naked handler reaches here by `bx`, so this function's own return IS the
@@ -235,9 +230,8 @@ void kickos_armv6m_fault_report(uint32_t* frame, uint32_t exc_return)
 }
 
 // Naked entry: pick the stacked frame (MSP vs PSP per EXC_RETURN bit 2) and pass it,
-// with EXC_RETURN, to the C reporter. Naked so no prologue perturbs the SP before we
-// read it. v6-M has no IT block, so the stack select is branch-based (movs/tst/beq/
-// mrs); the v7-M ite/mrseq form is illegal here.
+// with EXC_RETURN, to the C reporter. Naked so no prologue perturbs the SP before it is
+// read. v6-M conditionalises by branch, so the stack select is movs/tst/beq/mrs.
 __attribute__((naked)) void HardFault_Handler(void)
 {
     __asm volatile(
@@ -256,15 +250,11 @@ __attribute__((naked)) void HardFault_Handler(void)
         "bx   r2              \n");
 }
 
-// Called from switch.S when the running thread's live PSP has no room BELOW it for the
-// {r4-r11} block the push is about to write there. Exception entry stacks the hardware
-// frame ABOVE the PSP under the pre-exception privilege, so the MPU refuses only that
-// half: a PSP aimed a few words above a stack's base passes entry and lands the software
-// block in the NEIGHBOURING thread's own granted memory, where r10 and r11 overwrite that
-// thread's stacked PC and xPSR.
+// Called from switch.S when the running thread's live PSP lacks room BELOW it for the
+// {r4-r11} block the push is about to write there.
 //
-// Runs in handler mode on the MSP. Contains the system rather than the write: there is no
-// frame to trust and no PSP a resume could be handed.
+// Runs in handler mode on the MSP, and contains the system rather than the write: the
+// only frame and PSP a resume could use are the ones the guard just refused.
 void kickos_armv6m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi)
 {
     kpanic_enter();
@@ -305,8 +295,8 @@ void kickos_armv6m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi
     kfault_terminate();
 }
 
-// Install the system-handler priorities (SHPR is word-access only on v6-M).
-// No DWT to enable. Called by the chip's arch_init.
+// Install the system-handler priorities (SHPR is word-access only on v6-M). Called by
+// the chip's arch_init.
 void kickos_armv6m_init(void)
 {
     reg32(SCB_SHPR2) = (reg32(SCB_SHPR2) & 0x00FFFFFFu) | (PRIO_SVCALL << 24);

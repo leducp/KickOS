@@ -8,10 +8,9 @@
 #
 # Run as: cmake -DSRC=<repo root> -DOUT=<file> -P tests/static/preset_boards.cmake
 #
-# Not grep. KICKOS_BOARD is set on a handful of base presets and INHERITED by every
-# -st, -flat, -telem and -bench variant, so a line-shaped scan finds a board for a
-# third of the file and none for the rest. string(JSON) is a real parser, and the
-# inherit walk is where a variant's board actually comes from.
+# KICKOS_BOARD is set on a handful of base presets and INHERITED by every -st, -flat,
+# -telem and -bench variant, so a line-shaped scan finds a board for a third of the file
+# and none for the rest. The inherit walk below is where a variant's board comes from.
 #
 # A preset whose board never resolves is emitted as @none rather than dropped: the
 # caller has to tell "this preset names no board" from "this preset is not there at

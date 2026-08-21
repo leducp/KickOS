@@ -5,13 +5,11 @@
 // the board's LED and sleeps between edges, so a steady ~2.5 Hz blink is
 // end-to-end proof of the whole path on real silicon: reset -> C runtime ->
 // scheduler start -> thread spawn + context switch (main blocks, the blinker
-// runs) -> SysTick one-shot sleep -> wake. It needs no UART adapter; just eyes
-// on the LED.
+// runs) -> SysTick one-shot sleep -> wake. The witness is visual: eyes on the LED.
 //
-// No board-specific code here: the LED is the KERNEL's single diagnostic pin,
-// driven through a syscall (kos_kernel_diag_led_*). Which pin that is lives in
-// the chip backend (arch_diag_led_*), not in this app. On a board with no known
-// LED the toggle is a harmless no-op.
+// The LED is the KERNEL's single diagnostic pin, driven through a syscall
+// (kos_kernel_diag_led_*); the chip backend (arch_diag_led_*) owns which pin that
+// is. A board without a known LED makes the toggle a no-op.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

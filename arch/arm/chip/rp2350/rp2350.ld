@@ -4,27 +4,25 @@
  * Linker script for the Raspberry Pi RP2350 (Cortex-M33) executing in place (XIP)
  * from external QSPI flash at 0x1000_0000. This board carries 16 MiB QSPI.
  *
- * BOOT (datasheet 5.9.5): unlike the RP2040 there is NO 256-byte checksummed boot2
- * and no separate XIP-setup stage. The RP2350 bootrom sets up QSPI XIP itself, then
- * scans the first 4 KiB of the image for an IMAGE_DEF block-loop; with no
- * ENTRY_POINT/VECTOR_TABLE item it reads the initial SP/PC from the vector table at
- * the image base. So the vector table is PINNED at the flash origin (0x1000_0000)
- * and the IMAGE_DEF block (startup.S, .image_def) is homed immediately after it,
- * both inside the 4 KiB scan window. This is the RP2040 boot2/vector-slot lesson
- * (rp2040.ld pinned .text) applied to the new boot format: the vector VMA is fixed
- * by section placement, not left to whatever the linker packs ahead of it.
+ * BOOT (datasheet 5.9.5): the RP2350 bootrom sets up QSPI XIP itself, then scans the
+ * first 4 KiB of the image for an IMAGE_DEF block-loop; absent an
+ * ENTRY_POINT/VECTOR_TABLE item it reads the initial SP/PC from the vector table at the
+ * image base. So the vector table is PINNED at the flash origin (0x1000_0000) and the
+ * IMAGE_DEF block (startup.S, .image_def) is homed immediately after it, both inside the
+ * 4 KiB scan window: the vector VMA is fixed by section placement rather than by
+ * whatever the linker packs ahead of it.
  *
- * SRAM (datasheet 2.2.3): 520 KiB total. The lower 512 KiB (0x2000_0000..0x2008_0000)
- * is the striped region used here as main RAM; the two 4 KiB non-striped banks at
- * 0x2008_0000/0x2008_1000 are left reserved (future per-core stacks).
+ * SRAM (datasheet 2.2.3): 520 KiB total. Main RAM here is the striped lower 512 KiB
+ * (0x2000_0000..0x2008_0000); the two 4 KiB non-striped banks at
+ * 0x2008_0000/0x2008_1000 sit outside it, available for per-core stacks.
  *
  * ENFORCEMENT (KICKOS_HAVE_MPU): the armv8-m / PMSAv8 MPU backend
  * (arch/arm/common/arch_arm_pmsav8.cc, docs/design-rp2350-mpu-armv8m.md). PMSAv8 uses
  * RBAR/RLAR base+limit at a 32-byte granule (NON-pow2, like SYSMPU), so the app-data
- * window is just two 32-byte-aligned symbols: NONE of the pow2 .appdata machinery of
- * the v6-M/v7-M PMSA chips (rp2040.ld ALIGN(pow2)) is needed. The writable state is
- * split KERNEL vs app exactly as mk64f.ld (the other byte-granular backend). A
- * non-enforcement build (KICKOS_HAVE_MPU=0) reserves no window and is unchanged.
+ * window is two 32-byte-aligned symbols and needs no pow2 ALIGN of the kind the v6-M/v7-M
+ * PMSA chips carry (rp2040.ld). The writable state is split KERNEL vs app as in mk64f.ld,
+ * the other byte-granular backend. A non-enforcement build (KICKOS_HAVE_MPU=0) reserves
+ * no window.
  */
 
 ENTRY(Reset_Handler)
@@ -194,8 +192,9 @@ SECTIONS
         *(.bss .bss.* COMMON)
         . = ALIGN(4);
         _appdata_used_end = .;
-        /* MAX, not a bare set: ASSERTs are evaluated after layout, so a backwards move
-           fails the link before the overflow ASSERT below can print. */
+        /* ld evaluates ASSERTs after layout, so a bare `. = start + size` that moved
+           backwards would fail the link ahead of the overflow ASSERT below. MAX keeps
+           that ASSERT the thing that prints. */
         . = MAX(., __kickos_appdata_start + _appdata_size); /* pad the granted window */
         __kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */

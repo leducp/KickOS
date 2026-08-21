@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * ARMv7-M context switch + syscall trap assembly. Three mechanisms live here:
+ * ARMv7-M context switch + syscall trap assembly. Four mechanisms live here:
  *   1. PendSV_Handler: the deferred context switch (the arch_switch backend).
  *   2. SVC_Handler + svc_trampoline: the syscall trap. Dispatch runs in PRIVILEGED
  *      THREAD mode, so a blocking syscall is an ordinary synchronous PendSV switch
@@ -25,8 +25,6 @@
     .syntax unified
     .thumb
 
-/* struct arch_context field offsets read by the PSP bounds guard below. Taken from
-   armv7m_trap_stack.h, which arch_armv7m.cc static_asserts offsetof against. */
     .equ F_CTX_STACK_LO, KICKOS_ARMV7M_CTX_OFF_STACK_LO
     .equ F_CTX_STACK_HI, KICKOS_ARMV7M_CTX_OFF_STACK_HI
 
@@ -41,13 +39,14 @@
    privilege, so the MPU refuses that half and a kernel-aimed PSP faults as MSTKERR
    before any handler runs. The block pushed BELOW the PSP is written in handler mode
    and is refused by nothing, so a PSP 32 bytes above a stack's base clears the
-   hardware check and still writes into the block below. The last word pushed is
-   EXC_RETURN.
+   hardware check and still writes under the stack. Its last word is the EXC_RETURN the
+   resume branches through, so a neighbour owning that word and writing 0xFFFFFFF1
+   resumes the victim in handler mode, privileged.
 
    \need covers the software push AND whatever kernel C then descends below it on this
-   same stack, which armv7m_trap_stack.h derives per class. The two sites pass DIFFERENT
-   figures: only the SVC slow path leaves handler mode and keeps running on the thread's
-   PSP. */
+   same stack, per class, as armv7m_trap_stack.h derives it. The two sites pass DIFFERENT
+   figures because only the SVC slow path leaves handler mode and keeps running on the
+   thread's PSP. */
     .macro PSP_GUARD need
     movw    r1, #\need
 #if defined(__ARM_FP)
@@ -80,7 +79,7 @@
 PendSV_Handler:
 #if KICKOS_BENCH
     /* Bench: timestamp the switch entry (DWT CYCCNT @ 0xE0001004). r0/r1 are
-       caller-saved (HW-stacked), free to clobber here. */
+       caller-saved and already HW-stacked, so they are free here. */
     ldr     r0, =0xE0001004
     ldr     r0, [r0]
     ldr     r1, =g_bench_sw_start
@@ -89,10 +88,10 @@ PendSV_Handler:
     ldr     r3, =g_arch_current
     ldr     r2, [r3]                /* outgoing ctx* (0 => first start) */
 #if KICKOS_TELEMETRY
-    /* Spill the OUTGOING ctx* now, before the swap clobbers r2: the telemetry
-       tail emits from this spilled value and the incoming ctx* it actually loads,
-       never re-reading g_arch_next (a SysTick preempting PendSV can rewrite it).
-       r3 is pushed only to keep MSP 8-byte aligned across the later bl. */
+    /* Spill the OUTGOING ctx* before the swap clobbers r2: the telemetry tail emits
+       from this value and the incoming ctx* it loads, never from a re-read of
+       g_arch_next, which a SysTick preempting PendSV can rewrite. r3 keeps MSP 8-byte
+       aligned across the later bl. */
     push    {r2, r3}
 #endif
     cbz     r2, 1f                  /* nothing to save on the first entry */
@@ -110,10 +109,10 @@ PendSV_Handler:
     str     r0, [r2, #4]            /* syscall is privileged and must resume so */
 1:
     /* g_arch_next and the deferred MPU stash are ONE pair, written together under the
-       kernel lock; PendSV must consume them as one. A device IRQ (PRIO_DEVICE, above
+       kernel lock, and PendSV must consume them as one. A device IRQ (PRIO_DEVICE, above
        PRIO_PENDSV) preempting between the two reschedules and replaces BOTH, so an
        unmasked PendSV can restore one thread's PSP and then program the other thread's
-       regions -> the resumed thread faults on its own stack. PRIMASK masks PendSV
+       regions, and the resumed thread faults on its own stack. PRIMASK masks PendSV
        itself, so entry here implies PRIMASK==0 and the cpsie below restores the entry
        state exactly; the kernel lock uses BASEPRI and is untouched by this. */
     cpsid   i
@@ -134,11 +133,11 @@ PendSV_Handler:
     msr     control, r3
     isb
 #if KICKOS_BENCH
-    /* Bench: delta = now - entry stamp -> kickos_bench_switch_done. Read here,
-       right after the switch body, BEFORE any telemetry emit, so the measured
-       window brackets only the save/restore, not the emit. r1 (incoming ctx*) and
-       the entry-spilled {r2,r3} below it are preserved across the balanced push/pop
-       (telemetry reads them next). Keep MSP 8-byte aligned; save EXC_RETURN. */
+    /* Bench: delta = now - entry stamp -> kickos_bench_switch_done. Read right after
+       the switch body and BEFORE any telemetry emit, so the measured window brackets
+       the save/restore alone. The balanced push/pop preserves r1 (incoming ctx*) and
+       the entry-spilled {r2,r3} beneath it, which telemetry reads next. Keeps MSP
+       8-byte aligned and saves EXC_RETURN. */
     push    {r0, r1, r2, lr}
     ldr     r0, =0xE0001004
     ldr     r0, [r0]
@@ -149,11 +148,10 @@ PendSV_Handler:
     pop     {r0, r1, r2, lr}
 #endif
 #if KICKOS_TELEMETRY
-    /* SWITCH completion hook. Emit {from,to} from the PHYSICALLY-swapped contexts:
-       r1 is the incoming ctx* we loaded above; r2 (popped) is the outgoing ctx*
-       we spilled at entry. trace_tid lives at offset 20. from = 0xFFFF on the
-       first switch (outgoing ctx* was 0). EXC_RETURN (lr) is saved across the bl,
-       MSP kept 8-byte aligned. */
+    /* SWITCH completion hook. Emit {from,to} from the PHYSICALLY-swapped contexts: r1
+       is the incoming ctx* loaded above, r2 the outgoing ctx* spilled at entry.
+       from = 0xFFFF on the first switch, where the outgoing ctx* is 0. EXC_RETURN (lr)
+       is saved across the bl and MSP kept 8-byte aligned. */
     pop     {r2, r3}                /* r2 = outgoing ctx* (r3 = alignment pad) */
     ldr     r1, [r1, #20]           /* r1 = to_tid (incoming.trace_tid) */
     movw    r0, #0xFFFF             /* default from = no-thread */
@@ -165,14 +163,13 @@ PendSV_Handler:
     bl      kickos_trace_switch_done /* (r0=from_tid, r1=to_tid) */
     pop     {r0, lr}                /* restore EXC_RETURN */
 #endif
-    /* Deferred MPU commit: program the incoming thread's regions now that the physical
-       PSP/register swap is done, NOT eagerly in switch_to (shared seam, see
-       arch_arm_common.cc). Eager apply would run the OUTGOING thread under the incoming
-       region set until PendSV fires -> a fault on its own stack. Callee regs (r4-r11)
-       survive the call (AAPCS); r0-r3/r12 are reloaded from the HW frame on exception
-       return; lr holds EXC_RETURN and must be preserved across the bl (the r0 pad keeps
-       MSP 8-byte aligned). kickos_arch_mpu_commit resolves to the PMSAv7 fallback, a
-       chip override (K64F SYSMPU), or an empty fallback on a no-MPU board. */
+    /* Deferred MPU commit: the incoming thread's regions are programmed here, after the
+       physical PSP/register swap (shared seam, arch_arm_common.cc). Applying them in
+       switch_to instead would run the OUTGOING thread under the incoming region set
+       until PendSV fires, faulting it on its own stack. Callee regs (r4-r11) survive
+       the call (AAPCS), r0-r3/r12 are reloaded from the HW frame on exception return,
+       and lr holds EXC_RETURN and must be preserved across the bl (the r0 pad keeps MSP
+       8-byte aligned). */
     push    {r0, lr}
     bl      kickos_arch_mpu_commit
     pop     {r0, lr}
@@ -188,32 +185,32 @@ PendSV_Handler:
 
 /* ------------------------------------------------------------------------- */
 /* SVC_Handler: redirect the exception return into svc_trampoline, which runs */
-/* in PRIVILEGED THREAD mode. It does NOT dispatch (that would run in handler */
-/* mode, where a blocking switch could only be deferred, breaking the         */
-/* synchronous-blocking contract). The hardware exception frame already holds */
-/* the args (r0=nr, r1=a0, r2=a1, r3=a2, r12=a3) and, in LR, the return       */
-/* address of arch_syscall's caller, so only the stacked PC is rewritten.     */
+/* in PRIVILEGED THREAD mode and dispatches from there, so a blocking switch  */
+/* is a real synchronous one (arch.h arch_syscall contract). The hardware      */
+/* exception frame already holds the args (r0=nr, r1=a0, r2=a1, r3=a2, r12=a3) */
+/* and, in LR, the return address of arch_syscall's caller, so only the        */
+/* stacked PC is rewritten.                                                   */
 /* ------------------------------------------------------------------------- */
     .thumb_func
     .global SVC_Handler
 SVC_Handler:
     mrs     r0, psp                 /* r0 -> user hardware frame */
-    /* Guards BOTH exits from here, and at the SVC figure, which is the larger: the
-       fastpath below pushes the callee block through this PSP and returns in handler mode,
-       but the slow path exception-returns into svc_trampoline, which runs PRIVILEGED IN
-       THREAD MODE on this same PSP and calls syscall_dispatch below it. The guard sits
-       above the `cmp #56` that picks the arm, so it cannot know which one will run and
-       must charge the one that descends further. */
+    /* Guards BOTH exits from here, at the SVC figure, which is the larger of the two:
+       the fastpath below pushes the callee block through this PSP and returns in handler
+       mode, while the slow path exception-returns into svc_trampoline, which runs
+       PRIVILEGED IN THREAD MODE on this same PSP and calls syscall_dispatch below it.
+       The guard sits above the `cmp #56` that picks the arm, so it charges whichever
+       descends further. */
     ldr     r2, =g_arch_current
     ldr     r2, [r2]
     cbz     r2, .Lsvc_nothread     /* no thread running: nothing to bound against */
     PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_SVC
 .Lsvc_nothread:
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
-    /* THE SEAM. KOS_SYS_CALL_REG completes here, before the exception return that would
-       otherwise land in svc_trampoline and run the generic dispatch. The leaf decides
-       before it mutates, so a null return means nothing was committed and the
-       fall-through below is today's path exactly. */
+    /* THE SEAM. KOS_SYS_CALL_REG completes here, ahead of the exception return that
+       lands in svc_trampoline for the generic dispatch. The leaf decides before it
+       mutates, so a null return means nothing was committed and the fall-through below
+       carries the whole call. */
     ldr     r1, [r0]                /* the stacked r0 is the syscall number */
     cmp     r1, #56                 /* KOS_SYS_CALL_REG (sys/abi.h) */
     bne     .Lsvc_slow
@@ -256,10 +253,10 @@ SVC_Handler:
     beq     .Lsvc_fp_refused
     /* Taken. r0 = the incoming thread's arch_context*, r1 = the outgoing frame base. The
        stacked PC already points past the SVC, so the caller's resume is a plain exception
-       return and the switch that resumes it seats the result (sched.cc switch_book). */
-    /* The physical swap and the region commit are ONE pair, exactly as in the PendSV
-       epilogue: an interrupt between them would resume a thread under another thread's
-       regions. PRIMASK was 0 at entry (refused otherwise), so the cpsie below restores it. */
+       return and the switch that resumes it seats the result (sched.cc switch_book).
+       The physical swap and the region commit are ONE pair: an interrupt between them
+       would resume a thread under another thread's regions. PRIMASK was 0 at entry, so
+       the cpsie below restores it. */
     cpsid   i
     ldr     r2, =g_arch_current
     ldr     r3, [r2]                /* outgoing ctx* (the caller) */
@@ -285,9 +282,9 @@ SVC_Handler:
     msr     control, r3
     isb
 #if KICKOS_TELEMETRY
-    /* SWITCH completion hook, as in the PendSV epilogue: a physically swapped pair that
-       emitted nothing would break the decoder's from == previous.to continuity check. The
-       outgoing ctx* is never 0 here, so there is no first-switch case to default. */
+    /* SWITCH completion hook: a physically swapped pair that emitted nothing would break
+       the decoder's from == previous.to continuity check. The outgoing ctx* is always
+       live here, so from_tid is read unconditionally. */
     pop     {r2, r12}               /* r2 = outgoing ctx* */
     ldr     r1, [r0, #20]           /* to_tid (incoming.trace_tid) */
     ldr     r0, [r2, #20]           /* from_tid */
@@ -295,8 +292,8 @@ SVC_Handler:
     bl      kickos_trace_switch_done
     pop     {r0, lr}
 #endif
-    /* Deferred MPU commit for the incoming thread, the same seam and the same reason as
-       the PendSV epilogue: the physical swap is done and the mask is still up. */
+    /* Deferred MPU commit for the incoming thread: the physical swap is done and the
+       mask is still up. */
     push    {r0, lr}
     bl      kickos_arch_mpu_commit
     pop     {r0, lr}
@@ -326,9 +323,9 @@ SVC_Handler:
 /* blocking syscall_dispatch here blocks by pending PendSV (arch_switch); the  */
 /* switch is a real exception preempting this thread-mode code, and PendSV     */
 /* freezes the mid-dispatch continuation on THIS thread's stack, resuming it   */
-/* inline when the thread is next scheduled. Privilege is dropped with a plain */
-/* CONTROL write (no trap is needed to LOWER privilege in thread mode) before  */
-/* returning to the user.                                                      */
+/* inline when the thread is next scheduled. Thread mode can LOWER privilege   */
+/* with a plain CONTROL write, so the drop before returning to the user is     */
+/* that write.                                                                 */
     .thumb_func
     .global svc_trampoline
 svc_trampoline:
@@ -336,11 +333,10 @@ svc_trampoline:
     bl      syscall_dispatch        /* (r0..r3, [sp]=a3) -> result in r0:r1 */
     ldr     lr, [sp, #4]            /* restore caller-return */
     add     sp, sp, #8
-    /* Restore the caller's RESTING privilege (not a hard-coded nPRIV=1): a
-       privileged thread issuing a syscall must not be demoted. g_arch_current
-       is this thread again here (PendSV restores it across any block).
-       r2/r3 only: r0:r1 carry the result pair (AAPCS long long) all the way
-       out of this trampoline, so neither may be used as scratch here. */
+    /* Restore the caller's RESTING privilege, so a privileged thread issuing a syscall
+       keeps its posture. g_arch_current is this thread again here, PendSV having
+       restored it across any block. r2/r3 only: r0:r1 carry the result pair (AAPCS
+       long long) all the way out of this trampoline. */
     ldr     r2, =g_arch_current
     ldr     r2, [r2]                /* current ctx* */
     ldr     r2, [r2, #8]            /* ctx.resting_npriv (offset 8) */
@@ -406,9 +402,9 @@ arch_syscall_reg:
     ldr     r0, [r0]                /* nr */
     ldm     r1, {r5-r11}
     /* The two outcomes land at two different addresses, and nothing may run between the
-       SVC and the declined one: svc_trampoline exits to the STACKED LR, not past the SVC,
-       so a wrapper cannot resume in line the way the RISC-V trampoline lets it. The taken
-       path restores the hardware frame and so resumes at the SVC's own return address. */
+       SVC and the declined one: svc_trampoline exits to the STACKED LR, so the declined
+       arm resumes at whatever LR holds here. The taken path restores the hardware frame
+       and resumes at the SVC's own return address. */
     adr     r1, .Lreg_declined
     orr     r1, r1, #1              /* the trampoline exits with bx: Thumb bit required */
     mov     lr, r1

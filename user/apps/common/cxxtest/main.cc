@@ -5,17 +5,17 @@
 // toolchain's libstdc++/libsupc++ over newlib actually EXECUTES on the MCU:
 // exceptions (throw/catch, EH unwind), STL (std::vector, std::string over the heap),
 // and RTTI (dynamic_cast + typeid). Built ONLY under the FULL_CXX opt-in (see
-// CMakeLists.txt); a freestanding app cannot use any of this. Prints one PASS/FAIL
-// line per check then returns (clean exit -> QEMU SYS_EXIT).
+// CMakeLists.txt). Prints one PASS/FAIL line per check then returns (clean exit ->
+// QEMU SYS_EXIT).
 //
 // The checks run in a spawned UNPRIVILEGED worker, not inline in main: root's grant is
 // composed at boot from the whole app image, so an inline throw would prove nothing
 // about a thread whose grant is composed at spawn from what this app asks for.
-// Under enforcement the worker's throw/catch drives the DWARF/
-// EHABI/SjLj unwinder over eh_globals + the FDE registry, and every new/vector/string
-// allocation goes through the app-side arena. All of it must lie in the worker's
-// reachable grant. That is the real gate: full-C++ inside MPU confinement (the RISC-V
-// gp-in-appdata layout, docs/design-riscv-gp-split.md).
+// Under enforcement the worker's throw/catch drives the DWARF/EHABI/SjLj unwinder over
+// eh_globals + the FDE registry, and every new/vector/string allocation goes through the
+// app-side arena, so all of it must lie in the worker's reachable grant. That is the real
+// gate: full-C++ inside MPU confinement (the RISC-V gp-in-appdata layout,
+// docs/design-riscv-gp-split.md).
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -56,7 +56,6 @@ namespace
         int code_;
     };
 
-    // Polymorphic hierarchy for the RTTI checks.
     struct Base
     {
         virtual ~Base() = default;
@@ -75,7 +74,6 @@ namespace
 
     void test_exceptions()
     {
-        // Custom type caught by its concrete type: the right handler, with payload.
         bool right_handler = false;
         int seen_code = 0;
         try
@@ -97,7 +95,6 @@ namespace
         }
         report("exception caught by exact type", right_handler and seen_code == 42);
 
-        // Catch by std base: proves the libsupc++ type-match walks the hierarchy.
         bool caught_by_base = false;
         try
         {
@@ -109,7 +106,6 @@ namespace
         }
         report("exception caught by std::exception base", caught_by_base);
 
-        // Unwinding a scope with a non-trivial local (std::string dtor must run).
         bool unwound = false;
         try
         {
@@ -148,20 +144,16 @@ namespace
         Derived d;
         Base* b = &d;
 
-        // Virtual dispatch through the base pointer.
         report("virtual dispatch picks override", b->tag() == 2);
 
-        // dynamic_cast down the real dynamic type must succeed...
         Derived* dd = dynamic_cast<Derived*>(b);
         report("dynamic_cast to real type succeeds", dd != nullptr);
 
-        // ...and a cast to an unrelated sibling type must fail (return nullptr).
         Base base_only;
         Base* bp = &base_only;
         Derived* bad = dynamic_cast<Derived*>(bp);
         report("dynamic_cast to wrong type yields nullptr", bad == nullptr);
 
-        // typeid reflects the dynamic type through a base reference.
         bool typeid_ok = typeid(*b) == typeid(Derived) and typeid(*bp) == typeid(Base);
         report("typeid reflects dynamic type", typeid_ok);
     }
@@ -170,8 +162,7 @@ namespace
     // B1: fresh child table => handle == index; the worker's delegated g_done is at index 1.
     constexpr int CH_DONE = 1;
 
-    // UNPRIVILEGED: the whole full-C++ body runs here, under the MPU. Exceptions
-    // unwind, RTTI matches, and STL/new allocate all through the worker's own grant.
+    // UNPRIVILEGED: the whole full-C++ body runs here, under the MPU.
     void cxx_worker(void*)
     {
         test_exceptions();
@@ -184,7 +175,7 @@ namespace
             verdict = "ALL PASS\n";
         }
         kos::print(verdict);
-        kos_sem_post(CH_DONE); // g_done (delegated from main)
+        kos_sem_post(CH_DONE);
     }
 }
 
@@ -195,11 +186,9 @@ int main(int, char**)
     (void)kos_sem_create(0, &g_done);
     // Default spawn => UNPRIVILEGED (privileged=false). prio 10 sits above root
     // (KICKOS_PRIO_MIN+1), so once main blocks on g_done the worker runs to completion
-    // and root wakes as the last live thread (the selftest orchestration shape). Stack:
-    // the board's own KICKOS_USER_STACK_SIZE, demand-allocated from the app arena, so the
-    // EH unwind and the libstdc++ working set are charged to that arena. A static
-    // KOS_STACK_DEFINE buffer would instead have to be a pow2 region carved out of
-    // .appdata at one size for every gated board.
+    // and root wakes as the last live thread (the selftest orchestration shape). The stack
+    // is the board's own KICKOS_USER_STACK_SIZE, demand-allocated from the app arena, so
+    // the EH unwind and the libstdc++ working set are charged to that arena.
     kos_cap_grant caps[] = {{g_done, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}}; // g_done@1
     auto w = kos::thread::spawn_caps(cxx_worker, nullptr, "cxxwork", 10, caps, 1);
     if (not w.valid())

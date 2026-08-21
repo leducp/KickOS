@@ -82,10 +82,7 @@ extern "C"
     }
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // The telemetry sink, which the seam otherwise has no answer for: ktrace.h is
-    // header-inline and reaches BOTH of these from kernel/irq/irq.cc. Silent and accepting,
-    // because no arm here reads a trace record. The fixture has its own ordered trace, and
-    // the encoder is tests/unit/telemetry's subject.
+    // ktrace.h is header-inline and reaches BOTH of these from kernel/irq/irq.cc.
     uint32_t arch_trace_now(void)
     {
         return static_cast<uint32_t>(kickos::testfix::g_now_ns);
@@ -108,9 +105,7 @@ extern "C"
                                      kickos::testfix::thread_of_context(to));
     }
 
-    // Records rather than rebuilds. Leaving the context alone is not a shortcut: the
-    // fixture never resumes one, so a real rebuild would be unobservable, while WHICH
-    // context was named and WHEN are exactly the two facts the pended backends turn on.
+    // Records rather than rebuilds; kfixture.h states what an arm reads from it.
     void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                            void* stack_base, size_t stack_size)
     {
@@ -118,8 +113,8 @@ extern "C"
                                            stack_base, stack_size);
     }
 
-    // Never called: no arm here drives kickos_fault_kill_thread, so the two calls it would
-    // make never happen either. Present only to satisfy the link.
+    // Link-only: kickos_fault_kill_thread is the only caller of these two, and no arm
+    // drives it.
     bool arch_fault_is_user_thread(void*)
     {
         return false;
@@ -145,9 +140,8 @@ extern "C"
 
     // LOUD, and never with the status it was handed. exit_current calls this when the dying
     // thread was the last live one, and an exit(0) from there would end the gate green with
-    // failures already printed and later arms never run: the harness would forge its own
-    // only failure signal. An arm that wants the last-thread-out path keeps a spare thread
-    // live, exactly as the console arm does.
+    // failures already printed and later arms never run. An arm that wants the
+    // last-thread-out path keeps a spare thread live.
     void kickos_terminate(int status)
     {
         printf("FIXTURE FAIL: kickos_terminate(%d) ended the arm\n", status);
@@ -173,20 +167,17 @@ namespace kickos
     }
 #endif
 
-    // Never called: no arm here drives kickos_thread_fault_exit, which is the only caller.
+    // Link-only: kickos_thread_fault_exit is the only caller.
     void kprintf_fault(char const*, ...)
     {
     }
 
-    // The domain pool, cut here rather than at kernel/domain/domain.cc so the seam stays clear
-    // of the arena and the MPU granule. task.cc stores the pointer, counts references and
-    // frees at zero; the geometry rules behind grant_region_admissible are domain.cc's own
-    // subject and reaching them would drag arch_ram_region_size and the arena bounds in.
+    // The domain pool, cut here rather than at kernel/domain/domain.cc: what task.cc asks of
+    // it is to store the pointer, count references and free at zero.
     //
-    // NO DEDUP, so every call hands back a distinct domain where the real domain_for would
-    // return the shared default-user singleton for a no-grant unprivileged task. That is
-    // deliberate: it is what lets an arm read one task's reference count without another
-    // task's holds in it.
+    // NO DEDUP: every call hands back a distinct domain, where the real domain_for returns
+    // the shared default-user singleton for a no-grant unprivileged task. That is what lets
+    // an arm read one task's reference count without another task's holds in it.
     Domain* domain_for(bool, void*, size_t, uint32_t, bool, int* err)
     {
         *err = 0;

@@ -27,16 +27,13 @@ RIG_TREE=/path/to/checkout
 RIG_PYBIN=
 
 # --- consoles -----------------------------------------------------------------
-# ONE entry per board whose console cable cannot be named from the board alone,
-# spelled as the by-id path or glob that resolves it. Address a cable by its own
-# SERIAL, never by a ttyUSB/ttyACM number and never by the vendor pattern: numbers
-# renumber across a flash, and this bus carries FTDIs and CP210x cables belonging to
-# other work, so `the first FT232` is a different device on a different day.
+# ONE entry per board whose console cable the board name alone does not identify, spelled
+# as the by-id path or glob that resolves it. Address a cable by its own SERIAL: numbers
+# renumber across a flash, and this bus carries FTDIs and CP210x cables belonging to other
+# work.
 #
-# A board with no entry here and no unambiguous tracked default REFUSES by name
-# rather than picking a cable. Any board's row may be pinned here, including the
-# ones that do have a tracked default. Do that as soon as a second ST-Link or a
-# second CH34x joins the bus.
+# Any board's row may be pinned here, including the ones with a tracked default. Do that as
+# soon as a second ST-Link or a second CH34x joins the bus.
 #
 # The key is the board name uppercased with dashes turned into underscores, e.g.
 # esp32c6-wroom -> RIG_CONSOLE_ESP32C6_WROOM.
@@ -49,6 +46,9 @@ RIG_CONSOLE_PIZERO2350=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
 #   pizero2350  GP4/GP5, UART1. FTDI RX on GP4; UART0 is not on the Pi-Zero header.
 #   teensy41    LPUART6 ("Serial1"). FTDI RX on PIN 1; pin 0 is the board's own RX.
 RIG_CONSOLE_TEENSY41=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
+# f411disco's ST-Link is a V2 with no VCP, so its console is a separate FTDI rather than the
+# probe's own VCOM (f302nucleo's V2.1 does carry one and needs no row here).
+RIG_CONSOLE_F411DISCO=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ZZZZZZZZ*
 #
 # SEVERAL ROWS MAY NAME ONE CABLE, as the two above do: a bench with fewer FTDIs than
 # boards moves one between them. That is fine while only one of those boards is attached,
@@ -57,8 +57,8 @@ RIG_CONSOLE_TEENSY41=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
 
 # --- the bench host, when the boards are not on this box -----------------------
 # BENCH_HOST in the environment is what SELECTS remote mode; leave it unset and the
-# boards are taken to be here. These only say how to reach the host once it is
-# selected, and what it is called is deliberately not a tracked fact.
+# boards are taken to be here. These say only how to reach the host once selected; the
+# host name stays out of the tree and lives in the environment.
 RIG_BENCH_PORT=22
 
 # The remote directory holding the shipped tree and the run outputs, relative to the
@@ -72,7 +72,7 @@ RIG_REMOTE_PYBIN=/home/USER/.local/share/uv/tools/esptool/bin/python
 
 # --- ST-Link probes ---------------------------------------------------------------
 # Only needed once MORE THAN ONE ST-Link is on the bus, which is when st-flash stops
-# being deterministic. tools/flash-stlink.sh refuses instead of picking. Key is
+# being deterministic; tools/flash-stlink.sh has the detail. Key is
 # RIG_STLINK_<BOARD> with the board upper-cased and '-' as '_'. st-info --probe prints
 # the serials next to the chip each one is attached to.
 #RIG_STLINK_F411DISCO=30FF6C065647373735081143

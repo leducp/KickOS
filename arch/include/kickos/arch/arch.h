@@ -37,7 +37,7 @@
 struct arch_mpu_encoded;
 #endif
 
-// C++ ONLY: the extern "C" below is deliberately UNGUARDED, so a C includer breaks here.
+// C++ ONLY: the extern "C" below is UNGUARDED, so a C includer breaks here.
 extern "C"
 {
 
@@ -64,10 +64,10 @@ int arch_reboot(void);
 // --- Core identity ----------------------------------------------------------
 // The 0-based index of the core executing this code, in [0, KICKOS_NUM_CORES).
 //
-// At one core a MACRO, not an inline the optimiser folds: -Os has been measured
-// out-lining an always_inline candidate in system/include/kickos/sys/atomic.h.
-// The multi-core arm has NO fallback TU, so a port that raises KICKOS_NUM_CORES and
-// ships no definition is a LINK error rather than a kernel that believes it is on core 0.
+// At one core a MACRO, so the value is folded at every use: -Os out-lines an
+// always_inline candidate in system/include/kickos/sys/atomic.h. The multi-core arm is a
+// declaration only, so a port that raises KICKOS_NUM_CORES and ships no definition is a
+// LINK error rather than a kernel that believes it is on core 0.
 #if KICKOS_NUM_CORES > 1
 uint32_t arch_cpu_id(void);
 #else
@@ -94,9 +94,9 @@ void arch_context_init(struct arch_context* ctx,
 // Idempotent in its values: `entry` and the stack top are absolute, so applying it
 // twice before the thread resumes changes nothing.
 //
-// Total, deliberately: there is no failure return. A backend that cannot express a
-// privileged thread-mode resume at a given stack top cannot host a thread either, and
-// a silent decline here would downgrade a slay to a cooperative kill without saying so.
+// TOTAL: every backend answers, and the signature carries no failure return. A backend
+// able to host a thread can express a privileged thread-mode resume at a given stack top,
+// and a decline here would downgrade a slay to a cooperative kill without saying so.
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size);
 
@@ -135,10 +135,10 @@ uint32_t arch_cpu_clock_hz(void);
 // baud/prescaler. `base` is the peripheral register-BLOCK base (e.g. a K64F UART
 // at 0x4006A000); a backend MAY range-match within a block, but the contract only
 // promises correctness for the block base itself. Returns 0 when this chip does
-// not know the block's clock. The fallback TU returns 0 for every block, and a
-// wrong branch clock silently garbles the wire, so 0 (not the core clock) is the
-// safe unknown: the driver then falls back to its own explicit constant. Read-only
-// and cascade-free; the DVFS rate-change notify is deferred.
+// not know the block's clock. The fallback TU returns 0 for every block, and a wrong
+// branch clock silently garbles the wire, so 0 rather than the core clock is the safe
+// unknown: the driver then falls back to its own explicit constant. Read-only and
+// cascade-free, so a rate change reaches a driver only when it asks again.
 uint32_t arch_periph_clock_hz(uintptr_t base);
 
 // Ungate the clock and drop the bus-side supervisor-protect for the register block
@@ -162,10 +162,10 @@ int arch_periph_enable(uintptr_t base);
 // entry names. A backend never range-matches and never admits a whole block.
 //
 // An entry's block MUST be CLOCKED, POWERED and out of RESET whenever the syscall can
-// reach it. THE SEAM CHECKS NONE OF THAT: it validates alignment, wrap and possession and
-// consults no clock, power or reset state. The store runs in the kernel's frame, so a
-// fault on an unready block reaches kfault_terminate and ends the system. XMC4800's USIC0
-// qualifies only because kickos_xmc_usic_init() ungates it from arch_init; a U1C0/U2C0
+// reach it, and the caller carries that: the seam validates alignment, wrap and
+// possession, which is the whole of what it reads. The store runs in the kernel's frame,
+// so a fault on an unready block reaches kfault_terminate and ends the system. XMC4800's
+// USIC0 qualifies because kickos_xmc_usic_init() ungates it from arch_init; a U1C0/U2C0
 // entry behind CGATCLR1 would not.
 //
 // Returns 0, -KOS_EINVAL (not on the allowlist, or `value` has a bit outside the entry's
@@ -313,11 +313,9 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 // (the sim) or where there is no MPU.
 void kickos_arch_mpu_commit(void);
 
-// MMU-era NOTE (concepts, never mechanisms): a future VMSA/paging port introduces
-// a PARALLEL arch_aspace_* family (build/switch/map a page-table root), NOT an
-// overload of arch_mpu_apply and NOT a reinterpretation of arch_mpu_region. The
-// MPU seam stays a flat, non-translating protection-region set; do not try to
-// cram "load a page table" into it. See docs/design-mmu-era-exploration.md.
+// MMU-era NOTE: this seam is a flat, NON-TRANSLATING protection-region set, and stays
+// one. A VMSA/paging port gets its own parallel arch_aspace_* family (build/switch/map a
+// page-table root). See docs/design-mmu-era-exploration.md.
 
 // The smallest region this arch's MPU can enforce: ARM PMSA 32 bytes, RISC-V PMP
 // NAPOT 8, one host page on the sim. A return of 0 means this arch has NO enforceable
@@ -493,11 +491,11 @@ struct arch_reserved_block
     size_t size;
 };
 
-// Fill `out` (capacity `max`, the kernel passes KICKOS_MAX_RESERVED) with this
-// chip's reserved blocks and return the count. KICKOS_RESERVED_NONE (0) is legal
-// (the sim owns nothing MPU-governable). NO fallback TU on purpose: an enforcing
-// port that forgets to declare its set is a LINK error, not a silent open hole
-// (affirmative fail-closed). Defined per enforcing chip under #if KICKOS_HAVE_MPU.
+// Fill `out` (capacity `max`, the kernel passes KICKOS_MAX_RESERVED) with this chip's
+// reserved blocks and return the count. KICKOS_RESERVED_NONE (0) is legal, the sim owning
+// nothing MPU-governable. Every definition is per enforcing chip under #if
+// KICKOS_HAVE_MPU, so an enforcing port that forgets to declare its set is a LINK error
+// rather than a silent open hole (affirmative fail-closed).
 #define KICKOS_RESERVED_NONE 0u
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max);
 
@@ -558,9 +556,10 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result);
 #endif
 
 // --- Interrupt controller (thin abstraction: mask / unmask / raise) --------
-// Deliberately minimal: no priority grouping, pending-vs-active, edge-vs-level,
-// or tail-chaining; those are earned per-chip at M1 against real silicon. On ARM
-// this backs onto the NVIC; on the sim, signal-driven injection.
+// The whole seam is delivery gating: mask, unmask, inject, clear_pending. Priority
+// grouping, pending-vs-active, edge-vs-level and tail-chaining are earned per-chip
+// against real silicon. On ARM this backs onto the NVIC; on the sim, signal-driven
+// injection.
 //
 // mask/unmask gate delivery of a line. The generic first-level ISR masks the
 // line before waking its driver (thread context), which unmasks via irq_ack once
@@ -581,9 +580,9 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result);
 // a coalesced redelivery is carried through ONE shared cell + ONE physical doorbell
 // and the per-line pending bit is cleared as it is rung. So AT MOST ONE unmask with
 // a pending redelivery may occur per IrqLock/interrupts-masked region; a second
-// would clobber the first's identity and lose an event. Holds today (irq_claim/
-// wait/ack each unmask exactly one line per lock section); a future bulk-rearm path
-// needs the identity-free dispatcher (see TODO M4).
+// would clobber the first's identity and lose an event. irq_claim/wait/ack each unmask
+// exactly one line per lock section, which is what holds it; a bulk-rearm path would
+// need the identity-free dispatcher (see TODO M4).
 void arch_irq_mask(int line);
 
 // Enable delivery of a line, PRESERVING any raise latched while it was masked: a
@@ -619,13 +618,13 @@ void arch_console_write_sync(char const* buf, size_t n);
 
 // Force the UART back to a known polled-ready channel on the panic path after a
 // userspace console driver may have left its granted register window garbled (D6).
-// No-op fallback TU (boards that never hand over need nothing); a chip
-// that supports handover overrides it with an idempotent full-window register rewrite.
+// A chip that supports handover overrides this with an idempotent full-window register
+// rewrite; the fallback TU is a no-op, which is what a board that keeps the console needs.
 void arch_console_reclaim(void);
 
 // The register window arch_console_reclaim writes, i.e. the device a userspace console
-// driver is granted on this chip. *size == 0 (the fallback TU) means "no window": either
-// the console is not a memory-mapped device, or this chip has no handover.
+// driver is granted on this chip. *size == 0 (the fallback TU) says this chip names no
+// window, the console being either not memory-mapped or not handed over.
 //
 // The window is the ARCH's answer, never an address userspace supplied: the reclaim is
 // about to reprogram exactly these registers.

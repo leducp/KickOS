@@ -89,7 +89,7 @@ site rv32imac qemu-riscv console_tx.cc:284:49 NONE
 site rv32imac qemu-riscv console_tx.cc:286:24 NONE
 site rv32imac qemu-riscv console_tx.cc:294:31 NONE
 site rv32imac qemu-riscv console_tx.cc:310:27 NONE
-site rv32imac qemu-riscv console_tx.cc:357:27 NONE
+site rv32imac qemu-riscv console_tx.cc:356:27 NONE
 
 site rv32imac esp32c6-wroom-st console_tx.cc:69:37  chip_esp32c6.cc:c6_tx_slot_free
 site rv32imac esp32c6-wroom-st console_tx.cc:91:28  chip_esp32c6.cc:c6_tx_push
@@ -102,7 +102,7 @@ site rv32imac esp32c6-wroom-st console_tx.cc:284:49 chip_esp32c6.cc:c6_tx_slot_f
 site rv32imac esp32c6-wroom-st console_tx.cc:286:24 chip_esp32c6.cc:c6_tx_push
 site rv32imac esp32c6-wroom-st console_tx.cc:294:31 chip_esp32c6.cc:c6_tx_irq_disable
 site rv32imac esp32c6-wroom-st console_tx.cc:310:27 chip_esp32c6.cc:c6_tx_irq_disable
-site rv32imac esp32c6-wroom-st console_tx.cc:357:27 chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-st console_tx.cc:356:27 chip_esp32c6.cc:c6_tx_irq_disable
 
 site rxv3 rx72m-st console_tx.cc:69:37  chip_rx72m.cc:rx_tx_slot_free
 site rxv3 rx72m-st console_tx.cc:91:28  chip_rx72m.cc:rx_tx_push
@@ -115,7 +115,7 @@ site rxv3 rx72m-st console_tx.cc:284:49 chip_rx72m.cc:rx_tx_slot_free
 site rxv3 rx72m-st console_tx.cc:286:24 chip_rx72m.cc:rx_tx_push
 site rxv3 rx72m-st console_tx.cc:294:31 chip_rx72m.cc:rx_tx_irq_disable
 site rxv3 rx72m-st console_tx.cc:310:27 chip_rx72m.cc:rx_tx_irq_disable
-site rxv3 rx72m-st console_tx.cc:357:27 chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-st console_tx.cc:356:27 chip_rx72m.cc:rx_tx_irq_disable
 
 # --- POINTER C: Kernel::irq_table[irq].handler, one site -----------------------
 # The table is TOTAL (irq_init seeds every slot with irq_default_handler) and the callee
@@ -182,7 +182,7 @@ site armv7m qemu             console_tx.cc:284:49  NONE
 site armv7m qemu             console_tx.cc:286:24  NONE
 site armv7m qemu             console_tx.cc:294:31  NONE
 site armv7m qemu             console_tx.cc:310:27  NONE
-site armv7m qemu             console_tx.cc:357:27  NONE
+site armv7m qemu             console_tx.cc:356:27  NONE
 
 site armv7m qemu-m3          console_tx.cc:69:37   NONE
 site armv7m qemu-m3          console_tx.cc:91:28   NONE
@@ -195,7 +195,7 @@ site armv7m qemu-m3          console_tx.cc:284:49  NONE
 site armv7m qemu-m3          console_tx.cc:286:24  NONE
 site armv7m qemu-m3          console_tx.cc:294:31  NONE
 site armv7m qemu-m3          console_tx.cc:310:27  NONE
-site armv7m qemu-m3          console_tx.cc:357:27  NONE
+site armv7m qemu-m3          console_tx.cc:356:27  NONE
 
 site armv7m qemu-m7          console_tx.cc:69:37   NONE
 site armv7m qemu-m7          console_tx.cc:91:28   NONE
@@ -208,7 +208,7 @@ site armv7m qemu-m7          console_tx.cc:284:49  NONE
 site armv7m qemu-m7          console_tx.cc:286:24  NONE
 site armv7m qemu-m7          console_tx.cc:294:31  NONE
 site armv7m qemu-m7          console_tx.cc:310:27  NONE
-site armv7m qemu-m7          console_tx.cc:357:27  NONE
+site armv7m qemu-m7          console_tx.cc:356:27  NONE
 
 site armv7m qemu-m33         console_tx.cc:69:37   NONE
 site armv7m qemu-m33         console_tx.cc:91:28   NONE
@@ -221,7 +221,7 @@ site armv7m qemu-m33         console_tx.cc:284:49  NONE
 site armv7m qemu-m33         console_tx.cc:286:24  NONE
 site armv7m qemu-m33         console_tx.cc:294:31  NONE
 site armv7m qemu-m33         console_tx.cc:310:27  NONE
-site armv7m qemu-m33         console_tx.cc:357:27  NONE
+site armv7m qemu-m33         console_tx.cc:356:27  NONE
 
 site armv7m frdmk64f-st      console_tx.cc:69:37   chip_mk64f.cc:k64_tx_slot_free
 site armv7m frdmk64f-st      console_tx.cc:91:28   chip_mk64f.cc:k64_tx_push
@@ -234,7 +234,7 @@ site armv7m frdmk64f-st      console_tx.cc:284:49  chip_mk64f.cc:k64_tx_slot_fre
 site armv7m frdmk64f-st      console_tx.cc:286:24  chip_mk64f.cc:k64_tx_push
 site armv7m frdmk64f-st      console_tx.cc:294:31  chip_mk64f.cc:k64_tx_irq_disable
 site armv7m frdmk64f-st      console_tx.cc:310:27  chip_mk64f.cc:k64_tx_irq_disable
-site armv7m frdmk64f-st      console_tx.cc:357:27  chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-st      console_tx.cc:356:27  chip_mk64f.cc:k64_tx_irq_disable
 
 site armv7m teensy41-st      console_tx.cc:69:37   chip_imxrt1062.cc:lp6_tx_slot_free
 site armv7m teensy41-st      console_tx.cc:91:28   chip_imxrt1062.cc:lp6_tx_push
@@ -247,7 +247,7 @@ site armv7m teensy41-st      console_tx.cc:284:49  chip_imxrt1062.cc:lp6_tx_slot
 site armv7m teensy41-st      console_tx.cc:286:24  chip_imxrt1062.cc:lp6_tx_push
 site armv7m teensy41-st      console_tx.cc:294:31  chip_imxrt1062.cc:lp6_tx_irq_disable
 site armv7m teensy41-st      console_tx.cc:310:27  chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41-st      console_tx.cc:357:27  chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-st      console_tx.cc:356:27  chip_imxrt1062.cc:lp6_tx_irq_disable
 
 site armv7m xmc4800-relax-st console_tx.cc:69:37   usic_uart.cc:xmc_tx_slot_free
 site armv7m xmc4800-relax-st console_tx.cc:91:28   usic_uart.cc:xmc_tx_push
@@ -260,7 +260,7 @@ site armv7m xmc4800-relax-st console_tx.cc:284:49  usic_uart.cc:xmc_tx_slot_free
 site armv7m xmc4800-relax-st console_tx.cc:286:24  usic_uart.cc:xmc_tx_push
 site armv7m xmc4800-relax-st console_tx.cc:294:31  usic_uart.cc:xmc_tx_irq_disable
 site armv7m xmc4800-relax-st console_tx.cc:310:27  usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax-st console_tx.cc:357:27  usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-st console_tx.cc:356:27  usic_uart.cc:xmc_tx_irq_disable
 
 site armv7m f411disco-st     console_tx.cc:69:37   chip_stm32f411.cc:f4_tx_slot_free
 site armv7m f411disco-st     console_tx.cc:91:28   chip_stm32f411.cc:f4_tx_push
@@ -273,7 +273,7 @@ site armv7m f411disco-st     console_tx.cc:284:49  chip_stm32f411.cc:f4_tx_slot_
 site armv7m f411disco-st     console_tx.cc:286:24  chip_stm32f411.cc:f4_tx_push
 site armv7m f411disco-st     console_tx.cc:294:31  chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m f411disco-st     console_tx.cc:310:27  chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m f411disco-st     console_tx.cc:357:27  chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-st     console_tx.cc:356:27  chip_stm32f411.cc:f4_tx_irq_disable
 
 site armv7m blackpill-st     console_tx.cc:69:37   chip_stm32f411.cc:f4_tx_slot_free
 site armv7m blackpill-st     console_tx.cc:91:28   chip_stm32f411.cc:f4_tx_push
@@ -286,7 +286,7 @@ site armv7m blackpill-st     console_tx.cc:284:49  chip_stm32f411.cc:f4_tx_slot_
 site armv7m blackpill-st     console_tx.cc:286:24  chip_stm32f411.cc:f4_tx_push
 site armv7m blackpill-st     console_tx.cc:294:31  chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m blackpill-st     console_tx.cc:310:27  chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m blackpill-st     console_tx.cc:357:27  chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-st     console_tx.cc:356:27  chip_stm32f411.cc:f4_tx_irq_disable
 
 site armv7m due-st           console_tx.cc:69:37   chip_sam3x8e.cc:sam_tx_slot_free
 site armv7m due-st           console_tx.cc:91:28   chip_sam3x8e.cc:sam_tx_push
@@ -299,4 +299,4 @@ site armv7m due-st           console_tx.cc:284:49  chip_sam3x8e.cc:sam_tx_slot_f
 site armv7m due-st           console_tx.cc:286:24  chip_sam3x8e.cc:sam_tx_push
 site armv7m due-st           console_tx.cc:294:31  chip_sam3x8e.cc:sam_tx_irq_disable
 site armv7m due-st           console_tx.cc:310:27  chip_sam3x8e.cc:sam_tx_irq_disable
-site armv7m due-st           console_tx.cc:357:27  chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due-st           console_tx.cc:356:27  chip_sam3x8e.cc:sam_tx_irq_disable

@@ -25,8 +25,7 @@ if(NOT TARGET trapnest)
   return() # diagnostics off -> app not built; skip its test
 endif()
 
-# The figures the arm parks at live in the backend's own header, on this target only, so no
-# other app picks up an arch-private include path.
+# arch-private include path, on this target only.
 target_include_directories(trapnest PRIVATE
   "${PROJECT_SOURCE_DIR}/arch/riscv/rv32imac/include")
 

@@ -4,16 +4,14 @@
 #
 # Verdict gate for a self-asserting ARM-COUNTING app: one that emits `[<prefix>] ok -
 # <arm>` per arm, `[<prefix>] ERROR: <arm>` per failure, and ends with
-# `[<prefix>] PASS (<n> arms)`. Boots on QEMU when QEMU_MACHINE is set, natively
-# otherwise, so the sim and the QEMU boards are held to one standard.
+# `[<prefix>] PASS (<n> arms)`. Boots on QEMU when QEMU_MACHINE is set, natively otherwise.
 #
-# The count must be MET EXACTLY, not merely reached: too few means an arm was deleted
-# or the run was cut short, too many means the posture changed under the gate (an
-# armv6m no-ring board reporting the full armv7m set, say) without the expectation
-# being updated. The caller owns the number because only its CMakeLists knows the
-# board's posture. And the verdict's own tally must agree with the lines on the wire:
-# those come from different code paths (a counter vs one emit per arm), so a mismatch
-# means output was lost between them and the count cannot be trusted.
+# The count must be MET EXACTLY, not merely reached: too few means an arm was deleted or the
+# run was cut short, too many means the posture changed under the gate without the
+# expectation being updated. The caller owns the number because only its CMakeLists knows the
+# board's posture. The verdict's own tally must also agree with the lines on the wire: those
+# come from different code paths, a counter against one emit per arm, so a mismatch means
+# output was lost between them and the count cannot be trusted.
 #
 # usage: check_app_arms.sh <elf> <prefix> <exact-arm-count> [must-be-absent...]
 

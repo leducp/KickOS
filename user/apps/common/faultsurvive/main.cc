@@ -6,38 +6,37 @@
 // KICKOS_FS_MODE 0: an unprivileged worker executes a trapping instruction; root must
 // run AFTER it and end the system cleanly. The join is the ordering proof: it returns
 // only once the worker is gone.
-// KICKOS_FS_MODE 1: the worker recurses off its own stack (design 4.2). There is no
-// exception frame the thread legitimately produced, so the fault must reach the PANIC
-// dump instead of the thread kill. Needs a guarded stack, so only an enforcing build
-// gates it.
+// KICKOS_FS_MODE 1: the worker recurses off its own stack (design 4.2). The thread
+// produced no legitimate exception frame, so the fault must reach the PANIC dump instead
+// of the thread kill. Needs a guarded stack, so an enforcing build gates it.
 // KICKOS_FS_MODE 2: the worker points SP at a buffer OUTSIDE its stack and then faults.
 // The frame is written in full, at a writable address, by a thread that really is
 // unprivileged in thread mode, so every register-derived clause of the rule says yes and
 // only the stack-bounds test can refuse it. It is the witness that a backend actually
 // calls kickos_fault_frame_trusted, and the one mode 1 cannot stand in for: a stacking
 // abort sets a status bit on armv7m, and this sets none anywhere.
-// On RX the frame is not written here at all, it goes to the ISP, and what the
-// bounds test reads is the USP the exit stub WOULD have run on.
+// On RX the frame goes to the ISP instead, and what the bounds test reads is the USP the
+// exit stub WOULD have run on.
 // KICKOS_FS_MODE 3: the security regression for the software trap prologue. The worker
 // points SP at a KERNEL word (kickos_trapstack_witness) and traps. A prologue that stored
 // the frame through the U-mode SP overwrites that word in privileged mode; the bounds test
-// refuses the SP before the first store. Same ISA constraint as mode 2.
+// refuses the SP before the first store.
 // KICKOS_FS_MODE 4: the same defect one step in, where a FRAME-only bound still says yes.
 // The worker runs on a CALLER-PROVIDED stack, so the app knows stack_lo and can poison a
 // band of its own data immediately below it. The worker then parks SP inside its stack with
 // room for the frame but not for the kernel descent under it, so a frame-only bound accepts
 // it and the reporter chain runs privileged through the band. Root reads the band back after
-// the join. Same ISA constraint as mode 2.
+// the join.
 // KICKOS_FS_MODE 5: the alignment leg. The worker drops SP two bytes, still deep inside its
 // own stack and in bounds, and traps, so only alignment can refuse it. QEMU virt COMPLETES
 // the misaligned frame stores, so this mode witnesses the REFUSAL and not the prologue
-// live-lock a trapping core would take instead. Same ISA constraint as mode 2.
+// live-lock a trapping core would take instead.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/emit.h>
 
-// Undefined would silently select mode 0 rather than fail.
+// An unset mode compares equal to 0, so it would silently build that arm.
 #ifndef KICKOS_FS_MODE
 #error "KICKOS_FS_MODE must be set by this app's CMakeLists"
 #endif
@@ -45,14 +44,13 @@
 using kickos::emit;
 
 // The frame geometry modes 3 and 4 aim at. rv32imac only: this app's CMakeLists puts that
-// backend's include directory on those two targets alone, and no other backend defines the
-// figures.
+// backend's include directory on those two targets alone.
 #if (KICKOS_FS_MODE == 3 || KICKOS_FS_MODE == 4) && defined(__riscv)
 #include <kickos/arch/rv_trap_stack.h>
 #endif
 
 #if KICKOS_FS_MODE == 3
-// A kernel .data word (kickos/init/fault.cc, selftest builds). Referenced for its ADDRESS
+// A kernel .data word (kernel/init/fault.cc, selftest builds). Referenced for its ADDRESS
 // only; an unprivileged thread that dereferenced it would fault.
 extern "C" volatile unsigned kickos_trapstack_witness;
 #endif
@@ -64,10 +62,9 @@ extern "C" volatile unsigned kickos_trapstack_witness;
 #elif defined(__arm__) || defined(__thumb__)
 #define KICKOS_FS_TRAP() __asm volatile("udf #0")
 #elif defined(__RX__)
-// A PRIVILEGED instruction, not an undefined one: RX documents no reserved undefined
-// encoding, while MVTIPL in user mode is a defined privileged-instruction exception
-// (RXv3 ISA UM sec.5.1.2, and its own page). IPL is already 0, so an unexpected
-// execution in supervisor mode changes nothing and the app reports its own failure.
+// A PRIVILEGED instruction: MVTIPL in user mode is a defined privileged-instruction
+// exception (RXv3 ISA UM sec.5.1.2, and its own page). IPL is already 0, so an execution
+// that lands in supervisor mode changes nothing and the app reports its own failure.
 #define KICKOS_FS_TRAP() __asm volatile("mvtipl #0")
 #else
 #define KICKOS_FS_TRAP() __builtin_trap() // host: x86 ud2 -> SIGILL
@@ -104,8 +101,7 @@ namespace
     constexpr uint32_t FS_BAND_SIZE = 512;
     constexpr uint32_t FS_BAND_POISON = 0x5AFEBA5Eu;
 
-    // stack_lo, published by main before the spawn.
-    uintptr_t g_fs_stack_lo = 0;
+    uintptr_t g_fs_stack_lo = 0; // published before the spawn
 #endif
 #if KICKOS_FS_MODE == 5
 #if !defined(__riscv) && !defined(__RX__)
@@ -128,10 +124,9 @@ namespace
     volatile unsigned g_sink = 0;
 
     // `prev` is what forces one live frame per level: with the caller's array address
-    // escaping into the call the frame cannot be reused, so neither inlining nor the
-    // accumulator form of tail-recursion elimination can flatten this into a loop. A
-    // shape without it compiled at -Os to a single 256-byte frame and a loop, and never
-    // left the stack region.
+    // escaping into the call the frame cannot be reused, so at -Os neither inlining nor
+    // the accumulator form of tail-recursion elimination can flatten this into a single
+    // frame and a loop that never leaves the stack region.
     __attribute__((noinline)) unsigned burn(unsigned depth, volatile unsigned* prev)
     {
         volatile unsigned pad[64];

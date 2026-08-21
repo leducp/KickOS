@@ -10,9 +10,10 @@
 // TDRE (S1 bit 7) resets SET and re-asserts while the TWFIFO.TXWATER condition holds
 // (RM 52.3.5), so arming TIE on an idle channel raises immediately.
 //
-// OR/NF/FE/PF raise IRQ 32, which nothing claims; TDRE/TC/RDRF raise IRQ 31 (RM 3.2.2.3
-// Table 3-5). FE inhibits further reception and OR blocks RDRF until cleared (RM 52.3.5),
-// so a reader that ignores those flags leaves the receiver permanently dead.
+// OR/NF/FE/PF raise IRQ 32 while TDRE/TC/RDRF raise IRQ 31 (RM 3.2.2.3 Table 3-5), so
+// kos_uart_read services the error flags out of S1 itself. FE inhibits further reception and
+// OR blocks RDRF until cleared (RM 52.3.5), so a reader that ignores those flags leaves the
+// receiver permanently dead.
 
 #include <kickos/driver/uart.h>
 
@@ -49,8 +50,8 @@ namespace
     }
 
     // C1.M=0 is an 8-bit frame TOTAL: an enabled parity bit REPLACES the eighth data bit
-    // (RM 52.4.4.1 Table 52-11, RM 52.3.8 note). 8 data bits plus parity is the 9-bit frame,
-    // and 7-bit-no-parity has no encoding on this part.
+    // (RM 52.4.4.1 Table 52-11, RM 52.3.8 note), so 8 data bits plus parity is the 9-bit
+    // frame C1.M=1. The encodable set is 8N, 7E/7O and 8E/8O.
     bool encode_frame(struct kos_uart_config const* cfg, uint8_t* out_c1, uint8_t* out_sbns)
     {
         if (cfg->stop_bits != 1u and cfg->stop_bits != 2u)

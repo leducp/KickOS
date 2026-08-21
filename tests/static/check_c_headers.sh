@@ -3,8 +3,8 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Compiles every C-facing header as a standalone C11 translation unit. The tree tracks ONE
-# .c file (apps/hello_c), which reaches only the headers it includes, so a break in the C
-# claim any other one makes surfaces in a consumer's tree and nowhere else.
+# .c file (user/apps/common/hello_c), which reaches only the headers it includes, so a break
+# in the C claim any other one makes surfaces in a consumer's tree and nowhere else.
 #
 # Run from the repo root:
 #   tests/static/check_c_headers.sh <c-compiler> <include-root>...
@@ -43,28 +43,25 @@
 #   pedantic  a SECOND pass over the same corpus at -pedantic-errors. The main pass is not
 #             pedantic, so a construct that is a GNU extension rather than ISO C11 passes it
 #             exactly as it passes a consumer build with extensions on; this pass is what
-#             fails it before a consumer compiling strictly conforming C11 does. Its TU
-#             carries a trailing typedef: an include-only TU of a macros-only header is
-#             EMPTY, which -pedantic-errors forbids on its own.
+#             fails it before a consumer compiling strictly conforming C11 does.
 #
 #   refusal   a header whose own #include cannot be found is REFUSED by name, not reported as
 #             invalid C: the compiler judged nothing, so the verdict is UNKNOWN. Fix is a
 #             missing root on the command line, or a freestanding header the compiler lacks.
 #
-# THEREFORE NOT CAUGHT. Know these before trusting a green run:
-#   - `//` comments, compound literals and designated initialisers. All legal C99, and the
-#     positive probe pins `//` as accepted.
-#   - a quoted include that resolves next to the including file rather than under a root. It
-#     is compiled as part of its includer and never standalone.
-#   - anything behind a preprocessor conditional this gate does not define. It compiles with
-#     NO -D at all, so the C branch of a `#ifdef __cplusplus` is the only branch read.
-#   - a GNU extension, in the MAIN pass only: the pedantic pass fails it.
-#   - LINKING. -fsyntax-only proves a C TU parses and type-checks against the header; it
-#     proves nothing about a symbol the consumer then has to find.
-#   - a C++ construct that is ALSO valid C with different meaning: a cast-expression spelled
-#     `(T)x`, or a struct tag reused as a type name.
-#   - the arch, chip and board headers of every board but this one; the fleet sweep covers the
-#     rest.
+# What a green run states:
+#   - the language is C11, so a C99 construct is accepted: `//` comments, compound literals
+#     and designated initialisers, with `//` pinned accepted by the positive probe.
+#   - a quoted include that resolves beside its includer is compiled as part of that includer
+#     rather than standalone.
+#   - the compile carries NO -D at all, so the C branch of a `#ifdef __cplusplus` is the one
+#     branch read and any other conditional stays unread.
+#   - -fsyntax-only proves a C TU parses and type-checks against the header. Whether the
+#     consumer then finds a symbol is a link property.
+#   - the verdict is about spelling, so a C++ construct that is ALSO valid C with a different
+#     meaning reads clean: a cast-expression `(T)x`, a struct tag reused as a type name.
+#   - the arch, chip and board headers are the ones THIS board builds; the fleet sweep covers
+#     the other boards.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -194,7 +191,6 @@ close_over_includes() { # <seed list file> <workdir> -> <workdir>/corpus and <wo
 # 0 valid C11, 1 a language error, 2 an #include was not found. The TU comes from stdin so a
 # quoted include resolves against the repo root, which every corpus path is relative to; a TU
 # written into $TMP would resolve them against $TMP.
-# $CFLAGS and $INCARGS are unquoted so that they word-split into separate arguments.
 compile_as_c() { # <header path> <stderr file>
     # shellcheck disable=SC2086
     if printf '#include "%s"\n' "$1" | "$CC" $CFLAGS $INCARGS -x c - 2>"$2"; then
@@ -363,10 +359,9 @@ INCARGS="-I$TMP/st/inc"
 seeds_of "$TMP/st/headers" > "$TMP/st/seeds"
 close_over_includes "$TMP/st/seeds" "$TMP/st/w"
 
-# probe_seed carries the guard; probe_cxx has an extern "C" with no guard; probe_leaf and
-# probe_deep arrive by include, one and two hops out; probe_orphan is included by nobody;
-# probe_prose names both spellings and an #include in COMMENTS only. Compared as names, not a
-# count: a count passes while the wrong three files are selected.
+# probe_leaf and probe_deep arrive by include, one and two hops out, and probe_orphan is
+# included by nobody. Compared as names, not a count: a count passes while the wrong three
+# files are selected.
 SEL="$(sed 's|.*/||' "$TMP/st/w/corpus" | sort | tr '\n' ' ' | sed 's/ $//')"
 [ "$SEL" = "probe_deep.h probe_leaf.h probe_seed.h" ] || {
     fail "the selector chose '$SEL', not 'probe_deep.h probe_leaf.h probe_seed.h';

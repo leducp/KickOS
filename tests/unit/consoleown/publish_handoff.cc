@@ -8,10 +8,6 @@
 // The line a byte must not cross is the END of the publish drain, not the ownership flip:
 // root spawns the driver only once the drain returns, so a bracketed writer poking the UART
 // before that is what the protocol is FOR. note_commit marks that line.
-//
-// Injecting only console_tx_deinit, with no ownership move, is a composition the syscall
-// cannot produce; the last arm keeps that injection beside the real one to show what it
-// cannot see.
 
 #include <gtest/gtest.h>
 
@@ -135,8 +131,9 @@ namespace
     }
 }
 
-// Premise for every arm below: with no publish in flight, the message reaches the wire
-// whole AND the producer really does chunk, so a gap ordinal names a real boundary.
+// Premise for the arms that seat a publish in a gap ordinal: with no publish in flight the
+// message reaches the wire whole AND the producer really does chunk, so an ordinal names a
+// real boundary.
 TEST(ConsolePublishHandoff, AChunkedWriteWithNoPublishReachesTheWireWhole)
 {
     run_isolated([]() {

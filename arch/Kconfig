@@ -5,10 +5,10 @@
 # capabilities the silicon has, and decides no knob's value, so a new chip adds a
 # stanza and edits no ladder.
 #
-# Nothing here is prompted, and a chip CONSTANT does not appear here at all: if no
-# option's availability or default depends on a hardware fact, it is not configuration.
-# Those live in arch/<arch>/chip/<chip>/include/kickos/chip_limits.h, defined
-# unconditionally on the model of config/limits.h.
+# Everything here is unprompted. A chip CONSTANT belongs in
+# arch/<arch>/chip/<chip>/include/kickos/chip_limits.h, defined unconditionally on the
+# model of config/limits.h: an option whose availability and default depend on no
+# hardware fact is not configuration.
 
 config ARCH_ARMV6M
 	bool
@@ -119,8 +119,8 @@ config CHIP_RX72M
 	select ARCH_RXV3
 	select HAS_MPU
 
-# The sim has no chip: config/board.h and config/system.h fall through to their
-# own defaults, so the string is deliberately empty there.
+# Empty on the sim, which then leaves config/board.h and config/system.h on their own
+# defaults.
 config KICKOS_CHIP
 	string
 	default "imxrt1062" if CHIP_IMXRT1062

@@ -7,55 +7,48 @@
 # assert_no_panic and the sim FAIL_REGULAR_EXPRESSION see a fault at all, so a banner it
 # misses turns a board that died into a board that passed.
 #
-# Run from the repo root, no arguments, no build directory:
-#   tests/static/check_panic_banners.sh
+# Run from the repo root, no arguments: tests/static/check_panic_banners.sh
 #
-#   corpus     tracked C-family sources (*.c *.cc *.h *.S) under arch/, kernel/, include/,
-#              lib/ and system/. Any of them could grow a reporter.
+# THE MATCH: a single-line string literal that BOTH opens with `\n=== ` and carries a
+# closing ` ===` after that. Prose in this tree names a banner without either half, so the
+# shape separates an emit site from a comment ABOUT one with no by-name exemption list to
+# maintain. A comment that spells a WHOLE banner including its `\n` escape does report, and
+# the fix is to stop spelling an escape sequence in prose.
 #
-#   the match  a single-line string literal that BOTH opens with `\n=== ` and carries a
-#              closing ` ===` after that. Prose in this tree names a banner without either
-#              half, so the shape separates an emit site from a comment ABOUT one by
-#              construction, with no by-name exemption list to maintain. A comment that
-#              spells a WHOLE banner including its `\n` escape does report, and the fix is
-#              to stop spelling an escape sequence in prose.
+# THE NAME: when the banner name is itself the conversion, `\n=== %s ===`, the reporter
+# picks it at runtime and the wire text is one line per label. The labels come from the
+# argument NAME on the emit line and from every `<name> = "..."` assignment in the same
+# file, so all three armv7m labels are checked. Every other conversion is substituted with
+# a placeholder, since the ERE keys on the fixed prefix.
 #
-#   the name   when the banner name is itself the conversion, `\n=== %s ===`, the reporter
-#              picks it at runtime and the wire text is one line per label. The labels are
-#              taken from the argument NAME on the emit line and every `<name> = "..."`
-#              assignment in the same file, so all three armv7m labels are checked and not
-#              just the one a reader happened to remember. Every other conversion is
-#              substituted with a placeholder: the ERE keys on the fixed prefix.
-#
-# THEREFORE NOT CAUGHT. Know these before trusting a green run:
-#   - a banner assembled at runtime from pieces, or spelled across two source lines. The
-#     literal is read as bytes on one line; nothing here parses C.
-#   - a label held anywhere but a `<name> = "..."` in the reporter's own file (a table, a
-#     function return, another TU).
-#   - the reverse direction: an alternative in panic.ere that no longer matches any banner
-#     is dead weight and is not reported. The three non-banner alternatives ("KERNEL PANIC:",
-#     "MPU FAULT: thread", "ISOLATION FAULT:") have no `=== ` shape and are outside this
-#     gate entirely.
-#   - whether a banner SHOULD be a panic. That is the exclusion below, and it is a ruling.
+# SCOPE. Read are the banner literals as bytes, one source line at a time, over tracked
+# *.c, *.cc, *.h and *.S under arch/, kernel/, include/, lib/ and system/, any of which
+# could grow a reporter. Outside it: a banner assembled at runtime from pieces or spelled
+# across two source lines, since nothing here parses C; a label held anywhere but a
+# `<name> = "..."` in the reporter's own file, such as a table, a function return or
+# another TU; and the reverse direction, an alternative in panic.ere matching no banner at
+# all. The three non-banner alternatives ("KERNEL PANIC:", "MPU FAULT: thread",
+# "ISOLATION FAULT:") have no `=== ` shape and are outside this gate entirely. Whether a
+# banner SHOULD be a panic is the exclusion below, and that is a ruling.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
-# NOT set -e: collect every finding in one run.
+# Findings accumulate over the whole corpus, so set -e must stay off.
 
 [ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
 # `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
 [ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
 command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
 
-# THE ONE EXCLUSION, and it is a ruling rather than an omission: the thread-fault report is
-# what fault ISOLATION prints when a thread died and the system did not. Three gates
-# (check_rootfault.sh, check_mpu_fault.sh, check_faultsurvive.sh) assert that line is
+# THE ONE EXCLUSION, and it is a ruling: the thread-fault report is what fault ISOLATION
+# prints when a thread died and the system did not. Four gates (check_rootfault.sh,
+# check_mpu_fault.sh, check_faultsurvive.sh, check_qemu_ringppb.sh) assert that line is
 # PRESENT while asserting no panic occurred, so putting it in the ERE would make every one
 # of them contradict itself. On a board with no privilege ring the same violation panics
 # instead, and the banner it prints there is one of the reporter banners below.
 EXCLUDED='=== THREAD FAULT ==='
 
-# Files that MUST each yield a banner. One per fault reporter in the tree, so a shape that
+# Files that MUST each yield a banner, one per fault reporter in the tree, so a shape that
 # stops matching cannot read as "no reporter emits a banner any more".
 REPORTERS='arch/arm/armv6m/arch_armv6m.cc
 arch/arm/armv7m/arch_armv7m.cc
@@ -187,8 +180,8 @@ while IFS="$TAB" read -r f n slot text; do
     checked=$((checked + 1))
     case "$text" in
         *"$EXCLUDED"*)
-            # Named above, with the ruling. Assert it is NOT matched: putting it in the ERE
-            # would break the three gates that read it as a survivable outcome.
+            # Named above, with the ruling. Asserted NOT matched: in the ERE it would break
+            # the four gates that read it as a survivable outcome.
             if printf '%s\n' "$text" | grep -qE "$KOS_PANIC_RE"; then
                 echo "FAIL: $f:$n banner '$text' IS matched by tests/lib/panic.ere, but it is" >&2
                 echo "      the fault-isolation report: the thread died and the system did" >&2

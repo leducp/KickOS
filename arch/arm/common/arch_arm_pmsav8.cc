@@ -2,29 +2,26 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // ARMv8-M (PMSAv8) MPU backend for Cortex-M33 chips (RP2350, and any future
-// nRF5340 / STM32U5 / STM32H5 M33 part). The M33 reuses the armv7m arch for
-// everything else (BASEPRI crit, DWT, SysTick, NVIC, PendSV switch + SVC
-// trampoline); ONLY the MPU differs. So this is NOT a whole new arch: it is a
-// STRONG override of the two shared arch-seam symbols that the v7-M PMSA backend
-// gets wrong on a v8-M core:
+// nRF5340 / STM32U5 / STM32H5 M33 part). The M33 shares the whole armv7m arch
+// (BASEPRI crit, DWT, SysTick, NVIC, PendSV switch + SVC trampoline) and differs only
+// in the MPU, so this file is a STRONG override of exactly two shared arch-seam
+// symbols:
 //
 //   kickos_arch_mpu_commit: programs the running thread's regions into the PMSAv8
 //     RBAR/RLAR pair. The v7-M path writes RASR values to what is RLAR on v8-M, and
 //     clears the RBAR low bits that are now SH/AP/XN -> AP=priv-only, so an
 //     unprivileged thread faults on its own stack.
-//   arch_mpu_region_encodable: 32-byte-granular (PMSAv8 takes an arbitrary
-//     32-byte-aligned [base, base+size); no power-of-two).
+//   arch_mpu_region_encodable: 32-byte-granular, PMSAv8 taking an arbitrary
+//     32-byte-aligned [base, base+size).
 //
 // The stash-only arch_mpu_apply (arch_arm_common.cc) is SHARED unchanged: it records
-// the incoming region set; the armv7m PendSV epilogue calls kickos_arch_mpu_commit
-// AFTER the physical swap (the deferred-commit seam), which lands here. This is the
-// K64F/SYSMPU precedent: a chip with a non-PMSAv7 MPU overrides only the commit and
-// reads the same stash via kickos_arm_mpu_pending.
+// the incoming region set, and the armv7m PendSV epilogue calls
+// kickos_arch_mpu_commit AFTER the physical swap (the deferred-commit seam), which
+// lands here.
 //
-// This TU is NOT in the always-compiled kickos_arch_armv7m source list; it is pulled
-// into the CHIP library only for a PMSAv8 chip (arch/arm/chip/<chip>/mpu.cmake sets
-// KICKOS_ARM_PMSAV8_SOURCE). The v6-M/v7-M PMSA fleet never links it, so their commit
-// fallback stands byte-for-byte. See docs/design-rp2350-mpu-armv8m.md.
+// This TU enters the CHIP library only for a PMSAv8 chip (arch/arm/chip/<chip>/mpu.cmake
+// sets KICKOS_ARM_PMSAV8_SOURCE), so a PMSA board links the shared commit fallback
+// instead. See docs/design-rp2350-mpu-armv8m.md.
 
 #include <kickos/arch/arch.h>
 
@@ -41,9 +38,9 @@ namespace
     using namespace kickos::arm;
 
     // {base,size,attr} -> the MPU_RBAR low attribute bits (SH|AP|XN). attr is the
-    // UNPRIVILEGED access; supervisor comes from the PRIVDEFENA background. Keys off
-    // X/DEV/W exactly like the v7-M mpu_rasr does. Code is RO+executable (Normal);
-    // data/stack is RW+execute-never; a read-only data region (W absent) is RO-any.
+    // UNPRIVILEGED access; supervisor comes from the PRIVDEFENA background. Code is
+    // RO+executable (Normal), data/stack RW+execute-never, and a read-only data region
+    // RO-any.
     uint32_t pmsav8_rbar_attr(uint32_t attr)
     {
         if (attr & ARCH_MPU_X)
@@ -84,20 +81,19 @@ extern "C"
 struct arch_mpu_encoded const* kickos_arm_mpu_pending(void);
 
 // One-time PMSAv8 setup: the MAIR attribute indirection + MemManage enable. Called
-// from the chip arch_init (chip_rp2350.cc) BEFORE the scheduler starts. This is also
-// the LINK ANCHOR: chip_rp2350.o (always pulled for arch_init) references this symbol,
-// which is defined ONLY here, so GNU ld pulls this member and its
-// kickos_arch_mpu_commit / arch_mpu_region_encodable are the ones the link resolves.
-// A definition in an un-referenced archive member would NOT be reached: the fallback TU
-// would answer the reference first and the board would silently decline.
+// from the chip arch_init (chip_rp2350.cc) BEFORE the scheduler starts. This is also the
+// LINK ANCHOR: chip_rp2350.o, always pulled for arch_init, references this symbol, which
+// is defined ONLY here, so GNU ld pulls this member and resolves
+// kickos_arch_mpu_commit / arch_mpu_region_encodable to the overrides below. Without that
+// reference the fallback TU answers them first and the board silently declines.
 //
 // The MPU is per-core banked, so this must run once PER CORE at bring-up.
 void kickos_arm_pmsav8_init(void)
 {
     // kickos_arch_mpu_commit zeroes MPU_CTRL and reprograms per-thread rows ONLY, so a chip
     // fixed row would be dropped on every switch and never rewritten. Refuse such a chip at
-    // boot rather than dropping it silently. No kernel assert on the arch path, so spin as
-    // kickos_arm_mpu_fixed_init does.
+    // boot rather than dropping it silently, spinning as kickos_arm_mpu_fixed_init does:
+    // the arch path has no kernel assert to raise.
     struct kickos_arm_mpu_fixed_region const* fixed = nullptr;
     if (kickos_arm_mpu_fixed(&fixed) != 0)
     {
@@ -153,15 +149,14 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
     return seated;
 }
 
-// Replaces the PMSAv7 kickos_arch_mpu_commit fallback. Programs the running
-// thread's per-thread regions from the shared stash into RBAR/RLAR, disabling the
-// unused descriptors up to MPU_TYPE.DREGION. Called from the armv7m PendSV epilogue
-// AFTER the physical swap. cpsid brackets the disable/reprogram/re-enable: PendSV is
-// lowest priority, so a device IRQ could otherwise preempt a half-programmed MPU (the
-// caller's BASEPRI IrqLock no longer holds by the time the deferred commit runs).
-// There are NO chip fixed regions on the M33 (unlike the imxrt1062 anti-speculation
-// wrap): the Cortex-M33 is not speculative in the way the M7 is, so every descriptor
-// is a per-thread grant.
+// Replaces the PMSAv7 kickos_arch_mpu_commit fallback. Programs the running thread's
+// per-thread regions from the shared stash into RBAR/RLAR, disabling the unused
+// descriptors up to MPU_TYPE.DREGION. Called from the armv7m PendSV epilogue AFTER the
+// physical swap. cpsid brackets the disable/reprogram/re-enable: PendSV is lowest
+// priority, so a device IRQ could otherwise preempt a half-programmed MPU, the caller's
+// BASEPRI IrqLock having lapsed by the time the deferred commit runs. Every descriptor
+// on the M33 is a per-thread grant, which is what makes the MPU_CTRL zeroing below
+// sound.
 void kickos_arch_mpu_commit(void)
 {
     struct arch_mpu_encoded const* const img = kickos_arm_mpu_pending();
@@ -175,8 +170,8 @@ void kickos_arch_mpu_commit(void)
     __asm volatile("cpsid i" ::: "memory");
 
     // Zeroing MPU_CTRL also suspends any chip fixed row for the whole reprogram window, and
-    // the loop below rewrites per-thread rows only. Sound ONLY because this backend has no
-    // fixed row to lose, which kickos_arm_pmsav8_init enforces. PMSAv7 must NOT do this
+    // the loop below rewrites per-thread rows only. Sound because every row on this backend
+    // is per-thread, which kickos_arm_pmsav8_init enforces. PMSAv7 must NOT do this
     // (imxrt1062's anti-speculation wrap).
     reg32(MPU_CTRL) = 0; // disable while reprogramming (a switch must take effect atomically)
     __asm volatile("dsb" ::: "memory");
@@ -205,8 +200,8 @@ void kickos_arch_mpu_commit(void)
 }
 
 // PMSAv8 is byte-granular on a 32-byte page: a window is encodable EXACTLY iff base and
-// base+size both land on a 32-byte boundary, with no power-of-two rule unlike the v7-M
-// PMSA. arch_mpu_min_region needs no backend here, the granule matching v7-M's 32.
+// base+size both land on a 32-byte boundary, any multiple of the granule being nameable.
+// arch_mpu_min_region keeps the shared 32-byte answer.
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size < 32u)
@@ -216,8 +211,8 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return (base & 31u) == 0 and (size & 31u) == 0;
 }
 
-// Replaces the v7-M fallback 1, but only in an enforcement build: this TU is inside
-// KICKOS_HAVE_MPU.
+// Replaces the v7-M fallback 1. Reached only in an enforcement build, this TU sitting
+// inside KICKOS_HAVE_MPU.
 int arch_mpu_region_pow2(void)
 {
     return 0;

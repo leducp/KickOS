@@ -202,8 +202,9 @@ SECTIONS
         *(.bss .bss.* COMMON)
         . = ALIGN(4);
         _appdata_used_end = .;
-        /* MAX, not a bare set: ASSERTs are evaluated after layout, so a backwards move
-           fails the link before the overflow ASSERT below can print. */
+        /* ld evaluates ASSERTs after layout, so a bare `. = start + size` that moved
+           backwards would fail the link ahead of the overflow ASSERT below. MAX keeps
+           that ASSERT the thing that prints. */
         . = MAX(., __kickos_appdata_start + _appdata_size); /* pad the granted window */
         __kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
@@ -272,8 +273,7 @@ ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
 /* App globals must fit _appdata_size, the app's MPU-granted .data/.bss window.
-   SYSMPU is 32-byte granular, so any 32-byte multiple works here; there is no
-   power-of-two requirement, unlike the PMSA chips.
+   SYSMPU is 32-byte granular, so any 32-byte multiple works here.
    A zero-sized used-end means the user-path selector matched nothing. */
 #if KICKOS_HAVE_MPU
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
@@ -285,11 +285,10 @@ ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
    (kernel/arch/chip/lib) into kernel .data/.bss and lets .appdata/.appbss catch the
    rest, so a broken selector shows up as an EMPTY KERNEL side (kernel writable state
    silently leaked into the app window); that is the failure to catch, and an empty
-   .bss is the loud signal. NOT app-side: an empty .appdata is legitimate (a minimal
-   freestanding app whose only app-side state was --gc-sections'd away), so it must
-   not assert. What this ASSERT cannot see, that no privileged archive is placed inside
-   the granted window at all, is the appdata_no_kernel ctest
-   (tests/static/check_appdata_no_kernel.sh). */
+   .bss is the loud signal. Only the kernel side is asserted: an empty .appdata is
+   legitimate, a minimal freestanding app having had its app-side state --gc-sections'd
+   away. The appdata_no_kernel ctest (tests/static/check_appdata_no_kernel.sh) is what
+   establishes that no privileged archive lands inside the granted window. */
 ASSERT(_ebss > _sbss,
        "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
 #endif

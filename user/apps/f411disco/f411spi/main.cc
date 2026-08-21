@@ -15,8 +15,8 @@
 // jumper on the board; the final poke at an UNGRANTED peripheral (GPIOB) MUST fault
 // MemManage.
 //
-// Diagnostic app (kickos_add_diagnostic_app): build-only, never a production image;
-// the operator flashes + validates.
+// Diagnostic app (kickos_add_diagnostic_app): the operator flashes and validates on
+// silicon.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -24,9 +24,9 @@
 
 #include <stdint.h>
 
-// Without enforcement the MPU is a no-op, the ungranted poke below succeeds and the
-// console prints the isolation-FAILURE line: a vacuous test reporting a false "PMSA
-// does not gate peripherals" verdict. (CMake also gates the app to enforcement builds.)
+// Anti-vacuity: without enforcement the MPU is a no-op, the ungranted poke below
+// succeeds and the console prints the isolation-FAILURE line, a false "PMSA does not
+// gate peripherals" verdict.
 #if !KICKOS_HAVE_MPU
 #error "f411spi requires enforcement: build the board's base variant, not its flat one"
 #endif
@@ -94,7 +94,7 @@ namespace
         if (rc != 0)
         {
             // Name the pin: a refused mux leaves that signal on the wrong function, and
-            // the loopback verdict below then reads as a result instead of as vacuous.
+            // the loopback verdict below would then read as a result.
             char m[64];
             ksnprintf(m, sizeof(m), "[f411spi] ERROR: pinmux %s failed rc %d\n", what, rc);
             kos::print(m);
@@ -135,9 +135,9 @@ namespace
         *cr2 = CR2_RXNEIE; // arm RX interrupt (only source that wakes line 35)
         *cr1 |= CR1_SPE;
 
-        // Must print before the first blocking wait: if IRQ 35 never fires (misrouted
-        // line / NVIC) the driver hangs in kos_irq_wait, and without this line a board
-        // hung on the IRQ looks like a dead one or a missing console adapter.
+        // Must print before the first blocking wait: a misrouted line hangs the driver in
+        // kos_irq_wait, and this line is what tells that apart from a dead board or a
+        // missing console adapter.
         kos::print("[f411spi] starting loopback (blocking on SPI1 IRQ 35)\n");
 
         // Known pattern; each word round-trips through the PA7->PA6 jumper equal.
@@ -214,9 +214,8 @@ namespace
     }
 }
 
-// KOS_AUTH_PINMUX for the four mux_pin calls, KOS_AUTH_IRQ because the line mint is
-// namespace-wide so root claims and delegates the cap. main never returns, so it needs
-// no KOS_AUTH_SYSTEM.
+// KOS_AUTH_PINMUX for the four mux_pin calls; KOS_AUTH_IRQ because the line mint is
+// namespace-wide, so root claims the cap and delegates it. main never returns.
 KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_PINMUX | KOS_AUTH_IRQ);
 
 int main(int, char**)
@@ -251,7 +250,7 @@ int main(int, char**)
     if (not drv.valid())
     {
         // The console is the only oracle at the bench: without this line a failed spawn
-        // and a dead board look identical.
+        // and a dead board read the same.
         kos::print("[f411spi] ERROR: driver spawn failed\n");
     }
     if (irq != KOS_CAP_NONE)

@@ -13,9 +13,8 @@ namespace tap
 {
     namespace
     {
-        // 8 bytes each, and tap links into test images only: no production image
-        // carries this. The floor is microbit (16 KiB SRAM, armv6m), the smallest board
-        // that builds the suite; the 64 KiB-flash parts cannot link it at all.
+        // 8 bytes each, in test images only. The floor is microbit (16 KiB SRAM, armv6m),
+        // the smallest board that builds the suite.
         constexpr int MAX_TESTS = 128;
 
         struct Entry
@@ -30,9 +29,8 @@ namespace tap
         // only record; run_all() turns a non-zero count into a failing TAP line.
         int g_dropped = 0;
 
-        // Verdict of the running test. One buffer for the failure diagnostic, the skip
-        // reason and the partial reason: mutually exclusive, and it is real BSS on a
-        // 16 KiB-SRAM board.
+        // One buffer for the failure diagnostic, the skip reason and the partial reason:
+        // mutually exclusive, and real BSS on a 16 KiB-SRAM board.
         enum class Verdict : unsigned char
         {
             PASS,
@@ -43,15 +41,15 @@ namespace tap
         Verdict g_verdict = Verdict::PASS;
         char g_msg[192];
 
-        // Repair for the failing path, or null. Never runs on a passing test.
+        // Repair for the failing path, or null.
         TestFn g_after_failure = nullptr;
 
-        // The one writer for the whole stream. Same policy as libc's _write
-        // (user/src/newlib_stubs.cc) and <kickos/sys/emit.h>: try this thread's stdout
-        // cap at index 0, fall back to the kernel debug console for the remainder when
-        // index 0 is empty (-KOS_EBADF) or the driver died (-KOS_EPIPE). Keep the three
-        // copies in step. kos_print alone is not enough: once a service list publishes
-        // the console, console_emit drops every byte handed to the kernel console
+        // The one writer for the whole stream, and the third copy of a policy libc's
+        // _write (user/src/newlib_stubs.cc) and <kickos/sys/emit.h> also carry: keep them in
+        // step. Try this thread's stdout cap at index 0, fall back to the kernel debug
+        // console for the remainder when index 0 is empty (-KOS_EBADF) or the driver died
+        // (-KOS_EPIPE). kos_print alone is not enough, because console_emit drops every byte
+        // handed to the kernel console once a service list publishes it
         // (kernel/init/console.cc, USER_OWNED).
         void emit(char const* s)
         {

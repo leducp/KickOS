@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // MK64FN1M0 GPIO controller register map (K64 Sub-Family RM ch.55). Offsets are
-// instance-relative to a GPIOx base (see mmap.h); direction is a separate PDDR
+// instance-relative to a GPIOx base (chip_mmap.h); direction is a separate PDDR
 // write (unlike XMC, where it lives in the mux).
 
 #ifndef KICKOS_ARCH_ARM_CHIP_MK64F_REGS_GPIO_H

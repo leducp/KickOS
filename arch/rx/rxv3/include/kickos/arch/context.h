@@ -5,8 +5,7 @@
 // deferred through the SWINT handler (switch.S), which saves the FULL interrupted
 // register set (R1-R15, FPSW, the two accumulators, and the INT-stacked PC/PSW) on
 // the thread's own stack. So the only per-thread state the kernel holds is the saved
-// stack pointer; PC/PSW/GPRs all live in the frame that `sp` points at, not in this
-// struct.
+// stack pointer: PC/PSW/GPRs all live in the frame that `sp` points at.
 //
 // Every KickOS thread runs on its own stack selected by PSW.U=1 (the USP), in
 // supervisor (PM=0) for a kernel thread or user (PM=1) for a user thread. The
@@ -35,10 +34,9 @@ struct arch_context
 #endif
 
     // Stack bounds the syscall trap and the SWINT switcher (switch.S) check the live USP
-    // against before they build a frame on it: R0 is the USP in user mode and a thread
-    // owns it, so a wild USP would otherwise run privileged dispatch on a caller-chosen
-    // stack. Set once by arch_context_init; read at F_CTX_STACK_LO / F_CTX_STACK_HI in
-    // switch.S. A USP outside [stack_lo, stack_hi] routes the trap to a panic.
+    // against before they build a frame on it (rx_trap_stack.h). Set once by
+    // arch_context_init; read at F_CTX_STACK_LO / F_CTX_STACK_HI in switch.S. A USP
+    // outside [stack_lo, stack_hi] routes the trap to a panic.
     uint32_t stack_lo;
     uint32_t stack_hi;
 };

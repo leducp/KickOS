@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The GoogleTest layer over the K-seam fixture. Separate from kfixture.h for a link reason
-// stated there: the fixture library is built -fno-exceptions -fno-rtti and gtest's headers
-// configure themselves from those flags.
+// The GoogleTest layer over the K-seam fixture, separate from kfixture.h for the link
+// reason stated there.
 
 #ifndef KICKOS_TESTS_UNIT_KFIXTURE_KSEAM_TEST_H
 #define KICKOS_TESTS_UNIT_KFIXTURE_KSEAM_TEST_H
@@ -42,8 +41,8 @@ namespace kickos
         std::string("KERNEL PANIC: ") + (msg))
 
 // The other way an arm ends: a fixture self-diagnostic, which exits rather than returning a
-// state no assertion could interpret. `msg` is a substring of the refusal, so a diagnostic
-// naming a thread id can still be matched.
+// state no assertion could interpret. `msg` is a substring of the refusal, so one naming a
+// thread id can still be matched.
 #define KICKOS_EXPECT_FIXTURE_REFUSAL(stmt, msg)                                                  \
     EXPECT_DEATH(                                                                                 \
         {                                                                                         \

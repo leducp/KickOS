@@ -31,14 +31,14 @@ static char* s_brk = _kickos_heap_start;
 // the bounds check and both return the same prev, aliasing the same bytes. The heap window is
 // appended to EVERY unprivileged thread, so this is not confined to one task.
 //
-// Left as is because userspace has no primitive to fix it. ARMv6-M (microbit, picopi) and RX
-// have no atomic RMW at all and neither toolchain ships libatomic, so a CAS does not link on a
-// third of the fleet, which is why sys/atomic.h exposes no compare_exchange. The cap table is
-// per-thread with no runtime transfer, so a lock minted on first use is unshareable by
-// construction, and static constructors reach _sbrk before any init hook could mint one
-// earlier. Interrupt masking is privileged, and cpsid i from unprivileged ARM is a silent nop.
-// A fix takes the shape of arch/common/arch_ram_common.cc, the same bump allocator one
-// privilege level up under arch_irq_save, which means a syscall.
+// A CAS does not link on the ARMv6-M or RX boards: neither has an atomic RMW, and neither
+// toolchain ships a libatomic to emulate one, which is where sys/atomic.h's load/store
+// surface comes from. The cap table is per-thread with no runtime transfer, so a lock minted
+// on first use is unshareable by construction, and static constructors reach _sbrk before an
+// init hook could mint one earlier. Interrupt masking is privileged, and unprivileged
+// `cpsid i` on ARM is a silent nop. The fix takes the shape of
+// arch/common/arch_ram_common.cc, the same bump allocator one privilege level up under
+// arch_irq_save, which means a syscall.
 //
 // Serialising this alone would NOT make multi-threaded malloc safe: newlib's bins stay
 // unprotected while __malloc_lock is a no-op (newlib_stubs.cc), so the arena still corrupts.

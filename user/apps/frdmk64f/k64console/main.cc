@@ -6,29 +6,27 @@
 // runs, so a normal worker's printf() output reaches the wire THROUGH that driver with
 // zero app code doing the handover.
 //
-// Honesty (coarse-AIPS ceiling): unlike the XMC PMSA reference, the handover here is
-// FUNCTIONAL + RECLAIM-PROOF, NOT per-thread peripheral ownership: this app's window
-// grant is one of the three genuinely inert ones (docs/reference/boards.md, "When an
-// MMIO grant is INERT"). What SYSMPU DOES still enforce is MEMORY isolation (each
-// thread's stack/data), which is what confines the unprivileged driver that owns the
-// published console. The flat variant is a different demo, not this one with a knob off.
+// The handover is FUNCTIONAL and RECLAIM-PROOF. This app's window grant is one of the
+// three inert ones (docs/reference/boards.md, "When an MMIO grant is INERT"); what
+// SYSMPU enforces is MEMORY isolation (each thread's stack/data), which is what confines
+// the unprivileged driver that owns the published console.
 //
 // Flow:
-//   * Before main: a global constructor emits one line via printf. Constructors run
-//     in the root thread BEFORE the init bring-up publishes, so root's cap 0 is still
-//     empty; _write's kos_send(0) fails and falls back to the kernel console path.
-//     That line is the kernel-path proof (and exercises the per-thread _write reprobe:
-//     a stale process-wide probe would have poisoned the worker's later output).
+//   * Before main: a global constructor emits one line via printf. Constructors run in
+//     the root thread BEFORE the init bring-up publishes, so root's cap 0 is still
+//     empty; _write's kos_send(0) fails and falls back to the kernel console path. That
+//     line is the kernel-path proof, and it exercises the per-thread _write reprobe that
+//     keeps the worker's later output on the driver.
 //   * The default init walks this board's service list (KICKOS_SERVICE_LIST=
-//     kickos_services_frdmk64f), whose first KOS_SVC_CONSOLE entry
-//     runs k64uart_console_start(): create endpoint E, kos_console_publish(E) (kernel
-//     UART goes dark, stdout routes to E, and the publisher's own cap 0 is seated),
-//     open UART0's AIPS slot, spawn the unprivileged driver granted the UART0 window +
+//     kickos_services_frdmk64f), whose first KOS_SVC_CONSOLE entry runs
+//     k64uart_console_start(): create endpoint E, kos_console_publish(E) (kernel UART
+//     goes dark, stdout routes to E, and the publisher's own cap 0 is seated), open
+//     UART0's AIPS slot, spawn the unprivileged driver granted the UART0 window +
 //     {E | WAIT}, close root's own WAIT cap. Only if that succeeds is this main entered.
 //   * main spawns a normal unprivileged worker that printf()s. Its libc _write
-//     self-sends to cap index 0 (seated to E by cap_install_defaults because the
-//     worker is spawned AFTER publish), rendezvous-delivered to the driver, then
-//     poll-written to UART0. No knowledge of endpoints/drivers/MMIO in the worker.
+//     self-sends to cap index 0 (seated to E by cap_install_defaults because the worker
+//     is spawned AFTER publish), rendezvous-delivered to the driver, then poll-written to
+//     UART0.
 //
 // Requires enforcement: the board's base variant.
 
@@ -43,10 +41,9 @@
 
 namespace
 {
-    // Pre-publish poison probe (silicon repro), re-expressed as a global ctor so
-    // it runs BEFORE the init bring-up publishes (main now runs post-publish). cap 0 is
-    // empty here, so this printf falls back to the kernel console path; the worker's
-    // later printfs still reach k64uart because _write reclassifies per thread.
+    // Runs BEFORE the init bring-up publishes, so cap 0 is still empty and this printf
+    // falls back to the kernel console path. The worker's later printfs reach k64uart
+    // because _write reclassifies per thread.
     __attribute__((constructor)) void prepublish_ctor()
     {
         printf("[init] pre-publish ctor line\n");
@@ -57,8 +54,8 @@ namespace
     constexpr uint8_t WORKER_PRIO = 10;
 
     // Unprivileged worker: an ordinary app that just prints. printf -> _write ->
-    // kos_send(cap 0) -> the console endpoint -> the userspace driver -> UART0. No
-    // knowledge of endpoints/drivers/MMIO, which is the whole point of the handover.
+    // kos_send(cap 0) -> the console endpoint -> the userspace driver -> UART0, with no
+    // knowledge of endpoints, drivers or MMIO.
     void worker(void*)
     {
         for (int i = 0; i < 5; i++)
@@ -91,11 +88,10 @@ namespace
         return *reinterpret_cast<volatile uint8_t*>(a);
     }
 
-    // Unprivileged, granted NO MMIO window at all. It reaches UART0 anyway through the
-    // AIPS slot the bring-up opened, which IS the coarse-AIPS point being shown: a
-    // peripheral window grant would not have contained it. The marker goes out on kos::print
-    // (RTT / kernel debug path, NOT the dark chip path, NOT stdio), and the panic strictly
-    // follows the garble in this straight-line thread.
+    // Unprivileged, granted NO MMIO window at all: it reaches UART0 through the AIPS
+    // slot the bring-up opened, which is the coarse-AIPS behaviour under test. The marker
+    // goes out on kos::print (RTT / kernel debug path, never the dark chip path or
+    // stdio), and the panic strictly follows the garble in this straight-line thread.
     void scrambler(void*)
     {
         uintptr_t const uart = UART0_BASE;
@@ -112,13 +108,12 @@ namespace
         // arch_fault_is_user_thread says yes for an unprivileged thread whose frame is its
         // own, so the thread dies, the system lives, and the thread-kill path deliberately
         // does not reclaim the console (the ruling is stated in kpanic_enter,
-        // kernel/init/console.cc). Nothing would then reach the wire at all: the chip path
-        // is dropped while the console is published, and the record routed to the driver is
-        // poll-written into the UART this thread just killed. So no fault banner is
-        // reachable from an app here, and a privileged thread is no way out either, because
-        // PRIVDEFENA is on.
+        // kernel/init/console.cc). Nothing would then reach the wire: while the console is
+        // published the chip path is dropped, and the record routed to the driver is
+        // poll-written into the UART this thread just killed. PRIVDEFENA is on, so a
+        // privileged thread is no way round it either.
         //
-        // kos_panic is the terminal path an unprivileged thread still has, and it reaches
+        // kos_panic is the terminal path an unprivileged thread has, and it reaches
         // kpanic_enter through the same call the fault reporter used, so the reclaim body
         // under test is unchanged. Kept well inside user_panic's 64-byte buffer, so the
         // verdict is not truncated.
@@ -129,14 +124,14 @@ namespace
 
 int main(int, char**)
 {
-    // The default init already published + spawned the driver before this main was
-    // entered (a bring-up failure would have aborted the app), so the console is live
-    // and every thread spawned here gets its cap 0 seated to the endpoint. No handover
-    // call here: doing one would DOUBLE publish (a second endpoint + a second driver,
-    // both granted UART0, the first driver parked forever).
+    // The default init already published and spawned the driver before this main was
+    // entered (a bring-up failure would have aborted the app), so the console is live and
+    // every thread spawned here gets its cap 0 seated to the endpoint. A handover call
+    // here would DOUBLE publish: a second endpoint and a second driver, both granted
+    // UART0, with the first driver parked forever.
 #if K64CONSOLE_SCRAMBLE_TEST
-    // Scramble-then-panic test: the driver needs a beat to emit its first-light banner
-    // before the scrambler (NO MMIO grant, NO memory grant) garbles UART0 under it.
+    // The driver needs a beat to emit its first-light banner before the scrambler, which
+    // holds no grant of any kind, garbles UART0 under it.
     kos_sleep_ns(200000000ull); // 200 ms
     auto const s = kos::thread::spawn(
         scrambler, nullptr, "scrambler",
@@ -152,8 +147,8 @@ int main(int, char**)
     // printf from root reaches the wire THROUGH the userspace driver, with no child thread.
     printf("[root] post-publish line via the userspace driver\n");
     fflush(stdout);
-    // Spawn the printing worker: its index-0 cap is seated to the published endpoint
-    // by cap_install_defaults (it is spawned after the init's publish).
+    // The worker's index-0 cap is seated to the published endpoint by
+    // cap_install_defaults, because it is spawned after the init's publish.
     auto const w = kos::thread::spawn(worker, nullptr, "worker", WORKER_PRIO);
     if (not w.valid())
     {
@@ -161,9 +156,8 @@ int main(int, char**)
     }
 #endif
 
-    // Park: keep the app alive (root exiting would tear the system down). Fall back to a
-    // sleep park if the semaphore could not be created, else an unmintable handle hot-loops
-    // sem_wait.
+    // Park: root exiting would tear the system down. Sleep park when the semaphore could
+    // not be created, else an unmintable handle hot-loops sem_wait.
     kos_cap_t idle = KOS_CAP_NONE;
     (void)kos_sem_create(0, &idle);
     while (true)

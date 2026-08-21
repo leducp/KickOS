@@ -9,10 +9,9 @@ if(NOT KICKOS_ARCH STREQUAL "armv7m")
   return()
 endif()
 
-# NOT gated on KICKOS_HAVE_MPU. The bounds live in the saved context, not in a region
-# descriptor, so the refusal is the same with the MPU absent, disabled or enforcing. The
-# enforcing posture only decides whether the neighbouring word belongs to a THREAD, which is
-# the escalation and not the refusal.
+# Every MPU posture: the bounds live in the saved context, not in a region descriptor, so the
+# refusal is identical. Enforcement decides only whether the neighbouring word belongs to a
+# THREAD, which is the escalation and not the refusal.
 kickos_add_diagnostic_app(pspguard
   SOURCES main.cc
   BOARD   ${KICKOS_BOARD})
@@ -74,7 +73,8 @@ set(_pg_gate "${PROJECT_SOURCE_DIR}/tests/integration/check_pspguard.sh")
 # The SVC site's expected byte count is the whole SVC extent, read out of the header the
 # guard itself reads. Both macros must stay the plain integers
 # tests/static/check_trap_redzone.sh scrapes: a header that stopped spelling them that way
-# stops the configure instead of quietly pinning a stale expectation.
+# stops the configure instead of quietly pinning a stale expectation. The PendSV arms' 36
+# and 100 are KICKOS_ARMV7M_TRAP_FRAME and _FRAME_MAX, written out.
 set(_pg_hdr
     "${PROJECT_SOURCE_DIR}/arch/arm/armv7m/include/kickos/arch/armv7m_trap_stack.h")
 foreach(_pg_macro NEST_SVC KERNEL_DEPTH_SVC)

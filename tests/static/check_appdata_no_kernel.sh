@@ -5,39 +5,32 @@
 # Security CI gate for the inverted .appdata scheme. Under KICKOS_HAVE_MPU the enforcing
 # linker scripts capture the four privileged archives (kernel/arch/chip/lib) into the
 # KERNEL .data/.bss by `archive:member` colon selectors, and .appdata/.appbss are pure
-# CATCH-ALLS. kernel/domain/domain.cc (arch_domain_static_regions) then grants
+# CATCH-ALLS. kernel/domain/domain.cc (arch_domain_static_regions) grants
 # [__kickos_appdata_start, __kickos_appdata_end) R+W to EVERY unprivileged thread in every
 # domain, so a kernel object that lands in that window is directly writable by an
 # unprivileged thread: a privilege-escalation primitive, not a layout wart.
 #
-# The linker scripts' own ASSERT(_ebss > _sbss) only catches TOTAL selector failure. A
+# The linker scripts' own ASSERT(_ebss > _sbss) catches TOTAL selector failure only. A
 # renamed or typoed selector drops ONE archive into the app window while the other three
 # keep the kernel .bss non-empty, and the link stays green.
 #
-# The LINK MAP is the instrument rather than an nm symbol join: the map names the archive
-# MEMBER behind every input section, and it covers file-static globals,
-# anonymous-namespace globals and COMMON. nm cannot, because it reports locals with
-# lowercase types and their names are NOT unique tree-wide, so an address lookup keyed on a
-# local name is ambiguous. nm is used for the two window bounds only, where both symbols
-# are global and unique.
+# The LINK MAP is the instrument: it names the archive MEMBER behind every input section,
+# and so covers file-static globals, anonymous-namespace globals and COMMON. nm serves the
+# two window bounds only, where both symbols are global and unique; nm reports locals with
+# lowercase types and names that repeat tree-wide, so an address lookup keyed on a local
+# name is ambiguous.
 #
-# What this gate CANNOT see:
-#   - Other images. It reads ONE map (selftest's, the only target linked with -Map), so a
-#     selector that only misfires under a different app's link is not covered.
-#   - Anything outside the static app window: per-thread stack grants and the RAM pool
-#     arena are a separate mechanism with their own gates.
-#   - Non-allocated sections are skipped by name (.debug*, .comment, .note*, .stab*,
-#     .line*, and the two attribute sections by their exact names): the map gives them a
-#     0-based file offset rather than a load address, indistinguishable from a low RAM
-#     address on a chip based at 0.
-#   - An archive not named on the command line. The privileged set is the caller's claim.
+# Scope: the static app window, in ONE map (selftest's, the only target linked with -Map),
+# over the archives named on the command line, which are the caller's claim of the
+# privileged set. Per-thread stack grants and the RAM pool arena are a separate mechanism
+# with their own gates.
 #
 # usage: check_appdata_no_kernel.sh <nm> <elf> <map> <kernel.a> <arch.a> <chip.a> <lib.a>
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The map and the nm output are parsed structurally, never by translated headings.
+# The awk below keys on ld's English "Linker script and memory map" heading.
 export LC_ALL=C
 
 if [ "$#" -lt 4 ]; then
@@ -57,9 +50,7 @@ command -v "$NM" >/dev/null 2>&1 || fail "nm not found: $NM"
 
 scratch_dir
 
-# A symbol table with no addressed symbol at all is a truncated or empty read, and every
-# absence-assertion below it would then read as clean. The landmark is the SHAPE rather
-# than a name, because the label prefix is per-target (below).
+# The landmark is a symbol SHAPE, not a name: the identifier prefix is per-target (below).
 tool_out "$TMP/sym" '^[0-9a-fA-F]+[[:space:]]+[A-Za-z][[:space:]]' "$NM" "$ELF"
 
 # The RX ABI prefixes every C identifier with an underscore, so rx72m.ld spells the window
@@ -72,9 +63,9 @@ win_sym() { # <name> -> the one hex address on stdout, non-zero exit if 0 or >1 
                          print last }' "$TMP/sym"
 }
 
-# REFUSE, not skip: this gate is registered only for a board whose linker script carves the
-# window, so a missing bound means the registration guard drifted, and passing would report
-# "no kernel object in the app window" about an image that has no app window to check.
+# REFUSE, not skip: registration is limited to boards whose linker script carves the window,
+# so a missing bound means the registration guard drifted, and passing would report "no
+# kernel object in the app window" about an image that has none to check.
 WIN_START="$(win_sym __kickos_appdata_start)" \
     || fail "$ELF defines no __kickos_appdata_start: not an enforcing image, gate would be vacuous"
 WIN_END="$(win_sym __kickos_appdata_end)" \
@@ -82,8 +73,8 @@ WIN_END="$(win_sym __kickos_appdata_end)" \
 WIN_START="0x$WIN_START"
 WIN_END="0x$WIN_END"
 
-# The basenames the map records; ld writes the path it was given, so only the basename is
-# stable between the link line and this argv.
+# ld records the path it was given, so only the basename is stable between the link line
+# and this argv.
 NAMES=""
 for A in "$@"; do
     [ -f "$A" ] || fail "archive not found: $A"
@@ -95,8 +86,8 @@ done
 #   " .data._ZN...longname\n                       0x1fff0000 0x20 kernel/libkickos_kernel.a(y.obj)"
 # so the record is the last three fields and the section name is either the first field of
 # the same line or the bare name line above it. Only the memory-map region is read: the
-# "Discarded input sections" and "Archive member included" blocks above it name the same
-# archives with addresses that are not placements.
+# "Discarded input sections" and "Archive member included" blocks name the same archives
+# with addresses that are not placements.
 awk -v names="$NAMES" -v win_start="$WIN_START" -v win_end="$WIN_END" '
 function h2n(s,   i, c, d, v) {
     sub(/^0[xX]/, "", s)
@@ -134,8 +125,8 @@ NF >= 3 && $(NF - 2) ~ /^0x/ && $(NF - 1) ~ /^0x/ && $NF ~ /\.a\(/ {
     # chip whose RAM base is 0 (rx72m) those offsets fall numerically inside the window and
     # every .debug_* record reads as a leak. Only allocated bytes can be in the grant.
     if (sec ~ /^\.(debug|comment|note|stab|line)/) { next }
-    # NAMED, not a shape: an unanchored /attributes$/ also swallowed any allocated
-    # writable global whose -fdata-sections name happens to end that way (.bss.g_attributes).
+    # NAMED, not a shape: an unanchored /attributes$/ also takes an allocated writable
+    # global whose -fdata-sections name ends that way (.bss.g_attributes).
     if (sec == ".ARM.attributes" || sec == ".riscv.attributes") { next }
     total[base]++
     if (sec ~ /^\.(data|bss|sdata|sbss)/ || sec == "COMMON") { writable[base]++ }

@@ -5,7 +5,7 @@
 # NESTED-TRAP witness (rv32imac). The claim: an interrupt taken while the kernel is already
 # running a thread's syscall dispatch must NOT put its frame on that thread's stack.
 #
-# WHY THAT IS A PRIVILEGE CLAIM AND NOT A TIDINESS ONE. rv32imac runs syscall_dispatch
+# THAT IS A PRIVILEGE CLAIM. rv32imac runs syscall_dispatch
 # privileged, in thread mode, on the caller's own continuation, so the sp such an interrupt
 # finds is the CALLING THREAD'S, at whatever depth the dispatch had reached. It arrives with
 # mstatus.MPP=M, so the prologue's U-mode extent check does not apply to it. The syscall red
@@ -13,7 +13,7 @@
 # it, so a thread that parks sp at the red-zone edge and makes a deep syscall gets the kernel
 # to write below its own stack_lo, privileged, where a neighbour's granted region is.
 #
-# WHAT MAKES IT DETERMINISTIC. The app does not wait for a tick. kos_irq_inject raises its
+# WHAT MAKES IT DETERMINISTIC. The app does not wait for a tick: kos_irq_inject raises its
 # line from inside the dispatch with interrupts enabled, so the trap fires at that exact
 # instruction on every call: one nested M-mode trap per call, no window to hit. The kernel
 # tallies them (kickos_nestwitness_note) and ROOT reads the tally back through

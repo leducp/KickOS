@@ -52,10 +52,9 @@ int kos_sem_post(kos_cap_t sem);
 
 // Priority-inheritance mutex. The handle is an OPAQUE per-THREAD CAPABILITY, as above.
 // Possession IS the authority to lock and unlock (no rights split); create grants a
-// CAP_TRANSFER-only cap. A lower-priority holder contended by a
-// higher-priority waiter is boosted to the waiter's priority until it unlocks. Not
-// recursive: locking a mutex you already hold returns -KOS_EDEADLK. No trylock, no timed
-// lock.
+// CAP_TRANSFER-only cap. A lower-priority holder contended by a higher-priority waiter is
+// boosted to the waiter's priority until it unlocks. Not recursive: locking a mutex you
+// already hold returns -KOS_EDEADLK.
 int kos_mutex_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EINVAL/-KOS_EFAULT
 // Acquire (ALL error-shaped codes are negative: see <kickos/sys/errno.h>):
 //   0               acquired, protected state consistent
@@ -109,8 +108,7 @@ int32_t kos_recv_timed(kos_cap_t ep, void* buf, size_t cap_len,
 // cannot be minted), ENOSYS (server took an info-less recv, so it hosts no calls).
 int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap);
 // The same call, always through the buffer-carrying KOS_SYS_CALL trap: identical arguments,
-// identical result, identical in-place reply, and the register form never attempted. It is the
-// arm kos_call itself falls through to.
+// identical result, identical in-place reply. It is the arm kos_call itself falls through to.
 int32_t kos_call_generic(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap);
 // The same call, giving up after `timeout_us` RELATIVE microseconds, or never if that is
 // KOS_TIMEOUT_NONE. The deadline bounds the WHOLE call, both phases: the wait for a server
@@ -235,14 +233,12 @@ int kos_task_slay(kos_task_t task, uint32_t timeout_us);
 //
 // A target that had ALREADY exited returns 0, not -KOS_EBADF: a thread handle stays valid
 // until its slot is reused. Only a spawn that has since REUSED the slot invalidates the
-// handle, and then the answer is -KOS_EBADF. The parenthood gate is non-transferable, there
-// being no capability to delegate.
+// handle, and then the answer is -KOS_EBADF. The parenthood gate is non-transferable.
 int kos_thread_join(kos_thread_t thread, uint32_t timeout_us);
 
-// Wait until the CALLING thread is the last live one (idle aside), then return 0. Takes no
-// deadline, and returns immediately when the caller is already the last. It is the only wait
-// that reaches threads the caller cannot NAME. ROOT ONLY and single-seat: -KOS_EPERM to
-// anyone else.
+// Wait until the CALLING thread is the last live one (idle aside), then return 0. Returns
+// immediately when the caller is already the last, and it is the only wait that reaches
+// threads the caller cannot NAME. ROOT ONLY and single-seat: -KOS_EPERM to anyone else.
 int kos_wait_last(void);
 
 // End the WHOLE system with `status`: drain the buffered console, then hand over to the
@@ -278,7 +274,7 @@ uint32_t kos_irq_spurious_count(void);
 uint32_t kos_nest_witness(int which);
 // Test-only: count of calls the trap-handler IPC fastpath COMPLETED. It is the only
 // thing that tells a test which of the two call paths ran, since they answer a caller
-// identically. Reads 0 where the backend has no fastpath.
+// identically. Reads 0 on a backend whose calls all take the generic path.
 uint32_t kos_ipc_fast_taken(void);
 // Test-only: exercise a Rule 7 grant predicate directly (no descriptor forged).
 // `op` is an enum kos_grant_op (abi.h):
@@ -330,7 +326,8 @@ uint32_t kos_cpu_clock_hz(void);
 
 // The branch (peripheral) clock in Hz feeding the register block at `base`, which is the
 // peripheral register-BLOCK base (e.g. UART0 @ 0x4006A000). Returns 0 when the chip does not
-// know this block's clock, or on the host sim. No rate-change notification.
+// know this block's clock, or on the host sim. The value is a snapshot: a later retune of
+// this branch is not signalled.
 uint32_t kos_periph_clock_hz(uintptr_t base);
 
 // Ungate the clock and drop the bus-side supervisor-protect for the register block at
@@ -389,8 +386,8 @@ void kos_clock_set_realtime(uint64_t unix_ns);
 // Allocate a page-aligned block from the MPU-governed user-RAM pool, to hand to a thread as
 // its domain data region (see kos_thread_params.mem_base). NULL if exhausted.
 //
-// Allocating does NOT make the block reachable by the caller: it reserves arena memory and
-// grants nothing. Hand it to a spawn, or ask for it explicitly with kos_mem_self_grant.
+// Allocating reserves arena memory and grants nothing: reachability comes from handing the
+// block to a spawn, or from asking for it explicitly with kos_mem_self_grant.
 void* kos_ram_alloc(size_t size);
 
 // Add [base, base+size) to the CALLING thread's own region set, so the caller may
@@ -405,7 +402,7 @@ void* kos_ram_alloc(size_t size);
 //
 // BOUNDED by the hardware region budget: a thread already spends up to 5 of
 // KICKOS_MPU_MAX_REGIONS on code, static data, its domain and its stack, so self-grants draw
-// on a small remainder. This is not a general mapping call.
+// on a small remainder.
 //
 // `flags` is kos_mem_flags: the memory TYPE to commit the region with. Where the chip
 // PROGRAMS that type, asking for it spends a descriptor even on a block the caller can
@@ -423,7 +420,7 @@ void* kos_ram_alloc(size_t size);
 int kos_mem_self_grant(void* base, size_t size, uint32_t flags);
 
 // Borrow the KERNEL'S single diagnostic LED, which the kernel also drives for itself (solid
-// on panic). No-op on boards with no known LED.
+// on panic). Takes effect on a board whose diag LED the kernel knows.
 void kos_kernel_diag_led_set(int on);
 void kos_kernel_diag_led_toggle(void);
 

@@ -6,11 +6,9 @@
 # binaries, because one of them ends the process:
 #   ringpriv - survivable register prober, prints its own verdict line.
 #   ringppb  - terminal: ends on the privileged-only PPB read.
-# Neither is conditioned on KICKOS_HAVE_MPU. That is the point of this gate: the ring is
-# the fabricated first frame's CONTROL.nPRIV and the PPB permission is architectural, so
-# both arms hold with the MPU absent, disabled, or enforcing. A board's `flat` variant
-# IS the ring-only posture, which is what makes this gateable in CI rather than only
-# capturable on no-MPU silicon.
+# Every MPU posture: the ring is the fabricated first frame's CONTROL.nPRIV and the PPB
+# permission is architectural, so both arms hold with the MPU absent, disabled or enforcing.
+# A board's `flat` variant IS the ring-only posture, which is what makes this gateable in CI.
 
 # ARM only. The privilege axis exists on other ISAs (rv32imac mstatus.MPP, rxv3
 # PSW_THREAD_USER) but reaching it needs their own asm and their own trap expectation:
@@ -20,10 +18,8 @@ if(NOT (KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m"))
   return()
 endif()
 
-# Does this core implement a privilege ring? The top-level CMakeLists.txt derives it and
-# FATAL_ERRORs on an unclassified armv6m board, because fault isolation reads the SAME
-# axis: a core with no ring cannot tell a thread's own fault from a kernel bug, so it must
-# keep panicking.
+# Does this core implement a privilege ring? Derived in the top-level CMakeLists.txt, which
+# FATAL_ERRORs on an unclassified armv6m board.
 set(_ring ${KICKOS_HAVE_PRIV_RING})
 
 kickos_add_diagnostic_app(ringpriv

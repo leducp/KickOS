@@ -27,16 +27,14 @@ kickos_add_application(k64console
 # wire (arch_console_reclaim recovered the UART out of the PUBLISHED state, with the
 # userspace driver still holding it). Enable with -DK64CONSOLE_SCRAMBLE_TEST=ON.
 #
-# No fault banner is reachable here: fault isolation answers the scrambler's fault by killing
-# the thread, and the thread-kill path does not reclaim, so the run goes dark. main.cc records
-# why kos_panic is the only terminal path an app has left. This criterion has never been
-# witnessed on K64F silicon; take the capture on the next pass.
+# kos_panic is the only terminal path that reclaims: fault isolation answers the scrambler's
+# fault by killing the thread, and the thread-kill path does not reclaim (main.cc records
+# why). This criterion has never been witnessed on K64F silicon; take the capture on the next
+# pass.
 #
-# NOT RETIRED, though conreclaim shows the same reclaim body: that app runs with
-# kickos_services_none, so its console is KERNEL_OWNED and never published. This is the only
-# arm in the tree that reclaims out of USER_OWNED, the state a real board with a console
-# driver actually panics in, and the only one whose garbler reaches the device with no MMIO
-# grant at all (coarse AIPS). Deleting it would drop both.
+# The only arm in the tree that reclaims out of USER_OWNED, the state a real board with a
+# console driver panics in, and the only one whose garbler reaches the device with no MMIO
+# grant at all (coarse AIPS). conreclaim's console is KERNEL_OWNED and never published.
 option(K64CONSOLE_SCRAMBLE_TEST "k64console: scramble-then-panic console-reclaim test mode" OFF)
 if(K64CONSOLE_SCRAMBLE_TEST)
   target_compile_definitions(k64console PRIVATE K64CONSOLE_SCRAMBLE_TEST=1)
@@ -44,7 +42,7 @@ else()
   target_compile_definitions(k64console PRIVATE K64CONSOLE_SCRAMBLE_TEST=0)
 endif()
 
-# No CTest gate, and no way to add one: this app answers a HARDWARE question (userspace
-# UART ownership + the client->driver->wire path + panic-path reclaim). K64F has no QEMU
-# model and the in-env sim has no UART to garble, nor a TAP stream to read once a live
-# publish silences it, so the operator on silicon is the only reader either arm can have.
+# An OPERATOR on silicon is the reader of both arms: this app answers a HARDWARE question
+# (userspace UART ownership + the client->driver->wire path + panic-path reclaim), and a live
+# publish silences the TAP stream (docs/reference/boards.md carries which boards a QEMU
+# machine covers).

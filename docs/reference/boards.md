@@ -97,16 +97,23 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   since `f302nucleo` is the same class (64 KiB-flash armv7m, no MPU, real privilege ring) and is on
   the bench. Links the full app set.
 
-  **MODEL PREDICTION, not a witness: `bluepill-c8` fails `hello`'s second spawn by 96 bytes.** The
-  board can never be flashed, so this is arithmetic and stays arithmetic. Arena 6,560 B, read with
-  `arm-none-eabi-nm` on the `hello` ELF at `9ba4e4b`; idle 512 and root 2,048 leave **4,000** against
-  the **4,096** two 2,048-byte stacks need (`boards/bluepill-c8/configs/base/defconfig:9`,
-  `:10`, `:11`; every figure is a multiple of the 32-byte no-MPU granule, so alignment costs nothing
-  here). The cause is the **heap carve**, not the part: 8 KiB `.userheap`
-  (`arch/arm/chip/stm32f103/stm32f103.ld`) where `f302nucleo` now takes 2K, and the C8 has 4 KiB *more*
-  SRAM. The model is the one in `porting.md`'s `## Minimum hardware requirement` section; it
-  predicted all three `f302nucleo` silicon outcomes correctly (see *`f302nucleo` on silicon* below),
-  which is the whole basis for quoting a number for a board nobody can run.
+  **MODEL ARITHMETIC, not a witness: `bluepill-c8` seats `hello`'s two spawns with room to
+  spare.** The board can never be flashed, so this is arithmetic and stays arithmetic. On the
+  `base` config the `hello` ELF links `__kickos_ram_start`..`__kickos_ram_end` = **12,896 B** of
+  arena against the **6,656 B** that idle 512 + root 2,048 + a 2x2,048 pool need
+  (`boards/bluepill-c8/configs/base/defconfig:9`, `:10`, `:11`; every figure is a multiple of the
+  32-byte no-MPU granule, so alignment costs nothing here). `stm32f103.ld` carves
+  `KICKOS_USER_HEAP_SIZE` bytes of `.userheap`, which Kconfig defaults to **2,048** for
+  `CHIP_STM32F103`; the `st` variant sets it to **0**. The model is the one in `porting.md`'s
+  `## Minimum hardware requirement` section; it predicted all three `f302nucleo` silicon outcomes
+  correctly (see *`f302nucleo` on silicon* below), which is the whole basis for quoting a number
+  for a board nobody can run.
+
+  **Neither 64 KiB-flash STM32 builds `cxxtest`.** Its heap high-water is **6,136 B**, bisected on
+  `qemu-m3` by capping the `_sbrk` arena until the STL check stops reporting `ALL PASS`. That is
+  above both the 2,048 B `CHIP_STM32F103`/`CHIP_STM32F302` carve and the 0 B their `st` defconfigs
+  set, and `KICKOS_USER_HEAP_SIZE` is per-build rather than per-app, so raising it for `cxxtest`
+  would take the bytes from every other image on a 20 KiB part.
 - **`due`** -- **retired** (see the table note above): SAM3X port proven 2026-07-09, but
   this unit now has a peripheral-I/O fault.
 - **`frdmk64f`** -- **HW-revalidated 2026-07-15** (OpenSDA J-Link): full selftest streamed

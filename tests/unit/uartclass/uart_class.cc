@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Contract gate for the raw UART class <kickos/driver/uart.h>: proves the five-call contract
-// (open, read, write, flush, close) holds for a substituted backend, uart_mock.cc.
+// holds for a substituted backend, uart_mock.cc.
 
 #include <kickos/driver/uart.h>
 
@@ -16,7 +16,7 @@
 
 namespace
 {
-    // A channel opened on a fresh model, at the one frame the mock expresses.
+    // A cfg for a fresh model, at the one frame the mock expresses.
     void configure(struct kos_uart_config* cfg, struct kos_uart_mock* m,
                    struct kos_uart_stats* stats)
     {

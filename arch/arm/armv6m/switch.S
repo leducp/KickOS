@@ -1,23 +1,22 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * ARMv6-M (Cortex-M0/M0+) context switch + syscall trap. Same design as armv7m
- * (PendSV switch; SVC redirects to svc_trampoline running in privileged THREAD
- * mode; blocking = synchronous PendSV) but rewritten for the v6-M subset:
- *   - PUSH/POP and load/store multiple only reach r0-r7 -> r8-r11 are shuffled
- *     through r4-r7 (mov hi<->lo), and r12 (a3) is moved via a low register;
- *   - no BFI/MOVW/IT; CONTROL.nPRIV is set with movs/bics/orrs; addresses via
- *     ldr =literal; conditionals via cmp/branch;
- *   - no FPU, so no s-register save and no EXC_RETURN stored in the frame
- *     (thread returns are always 0xFFFFFFFD, reconstructed on switch-in).
+ * ARMv6-M (Cortex-M0/M0+) context switch + syscall trap: PendSV switch, SVC
+ * redirecting to svc_trampoline in privileged THREAD mode, blocking as a synchronous
+ * PendSV. The v6-M subset shapes every sequence here:
+ *   - PUSH/POP and load/store multiple reach r0-r7, so r8-r11 are shuffled through
+ *     r4-r7 (mov hi<->lo) and r12 (a3) travels via a low register;
+ *   - CONTROL.nPRIV is set with movs/bics/orrs, addresses come from ldr =literal, and
+ *     conditionals are cmp/branch (v6-M has BFI, MOVW and IT in neither encoding);
+ *   - thread returns are always 0xFFFFFFFD, rebuilt on switch-in.
  *
  * Saved frame, low->high on PSP:  [r4 r5 r6 r7 r8 r9 r10 r11][hw frame].
  * ctx.sp -> r4. ctx = {sp@0, npriv@4, resting_npriv@8, stack_lo@12, stack_hi@16}.
  *
  * The IPC fastpath seam sits inside SVC_Handler, with arch_syscall_reg at the end.
- * The saved block IS the leaf's argument array on this arch too, but the v6-M store
- * of it shuffles r8-r11 through r4-r7, so a refusal must put r4-r7 back before the
- * generic path resumes on the real register file.
+ * The saved block IS the leaf's argument array, and the v6-M store of it shuffles
+ * r8-r11 through r4-r7, so a refusal must put r4-r7 back before the generic path
+ * resumes on the real register file.
  */
 
 #include <kickos/arch/context.h>
@@ -83,9 +82,8 @@ PendSV_Handler:
     ldr     r2, =g_arch_current
     ldr     r3, [r2]                /* outgoing ctx* (0 => first start) */
 #if KICKOS_TELEMETRY
-    /* Spill the outgoing ctx* before the swap clobbers it; the tail emits from
-       this + the incoming ctx* it loads, never re-reading g_arch_next. r2 is
-       pushed only to keep MSP 8-byte aligned across the later bl. */
+    /* The tail emits from this spill and the incoming ctx* it loads, never from a
+       re-read of g_arch_next. r2 keeps MSP 8-byte aligned across the later bl. */
     push    {r2, r3}
 #endif
     cmp     r3, #0
@@ -107,12 +105,12 @@ PendSV_Handler:
     str     r0, [r3, #4]            /* outgoing->npriv */
 1:
     /* g_arch_next and the deferred MPU stash are ONE pair, written together under the
-       kernel lock; PendSV must consume them as one. A device IRQ preempting between the
-       two (every v6-M device line sits at reset priority 0, above PendSV) reschedules
-       and replaces BOTH, so an unmasked PendSV can restore one thread's PSP and then
-       program the other thread's regions -> the resumed thread faults on its own stack.
-       PRIMASK masks PendSV itself, so entry here implies PRIMASK==0 and the cpsie below
-       restores the entry state exactly. */
+       kernel lock, and PendSV must consume them as one. A device IRQ preempting between
+       the two (every v6-M device line sits at reset priority 0, above PendSV)
+       reschedules and replaces BOTH, so an unmasked PendSV can restore one thread's PSP
+       and then program the other thread's regions, and the resumed thread faults on its
+       own stack. PRIMASK masks PendSV itself, so entry here implies PRIMASK==0 and the
+       cpsie below restores the entry state exactly. */
     cpsid   i
     ldr     r2, =g_arch_current
     ldr     r1, =g_arch_next
@@ -136,10 +134,8 @@ PendSV_Handler:
     msr     control, r2
     isb
 #if KICKOS_TELEMETRY
-    /* SWITCH completion hook, BEFORE the EXC_RETURN reconstruction: lr is
-       clobbered by the bl but rebuilt (0xFFFFFFFD) right after, so it needs no
-       save. r1 = incoming ctx* (loaded above); the popped r3 = outgoing ctx*.
-       trace_tid @ F_CTX_TRACE_TID; from = 0xFFFF on the first switch. */
+    /* SWITCH completion hook. lr is clobbered by the bl and rebuilt (0xFFFFFFFD) right
+       after, so it needs no save. from = 0xFFFF on the first switch. */
     pop     {r2, r3}                /* r3 = outgoing ctx* (r2 = alignment pad) */
     ldr     r1, [r1, #F_CTX_TRACE_TID] /* r1 = to_tid (incoming.trace_tid) */
     ldr     r0, =0xFFFF             /* default from = no-thread */
@@ -149,10 +145,9 @@ PendSV_Handler:
 4:
     bl      kickos_trace_switch_done /* (r0=from_tid, r1=to_tid) */
 #endif
-    /* Deferred MPU commit: must run after the physical PSP/register swap (shared
-       seam, arch_arm_common.cc). r4-r11 are callee-saved across this call;
-       r0-r3/r12 are reloaded from the HW frame on exception return; lr is rebuilt
-       right below. */
+    /* Deferred MPU commit: must run after the physical PSP/register swap (shared seam,
+       arch_arm_common.cc). r4-r11 are callee-saved across the call, r0-r3/r12 are
+       reloaded from the HW frame on exception return, and lr is rebuilt right below. */
     bl      kickos_arch_mpu_commit
     cpsie   i                       /* pair consumed; never resume a thread masked */
     ldr     r0, =0xFFFFFFFD         /* EXC_RETURN: thread mode, PSP */
@@ -175,10 +170,10 @@ PendSV_Handler:
 SVC_Handler:
     mrs     r0, psp
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
-    /* THE SEAM. KOS_SYS_CALL_REG completes here, before the exception return that would
-       otherwise land in svc_trampoline and run the generic dispatch. The leaf decides
-       before it mutates, so a null return means nothing was committed and the
-       fall-through below is today's path exactly. */
+    /* THE SEAM. KOS_SYS_CALL_REG completes here, ahead of the exception return that
+       lands in svc_trampoline for the generic dispatch. The leaf decides before it
+       mutates, so a null return means nothing was committed and the fall-through below
+       carries the whole call. */
     ldr     r1, [r0]                /* the stacked r0 is the syscall number */
     cmp     r1, #56                 /* KOS_SYS_CALL_REG (sys/abi.h) */
     bne     .Lsvc_slow
@@ -229,9 +224,9 @@ SVC_Handler:
     /* Taken. r0 = the incoming thread's arch_context*, r1 = the outgoing block base. The
        stacked PC already points past the SVC, so the caller's resume is a plain exception
        return and the switch that resumes it seats the result (sched.cc switch_book).
-       The physical swap and the region commit are ONE pair, exactly as in the PendSV
-       epilogue: an interrupt between them would resume a thread under another thread's
-       regions. PRIMASK was 0 at entry (refused otherwise), so the cpsie below restores it. */
+       The physical swap and the region commit are ONE pair: an interrupt between them
+       would resume a thread under another thread's regions. PRIMASK was 0 at entry, so
+       the cpsie below restores it. */
     ldr     r2, =g_arch_current
     ldr     r3, [r2]                /* outgoing ctx* (the caller) */
     str     r1, [r3]                /* outgoing->sp = this block */
@@ -261,17 +256,17 @@ SVC_Handler:
     msr     control, r2
     isb
 #if KICKOS_TELEMETRY
-    /* SWITCH completion hook, as in the PendSV epilogue: a physically swapped pair that
-       emitted nothing would break the decoder's from == previous.to continuity check. The
-       outgoing ctx* is never 0 here, so there is no first-switch case to default. lr is
-       clobbered by the bl but rebuilt below. */
+    /* SWITCH completion hook: a physically swapped pair that emitted nothing would break
+       the decoder's from == previous.to continuity check. The outgoing ctx* is always
+       live here, so from_tid is read unconditionally. lr is clobbered by the bl and
+       rebuilt below. */
     pop     {r2, r3}                /* r3 = outgoing ctx* */
     ldr     r1, [r0, #F_CTX_TRACE_TID] /* to_tid (incoming.trace_tid) */
     ldr     r0, [r3, #F_CTX_TRACE_TID] /* from_tid */
     bl      kickos_trace_switch_done
 #endif
-    /* Deferred MPU commit for the incoming thread, the same seam and the same reason as
-       the PendSV epilogue: the physical swap is done and the mask is still up. */
+    /* Deferred MPU commit for the incoming thread: the physical swap is done and the
+       mask is still up. */
     bl      kickos_arch_mpu_commit
     cpsie   i                       /* the pair is consumed */
     ldr     r0, =0xFFFFFFFD         /* EXC_RETURN: thread mode, PSP */
@@ -389,9 +384,9 @@ arch_syscall_reg:
     mov     r11, r3
     ldr     r0, [r0]                /* nr */
     /* The two outcomes land at two different addresses, and nothing may run between the
-       SVC and the declined one: svc_trampoline exits to the STACKED LR, not past the SVC,
-       so a wrapper cannot resume in line the way the RISC-V trampoline lets it. The taken
-       path restores the hardware frame and so resumes at the SVC's own return address. */
+       SVC and the declined one: svc_trampoline exits to the STACKED LR, so the declined
+       arm resumes at whatever LR holds here. The taken path restores the hardware frame
+       and resumes at the SVC's own return address. */
     ldr     r1, =.Lreg_declined
     adds    r1, #1                  /* the trampoline exits with bx: Thumb bit required */
     mov     lr, r1

@@ -28,10 +28,9 @@ elif have st-info; then
 fi
 # A RUNNING KickOS image parks the idle thread in WFI and SWD cannot halt a live
 # core, so re-flashing a board that is already running needs --connect-under-reset,
-# which in turn needs NRST reaching the probe. Default on for the onboard-debugger
-# boards, where it is wired by construction. Off elsewhere: a bare 4-pin SWD header does
-# not carry NRST even though the board has the pin, so it needs an extra wire.
-# STLINK_UNDER_RESET=1 forces it on (use once NRST is wired), =0 forces it off.
+# which in turn needs NRST reaching the probe. Default on for the onboard-debugger boards,
+# where NRST is wired by construction; a bare 4-pin SWD header carries the pin but not the
+# signal, so elsewhere it takes an extra wire and STLINK_UNDER_RESET to match.
 case "$FL_BOARD" in
     f411disco|f302nucleo) FL_UR=(--connect-under-reset) ;;
     *)                    FL_UR=() ;;
