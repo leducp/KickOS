@@ -146,8 +146,11 @@
 /* struct arch_context field offsets the guard reads as plain displacements. switch.S .equ's
  * from these and arch_armv7m.cc static_asserts offsetof against them. UNCONDITIONAL, because
  * the telemetry-only trace_tid is the LAST field precisely so that no build posture shifts
- * them, which would make the guard compare a PSP against a trace id. */
+ * them, which would make the guard compare a PSP against a trace id. kernel_sp sits ahead of
+ * it for that reason and not after. */
 #define KICKOS_ARMV7M_CTX_OFF_STACK_LO 12
 #define KICKOS_ARMV7M_CTX_OFF_STACK_HI 16
+#define KICKOS_ARMV7M_CTX_OFF_KERNEL_SP 20
+#define KICKOS_ARMV7M_CTX_OFF_TRACE_TID 24
 
 #endif /* KICKOS_ARCH_ARMV7M_TRAP_STACK_H */

@@ -51,6 +51,8 @@ static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_ARMV6M_CTX_OFF_S
               "switch.S reads ctx.stack_lo at F_CTX_STACK_LO");
 static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_ARMV6M_CTX_OFF_STACK_HI,
               "switch.S reads ctx.stack_hi at F_CTX_STACK_HI");
+static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_ARMV6M_CTX_OFF_KERNEL_SP,
+              "a trusted entry loads ctx.kernel_sp at F_CTX_KERNEL_SP");
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_ARMV6M_CTX_OFF_TRACE_TID,
               "switch.S telemetry hook expects ctx.trace_tid at F_CTX_TRACE_TID");
@@ -152,6 +154,11 @@ void arch_context_init(struct arch_context* ctx,
     // below, so a running thread's PSP stays in [stack_lo, stack_hi).
     ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
     ctx->stack_hi = static_cast<uint32_t>(top);
+
+    // No kernel stack is allocated yet, so it is seated at 0 rather than left as whatever
+    // the TCB slab last held. A trusted entry that finds 0 here has nothing to transfer to,
+    // which is the state every thread is in until the allocator lands.
+    ctx->kernel_sp = 0;
 }
 
 #if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH

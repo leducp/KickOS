@@ -217,7 +217,12 @@ else
         fi
         fresh_configure
     else
+        # A directory with generated Kconfig state and NO cache is the same refusal one
+        # branch up: the cache is what --fresh drops, and it is the generated state that
+        # makes genconfig refuse. Removing it here covers a partial cleanup as well as a
+        # cross-tree one.
         echo "trap_redzone: configuring scratch tree $BUILD"
+        rm -rf "$BUILD/generated"
         configure_scratch
     fi
     scratch_flags_ok || fail "the scratch tree still lacks the flags this gate needs after a

@@ -48,7 +48,9 @@ static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_RX_CTX_OFF_STACK
               "switch.S reads stack_lo at F_CTX_STACK_LO");
 static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_RX_CTX_OFF_STACK_HI,
               "switch.S reads stack_hi at F_CTX_STACK_HI");
-static_assert(sizeof(struct arch_context) >= KICKOS_RX_CTX_OFF_STACK_HI + sizeof(uint32_t),
+static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_RX_CTX_OFF_KERNEL_SP,
+              "a trusted entry loads ctx.kernel_sp at F_CTX_KERNEL_SP");
+static_assert(sizeof(struct arch_context) >= KICKOS_RX_CTX_OFF_KERNEL_SP + sizeof(uint32_t),
               "a guard reads a word past the end of struct arch_context");
 
 // The syscall guard runs above the arm selection, so its one figure has to dominate
@@ -325,6 +327,11 @@ void arch_context_init(struct arch_context* ctx,
     // thread's USP stays in [stack_lo, stack_hi].
     ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
     ctx->stack_hi = static_cast<uint32_t>(top);
+
+    // No kernel stack is allocated yet, so it is seated at 0 rather than left as whatever
+    // the TCB slab last held. A trusted entry that finds 0 here has nothing to transfer to,
+    // which is the state every thread is in until the allocator lands.
+    ctx->kernel_sp = 0;
 }
 
 #if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH

@@ -536,8 +536,9 @@ the board".
   cores and nothing in the tree distinguishes them. See `design-unprivileged-root.md` section 2.
 - **microbit is the armv6m run gate, and the fleet's only board that is allowed to skip anything.**
   16 KiB SRAM and a 2-slot pool mean part of the suite genuinely cannot run here, so
-  `microbit_selftest` sets `EXPECT_SKIPS` to the test **names** it cannot host; every other
-  board keeps the script's default of "nothing may skip". The list is a **measurement, not slack**
+  `microbit_selftest` and `microbit_selftest_p2` each set `EXPECT_SKIPS` to the test **names** that
+  part cannot host (the board is a two-image board, see below); every other
+  board keeps the script's default of "nothing may skip". The lists are a **measurement, not slack**
   -- each name and why it skips is at the call site
   (`../../user/apps/common/selftest/CMakeLists.txt`), so growing it should mean a board capability
   changed, and a test that merely stopped running shows up as a breach. It is named rather than
@@ -599,11 +600,14 @@ Every recipe -- ST-Link, external SWD, USB-DFU, picotool/BOOTSEL, esptool, bossa
 `rfp-cli`, and the J-Link / RTT deep-dive -- lives in [flashing.md](../flashing.md). Nothing
 operational belongs in this file.
 
-### The 64 KiB parts run the selftest as TWO images
+### Three boards run the selftest as TWO images
 
-`bluepill-c8` and `f302nucleo` only. Every other board still produces one `selftest`, unchanged.
-The suite outgrew a 64 KiB part (`f302nucleo-st` was at 4 free bytes of 65536), so it is built as
-two self-contained images that partition the arms between them.
+`bluepill-c8`, `f302nucleo` and `microbit` only. Every other board still produces one `selftest`,
+unchanged. The suite outgrew a 64 KiB part (`f302nucleo-st` was at 4 free bytes of 65536), so it is
+built as two self-contained images that partition the arms between them. **`microbit` splits for the
+opposite resource**: its FLASH is 256 KiB and never binding, but `__kickos_ram_start` follows `.bss`
+on `nrf51`, so eliding a region's test bodies takes their statics out of `.bss` and hands the
+difference to the arena.
 
 - `selftest` is **part 1**, `selftest_p2` is **part 2**; both land in
   `<build>/user/apps/common/selftest/` with the usual `.elf` / `.bin` / `.hex`.
@@ -615,7 +619,14 @@ two self-contained images that partition the arms between them.
   obvious way to be fooled here.
 - Configure prints what to expect, off the same two expressions:
   `-- selftest: split into two images: selftest plans <N1> arms, selftest_p2 plans <N2> (<N1+N2> together)`
-- These two boards run the FULL arm set: `cap_dest` and `irq_discard` are not excluded on them.
+- The two 64 KiB parts run the FULL arm set: `cap_dest` and `irq_discard` are not excluded on them.
+- **`microbit` is the only split board with a ctest gate, and it has two:** `microbit_selftest` for
+  part 1 and `microbit_selftest_p2` for part 2, each with its OWN `EXPECT_SKIPS` /
+  `EXPECT_PARTIALS`. A name has to be declared in the part whose region holds its `TAP_ADD` line,
+  because `check_tap_stream.sh` reports a name declared in the other part as a NOTE and not a
+  failure. The split recovered three arms there: `mem_self_grant`, `mem_self_grant_nonpow2` and
+  `region_mode` ran out of arena in the combined image and run in part 2 (measured at 288 B more
+  arena, part 2 base `0x20001a60` against `0x20001b80` combined).
 - Which arm sits in which part is decided by POSITION in the registration list at the bottom of
   `user/apps/common/selftest/main.cc`, not by an annotation; the boundary is the `#undef TAP_ADD`.
   Adding or moving an arm means updating the whole-suite floor AND the matching per-part clause in

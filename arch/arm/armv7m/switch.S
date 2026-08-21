@@ -27,6 +27,7 @@
 
     .equ F_CTX_STACK_LO, KICKOS_ARMV7M_CTX_OFF_STACK_LO
     .equ F_CTX_STACK_HI, KICKOS_ARMV7M_CTX_OFF_STACK_HI
+    .equ F_CTX_TRACE_TID, KICKOS_ARMV7M_CTX_OFF_TRACE_TID
 
 /* PSP bounds guard, used by both software pushes in this file.
    In:  \need = the room this site's class needs below the PSP, before the FP term;
@@ -161,11 +162,11 @@ PendSV_Handler:
        from = 0xFFFF on the first switch, where the outgoing ctx* is 0. EXC_RETURN (lr)
        is saved across the bl and MSP kept 8-byte aligned. */
     pop     {r2, r3}                /* r2 = outgoing ctx* (r3 = alignment pad) */
-    ldr     r1, [r1, #20]           /* r1 = to_tid (incoming.trace_tid) */
+    ldr     r1, [r1, #F_CTX_TRACE_TID] /* r1 = to_tid (incoming.trace_tid) */
     movw    r0, #0xFFFF             /* default from = no-thread */
     cmp     r2, #0
     beq     4f
-    ldr     r0, [r2, #20]           /* from_tid = outgoing.trace_tid */
+    ldr     r0, [r2, #F_CTX_TRACE_TID] /* from_tid = outgoing.trace_tid */
 4:
     push    {r0, lr}                /* save EXC_RETURN; r0 pad keeps 8B alignment */
     bl      kickos_trace_switch_done /* (r0=from_tid, r1=to_tid) */
@@ -186,6 +187,18 @@ PendSV_Handler:
 
 /* The PSP has no room for the software block. r3 is loaded FIRST because r2 is the ctx*
    both loads read. Never returns. */
+/* A syscall with no current thread has no bounds to check, and the slow path below this
+   handler still writes through the PSP. Unreachable today: g_arch_current is the first-start
+   sentinel only until arch_start's first switch, and nothing traps before then. Reported
+   rather than argued, so a future caller that reaches it finds a refusal instead of an
+   unchecked store. The bounds go out as [0, 0), which the reporter's own upper-bound test
+   describes as an unseated pair. */
+.Lsvc_nothread:
+    movw    r1, #KICKOS_ARMV7M_TRAP_NEED_SVC
+    movs    r2, #0
+    movs    r3, #0
+    b       kickos_armv7m_bad_psp   /* (r0=PSP, r1=need, r2=0, r3=0) */
+
 .Lpsp_wild:
     ldr     r3, [r2, #F_CTX_STACK_HI]
     ldr     r2, [r2, #F_CTX_STACK_LO]
@@ -211,9 +224,12 @@ SVC_Handler:
        descends further. */
     ldr     r2, =g_arch_current
     ldr     r2, [r2]
-    cbz     r2, .Lsvc_nothread     /* no thread running: nothing to bound against */
+    /* Inverted so the far branch is a plain b: cbz reaches +126 bytes and the refusal is
+       out of line. The taken cbnz costs what the untaken cbz did. */
+    cbnz    r2, 1f
+    b       .Lsvc_nothread          /* no thread running, and it does not return */
+1:
     PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_SVC, 0
-.Lsvc_nothread:
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
     /* THE SEAM. KOS_SYS_CALL_REG completes here, ahead of the exception return that
        lands in svc_trampoline for the generic dispatch. The leaf decides before it
@@ -294,8 +310,8 @@ SVC_Handler:
        the decoder's from == previous.to continuity check. The outgoing ctx* is always
        live here, so from_tid is read unconditionally. */
     pop     {r2, r12}               /* r2 = outgoing ctx* */
-    ldr     r1, [r0, #20]           /* to_tid (incoming.trace_tid) */
-    ldr     r0, [r2, #20]           /* from_tid */
+    ldr     r1, [r0, #F_CTX_TRACE_TID] /* to_tid (incoming.trace_tid) */
+    ldr     r0, [r2, #F_CTX_TRACE_TID] /* from_tid */
     push    {r0, lr}                /* save EXC_RETURN; r0 pad keeps MSP 8-byte aligned */
     bl      kickos_trace_switch_done
     pop     {r0, lr}

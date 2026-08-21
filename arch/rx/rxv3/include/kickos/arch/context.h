@@ -39,6 +39,13 @@ struct arch_context
     // outside [stack_lo, stack_hi] routes the trap to a panic.
     uint32_t stack_lo;
     uint32_t stack_hi;
+
+    // The kernel stack this thread's privileged dispatch runs on, saved across a switch the
+    // way `sp` above saves the USER one. `sp` is and stays the user stack pointer on every
+    // backend, so no second field names it; these two are the pair a trusted entry swaps
+    // between. Unused until the trap entry transfers to it: the field exists here first so
+    // the allocation and the geometry can be reviewed apart from the execution change.
+    uint32_t kernel_sp;
 };
 
 #endif

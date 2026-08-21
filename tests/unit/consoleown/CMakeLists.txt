@@ -10,8 +10,16 @@
 #
 # HOST-ONLY: it defines the arch and console_tx seam names an image resolves from its own
 # backend, and the injected flip needs a stub arch_irq_save.
+#
+# lib/rtt.cc is in SOURCES because a telemetry board's definitions carry
+# KICKOS_CONSOLE_RTT, which compiles console.cc's RTT arm and with it a call to
+# kickos_rtt_write. The real ring is a plain RAM buffer reading no clock and calling no arch
+# seam, so it links here unchanged. That arm also brackets itself in its own IrqLock ahead of
+# the chip path, which consumes a mask gap; publish_handoff.cc offsets its gap ordinals by
+# that, so both console postures race the window each test names.
 kickos_add_unit_test(NAME console_ownership
   SOURCES console_ownership.cc "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
+          "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
   INCLUDES $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>
   DEFINITIONS $<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS>)
 
@@ -25,5 +33,6 @@ kickos_add_unit_test(NAME console_publish_handoff
   SOURCES publish_handoff.cc publish_seam.cc
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
+          "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
   INCLUDES $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>
   DEFINITIONS $<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS>)

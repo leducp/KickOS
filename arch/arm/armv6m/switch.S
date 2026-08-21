@@ -162,6 +162,19 @@ PendSV_Handler:
 /* The PSP has no room for the software block. stack_lo is read before r3 is overwritten
    with stack_hi. Never returns, so r4 is free to carry the target: a v6-M ldr literal
    cannot reach r12, and a plain b is a +-2 KB reach that --gc-sections can outrun. */
+/* A syscall with no current thread has no bounds to check, and the generic path below this
+   handler still writes through the PSP. Unreachable today: g_arch_current is the first-start
+   sentinel only until arch_start's first switch, and nothing traps before then. Reported
+   rather than argued, so a future caller that reaches it finds a refusal instead of an
+   unchecked store. The bounds go out as [0, 0), which the reporter's own upper-bound test
+   describes as an unseated pair. */
+.Lsvc_nothread:
+    ldr     r1, =KICKOS_ARMV6M_TRAP_NEED_SVC
+    movs    r2, #0
+    movs    r3, #0
+    ldr     r4, =kickos_armv6m_bad_psp
+    bx      r4                      /* (r0=PSP, r1=need, r2=0, r3=0) */
+
 .Lpsp_wild:
     mov     r1, r2                  /* the figure THIS site asked for, which the guard left
                                        in r2. A literal here would report the switcher's 32
@@ -185,9 +198,8 @@ SVC_Handler:
     ldr     r3, =g_arch_current
     ldr     r3, [r3]
     cmp     r3, #0
-    beq     .Lsvc_nothread          /* no thread running: nothing to bound against */
+    beq     .Lsvc_nothread          /* out of line below, and it does not return */
     PSP_GUARD KICKOS_ARMV6M_TRAP_NEED_SVC
-.Lsvc_nothread:
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
     /* THE SEAM. KOS_SYS_CALL_REG completes here, ahead of the exception return that
        lands in svc_trampoline for the generic dispatch. The leaf decides before it
@@ -209,10 +221,6 @@ SVC_Handler:
     ldr     r2, =0x10000000         /* PENDSVSET */
     tst     r1, r2
     bne     .Lsvc_slow
-    /* This arm swaps g_arch_current and seats the result in the outgoing context, so it
-       needs a running thread. r3 still carries the pointer the guard above loaded. */
-    cmp     r3, #0
-    beq     .Lsvc_slow
     /* The kernel lock IS PRIMASK on v6-M, so masking at the one level there is nests
        exactly: each IrqLock inside the leaf saves 1, masks, and restores 1. */
     cpsid   i

@@ -37,6 +37,8 @@ static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_ARMV7M_CTX_OFF_S
               "switch.S reads ctx.stack_lo at KICKOS_ARMV7M_CTX_OFF_STACK_LO");
 static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_ARMV7M_CTX_OFF_STACK_HI,
               "switch.S reads ctx.stack_hi at KICKOS_ARMV7M_CTX_OFF_STACK_HI");
+static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_ARMV7M_CTX_OFF_KERNEL_SP,
+              "a trusted entry loads ctx.kernel_sp at F_CTX_KERNEL_SP");
 
 // The red-zone figures switch.S enforces. gas cannot count the registers in an stmdb, so
 // the frame halves are asserted here against the register lists the two pushes carry.
@@ -67,17 +69,30 @@ static_assert(KICKOS_ARMV7M_TRAP_NEED_SVC > KICKOS_ARMV7M_TRAP_NEED_PENDSV,
 // STRICTER THAN THE RED-ZONE GATE'S OWN FLOOR CLAUSE, and it has to be: the guard bounds
 // the room below the PSP, and on this arch the hardware has already spent bytes ABOVE it
 // before any handler runs. A thread trapping with an empty floor-sized stack therefore
-// offers the guard only KICKOS_MIN_STACK_SIZE minus that frame. 32 is the basic frame; the
-// FP-live posture spends 104 but hands the trampoline back the same 72 bytes it took, so
-// both postures land on the same requirement (armv7m_trap_stack.h walks the two). The gate
-// models no such term, which is why it lives here.
+// offers the guard only KICKOS_MIN_STACK_SIZE minus that frame.
+//
+// THE ENTRY FRAME IS THE BINDING TERM, NOT THE DESCENT. Those are two different questions
+// and conflating them understates this floor. What the descent needs does cancel across the
+// two postures, 32 + 836 and 104 + 764 both being 868, because a wider entry frame is
+// handed straight back when the exception return unstacks it. What the GUARD demands does
+// not cancel: it asks for NEED_SVC unconditionally, so the requirement is NEED_SVC plus
+// whatever entry spent, and the FP-live 104 is the worse of the two. The guard is therefore
+// 72 bytes stricter than physics in that posture, which is the price of not branching on
+// FPCA at the SVC site.
+#if defined(__ARM_FP)
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV7M_TRAP_NEED_SVC + 104,
+              "KICKOS_MIN_STACK_SIZE is below the armv7m syscall red zone plus the "
+              "FP-live exception frame entry spends above it: raise the per-arch default in "
+              "Kconfig, never the red zone, which is a measurement");
+#else
 static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV7M_TRAP_NEED_SVC + 32,
               "KICKOS_MIN_STACK_SIZE is below the armv7m syscall red zone plus the "
               "exception frame entry spends above it: raise the per-arch default in "
               "Kconfig, never the red zone, which is a measurement");
+#endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-static_assert(offsetof(struct arch_context, trace_tid) == 20,
-              "switch.S telemetry hook expects ctx.trace_tid @20");
+static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_ARMV7M_CTX_OFF_TRACE_TID,
+              "switch.S telemetry hook reads ctx.trace_tid at F_CTX_TRACE_TID");
 #endif
 #if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
 static_assert(kickos::armv7m::PRIO_LOCK_BASEPRI == 0x20,
@@ -167,6 +182,11 @@ void arch_context_init(struct arch_context* ctx,
     // first frame sits below, so a running thread's PSP stays in [stack_lo, stack_hi).
     ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
     ctx->stack_hi = static_cast<uint32_t>(top);
+
+    // No kernel stack is allocated yet, so it is seated at 0 rather than left as whatever
+    // the TCB slab last held. A trusted entry that finds 0 here has nothing to transfer to,
+    // which is the state every thread is in until the allocator lands.
+    ctx->kernel_sp = 0;
 }
 
 #if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH

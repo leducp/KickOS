@@ -1119,7 +1119,7 @@ Four readings, and they are the point of the section:
   part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways,
   measured at `124b68c`. That reading predates `9da898e`, which builds this board's suite as
   TWO images, so the board emits no single `1..63` plan today; read the plan sizes off the
-  configure line (see `boards.md`, *The 64 KiB parts run the selftest as TWO images*).
+  configure line (see `boards.md`, *Three boards run the selftest as TWO images*).
 - **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than `f302nucleo`
   and used to host *fewer* threads, missing `hello`'s second stack by 96 bytes, purely
   because its heap carve was 8K against f302's 2K. That 8K was the `CHIP_STM32F103`

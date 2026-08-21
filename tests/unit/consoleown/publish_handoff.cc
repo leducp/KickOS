@@ -32,10 +32,21 @@ namespace
     constexpr uint32_t kRing = 32u;
     constexpr size_t kMsg = 100u;
 
-    // Gap 1 closes console_emit's state-read-plus-count bracket, before console_tx_write
-    // reads `armed`. Gap 3 is a chunk boundary, two chunks in.
-    constexpr uint32_t kGapBeforeRingCheck = 1u;
-    constexpr uint32_t kGapMidChunking = 3u;
+    // These races are addressed by mask-gap ORDINAL, so they move with the number of
+    // brackets kconsole_write_impl opens before the chip path. On a telemetry board the RTT
+    // arm is compiled in and takes an IrqLock of its own first, which consumes one gap: with
+    // it the ordinal named below would land before the writer is even admitted, where a drop
+    // is the designed answer rather than a defect, and each test would silently assert
+    // against a window it does not mean.
+#if defined(KICKOS_CONSOLE_RTT) && KICKOS_CONSOLE_RTT
+    constexpr uint32_t kGapBase = 1u;
+#else
+    constexpr uint32_t kGapBase = 0u;
+#endif
+    // Closes console_emit's state-read-plus-count bracket, before console_tx_write reads
+    // `armed`. The second is a chunk boundary, two chunks in.
+    constexpr uint32_t kGapBeforeRingCheck = kGapBase + 1u;
+    constexpr uint32_t kGapMidChunking = kGapBase + 3u;
 
     int g_writers_at_handover = -1;
     int g_drain_passes = -1;

@@ -9,6 +9,8 @@
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
 
+#ifndef __ASSEMBLER__
+
 #include <stdint.h>
 
 struct arch_context
@@ -39,6 +41,13 @@ struct arch_context
     uint32_t stack_lo;
     uint32_t stack_hi;
 
+    // The kernel stack this thread's privileged dispatch runs on, saved across a switch the
+    // way `sp` above saves the USER one. `sp` is and stays the user stack pointer on every
+    // backend, so no second field names it; these two are the pair a trusted entry swaps
+    // between. Unused until the trap entry transfers to it: the field exists here first so
+    // the allocation and the geometry can be reviewed apart from the execution change.
+    uint32_t kernel_sp;
+
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     // Owning thread's trace id (stamped once in thread_create). switch.S reads it
     // at offset 20 from the PHYSICALLY-swapped contexts to emit the SWITCH record
@@ -46,5 +55,7 @@ struct arch_context
     uint32_t trace_tid;
 #endif
 };
+
+#endif // __ASSEMBLER__
 
 #endif
