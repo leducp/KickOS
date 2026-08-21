@@ -35,6 +35,11 @@
 # missing is a hard failure, because a root the graph does not have is a path nobody
 # measured.
 #
+# '?' WORKS ON AN `exclude` TOO, and for the same reason `unsized` tolerates an absent
+# allowance: these lists span the fleet, and a given image need not reach every symbol in
+# them. Without it, excluding a symbol only SOME boards' graphs contain fails every board
+# that inlines it away. A '?' exclusion the graph does not have is reported as unused.
+#
 # NONE declares that the class runs NO C on the guarded stack, so its measured depth is 0
 # and there is nothing to walk. It is the deliberate twin of an omitted root: a class with
 # no record at all is refused, because a root set that is empty by accident measures 0 and
@@ -119,6 +124,7 @@ root    rv32imac NESTED kickos_fault_stack_top
 root    rv32imac NESTED ?kickos_rv_nested_witness
 
 exclude rv32imac _ZN6kickos6kpanicEPKc reason: the noreturn panic tail, which every KICKOS_ASSERT in the dispatch reaches. Counting it puts the SYS red zone above KICKOS_MIN_STACK_SIZE, so a thread spawned at the floor could not make a syscall at all. The residual is stated in rv_trap_stack.h; the tool prints the without-exclusions figure so it cannot go quiet.
+exclude rv32imac ?_ZN6kickos9kpanic_atEPKcj reason: the SECOND door into the same noreturn panic tail, which KICKOS_ASSERT reaches where kpanic takes a message. Excluding one and not the other left the tail counted on any board whose deepest chain happens to enter through this one, which is a figure the exclusion above was meant to remove. Same residual, stated once in rv_trap_stack.h.
 
 # Assembly and libgcc bodies have no .ci entry, so their frames are declared here. None of
 # the three references sp anywhere in its body and none calls out, so all three are
@@ -155,6 +161,7 @@ root    rxv3 SYS_FAST ?kickos_trace_switch_done
 root    rxv3 SYS_FAST ?kickos_bench_switch_done
 
 exclude rxv3 _ZN6kickos6kpanicEPKc reason: the noreturn panic tail, same exclusion and same residual as rv32imac; see rx_trap_stack.h
+exclude rxv3 ?_ZN6kickos9kpanic_atEPKcj reason: the SECOND door into the same noreturn panic tail; see the kpanic exclusion above and the residual in rx_trap_stack.h.
 
 # arch_switch is rxv3 assembly (switch.S): five instructions that store g_arch_next and
 # write ICU.SWINTR, with no stack traffic at all, so it is a leaf worth 0. The rx-elf
@@ -196,6 +203,10 @@ preset  armv7m xmc4800-relax-st
 preset  armv7m f411disco-st
 preset  armv7m blackpill-st
 preset  armv7m due-st
+# The two 64 KiB FLASH parts, declared so a board with its OWN smaller dispatch can be
+# sized from its own figure rather than the fleet worst case.
+preset  armv7m f302nucleo-st
+preset  armv7m bluepill-c8-st
 class   armv7m PENDSV frame=KICKOS_ARMV7M_TRAP_FRAME_MAX \
                       depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV
 class   armv7m SVC    frame=KICKOS_ARMV7M_TRAP_NEST_SVC \
@@ -208,6 +219,7 @@ root    armv7m PENDSV NONE reason: PendSV_Handler and the SVC fastpath arm run i
 root    armv7m SVC    syscall_dispatch
 
 exclude armv7m _ZN6kickos6kpanicEPKc reason: the noreturn panic tail, which every KICKOS_ASSERT in the dispatch reaches. Counting it puts the SVC red zone at 980, above every armv7m board's KICKOS_MIN_STACK_SIZE, so a thread spawned at the floor could not make a syscall at all. The residual is stated in armv7m_trap_stack.h; the tool prints the without-exclusions figure so it cannot go quiet.
+exclude armv7m ?_ZN6kickos9kpanic_atEPKcj reason: the SECOND door into the same noreturn panic tail. f302nucleo-st and bluepill-c8-st measure 680 and 672 THROUGH this symbol, above the enforced 656, where every board measured before them reached its depth by another chain entirely: excluding one door and not the other made the figure depend on which door a board's deepest path used. Same residual, stated once in armv7m_trap_stack.h.
 
 # The AEABI 64-bit divide helpers are libgcc, so they have no .ci entry and neither does
 # __udivmoddi4 below them. MEASURED from the linked ELF and from libgcc.a for this
@@ -246,6 +258,7 @@ root    armv6m PENDSV NONE reason: PendSV_Handler and the SVC fastpath arm run i
 root    armv6m SVC    syscall_dispatch
 
 exclude armv6m _ZN6kickos6kpanicEPKc reason: the noreturn panic tail, which every KICKOS_ASSERT in the dispatch reaches. Counting it takes the deepest measurement to 808 and the red zone to 860 (picopi-st), above KICKOS_MIN_STACK_SIZE, so a thread spawned at the floor could not make a syscall at all. The residual is stated in armv6m_trap_stack.h; the tool prints the without-exclusions figure so it cannot go quiet.
+exclude armv6m ?_ZN6kickos9kpanic_atEPKcj reason: the SECOND door into the same noreturn panic tail; see the kpanic exclusion above and the residual in armv6m_trap_stack.h.
 
 # The AEABI helpers are libgcc, so they have no .ci entry and neither does anything they
 # call. MEASURED from the linked ELF and from libgcc.a for this multilib

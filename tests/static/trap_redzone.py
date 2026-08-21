@@ -86,7 +86,7 @@ class Decl(object):
         self.trap_stack = set()                      # classes declared stack=trap
         self.roots = collections.OrderedDict()        # class -> [(symbol, optional)]
         self.rootless = {}                            # class -> declared reason
-        self.excludes = []                           # [(mangled, reason)]
+        self.excludes = []                           # [(mangled, reason, optional)]
         self.unsized = collections.OrderedDict()      # symbol -> (bytes, reason)
         seen_arch = set()
         for n, f, reason in records(roots_path):
@@ -154,7 +154,9 @@ class Decl(object):
                 if reason is None:
                     die('%s: exclude %s carries no "reason:"; an undocumented exclusion is'
                         ' how a margin goes quiet' % (where, f[2]))
-                self.excludes.append((f[2], reason))
+                # '?' as on a root: the symbol is absent from SOME boards' graphs, so its
+                # absence contributes nothing instead of failing as a stale declaration.
+                self.excludes.append((f[2].lstrip('?'), reason, f[2].startswith('?')))
             elif kind == 'unsized':
                 if reason is None:
                     die('%s: unsized %s carries no "reason:"; the byte cost has to say'
@@ -556,9 +558,12 @@ def run(argv):
                           % (cls, decl.rootless[cls]))
 
     excluded = set()
-    for spec, reason in decl.excludes:
+    for spec, reason, optional in decl.excludes:
         key = graph.resolve(spec)
         if key is None:
+            if optional:
+                report.append('  exclusion %s: not in this graph, unused' % spec)
+                continue
             die('declared exclusion %s is not in the graph; the declaration is stale and'
                 ' the printed without-exclusions figure would be a duplicate' % spec)
         excluded.add(key)
@@ -628,7 +633,7 @@ def run(argv):
     if decl.excludes:
         print()
         print('WITHOUT the declared exclusions (report only, never a failure):')
-        for spec, reason in decl.excludes:
+        for spec, reason, _optional in decl.excludes:
             print('  excluded %s' % spec)
             print('    reason: %s' % reason)
         for cls in decl.classes:

@@ -365,3 +365,30 @@ site armv6m picopi-st        console_tx.cc:356:27  chip_rp2040.cc:rp_tx_irq_disa
 # thread's stack. Declared rather than omitted so the residual is stated somewhere.
 site armv6m picopi-st        chip_rp2040.cc:523:45 NONE
 site armv6m picopi-st        chip_rp2040.cc:531:13 NONE
+
+site armv7m f302nucleo-st    console_tx.cc:69:37    chip_stm32f302.cc:f3_tx_slot_free
+site armv7m f302nucleo-st    console_tx.cc:91:28    chip_stm32f302.cc:f3_tx_push
+site armv7m f302nucleo-st    console_tx.cc:141:30   chip_stm32f302.cc:f3_tx_irq_enable
+site armv7m f302nucleo-st    console_tx.cc:155:63   chip_stm32f302.cc:f3_tx_slot_free
+site armv7m f302nucleo-st    console_tx.cc:157:28   chip_stm32f302.cc:f3_tx_push
+site armv7m f302nucleo-st    console_tx.cc:259:35   chip_stm32f302.cc:f3_tx_irq_disable
+site armv7m f302nucleo-st    console_tx.cc:267:32   chip_stm32f302.cc:f3_tx_push
+site armv7m f302nucleo-st    console_tx.cc:284:49   chip_stm32f302.cc:f3_tx_slot_free
+site armv7m f302nucleo-st    console_tx.cc:286:24   chip_stm32f302.cc:f3_tx_push
+site armv7m f302nucleo-st    console_tx.cc:294:31   chip_stm32f302.cc:f3_tx_irq_disable
+site armv7m f302nucleo-st    console_tx.cc:310:27   chip_stm32f302.cc:f3_tx_irq_disable
+site armv7m f302nucleo-st    console_tx.cc:356:27   chip_stm32f302.cc:f3_tx_irq_disable
+
+site armv7m bluepill-c8-st   console_tx.cc:69:37    chip_stm32f103.cc:f1_tx_slot_free
+site armv7m bluepill-c8-st   console_tx.cc:91:28    chip_stm32f103.cc:f1_tx_push
+site armv7m bluepill-c8-st   console_tx.cc:141:30   chip_stm32f103.cc:f1_tx_irq_enable
+site armv7m bluepill-c8-st   console_tx.cc:155:63   chip_stm32f103.cc:f1_tx_slot_free
+site armv7m bluepill-c8-st   console_tx.cc:157:28   chip_stm32f103.cc:f1_tx_push
+site armv7m bluepill-c8-st   console_tx.cc:259:35   chip_stm32f103.cc:f1_tx_irq_disable
+site armv7m bluepill-c8-st   console_tx.cc:267:32   chip_stm32f103.cc:f1_tx_push
+site armv7m bluepill-c8-st   console_tx.cc:284:49   chip_stm32f103.cc:f1_tx_slot_free
+site armv7m bluepill-c8-st   console_tx.cc:286:24   chip_stm32f103.cc:f1_tx_push
+site armv7m bluepill-c8-st   console_tx.cc:294:31   chip_stm32f103.cc:f1_tx_irq_disable
+site armv7m bluepill-c8-st   console_tx.cc:310:27   chip_stm32f103.cc:f1_tx_irq_disable
+site armv7m bluepill-c8-st   console_tx.cc:356:27   chip_stm32f103.cc:f1_tx_irq_disable
+

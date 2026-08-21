@@ -501,13 +501,13 @@ namespace kickos
         // itself. A block enters the list only at the exited-slot reclaim point (alloc, below),
         // where its former owner is provably off-CPU.
         void* stack_free_list = nullptr;
-#if KICKOS_HAVE_MPU
-        // A demand-allocated stack is granted as ONE MPU region. PMSAv7/NAPOT require a power
-        // of two; the base+limit backends would accept any granule multiple, but the granule is
-        // a runtime seam value that cannot be asserted here.
-        static_assert((KICKOS_USER_STACK_SIZE & (KICKOS_USER_STACK_SIZE - 1)) == 0,
-                      "KICKOS_USER_STACK_SIZE must be a power of two under MPU enforcement");
-#endif
+        // The pow2 requirement a demand-allocated stack carries under some MPU backends is
+        // NOT asserted here. It holds for PMSAv7 and PMP NAPOT and not for the base+limit
+        // backends, and which one a board has is the scraped arch_mpu_region_pow2 seam,
+        // which reaches CMake and not this header: cmake/boot_arena.cmake refuses the
+        // mismatch there, naming the board and the backend. Asserting it here covered every
+        // enforcing board alike and so refused sizes SYSMPU, PMSAv8 and the RX MPU name
+        // exactly.
         static_assert(KICKOS_USER_STACK_SIZE >= sizeof(void*),
                       "a reclaimed stack block must be able to hold the free-list link");
         // A KERNEL-DEFAULT stack has no caller to refuse it. The caller-provided path tests
