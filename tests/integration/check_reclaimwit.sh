@@ -13,9 +13,9 @@
 # silence is what makes the LIVE line attributable to arch_console_reclaim and not to a
 # driver that was still serving.
 #
-# EVERY MATCH HERE IS grep -F ON A WHOLE EMISSION LINE, and that is the whole design. The
-# app prints a reading key that spells the word MUTE four times, so `grep MUTE` matches the
-# key on a CORRECT run and reports a broken publish that did not happen.
+# EVERY MATCH HERE IS grep -F ON A WHOLE EMISSION LINE. The app prints a reading key that
+# spells the word MUTE four times, so `grep MUTE` matches the key on a CORRECT run and
+# reports a broken publish that did not happen.
 #
 # usage: check_reclaimwit.sh <reclaimwit.elf> <park|drain>
 #   park  the app never returns: polled to its last line, then killed. A poll that runs
@@ -39,16 +39,15 @@ PASS_LINE='[reclaimwit] PASS reclaim fired'
 PARK_LINE='[reclaimwit] park arm: the system stays up'
 TAIL_LINE='[reclaimwit] DRAINTAIL 0123456789abcdef0123456789abcdef <<<DRAIN-END>>>'
 
-# grep -c exits 1 on zero matches, which would kill a `set -e` caller before its fail
-# message printed.
+# grep -c exits 1 on zero matches, which kills a `set -e` caller before its fail message
+# prints.
 n_of() { printf '%s\n' "$OUT" | grep -cF -- "$1" || true; }
 
 case "$arm" in
     park)
-        # The last line of each terminal path, as one ERE: the park banner on a run that
-        # reached the end, the run-time refusal, and print_rc's failure prefix. Without the
-        # last two an early failure burns the whole poll and reports no-progress instead of
-        # its cause.
+        # The last line of each terminal path, as one ERE. The refusal and print_rc's failure
+        # prefix are in it because an early failure otherwise burns the whole poll and reports
+        # no-progress instead of its cause.
         poll_image "$elf" '\[reclaimwit\] (park arm: the system stays up|REFUSE: this image already publishes|  FAIL )'
         if [ "$POLL_OK" -ne 1 ]; then
             fail "no terminal line reached the wire: the image did not boot, or the console never came back after the driver died"
@@ -67,8 +66,7 @@ esac
 
 assert_no_panic "the image panicked, so any reclaim cannot be credited to the driver's death"
 
-# Premise, checked first: a capture that lost its head would make every absence assertion
-# below vacuous.
+# Premise, first: a capture that lost its head makes every absence assertion below vacuous.
 if [ "$(n_of "$KEY_LINE")" -eq 0 ]; then
     fail "the app's reading key never reached the wire, so this capture witnesses nothing"
 fi
@@ -76,8 +74,8 @@ if has "\[reclaimwit\] REFUSE:"; then
     fail "the app refused: this image already publishes a userspace console, so it cannot kill the console's own driver. Build with -DKICKOS_SERVICE_LIST=kickos_services_none"
 fi
 
-# The wrong binary greps green on almost everything here, and the two arms are built from
-# one source file, so each one names the other's terminal line as its own refusal.
+# The two arms are built from one source file and the wrong binary greps green on almost
+# everything here, so each arm names the other's terminal line as its own refusal.
 if [ "$arm" = park ] && [ "$(n_of "$TAIL_LINE")" -ne 0 ]; then
     fail "the park gate was handed the drain binary"
 fi

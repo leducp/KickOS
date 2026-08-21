@@ -1,21 +1,20 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// GPIO direct-MMIO demo (M4.3): the kernel does NOT do GPIO. A bring-up main (the root
-// thread, unprivileged but seated with every authority) grants the LED port's block to an
+// GPIO direct-MMIO demo (M4.3): userspace owns GPIO. A bring-up main (the root thread,
+// unprivileged but seated with every authority) grants the LED port's block to an
 // UNPRIVILEGED worker as a spawn MMIO window; the worker toggles the pin by writing that
-// window DIRECTLY: no syscall per edge. A syscall-per-toggle cannot serve a hot pin (a
-// spike measured an SVC round-trip well above a 16-bit chip-select's edge budget), so the
-// honest model is direct MMIO with a per-chip isolation ceiling on the granted window.
+// window DIRECTLY, with no syscall per edge. A syscall-per-toggle cannot serve a hot pin,
+// so the model is direct MMIO with a per-chip isolation ceiling on the granted window.
 //
 // The pin was already muxed by the default init's board pin-map (the clock->pinmux->gpio
-// bring-up DAG). This app never touches a mux register; it only drives + reads back.
+// bring-up DAG); this app only drives and reads back.
 //
 // PORT/PIN come from compile defs KICKOS_GPIOBLINK_PORT / _PIN. The register layout is per
 // chip (KICKOS_GPIOBLINK_XMC / _K64F, set by CMake from KICKOS_CHIP). Register offsets are
-// mirrored as local constexprs from the canonical per-chip regs/ headers (cited below); a
-// cross-tree include from user/ does not resolve cleanly and would break the sim/qemu
-// builds this app must also compile on. A chip with no layout here builds a park-only stub.
+// mirrored as local constexprs from the canonical per-chip regs/ headers (cited below),
+// because a cross-tree include from user/ would break the sim/qemu builds this app must
+// also compile on. A chip with no layout here builds a park-only stub.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -41,12 +40,13 @@ namespace
 namespace
 {
     // XMC4800 P<port> block. Canonical: arch/arm/chip/xmc4800/regs/port.h (OMR set/reset,
-    // IN) + mmap.h (PORT0_BASE 0x48028000, PORT_STRIDE 0x100). Direction lives in the IOCR
-    // mux (init set PC=0x10, output push-pull GP), so there is no direction write here.
+    // IN) + include/kickos/chip_mmap.h (PORT0_BASE 0x48028000, PORT_STRIDE 0x100).
+    // Direction lives in the IOCR mux (init set PC=0x10, output push-pull GP), so driving
+    // needs no direction write.
     constexpr uintptr_t WINDOW_BASE = 0x48028000u + PORT * 0x100u;
     // Whole port block: OMR is inseparable from IOCR (a sub-region cannot split them), so
-    // the grant is a TRUSTED OVER-GRANT. P5.9 (the kernel diag LED) co-resides on P5; this
-    // app must never touch it. This shared-port over-grant is the documented XMC limit.
+    // the grant is a TRUSTED OVER-GRANT, and that shared-port over-grant is the XMC limit.
+    // P5.9 (the kernel diag LED) co-resides on P5; this app must never touch it.
     constexpr uint32_t WINDOW_SIZE = 0x100u;
     constexpr uintptr_t OMR_OFF = 0x04u; // write 1<<pin = set high, 1<<(pin+16) = set low
     constexpr uintptr_t IN_OFF = 0x24u;  // read-only pad input (readable even as PP output)
@@ -78,8 +78,8 @@ namespace
 namespace
 {
     // MK64F GPIO<port> block. Canonical: arch/arm/chip/mk64f/regs/gpio.h (PSOR/PCOR/PDIR/
-    // PDDR) + mmap.h (GPIOA_BASE 0x400FF000, GPIO_STRIDE 0x40). Direction is a SEPARATE
-    // PDDR write (unlike XMC): the worker sets output before driving.
+    // PDDR) + include/kickos/chip_mmap.h (GPIOA_BASE 0x400FF000, GPIO_STRIDE 0x40).
+    // Direction is a SEPARATE PDDR write: the worker sets output before driving.
     constexpr uintptr_t WINDOW_BASE = 0x400FF000u + PORT * 0x40u;
     // Whole GPIO instance block. The K64F GPIO block is unprotectable, so this grant is
     // one of the three genuinely inert ones and is kept for spawn-signature parity and
@@ -124,7 +124,7 @@ namespace
 {
     // UNPRIVILEGED worker: the granted window base arrives as the thread arg VALUE (never a
     // pointer into mutable file-scope state, which the grant would not cover under
-    // enforcement). Drives + reads back for a few cycles, then slow-blinks forever.
+    // enforcement).
     void worker(void* arg)
     {
         uintptr_t const win = reinterpret_cast<uintptr_t>(arg);
@@ -159,8 +159,8 @@ namespace
         }
         fflush(stdout);
 
-        // Persistent: keep the window and slow-blink forever, mirroring the design. A
-        // granted pin is owned for the driver's life.
+        // A granted pin is owned for the driver's life, so the worker keeps the window
+        // and slow-blinks on.
         while (true)
         {
             gpio_drive(win, bit, 1);

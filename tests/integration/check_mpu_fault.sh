@@ -7,19 +7,18 @@
 # domain-A thread writes its own granted region (must succeed), then writes domain B's
 # region (must fault). Native for the sim, QEMU when QEMU_MACHINE is set.
 #
-# Registered only on an enforcing build; on a flat one the write completes, which is
-# correct there and would (rightly) fail this gate.
+# Registered only on an enforcing build, where the cross-domain write is the one that traps.
 #
 # The banner alone is not the claim. Without the control marker AND the address pin
 # below, a total grant failure (region A never granted at all) still passes: the fault
 # then happens on the thread's OWN write, at a different address, and every marker the
 # gate greps still appears.
 #
-# <outcome> is the caller's, not this script's to sniff: what a detected violation DOES
-# is a property of the backend. `panic' ends the system through kickos_isr_fault;
-# `thread-kill' kills the worker alone, and root then parks forever on a semaphore
-# nobody can post, so that arm polls and stops QEMU instead of waiting for an exit.
-# Either way the claim under test is the same one: detected, and credited to 'domainA'.
+# What a detected violation DOES is a property of the backend, so <outcome> is passed in.
+# `panic' ends the system through kickos_isr_fault; `thread-kill' kills the worker alone, and
+# root then parks forever on a semaphore nobody can post, so that arm polls and stops QEMU
+# instead of waiting for an exit. The claim is the same either way: detected, and credited
+# to 'domainA'.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -46,18 +45,17 @@ fi
 if has_e "did not fault|cross-domain write completed"; then
     fail "the cross-domain write was NOT trapped (enforcement inactive?)"
 fi
-# The CONTROL half must have run: the thread writing its OWN granted region and reading
-# the value back is what separates "domain B is refused" from "region A was never
-# granted", which faults earlier and prints the same banner.
+# The CONTROL half must have run: the thread writing its OWN granted region and reading the
+# value back separates "domain B is refused" from "region A was never granted", which faults
+# earlier and prints the same banner.
 if ! has "\[domain\] A: my region ok"; then
     fail "the control write never took effect (region A not granted?)"
 fi
 
-# Pin the trap to the address the app announced. This is what the banner cannot say:
-# the reporters differ (RISC-V and the sim take the kernel-reported path and name the
-# thread; ARM's panic dump prints no name and only labels itself "MPU FAULT" when the CFSR
-# MMFSR byte is set; the thread-kill dump names the thread and prints ADDR), but all of
-# them record the faulting address.
+# Pin the trap to the address the app announced, which is what the banner cannot say. The
+# reporters differ in wording, RISC-V and the sim naming the thread from the kernel-reported
+# path while ARM's panic dump names none and labels itself "MPU FAULT" only when the CFSR
+# MMFSR byte is set, and every one of them records the faulting address.
 want="$(printf '%s\n' "$OUT" \
     | sed -n 's/.*\[domain\] expect fault at 0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
 if [ -z "$want" ]; then
@@ -67,9 +65,8 @@ if [ "$outcome" = "thread-kill" ]; then
     if ! has_e "$(thread_fault_re domainA)"; then
         fail "no thread-kill for 'domainA' (crash / hang / truncated run?)"
     fi
-    # The kill must be the WHOLE outcome. Without this a redirect that fired and then
-    # escalated anyway still shows the banner above, and the system it was meant to keep
-    # running is dead.
+    # The kill must be the WHOLE outcome: a redirect that fired and then escalated anyway
+    # still shows the banner above, with the system it was meant to keep running dead.
     assert_no_panic "the domain violation killed the thread AND panicked the system"
 elif ! has_e "MPU FAULT: thread 'domainA'|=== MPU FAULT ==="; then
     fail "MPU FAULT marker missing (crash / hang / truncated run?)"

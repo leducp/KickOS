@@ -16,9 +16,8 @@ if(NOT KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
     "-DKICKOS_ENABLE_SELFTEST=ON (it is a diagnostic app).")
   return()
 endif()
-# kickos_add_diagnostic_app returns silently without KICKOS_ENABLE_SELFTEST, so name the
-# second requirement here: the service-list message alone sends the operator to a
-# configure that produces no binary and says nothing.
+# Name the selftest requirement too: the service-list message alone sends the operator to a
+# configure that produces no binary.
 if(NOT KICKOS_ENABLE_SELFTEST)
   message(STATUS
     "KickOS: conreclaim skipped: it is a diagnostic app and KICKOS_ENABLE_SELFTEST is off. "
@@ -34,5 +33,8 @@ if(NOT TARGET conreclaim)
   return() # diagnostics off -> app not built
 endif()
 
-# No CTest gate: PASS is an operator reading the panic banner on silicon (XMC has no
-# QEMU model), which the in-env sim cannot reproduce.
+# An OPERATOR on silicon is the reader: PASS is the
+# "KERNEL PANIC: [conreclaim] PASS: the dead channel came back" line and the queued marker
+# above it, both written while the channel was dead. Witnessed on the XMC4800-relax
+# (docs/reference/boards.md carries which boards a QEMU machine covers); main.cc records why
+# kos_panic is the only terminal path left to an app here.

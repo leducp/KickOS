@@ -13,25 +13,94 @@
 #include <kickos/units.h> // _s literal (== 1e9 ns)
 
 #include "regs.h"
+#include <kickos/arch/armv7m_trap_stack.h> // the figures switch.S's PSP guard enforces
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 
 #include <stddef.h> // offsetof
+#include <stdint.h>
 
-// The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
-// for the arch this backend implements, or a SESSION record mislabels the trace.
-// A wrong caps.cmake value breaks the build here instead of drifting silently.
+// The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId for
+// the arch this backend implements, or a SESSION record mislabels the trace.
 static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_ARMV7M,
               "KICKOS_TRACE_ARCH does not match ArchId::ARCH_ARMV7M for armv7m");
 
-// switch.S hard-codes these arch_context field offsets; keep struct and asm in
-// sync (a silent reorder would corrupt the saved SP / privilege state).
+// switch.S hard-codes these arch_context field offsets, so a reorder would corrupt the
+// saved SP or privilege state.
 static_assert(offsetof(struct arch_context, sp) == 0, "switch.S expects ctx.sp @0");
 static_assert(offsetof(struct arch_context, npriv) == 4, "switch.S expects ctx.npriv @4");
 static_assert(offsetof(struct arch_context, resting_npriv) == 8,
               "switch.S expects ctx.resting_npriv @8");
+// The PSP bounds guard reads these two, so a reorder would let it compare against the
+// wrong words and pass a PSP with no room below it. The telemetry field is last, which
+// keeps both offsets the same in every build posture.
+static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_ARMV7M_CTX_OFF_STACK_LO,
+              "switch.S reads ctx.stack_lo at KICKOS_ARMV7M_CTX_OFF_STACK_LO");
+static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_ARMV7M_CTX_OFF_STACK_HI,
+              "switch.S reads ctx.stack_hi at KICKOS_ARMV7M_CTX_OFF_STACK_HI");
+static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_ARMV7M_CTX_OFF_KERNEL_SP,
+              "a trusted entry loads ctx.kernel_sp at F_CTX_KERNEL_SP");
+
+// The red-zone figures switch.S enforces. gas cannot count the registers in an stmdb, so
+// the frame halves are asserted here against the register lists the two pushes carry.
+static_assert(KICKOS_ARMV7M_TRAP_FRAME == 9u * sizeof(uint32_t),
+              "PSP_GUARD prices {r4-r11, EXC_RETURN}: nine words");
+static_assert(KICKOS_ARMV7M_TRAP_FRAME_FP == 16u * sizeof(uint32_t),
+              "the FP term prices {s16-s31}: sixteen words");
+static_assert(KICKOS_ARMV7M_TRAP_FRAME_MAX
+                  == KICKOS_ARMV7M_TRAP_FRAME + KICKOS_ARMV7M_TRAP_FRAME_FP,
+              "FRAME_MAX is the worst-case push and is what the red-zone gate scrapes");
+// The SVC figure must dominate the fastpath arm's own worst-case push, since the one
+// hoisted guard charges the same figure for both arms.
+static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC >= KICKOS_ARMV7M_TRAP_FRAME_MAX,
+              "the SVC site must cover the fastpath arm's FP-live push, which it guards too");
+static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC >= KICKOS_ARMV7M_TRAP_FRAME,
+              "NEST_SVC must dominate the software push it stands in for");
+// The PENDSV class charges the push alone. A claim about handler mode rather than a
+// measurement: ARMv7-M forces SP_main there, so everything PendSV_Handler calls runs on
+// the MSP.
+static_assert(KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV == 0,
+              "a nonzero PendSV descent needs roots in tests/static/trap_redzone_roots.txt");
+static_assert(KICKOS_ARMV7M_TRAP_NEED_SVC > KICKOS_ARMV7M_TRAP_NEED_PENDSV,
+              "the SVC site must charge more than the switcher: it keeps running on the PSP");
+// The floor must DOMINATE the worst-case red zone, or a thread spawned at the floor passes
+// the spawn check and is then refused by the guard on every syscall it makes. This
+// assertion covers every armv7m board.
+//
+// STRICTER THAN THE RED-ZONE GATE'S OWN FLOOR CLAUSE, and it has to be: the guard bounds
+// the room below the PSP, and on this arch the hardware has already spent bytes ABOVE it
+// before any handler runs. A thread trapping with an empty floor-sized stack therefore
+// offers the guard only KICKOS_MIN_STACK_SIZE minus that frame.
+//
+// THE ENTRY FRAME IS THE BINDING TERM, NOT THE DESCENT. Those are two different questions
+// and conflating them understates this floor. What the descent needs does cancel across the
+// two postures, 32 + 836 and 104 + 764 both being 868, because a wider entry frame is
+// handed straight back when the exception return unstacks it. What the GUARD demands does
+// not cancel: it asks for NEED_SVC unconditionally, so the requirement is NEED_SVC plus
+// whatever entry spent, and the FP-live 104 is the worse of the two. The guard is therefore
+// 72 bytes stricter than physics in that posture, which is the price of not branching on
+// FPCA at the SVC site.
+#if defined(__ARM_FP)
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV7M_TRAP_NEED_SVC + 104,
+              "KICKOS_MIN_STACK_SIZE is below the armv7m syscall red zone plus the "
+              "FP-live exception frame entry spends above it: raise the per-arch default in "
+              "Kconfig, never the red zone, which is a measurement");
+#else
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV7M_TRAP_NEED_SVC + 32,
+              "KICKOS_MIN_STACK_SIZE is below the armv7m syscall red zone plus the "
+              "exception frame entry spends above it: raise the per-arch default in "
+              "Kconfig, never the red zone, which is a measurement");
+#endif
+
+// THE CEILING'S ALIGNMENT is checkable even though its SIZE is not yet measurable:
+// ARMv7-M keeps SP 8-byte aligned at every public interface (AAPCS), so a kernel stack
+// whose SIZE is not a multiple of 8 puts its top off that boundary.
+static_assert(KICKOS_KERNEL_STACK_SIZE % 8 == 0,
+              "KICKOS_KERNEL_STACK_SIZE must be a multiple of 8 on this arch, or a "
+              "kernel stack's top does not land on the alignment every frame on it "
+              "assumes");
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-static_assert(offsetof(struct arch_context, trace_tid) == 12,
-              "switch.S telemetry hook expects ctx.trace_tid @12");
+static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_ARMV7M_CTX_OFF_TRACE_TID,
+              "switch.S telemetry hook reads ctx.trace_tid at F_CTX_TRACE_TID");
 #endif
 #if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
 static_assert(kickos::armv7m::PRIO_LOCK_BASEPRI == 0x20,
@@ -115,6 +184,17 @@ void arch_context_init(struct arch_context* ctx,
     }
     ctx->npriv = npriv;
     ctx->resting_npriv = npriv;
+
+    // PendSV and SVC_Handler check the live PSP against these before either pushes the
+    // {r4-r11, EXC_RETURN} block through it. `top` is the 8-byte-aligned high edge the
+    // first frame sits below, so a running thread's PSP stays in [stack_lo, stack_hi).
+    ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
+    ctx->stack_hi = static_cast<uint32_t>(top);
+
+    // No kernel stack is allocated yet, so it is seated at 0 rather than left as whatever
+    // the TCB slab last held. A trusted entry that finds 0 here has nothing to transfer to,
+    // which is the state every thread is in until the allocator lands.
+    ctx->kernel_sp = 0;
 }
 
 #if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
@@ -129,11 +209,10 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 }
 #endif
 
-// The whole seam on this backend. The fabricated frame carries EXC_RETURN 0xFFFFFFFD
-// (thread mode, PSP, NON-FP frame), so the rebuild also RESETS the frame format: a
-// thread that had an extended FP frame stacked resumes on a plain 8-word one, which is
-// what the new EXC_RETURN says. That is only sound because every frame it had is
-// discarded here.
+// The fabricated frame carries EXC_RETURN 0xFFFFFFFD (thread mode, PSP, NON-FP frame), so
+// the rebuild also RESETS the frame format: a thread that had an extended FP frame stacked
+// resumes on a plain 8-word one, which is what the new EXC_RETURN says. Sound because
+// every frame it held is discarded here.
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
@@ -145,12 +224,10 @@ arch_irq_state_t arch_irq_save(void)
 {
     uint32_t prev;
     __asm volatile("mrs %0, basepri" : "=r"(prev));
-    // Nested-lock fast path: if BASEPRI already masks at least as strongly as the
-    // lock, the section is already in effect: no BASEPRI change and thus no barrier
-    // is needed. Skips the DSB+ISB (a pipeline flush) on every nested IrqLock; the hot
-    // syscall->sem->wake->reschedule->ktime_rearm path nests ~6-8. Lower BASEPRI value
-    // = stronger mask; 0 = no mask. (A weaker prev, e.g. a device band 0x30, still
-    // raises to the lock below.)
+    // Nested-lock fast path: BASEPRI already masking at least as strongly as the lock
+    // means the section is in effect, so the write and its barriers are both skipped.
+    // Lower BASEPRI value = stronger mask, 0 = no mask, so a weaker prev (a device band
+    // 0x30) still raises to the lock below.
     if (prev != 0 and prev <= PRIO_LOCK_BASEPRI)
     {
         return prev;
@@ -169,17 +246,16 @@ void arch_irq_restore(arch_irq_state_t state)
     __asm volatile("msr basepri, %0" ::"r"(state) : "memory");
 }
 
-// --- Monotonic clock: NO armv7m default -------------------------------------
-// arch_clock_now is a REQUIRED chip contract (a strong per-chip definition over a
-// dedicated peripheral timer). There is deliberately no DWT fallback TU here: the
-// DWT is debug-domain (gated by DEMCR.TRCENA, lockable on Cortex-M7, absent under
-// QEMU) and every chip that ever relied on the old fallback hit a broken clock, so a
-// board that forgets to provide one must fail LOUD at link time, not hang on its
-// first sleep. The one-shot SysTick timer is core-generic (arch_arm_common).
+// --- Monotonic clock ---------------------------------------------------------
+// arch_clock_now is a REQUIRED chip contract: a strong per-chip definition over a
+// dedicated peripheral timer. The DWT is debug-domain (gated by DEMCR.TRCENA, lockable on
+// Cortex-M7, and absent under QEMU), so this arch supplies no fallback and a board that
+// omits its own definition fails LOUD at link time rather than hanging on its first
+// sleep. The one-shot SysTick timer is core-generic (arch_arm_common).
 
-// --- Interrupt controller (NVIC). mask/inject are core-generic (arm/common);
-// only unmask is arch-specific: it programs the BASEPRI-maskable priority band
-// the crit section relies on, which v6-M (PRIMASK-masks-all) has no analogue for.
+// --- Interrupt controller (NVIC). mask/inject are core-generic (arm/common); unmask is
+// arch-specific because it programs the BASEPRI-maskable priority band the crit section
+// relies on.
 void arch_irq_unmask(int line)
 {
     if (line < 0)
@@ -346,6 +422,53 @@ void arch_fault_redirect_to_exit(void* frame)
     __asm volatile("mrs %0, control" : "=r"(control));
     __asm volatile("msr control, %0" ::"r"(control & ~1u));
     __asm volatile("isb" ::: "memory");
+}
+
+// Called from switch.S (PendSV and SVC_Handler) when the running thread's live PSP lacks
+// room BELOW it for the {r4-r11, EXC_RETURN} block the switcher is about to push there.
+//
+// Runs in handler mode on the MSP, trusted, with no stack swap to arrange, and contains
+// the system rather than the write: the only frame and PSP a resume could use are the
+// ones the guard just refused.
+void kickos_armv7m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi)
+{
+    kpanic_enter();
+#if KICKOS_PANIC_DUMP
+    // WHICH bound refused, classified from the values: one guard serves all three legs and
+    // the branch that took it is not passed in.
+    char const* why = "no room below";
+    if (psp < lo)
+    {
+        why = "under stack_lo";
+    }
+    else if (psp >= hi)
+    {
+        why = "at or above stack_hi";
+    }
+    // WHICH guarded push refused, read from ICSR.VECTACTIVE: nothing in the arguments
+    // separates the two sites.
+    uint32_t const vect = kickos::arm::reg32(0xE000ED04) & 0x1FFu;
+    char const* site = "handler";
+    if (vect == 11u)
+    {
+        site = "SVCall";
+    }
+    else if (vect == 14u)
+    {
+        site = "PendSV";
+    }
+    ::kickos::kprintf("\n=== ARMV7M EXCEPTION (wild PSP: %s) ===\n", why);
+    ::kickos::kprintf("  in %s PSP=0x%x need=%u stack=[0x%x,0x%x)\n", site,
+                      static_cast<unsigned>(psp), static_cast<unsigned>(need),
+                      static_cast<unsigned>(lo), static_cast<unsigned>(hi));
+#else
+    (void)psp;
+    (void)need;
+    (void)lo;
+    (void)hi;
+    ::kickos::kprintf("\n=== ARMV7M EXCEPTION (wild PSP) ===\n");
+#endif
+    kfault_terminate();
 }
 
 // C side of the fault handler: `frame` points at the hardware-stacked exception

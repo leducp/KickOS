@@ -4,13 +4,14 @@
 // Failure-path gate for kickos::driver::bring_up and its unwind, over the recording seam
 // in kos_seam.h.
 //
-// Every arm compares the FULL ordered trace as one string. Counters, substring tests or
-// per-token assertions would drop the only check on `unwind`'s three orderings: lines then
-// endpoint, endpoint close before any cancel, both before the diagnostic print.
+// Every arm compares the FULL ordered trace as one string. That comparison is the only check
+// on `unwind`'s three orderings (lines then endpoint, endpoint close before any cancel, both
+// before the diagnostic print), and a counter or a substring test drops it.
 //
-// NOT witnessed here: that kos_thread_kill was honoured (cancellation is cooperative and
-// taken only inside kos_irq_wait, and no spawned thread runs here; see
-// tests/integration/check_sim_drvdeath.sh), nor that a close reclaims the console.
+// What the trace witnesses is the ORDER of the unwind calls. Whether kos_thread_kill is
+// honoured (cancellation is cooperative, taken inside kos_irq_wait, and no spawned thread
+// runs here) and whether a close reclaims the console are settled by
+// tests/integration/check_sim_drvdeath.sh.
 
 #include <kickos/sys/driver_service.h>
 
@@ -47,15 +48,15 @@ namespace
 
     int block_init(void* blk, struct kos_service_cfg const*)
     {
-        // The latch ADDRESS is published here; the spawn fake SETS it, as no child runs.
+        // The latch ADDRESS is published here; the spawn fake SETS it.
         g_seam.latch = reinterpret_cast<volatile uint32_t*>(
             static_cast<unsigned char*>(blk) + K_READY_OFF);
         *g_seam.latch = 0u;
         return g_block_init_rc;
     }
 
-    // Two lines: with one, a partial claim is indistinguishable from none and the arm that
-    // separates `claimed` from `line_count` dies with it.
+    // Two lines, so a partial claim is distinguishable from none: the arm that separates
+    // `claimed` from `line_count` needs both.
     constexpr drv::Descriptor k_two = {
         .tag = "[drvfake] ",
         .expected_base = K_BASE,
@@ -372,8 +373,7 @@ TEST_F(DrvBringup, a_block_no_thread_reads_is_not_a_driver_shape)
     EXPECT_TRUE(drv::valid(k_blockless)) << "and dropping the block is what makes it valid";
 }
 
-// A refusal must leave NO trace: no arena block, no endpoint, no publish. One arm per leg
-// of the guard.
+// A refusal must leave NO trace, one arm per leg of the guard.
 TEST_F(DrvBringup, a_wrong_kind_cfg_has_no_effect)
 {
     struct kos_service_cfg const wrong = cfg_of(KOS_SVC_SPI, K_BASE);

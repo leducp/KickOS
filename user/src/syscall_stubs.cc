@@ -322,7 +322,7 @@ void kos_panic(char const* msg)
 
 // Planted by the arch as the return address of an UNPRIVILEGED thread's entry: such a worker
 // must reach the kernel exit path through the syscall trap, never by calling
-// kickos_thread_return, which is the privileged threads' path. Unused on the sim.
+// kickos_thread_return, which is the privileged threads' path.
 void kickos_user_thread_return(void)
 {
     kos_exit(0);
@@ -355,6 +355,12 @@ uint32_t kos_irq_spurious_count(void)
 uint32_t kos_ipc_fast_taken(void)
 {
     return static_cast<uint32_t>(arch_syscall(KOS_SYS_IPC_FAST_TAKEN, 0, 0, 0, 0));
+}
+
+uint32_t kos_nest_witness(int which)
+{
+    return static_cast<uint32_t>(
+        arch_syscall(KOS_SYS_NEST_WITNESS, static_cast<uintptr_t>(which), 0, 0, 0));
 }
 
 uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size)

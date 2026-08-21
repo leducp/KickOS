@@ -32,7 +32,7 @@ namespace
     constexpr uint32_t RX_FULL_THRHD = 1;
     constexpr uint32_t TX_EMPTY_THRHD = 32;
 
-    // TX-empty is armed on demand by kos_uart_write, never here.
+    // TX-empty is armed on demand by kos_uart_write.
     constexpr uint32_t RX_INT_MASK =
         ru::RXFIFO_FULL_INT | ru::RXFIFO_OVF_INT | ru::FRM_ERR_INT | ru::PARITY_ERR_INT;
 
@@ -53,8 +53,8 @@ namespace
         uint32_t const ena = r32(base + ru::OFF_INT_ENA);
         if (on)
         {
-            // Enable only: dropping the stale latch here would kill the re-raise when the
-            // burst stopped on a full FIFO.
+            // Enable only: the stale latch IS the re-raise for a burst that stopped on a
+            // full FIFO.
             r32(base + ru::OFF_INT_ENA) = ena | ru::TXFIFO_EMPTY_INT;
             return;
         }
@@ -221,7 +221,8 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
         return -KOS_EBUSY;
     }
 
-    // The last step that can refuse, so nothing is armed yet and a refusal needs no undo.
+    // RX_INT_MASK is armed only BELOW this, so every refusal above returns with INT_ENA
+    // still 0 and the channel quiet.
     int32_t const rate = achieved_baud(u->base);
     if (rate < 0)
     {
@@ -313,8 +314,8 @@ int32_t kos_uart_flush(struct kos_uart* u)
 
 int32_t kos_uart_close(struct kos_uart* u)
 {
-    // CONF0_SYNC is left alone: this part has no transmit or receive enable to clear, and
-    // gating the channel's clock means PCR, which belongs to the kernel.
+    // Enabling this channel lives in PCR, which belongs to the kernel, so CONF0_SYNC keeps
+    // its framing and the interrupt enables are what close drops.
     r32(u->base + ru::OFF_INT_ENA) = 0;
     r32(u->base + ru::OFF_INT_CLR) = 0xFFFFFFFFu;
     return 0;

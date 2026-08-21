@@ -174,6 +174,25 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt ld
   # table, so the shortfall is indistinguishable from a legitimate limit at runtime.
   # SLOTS MINUS ROOT, not the slot count: the pool holds KICKOS_THREAD_SLOTS, and root's
   # slot takes its stack from the boot replay above rather than from this demand.
+  # A DEMAND-ALLOCATED STACK IS ONE MPU DESCRIPTOR, and on a pow2 backend only a power of
+  # two is expressible, so a size that is not one gets SNAPPED UP by arch_ram_region_size
+  # and the board allocates more per thread than it asked for. Refused here rather than
+  # snapped, because the arena model below would then be right about a number no defconfig
+  # states. The fact is per BACKEND and not per board: PMSAv7 RASR carries ctz(size) - 1
+  # and PMP folds the size into the address bits, while PMSAv8, SYSMPU and the RX MPU are
+  # base+limit and take any granule multiple. _p2 is the scraped seam, so this asks the
+  # backend rather than assuming every enforcing board is the strict kind.
+  if(_p2 AND NOT _user EQUAL 0)
+    math(EXPR _user_pow2 "${_user} & (${_user} - 1)")
+    if(NOT _user_pow2 EQUAL 0)
+      message(FATAL_ERROR
+        "KickOS: KICKOS_USER_STACK_SIZE is ${_user} on board '${KICKOS_BOARD}', whose MPU "
+        "backend encodes a region as a power of two (arch_mpu_region_pow2 returns 1). "
+        "arch_ram_region_size would snap every demand-allocated stack up to the next power "
+        "of two, so each thread would silently cost more than the defconfig states. State a "
+        "power of two, or state a size this backend can name exactly.")
+    endif()
+  endif()
   kickos_region_size("${_user}" "${_mn}" "${_p2}" _usz)
   kickos_region_align("${_user}" "${_mn}" "${_p2}" _ual)
   file(READ "${ld}" _ldtxt)

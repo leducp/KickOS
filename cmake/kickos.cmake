@@ -390,8 +390,9 @@ endfunction()
 #   kos_guard_addr, ...) that is deliberately kept OUT of the production ABI, and/or
 #   deliberately faults. A production build carries no diagnostic image. Callers
 #   should `if(NOT TARGET <name>) return() endif()` before registering its tests so
-#   a non-diagnostic build skips them cleanly. Distinct from kickos_add_application,
-#   which is for user/demo apps that build on every configuration.
+#   a non-diagnostic build skips them cleanly. It returns SILENTLY, so a caller that
+#   wants the operator told states the requirement itself. Distinct from
+#   kickos_add_application, which is for user/demo apps that build on every configuration.
 # ---------------------------------------------------------------------------
 function(kickos_add_diagnostic_app name)
   if(NOT KICKOS_ENABLE_SELFTEST)

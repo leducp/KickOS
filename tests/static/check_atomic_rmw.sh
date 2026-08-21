@@ -23,13 +23,11 @@
 #              are findings to a plain grep. A file whose block comment or literal is still
 #              open at EOF is REFUSED by name, not skipped: its verdict is UNKNOWN.
 #
-#   named      the method, C11 free-function and builtin RMW spellings, listed one by one.
-#              The rule is READ-MODIFY-WRITE, never the `__atomic_` prefix: `__atomic_load_n`
-#              and `__atomic_store_n` are a plain load and a plain store, as are
-#              `atomic_load_explicit` and `atomic_store_explicit`, and `atomic_thread_fence`
-#              and `__sync_synchronize` are fences. All are absent from the patterns and
-#              pinned absent by the self-test's negative corpus, which is what fails a
-#              widening of `__atomic_(...)` back into a prefix.
+#   named      the method, C11 free-function and builtin RMW spellings, listed one by one in
+#              RMW_METHOD and RMW_FUNC below. The rule is READ-MODIFY-WRITE, never the
+#              `__atomic_` prefix, and the self-test's negative corpus pins the plain load,
+#              store and fence spellings out of the patterns: that is what fails a widening
+#              of `__atomic_(...)` back into a prefix.
 #
 #   operator   `++ -- += -= &= |= ^=` applied to an atomic. The use site carries no atomic
 #              spelling, so the only handle is which identifiers were DECLARED atomic, which
@@ -40,27 +38,25 @@
 #                        corpus: the atomic fields that matter are declared in a header and
 #                        incremented in a driver.
 #                bare    `name++`, over the names THAT FILE declares, never the whole
-#                        corpus. `head`, `tail`, `mode`, `ready`, `stage` and `latch` are all
-#                        atomic member names here and all ordinary local-variable names, so
-#                        a cross-file bare match would fire on a plain `uint32_t mode` in an
-#                        unrelated file.
+#                        corpus. A short field name is an ordinary local-variable name too,
+#                        so a cross-file bare match would fire on a plain `uint32_t mode` in
+#                        an unrelated file.
 #
-# THEREFORE NOT CAUGHT. Know these before trusting a green run:
-#   - an operator form whose object reaches the atomic through anything but a plain
-#     identifier chain: `(*p)++`, `v[i].f++` where the subscript holds a call, and
-#     `stats_block()->stats.f++`-shaped PREFIX increments (the postfix ones DO hit; only
-#     `++` written to the LEFT of a call in the chain is missed).
-#   - a bare atomic declared `extern` in a header and incremented in a third file. A member
-#     declared through a macro, or on a line the type does not share
-#     (`std::atomic<uint32_t>` alone, name on the next line), is not harvested either.
-#   - a field of the house wrapper `kickos::Atomic`, which the harvester does not know. That
-#     type exposes no RMW at all, so its sites are refused by the compiler instead.
-#   - `std::atomic<int> x(0);`: `(` is excluded from the declarator terminators.
-#   - an RMW assembled by the preprocessor, and one inside a macro argument that only becomes
-#     an RMW after substitution.
-#   - a 64-bit atomic LOAD, which is a `__atomic_load_8` libcall on every backend including
-#     armv7m. That is a separate rule and style.md points `volatile` at those fields.
-#   - an untracked file, and any language outside the corpus above.
+# How far the shapes above reach:
+#   - the operator shapes read a plain identifier chain, so `(*p)++`, `v[i].f++` with a call
+#     in the subscript, and a PREFIX `++` written to the LEFT of a call in the chain sit
+#     outside them. A POSTFIX increment through a call (`stats_block()->stats.f++`) does hit.
+#   - the harvest learns a name from a declaration whose type and name share ONE line, and
+#     the bare shape needs that declaration in the file that uses the name. A member declared
+#     through a macro, a declaration split over two lines, and an `extern` bare atomic
+#     incremented in a third file therefore stay unlearned, as does `std::atomic<int> x(0);`,
+#     `(` being excluded from the declarator terminators.
+#   - a field of the house wrapper `kickos::Atomic` is not harvested. That type exposes no
+#     RMW at all, so the compiler refuses those sites.
+#   - the corpus is source text as committed, so an RMW the preprocessor assembles, or one
+#     that becomes an RMW only after a macro argument is substituted, sits outside it.
+#   - a 64-bit atomic LOAD is a `__atomic_load_8` libcall on every backend, armv7m included.
+#     That is a separate rule, and style.md points `volatile` at those fields.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -79,8 +75,8 @@ DECLS="$(dirname "$0")/atomic_decls.awk"
 [ -r "$DECLS" ] || fail "tests/static/atomic_decls.awk is unreadable; the operator half cannot run"
 
 # The one way a member-shape finding can be classified away, keyed on the FILE AND THE NAME
-# together, never on a name alone: `mode` is an atomic in usb_cdc_service.h and a `uint8_t`
-# in bus.h. Every entry in use is PRINTED on every run.
+# together, never on a name alone: one name can be a harvested atomic in one header and a
+# plain integer field in another. Every entry in use is PRINTED on every run.
 member_exempt_names() { # <file> -> names this file uses non-atomically, one per line
     case "$1" in
         # system/driver/foo/bar.cc) printf 'mode\n' ;;  # kos_bus_xfer's uint8_t, not the atomic
@@ -168,9 +164,9 @@ detect() {
                 grep -nE "(\.|->)[[:space:]]*($_mine)$SUB[[:space:]]*$OPS" "$_w/s/$n"
                 grep -nE "(\+\+|--)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\.|->)[[:space:]]*)+($_mine)([^A-Za-z0-9_]|$)" "$_w/s/$n"
             fi
-            # The file's OWN declarations, parameters included. Never the corpus: `head`,
-            # `tail`, `mode`, `ready` and `stage` are atomic member names here AND ordinary
-            # local names, so a corpus-wide bare match would fire on an unrelated one.
+            # The file's OWN declarations, parameters included. Never the corpus: a harvested
+            # name is an ordinary local name elsewhere, and a corpus-wide bare match would
+            # fire on that.
             _own="$(awk -F"$TAB" -v F="$f" '$1 == F { print $3 }' "$_w/names" | sort -u | tr '\n' '|' | sed 's/|$//')"
             if [ -n "$_own" ]; then
                 # No `.` or `>` to the left, or a member access would report twice on one line.

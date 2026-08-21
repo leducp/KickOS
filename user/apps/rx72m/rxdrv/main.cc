@@ -1,35 +1,32 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RX72M (RXv3) GPIO blink: the per-thread peripheral-MMIO isolation reference on
-// the RX MPU. The RX twin of the F411 PMSA proof (f411spi) and the C6 PMP proof
-// (c6blink). The RX MPU is CPU-side and checks EVERY access to the whole address
-// space 0000_0000h-FFFF_FFFFh in user mode, including the peripheral/SFR aperture
-// (UM r01uh0804ej0120 sec.17.1 + Table 17.1); supervisor is never checked. So a
-// granted MMIO window IS a genuine per-thread capability, unlike K64F where SYSMPU
-// cannot gate peripherals at all (docs/reference/boards.md, "When an MMIO grant is
-// INERT"; k64drv demonstrates it). This app's own window grant is LOAD-BEARING either
-// way, because it authorises the kos_periph_enable in the spawned driver.
+// RX72M (RXv3) GPIO blink: per-thread peripheral-MMIO isolation on the RX MPU. That MPU
+// is CPU-side and checks EVERY user-mode access to the whole address space
+// 0000_0000h-FFFF_FFFFh, including the peripheral/SFR aperture (UM r01uh0804ej0120
+// sec.17.1 + Table 17.1); supervisor is never checked. So a granted MMIO window IS a
+// genuine per-thread capability. This app's own window grant is LOAD-BEARING, because it
+// authorises the kos_periph_enable in the spawned driver.
 //
-// main only prints and spawns (the fleet pattern, see apps/common/gpioblink): the
-// mux goes through kos_pinmux_set, which the kernel mediates on both the MPC PmnPFS
-// function select and the PORTm.PMR peripheral-vs-GPIO switch, and EVERY port MMIO
-// access happens inside the spawned UNPRIVILEGED driver holding an 80 B window. So
-// this app runs unchanged with a privileged or an unprivileged root.
+// main only prints and spawns: the mux goes through kos_pinmux_set, which the kernel
+// mediates on both the MPC PmnPFS function select and the PORTm.PMR peripheral-vs-GPIO
+// switch, and EVERY port MMIO access happens inside the spawned UNPRIVILEGED driver
+// holding an 80 B window. So this app runs unchanged with a privileged or an
+// unprivileged root.
 //
 // The driver sets its own direction (PDR), blinks LED6 (PODR), reads the pad back
-// (PIDR), then pokes UNGRANTED PORT8.PMR (0008_C068h): the mux escalation surface
-// arch_pinmux_set now owns, OUTSIDE the window -> RX access exception (fixed vector
-// +0x54) with MPESTS.DMPER set and MPDEA holding the address -> rxv3 opted into fault
+// (PIDR), then pokes UNGRANTED PORT8.PMR (0008_C068h), the mux escalation surface
+// arch_pinmux_set owns, OUTSIDE the window -> RX access exception (fixed vector +0x54)
+// with MPESTS.DMPER set and MPDEA holding the address -> rxv3 opted into fault
 // isolation, so the thread is KILLED ("=== THREAD FAULT === thread 'rxdrv' killed") and
-// the system continues. So the negative test proves the driver cannot
-// re-mux its own pin behind pinmux's back.
+// the system continues. The negative test therefore proves the driver cannot re-mux its
+// own pin behind pinmux's back.
 //
-// LED6 (P80, active-low, board UM r12uz0098ej0110 Table 5-9) is the CPU Card's only
-// user LED; the console (SCI6, 115200 8N1) is the authoritative oracle either way.
+// LED6 (P80, active-low, board UM r12uz0098ej0110 Table 5-9) is the CPU Card's only user
+// LED; the console (SCI6, 115200 8N1) is the authoritative oracle.
 //
-// Diagnostic app (kickos_add_diagnostic_app): build-only, never a production image;
-// the operator flashes a RAM image + observes LED6 and the console.
+// Diagnostic app (kickos_add_diagnostic_app): the operator flashes a RAM image and
+// observes LED6 and the console.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -40,9 +37,8 @@
 
 #include <stdint.h>
 
-// This app EXISTS to prove RX MPU per-thread peripheral enforcement. Without it the
-// ungranted poke below succeeds and the console prints the isolation-FAILURE line:
-// a false verdict. Refuse to build a misleading oracle. (CMake gates it too.)
+// Anti-vacuity: without enforcement the ungranted poke below succeeds and the console
+// prints the isolation-FAILURE line, which is a false verdict.
 #if !KICKOS_HAVE_MPU
 #error "rxdrv requires enforcement: build the board's base variant, not its flat one"
 #endif
@@ -74,15 +70,14 @@ namespace
 
     // 80 B window granted to the driver: base 0008_C000h (16-aligned), size 0x50
     // (16-multiple) -> exact cover, encodable by arch_mpu_region_encodable (the RX MPU
-    // page is 16 B and needs no power-of-two size, UM sec.17.1.2). It spans PDR, PODR
-    // and PIDR up to PORTF, ending at 0008_C04Fh: 16 B, one full register row, short
-    // of the PMR block at 0008_C060h, which is the point: direction and drive are in,
-    // the FUNCTION SELECTORS (PMR here, the MPC
-    // PFS file at 0008_C140h) stay out. Covering PDR/PODR for every port is an
-    // unavoidable over-grant (the RX interleaves ports inside each register block
-    // instead of blocking per port) but not an escalation: a pin at PMR=1 ignores
-    // PDR/PODR entirely (UM Table 23.47), so the console pins cannot be touched
-    // through this window.
+    // page is 16 B and takes any 16-multiple size, UM sec.17.1.2). It spans PDR, PODR and
+    // PIDR through PORTF, ending at 0008_C04Fh, one full register row short of the PMR
+    // block at 0008_C060h: direction and drive are in, the FUNCTION SELECTORS (PMR here,
+    // the MPC PFS file at 0008_C140h) stay out. Covering PDR/PODR for every port is an
+    // over-grant the RX register layout forces (ports are interleaved inside each block
+    // rather than blocked per port), and not an escalation: a pin at PMR=1 ignores
+    // PDR/PODR entirely (UM Table 23.47), so the console pins cannot be touched through
+    // this window.
     constexpr uintptr_t PORT_WINDOW_BASE = PORT_BASE;
     constexpr uint32_t PORT_WINDOW = 0x50u;
     constexpr uint32_t PDR_OFFSET = 0x00u;
@@ -100,7 +95,7 @@ namespace
     // UNPRIVILEGED driver: granted app code+data (auto) + the 80 B port window (spawn
     // MMIO grant). No file-scope mutable state under enforcement: the window base
     // arrives as the thread arg VALUE (never dereferenced as memory), buffers live on
-    // the granted stack. IRQ-less (GPIO blink); a kos_sleep_ns toggle loop.
+    // the granted stack.
     void blink_driver(void* arg)
     {
         uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // port block base
@@ -110,10 +105,9 @@ namespace
 
         // Possession probe, positive arm. This thread holds `win` as a live ARCH_MPU_DEV
         // region whose base is EXACTLY `win`, so caller_holds_mmio_block passes and the
-        // call reaches arch_periph_enable. chip_rx72m answers only for RIIC0/1/2 and
-        // refuses this port block with -KOS_EINVAL, which means the kernel touched no
-        // register: the window state below is untouched either way.
-        // First act, so the capture shows it ahead of any MMIO.
+        // call reaches arch_periph_enable. chip_rx72m answers for RIIC0/1/2 only and
+        // refuses this port block with -KOS_EINVAL, so no register is touched. First act,
+        // so the capture shows it ahead of any MMIO.
         int const pe = kos_periph_enable(win);
         int const pe_want = -KOS_EINVAL;
         char const* pe_verdict = "FAIL";
@@ -126,9 +120,8 @@ namespace
                   pe_verdict, pe, pe_want);
         kos::print(pe_msg);
 
-        // Direction, in-window: the pin is already muxed to general I/O, so this is the
-        // driver owning a pin it was granted, not an escalation. Set before the first
-        // drive, and drive high (LED off) first so the pin does not glitch on.
+        // Direction, in-window; the pin is already muxed to general I/O. Set before the
+        // first drive, and drive high (LED off) first so the pin does not glitch on.
         r8(podr) = static_cast<uint8_t>(r8(podr) | LED6);
         r8(pdr) = static_cast<uint8_t>(r8(pdr) | LED6);
 
@@ -170,16 +163,15 @@ namespace
             kos::print("[rxdrv] FAIL (pad did not track the drive)\n");
         }
 
-        // Negative test (the per-thread isolation proof): poke UNGRANTED PORT8.PMR:
-        // the pin-function switch, OUTSIDE the 80 B window. The RX MPU is CPU-side and
-        // checked on every user access, so this operand write faults BEFORE the bus ->
-        // access exception (fixed vector +0x54), MPESTS.DMPER set, MPDEA=0008_C068h. Since
-        // rxv3 opted into fault isolation this KILLS the thread ("=== THREAD FAULT ===
-        // thread 'rxdrv' killed") rather than reaching kickos_isr_fault: the address is
-        // ABOVE this thread's stack base, so it is not the overflow case that escalates.
-        // A plain store, not a read-modify-write: an RMW faults on its
-        // READ half and the report would name a read rather than the escalation.
-        // Announce-before-poke; terminal, so it is LAST.
+        // Negative test (the per-thread isolation proof): poke UNGRANTED PORT8.PMR, the
+        // pin-function switch, OUTSIDE the 80 B window. The RX MPU is CPU-side and checked
+        // on every user access, so this operand write faults BEFORE the bus -> access
+        // exception (fixed vector +0x54), MPESTS.DMPER set, MPDEA=0008_C068h. Since rxv3
+        // opted into fault isolation this KILLS the thread ("=== THREAD FAULT === thread
+        // 'rxdrv' killed"); the address is ABOVE this thread's stack base, so it takes the
+        // kill path and not the overflow escalation in kickos_isr_fault. A plain store, so
+        // that the report names the escalating write: an RMW would fault on its READ half
+        // and be reported as a read. Announce-before-poke; terminal, so it is LAST.
         kos::print("[rxdrv] poking UNGRANTED PORT8.PMR @ 0x0008C068 (expect MPU FAULT)\n");
         r8(PORT8_PMR) = LED6;
 
@@ -192,8 +184,8 @@ namespace
     }
 }
 
-// Muxes its own port pins from root, then grants the PORT window to a worker. Never
-// returns, so it needs no KOS_AUTH_SYSTEM.
+// Root muxes its own port pins, then grants the PORT window to a worker. main never
+// returns.
 KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_PINMUX);
 
 int main(int, char**)
@@ -213,9 +205,9 @@ int main(int, char**)
               pe_verdict, pe, pe_want);
     kos::print(pe_msg);
 
-    // P80 to general I/O, both mux stages in one mediated call: PmnPFS PSEL=000000b
-    // and PORT8.PMR bit 0 clear (UM sec.23.4.1 steps 1-6, PWPR unlock included). No
-    // raw MMIO is left here, so this runs identically with root privileged or not.
+    // P80 to general I/O, both mux stages in one mediated call: PmnPFS PSEL=000000b and
+    // PORT8.PMR bit 0 clear (UM sec.23.4.1 steps 1-6, PWPR unlock included). No raw MMIO
+    // here, so this runs identically with root privileged or not.
     int const mux = kos_pinmux_set(PORT8, P80, PINMUX_PFS_EN | PFS_PSEL_HIZ);
     char m[64];
     ksnprintf(m, sizeof(m), "[rxdrv] pinmux P80 -> general I/O rc %d\n", mux);
@@ -235,7 +227,6 @@ int main(int, char**)
         kos::print(m);
     }
 
-    // Spawn the UNPRIVILEGED driver granted ONLY the 80 B port window. No IRQ.
     auto drv = kos::thread::spawn(blink_driver,
                                   reinterpret_cast<void*>(PORT_WINDOW_BASE),
                                   "rxdrv", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
@@ -245,13 +236,13 @@ int main(int, char**)
                                   PORT_WINDOW);
     if (not drv.valid())
     {
-        // Console is the only oracle at the bench: a silent dead board must not be
-        // mistaken for a bring-up failure, so say so.
+        // The console is the only oracle at the bench: without this line a failed spawn
+        // and a dead board read the same.
         kos::print("[rxdrv] ERROR: driver spawn failed\n");
     }
 
-    // Park: fall back to a sleep park if the semaphore could not be created (else an
-    // unmintable handle spins a hot loop of failing sem_wait syscalls).
+    // Sleep park when the semaphore could not be created: an unmintable handle would
+    // spin a hot loop of failing sem_wait syscalls.
     kos_cap_t idle = KOS_CAP_NONE;
     (void)kos_sem_create(0, &idle);
     while (true)

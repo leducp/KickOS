@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// What a blocking primitive RETURNS, driven for real rather than seated by hand. The park
-// STATE was always assertable on this fixture; the return value was not, because arch_switch
-// returns and hands the CPU straight back to the thread that parked, with no waker having
-// run. kfixture.h note 2 is the mechanism.
+// What a blocking primitive RETURNS, driven for real rather than seated by hand: arch_switch
+// returns and hands the CPU straight back to the thread that parked, so a return value is
+// worth exactly the waker an arm supplies (kfixture.h note 2).
 //
-// The primitives reachable here are sync.cc's, because that is the translation unit the
-// K-seam compiles. endpoint_recv lives in syscall_ipc.cc and is out of the gate's reach.
+// The primitives reachable here are sync.cc's, that being the translation unit the K-seam
+// compiles.
 
 #include <kickos/instance.h>
 #include <kickos/kernel.h>
@@ -29,8 +28,8 @@ namespace kickos
             {
             };
 
-            // gtest runs a *DeathTest suite ahead of the others, which is the documented
-            // placement for a forking case.
+            // gtest runs a *DeathTest suite ahead of the others, which is where a forking
+            // case belongs.
             class ParkResultDeathTest : public KSeam
             {
             };
@@ -58,8 +57,8 @@ namespace kickos
                 (void) sem_post(g_sem);
             }
 
-            // Hand-rolled: every real waker in the tree writes a result; this one deliberately
-            // does not, to exercise note 2's poison.
+            // Every real waker in the tree writes a result; this one does not, which is what
+            // leaves note 2's poison in place.
             void end_the_park_writing_nothing(Thread* parked)
             {
                 parked->wait_queue->unlink(&parked->link);
@@ -83,7 +82,7 @@ namespace kickos
             }
         }
 
-        // --- the four arms that supply a waker ----------------------------------------
+        // --- the arms that supply a waker --------------------------------------------
 
         TEST_F(ParkResult, a_woken_mutex_lock_returns_what_the_waker_wrote)
         {

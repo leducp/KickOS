@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The three-valued non-cacheable admission (docs/design-m4.6.2-usb-cdc.md, S7), read from
-// the REAL kernel/grant/grant.cc over an arch seam this file sets. No chip in tree answers
-// REFUSED, so that value is reachable only here.
+// the REAL kernel/grant/grant.cc over an arch seam this file sets. REFUSED is the answer no
+// chip in tree gives, so this fixture is where that value is driven.
 
 #include <kickos/grant.h>
 
@@ -42,7 +42,7 @@ extern "C"
     uintptr_t arch_ram_base(void) { return ARENA_BASE; }
     size_t arch_ram_size(void) { return ARENA_SIZE; }
 
-    // No reserved block and no bit-band alias: either would decide arms on geometry.
+    // Zero blocks and no bit-band alias, so geometry cannot decide an arm's verdict.
     size_t arch_reserved_blocks(struct arch_reserved_block*, size_t) { return 0; }
     int arch_bitband_present(void) { return 0; }
 }
@@ -60,6 +60,14 @@ namespace kickos
         ADD_FAILURE() << "kernel panic: " << msg;
         abort();
     }
+
+#if KICKOS_DIAG_TERSE
+    void kpanic_at(char const* file, unsigned line)
+    {
+        ADD_FAILURE() << "kernel panic: " << file << ":" << line;
+        abort();
+    }
+#endif
 }
 
 namespace

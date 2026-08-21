@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Contract gate for the raw UART class <kickos/driver/uart.h>: proves the five-call contract
-// (open, read, write, flush, close) holds for a substituted backend, uart_mock.cc.
+// holds for a substituted backend, uart_mock.cc.
 
 #include <kickos/driver/uart.h>
 
@@ -16,7 +16,7 @@
 
 namespace
 {
-    // A channel opened on a fresh model, at the one frame the mock expresses.
+    // A cfg for a fresh model, at the one frame the mock expresses.
     void configure(struct kos_uart_config* cfg, struct kos_uart_mock* m,
                    struct kos_uart_stats* stats)
     {
@@ -84,6 +84,51 @@ TEST(UartClass, open_refuses_an_unknowable_rate)
 
     struct kos_uart dev;
     EXPECT_EQ(kos_uart_open(&dev, &cfg), -KOS_ENOSYS) << "an unmeasurable rate is refused";
+}
+
+// kos_uart_cfg_check_fixed_rate, measured through the class entry point: the refusal value
+// is THE CONTRACT'S, not a backend's.
+TEST(UartClass, open_refuses_a_rate_request_it_cannot_program)
+{
+    struct kos_uart_mock m = {};
+    m.rate = 115199;
+    m.fixed_rate = 1;
+    struct kos_uart_stats stats = {};
+    struct kos_uart_config cfg = {};
+    configure(&cfg, &m, &stats);
+
+    struct kos_uart dev;
+    EXPECT_EQ(kos_uart_open(&dev, &cfg), -KOS_ENOTSUP) << "a rate request is refused";
+    EXPECT_EQ(m.opened, 0u) << "a refused open did not bind the channel";
+
+    // baud == 0 is the ONE request such a backend serves, and it still reports a measured
+    // rate rather than the 0 it was handed.
+    cfg.baud = 0;
+    EXPECT_EQ(kos_uart_open(&dev, &cfg), 115199) << "adopting the running rate is served";
+    EXPECT_EQ(m.opened, 1u) << "the served open bound the channel";
+}
+
+// A wedged transmit path, which is the one condition both bounded waits in the class share.
+TEST(UartClass, a_transmit_path_that_will_not_drain_is_reported)
+{
+    struct kos_uart_mock m = {};
+    m.rate = 115199;
+    m.tx_stuck = 1;
+    struct kos_uart_stats stats = {};
+    struct kos_uart_config cfg = {};
+    configure(&cfg, &m, &stats);
+
+    // OPEN REFUSES rather than reprogramming into a live shifter.
+    struct kos_uart dev;
+    EXPECT_EQ(kos_uart_open(&dev, &cfg), -KOS_EBUSY) << "open refuses an undrainable channel";
+    EXPECT_EQ(m.opened, 0u) << "a refused open did not bind the channel";
+
+    // FLUSH reports the same bound expiring, on a channel that did open.
+    m.tx_stuck = 0;
+    ASSERT_EQ(kos_uart_open(&dev, &cfg), 115199) << "open succeeded once the path drains";
+    m.tx_stuck = 1;
+    EXPECT_EQ(kos_uart_flush(&dev), -KOS_EBUSY) << "flush reports bytes still in flight";
+    EXPECT_EQ(m.flushes, 1u) << "the refused flush still reached the device";
 }
 
 TEST(UartClass, open_reports_a_measured_rate)

@@ -6,7 +6,7 @@
 // HOST-ONLY. These are the public kos_* names: a target image linking this TU would satisfy
 // them from the executable, and only the fact that every syscall stub in the tree shares one
 // archive member (user/src/syscall_stubs.cc) makes that a duplicate-symbol error instead of a
-// silent shadow. Nothing gates it: check_class_backend.sh covers the driver classes only.
+// silent shadow.
 
 #ifndef KICKOS_TESTS_UNIT_DRVBRINGUP_KOS_SEAM_H
 #define KICKOS_TESTS_UNIT_DRVBRINGUP_KOS_SEAM_H
@@ -24,8 +24,8 @@ enum
     KOS_SEAM_MSG_MAX = 512
 };
 
-// What the next call of each kind does. Zero-initialised means "every call succeeds", which
-// is the happy path, so an arm names only the failure it is about.
+// What the next call of each kind does. Zero-initialised is the happy path, so an arm names
+// only the failure it is about.
 struct kos_seam_control
 {
     // 1-based ordinal of the call that fails; 0 = none ever fails. An ordinal beyond the

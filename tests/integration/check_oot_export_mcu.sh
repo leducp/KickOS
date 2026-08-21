@@ -2,15 +2,13 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# CI gate for the MCU out-of-tree packaging surface (the sim gate,
-# check_oot_export.sh, cannot exercise it): install a bare-metal KickOS package,
-# then configure + build a standalone app against it with the SHIPPED cross
-# toolchain via find_package(KickOS) + plain add_executable. Build-only: an MCU
-# ELF can't run on the host, so it asserts on what the build produced.
+# CI gate for the MCU out-of-tree packaging surface: install a bare-metal KickOS package,
+# then configure + build a standalone app against it with the SHIPPED cross toolchain via
+# find_package(KickOS) + plain add_executable. Build-only, so every assertion is on what
+# the build produced.
 #
-# This is where the interesting machinery lives. The sim package has no linker
-# script, no reset vector and no flashable image, so everything the bare-metal
-# recipe adds is proven here or nowhere:
+# A bare-metal package is the only one carrying a linker script, a reset vector and a
+# flashable image, so this is where the whole bare-metal recipe is proven:
 #   - the plain path links at all (the exported target carries the whole recipe);
 #   - an edited linker script RELINKS (INTERFACE_LINK_DEPENDS). Passing the script
 #     as a -T driver option alone does not create that edge, and the failure is
@@ -42,10 +40,10 @@ READELF="${5:-readelf}"
 
 scratch_dir
 
-# The provisioning THIS build resolved, read from the header it generated. Handed to the
-# child configure so the example can static_assert the installed headers state the same:
-# without that, a deleted board_config.h install rule leaves config/system.h's fleet
-# defaults standing and the app compiles against a geometry the libraries do not have.
+# The provisioning THIS build resolved, read from the header it generated, and handed to the
+# child configure so the example can static_assert the installed headers state the same. A
+# deleted board_config.h install rule otherwise leaves config/system.h's fleet defaults
+# standing and the app compiles against a geometry the libraries do not have.
 BOARD_CFG="$KICKOS_BUILD/generated/include/kickos/board_config.h"
 [ -f "$BOARD_CFG" ] || fail "no generated board_config.h at $BOARD_CFG"
 knob() {
@@ -53,8 +51,8 @@ knob() {
 }
 EXPECT_MAX_THREADS="$(knob KICKOS_MAX_THREADS)"
 EXPECT_USER_STACK_SIZE="$(knob KICKOS_USER_STACK_SIZE)"
-# An empty value would be passed as a -D nothing defines, and the example's #ifdef would
-# then skip the assertion in silence.
+# An empty value passes as a -D nothing defines, and the example's #ifdef then skips the
+# assertion in silence.
 [ -n "$EXPECT_MAX_THREADS" ] || fail "$BOARD_CFG states no KICKOS_MAX_THREADS"
 [ -n "$EXPECT_USER_STACK_SIZE" ] || fail "$BOARD_CFG states no KICKOS_USER_STACK_SIZE"
 
@@ -91,8 +89,7 @@ echo "== configuring out-of-tree MCU app with the shipped toolchain (no -DKICKOS
 echo "== building out-of-tree MCU app =="
 "$CMAKE" --build "$TMP/build" >/dev/null || fail "out-of-tree MCU build failed"
 
-# The plain add_executable target is the one that must work; the _sugar target is
-# the same source through kickos_add_application().
+# The _sugar target is the same source through kickos_add_application().
 APP="$TMP/build/oot_mcu_app"
 [ -f "$APP" ] || fail "plain add_executable target produced no ELF"
 "$READELF" -h "$APP" | grep -q 'Machine:.*ARM' \
@@ -105,11 +102,10 @@ echo "== the plain path emits a flashable image =="
 echo "== the optional wrapper produces the same image, not a better one =="
 [ -f "$TMP/build/oot_mcu_app_sugar.bin" ] \
   || fail "kickos_add_application() target produced no .bin"
-# Compared by size, not byte-for-byte: app.h bakes __DATE__/__TIME__ into every app
-# TU, so two targets whose compiles straddle a second boundary differ in those fixed
-# -width bytes for reasons that say nothing about the link recipe. The length is
-# immune to that and still catches the thing worth catching: the wrapper linking
-# in something, or with something, that the plain path does not get.
+# Compared by size, not byte-for-byte: app.h bakes __DATE__/__TIME__ into every app TU, so
+# two targets whose compiles straddle a second boundary differ in those fixed-width bytes.
+# The length still catches the wrapper linking in something, or with something, that the
+# plain path does not get.
 SZ_PLAIN=$(wc -c < "$TMP/build/oot_mcu_app.bin")
 SZ_SUGAR=$(wc -c < "$TMP/build/oot_mcu_app_sugar.bin")
 [ "$SZ_PLAIN" = "$SZ_SUGAR" ] \
@@ -132,13 +128,12 @@ else
   fail "no compile_commands.json: cannot check the consumer's flag posture"
 fi
 
-# The regression gate for the stale-image bug. -T reaches the linker as an opaque
-# driver option, so on its own it creates no dependency edge and an edited script
-# does not relink. Append a top-level absolute symbol (always legal, never changes
-# the layout) and require it to appear in the rebuilt ELF.
+# -T reaches the linker as an opaque driver option and creates no dependency edge on its
+# own, so an edited script does not relink and a stale image gets flashed. The probe is a
+# top-level absolute symbol, legal anywhere and never changing the layout.
 echo "== an edited linker script must relink (not leave a stale image) =="
-# Through tool_out both times: a readelf that reads nothing reports the probe absent,
-# which is the "correct" answer before the edit and the assertion's own failure after it.
+# Both readelf runs go through tool_out: one that read nothing reports the probe absent,
+# which is the expected answer before the edit and the assertion's failure after it.
 tool_out "$TMP/syms_before" "$READELF_SYM_RE" "$READELF" -sW "$APP"
 if grep -q 'kickos_relink_probe' "$TMP/syms_before"; then
   fail "probe symbol already present before the edit: the check proves nothing"

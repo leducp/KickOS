@@ -97,16 +97,23 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   since `f302nucleo` is the same class (64 KiB-flash armv7m, no MPU, real privilege ring) and is on
   the bench. Links the full app set.
 
-  **MODEL PREDICTION, not a witness: `bluepill-c8` fails `hello`'s second spawn by 96 bytes.** The
-  board can never be flashed, so this is arithmetic and stays arithmetic. Arena 6,560 B, read with
-  `arm-none-eabi-nm` on the `hello` ELF at `9ba4e4b`; idle 512 and root 2,048 leave **4,000** against
-  the **4,096** two 2,048-byte stacks need (`boards/bluepill-c8/configs/base/defconfig:9`,
-  `:10`, `:11`; every figure is a multiple of the 32-byte no-MPU granule, so alignment costs nothing
-  here). The cause is the **heap carve**, not the part: 8 KiB `.userheap`
-  (`arch/arm/chip/stm32f103/stm32f103.ld`) where `f302nucleo` now takes 2K, and the C8 has 4 KiB *more*
-  SRAM. The model is the one in `porting.md`'s `## Minimum hardware requirement` section; it
-  predicted all three `f302nucleo` silicon outcomes correctly (see *`f302nucleo` on silicon* below),
-  which is the whole basis for quoting a number for a board nobody can run.
+  **MODEL ARITHMETIC, not a witness: `bluepill-c8` seats `hello`'s two spawns with room to
+  spare.** The board can never be flashed, so this is arithmetic and stays arithmetic. On the
+  `base` config the `hello` ELF links `__kickos_ram_start`..`__kickos_ram_end` = **12,896 B** of
+  arena against the **6,656 B** that idle 512 + root 2,048 + a 2x2,048 pool need
+  (`boards/bluepill-c8/configs/base/defconfig:9`, `:10`, `:11`; every figure is a multiple of the
+  32-byte no-MPU granule, so alignment costs nothing here). `stm32f103.ld` carves
+  `KICKOS_USER_HEAP_SIZE` bytes of `.userheap`, which Kconfig defaults to **2,048** for
+  `CHIP_STM32F103`; the `st` variant sets it to **0**. The model is the one in `porting.md`'s
+  `## Minimum hardware requirement` section; it predicted all three `f302nucleo` silicon outcomes
+  correctly (see *`f302nucleo` on silicon* below), which is the whole basis for quoting a number
+  for a board nobody can run.
+
+  **Neither 64 KiB-flash STM32 builds `cxxtest`.** Its heap high-water is **6,136 B**, bisected on
+  `qemu-m3` by capping the `_sbrk` arena until the STL check stops reporting `ALL PASS`. That is
+  above both the 2,048 B `CHIP_STM32F103`/`CHIP_STM32F302` carve and the 0 B their `st` defconfigs
+  set, and `KICKOS_USER_HEAP_SIZE` is per-build rather than per-app, so raising it for `cxxtest`
+  would take the bytes from every other image on a 20 KiB part.
 - **`due`** -- **retired** (see the table note above): SAM3X port proven 2026-07-09, but
   this unit now has a peripheral-I/O fault.
 - **`frdmk64f`** -- **HW-revalidated 2026-07-15** (OpenSDA J-Link): full selftest streamed
@@ -529,8 +536,9 @@ the board".
   cores and nothing in the tree distinguishes them. See `design-unprivileged-root.md` section 2.
 - **microbit is the armv6m run gate, and the fleet's only board that is allowed to skip anything.**
   16 KiB SRAM and a 2-slot pool mean part of the suite genuinely cannot run here, so
-  `microbit_selftest` sets `EXPECT_SKIPS` to the test **names** it cannot host; every other
-  board keeps the script's default of "nothing may skip". The list is a **measurement, not slack**
+  `microbit_selftest` and `microbit_selftest_p2` each set `EXPECT_SKIPS` to the test **names** that
+  part cannot host (the board is a two-image board, see below); every other
+  board keeps the script's default of "nothing may skip". The lists are a **measurement, not slack**
   -- each name and why it skips is at the call site
   (`../../user/apps/common/selftest/CMakeLists.txt`), so growing it should mean a board capability
   changed, and a test that merely stopped running shows up as a breach. It is named rather than
@@ -592,11 +600,14 @@ Every recipe -- ST-Link, external SWD, USB-DFU, picotool/BOOTSEL, esptool, bossa
 `rfp-cli`, and the J-Link / RTT deep-dive -- lives in [flashing.md](../flashing.md). Nothing
 operational belongs in this file.
 
-### The 64 KiB parts run the selftest as TWO images
+### Three boards run the selftest as TWO images
 
-`bluepill-c8` and `f302nucleo` only. Every other board still produces one `selftest`, unchanged.
-The suite outgrew a 64 KiB part (`f302nucleo-st` was at 4 free bytes of 65536), so it is built as
-two self-contained images that partition the arms between them.
+`bluepill-c8`, `f302nucleo` and `microbit` only. Every other board still produces one `selftest`,
+unchanged. The suite outgrew a 64 KiB part (`f302nucleo-st` was at 4 free bytes of 65536), so it is
+built as two self-contained images that partition the arms between them. **`microbit` splits for the
+opposite resource**: its FLASH is 256 KiB and never binding, but `__kickos_ram_start` follows `.bss`
+on `nrf51`, so eliding a region's test bodies takes their statics out of `.bss` and hands the
+difference to the arena.
 
 - `selftest` is **part 1**, `selftest_p2` is **part 2**; both land in
   `<build>/user/apps/common/selftest/` with the usual `.elf` / `.bin` / `.hex`.
@@ -608,7 +619,14 @@ two self-contained images that partition the arms between them.
   obvious way to be fooled here.
 - Configure prints what to expect, off the same two expressions:
   `-- selftest: split into two images: selftest plans <N1> arms, selftest_p2 plans <N2> (<N1+N2> together)`
-- These two boards run the FULL arm set: `cap_dest` and `irq_discard` are not excluded on them.
+- The two 64 KiB parts run the FULL arm set: `cap_dest` and `irq_discard` are not excluded on them.
+- **`microbit` is the only split board with a ctest gate, and it has two:** `microbit_selftest` for
+  part 1 and `microbit_selftest_p2` for part 2, each with its OWN `EXPECT_SKIPS` /
+  `EXPECT_PARTIALS`. A name has to be declared in the part whose region holds its `TAP_ADD` line,
+  because `check_tap_stream.sh` reports a name declared in the other part as a NOTE and not a
+  failure. The split recovered three arms there: `mem_self_grant`, `mem_self_grant_nonpow2` and
+  `region_mode` ran out of arena in the combined image and run in part 2 (measured at 288 B more
+  arena, part 2 base `0x20001a60` against `0x20001b80` combined).
 - Which arm sits in which part is decided by POSITION in the registration list at the bottom of
   `user/apps/common/selftest/main.cc`, not by an annotation; the boundary is the `#undef TAP_ADD`.
   Adding or moving an arm means updating the whole-suite floor AND the matching per-part clause in

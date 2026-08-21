@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RISC-V RV32IMAC: struct arch_context is the minimal state the switcher needs to
-// resume a thread. ALL register state lives in a flat save frame on the thread's own
-// stack (switch.S), so a thread is fully described by one pointer, the top of that
-// frame. There is ONE frame format for both a voluntary block and a preemptive wake:
-// the msip switcher always saves the complete interrupted context (every GPR except
-// gp/tp, plus mepc + mstatus; sp is the frame base held in ctx.sp), so a thread
-// preempted at an arbitrary PC and one that blocked in a syscall are indistinguishable
-// to the resume path.
+// RISC-V RV32IMAC: struct arch_context is the minimal state the switcher needs to resume a
+// thread. ALL register state lives in a flat save frame on the thread's own stack
+// (switch.S), so a thread is fully described by one pointer, the base of that frame. ONE
+// frame format serves both a voluntary block and a preemptive wake: the msip switcher always
+// saves the complete interrupted context (every GPR bar gp/tp, plus mepc + mstatus), so a
+// thread preempted at an arbitrary PC and one that blocked in a syscall are
+// indistinguishable to the resume path.
 //
-// There is no npriv/resting_npriv field: a thread's privilege lives in the saved
-// frame's mstatus.MPP, restored by the mret at frame-restore.
+// A thread's privilege lives in the saved frame's mstatus.MPP, restored by the mret at
+// frame-restore, so the struct carries no privilege field of its own.
 
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
@@ -32,6 +31,22 @@ struct arch_context
     // hard-codes it at OFFSET 4.
     uint32_t trace_tid;
 #endif
+
+    // Stack bounds trap_entry (switch.S) checks the interrupted U-mode sp against before it
+    // stores a frame through it: a U-mode thread owns its sp and can aim it at kernel
+    // memory, which the software M-mode prologue would then write. Set once by
+    // arch_context_init; read as plain words at the offsets F_CTX_STACK_LO /
+    // F_CTX_STACK_HI hard-coded in switch.S. A sp outside [stack_lo, stack_hi] routes the
+    // trap to the fault reporter instead of storing.
+    uint32_t stack_lo;
+    uint32_t stack_hi;
+
+    // The kernel stack this thread's privileged dispatch runs on, saved across a switch the
+    // way `sp` above saves the USER one. `sp` is and stays the user stack pointer on every
+    // backend, so no second field names it; these two are the pair a trusted entry swaps
+    // between. Unused until the trap entry transfers to it: the field exists here first so
+    // the allocation and the geometry can be reviewed apart from the execution change.
+    uint32_t kernel_sp;
 };
 
 #endif

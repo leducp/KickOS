@@ -12,10 +12,10 @@
 // successor never earned, and the generation bump that kills a stale handle does not reach it:
 // a slot with a live member is not freed.
 //
-// WHAT THIS GATE CANNOT WITNESS: the syscall refusals themselves. syscall_thread.cc is not in
-// the K-seam source set, so the -KOS_EPERM a stranger gets and the -KOS_EBADF a dead group's
-// handle gets are the selftest's to show. The subject here is the predicate all three of those
-// refusals read, and the reference and slot bookkeeping under it.
+// WHAT THIS GATE CANNOT WITNESS: the syscall refusals themselves. syscall_thread.cc is not
+// in the K-seam source set, so the -KOS_EPERM a stranger gets and the -KOS_EBADF a dead
+// group's handle gets are the selftest's. What it does gate is the predicate all three
+// refusal sites read, and the reference and slot bookkeeping under it.
 
 #include <kickos/domain.h>
 #include <kickos/instance.h>
@@ -44,9 +44,8 @@ namespace kickos
             constexpr uint8_t PRIO_LOW = 4;
             constexpr uint8_t PRIO_MID = 5;
 
-            // A live thread the exit path can leave behind: exit_current calls
-            // kickos_terminate when the dying thread was the last one out, and the seam
-            // stub ends the arm there.
+            // A live thread the exit path can leave behind, so an arm does not take the
+            // last-thread-out path (karch_seam.cc's kickos_terminate).
             Thread* bystander()
             {
                 return seat_pool(SLOT_BYSTANDER, PRIO_LOW);
@@ -133,8 +132,8 @@ namespace kickos
                 << "and the stale handle still misses it: the generation moved";
         }
 
-        // The other direction, and the mutant it kills is a sweep keyed on nothing: a death
-        // that is not the creator's must leave the hold exactly where it was.
+        // The other direction: a death that is not the creator's must leave the hold exactly
+        // where it was.
         TEST_F(CreatorHold, a_strangers_death_leaves_the_hold_alone)
         {
             bystander();
@@ -213,8 +212,8 @@ namespace kickos
                 << "the precondition still owes this one: the count is not one-shot";
         }
 
-        // The creator hold and the members' hold are TWO references on ONE domain, and only
-        // separating them keeps a domain alive across the order the two deaths arrive in.
+        // The creator hold and the members' hold are TWO references on ONE domain, and
+        // separating them is what keeps a domain alive whichever order the deaths arrive in.
         TEST_F(CreatorHold, the_creator_hold_is_a_domain_reference_of_its_own)
         {
             bystander();

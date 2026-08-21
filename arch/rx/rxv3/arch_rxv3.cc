@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/rx_trap_stack.h> // the USP guards' derived figures + ctx offsets
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
 
 #include "regs.h"
@@ -22,8 +23,8 @@ namespace kickos
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
-// Verbose CPU-context dump. Default on; -DKICKOS_PANIC_DUMP=0 keeps only the
-// one-line fault marker. Same knob and default on every arch reporter.
+// 0 keeps only the one-line fault marker; set it in the board defconfig or with
+// cmake -DKICKOS_PANIC_DUMP=0.
 #ifndef KICKOS_PANIC_DUMP
 #define KICKOS_PANIC_DUMP 1
 #endif
@@ -32,13 +33,55 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 static_assert(sizeof(double) == 8, "-mdfpu should give 64-bit doubles");
 #endif
 
-// switch.S hard-codes ctx.sp @0 (the saved SP). A silent reorder would corrupt
-// the switch.
-static_assert(offsetof(struct arch_context, sp) == 0, "switch.S expects ctx.sp @0");
+// switch.S hard-codes each offset below as a literal displacement and takes it from
+// rx_trap_stack.h. Nothing in the language ties the two together, so a field inserted
+// ahead of the bounds leaves a USP guard comparing against trace_tid, and that still
+// assembles and still links: these assertions are what holds them together.
+static_assert(offsetof(struct arch_context, sp) == KICKOS_RX_CTX_OFF_SP,
+              "switch.S expects ctx.sp @0");
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 // The SWINT switcher reads the trace id at 4[ctx] (the `4[r15]` loads in switch.S).
-static_assert(offsetof(struct arch_context, trace_tid) == 4, "switch.S expects trace_tid @4");
+static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_RX_CTX_OFF_TRACE_TID,
+              "switch.S expects trace_tid @4");
 #endif
+static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_RX_CTX_OFF_STACK_LO,
+              "switch.S reads stack_lo at F_CTX_STACK_LO");
+static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_RX_CTX_OFF_STACK_HI,
+              "switch.S reads stack_hi at F_CTX_STACK_HI");
+static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_RX_CTX_OFF_KERNEL_SP,
+              "a trusted entry loads ctx.kernel_sp at F_CTX_KERNEL_SP");
+// THE CEILING'S ALIGNMENT is checkable even though its SIZE is not yet measurable: the
+// same figure the trap prologue already requires of a stack pointer it builds on.
+static_assert(KICKOS_KERNEL_STACK_SIZE % KICKOS_RX_TRAP_SP_ALIGN == 0,
+              "KICKOS_KERNEL_STACK_SIZE must be a multiple of KICKOS_RX_TRAP_SP_ALIGN, "
+              "or a kernel stack's top does not land on the alignment the prologue "
+              "requires");
+static_assert(sizeof(struct arch_context) >= KICKOS_RX_CTX_OFF_KERNEL_SP + sizeof(uint32_t),
+              "a guard reads a word past the end of struct arch_context");
+
+// The syscall guard runs above the arm selection, so its one figure has to dominate
+// both arms.
+static_assert(KICKOS_RX_TRAP_REDZONE_SYS
+                  >= KICKOS_RX_TRAP_FRAME_SYS + KICKOS_RX_TRAP_KERNEL_DEPTH_SYS,
+              "the syscall red zone does not cover the generic arm");
+static_assert(KICKOS_RX_TRAP_REDZONE_SYS
+                  >= KICKOS_RX_TRAP_FRAME_SYS_FAST + KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST,
+              "the syscall red zone does not cover the fastpath arm");
+// It must also carry a whole PENDSW zone, a SWINT pended over a running dispatch building
+// its save on the same USP below it (rx_trap_stack.h derives the composition).
+static_assert(KICKOS_RX_TRAP_REDZONE_SYS
+                  >= KICKOS_RX_TRAP_FRAME_SYS + KICKOS_RX_TRAP_KERNEL_DEPTH_SYS
+                         + KICKOS_RX_TRAP_REDZONE_PENDSW,
+              "the syscall red zone does not cover a SWINT arriving mid-dispatch");
+
+// The floor must DOMINATE the red zone, or a thread spawned at the floor passes the spawn
+// check and is then refused by the guard on every syscall it makes. This arch had no such
+// assertion, so the relation held only where check_trap_redzone.sh ran, and the RX reaches
+// no hosted CI. Unlike the two ARM backends this needs no entry-frame term: RX accepts
+// interrupts on the ISP, so nothing is spent above the USP the guard validates.
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RX_TRAP_REDZONE_SYS,
+              "KICKOS_MIN_STACK_SIZE is below the rxv3 syscall red zone: raise the "
+              "per-arch default in Kconfig, never the red zone, which is a measurement");
 
 // arch_irq_save raises PSW.IPL to the lock level with an MVTIPL immediate; keep
 // the literal in the asm string in sync with the constant.
@@ -52,24 +95,22 @@ namespace
     using kickos::Order;
 
     // Free-running CMTW1 is 32-bit; extend to a monotonic 64-bit count in software by
-    // catching wraps on each read. LIMITATION (M1): a wrap not observed within one
-    // 2^32-cycle period is missed; a counter-overflow interrupt is the refinement.
-    // The two words are ONE value, kept coherent by the IrqLock in now_cycles.
+    // catching wraps on each read, so a wrap not observed within one 2^32-cycle period is
+    // missed. The two words are ONE value, kept coherent by the IrqLock in now_cycles.
     uint32_t g_cyc_high = 0;
     uint32_t g_cyc_last = 0;
 
-    // Software in-ISR nesting counter (RX has no IPSR-equivalent). Bumped only by
-    // the first-level DEVICE-IRQ dispatchers, never by the syscall INT path, so
-    // arch_in_isr() reads false throughout syscall_dispatch (arch.h contract).
+    // In-ISR nesting is tracked in software on RXv3. Bumped only by the first-level
+    // DEVICE-IRQ dispatchers, never by the syscall INT path, so arch_in_isr() reads false
+    // throughout syscall_dispatch (arch.h contract).
     Atomic<int, Order::RELAXED> g_in_isr = 0;
 
-    // Software IRQ controller for INJECTED logical lines. The RX ICU cannot pend an
-    // arbitrary peripheral line from software (only the two software interrupts are
-    // settable), so injected lines are delivered over the single SWINT2 doorbell:
-    // g_inject_line carries the logical line, g_irq_masked gates it. Lines <
-    // SOFT_IRQ_LINES are software (this controller); lines >= it are real ICU vectors
-    // gated by ICU.IER (e.g. console TXI6 = 87). RX's own sub-32 vectors (SWINT 26/27,
-    // timer CMWI0 30) are configured directly by the arch/chip init and never pass
+    // Software IRQ controller for INJECTED logical lines. Only the ICU's two software
+    // interrupts are settable from software, so injected lines are delivered over the
+    // single SWINT2 doorbell: g_inject_line carries the logical line, g_irq_masked gates
+    // it. Lines < SOFT_IRQ_LINES are software (this controller); lines >= it are real ICU
+    // vectors gated by ICU.IER (e.g. console TXI6 = 87). RX's own sub-32 vectors (SWINT
+    // 26/27, timer CMWI0 30) are configured directly by the arch/chip init and never pass
     // through the arch_irq_* seam, so they do not collide. Masked-by-default: a line is
     // armed only by arch_irq_unmask (kernel irq_claim/irq_ack).
     constexpr int SOFT_IRQ_LINES = 32;
@@ -189,14 +230,13 @@ namespace
         arch_irq_restore(s);
     }
 
-    // RX72M ICU IPR index for a vector. IR (UM sec.15.2.1) and IER (sec.15.2.2)
-    // are indexed 1:1 by vector; only IPR (sec.15.2.4) is shared: several sources
-    // collapse onto one IPR entry, so the IPR index is NOT the vector number in
-    // general. This table carries the mappings confirmed against the UM interrupt
-    // vector table (sec.15.3.1); an unlisted vector falls back to identity, which
-    // holds for the 1:1 SCIg/peripheral block this backend arms today (SCI6 TXI6 =
-    // vector 87 -> IPR087). A shared source NOT listed here would be given the
-    // wrong IPR: add it (and cite the UM) before enabling that device line.
+    // RX72M ICU IPR index for a vector. IR (UM sec.15.2.1) and IER (sec.15.2.2) are
+    // indexed 1:1 by vector; IPR (sec.15.2.4) is shared, several sources collapsing onto
+    // one entry, so the IPR index is NOT the vector number in general. This table carries
+    // the mappings the UM interrupt vector table (sec.15.3.1) gives; an unlisted vector
+    // falls back to identity, which holds for the 1:1 SCIg/peripheral block this backend
+    // arms (SCI6 TXI6 = vector 87 -> IPR087). A shared source reaching identity would be
+    // given the wrong IPR: list it, and cite the UM, before enabling that device line.
     struct ipr_map_entry
     {
         uint16_t vector;
@@ -272,12 +312,11 @@ void arch_context_init(struct arch_context* ctx,
     *(--sp) = 0;                                 // A0 high
     *(--sp) = 0;                                 // A0 low
 #if defined(__RX_DFPU_INSNS__)
-    // DPFPU register file, banked below the accumulators (switch.S DPUSHM/DPOPM).
-    // A fresh thread's DR0-DR15 are don't-care (it sets them before first use), so
-    // zero them; the control words take the DPFPU reset posture (DPSW round-to-
-    // nearest, DECNT=1) per the RXv3 ISA UM DPFPU reset values. Layout must
-    // mirror DPUSHM.D dr0-dr15 (higher) + DPUSHM.L dpsw-decnt (lower): so DR block
-    // first (all zero), then DECNT, DCMR, DPSW with DPSW lowest = the new ctx.sp.
+    // DPFPU register file, banked below the accumulators (switch.S DPUSHM/DPOPM). The
+    // control words take the DPFPU reset posture (DPSW round-to-nearest, DECNT=1) per the
+    // RXv3 ISA UM DPFPU reset values. Layout must mirror DPUSHM.D dr0-dr15 (higher) +
+    // DPUSHM.L dpsw-decnt (lower): DR block first, then DECNT, DCMR, DPSW with DPSW
+    // lowest = the new ctx.sp.
     for (int i = 0; i < 16 * 2; i++)             // DR0-DR15 (16 doubles, 2 words each)
     {
         *(--sp) = 0;
@@ -288,13 +327,24 @@ void arch_context_init(struct arch_context* ctx,
 #endif
 
     ctx->sp = reinterpret_cast<uint32_t>(sp);
+
+    // The syscall trap and SWINT switcher validate the live USP against these before they
+    // store a frame through it. `top` is the 4-byte-aligned high edge, so a running
+    // thread's USP stays in [stack_lo, stack_hi].
+    ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
+    ctx->stack_hi = static_cast<uint32_t>(top);
+
+    // No kernel stack is allocated yet, so it is seated at 0 rather than left as whatever
+    // the TCB slab last held. A trusted entry that finds 0 here has nothing to transfer to,
+    // which is the state every thread is in until the allocator lands.
+    ctx->kernel_sp = 0;
 }
 
 #if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
-// The fastpath parks a caller on the frame the trap built for it, with no kernel
-// continuation, so the result has to be seated where the restore reloads R1 from. R1 is
-// the register the RX psABI answers in, and its slot sits above the DPFPU bank and the
-// accumulators; switch.S spells the same offset as FRAME_R1_OFF.
+// The fastpath parks a caller on the frame the trap built for it, so the result has to
+// be seated where the restore reloads R1 from. R1 is the register the RX psABI answers
+// in, and its slot sits above the DPFPU bank and the accumulators; switch.S spells the
+// same offset as FRAME_R1_OFF.
 #if defined(__RX_DFPU_INSNS__)
 constexpr uint32_t FRAME_R1_OFF = 168;
 #else
@@ -322,8 +372,7 @@ arch_irq_state_t arch_irq_save(void)
     uint32_t psw;
     __asm volatile("mvfc psw, %0" : "=r"(psw));
     // Raise to IPL_LOCK (12). MVTIPL takes an immediate only, so the level is a
-    // literal (static_assert above pins it). MVTIPL is self-synchronizing; no barrier
-    // is needed after it.
+    // literal (static_assert above pins it), and it is self-synchronizing.
     __asm volatile("mvtipl #12" ::: "memory");
     return (psw & PSW_IPL_MASK) >> PSW_IPL_SHIFT; // old IPL
 }
@@ -349,8 +398,8 @@ int arch_in_isr(void)
 // What the core hands back to the two seams. The saved pair is [0]=PC, [4]=PSW on the
 // ISP: exception pre-processing writes both to the stack ISP selects, never to the USP
 // (RXv3 ISA UM sec.5.2 + Table 5.2), and RTE pops PC first then PSW (sec.3, RTE).
-// `cause` rides along because no register on this core carries it: the fixed-vector
-// offset is known only to the shim that took the vector.
+// `cause` rides along: the fixed-vector offset is known only to the shim that took the
+// vector.
 struct RxFaultFrame
 {
     uint32_t* saved;
@@ -372,8 +421,7 @@ bool arch_fault_is_user_thread(void* frame)
 {
     RxFaultFrame const* const ff = static_cast<RxFaultFrame const*>(frame);
     // PSW.PM is the mode BEFORE the exception, and the copy carrying it sits on the ISP,
-    // which no user thread can reach: there is no stacking abort to detect on this core
-    // and no bounds test to run on the frame itself.
+    // which no user thread can reach, so the frame itself is trusted as read.
     if ((ff->saved[1] & PSW_PM) == 0)
     {
         return false;
@@ -382,11 +430,11 @@ bool arch_fault_is_user_thread(void* frame)
     {
         return false;
     }
-    // The stub does not run on the frame. RTE restores U=1 and it executes on the
-    // thread's USP, exactly where svc_trampoline runs, so the USP is what must lie in
-    // the thread's own stack: a thread that wrecked R0 would otherwise put privileged
-    // code on a stack of its choosing. Length 0 asks for containment alone, since the
-    // stack grows DOWN from here and no frame has been written at this address.
+    // RTE restores U=1 and the stub executes on the thread's USP, exactly where
+    // svc_trampoline runs, so the USP is what must lie in the thread's own stack: a
+    // thread that wrecked R0 would otherwise put privileged code on a stack of its
+    // choosing. Length 0 asks for containment alone: the stack grows DOWN from here and
+    // no frame has been written at this address.
     uint32_t usp;
     __asm volatile("mvfc usp, %0" : "=r"(usp));
     if (not kickos_fault_frame_trusted(reinterpret_cast<void*>(usp), 0))
@@ -394,13 +442,11 @@ bool arch_fault_is_user_thread(void* frame)
         return false;
     }
 #if KICKOS_HAVE_MPU
-    // A STACK OVERFLOW does not show in the USP, and this is what the design's section 4.2
-    // did not anticipate for RX: every one of these exceptions CANCELS its instruction and
-    // restores SP (ISA UM sec.5.3.1), so the denied push reads as though it never moved the
-    // USP and the containment test above passes with nothing left below. Only MPDEA says
-    // so. MEASURED on rx72m silicon before this test existed: the stub ran privileged on
-    // the exhausted stack, where supervisor bypasses the RX MPU so nothing trapped the
-    // damage, and it smashed its way to PC=0.
+    // A STACK OVERFLOW reads as in-bounds in the USP: every one of these exceptions
+    // CANCELS its instruction and restores SP (ISA UM sec.5.3.1), so the denied push
+    // leaves the USP where it was and the containment test above passes with nothing left
+    // below. MPDEA is the only register that says so. Supervisor bypasses the RX MPU, so
+    // a stub run on the exhausted stack smashes its way out untrapped.
     if (ff->cause == 0x54 and (reg32(MPU_MPESTS) & MPU_MPESTS_DMPER) != 0)
     {
         if (kickos_fault_below_stack(reg32(MPU_MPDEA)))
@@ -435,8 +481,8 @@ void arch_fault_redirect_to_exit(void* frame)
             addr = ff->saved[0]; // instruction fetch: the address IS the saved PC
             addr_valid = 1;
         }
-        // Latched, and cleared only through MPECLR. Unlike the panic path this fault is
-        // not the last, so a bit left set would label the NEXT thread's fault with it.
+        // Latched, and cleared only through MPECLR. This fault is survivable, so a bit
+        // left set would label the NEXT thread's fault with it.
         reg32(MPU_MPECLR) = MPU_MPECLR_CLR;
     }
 #endif
@@ -451,12 +497,10 @@ void arch_fault_redirect_to_exit(void* frame)
     ff->saved[1] = (ff->saved[1] & ~(PSW_PM | PSW_IPL_MASK)) | PSW_U | PSW_I;
 
     // The stub runs at the TOP of the dying thread's stack, not at the depth the fault
-    // reached. This is the backend that needs it: an access exception CANCELS the faulting
-    // instruction and restores SP (ISA UM sec.5.3.1), so an overflowed thread hands over a
-    // USP that reads in-bounds, and the stub would then run privileged on an exhausted stack
-    // and smash its way out. Written here rather than after the RTE because the handler runs
-    // on the ISP, so there is no window: R0 in supervisor mode is the ISP, and USP is a
-    // separate control register.
+    // reached: an access exception restores SP (ISA UM sec.5.3.1), so an overflowed thread
+    // hands over a USP that reads in-bounds and the stub would otherwise run privileged on
+    // an exhausted stack. Safe to write here because the handler runs on the ISP: R0 in
+    // supervisor mode is the ISP, and USP is a separate control register.
     uint32_t const top = static_cast<uint32_t>(kickos_fault_stack_top());
     if (top != 0)
     {
@@ -465,11 +509,26 @@ void arch_fault_redirect_to_exit(void* frame)
     }
 }
 
+// The syscall trap and SWINT switcher (switch.S) call this when the live USP is outside
+// the running thread's stack: R0 is the USP in user mode, so a wild USP would run
+// privileged dispatch on a caller-chosen stack. Runs on the ISP (trusted). Panics rather
+// than killing the thread, because containment needs a frame worth trusting and a safe
+// USP for the exit stub, and a refused USP supplies neither.
+void kickos_rx_bad_usp(uint32_t usp)
+{
+    kpanic_enter();
+#if defined(KICKOS_ENABLE_SELFTEST)
+    kickos_trapstack_witness_report();
+#endif
+    ::kickos::kprintf("\n=== RX EXCEPTION (wild stack) ===\n  USP=0x%x\n",
+                      static_cast<unsigned>(usp));
+    kfault_terminate();
+}
+
 // C side of the RX exception handler (startup.S .fvectors shims branch here with
-// r1=cause [the fixed-vector offset], r2=the saved PC/PSW pair on the ISP). Dump the
-// context, then hand off to the shared dead-end (blink on real HW). Runs on the
-// ISP in supervisor mode. kpanic_enter masks IRQs (raises PSW.IPL, never restored;
-// this path does not return), forces the polled writer, and flushes the ring.
+// r1=cause [the fixed-vector offset], r2=the saved PC/PSW pair on the ISP). Runs on the
+// ISP in supervisor mode. kpanic_enter masks IRQs (raises PSW.IPL, never restored; this
+// path does not return), forces the polled writer, and flushes the ring.
 //
 // RETURNING means the fault was redirected: the shim's RTE then lands in
 // kickos_thread_fault_exit instead of resuming the faulting instruction.
@@ -486,6 +545,9 @@ void kickos_rx_fault_report(uint32_t cause, uint32_t* saved)
     uint32_t const psw = saved[1];
     rx_mpu_mark('F'); // localizer: an exception fired (a FAULT, not a hang), raw, pre-console
     kpanic_enter();
+#if defined(KICKOS_ENABLE_SELFTEST)
+    kickos_trapstack_witness_report(); // names a U-mode USP that reached kernel memory
+#endif
 #if KICKOS_HAVE_MPU
     // The access exception (fixed vector +0x54) IS the RX MPU violation, and the RX MPU
     // checks user mode only (UM sec.17.1.1), so one taken with the faulting PSW.PM set is
@@ -554,8 +616,7 @@ uint64_t arch_clock_now(void)
 // --- Trace clock (telemetry timestamp seam) ---------------------------------
 // The free-running 32-bit CMTW1 counter IS the raw trace clock: u32, wraps on its own,
 // host reconstructs absolute time from the SESSION clock_hz anchors (arch.h). Same source
-// as arch_clock_now, read raw: no ns conversion, no wrap-extend.
-// KICKOS_HAVE_TRACE_CLOCK is set for rxv3.
+// as arch_clock_now, read raw. KICKOS_HAVE_TRACE_CLOCK is set for rxv3.
 uint32_t arch_trace_now(void)
 {
     return reg32(CMTW1_BASE + CMTW_CMWCNT);
@@ -610,7 +671,7 @@ void arch_timer_arm(uint64_t deadline_ns)
         cyc = 1; // never program 0
     }
     // One-shot from zero: stop, clear counter, load compare, enable interrupt +
-    // clear-on-match, start. (CMWCR clock/prescale is set once by the chip init.)
+    // clear-on-match, start. CMWCR clock/prescale is set once by the chip init.
     reg16(CMTW0_BASE + CMTW_CMWSTR) = 0;
     reg32(CMTW0_BASE + CMTW_CMWCNT) = 0;
     reg32(CMTW0_BASE + CMTW_CMWCOR) = static_cast<uint32_t>(cyc);
@@ -728,12 +789,11 @@ void kickos_arch_mpu_commit(void)
     {
         rx_mpu_mark('['); // localizer: entering the MPU register writes from ISR ctx
     }
-    // One-time: background = no user access (UBAC=0), then enable. Overlaps OR
-    // their permission bits with the background (UM sec.17.1.4), so a nonzero
-    // MPBAC would silently grant every user thread, so it must stay 0. MPOPI.INV
-    // clears any stale region V bits (reset leaves REPAGEn.V=0, but be explicit).
-    // MPU registers are supervisor-only and not PRCR-gated (UM Table 13.1), so no
-    // unlock. MPEN takes effect on the RTE into user mode (UM sec.17.2.3).
+    // One-time: background = no user access (UBAC=0), then enable. Overlaps OR their
+    // permission bits with the background (UM sec.17.1.4), so MPBAC must stay 0 or every
+    // user thread is silently granted. MPOPI.INV clears any stale region V bits. MPU
+    // registers are supervisor-only and not PRCR-gated (UM Table 13.1). MPEN takes effect
+    // on the RTE into user mode (UM sec.17.2.3).
     static bool mpu_ready = false;
     if (not mpu_ready)
     {
@@ -799,7 +859,7 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
     (void)n;
     (void)image;
 }
-// PendSV/SWINT epilogue calls this unconditionally; provide an empty no-MPU commit.
+// The SWINT restore epilogue calls this unconditionally.
 void kickos_arch_mpu_commit(void) {}
 #endif
 
@@ -812,8 +872,7 @@ size_t arch_mpu_min_region(void)
 }
 
 // The RX MPU is byte-granular on a 16-byte page (RSPAGEn/REPAGEn hold addr[31:4]);
-// a window is exact iff base and base+size both land on a 16-byte boundary. No
-// power-of-two size is required.
+// a window is exact iff base and base+size both land on a 16-byte boundary.
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size < 16u)
@@ -823,20 +882,21 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return (base & 15u) == 0 and (size & 15u) == 0;
 }
 
+// The RSPAGEn/REPAGEn pair holds arbitrary 16-byte-page bounds, so a region size is free.
 int arch_mpu_region_pow2(void)
 {
     return 0;
 }
 
-// No data cache between the core and the arena on the RX parts in tree, and an RX MPU
-// region pair holds permissions only with no memory type.
+// Every RX part in tree runs the arena uncached, and an RX MPU region pair encodes
+// permissions only, so a nocache request is already satisfied.
 int arch_mpu_nocache_support(void)
 {
     return ARCH_MPU_NOCACHE_ALREADY;
 }
 
-// Rule 7 (arch.h): RX has no Cortex-M bit-band alias. No ARM-common fallback
-// default exists in an RX link.
+// Rule 7 (arch.h): bit-band is a Cortex-M alias window, so RXv3 answers 0. An RX link
+// resolves this seam here, so the definition is mandatory.
 int arch_bitband_present(void)
 {
     return 0;
@@ -858,6 +918,20 @@ int arch_bitband_present(void)
 // vector itself belong to the chip; the core owns only the line-space split.
 void kickos_rx_dev_dispatch(void);
 void kickos_rx_group_arm(int line, int on);
+
+// Contract in rx_group.h: kickos_rx_group_arm arms a group's own VECTOR through here
+// rather than back through arch_irq_unmask, a route the trap red-zone measurement reads
+// as unbounded recursion. Caller holds arch_irq_save.
+void kickos_rx_icu_line_arm(int line, int on)
+{
+    if (on != 0)
+    {
+        reg8(ICU_IPR_BASE + vector_to_ipr(line)) = static_cast<uint8_t>(IPL_DEVICE);
+        icu_ier_set(line, true);
+        return;
+    }
+    icu_ier_set(line, false);
+}
 
 // Self-bracketed (arch_irq_save/restore) so the soft-line g_irq_masked/g_irq_pending
 // RMWs are atomic against a device ISR regardless of the caller: kos_irq_inject/unmask
@@ -906,19 +980,18 @@ void arch_irq_unmask(int line)
     }
     else if (line >= GROUP_LINE_BASE)
     {
-        // No IPR/IER here: a group SOURCE has neither. Its mask is GENxxx.ENj, and the
-        // group VECTOR's own IPR/IER are armed lazily by the chip once some source in
-        // that group is armed.
+        // A group SOURCE's mask is GENxxx.ENj. The group VECTOR's own IPR/IER are armed
+        // lazily by the chip once some source in that group is armed.
         kickos_rx_group_arm(line, 1);
     }
     else
     {
-        // Program the source priority BELOW the kernel lock level before enabling, so
-        // a device line cannot preempt an IrqLock-held section (the armv7m NVIC_IPR
-        // care). IPR is shared per the ICU source table, so the index comes from
-        // vector_to_ipr, NOT the vector (IR/IER stay vector-indexed via icu_ier_set).
-        // A real ICU line is preserve-correct already: IR latches a request while
-        // IER=0, so re-enabling here fires a raise taken while masked.
+        // Program the source priority BELOW the kernel lock level before enabling, so a
+        // device line cannot preempt an IrqLock-held section. IPR is shared per the ICU
+        // source table, so the index comes from vector_to_ipr, NOT the vector (IR/IER stay
+        // vector-indexed via icu_ier_set). A real ICU line is preserve-correct already: IR
+        // latches a request while IER=0, so re-enabling here fires a raise taken while
+        // masked.
         reg8(ICU_IPR_BASE + vector_to_ipr(line)) = static_cast<uint8_t>(IPL_DEVICE);
         icu_ier_set(line, true);
     }
@@ -939,11 +1012,10 @@ void arch_irq_clear_pending(int line)
     else if (line >= GROUP_LINE_BASE)
     {
         // A group source is level-detected: GRPxxx.ISj and the group's IRn both FOLLOW
-        // the source and go down only when the peripheral request clears or GENxxx.ENj
-        // is written 0 (UM sec.15.5.4 p.542). GRPxxx is read-only and these groups have
-        // no clear register at all (sec.15.2.25 p.505 defines one only for the edge
-        // groups IE0/BE0). So there is nothing kernel-side to drop: the clear is the
-        // DRIVER's own peripheral write (RULE L1). Deliberately a no-op, not an error:
+        // the source and go down only when the peripheral request clears or GENxxx.ENj is
+        // written 0 (UM sec.15.5.4 p.542). GRPxxx is read-only, and sec.15.2.25 p.505
+        // gives a clear register to the edge groups IE0/BE0 alone, so the clear belongs to
+        // the DRIVER's own peripheral write (RULE L1). A no-op is the correct answer here:
         // the level-rearm path calls this before every unmask.
     }
     else
@@ -964,8 +1036,8 @@ void arch_irq_inject(int irq)
         return;
     }
     arch_irq_state_t s = arch_irq_save();
-    // Latch-and-coalesce: a raise on a masked soft line latches one-deep
-    // (redelivered at unmask), it is NOT dropped.
+    // Latch-and-coalesce: a raise on a masked soft line latches one-deep, redelivered
+    // at unmask.
     if ((g_irq_masked & (1u << static_cast<unsigned>(irq))) != 0)
     {
         g_irq_pending |= (1u << irq);
@@ -1024,9 +1096,9 @@ __attribute__((interrupt)) void kickos_rx_console_txi_isr(void)
 
 // SWINT2 doorbell: the software IRQ controller's delivery vector. arch_irq_inject
 // latched the logical line in g_inject_line and pended SWINT2; run its bound handler.
-// Clear IR026 first: a software interrupt's request flag is NOT auto-cleared on accept,
-// so leaving it set re-fires the doorbell forever. kickos_isr_irq runs the handler, which
-// masks the line itself (irq_event_isr / the null-object default), so no masking here.
+// Clear IR026 first: a software interrupt's request flag survives acceptance, so leaving
+// it set re-fires the doorbell forever. kickos_isr_irq runs the handler, which masks the
+// line itself (irq_event_isr / the null-object default).
 __attribute__((interrupt)) void kickos_rx_swint2(void)
 {
     reg8(ICU_IR_BASE + SWINT2_VECTOR) = 0;
@@ -1041,9 +1113,9 @@ __attribute__((interrupt)) void kickos_rx_swint2(void)
 }
 
 // Device-line default entry: the shared first-level ISR for every INTB device slot that
-// has no dedicated one. RXv3 has no cheap current-vector read, so this entry cannot name
-// the source; the chip reads its OWN status registers and posts what it finds. With no
-// chip override the fallback does nothing and this is inert.
+// has no dedicated one. RXv3 leaves the accepted vector unreadable from the handler, so
+// the chip reads its OWN status registers and posts what it finds. The default
+// kickos_rx_dev_dispatch does nothing, so this entry stays inert until a chip overrides it.
 __attribute__((interrupt)) void kickos_rx_default_irq(void)
 {
     g_in_isr = g_in_isr + 1;
@@ -1055,8 +1127,8 @@ __attribute__((interrupt)) void kickos_rx_default_irq(void)
 // It needs a DEDICATED slot rather than the shared dispatch above because an edge source
 // cannot be discovered after the fact: the ICU clears IR086 when the request is accepted
 // (UM sec.15.2.1(1) p.480), so any dispatch would find the flag it must test already 0.
-// Nothing is written here for the same reason, and a write after the handler would discard
-// a request latched while irq_event_isr had the line IER-masked, i.e. drop a received byte.
+// No flag is written here for the same reason: a write after the handler would discard a
+// request latched while irq_event_isr had the line IER-masked, i.e. drop a received byte.
 __attribute__((interrupt)) void kickos_rx_sci6_rxi_isr(void)
 {
     g_in_isr = g_in_isr + 1;
@@ -1073,11 +1145,11 @@ void kickos_rxv3_init(void)
     g_cyc_high = 0;
     g_cyc_last = 0;
 
-    // SWINT is the deferred-switch line (the PendSV analog): lowest active priority
-    // so a switch requested from an ISR is accepted only after every other ISR
-    // drains, and below IPL_LOCK so an IrqLock masks it (the switch fires as the
-    // lock releases). arch_switch pends it via SWINTR; startup.S routes INTB[27] to
-    // kickos_rx_pendsw. SWINT + SWINT2 share this IPR (regs.h).
+    // SWINT is the deferred-switch line: lowest active priority, so a switch requested
+    // from an ISR is accepted only after every other ISR drains, and below IPL_LOCK so an
+    // IrqLock masks it and the switch fires as the lock releases. arch_switch pends it via
+    // SWINTR; startup.S routes INTB[27] to kickos_rx_pendsw. SWINT + SWINT2 share this
+    // IPR (regs.h).
     reg8(ICU_IPR_SWINT) = static_cast<uint8_t>(IPL_PENDSW);
     reg8(ICU_IER_BASE + (SWINT_VECTOR >> 3)) =
         static_cast<uint8_t>(reg8(ICU_IER_BASE + (SWINT_VECTOR >> 3)) |

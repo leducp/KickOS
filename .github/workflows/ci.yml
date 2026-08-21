@@ -1,30 +1,27 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 # KickOS CI: the deterministic, host-runnable green gates (docs/m2-readiness.md #6).
-# Every job mirrors a `--preset` invocation. Nothing here runs on silicon; a port's
+# Every job mirrors a `--preset` invocation. Every gate here is host or QEMU; a port's
 # hardware status has one home, docs/reference/boards.md.
 #
 # ISA coverage: sim (host), armv7m + armv6m + armv8m (QEMU run), rv32imac (QEMU run,
-# plain and under PMP), Xtensa LX6 (build-only). Renesas RX has no gate: RX72M needs
-# -misa=v3/-mdfpu, which exist only in the registration-gated Renesas GNURX build.
+# plain and under PMP), Xtensa LX6 (build-only).
 #
 # MPU enforcement runs at RUNTIME on all three ISA families: sim (host mprotect),
 # rv32imac (PMP, qemu-riscv-mpu), ARM on both PMSA revisions (the four mps2 run gates
 # in qemu-arm). It is the BASE variant of every board that can enforce, so a preset
 # names it and no -D flips it; the non-enforcing posture has its own `-flat` presets,
-# which is what the ring-only gates run on. build-boards-mpu is the only coverage of
-# the chip-specific backends QEMU has no model for (SYSMPU, the M7 anti-speculation
-# wrap, PMSAv6): link surface only, never the trap.
+# which is what the ring-only gates run on. build-boards-mpu covers the chip-specific
+# backends (SYSMPU, the M7 anti-speculation wrap, PMSAv6) as link surface.
 #
 # Warnings-as-errors rides EVERY job with no flag (KICKOS_WERROR defaults ON for any
 # in-tree build; see cmake/kickos.cmake, incl. the -DKICKOS_WERROR=OFF escape).
-# UBSan is the sim alone: there is no bare-metal sanitizer runtime to link against.
+# UBSan rides the sim alone.
 #
 # Toolchains are the SAME pinned vendor tarballs used locally (reproducibility): the
 # official Arm GNU Toolchain (arm-none-eabi, newlib), the RISCstar toolchain
 # (riscv32-none-elf, newlib, rv32imac soft-float multilib), and Espressif's
-# crosstool-NG Xtensa build. All downloaded + cached; no apt gcc-arm-none-eabi /
-# xPack. The sim job uses the host g++.
+# crosstool-NG Xtensa build. All downloaded + cached. The sim job uses the host g++.
 #
 # Each pin (and the reason for it) lives in the composite action that uses it, under
 # .github/actions/<name>: arm-toolchain, riscv-toolchain, xtensa-toolchain, kconfiglib.
@@ -37,8 +34,7 @@ on:
   push:
     branches: [master]
   pull_request:
-  # Manual per-branch run (`gh workflow run ci.yml --ref <branch>`): push is
-  # master-only and a feature branch fires nothing until a PR opens.
+  # Manual per-branch run: `gh workflow run ci.yml --ref <branch>`.
   workflow_dispatch:
 
 concurrency:
@@ -57,8 +53,8 @@ jobs:
         with:
           packages: cmake ninja-build g++
       # Before the configure, and NOT optional: KICKOS_BUILD_UNIT_TESTS defaults to whether
-      # find_package(GTest) succeeded, so a runner without it drops the whole host unit layer
-      # and still reports green.
+      # find_package(GTest) succeeded, and a run with the whole host unit layer dropped still
+      # reports green.
       - uses: ./.github/actions/gtest
       - run: cmake --preset sim -DCMAKE_PREFIX_PATH="$KICKOS_GTEST_PREFIX" -DKICKOS_BUILD_UNIT_TESTS=ON
       - run: cmake --build --preset sim
@@ -69,8 +65,7 @@ jobs:
   #
   # UBSan only. Do NOT add -fsanitize=address: the sim switches threads with
   # ucontext, and without __sanitizer_start/finish_switch_fiber annotations ASan
-  # treats each new stack as a wild region and the sim hangs. UBSan intercepts no
-  # stacks and needs nothing from the context switch.
+  # treats each new stack as a wild region and the sim hangs.
   #
   # Flags via the CFLAGS/CXXFLAGS ENVIRONMENT, at JOB level, not -DCMAKE_C/CXX_FLAGS
   # on the configure step: the oot_export test's child cmake (spawned by the CTEST
@@ -78,7 +73,7 @@ jobs:
   # instrumented archives without the UBSan runtime (undefined __ubsan_handle_*).
   #
   # A separate binaryDir (-B) keeps the instrumented tree out of the plain `sim`
-  # preset's build/sim; ctest is driven by --test-dir (no sanitizer test preset).
+  # preset's build/sim.
   sim-ubsan:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -92,8 +87,7 @@ jobs:
         with:
           packages: cmake ninja-build g++
       # GTest itself is built by Conan WITHOUT the job's CFLAGS (Conan uses its own profile),
-      # so the instrumented tree links an uninstrumented gtest. That is the same arrangement
-      # every UBSan build has with libstdc++ and it is what keeps the subject instrumented.
+      # so the instrumented tree links an uninstrumented gtest.
       - uses: ./.github/actions/gtest
       - run: cmake --preset sim -B build/sim-ubsan -DCMAKE_PREFIX_PATH="$KICKOS_GTEST_PREFIX" -DKICKOS_BUILD_UNIT_TESTS=ON
       - run: cmake --build build/sim-ubsan
@@ -110,6 +104,8 @@ jobs:
     # is failure headroom on a loaded runner; passing gates exit early.
     env:
       QEMU_TIMEOUT: "30"
+      # The gates whose image never exits, so they go through poll_image (tests/lib/gate.sh).
+      POLLED: "hello|fp_switch|mpu_fault|rootfault|reclaimwit_park"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -117,72 +113,72 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/arm-toolchain
-      # --repeat until-pass:4: the mps2 QEMU timer is coarse (DWT frozen; ~100 Hz
-      # semihosting clock), so the run gates can transiently miss their output
-      # window under CI-host load. Retry rides that out; a real hang still fails
-      # (each attempt is bounded by the gate's own timeout).
-      # ARM MPU enforcement at RUNTIME, which is what the base variant of these four
-      # boards states: the full TAP suite as unprivileged threads plus a real MemManage
-      # denial in mpu_fault, over both PMSA revisions: v7 on the M4/M7/M3, v8 on the M33
-      # (a different register layout, not the same code path).
+      # --repeat until-pass:2 rides the POLLED gates and NOTHING else. The mps2/nrf51
+      # clock is the ~100 Hz semihosting SYS_CLOCK (chip_mps2.cc arch_clock_now, DWT
+      # frozen), so every timed sleep before an awaited line is stretched to a 10 ms
+      # granule and a loaded runner can push the last pattern past the poll bound. A real
+      # hang still fails, each attempt being bounded by the gate's own timeout.
       - name: armv7m (mps2-an386)
         run: |
           cmake --preset qemu -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu
-          ctest --preset qemu --no-tests=error --output-on-failure --repeat until-pass:4
-          # Posture pin. The enforcing posture is a line in this board's base defconfig
-          # and those two gates are REGISTERED only when it resolves on, so deleting it
-          # would shrink the suite above in silence and leave the run green. Naming them
-          # makes an empty selection the failure (--no-tests=error). Same --repeat as the
-          # suite: the coarse mps2 clock is why it is there.
-          ctest --preset qemu -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
-      # Coverage the an386 cannot buy: the M33 is armv8-M (PMSAv8), the M7 has 16 MPU
-      # regions to the M4's 8, and the M3 has no FPU so the soft-float switch path runs.
+          ctest --preset qemu -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset qemu -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
+          # Posture pin. Those two gates are REGISTERED only when the enforcing posture in
+          # this board's base defconfig resolves on, so naming them makes an empty selection
+          # the failure (--no-tests=error); the -R "$POLLED" run above matches hello either
+          # way and stays green.
+          ctest --preset qemu -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:2
+      # The M33 is armv8-M (PMSAv8, a different register layout), the M7 has 16 MPU regions
+      # to the M4's 8, and the M3 is soft-float, so the soft-float switch path runs there.
       - name: armv8-m mainline (mps2-an505, Cortex-M33)
         run: |
           cmake --preset qemu-m33 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m33
-          ctest --preset qemu-m33 --no-tests=error --output-on-failure --repeat until-pass:4
-          # Posture pin, as on the an386: each mps2 board carries its own base
-          # defconfig, so one pin does not cover the other three.
-          ctest --preset qemu-m33 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-m33 -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset qemu-m33 -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
+          # Posture pin, as on the an386: this board carries its own base defconfig, so it
+          # needs its own pin.
+          ctest --preset qemu-m33 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:2
       - name: armv7m (mps2-an500, Cortex-M7)
         run: |
           cmake --preset qemu-m7 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m7
-          ctest --preset qemu-m7 --no-tests=error --output-on-failure --repeat until-pass:4
-          # Posture pin, as on the an386: each mps2 board carries its own base
-          # defconfig, so one pin does not cover the other three.
-          ctest --preset qemu-m7 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-m7 -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset qemu-m7 -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
+          # Posture pin, as on the an386: this board carries its own base defconfig, so it
+          # needs its own pin.
+          ctest --preset qemu-m7 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:2
       - name: armv7m soft-float (mps2-an385, Cortex-M3)
         run: |
           cmake --preset qemu-m3 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m3
-          ctest --preset qemu-m3 --no-tests=error --output-on-failure --repeat until-pass:4
-          # Posture pin, as on the an386: each mps2 board carries its own base
-          # defconfig, so one pin does not cover the other three.
-          ctest --preset qemu-m3 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-m3 -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset qemu-m3 -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
+          # Posture pin, as on the an386: this board carries its own base defconfig, so it
+          # needs its own pin.
+          ctest --preset qemu-m3 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:2
       # The ring-only posture of the same four boards, which is what ringpriv and
-      # ringppb assert against: the privilege ring holds with the MPU absent. Its own
-      # preset and its own build directory, because the posture is a configuration
-      # variant and not something a -D can flip in place.
+      # ringppb assert against: the privilege ring holds on its own.
       - name: ARM ring-only run gates (no PMSA enforcement)
         run: |
           for b in qemu qemu-m33 qemu-m7 qemu-m3; do
             cmake --preset "$b-flat" -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
             cmake --build --preset "$b-flat"
-            ctest --preset "$b-flat" --no-tests=error --output-on-failure --repeat until-pass:4
+            ctest --preset "$b-flat" -E "$POLLED" --no-tests=error --output-on-failure
+            ctest --preset "$b-flat" -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
           done
       - name: armv6m (microbit)
         run: |
           cmake --preset microbit -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset microbit
-          ctest --preset microbit --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset microbit -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset microbit -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
 
   # rv32imac (virt) under QEMU, plus build-only checks of three more rv32 presets,
   # on the pinned RISCstar toolchain (newlib, soft-float rv32imac/ilp32 multilib).
-  # No idle fix needed here: RISC-V clocks off the CLINT mtime, which keeps ticking
-  # during WFI (unlike the ARM semihosting clock). QEMU_TIMEOUT is failure headroom.
+  # RISC-V clocks off the CLINT mtime, which keeps ticking during WFI, so a timed sleep
+  # advances with every thread idle. QEMU_TIMEOUT is failure headroom.
   qemu-riscv:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -201,10 +197,8 @@ jobs:
         run: |
           cmake --preset qemu-riscv-flat -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-flat
-          ctest --preset qemu-riscv-flat --no-tests=error --output-on-failure --repeat until-pass:4
-      # -L host is the set that reads a build tree without executing an image, so a board
-      # with no machine model still gets it. Not a bare ctest: qemu-riscv-bench registers the
-      # boot gates of the run gate above, and this job's emulator time belongs there.
+          ctest --preset qemu-riscv-flat --no-tests=error --output-on-failure
+      # -L host is the gate set that executes no image (tests/static/test_classes.txt).
       - name: build-only rv32 boards
         run: |
           cmake --preset esp32c6-wroom -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
@@ -220,7 +214,7 @@ jobs:
   # rv32imac (virt) UNDER PMP ENFORCEMENT, which is this board's base variant: runs the full-C++
   # throw under PMP + the gp-in-appdata CI gates (riscv_no_smalldata, qemu_riscv_cxxtest,
   # qemu_riscv_mpu_fault; see docs/design-riscv-gp-split.md and docs/design-cxx-under-mpu.md).
-  # Deterministic (~3s, no silicon). Same RISCstar toolchain as the non-enforcement job.
+  # Deterministic (~3s). Same RISCstar toolchain as the non-enforcement job.
   qemu-riscv-mpu:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -237,20 +231,16 @@ jobs:
         run: |
           cmake --preset qemu-riscv -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv
-          ctest --preset qemu-riscv --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-riscv --no-tests=error --output-on-failure
           # Posture pin, as in qemu-arm: PMP enforcement is a line in this board's base
           # defconfig, and dropping it de-registers these gates instead of failing them.
-          ctest --preset qemu-riscv -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-riscv -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure
 
-  # Xtensa LX6 (esp32-wroom) gate: upstream QEMU ships no ESP32 machine model, so this
-  # proves build/link/linker-script + windowed-ABI asm and never boots the image. It runs
-  # the `host` label, which needs no machine model: seam_defaults and class_backend, whose
-  # verdict is PER-LINK, plus cpu_id_fold, c_headers and test_labels, which read THIS tree
-  # (the generated board_config.h, this board's C compiler and include roots, this build's
-  # own test registrations) and are covered by no other job.
-  # The selftest config is built too (much more link surface). esptool is NOT
-  # installed: it only serves the bootable .app.bin post-step, which CI cannot boot
-  # anyway; CMake reports the skip without failing.
+  # Xtensa LX6 (esp32-wroom) gate: proves build/link/linker-script + windowed-ABI asm.
+  # It runs the `host` label: seam_defaults and class_backend, whose verdict is PER-LINK,
+  # plus cpu_id_fold, c_headers and test_labels, which read THIS tree (the generated
+  # board_config.h, this board's C compiler and include roots, this build's own test
+  # registrations). The selftest config is built too, for the wider link surface.
   xtensa:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -261,10 +251,6 @@ jobs:
         with:
           packages: cmake ninja-build curl xz-utils file
       - uses: ./.github/actions/xtensa-toolchain
-      # These gates read this tree's own output and never a booted image, so they run here
-      # despite there being no machine model. This is the ONLY CI execution of a gate on the
-      # Xtensa TREE, and the archive-extraction rule seam_defaults enforces is per-link: no
-      # other job's tree covers this one.
       - name: xtensa lx6 (esp32-wroom) build gate
         run: |
           cmake --preset esp32-wroom -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
@@ -277,10 +263,7 @@ jobs:
           ctest --test-dir build/esp32-wroom-st -L host --no-tests=error --output-on-failure
 
   # Build sweep of the remaining ARM boards (catches build/link/linker-script
-  # regressions). No BOOT step: these need silicon or a machine model CI does not carry.
-  # The `host` label runs, which is every gate reading this board's own tree. RX omitted (no
-  # hosted-runner toolchain; see the header). Xtensa is the job above; RISC-V is the
-  # qemu-riscv job.
+  # regressions). The `host` label runs, which is every gate reading this board's own tree.
   build-boards:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -299,13 +282,8 @@ jobs:
       - uses: ./.github/actions/arm-toolchain
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
-      # -L host is every gate that reads this build tree without executing an image:
-      # seam_defaults and class_backend read nm/readelf output and their verdict is per-link,
-      # while cpu_id_fold, c_headers and test_labels read this board's generated config, its
-      # own C compiler and this build's test registrations. A board is covered only by its
-      # OWN tree. Not a bare ctest: qemu-telem registers the full QEMU boot suite, this job
-      # installs no emulator, and a suite whose every case skipped reads like a suite that
-      # ran. The qemu-arm job covers the an386 tree instead.
+      # -L host, not a bare ctest: qemu-telem registers the full QEMU boot suite, and a
+      # suite whose every case skipped reads like a suite that ran.
       - run: ctest --test-dir build/${{ matrix.preset }} -L host --no-tests=error --output-on-failure
 
   # ARM MPU-ENFORCEMENT build gate: the enforcement-capable ARM boards (those
@@ -313,14 +291,8 @@ jobs:
   # enforcing posture because that is the posture they ship. The only job
   # that builds the enforcement-only link surface of the silicon boards: the
   # .appdata/.appbss window and its ASSERTs, the closed-set archive selectors, the
-  # grant symbols, and arch_reserved_blocks, which has NO weak default on purpose,
-  # so an enforcing port that forgets its reserved set is a LINK error here, not a
-  # silent open hole.
-  #
-  # BUILD-ONLY, necessarily: QEMU has no machine model for these chips, and what is
-  # unproven is chip-specific (SYSMPU is not PMSA, imxrt1062 needs the M7
-  # anti-speculation wrap, picopi is PMSAv6 with no MemManage). Trapping stays
-  # silicon-proven; see docs/reference/boards.md.
+  # grant symbols, and arch_reserved_blocks, which an enforcing port must define itself
+  # or fail to link here.
   #
   # kernel_ctor_placement passes VACUOUSLY here: every app in this matrix links an
   # empty .kickos_app_init_array window, so the check takes its "window empty -> PASS"
@@ -333,11 +305,6 @@ jobs:
   # KICKOS_MCPU, so its shipped board.cmake is complete either way, while pizero2350
   # leaves the core to the chip. The gate installs the package and cross-builds an
   # out-of-tree app with the shipped toolchain, which this job already has.
-  #
-  # No `ctest --preset` (arm.json defines test presets for the qemu images, their flat
-  # variants, qemu-telem and microbit, and for no board in this matrix): --test-dir on the
-  # preset's binaryDir. picopi links under enforcement
-  # but registers no ctor gate (armv7m-only check).
   build-boards-mpu:
     runs-on: ubuntu-latest
     timeout-minutes: 40

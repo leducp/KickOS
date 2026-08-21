@@ -9,16 +9,16 @@
 // Sequenced by the wire, not by sleeps. The service list is built with
 // KICKOS_SIMCON_EXIT_AFTER=1, so the driver serves exactly one message and exits:
 //
+//   0. kos_print, dropped because the console is USER_OWNED. Its ABSENCE is the
+//      anti-vacuity witness: a line on the wire here means the console was never
+//      published and every assertion below is meaningless.
 //   1. emit() -> the published route, served by the driver, reaches the wire.
 //   2. the driver exits; its cap_teardown takes the endpoint's recv_holders to 0, which
 //      notes the console death, and exit_current then runs the reclaim.
 //   3. a second emit() must fail -KOS_EPIPE. That is what PROVES the driver is gone
 //      rather than merely slow, with no timing assumption.
-//   4. kos_print now has to reach the wire. Before the reclaim it was dropped, so the
-//      SAME call being absent in step 0 and present here is the whole assertion.
-//
-// The step-0 kos_print is the anti-vacuity witness: if it appeared, the console was
-// never published and every later assertion would be meaningless.
+//   4. the SAME kos_print now has to reach the wire. Steps 0 and 4 together are the
+//      whole assertion.
 //
 // Under KICKOS_SIMCON_WINDOW_THREAD the driver is TWO threads: a service thread that
 // receives, and a thread that holds the register window and parks in kos_irq_wait. Step 4

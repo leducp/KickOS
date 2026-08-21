@@ -1,29 +1,84 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * ARMv6-M (Cortex-M0/M0+) context switch + syscall trap. Same design as armv7m
- * (PendSV switch; SVC redirects to svc_trampoline running in privileged THREAD
- * mode; blocking = synchronous PendSV) but rewritten for the v6-M subset:
- *   - PUSH/POP and load/store multiple only reach r0-r7 -> r8-r11 are shuffled
- *     through r4-r7 (mov hi<->lo), and r12 (a3) is moved via a low register;
- *   - no BFI/MOVW/IT; CONTROL.nPRIV is set with movs/bics/orrs; addresses via
- *     ldr =literal; conditionals via cmp/branch;
- *   - no FPU, so no s-register save and no EXC_RETURN stored in the frame
- *     (thread returns are always 0xFFFFFFFD, reconstructed on switch-in).
+ * ARMv6-M (Cortex-M0/M0+) context switch + syscall trap: PendSV switch, SVC
+ * redirecting to svc_trampoline in privileged THREAD mode, blocking as a synchronous
+ * PendSV. The v6-M subset shapes every sequence here:
+ *   - PUSH/POP and load/store multiple reach r0-r7, so r8-r11 are shuffled through
+ *     r4-r7 (mov hi<->lo) and r12 (a3) travels via a low register;
+ *   - CONTROL.nPRIV is set with movs/bics/orrs, addresses come from ldr =literal, and
+ *     conditionals are cmp/branch (v6-M has BFI, MOVW and IT in neither encoding);
+ *   - thread returns are always 0xFFFFFFFD, rebuilt on switch-in.
  *
  * Saved frame, low->high on PSP:  [r4 r5 r6 r7 r8 r9 r10 r11][hw frame].
- * ctx.sp -> r4. ctx = {sp@0, npriv@4, resting_npriv@8}.
+ * ctx.sp -> r4. ctx = {sp@0, npriv@4, resting_npriv@8, stack_lo@12, stack_hi@16}.
  *
  * The IPC fastpath seam sits inside SVC_Handler, with arch_syscall_reg at the end.
- * The saved block IS the leaf's argument array on this arch too, but the v6-M store
- * of it shuffles r8-r11 through r4-r7, so a refusal must put r4-r7 back before the
- * generic path resumes on the real register file.
+ * The saved block IS the leaf's argument array, and the v6-M store of it shuffles
+ * r8-r11 through r4-r7, so a refusal must put r4-r7 back before the generic path
+ * resumes on the real register file.
  */
+
+#include <kickos/arch/armv6m_trap_stack.h>
 
     .syntax unified
     .thumb
     .text
     .cpu cortex-m0plus
+
+/* struct arch_context field offsets the PSP bounds guard reads as plain displacements.
+   arch_armv6m.cc static_asserts offsetof against the same macros. UNCONDITIONAL: the
+   telemetry-only trace_tid sits after them so no build posture shifts them, which would
+   have the guard compare a PSP against a trace id. */
+    .equ F_CTX_STACK_LO, KICKOS_ARMV6M_CTX_OFF_STACK_LO
+    .equ F_CTX_STACK_HI, KICKOS_ARMV6M_CTX_OFF_STACK_HI
+    .equ F_CTX_TRACE_TID, KICKOS_ARMV6M_CTX_OFF_TRACE_TID
+
+/* The software block both guarded pushes write below the live PSP: {r4-r11}, eight
+   words. A REGISTER COUNT, not a measured depth, and arch_armv6m.cc asserts it against
+   the register list it prices. */
+    .equ F_TRAP_FRAME, KICKOS_ARMV6M_TRAP_FRAME
+
+/* PSP bounds guard, used by both trap sites in this file.
+   In:  \need = the room this site's class needs below the PSP;
+        r0 = the live PSP, r3 = the running thread's arch_context*.
+   Clobbers r1 and r2, both already in the hardware frame and so free here. Leaves \need
+   in r2, which .Lpsp_wild reports.
+   Falls through only when \need bytes fit between stack_lo and the PSP.
+
+   Exception entry stacks the hardware frame ABOVE the PSP with the PRE-exception
+   privilege, so on a chip with an MPU that half is refused and a kernel-aimed PSP faults
+   on entry before any handler runs. The block pushed BELOW that frame is written in
+   handler mode and is refused by nothing, so a PSP 32 bytes above a stack's base clears
+   the hardware check and still writes under the stack, where r10 and r11 land on the
+   neighbouring thread's stacked PC and xPSR.
+
+   \need covers the software push AND whatever kernel C then descends below it on this
+   same stack, per class, as armv6m_trap_stack.h derives it. The two sites pass DIFFERENT
+   figures because only the SVC slow path leaves handler mode and keeps running on the
+   thread's PSP. The figure comes out of the literal pool: a v6-M movs carries an imm8,
+   and the SVC figure is well past 255.
+
+   NO ALIGNMENT LEG. CCR.STKALIGN is Read-As-One on ARMv6-M (ARMv6-M ARM B3.2.8, D3.6.1),
+   so exception entry clears bit 2 of the banked SP before stacking the frame and r0 here
+   is an 8-byte-aligned frame base whatever the thread wrote to SP. Such a leg could
+   refuse nothing. */
+    .macro PSP_GUARD need
+    ldr     r2, =\need
+    ldr     r1, [r3, #F_CTX_STACK_LO]
+    cmp     r0, r1
+    blo     9f
+    subs    r1, r0, r1              /* the room REMAINING below the PSP: a bound written
+                                       as psp - need could wrap under stack_lo instead */
+    cmp     r1, r2
+    blo     9f
+    ldr     r1, [r3, #F_CTX_STACK_HI]
+    cmp     r0, r1
+    blo     8f                      /* a PSP above the stack would push into whatever
+                                       granted region carried the hardware frame */
+9:  b       .Lpsp_wild
+8:
+    .endm
 
 /* ------------------------------------------------------------------------- */
     .thumb_func
@@ -32,16 +87,16 @@ PendSV_Handler:
     ldr     r2, =g_arch_current
     ldr     r3, [r2]                /* outgoing ctx* (0 => first start) */
 #if KICKOS_TELEMETRY
-    /* Spill the outgoing ctx* before the swap clobbers it; the tail emits from
-       this + the incoming ctx* it loads, never re-reading g_arch_next. r2 is
-       pushed only to keep MSP 8-byte aligned across the later bl. */
+    /* The tail emits from this spill and the incoming ctx* it loads, never from a
+       re-read of g_arch_next. r2 keeps MSP 8-byte aligned across the later bl. */
     push    {r2, r3}
 #endif
     cmp     r3, #0
     beq     1f
     /* --- save outgoing --- */
     mrs     r0, psp
-    subs    r0, #32                 /* room for r4-r11 */
+    PSP_GUARD KICKOS_ARMV6M_TRAP_NEED_PENDSV
+    subs    r0, #F_TRAP_FRAME       /* room for r4-r11 */
     str     r0, [r3]                /* outgoing->sp = base */
     stmia   r0!, {r4-r7}            /* [base..+12] = r4-r7 */
     mov     r4, r8
@@ -55,12 +110,12 @@ PendSV_Handler:
     str     r0, [r3, #4]            /* outgoing->npriv */
 1:
     /* g_arch_next and the deferred MPU stash are ONE pair, written together under the
-       kernel lock; PendSV must consume them as one. A device IRQ preempting between the
-       two (every v6-M device line sits at reset priority 0, above PendSV) reschedules
-       and replaces BOTH, so an unmasked PendSV can restore one thread's PSP and then
-       program the other thread's regions -> the resumed thread faults on its own stack.
-       PRIMASK masks PendSV itself, so entry here implies PRIMASK==0 and the cpsie below
-       restores the entry state exactly. */
+       kernel lock, and PendSV must consume them as one. A device IRQ preempting between
+       the two (every v6-M device line sits at reset priority 0, above PendSV)
+       reschedules and replaces BOTH, so an unmasked PendSV can restore one thread's PSP
+       and then program the other thread's regions, and the resumed thread faults on its
+       own stack. PRIMASK masks PendSV itself, so entry here implies PRIMASK==0 and the
+       cpsie below restores the entry state exactly. */
     cpsid   i
     ldr     r2, =g_arch_current
     ldr     r1, =g_arch_next
@@ -84,39 +139,72 @@ PendSV_Handler:
     msr     control, r2
     isb
 #if KICKOS_TELEMETRY
-    /* SWITCH completion hook, BEFORE the EXC_RETURN reconstruction: lr is
-       clobbered by the bl but rebuilt (0xFFFFFFFD) right after, so it needs no
-       save. r1 = incoming ctx* (loaded above); the popped r3 = outgoing ctx*.
-       trace_tid @ offset 12; from = 0xFFFF on the first switch. */
+    /* SWITCH completion hook. lr is clobbered by the bl and rebuilt (0xFFFFFFFD) right
+       after, so it needs no save. from = 0xFFFF on the first switch. */
     pop     {r2, r3}                /* r3 = outgoing ctx* (r2 = alignment pad) */
-    ldr     r1, [r1, #12]           /* r1 = to_tid (incoming.trace_tid) */
+    ldr     r1, [r1, #F_CTX_TRACE_TID] /* r1 = to_tid (incoming.trace_tid) */
     ldr     r0, =0xFFFF             /* default from = no-thread */
     cmp     r3, #0
     beq     4f
-    ldr     r0, [r3, #12]           /* from_tid = outgoing.trace_tid */
+    ldr     r0, [r3, #F_CTX_TRACE_TID] /* from_tid = outgoing.trace_tid */
 4:
     bl      kickos_trace_switch_done /* (r0=from_tid, r1=to_tid) */
 #endif
-    /* Deferred MPU commit: must run after the physical PSP/register swap (shared
-       seam, arch_arm_common.cc). r4-r11 are callee-saved across this call;
-       r0-r3/r12 are reloaded from the HW frame on exception return; lr is rebuilt
-       right below. */
+    /* Deferred MPU commit: must run after the physical PSP/register swap (shared seam,
+       arch_arm_common.cc). r4-r11 are callee-saved across the call, r0-r3/r12 are
+       reloaded from the HW frame on exception return, and lr is rebuilt right below. */
     bl      kickos_arch_mpu_commit
     cpsie   i                       /* pair consumed; never resume a thread masked */
     ldr     r0, =0xFFFFFFFD         /* EXC_RETURN: thread mode, PSP */
     mov     lr, r0
     bx      lr
 
+/* The PSP has no room for the software block. stack_lo is read before r3 is overwritten
+   with stack_hi. Never returns, so r4 is free to carry the target: a v6-M ldr literal
+   cannot reach r12, and a plain b is a +-2 KB reach that --gc-sections can outrun. */
+/* A syscall with no current thread has no bounds to check, and the generic path below this
+   handler still writes through the PSP. Unreachable today: g_arch_current is the first-start
+   sentinel only until arch_start's first switch, and nothing traps before then. Reported
+   rather than argued, so a future caller that reaches it finds a refusal instead of an
+   unchecked store. The bounds go out as [0, 0), which the reporter's own upper-bound test
+   describes as an unseated pair. */
+.Lsvc_nothread:
+    ldr     r1, =KICKOS_ARMV6M_TRAP_NEED_SVC
+    movs    r2, #0
+    movs    r3, #0
+    ldr     r4, =kickos_armv6m_bad_psp
+    bx      r4                      /* (r0=PSP, r1=need, r2=0, r3=0) */
+
+.Lpsp_wild:
+    mov     r1, r2                  /* the figure THIS site asked for, which the guard left
+                                       in r2. A literal here would report the switcher's 32
+                                       for an SVC refusal that charged the whole extent. */
+    ldr     r2, [r3, #F_CTX_STACK_LO]
+    ldr     r3, [r3, #F_CTX_STACK_HI]
+    ldr     r4, =kickos_armv6m_bad_psp
+    bx      r4                      /* (r0=PSP, r1=need, r2=stack_lo, r3=stack_hi) */
+
 /* ------------------------------------------------------------------------- */
     .thumb_func
     .global SVC_Handler
 SVC_Handler:
     mrs     r0, psp
+    /* Guards BOTH exits from here, at the SVC figure, which is the larger of the two:
+       the fastpath below pushes the callee block through this PSP and returns in handler
+       mode, while the slow path exception-returns into svc_trampoline, which runs
+       PRIVILEGED IN THREAD MODE on this same PSP and calls syscall_dispatch below it.
+       The guard sits above the `cmp #56` that picks the arm, so it charges whichever
+       descends further. */
+    ldr     r3, =g_arch_current
+    ldr     r3, [r3]
+    cmp     r3, #0
+    beq     .Lsvc_nothread          /* out of line below, and it does not return */
+    PSP_GUARD KICKOS_ARMV6M_TRAP_NEED_SVC
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
-    /* THE SEAM. KOS_SYS_CALL_REG completes here, before the exception return that would
-       otherwise land in svc_trampoline and run the generic dispatch. The leaf decides
-       before it mutates, so a null return means nothing was committed and the
-       fall-through below is today's path exactly. */
+    /* THE SEAM. KOS_SYS_CALL_REG completes here, ahead of the exception return that
+       lands in svc_trampoline for the generic dispatch. The leaf decides before it
+       mutates, so a null return means nothing was committed and the fall-through below
+       carries the whole call. */
     ldr     r1, [r0]                /* the stacked r0 is the syscall number */
     cmp     r1, #56                 /* KOS_SYS_CALL_REG (sys/abi.h) */
     bne     .Lsvc_slow
@@ -141,14 +229,14 @@ SVC_Handler:
        (endpoint cap), args[2] = r6 (packed lengths), args[3..7] = r7-r11 (the payload).
        PSP is not moved, so a refusal below leaves the words as dead scratch under the
        thread's own stack pointer. */
-    subs    r0, #32
+    subs    r0, #F_TRAP_FRAME
     stmia   r0!, {r4-r7}
     mov     r4, r8
     mov     r5, r9
     mov     r6, r10
     mov     r7, r11
     stmia   r0!, {r4-r7}
-    subs    r0, #32                 /* r0 = the block base = args */
+    subs    r0, #F_TRAP_FRAME       /* r0 = the block base = args */
     push    {r0, lr}                /* the frame base and EXC_RETURN, across the bl */
     bl      kickos_ipc_fastpath
     pop     {r1, r2}
@@ -158,9 +246,9 @@ SVC_Handler:
     /* Taken. r0 = the incoming thread's arch_context*, r1 = the outgoing block base. The
        stacked PC already points past the SVC, so the caller's resume is a plain exception
        return and the switch that resumes it seats the result (sched.cc switch_book).
-       The physical swap and the region commit are ONE pair, exactly as in the PendSV
-       epilogue: an interrupt between them would resume a thread under another thread's
-       regions. PRIMASK was 0 at entry (refused otherwise), so the cpsie below restores it. */
+       The physical swap and the region commit are ONE pair: an interrupt between them
+       would resume a thread under another thread's regions. PRIMASK was 0 at entry, so
+       the cpsie below restores it. */
     ldr     r2, =g_arch_current
     ldr     r3, [r2]                /* outgoing ctx* (the caller) */
     str     r1, [r3]                /* outgoing->sp = this block */
@@ -190,17 +278,17 @@ SVC_Handler:
     msr     control, r2
     isb
 #if KICKOS_TELEMETRY
-    /* SWITCH completion hook, as in the PendSV epilogue: a physically swapped pair that
-       emitted nothing would break the decoder's from == previous.to continuity check. The
-       outgoing ctx* is never 0 here, so there is no first-switch case to default. lr is
-       clobbered by the bl but rebuilt below. */
+    /* SWITCH completion hook: a physically swapped pair that emitted nothing would break
+       the decoder's from == previous.to continuity check. The outgoing ctx* is always
+       live here, so from_tid is read unconditionally. lr is clobbered by the bl and
+       rebuilt below. */
     pop     {r2, r3}                /* r3 = outgoing ctx* */
-    ldr     r1, [r0, #12]           /* to_tid (incoming.trace_tid) */
-    ldr     r0, [r3, #12]           /* from_tid */
+    ldr     r1, [r0, #F_CTX_TRACE_TID] /* to_tid (incoming.trace_tid) */
+    ldr     r0, [r3, #F_CTX_TRACE_TID] /* from_tid */
     bl      kickos_trace_switch_done
 #endif
-    /* Deferred MPU commit for the incoming thread, the same seam and the same reason as
-       the PendSV epilogue: the physical swap is done and the mask is still up. */
+    /* Deferred MPU commit for the incoming thread: the physical swap is done and the
+       mask is still up. */
     bl      kickos_arch_mpu_commit
     cpsie   i                       /* the pair is consumed */
     ldr     r0, =0xFFFFFFFD         /* EXC_RETURN: thread mode, PSP */
@@ -318,9 +406,9 @@ arch_syscall_reg:
     mov     r11, r3
     ldr     r0, [r0]                /* nr */
     /* The two outcomes land at two different addresses, and nothing may run between the
-       SVC and the declined one: svc_trampoline exits to the STACKED LR, not past the SVC,
-       so a wrapper cannot resume in line the way the RISC-V trampoline lets it. The taken
-       path restores the hardware frame and so resumes at the SVC's own return address. */
+       SVC and the declined one: svc_trampoline exits to the STACKED LR, so the declined
+       arm resumes at whatever LR holds here. The taken path restores the hardware frame
+       and resumes at the SVC's own return address. */
     ldr     r1, =.Lreg_declined
     adds    r1, #1                  /* the trampoline exits with bx: Thumb bit required */
     mov     lr, r1

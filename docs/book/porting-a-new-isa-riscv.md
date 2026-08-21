@@ -53,7 +53,10 @@ full register context** onto the running thread's own stack, then demux:
 
 ```
 trap_entry:            # arch/riscv/rv32imac/switch.S
-    addi sp, sp, -128  # carve a frame on the interrupted thread's stack
+    csrrw sp, mscratch, sp   # swap to a trusted per-hart trap stack
+    ...                      # from U-mode: bounds-check the interrupted sp,
+                             # adopt it when valid, else route to the reporter
+    addi sp, sp, -128  # carve a frame on the (validated) thread stack
     sw   ra, ...(sp)   # save every GPR (except x0, sp, gp, tp) ...
     csrr t0, mepc      # ... plus the return PC ...
     csrr t0, mstatus   # ... and the status word
@@ -63,12 +66,21 @@ trap_entry:            # arch/riscv/rv32imac/switch.S
 
 Two subtleties worth pausing on. First, **`gp` and `tp` are not saved.** The
 global pointer is a link-time constant shared by every thread; the thread pointer
-is unused (no thread-local storage). Saving invariants wastes cycles -- a small
-lesson in knowing your ABI. Second, **the handler runs on the interrupted
-thread's stack**, not a separate interrupt stack. This is a choice (RISC-V
-provides `mscratch` to swap in a dedicated stack); the simpler route works here
-because the thread stacks are sized with headroom, exactly as the RX port saves
-onto the user stack.
+is unused (no thread-local storage). Saving invariants wastes cycles, a small
+lesson in knowing your ABI. Second, **the frame lands on the interrupted
+thread's own stack, but the prologue does not trust that stack blindly.** A
+U-mode thread owns `sp` and can aim it at kernel memory, and the software
+prologue runs in M-mode, which bypasses the unlocked PMP entries, so storing
+through an unchecked `sp` would be a fully controlled kernel write. `mscratch`
+holds a trusted per-hart trap stack: `trap_entry` swaps onto it first, so nothing
+has been stored anywhere while it decides, and it adopts the interrupted `sp`
+only if that `sp` is aligned, lies inside the running thread's own stack, and has
+room *remaining* below it for the frame plus the deepest kernel descent this trap
+can reach. An M-mode trap keeps its already-trusted `sp`; a U-mode `sp` that
+fails any leg is routed to the fault reporter with nothing written through it.
+Chapter 7.7,
+[*Whoever stacks the trap frame owns the bounds check*](whoever-stacks-the-trap-frame-owns-the-bounds-check.md),
+works through why each leg is needed and how the four backends differ.
 
 ## 3. The single-frame deferred switch (the heart of it)
 

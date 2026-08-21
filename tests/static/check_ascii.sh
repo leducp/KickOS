@@ -8,21 +8,18 @@
 #   tests/static/check_ascii.sh
 #
 #   corpus   EVERY tracked file, from `git ls-files`, with no extension filter of any
-#            kind, so the next .svg, .rst or .csv is covered on the day it lands. The two
-#            exempt PATTERNS are named in exempt() below with the reason each carries, and
-#            every file they match is printed by name on every run.
+#            kind, so the next .svg, .rst or .csv is covered on the day it lands. exempt()
+#            below carries the two exempt patterns and the reason each holds; every file
+#            they match is printed by name on every run.
 #
 #   binary   a tracked file holding a NUL byte is not text, and "ASCII only" states nothing
 #            about it, so this gate REFUSES it by name rather than skipping it. Refused AND
 #            STILL SCANNED: `grep -a` reads it either way, so no byte report is suppressed.
 #
-# THEREFORE NOT CAUGHT. Know these before trusting a green run:
-#   - an ASCII spelling that is WRONG rather than non-ASCII: an HTML entity for a dash,
-#     `(c)` where a real copyright sign was meant. The rule is about the byte.
-#   - an untracked file. That is deliberate and it is how every gate here works.
-#   - a control character below 0x20 other than NUL. It is ASCII; style.md's "no CRLF,
-#     no trailing whitespace" rules are a separate, currently ungated concern.
-#   - any byte inside a file exempt() matches, whether that file is dirty today or not.
+# The rule is about the BYTE, so the verdict covers bytes above 0x7F and NUL, and nothing
+# else: an ASCII spelling that is merely WRONG passes (an HTML entity for a dash, `(c)`
+# where a real copyright sign was meant), and a control character below 0x20 is ASCII,
+# belonging to style.md's separate no-CRLF and no-trailing-whitespace rules.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -45,6 +42,7 @@ command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be buil
 #       regenerable, so rewriting a byte inside one falsifies it, NULs off the wire included.
 #       Scoped to the `_meas.md` captures, not to docs/archive/ wholesale: the directory
 #       also holds ordinary prose (docs/archive/M1_state.md), scanned like any other file.
+#
 exempt() {
     case "$1" in
         LICENSE)                 return 0 ;;
@@ -58,9 +56,9 @@ scratch_dir
 git ls-files > "$TMP/all" || fail "git ls-files failed"
 require_nonempty "$TMP/all" "git ls-files matched nothing; every check below would pass vacuously"
 
-# Built with printf because a literal 0x80..0xFF range cannot be typed into this file: the
-# file is itself part of the corpus above. Proven both ways every run, because a shell that
-# left the escapes unexpanded and a locale other than C each break the range silently.
+# Built with printf: a literal 0x80..0xFF range cannot be typed into this file, which is
+# itself part of the corpus above. Proven both ways every run, because a shell that left
+# the escapes unexpanded and a locale other than C each break the range silently.
 HIGH="$(printf '[\200-\377]')"
 printf 'caf\351\n' | LC_ALL=C grep -q "$HIGH" \
     || fail "the high-byte class matches no high byte; the scan below would report clean on anything"
@@ -80,20 +78,18 @@ while IFS= read -r f; do
         continue
     fi
     N=$((N + 1))
-    # grep cannot carry a NUL in its pattern, so this is a `tr -d` compare instead: an
-    # unequal compare means a NUL was deleted.
+    # grep cannot carry a NUL in its pattern, so an unequal `tr -d` compare is the test.
     if ! LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f"; then
         printf '%s\n' "$f" >> "$TMP/binary"
     fi
     # -a, because a file grep decides is "binary" gets ONE summary line and no matches.
-    # The file name is prefixed by hand so a one-file invocation cannot differ in shape
-    # from a many-file one.
+    # The name is prefixed by hand, so a one-file invocation reports in the same shape as
+    # a many-file one.
     LC_ALL=C grep -an "$HIGH" "$f" | awk -v F="$f" '{ print F ":" $0 }' >> "$TMP/findings"
 done < "$TMP/all"
 
 echo "== checked $N tracked file(s), every byte of each =="
 
-# Printed on every run, green or red.
 if [ -s "$TMP/exempt" ]; then
     echo "== not scanned, exempt by name (see exempt() for the reason each carries) =="
     sed 's/^/   /' "$TMP/exempt"
@@ -102,8 +98,8 @@ fi
 RC=0
 
 if [ -s "$TMP/findings" ]; then
-    # cat -v, or the report re-emits the very bytes it is complaining about and the terminal
-    # renders them as the thing that looked fine to whoever committed them.
+    # cat -v, or the report re-emits the bytes it complains about and the terminal renders
+    # them as whatever looked fine to whoever committed them.
     cat -v "$TMP/findings" >&2
     echo "" >&2
     echo "per-file finding count:" >&2

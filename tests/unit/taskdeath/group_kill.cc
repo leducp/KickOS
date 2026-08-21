@@ -49,8 +49,7 @@ namespace kickos
             constexpr uint8_t PRIO_HIGH = 6;
         }
 
-        // The inert-by-default claim, and the reason the rule is safe for every spawn written
-        // before tasks existed: a thread alone in its task takes nobody with it.
+        // The inert-by-default claim: a thread alone in its task takes nobody with it.
         TEST_F(TaskDeath, a_lone_member_takes_nobody)
         {
             Task* const alone = task(0);
@@ -274,8 +273,8 @@ namespace kickos
             EXPECT_NE(waiter->state, ThreadState::BLOCKED) << "and it is runnable again";
         }
 
-        // The other half, and the mutant it kills is a wake keyed on the death rather than on
-        // the emptying: a member leaving a group that still holds peers wakes nobody, or
+        // The other half: the wake is keyed on the EMPTYING, not on a death, so a member
+        // leaving a group that still holds peers wakes nobody. Keyed on the death,
         // kos_task_slay would answer "empty" with members still alive.
         TEST_F(TaskDeath, a_death_that_leaves_peers_wakes_no_group_waiter)
         {

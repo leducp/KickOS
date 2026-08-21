@@ -45,25 +45,25 @@
 #                real tracked directory. That is what keeps `/dev/ttyUSB0`,
 #                `build/...`, `.session/logs/...` and register groups out.
 #
-# THEREFORE NOT CAUGHT. Know these before trusting a green run:
-#   - the `:N` in `path:N` is STRIPPED, never verified. The corpus carries ~270 such
-#     citations and they rot silently and badly: a citation into the syscall enum of
-#     user/include/kickos/sys/abi.h keeps resolving after the enum has moved down the
-#     file, and lands on unrelated prose. Verifying a line number needs the doc to say
-#     WHAT it expects to find there; nothing here can. Do not pin this example to a
-#     line, which rotted once already by being the thing it warns about.
-#   - a directory reference with NO trailing slash (`kernel/domain`), because it is
-#     shape-identical to the prose alternations this corpus uses constantly
-#     (`kernel/app` split, `user/kernel` boundary, `arch/chip` seam). Write directory
-#     references with a trailing slash and they get checked.
-#   - a single-component reference (`M1_state.md` naked in a root-level doc), because
-#     the corpus also says `main.cc` and `switch.S` as bare shorthand for a dozen files.
-#   - names inside fenced code; `<kickos/sys/x.h>` include-form references; anything
-#     spelled with a glob or a <placeholder>; paths whose first component is not a
-#     tracked top-level entry (`esp32c6/mpu.cmake`).
-#   - lowercase wrapper names (`kos_send`, `arch_mpu_apply`): out of the named families.
-#   - a name that survives ONLY in a stale source comment still resolves, so this gate
-#     catches a DELETED symbol, not a half-completed rename.
+# What a green run states:
+#   - the PATH resolves; the `:N` in `path:N` is stripped, never verified. A citation into
+#     the syscall enum of user/include/kickos/sys/abi.h keeps resolving after the enum has
+#     moved down the file, and lands on unrelated prose. Verifying a line number needs the
+#     doc to say WHAT it expects to find there. Do not pin this example to a line.
+#   - a directory reference is checked when it carries a TRAILING SLASH. Without one it is
+#     shape-identical to the prose alternations this corpus uses constantly (`kernel/app`
+#     split, `user/kernel` boundary, `arch/chip` seam), so it is left alone.
+#   - a reference needs two components: the corpus says `main.cc` and `switch.S` as bare
+#     shorthand for a dozen files, so a lone `M1_state.md` is prose here.
+#   - the scan reads unfenced prose, plain path shapes and the four named identifier
+#     families. Fenced code, `<kickos/sys/x.h>` include forms, globs and <placeholder>
+#     spellings, a first component that is not a tracked top-level entry
+#     (`esp32c6/mpu.cmake`), and lowercase wrapper names (`kos_send`, `arch_mpu_apply`)
+#     are all outside it.
+#   - the valid set comes from CODE with comments stripped, so a name kept alive only by a
+#     stale comment reads as dangling: a half-completed rename is caught, not just a
+#     deleted symbol. A file whose extension the stripper does not recognise is the one
+#     place a commented-out name still validates.
 #
 # NOTHING is exempt. If a clean run seems to need an exemption, that is a finding about
 # the corpus: a proposed name belongs in a fenced listing, and a claim about a name that
@@ -72,7 +72,6 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # NOT set -e: the point is to collect EVERY finding in one run, not to stop at the first.
-
 
 [ -d .git ] || [ -f .git ] || fail "must run from the repo root (no .git here)"
 command -v git >/dev/null 2>&1 || fail "git not found"
@@ -93,11 +92,9 @@ DOCS=$(wc -l < "$TMP/docs.txt" | tr -d ' ')
 # mask the very findings they describe.
 # docs/ is excluded for the same reason and it is NOT redundant with the *.md filter:
 # a DOCUMENT tracked under a non-markdown extension behaves as a source here, so every
-# name it records would stay valid to this gate forever after the build dropped it. An
-# audit ledger tracked as .html did exactly that and masked two knobs
-# (KICKOS_ROOT_PRIVILEGED, KICKOS_SERVICE_LIST_ROOT_MMIO). That file is gone, and this
-# exclusion is NOT: the next .html, .svg or .json committed under docs/ reopens it. The
-# corpus being CHECKED is unaffected: docs/*.md is still every bit of it.
+# name it records would stay valid to this gate forever after the build dropped it, and
+# the next .html, .svg or .json committed under docs/ would do exactly that. The corpus
+# being CHECKED is unaffected: docs/*.md is still every bit of it.
 git ls-files -z | tr '\0' '\n' | grep -v '\.md$' | grep -v '^docs/' | grep -v '^tests/static/check_doc_names\.sh$' > "$TMP/src.txt"
 [ -s "$TMP/src.txt" ] || fail "no tracked non-markdown sources: cannot build the valid identifier set"
 # The alphabet here MUST match the one the doc scan below uses, lowercase included:
@@ -109,19 +106,16 @@ git ls-files -z | tr '\0' '\n' | grep -v '\.md$' | grep -v '^docs/' | grep -v '^
 # substrings and a doc may drop the K from any KCAP_ name and pass. KCAP is listed
 # explicitly because with the boundary and without it here, those names match on neither
 # side and go unchecked.
-# Comments do not confer validity. A name mentioned only in prose is a name nothing
-# builds, and admitting it let a removed knob validate itself: a comment in
-# tools/bench/bench.sh named a deleted knob, and tracking that file would have made the
-# dead name valid in every doc. A green run cannot show this, because the masking is the
-# green.
+# Comments do not confer validity. A name mentioned only in prose is a name nothing builds,
+# and admitting one lets a removed knob validate itself in every doc. No run can show that
+# happening, because the masking IS the green.
 #
 # Type-aware, because the marker is not: `#` opens a comment in sh, CMake and Kconfig, and
 # opens the preprocessor in C where `#define` is the definition site. An unrecognised
-# extension passes through unstripped, which errs toward the old behaviour.
+# extension passes through unstripped.
 #
-# NOT CAUGHT: a name appearing only inside a shell string that contains `#` is stripped
-# with the comment and loses validity. A name used in dead code is code, not prose, and
-# still counts.
+# A `#` inside a shell string takes the rest of that line with it, so a name living only
+# there loses validity. A name in dead code is code, not prose, and still counts.
 # The program goes to a FILE and the harvest to a function, so the self-test below runs the
 # SAME scan the corpus does.
 cat > "$TMP/harvest.awk" <<'AWK'

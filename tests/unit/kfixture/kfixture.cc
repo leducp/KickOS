@@ -269,8 +269,8 @@ namespace kickos
             g_parked = 0;
             trace_reset();
 
-            // The chunk free list and the published stdout target live in cap.cc's own
-            // constinit state, which the Kernel assignment above does not reach.
+            // cap.cc's own constinit state, which the Kernel re-construction above does not
+            // reach; kfixture.h note 4 has what it costs an arm.
             cap_slab_init();
             cap_console_reset();
             // Every dispatch slot back to the null-object default. The Kernel assignment
@@ -375,8 +375,8 @@ namespace kickos
             ep->send_waiters.push_back(&w->link);
         }
 
-        // The held_list link is restated here: held_push is TU-local to sync.cc. The sweep's
-        // own held_remove is what unlinks it.
+        // held_push is TU-local to sync.cc, so the held_list link is made by hand; the
+        // sweep's own held_remove unlinks it.
         Mutex* own_mutex(Thread* owner, int* out_handle)
         {
             int const i = kernel().mutexes.alloc();

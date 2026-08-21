@@ -5,17 +5,15 @@
 #   . "$(dirname "$0")/../lib/gate.sh"
 # POSIX sh (dash-clean), because /bin/sh is dash on the CI images.
 
-# The reporters' literal dump markers, as one ERE: kpanic (which KICKOS_UNREACHABLE routes
-# through), the armv7m/armv6m/sim/riscv fault reporters, kickos_isr_fault, the K64F SYSMPU
-# hook. Case-sensitive and anchored on the banner shape, because a substring match on
-# "fault" also hits "EFAULT" and "default" in benign output.
+# Every reporter's literal dump marker, as one ERE. Case-sensitive and anchored on the
+# banner shape, because a substring match on "fault" also hits "EFAULT" and "default" in
+# benign output.
 #
-# It lives in tests/lib/panic.ere, ONE line, read by both consumers: this file and the root
-# CMakeLists, which registers it as a ctest FAIL_REGULAR_EXPRESSION. A plain data file is
-# readable by both languages without either parsing the other.
-# Every caller lives one level below tests/ and sources this file as ../lib/gate.sh, so the
-# data file sits beside it. Read once, and REFUSE an empty result: an empty ERE matches
-# nothing, so every panic gate in the suite would silently stop failing.
+# It lives in tests/lib/panic.ere, ONE line, and has two consumers: this file and the root
+# CMakeLists, which registers it as a ctest FAIL_REGULAR_EXPRESSION. Every caller lives one
+# level below tests/ and sources this file as ../lib/gate.sh, so the data file sits beside
+# it. Read once, and REFUSE an empty result: an empty ERE matches nothing, so every panic
+# gate in the suite would silently stop failing.
 KOS_PANIC_RE="$(cat "$(dirname "$0")/../lib/panic.ere")"
 if [ -z "$KOS_PANIC_RE" ]; then
     echo "FAIL: tests/lib/panic.ere is empty or unreadable; every panic gate would pass" >&2
@@ -25,10 +23,9 @@ fi
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # A literal tab, for `while IFS="$TAB" read -r ...` over tab-separated records. NOT $'\t':
-# that is a bashism, and dash does not expand it: it sets IFS to the three characters $ \ t,
-# so every field splits on those instead of on a tab. It reads as correct, `dash -n` passes it,
-# and a gate whose records mis-split goes VACUOUS rather than loud. /bin/sh is dash on the CI
-# images, so the failure lands there and not here.
+# that is a bashism, and dash sets IFS to the three characters $ \ t instead, so every field
+# splits on those. `dash -n` passes it and a gate whose records mis-split goes VACUOUS rather
+# than loud, so only a run under dash shows it.
 TAB="$(printf '\t')"
 
 # TMP: a fresh directory, removed on exit.
@@ -44,12 +41,11 @@ require_nonempty() {
     fi
 }
 
-# The same trap one level up: a binutils invocation that FAILED also produces nothing,
-# so every absence-assertion reading its output concludes "clean". Route every
-# invocation through here. The landmark is a positive control (a section, a symbol
-# shape) that a healthy run cannot lack, so a tool that merely emitted a banner is
-# caught too. Exits on the spot; a broken tool is not a result to accumulate. Does not
-# go through fail(), because a gate may legitimately redefine that to accumulate.
+# The same trap one level up: a binutils invocation that FAILED also produces nothing, so
+# every absence-assertion reading its output concludes "clean". Route every invocation
+# through here. The landmark is a positive control (a section, a symbol shape) that a healthy
+# run cannot lack, so a tool that merely emitted a banner is caught too. Exits on the spot,
+# and not through fail(), which a gate may legitimately redefine to accumulate.
 tool_out() { # <outfile> <landmark-ere, empty for success-only> <tool> <arg>...
     _o="$1"
     _mark="$2"
@@ -83,8 +79,8 @@ need_qemu() {
 }
 
 # For a gate that only ever runs under QEMU. kickos_add_qemu_test always exports
-# QEMU_MACHINE, so an unset one means the script was run bare; refusing beats the old
-# per-script mps2-an386 default, which silently targeted the wrong core.
+# QEMU_MACHINE, so an unset one means the script was run bare, and a per-script default
+# would silently target the wrong core.
 need_qemu_machine() {
     if [ -z "${QEMU_MACHINE:-}" ]; then
         fail "QEMU_MACHINE is unset; this gate boots on QEMU only"
@@ -168,10 +164,9 @@ assert_no_panic() {
     fi
 }
 
-# The faulting address the reporters recorded, as bare hex digits: armv7m's panic dump
-# prints MMFAR (MemManage) or BFAR (BusFault), the thread-kill dump prints whichever it
-# captured as ADDR, and the kernel-reported path (sim, RISC-V) names it in its MPU FAULT
-# line. All are printed only when the address is live, never stale.
+# The faulting address the reporters recorded, as bare hex digits, from whichever spelling
+# this backend uses. Every one of them is printed only when the address is live, so a match
+# is never a stale register.
 reported_fault_addr() {
     printf '%s\n' "$OUT" \
         | sed -n -e 's/.*MMFAR=0x\([0-9a-fA-F]*\).*/\1/p' \

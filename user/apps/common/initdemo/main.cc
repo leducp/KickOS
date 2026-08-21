@@ -3,10 +3,10 @@
 //
 // M4.3 per-thread stdout regression. Proves that a root pre-publish printf (whose
 // cap index 0 is empty, so its send fails) does NOT poison a post-publish worker
-// whose cap 0 IS seated to the console endpoint. The bug this guards was a sticky
-// process-wide probe in newlib_stubs.cc: once ANY thread's kos_send(0) failed, every
-// later _write skipped the endpoint and fell back to the debug console. The fix makes
-// _write self-classify per invocation against the CALLING thread's own cap 0.
+// whose cap 0 IS seated to the console endpoint. _write (user/src/newlib_stubs.cc)
+// self-classifies per invocation against the CALLING thread's own cap 0; a
+// process-wide probe would instead let root's one failed send divert every later
+// thread to the debug console.
 //
 // Console is DARK to an external observer after publish (stdout routes to the
 // software counting driver below, which never re-emits), so the verdict cannot ride
@@ -15,12 +15,8 @@
 // forwards that status via semihosting SYS_EXIT_EXTENDED (see chip_mps2.cc), and the
 // CTest gate reads QEMU's process exit code.
 //
-// PRE-fix: root's pre-publish printf pins the sticky probe dead, the worker's bytes
-// bypass the endpoint (kconsole -> dropped), driver count == 0, main returns 1.
-// POST-fix: the worker's cap 0 is used, driver count == PAYLOAD_LEN, main returns 0.
-//
 // qemu (mps2) is a NON-enforcement board, so all threads share one address space and
-// the globals below are a legitimate cross-thread channel (no grant needed).
+// the globals below are a legitimate cross-thread channel.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -37,8 +33,8 @@ namespace
     constexpr uint8_t DRIVER_PRIO = 12; // >= WORKER_PRIO (D9: rendezvous has no PI)
     constexpr uint8_t WORKER_PRIO = 10;
 
-    // The worker's fixed payload. Byte count is known at compile time; the driver
-    // must receive exactly this many bytes over the endpoint.
+    // Byte count is known at compile time: the driver must receive exactly this many
+    // bytes over the endpoint.
     constexpr char WORKER_PAYLOAD[] =
         "[worker] initdemo payload line 1\n"
         "[worker] initdemo payload line 2\n"
@@ -46,15 +42,14 @@ namespace
     constexpr size_t PAYLOAD_LEN = sizeof(WORKER_PAYLOAD) - 1;
 
     // Cross-thread channel (shared address space on this non-enforcement board).
-    // g_driver_bytes: total bytes the counting driver pulled off the endpoint.
-    // g_worker_done: set by the worker after its final fflush, before it exits.
+    // g_worker_done is set after the worker's final fflush, before it exits.
     Atomic<int32_t, Order::RELAXED> g_driver_bytes{0};
     Atomic<int, Order::RELAXED> g_worker_done{0};
 
-    // Software console driver: a no-hardware sink. Recv on the delegated endpoint cap
-    // (B1: first delegated cap lands at child table index 1) and count bytes. It never
-    // prints (a printf would self-send to the very endpoint it serves and deadlock).
-    // Exits on a negative recv (dead endpoint); otherwise parks in recv until shutdown.
+    // A no-hardware sink: counts the bytes it receives on the delegated endpoint cap
+    // (B1: first delegated cap lands at child table index 1). It never prints, because a
+    // printf would self-send to the very endpoint it serves and deadlock. A negative recv
+    // (dead endpoint) ends it; otherwise it parks in recv until shutdown.
     void console_sink(void*)
     {
         int const ep = KOS_SPAWN_DELEGATED_CAP0;
@@ -75,7 +70,7 @@ namespace
 
     // Post-publish worker: an ordinary app that just prints. Its cap 0 was seated to
     // the published endpoint by cap_install_defaults at spawn, so _write self-sends
-    // there -> the sink counts the bytes. Prints the fixed payload, flushes, signals.
+    // there and the sink counts the bytes.
     void worker(void*)
     {
         fwrite(WORKER_PAYLOAD, 1, PAYLOAD_LEN, stdout);
@@ -85,15 +80,12 @@ namespace
     }
 }
 
-// Publishes a console from root (this app IS the handover demo), spawns a worker, and
-// returns.
 KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_CONSOLE);
 
 int main(int, char**)
 {
-    // The poison write: root's cap 0 is EMPTY (root predates any publish), so this
-    // send fails and falls back to the debug console. With the old sticky probe this
-    // pinned the process route dead for every later thread. Must run BEFORE publish.
+    // The poison write: root's cap 0 is EMPTY (root predates any publish), so this send
+    // fails and falls back to the debug console. Must run BEFORE publish.
     printf("[init] pre-publish\n");
     fflush(stdout);
 
@@ -139,7 +131,7 @@ int main(int, char**)
 
     // Bounded wait for the worker to finish, then a bounded settle so the sink has
     // counted its last batch (the sink's count += n runs just after each rendezvous
-    // returns to the worker). No hang: every wait is capped.
+    // returns to the worker).
     for (int i = 0; i < 200; i++)
     {
         if (g_worker_done != 0)
@@ -157,7 +149,6 @@ int main(int, char**)
         kos_sleep_ns(10000000ull);
     }
 
-    // Verdict rides the exit status. Console is dark, so this is the only signal.
     int rc = 1;
     if (g_driver_bytes == static_cast<int32_t>(PAYLOAD_LEN))
     {

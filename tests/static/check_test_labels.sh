@@ -12,9 +12,7 @@
 #     of a back-to-back run. An image test wrongly labelled `host` joins the batch and
 #     survives the knob meant to skip it.
 #
-# Usage:
-#   check_test_labels.sh <ctest> <cmake> <build-dir> <src-dir> <declined:yes|no> <complete:yes|no>
-# <declined> is `yes` when KICKOS_BUILD_INTEGRATION_TESTS is OFF; it is what makes the
+# <declined> is `yes` when KICKOS_BUILD_INTEGRATION_TESTS is OFF, which is what makes the
 # DISABLED leg decidable. <complete> is `yes` on a tree that registers every build-rooted
 # program declared, and only there does "no test runs it" mean the declaration is dead
 # rather than that this board does not build it.
@@ -24,21 +22,17 @@
 # the program it runs and REFUSES an entry whose program is undeclared, so a new test forces
 # an explicit choice rather than inheriting one.
 #
-# THEREFORE NOT CAUGHT. Know these before trusting a green run:
-#   - a program declared with the WRONG class is ratified, not questioned. This pins the
-#     declaration against the labels; a human pins the declaration against the script.
-#   - a declaration no board registers any more is dead. Its `src` half rots visibly on
-#     every board (the file check below). Its `build` half is swept only when <complete>
-#     is yes, so a fleet whose runs are all <complete> no checks that half NOWHERE and the
-#     rot returns silently. One board's run still cannot see the fleet's union: on a
-#     <complete> no tree an unrun build declaration is indistinguishable from a program
-#     the board legitimately does not build, and nothing is asserted about it.
-#   - a gate that reads a clock WITHOUT running an image would be `host` here and still
-#     unbatchable. None exists today.
+# SCOPE. This pins the DECLARATION against the labels, so a program declared with the wrong
+# class is ratified; pinning a declaration against the script it names is a human's job.
+# A `src` declaration is also pinned to its file and rots visibly on every board. A `build`
+# declaration is swept only where <complete> is yes: on a <complete> no tree an unrun build
+# declaration reads the same as a program the board legitimately does not build, so a fleet
+# whose runs are all <complete> no sweeps that half nowhere. A gate that reads a clock
+# WITHOUT running an image is `host` here and still unbatchable.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
-# NOT set -e: the point is to collect EVERY finding in one run, not to stop at the first.
+# Findings accumulate over the whole suite, so set -e must stay off.
 
 if [ "$#" -ne 6 ]; then
     fail "usage: check_test_labels.sh <ctest> <cmake> <build-dir> <src-dir> <declined:yes|no> <complete:yes|no>"

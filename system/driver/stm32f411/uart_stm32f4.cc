@@ -5,15 +5,15 @@
 // RM0383 Rev 4 sec.19; no vendor HAL/CMSIS source.
 //
 // The instance base arrives in the cfg, so this one body serves any USART on the part; the
-// console channel is USART2 and is the only one a service list grants today.
+// console channel is USART2, the only one a service list grants.
 //
-// Clock gating is not this backend's job: RCC_APB1ENR (RM0383 sec.6.3.11) is an
-// arch_reserved_blocks entry no domain can be granted, and arch_init has already gated the
-// console channel before open() runs. APB1 also has no bus-side supervisor-protect register
-// for this seam to drop, so a granted window is live the moment it is granted.
+// Clock gating belongs to the kernel: RCC_APB1ENR (RM0383 sec.6.3.11) is an
+// arch_reserved_blocks entry no domain can be granted, and arch_init has already clocked the
+// console channel before open() runs. APB1 carries no bus-side supervisor-protect register,
+// so a granted window is live the moment it is granted.
 //
-// THE PIN MUX IS NOT REACHABLE FROM HERE EITHER: PA2/PA3 sit in GPIOA, outside this window,
-// and arch_pinmux_set refuses both as kernel-owned.
+// THE PIN MUX LIVES IN GPIOA, OUTSIDE THIS WINDOW: PA2/PA3 are the console channel's pins,
+// and arch_pinmux_set holds both as kernel-owned.
 //
 // ORE (SR bit 3) is the trap on this part: a bare DR read clears RXNE but NOT ORE, and with
 // RXNEIE armed a stuck ORE holds the single USART vector asserted forever. Every error latch
@@ -53,8 +53,8 @@ namespace
     }
 
     // M=0 is an 8-bit frame TOTAL: an enabled parity bit REPLACES the eighth data bit
-    // (RM0383 sec.19.3.7 Table 85). 8 data bits plus parity is the 9-bit frame (M=1), and
-    // 7-bit-no-parity has no encoding on this part.
+    // (RM0383 sec.19.3.7 Table 85), so 8 data bits plus parity is the 9-bit frame (M=1). The
+    // encodable set is 8N, 7E/7O and 8E/8O.
     bool encode_frame(struct kos_uart_config const* cfg, uint32_t* out_cr1, uint32_t* out_cr2)
     {
         if (cfg->stop_bits != 1u and cfg->stop_bits != 2u)
@@ -118,7 +118,12 @@ namespace
         {
             return -KOS_ENOTSUP; // USARTDIV below 1 is not a rate (RM0383 sec.19.3.4)
         }
-        return static_cast<int32_t>(clk / brr);
+        uint32_t const rate = clk / brr;
+        if (rate == 0u)
+        {
+            return -KOS_ENOTSUP; // the class contract admits no rate of 0
+        }
+        return static_cast<int32_t>(rate);
     }
 }
 
@@ -143,14 +148,20 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     u->stats = cfg->stats;
 
     // A divisor or frame change with a byte still in the shifter corrupts it on the wire,
-    // and TC is what says the shifter is idle (RM0383 sec.19.3.2). Bounded: a channel that
-    // never completes costs a truncated first frame, not the bring-up.
+    // and TC is what says the shifter is idle (RM0383 sec.19.3.2).
+    bool drained = false;
     for (uint32_t i = 0; i < POLL_MAX; i++)
     {
         if (tx_idle(u->base))
         {
+            drained = true;
             break;
         }
+    }
+    if (not drained)
+    {
+        // Nothing in the channel has been written yet, so this leaves it as it was found.
+        return -KOS_EBUSY;
     }
     r32(u->base + ru::CR1_OFFSET) = 0u; // UE=0: channel off, every source disarmed
 
@@ -174,7 +185,7 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
         }
         r32(u->base + ru::BRR_OFFSET) = brr;
     }
-    // baud == 0 keeps the divisor the kernel console left; BRR is not touched at all.
+    // baud == 0 keeps the divisor the kernel console left.
 
     // RXNEIE arms ORE as well as RXNE (RM0383 sec.19.6.4), which is what makes an overrun a
     // wake this driver can clear rather than a silently dead receiver.
@@ -249,11 +260,11 @@ uint32_t kos_uart_write(struct kos_uart* u, unsigned char const* src, uint32_t n
 {
     // PE ALONE among the receive latches is cleared by a read of SR followed by a read OR A
     // WRITE of DR (RM0383 sec.19.6.1), which is exactly the pair below, so a parity error
-    // latched between two service passes is lost to stats.rx_parity. Only the counter is
-    // lost: reception is unaffected, PEIE is never armed here, and the service route opens
-    // 8N1 so PCE is 0 and PE cannot set at all. A consumer that opens WITH parity must fold
-    // the SR read into this loop instead of calling usart_tx_ready. ORE, FE and NF are not
-    // exposed: their clear needs a DR READ, which a transmit is not.
+    // latched between two service passes is lost to stats.rx_parity. The counter is all that
+    // is lost: reception is unaffected, PEIE stays 0, and the service route opens 8N1, where
+    // PCE is 0 and PE cannot set at all. A consumer that opens WITH parity must fold the SR
+    // read into this loop instead of calling usart_tx_ready. ORE, FE and NF need a DR READ to
+    // clear, which a transmit is not, so they survive this loop.
     uint32_t i = 0;
     while (i < n)
     {

@@ -22,8 +22,8 @@ if len(sys.argv) < 3:
 image = os.path.abspath(sys.argv[1])
 kicktrace = os.path.abspath(sys.argv[2])
 qemu = os.environ.get("QEMU", "qemu-system-arm")
-# kickos_add_qemu_test always exports QEMU_MACHINE; an unset one means this was run
-# bare, and defaulting would silently target a different core.
+# kickos_add_qemu_test always exports QEMU_MACHINE, so an unset one means this was run bare
+# and a default would silently target a different core.
 machine = os.environ.get("QEMU_MACHINE")
 if not machine:
     sys.stderr.write("FAIL: QEMU_MACHINE is unset; this gate boots on QEMU only\n")

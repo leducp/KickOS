@@ -29,10 +29,8 @@
 #              command position also tolerates leading `NAME=value` assignments
 #              (`CDPATH= cd -- "$dir"`) and one leading `"${NAME[@]}"` array invocation
 #              (`"${SSH[@]}" bash -s -- "$@"`, the array holding the real command). The
-#              command list is SEP below, kept generous on purpose so a fresh exemption is
-#              not needed every month; a tool that takes `--` and is still not on it
-#              reports, and the fix is one word in that list, never a rewrite of working
-#              shell.
+#              command list is SEP below: a tool that takes `--` and is not on it reports,
+#              and the fix is one word in that list, never a rewrite of working shell.
 #
 #   quoted     a `--` inside a matched pair of backticks is the token being NAMED, not
 #              punctuation: a comment documenting `++ -- +=` is describing the decrement
@@ -47,17 +45,15 @@
 #              The scan REFUSES a file whose heredoc is never terminated: everything below
 #              it went unread, so its verdict is UNKNOWN and not clean.
 #
-# THEREFORE NOT CAUGHT. Know these before trusting a green run:
-#   - *.md. Documentation is prose and its 4000-odd dashes are a separate decision, not
-#     this rule; commit messages are not in the tree at all and no static gate can see one.
-#   - a line that carries BOTH a real separator and prose, or both a banner and prose after
-#     the banner's own trailing pair. The erase is per occurrence, but a prose pair sitting
-#     inside the command-word span an erase covers goes with it.
-#   - an em dash or an en dash spelled as such: that is check_ascii.sh's rule, and the byte
-#     is what it reads.
-#   - a `#`-to-end-of-line assembler comment in a *.S file is scanned like any other text,
-#     but a `--` there has never appeared; the file is read as bytes, not parsed.
-#   - an untracked file, and any extension outside the corpus above.
+# How far the rule above reaches:
+#   - the corpus is source, so *.md prose is a separate decision about its 4000-odd dashes,
+#     and a commit message is not in the tree for a static gate to read at all.
+#   - the erase is per occurrence, so a prose pair sitting inside the span an erase covers
+#     goes with it: a line carrying BOTH a real separator and prose, or a banner and prose
+#     after the banner's own trailing pair.
+#   - an em dash or an en dash spelled as such is check_ascii.sh's rule, which reads the byte.
+#   - every file is read as text and never parsed per language, an assembler `#` comment in
+#     a *.S file included.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -143,8 +139,7 @@ done < "$TMP/neg.sh"
 [ "$i" -eq 12 ] || fail "$i negative control(s) ran, expected 12"
 
 # The mutation the negatives exist to survive: turn each exemption OFF and the control must
-# then report, which is what proves the control was ever a near miss. Done by feeding the
-# scanner a rule with that one clause emptied.
+# then report, which is what proves the control was ever a near miss.
 mutate() { # <what> <run-ere> <sep-ere> <tick-ere> <expect-count>
     m="$(LC_ALL=C awk -v DASH="$DASH_ERE" -v RUN="$2" -v SEP="$3" -v TICK="$4" -v HEREDOC=0 \
             -f "$SCAN" "$TMP/neg.sh" | wc -l | tr -d ' ')"

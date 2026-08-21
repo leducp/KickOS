@@ -19,3 +19,14 @@ kickos_add_unit_test(NAME drv_bringup
           "${PROJECT_SOURCE_DIR}/user/src/driver_service.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include")
+
+# The shutdown side of the same console probe: the default init body's flush handshake
+# (system/init/common/default_init_run.cc), compiled in over its own fakes for the same
+# reason driver_service.cc is above: kickos_user carries the real syscall stubs.
+#
+# HOST-ONLY on the same mechanism as the gate above: init_flush.cc defines public kos_* names.
+kickos_add_unit_test(NAME init_flush
+  SOURCES init_flush.cc
+          "${PROJECT_SOURCE_DIR}/system/init/common/default_init_run.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_BINARY_DIR}/generated/include")

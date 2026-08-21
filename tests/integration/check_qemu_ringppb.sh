@@ -5,18 +5,16 @@
 # QEMU PRIVILEGE-RING gate, fault arm: boot the `ringppb` image and assert that an
 # unprivileged read of the privileged-only PPB (SCB->CPUID) TRAPS.
 #
-# Unlike check_rootfault.sh this is registered in both postures, because the
-# refusal is not the MPU's: ValidateAddress() takes the default system address map for any
-# PPB access before consulting MPU_CTRL.ENABLE (ARM DDI 0403E.e B3.5.1/B3.5.3). That is
-# what makes this the one confinement trap a no-MPU board can witness, so the app's own
-# "NOT confined" line is a failure marker in every posture.
+# Registered in BOTH postures, because the refusal is not the MPU's: ValidateAddress() takes
+# the default system address map for any PPB access before consulting MPU_CTRL.ENABLE (ARM
+# DDI 0403E.e B3.5.1/B3.5.3). That makes this the one confinement trap a no-MPU board can
+# witness, so the app's own "NOT confined" line is a failure marker in every posture.
 #
-# <outcome> is the caller's, not this script's to sniff, and it is the same split
-# check_mpu_fault.sh and check_rootfault.sh take: what a detected violation DOES is a
-# property of the backend. The read happens in ROOT, which kmain spawns unprivileged in
-# every posture, so on an isolating backend the BusFault kills root instead of panicking.
-# Root is the only thread this image ever has, so exit_current ends the process either
-# way and both arms can wait for an exit.
+# What a detected violation DOES is a property of the backend, so <outcome> is passed in.
+# The read happens in ROOT, which kmain spawns unprivileged in every posture, so on an
+# isolating backend the BusFault kills root instead of panicking. Root is the only thread
+# this image ever has, so exit_current ends the process either way and both arms can wait
+# for an exit.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -60,11 +58,10 @@ case "$outcome" in
         ;;
 esac
 
-# Discriminate a genuine BUS fault from any other trap that also prints this banner. A
-# PPB permission failure sets a BFSR bit, and BFSR is CFSR[15:8]; without this check a
-# stray UsageFault or a stacking fault elsewhere would satisfy the banner grep above.
-# Both dumps print CFSR under that name, the thread-kill one because
-# arch_fault_redirect_to_exit captures it before clearing the sticky bits.
+# A PPB permission failure sets a BFSR bit, and BFSR is CFSR[15:8]. Without this a stray
+# UsageFault or a stacking fault elsewhere satisfies the banner grep above. Both dumps print
+# CFSR under that name, the thread-kill one because arch_fault_redirect_to_exit captures it
+# before clearing the sticky bits.
 cfsr="$(printf '%s\n' "$OUT" | sed -n 's/.*CFSR=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
 if [ -z "$cfsr" ]; then
     fail "fault dump carries no CFSR (KICKOS_PANIC_DUMP off?)"
@@ -73,16 +70,15 @@ if [ $(( (0x$cfsr >> 8) & 0xFF )) -eq 0 ]; then
     fail "CFSR=0x$cfsr has an empty BFSR byte: the trap was not a BusFault"
 fi
 
-# Pin the trap to the address the app actually probed. The address is printed only when
-# the CFSR VALID bit is set, so its presence already means it is live rather than stale;
-# requiring it to equal SCB->CPUID is what separates "the PPB refused THIS read" from any
-# other precise BusFault the image might have taken on the way here.
+# Pin the trap to the address the app probed. The address is printed only when the CFSR
+# VALID bit is set, so its presence means it is live; requiring it to equal SCB->CPUID is
+# what separates "the PPB refused THIS read" from any other precise BusFault on the way here.
 #
-# The claim is specifically that a BUS fault recorded it, so the panic dump's address is
-# read as BFAR by name rather than through reported_fault_addr(), which would also accept
-# an MMFAR. The thread-kill dump prints one address under the neutral name ADDR, and
-# arch_fault_redirect_to_exit takes MMFAR whenever MMARVALID is set and BFAR otherwise:
-# MMARVALID clear plus BFARVALID set is therefore the same claim, spelled in the CFSR.
+# The claim is that a BUS fault recorded it, so the panic dump's address is read as BFAR by
+# name rather than through reported_fault_addr(), which also accepts an MMFAR. The
+# thread-kill dump prints one address under the neutral name ADDR, and
+# arch_fault_redirect_to_exit takes MMFAR whenever MMARVALID is set and BFAR otherwise, so
+# MMARVALID clear plus BFARVALID set is the same claim spelled in the CFSR.
 if [ "$outcome" = "thread-kill" ]; then
     if [ $(( 0x$cfsr & 0x80 )) -ne 0 ]; then
         fail "CFSR=0x$cfsr has MMARVALID set: ADDR below is MMFAR, not the BusFault's"

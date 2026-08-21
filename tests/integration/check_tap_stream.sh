@@ -41,12 +41,12 @@ fi
 if ! echo "$out" | grep -q "# all tests passed"; then
     fail "TAP completion marker missing (crash / hang / truncated run?)"
 fi
-# THE SELFTEST NEVER FAULTS. The deliberate cross-domain fault is a separate binary
-# (faultsurvive), so a thread-fault record in this stream is an arm whose thread died the
-# wrong way, and thread-scoped isolation means it dies anyway, so every plan, case and
-# directive check above still reconciles and the run reads green. A slay redirect that
-# rebuilds an UNPRIVILEGED context faults the stub on its first kernel access, is caught
-# by kickos_fault_kill_thread, and reaches the same observable end state as a correct one.
+# THE SELFTEST NEVER FAULTS: the deliberate cross-domain fault lives in a separate binary
+# (faultsurvive). A thread-fault record here is an arm whose thread died the wrong way, and
+# thread-scoped isolation means the plan, case and directive checks above still reconcile and
+# read green, so only this clause can see it. A slay redirect that rebuilds an UNPRIVILEGED
+# context faults the stub on its first kernel access and reaches the same observable end
+# state as a correct one.
 if echo "$out" | grep -q "=== THREAD FAULT ==="; then
     echo "$out" | grep "=== THREAD FAULT ==="
     fail "a thread faulted during the suite: this stream's arms must never fault"
@@ -103,8 +103,8 @@ else
 fi
 
 # One directive class. The harness spells both as a passing case carrying a directive,
-# `ok <n> - <name> # <DIRECTIVE> <reason>`, plus a matching `# <label>: N` summary line;
-# parse and permission are identical, only the tokens differ. Sets N to the count.
+# `ok <n> - <name> # <DIRECTIVE> <reason>`, plus a matching `# <label>: N` summary line.
+# Sets N to the count.
 check_directive() { # <DIRECTIVE> <summary-label> <permitted names>
     _dir="$1"
     _label="$2"

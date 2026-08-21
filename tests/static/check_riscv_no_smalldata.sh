@@ -9,13 +9,12 @@
 # -msmall-data-limit=0 so they emit no .sdata/.sbss and their globals land in the
 # kernel-side .data/.bss instead. One stray KickOS global left in .sdata/.sbss would
 # sit in the app-granted window: a privilege-escalation vector (an unprivileged
-# thread could overwrite g_arch_current / g_clint_msip). This gate fails loud on any
-# such leak, per-archive, before it can ship.
+# thread could overwrite g_arch_current / g_clint_msip). The leak is reported per-archive.
 #
-# Section-level via objdump -h: with -msmall-data-limit=0 no KickOS object may carry
-# a .sdata/.sdata2/.sbss section. (nm is NOT used: this toolchain's nm reports .sdata
-# symbols with the same 'D'/'B' type as .data/.bss, so a symbol-type check would pass
-# vacuously. Verified: section headers are the reliable signal.)
+# Section-level via objdump -h: with -msmall-data-limit=0 no KickOS object may carry a
+# .sdata/.sdata2/.sbss section. The section table is the signal, since this toolchain's nm
+# reports .sdata symbols with the same 'D'/'B' type as .data/.bss and a symbol-type check
+# would pass vacuously.
 #
 # usage: check_riscv_no_smalldata.sh <objdump> <kernel.a> <arch.a> <chip.a> <lib.a>
 
@@ -33,13 +32,12 @@ scratch_dir
 leaks=""
 for A in "$@"; do
   [ -f "$A" ] || fail "archive not found: $A"
-  # Positive control: objdump reads a text file named *.a with a diagnostic and no
-  # section table at all, and the absence-assertion below would call that clean. Every
-  # KickOS archive carries code, so a run that saw no .text saw nothing.
+  # Positive control: objdump reads a text file named *.a with a diagnostic and no section
+  # table at all, which the absence-assertion below would call clean. Every KickOS archive
+  # carries code, so a run that saw no .text saw nothing.
   tool_out "$TMP/sect" '[[:space:]]\.text' "$OBJDUMP" -h "$A"
-  # objdump -h prints a section table per archive member. The section name is field 2
-  # on the numbered rows; match anything beginning .sdata (covers .sdata/.sdata.*/
-  # .sdata2*) or .sbss (covers .sbss/.sbss.*). ^\. anchors so .data/.bss never match.
+  # objdump -h prints a section table per archive member, with the section name in field 2
+  # on the numbered rows. ^\. anchors the prefix so .data/.bss never match.
   hits="$(awk '$2 ~ /^\.sdata/ || $2 ~ /^\.sbss/ { print $2 }' "$TMP/sect" | sort -u)"
   if [ -n "$hits" ]; then
     leaks="$leaks

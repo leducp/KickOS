@@ -1,17 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Storage + allocation-policy gate for the capability table's two code paths
-// (kernel/include/kickos/cap.h): the segmented chunk directory, the all-or-nothing chunk
-// reservation, and the run's free-slot list.
+// Storage + allocation-policy gate for the capability table (kernel/include/kickos/cap.h):
+// the segmented chunk directory, the all-or-nothing chunk reservation, and the run's
+// free-slot list.
 //
-// Host-only of necessity, twice over. The chunk geometry is chosen by an #if on the summed
-// table width, so one build compiles ONE geometry and this source is built once per geometry
-// (CAPTABLE_GATE_WIDTH). And no cap-table slot index is observable from userspace beyond the
-// low bits of a handle, so no on-target arm can see a directory mapping or a free-list length.
-//
-// Everything measured here goes through the header's own inline functions: cap_slot,
-// CapChunkList::take/give, cap_run_free_build/peek/unlink/release.
+// Everything measured here goes through the header's own inline functions rather than a
+// mirror of their arithmetic.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -62,9 +57,9 @@ namespace
     constexpr uint32_t CHILD = KICKOS_CAP_CHILD_WIDTH;
     constexpr uint32_t FIRST = KICKOS_CAP_FIRST_DYNAMIC;
     constexpr uint32_t SPAN = WIDTH - FIRST;
-    // Unsigned aliases for the two geometry macros: the gtest comparison helpers take their
-    // operands by reference, so a macro that expands to a signed literal reaches -Wsign-compare
-    // as a non-constant.
+    // Unsigned aliases for the two geometry macros: the gtest comparison helpers bind by
+    // reference, so a macro expanding to a signed literal reaches -Wsign-compare as a
+    // non-constant.
     constexpr uint32_t RUN_CHUNKS = KCAP_RUN_CHUNKS;
     constexpr uint32_t CHUNK_SLOTS = KCAP_CHUNK_SLOTS;
     // What the widest run reserves. Not a capacity: the last chunk's tail is paid for and
@@ -434,8 +429,7 @@ TEST(CapTable, short_take_is_all_or_nothing)
 // The refusal at the FIRST chunk, on EVERY geometry including the flat one: the list is
 // empty, so not one directory entry is written and the unwind loop runs zero times. Only
 // the unconditional clear can make the postcondition hold here. Seeded for the reason
-// above: a zeroed CapRun cannot tell a cleared directory from one that never held
-// anything.
+// above.
 TEST(CapTable, refused_take_clears_the_directory)
 {
     CapChunkList empty;
@@ -677,9 +671,8 @@ TEST(CapTable, reserved_plane_is_never_handed_out)
     EXPECT_TRUE(reserved_intact) << "the reserved plane is what it was before the refusals";
 
     // Closing a reserved slot must not put it in the list: it is the kernel's to re-seat,
-    // and an own create that could land there would alias a well-known name.
-    //
-    // clear() zeroes every obj, so without this marker the case passes either way.
+    // and an own create that could land there would alias a well-known name. clear() zeroes
+    // every obj, so without the marker the case passes either way.
     CapEntry* reserved = cap_slot(run, KOS_CAP_STDOUT);
     reserved->obj = 0x5AA5;
     close_at(run, KOS_CAP_STDOUT, &head);

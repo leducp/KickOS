@@ -2,8 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // PRIVILEGE-RING gate: asserts an unprivileged thread cannot exercise CPU privilege.
-// The complement of rootfault/mpu_fault, which prove MEMORY confinement through an
-// MPU/PMP fault. This needs no MPU and holds on a board that has none.
+// Needs no MPU, so it holds on a board that has none.
 //
 // A FAULT IS THE WRONG EXPECTATION HERE. On ARMv7-M an unprivileged MSR to a
 // privileged special register is architecturally IGNORED, not trapped: the MSR
@@ -20,11 +19,10 @@
 // the write landed. MRS of CONTROL carries NO privilege guard in that same pseudocode,
 // which is what makes arm 3 an observation and not an artifact.
 //
-// The interrupt-mask arm that would pair with this (cpsid i must not mask) is absent
-// deliberately, not forgotten: its read-back is vacuous for the reason above, and the
-// only other observable is interrupt DELIVERY, which neither verification board can
-// witness - mps2 derives the monotonic clock from a semihosting SYS_CLOCK call and
-// stm32f302 from a free-running TIM2 counter, so both advance with interrupts masked.
+// SCOPE: privilege state as read back through MRS. Interrupt masking sits outside it,
+// since PRIMASK reads zero from unprivileged Thread mode and the only other observable is
+// interrupt DELIVERY: mps2 derives the monotonic clock from a semihosting SYS_CLOCK call
+// and stm32f302 from a free-running TIM2 counter, so both advance with interrupts masked.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -62,8 +60,6 @@ namespace
         emit(msg);
     }
 
-    // Called only from the postures whose arms are compiled out, so it is unused in the
-    // others.
     [[maybe_unused]] void skip(char const* what)
     {
         char msg[128];

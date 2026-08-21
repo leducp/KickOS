@@ -30,6 +30,6 @@ with tempfile.TemporaryDirectory() as d:
         print("no trace file produced")
         sys.exit(1)
     rc = subprocess.run([sys.executable, kicktrace, trace, "--assert-structural"])
-    # Also print a human summary for the CI log.
+    # The summary is for the CI log; the verdict is the assert run's status above.
     subprocess.run([sys.executable, kicktrace, trace, "--summary"])
     sys.exit(rc.returncode)

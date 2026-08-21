@@ -8,11 +8,10 @@
 // service: if the CS drops between software-paced words the slave sees N frames
 // instead of one, so a held CS must be proven, not assumed.
 //
-// Modelled on user/apps/xmc4800-relax/xmcspi (same U0C1 = 0x4003_0200 512 B window, same
-// unprivileged-driver-brings-itself-up + spawn-with-MMIO-grant pattern, with
-// FDR/BRG/CCR going through kos_periph_reg_write). It is NOT the enforcement proof:
-// no negative test, no MPU-fault poke; this bench answers only the functional CS-hold
-// question.
+// Same U0C1 = 0x4003_0200 512 B window as xmcspi, with the driver bringing itself up and
+// FDR/BRG/CCR going through kos_periph_reg_write. WHAT THIS BENCH ANSWERS is the functional
+// CS-hold question alone; the enforcement proof is xmcspi's, which pokes an ungranted
+// register.
 //
 // The finding under test (RM 18.4.5.1, PCR.FEM description, printed 18-99):
 //   FEM = 0 (reset): "an end of frame is assumed if the transmit buffer TBUF does
@@ -33,8 +32,7 @@
 // Reference Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. "RM p.NN"
 // citations are the manual's printed page numbers.
 //
-// Diagnostic app (kickos_add_diagnostic_app): build-only, never a production
-// image; the operator flashes + validates on silicon.
+// Diagnostic app (kickos_add_diagnostic_app): build-only, never a production image.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -44,25 +42,21 @@
 
 #include <stdint.h>
 
-// Mirrors xmcspi: the driver runs unprivileged in a granted DEV window, which is
-// only a real capability under PMSA. Gate on enforcement so the window means
-// something (and so the build config matches the xmcspi reference).
+// The driver runs unprivileged in a granted DEV window, which is only a real capability
+// under PMSA.
 #if !KICKOS_HAVE_MPU
 #error "xmccshold requires enforcement: build the board's base variant, not its flat one"
 #endif
 
-// Register offsets (off::<REG>) and SSC bit fields are the shared chip definitions.
 using namespace kickos::xmc::reg::usic;
 
 namespace
 {
-    // USIC0 channel 1 register block: offsets + SSC bit fields come from the shared
-    // chip header (regs/usic.h). The console owns U0C0 (0x4003_0000); this bench uses
-    // the sibling channel U0C1 (U0C1_BASE = 0x4003_0200).
+    // The console owns U0C0 (0x4003_0000), so this bench uses the sibling channel U0C1.
 
-    // U0C1 window granted to the driver: base = channel base, size = 0x200
-    // (512 B), R|W|DEV no-X. Every register the driver touches (SCTR 0x34, TCSR
-    // 0x38, PCR 0x3C, PSR 0x48, PSCR 0x4C, RBUF 0x54, TBUF0 0x80) lies inside.
+    // U0C1 window granted to the driver: base = channel base, size = 0x200 (512 B),
+    // R|W|DEV no-X. Every register the driver touches lies inside it, TBUF0 (0x080) being
+    // the highest.
     constexpr uint32_t U0C1_WINDOW = 0x200u;
 
     // TCSR frame-control base (start-on-TDV + single-shot); SOF/EOF are added per word.
@@ -89,12 +83,11 @@ namespace
     // This is the exact condition FEM must survive.
     constexpr uint64_t WORD_GAP_NS = 3000000ull; // 3 ms
 
-    // Bounded polls (RM/house rule: never an unbounded MMIO poll). After each TBUF
-    // write we spin-poll PSR: CAPTURE_MAX is the hard ceiling so a dead channel
-    // cannot wedge the bench; POST_RX_MARGIN is a short tail spun AFTER RX
-    // completion so the trailing MSLS fall (FEM=0, and the FEM=1 end-of-frame) is
-    // caught in the same capture window, before the WORD_GAP sleep, keeping every
-    // edge attributed to exactly one word (no cross-word coalescing).
+    // Bounded polls (house rule: never an unbounded MMIO poll). CAPTURE_MAX is the hard
+    // ceiling, so a dead channel cannot wedge the bench. POST_RX_MARGIN is a short tail spun
+    // AFTER RX completion so the trailing MSLS fall (FEM=0, and the FEM=1 end-of-frame) lands
+    // in the same capture window, before the WORD_GAP sleep: that is what attributes every
+    // edge to exactly one word.
     constexpr unsigned CAPTURE_MAX = 500000u;
     constexpr unsigned POST_RX_MARGIN = 4000u;
 
@@ -176,9 +169,9 @@ namespace
         return edges;
     }
 
-    // UNPRIVILEGED driver: granted app code+data (auto) and the U0C1 window (spawn
-    // MMIO grant). No IRQ is registered; the bench polls. No file-scope mutable
-    // state: the window base arrives as the thread arg VALUE, counters are locals.
+    // UNPRIVILEGED driver: granted app code+data (auto) and the U0C1 window (spawn MMIO
+    // grant). It polls PSR and keeps no file-scope mutable state: the window base arrives as
+    // the thread arg VALUE and the counters are locals.
     constexpr uint32_t FDR_WORD = FDR_DM_FRACTIONAL | FDR_STEP_367;
     constexpr uint32_t BRG_WORD = BRG_PDIV_13 | BRG_DCTQ_15 | BRG_PCTQ_0;
 
@@ -232,9 +225,9 @@ namespace
         // must be done while CCR.MODE=0 (RM p.18-57).
         r32(win + off::DX0CR) = DX0CR_INSW | DX0CR_DSEL_G;
 
-        // Enable the channel (config complete). No RX interrupt enables: the bench polls
-        // PSR. No INPR / NVIC routing, no IOCR pin-mux: MSLS is observed internally, so
-        // this is a fully pin-free measurement.
+        // Enable the channel. The bench polls PSR and reads MSLS internally, so no RX
+        // interrupt enable, no INPR/NVIC route and no IOCR pin-mux are involved: the
+        // measurement is pin-free.
         ok = seam_write("CCR", win, off::CCR, CCR_MODE_SSC, 0xFFFFFFFFu) and ok;
         return ok;
     }
@@ -306,7 +299,6 @@ int main(int, char**)
 {
     // No register access from root: the bring-up belongs to the thread that holds the
     // window. USIC0's module clock is already ungated by the console (U0C0) bring-up.
-    // The driver flips only PCR.FEM for run 2, on the idle channel.
 
     auto drv = kos::thread::spawn(cs_hold_driver, reinterpret_cast<void*>(U0C1_BASE),
                                   "xmccshold", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
@@ -315,10 +307,10 @@ int main(int, char**)
                                   /*mmio=*/reinterpret_cast<void*>(U0C1_BASE), U0C1_WINDOW);
     if (not drv.valid())
     {
-        // -KOS_EBUSY: a live domain already holds U0C1, which this bench needs
-        // exclusively, so no service list carrying an SSC/SPI entry may run alongside
-        // it. The kernel console path drops every byte once a driver has published, so
-        // the errno goes out through the panic path.
+        // -KOS_EBUSY: a live domain already holds U0C1, which this bench needs exclusively,
+        // so no service list carrying an SSC/SPI entry may run alongside it. The errno goes
+        // out through the panic path because the kernel console path drops every byte once a
+        // driver has published.
         char e[64];
         ksnprintf(e, sizeof(e), "[xmccshold] U0C1 spawn refused, errno %d", -drv.error());
         kos_panic(e);

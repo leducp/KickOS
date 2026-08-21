@@ -2,16 +2,12 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Round-trip gate for a CAP_REPLY entry's packing (kernel/include/kickos/cap.h): the parked
-// caller's whole 32-bit generational THREAD handle in `obj`, its 8-bit call sequence in the
-// spare bits beside the type and the rights.
+// caller's whole 32-bit generational THREAD handle in `obj`, its 8-bit call sequence split
+// into the spare bits beside the type and the rights.
 //
 // It drives the header's own cap_reply_seq_seat / cap_reply_seq / cap_reply_handle, the same
 // functions cap_install_reply and cap_reply_caller call, so the gate cannot pass against a
 // mirror of the arithmetic that has drifted from the kernel's.
-//
-// Host-only: no cap-table entry is observable from userspace, and the case that matters is a
-// thread INDEX above 255, which needs more thread slots than any board in the fleet
-// configures.
 
 #include <ios>
 #include <stdint.h>
@@ -30,8 +26,8 @@ using kickos::CapType;
 
 namespace
 {
-    // What the kernel writes: cap_install seats obj/type/rights, cap_install_reply then seats
-    // the sequence.
+    // The kernel's order: cap_install seats obj/type/rights, cap_install_reply then seats the
+    // sequence.
     void mint(CapEntry* e, uint32_t thread_handle, uint8_t seq8)
     {
         e->obj = static_cast<int32_t>(thread_handle);
@@ -42,8 +38,7 @@ namespace
     }
 }
 
-// The header asserts the field widths; this pins the FOOTPRINT, which is what a re-cut of
-// the bitfields would silently spend.
+// Publishes the footprint in the run log; cap.h static_asserts the same two numbers.
 TEST(CapReply, entry_footprint)
 {
     printf("# sizeof(CapEntry)=%u alignof(CapEntry)=%u\n",
@@ -56,9 +51,10 @@ TEST(CapReply, entry_footprint)
 // handle may be traded away for the sequence.
 TEST(CapReply, round_trip_over_the_whole_word)
 {
-    // Values straddling every byte boundary of the handle word: 255/256 is a byte edge in
-    // the index, 0x8000 is where the handle goes negative, and 0xFFFF is the top of both
-    // fields.
+    // Values straddling every edge of the packing: 255/256 is a byte edge in the index,
+    // 0x8000 in the generation is where the handle word goes negative, 0xFFFF is the top of
+    // the generation, and 0x1F/0x20 straddles the sequence's 5-bit low half. The index stops
+    // at 65534: 0xFFFF is KCAP_RESERVED_INDEX and is never seated.
     uint32_t const indices[] = {0u, 1u, 254u, 255u, 256u, 257u, 4095u, 32767u, 32768u, 65534u};
     uint32_t const gens[] = {0u, 1u, 255u, 256u, 0x7FFFu, 0x8000u, 0xFFFFu};
     uint32_t const seqs[] = {0u, 1u, 0x1Fu, 0x20u, 0x7Fu, 0x80u, 0xFEu, 0xFFu};
@@ -85,7 +81,7 @@ TEST(CapReply, round_trip_over_the_whole_word)
                 ASSERT_EQ(cap_reply_seq(e), static_cast<uint8_t>(seqs[s]))
                     << std::hex << "seq 0x" << seqs[s] << " came back 0x"
                     << static_cast<uint32_t>(cap_reply_seq(e)) << " (handle 0x" << handle << ")";
-                // Cast: a bitfield cannot bind to the const reference EXPECT_EQ takes.
+                // A bitfield cannot bind to the const reference EXPECT_EQ takes.
                 ASSERT_EQ(static_cast<uint32_t>(e.type),
                           static_cast<uint32_t>(CapType::CAP_REPLY))
                     << std::hex << "the sequence overwrote the type (handle 0x" << handle << ")";
@@ -113,16 +109,15 @@ TEST(CapReply, index_above_the_old_ceiling_keeps_the_full_generation)
     EXPECT_EQ(cap_reply_seq(e), 0xA5u) << "with its call sequence beside it";
 }
 
-// The sequence must not be able to forge a right. It is split across the bytes holding
-// the type and the rights, so a sequence value landing on the CAP_TRANSFER bit would make
-// a one-shot reply cap delegable.
+// The sequence shares its two bytes with the type and the rights, so a sequence value
+// landing on the CAP_TRANSFER bit would make a one-shot reply cap delegable.
 TEST(CapReply, sequence_can_never_forge_a_right)
 {
     for (uint32_t s = 0; s < 256u; s++)
     {
         CapEntry e = {};
         mint(&e, 1u, static_cast<uint8_t>(s));
-        // Cast: a bitfield cannot bind to the const reference EXPECT_EQ takes.
+        // A bitfield cannot bind to the const reference EXPECT_EQ takes.
         ASSERT_EQ(static_cast<uint32_t>(e.rights), 0u)
             << std::hex << "sequence 0x" << s << " leaked rights 0x"
             << static_cast<uint32_t>(e.rights);

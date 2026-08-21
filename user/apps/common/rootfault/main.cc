@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ROOT-confinement gate, in its own binary because it ends the process. The
-// complement of apps/mpu_fault (which confines a spawned CHILD): here the child's
-// write is the control that must succeed, and ROOT's write is the one that must
-// fault. Root holds only [app code RX, app static data RW, its own stack], so region A
+// ROOT-confinement gate, in its own binary because the run ends in a trap: the child's
+// write is the control that must succeed, and ROOT's write is the one that must fault.
+// Root holds only [app code RX, app static data RW, its own stack], so region A
 // is in no region of root's: under enforcement the write traps. What that DOES depends
 // on the posture (KICKOS_FAULT_OUTCOME): with no fault isolation the kernel reports
 // "MPU FAULT: thread 'root' attempted write at <A>" and shuts down; where the arch opted
@@ -24,8 +23,8 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
-#include <kickos/libc/fmt.h>   // ksnprintf: print region A's address for the MMFAR check
-#include <kickos/sys/emit.h>   // publish-aware write (kos_print is dropped once published)
+#include <kickos/libc/fmt.h>
+#include <kickos/sys/emit.h>   // emit: kos_print is dropped once the console is published
 
 using kickos::emit;
 
@@ -40,9 +39,8 @@ namespace
     {
         volatile int* own = static_cast<volatile int*>(arg); // -> region A (granted)
         *own = 0x1111;                                       // granted -> must succeed
-        // Read back: the marker below is the gate's CONTROL, so it must witness the
-        // write's EFFECT. Emitted after the store in program order, it would otherwise
-        // print with the grant machinery never exercised.
+        // The marker below is the gate's CONTROL, so it must witness the write's EFFECT
+        // and not merely its position in program order: read the cell back first.
         if (*own != 0x1111)
         {
             emit("[rootfault] ERROR: the child's own write did not stick\n");
@@ -95,8 +93,7 @@ int main(int, char**)
     emit(msg);
     *static_cast<volatile int*>(rA) = 0x2222;
 
-    // Reached ONLY where nothing is enforced. The "NOT confined" substring is the FAIL
-    // marker in tests/integration/check_rootfault.sh.
+    // Reached ONLY where nothing is enforced; "NOT confined" is the gate's FAIL marker.
     emit("[rootfault] cross-domain write completed: root is NOT confined "
          "(no enforcement)\n");
     return 0;
