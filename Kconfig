@@ -214,9 +214,21 @@ config KICKOS_USER_HEAP_SIZE
 	  not get. Zero carves nothing and still prints: newlib falls back
 	  to unbuffered stdio when the buffer malloc fails.
 
+config KICKOS_KERNEL_STACKS
+	int
+	default 1 if ARCH_HAS_KERNEL_STACKS
+	default 0
+	help
+	  ARCH_HAS_KERNEL_STACKS as a number the generated header and the CMake fragment can
+	  carry, on the KICKOS_HAVE_MPU model. At 1 kmain carves KICKOS_THREAD_SLOTS blocks of
+	  KICKOS_KERNEL_STACK_SIZE from the arena, cmake/boot_arena.cmake prices them into the
+	  link-time arena model, and thread_create seats each pool thread's ctx.kernel_sp on
+	  its slot's block. At 0 nothing is carved and every kernel_sp stays 0.
+
 config KICKOS_KERNEL_STACK_SIZE
 	int "Per-thread kernel stack"
 	range 256 65536
+	default 1088 if ARCH_RV32IMAC
 	default 1024
 	help
 	  The stack a thread's PRIVILEGED dispatch runs on, once the trap entry
@@ -242,11 +254,21 @@ config KICKOS_KERNEL_STACK_SIZE
 	  stack. A first-preemption frame on ARM, if the software context save moves
 	  off the user PSP onto the kernel stack. The fault reporter, if it ever runs
 	  there rather than in handler mode on the MSP. An independent review derives
-	  892, 948, 1056 and 1072 counting some of these, which is above this lower
-	  bound on three arches and below it on one: the spread is the argument for a
-	  ceiling rather than for either set of digits.
+	  892, 948, 1056 and 1072 counting some of these: above this lower bound on
+	  three arches and EQUAL on rv32imac, where both derivations reach 1072. Two
+	  derivations that disagree at all are the argument for a ceiling rather than
+	  for either set of digits.
 
-	  Nothing allocates this yet, so no board pays for it at this size.
+	  AND A CEILING MUST NOT SIT UNDER ITS OWN LOWER BOUND, which 1024 did on
+	  rv32imac, the one arch that carves them: 256 + 816 is 1072, so that arch
+	  takes 1088, the next multiple of 16. The other three have lower bounds under
+	  1024 and take it.
+
+	  WHICH BOARDS PAY. Only where KICKOS_KERNEL_STACKS is 1, which today is
+	  rv32imac alone: the block is KICKOS_THREAD_SLOTS of this size in kernel
+	  .bss, and the banner reports the carved total. Every other arch carves
+	  nothing until its own entry conversion, which is also when its red-zone
+	  reservation goes, so no board ever holds both.
 
 config KICKOS_TLS_SIZE
 	int "Per-thread TLS block"

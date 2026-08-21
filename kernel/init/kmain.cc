@@ -154,6 +154,13 @@ namespace kickos
             {
                 kprintf(KDIAG_F_BANNER_NOHEAP);
             }
+#if KICKOS_KERNEL_STACKS
+            // The block kmain carves further down. Compiled out where nothing is carved: a
+            // board that never allocates them would be reporting geometry it does not have.
+            kprintf(KDIAG_F_BANNER_KSTACK, static_cast<unsigned>(KICKOS_KERNEL_STACK_SIZE),
+                    static_cast<unsigned>(KICKOS_THREAD_SLOTS),
+                    static_cast<unsigned>(KICKOS_THREAD_SLOTS * KICKOS_KERNEL_STACK_SIZE));
+#endif
             kputs("\n");
         }
 
@@ -225,6 +232,25 @@ namespace kickos
             boot_stack_alloc(KICKOS_IDLE_STACK_SIZE, diag::kBootIdleStack);
         void* const root_stack =
             boot_stack_alloc(KICKOS_ROOT_STACK_SIZE, diag::kBootRootStack);
+
+#if KICKOS_KERNEL_STACKS
+        // ONE block for every pool slot's kernel stack, carved AFTER the two boot stacks and
+        // so the LARGEST last: on both enabled boards it is 17 x 1024 = 17408 bytes against a
+        // 512-byte idle and an 8192-byte root, and the run-up the idle-then-root order buys is
+        // kept only while each block still fits inside the next one's alignment padding.
+        // KICKOS_BOOT_ARENA_ASSERT replays this exact order, so a KICKOS_KERNEL_STACK_SIZE
+        // that reorders the three costs arena and nothing else.
+        //
+        // ONE allocation and not one per slot: on a pow2-descriptor arch every carve is
+        // snapped to its own rounded size, so seventeen 1024-byte carves would each pay their
+        // own run-up.
+        // Canary and fill laid before any slot is handed out, so a slot that is never reused
+        // is armed exactly once and ThreadPool::alloc re-arms only the ones that are.
+        for (int slot = 0; slot < KICKOS_THREAD_SLOTS; slot++)
+        {
+            kstack_arm(slot);
+        }
+#endif
 
         // Must precede the cap_slab_attach below: this rebuilds the free-chunk list from
         // scratch, so running it afterwards would hand root's run back to the free list.

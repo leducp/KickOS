@@ -458,6 +458,23 @@ namespace kickos
     // KICKOS_MAX_THREADS the board states. The fault-kill path is the one that DOES set root
     // EXITED (kernel/init/fault.cc excludes only null / idle / privileged / dying), and root's
     // slot is reclaimable from then on.
+
+#if KICKOS_KERNEL_STACKS
+    // The per-slot kernel-stack instrumentation. `index` is a POOL index, 0 to
+    // KICKOS_THREAD_SLOTS - 1: idle holds its TCB outside the pool (kernel().idle_tcb), is
+    // privileged, and its body is arch_idle_wait alone, so it never enters the syscall path
+    // and has neither a stack here nor anything to measure.
+    //
+    // Both readings are PER SLOT AND SINCE BOOT, not per thread. The block is armed once at
+    // init and never re-armed when a slot changes hands: re-arming would erase the record of
+    // an overflow that had already happened, and it would have to run where a slot is handed
+    // out, which is inside the spawn's IrqLock. The worst any thread ever drove a slot is
+    // also the figure that SIZES a kernel stack, where a per-thread reading is not.
+    void kstack_arm(int index);
+    size_t kstack_high_water(int index);
+    bool kstack_canary_intact(int index);
+#endif
+
     struct ThreadPool
     {
         // The uint16_t generation takes the other 16, so the handle spends the whole word: a

@@ -86,6 +86,9 @@ namespace kickos
 #define KDIAG_F_BANNER_COMMIT KICKOS_DIAG_PICK("   commit  %s\n", "c %s\n")
 #define KDIAG_F_BANNER_HEAP  KICKOS_DIAG_PICK("   heap    %u KiB available\n", "h %u\n")
 #define KDIAG_F_BANNER_NOHEAP KICKOS_DIAG_PICK("   heap    none\n", "h 0\n")
+// The per-thread kernel-stack block kmain carves: bytes per slot, slots, and their
+// product. Emitted only at KICKOS_KERNEL_STACKS 1, where that carve happens.
+#define KDIAG_F_BANNER_KSTACK KICKOS_DIAG_PICK("   kstack  %u B x %u = %u B\n", "k %u %u %u\n")
 
 // Thread fault (kernel/init/fault.cc).
 #define KDIAG_F_THREAD_FAULT KICKOS_DIAG_PICK("\n=== THREAD FAULT === thread '%s' killed, system continues\n", \

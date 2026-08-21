@@ -10,6 +10,18 @@
 # model of config/limits.h: an option whose availability and default depend on no
 # hardware fact is not configuration.
 
+# The arch can hold one kernel stack per thread slot resident from boot, and its
+# arch_context carries the kernel_sp a trusted entry loads. Declared here rather than
+# beside HAS_MPU because it is a fact about the ARCH and not about the silicon: the trap
+# entry that transfers to those stacks is written per arch, and a chip selects nothing.
+config ARCH_HAS_KERNEL_STACKS
+	bool
+	help
+	  The arch's trap entry is being moved onto a per-thread kernel stack, and every
+	  board it covers has the RAM to keep KICKOS_THREAD_SLOTS of
+	  KICKOS_KERNEL_STACK_SIZE resident. Off, the blocks are not carved and each
+	  thread's ctx.kernel_sp stays 0.
+
 config ARCH_ARMV6M
 	bool
 
@@ -21,6 +33,7 @@ config ARCH_RXV3
 
 config ARCH_RV32IMAC
 	bool
+	select ARCH_HAS_KERNEL_STACKS
 
 config ARCH_LX6
 	bool
