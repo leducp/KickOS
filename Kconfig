@@ -214,6 +214,40 @@ config KICKOS_USER_HEAP_SIZE
 	  not get. Zero carves nothing and still prints: newlib falls back
 	  to unbuffered stdio when the buffer malloc fails.
 
+config KICKOS_KERNEL_STACK_SIZE
+	int "Per-thread kernel stack"
+	range 256 65536
+	default 1024
+	help
+	  The stack a thread's PRIVILEGED dispatch runs on, once the trap entry
+	  transfers to it instead of continuing on the thread's own. One size class
+	  per board, so it is a constant here and not a per-thread field.
+
+	  1024 is derived rather than picked. A kernel stack must hold the frame the
+	  trap entry saves plus the deepest the dispatch descends, and unlike a
+	  thread's red zone it must include the panic tail: that tail is excluded
+	  from a red zone only to keep it under the spawn floor, and a kernel array
+	  has no floor to clear (trap_redzone_roots.txt says so for stack=trap).
+	  Frame plus without-exclusions depth is 32 + 808 on armv6m, 100 + 736 on
+	  armv7m and 236 + 760 on rxv3, so 840, 836 and 996. Nested interrupts do
+	  not add a term: they stay on the per-core handler stack.
+
+	  Nothing allocates this yet, so no board pays for it at this size.
+
+config KICKOS_TLS_SIZE
+	int "Per-thread TLS block"
+	range 0 4096
+	default 0
+	help
+	  Bytes of thread-local storage each thread gets, which is the .tdata plus
+	  .tbss template rounded to the thread pointer's alignment. 0 until the
+	  template exists, and 0 costs nothing.
+
+	  The mechanism is NOT one register on every ISA. RISC-V and Xtensa have a
+	  thread pointer (tp, THREADPTR); every ARM part in this fleet is M-profile
+	  and has none, so its compiler emits a call to __aeabi_read_tp for each
+	  access and the kernel has to answer it; RX has neither.
+
 config KICKOS_MIN_STACK_SIZE
 	int
 	default 896 if ARCH_ARMV6M

@@ -131,12 +131,19 @@ extern "C"
     // and the kernel C that runs below it, so a tick taken mid-dispatch stays off the
     // calling thread's stack. rv_trap_stack.h derives the size and check_trap_redzone.sh
     // re-measures the depth half of it.
-    alignas(16) uint8_t g_rv_trap_stack[KICKOS_RV_TRAP_STACK_SIZE];
+    // ONE PER CORE, indexed rather than singular, and at KICKOS_NUM_CORES == 1 that is a
+    // one-element array occupying exactly the bytes the single object did: mscratch holds
+    // the top, so the index is spent once at init and never in the prologue. The seam is
+    // cut here so that raising the core count is a substitution at the seat below rather
+    // than a change to four trap prologues.
+    alignas(16) uint8_t g_rv_trap_stack[KICKOS_NUM_CORES][KICKOS_RV_TRAP_STACK_SIZE];
     static_assert(KICKOS_RV_TRAP_STACK_SIZE % KICKOS_RV_TRAP_SP_ALIGN == 0,
                   "the trap-stack top must land on the alignment the prologue requires");
     static_assert(KICKOS_RV_TRAP_STACK_SIZE > KICKOS_RV_TRAP_FRAME,
                   "a nested frame would fill the whole trap stack, leaving nowhere for the "
                   "kernel C below it; how much is enough is what the gate measures");
+    static_assert(sizeof(g_rv_trap_stack) == KICKOS_NUM_CORES * KICKOS_RV_TRAP_STACK_SIZE,
+                  "the per-core array costs one stack per core and nothing else");
 
     // CLINT machine-software-interrupt-pending register for this hart, set by the
     // chip's arch_init. arch_switch writes 1 to pend the deferred switch; the msip
@@ -818,7 +825,11 @@ void kickos_rv32_init(void)
 
     // The trusted trap stack top. trap_entry swaps sp with mscratch on entry, so it
     // must hold this before the first trap (and thus before the first mret to U-mode).
-    uintptr_t const trap_sp = reinterpret_cast<uintptr_t>(&g_rv_trap_stack[sizeof(g_rv_trap_stack)]);
+    // THIS core's stack, and the whole of the per-core seam: sizeof on the row rather than
+    // on the array, so a second core takes its own and not the far end of everyone's.
+    uint8_t* const trap_stack = g_rv_trap_stack[arch_cpu_id()];
+    uintptr_t const trap_sp =
+        reinterpret_cast<uintptr_t>(&trap_stack[KICKOS_RV_TRAP_STACK_SIZE]);
     __asm volatile("csrw mscratch, %0" ::"r"(trap_sp) : "memory");
 
     // Enable the machine software (msip, bit 3 = the deferred switch), machine timer
