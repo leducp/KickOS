@@ -5218,9 +5218,24 @@ below where they were previously mislabeled.
   Both halves are wrong. `_REENT_THREAD_LOCAL` is off on all three pinned toolchains, `errno` is
   `(*__errno())`, `__errno` returns `_impure_ptr`, and 239 members of libc.a reference that pointer
   without ever calling `__errno()`. So TLS does not touch `errno`, and swapping `_impure_ptr` per
-  thread fixes `errno` plus every other reentrant path at once. What is left of this item is the
-  `_impure_ptr` swap, at `sizeof(struct _reent)` per thread: 512 on ARM, 284 on RX, 288 on RISC-V,
-  so per-board opt-in.
+  thread fixes `errno` plus every other reentrant path at once.
+
+  **THE `_impure_ptr` SWAP LANDED IN M5.2.1 PR 9** as `KICKOS_LIBC_REENT`, default n and per-board
+  opt-in because it costs one `struct _reent` per thread SLOT out of the app window's heap pad: 512
+  bytes on arm-none-eabi, 288 on riscv32-none-elf, 284 on rx-elf. The array is in `.appbss`
+  (`user/src/newlib_reent.cc`), `struct Thread` carries the pointer, and `switch_book` plus
+  `sched::start` store it into the one word libc reads (`&_impure_ptr`, or what `__getreent`
+  returns on Xtensa). It is NAMING AND NOT ISOLATION: the window is granted R/W to every
+  unprivileged thread, so a peer can still scribble another thread's `errno`. On by default in the
+  `qemu` and `qemu-riscv` base variants, where `errnoprobe` boots it.
+
+  WHAT THIS DOES NOT FIX, and neither does TLS. `__malloc_lock`/`__malloc_unlock` are still
+  no-ops, so multi-threaded `malloc` still corrupts the arena; that is its own item in the M4.5.1
+  section. And `_REENT_INIT_PTR` points every thread's `_stdin`/`_stdout`/`_stderr` at the ONE
+  shared `__sf[3]`, so stdio buffering stays process-wide even where `errno` no longer is. A
+  reclaimed thread slot is re-initialised at the next create rather than run through
+  `_reclaim_reent`, so the per-reent mprec/asctime scratch a `strtod`/`ctime` caller allocates is
+  not returned to the arena.
 
   `thread_local` itself is DONE (PR 8): a block carved off the low end of each thread's own stack,
   with a per-arch thread pointer. Not `TPIDRURW`: M-profile has no such register, so the kernel

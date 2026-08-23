@@ -119,6 +119,15 @@ namespace kickos
         // block lock dropping and the pended switch firing.
         Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> switch_count = 0;
 
+#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
+        // This thread's struct _reent, seated by thread_create out of the app-side array.
+        // switch_book stores it into libc's state word; nothing in the kernel dereferences
+        // it. HERE, and priced by thread_head_bytes: where uint64_t aligns to 8 this is the
+        // second half of the pad before deadline_ns and the pointer is free. Anywhere below
+        // it costs 8, because the TCB is a multiple of 8 there with no tail slack.
+        void* reent = nullptr;
+#endif
+
         uint64_t deadline_ns = 0;
         bool on_timer = false;
 
@@ -325,8 +334,11 @@ namespace kickos
     // last whose offset the target's context size can shift.
     constexpr size_t thread_head_bytes()
     {
-        size_t const members = sizeof(arch_context) + sizeof(ListNode) + sizeof(List*)
-                               + sizeof(Thread*) + sizeof(uint32_t);
+        size_t members = sizeof(arch_context) + sizeof(ListNode) + sizeof(List*)
+                         + sizeof(Thread*) + sizeof(uint32_t);
+#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
+        members = members + sizeof(void*); // Thread::reent
+#endif
         return members + (alignof(uint64_t) - members % alignof(uint64_t)) % alignof(uint64_t);
     }
 

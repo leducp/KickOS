@@ -311,6 +311,7 @@ SECTIONS
 }
 
 KICKOS_STATIC_RELOC_ASSERT()
+KICKOS_TLS_ALIGN_ASSERT()
 
 ASSERT(___kickos_ram_start <= ___kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + ISP stack)")

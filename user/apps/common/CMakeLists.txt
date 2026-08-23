@@ -66,6 +66,10 @@ add_subdirectory(specfault)
 # template arriving in a freshly spawned thread. Its own CMakeLists returns early where the
 # board compiles no TLS.
 add_subdirectory(tlsprobe)
+
+# The per-thread errno witness: libc's whole reentrant state following the running thread.
+# Its own CMakeLists returns early where KICKOS_LIBC_REENT is off.
+add_subdirectory(errnoprobe)
 # kos_reboot plumbing witness + the unattended-reflash affordance. Board-agnostic;
 # its ctest arms are the declining-fallback targets only (see its CMakeLists).
 add_subdirectory(rebootdemo)

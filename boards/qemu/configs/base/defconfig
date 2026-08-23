@@ -9,4 +9,9 @@ CONFIG_MEMORY_MODEL_MPU=y
 CONFIG_KICKOS_USER_STACK_SIZE=8192
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=8192
+
+# The per-thread errno witness runs here, so the mechanism is ON for this variant: an
+# opt-in nobody enables is an opt-in nobody tests. 17 slots of 512 B come out of the
+# app window's heap pad, which the banner reports.
+CONFIG_KICKOS_LIBC_REENT=y
 CONFIG_KICKOS_ENABLE_SELFTEST=y

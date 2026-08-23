@@ -18,6 +18,12 @@ if(KICKOS_ARCH STREQUAL "sim")
   list(APPEND KICKOS_USER_SOURCES src/sim_exit.cc)
 else()
   list(APPEND KICKOS_USER_SOURCES src/newlib_stubs.cc src/newlib_sbrk.cc)
+  # The per-thread struct _reent array and the word the kernel swaps. Added to the source
+  # list rather than compiled to nothing under an #if, so with the knob off this archive
+  # carries no member for it at all.
+  if(KICKOS_LIBC_REENT)
+    list(APPEND KICKOS_USER_SOURCES src/newlib_reent.cc)
+  endif()
 endif()
 
 add_library(kickos_user STATIC ${KICKOS_USER_SOURCES})
@@ -28,9 +34,12 @@ kickos_apply_freestanding(kickos_user)
 target_include_directories(kickos_user PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-# abi.h includes <kickos/sys/errno.h>, which now lives in kickos_system.
+# abi.h includes <kickos/sys/errno.h>, which now lives in kickos_system. kernel/include is
+# here for config/system.h alone: the reent array is indexed by thread slot, and
+# KICKOS_THREAD_SLOTS is stated there. kickos_kernel takes user/include the same way.
 target_include_directories(kickos_user PRIVATE
-  "${PROJECT_SOURCE_DIR}/system/include")
+  "${PROJECT_SOURCE_DIR}/system/include"
+  "${PROJECT_SOURCE_DIR}/kernel/include")
 target_link_libraries(kickos_user PUBLIC kickos_arch_${KICKOS_ARCH} kickos_lib)
 install(TARGETS kickos_user EXPORT KickOSTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")

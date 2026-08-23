@@ -14,23 +14,53 @@ era plus everything for SMP that is not SMP. `M5` the integration branch is full
 deleted, along with `M5.1.1`, `M5.1.4-docrewrite`, `hotfix/wake-parks-wrong-thread` and every
 `topic/*`. Master is still `a41856d6`.
 
-**M5.2.1: EVERY PER-ARCH CONVERSION IS DOWN, AND SO IS PR 7. TWENTY-THREE COMMITS ON THE
-BRANCH, NONE PUSHED.** The tip hash is deliberately NOT written here: it names the commit that
-writes it, so any amend falsifies it immediately, which happened once. `git rev-parse --short HEAD`
-and `git rev-list --count master..HEAD` are the authorities, and this line has been wrong four
-times for exactly that reason.** The death path now runs on the dying thread's own
-kernel block on ALL FOUR backends, measured as `EXITK` against the block, with `RET`
-(`kickos_thread_return`, which nothing relocates) measured against the spawn floor and an `EXIT`
-fallback on the four armv7m presets that carve no block.** Derive the count, never copy it: this line
-has said twelve, thirteen and fifteen while `git rev-list --count master..HEAD` said otherwise, the
-disagreement coming from whether the two pre-rework commits and the session records are counted.
-`202ba8cc` PR 3's owed proofs, `ab9a9866` PR 4 rv32imac, `9b382b18` PR 5 both ARM backends,
-`7943e6fb` PR 6 rxv3, `3699644b` the PR 4 audit corrections, `26361ecf` the armv7m preset coverage,
-`72f91136` the RX privilege boundary, `57fe26c1` the re-taken witness, `ded8a659` the audit's
-surviving findings, `778918f1` PR 7's EXIT classes. Read
-`~/.claude/projects/-home-leduc-projets-KickOS/docs/m5.2.1-trusted-context-plan.md` section
-"SESSION 3" before planning PR 7: it carries what each arch's transfer actually looks like, the
-figures that moved, and the debts.
+**M5.2.1: PR 7 AND PR 8 ARE DOWN. NONE OF IT IS PUSHED.** The tip hash and the commit count are
+deliberately NOT written here: the hash names the commit that writes it, so any amend falsifies it,
+which happened once, and the count has been wrong four times. `git rev-parse --short HEAD` and
+`git rev-list --count master..HEAD` are the authorities. PR 9 is in flight on `topic/pr9-reent`.
+Read `~/.claude/projects/-home-leduc-projets-KickOS/docs/m5.2.1-trusted-context-plan.md` section
+"SESSION 5" before touching any of it: it carries the traps that cost the most time here, including
+the two sweep instruments that report green while measuring almost nothing.
+
+**PR 7: THE DEATH PATH RUNS ON THE DYING THREAD'S OWN KERNEL BLOCK ON ALL FOUR BACKENDS**, measured
+as `EXITK` against the block, with `RET` (`kickos_thread_return`, which nothing relocates) measured
+against the spawn floor and an `EXIT` fallback on the four armv7m presets that carve no block.
+
+**PR 8: `thread_local` WORKS, ON FIVE BACKENDS, AND IT IS NOT WHAT FIXES `errno`.** The block is
+carved off the LOW end of each thread's own stack, so it costs no MPU descriptor and the thread
+pointer IS the stack block's base. That placement is what forces `arch_ram_region_align` to stride
+every arena block by a power of two when `KICKOS_TLS` is on, because ARM M-profile gives
+unprivileged code no register that differs per thread except SP.
+
+  - **armv7m, armv6m**: the kernel provides `__aeabi_read_tp`, which is in NEITHER libc.a NOR
+    libgcc.a. Five instructions, no memory access. **The subtract in it is load-bearing**: a stack
+    top is exclusive, so an empty stack has SP exactly at base + stride and a plain mask returns
+    the NEIGHBOUR's block. That was a real data abort on the witness's first run, and the witness
+    CANNOT catch it (C never runs with SP at the top), which is why
+    `tests/static/check_arm_read_tp.sh` reads the emitted instructions.
+  - **rv32imac**: `.Lrestore` masks `ctx.stack_lo`, NOT the frame sp. Three paths reach it and on
+    the third the frame is on the KERNEL stack: an msip taken inside a U-mode thread's dispatch.
+    The incoming `tp` is never read.
+  - **lx6**: `wur.threadptr` at both `xtensa_switch` and `arch_start`, from the saved sp. Correct
+    only because lx6 selects no `ARCH_HAS_KERNEL_STACKS`.
+  - **rxv3**: GNURX emits NO `.tdata`/`.tbss` at all, so `tls_block_size()` measured zero and the
+    carve was skipped; `arch/rx/rxv3/emutls.cc` overrides `__emutls_get_address` and contributes a
+    synthetic reservation.
+  - **sim CANNOT DO THIS AT ALL** and does not select `ARCH_HAS_TLS`: its threads are ucontext
+    coroutines in one host thread sharing one `%fs`. The arch with the largest suite witnesses
+    nothing here.
+
+**WHAT IS WITNESSED RUNNING, AND WHAT IS NOT.** armv7m, armv6m and rv32imac read their own
+`thread_local` back under QEMU (`user/apps/common/tlsprobe`). **lx6 and rxv3 are a build and a
+disassembly**: no hardware on this bench, no emulator for either. On rxv3 three of four mutations
+were caught by NOTHING, which is why `tests/static/rx_tls_fit.py` replays the allocator offline.
+
+**BOARDS THAT MOVED, AND WHY.** microbit is deliberately no longer a BBC micro:bit v1: 32 KiB, four
+slots, fleet-default provisioning, and it went from skipping TWENTY TAP arms to one. QEMU is told
+the size with `-global nrf51-soc.sram-size=32768`; its machine defaults to 16 KiB and ignores `-m`.
+frdmk64f traded four thread slots for a power of two, 12 x 7584 becoming 8 x 8192. **f302nucleo and
+bluepill-c8 set `KICKOS_TLS=n`**: three blocks at a 2048 stride need 6656 bytes and their fattest
+image leaves 4672 and 6112. A `thread_local` there is a link error naming `__aeabi_read_tp`.
 
 **NO PRIVILEGED C DISPATCH RUNS ON A POINTER A THREAD CHOSE, ON ANY ARCH.** That is the
 milestone's central claim and it now holds. What each arch kept is NOT the same thing and the

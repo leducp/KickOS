@@ -98,7 +98,7 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
   endforeach()
   foreach(_flag KICKOS_ENABLE_SELFTEST KICKOS_DEBUG KICKOS_BENCH
                 KICKOS_SHUTDOWN_TO_BOOTLOADER KICKOS_MULTI_INSTANCE KICKOS_TLS
-                CONFIG_SCHED_PERIODIC_TICK)
+                KICKOS_LIBC_REENT CONFIG_SCHED_PERIODIC_TICK)
     if(DEFINED ${_flag})
       string(REGEX REPLACE "^CONFIG_" "" _sym "${_flag}")
       set(_val "n")
@@ -334,6 +334,20 @@ if(KICKOS_TLS)
       "boards/${KICKOS_BOARD}/configs/<variant>/defconfig, or set KICKOS_TLS=n there and "
       "let a thread_local fail the link instead.")
   endif()
+  # AND THEY MUST BE THE STRIDE, not merely round to it. tls_stack_admissible requires a
+  # block of EXACTLY one stride, because two smaller blocks can sit inside one stride and
+  # mask to the same base. A pool stack is whatever KICKOS_USER_STACK_SIZE says, so a
+  # non-power-of-two here would have every spawn refused at runtime instead of at configure.
+  foreach(_k KICKOS_USER_STACK_SIZE KICKOS_ROOT_STACK_SIZE)
+    if(NOT ${${_k}} EQUAL _tls_stride)
+      message(FATAL_ERROR
+        "KickOS: KICKOS_TLS is on and ${_k} is ${${_k}}, which is not a power of two: it "
+        "rounds to a stride of ${_tls_stride}. The thread pointer is SP masked down to that "
+        "stride and a block must BE one, because two smaller blocks fit inside a single "
+        "stride and would mask to the same base. State ${_tls_stride} in "
+        "boards/${KICKOS_BOARD}/configs/<variant>/defconfig, or set KICKOS_TLS=n there.")
+    endif()
+  endforeach()
   set(_tls_log2 0)
   set(_tls_p 1)
   while(_tls_p LESS _tls_stride)
@@ -350,6 +364,14 @@ else()
   # HERE and not through the generated board_config.h, which is why genconfig lists it
   # among the CMake bool knobs.
   add_compile_definitions(KICKOS_TLS=0)
+endif()
+
+# Per-thread struct _reent. Defined either way for the same reason KICKOS_TLS is, and it
+# gates a member of struct Thread, so the value also rides the export below.
+if(KICKOS_LIBC_REENT)
+  add_compile_definitions(KICKOS_LIBC_REENT=1)
+else()
+  add_compile_definitions(KICKOS_LIBC_REENT=0)
 endif()
 
 # Positive identification only: a new arch must land in the 0 branch of every
@@ -996,7 +1018,8 @@ if(TARGET kickos_kernel)
   target_compile_definitions(kickos_core INTERFACE main=kickos_app_main)
   # ODR: an out-of-tree TU including a kernel-internal header must see the same posture as
   # the prebuilt libs. KICKOS_TELEMETRY gates fields in struct Kernel (instance.h) and
-  # arch_context (context.h), KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h),
+  # arch_context (context.h), KICKOS_LIBC_REENT gates one in struct Thread (thread.h),
+  # KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h),
   # KICKOS_ARM_MPU (plus the four name constants it is compared against) picks the
   # arch_mpu_encoded layout, and without KICKOS_ARCH_SIM a sim package (which ships no
   # chip_limits.h) hits config/board.h's #error.
@@ -1015,6 +1038,7 @@ if(TARGET kickos_kernel)
     KICKOS_ARM_MPU=${_kickos_arm_mpu}
     KICKOS_ARCH_SIM=${_kos_iface_sim}
     KICKOS_MULTI_INSTANCE=$<BOOL:${KICKOS_MULTI_INSTANCE}>
+    KICKOS_LIBC_REENT=$<BOOL:${KICKOS_LIBC_REENT}>
     KICKOS_DEBUG=$<BOOL:${KICKOS_DEBUG}>)
   target_compile_options(kickos_core INTERFACE -include kickos/app.h)
   # Force-include the seam header so an app-TU-defined kickos_init_entry gets C linkage.

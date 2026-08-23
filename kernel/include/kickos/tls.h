@@ -24,14 +24,9 @@ size_t tls_block_size();
 void tls_seat(void* base);
 
 // True iff a stack block at (base, size) can carry a TLS block the thread pointer can be
-// derived from: strided, one stride wide at most, and larger than the block itself.
+// derived from: strided, EXACTLY one stride wide, and larger than the block itself. Idle's
+// 512-byte block is not, by design, and it reaches no thread_local.
 bool tls_stack_admissible(uintptr_t base, size_t size);
-
-// True iff the block is too small for a thread pointer to be masked out of an SP inside
-// it. Idle's is, by design, and it reaches no thread_local; every stack the pool hands out
-// is exactly one stride. Distinguishing this from a FAILED admissibility test is what lets
-// thread_create assert the rest instead of silently skipping the carve.
-bool tls_stack_below_stride(size_t size);
 
 } // namespace kickos
 

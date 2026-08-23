@@ -40,6 +40,6 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "rxv3")
   add_test(
     NAME    rx_tls_fit
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/rx_tls_fit.py"
-            "${CMAKE_NM}" "${CMAKE_OBJDUMP}" "$<TARGET_FILE:tlsprobe>")
+            "${CMAKE_NM}" "${CMAKE_OBJDUMP}" "${CMAKE_BINARY_DIR}/user/apps")
   set_tests_properties(rx_tls_fit PROPERTIES TIMEOUT 60 LABELS host)
 endif()

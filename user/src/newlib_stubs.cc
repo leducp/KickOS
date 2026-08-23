@@ -150,8 +150,9 @@ void _fini(void)
 __attribute__((weak)) void* __dso_handle = nullptr;
 #endif
 
-#ifdef __XTENSA__
+#if defined(__XTENSA__) && !KICKOS_LIBC_REENT
 #include <sys/reent.h>
+// newlib_reent.cc owns __getreent where KICKOS_LIBC_REENT is on.
 // esp-elf newlib resolves _REENT through __getreent(), NOT through _impure_ptr, and
 // ships a WEAK fallback that returns NULL: without this override every stdio call
 // dereferences null and takes a LoadProhibited exception (EXCCAUSE 0x1c, EXCVADDR 0x28

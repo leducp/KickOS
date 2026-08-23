@@ -54,4 +54,41 @@
 /* Total frame size (16-byte aligned). */
 #define F_SIZE 0x100
 
+#ifdef __ASSEMBLER__
+#if defined(KICKOS_TLS) && KICKOS_TLS
+/* Seat THREADPTR for the thread whose context pointer is in \ctx, from that thread's own
+   saved sp masked down to its stack block. Xtensa TLS is variant 1, so THREADPTR is the
+   block base and the compiler adds the offset the linker computed.
+ *
+ * THE SAVED sp IS ALWAYS THAT THREAD'S OWN. lx6 selects no ARCH_HAS_KERNEL_STACKS, so
+ * there is no second stack a frame could be sitting on when it is saved. If that ever
+ * changes this becomes wrong in the same way masking F_SP is wrong on rv32imac.
+ *
+ * The -1 is the edge of the range and not defensiveness: a stack top is EXCLUSIVE, so an
+ * empty stack has sp exactly at base + stride and a plain mask returns the NEXT block.
+ *
+ * movi with the negated stride rather than srli/slli: srli takes an immediate of 0..15 and
+ * a board with a larger stack would silently be out of range.
+ *
+ * THREE SITES INVOKE THIS, not two: xtensa_switch and arch_start in switch.S, and the
+ * PREEMPTIVE switch at the tail of _kickos_int_level1 in the chip startup. An interrupt that
+ * decides a switch never enters xtensa_switch at all, so seating it there alone leaves the
+ * incoming thread running on the OUTGOING thread's pointer until its next cooperative switch.
+ *
+ * IDLE GETS AN ADDRESS INSIDE A NEIGHBOUR'S BLOCK, because its stack is below one stride
+ * and takes no carve. Its body is arch_idle_wait and it reaches no thread_local; the
+ * no_privileged_tls gate is what keeps that true. */
+    .macro  SEAT_THREADPTR ctx, tmp0, tmp1
+    l32i    \tmp0, \ctx, CTX_SP
+    addi    \tmp0, \tmp0, -1
+    movi    \tmp1, -KICKOS_TLS_STRIDE
+    and     \tmp0, \tmp0, \tmp1
+    wur.threadptr \tmp0
+    .endm
+#else
+    .macro  SEAT_THREADPTR ctx, tmp0, tmp1
+    .endm
+#endif
+#endif // __ASSEMBLER__
+
 #endif

@@ -43,7 +43,12 @@ command -v "$NM" >/dev/null 2>&1 || fail "nm not found: $NM"
 [ "$#" -gt 0 ] || fail "no archives given, so every check below would pass vacuously"
 
 TLS_RELOCS='R_ARM_TLS_LE32|R_RISCV_TPREL_HI20|R_RISCV_TPREL_LO12_I|R_RISCV_TPREL_LO12_S|R_RISCV_TPREL_ADD|R_XTENSA_TLS_TPOFF'
-TLS_CALLS='__aeabi_read_tp|__emutls_get_address|__tls_get_addr'
+# The RX psABI prefixes a C identifier with an extra leading underscore, so C's
+# __emutls_get_address is asm ___emutls_get_address. Without the optional underscore this
+# whole gate is VACUOUS on rxv3, which is also the one backend where the relocation leg
+# below can never fire: GNURX emits no TLS relocations at all, the emutls fallback being
+# ordinary calls. The call leg is the only thing watching that arch.
+TLS_CALLS='_?__aeabi_read_tp|_?__emutls_get_address|_?__tls_get_addr'
 
 FOUND=0
 for a in "$@"; do

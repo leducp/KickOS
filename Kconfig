@@ -214,6 +214,30 @@ config KICKOS_USER_HEAP_SIZE
 	  not get. Zero carves nothing and still prints: newlib falls back
 	  to unbuffered stdio when the buffer malloc fails.
 
+config KICKOS_LIBC_REENT
+	bool "Per-thread newlib reentrant state"
+	depends on !ARCH_SIM
+	default n
+	help
+	  Give every thread slot its own struct _reent and point libc at the running
+	  thread's copy on each switch. errno is that struct's first member, so this is
+	  what makes errno per-thread; the 239 other libc members that reach the state
+	  as _REENT follow from the same store.
+
+	  Overriding __errno() does NOT do this. _REENT_THREAD_LOCAL is off in all three
+	  pinned toolchains, so newlib reaches the state through _impure_ptr and never
+	  calls __errno at all: a thread_local errno would be one the app reads and libc
+	  never writes.
+
+	  ONE struct _reent PER SLOT, in the app-data window: 512 bytes on arm-none-eabi,
+	  288 on riscv32-none-elf, 284 on rx-elf. That window's unused pad IS the newlib
+	  heap, so every byte here is a byte malloc does not get, and a board with a
+	  handful of slots and kilobytes of RAM cannot afford it.
+
+	  NAMING, NOT ISOLATION. The array is unprivileged app memory, granted R/W to
+	  every unprivileged thread the way thread_local storage is, so a peer can
+	  scribble another thread's errno.
+
 config KICKOS_KERNEL_STACKS
 	int
 	range 1 1 if ARCH_KERNEL_STACKS_MANDATORY

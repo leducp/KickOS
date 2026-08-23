@@ -96,6 +96,7 @@ image  src    tests/integration/check_qemu_cxxtest.sh
 image  src    tests/integration/check_qemu_fp.sh
 image  src    tests/integration/check_qemu_hello.sh
 image  src    tests/integration/check_qemu_tlsprobe.sh
+image  src    tests/integration/check_qemu_errnoprobe.sh
 image  src    tests/integration/check_qemu_initdemo.sh
 image  src    tests/integration/check_qemu_panicgate.sh
 image  src    tests/integration/check_qemu_ringppb.sh

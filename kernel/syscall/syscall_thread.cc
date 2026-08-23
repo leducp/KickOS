@@ -453,6 +453,14 @@ namespace kickos
         // answer; the pool's own blocks satisfy it by construction.
         if (not tls_stack_admissible(reinterpret_cast<uintptr_t>(stack), stack_size))
         {
+            // The pool branch cannot reach this today, every arena block being one stride by
+            // construction, but the unwind is owed all the same: a popped block dropped here
+            // is a slot the pool never gets back, and the next reader of this code should not
+            // have to re-derive why the push is absent.
+            if (attr.kstack_owned)
+            {
+                k.threads.stack_push(stack);
+            }
             k.threads.release(i);
             return -KOS_EINVAL;
         }

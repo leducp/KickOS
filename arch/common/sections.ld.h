@@ -95,4 +95,19 @@
         __kickos_tbss_end = .;                                                \
     } > region
 
+/* THE ABI BIAS BELOW THE THREAD POINTER IS align_up(KICKOS_ARCH_TLS_TCB, tls_align) ON A
+ * VARIANT 1 ARCH, not the constant the header states: an object needing 16-byte alignment
+ * moves the first thread_local from tp+8 to tp+16 and every offset with it. Rather than
+ * derive the bias at runtime from an alignment the linker knows and C does not, refuse the
+ * case. A thread_local wanting more than 8 is a build failure naming this, not a silently
+ * wrong offset.
+ *
+ * Guarded on SIZEOF because ALIGNOF of an absent output section is not meaningful.
+ */
+#define KICKOS_TLS_ALIGN_ASSERT()                                             \
+    ASSERT(SIZEOF(.tdata) == 0 || ALIGNOF(.tdata) <= 8,                       \
+           "KickOS: a thread_local needs more than 8-byte alignment, which moves the ABI bias below the thread pointer and every TLS offset with it. KICKOS_ARCH_TLS_TCB states a fixed bias, so this is refused rather than mis-seated.")    \
+    ASSERT(SIZEOF(.tbss) == 0 || ALIGNOF(.tbss) <= 8,                         \
+           "KickOS: a thread_local needs more than 8-byte alignment, which moves the ABI bias below the thread pointer and every TLS offset with it. KICKOS_ARCH_TLS_TCB states a fixed bias, so this is refused rather than mis-seated.")
+
 #endif

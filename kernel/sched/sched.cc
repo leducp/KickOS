@@ -14,6 +14,7 @@
 #include <kickos/task.h>
 #include <kickos/time.h>
 #include <kickos/irqlock.h>
+#include <kickos/reent.h>
 
 #include <kickos/sys/abi.h> // KOS_EXIT_CANCELLED
 
@@ -41,6 +42,12 @@ namespace kickos
             next->state = ThreadState::RUNNING;
             next->switch_count.store(next->switch_count.load() + 1u);
             kernel().policy->on_switch_in(next);
+#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
+            // libc reads errno as *(int*)*kickos_reent_slot, so the whole reentrant state
+            // follows the thread HERE. Seating it once at thread entry instead would leave
+            // the last entrant owning the one word for the rest of the run.
+            *static_cast<void**>(kickos_reent_slot) = next->reent;
+#endif
             KICKOS_BENCH_SPAN(PH_SWITCH_BOOK, bm_book);
             KICKOS_BENCH_MARK(bm_mpu);
             next->mpu.apply();
@@ -123,6 +130,12 @@ namespace kickos
             kernel().current = first;
             first->state = ThreadState::RUNNING;
             kernel().policy->on_switch_in(first);
+#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
+            // switch_book is not on this path: nothing else seats the FIRST thread's state,
+            // and without this it would run on libc's process-wide one until its first
+            // switch away and back.
+            *static_cast<void**>(kickos_reent_slot) = first->reent;
+#endif
             first->mpu.apply();
             ktime_rearm();
             arch_start(&kernel().boot, &first->ctx);
