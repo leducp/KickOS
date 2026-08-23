@@ -2,17 +2,24 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# PSP-BOUNDS gate: boot a `pspguard` image and assert the switcher REFUSED to save a
-# thread through a PSP with no room below it for the {r4-r11, EXC_RETURN} block.
+# PSP-BOUNDS gate: boot a `pspguard` image and assert the guarded site REFUSED to write
+# through a PSP with no room below it for the {r4-r11, EXC_RETURN} block.
 #
 # The refusal is a panic, so the absence of one is the failure, and the arm's own announce is
 # checked first: a boot that never reached the arm otherwise reads the same as one whose PSP
 # was accepted.
 #
+# MODE 5 IS THE OPPOSITE CLAIM and has its own clause set below. Its PSP is parked with
+# exactly the room the SVC site asks for, which svc_trampoline's transfer onto the caller's
+# kernel block makes legal, so what this gate requires there is an ACCEPTANCE plus an intact
+# poison band under stack_lo, ordered after the acceptance so a compiled-out readback cannot
+# pass. <need>, <site> and <why> are unused on that arm; they stay in the argv so a call site
+# cannot become the wrong arm by dropping arguments.
+#
 # <need> is passed in, because only the reported byte count says which figure fired: 36 is the
 # switcher's plain push, 100 is that push with the FP callee block under it, and the SVC site
-# reports its whole extent, the push plus the depth syscall_dispatch reaches while running
-# privileged in thread mode on the same PSP.
+# reports its whole extent, the trampoline's scratch push plus the exception pair that can
+# preempt the window it spends on this PSP before it reaches the caller's kernel block.
 #
 # <site> comes from ICSR.VECTACTIVE, read by the refusal itself. Both guarded pushes print
 # through one helper, so only the named exception separates "the switcher refused" from "the
@@ -54,6 +61,38 @@ fi
 if ! has "\[pspguard\] arm: mode=$mode "; then
     fail "the wild thread never announced arm mode=$mode (faulted earlier?)"
 fi
+
+# First matching line number, so the two mode-5 clauses can be ordered against each other.
+line_of() { printf '%s\n' "$OUT" | grep -nE "$1" | head -n1 | cut -d: -f1; }
+
+if [ "$mode" = 5 ]; then
+    accepted="$(line_of "\\[pspguard\\] accepted: the syscall trap ran on the low-edge sp")"
+    if [ -z "$accepted" ]; then
+        fail "mode=5: the low-edge sp was never accepted, so the SVC site refused a legal sp"
+    fi
+    assert_no_panic "the syscall ran on the low-edge sp AND the system panicked"
+    # The band, and BOTH directions are clauses. Corrupted names the privileged writes that
+    # went under the parked sp; a missing verdict line means root reached the readback and
+    # printed neither, which is the silent arm this pair exists to refuse.
+    if has "lowband\] CORRUPTED"; then
+        fail "mode=5: the syscall dispatch ran below the parked sp, through a PSP a thread chose"
+    fi
+    intact="$(line_of "\\[pspguard\\] \\[lowband\\] INTACT")"
+    if [ -z "$intact" ]; then
+        fail "mode=5: root printed no band verdict, so nothing here witnessed the band at all:
+    the readback is compiled out, or this is not the mode 5 image"
+    fi
+    if [ "$intact" -le "$accepted" ]; then
+        fail "mode=5: the band verdict at $intact is not after the acceptance at $accepted,
+    so it was read before the syscall it is meant to judge"
+    fi
+    if [ "$RC" -ne 0 ]; then
+        fail "mode=5: expected a clean exit 0 once root printed the verdict, got $RC"
+    fi
+    echo "PASS: mode=5 accepted the low-edge sp at line $accepted and the band was intact at $intact"
+    exit 0
+fi
+
 if ! has "=== $banner EXCEPTION (wild PSP: $why) ==="; then
     fail "no $banner refusal classified '$why' reached the wire: the PSP was accepted, or another bound fired"
 fi

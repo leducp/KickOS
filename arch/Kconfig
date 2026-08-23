@@ -17,16 +17,43 @@
 config ARCH_HAS_KERNEL_STACKS
 	bool
 	help
-	  The arch's trap entry is being moved onto a per-thread kernel stack, and every
-	  board it covers has the RAM to keep KICKOS_THREAD_SLOTS of
-	  KICKOS_KERNEL_STACK_SIZE resident. Off, the blocks are not carved and each
-	  thread's ctx.kernel_sp stays 0.
+	  The arch's trap entry can transfer to a per-thread kernel stack, and its
+	  arch_context carries the kernel_sp that entry loads. NECESSARY AND NOT
+	  SUFFICIENT: whether a given board actually carves the blocks is
+	  KICKOS_KERNEL_STACKS, which asks this AND the chip's HAS_MPU, or this AND the
+	  board's own BOARD_TAKES_KERNEL_STACKS.
+
+config BOARD_TAKES_KERNEL_STACKS
+	bool
+	help
+	  A board on a chip with NO MPU that pays for the per-thread kernel stacks anyway.
+
+	  WHY THIS IS A BOARD DECISION AND NOT AN ARCH ONE. A chip with no MPU has no
+	  privilege boundary for a trusted kernel stack to protect: an unprivileged thread
+	  there reaches kernel memory with a plain store, so moving the syscall dispatch
+	  off that thread's stack buys ROBUSTNESS and not ISOLATION. The red zone the entry
+	  otherwise reserves buys the same robustness at a fifth of the RAM. So on a
+	  HAS_MPU chip the transfer is mandatory, because there it is the isolation; on a
+	  chip without one it is a RAM trade the board makes.
+
+	  DEFAULT OFF, AND THAT DIRECTION IS DELIBERATE. A new board on a no-MPU chip
+	  keeps its red zone until someone does the arena arithmetic and states this,
+	  rather than silently acquiring KICKOS_THREAD_SLOTS blocks of kernel .bss its
+	  arena cannot back. The failure of the silent version is a link-time arena
+	  refusal on the fattest image, which reads as a board that advertises thread
+	  slots it cannot seat.
+
+	  WHAT THE OPTED-IN BOARD OWES: the whole per-board derivation, in its defconfig,
+	  of the arena it gave up and the usable stack its threads keep. microbit and
+	  bluepill-c8 carry theirs.
 
 config ARCH_ARMV6M
 	bool
+	select ARCH_HAS_KERNEL_STACKS
 
 config ARCH_ARMV7M
 	bool
+	select ARCH_HAS_KERNEL_STACKS
 
 config ARCH_RXV3
 	bool

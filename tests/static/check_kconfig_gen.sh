@@ -65,12 +65,18 @@ grep -qE '^#define KICKOS_MAX_IRQ ' "$H" \
 grep -q '^#define KICKOS_MAX_THREADS 8$' "$H" || fail "header lost MAX_THREADS=8"
 # Stated in no defconfig: it comes from KICKOS_MIN_STACK_SIZE's `default <n> if
 # ARCH_ARMV7M`, which the board reached through its chip. The expected value is READ OUT OF
-# Kconfig, since a copy here would not prove the select chain resolved.
-_floor="$(sed -n 's/^[[:space:]]*default[[:space:]]\{1,\}\([0-9]\{1,\}\)[[:space:]]\{1,\}if[[:space:]]\{1,\}ARCH_ARMV7M[[:space:]]*$/\1/p' \
-          "$SRC/Kconfig")"
+# Kconfig, since a copy here would not prove the select chain resolved. Scoped to that ONE
+# stanza: other knobs carry per-arch defaults too (KICKOS_KERNEL_STACK_SIZE does), so a
+# whole-file scrape would find several and have nothing to compare against.
+_floor="$(awk '
+    /^config KICKOS_MIN_STACK_SIZE[[:space:]]*$/ { inside = 1; next }
+    inside && /^config / { inside = 0 }
+    inside && $1 == "default" && $3 == "if" && $4 == "ARCH_ARMV7M" && NF == 4 { print $2 }
+' "$SRC/Kconfig")"
 [ "$(printf '%s\n' "$_floor" | wc -l | tr -d ' ')" = 1 ] && [ -n "$_floor" ] \
-    || fail "Kconfig does not carry exactly one 'default <n> if ARCH_ARMV7M', so this leg
-    has nothing to compare the generated floor against"
+    || fail "Kconfig's KICKOS_MIN_STACK_SIZE stanza does not carry exactly one
+    'default <n> if ARCH_ARMV7M', so this leg has nothing to compare the generated floor
+    against"
 grep -q "^#define KICKOS_MIN_STACK_SIZE $_floor\$" "$H" \
     || fail "MIN_STACK_SIZE did not resolve to the armv7m floor ($_floor per Kconfig)"
 grep -q '^#define KICKOS_BOARD_CONFIG_H$' "$H" \

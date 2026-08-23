@@ -288,25 +288,24 @@ scrape_macro() { # <file> <macro>
 
 # --- the per-thread kernel block, for the stack=kernel classes ----------------
 # Read from the GENERATED board config of the tree just built, the same place the compiler
-# read it from, and only when a class asks for it: no other arch declares one yet.
+# read it from, and only when a class asks for it.
 KUSABLE=""
 KSIZE=""
+KSTACKS=1
 KCANARY=4
 if awk -F"$TAB" '{ if ($4 == "kernel") { found = 1 } } END { exit !found }' "$TMP/classes"; then
     BOARDCFG="$BUILD/generated/include/kickos/board_config.h"
     [ -r "$BOARDCFG" ] || fail "cannot read $BOARDCFG, which is where the gate reads the
     per-thread kernel block a stack=kernel class is measured against"
     KSTACKS="$(scrape_macro "$BOARDCFG" KICKOS_KERNEL_STACKS)" || exit 1
-    if [ "$KSTACKS" -eq 0 ]; then
-        fail "$ROOTS declares a stack=kernel class for $ARCH but this configuration has
-    KICKOS_KERNEL_STACKS=0, so no block is carved and every thread's kernel_sp stays 0: the
-    entry those figures describe cannot run at all here"
+    if [ "$KSTACKS" -ne 0 ]; then
+        KSIZE="$(scrape_macro "$BOARDCFG" KICKOS_KERNEL_STACK_SIZE)" || exit 1
+        # The LOWEST word of a block is the overflow canary kmain arms
+        # (kernel/thread/thread.cc), so it is not stack a descent may reach: a requirement
+        # that merely equals the block reports an overflow every time the deepest legitimate
+        # path runs.
+        KUSABLE=$((KSIZE - KCANARY))
     fi
-    KSIZE="$(scrape_macro "$BOARDCFG" KICKOS_KERNEL_STACK_SIZE)" || exit 1
-    # The LOWEST word of a block is the overflow canary kmain arms (kernel/thread/thread.cc),
-    # so it is not stack a descent may reach: a requirement that merely equals the block
-    # reports an overflow every time the deepest legitimate path runs.
-    KUSABLE=$((KSIZE - KCANARY))
 fi
 
 ENFORCED_ARGS=""
@@ -318,6 +317,10 @@ echo "trap_redzone: header  $HEADER"
 echo "trap_redzone: floor   KICKOS_MIN_STACK_SIZE=$FLOOR (from $CFGFILE)"
 if [ -n "$KSIZE" ]; then
     echo "trap_redzone: block   KICKOS_KERNEL_STACK_SIZE=$KSIZE, $KUSABLE usable above the canary"
+elif [ "$KSTACKS" -eq 0 ]; then
+    echo "trap_redzone: block   KICKOS_KERNEL_STACKS=0 on this board, so every stack=kernel
+    class below is MEASURED AND NOT ENFORCED: it describes an entry design this image does
+    not compile"
 fi
 while IFS="$TAB" read -r cls frame_macro depth_macro onstack; do
     [ -n "$cls" ] || continue
@@ -336,6 +339,23 @@ while IFS="$TAB" read -r cls frame_macro depth_macro onstack; do
     # says nothing about it either. What it has to fit is that block, minus the canary word
     # at the bottom of it, and that is a clause of its own: raising the spawn floor would do
     # nothing here, and the array is per thread SLOT, so a byte costs KICKOS_THREAD_SLOTS.
+    # A CLASS THE BOARD DOES NOT COMPILE IS STILL MEASURED, and saying so is the point: an
+    # arch may carry two entry designs (armv7m does), KICKOS_KERNEL_STACKS picks one per
+    # board, and the call graph cannot see which linked. So the depth is checked against the
+    # header either way and only the FIT clause is skipped, there being no block to fit.
+    #
+    # WHAT COVERS THE OTHER DIRECTION IS NOT UNIFORM, and the difference is the whole reason
+    # this clause measures instead of refusing. An arch whose entry can only run on blocks
+    # says so in C: armv6m and rv32imac carry static_assert(KICKOS_KERNEL_STACKS != 0), on
+    # every image of every board. armv7m carries no such assert and must not, one of its
+    # chips resolving 0 on purpose, so on that arch what keeps this class honest is that its
+    # HAS_MPU presets resolve 1 unconditionally and the skip above is printed rather than
+    # silent. A run that skips every registered preset of an arch would leave the figure
+    # unenforced, which one preset per run cannot see.
+    if [ "$onstack" = kernel ] && [ "$KSTACKS" -eq 0 ]; then
+        echo "trap_redzone: class $cls not enforced here (KICKOS_KERNEL_STACKS=0)"
+        continue
+    fi
     if [ "$onstack" = kernel ]; then
         if [ "$zone" -gt "$KUSABLE" ]; then
             bad "KERNEL STACK BELOW ITS REQUIREMENT: $ARCH needs $zone bytes of a $cls trap's

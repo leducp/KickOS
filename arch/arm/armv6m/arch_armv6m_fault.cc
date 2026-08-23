@@ -10,10 +10,15 @@ extern "C"
 {
 
 // NOT ctx.resting_npriv: that says the thread is a user thread, while syscall dispatch
-// runs PRIVILEGED in thread mode on the thread's own stack (switch.S svc_trampoline), so
-// a fault there is a kernel bug. Exception entry does not modify CONTROL.nPRIV, so
-// reading it here gives the privilege at fault time. A non-zero stacked IPSR means the
-// fault escalated from inside another handler: also a kernel bug.
+// runs PRIVILEGED in thread mode on the thread's KERNEL block (switch.S svc_trampoline),
+// so a fault there is a kernel bug and CONTROL.nPRIV says so. Exception entry does not
+// modify CONTROL.nPRIV, so reading it here gives the privilege at fault time. A non-zero
+// stacked IPSR means the fault escalated from inside another handler: also a kernel bug.
+//
+// THE FRAME IS ALWAYS ON THE USER STACK on this arch, which is why the test below is the
+// thread-stack one and not its kernel-block twin: the hardware stacks it at the PSP with
+// the PRE-exception privilege, and an accepted fault here is by definition one taken with
+// nPRIV set, which the dispatch never is.
 //
 // v6-M has NO CFSR, so armv7m's stacking-abort early-out has no equivalent and the
 // stack-bounds test is the whole of frame validity here. Hardware stacking decrements SP
@@ -37,8 +42,8 @@ bool arch_fault_is_user_thread(void* frame)
 
 // Entered by the exception return with r0 = the SP the stub must run on. Naked, and the
 // SP move is the first instruction: anything the compiler put before it would run on the
-// stack this exists to leave. Thread mode does not change SPSEL, so this writes the PSP
-// the switcher gave the thread, which is where svc_trampoline runs privileged too.
+// stack this exists to leave. Thread mode does not change SPSEL, so this writes the PSP,
+// which is the stack the killed thread was running its own code on.
 __attribute__((naked, noreturn)) void kickos_armv6m_fault_stack_reset(void)
 {
     // Reached through a LITERAL, not `b`. On v6-M an unconditional `b` is the T2 encoding,

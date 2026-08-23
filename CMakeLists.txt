@@ -720,6 +720,13 @@ if(KICKOS_BUILD_TESTS)
   # picopi-st that SETS the figure the header enforces. This gate needs no board, only a
   # cross toolchain, so leaving the binding measurement to a hand run would have left the
   # enforced figure unchecked by anything automated.
+  #
+  # f302nucleo-st REGISTERS FOR THE OPPOSITE REASON: it is the only registered preset left
+  # that keeps the armv7m RED ZONE, stm32f302 having no MPU and not taking
+  # BOARD_TAKES_KERNEL_STACKS. qemu, qemu-m3 and frdmk64f-st all transferred to the kernel
+  # block, so without this entry the armv7m thread-stack class and the spawn-floor clause
+  # that binds it would be measured by nothing automated on any board that still depends on
+  # them.
   set(_fs_redzone_preset "")
   if(KICKOS_BOARD STREQUAL "qemu-riscv" AND KICKOS_CONFIG_VARIANT STREQUAL "base")
     set(_fs_redzone_preset qemu-riscv)
@@ -737,6 +744,8 @@ if(KICKOS_BUILD_TESTS)
     set(_fs_redzone_preset microbit)
   elseif(KICKOS_BOARD STREQUAL "picopi" AND KICKOS_CONFIG_VARIANT STREQUAL "st")
     set(_fs_redzone_preset picopi-st)
+  elseif(KICKOS_BOARD STREQUAL "f302nucleo" AND KICKOS_CONFIG_VARIANT STREQUAL "st")
+    set(_fs_redzone_preset f302nucleo-st)
   endif()
   if(NOT _fs_redzone_preset STREQUAL "")
     # _add_test, not the wrapper: the gate builds a tree of its own, so the kickos_build

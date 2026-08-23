@@ -267,9 +267,10 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   # from 0x20001a60, against 7296 B from 0x20001b80 for the single combined image.
   #
   # Part 2's extra 288 B, 18 grains of the 16-byte granule, is what the split bought:
-  # mem_self_grant, mem_self_grant_nonpow2 and region_mode all ran out of arena in the
-  # combined image and all three run here. They are coverage this board now carries, not
-  # names on a skip list.
+  # mem_self_grant_nonpow2 ran out of arena in the combined image and runs here. It is
+  # coverage this board now carries, not a name on a skip list. mem_self_grant,
+  # endpoint_crossdomain and region_mode ran here too until the kernel stacks took 2688
+  # bytes of .bss; see part 2's clause below.
   #
   # THE TWO SETS BELOW ARE PARTITIONED BY REGION, NOT BY NAME: an arm belongs to the part
   # whose region holds its TAP_ADD line in main.cc, the boundary being the `#undef TAP_ADD`
@@ -289,17 +290,28 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_timeout_revert,call_infoless_revert,call_donation"
     "EXPECT_PARTIALS=")
-  # Part 2's nine. Six are pool refusals, as above:
+  # Part 2's twelve. Six are pool refusals, as above:
   #   call_donation_hold, call_donation_slow, call_donation_pending: 3 workers each
   #   cap_reply_bound_fast, cap_reply_bound_slow, cap_reply_release_close: 3 workers each
-  # Three are what 7584 B of arena still cannot buy:
+  # Six are what this board's arena cannot buy:
   #   irq_as_event: wants a 4 KiB MMIO page out of 16 KiB SRAM
   #   domain_share: the arena cannot spare the shared region
   #   uart_service: PINNED above (KICKOS_SELFTEST_NO_UART_SERVICE), no longer an arena
   #   outcome. Its 1 KiB ring and the arena probes sit in the SAME region, so the split
   #   cannot put one in each part and the pin stays what reserves the block.
+  #   endpoint_crossdomain, region_mode and mem_self_grant: all three PAID FOR THE KERNEL
+  #   STACKS. Three slots of KICKOS_KERNEL_STACK_SIZE moved into kernel .bss when armv6m's
+  #   syscall trap started dispatching there, which took the arena from 7584 to 4896, and
+  #   the defconfig spent 640 of each stack buying it back. That is 928 bytes of spare
+  #   arena down to 160, which is the whole distance the cliff below warns about. The size
+  #   was chosen against THIS output and not only against the link: over the band that
+  #   keeps a thread's usable stack at or above what it had (1348 to 1456, the ceiling the
+  #   arena imposes), 1392 and 1408 lose three arms and every other multiple of 16 tried
+  #   loses four or eight. Re-tune by diffing the whole stream, as the cliff note below
+  #   says, because the count is not monotone in the size.
   # Four more run their invariant and drop a sub-case, reporting PARTIAL: they count as
-  # passes, not skips, and carry their own permission set. All four are in region 2.
+  # passes, not skips, and carry their own permission set. All four are in region 2, and
+  # the set is unchanged by the above.
   #   caller_stack: the arena cannot spare a caller-owned stack
   #   confused_deputy: the arena cannot spare the grandchild's stack
   #   cap_chunk_span: a 7-slot table compiles the flat decode, so no segmented index exists
@@ -322,7 +334,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(NAME microbit_selftest_p2 TARGET selftest_p2 BOARD microbit
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p2})
   set_property(TEST microbit_selftest_p2 APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=call_donation_hold,call_donation_slow,call_donation_pending,uart_service,cap_reply_bound_fast,cap_reply_bound_slow,cap_reply_release_close,irq_as_event,domain_share"
+    "EXPECT_SKIPS=call_donation_hold,call_donation_slow,call_donation_pending,uart_service,cap_reply_bound_fast,cap_reply_bound_slow,cap_reply_release_close,irq_as_event,domain_share,endpoint_crossdomain,region_mode,mem_self_grant"
     "EXPECT_PARTIALS=caller_stack,confused_deputy,cap_chunk_span,cap_child_width")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")

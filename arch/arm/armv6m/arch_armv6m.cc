@@ -52,7 +52,7 @@ static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_ARMV6M_CTX_OFF_S
 static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_ARMV6M_CTX_OFF_STACK_HI,
               "switch.S reads ctx.stack_hi at F_CTX_STACK_HI");
 static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_ARMV6M_CTX_OFF_KERNEL_SP,
-              "a trusted entry loads ctx.kernel_sp at F_CTX_KERNEL_SP");
+              "svc_trampoline and PendSV_Handler load ctx.kernel_sp at F_CTX_KERNEL_SP");
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_ARMV6M_CTX_OFF_TRACE_TID,
               "switch.S telemetry hook expects ctx.trace_tid at F_CTX_TRACE_TID");
@@ -68,13 +68,27 @@ namespace
 }
 static_assert(CALLEE_BLOCK_WORDS * sizeof(uint32_t) == KICKOS_ARMV6M_TRAP_FRAME,
               "PSP_GUARD's F_TRAP_FRAME prices {r4-r11}: eight words");
-// The figure the red-zone gate scrapes as the SVC class's non-measured half: the
-// trampoline prologue plus the nested-exception terms, less the frame its own exception
-// return unstacks. PENDSV's half is KICKOS_ARMV6M_TRAP_FRAME itself.
+// The figure the red-zone gate scrapes as the SVC class's non-measured half: the frame the
+// exception return unstacks, less svc_trampoline's scratch push and the exception pair that
+// can preempt it before it reaches ctx.kernel_sp. The STKALIGN pad is absent because it
+// cancels, which armv6m_trap_stack.h derives. PENDSV's half is KICKOS_ARMV6M_TRAP_FRAME.
 static_assert(KICKOS_ARMV6M_TRAP_NEST_SVC
-                  == 8 + 8 + 36 + KICKOS_ARMV6M_TRAP_FRAME - 32,
-              "the SVC zone is the unstack credit, the trampoline prologue, a preempting "
-              "hardware frame and the PendSV block that tail-chains below it");
+                  == 8 + 32 + KICKOS_ARMV6M_TRAP_FRAME - 32,
+              "the SVC window is the unstack credit, the trampoline's scratch push, a "
+              "preempting hardware frame and the PendSV block that tail-chains below it");
+// The kernel block's structural half: the continuation header svc_trampoline lays at the
+// block top, the pad a preempting entry spends there (it does NOT cancel, the frames above
+// being the compiler's), that hardware frame and the PendSV block below it.
+static_assert(KICKOS_ARMV6M_TRAP_NEST_SVCK
+                  == 16 + 4 + 32 + KICKOS_ARMV6M_TRAP_FRAME,
+              "the SVCK structural half is the continuation header, the STKALIGN pad, a "
+              "preempting hardware frame and the PendSV block that tail-chains below it");
+// NOTHING DESCENDS ON THE THREAD STACK AT THE SVC SITE any more: svc_trampoline moves SP to
+// ctx.kernel_sp before it calls anything, so the dispatch is measured as SVCK. A nonzero
+// figure here needs roots in tests/static/trap_redzone_roots.txt, where the SVC class
+// declares NONE.
+static_assert(KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVC == 0,
+              "a nonzero SVC descent needs roots in tests/static/trap_redzone_roots.txt");
 // The PENDSV class charges the push alone. A claim about handler mode rather than a
 // measurement: ARMv6-M forces SP_main there, so everything PendSV_Handler calls runs on
 // the MSP.
@@ -97,7 +111,6 @@ static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV6M_TRAP_NEED_SVC + 32,
               "KICKOS_MIN_STACK_SIZE is below the armv6m syscall red zone plus the "
               "exception frame entry spends above it: raise the per-arch default in "
               "Kconfig, never the red zone, which is a measurement");
-// THE CEILING'S ALIGNMENT is checkable even though its SIZE is not yet measurable:
 // ARMv6-M keeps SP 8-byte aligned at every public interface (AAPCS), and exception entry
 // clears bit 2 of the banked SP, so a kernel stack whose SIZE is not a multiple of 8
 // puts its top off that boundary.
@@ -105,6 +118,21 @@ static_assert(KICKOS_KERNEL_STACK_SIZE % 8 == 0,
               "KICKOS_KERNEL_STACK_SIZE must be a multiple of 8 on this arch, or a "
               "kernel stack's top does not land on the alignment every frame on it "
               "assumes");
+// THE TRAMPOLINE HAS NOWHERE ELSE TO BUILD. With no block seated, every syscall takes
+// svc_trampoline's refusal path and the first one a thread makes ends the system, so this
+// arch cannot be configured without the blocks.
+static_assert(KICKOS_KERNEL_STACKS != 0,
+              "armv6m's syscall trap runs every dispatch on ctx.kernel_sp");
+// THE CEILING MUST COVER ITS OWN REQUIREMENT. The deepest a syscall drives a kernel block
+// is the continuation header, the dispatch below it, and the hardware frame plus PendSV
+// block a preemption takes at that depth. The lowest word of the block is the overflow
+// canary (kernel/thread/thread.cc), so the requirement has to fit ABOVE it: a ceiling that
+// merely equals the requirement reports an overflow on the deepest legitimate descent, and
+// one below it overflows the block for real. This assert covers every armv6m board.
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t) >= KICKOS_ARMV6M_TRAP_NEED_SVCK,
+              "KICKOS_KERNEL_STACK_SIZE is below the armv6m syscall kernel-stack "
+              "requirement plus its canary word: raise the per-arch default in Kconfig, "
+              "never the depth, which is a measurement");
 
 namespace
 {
@@ -336,6 +364,22 @@ void kickos_armv6m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi
     (void)lo;
     (void)hi;
     ::kickos::kprintf("\n=== ARMV6M EXCEPTION (wild PSP) ===\n");
+#endif
+    kfault_terminate();
+}
+
+// Called from switch.S (svc_trampoline) when the calling thread has no kernel block seated,
+// so the transfer has nowhere to build. Runs PRIVILEGED IN THREAD MODE on that thread's own
+// stack, which is what a panic has to work with here, and contains the system rather than
+// the dispatch: nothing has run yet.
+void kickos_armv6m_no_kernel_stack(uint32_t psp)
+{
+    kpanic_enter();
+    ::kickos::kprintf("\n=== ARMV6M EXCEPTION (no kernel stack) ===\n");
+#if KICKOS_PANIC_DUMP
+    ::kickos::kprintf("  in svc_trampoline PSP=0x%x\n", static_cast<unsigned>(psp));
+#else
+    (void)psp;
 #endif
     kfault_terminate();
 }

@@ -17,6 +17,10 @@ config BOARD_BLACKPILL
 config BOARD_BLUEPILL_C8
 	bool "bluepill-c8 (STM32F103C8)"
 	select CHIP_STM32F103
+	# STM32F103 has no MPU, so the kernel stacks are this board's RAM decision and not
+	# its arch's; arch/Kconfig's BOARD_TAKES_KERNEL_STACKS carries the principle and
+	# the defconfig carries the arithmetic. 20 KiB of SRAM backs the three blocks.
+	select BOARD_TAKES_KERNEL_STACKS
 
 config BOARD_DUE
 	bool "due (Arduino Due, SAM3X8E)"
@@ -45,6 +49,13 @@ config BOARD_FRDMK64F
 config BOARD_MICROBIT
 	bool "microbit (BBC micro:bit, nRF51822)"
 	select CHIP_NRF51
+	# nRF51 has no MPU, so the kernel stacks are this board's RAM decision and not its
+	# arch's; arch/Kconfig's BOARD_TAKES_KERNEL_STACKS carries the principle and the
+	# defconfig carries the arithmetic. It is also the ONLY armv6m board that executes
+	# anything: it runs the emulator arms this arch's entry is witnessed by, picopi-st
+	# having no QEMU machine, so opting microbit out would leave the armv6m transfer
+	# with no execution witness at all.
+	select BOARD_TAKES_KERNEL_STACKS
 
 config BOARD_PICOPI
 	bool "picopi (Raspberry Pi Pico, RP2040)"

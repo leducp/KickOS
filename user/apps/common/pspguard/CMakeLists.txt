@@ -24,13 +24,22 @@ if(NOT TARGET pspguard_svc)
 endif()
 target_compile_definitions(pspguard_svc PRIVATE KICKOS_PSPGUARD_MODE=2)
 
-# The SVC slow path's KERNEL DESCENT. The push leg ACCEPTS this arm's PSP, so the only bound
-# that can refuse it is one that also charges what syscall_dispatch descends below the frame
-# while running privileged in thread mode on that same PSP.
-kickos_add_diagnostic_app(pspguard_svcdepth
-  SOURCES main.cc
-  BOARD   ${KICKOS_BOARD})
-target_compile_definitions(pspguard_svcdepth PRIVATE KICKOS_PSPGUARD_MODE=5)
+# THE LOW EDGE, and the one arm here that expects the trap to be ACCEPTED: the PSP is parked
+# with exactly the room the SVC site asks for, which is legal once svc_trampoline moves SP
+# onto the caller's own kernel block before it calls anything. What it witnesses is the
+# stronger statement, that the syscall returns AND the band the child poisoned below that PSP,
+# inside its own stack, is intact.
+#
+# BUILT ONLY WHERE THE BLOCKS EXIST, because the premise is the transfer. On an armv7m board
+# that kept its red zone the same park is REFUSED and correctly so, and what covers that board
+# is check_trap_redzone.sh, which measures the descent the red zone reserves for on every
+# preset it is registered for. main.cc #errors if this arm is built without the blocks.
+if(KICKOS_KERNEL_STACKS)
+  kickos_add_diagnostic_app(pspguard_svcdepth
+    SOURCES main.cc
+    BOARD   ${KICKOS_BOARD})
+  target_compile_definitions(pspguard_svcdepth PRIVATE KICKOS_PSPGUARD_MODE=5)
+endif()
 
 # The PendSV arms, armv7m only. They provoke an ASYNCHRONOUS switch, so each needs a
 # higher-priority ticker thread as a second spawn, and the runnable armv6m board is microbit,
@@ -76,7 +85,8 @@ endif()
 
 # The byte count the refusal must report, carried by the caller and not sniffed by the
 # script: only this expectation separates "some leg refused the PSP" from "the leg that
-# measured the FP block refused it".
+# measured the FP block refused it". Mode 5 expects no refusal at all and takes the same
+# argv shape with the count unused, so a call site cannot silently become the wrong arm.
 set(_pg_gate "${PROJECT_SOURCE_DIR}/tests/integration/check_pspguard.sh")
 # The SVC site's expected byte count is the whole SVC extent, read out of the header the
 # guard on THIS arch reads, and the banner is the one that arch's fault reporter prints.
@@ -106,13 +116,20 @@ foreach(_pg_macro NEST_SVC KERNEL_DEPTH_SVC)
   endif()
   string(REGEX REPLACE "^.* " "" _pg_${_pg_macro} "${_pg_hit}")
 endforeach()
-math(EXPR _pg_svc_need "${_pg_NEST_SVC} + ${_pg_KERNEL_DEPTH_SVC}")
+# THE SAME LADDER THE HEADER RESOLVES, and it has to be here rather than read out of one
+# macro because the gate scrapes plain integers and cannot evaluate the header's #if. At
+# KICKOS_KERNEL_STACKS 1 the dispatch is on the kernel block and the site charges the window
+# alone; at 0 it charges the window plus the dispatch.
+if(KICKOS_KERNEL_STACKS)
+  set(_pg_svc_need "${_pg_NEST_SVC}")
+else()
+  math(EXPR _pg_svc_need "${_pg_NEST_SVC} + ${_pg_KERNEL_DEPTH_SVC}")
+endif()
 
 if(KICKOS_BOARD STREQUAL "microbit")
-  # The armv6m pair. Both arms are refused at the SVC class's whole extent: the site charges
-  # that figure above the arm selector, so mode 2, whose PSP has no room for even the push,
-  # reports the same count as mode 5, whose PSP has room for the push and not for the
-  # descent.
+  # The armv6m pair, and they are opposite claims now: mode 2 is refused at the SVC class's
+  # whole extent, mode 5 is ACCEPTED at the low edge of that same extent and answers with the
+  # band verdict instead of a refusal.
   kickos_add_qemu_test(NAME microbit_pspguard_svc TARGET pspguard_svc
     BOARD microbit
     SCRIPT "${_pg_gate}" ARGS 2 ${_pg_svc_need} SVCall "no room below" ${_pg_banner})

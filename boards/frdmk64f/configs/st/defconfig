@@ -6,9 +6,18 @@ CONFIG_BOARD_FRDMK64F=y
 # Adds the test-only self-test syscalls the TAP suite calls.
 CONFIG_MEMORY_MODEL_MPU=y
 # Not the fleet default 16: enforcement pins __kickos_ram_start above the .appdata
-# window, and what is left backs 12 stacks of the 8192 below.
+# window, and what is left backs 12 stacks of the 7584 below.
+#
+# 7584 AND NOT 8192 BECAUSE THE KERNEL BLOCKS ARE IN .bss NOW, AND A THREAD STILL ENDS
+# UP WITH MORE STACK THAN BEFORE. Thirteen slots of KICKOS_KERNEL_STACK_SIZE (992 on
+# armv7m) is 12896 bytes of kernel .bss below the arena, more than one whole stack, and
+# it takes the arena from 112704 to 99808. The SYSMPU is a base+limit unit
+# (arch_mpu_region_pow2 is 0), so the step is the 32-byte granule and not a power of
+# two: 512 + 13 x 7584 is 99104, so 704 spare. A thread may use 7584 - 180 = 7404
+# against 8192 - 836 = 7356 before, the red zone having gone from 836 to 180
+# (armv7m_trap_stack.h derives both).
 CONFIG_KICKOS_MAX_THREADS=12
-CONFIG_KICKOS_USER_STACK_SIZE=8192
+CONFIG_KICKOS_USER_STACK_SIZE=7584
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
-CONFIG_KICKOS_ROOT_STACK_SIZE=8192
+CONFIG_KICKOS_ROOT_STACK_SIZE=7584
 CONFIG_KICKOS_ENABLE_SELFTEST=y

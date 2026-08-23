@@ -182,7 +182,13 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt ld
   # and PMP folds the size into the address bits, while PMSAv8, SYSMPU and the RX MPU are
   # base+limit and take any granule multiple. _p2 is the scraped seam, so this asks the
   # backend rather than assuming every enforcing board is the strict kind.
-  if(_p2 AND NOT _user EQUAL 0)
+  # AND IT ASKS _mn FIRST, because arch_mpu_region_pow2 is declared read-only where
+  # arch_mpu_min_region is non-zero (arch/include/kickos/arch/arch.h) and
+  # arch_ram_region_size returns 16-byte granular at 0 without ever reading it. A board
+  # with no MPU scrapes _p2 = 1 off the v7-M fallback TU, so a refusal keyed on _p2 alone
+  # rejected a size that backend snaps nothing on, and said so citing a snap that cannot
+  # happen there.
+  if(_p2 AND NOT _mn EQUAL 0 AND NOT _user EQUAL 0)
     math(EXPR _user_pow2 "${_user} & (${_user} - 1)")
     if(NOT _user_pow2 EQUAL 0)
       message(FATAL_ERROR

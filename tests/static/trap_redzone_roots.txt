@@ -49,8 +49,8 @@
 # a file-scoped one; the match must be UNIQUE, and an ambiguous name is refused rather than
 # guessed at.
 #
-# WHICH ARCHES ARE HERE, AND WHY LX6 IS NOT. The four below are every backend whose trap
-# prologue writes through a pointer an unprivileged thread chose while an MPU is enforcing.
+# WHICH ARCHES ARE HERE, AND WHY LX6 IS NOT. The four below are every backend that writes
+# through a pointer an unprivileged thread chose, or once did, while an MPU is enforcing.
 # lx6 is absent on purpose: CHIP_ESP32 selects no HAS_MPU, so nothing on that part isolates
 # one thread's memory from another's and a wild-sp privileged descent reaches nothing a
 # plain store from the thread itself does not already reach. A red zone there would cost
@@ -228,17 +228,24 @@ unsized rxv3 __divdi3    32 reason: measured from libgcc.a, pushm r6-r12 is 28 p
 unsized rxv3 __clzsi2     4 reason: measured from libgcc.a, frameless leaf so the return-address slot only
 
 # --- armv7m --------------------------------------------------------------------
-# TWO classes, and only one of them has anything to measure. Both guarded pushes in
-# switch.S happen in HANDLER mode, where ARMv7-M forces SP_main, so the switcher's calls
-# and the SVC fastpath's kickos_ipc_fastpath descend on the MSP and not on the thread's
-# stack. The SVC SLOW path is the exception: it exception-returns into svc_trampoline,
-# which runs privileged in THREAD mode on the caller's own PSP and calls syscall_dispatch
-# there. So PENDSV measures nothing by declaration, and SVC measures the dispatch.
+# THREE classes, and TWO OF THEM ARE THE SAME DISPATCH UNDER THE TWO ENTRY DESIGNS THIS ARCH
+# COMPILES. KICKOS_KERNEL_STACKS picks which one an image links: at 1 svc_trampoline moves SP
+# onto the calling thread's own kernel block before it calls anything, so the dispatch is
+# SVCK, stack=kernel; at 0 it runs the dispatch on the caller's own PSP and the dispatch is
+# SVC, on the thread stack, with the red zone the SVC site reserves. armv7m_trap_stack.h says
+# which chips take which and why.
 #
-# The SVC frame= is NEST_SVC rather than FRAME, because on this backend the non-measured
-# half of that class is more than the push: it also holds the hardware frame a device IRQ or
-# SysTick stacks on the PSP when it preempts the trampoline, and the PendSV push below that.
-# PENDSV takes FRAME_MAX, its own worst-case push. armv7m_trap_stack.h derives every term.
+# BOTH CLASSES ARE MEASURED ON EVERY PRESET, and that is deliberate rather than a limitation
+# worked around: the call graph has no way to say which design an object linked, so each
+# figure is enforced fleet-wide and dominates every board whichever path it takes. Sizing
+# SVC to the boards that happen to be unconverted today would make the figure a claim about
+# the configuration set, which is the sample defect this file's history is a record of.
+#
+# The SVC class is what the SPAWN FLOOR clause binds, and f302nucleo-st is the board it now
+# exists for: with qemu, qemu-m3 and frdmk64f-st all converted, no other REGISTERED preset
+# takes that path, so f302nucleo-st is registered as a preset in the top-level CMakeLists
+# ladder rather than left to a hand run. PENDSV takes FRAME_MAX, its own worst-case push, and
+# is the same under both designs, handler mode putting everything it calls on the MSP.
 arch    armv7m header=arch/arm/armv7m/include/kickos/arch/armv7m_trap_stack.h
 # Three of these (qemu, qemu-m3, frdmk64f-st) are registered as a ctest by the top-level
 # CMakeLists; the rest are declared so a hand run covers them without inventing bindings on
@@ -261,14 +268,22 @@ class   armv7m PENDSV frame=KICKOS_ARMV7M_TRAP_FRAME_MAX \
                       depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV
 class   armv7m SVC    frame=KICKOS_ARMV7M_TRAP_NEST_SVC \
                       depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC
+class   armv7m SVCK   frame=KICKOS_ARMV7M_TRAP_NEST_SVCK \
+                      depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK stack=kernel
 
 root    armv7m PENDSV NONE reason: PendSV_Handler and the SVC fastpath arm run in handler mode, where ARMv7-M forces SP_main, so kickos_arch_mpu_commit, kickos_ipc_fastpath and the trace/bench hooks all descend on the MSP. What the MSP has to hold is a kernel-stack sizing question, not a privilege one, and no figure here bounds it.
 
-# svc_trampoline's only call. The fastpath is NOT a root of this class: it is reached with
-# lr still an EXC_RETURN, in handler mode, on the MSP.
+# svc_trampoline's only call, and the SAME ROOT SET serves both classes: what differs is the
+# stack it lands on and, with it, whether the panic tail is charged. The fastpath is NOT a
+# root of either: it is reached with lr still an EXC_RETURN, in handler mode, on the MSP.
 root    armv7m SVC    syscall_dispatch
+root    armv7m SVCK   syscall_dispatch
 
-exclude armv7m _ZN6kickos6kpanicEPKc reason: the noreturn panic tail, which every KICKOS_ASSERT in the dispatch reaches. Counting it puts the SVC red zone at 980, above every armv7m board's KICKOS_MIN_STACK_SIZE, so a thread spawned at the floor could not make a syscall at all. The residual is stated in armv7m_trap_stack.h; the tool prints the without-exclusions figure so it cannot go quiet.
+# THE TWO EXCLUSIONS SERVE SVC ALONE, that being the only armv7m class on a thread stack
+# whose roots reach the tail. They do NOT reach SVCK: a stack=kernel class is measured with
+# nothing excluded, which is where the decision that a kernel array has no spawn floor to
+# clear is spent.
+exclude armv7m _ZN6kickos6kpanicEPKc reason: the noreturn panic tail, which every KICKOS_ASSERT in the dispatch reaches. Counting it puts the SVC red zone at 940, above every armv7m board's KICKOS_MIN_STACK_SIZE, so a thread spawned at the floor could not make a syscall at all. The residual is stated in armv7m_trap_stack.h; the tool prints the without-exclusions figure so it cannot go quiet, and SVCK is that figure enforced where it belongs, against the kernel block.
 exclude armv7m ?_ZN6kickos9kpanic_atEPKcj reason: the SECOND door into the same noreturn panic tail. f302nucleo-st and bluepill-c8-st measure 680 and 672 THROUGH this symbol, above the enforced 656, where every board measured before them reached its depth by another chain entirely: excluding one door and not the other made the figure depend on which door a board's deepest path used. Same residual, stated once in armv7m_trap_stack.h.
 
 # The AEABI 64-bit divide helpers are libgcc, so they have no .ci entry and neither does
@@ -282,17 +297,17 @@ unsized armv7m __aeabi_ldivmod  56 reason: measured, 16-byte head plus __udivmod
 unsized armv7m __aeabi_uldivmod 56 reason: measured, 16-byte head plus __udivmoddi4's 40
 
 # --- armv6m --------------------------------------------------------------------
-# TWO classes, the same split as armv7m and for the same reason: both guarded pushes in
+# THREE classes, the same split as armv7m and for the same reason: both guarded pushes in
 # switch.S happen in HANDLER mode, where ARMv6-M forces SP_main (ARMv6-M ARM B1.4.1), so
 # the switcher's calls and the SVC fastpath's kickos_ipc_fastpath descend on the MSP and
-# not on the thread's stack. The SVC SLOW path is the exception: it exception-returns into
-# svc_trampoline, which runs privileged in THREAD mode on the caller's own PSP and calls
-# syscall_dispatch there.
+# not on a thread stack. The SVC slow path leaves handler mode, and svc_trampoline's FIRST
+# act there is to move SP onto the calling thread's own KERNEL BLOCK (ctx.kernel_sp), so it
+# is SVCK, stack=kernel, that measures the dispatch.
 #
-# The SVC frame= is NEST_SVC rather than FRAME, because the non-measured half of that class
-# is more than the push: it also holds the hardware frame a device IRQ or SysTick stacks on
-# the PSP when it preempts the trampoline, and the PendSV block below that. PENDSV takes the
-# push itself. armv6m_trap_stack.h derives every term. There is no FP term on this arch.
+# The SVC class is NOT deletable for that: the fastpath arm's callee block and the
+# trampoline's eight scratch bytes still land on the thread's PSP, and NEST_SVC prices them
+# plus the exception pair that can preempt the window between them. PENDSV takes the push
+# itself. armv6m_trap_stack.h derives every term. There is no FP term on this arch.
 arch    armv6m header=arch/arm/armv6m/include/kickos/arch/armv6m_trap_stack.h
 preset  armv6m microbit
 preset  armv6m picopi-st
@@ -300,15 +315,15 @@ class   armv6m PENDSV frame=KICKOS_ARMV6M_TRAP_FRAME \
                       depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_PENDSV
 class   armv6m SVC    frame=KICKOS_ARMV6M_TRAP_NEST_SVC \
                       depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVC
+class   armv6m SVCK   frame=KICKOS_ARMV6M_TRAP_NEST_SVCK \
+                      depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVCK stack=kernel
 
 root    armv6m PENDSV NONE reason: PendSV_Handler and the SVC fastpath arm run in handler mode, where ARMv6-M forces SP_main, so kickos_arch_mpu_commit, kickos_ipc_fastpath and the telemetry hook all descend on the MSP. What the MSP has to hold is a kernel-stack sizing question, not a privilege one, and no figure here bounds it.
+root    armv6m SVC    NONE reason: svc_trampoline moves SP to ctx.kernel_sp before it calls anything, so syscall_dispatch and the tree under it are measured as SVCK. What is left on the thread's PSP at this site writes no C frame at all: the fastpath arm's callee block, in handler mode, and the trampoline's own scratch push. NEST_SVC prices both plus the exception pair that can preempt the window between them.
 
-# svc_trampoline's only call. The fastpath is NOT a root of this class: it is reached with
-# lr still an EXC_RETURN, in handler mode, on the MSP.
-root    armv6m SVC    syscall_dispatch
-
-exclude armv6m _ZN6kickos6kpanicEPKc reason: the noreturn panic tail, which every KICKOS_ASSERT in the dispatch reaches. Counting it takes the deepest measurement to 808 and the red zone to 860 (picopi-st), above KICKOS_MIN_STACK_SIZE, so a thread spawned at the floor could not make a syscall at all. The residual is stated in armv6m_trap_stack.h; the tool prints the without-exclusions figure so it cannot go quiet.
-exclude armv6m ?_ZN6kickos9kpanic_atEPKcj reason: the SECOND door into the same noreturn panic tail; see the kpanic exclusion above and the residual in armv6m_trap_stack.h.
+# svc_trampoline's only call, on the calling thread's kernel block. The fastpath is NOT a
+# root of this class: it is reached with lr still an EXC_RETURN, in handler mode, on the MSP.
+root    armv6m SVCK   syscall_dispatch
 
 # The AEABI helpers are libgcc, so they have no .ci entry and neither does anything they
 # call. MEASURED from the linked ELF and from libgcc.a for this multilib

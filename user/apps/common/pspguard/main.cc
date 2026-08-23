@@ -24,16 +24,18 @@
 //
 // MODE 2: the SECOND site. SVC_Handler pushes the same block through the same PSP for the
 // register-carrying IPC trap, and its slow path hands that PSP to svc_trampoline, which runs
-// PRIVILEGED on it. Refusal: SVCall, "no room below". This PSP is short of room for even the
-// push, so what the arm establishes is that the site is guarded at all; mode 5 pins the figure.
+// PRIVILEGED on it until it reaches the caller's kernel block. Refusal: SVCall, "no room
+// below", need = the whole SVC extent. This PSP is short of room for even the push, so the
+// refusal pins both that the site is guarded and which figure it charges.
 //
-// MODE 5: the SVC slow path's KERNEL DESCENT. The PSP is placed so that the push FITS: the
-// SVC's own hardware frame takes the top 32 bytes and leaves the handler a PSP 40 bytes above
-// the base, one word clear of the 36-byte push (on armv6m the push is 32 and the clearance is
-// 8, exception entry's 8-byte alignment absorbing anything less). svc_trampoline then runs
-// PRIVILEGED IN THREAD MODE on that PSP and syscall_dispatch descends hundreds of bytes below
-// stack_lo, with the MPU not consulted. Refusal: SVCall, "no room below", need = the whole
-// SVC extent.
+// MODE 5: THE LOW EDGE, and the one arm here that expects the trap to be ACCEPTED. The PSP is
+// placed with exactly the room the SVC site asks for and no more, which is a legal sp:
+// svc_trampoline moves SP to the caller's own kernel block before it calls anything, so
+// syscall_dispatch descends there and nothing privileged is written under the parked sp. The
+// claim is therefore the STRONGER one, that the syscall RETURNS and the poisoned band below
+// its own stack below that PSP is intact, which the child reads back and prints either way. A
+// kernel that still ran the dispatch on this PSP writes syscall_dispatch's own frame into the
+// top of that band and the band says so; a guard that refused the sp panics instead.
 //
 // MODE 3: PSP ABOVE stack_hi, inside a granted domain region allocated after the stack. The
 // room below such a PSP is enormous, so only the upper-bound leg can refuse it.
@@ -48,10 +50,10 @@
 //
 // ARMV6M CARRIES MODES 2 AND 5, AND NOTHING ELSE. Its switch residual is {r4-r11} with no
 // EXC_RETURN, which the epilogue rebuilds from a literal, so no PSP a thread writes steers an
-// exception return there. What is left is what these two arms aim at: the SVC slow path runs
-// syscall_dispatch PRIVILEGED IN THREAD MODE on the thread-chosen PSP, where no MPU is
-// consulted, and the push itself lands r10 and r11 on the neighbouring thread's stacked PC
-// and xPSR. Mode 1 needs an FP frame and Cortex-M0 has no FPU. Modes 0, 3 and 4 provoke an
+// exception return there. What is left is what these two arms aim at: the SVC site's own push
+// lands r10 and r11 on the neighbouring thread's stacked PC and xPSR, and svc_trampoline runs
+// PRIVILEGED IN THREAD MODE on the thread-chosen PSP until it reaches ctx.kernel_sp. Mode 1
+// needs an FP frame and Cortex-M0 has no FPU. Modes 0, 3 and 4 provoke an
 // ASYNCHRONOUS PendSV, so each needs the ticker below as a second spawn on a board whose
 // defconfig states CONFIG_KICKOS_MAX_THREADS=2 and no arena slack, and what they would bound
 // on this arch is the 32-byte push alone: PendSV_Handler runs in handler mode, which forces
@@ -61,6 +63,15 @@
 #include <kickos/arch/armv7m_trap_stack.h>
 #else
 #include <kickos/arch/armv6m_trap_stack.h>
+#endif
+/* KICKOS_KERNEL_STACKS: mode 5's whole premise is the transfer onto the kernel block, and
+   the armv6m header has no reason to carry the posture (that arch has one entry design), so
+   this app reads it itself. -Wundef makes the fallback load-bearing rather than tidy. */
+#if defined(__has_include) && __has_include(<kickos/board_config.h>)
+#include <kickos/board_config.h>
+#endif
+#ifndef KICKOS_KERNEL_STACKS
+#define KICKOS_KERNEL_STACKS 0
 #endif
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -76,6 +87,9 @@
 #endif
 #if KICKOS_PSPGUARD_MODE == 1 && !defined(__ARM_FP)
 #error "pspguard mode 1 needs an FP frame to place; it must not be built soft-float"
+#endif
+#if KICKOS_PSPGUARD_MODE == 5 && !KICKOS_KERNEL_STACKS
+#error "pspguard mode 5 witnesses the transfer onto the kernel block; without the blocks the same sp is refused"
 #endif
 #if (!defined(__ARM_ARCH) || (__ARM_ARCH < 7)) && KICKOS_PSPGUARD_MODE != 2 \
     && KICKOS_PSPGUARD_MODE != 5
@@ -112,22 +126,29 @@ namespace
 #endif
 #elif KICKOS_PSPGUARD_MODE == 5
 #if defined(__ARM_ARCH) && (__ARM_ARCH >= 7)
-    // The hardware frame the SVC stacks (32), plus ONE WORD MORE than the software push
-    // needs, so the push leg accepts and only a bound that also charges the kernel descent
-    // can refuse.
-    constexpr uint32_t SP_OFFSET = 32 + KICKOS_ARMV7M_TRAP_FRAME + 4;
+    constexpr uint32_t PG_SVC_NEED = KICKOS_ARMV7M_TRAP_NEED_SVC;
 #else
-    // The same, with EIGHT bytes of slack and not four: ARMv6-M exception entry clears bit 2
-    // of SP before stacking (CCR.STKALIGN is Read-As-One), so a single word of slack is
-    // absorbed by that adjustment and leaves room exactly equal to the push, which makes the
-    // arm rest on the guard comparing room < need rather than room <= need. Eight survives
-    // the rounding, so the push leg accepts with slack and only the extent can refuse.
-    constexpr uint32_t SP_OFFSET = 32 + KICKOS_ARMV6M_TRAP_FRAME + 8;
+    constexpr uint32_t PG_SVC_NEED = KICKOS_ARMV6M_TRAP_NEED_SVC;
 #endif
-    // A guard that does not charge the descent lets it run: hundreds of privileged bytes
-    // below stack_lo. Without a sink under the stack the arena it corrupts is the runner's
-    // own, and the failure arrives as a fault elsewhere instead of as this arm's report.
-    constexpr uint32_t SINK_BYTES = 2048;
+    // The hardware frame the SVC stacks (32) plus exactly what the site asks for below it,
+    // rounded UP to 8 and given one spare word pair: exception entry clears bit 2 of SP
+    // before stacking on both arches (CCR.STKALIGN Read-As-One), so an sp that is 4-mod-8
+    // here loses a word to that adjustment and would leave the guard one word short of its
+    // own figure.
+    constexpr uint32_t SP_OFFSET = ((32u + PG_SVC_NEED + 8u + 7u) / 8u) * 8u;
+    static_assert(SP_OFFSET - 32u >= PG_SVC_NEED,
+                  "the parked sp must leave the SVC site exactly the room it asks for, or "
+                  "this arm measures a refusal instead of the acceptance it exists to pin");
+    // The band the child poisons IN ITS OWN STACK, from stack_lo up to the PSP the SVC site
+    // guards, and reads back after the syscall returns. That is exactly the memory a kernel
+    // still running the dispatch on the parked PSP writes FIRST: syscall_dispatch's own frame
+    // starts at that PSP and descends, so the top of this band is hit before anything leaves
+    // the stack at all. It needs no arena block and no grant: the child owns this memory.
+    constexpr uint32_t BAND_BYTES = SP_OFFSET - 32u;
+    constexpr uint32_t BAND_POISON = 0x5AFEBA5Eu;
+    static_assert(BAND_BYTES >= 32u,
+                  "a band this narrow could be stepped over by the first frame of a dispatch "
+                  "that still ran on the parked PSP");
 #endif
 
     // Filled by main before the spawn: the child has no way to find its own bounds.
@@ -203,6 +224,15 @@ namespace
                   static_cast<unsigned>(target));
         emit(msg);
 
+#if KICKOS_PSPGUARD_MODE == 5
+        // Poison from stack_lo up to the PSP the site guards, at the normal sp, so the loop
+        // itself writes nothing into the band it is laying.
+        volatile uint32_t* const band = reinterpret_cast<volatile uint32_t*>(a->stack_lo);
+        for (uint32_t i = 0; i < BAND_BYTES / 4u; i++)
+        {
+            band[i] = BAND_POISON;
+        }
+#endif
 #if KICKOS_PSPGUARD_MODE == 2 || KICKOS_PSPGUARD_MODE == 5
         // svc_trampoline exits to the STACKED LR, so the return address has to be arranged
         // here the way arch_syscall_reg does it. KOS_SYS_CLOCK_NOW is nullary and cannot fail,
@@ -243,7 +273,31 @@ namespace
                        : [low] "r"(target)
                        : "r0", "r1", "r2", "r3", "r12", "lr", "cc", "memory");
 #endif
+#if KICKOS_PSPGUARD_MODE == 5
+        // The tell this arm turns on, and the gate requires it: a mode-5 image whose syscall
+        // was refused panics instead, and one compiled without the trap prints nothing here.
+        emit("[pspguard] accepted: the syscall trap ran on the low-edge sp\n");
+        // The verdict, and BOTH outcomes print, so the gate reads an answer rather than
+        // inferring one from a missing line. Ordered after the acceptance above, which is what
+        // keeps a compiled-out readback from passing.
+        bool corrupt = false;
+        for (uint32_t i = 0; i < BAND_BYTES / 4u; i++)
+        {
+            if (band[i] != BAND_POISON)
+            {
+                corrupt = true;
+            }
+        }
+        if (corrupt)
+        {
+            emit("[pspguard] [lowband] CORRUPTED: the dispatch ran below the parked sp\n");
+            return;
+        }
+        emit("[pspguard] [lowband] INTACT: the kernel wrote nothing below the parked sp\n");
+        return;
+#else
         emit("[pspguard] ERROR: the syscall trap accepted a PSP it must refuse\n");
+#endif
 #else
         uint32_t const before = g_ticks;
         volatile uint32_t* const addr = &g_ticks;
@@ -295,14 +349,6 @@ int main(int, char**)
     // the sink is below everything, `pad_lo` below the stack and `pad_hi` above it. Modes 3
     // and 4 need exactly that, and no other mode allocates a pad: the SVC arms take the
     // child stack, plus the sink for mode 5, and leave the rest of the arena untouched.
-#if KICKOS_PSPGUARD_MODE == 5
-    void* const sink = kos_ram_alloc(SINK_BYTES);
-    if (sink == nullptr)
-    {
-        emit("[pspguard] ERROR: arena ram_alloc refused the descent sink\n");
-        return 1;
-    }
-#endif
 #if KICKOS_PSPGUARD_MODE == 3 || KICKOS_PSPGUARD_MODE == 4
     void* const pad_lo = kos_ram_alloc(PAD_BYTES);
 #endif
@@ -361,6 +407,13 @@ int main(int, char**)
         return 1;
     }
     w.join();
+#if KICKOS_PSPGUARD_MODE == 5
+    // Reached only because the trap was ACCEPTED: a refusal panics and root never runs again.
+    // The verdict itself is the child's, printed on its own stack while it still owned the
+    // band.
+    return 0;
+#else
     emit("[pspguard] ERROR: the wild thread came back; its PSP was never refused\n");
     return 1;
+#endif
 }
