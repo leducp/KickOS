@@ -885,6 +885,12 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   add_subdirectory(tests/unit/ktime)
 endif()
 
+# Host-only; the reason is in tests/unit/tlscarve/CMakeLists.txt.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tlscarve/CMakeLists.txt")
+  add_subdirectory(tests/unit/tlscarve)
+endif()
+
 # Host-only: the chunk directory mapping and the free-slot list length are kernel-internal,
 # so a host program is what observes them. The per-geometry split is in
 # tests/unit/captable/CMakeLists.txt.

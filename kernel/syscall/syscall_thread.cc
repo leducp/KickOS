@@ -12,6 +12,7 @@
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
+#include <kickos/reent.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h> // wq_confirm_resume
 #include <kickos/task.h>
@@ -67,7 +68,8 @@ namespace kickos
         }
     }
 
-    int thread_spawn(kos_thread_params const* p, kos_thread_t* out_thread)
+    static int spawn_masked(kos_thread_params const* p, kos_thread_t* out_thread,
+                            Thread** out_child)
     {
         IrqLock lock;
         *out_thread = KOS_THREAD_NONE; // every early return below leaves the sentinel seated
@@ -520,6 +522,27 @@ namespace kickos
                            static_cast<CapType>(deleg_type[ci]), deleg_rights[ci]);
         }
         *out_thread = k.threads.handle_for(i);
+        *out_child = child;
+        return 0;
+    }
+
+    // The child is built by spawn_masked and made READY here, and the gap between the two
+    // is the point: the per-thread libc state is hundreds of bytes (284 to 512 across the
+    // pinned toolchains) and writing it inside the spawn's IrqLock would charge every
+    // spawn that much masked time. Nothing can pick a thread that is not READY, so the
+    // gap is not a window on a half-built child.
+    int thread_spawn(kos_thread_params const* p, kos_thread_t* out_thread)
+    {
+        Thread* child = nullptr;
+        int const rc = spawn_masked(p, out_thread, &child);
+        if (rc != 0)
+        {
+            return rc;
+        }
+#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
+        kickos_reent_init(child->reent);
+#endif
+        sched::add(child);
         return 0;
     }
 

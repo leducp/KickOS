@@ -25,14 +25,20 @@
 # An arch that grows a fifth relocation spelling passes here VACUOUSLY until its name is added,
 # which is why the per-arch set is spelled out above and not globbed.
 #
-# usage: check_no_privileged_tls.sh <readelf> <nm> <archive>...
+# An argument spelled <archive>::<member> scans ONE member of that archive. It exists for an
+# archive whose OTHER members are legitimately thread-local (libkickos_user.a: ordinary user
+# runtime TLS is correct there) but which carries one privileged-adjacent TU. A member named
+# here and absent from the archive is a HARD FAILURE, never a quiet pass: a renamed or dropped
+# TU has to break the gate rather than empty it.
+#
+# usage: check_no_privileged_tls.sh <readelf> <nm> <archive|archive::member>...
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-READELF="${1:?usage: check_no_privileged_tls.sh <readelf> <nm> <archive>...}"
+READELF="${1:?usage: check_no_privileged_tls.sh <readelf> <nm> <archive|archive::member>...}"
 shift
-NM="${1:?usage: check_no_privileged_tls.sh <readelf> <nm> <archive>...}"
+NM="${1:?usage: check_no_privileged_tls.sh <readelf> <nm> <archive|archive::member>...}"
 shift
 
 command -v "$READELF" >/dev/null 2>&1 || fail "readelf not found: $READELF"
@@ -46,30 +52,86 @@ TLS_RELOCS='R_ARM_TLS_LE32|R_RISCV_TPREL_HI20|R_RISCV_TPREL_LO12_I|R_RISCV_TPREL
 # relocations at all, the emutls fallback being ordinary calls.
 TLS_CALLS='_?__aeabi_read_tp|_?__emutls_get_address|_?__tls_get_addr'
 
+# Both binutils emit a header line per member EVEN when the member has no relocation section
+# and no symbol at all, so a member absent from that output is a member absent from the
+# archive; that is what makes these two the membership oracle and keeps `ar` out of the
+# argument list. Exit 1 when the header never appeared, so the caller can tell "member is
+# clean" from "member is not there" (the two produce the same empty slice).
+#
+# readelf: "File: <archive>(<member>)". Compared as a fixed suffix, not as an ERE, because
+# every member name here holds dots.
+slice_readelf() {
+    awk -v m="$1" '
+        index($0, "File: ") == 1 {
+            inmem = (substr($0, length($0) - length(m) - 1) == "(" m ")")
+            if (inmem) { seen = 1 }
+            next
+        }
+        inmem { print }
+        END { if (! seen) { exit 1 } }'
+}
+# nm: a bare "<member>:" line. A symbol line always holds a space, so a space-free line
+# ending in a colon is a header and nothing else.
+slice_nm() {
+    awk -v m="$1" '
+        /^[^ ]*:$/ {
+            inmem = ($0 == m ":")
+            if (inmem) { seen = 1 }
+            next
+        }
+        inmem { print }
+        END { if (! seen) { exit 1 } }'
+}
+
 FOUND=0
-for a in "$@"; do
+NARCHIVE=0
+NMEMBER=0
+for spec in "$@"; do
+    case "$spec" in
+        *::*)
+            a="${spec%::*}"
+            member="${spec##*::}"
+            what="$a($member)"
+            NMEMBER=$((NMEMBER + 1))
+            ;;
+        *)
+            a="$spec"
+            member=""
+            what="$a"
+            NARCHIVE=$((NARCHIVE + 1))
+            ;;
+    esac
     [ -f "$a" ] || fail "no archive at $a"
-    hits="$("$READELF" -rW "$a" 2>/dev/null | grep -E "$TLS_RELOCS" || true)"
+    relocs="$("$READELF" -rW "$a" 2>/dev/null || true)"
+    # `U` in nm's archive listing is an undefined reference from a member of THIS archive.
+    syms="$("$NM" "$a" 2>/dev/null || true)"
+    if [ -n "$member" ]; then
+        missing="$a has no member $member, so this scan would be vacuous. A renamed or
+    deleted translation unit must update the no_privileged_tls argument in arch/CMakeLists.txt."
+        # `|| fail` puts the assignment in a condition, so set -e does not abort ahead of it.
+        relocs="$(printf '%s\n' "$relocs" | slice_readelf "$member")" || fail "$missing"
+        syms="$(printf '%s\n' "$syms" | slice_nm "$member")" || fail "$missing"
+    fi
+    hits="$(printf '%s\n' "$relocs" | grep -E "$TLS_RELOCS" || true)"
     if [ -n "$hits" ]; then
-        echo "$a carries a thread-local relocation:"
+        echo "$what carries a thread-local relocation:"
         printf '%s\n' "$hits" | head -20 | sed 's/^/    /'
         FOUND=1
     fi
-    # `U` in nm's archive listing is an undefined reference from a member of THIS archive.
-    calls="$("$NM" "$a" 2>/dev/null | grep -E "^ *U ($TLS_CALLS)$" || true)"
+    calls="$(printf '%s\n' "$syms" | grep -E "^ *U ($TLS_CALLS)$" || true)"
     if [ -n "$calls" ]; then
-        echo "$a references a thread-pointer ABI entry point:"
+        echo "$what references a thread-pointer ABI entry point:"
         printf '%s\n' "$calls" | sort -u | sed 's/^/    /'
         FOUND=1
     fi
 done
 
 if [ "$FOUND" -ne 0 ]; then
-    fail "a privileged archive reaches thread-local storage. The thread pointer belongs to
+    fail "privileged code reaches thread-local storage. The thread pointer belongs to
     the unprivileged thread that is running: on ARM and RX it is derived from SP, so kernel
     code on a per-thread kernel stack masks down to no thread's block, and on RISC-V and
     Xtensa it is whatever the last resume wrote. Move the state to the thread's own memory
     or to a per-slot kernel array indexed by kickos::Kernel::threads.index_of()."
 fi
 
-echo "PASS: $# privileged archive(s) carry no thread-local access"
+echo "PASS: $NARCHIVE privileged archive(s) and $NMEMBER archive member(s) carry no thread-local access"

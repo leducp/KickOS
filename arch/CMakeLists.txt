@@ -282,14 +282,25 @@ endif()
 # board and not only where KICKOS_TLS is on: a kernel TU that grows one on a board with the
 # knob off is the same bug arriving somewhere the app cannot see it.
 if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
+  set(_no_tls_scan
+      "$<TARGET_FILE:kickos_kernel>"
+      "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+      "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
+      "$<TARGET_FILE:kickos_lib>")
+  # ONE member of libkickos_user.a, never the whole archive: the rest of that archive is
+  # unprivileged and its thread_local is correct there. newlib_reent.cc owns the per-thread
+  # struct _reent array and the word the context switch seats, so a thread_local in it is
+  # read on the wrong thread pointer exactly as a kernel one would be. The member exists
+  # only when the knob that adds the source is on, and the gate hard-fails on a member it
+  # cannot find, so the argument has to follow the same condition as user/CMakeLists.txt.
+  if(KICKOS_LIBC_REENT)
+    list(APPEND _no_tls_scan "$<TARGET_FILE:kickos_user>::newlib_reent.cc.obj")
+  endif()
   add_test(
     NAME    no_privileged_tls
     COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_no_privileged_tls.sh"
             "${CMAKE_READELF}" "${CMAKE_NM}"
-            "$<TARGET_FILE:kickos_kernel>"
-            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
-            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
-            "$<TARGET_FILE:kickos_lib>")
+            ${_no_tls_scan})
   set_tests_properties(no_privileged_tls PROPERTIES TIMEOUT 60 LABELS host)
 endif()
 

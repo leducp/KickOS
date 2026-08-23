@@ -12,6 +12,7 @@
 #include <kickos/grant.h>
 #include <kickos/instance.h> // kernel(): root's TCB is an ordinary thread-pool slot
 #include <kickos/irqlock.h>
+#include <kickos/reent.h>
 #include <kickos/time.h>
 #include <kickos/irq.h>
 #include <kickos/app.h>
@@ -260,6 +261,9 @@ namespace kickos
         // Idle is created first, so it MUST be trace id 0 (the telemetry decoder
         // keys CPU% off tid 0 == idle). Assert the invariant, not just assume it.
         KICKOS_ASSERT(kernel().idle_tcb.id == KICKOS_TID_IDLE);
+        // Idle holds no pool slot, so it carries libc's process-wide state and there is
+        // nothing to initialise for it.
+        sched::add(&kernel().idle_tcb);
 
         // Root runs at a low priority so a worker's completion post never preempts the
         // orchestrator. That is the only scheduling property the priority buys, and it is
@@ -315,6 +319,12 @@ namespace kickos
             IrqLock lock;
             cap_seat_authority(root_tcb, CAP_AUTH_ALL);
         }
+#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
+        // Root holds an ordinary pool slot, so it owns a struct _reent and stdio does not
+        // work until this has run. Nothing is READY yet, so it costs no masked time.
+        kickos_reent_init(root_tcb->reent);
+#endif
+        sched::add(root_tcb);
 
         sched::start(); // returns only if the scheduler ever unwinds to boot
         return 0;

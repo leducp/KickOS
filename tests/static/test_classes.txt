@@ -80,6 +80,8 @@ host   build  tests/unit/schedwake/sched_wake
 host   build  tests/unit/slayhook/slay_hook
 host   build  tests/unit/slotpool/slotpool_policy
 host   build  tests/unit/taskdeath/task_death
+host   build  tests/unit/tlscarve/tls_carve_empty
+host   build  tests/unit/tlscarve/tls_carve_span
 host   build  tests/unit/uartclass/uart_class
 
 # --- gates that run an image -------------------------------------------------

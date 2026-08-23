@@ -43,10 +43,10 @@ namespace kickos
             next->switch_count.store(next->switch_count.load() + 1u);
             kernel().policy->on_switch_in(next);
 #if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
-            // libc reads errno as *(int*)*kickos_reent_slot, so the whole reentrant state
-            // follows the thread HERE. Seating it once at thread entry instead would leave
-            // the last entrant owning the one word for the rest of the run.
-            *static_cast<void**>(kickos_reent_slot) = next->reent;
+            // libc resolves errno through the word this seats, so the whole reentrant
+            // state follows the thread HERE. Seating it once at thread entry instead would
+            // leave the last entrant owning the one word for the rest of the run.
+            kickos_reent_seat(next->reent);
 #endif
             KICKOS_BENCH_SPAN(PH_SWITCH_BOOK, bm_book);
             KICKOS_BENCH_MARK(bm_mpu);
@@ -134,7 +134,7 @@ namespace kickos
             // switch_book is not on this path: nothing else seats the FIRST thread's state,
             // and without this it would run on libc's process-wide one until its first
             // switch away and back.
-            *static_cast<void**>(kickos_reent_slot) = first->reent;
+            kickos_reent_seat(first->reent);
 #endif
             first->mpu.apply();
             ktime_rearm();

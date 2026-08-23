@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// One struct _reent per thread slot, and the word the kernel stores the running thread's
+// One struct _reent per thread slot, and the word the kernel seats the running thread's
 // into. The user side of kernel/include/kickos/reent.h; compiled only where
 // KICKOS_LIBC_REENT is on, and never for the sim, whose libc is the host's.
 //
@@ -35,26 +35,37 @@ extern "C" struct _reent* __getreent(void)
 extern "C"
 {
 
-// `extern` IS LOAD-BEARING: a namespace-scope const without it has internal linkage in
-// C++, extern "C" changes the language linkage and not that one, and the definition is
-// then dropped and the kernel's reference goes unresolved.
-#ifdef __XTENSA__
-extern void* const kickos_reent_slot = &s_current;
-#else
-extern void* const kickos_reent_slot = &_impure_ptr;
-#endif
-
 void* kickos_reent_acquire(int slot)
 {
     if (slot < 0 or slot >= static_cast<int>(KICKOS_THREAD_SLOTS))
     {
         return _GLOBAL_REENT;
     }
-    struct _reent* const r = &s_reent[slot];
-    // Not reclaimed when a slot is freed: _reclaim_reent would have to run on the death
-    // path, and what it reclaims is the per-reent mprec/asctime scratch, allocated only by
-    // a thread that used strtod or ctime. A reused slot is re-initialised here instead.
+    return &s_reent[slot];
+}
+
+void kickos_reent_init(void* reent)
+{
+    struct _reent* const r = static_cast<struct _reent*>(reent);
+    if (r == _GLOBAL_REENT)
+    {
+        return;
+    }
+    // A REUSED SLOT LEAKS THE PRIOR OCCUPANT'S SCRATCH. _REENT_INIT_PTR overwrites the
+    // mprec and asctime pointers a strtod or ctime caller allocated, and _reclaim_reent,
+    // which would return them, cannot be called here: it closes stdio, and every thread's
+    // _stdin/_stdout/_stderr point at the one process-wide __sf[3].
     _REENT_INIT_PTR(r);
-    return r;
+}
+
+void kickos_reent_seat(void* reent)
+{
+    // The store the kernel is not allowed to make itself: struct _reent* is the object's
+    // real type, and it is in scope only here.
+#ifdef __XTENSA__
+    s_current = static_cast<struct _reent*>(reent);
+#else
+    _impure_ptr = static_cast<struct _reent*>(reent);
+#endif
 }
 }

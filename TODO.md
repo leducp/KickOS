@@ -5229,13 +5229,28 @@ below where they were previously mislabeled.
   unprivileged thread, so a peer can still scribble another thread's `errno`. On by default in the
   `qemu` and `qemu-riscv` base variants, where `errnoprobe` boots it.
 
-  WHAT THIS DOES NOT FIX, and neither does TLS. `__malloc_lock`/`__malloc_unlock` are still
-  no-ops, so multi-threaded `malloc` still corrupts the arena; that is its own item in the M4.5.1
-  section. And `_REENT_INIT_PTR` points every thread's `_stdin`/`_stdout`/`_stderr` at the ONE
-  shared `__sf[3]`, so stdio buffering stays process-wide even where `errno` no longer is. A
-  reclaimed thread slot is re-initialised at the next create rather than run through
-  `_reclaim_reent`, so the per-reent mprec/asctime scratch a `strtod`/`ctime` caller allocates is
-  not returned to the arena.
+  WHAT THIS DOES NOT FIX, and neither does TLS. `_REENT_INIT_PTR` points every thread's
+  `_stdin`/`_stdout`/`_stderr` at the ONE shared `__sf[3]`, so stdio buffering stays process-wide
+  even where `errno` no longer is.
+
+  **PR 9 DOES NOT CLOSE THIS ITEM.** Four pieces of the runtime-consumer scope it was opened for
+  are still open, and each is a separate decision rather than more of the same swap:
+
+  - **malloc locking.** `__malloc_lock`/`__malloc_unlock` are still no-ops, so multi-threaded
+    `malloc` corrupts the arena. Tracked as its own item in the M4.5.1 section; the reent swap does
+    not touch it, `__malloc_sbrk_base` and the bin array living in libc's own statics.
+  - **Heap-break serialisation.** `_sbrk` (`user/src/newlib_sbrk.cc`) moves one process-wide break
+    with no lock, so two threads growing the heap at once hand out the same page.
+  - **C++ exception state.** The unwinder's per-thread state (`__cxa_eh_globals`) is reached
+    through `__cxa_get_globals`, which is neither `_impure_ptr` nor a `thread_local` here, so a
+    throw crossing a switch is not covered by either mechanism.
+  - **Safe reclaim.** A reused slot is re-initialised at the next spawn rather than run through
+    `_reclaim_reent`, so the per-reent mprec/asctime scratch a `strtod`/`ctime` caller allocated is
+    never returned to the arena. `_reclaim_reent` cannot simply be called on the death path: it
+    CLOSES stdio, and every thread's `_stdin`/`_stdout`/`_stderr` point at the one shared
+    `__sf[3]`, so reclaiming one thread's state would tear down the whole image's. A reclaim needs
+    a newlib-internal-aware sweep of the scratch lists alone, run from a kernel-to-user call on the
+    death path PR 7 reworked.
 
   `thread_local` itself is DONE (PR 8): a block carved off the low end of each thread's own stack,
   with a per-arch thread pointer. Not `TPIDRURW`: M-profile has no such register, so the kernel

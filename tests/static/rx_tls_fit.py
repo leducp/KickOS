@@ -107,9 +107,11 @@ def check(nm, objdump, elf):
                             f"{PAD} the override accepts. It would panic on first touch.")
             return findings
         # ORDER-INDEPENDENT BOUND. First touch order is the program's, not the index order,
-        # and padding makes the peak depend on it. Charging every object its full run-up is
-        # >= any order, so a pass here holds whatever order the program uses.
-        want += (size + align - 1) & ~(align - 1)
+        # and padding makes the peak depend on it. One object costs its size plus the run-up
+        # its alignment can demand, which is align - 1 bytes BEFORE it: rounding the size up
+        # to a multiple of align instead charges {1,1} then {8,8} nine bytes where the
+        # reverse order needs sixteen, and the gate then passes a layout that panics.
+        want += size + align - 1
     if want > block:
         findings.append(
             f"{elf}: {count} thread_local object(s) need up to {want} bytes of a {block}-byte "
