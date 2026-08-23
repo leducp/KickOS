@@ -63,6 +63,15 @@ static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC
                   == 8 + 104 + KICKOS_ARMV7M_TRAP_FRAME_MAX - 32,
               "the SVC window is the unstack credit, the trampoline's prologue, a "
               "preempting hardware frame and the PendSV block that tail-chains below it");
+#if !KICKOS_KERNEL_STACKS
+// THE SAME WINDOW WITH THE DISPATCH INSIDE IT. The pad stops cancelling once the compiler's
+// frames stand between the trampoline and the preemption point, which is the SVCK situation
+// exactly, so the two figures differ by that pad and nothing else. Asserted so the pair
+// cannot drift: the gate scrapes both as plain immediates.
+static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH == KICKOS_ARMV7M_TRAP_NEST_SVC + 4,
+              "the unconverted SVC window is the converted one plus the STKALIGN pad a "
+              "preempting entry spends below a chain of compiler frames");
+#endif
 #if KICKOS_KERNEL_STACKS
 // The kernel block's structural half: the continuation header svc_trampoline lays at the
 // block top, the pad a preempting entry spends there (it does NOT cancel, the frames above
@@ -132,6 +141,11 @@ static_assert(KICKOS_KERNEL_STACK_SIZE <= 0xFFFF,
 // one below it overflows the block for real. This assert covers every armv7m board that
 // carves the blocks; the ones that do not compile the red zone instead and the floor assert
 // above is what prices it.
+//
+// BOTH SIDES RESOLVE PER KICKOS_TELEMETRY, so this prices the posture the image compiles and
+// not a fleet-wide worst case: NEED_SVCK takes the telemetry tail's depth through
+// armv7m_trap_stack.h, and the Kconfig default for the ceiling carries the matching figure.
+// A board that raises one without the other fails here rather than at run time.
 static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t) >= KICKOS_ARMV7M_TRAP_NEED_SVCK,
               "KICKOS_KERNEL_STACK_SIZE is below the armv7m syscall kernel-stack "
               "requirement plus its canary word: raise the per-arch default in Kconfig, "
@@ -255,7 +269,14 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
+    // kernel_sp SURVIVES THE REBUILD, and arch_context_init clearing it is right for a fresh
+    // TCB and wrong here. This ctx belongs to a LIVE POOL THREAD being redirected onto its
+    // slay stub: its block is seated by pool slot and does not move, and thread_create is the
+    // only other writer. Cleared, the thread carries kernel_sp 0 through its own teardown,
+    // which is the state svc_trampoline's .Lsvc_nokstack arm calls unreachable.
+    uint32_t const kernel_sp = ctx->kernel_sp;
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+    ctx->kernel_sp = kernel_sp;
 }
 
 // --- Critical section: raise BASEPRI to the kernel lock threshold -----------
@@ -517,9 +538,10 @@ void kickos_armv7m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi
 
 #if KICKOS_KERNEL_STACKS
 // Called from switch.S (svc_trampoline) when the calling thread has no kernel block seated,
-// so the transfer has nowhere to build. Runs PRIVILEGED IN THREAD MODE on that thread's own
-// stack, which is what a panic has to work with here, and contains the system rather than
-// the dispatch: nothing has run yet.
+// so the transfer has nowhere to build. Runs privileged in THREAD mode ON THE MSP,
+// .Lsvc_nokstack clearing CONTROL.SPSEL before the branch and deriving there why the PSP
+// cannot carry it. `psp` is the thread's own, computed before that clear. Contains the
+// system rather than the dispatch: nothing has run yet.
 void kickos_armv7m_no_kernel_stack(uint32_t psp)
 {
     kpanic_enter();

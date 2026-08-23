@@ -49,30 +49,53 @@ static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_RX_CTX_OFF_STACK
 static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_RX_CTX_OFF_STACK_HI,
               "switch.S reads stack_hi at F_CTX_STACK_HI");
 static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_RX_CTX_OFF_KERNEL_SP,
-              "a trusted entry loads ctx.kernel_sp at F_CTX_KERNEL_SP");
-// THE CEILING'S ALIGNMENT is checkable even though its SIZE is not yet measurable: the
-// same figure the trap prologue already requires of a stack pointer it builds on.
+              "svc_trampoline and kickos_rx_pendsw load ctx.kernel_sp at F_CTX_KERNEL_SP");
 static_assert(KICKOS_KERNEL_STACK_SIZE % KICKOS_RX_TRAP_SP_ALIGN == 0,
               "KICKOS_KERNEL_STACK_SIZE must be a multiple of KICKOS_RX_TRAP_SP_ALIGN, "
               "or a kernel stack's top does not land on the alignment the prologue "
               "requires");
 static_assert(sizeof(struct arch_context) >= KICKOS_RX_CTX_OFF_KERNEL_SP + sizeof(uint32_t),
               "a guard reads a word past the end of struct arch_context");
+// THE TRAMPOLINE HAS NOWHERE ELSE TO BUILD. With no block seated, every syscall takes
+// svc_trampoline's refusal instead of dispatching. rx72m is the only chip that selects
+// ARCH_RXV3 and it selects HAS_MPU, so this arch resolves 1 on every board it has.
+// KCONFIG NOW FORECLOSES THE 0 CASE rather than leaving this assert to catch it: this arch
+// selects ARCH_KERNEL_STACKS_MANDATORY, which puts `range 1 1` on the knob, so a defconfig
+// asking for 0 is refused by name at configure. Kept because it states the arch's requirement
+// at the point of use, and because a `select` removed by accident should fail loudly here.
+static_assert(KICKOS_KERNEL_STACKS != 0,
+              "rxv3's syscall trap runs every dispatch on ctx.kernel_sp");
 
 // The syscall guard runs above the arm selection, so its one figure has to dominate
-// both arms.
-static_assert(KICKOS_RX_TRAP_REDZONE_SYS
-                  >= KICKOS_RX_TRAP_FRAME_SYS + KICKOS_RX_TRAP_KERNEL_DEPTH_SYS,
+// both arms. The generic arm is the one that sets it; the fastpath arm's save plus restore
+// descent is the smaller of the two.
+static_assert(KICKOS_RX_TRAP_REDZONE_SYS >= KICKOS_RX_TRAP_NEST_SYS,
               "the syscall red zone does not cover the generic arm");
 static_assert(KICKOS_RX_TRAP_REDZONE_SYS
                   >= KICKOS_RX_TRAP_FRAME_SYS_FAST + KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST,
               "the syscall red zone does not cover the fastpath arm");
-// It must also carry a whole PENDSW zone, a SWINT pended over a running dispatch building
-// its save on the same USP below it (rx_trap_stack.h derives the composition).
-static_assert(KICKOS_RX_TRAP_REDZONE_SYS
-                  >= KICKOS_RX_TRAP_FRAME_SYS + KICKOS_RX_TRAP_KERNEL_DEPTH_SYS
-                         + KICKOS_RX_TRAP_REDZONE_PENDSW,
-              "the syscall red zone does not cover a SWINT arriving mid-dispatch");
+// The generic arm's window is the head the trap commits plus a whole PENDSW zone, a SWINT
+// accepted over svc_trampoline before it reaches the block and building its save on the same
+// USP below that head (rx_trap_stack.h derives the composition).
+static_assert(KICKOS_RX_TRAP_NEST_SYS == KICKOS_RX_TRAP_HEAD_SYS + KICKOS_RX_TRAP_REDZONE_PENDSW,
+              "the SYS window is the stacked [userPC][userPSW] head and the switcher zone "
+              "a SWINT puts below it");
+// The kernel block's structural half: the continuation header svc_trampoline lays at the
+// block top, and the switcher zone a preemption takes below the deepest byte of the dispatch.
+static_assert(KICKOS_RX_TRAP_NEST_SYSK == 8 + KICKOS_RX_TRAP_REDZONE_PENDSW,
+              "the SYSK structural half is the continuation header and the switcher zone "
+              "a SWINT puts below the dispatch");
+// NOTHING DESCENDS ON THE THREAD STACK AT THE GENERIC ARM any more: svc_trampoline moves R0
+// to ctx.kernel_sp before it calls anything, so the dispatch is measured as SYSK.
+static_assert(KICKOS_RX_TRAP_KERNEL_DEPTH_SYS == 0,
+              "a nonzero SYS descent needs roots in tests/static/trap_redzone_roots.txt");
+// AND THE FASTPATH ARM'S C DISPATCH IS ON THE BLOCK TOO, so what is left of that class on the
+// thread stack is its save plus the restore descent below it, which is the epilogue PENDSW
+// already measures on the same chain. Equal by derivation and not by coincidence: if one moves
+// and the other does not, one of the two classes is wrong.
+static_assert(KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST == KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW,
+              "the fastpath arm's residual is the restore epilogue PENDSW measures, so the "
+              "two depths are one measurement");
 
 // The floor must DOMINATE the red zone, or a thread spawned at the floor passes the spawn
 // check and is then refused by the guard on every syscall it makes. This arch had no such
@@ -82,6 +105,16 @@ static_assert(KICKOS_RX_TRAP_REDZONE_SYS
 static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RX_TRAP_REDZONE_SYS,
               "KICKOS_MIN_STACK_SIZE is below the rxv3 syscall red zone: raise the "
               "per-arch default in Kconfig, never the red zone, which is a measurement");
+// THE CEILING MUST COVER ITS OWN REQUIREMENT. The deepest a syscall drives a kernel block is
+// the continuation header, the dispatch below it, and the switcher save plus restore descent a
+// preemption takes at that depth. The lowest word of the block is the overflow canary
+// (kernel/thread/thread.cc), so the requirement has to fit ABOVE it: a ceiling that merely
+// equals the requirement reports an overflow on the deepest legitimate descent, and one below
+// it overflows the block for real.
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t) >= KICKOS_RX_TRAP_NEED_SYSK,
+              "KICKOS_KERNEL_STACK_SIZE is below the rxv3 syscall kernel-stack requirement "
+              "plus its canary word: raise the per-arch default in Kconfig, never the depth, "
+              "which is a measurement");
 
 // arch_irq_save raises PSW.IPL to the lock level with an MVTIPL immediate; keep
 // the literal in the asm string in sync with the constant.
@@ -363,7 +396,14 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
+    // kernel_sp SURVIVES THE REBUILD, and arch_context_init clearing it is right for a fresh
+    // TCB and wrong here. This ctx belongs to a LIVE POOL THREAD being redirected onto its
+    // slay stub: its block is seated by pool slot and does not move, and thread_create is the
+    // only other writer. Cleared, the thread carries kernel_sp 0 through its own teardown,
+    // which is the state svc_trampoline's .Lsvc_nokstack arm calls unreachable.
+    uint32_t const kernel_sp = ctx->kernel_sp;
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+    ctx->kernel_sp = kernel_sp;
 }
 
 // --- Critical section: raise PSW.IPL to the kernel lock level ---------------
@@ -430,11 +470,16 @@ bool arch_fault_is_user_thread(void* frame)
     {
         return false;
     }
-    // RTE restores U=1 and the stub executes on the thread's USP, exactly where
-    // svc_trampoline runs, so the USP is what must lie in the thread's own stack: a
-    // thread that wrecked R0 would otherwise put privileged code on a stack of its
-    // choosing. Length 0 asks for containment alone: the stack grows DOWN from here and
-    // no frame has been written at this address.
+    // RTE restores U=1 and the stub executes on the thread's USP, so the USP is what must
+    // lie in the thread's own stack: a thread that wrecked R0 would otherwise put
+    // privileged code on a stack of its choosing. Length 0 asks for containment alone: the
+    // stack grows DOWN from here and no frame has been written at this address.
+    //
+    // THE THREAD-STACK TEST AND NOT ITS KERNEL-BLOCK TWIN, and the PM clause above is why.
+    // A fault taken while a thread is running its dispatch on ctx.kernel_sp arrives with
+    // PSW.PM clear and is refused before this line, so an accepted fault is always one taken
+    // in user mode with the USP on the thread's own stack. The frame itself never moved: RX
+    // pre-processing writes the saved pair to the ISP whatever stack was interrupted.
     uint32_t usp;
     __asm volatile("mvfc usp, %0" : "=r"(usp));
     if (not kickos_fault_frame_trusted(reinterpret_cast<void*>(usp), 0))
@@ -509,11 +554,13 @@ void arch_fault_redirect_to_exit(void* frame)
     }
 }
 
-// The syscall trap and SWINT switcher (switch.S) call this when the live USP is outside
-// the running thread's stack: R0 is the USP in user mode, so a wild USP would run
-// privileged dispatch on a caller-chosen stack. Runs on the ISP (trusted). Panics rather
-// than killing the thread, because containment needs a frame worth trusting and a safe
-// USP for the exit stub, and a refused USP supplies neither.
+// The syscall trap and SWINT switcher (switch.S) call this when the live USP is neither
+// inside the running thread's stack with room to spare nor inside that thread's own kernel
+// block: both sites still store through the USP they arrive with, the switcher its whole
+// context save and the syscall trap the [userPC][userPSW] head plus, on the fastpath arm,
+// that same save. Runs on the ISP (trusted). Panics rather than killing the thread, because
+// containment needs a frame worth trusting and a safe USP for the exit stub, and a refused
+// USP supplies neither.
 void kickos_rx_bad_usp(uint32_t usp)
 {
     kpanic_enter();
@@ -522,6 +569,23 @@ void kickos_rx_bad_usp(uint32_t usp)
 #endif
     ::kickos::kprintf("\n=== RX EXCEPTION (wild stack) ===\n  USP=0x%x\n",
                       static_cast<unsigned>(usp));
+    kfault_terminate();
+}
+
+// Called from switch.S (svc_trampoline) when the calling thread has no kernel block seated,
+// so the transfer has nowhere to build. Runs supervisor ON THE ISP, .Lsvc_nokstack clearing
+// PSW.U before the branch and deriving there why the USP cannot carry it. `usp` is the
+// thread's own, copied before that clear. Contains the system rather than the dispatch:
+// nothing has run yet.
+void kickos_rx_no_kernel_stack(uint32_t usp)
+{
+    kpanic_enter();
+    ::kickos::kprintf("\n=== RX EXCEPTION (no kernel stack) ===\n");
+#if KICKOS_PANIC_DUMP
+    ::kickos::kprintf("  in svc_trampoline USP=0x%x\n", static_cast<unsigned>(usp));
+#else
+    (void)usp;
+#endif
     kfault_terminate();
 }
 

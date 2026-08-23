@@ -6,40 +6,43 @@
  * that keep the interrupted sp, and the trusted per-hart trap stack for every other M-mode
  * trap.
  *
- * NO FIGURE HERE RESERVES AN UNPRIVILEGED THREAD'S STACK. A U-mode entry loads ctx.kernel_sp
- * and builds the frame there, so the only thing the entry does with the sp a U-mode thread
- * chose is remember it in F_SP and test it: 16-byte aligned and inside
+ * NO TRAP FIGURE HERE RESERVES AN UNPRIVILEGED THREAD'S STACK. A U-mode entry loads
+ * ctx.kernel_sp and builds the frame there, so the only thing the entry does with the sp a
+ * U-mode thread chose is remember it in F_SP and test it: 16-byte aligned and inside
  * [stack_lo, stack_hi], because .Lrestore loads that word back and mret resumes U-mode on
  * it. Nothing privileged is stored through it, and no C runs below it. So the TRAP and SYS
  * figures below are a requirement on KICKOS_KERNEL_STACK_SIZE, which is what
  * check_trap_redzone.sh measures them against.
  *
- * THE ONE CASE THEY STILL PRICE A THREAD STACK is a PRIVILEGED thread's own syscall: it
- * traps with mstatus.MPP=M, so .Ltrap_from_m_ctx keeps the frame on the sp it interrupted,
- * which is that thread's own stack, and svc_trampoline runs the same dispatch there. Nothing
- * would be isolated by moving it, the caller being M-mode already, but the ROOM is the same
- * FRAME_SYS plus dispatch and that stack has to hold it. The SYSPRIV class measures exactly
- * that, against KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC.
+ * TWO CASES STILL PRICE A THREAD STACK, and neither is a trap prologue.
  *
- * SO THE SPAWN FLOOR ON THIS ARCH IS NOW SET BY PRIVILEGED THREADS, and that is the
- * interesting result of the transfer. Two terms, one per privilege, and only the second binds:
+ * A PRIVILEGED THREAD'S OWN SYSCALL traps with mstatus.MPP=M, so .Ltrap_from_m_ctx keeps the
+ * frame on the sp it interrupted, which is that thread's own stack, and svc_trampoline runs
+ * the same dispatch there. Nothing would be isolated by moving it, the caller being M-mode
+ * already, but the ROOM is the same FRAME_SYS plus dispatch and that stack has to hold it.
+ * The SYSPRIV class measures exactly that, against
+ * KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC.
  *
- *   UNPRIVILEGED, 720 bytes. Its dispatch is gone from its stack entirely. What privileged
- *   code still runs there is the death path: an accepted fault redirects to
- *   kickos_thread_fault_exit with sp moved to the TOP of that stack (kickos_fault_stack_top),
- *   and it descends kickos_thread_fault_exit[16] -> kprintf_fault[64] -> kvprintf_route[288]
- *   -> kconsole_write[0] -> kconsole_write_impl[176] -> console_emit[48]
- *   -> arch_console_write[0] -> console_tx_write[80] -> drain_sync[32] -> wait_slot[16] on
- *   esp32c6-wroom-st, 624 on qemu-riscv, over the same three exit roots (fault exit, slay
- *   exit, thread return) and the same instrument as the figures below. There is no frame term:
- *   the stub starts from the top.
+ * THE DEATH PATH RUNS THERE FOR EVERY THREAD, privilege included, and it is the one place
+ * privileged C descends on an UNPRIVILEGED thread's own stack: .Lfault relocates sp to
+ * kickos_fault_stack_top and mrets into kickos_thread_fault_exit, and arch_ctx_redirect
+ * fabricates kickos_thread_slay_exit at the same top. Not a trap prologue and not bounded by
+ * one, so what covers it is the spawn floor alone. The EXIT class measures that, against
+ * KICKOS_RV_TRAP_EXIT_DEPTH.
  *
- *   PRIVILEGED, 960 bytes: KICKOS_RV_TRAP_FRAME_SYS 256 plus
- *   KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC 704, its ecall frame and dispatch staying where
- *   they always were. This is the term KICKOS_MIN_STACK_SIZE has to clear, and the FAILURE it
- *   prevents changed with the transfer: a red zone used to make the entry REFUSE a floor-sized
- *   thread's syscall, and there is no bound on an M-mode sp to refuse anything with, so what a
- *   floor below 960 buys now is a privileged thread overflowing its own stack mid-dispatch.
+ * SO THE SPAWN FLOOR ON THIS ARCH IS SET BY PRIVILEGED THREADS AND BY THE DEATH PATH, and
+ * that is the interesting result of the transfer. Two terms, each measured as a class of its
+ * own, and which of them binds depends on the build posture:
+ *
+ *   EVERY THREAD'S DEATH PATH, KICKOS_RV_TRAP_EXIT_DEPTH, and it spends the thread's own
+ *   stack whatever its privilege. The EXIT class measures it.
+ *
+ *   A PRIVILEGED THREAD'S SYSCALL, KICKOS_RV_TRAP_NEED_SYSPRIV, its ecall frame and dispatch
+ *   staying where they always were. This is the larger of the two in every posture, so it is
+ *   the term KICKOS_MIN_STACK_SIZE is set by, and the FAILURE it prevents changed with the
+ *   transfer: a red zone used to make the entry REFUSE a floor-sized thread's syscall, and
+ *   there is no bound on an M-mode sp to refuse anything with, so a floor below this buys a
+ *   privileged thread overflowing its own stack mid-dispatch. The SYSPRIV class measures it.
  *
  * tests/static/check_trap_redzone.sh re-measures the depth figures below under
  * -fcallgraph-info=su,da and fails when a worst-case path exceeds what they enforce, when a
@@ -57,6 +60,13 @@
 
 #ifndef KICKOS_ARCH_RV_TRAP_STACK_H
 #define KICKOS_ARCH_RV_TRAP_STACK_H
+
+/* KICKOS_BENCH selects one of the SYSPRIV figures below. It is an add_compile_definitions
+   knob rather than a generated header macro, so it reaches every C and every .S the top-level
+   CMakeLists compiles, always as 0 or 1. Deliberately NOT given a fallback #define here: with
+   -Wundef -Werror an image that lost the definition fails to build, where a fallback would
+   silently reserve the smaller of the two figures. check_trap_redzone.sh resolves this ladder
+   through the compiler for the same reason. */
 
 /* The save frame trap_entry builds below the stack top it picked: `addi sp, sp, -128`, then
  * 30 word stores spanning 0(sp)..116(sp) plus the F_SP slot at 120. Equals FRAME in switch.S
@@ -86,6 +96,11 @@
  *   _SYS   912  syscall_dispatch[32] -> syscall_body[128] -> thread_spawn[272]
  *               -> thread_create[96] -> the same tail from kpanic down (qemu-riscv: 816)
  *
+ * NEITHER IS POSTURE-DEPENDENT, unlike the SYSPRIV figure below, and that is measured rather
+ * than assumed: the four rv32imac postures the gate runs (base, flat, st, bench, per board)
+ * measure _TRAP at 384/480 and _SYS no deeper than 832, the flat and bench chains being
+ * shallower than the enforcing selftest one.
+ *
  * Two classes and not one because mcause is readable before the frame is built, so each
  * trap pays only its own class.
  *
@@ -104,28 +119,84 @@
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_SYS 912
 
 /* THE SAME SYSCALL DISPATCH WITH THE NORETURN KPANIC TAIL EXCLUDED, which is the figure the
- * one remaining THREAD-stack class is measured against. A PRIVILEGED thread's ecall arrives
- * with mstatus.MPP=M, so .Ltrap_from_m_ctx keeps its frame on the sp it interrupted, that
- * thread's own stack, and svc_trampoline runs this same dispatch there: the transfer moves
- * U-mode callers off their stacks and leaves privileged ones exactly where they were.
+ * one remaining THREAD-stack syscall class is measured against. A PRIVILEGED thread's ecall
+ * arrives with mstatus.MPP=M, so .Ltrap_from_m_ctx keeps its frame on the sp it interrupted,
+ * that thread's own stack, and svc_trampoline runs this same dispatch there: the transfer
+ * moves U-mode callers off their stacks and leaves privileged ones exactly where they were.
  *
  * THE TAIL IS DROPPED HERE FOR THE ORIGINAL REASON, which the kernel-stack figures no longer
  * have: a thread stack has a SPAWN FLOOR to clear. Counting it would put this requirement at
- * 256 + 912 = 1168, above every rv32imac KICKOS_MIN_STACK_SIZE, so a privileged thread
- * spawned at the floor could not make a syscall at all.
- *   688  syscall_dispatch[32] -> syscall_body[128] -> thread_spawn[272]
- *        -> thread_create[96] -> task_for[16] -> domain_for[32]
- *        -> grant_region_admissible[32] -> grant_hits_reserved[80]
- * Both boards measure the same 688: with the console tail gone the chain no longer walks a
- * per-board backend. Rounded up to the next multiple of 64, the convention a thread-stack red
- * zone carries, so the slack cannot be spent silently.
+ * 256 + 912 = 1168, above the non-bench rv32imac KICKOS_MIN_STACK_SIZE, so a privileged
+ * thread spawned at the floor could not make a syscall at all.
  *
- * THE RESIDUAL, unchanged in shape from when this was the whole story: a kernel assertion
- * firing while a privileged thread is parked at the very bottom of its floor has the console
- * writer descend up to 208 bytes (1168 against the 960 reserved) below its stack_lo,
- * privileged, with the system already terminating. The gate prints the without-exclusions
- * figure so it cannot go quiet. */
+ * TWO FIGURES, ONE PER POSTURE, BECAUSE KICKOS_BENCH ADDS A SYSCALL ARM AND NOTHING ELSE
+ * COMPILES IT. Folding the two into one fleet-wide number would make every non-bench board's
+ * floor reserve for a bracket its image does not contain, which is the charged-twice error the
+ * armv7m FP term made once already.
+ *
+ *   KICKOS_BENCH 0, 704 enforced over 688 measured on BOTH boards, the console tail being
+ *   gone so the chain no longer walks a per-board backend:
+ *     688  syscall_dispatch[32] -> syscall_body[128] -> thread_spawn[272]
+ *          -> thread_create[96] -> task_for[16] -> domain_for[32]
+ *          -> grant_region_admissible[32] -> grant_hits_reserved[80]
+ *
+ *   KICKOS_BENCH 1, 832 enforced over 816 measured on the worse board. The winning chain is
+ *   not the spawn one at all: the bench syscall arm prints, so it walks the console, and that
+ *   makes the figure per board the way the tail-counting ones are. gcc inlines syscall_body
+ *   into syscall_dispatch under this posture, so the head is one frame rather than 32 + 128
+ *   and its size differs per board (64 here, 80 on qemu-riscv-bench):
+ *     816  syscall_dispatch[64] -> bench_phase_print[48] -> kprintf[64]
+ *          -> kvprintf_route[288] -> kconsole_write[0] -> kconsole_write_impl[176]
+ *          -> console_emit[48] -> arch_console_write[0] -> console_tx_write[80]
+ *          -> drain_sync[32] -> wait_slot[16]     (qemu-riscv-bench: 736, its
+ *                                                  arch_console_write being a 32-byte leaf)
+ *
+ * Each is its measurement rounded up to the next multiple of 64, the convention a thread-stack
+ * figure carries here, so the slack cannot be spent silently.
+ *
+ * THE RESIDUAL IS PER POSTURE TOO. At KICKOS_BENCH 0 a kernel assertion firing while a
+ * privileged thread is parked at the very bottom of a floor-sized stack has the console writer
+ * descend up to 144 bytes below its stack_lo, privileged, with the system already terminating:
+ * the tail-included chain needs 1168 and the FLOOR provides 1024. The requirement is what must
+ * fit and the floor is what is provisioned, so the residual is measured from the floor. At
+ * KICKOS_BENCH 1 there is NO residual: the bench chain is deeper than the panic tail, so 816
+ * is the figure with and without the exclusions and 1088 covers both. The gate prints the
+ * without-exclusions figure either way, so neither claim can go quiet. */
+#if KICKOS_BENCH
+#define KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC 832
+#else
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC 704
+#endif
+
+/* THE ONE FIGURE A PRIVILEGED THREAD'S STACK HAS TO HOLD, resolved by the posture above so
+ * that the C floor assert and any reporter read the number the gate compares against. Nothing
+ * refuses it at run time: an M-mode ecall carries no sp the entry may bound. */
+#define KICKOS_RV_TRAP_NEED_SYSPRIV \
+    (KICKOS_RV_TRAP_FRAME_SYS + KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC)
+
+/* THE DEATH PATH, and the one class here that spends an UNPRIVILEGED thread's own stack. Three
+ * roots reach it and all three run privileged in thread mode on the dying thread's stack:
+ * kickos_thread_fault_exit (an accepted fault, .Lfault moving sp to kickos_fault_stack_top),
+ * kickos_thread_slay_exit (arch_ctx_redirect fabricating a frame at that same top), and
+ * kickos_thread_return, which is a PRIVILEGED thread's entry-return stub, a user thread's
+ * being the kickos_user_thread_return syscall instead.
+ *
+ * MEASURED, same instrument as the figures above, and the fault reporter wins on both boards:
+ *   720  kickos_thread_fault_exit[16] -> kprintf_fault[64] -> kvprintf_route[288]
+ *        -> kconsole_write[0] -> kconsole_write_impl[176] -> console_emit[48]
+ *        -> arch_console_write[0] -> console_tx_write[80] -> drain_sync[32]
+ *        -> wait_slot[16]                                  (qemu-riscv: 624)
+ * The posture does not move it: all four rv32imac postures the gate runs measure 624 on
+ * qemu-riscv and 720 on esp32c6-wroom, KICKOS_BENCH included, the exit chain reaching no
+ * instrumented site. 768 is 720 rounded up on the convention above, and that margin is free
+ * because KICKOS_RV_TRAP_NEED_SYSPRIV sets the floor in both postures.
+ *
+ * NO FRAME TERM, AND ONE RESIDUAL. The two redirect paths start from the stack TOP, so the
+ * whole stack is under the descent and 0 is right. kickos_thread_return does NOT: it runs at
+ * the depth the thread's entry function returned from, so what the floor buys there is this
+ * descent plus that frame, which this class does not model. */
+#define KICKOS_RV_TRAP_FRAME_EXIT 0
+#define KICKOS_RV_TRAP_EXIT_DEPTH 768
 
 /* THE SYSCALL REQUIREMENT HOLDS TWO FRAMES, the second being the msip frame the deferred
  * switcher builds. A blocking dispatch pends msip and the trap fires at whatever depth the

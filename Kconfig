@@ -216,6 +216,8 @@ config KICKOS_USER_HEAP_SIZE
 
 config KICKOS_KERNEL_STACKS
 	int
+	range 1 1 if ARCH_KERNEL_STACKS_MANDATORY
+	default 1 if ARCH_KERNEL_STACKS_MANDATORY
 	default 1 if ARCH_HAS_KERNEL_STACKS && HAS_MPU
 	default 1 if ARCH_HAS_KERNEL_STACKS && BOARD_TAKES_KERNEL_STACKS
 	default 0
@@ -239,6 +241,30 @@ config KICKOS_KERNEL_STACKS
 	  buys robustness rather than isolation, so it is a board decision.
 	  BOARD_TAKES_KERNEL_STACKS in arch/Kconfig carries that principle and its default.
 
+	  AND ON THREE ARCHES 0 IS NOT A RESOLUTION AT ALL. armv6m, rv32imac and rxv3 select
+	  ARCH_KERNEL_STACKS_MANDATORY: their switch.S compiles the transfer with no
+	  red-zone path beside it, and their backends static_assert this knob non-zero
+	  (arch_armv6m.cc, arch_rv32imac.cc, arch_rxv3.cc). Without the first `default`
+	  above, the ladder reaches `default 0` for any board on those arches whose chip
+	  lacks HAS_MPU and which did not opt in, and that is a config authority permitting
+	  what the code it configures rejects. It was reachable, not theoretical: drop
+	  microbit's BOARD_TAKES_KERNEL_STACKS and nRF51 has no MPU, so the old ladder
+	  resolved 0 and the build died in the assert rather than at configure.
+
+	  WHICH CLAUSE DOES WHAT, because they are not interchangeable. The `default 1 if
+	  ARCH_KERNEL_STACKS_MANDATORY`, placed FIRST, is what closes the hole: it makes the
+	  resolution total, so no chip capability or board opt-in can steer it. The `range
+	  1 1` is a declared invariant rather than the enforcement: this symbol has no
+	  prompt, so tools/kconfig/genconfig.py already refuses any requested value by name
+	  ("no prompt, so nothing can set it") before it looks at ranges at all. The range
+	  becomes the enforcing clause only if this knob ever gains a prompt, and it cannot
+	  contradict the default, being the same value under the same condition.
+
+	  The asserts stay: they state the requirement at the point of use, and a `select`
+	  deleted by accident should fail loudly there. armv7m does NOT select it, being the
+	  one arch that legitimately resolves 0 (stm32f302 and sam3x8e), so f302nucleo and
+	  due are unaffected.
+
 	  NOT AN ARENA CARVE, so cmake/boot_arena.cmake names nothing here. The block grows
 	  kernel .bss, which raises __kickos_ram_start and shrinks the arena above it, and
 	  the two arena asserts in arch/common/boot_arena.ld.h refuse the link when what is
@@ -249,22 +275,18 @@ config KICKOS_KERNEL_STACK_SIZE
 	int "Per-thread kernel stack"
 	range 256 65536
 	default 1184 if ARCH_RV32IMAC
-	default 992 if ARCH_ARMV7M
+	default 1104 if ARCH_RXV3
+	default 1472 if ARCH_ARMV7M && TELEMETRY_RTT
+	default 1008 if ARCH_ARMV7M
 	default 896 if ARCH_ARMV6M
 	default 1024
 	help
-	  The stack a thread's PRIVILEGED dispatch runs on, once the trap entry
-	  transfers to it instead of continuing on the thread's own. One size class
+	  The stack a thread's PRIVILEGED dispatch runs on, the trap entry
+	  transferring to it instead of continuing on the thread's own. One size class
 	  per board, so it is a constant here and not a per-thread field.
 
-	  A MEASURED REQUIREMENT ON EVERY ARCH WHOSE ENTRY HAS MOVED, which is
-	  rv32imac, armv7m and armv6m, and a BUDGET CEILING on rxv3, whose entry has
-	  not. What a kernel stack must hold cannot be measured before the entry
-	  transfers to it, and how much lands there depends on decisions that entry
-	  work has to make, so on rxv3 this is still a bound to allocate against and
-	  to tighten later, never a claim about what the kernel uses.
-
-	  WHAT THE MEASURED ARCHES DERIVE. trap_redzone_roots.txt declares the
+	  A MEASURED REQUIREMENT ON EVERY ARCH THAT HAS ONE, which is now all four:
+	  rv32imac, rxv3, armv7m and armv6m. trap_redzone_roots.txt declares the
 	  transferred class stack=kernel and check_trap_redzone.sh measures it against
 	  this knob rather than against the spawn floor. A stack=kernel class counts
 	  the panic tail, a kernel array having no spawn floor to clear, which makes
@@ -275,9 +297,33 @@ config KICKOS_KERNEL_STACK_SIZE
 	  dispatch takes at that depth and the switcher below that, 256 + 912 + 0 is
 	  1168 on esp32c6-wroom-st, so 1184.
 
+	  rxv3: svc_trampoline's 8-byte continuation header, the dispatch below it, and
+	  the SWINT switcher's 236-byte context save plus its 64-byte restore descent a
+	  preemption takes at that depth, 308 + 788 is 1096, plus the canary word and
+	  the arch stack alignment is 1104. RX needs no interrupt-frame term: acceptance
+	  clears PSW.U, so a device ISR lands on the ISP and the switcher is the one
+	  handler that rebuilds a save on a USP by hand. BOTH rxv3 C dispatches share the
+	  block, the IPC fastpath's leaf as well as syscall_dispatch, and the fastpath's
+	  own claim on it is smaller in both halves: a 4-byte header and no preemption
+	  term, PSW.I being clear across that whole arm.
+
 	  armv7m: svc_trampoline's 16-byte continuation header, the dispatch below it,
 	  and the STKALIGN pad plus FP-live hardware frame plus PendSV block a
-	  preemption takes at that depth, 224 + 760 is 984 on frdmk64f-st, so 992.
+	  preemption takes at that depth. TWO FIGURES, ONE PER POSTURE, because
+	  KICKOS_TELEMETRY compiles the trace emitters and the ring drain arch_shutdown
+	  runs and nothing else does, and the dispatch reaches them through exit_current
+	  as well as through the panic tail. It is the largest posture effect in this
+	  fleet and it must NOT be folded into one number: the blocks are per thread
+	  SLOT, so a byte costs KICKOS_THREAD_SLOTS, and bluepill-c8 carves 3 slots out
+	  of an arena with room for 224 more bytes each. The telemetry figure applied
+	  fleet-wide fails to link a board that has no telemetry variant.
+	    telemetry off: 224 + 768 is 992 on xmc4800-relax-st and -bench, whose USIC
+	    console tail is the deepest in the armv7m fleet, plus the canary word is 996,
+	    rounded to 16 is 1008.
+	    telemetry rtt: 224 + 1240 is 1464 on qemu-telem, through arch_shutdown's
+	    telemetry tail, plus the canary word is 1468, rounded to 16 is 1472. ONE
+	    BOARD'S READING, qemu/telem being the only telemetry variant of any armv7m
+	    board, so it is not the worse of a sample the way the figure above it is.
 
 	  armv6m: the same shape with no FP term, 84 + 808 is 892 on picopi-st, so 896.
 
@@ -286,24 +332,19 @@ config KICKOS_KERNEL_STACK_SIZE
 
 	  A BOARD MAY ONLY RAISE IT. The per-arch static_assert prices the ARCH depth
 	  macro, so a defconfig figure below the arch default fails the build even on a
-	  board whose own reading is lower: f302nucleo-st measures 680 rather than 760,
-	  and 912 would cover it, but the assert asks for 992 there too. Tightening a
-	  board below its arch is a change to the assert and to what the depth macro
-	  means, not a defconfig line.
+	  board whose own reading is lower: bluepill-c8 measures 672 rather than 768, and
+	  900 would cover it, but the assert asks for 1008 there too. Tightening a board
+	  below its arch is a change to the assert and to what the depth macro means, not
+	  a defconfig line.
 
-	  RXV3 IS STILL A LOWER BOUND, from its current path: the frame the trap entry
-	  saves plus the deepest the dispatch descends, counting the panic tail for the
-	  same reason, 236 + 760 is 996, under the 1024 it takes. Terms that lower bound
-	  does not count, each conditional on an entry design not yet fixed: a nested
-	  switch frame, if the switcher's trap lands on the interrupted thread's kernel
-	  stack rather than on the per-core handler stack, and the fault reporter, if it
-	  ever runs there. An independent review derives 1056 counting some of these.
+	  RXV3 IS ONE BOARD'S READING AND SAYS SO. rx72m-st is the only preset declared
+	  for that arch, rx72m being the only chip that selects ARCH_RXV3, so the 788
+	  above is not the worse of a sample the way the other three figures are.
 
-	  WHICH BOARDS PAY. Only where KICKOS_KERNEL_STACKS is 1, which is rv32imac,
-	  armv7m and armv6m: the block is KICKOS_THREAD_SLOTS of this size in kernel
-	  .bss, and the banner reports slot size, slot count and their product. rxv3
-	  allocates nothing until its own entry conversion, which is also when its
-	  red-zone reservation goes, so no board ever holds both.
+	  WHICH BOARDS PAY. Only where KICKOS_KERNEL_STACKS is 1: the block is
+	  KICKOS_THREAD_SLOTS of this size in kernel .bss, and the banner reports slot
+	  size, slot count and their product. An arch that carves the blocks stops
+	  reserving a red zone for the dispatch, so no board ever holds both.
 
 config KICKOS_TLS_SIZE
 	int "Per-thread TLS block"
@@ -337,6 +378,12 @@ config KICKOS_MIN_STACK_SIZE
 	default 896 if ARCH_ARMV6M
 	default 960 if ARCH_ARMV7M
 	default 1024 if ARCH_RXV3
+	# KICKOS_BENCH compiles a syscall arm that prints, so a PRIVILEGED thread's
+	# dispatch on its own stack reaches the console from inside the bench bracket
+	# and measures 816 rather than 688. Under that posture alone, or every
+	# non-bench rv32imac board would reserve for a bracket it does not compile.
+	# rv_trap_stack.h derives both figures and names the chain each one wins on.
+	default 1088 if ARCH_RV32IMAC && KICKOS_BENCH
 	default 1024 if ARCH_RV32IMAC
 	default 896 if ARCH_LX6
 	default 1024
@@ -345,32 +392,45 @@ config KICKOS_MIN_STACK_SIZE
 	  dispatch, measured. A stack below it passes the spawn check and then
 	  overflows on exit.
 
+	  THE THREAD-EXIT CLAIM IS MEASURED ON rv32imac AND ONLY THERE, as the EXIT
+	  class of check_trap_redzone.sh, over the three stubs a dying thread runs
+	  privileged on its own stack: kickos_thread_fault_exit,
+	  kickos_thread_slay_exit and kickos_thread_return. The other three gated
+	  backends relocate to the same place and no class of theirs measures it, so
+	  on armv7m, armv6m and rxv3 this sentence is still prose.
+
 	  On a backend whose trap prologue enforces a red zone below the interrupted
 	  sp, this floor must also DOMINATE that red zone. A thread whose whole stack
 	  is smaller cannot satisfy the prologue at all, so it does not overflow on a
-	  syscall, it is refused every time. rxv3 enforces one over its whole dispatch,
-	  and the two ARM backends over the window svc_trampoline spends on the thread's
-	  PSP before it reaches ctx.kernel_sp. Each derives its figures in its own
-	  <arch>_trap_stack.h, which is where to read them. No figure is repeated here,
-	  because a copy of a measurement is a copy that goes stale.
+	  syscall, it is refused every time. Three backends enforce one and NONE of them
+	  over a C dispatch any more: the two ARM backends over the window svc_trampoline
+	  spends on the thread's PSP before it reaches ctx.kernel_sp, and rxv3 over the
+	  same window plus the context SAVE its two trap arms leave on the caller's own
+	  USP, which they leave there because that save is the caller's saved context and
+	  the ISA's return path computes the resume SP from where it sits. Each derives
+	  its figures in its own <arch>_trap_stack.h, which is where to read them. No
+	  figure is repeated here, because a copy of a measurement is a copy that goes
+	  stale.
 
 	  RV32IMAC ENFORCES NONE, its entry having moved every U-mode frame onto the
-	  thread's kernel stack, and on that arch this floor is set by PRIVILEGED
-	  threads alone. An unprivileged thread runs no dispatch on its own stack any
-	  more; what a privileged one runs there is unchanged, its ecall arriving with
-	  mstatus.MPP=M and keeping frame and dispatch on the sp it interrupted. So the
-	  relation to check is the same size against a different failure: no bound
-	  exists to refuse a floor-sized privileged thread's syscall, so a floor below
-	  that requirement buys an overflow instead of a refusal.
-	  check_trap_redzone.sh measures it as the rv32imac SYSPRIV class and compares
-	  it here; rv_trap_stack.h derives both privilege terms.
+	  thread's kernel stack, and on that arch this floor is what covers the two
+	  descents that still spend a thread's own stack. A PRIVILEGED thread's SYSCALL
+	  is one: its ecall arrives with mstatus.MPP=M and keeps frame and dispatch on
+	  the sp it interrupted, so the relation to check is the same size against a
+	  different failure, no bound existing to refuse a floor-sized privileged
+	  thread's syscall. The DEATH PATH is the other, and it spends the stack of
+	  every thread whatever its privilege. check_trap_redzone.sh measures them as
+	  the SYSPRIV and EXIT classes and compares both here; rv_trap_stack.h derives
+	  every term, including the one figure that is posture-dependent.
 
-	  THE ARM BACKENDS HAVE NO SUCH SPLIT. SVC_Handler clears CONTROL.nPRIV for
-	  every caller and svc_trampoline transfers on a PSP write rather than on a
+	  THE ARM BACKENDS AND RXV3 HAVE NO SUCH SPLIT. SVC_Handler clears CONTROL.nPRIV
+	  for every caller and svc_trampoline transfers on a PSP write rather than on a
 	  cause branch, so a privileged thread's syscall runs on its kernel block
 	  exactly as an unprivileged one's does and neither spends its own stack on the
 	  dispatch. What remains there is the trampoline's transfer window, which is
-	  the same for both.
+	  the same for both. RX is the same shape for the same reason: INT #SYS is one
+	  vector whichever mode issued it, its rewrite clears PSW.PM unconditionally,
+	  and the transfer is a write to R0.
 
 	  Two things check the relation, and they are not the same check.
 	  check_trap_redzone.sh compares this floor against every class that spends a

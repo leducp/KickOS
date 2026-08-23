@@ -105,7 +105,15 @@ else()
   set(_pg_pfx KICKOS_ARMV7M_TRAP)
   set(_pg_banner ARMV7M)
 endif()
-foreach(_pg_macro NEST_SVC KERNEL_DEPTH_SVC)
+# NEST_SVC_DISPATCH exists on armv7m only, and only the KICKOS_KERNEL_STACKS 0 branch below
+# reads it. armv6m cannot reach that branch: Kconfig gives it range 1 1 through
+# ARCH_KERNEL_STACKS_MANDATORY, so scraping it there would demand a macro that arch has no
+# reason to define.
+set(_pg_macros NEST_SVC KERNEL_DEPTH_SVC)
+if(NOT KICKOS_KERNEL_STACKS)
+  list(APPEND _pg_macros NEST_SVC_DISPATCH)
+endif()
+foreach(_pg_macro ${_pg_macros})
   file(STRINGS "${_pg_hdr}" _pg_hit
        REGEX "^#define ${_pg_pfx}_${_pg_macro} +[0-9]+$")
   list(LENGTH _pg_hit _pg_n)
@@ -123,7 +131,7 @@ endforeach()
 if(KICKOS_KERNEL_STACKS)
   set(_pg_svc_need "${_pg_NEST_SVC}")
 else()
-  math(EXPR _pg_svc_need "${_pg_NEST_SVC} + ${_pg_KERNEL_DEPTH_SVC}")
+  math(EXPR _pg_svc_need "${_pg_NEST_SVC_DISPATCH} + ${_pg_KERNEL_DEPTH_SVC}")
 endif()
 
 if(KICKOS_BOARD STREQUAL "microbit")

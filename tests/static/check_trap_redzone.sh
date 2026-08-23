@@ -22,10 +22,13 @@
 # from the declared trap-path roots. The scratch tree has to stay separate from the
 # caller's build dir: those flags change every object.
 #
-# The enforced numbers are scraped out of the arch header, and WHICH macros to scrape
-# comes from tests/static/trap_redzone_roots.txt. A macro the scrape cannot find is a hard
-# failure and never a default: a gate that defaults its own reference compares a
-# measurement against nothing.
+# The enforced numbers come out of the arch header, and WHICH macros to read comes from
+# tests/static/trap_redzone_roots.txt. A macro that cannot be read is a hard failure and never
+# a default: a gate that defaults its own reference compares a measurement against nothing.
+# The header is RESOLVED THROUGH THE COMPILER rather than read as text, because a figure there
+# can be posture-dependent (rv32imac's SYSPRIV depth resolves per KICKOS_BENCH) and a text
+# scrape would either see both branches or silently take the wrong one. The block below the
+# clause-0 checks states where the flags for that resolution come from.
 #
 # HOW trap_redzone.py REFUSES TO ANSWER, each refusal its own named failure:
 #   - a class measures deeper than its red zone reserves.
@@ -142,16 +145,18 @@ HEADER="$SRC/$HEADER_REL"
 
 decl class | awk '
     {
-        frame = ""; depth = ""; onstack = "thread"
+        frame = ""; depth = ""; onstack = "thread"; kstacks = "any"
         n = split($0, f, /[[:space:]]+/)
         for (i = 4; i <= n; i++) {
             if (f[i] ~ /^frame=/) { frame = substr(f[i], 7) }
             if (f[i] ~ /^depth=/) { depth = substr(f[i], 7) }
             if (f[i] == "stack=trap") { onstack = "trap" }
             if (f[i] == "stack=kernel") { onstack = "kernel" }
+            if (f[i] == "kstacks=0") { kstacks = "0" }
+            if (f[i] == "kstacks=1") { kstacks = "1" }
         }
         if (frame == "" || depth == "") { exit 1 }
-        print f[3] "\t" frame "\t" depth "\t" onstack
+        print f[3] "\t" frame "\t" depth "\t" onstack "\t" kstacks
     }' > "$TMP/classes" || fail "$ROOTS has a class record for $ARCH without frame=/depth="
 require_nonempty "$TMP/classes" "$ROOTS declares no class for arch $ARCH"
 
@@ -265,13 +270,108 @@ FLOOR="$(sed -n 's/^[[:space:]]*set(KICKOS_MIN_STACK_SIZE[[:space:]]\{1,\}\([0-9
          "$CFGFILE" | head -n1)"
 [ -n "$FLOOR" ] || fail "no KICKOS_MIN_STACK_SIZE in $CFGFILE"
 
-# --- scrape the enforced figures out of the arch header ----------------------
+# --- resolve the enforced figures out of the arch header ---------------------
 [ -r "$HEADER" ] || fail "cannot read $HEADER, so the enforced red zone cannot be read;
     this gate compares a measurement against that header and has no default to fall back on"
 
+# A FIGURE IN THAT HEADER CAN BE POSTURE-DEPENDENT, so reading the file as text is not enough:
+# rv32imac's SYSPRIV depth resolves per KICKOS_BENCH, and a sed over the source would see both
+# branches of that ladder and refuse the macro as defined twice, or take the first and compare
+# the measurement against the wrong posture's number. So the COMPILER resolves it, and the
+# scrape below runs over its macro dump rather than over the header: one macro name, one live
+# value, and the same number the C floor assert in that arch's backend sees.
+#
+# THE FLAGS ARE THE IMAGE'S, taken from compile_commands.json of the tree just built (every
+# preset here turns CMAKE_EXPORT_COMPILE_COMMANDS on) and restricted to a translation unit of
+# the arch directory the header belongs to, which is its `include/` parent. That TU is the one
+# that static_asserts against these very macros, so the posture is the one they are enforced
+# under by construction rather than by a list of knobs this script would have to keep.
+#
+# ONLY -D, -I, -isystem, -include and -std are carried over. Preprocessing needs no more, and
+# -fcallgraph-info would have the resolution drop a .ci file of its own. -Wundef -Werror is
+# added rather than inherited, and it is load-bearing: cpp takes the 0 branch of `#if KNOB`
+# for an undefined KNOB without saying so, which is exactly the defaulted reference this gate
+# refuses everywhere else.
+CCJSON="$BUILD/compile_commands.json"
+[ -r "$CCJSON" ] || fail "cannot read $CCJSON, which is where the flags that resolve
+    $HEADER_REL come from; without them a posture-dependent figure resolves to the wrong branch"
+python3 - "$BUILD" "$SRC" "$HEADER_REL" > "$TMP/figures.h" 2> "$TMP/figures.err" <<'PYEOF'
+import json
+import os
+import shlex
+import subprocess
+import sys
+
+build, src, header_rel = sys.argv[1], sys.argv[2], sys.argv[3]
+if '/include/' not in header_rel:
+    sys.stderr.write('the arch header %s is not under an <archdir>/include/ path, so the'
+                     ' translation unit whose flags resolve it cannot be derived\n'
+                     % header_rel)
+    sys.exit(1)
+archdir = os.path.join(src, header_rel.split('/include/', 1)[0])
+try:
+    db = json.load(open(os.path.join(build, 'compile_commands.json')))
+except (OSError, ValueError) as e:
+    sys.stderr.write('cannot read the compile database: %s\n' % e)
+    sys.exit(1)
+
+entry = None
+for e in sorted(db, key=lambda e: e.get('file', '')):
+    f = e.get('file', '')
+    if f.startswith(archdir + os.sep) and os.path.splitext(f)[1] in ('.cc', '.c', '.cpp'):
+        entry = e
+        break
+if entry is None:
+    sys.stderr.write('no translation unit under %s in the compile database, so there is no'
+                     ' posture to resolve %s under\n' % (archdir, header_rel))
+    sys.exit(1)
+
+# `arguments` when the generator emits it; `command` is one shell-quoted string, so it is
+# split the way a shell would and not on whitespace: a -D value can carry quotes.
+argv = entry.get('arguments')
+if argv is None:
+    argv = shlex.split(entry['command'])
+cxx = argv[0]
+keep = []
+i = 1
+while i < len(argv):
+    a = argv[i]
+    if a.startswith(('-D', '-I', '-std=')) and len(a) > 2:
+        keep.append(a)
+    elif a in ('-D', '-I', '-isystem', '-include') and i + 1 < len(argv):
+        keep.append(a)
+        keep.append(argv[i + 1])
+        i += 1
+    elif a.startswith('-isystem'):
+        keep.append(a)
+    i += 1
+
+cmd = [cxx, '-E', '-dM', '-Wundef', '-Werror', '-x', 'c++'] + keep \
+      + ['-include', os.path.join(src, header_rel), os.devnull]
+try:
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+except OSError as e:
+    sys.stderr.write('cannot run %s: %s\n' % (cxx, e))
+    sys.exit(1)
+if r.returncode != 0:
+    sys.stderr.write(r.stderr.decode('utf-8', 'replace')[:2000])
+    sys.stderr.write('\nresolving %s failed; the command was:\n%s\n'
+                     % (header_rel, ' '.join(cmd)))
+    sys.exit(1)
+sys.stdout.write(r.stdout.decode('utf-8', 'replace'))
+PYEOF
+if [ "$?" -ne 0 ]; then
+    sed -n '1,30p' "$TMP/figures.err" >&2
+    fail "could not resolve the figures in $HEADER_REL through the compiler; this gate has no
+    default to fall back on"
+fi
+FIGURES="$TMP/figures.h"
+
 # A plain integer only. The arch header's macros are read by the assembler as immediates and
 # the generated board config carries nothing else, so an expression in either would mean the
-# file changed shape and the scrape has to be revisited rather than guessed at.
+# file changed shape and the scrape has to be revisited rather than guessed at. Run over the
+# resolved dump for the arch header and over the generated header itself for the board config,
+# which carries no ladder at all.
 scrape_macro() { # <file> <macro>
     _hits="$(sed -n "s|^[[:space:]]*#[[:space:]]*define[[:space:]]\{1,\}$2[[:space:]]\{1,\}\([0-9]\{1,\}\)[[:space:]]*\(/\*.*\)\{0,1\}$|\1|p" \
              "$1")"
@@ -293,12 +393,20 @@ KUSABLE=""
 KSIZE=""
 KSTACKS=1
 KCANARY=4
-if awk -F"$TAB" '{ if ($4 == "kernel") { found = 1 } } END { exit !found }' "$TMP/classes"; then
+# The knob is read for a stack=kernel class, which is measured against the block, AND for a
+# kstacks= class, whose whole point is that the image may not compile it. Both need the live
+# value, so one read serves them.
+if awk -F"$TAB" '{ if ($4 == "kernel" || $5 != "any") { found = 1 } } END { exit !found }' "$TMP/classes"; then
     BOARDCFG="$BUILD/generated/include/kickos/board_config.h"
-    [ -r "$BOARDCFG" ] || fail "cannot read $BOARDCFG, which is where the gate reads the
-    per-thread kernel block a stack=kernel class is measured against"
+    [ -r "$BOARDCFG" ] || fail "cannot read $BOARDCFG, which is where the gate reads
+    KICKOS_KERNEL_STACKS and the per-thread kernel block a stack=kernel class is measured
+    against"
     KSTACKS="$(scrape_macro "$BOARDCFG" KICKOS_KERNEL_STACKS)" || exit 1
-    if [ "$KSTACKS" -ne 0 ]; then
+    # The SIZE is only the block clause's business, so it is read only where a class is
+    # measured against a block that exists.
+    if [ "$KSTACKS" -ne 0 ] &&
+       awk -F"$TAB" '{ if ($4 == "kernel") { found = 1 } } END { exit !found }' "$TMP/classes"
+    then
         KSIZE="$(scrape_macro "$BOARDCFG" KICKOS_KERNEL_STACK_SIZE)" || exit 1
         # The LOWEST word of a block is the overflow canary kmain arms
         # (kernel/thread/thread.cc), so it is not stack a descent may reach: a requirement
@@ -322,13 +430,30 @@ elif [ "$KSTACKS" -eq 0 ]; then
     class below is MEASURED AND NOT ENFORCED: it describes an entry design this image does
     not compile"
 fi
-while IFS="$TAB" read -r cls frame_macro depth_macro onstack; do
+NOTCOMPILED_ARGS=""
+while IFS="$TAB" read -r cls frame_macro depth_macro onstack kstacks; do
     [ -n "$cls" ] || continue
-    frame="$(scrape_macro "$HEADER" "$frame_macro")" || exit 1
-    depth="$(scrape_macro "$HEADER" "$depth_macro")" || exit 1
+    frame="$(scrape_macro "$FIGURES" "$frame_macro")" || exit 1
+    depth="$(scrape_macro "$FIGURES" "$depth_macro")" || exit 1
     zone=$((frame + depth))
     echo "trap_redzone: class $cls  $frame_macro=$frame  $depth_macro=$depth  zone=$zone ($onstack stack)"
     ENFORCED_ARGS="$ENFORCED_ARGS --enforced $cls=$frame,$depth"
+    # THE MIRROR OF THE stack=kernel SKIP BELOW, and the reason it has to exist is that an
+    # arch can compile TWO entry designs (armv7m does) while the call graph sees only one
+    # merged tree. A kstacks= class belongs to ONE of them: where KICKOS_KERNEL_STACKS
+    # disagrees, the image does not contain the path this class describes, so its DEPTH is a
+    # measurement of the same C landing on a different stack and enforcing it charges the
+    # board for a design it never links. Both halves go unenforced, and the tool is told so
+    # it does not fail the depth either. PRINTED, never silent: a run that skipped every
+    # registered preset of an arch would leave the figure unenforced, which one preset per
+    # run cannot see.
+    if [ "$kstacks" != any ] && [ "$kstacks" -ne "$KSTACKS" ]; then
+        echo "trap_redzone: class $cls not enforced here (KICKOS_KERNEL_STACKS=$KSTACKS,
+    this class is the kstacks=$kstacks design): MEASURED AND NOT ENFORCED, it describes an
+    entry design this image does not compile"
+        NOTCOMPILED_ARGS="$NOTCOMPILED_ARGS --not-compiled $cls"
+        continue
+    fi
     # A stack=trap class spends a static kernel array, not a thread stack, so the floor says
     # nothing about it. Skipped by NAME rather than by the figure happening to fit, or the
     # clause would start passing for the wrong reason the day the array grew.
@@ -339,21 +464,29 @@ while IFS="$TAB" read -r cls frame_macro depth_macro onstack; do
     # says nothing about it either. What it has to fit is that block, minus the canary word
     # at the bottom of it, and that is a clause of its own: raising the spawn floor would do
     # nothing here, and the array is per thread SLOT, so a byte costs KICKOS_THREAD_SLOTS.
-    # A CLASS THE BOARD DOES NOT COMPILE IS STILL MEASURED, and saying so is the point: an
-    # arch may carry two entry designs (armv7m does), KICKOS_KERNEL_STACKS picks one per
-    # board, and the call graph cannot see which linked. So the depth is checked against the
-    # header either way and only the FIT clause is skipped, there being no block to fit.
+    # A CLASS THE BOARD DOES NOT COMPILE IS MEASURED AND NOT ENFORCED, both halves, exactly
+    # as the kstacks= skip above drops both. An arch may carry two entry designs (armv7m
+    # does) and KICKOS_KERNEL_STACKS picks one per board, so at 0 there is no block to fit
+    # AND the depth is the same C measured landing on a stack this image never puts it on.
+    # THE DEPTH USED TO BE ENFORCED HERE ANYWAY, which made the clause print that it was not
+    # enforcing a class and then fail on it: f302nucleo-st measures SVCK 680 against 768 with
+    # 88 bytes of margin, unexcluded, through its own console driver's panic tail, and the
+    # remedy that failure prints is to raise KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK, which
+    # raises KICKOS_KERNEL_STACK_SIZE for all 30 kstacks=1 presets. A board compiling no
+    # blocks could force a fleet-wide ceiling raise, which is the same charge-twice the
+    # kstacks= marker exists to refuse.
     #
-    # WHAT COVERS THE OTHER DIRECTION IS NOT UNIFORM, and the difference is the whole reason
-    # this clause measures instead of refusing. An arch whose entry can only run on blocks
-    # says so in C: armv6m and rv32imac carry static_assert(KICKOS_KERNEL_STACKS != 0), on
-    # every image of every board. armv7m carries no such assert and must not, one of its
-    # chips resolving 0 on purpose, so on that arch what keeps this class honest is that its
-    # HAS_MPU presets resolve 1 unconditionally and the skip above is printed rather than
-    # silent. A run that skips every registered preset of an arch would leave the figure
-    # unenforced, which one preset per run cannot see.
+    # NOTHING GOES QUIET: trap_redzone.py still reports the reading under `measured and NOT
+    # enforced here`, and the 30 presets that DO compile blocks still enforce the figure. An
+    # arch whose entry can only run on blocks says so in C instead: armv6m, rv32imac and rxv3
+    # carry static_assert(KICKOS_KERNEL_STACKS != 0) on every image of every board. armv7m
+    # carries no such assert and must not, one of its chips resolving 0 on purpose, so on
+    # that arch what keeps this class honest is that its HAS_MPU presets resolve 1
+    # unconditionally and this skip is printed rather than silent.
     if [ "$onstack" = kernel ] && [ "$KSTACKS" -eq 0 ]; then
-        echo "trap_redzone: class $cls not enforced here (KICKOS_KERNEL_STACKS=0)"
+        echo "trap_redzone: class $cls not enforced here (KICKOS_KERNEL_STACKS=0):
+    MEASURED AND NOT ENFORCED, it describes an entry design this image does not compile"
+        NOTCOMPILED_ARGS="$NOTCOMPILED_ARGS --not-compiled $cls"
         continue
     fi
     if [ "$onstack" = kernel ]; then
@@ -389,7 +522,7 @@ done < "$TMP/classes"
 # --- the measurement ---------------------------------------------------------
 # shellcheck disable=SC2086
 python3 "$TOOL" --ci-dir "$BUILD" --arch "$ARCH" --preset "$PRESET" \
-    --roots "$ROOTS" --indirect "$INDIRECT" $ENFORCED_ARGS
+    --roots "$ROOTS" --indirect "$INDIRECT" $ENFORCED_ARGS $NOTCOMPILED_ARGS
 prc=$?
 if [ "$prc" -ne 0 ]; then
     rc="$prc"

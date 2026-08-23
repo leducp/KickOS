@@ -9,13 +9,20 @@ CONFIG_KICKOS_MAX_SEMAPHORES=4
 CONFIG_KICKOS_MAX_MUTEXES=4
 CONFIG_KICKOS_MAX_IRQ_HANDLES=4
 CONFIG_KICKOS_CAP_TABLE_SUPPLY=7
-# 1664 and not 2048: three slots of KICKOS_KERNEL_STACK_SIZE (992 on armv7m) is 2976
-# bytes of kernel .bss below the arena, taking it from 9152 to 6176, which cannot hold
-# idle plus root plus two 2048-byte pool stacks. STM32F103 has no MPU, so
-# arch_mpu_min_region is 0 and the size is byte-granular to 16 rather than a
-# power-of-two step. 512 + 3 x 1664 is 5504, so 672 spare, and a thread may use
-# 1664 - 180 = 1484 against 2048 - 836 = 1212 before (armv7m_trap_stack.h derives both
-# red zones).
+# 1664 and not 2048: three slots of KICKOS_KERNEL_STACK_SIZE (1008 on armv7m at
+# telemetry off) is 3024 bytes of kernel .bss below the arena, taking it from 9152 to
+# 6128, which cannot hold idle plus root plus two 2048-byte pool stacks. STM32F103 has
+# no MPU, so arch_mpu_min_region is 0 and the size is byte-granular to 16 rather than a
+# power-of-two step. 512 + 3 x 1664 is 5504, and the arena above the fattest image
+# (selftest_p2) MEASURES 608 spare, the block growth being absorbed 16 bytes by .bss
+# alignment. A thread may use 1664 - 180 = 1484 against 2048 - 836 = 1212 before
+# (armv7m_trap_stack.h derives both red zones).
+#
+# THIS BOARD IS WHY THE CEILING IS PER POSTURE. Bisecting the ceiling against the link
+# puts its maximum at 1216: 1232 trips KICKOS_POOL_ARENA_ASSERT. That is 224 per slot
+# over the 992 this board was tuned at, 672 bytes, where the telemetry ceiling wants 480
+# per slot. bluepill-c8 has no telemetry variant, so a fleet-wide raise to that figure
+# would fail to link a board that never compiles the tail it pays for.
 CONFIG_KICKOS_USER_STACK_SIZE=1664
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=1664

@@ -417,8 +417,29 @@ svc_trampoline:
    through 0xFFFFFFF0. Reached through a literal for the reason .Lpsp_wild is: a v6-M `b`
    is a +-2 KB reach that --gc-sections can outrun. */
 .Lsvc_nokstack:
+    /* PRIMASK IS SET BEFORE SPSEL MOVES, and the order is load-bearing. The exception
+       return into svc_trampoline dropped below PRIO_SVCALL, so PendSV is live here. Its
+       save assumes the interrupted thread was on that PSP, and it exception-returns on a
+       hardcoded 0xFFFFFFFD, which selects the PSP whatever stack the entry frame went to.
+       Taken after SPSEL is 0 the hardware stacked that frame on the MSP, so the resume
+       pops a frame from the wrong bank. NOT a containment hole, PSP_GUARD having already
+       bounded the PSP at the PendSV entry and this site leaving it untouched; the damage
+       is to the switch. kpanic_enter masks too, one call later, which is one call too
+       late. Noreturn, so no cpsie pairs. */
+    cpsid   i
     mov     r0, sp
     adds    r0, #8                  /* the PSP the thread would have resumed on */
+    /* THE REPORTER RUNS ON THE MSP. This site is in THREAD mode on the thread's own PSP, and
+       the reporter's console chain measures 536 bytes against the 40 the SVC guard reserved
+       below that PSP, so reporting on the PSP overflows the thread's stack while printing.
+       SPSEL is cleared after r0 is computed, so the reported PSP is the thread's; the
+       push {r0, r1} above is abandoned with it, the reporter being noreturn. v6-M has no
+       immediate bic, so the mask comes from a register. */
+    mrs     r2, control
+    movs    r3, #2
+    bics    r2, r3                  /* CONTROL.SPSEL = 0: SP is the MSP from here */
+    msr     control, r2
+    isb
     ldr     r1, =kickos_armv6m_no_kernel_stack
     bx      r1
 

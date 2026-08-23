@@ -131,8 +131,14 @@ trap_entry:
     /* Interrupted U-mode: the interrupted sp (in mscratch) is checked for the RETURN. No
        frame is built through it, but .Lrestore loads it out of F_SP and mret resumes U-mode
        on it, so an sp outside the thread's own stack or misaligned is refused here instead
-       of being handed back. */
+       of being handed back.
+       THE INVARIANT IS RESTORED BEFORE THE TESTS AND NOT AFTER THE FRAME IS BUILT. MIE=0
+       masks interrupts and not synchronous exceptions, so a fault on any access below would
+       re-enter trap_entry, whose first instruction swaps sp with mscratch and would land the
+       nested handler on the U-mode sp. The only instruction between the csrr and the csrw is
+       the csrw, which cannot fault, so mscratch holds a thread's sp for no access at all. */
     csrr    t1, mscratch           /* t1 = interrupted user sp */
+    csrw    mscratch, sp           /* mscratch = trap top: invariant restored */
     andi    t0, t1, KICKOS_RV_TRAP_SP_ALIGN - 1
     bnez    t0, .Ltrap_wild        /* misaligned sp */
     la      t0, g_arch_current
@@ -145,16 +151,15 @@ trap_entry:
     bltu    t1, t0, .Ltrap_wild    /* sp < stack_lo -> wild */
     /* Accepted U-mode sp: the frame and the dispatch below it go on the thread's own kernel
        stack, so nothing privileged is stored through the sp the thread chose. sp is still
-       the trap top here and the originals of t0/t1 are at -4(sp)/-8(sp). */
+       the trap top here, t1 carries the sp to hand back, and the originals of t0/t1 are at
+       -4(sp)/-8(sp). */
     la      t0, g_arch_current
     lw      t0, 0(t0)
     lw      t0, F_CTX_KERNEL_SP(t0)
     beqz    t0, .Ltrap_wild        /* a U-mode thread with no kernel stack */
     addi    t0, t0, -FRAME         /* frame base on the kernel stack */
     sw      ra, F_RA(t0)           /* ra's original into the frame; ra is now scratch */
-    csrr    ra, mscratch           /* ra = interrupted user sp */
-    sw      ra, F_SP(t0)           /* the sp .Lrestore mrets on */
-    csrw    mscratch, sp           /* mscratch = trap top: invariant restored */
+    sw      t1, F_SP(t0)           /* the sp .Lrestore mrets on */
     lw      ra, -4(sp)             /* ra = t0's original, staged */
     lw      t1, -8(sp)
     mv      sp, t0
@@ -196,9 +201,11 @@ trap_entry:
     j       .Ltrap_regs
 /* The frame goes on the trusted trap stack and the interrupted sp is only remembered, never
    written through. mscratch holds the interrupted sp from trap_entry's swap until the csrrw
-   below, the ONE window where a trap would swap onto a thread stack instead of the trap top.
-   Nothing in it can trap: MIE is 0 from the vector, and every memory access in between is an
-   aligned word on the trap stack.
+   below, a window where a trap would swap onto the interrupted sp instead of the trap top.
+   MIE=0 does NOT close it, masking interrupts and not synchronous exceptions; what closes it
+   is that every memory access in between is an aligned word on the trap stack. This path is
+   reached from M-mode only, so the interrupted sp is a kernel one either way; the U-mode
+   entry restores mscratch before its first access through anything a thread chose.
    F_SP here IS the -8(sp) slot trap_entry stashed t1 in, since this frame starts one FRAME
    below the trap-stack top. Sound only because .Ltrap_from_m has already reloaded that word
    into t1; do not move the reload after this store. */
@@ -527,7 +534,9 @@ svc_trampoline:
 /* A U-mode trap the entry refused: sp outside the thread's stack or misaligned, so mret
    could not return on it, or a running U-mode thread whose ctx.kernel_sp is 0, which leaves
    the entry no stack to build on. Nothing was stored through the interrupted sp. sp is
-   the trusted trap-stack top, so restore the mscratch invariant and hand the live trap CSRs
+   the trusted trap-stack top, and every path here has already restored mscratch, so the
+   csrw below writes the value that is there: it holds the invariant for a reader who reaches
+   this label without following one of the four branches. Then hand the live trap CSRs
    to the shared reporter, whose frame-trusted test refuses this (trap-stack) frame and
    panics, except a U-mode access fault (1/5/7), which it credits to the thread and exits.
    This is the one path that reaches .Lfault with an ECALL cause, so the reporter's cause

@@ -14,27 +14,125 @@ era plus everything for SMP that is not SMP. `M5` the integration branch is full
 deleted, along with `M5.1.1`, `M5.1.4-docrewrite`, `hotfix/wake-parks-wrong-thread` and every
 `topic/*`. Master is still `a41856d6`.
 
-**M5.2.1 IS UNDER WAY: PR 1, PR 2 AND PR 3 ARE DOWN, SIX COMMITS, NONE PUSHED, TREE CLEAN AT
-`6c200e56`.** Read
+**M5.2.1: EVERY PER-ARCH CONVERSION IS DOWN. TWELVE COMMITS, NONE PUSHED, TREE CLEAN AT
+`26361ecf`.** `202ba8cc` PR 3's owed proofs, `ab9a9866` PR 4 rv32imac, `9b382b18` PR 5 both ARM
+backends, `7943e6fb` PR 6 rxv3, `3699644b` the PR 4 audit corrections, `26361ecf` the armv7m
+preset coverage. Read
 `~/.claude/projects/-home-leduc-projets-KickOS/docs/m5.2.1-trusted-context-plan.md` section
-"SESSION 2" BEFORE PLANNING PR 4: it carries the measured figures, two gate defects found on
-the way, and the one plan change that matters.
+"SESSION 3" before planning PR 7: it carries what each arch's transfer actually looks like, the
+figures that moved, and the debts.
 
-**THE PLAN CHANGED: THE RED-ZONE DELETION MOVED OUT OF STAGE `close` AND INTO EACH PER-ARCH
-ENTRY PR.** The audit deferred every deletion to the end, which makes a board hold a kernel
-stack and a still-reserved red zone at once; that double payment is the only reason the tight
-boards do not fit, and it cannot be dodged per board because the entry converts per ARCH. So
-PRs 4-6 each land, atomically for one arch: entry transfer, real callgraph roots, that arch's
-red-zone deletion, renewed fit evidence. The final state was never the problem, a thread's
-usable stack ending neutral-to-better on every board.
+**NO PRIVILEGED C DISPATCH RUNS ON A POINTER A THREAD CHOSE, ON ANY ARCH.** That is the
+milestone's central claim and it now holds. What each arch kept is NOT the same thing and the
+difference is load-bearing:
 
-**THE FLEET AT `6c200e56`, and two counts moved for stated reasons:** sim 293, sim-telem 295
-(it could not LINK before this branch), qemu 52, qemu-m3 49, qemu-m33 50, qemu-telem 46,
-qemu-riscv 44, microbit **36** (its selftest split into two images, recovering three
-arena-starved arms), frdmk64f-st 21, rx72m-st 20, esp32c6-wroom-st 21, xmc4800-relax-st 20,
-picopi-st **20** (its red-zone gate is now registered, and it is the board that SETS the
-enforced armv6m figure). Nine more boards build. PR 3 itself is verified on five presets
-covering all four arches; its full sweep and two proofs are OWED and listed in the plan doc.
+  - **rv32imac** transfers on the U-mode accept path. A PRIVILEGED thread's ecall does NOT
+    convert: it arrives with `mstatus.MPP=M`, so `.Ltrap_from_m_ctx` keeps frame and dispatch on
+    its own stack, which is what the `SYSPRIV` class and the C floor assert exist for.
+  - **ARM** converts both privileges together, `.Lsvc_slow` clearing `CONTROL.nPRIV`
+    unconditionally, so there is no `SYSPRIV` analogue. The transfer lives in `svc_trampoline`
+    and NOT in `.Lsvc_slow`: fabricating a frame there loses `CONTROL.FPCA`, and a PendSV taken
+    with it clear does not save `{s16-s31}`, silently corrupting FP state across a blocking
+    syscall. In the trampoline the hardware computes the resume PSP.
+  - **rxv3** converts both arms, generic and IPC fastpath. Its 236-byte save STAYS on the USP
+    because `rte` pops PC then PSW from R0 and R0 IS the USP once the popped PSW sets U, so a
+    frame on the block would resume a user thread with its SP in kernel `.bss`.
+  - **f302nucleo and due KEEP THEIR RED ZONE**, so armv7m carries BOTH paths under
+    `KICKOS_KERNEL_STACKS`. Gated on the chip capability `HAS_MPU` and not the posture, because
+    affording the blocks is a RAM question and RAM does not change between a board's enforcing
+    and flat variants. sam3x8e is classified by a proxy: it HAS an MPU and lacks only the
+    backend, and its scraped granule of 32 CONTRADICTS its own `HAS_MPU`.
+
+**THE PATTERN THAT COST THE MOST TIME, AND IT APPEARED FOUR TIMES: A FIGURE CHARGED TWICE.** The
+armv7m FP term charged the same pessimism on both sides and refused a legal thread. The bench
+`SYSPRIV` would have made every non-bench board reserve for brackets it never compiles. The
+armv7m `SVC` figure would have charged f302nucleo and due for postures they never build. And
+the `.appdata` window on rx72m is a cliff rather than a slope. Suspect it whenever one figure
+covers two postures, and prefer a posture-dependent macro to a bigger number.
+
+**THE SECOND PATTERN, ALSO FOUR TIMES: A PRESET NOBODY MEASURED.** f302nucleo-st and
+bluepill-c8-st were never measured while the class they depend on was live; after three boards
+converted, no REGISTERED armv7m preset measured that class at all; the two rv32imac bench
+variants fell through the ladder in silence; and xmc4800-relax-st was OVERWRITING ITS CANARY by
+four bytes on hardware. **That class is now closed structurally**: the ctest ladder no longer
+holds a list, it derives the preset name and asks `trap_redzone_roots.txt`, so the two cannot
+disagree. Every preset of every gated arch is declared, and the roots-file header carries the
+measured reason each knob is relevant. 22 of the 34 armv7m presets had no console bindings, so
+their figures had been LOWER BOUNDS.
+
+**READ THE COUNT, NEVER THE PERCENTAGE, AND SOMETIMES NOT EVEN THE COUNT.** microbit's ctest
+count is unchanged at 36 while THREE of its TAP arms lost their real run to the arena
+(`endpoint_crossdomain`, `region_mode`, `mem_self_grant` went SKIP, 17 skips to 20). Only a diff
+of the TAP stream shows it. It is paid because microbit is the ONLY armv6m board that executes
+anything: it runs 12 emulator arms where picopi-st runs none, RP2040 having no QEMU machine.
+
+**THE FLEET AT `72f91136`:** sim 294, sim-telem 296, qemu 53, qemu-m3 50, qemu-m33 52,
+qemu-telem 48, qemu-riscv 45, microbit 37, frdmk64f-st 22, rx72m-st 21, esp32c6-wroom-st 22,
+xmc4800-relax-st 22, picopi-st 21. Every one gained the `trap_redzone_decls` arm. The three that moved each gained exactly the
+`trap_redzone` arm it lacked. Image sweep 52 presets, 373 gates, 0 fail. Nine more boards build.
+
+**THE rxv3 SILICON WITNESS IS TAKEN, and it is the only execution evidence that arch can
+have: RX has no QEMU machine.** rx72m on GlaDOS, tree `72f91136` CLEAN, one boot, validated by
+hand through `check_tap_stream.sh` because `bench.sh` does not: `1..105`, 105 ok, 0 skip, 0
+partial, `mpu enforce`, banner `kstack 1104 B x 17 = 18768 B`. An earlier pass at `26361ecf`
+is SUPERSEDED: an audit found a critical in the code it exercised, so it witnessed a tree
+that no longer exists. The arms that make it a witness
+rather than a smoke test: `ok 43 call_reg_fastpath`, whose over-budget form is a DECLINE and so
+the ONE silent failure mode the fastpath conversion introduced (a bad R0 reload would dispatch
+with corrupted args, no fault and no panic); and `ok 19 mutex_chain_boost` plus `ok 47
+call_server_death`, which block mid-dispatch and so exercise PendSW's new either-stack leg,
+whose failure would panic every blocking syscall. The PRE-EXISTING rx72m witness is superseded
+and must not be cited for this tree.
+
+**AND IT PROVES THE ACCEPTANCE PATH ONLY, WHICH IS THE ASYMMETRY THAT LET A CRITICAL LIVE.**
+Every blocking syscall drives the block leg, so a 105-arm run exercises the accept side
+continuously. NOTHING on RX can reach the REFUSE side: `pspguard` is armv7m/armv6m only with no
+RX analogue, and `.Lsvc_nokstack` is structurally unreachable, every pool thread getting a
+block. So a green run says the guard does not reject what it must accept, and says nothing about
+what it must reject. **An RX `pspguard` is OWED**, and until it exists no rxv3 refusal figure is
+witnessed by anything.
+
+**THE FLEET SWEEP COVERS HALF THE TESTS, AND EVERY GREEN SWEEP THIS SESSION REPORTED SAID LESS
+THAN IT SOUNDED LIKE.** `tools/sweep_image_gates.sh` runs `ctest -LE host`, so a HOST gate
+failure is structurally invisible to it: it reported 0 fail on a tree where `sim-telem` had a
+failing arm, and only the 13 baseline counts caught that. `tools/sweep_host_gates.sh` is the
+other half and was never run once. Run BOTH before trusting green.
+
+**AN OPEN FLAKE, not dismissed.** `sim_published_console` failed once during a count pass and
+passed eight runs after, five in isolation and three under the concurrent child-build load it is
+most likely sensitive to. It configures and BUILDS a whole sim tree under `mktemp -d`, so in the
+shared RAM-backed `/tmp` this file's own notes call a silent-ENOSPC hazard, and five such gates
+run together under `-j8`. A mechanism is not a diagnosis and this one has none: **the failure
+text was LOST because re-running overwrote `LastTest.log` before anyone read it. Read that file
+BEFORE re-running a flake.**
+
+**WHAT IS OWED, and none of it is a surprise waiting to be found:**
+
+  - **The Book page and `docs/reference/porting.md:1464`.** Deferred by the user, deliberately,
+    until the whole PR suite is final: "because it is a work in progress I dont want to write
+    down stuff that can changes later on". With every arch converted, no backend runs the
+    mechanism `docs/book/whoever-stacks-the-trap-frame-owns-the-bounds-check.md` describes, and
+    its section arguing AGAINST a per-thread kernel stack now argues against what shipped.
+  - **The ungated fault/slay exit path on armv7m, armv6m and rxv3.** rv32imac got an `EXIT`
+    class; the other three relocate sp to the stack top and branch to the exit stub with no
+    class naming those symbols. armv6m's is widest: its SVC root is `NONE`, so no armv6m class
+    measures any C on a thread stack at all.
+  - **No unit test for the canary/high-water machinery.** An auditor asked for one: arming,
+    simulated depth, corruption detection, and persistence across slot reuse. That last is the
+    invariant the readings rest on and it is asserted only by a comment and by `kstack_arm`
+    having one caller.
+  - **`close` INHERITS THE armv7m DUAL PATH**, not a deletion. Unlike rv32imac, the machinery
+    stays while f302nucleo keeps its red zone, which ties to whether PR 7's continuation-style
+    blocking ever converts that board. roadmap.md already anticipated this board needing either
+    a lower thread ceiling or continuation-style blocking.
+  - **Two four-byte margins on one board.** f302nucleo's `DEPTH_SVC` 448 is EXACTLY its
+    requirement once the STKALIGN pad is provisioned, and the panic-tail exclusion is
+    load-bearing by four bytes. Both deliberate, both gated, neither slack.
+  - `DEPTH_SVCK >= DEPTH_SVC` was written as a tripwire against swapping the two macros and is
+    no longer one, 768 and 1240 against 448 being far enough apart that a swap fails the gate.
+  - `genconfig.py` warns "set more than once" whenever a `-D` knob is re-passed unchanged,
+    because it loads the live `.config` then the overrides. Noise in a channel documented to
+    mean a declaration is wrong.
 
 **THE OLD FRAMING, kept because the decision it records still holds:** M5.2.1 absorbs M5.2.2,
 the mechanism is reworked once, in this milestone. Decided 2026-08-21, the user's words: *"Let's do M5.2.2 in M5.2.1.

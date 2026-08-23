@@ -114,12 +114,23 @@ static_assert(KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC <= KICKOS_RV_TRAP_KERNEL_
 // M-mode sp, so a floor under this requirement buys an overflow rather than a refusal. The
 // SYSPRIV class measures the same relation per registered preset; this runs on every build of
 // every board, which is the coverage the gate does not have.
-static_assert(KICKOS_MIN_STACK_SIZE
-                  >= KICKOS_RV_TRAP_FRAME_SYS + KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC,
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RV_TRAP_NEED_SYSPRIV,
               "the spawn floor cannot hold a privileged thread's own syscall dispatch");
+// THE DEATH PATH SPENDS EVERY THREAD'S OWN STACK, privilege included, and no prologue bounds
+// it: .Lfault relocates sp to the top of the dying thread's stack and mrets into the exit
+// stub. So the spawn floor is the only thing that covers it, which is what KICKOS_MIN_STACK_SIZE
+// has always claimed to be and nothing measured until the EXIT class. No frame term: the
+// redirect paths start from the top.
+static_assert(KICKOS_MIN_STACK_SIZE
+                  >= KICKOS_RV_TRAP_FRAME_EXIT + KICKOS_RV_TRAP_EXIT_DEPTH,
+              "the spawn floor cannot hold the thread-exit dispatch");
 // THE ENTRY HAS NOWHERE ELSE TO BUILD. With no block seated, every U-mode trap takes the
 // refusal path and the first syscall a thread makes ends the system, so this arch cannot be
 // configured without the blocks.
+// KCONFIG NOW FORECLOSES THE 0 CASE rather than leaving this assert to catch it: this arch
+// selects ARCH_KERNEL_STACKS_MANDATORY, which puts `range 1 1` on the knob, so a defconfig
+// asking for 0 is refused by name at configure. Kept because it states the arch's requirement
+// at the point of use, and because a `select` removed by accident should fail loudly here.
 static_assert(KICKOS_KERNEL_STACKS != 0,
               "rv32imac's trap entry builds every U-mode frame on ctx.kernel_sp");
 // THE CEILING MUST COVER ITS OWN REQUIREMENT. The deepest a syscall drives a kernel stack is
@@ -275,7 +286,14 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
+    // kernel_sp SURVIVES THE REBUILD, and arch_context_init clearing it is right for a fresh
+    // TCB and wrong here. This ctx belongs to a LIVE POOL THREAD being redirected onto its
+    // slay stub: its block is seated by pool slot and does not move, and thread_create is the
+    // only other writer. Cleared, the thread carries kernel_sp 0 through its own teardown,
+    // which is the state svc_trampoline's .Lsvc_nokstack arm calls unreachable.
+    uint32_t const kernel_sp = ctx->kernel_sp;
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+    ctx->kernel_sp = kernel_sp;
 }
 
 // --- Switch: record the target + pend the msip switcher ---------------------

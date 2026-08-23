@@ -710,42 +710,35 @@ if(KICKOS_BUILD_TESTS)
   # refused by the gate itself, so an unlisted variant registers nothing rather than
   # measuring the wrong configuration.
   #
-  # The armv7m entries cover the FP-live posture, the soft-float one, and a live console
-  # backend (the deepest dispatch in the fleet). trap_redzone_roots.txt declares the other
-  # armv7m presets for a hand run. pizero2350 is measured by hand alone: its reboot path
-  # calls into the bootrom through a pointer no call graph can follow.
+  # THIS LADDER WAS SHORT THREE TIMES, and each time the pair nobody measured was the
+  # defect: an elseif was missing and nothing said so, a registered set being indistinguishable
+  # from a complete one. So it is no longer a list. trap_redzone_roots.txt declares which
+  # (board, variant) pairs are measurable and states the rule that makes the answer "every
+  # preset of every gated arch": a variant is measurement-relevant when it changes
+  # KICKOS_BENCH, KICKOS_TELEMETRY, KICKOS_ENABLE_SELFTEST, the memory model or the console
+  # backend, each of which was MEASURED to move a class depth here, and a board's variants
+  # differ by exactly those. This block now DERIVES the preset name and asks that file whether
+  # it is declared, so the two can no longer disagree and a new preset registers by being
+  # declared once rather than in two places.
   #
-  # BOTH armv6m presets register, and picopi-st is the one that must: it measures DEEPER
-  # than microbit, having an MPU whose dispatch reaches the reserved-block walk, so it is
-  # picopi-st that SETS the figure the header enforces. This gate needs no board, only a
-  # cross toolchain, so leaving the binding measurement to a hand run would have left the
-  # enforced figure unchecked by anything automated.
-  #
-  # f302nucleo-st REGISTERS FOR THE OPPOSITE REASON: it is the only registered preset left
-  # that keeps the armv7m RED ZONE, stm32f302 having no MPU and not taking
-  # BOARD_TAKES_KERNEL_STACKS. qemu, qemu-m3 and frdmk64f-st all transferred to the kernel
-  # block, so without this entry the armv7m thread-stack class and the spawn-floor clause
-  # that binds it would be measured by nothing automated on any board that still depends on
-  # them.
+  # THE NAMING RULE IS THE PRESETS' OWN: the base variant is the board name and every other
+  # variant is <board>-<variant>, which holds for all 52 pairs in cmake/presets/*.json. A
+  # preset that broke the rule would fail to configure under its derived name rather than
+  # register the wrong tree, the gate taking the name as an argument.
+  set(_fs_redzone_roots "${PROJECT_SOURCE_DIR}/tests/static/trap_redzone_roots.txt")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_fs_redzone_roots}")
+  if(KICKOS_CONFIG_VARIANT STREQUAL "base")
+    set(_fs_redzone_candidate "${KICKOS_BOARD}")
+  else()
+    set(_fs_redzone_candidate "${KICKOS_BOARD}-${KICKOS_CONFIG_VARIANT}")
+  endif()
   set(_fs_redzone_preset "")
-  if(KICKOS_BOARD STREQUAL "qemu-riscv" AND KICKOS_CONFIG_VARIANT STREQUAL "base")
-    set(_fs_redzone_preset qemu-riscv)
-  elseif(KICKOS_BOARD STREQUAL "esp32c6-wroom" AND KICKOS_CONFIG_VARIANT STREQUAL "st")
-    set(_fs_redzone_preset esp32c6-wroom-st)
-  elseif(KICKOS_BOARD STREQUAL "rx72m" AND KICKOS_CONFIG_VARIANT STREQUAL "st")
-    set(_fs_redzone_preset rx72m-st)
-  elseif(KICKOS_BOARD STREQUAL "qemu" AND KICKOS_CONFIG_VARIANT STREQUAL "base")
-    set(_fs_redzone_preset qemu)
-  elseif(KICKOS_BOARD STREQUAL "qemu-m3" AND KICKOS_CONFIG_VARIANT STREQUAL "base")
-    set(_fs_redzone_preset qemu-m3)
-  elseif(KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_CONFIG_VARIANT STREQUAL "st")
-    set(_fs_redzone_preset frdmk64f-st)
-  elseif(KICKOS_BOARD STREQUAL "microbit" AND KICKOS_CONFIG_VARIANT STREQUAL "base")
-    set(_fs_redzone_preset microbit)
-  elseif(KICKOS_BOARD STREQUAL "picopi" AND KICKOS_CONFIG_VARIANT STREQUAL "st")
-    set(_fs_redzone_preset picopi-st)
-  elseif(KICKOS_BOARD STREQUAL "f302nucleo" AND KICKOS_CONFIG_VARIANT STREQUAL "st")
-    set(_fs_redzone_preset f302nucleo-st)
+  # REGEX rather than a substring test: "preset armv7m qemu" must not match qemu-flat, and the
+  # trailing anchor is what stops it.
+  file(STRINGS "${_fs_redzone_roots}" _fs_redzone_decls
+       REGEX "^preset[ \t]+${KICKOS_ARCH}[ \t]+${_fs_redzone_candidate}[ \t]*$")
+  if(NOT _fs_redzone_decls STREQUAL "")
+    set(_fs_redzone_preset "${_fs_redzone_candidate}")
   endif()
   if(NOT _fs_redzone_preset STREQUAL "")
     # _add_test, not the wrapper: the gate builds a tree of its own, so the kickos_build
@@ -757,6 +750,15 @@ if(KICKOS_BUILD_TESTS)
     # The timeout covers a cold cross build of the scratch tree.
     set_tests_properties(trap_redzone PROPERTIES TIMEOUT 1800 LABELS host)
   endif()
+
+  # UNCONDITIONAL, and outside the _fs_redzone_preset guard above on purpose: what it checks
+  # is that the declaration set covers the fleet, which is exactly the question a board whose
+  # preset is UNDECLARED cannot ask by registering trap_redzone. It configures nothing and
+  # needs no cross toolchain, so it runs on sim too.
+  _add_test(NAME trap_redzone_decls
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_trap_redzone_decls.sh"
+                    "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(trap_redzone_decls PROPERTIES TIMEOUT 120 LABELS host)
 
   _add_test(NAME atomic_rmw
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_atomic_rmw.sh"

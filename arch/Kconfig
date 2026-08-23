@@ -23,6 +23,37 @@ config ARCH_HAS_KERNEL_STACKS
 	  KICKOS_KERNEL_STACKS, which asks this AND the chip's HAS_MPU, or this AND the
 	  board's own BOARD_TAKES_KERNEL_STACKS.
 
+# STRONGER THAN THE ABOVE: the arch's entry has NO red-zone fallback. Declared here for the
+# same reason ARCH_HAS_KERNEL_STACKS is, and separate from it because the two say different
+# things: one says the transfer is POSSIBLE, this one says it is the ONLY thing the entry
+# compiles.
+config ARCH_KERNEL_STACKS_MANDATORY
+	bool
+	help
+	  The arch's switch.S compiles the transfer UNCONDITIONALLY, with no red-zone path
+	  beside it, and its backend static_asserts KICKOS_KERNEL_STACKS != 0. Selecting
+	  this makes that knob default 1 unconditionally on the arch, so no chip capability
+	  or board opt-in can steer it to a value three backends reject, and pins it with
+	  `range 1 1` as a declared invariant. A requested 0 is REFUSED BY NAME at configure
+	  instead of reaching the assert as a compile error.
+
+	  WHY IT IS NOT IMPLIED BY ARCH_HAS_KERNEL_STACKS. That symbol says the entry CAN
+	  transfer; this one says it can do nothing else. armv6m, rv32imac and rxv3 select
+	  this: every chip on them either has an MPU or opted in, so the fallback was never
+	  written and their asserts have always been the only thing standing behind the
+	  knob's `default 0`.
+
+	  ARMV7M DELIBERATELY DOES NOT SELECT IT, and that is what makes the distinction
+	  expressible rather than a tautology. It carries BOTH paths under
+	  KICKOS_KERNEL_STACKS because stm32f302 and sam3x8e have no MPU and did not opt in:
+	  on a chip with no privilege boundary the transfer buys robustness rather than
+	  isolation, and the red zone buys the same robustness without KICKOS_THREAD_SLOTS
+	  blocks of kernel .bss. f302nucleo and due are those boards, and they must keep
+	  resolving 0.
+
+	  A NEW ARCH THAT WRITES ONLY THE TRANSFER SELECTS THIS. One that writes both paths
+	  does not, and then the red zone is what its unconverted boards depend on.
+
 config BOARD_TAKES_KERNEL_STACKS
 	bool
 	help
@@ -50,6 +81,7 @@ config BOARD_TAKES_KERNEL_STACKS
 config ARCH_ARMV6M
 	bool
 	select ARCH_HAS_KERNEL_STACKS
+	select ARCH_KERNEL_STACKS_MANDATORY
 
 config ARCH_ARMV7M
 	bool
@@ -57,10 +89,13 @@ config ARCH_ARMV7M
 
 config ARCH_RXV3
 	bool
+	select ARCH_HAS_KERNEL_STACKS
+	select ARCH_KERNEL_STACKS_MANDATORY
 
 config ARCH_RV32IMAC
 	bool
 	select ARCH_HAS_KERNEL_STACKS
+	select ARCH_KERNEL_STACKS_MANDATORY
 
 config ARCH_LX6
 	bool

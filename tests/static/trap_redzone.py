@@ -120,6 +120,12 @@ class Decl(object):
                         on_trap = True
                     elif opt == 'stack=kernel':
                         on_kernel = True
+                    elif opt in ('kstacks=0', 'kstacks=1'):
+                        # Read by check_trap_redzone.sh, which owns the live posture knob and
+                        # passes --not-compiled for a class this image does not contain. Only
+                        # accepted here so a marked record parses; this tool never resolves it
+                        # itself, there being no board config in a .ci tree to resolve it from.
+                        pass
                     else:
                         die('%s: unknown class option "%s"' % (where, opt))
                 if frame is None or depth is None:
@@ -496,7 +502,8 @@ def usage():
     sys.stderr.write(
         'usage: trap_redzone.py --ci-dir <dir> --arch <arch> --preset <preset>\n'
         '                       --roots <file> --indirect <file>\n'
-        '                       --enforced <CLASS>=<frame>,<depth> [--enforced ...]\n')
+        '                       --enforced <CLASS>=<frame>,<depth> [--enforced ...]\n'
+        '                       [--not-compiled <CLASS>]...\n')
     return 2
 
 
@@ -504,9 +511,19 @@ def parse_argv(argv):
     want = {'--ci-dir', '--arch', '--preset', '--roots', '--indirect'}
     opt = {}
     enforced = collections.OrderedDict()
+    # Classes this image does not compile, per the caller's read of the live posture knob.
+    # Still measured and still printed; only the figure comparison is dropped, because the
+    # depth measures the same C landing on a stack this design does not put it on.
+    not_compiled = set()
     i = 0
     while i < len(argv):
         a = argv[i]
+        if a == '--not-compiled':
+            if i + 1 >= len(argv):
+                die('--not-compiled wants <CLASS>')
+            not_compiled.add(argv[i + 1])
+            i += 2
+            continue
         if a == '--enforced':
             if i + 1 >= len(argv):
                 die('--enforced wants <CLASS>=<frame>,<depth>')
@@ -533,11 +550,14 @@ def parse_argv(argv):
             die('missing %s' % a)
     if not enforced:
         die('no --enforced figure; there would be nothing to compare against')
-    return opt, enforced
+    if not_compiled and set(enforced) <= not_compiled:
+        die('every class was passed --not-compiled, so nothing would be compared at all;'
+            ' a posture that enforces no class of an arch is a declaration bug, not a run')
+    return opt, enforced, not_compiled
 
 
 def run(argv):
-    opt, enforced = parse_argv(argv)
+    opt, enforced, not_compiled = parse_argv(argv)
     arch = opt['arch']
     preset = opt['preset']
     decl = Decl(opt['roots'], arch)
@@ -551,6 +571,10 @@ def run(argv):
     for cls in enforced:
         if cls not in decl.macros:
             die('--enforced names class %s, which %s declares nowhere for %s'
+                % (cls, opt['roots'], arch))
+    for cls in sorted(not_compiled):
+        if cls not in decl.macros:
+            die('--not-compiled names class %s, which %s declares nowhere for %s'
                 % (cls, opt['roots'], arch))
 
     graph = Graph(opt['ci-dir'])
@@ -635,6 +659,9 @@ def run(argv):
             where = 'on the arch trap stack, exclusions NOT applied'
         if cls in decl.kernel_stack:
             where = 'on the per-thread kernel stack, exclusions NOT applied'
+        if cls in not_compiled:
+            where += ', NOT ENFORCED: this image does not compile the entry design this' \
+                     ' class describes'
         print('%s: measured depth %d bytes, %s enforces %d bytes (%s)'
               % (cls, best, macro_depth, enf_depth, where))
         print('  red zone = %s %d + %s %d = %d bytes'
@@ -659,8 +686,11 @@ def run(argv):
             for key in roots[cls]:
                 b = max(b, bare.depth(key))
             frame, enf_depth = enforced[cls]
-            print('  %-6s %d bytes measured, %d over the enforced %d, red zone would be %d'
-                  % (cls, b, b - enf_depth, enf_depth, frame + b))
+            note = ''
+            if cls in not_compiled:
+                note = ' (not enforced here at all)'
+            print('  %-6s %d bytes measured, %d over the enforced %d, red zone would be %d%s'
+                  % (cls, b, b - enf_depth, enf_depth, frame + b, note))
 
     # Every hard check runs over the reachable set the ENFORCED figure claims to cover,
     # which is the set after exclusions: a node only the excluded tail reaches is outside
@@ -677,6 +707,8 @@ def run(argv):
 
     fails = []
     for cls in decl.classes:
+        if cls in not_compiled:
+            continue
         frame, enf_depth = enforced[cls]
         if measured[cls] > enf_depth:
             fails.append(
@@ -741,7 +773,11 @@ def run(argv):
             sys.stderr.write('FAIL: %s\n' % f)
         return 1
     print('trap_redzone: depths OK, %s' % ', '.join(
-        '%s %d <= %d' % (c, measured[c], enforced[c][1]) for c in decl.classes))
+        '%s %d <= %d' % (c, measured[c], enforced[c][1])
+        for c in decl.classes if c not in not_compiled))
+    if not_compiled:
+        print('trap_redzone: measured and NOT enforced here, %s' % ', '.join(
+            '%s %d' % (c, measured[c]) for c in sorted(not_compiled)))
     return 0
 
 

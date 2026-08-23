@@ -452,9 +452,33 @@ svc_trampoline:
    to build. Unreachable today: thread_create seats a block on every pool thread, and idle
    is the only TCB outside the pool, privileged and running arch_idle_wait alone. Reported
    rather than argued, so a future TCB that reaches it finds a refusal instead of a store
-   through 0xFFFFFFF0. r0 is the PSP the thread would have resumed on. */
+   through 0xFFFFFFF0. r0 is the PSP the thread would have resumed on.
+
+   THE REPORTER RUNS ON THE MSP, and switching to it is not tidiness. This site is in THREAD
+   mode on the thread's own PSP, and the reporter's console chain measures 488 bytes against
+   the 180 the SVC guard reserved below that PSP, so reporting on the PSP overflows the
+   thread's stack while printing. .Lpsp_wild and .Lsvc_nothread need no such switch: they are
+   inside SVC_Handler, in handler mode, already on the MSP. SPSEL is written before the
+   branch and after r0 is computed, so the reported PSP is the thread's and not the MSP; the
+   push {r0, r1} above is abandoned with the PSP, the reporter being noreturn. The MSP here
+   is where the SVC entry left it, which is the trusted handler stack.
+
+   PRIMASK IS SET BEFORE SPSEL MOVES, and the order is load-bearing. The exception return
+   into svc_trampoline dropped below PRIO_SVCALL, so PendSV is live here. Its save reads r0
+   from the PSP and banks the handler's own lr as the outgoing EXC_RETURN, both of which
+   assume the interrupted thread was ON that PSP. Taken after SPSEL is 0 it is not: the
+   hardware stacked the entry frame on the MSP, so the context it saves describes a stack
+   the thread was not running on. NOT a containment hole, PSP_GUARD having already bounded
+   the PSP at the PendSV entry and this site leaving it untouched; the damage is to the
+   switch. kpanic_enter masks too, one call later, which is one call too late. Noreturn, so
+   no cpsie pairs with it. */
 .Lsvc_nokstack:
+    cpsid   i
     add     r0, sp, #8
+    mrs     r1, control
+    bic     r1, r1, #2              /* CONTROL.SPSEL = 0: SP is the MSP from here */
+    msr     control, r1
+    isb
     b       kickos_armv7m_no_kernel_stack
 #else
 /* THE UNCONVERTED DESIGN, for the armv7m chips with no MPU that keep their red zone

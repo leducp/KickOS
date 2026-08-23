@@ -37,11 +37,14 @@ struct arch_context
     uint32_t stack_lo;
     uint32_t stack_hi;
 
-    // The kernel stack this thread's privileged dispatch runs on, saved across a switch the
-    // way `sp` above saves the USER one. `sp` is and stays the user stack pointer on every
-    // backend, so no second field names it; these two are the pair a trusted entry swaps
-    // between. Unused until the trap entry transfers to it: the field exists here first so
-    // the allocation and the geometry can be reviewed apart from the execution change.
+    // TOP of the kernel stack this thread's privileged dispatch runs on, seated once per pool
+    // thread by thread_create and preserved across arch_ctx_redirect. NOT saved by a switch:
+    // it is write-once per slot and every switch-path reference is a load, `sp` above being
+    // the one field that tracks where the thread is. svc_trampoline relocates sp onto this
+    // before it calls anything, and PendSV's guard accepts a PSP inside the block below it as
+    // well as one inside the user stack, because a thread preempted mid-dispatch is running
+    // there. Read at F_CTX_KERNEL_SP in switch.S. Zero for a TCB outside the pool, which
+    // reaches neither site.
     uint32_t kernel_sp;
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY

@@ -121,6 +121,10 @@ static_assert(KICKOS_KERNEL_STACK_SIZE % 8 == 0,
 // THE TRAMPOLINE HAS NOWHERE ELSE TO BUILD. With no block seated, every syscall takes
 // svc_trampoline's refusal path and the first one a thread makes ends the system, so this
 // arch cannot be configured without the blocks.
+// KCONFIG NOW FORECLOSES THE 0 CASE rather than leaving this assert to catch it: this arch
+// selects ARCH_KERNEL_STACKS_MANDATORY, which puts `range 1 1` on the knob, so a defconfig
+// asking for 0 is refused by name at configure. Kept because it states the arch's requirement
+// at the point of use, and because a `select` removed by accident should fail loudly here.
 static_assert(KICKOS_KERNEL_STACKS != 0,
               "armv6m's syscall trap runs every dispatch on ctx.kernel_sp");
 // THE CEILING MUST COVER ITS OWN REQUIREMENT. The deepest a syscall drives a kernel block
@@ -214,7 +218,14 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
+    // kernel_sp SURVIVES THE REBUILD, and arch_context_init clearing it is right for a fresh
+    // TCB and wrong here. This ctx belongs to a LIVE POOL THREAD being redirected onto its
+    // slay stub: its block is seated by pool slot and does not move, and thread_create is the
+    // only other writer. Cleared, the thread carries kernel_sp 0 through its own teardown,
+    // which is the state svc_trampoline's .Lsvc_nokstack arm calls unreachable.
+    uint32_t const kernel_sp = ctx->kernel_sp;
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+    ctx->kernel_sp = kernel_sp;
 }
 
 // --- Critical section: PRIMASK (mask all configurable interrupts) -----------
@@ -369,9 +380,10 @@ void kickos_armv6m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi
 }
 
 // Called from switch.S (svc_trampoline) when the calling thread has no kernel block seated,
-// so the transfer has nowhere to build. Runs PRIVILEGED IN THREAD MODE on that thread's own
-// stack, which is what a panic has to work with here, and contains the system rather than
-// the dispatch: nothing has run yet.
+// so the transfer has nowhere to build. Runs privileged in THREAD mode ON THE MSP,
+// .Lsvc_nokstack clearing CONTROL.SPSEL before the branch and deriving there why the PSP
+// cannot carry it. `psp` is the thread's own, computed before that clear. Contains the
+// system rather than the dispatch: nothing has run yet.
 void kickos_armv6m_no_kernel_stack(uint32_t psp)
 {
     kpanic_enter();

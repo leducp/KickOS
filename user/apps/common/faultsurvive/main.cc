@@ -189,6 +189,11 @@ namespace
         // already checks the USP. So enter through `int #1` (kickos_rx_syscall_trap): its
         // generic arm stores the stacked userPC/userPSW at USP-8/USP-4, so USP = &witness + 8
         // lands userPC (non-sentinel) on the witness. R0 IS the SP on RX.
+        //
+        // THAT HEAD SURVIVES THE KERNEL-STACK TRANSFER, so this is the one backend where the
+        // aim can still land: RX has no way out of supervisor but RTE, RTE pops PC then PSW
+        // from R0, and R0 is the USP while PSW.U is set, so the pair has to sit on the stack
+        // the thread resumes on however far the dispatch moves.
         __asm volatile("mov.l %0, r0\n\t"
                        "int #1\n\t"
                        : : "r"(kw + 8u) : "memory");
