@@ -21,12 +21,15 @@
 // points SP at a KERNEL word (kickos_trapstack_witness) and traps. A prologue that stored
 // the frame through the U-mode SP overwrites that word in privileged mode; the bounds test
 // refuses the SP before the first store.
-// KICKOS_FS_MODE 4: the same defect one step in, where a FRAME-only bound still says yes.
-// The worker runs on a CALLER-PROVIDED stack, so the app knows stack_lo and can poison a
-// band of its own data immediately below it. The worker then parks SP inside its stack with
-// room for the frame but not for the kernel descent under it, so a frame-only bound accepts
-// it and the reporter chain runs privileged through the band. Root reads the band back after
-// the join.
+// KICKOS_FS_MODE 4: the LOW EDGE, which is legal. The worker runs on a CALLER-PROVIDED
+// stack, so the app knows stack_lo and can poison a band of its own data immediately below
+// it. The worker then parks SP inside its stack with less room under it than the frame plus
+// the kernel descent would need, and faults. On rv32imac that SP is accepted: the entry
+// transfers to the thread's kernel stack, so the frame and every byte of C below it land
+// there and nothing privileged is written under the parked SP. The claim is therefore a
+// clean thread kill with the band INTACT, and root reads the band back after the join. An
+// entry that adopted the U-mode SP instead would run the reporter chain privileged through
+// the band, which is what the band still detects.
 // KICKOS_FS_MODE 5: the alignment leg. The worker drops SP two bytes, still deep inside its
 // own stack and in bounds, and traps, so only alignment can refuse it. QEMU virt COMPLETES
 // the misaligned frame stores, so this mode witnesses the REFUSAL and not the prologue
@@ -81,22 +84,20 @@ namespace
 #if !defined(__riscv)
 #error "KICKOS_FS_MODE 4 pins rv32imac's trap-frame figures; no other backend defines them"
 #endif
-    // Room the worker leaves below its SP: EXACTLY the frame, which is all a bound that
-    // priced the frame ALONE demands. The frame then lands flush with stack_lo, in bounds, so
-    // the frame-validity test accepts it, and every byte the kernel's C dispatch touches
-    // under it is below stack_lo, where the band is.
+    // Room the worker leaves below its SP: EXACTLY the frame, so an entry that built the
+    // frame at the parked SP would land it flush with stack_lo and run every byte of its C
+    // dispatch below stack_lo, where the band is.
     constexpr uintptr_t FS_LOW_ROOM = KICKOS_RV_TRAP_FRAME;
-    static_assert(FS_LOW_ROOM >= KICKOS_RV_TRAP_FRAME,
-                  "FS_LOW_ROOM below the frame size: the frame lands out of bounds and the "
-                  "frame-validity test refuses it, so the arm no longer shows the descent");
-    static_assert(FS_LOW_ROOM < KICKOS_RV_TRAP_REDZONE,
-                  "FS_LOW_ROOM at or above the red zone: the fixed guard accepts this SP and "
-                  "the arm can never go green");
+    static_assert(FS_LOW_ROOM < KICKOS_RV_TRAP_FRAME + KICKOS_RV_TRAP_KERNEL_DEPTH,
+                  "FS_LOW_ROOM leaves room for the frame and the kernel descent, so even an "
+                  "entry that adopted this SP would stay above stack_lo and an intact band "
+                  "would prove nothing");
 
     // The caller-owned stack, and the band of the app's own arena block directly beneath it.
-    // Size clears KICKOS_MIN_STACK_SIZE and exceeds the syscall red zone, so the worker is a
-    // legitimate thread until the moment it moves SP. Under an enforcing MPU the stack is one
-    // region, so PMP NAPOT wants the base aligned to its size; main checks that it got it.
+    // Size clears KICKOS_MIN_STACK_SIZE, so the worker is a legitimate thread, and it stays
+    // one after it moves SP: the low edge of its own stack is an sp the entry accepts. Under
+    // an enforcing MPU the stack is one region, so PMP NAPOT wants the base aligned to its
+    // size; main checks that it got it.
     constexpr uint32_t FS_STACK_SIZE = 2048;
     constexpr uint32_t FS_BAND_SIZE = 512;
     constexpr uint32_t FS_BAND_POISON = 0x5AFEBA5Eu;
@@ -166,14 +167,16 @@ namespace
         KICKOS_FS_TRAP();
 #elif KICKOS_FS_MODE == 3
         // Aim the trap's frame at the kernel witness and trap. A prologue that stores
-        // through the U-mode SP writes INTO kernel .data; the bounds test refuses the SP
-        // first. Nothing may run between the SP move and the trap.
+        // through the U-mode SP writes INTO kernel .data; the extent test refuses the SP
+        // first, and the frame base is ctx.kernel_sp and no function of the SP anyway, so
+        // the aim cannot land even with that test gone. Nothing may run between the SP move
+        // and the trap.
         uintptr_t const kw = reinterpret_cast<uintptr_t>(&kickos_trapstack_witness);
 #if defined(__riscv)
         // trap_entry saves EVERY trap (ecall/interrupt/fault) through the same prologue, so
-        // an illegal instruction reaches it. The prologue builds the frame at sp minus the
-        // frame size and stores s2 at F_S2 within it, so the store lands on the witness when
-        // sp sits FRAME - F_S2 above it.
+        // an illegal instruction reaches it. The SP below is where a prologue that built the
+        // frame at sp minus the frame size would put the s2 slot (F_S2) exactly on the
+        // witness word.
         static_assert(KICKOS_RV_TRAP_F_S2 < KICKOS_RV_TRAP_FRAME,
                       "the s2 slot must lie inside the frame, or this arm aims above the "
                       "witness and stops testing the prologue");
@@ -191,8 +194,8 @@ namespace
                        : : "r"(kw + 8u) : "memory");
 #endif
 #elif KICKOS_FS_MODE == 4
-        // Nothing may run between the SP move and the trap: what follows in the frame's
-        // shadow must be the kernel's.
+        // Nothing may run between the SP move and the trap: what follows must be the
+        // kernel's alone, so that an intact band names the kernel and nothing else.
         uintptr_t const low = g_fs_stack_lo + FS_LOW_ROOM;
         __asm volatile("mv sp, %0" ::"r"(low) : "memory");
         KICKOS_FS_TRAP();
@@ -269,8 +272,11 @@ int main(int, char**)
     int const rc = t.join(KOS_TIMEOUT_NONE);
     emit("[fs] survivor ran after the fault\n");
 #if KICKOS_FS_MODE == 4
-    // Reachable only when the fault was survivable, which is itself the failure this arm
-    // reports: the refusal ends the system and root never runs at all.
+    // The verdict of this arm, and it is reached only because the fault was survivable: the
+    // parked sp was accepted, the worker was killed alone, and root got to run. Both outcomes
+    // PRINT, so the gate reads an answer rather than inferring one from a missing line: a
+    // silent arm is what a deleted band check, a spawn that never happened and a worker that
+    // never faulted all look like.
     bool corrupt = false;
     for (uint32_t i = 0; i < FS_BAND_SIZE / 4u; i++)
     {
@@ -282,6 +288,10 @@ int main(int, char**)
     if (corrupt)
     {
         emit("[fs] [lowband] CORRUPTED: the kernel ran below stack_lo on a U-mode sp\n");
+    }
+    else
+    {
+        emit("[fs] [lowband] INTACT: the kernel wrote nothing below the parked sp\n");
     }
 #endif
     if (rc != 0)

@@ -5,13 +5,19 @@
 # NESTED-TRAP witness (rv32imac). The claim: an interrupt taken while the kernel is already
 # running a thread's syscall dispatch must NOT put its frame on that thread's stack.
 #
-# THAT IS A PRIVILEGE CLAIM. rv32imac runs syscall_dispatch
-# privileged, in thread mode, on the caller's own continuation, so the sp such an interrupt
-# finds is the CALLING THREAD'S, at whatever depth the dispatch had reached. It arrives with
-# mstatus.MPP=M, so the prologue's U-mode extent check does not apply to it. The syscall red
-# zone reserves the ecall frame plus the dispatch and never a second frame plus an ISR under
-# it, so a thread that parks sp at the red-zone edge and makes a deep syscall gets the kernel
-# to write below its own stack_lo, privileged, where a neighbour's granted region is.
+# THAT IS A PRIVILEGE CLAIM. rv32imac runs syscall_dispatch privileged, in thread mode, on the
+# caller's own continuation, and such an interrupt arrives with mstatus.MPP=M, so no U-mode sp
+# check applies to it: a frame built on the sp it finds lands at whatever depth the dispatch
+# had reached, and if that sp were the calling THREAD'S the kernel would be writing below its
+# own stack_lo, privileged, where a neighbour's granted region is. Two things hold that off,
+# and this arm covers both: the entry transfers a U-mode ecall to the thread's own KERNEL
+# stack, so the dispatch is not on the thread's stack to begin with, and .Ltrap_from_m keeps
+# only msip and ecall-from-M on the interrupted sp.
+#
+# THE WORKER PARKS ITS SP LOW ON PURPOSE, at the room a regressed entry would need for the
+# ecall frame, the dispatch and the msip frame under it. Deeper than that, a regression's
+# frames land BELOW stack_lo, where the in-bounds test below cannot see them and the arm would
+# report a false pass; the low edge itself is witnessed by the faultsurvive lowedge arm.
 #
 # WHAT MAKES IT DETERMINISTIC. The app does not wait for a tick: kos_irq_inject raises its
 # line from inside the dispatch with interrupts enabled, so the trap fires at that exact
@@ -19,8 +25,8 @@
 # tallies them (kickos_nestwitness_note) and ROOT reads the tally back through
 # KOS_SYS_NEST_WITNESS and prints it, so this gate reads an OBSERVATION rather than
 # inferring one from corrupted memory. The print has to be the app's: a kprintf on
-# kickos_terminate puts the console's varargs route inside the SYSCALL red zone and deepens
-# its measured descent.
+# kickos_terminate puts the console's varargs route inside the syscall descent and deepens
+# what that class measures.
 #
 # THE TWO CLAUSES, and neither works without the other:
 #   traps > 0    the positive control. onstack == 0 with nothing provoked is what a deleted
@@ -29,9 +35,9 @@
 #
 # THE THIRD LINE IS REPORTED, NOT ASSERTED. When a frame did land on a thread stack the
 # kernel also prints how much room was left below it. The figure to compare that against is
-# the interrupt KERNEL DESCENT, not the whole red zone: the frame itself is already spent, so
-# what has to fit under it is the ISR alone. It cannot be a clause: a fixed system prints no
-# such line, so requiring it would make the arm unfalsifiable in the direction that matters.
+# the interrupt KERNEL DESCENT alone: the frame itself is already spent, so what has to fit
+# under it is the ISR. It cannot be a clause: a fixed system prints no such line, so requiring
+# it would make the arm unfalsifiable in the direction that matters.
 #
 # QEMU, machine from kickos_add_qemu_test.
 

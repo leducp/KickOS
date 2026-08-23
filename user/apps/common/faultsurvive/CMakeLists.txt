@@ -49,10 +49,11 @@ if(KICKOS_ARCH STREQUAL "rv32imac" OR KICKOS_ARCH STREQUAL "rxv3")
   target_compile_definitions(faultsurvive_misalign PRIVATE KICKOS_FS_MODE=5)
 endif()
 
-# Mode 4 parks SP inside the stack with too little room beneath it for the frame PLUS the
-# kernel descent. It PINS rv32imac's frame and red-zone figures from rv_trap_stack.h, so it
-# is that backend's alone: rxv3 stacks its fault frame on the ISP and defines no such
-# geometry, and main.cc #errors if an image is built there.
+# Mode 4 parks SP at the low edge of the stack, with less room beneath it than the frame plus
+# the kernel descent would need, and expects the kill anyway: the entry builds on the thread's
+# kernel stack, so nothing privileged goes under that SP. It PINS rv32imac's frame and depth
+# figures from rv_trap_stack.h, so it is that backend's alone: rxv3 stacks its fault frame on
+# the ISP and defines no such geometry, and main.cc #errors if an image is built there.
 if(KICKOS_ARCH STREQUAL "rv32imac")
   kickos_add_diagnostic_app(faultsurvive_lowedge
     SOURCES main.cc
@@ -137,7 +138,8 @@ if(KICKOS_ARCH STREQUAL "rv32imac")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS misalign ${KICKOS_ARCH})
 endif()
 
-# The kernel-descent arm, wherever its image was built.
+# The low-edge arm, wherever its image was built. Not gated with the refusal arms above: this
+# one expects a clean kill, and the band it reads back is what says the kill was clean.
 if(KICKOS_ARCH STREQUAL "rv32imac")
   kickos_add_qemu_test(NAME ${_fs_tag}_faultlowedge TARGET faultsurvive_lowedge
     BOARD ${KICKOS_BOARD}

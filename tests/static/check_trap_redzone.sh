@@ -2,12 +2,18 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Trap red-zone gate. A trap prologue on rv32imac, rxv3, armv7m and armv6m reserves a RED ZONE at
-# the bottom of the interrupted unprivileged stack and refuses the trap when less room
-# than that remains below sp. The red zone has to cover the frame the prologue stores PLUS
-# the worst-case depth of the kernel C dispatch that then runs below that frame,
-# privileged, on the same thread stack. This script re-measures that depth and fails when
-# it exceeds what the prologue enforces.
+# Trap stack-geometry gate. A trap entry on rv32imac, rxv3, armv7m and armv6m builds a frame
+# and then runs the kernel's C dispatch below it, privileged, and this script re-measures that
+# descent and fails when it exceeds what the arch header enforces. WHICH STACK the pair lands
+# on is per class, and it is what the failure clauses below key on:
+#   thread  the interrupted unprivileged stack. The entry reserves a RED ZONE at the bottom of
+#           it and refuses the trap when less room than that remains below sp, so the zone is
+#           also compared against the spawn floor.
+#   kernel  the interrupted thread's own per-thread kernel block, which the entry transfers to
+#           instead of continuing on the sp the thread chose. Compared against
+#           KICKOS_KERNEL_STACK_SIZE.
+#   trap    a static per-hart stack the arch owns. No thread stack is spent, so no fit clause
+#           here applies to it; its own size lives in the arch header.
 #
 # HOW IT MEASURES. It configures a SCRATCH tree of its own with
 # -fcallgraph-info=su,da, which makes gcc drop a .ci file next to every object carrying
@@ -35,19 +41,28 @@
 #   - a class has no root at all. A class that runs no C on the guarded stack says so with
 #     `root <arch> <CLASS> NONE reason: ...`, which charges 0 and prints the reason, so an
 #     empty root set can never be an accident.
+# And two the script itself refuses on, named separately in its output: a spawn floor under a
+# thread-stack class's red zone, and a kernel block under a kernel-stack class's requirement.
 #
 # AND ONE REFUSAL BEFORE ANY OF THAT: the scratch tree's own flags. The measurement is only
 # the image's if the scratch tree compiled the image's ISA, so the cache is checked for the
 # callgraph flag and for every token of KICKOS_MCPU_FLAGS, and a tree that fails is
 # reconfigured from scratch rather than measured.
 #
-# THE FLOOR CLAUSE IS NOT ABOUT THE PROLOGUE. A red zone larger than
-# KICKOS_MIN_STACK_SIZE means a thread spawned at the floor passes the spawn check and
-# then cannot take that trap at all: the prologue refuses it forever. So the floor is
-# compared against every class's red zone, and the remedy is named in the message. The one
-# exception is a class declared `stack=trap`, whose descent runs on a static kernel stack
-# and spends no thread stack at all; trap_redzone_roots.txt states what that flag means and
-# the other consequence it carries.
+# THE FLOOR CLAUSE IS NOT ABOUT THE PROLOGUE. A thread-stack requirement larger than
+# KICKOS_MIN_STACK_SIZE means a thread spawned at the floor passes the spawn check and then
+# cannot complete that trap at all: refused forever where the entry bounds the sp, and an
+# overflow where it does not bound it, which is the shape of a class whose caller was already
+# privileged. So the floor is compared against every thread-stack class, and the remedy is
+# named in the message. A class declared `stack=trap` or `stack=kernel` is skipped by NAME, not by its
+# figure happening to fit; trap_redzone_roots.txt states what those flags mean and the other
+# consequence they carry.
+#
+# AND THE BLOCK CLAUSE IS NOT ABOUT THE FLOOR. A `stack=kernel` class's frame plus depth is
+# what one thread's kernel block has to hold, so it is compared against
+# KICKOS_KERNEL_STACK_SIZE read out of the GENERATED board config of the tree just built,
+# minus the canary word at the bottom of a block. Raising the spawn floor would answer that
+# failure with nothing, which is why it is a clause of its own with its own remedy.
 #
 # SCOPE. Know these before trusting a green run:
 #   - ONE BOARD PER RUN. The measurement covers the objects THIS preset compiles, and the
@@ -133,6 +148,7 @@ decl class | awk '
             if (f[i] ~ /^frame=/) { frame = substr(f[i], 7) }
             if (f[i] ~ /^depth=/) { depth = substr(f[i], 7) }
             if (f[i] == "stack=trap") { onstack = "trap" }
+            if (f[i] == "stack=kernel") { onstack = "kernel" }
         }
         if (frame == "" || depth == "") { exit 1 }
         print f[3] "\t" frame "\t" depth "\t" onstack
@@ -253,22 +269,45 @@ FLOOR="$(sed -n 's/^[[:space:]]*set(KICKOS_MIN_STACK_SIZE[[:space:]]\{1,\}\([0-9
 [ -r "$HEADER" ] || fail "cannot read $HEADER, so the enforced red zone cannot be read;
     this gate compares a measurement against that header and has no default to fall back on"
 
-# A plain integer only. These macros are read by the assembler as immediates, so an
-# expression here would mean the header changed shape and the scrape has to be revisited
-# rather than guessed at.
-scrape_macro() { # <macro>
-    _hits="$(sed -n "s|^[[:space:]]*#[[:space:]]*define[[:space:]]\{1,\}$1[[:space:]]\{1,\}\([0-9]\{1,\}\)[[:space:]]*\(/\*.*\)\{0,1\}$|\1|p" \
-             "$HEADER")"
+# A plain integer only. The arch header's macros are read by the assembler as immediates and
+# the generated board config carries nothing else, so an expression in either would mean the
+# file changed shape and the scrape has to be revisited rather than guessed at.
+scrape_macro() { # <file> <macro>
+    _hits="$(sed -n "s|^[[:space:]]*#[[:space:]]*define[[:space:]]\{1,\}$2[[:space:]]\{1,\}\([0-9]\{1,\}\)[[:space:]]*\(/\*.*\)\{0,1\}$|\1|p" \
+             "$1")"
     if [ -z "$_hits" ]; then
-        fail "$1 is not defined as a plain integer in $HEADER; a scrape that cannot find its
+        fail "$2 is not defined as a plain integer in $1; a scrape that cannot find its
     reference has nothing to compare against, and defaulting it would make this gate lie"
     fi
     if [ "$(printf '%s\n' "$_hits" | wc -l | tr -d ' ')" -ne 1 ]; then
-        fail "$1 is defined more than once in $HEADER; which one the assembler sees is not
+        fail "$2 is defined more than once in $1; which one the compiler sees is not
     something this gate should guess"
     fi
     printf '%s\n' "$_hits"
 }
+
+# --- the per-thread kernel block, for the stack=kernel classes ----------------
+# Read from the GENERATED board config of the tree just built, the same place the compiler
+# read it from, and only when a class asks for it: no other arch declares one yet.
+KUSABLE=""
+KSIZE=""
+KCANARY=4
+if awk -F"$TAB" '{ if ($4 == "kernel") { found = 1 } } END { exit !found }' "$TMP/classes"; then
+    BOARDCFG="$BUILD/generated/include/kickos/board_config.h"
+    [ -r "$BOARDCFG" ] || fail "cannot read $BOARDCFG, which is where the gate reads the
+    per-thread kernel block a stack=kernel class is measured against"
+    KSTACKS="$(scrape_macro "$BOARDCFG" KICKOS_KERNEL_STACKS)" || exit 1
+    if [ "$KSTACKS" -eq 0 ]; then
+        fail "$ROOTS declares a stack=kernel class for $ARCH but this configuration has
+    KICKOS_KERNEL_STACKS=0, so no block is carved and every thread's kernel_sp stays 0: the
+    entry those figures describe cannot run at all here"
+    fi
+    KSIZE="$(scrape_macro "$BOARDCFG" KICKOS_KERNEL_STACK_SIZE)" || exit 1
+    # The LOWEST word of a block is the overflow canary kmain arms (kernel/thread/thread.cc),
+    # so it is not stack a descent may reach: a requirement that merely equals the block
+    # reports an overflow every time the deepest legitimate path runs.
+    KUSABLE=$((KSIZE - KCANARY))
+fi
 
 ENFORCED_ARGS=""
 rc=0
@@ -277,10 +316,13 @@ bad() { echo "FAIL: $*" >&2; rc=1; }
 echo "trap_redzone: preset=$PRESET arch=$ARCH"
 echo "trap_redzone: header  $HEADER"
 echo "trap_redzone: floor   KICKOS_MIN_STACK_SIZE=$FLOOR (from $CFGFILE)"
+if [ -n "$KSIZE" ]; then
+    echo "trap_redzone: block   KICKOS_KERNEL_STACK_SIZE=$KSIZE, $KUSABLE usable above the canary"
+fi
 while IFS="$TAB" read -r cls frame_macro depth_macro onstack; do
     [ -n "$cls" ] || continue
-    frame="$(scrape_macro "$frame_macro")" || exit 1
-    depth="$(scrape_macro "$depth_macro")" || exit 1
+    frame="$(scrape_macro "$HEADER" "$frame_macro")" || exit 1
+    depth="$(scrape_macro "$HEADER" "$depth_macro")" || exit 1
     zone=$((frame + depth))
     echo "trap_redzone: class $cls  $frame_macro=$frame  $depth_macro=$depth  zone=$zone ($onstack stack)"
     ENFORCED_ARGS="$ENFORCED_ARGS --enforced $cls=$frame,$depth"
@@ -290,16 +332,37 @@ while IFS="$TAB" read -r cls frame_macro depth_macro onstack; do
     if [ "$onstack" = trap ]; then
         continue
     fi
+    # A stack=kernel class spends the interrupted thread's own kernel block, so the floor
+    # says nothing about it either. What it has to fit is that block, minus the canary word
+    # at the bottom of it, and that is a clause of its own: raising the spawn floor would do
+    # nothing here, and the array is per thread SLOT, so a byte costs KICKOS_THREAD_SLOTS.
+    if [ "$onstack" = kernel ]; then
+        if [ "$zone" -gt "$KUSABLE" ]; then
+            bad "KERNEL STACK BELOW ITS REQUIREMENT: $ARCH needs $zone bytes of a $cls trap's
+    kernel stack ($frame_macro=$frame + $depth_macro=$depth) but KICKOS_KERNEL_STACK_SIZE is
+    $KSIZE, of which $KUSABLE is stack: the lowest word is the overflow canary. The deepest
+    legitimate descent of that trap overwrites the canary, or the block, and the first report
+    of it is a runtime canary failure on whichever board goes deepest.
+    REMEDY: raise the per-arch default in $SRC/Kconfig (config KICKOS_KERNEL_STACK_SIZE,
+    'default <n> if ARCH_$(printf '%s' "$ARCH" | tr '[:lower:]' '[:upper:]')') from $KSIZE to
+    at least $((zone + KCANARY)). Do NOT shrink the depth to fit: it is a measurement."
+        fi
+        continue
+    fi
     # Own clause, and NOT the same failure as an over-deep measurement: here the
-    # measurement and the prologue agree, and the SPAWN FLOOR is the thing that is wrong.
+    # measurement and the entry agree, and the SPAWN FLOOR is the thing that is wrong. The
+    # CONSEQUENCE is per class and both halves are named, because a thread-stack class whose
+    # sp the entry never bounds (an M-mode caller) cannot be refused at all.
     if [ "$zone" -gt "$FLOOR" ]; then
-        bad "SPAWN FLOOR BELOW RED ZONE: $ARCH reserves $zone bytes for a $cls trap
-    ($frame_macro=$frame + $depth_macro=$depth) but KICKOS_MIN_STACK_SIZE is $FLOOR. A
-    thread spawned at the floor passes the spawn check and can then never take that trap:
-    the prologue refuses it, every time, for the life of the thread.
+        bad "SPAWN FLOOR BELOW A THREAD-STACK REQUIREMENT: $ARCH needs $zone bytes of the
+    interrupted thread's own stack for a $cls trap ($frame_macro=$frame + $depth_macro=$depth)
+    but KICKOS_MIN_STACK_SIZE is $FLOOR. A thread spawned at the floor passes the spawn check
+    and can then never complete that trap: where the entry bounds the sp it is REFUSED, every
+    time, for the life of the thread, and where the entry applies no bound the kernel
+    OVERFLOWS that thread's stack instead.
     REMEDY: raise the per-arch default in $SRC/Kconfig (config KICKOS_MIN_STACK_SIZE,
     'default <n> if ARCH_$(printf '%s' "$ARCH" | tr '[:lower:]' '[:upper:]')') from $FLOOR
-    to at least $zone. Do NOT shrink the red zone to fit: it is a measurement."
+    to at least $zone. Do NOT shrink the requirement to fit: it is a measurement."
     fi
 done < "$TMP/classes"
 

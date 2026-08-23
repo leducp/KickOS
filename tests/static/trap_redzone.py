@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Re-measures the kernel stack descent a trap prologue's red zone has to cover, and fails
-# when the measurement exceeds what the prologue enforces.
+# Re-measures the kernel C descent a trap entry's reservation has to cover, on whichever
+# stack that entry builds on, and fails when the measurement exceeds what it enforces.
 #
 # INPUT is the .ci files gcc -fcallgraph-info=su,da leaves next to every object: one VCG
 # graph per translation unit, carrying each function's own frame size ("N bytes (static)"),
@@ -84,6 +84,7 @@ class Decl(object):
         self.classes = []                            # class names, declaration order
         self.macros = {}                             # class -> (frame macro, depth macro)
         self.trap_stack = set()                      # classes declared stack=trap
+        self.kernel_stack = set()                    # classes declared stack=kernel
         self.roots = collections.OrderedDict()        # class -> [(symbol, optional)]
         self.rootless = {}                            # class -> declared reason
         self.excludes = []                           # [(mangled, reason, optional)]
@@ -109,6 +110,7 @@ class Decl(object):
                 frame = None
                 depth = None
                 on_trap = False
+                on_kernel = False
                 for opt in f[3:]:
                     if opt.startswith('frame='):
                         frame = opt[len('frame='):]
@@ -116,14 +118,21 @@ class Decl(object):
                         depth = opt[len('depth='):]
                     elif opt == 'stack=trap':
                         on_trap = True
+                    elif opt == 'stack=kernel':
+                        on_kernel = True
                     else:
                         die('%s: unknown class option "%s"' % (where, opt))
                 if frame is None or depth is None:
                     die('%s: class %s needs both frame= and depth=' % (where, name))
+                if on_trap and on_kernel:
+                    die('%s: class %s names two stacks; a frame goes on one of them'
+                        % (where, name))
                 if name in self.macros:
                     die('%s: class %s declared twice' % (where, name))
                 if on_trap:
                     self.trap_stack.add(name)
+                if on_kernel:
+                    self.kernel_stack.add(name)
                 self.classes.append(name)
                 self.macros[name] = (frame, depth)
                 self.roots[name] = []
@@ -179,6 +188,10 @@ class Decl(object):
                 die('%s: class %s has no root, so it would measure 0 and always pass.'
                     ' Declare `root %s %s NONE reason: ...` if that is the honest answer'
                     % (roots_path, cls, arch, cls))
+
+    def off_thread(self):
+        """Classes whose descent spends no unprivileged thread stack."""
+        return self.trap_stack | self.kernel_stack
 
 
 def read_bindings(path, arch, preset):
@@ -587,12 +600,12 @@ def run(argv):
     walk = Walk(graph, excluded)
     bare = Walk(graph, set())
 
-    # A stack=trap class is measured with NOTHING excluded: the exclusion set exists only to
-    # keep a THREAD's red zone under the spawn floor, and this class does not spend a thread
-    # stack. So it walks `bare`, and every hard check below runs over the set that walk
-    # reaches, not over the post-exclusion one.
+    # A stack=trap or stack=kernel class is measured with NOTHING excluded: the exclusion set
+    # exists only to keep a THREAD's red zone under the spawn floor, and neither class spends
+    # a thread stack. So both walk `bare`, and every hard check below runs over the set that
+    # walk reaches, not over the post-exclusion one.
     def walk_for(cls):
-        if cls in decl.trap_stack:
+        if cls in decl.off_thread():
             return bare
         return walk
 
@@ -620,6 +633,8 @@ def run(argv):
         where = 'on the interrupted thread stack'
         if cls in decl.trap_stack:
             where = 'on the arch trap stack, exclusions NOT applied'
+        if cls in decl.kernel_stack:
+            where = 'on the per-thread kernel stack, exclusions NOT applied'
         print('%s: measured depth %d bytes, %s enforces %d bytes (%s)'
               % (cls, best, macro_depth, enf_depth, where))
         print('  red zone = %s %d + %s %d = %d bytes'
@@ -637,7 +652,7 @@ def run(argv):
             print('  excluded %s' % spec)
             print('    reason: %s' % reason)
         for cls in decl.classes:
-            if cls in decl.trap_stack:
+            if cls in decl.off_thread():
                 print('  %-6s already measured that way, see above' % cls)
                 continue
             b = 0
@@ -685,7 +700,7 @@ def run(argv):
 
     seen_cycles = set()
     cycles = list(walk.cycles)
-    if decl.trap_stack:
+    if decl.off_thread():
         cycles += bare.cycles
     for cyc in cycles:
         if not (set(cyc) & reach):

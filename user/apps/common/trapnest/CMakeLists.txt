@@ -35,6 +35,16 @@ endif()
 if(NOT KICKOS_BOARD STREQUAL "qemu-riscv")
   return() # the one rv32imac board with a runner
 endif()
+# THE DEEP SYSCALL IS A SPAWN THE KERNEL MUST REFUSE, and what refuses it is the region
+# admissibility Rule 7 enforces on a grant outside the arena. With no MPU backend nothing
+# refuses that region, so the attempt SUCCEEDS: a second thread starts on main.cc's worker
+# entry, parks its sp at the first worker's stack_lo, and its own ecall is then correctly
+# refused as an sp outside that thread's stack. The arm reports that refusal as a failure of
+# the entry, which is the one thing it is not. So this variant registers no arm at all rather
+# than one whose premise its own posture removes.
+if(NOT KICKOS_HAVE_MPU)
+  return()
+endif()
 
 # The interrupt KERNEL DESCENT, read out of the header the prologue itself reads. The gate
 # compares the reported room BELOW the nested frame against it, so the frame's own bytes must

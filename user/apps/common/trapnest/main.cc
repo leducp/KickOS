@@ -2,25 +2,23 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // NESTED-TRAP witness (rv32imac): which stack the kernel picks for an interrupt taken
-// while it is ALREADY running on a thread's own stack.
+// while it is ALREADY running the interrupted thread's own syscall dispatch.
 //
 // rv32imac runs syscall_dispatch privileged, in thread mode, on the CALLER's continuation
-// (arch.h arch_syscall contract). An interrupt taken there arrives with mstatus.MPP=M, so
-// the trap prologue's U-mode bounds check does not apply, and a prologue that adopted the
-// interrupted sp built its frame at whatever depth the dispatch had descended to, then ran
-// the ISR below that. The syscall red zone covers the frame plus the dispatch; it never
-// covered a second frame plus an ISR under it, so a thread that parks sp at the red-zone
-// edge and makes a deep syscall had the kernel write, privileged, below its own stack_lo.
+// (arch.h arch_syscall contract). An interrupt taken there arrives with mstatus.MPP=M, so no
+// U-mode sp test applies to it, and a prologue that adopted the interrupted sp built its frame
+// at whatever depth the dispatch had descended to, then ran the ISR below that.
+//
+// WHAT MAKES THAT SAFE NOW IS WHERE THE DISPATCH RUNS. The trap entry transfers a U-mode ecall
+// to the thread's own KERNEL stack, so the sp such an interrupt finds is a kernel block and
+// the frame it keeps there is nowhere near the thread's own stack. This arm is what witnesses
+// that, from the worst sp an unprivileged thread can hand the kernel and through the deepest
+// syscall it can reach.
 //
 // kos_irq_inject, a selftest syscall, raises its line from INSIDE the dispatch with
 // interrupts enabled, so the trap fires at that exact instruction on every call: one nested
 // M-mode trap each time, with no window to hit. The kernel tallies them (arch.h
 // kickos_nestwitness_note).
-//
-// The worker parks sp at the red-zone EDGE, read from the header the prologue itself reads.
-// That is as low as the guard permits the nested frame to land; the tally's second line
-// reports the room left under it, to be compared against the interrupt red zone the same
-// header derives.
 //
 // The verdict is the kernel's tally, read back through KOS_SYS_NEST_WITNESS and printed by
 // ROOT: traps > 0, the positive control, since nothing provoked proves nothing, and
@@ -83,13 +81,23 @@ namespace
         }
     }
 
+    // Room the worker leaves BELOW the sp it parks at: exactly what a trap entry that
+    // adopted the interrupted sp would spend on this thread's own stack for a deep syscall,
+    // the ecall frame plus the dispatch plus the msip frame the switcher takes at that depth.
+    // WHY NOT THE LOW EDGE, which the entry now accepts: the witness can only see a nested
+    // frame INSIDE [stack_lo, stack_hi), so a regression that put frames below stack_lo would
+    // go uncounted. Parking this high is what keeps the regression visible where it is
+    // counted, and the low edge is witnessed by the faultsurvive lowedge arm instead.
+    constexpr uintptr_t TN_PARK_ROOM =
+        KICKOS_RV_TRAP_FRAME_SYS + KICKOS_RV_TRAP_KERNEL_DEPTH_SYS;
+
     // Power of two and clear of the floor: under enforcement the worker's stack is one PMP
-    // region, and PMP NAPOT wants a naturally aligned power of two. Twice the syscall red
-    // zone, so the worker still has room for its own frames above the sp it parks at.
+    // region, and PMP NAPOT wants a naturally aligned power of two. Above the room below,
+    // so the worker still has stack of its own over the sp it parks at.
     constexpr uint32_t TN_STACK_SIZE = 2048;
-    static_assert(TN_STACK_SIZE > KICKOS_RV_TRAP_REDZONE_SYS,
-                  "the worker cannot park at the red-zone edge and still have a stack above "
-                  "it, so it would fault before reaching the arm");
+    static_assert(TN_STACK_SIZE > TN_PARK_ROOM,
+                  "the worker cannot park that low and still have a stack above it, so it "
+                  "would fault before reaching the arm");
 
     // Published by main before the spawn: the worker needs stack_lo and has no syscall that
     // would tell it its own bounds.
@@ -150,11 +158,11 @@ namespace
 
     void worker(void*)
     {
-        uintptr_t const low = g_tn_stack_lo + KICKOS_RV_TRAP_REDZONE_SYS;
+        uintptr_t const low = g_tn_stack_lo + TN_PARK_ROOM;
         char msg[128];
         ksnprintf(msg, sizeof(msg), "[trapnest] worker parks sp at 0x%x (stack_lo 0x%x + %u)\n",
                   static_cast<unsigned>(low), static_cast<unsigned>(g_tn_stack_lo),
-                  static_cast<unsigned>(KICKOS_RV_TRAP_REDZONE_SYS));
+                  static_cast<unsigned>(TN_PARK_ROOM));
         emit(msg);
         for (uint32_t i = 0; i < TN_INJECTS; i++)
         {
@@ -169,7 +177,7 @@ namespace
         }
         // THE DEEPEST SYSCALL an unprivileged thread can reach, from the parked sp. Depth is
         // what decides how far under the frame the nested trap lands, and thread_spawn is the
-        // chain rv_trap_stack.h measures the syscall red zone against; the shallower calls
+        // chain rv_trap_stack.h measures the syscall requirement against; the shallower calls
         // above cannot get the frame low enough for the ISR under it to run out of room.
         for (uint32_t i = 0; i < TN_SPAWNS; i++)
         {

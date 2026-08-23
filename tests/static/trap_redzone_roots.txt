@@ -24,7 +24,7 @@
 # FILE FORMAT, one record per line, '#' starts a comment:
 #   arch    <arch> header=<path-relative-to-source-dir>
 #   preset  <arch> <configure-preset>
-#   class   <arch> <CLASS> frame=<MACRO> depth=<MACRO> [stack=trap]
+#   class   <arch> <CLASS> frame=<MACRO> depth=<MACRO> [stack=trap|stack=kernel]
 #   root    <arch> <CLASS> [?]<symbol>
 #   root    <arch> <CLASS> NONE reason: <text to end of line>
 #   exclude <arch> <mangled-symbol> reason: <text to end of line>
@@ -63,23 +63,52 @@
 # declared `exclude` set does NOT apply either: a panic tail is excluded only because
 # counting it would put a THREAD's red zone above the spawn floor, and a kernel array has no
 # floor to clear.
+#
+# stack=kernel says the same two things for the same reason, and adds a clause of its own:
+# the descent runs on the interrupted thread's PER-THREAD KERNEL stack, one block of
+# KICKOS_KERNEL_STACK_SIZE per thread slot in kernel .bss, so frame plus depth is a
+# requirement on THAT knob and check_trap_redzone.sh compares it against the block. The
+# lowest word of a block is its overflow canary, so the fit has to leave that word alone.
+# stack=trap and stack=kernel are exclusive: a frame goes on one stack.
 
 # --- rv32imac ------------------------------------------------------------------
-# FOUR classes, and mcause is what separates all four, read before the frame is built: the
-# .Lintr arms take TRAP, the ecall arms take SYS, msip takes SWITCH, and everything else
-# arriving with mstatus.MPP=M takes NESTED, whose frame goes on the kernel's own trap stack
-# rather than on the stack it interrupted.
+# SIX classes, and TWO registers separate them, both readable before the frame is built.
+# mcause picks the entry: the .Lintr arms take TRAP, msip takes SWITCH, an ecall takes SYS or
+# SYSPRIV, and any other exception takes FAULT. mstatus.MPP then picks the stack: an ecall from
+# U-mode is SYS on the thread's kernel block, the same ecall from M-mode is SYSPRIV on the sp
+# it interrupted, and every M-mode cause that is not msip or an ecall is NESTED on the kernel's
+# own trap stack rather than on the stack it interrupted.
 #
-# SWITCH is not a red zone any prologue enforces on its own: it is the msip frame plus the
-# switcher's own descent, and rv_trap_stack.h composes it INTO the syscall zone, because a
-# blocking dispatch (or a tick's wake) takes that trap at whatever depth the dispatch had
-# reached. It is a class here so the switcher's descent is re-measured rather than assumed to
-# be the zero it is today.
+# TRAP AND SYS SPEND NO UNPRIVILEGED THREAD'S STACK. trap_entry's U-mode accept path loads
+# ctx.kernel_sp and builds the frame on the interrupted thread's own kernel stack, so both
+# classes are a requirement on KICKOS_KERNEL_STACK_SIZE rather than on the spawn floor:
+# stack=kernel, which is also what makes the panic tail counted for them.
+#
+# SYSPRIV IS THAT SAME ECALL FROM A PRIVILEGED THREAD, which arrives with mstatus.MPP=M and so
+# keeps its frame on the sp it interrupted, that thread's own stack, with svc_trampoline running
+# the same dispatch there. Same FRAME_SYS, same roots, THREAD stack, and therefore the depth
+# macro with the panic tail excluded: it is the one rv32imac trap class the SPAWN FLOOR clause
+# still has anything to say about, and after the transfer it is the only thing that sets
+# KICKOS_MIN_STACK_SIZE on this arch.
+#
+# FAULT is the accepted U-mode fault: .Lfault runs the reporter with sp on the frame the entry
+# built, which is now the kernel stack, so the whole dump chain lands there. Its depth is the
+# same reporter chain KICKOS_RV_TRAP_NESTED_DEPTH already measures on the trap stack, and it is
+# a class of its own because it is the KERNEL BLOCK it has to fit.
+#
+# SWITCH IS THE ONE CLASS STILL ON A THREAD STACK, and that is the reason it must not be
+# deleted: .Lswitch and arch_start call kickos_arch_mpu_commit with sp = incoming->sp, and for
+# a thread that has never trapped that is still the frame arch_context_init fabricated on its
+# USER stack. Measuring 0 there is what says no privileged C frame stands on user memory.
+# rv_trap_stack.h also composes this class INTO the syscall requirement, a blocking dispatch
+# (or a tick's wake) taking the msip trap at whatever depth the dispatch had reached.
 arch    rv32imac header=arch/riscv/rv32imac/include/kickos/arch/rv_trap_stack.h
 preset  rv32imac qemu-riscv
 preset  rv32imac esp32c6-wroom-st
-class   rv32imac TRAP   frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_KERNEL_DEPTH
-class   rv32imac SYS    frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYS
+class   rv32imac TRAP   frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_KERNEL_DEPTH stack=kernel
+class   rv32imac SYS    frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYS stack=kernel
+class   rv32imac SYSPRIV frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC
+class   rv32imac FAULT  frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_NESTED_DEPTH stack=kernel
 class   rv32imac SWITCH frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_SWITCH_DEPTH
 class   rv32imac NESTED frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_NESTED_DEPTH stack=trap
 
@@ -106,6 +135,21 @@ root    rv32imac SYS  kickos_arch_mpu_commit
 root    rv32imac SYS  ?kickos_trace_switch_done
 root    rv32imac SYS  ?kickos_bench_switch_done
 
+# SYSPRIV is the SAME entry reached from M-mode, so the root set is the SYS one exactly; what
+# differs is the stack it lands on and, with it, whether the panic tail is charged.
+root    rv32imac SYSPRIV syscall_dispatch
+root    rv32imac SYSPRIV kickos_ipc_fastpath
+root    rv32imac SYSPRIV kickos_arch_mpu_commit
+root    rv32imac SYSPRIV ?kickos_trace_switch_done
+root    rv32imac SYSPRIV ?kickos_bench_switch_done
+
+# .Lfault, for a U-mode fault the entry ACCEPTED: the reporter and the stack-top query run on
+# the frame the entry built, which is the thread's kernel block. The kill path returns early
+# and the panic path walks the console; this charges the deeper of the two, so no claim about
+# C control flow is needed.
+root    rv32imac FAULT kickos_rv_fault_report
+root    rv32imac FAULT kickos_fault_stack_top
+
 # What .Lswitch itself calls, below the frame it just saved.
 root    rv32imac SWITCH kickos_arch_mpu_commit
 root    rv32imac SWITCH ?kickos_trace_switch_done
@@ -123,7 +167,13 @@ root    rv32imac NESTED kickos_rv_fault_report
 root    rv32imac NESTED kickos_fault_stack_top
 root    rv32imac NESTED ?kickos_rv_nested_witness
 
-exclude rv32imac _ZN6kickos6kpanicEPKc reason: the noreturn panic tail, which every KICKOS_ASSERT in the dispatch reaches. Counting it puts the SYS red zone above KICKOS_MIN_STACK_SIZE, so a thread spawned at the floor could not make a syscall at all. The residual is stated in rv_trap_stack.h; the tool prints the without-exclusions figure so it cannot go quiet.
+# THE TWO EXCLUSIONS NOW SERVE SYSPRIV ALONE, that being the only rv32imac class left on a
+# thread stack whose roots can reach the tail. They do NOT reach TRAP, SYS or FAULT: a
+# stack=kernel class is measured with nothing excluded, which is where the decision that a
+# kernel array has no floor to clear is spent. SWITCH is on a thread stack too, but its roots
+# cannot reach the tail, and if one ever did, failing it would be the right answer: that would
+# be a privileged panic descent on user memory.
+exclude rv32imac _ZN6kickos6kpanicEPKc reason: the noreturn panic tail, which every KICKOS_ASSERT in the dispatch reaches. Counting it puts the SYSPRIV requirement at 1168, above every rv32imac KICKOS_MIN_STACK_SIZE, so a PRIVILEGED thread spawned at the floor could not make a syscall at all. The residual is stated in rv_trap_stack.h; the tool prints the without-exclusions figure so it cannot go quiet.
 exclude rv32imac ?_ZN6kickos9kpanic_atEPKcj reason: the SECOND door into the same noreturn panic tail, which KICKOS_ASSERT reaches where kpanic takes a message. Excluding one and not the other left the tail counted on any board whose deepest chain happens to enter through this one, which is a figure the exclusion above was meant to remove. Same residual, stated once in rv_trap_stack.h.
 
 # Assembly and libgcc bodies have no .ci entry, so their frames are declared here. None of

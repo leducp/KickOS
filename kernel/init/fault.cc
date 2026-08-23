@@ -151,6 +151,34 @@ extern "C" bool kickos_fault_frame_trusted(void const* frame, size_t bytes)
     return f >= lo and f < hi and bytes <= (hi - f);
 }
 
+#if KICKOS_KERNEL_STACKS
+// The same guard for a backend whose trap entry has been moved onto the per-thread kernel
+// stack: the frame is expected in the RUNNING thread's own block, and a frame anywhere else
+// was written through a pointer the entry had no business adopting. The block is
+// [kernel_sp - KICKOS_KERNEL_STACK_SIZE, kernel_sp), the top being what thread_create seated
+// and what the entry loads.
+//
+// A TCB with kernel_sp 0 is refused: no block was seated for it, so there is no frame of
+// this kind to believe. Idle is refused by name as well, as above.
+extern "C" bool kickos_fault_frame_on_kernel_stack(void const* frame, size_t bytes)
+{
+    ::kickos::Thread* const c = ::kickos::sched::current();
+    if (c == nullptr or c == ::kickos::sched::idle())
+    {
+        return false;
+    }
+    uintptr_t const hi = static_cast<uintptr_t>(c->ctx.kernel_sp);
+    if (hi == 0)
+    {
+        return false;
+    }
+    uintptr_t const lo = hi - KICKOS_KERNEL_STACK_SIZE;
+    uintptr_t const f = reinterpret_cast<uintptr_t>(frame);
+    // Room REMAINING, for the reason stated above.
+    return f >= lo and f < hi and bytes <= (hi - f);
+}
+#endif
+
 // How far below a thread's stack base kickos_fault_below_stack still reads an access as that
 // thread running off the bottom of its own stack. ONE RXv3 MPU region page (16 bytes:
 // RSPAGEn/REPAGEn hold addr[31:4], RX72M UM sec.17.1.2), because the page is the unit the

@@ -8,20 +8,27 @@
  *   .Lswitch     the deferred switcher (mcause = msip). arch_switch pends msip; the
  *                physical swap ALWAYS happens here, with MIE=0.
  *   .Lecall      the syscall trap. mret lands in svc_trampoline running M-mode on the
- *                CALLING THREAD'S stack, so a blocking dispatch's continuation is
- *                per-thread (arch.h arch_syscall contract).
+ *                CALLING THREAD'S kernel stack from U-mode, or on the sp it interrupted
+ *                when the caller was already M-mode, so a blocking dispatch's continuation
+ *                is per-thread either way (arch.h arch_syscall contract).
  *   arch_start   enters the first thread through the shared restore epilogue.
  *
- * WHICH STACK A FRAME GOES ON. A frame that is a thread's saved context has to be on that
- * thread's own stack: the U-mode entries (bounds-checked), plus the two M-mode causes whose
- * frame the switcher stores as outgoing->sp (msip, ecall-from-M). Every other M-mode trap
- * pops its frame and mrets, so its frame and the C below it go on the trusted per-hart trap
- * stack. The frame's F_SP slot carries the sp .Lrestore leaves on, which is what lets one
- * epilogue serve both.
+ * WHICH STACK A FRAME GOES ON, three destinations and no fourth. A U-mode entry puts the
+ * frame on the interrupted thread's own KERNEL stack (ctx.kernel_sp, seated per pool thread
+ * by thread_create): the frame is that thread's saved context, and the sp the thread chose
+ * is never written through. The two M-mode causes whose frame the switcher stores as
+ * outgoing->sp (msip, ecall-from-M) keep the interrupted sp, which is that kernel stack when
+ * what they interrupted was a dispatch, and a PRIVILEGED thread's own stack when it was that
+ * thread running: privileged code's sp needs no isolating. Every other M-mode trap pops its
+ * frame and mrets, so its frame and the C below it go on the trusted per-hart trap stack.
+ * The frame's F_SP slot carries the sp .Lrestore leaves on, which is what lets one epilogue
+ * serve all three.
  *
  * MSCRATCH INVARIANT: outside the prologue, mscratch holds the trap-stack TOP. That is what
  * makes trap_entry's first instruction a swap onto a trusted sp, and it holds through the
- * nested path (which never adopts the interrupted sp) and through .Ltrap_wild.
+ * U-mode accept path (which writes it back rather than swapping, sp there ending up on a
+ * third stack), through the nested path (which never adopts the interrupted sp) and through
+ * .Ltrap_wild.
  *
  * Save frame (128 B, low->high; ctx.sp = its base). Must match arch_context_init
  * (arch_rv32imac.cc). gp and tp are link-time constants across threads and stay out of the
@@ -77,9 +84,10 @@
     .error "F_SP lies outside the frame"
     .endif
 
-/* struct arch_context field offsets read by trap_entry's U-mode sp bounds check. */
+/* struct arch_context field offsets read by trap_entry's U-mode entry. */
     .equ F_CTX_STACK_LO, KICKOS_RV_CTX_OFF_STACK_LO
     .equ F_CTX_STACK_HI, KICKOS_RV_CTX_OFF_STACK_HI
+    .equ F_CTX_KERNEL_SP, KICKOS_RV_CTX_OFF_KERNEL_SP
 
     .text
 
@@ -120,9 +128,10 @@ trap_entry:
     srli    t1, t0, 11             /* MPP is mstatus[12:11]; 0x1800 exceeds andi's imm */
     andi    t1, t1, 3
     bnez    t1, .Ltrap_from_m      /* MPP nonzero => interrupted M-mode (trusted sp) */
-    /* Interrupted U-mode: the interrupted sp (in mscratch) is checked as an EXTENT, not as
-       a pointer. rv_trap_stack.h carries the derivation and the figures;
-       check_trap_redzone.sh re-measures them. */
+    /* Interrupted U-mode: the interrupted sp (in mscratch) is checked for the RETURN. No
+       frame is built through it, but .Lrestore loads it out of F_SP and mret resumes U-mode
+       on it, so an sp outside the thread's own stack or misaligned is refused here instead
+       of being handed back. */
     csrr    t1, mscratch           /* t1 = interrupted user sp */
     andi    t0, t1, KICKOS_RV_TRAP_SP_ALIGN - 1
     bnez    t0, .Ltrap_wild        /* misaligned sp */
@@ -134,30 +143,33 @@ trap_entry:
     lw      t0, 0(t0)
     lw      t0, F_CTX_STACK_LO(t0)
     bltu    t1, t0, .Ltrap_wild    /* sp < stack_lo -> wild */
-    /* The subtraction runs only after the test above proved sp >= stack_lo, so it cannot
-       wrap. */
-    sub     t1, t1, t0             /* t1 = writable bytes below sp */
-    csrr    t0, mcause
-    addi    t0, t0, -8             /* ecall-from-U is the deepest descent of the two */
-    bnez    t0, .Ltrap_lo_isr
-    li      t0, KICKOS_RV_TRAP_REDZONE_SYS
-    j       .Ltrap_lo_test
-.Ltrap_lo_isr:
-    li      t0, KICKOS_RV_TRAP_REDZONE
-.Ltrap_lo_test:
-    bltu    t1, t0, .Ltrap_wild
+    /* Accepted U-mode sp: the frame and the dispatch below it go on the thread's own kernel
+       stack, so nothing privileged is stored through the sp the thread chose. sp is still
+       the trap top here and the originals of t0/t1 are at -4(sp)/-8(sp). */
+    la      t0, g_arch_current
+    lw      t0, 0(t0)
+    lw      t0, F_CTX_KERNEL_SP(t0)
+    beqz    t0, .Ltrap_wild        /* a U-mode thread with no kernel stack */
+    addi    t0, t0, -FRAME         /* frame base on the kernel stack */
+    sw      ra, F_RA(t0)           /* ra's original into the frame; ra is now scratch */
+    csrr    ra, mscratch           /* ra = interrupted user sp */
+    sw      ra, F_SP(t0)           /* the sp .Lrestore mrets on */
+    csrw    mscratch, sp           /* mscratch = trap top: invariant restored */
+    lw      ra, -4(sp)             /* ra = t0's original, staged */
     lw      t1, -8(sp)
-    lw      t0, -4(sp)
-    csrrw   sp, mscratch, sp       /* sp = user sp; mscratch = trap-stack top */
-    j       .Ltrap_build
+    mv      sp, t0
+    mv      t0, ra
+    j       .Ltrap_regs            /* .Ltrap_regs stores no ra: F_RA is written above */
 .Ltrap_from_m:
     /* Interrupted M-mode, so the sp is the kernel's and needs no bounds check. What it
        still needs is a DECISION, because two of these causes produce a frame that IS a
-       thread's saved context and can live only on that thread's own stack: msip, whose
-       frame .Lswitch stores as outgoing->sp, and ecall-from-M, whose frame svc_trampoline
-       runs the dispatch on and .Lecall's fastpath also stores as outgoing->sp. Every other
-       M-mode trap pops its frame and mrets, so it takes the trusted trap stack and neither
-       its frame nor the C below it descends on the stack it interrupted. */
+       thread's saved context and so has to stay on the sp it interrupted: msip, whose frame
+       .Lswitch stores as outgoing->sp, and ecall-from-M, whose frame svc_trampoline runs the
+       dispatch on and .Lecall's fastpath also stores as outgoing->sp. That sp is a kernel
+       stack when a dispatch was interrupted and a privileged thread's own stack when one was
+       running, so a privileged thread's syscall descends on its own stack, as it always has.
+       Every other M-mode trap pops its frame and mrets, so it takes the trusted trap stack
+       and neither its frame nor the C below it descends on the stack it interrupted. */
     csrr    t0, mcause
     li      t1, KICKOS_RV_MCAUSE_MSIP
     beq     t0, t1, .Ltrap_from_m_ctx
@@ -171,9 +183,11 @@ trap_entry:
     lw      t0, -4(sp)
     csrrw   sp, mscratch, sp       /* sp = interrupted kernel sp; mscratch = trap top */
     j       .Ltrap_build
-/* Both builders seat F_SP, the sp .Lrestore returns with: here the stack the frame is on,
-   on the nested path below a different stack entirely. ra is free scratch from the moment
-   its own slot is written. */
+/* Reached only from .Ltrap_from_m_ctx (msip, ecall-from-M), sp already swapped to the
+   interrupted kernel sp. It stays a label of its own for F_SP alone: this frame is resumed
+   on the stack it sits on, so F_SP is its own base plus FRAME, where .Ltrap_nested's names a
+   different stack entirely. The U-mode entry writes both slots itself and joins at
+   .Ltrap_regs. ra is free scratch from the moment its own slot is written. */
 .Ltrap_build:
     addi    sp, sp, -FRAME
     sw      ra,  F_RA(sp)
@@ -378,9 +392,10 @@ trap_entry:
     call    kickos_arch_mpu_commit
     j       .Lrestore
 
-/* --- ecall: redirect mret into svc_trampoline running M-mode (privileged) on  */
-/* the caller's own stack. Args are already in the frame's a0-a4 slots. The      */
-/* frame keeps the USER mstatus (MPP=caller priv) for the eventual return.       */
+/* --- ecall: redirect mret into svc_trampoline running M-mode (privileged) on   */
+/* the stack the entry put the frame on. Args are already in the frame's a0-a4    */
+/* slots. The frame keeps the USER mstatus (MPP=caller priv) for the eventual     */
+/* return.                                                                       */
 .Lecall:
     /* THE SEAM. KOS_SYS_CALL_REG completes here, before the exception return into
        svc_trampoline. The leaf decides before it mutates, so a null return means nothing
@@ -432,7 +447,9 @@ trap_entry:
     csrw    mstatus, t0
     mret                            /* -> svc_trampoline; sp=frame, a0-a4=args */
 
-/* Runs M-mode (privileged) on the calling thread's stack, sp = its saved frame. */
+/* Runs M-mode (privileged) with sp = the saved frame: the calling thread's KERNEL */
+/* stack for a U-mode caller, and the sp the trap interrupted for an M-mode one,   */
+/* which is a privileged thread's own stack.                                      */
 /* A blocking syscall_dispatch here blocks by an ordinary arch_switch (pends     */
 /* msip); the msip switcher freezes the mid-dispatch continuation on THIS stack  */
 /* and resumes it inline when the thread is rescheduled. sp is callee-saved, so  */
@@ -507,8 +524,9 @@ svc_trampoline:
     lw      sp,  F_SP(sp)
     mret
 
-/* A U-mode trap the guard refused: sp outside the stack, misaligned, or with too little
-   room below it for the frame plus the kernel descent. Nothing was stored through it. sp is
+/* A U-mode trap the entry refused: sp outside the thread's stack or misaligned, so mret
+   could not return on it, or a running U-mode thread whose ctx.kernel_sp is 0, which leaves
+   the entry no stack to build on. Nothing was stored through the interrupted sp. sp is
    the trusted trap-stack top, so restore the mscratch invariant and hand the live trap CSRs
    to the shared reporter, whose frame-trusted test refuses this (trap-stack) frame and
    panics, except a U-mode access fault (1/5/7), which it credits to the thread and exits.

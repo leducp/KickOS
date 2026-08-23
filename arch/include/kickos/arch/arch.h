@@ -707,6 +707,16 @@ bool kickos_fault_kill_thread(void* frame);
 // neither test subsumes the other.
 bool kickos_fault_frame_trusted(void const* frame, size_t bytes);
 
+#if KICKOS_KERNEL_STACKS
+// Does [frame, frame + bytes) lie inside the RUNNING thread's own KERNEL stack block? The
+// same guard for a backend whose trap entry builds its frames there instead of on the
+// interrupted thread stack: the sp a U-mode thread chose is never written through, so a
+// frame that is NOT in the block was produced by some other sp and nothing in it may be
+// believed. Fails closed on no current thread, on idle, and on a thread with no block
+// seated (ctx.kernel_sp 0). Compiled only where the blocks exist.
+bool kickos_fault_frame_on_kernel_stack(void const* frame, size_t bytes);
+#endif
+
 // Top (exclusive) of the RUNNING thread's own stack, or 0 when there is none to name (no
 // current thread, idle, or no recorded stack). Where a backend's redirect puts the SP, so
 // the stub runs with the whole stack under it rather than at the depth the thread had
@@ -743,14 +753,15 @@ void kickos_trapstack_witness_report(void);
 
 // NESTED-TRAP regression, and a different claim from the one above: not where a wild sp
 // pointed, but which stack the kernel picked for an interrupt taken while the kernel was
-// ALREADY running. On a backend with a software trap prologue the interrupted sp is the
-// calling thread's own whenever what got interrupted was that thread's syscall dispatch, and
-// no bound was applied to it, so a frame built there lands wherever the dispatch had
-// descended to. A backend calls this once per such trap with the frame it built and the
-// interrupted thread's stack bounds (`lo` 0 when there is no current thread). The counters
-// are kernel-side so one syscall serves every backend, and KOS_SYS_NEST_WITNESS reads them.
-// A COUNTER READ and not a print: a kprintf on the shutdown path would put the console's
-// varargs route inside the SYSCALL red zone.
+// ALREADY running. Such a trap arrives with no bound applied to the sp it interrupts, so a
+// frame built there lands wherever the interrupted code had descended to; the claim is that
+// this is never the interrupted THREAD's own stack, which on a backend whose entry has moved
+// to per-thread kernel stacks holds because the dispatch it interrupts is not there either. A
+// backend calls this once per such trap with the frame it built and the interrupted thread's
+// stack bounds (`lo` 0 when there is no current thread). The counters are kernel-side so one
+// syscall serves every backend, and KOS_SYS_NEST_WITNESS reads them. A COUNTER READ and not a
+// print: a kprintf on the shutdown path would put the console's varargs route inside the
+// syscall descent it stands beside.
 void kickos_nestwitness_note(uintptr_t frame, uintptr_t lo, uintptr_t hi);
 uint32_t kickos_nestwitness_count(int which);
 #endif

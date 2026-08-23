@@ -100,16 +100,40 @@ static_assert(sizeof(struct arch_context) >= KICKOS_RV_CTX_OFF_KERNEL_SP + sizeo
 // and the guard prices the prologue's own descent at KICKOS_RV_TRAP_FRAME.
 static_assert(FRAME_WORDS * 4 == KICKOS_RV_TRAP_FRAME,
               "the fabricated frame and the trap guard disagree on the frame size");
-// The syscall zone's structural half is the ecall frame plus the msip frame the deferred
-// switcher builds at whatever depth the dispatch reached.
+// The syscall requirement's structural half is the ecall frame plus the msip frame the
+// deferred switcher builds at whatever depth the dispatch reached, both on the kernel stack.
 static_assert(KICKOS_RV_TRAP_FRAME_SYS == 2 * KICKOS_RV_TRAP_FRAME,
-              "the syscall zone must hold exactly two frames");
-// The floor must DOMINATE the worst-case red zone, or a thread spawned at the floor passes
-// the spawn check and is then refused by the guard on every syscall it makes. This assert
-// covers every rv32imac board.
-static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RV_TRAP_REDZONE_SYS,
-              "KICKOS_MIN_STACK_SIZE is below the rv32imac syscall red zone: raise the "
-              "per-arch default in Kconfig, never the red zone, which is a measurement");
+              "the syscall requirement must hold exactly two frames");
+// ONE CHAIN, TWO READINGS: the SYSPRIV figure is the SYS one with a subtree removed, so it
+// cannot be the larger of the two. Both are scraped by the gate as plain immediates, which is
+// what makes a swap between them a live possibility rather than a typo the compiler catches.
+static_assert(KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC <= KICKOS_RV_TRAP_KERNEL_DEPTH_SYS,
+              "the tail-excluded syscall depth exceeds the tail-included one");
+// A PRIVILEGED THREAD STILL SPENDS ITS OWN STACK: its ecall arrives with mstatus.MPP=M, so
+// .Ltrap_from_m_ctx keeps frame and dispatch on the sp it interrupted. No bound refuses an
+// M-mode sp, so a floor under this requirement buys an overflow rather than a refusal. The
+// SYSPRIV class measures the same relation per registered preset; this runs on every build of
+// every board, which is the coverage the gate does not have.
+static_assert(KICKOS_MIN_STACK_SIZE
+                  >= KICKOS_RV_TRAP_FRAME_SYS + KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC,
+              "the spawn floor cannot hold a privileged thread's own syscall dispatch");
+// THE ENTRY HAS NOWHERE ELSE TO BUILD. With no block seated, every U-mode trap takes the
+// refusal path and the first syscall a thread makes ends the system, so this arch cannot be
+// configured without the blocks.
+static_assert(KICKOS_KERNEL_STACKS != 0,
+              "rv32imac's trap entry builds every U-mode frame on ctx.kernel_sp");
+// THE CEILING MUST COVER ITS OWN REQUIREMENT. The deepest a syscall drives a kernel stack is
+// the ecall frame, the dispatch below it, the msip frame a blocking dispatch takes at that
+// depth, and the switcher below that. The lowest word of the block is the overflow canary
+// (kernel/thread/thread.cc), so the requirement has to fit ABOVE it: a ceiling that merely
+// equals the requirement reports an overflow on the deepest legitimate descent, and one
+// below it overflows the block for real. This assert covers every rv32imac board.
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                  >= KICKOS_RV_TRAP_FRAME_SYS + KICKOS_RV_TRAP_KERNEL_DEPTH_SYS
+                      + KICKOS_RV_TRAP_SWITCH_DEPTH,
+              "KICKOS_KERNEL_STACK_SIZE is below the rv32imac syscall kernel-stack "
+              "requirement plus its canary word: raise the per-arch default in Kconfig, "
+              "never the depth, which is a measurement");
 
 extern "C"
 {
@@ -672,12 +696,14 @@ void kickos_rv_nested_witness(void* frame)
 // --- Fault isolation ----------------------------------------------------------
 // mstatus.MPP is the privilege BEFORE the trap and lives in a CSR, so it is valid
 // whatever the stack did; nothing between the vector and here writes it. NOT the
-// thread's identity: .Lecall runs syscall dispatch in M-mode on the thread's own
+// thread's identity: .Lecall runs syscall dispatch in M-mode on the thread's kernel
 // stack, so a fault there is a kernel bug and MPP says so.
 //
-// The frame is the one trap_entry pushed at sp. The prologue is software and runs M-mode,
-// which bypasses the unlocked PMP entries, so an overflowed thread's frame is written
-// SUCCESSFULLY below its own stack and the stack-bounds test is what catches it.
+// The frame is the one trap_entry built on the thread's own kernel stack, so THAT is what
+// the bounds test asks about. A frame anywhere else was not built by the U-mode accept path:
+// a refused sp (wild, misaligned, or a thread with no block seated) leaves the frame on the
+// per-hart trap stack, and the prologue runs M-mode, which bypasses the unlocked PMP
+// entries, so nothing latches such a frame and this test is what catches it.
 bool arch_fault_is_user_thread(void* frame)
 {
     uint32_t mstatus;
@@ -686,7 +712,7 @@ bool arch_fault_is_user_thread(void* frame)
     {
         return false;
     }
-    return kickos_fault_frame_trusted(frame, FRAME_WORDS * 4);
+    return kickos_fault_frame_on_kernel_stack(frame, FRAME_WORDS * 4);
 }
 
 // Mirrors .Lecall: point mepc at the stub and set MPP=M so the mret lands M-mode on

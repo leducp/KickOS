@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Fault-isolation witness. One arm per image: survive keeps the system up, the five refusal
-# arms escalate to a panic.
+# Fault-isolation witness. One arm per image: survive and lowedge keep the system up, the four
+# refusal arms escalate to a panic.
 #
 # `survive' (faultsurvive, KICKOS_FS_MODE 0): an unprivileged worker executes an
 # undefined instruction and only that thread dies. The claim is ORDERING, not presence:
@@ -22,10 +22,10 @@
 #            BusFault.
 #   armv6m   keys on the frame's stack (PSP), which is what this hardware latches; an
 #            absent CFSR is the positive control that the capture is an armv6m one.
-#   rv32imac the trap prologue is software and runs M-mode, which bypasses the unlocked
-#            PMP entries, so the frame IS written below the thread's stack. Nothing
-#            latches; the store access fault on the recursion's own push is the tell, and
-#            the stack-bounds test is what refuses the frame.
+#   rv32imac nothing latches: the trap entry is software, so the store access fault on the
+#            recursion's own push is the tell. The sp it interrupts is far below stack_lo, so
+#            the entry refuses it, leaves the frame on the per-hart trap stack, and the
+#            frame-on-the-kernel-stack test is what refuses that frame.
 #   rxv3     the same shape as rv32imac. Supervisor bypasses the RX MPU, and RXv3 CANCELS
 #            the faulting instruction and restores SP, so kickos_fault_below_stack is what
 #            refuses it and no SP-based test can see the overflow.
@@ -35,16 +35,18 @@
 # unprivileged in thread mode, so every register-derived clause says yes and NO status
 # bit is set on any backend: the stack-bounds test alone can refuse it. Delete that test
 # and this arm reports a thread kill instead of a panic, which is what makes it the
-# witness that the backend calls kickos_fault_frame_trusted at all.
+# witness that the backend calls kickos_fault_frame_trusted at all, or on rv32imac its
+# kernel-stack twin, the entry having moved off the interrupted thread stack.
 #
-# `lowedge' (faultsurvive_lowedge, KICKOS_FS_MODE 4): the half a FRAME-only bound misses.
-# The worker runs on a caller-owned stack and parks its sp inside that stack with room for
-# the frame but not for the kernel's C dispatch beneath it. A frame-only bound therefore
-# says yes, the frame lands in bounds, the thread is killed cleanly, and the reporter chain
-# runs privileged through the app's poisoned band below stack_lo. So this arm has a POSITIVE
-# tell as well as the shared negative one: root, which only runs at all when the fault was
-# survivable, prints the band's corruption. The extent bound refuses the sp before the first
-# store, so the fixed system panics and root never runs.
+# `lowedge' (faultsurvive_lowedge, KICKOS_FS_MODE 4): the LOW EDGE, and the one arm here that
+# expects a KILL. The worker runs on a caller-owned stack and parks its sp inside that stack
+# with less room beneath it than the frame plus the kernel's C dispatch would need. On
+# rv32imac that sp is legal: the entry transfers to the thread's own kernel stack, so the
+# frame and every byte of C below it land there and nothing privileged is written under the
+# parked sp. So the claim is the STRONGER one, a clean thread kill AND the app's poisoned band
+# below stack_lo intact, which root reads back and prints either way. An entry that adopted
+# the sp instead would run the reporter chain privileged through that band, and the band says
+# so; an entry that refused the sp would panic and root would never run.
 #
 # `misalign' (faultsurvive_misalign, KICKOS_FS_MODE 5): the worker drops sp two bytes, still
 # deep inside its own stack and in bounds, so bounds and extent both pass and only alignment
@@ -54,7 +56,7 @@
 # and no write ever landing. QEMU virt COMPLETES misaligned stores, so pre-fix it writes the
 # whole frame in bounds and kills the thread cleanly. The ESP32-C6 is the exposed core.
 #
-# The five refusal arms share the negative claim: no kill banner, a panic dump, exit 132.
+# The four refusal arms share the negative claim: no kill banner, a panic dump, exit 132.
 #
 # QEMU, machine from kickos_add_qemu_test; the survive arm also runs natively on the sim.
 
@@ -97,7 +99,7 @@ fi
 line_of() { printf '%s\n' "$OUT" | grep -nE "$1" | head -n1 | cut -d: -f1; }
 
 case "$arm" in
-    survive)
+    survive | lowedge)
         killed="$(line_of "$(thread_fault_re faulter)")"
         if [ -z "$killed" ]; then
             fail "no thread-kill for 'faulter' (the fault ended the system?)"
@@ -110,6 +112,23 @@ case "$arm" in
             fail "root's line is at $survived, not after the kill at $killed"
         fi
         assert_no_panic "the worker was killed AND the system panicked"
+        # The band, and BOTH directions are clauses. Corrupted names the privileged writes
+        # that went under the parked sp; a missing verdict line means root reached the readback
+        # and printed neither, which is the silent arm this pair exists to refuse.
+        if [ "$arm" = lowedge ]; then
+            if has "lowband] CORRUPTED"; then
+                fail "lowedge: the kernel's trap dispatch ran below stack_lo through a U-mode sp"
+            fi
+            intact="$(line_of "\[fs\] \[lowband\] INTACT")"
+            if [ -z "$intact" ]; then
+                fail "lowedge: root printed no band verdict, so nothing here witnessed the
+    band at all: the readback is compiled out, or this is not the mode 4 image"
+            fi
+            if [ "$intact" -le "$killed" ]; then
+                fail "lowedge: the band verdict at $intact is not after the kill at $killed,
+    so it was read before the fault it is meant to judge"
+            fi
+        fi
         if [ "$CAPTURED" -eq 0 ]; then
             if [ "$RC" -ne 0 ]; then
                 fail "expected a clean exit 0 once root returned, got $RC"
@@ -119,13 +138,7 @@ case "$arm" in
         fi
         echo "PASS: 'faulter' died at line $killed and root ran at line $survived"
         ;;
-    overflow | offstack | kwrite | lowedge | misalign)
-        # First, ahead of the shared negative clauses: on lowedge the pre-fix system kills the
-        # thread cleanly, and only this line names the privileged writes that went under
-        # stack_lo while it did.
-        if [ "$arm" = lowedge ] && has "lowband] CORRUPTED"; then
-            fail "lowedge: the kernel's trap dispatch ran below stack_lo through a U-mode sp"
-        fi
+    overflow | offstack | kwrite | misalign)
         if has_e "$(thread_fault_re faulter)"; then
             fail "$arm: the fault was redirected to the exit stub instead of escalating"
         fi
@@ -229,12 +242,11 @@ case "$arm" in
                 fi
                 why="mstatus=0x$mst, MPP=U"
                 ;;
-            rv32imac:lowedge | rv32imac:misalign)
+            rv32imac:misalign)
                 # Same trap and the same two facts as kwrite: a panic taken in user mode is
-                # the prologue refusing this sp before it stored anything, and neither arm
-                # claims more here. lowedge's band discriminates only when it is DIRTY, since
-                # a refusal ends the system before root runs. misalign shows nothing further,
-                # QEMU virt completing the misaligned stores a trapping core would loop on.
+                # the entry refusing this sp before it stored anything, and this arm claims
+                # nothing more here, QEMU virt completing the misaligned stores a trapping
+                # core would loop on.
                 has "RISC-V TRAP (illegal instruction)" \
                   || fail "the dump names a cause other than the deliberate illegal instruction"
                 mst="$(printf '%s\n' "$OUT" | sed -n 's/.*mstatus=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
