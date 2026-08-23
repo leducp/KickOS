@@ -521,29 +521,28 @@ namespace kickos
             cap_install_at(child, static_cast<int>(deleg_dest[ci]), deleg_obj[ci],
                            static_cast<CapType>(deleg_type[ci]), deleg_rights[ci]);
         }
+        // INSIDE THE LOCK, and the masked cost is accepted. The per-thread libc state is
+        // 284 to 512 bytes across the pinned toolchains, so writing it here charges every
+        // spawn that much masked time. It cannot move out: between an allocated child and
+        // sched::add, the SPAWNER is preemptible, and a spawner slain in that gap never
+        // returns to its continuation at all, because switch_book redirects a CANCEL_SLAY
+        // thread to the exit stub. The child would then be a fully built INACTIVE orphan
+        // holding a slot, a stack, a task reference and its delegated caps, with nothing
+        // left running that knows to finish or free it. A spawn is a transaction and the
+        // lock is what makes it one.
+#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
+        kickos_reent_init(child->reent);
+#endif
+        sched::add(child);
         *out_thread = k.threads.handle_for(i);
         *out_child = child;
         return 0;
     }
 
-    // The child is built by spawn_masked and made READY here, and the gap between the two
-    // is the point: the per-thread libc state is hundreds of bytes (284 to 512 across the
-    // pinned toolchains) and writing it inside the spawn's IrqLock would charge every
-    // spawn that much masked time. Nothing can pick a thread that is not READY, so the
-    // gap is not a window on a half-built child.
     int thread_spawn(kos_thread_params const* p, kos_thread_t* out_thread)
     {
         Thread* child = nullptr;
-        int const rc = spawn_masked(p, out_thread, &child);
-        if (rc != 0)
-        {
-            return rc;
-        }
-#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
-        kickos_reent_init(child->reent);
-#endif
-        sched::add(child);
-        return 0;
+        return spawn_masked(p, out_thread, &child);
     }
 
     // NOT a destroy. This MARKS the target and breaks whatever park it is in; the target

@@ -302,9 +302,9 @@ namespace kickos
 #if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
         // The pool slot indexes the app-side array. A TCB outside the pool takes libc's
         // process-wide state: index_of returns negative for it and the seam answers that
-        // with the global rather than with a slot nobody sized. Selection only: the
-        // hundreds of bytes kickos_reent_init writes are the caller's to pay unmasked,
-        // between this and sched::add.
+        // with the global rather than with a slot nobody sized. Selection only; the
+        // hundreds of bytes kickos_reent_init writes are the caller's, and on the spawn
+        // path they are written under the spawn's own lock.
         t->reent = kickos_reent_acquire(kernel().threads.index_of(t));
 #endif
 #if KICKOS_KERNEL_STACKS

@@ -55,8 +55,9 @@ namespace kickos
 
     // Build a thread. `stack_base`/`stack_size` and the TCB storage are supplied by the
     // caller (static allocation first). Leaves it INACTIVE: the caller publishes it with
-    // sched::add once it has paid the unmasked part of the setup (kickos_reent_init).
-    // Nothing may make it READY before that, or it can be picked half-built.
+    // sched::add, under the same lock that allocated it. A publish deferred past that lock
+    // leaves a fully built child reachable only from the spawner's continuation, which a
+    // slay discards.
     void thread_create(Thread* t, void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size, ThreadAttr const& attr);
 
