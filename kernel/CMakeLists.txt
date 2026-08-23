@@ -5,6 +5,7 @@ set(KICKOS_KERNEL_SOURCES
   sched/sched.cc
   sched/policy_fifo_rr.cc
   thread/thread.cc
+  thread/tls.cc
   thread/park.cc
   domain/domain.cc
   task/task.cc

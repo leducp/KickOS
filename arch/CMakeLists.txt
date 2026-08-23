@@ -131,6 +131,7 @@ elseif(KICKOS_ARCH STREQUAL "armv7m")
     ${KICKOS_SEAM_DEFAULTS_ARM}
     arm/armv7m/arch_fault_report_extra_default.cc
     arm/armv7m/arch_trace_now_default.cc
+    arm/read_tp.S
     arm/armv7m/switch.S)
   kickos_apply_freestanding(kickos_arch_armv7m)
   # The DWT arch_trace_now fallback runs on the PendSV-tail emit path, so its TU (and
@@ -166,6 +167,7 @@ elseif(KICKOS_ARCH STREQUAL "armv6m")
     common/startup_ranges.cc
     ${KICKOS_SEAM_DEFAULTS_COMMON}
     ${KICKOS_SEAM_DEFAULTS_ARM}
+    arm/read_tp.S
     arm/armv6m/switch.S)
   kickos_apply_freestanding(kickos_arch_armv6m)
   target_include_directories(kickos_arch_armv6m PUBLIC
@@ -258,6 +260,20 @@ endif()
 # LINKED here because it sits above the arch layer.
 target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../system/include")
+
+# STRUCTURAL GATE ON __aeabi_read_tp. The leaf answers every thread_local access on
+# M-profile and the one way to get it wrong is at the edge of the range, which the tlsprobe
+# witness cannot see: C code never runs with SP at an exclusive stack top, so the witness
+# passes with and without the subtract that makes that case correct. The instructions are
+# what gets checked.
+if(KICKOS_BUILD_TESTS AND KICKOS_TLS AND KICKOS_ARCH_FAMILY STREQUAL "arm")
+  add_test(
+    NAME    arm_read_tp
+    COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_arm_read_tp.sh"
+            "${CMAKE_OBJDUMP}"
+            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>")
+  set_tests_properties(arm_read_tp PROPERTIES TIMEOUT 60 LABELS host)
+endif()
 
 # --- Chip backend (startup + linker script + clocks + console) --------------
 # Built when the selected board resolves to a chip that is brought up. Sources:

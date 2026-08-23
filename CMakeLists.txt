@@ -76,7 +76,7 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
                 KICKOS_MAX_ENDPOINTS KICKOS_CAP_TABLE_SUPPLY KICKOS_MAX_SPAWN_GRANTS
                 KICKOS_MAX_IRQ_HANDLES KICKOS_RTT_CH1_SIZE KICKOS_USER_HEAP_SIZE
                 KICKOS_MAX_INSTANCES KICKOS_PANIC_DUMP KICKOS_DIAG_TERSE
-                KICKOS_KERNEL_STACK_SIZE KICKOS_TLS_SIZE)
+                KICKOS_KERNEL_STACK_SIZE)
     if(DEFINED ${_knob})
       list(APPEND _kcfg_req "CONFIG_${_knob}=${${_knob}}")
     endif()
@@ -97,7 +97,7 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
     endif()
   endforeach()
   foreach(_flag KICKOS_ENABLE_SELFTEST KICKOS_DEBUG KICKOS_BENCH
-                KICKOS_SHUTDOWN_TO_BOOTLOADER KICKOS_MULTI_INSTANCE
+                KICKOS_SHUTDOWN_TO_BOOTLOADER KICKOS_MULTI_INSTANCE KICKOS_TLS
                 CONFIG_SCHED_PERIODIC_TICK)
     if(DEFINED ${_flag})
       string(REGEX REPLACE "^CONFIG_" "" _sym "${_flag}")
@@ -311,6 +311,45 @@ if(KICKOS_MULTI_INSTANCE)
   add_compile_definitions(KICKOS_MULTI_INSTANCE=1)
 else()
   add_compile_definitions(KICKOS_MULTI_INSTANCE=0)
+endif()
+
+# The TLS stride, and the two knobs that have to agree for it to exist. Unprivileged ARM
+# code has no register that differs per thread except SP, so __aeabi_read_tp is SP masked
+# down to the thread's own stack block, and one image has ONE mask: root and every pool
+# stack must therefore round to the SAME power of two. The SIZES need not be powers of two,
+# because arch_ram_region_align strides each block by its own rounded size and the slack
+# just goes unused; what cannot differ is the rounding.
+include("${CMAKE_SOURCE_DIR}/cmake/boot_arena.cmake")
+if(KICKOS_TLS)
+  kickos_pow2_ceil("${KICKOS_USER_STACK_SIZE}" _tls_stride)
+  kickos_pow2_ceil("${KICKOS_ROOT_STACK_SIZE}" _tls_root_stride)
+  if(NOT _tls_stride EQUAL _tls_root_stride)
+    message(FATAL_ERROR
+      "KickOS: KICKOS_TLS is on and this board's stacks do not share a stride. "
+      "KICKOS_USER_STACK_SIZE ${KICKOS_USER_STACK_SIZE} rounds to ${_tls_stride} and "
+      "KICKOS_ROOT_STACK_SIZE ${KICKOS_ROOT_STACK_SIZE} rounds to ${_tls_root_stride}. "
+      "The ARM thread pointer is SP masked down to the stack block and one image has one "
+      "mask, so a thread on the smaller stride would read its neighbour's thread_local. "
+      "State both at the same power of two in "
+      "boards/${KICKOS_BOARD}/configs/<variant>/defconfig, or set KICKOS_TLS=n there and "
+      "let a thread_local fail the link instead.")
+  endif()
+  set(_tls_log2 0)
+  set(_tls_p 1)
+  while(_tls_p LESS _tls_stride)
+    math(EXPR _tls_p "${_tls_p} * 2")
+    math(EXPR _tls_log2 "${_tls_log2} + 1")
+  endwhile()
+  add_compile_definitions(KICKOS_TLS=1
+                          KICKOS_TLS_STRIDE=${_tls_stride}
+                          KICKOS_TLS_STRIDE_LOG2=${_tls_log2})
+  message(STATUS "KickOS: TLS stride ${_tls_stride} (1 << ${_tls_log2})")
+else()
+  # Defined either way so `#if KICKOS_TLS` in a TU that forgot to test defined() reads
+  # false rather than reading an undefined identifier as zero by luck. The knob reaches C
+  # HERE and not through the generated board_config.h, which is why genconfig lists it
+  # among the CMake bool knobs.
+  add_compile_definitions(KICKOS_TLS=0)
 endif()
 
 # Positive identification only: a new arch must land in the 0 branch of every

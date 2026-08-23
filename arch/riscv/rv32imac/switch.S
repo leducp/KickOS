@@ -31,9 +31,11 @@
  * .Ltrap_wild.
  *
  * Save frame (128 B, low->high; ctx.sp = its base). Must match arch_context_init
- * (arch_rv32imac.cc). gp and tp are link-time constants across threads and stay out of the
- * frame; .Lrestore re-anchors gp on every resume. ecall is always 4 bytes (no compressed
- * form), so the user return is mepc+4.
+ * (arch_rv32imac.cc). gp and tp stay OUT of the frame and are written from the kernel's own
+ * knowledge on every resume instead: gp from the link-time __global_pointer$, tp from the
+ * running context's stack_lo. Both are U-mode writable, so a saved copy would be a value
+ * the outgoing thread chose. ecall is always 4 bytes (no compressed form), so the user
+ * return is mepc+4.
  */
 
 #include <kickos/arch/rv_trap_ids.h>
@@ -486,6 +488,31 @@ svc_trampoline:
     .option norelax
     la      gp, __global_pointer$
     .option pop
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    /* tp = the running thread's TLS block base. RISC-V TLS is variant 2 (TP_OFFSET 0), so
+       tp IS the block start and the block start is the thread's stack block base, which is
+       where thread_create seated the .tdata template.
+       DERIVED FROM ctx.stack_lo AND NEVER FROM THE INCOMING tp. tp is U-mode writable, so
+       a privileged path that reads it back trusts a value the thread chose; every resume
+       overwrites it from the kernel's own record. The frame's sp is no substitute either:
+       a U-mode entry builds the frame on ctx.kernel_sp and F_SP carries a mid-dispatch
+       kernel sp for a thread that blocked inside a syscall, so neither word names this
+       thread's own stack on every path that reaches here.
+       NO -1 CORRECTION IS DUE, unlike the ARM leaf that masks a live SP. arch_context_init
+       sets stack_lo to the low edge of what the carve left, base + block, which is strictly
+       INSIDE the block; only an exclusive stack TOP sits at base + stride.
+       Shifts and not andi: KICKOS_TLS_STRIDE - 1 exceeds the 12-bit signed immediate.
+       tp is its own scratch, being in no frame slot and dead until this write.
+       Idle's stack is below one stride and takes no carve, so this hands it an address in
+       a neighbour's block; its body is arch_idle_wait alone and reaches no thread_local.
+       KEEP THIS AFTER THE gp ANCHOR ABOVE: relaxation is back on here and the linker turns
+       the `la` into `addi tp, gp, <off>`, which reads the gp those instructions just set. */
+    la      tp, g_arch_current
+    lw      tp, 0(tp)
+    lw      tp, F_CTX_STACK_LO(tp)
+    srli    tp, tp, KICKOS_TLS_STRIDE_LOG2
+    slli    tp, tp, KICKOS_TLS_STRIDE_LOG2
+#endif
     /* Restore mstatus (saved with MIE=0) BEFORE mepc. The ecall-return path reaches here
        from svc_trampoline with MIE=1 (.Lecall set MPIE=1); a trap taken between the mepc
        and mstatus writes would overwrite mepc, and the final mret would then jump back

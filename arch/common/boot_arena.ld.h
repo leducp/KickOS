@@ -39,17 +39,23 @@
  * KICKOS_MAX_THREADS blocks of KICKOS_USER_STACK_SIZE, because that is what the pool
  * bump-allocates on demand (syscall_thread.cc). The count is SLOTS MINUS ROOT and not the
  * slot count: the pool holds KICKOS_THREAD_SLOTS, and root's slot draws its stack from the
- * boot replay above instead. All the pool blocks share one size, so only the FIRST pays an
- * alignment run-up.
+ * boot replay above instead.
  *
  * KICKOS_POOL_STACK_* arrive as -D beside the KICKOS_BOOT_* set, from the same source.
+ *
+ * THE STRIDE IS NOT ALWAYS THE SIZE. Where the alignment exceeds the size, which is what
+ * KICKOS_TLS does to every block so the ARM thread pointer can be SP masked down to it,
+ * EVERY pool block pays a run-up and not just the first.
  */
+#define KICKOS_POOL_STRIDE \
+    KICKOS_BOOT_ALIGN_UP(KICKOS_POOL_STACK_SIZE, KICKOS_POOL_STACK_ALIGN)
+
 #define KICKOS_POOL_BASE(ram_start)                                                  \
     KICKOS_BOOT_ALIGN_UP(KICKOS_BOOT_ROOT_BASE(ram_start) + KICKOS_BOOT_ROOT_SIZE,   \
                          KICKOS_POOL_STACK_ALIGN)
 
 #define KICKOS_POOL_TOP(ram_start) \
-    (KICKOS_POOL_BASE(ram_start) + KICKOS_POOL_STACK_COUNT * KICKOS_POOL_STACK_SIZE)
+    (KICKOS_POOL_BASE(ram_start) + KICKOS_POOL_STACK_COUNT * KICKOS_POOL_STRIDE)
 
 /* Invoked by every linker script the fleet links, board-local overrides included, and
  * omitting it is a configure FATAL_ERROR exactly as for KICKOS_BOOT_ARENA_ASSERT. The arena

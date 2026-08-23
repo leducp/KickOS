@@ -54,6 +54,24 @@ config ARCH_KERNEL_STACKS_MANDATORY
 	  A NEW ARCH THAT WRITES ONLY THE TRANSFER SELECTS THIS. One that writes both paths
 	  does not, and then the red zone is what its unconverted boards depend on.
 
+# The arch can hand a thread its own thread pointer with no syscall and no kernel read,
+# so an unprivileged thread_local access costs no privilege transition. Declared here for
+# the same reason ARCH_HAS_KERNEL_STACKS is: which register or call answers the question is
+# written per arch, and a chip selects nothing.
+config ARCH_HAS_TLS
+	bool
+	help
+	  The arch has a per-thread thread pointer reachable from UNPRIVILEGED code:
+	  a register the kernel writes at restore (rv32imac tp, lx6 THREADPTR), or a
+	  leaf the kernel provides that derives it from SP (armv7m, armv6m
+	  __aeabi_read_tp; rxv3 through its emutls anchor).
+
+	  ARCH_SIM DOES NOT SELECT IT, and cannot. Its threads are ucontext coroutines
+	  in ONE host thread sharing one %fs, and instance_local.h already owns host
+	  TLS deliberately for the signal handlers. An fs-base swap was probed and
+	  segfaults. So the arch with the largest test suite cannot witness this
+	  feature at all, and that is stated here rather than left to be discovered.
+
 config BOARD_TAKES_KERNEL_STACKS
 	bool
 	help
@@ -80,25 +98,30 @@ config BOARD_TAKES_KERNEL_STACKS
 
 config ARCH_ARMV6M
 	bool
+	select ARCH_HAS_TLS
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
 
 config ARCH_ARMV7M
 	bool
+	select ARCH_HAS_TLS
 	select ARCH_HAS_KERNEL_STACKS
 
 config ARCH_RXV3
 	bool
+	select ARCH_HAS_TLS
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
 
 config ARCH_RV32IMAC
 	bool
+	select ARCH_HAS_TLS
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
 
 config ARCH_LX6
 	bool
+	select ARCH_HAS_TLS
 
 config ARCH_SIM
 	bool

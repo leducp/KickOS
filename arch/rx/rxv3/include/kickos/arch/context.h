@@ -15,6 +15,12 @@
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
 
+// Bytes the ABI reserves BELOW the thread pointer, which the TLS carve has to
+// carry on top of .tdata + .tbss.
+// RX has no thread pointer and no native TLS; the emutls override owns the block
+// layout end to end, so it reserves nothing the compiler knows about.
+#define KICKOS_ARCH_TLS_TCB 0
+
 #include <stdint.h>
 
 struct arch_context

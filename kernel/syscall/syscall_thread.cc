@@ -20,6 +20,7 @@
 
 #include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
+#include <kickos/tls.h>
 
 #include "syscall_internal.h"
 
@@ -444,6 +445,16 @@ namespace kickos
             }
             stack_size = KICKOS_USER_STACK_SIZE;
             attr.kstack_owned = true;
+        }
+        // A CALLER-SUPPLIED STACK MUST SATISFY THE TLS STRIDE. The thread pointer is SP
+        // masked down to KICKOS_TLS_STRIDE, so a block the caller chose that is not
+        // strided, or that spans more than one stride, would hand this thread a pointer
+        // into a NEIGHBOUR's thread_local storage. Refusing the spawn is the only honest
+        // answer; the pool's own blocks satisfy it by construction.
+        if (not tls_stack_admissible(reinterpret_cast<uintptr_t>(stack), stack_size))
+        {
+            k.threads.release(i);
+            return -KOS_EINVAL;
         }
         // Taken BEFORE the reference loop so one unwind path serves both failures.
         if (not cap_slab_attach(&attr.cap_run, KICKOS_CAP_CHILD_WIDTH, &attr.cap_free_head,

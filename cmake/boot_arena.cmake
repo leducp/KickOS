@@ -33,18 +33,34 @@ function(kickos_region_size want mn pow2 out)
   set(${out} "${_p}" PARENT_SCOPE)
 endfunction()
 
-# Natural alignment the block must sit on. Mirrors arch_ram_region_align().
+# Round up to a power of two. Mirrors kickos_pow2_ceil().
+function(kickos_pow2_ceil want out)
+  set(_p 1)
+  while(_p LESS want)
+    math(EXPR _p "${_p} * 2")
+  endwhile()
+  set(${out} "${_p}" PARENT_SCOPE)
+endfunction()
+
+# Natural alignment the block must sit on. Mirrors arch_ram_region_align(), INCLUDING its
+# KICKOS_TLS leg, which is read from the resolved configuration rather than passed: the C
+# side reads the same knob out of board_config.h and a fourth parameter here would let a
+# caller model a geometry the allocator does not produce.
 function(kickos_region_align want mn pow2 out)
-  if(mn EQUAL 0)
-    set(${out} 16 PARENT_SCOPE)
-    return()
+  set(_geometry 16)
+  if(NOT mn EQUAL 0)
+    set(_geometry "${mn}")
+    if(NOT pow2 EQUAL 0)
+      kickos_region_size("${want}" "${mn}" "${pow2}" _geometry)
+    endif()
   endif()
-  if(pow2 EQUAL 0)
-    set(${out} "${mn}" PARENT_SCOPE)
-    return()
+  if(KICKOS_TLS)
+    kickos_pow2_ceil("${want}" _stride)
+    if(_stride GREATER _geometry)
+      set(_geometry "${_stride}")
+    endif()
   endif()
-  kickos_region_size("${want}" "${mn}" "${pow2}" _v)
-  set(${out} "${_v}" PARENT_SCOPE)
+  set(${out} "${_geometry}" PARENT_SCOPE)
 endfunction()
 
 # The integer returned by a `symbol` DEFINITION in `file`, or "" when the file only

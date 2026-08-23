@@ -11,10 +11,19 @@
 
 ENTRY(Reset_Handler)
 
+/* 32 KiB AND NOT THE 16 A BBC micro:bit v1 HAS. That part is EOL and nothing in this tree
+   flashes one; what this board is FOR is being the fleet's only executable armv6m target,
+   and 16 KiB made it a target that could not run what every other board runs. The nRF51822
+   ships in a 32 KiB variant (QFAC), so this is a real part, just not the one on a micro:bit.
+
+   QEMU HAS TO BE TOLD. Its microbit machine defaults to 16 KiB and ignores -m; the size is a
+   QOM property, so every invocation passes -global nrf51-soc.sram-size=32768
+   (cmake/kickos.cmake, kickos_add_qemu_test). Without it an image linked here locks up on
+   its first push, before any vector table is live, as "can't escalate 3 to HardFault". */
 MEMORY
 {
     FLASH (rx)  : ORIGIN = 0x00000000, LENGTH = 256K
-    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 16K
+    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 32K
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);

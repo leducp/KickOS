@@ -62,6 +62,10 @@ add_subdirectory(pspguard)
 # thread's syscall dispatch must put its frame on a trusted stack.
 add_subdirectory(trapnest)
 add_subdirectory(specfault)
+# The thread_local witness: per-thread storage at a per-thread ADDRESS, with the .tdata
+# template arriving in a freshly spawned thread. Its own CMakeLists returns early where the
+# board compiles no TLS.
+add_subdirectory(tlsprobe)
 # kos_reboot plumbing witness + the unattended-reflash affordance. Board-agnostic;
 # its ctest arms are the declining-fallback targets only (see its CMakeLists).
 add_subdirectory(rebootdemo)

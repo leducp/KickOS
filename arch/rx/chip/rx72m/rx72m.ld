@@ -115,6 +115,15 @@ SECTIONS
 
     KICKOS_TLS_TEMPLATE(ROM)
 
+    /* The RX psABI prefixes a C identifier with an extra leading underscore, so C's
+       __kickos_tdata_start is asm ___kickos_tdata_start. The shared template spells the
+       asm names every other backend needs; these four are what the RX compiler emits. */
+    ___kickos_tdata_start = __kickos_tdata_start;
+    ___kickos_tdata_end = __kickos_tdata_end;
+    ___kickos_tbss_start = __kickos_tbss_start;
+    ___kickos_tbss_end = __kickos_tbss_end;
+
+
     .kickos_app_init_array : ALIGN(4)
     {
         ___kickos_app_init_array_start = .;

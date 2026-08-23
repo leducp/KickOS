@@ -378,20 +378,53 @@ static inline size_t arch_ram_region_size(size_t want)
     return p;
 }
 
+// Round up to a power of two. Separate from arch_ram_region_size because that one
+// answers a DESCRIPTOR question and on a base+limit backend does not round to a power of
+// two at all.
+static inline size_t kickos_pow2_ceil(size_t want)
+{
+    size_t p = 1;
+    while (p < want)
+    {
+        size_t const next = p << 1;
+        if (next < p) // size_t overflow: unroundable, hand back the raw request
+        {
+            return want;
+        }
+        p = next;
+    }
+    return p;
+}
+
 // Natural ALIGNMENT the block must sit on. In pow2 mode this is the region size itself,
 // since PMSA/NAPOT snap the base to it; only that mode pays an alignment gap.
+//
+// UNDER KICKOS_TLS EVERY BLOCK IS STRIDED BY A POWER OF TWO, whatever the descriptor
+// geometry asks for. Unprivileged ARM code has no register that differs per thread except
+// SP, so __aeabi_read_tp is SP masked down to the thread's own block, and a block that
+// does not start on a multiple of that stride masks into its neighbour's. The mask in
+// arch_ram_alloc needs a power of two anyway, which is why this rounds rather than
+// returning arch_ram_region_size.
 static inline size_t arch_ram_region_align(size_t want)
 {
     size_t const min = arch_mpu_min_region();
-    if (min == 0)
+    size_t geometry = 16u;
+    if (min != 0)
     {
-        return 16u;
+        geometry = min;
+        if (arch_mpu_region_pow2() != 0)
+        {
+            geometry = arch_ram_region_size(want);
+        }
     }
-    if (arch_mpu_region_pow2() == 0)
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    size_t const stride = kickos_pow2_ceil(want);
+    if (stride > geometry)
     {
-        return min;
+        return stride;
     }
-    return arch_ram_region_size(want);
+#endif
+    return geometry;
 }
 
 // True iff a RAM block at (base,size) is nameable by ONE descriptor. The RAM test;

@@ -13,9 +13,15 @@ namespace tap
 {
     namespace
     {
-        // 8 bytes each, in test images only. The floor is microbit (16 KiB SRAM, armv6m),
-        // the smallest board that builds the suite.
-        constexpr int MAX_TESTS = 128;
+        // 8 bytes each, in test images only. An image that knows its own plan states it as
+        // KICKOS_TAP_MAX_TESTS and pays for that many; the 128 below is the fleet ceiling a
+        // caller who states nothing falls back to, and on a 16 KiB-SRAM board it is 1 KiB of
+        // .bss under the arena. Registrations past the cap are counted, not silently lost:
+        // run_all() turns g_dropped into a failing tap_registry_overflow line.
+#ifndef KICKOS_TAP_MAX_TESTS
+#define KICKOS_TAP_MAX_TESTS 128
+#endif
+        constexpr int MAX_TESTS = KICKOS_TAP_MAX_TESTS;
 
         struct Entry
         {

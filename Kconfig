@@ -348,32 +348,45 @@ config KICKOS_KERNEL_STACK_SIZE
 	  size, slot count and their product. An arch that carves the blocks stops
 	  reserving a red zone for the dispatch, so no board ever holds both.
 
-config KICKOS_TLS_SIZE
-	int "Per-thread TLS block"
-	range 0 4096
-	default 0
+config KICKOS_TLS
+	bool "Per-thread thread_local storage"
+	depends on ARCH_HAS_TLS
+	default y
 	help
-	  Bytes of thread-local storage each thread gets, which is the .tdata plus
-	  .tbss template rounded to the thread pointer's alignment. 0 until the
-	  template exists, and 0 costs nothing.
+	  Give each thread its own copy of every thread_local, carved off the LOW end
+	  of that thread's own stack block. The SIZE is not a knob: it is .tdata plus
+	  .tbss as the linker lays the template out, plus whatever the ABI reserves
+	  below the thread pointer. A number typed into a defconfig cannot track a
+	  template the linker owns. With no thread_local declared the carve is zero
+	  bytes and this costs nothing.
 
-	  The mechanism is NOT one register on every ISA. RISC-V and Xtensa have a
-	  thread pointer (tp, THREADPTR); every ARM part in this fleet is M-profile
-	  and has none, so its compiler emits a call to __aeabi_read_tp for each
-	  access and the kernel has to answer it; RX has neither.
+	  IT COSTS NO MPU DESCRIPTOR. The stack is already one region under one
+	  descriptor, and the carve is inside it. Raising ctx.stack_lo above the carve
+	  is what keeps a thread's own SP out of its own TLS.
 
-	  DERIVED FROM THE LINKER, not stated here, once a template exists: the
-	  block is .tdata plus .tbss at the thread pointer's alignment, and the ABI
-	  may reserve words BELOW the pointer that the block has to carry as well.
-	  A number typed into a defconfig cannot track a template the linker lays
-	  out.
+	  WHAT IT IS NOT: an isolation boundary. Peers in a task share the whole
+	  .appdata window, so a thread_local is a NAMING mechanism, private by
+	  convention and not by hardware.
 
-	  AND ON RISC-V `tp` IS USER-WRITABLE, which makes it the same class of
-	  hazard this milestone exists for. An unprivileged thread can put anything
-	  in tp, so privileged code that reads thread-local state through the
-	  incoming tp trusts a value the thread chose. The trap entry has to
-	  RE-ANCHOR tp from the thread's own control block before any privileged
-	  access, exactly as it validates a stack pointer rather than trusting one.
+	  THE MECHANISM IS NOT ONE REGISTER ON EVERY ISA. RISC-V and Xtensa have a
+	  thread pointer (tp, THREADPTR) the kernel writes at restore. Every ARM part
+	  in this fleet is M-profile and has none, so the compiler emits a call to
+	  __aeabi_read_tp, which libc and libgcc both leave undefined and the kernel
+	  must answer. RX has neither and falls back to emutls.
+
+	  AND ON RISC-V `tp` IS USER-WRITABLE, which is the same class of hazard this
+	  milestone exists for. An unprivileged thread can put anything in tp, so
+	  privileged code reading thread-local state through the incoming tp trusts a
+	  value the thread chose. The entry never reads it: tp is written FROM the
+	  control block at both ends, exactly as gp already is.
+
+	  WHY IT FORCES POWER-OF-TWO STACK SIZES. Unprivileged code on ARM has no
+	  register that differs per thread except SP, so __aeabi_read_tp is SP masked
+	  down to the thread's own block. That is correct only when the blocks are
+	  STRIDED by a power of two, so with this on every arena block is aligned to
+	  its own rounded size and KICKOS_USER_STACK_SIZE and KICKOS_ROOT_STACK_SIZE
+	  must be powers of two and must round to the SAME one. cmake/boot_arena.cmake
+	  refuses the rest by name.
 
 config KICKOS_MIN_STACK_SIZE
 	int

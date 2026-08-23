@@ -10,6 +10,7 @@
 #include <kickos/irqlock.h>
 #include <kickos/libc/string.h>
 #include <kickos/task.h>
+#include <kickos/tls.h>
 
 namespace kickos
 {
@@ -291,7 +292,26 @@ namespace kickos
         }
 #endif
 
-        arch_context_init(&t->ctx, entry, arg, stack_base, stack_size, attr.privileged);
+        // THE TLS CARVE, off the LOW end of the thread's own stack, so it costs no MPU
+        // descriptor: the region added above already spans it, and raising stack_lo past it
+        // is what keeps the thread's own SP out of its own thread_local storage.
+        //
+        // IDLE TAKES NONE and that is not a diagnostic. Its block is smaller than
+        // KICKOS_TLS_STRIDE, so no thread pointer could be derived from an SP inside it,
+        // and its body is arch_idle_wait alone. Every other stack the pool hands out is
+        // exactly one stride.
+        void* ustack = stack_base;
+        size_t usize = stack_size;
+        size_t const tls = tls_block_size();
+        if (tls != 0 and not tls_stack_below_stride(stack_size))
+        {
+            KICKOS_ASSERT(
+                tls_stack_admissible(reinterpret_cast<uintptr_t>(stack_base), stack_size));
+            tls_seat(stack_base);
+            ustack = static_cast<unsigned char*>(stack_base) + tls;
+            usize = stack_size - tls;
+        }
+        arch_context_init(&t->ctx, entry, arg, ustack, usize, attr.privileged);
 #if KICKOS_KERNEL_STACKS
         // The slot index IS the per-thread state: the top follows from it and the one
         // instance-scoped block, so no base or size field joins struct Thread (whose

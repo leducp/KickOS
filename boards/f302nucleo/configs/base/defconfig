@@ -16,3 +16,10 @@ CONFIG_KICKOS_ROOT_STACK_SIZE=1536
 # 64 KiB of flash: the kernel says its diagnostics in the short column of
 # include/kickos/diag.h, and an assert names its file and line instead of its condition.
 CONFIG_KICKOS_DIAG_TERSE=1
+
+# NO TLS ON THIS PART. Deriving the ARM thread pointer from SP needs every stack block
+# strided by one power of two, and three blocks of 2048 do not fit an arena the fattest
+# image leaves at 4672 bytes. Paying it would mean one thread instead of two, and the
+# root stack is already one notch up because the suite outgrew a 1024 root. A thread_local
+# in an app built for this board is a link error naming __aeabi_read_tp.
+# CONFIG_KICKOS_TLS is not set

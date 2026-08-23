@@ -11,6 +11,14 @@
 
 #ifndef __ASSEMBLER__
 
+// Bytes the ABI reserves BELOW the thread pointer, which the TLS carve has to
+// carry on top of .tdata + .tbss.
+// M-profile AAPCS TLS is variant 1: tp points at a reserved two-word TCB
+// and the first thread_local sits above it. __aeabi_read_tp returns tp, and the
+// compiler adds the offset the linker computed.
+#define KICKOS_ARCH_TLS_TCB 8
+
+
 #include <stdint.h>
 
 struct arch_context

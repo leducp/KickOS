@@ -211,6 +211,19 @@ if(_selftest_split)
     "selftest_p2 plans ${_tap_arms_p2} (${_tap_arms} together)")
 endif()
 
+# tap.cc sizes its registry from this, so each image pays 8 bytes per arm IT plans instead
+# of 8 x the fleet ceiling. Per IMAGE and not per board, so it cannot go through
+# _selftest_defs, which applies one list to both parts. The counts are the ones the
+# totality check above already binds to main.cc's regions: an arm added without its clause
+# overflows the registry and run_all() says so as tap_registry_overflow, so the cap cannot
+# drop an arm quietly.
+if(_selftest_split)
+  target_compile_definitions(selftest    PRIVATE KICKOS_TAP_MAX_TESTS=${_tap_arms_p1})
+  target_compile_definitions(selftest_p2 PRIVATE KICKOS_TAP_MAX_TESTS=${_tap_arms_p2})
+else()
+  target_compile_definitions(selftest PRIVATE KICKOS_TAP_MAX_TESTS=${_tap_arms})
+endif()
+
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # The guard-probe case is registered only under KICKOS_ENABLE_SELFTEST (the sim
   # preset enables it), so the plan count still matches.

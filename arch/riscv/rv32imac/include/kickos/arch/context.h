@@ -15,6 +15,12 @@
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
 
+// Bytes the ABI reserves BELOW the thread pointer, which the TLS carve has to
+// carry on top of .tdata + .tbss.
+// RISC-V TLS is variant 2: TP_OFFSET is 0, so tp IS the block start and the
+// first thread_local sits AT it. Reserving a TCB here would put every offset wrong.
+#define KICKOS_ARCH_TLS_TCB 0
+
 #include <stdint.h>
 
 struct arch_context
