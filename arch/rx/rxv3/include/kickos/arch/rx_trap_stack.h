@@ -169,7 +169,11 @@
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW 64
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS 0
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST 64
-#define KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK 788
+/* 792 AND NOT THE 788 IT WAS. kos_thread_spawn validates a CALLER-SUPPLIED stack against the
+ * TLS stride, and inlining that check grew thread_spawn's own frame from 244 to 248 bytes,
+ * which is the deepest single frame on this chain. The zone becomes 1100 against a 1104-byte
+ * block, so it still fits, with one word left over the canary. */
+#define KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK 792
 
 /* THE EXIT CLASS, structural half: what a preemption puts below the deepest byte the DEATH
  * PATH uses. One whole PENDSW zone, 236 of save plus the 64 restore descent below it, which

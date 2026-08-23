@@ -269,86 +269,55 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   set_property(TEST ${KICKOS_QEMU_MPS2_TAG}_selftest APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
 endif()
-# microbit (nrf51) runs the same suite on armv6m with MAX_SEMAPHORES=4 / MAX_THREADS=2.
-# Every test must reclaim its semaphores so peak concurrent stays within 4.
+# microbit (nrf51) runs the same suite on armv6m. It used to do so with MAX_SEMAPHORES=4 and
+# MAX_THREADS=2 and skipped twenty arms for it; the board now takes the fleet defaults.
+# Every test still reclaims its semaphores, which is a suite invariant and not a board budget.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   # TWO IMAGES here, for SRAM where the 64 KiB parts split for FLASH. nrf51 is in the split
   # condition at the top of this file, so each part compiles only its own region's test
-  # bodies and the elided region's statics leave .bss. The arena runs from ALIGN(_ebss, 32)
-  # (nrf51.ld, with a zero-byte .userheap in between) to __kickos_ram_end = 0x20003800, so
-  # every byte .bss gives up is arena: part 1 has 9728 B from 0x20001200 and part 2 7584 B
-  # from 0x20001a60, against 7296 B from 0x20001b80 for the single combined image.
+  # bodies and the elided region's statics leave .bss.
   #
-  # Part 2's extra 288 B, 18 grains of the 16-byte granule, is what the split bought:
-  # mem_self_grant_nonpow2 ran out of arena in the combined image and runs here. It is
-  # coverage this board now carries, not a name on a skip list. mem_self_grant,
-  # endpoint_crossdomain and region_mode ran here too until the kernel stacks took 2688
-  # bytes of .bss; see part 2's clause below.
+  # THE SPLIT IS NOW A HABIT AND NOT A NEED. It was carved when this board had 16 KiB and an
+  # arena of 4896 bytes; the part now has 32 KiB (arch/arm/chip/nrf51/nrf51.ld says why) and
+  # the arena is 21280. Collapsing it back to one image is a change worth making and is not
+  # made here: it means deleting the p2 registration below and re-deriving _tap_arms, and
+  # this commit is about what the board can now RUN.
   #
   # THE TWO SETS BELOW ARE PARTITIONED BY REGION, NOT BY NAME: an arm belongs to the part
   # whose region holds its TAP_ADD line in main.cc, the boundary being the `#undef TAP_ADD`
   # after call_donation. check_tap_stream.sh reports a name declared in the wrong part as a
   # NOTE and not a failure, so only that rule catches one.
   #
-  # Part 1's eight skips are all pool or cap-table refusals, not one of them an arena
-  # outcome, so they are the same eight whether this board splits or not:
-  #   mutex_basic, mutex_pi_donation, mutex_chain_boost, mutex_multi_held: 3-worker PI
-  #   choreographies on a 2-slot pool
-  #   mutex_deadlock: 6 concurrent caps, over the 7-slot table once main's 2 are held
-  #   call_timeout_revert: 3 workers (server, caller, spoiler)
-  #   call_infoless_revert (4 workers), call_donation (3)
-  # No arm in region 1 reports PARTIAL, so part 1 permits none.
+  # PART 1 SKIPS NOTHING. Its eight names were all pool or cap-table refusals against a
+  # 2-slot pool and a 7-slot table: four 3-worker PI choreographies, mutex_deadlock's six
+  # concurrent caps, and three call arms wanting three or four workers. Four slots and the
+  # fleet-default tables host every one of them.
   kickos_add_qemu_test(NAME microbit_selftest TARGET selftest BOARD microbit
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p1})
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_timeout_revert,call_infoless_revert,call_donation"
+    "EXPECT_SKIPS="
     "EXPECT_PARTIALS=")
-  # Part 2's twelve. Six are pool refusals, as above:
-  #   call_donation_hold, call_donation_slow, call_donation_pending: 3 workers each
-  #   cap_reply_bound_fast, cap_reply_bound_slow, cap_reply_release_close: 3 workers each
-  # Six are what this board's arena cannot buy:
-  #   irq_as_event: wants a 4 KiB MMIO page out of 16 KiB SRAM
-  #   domain_share: the arena cannot spare the shared region
-  #   uart_service: PINNED above (KICKOS_SELFTEST_NO_UART_SERVICE), no longer an arena
-  #   outcome. Its 1 KiB ring and the arena probes sit in the SAME region, so the split
-  #   cannot put one in each part and the pin stays what reserves the block.
-  #   endpoint_crossdomain, region_mode and mem_self_grant: all three PAID FOR THE KERNEL
-  #   STACKS. Three slots of KICKOS_KERNEL_STACK_SIZE moved into kernel .bss when armv6m's
-  #   syscall trap started dispatching there, which took the arena from 7584 to 4896, and
-  #   the defconfig spent 640 of each stack buying it back. That is 928 bytes of spare
-  #   arena down to 160, which is the whole distance the cliff below warns about. The size
-  #   was chosen against THIS output and not only against the link: over the band that
-  #   keeps a thread's usable stack at or above what it had (1348 to 1456, the ceiling the
-  #   arena imposes), 1392 and 1408 lose three arms and every other multiple of 16 tried
-  #   loses four or eight. Re-tune by diffing the whole stream, as the cliff note below
-  #   says, because the count is not monotone in the size.
-  # Four more run their invariant and drop a sub-case, reporting PARTIAL: they count as
-  # passes, not skips, and carry their own permission set. All four are in region 2, and
-  # the set is unchanged by the above.
-  #   caller_stack: the arena cannot spare a caller-owned stack
-  #   confused_deputy: the arena cannot spare the grandchild's stack
-  #   cap_chunk_span: a 7-slot table compiles the flat decode, so no segmented index exists
-  #   cap_child_width: at 7 the child width IS root's summed width
+  # PART 2 SKIPS ONE, AND IT IS A PIN RATHER THAN AN ARENA OUTCOME. uart_service is held out
+  # by KICKOS_SELFTEST_NO_UART_SERVICE at the top of this file: its 1 KiB ring and the arena
+  # probes want the SAME region, so the split cannot put one in each part and the pin is what
+  # reserves the block. The other eleven names this list carried were six pool refusals and
+  # five arena refusals, and all eleven now run and pass.
   #
-  # ARENA CLIFF, and the reason uart_service is pinned rather than left to the allocator:
-  # the split widened the margin, it did not end the cliff. The granule is 16 bytes and the
-  # arena base is 32-aligned, so a .bss addition of a few bytes still moves the base and
-  # costs a grain, and a grain is the whole distance between running and skipped for
-  # endpoint_crossdomain, mem_self_grant_nonpow2, region_mode and mem_self_grant. Before
-  # changing any static demand here, diff the whole TAP output of BOTH parts and not the
-  # verdict: the arm that flips is the cause.
+  # ONE PARTIAL, DOWN FROM FOUR. A PARTIAL is an arm that ran its invariant and left a
+  # sub-case unexercised; it reports `ok`, so neither the plan reconciliation nor the skip
+  # bookkeeping can see one and this by-name set is the only thing that can. caller_stack
+  # still drops its sub-case; confused_deputy, cap_chunk_span and cap_child_width no longer
+  # do, the last two because the cap table is no longer seven slots wide.
   #
-  # The lever left, now that the images are two, is WHERE the boundary sits: region 1 is the
-  # roomier part by 2144 B, so an arena-hungry arm moved above the `#undef TAP_ADD` gets
-  # that room, and its per-part clause has to move with it or configure fails on the totality
-  # assert. The arms that stay skipped are the ruling and not an omission: each is either a
-  # choreography this pool cannot host at all, or a region witnessed elsewhere (picopi runs
-  # the armv6m PMSAv6 enforcement class on real silicon).
+  # THESE TWO LISTS ARE A MEASUREMENT AND NOT SLACK, which is the whole reason they are by
+  # name: a listed arm that did NOT skip is only a NOTE, so a stale list quietly permits a
+  # regression. This one was stale by twenty names the moment the board grew, and
+  # check_tap_stream.sh printed one NOTE per name saying so.
   kickos_add_qemu_test(NAME microbit_selftest_p2 TARGET selftest_p2 BOARD microbit
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p2})
   set_property(TEST microbit_selftest_p2 APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=call_donation_hold,call_donation_slow,call_donation_pending,uart_service,cap_reply_bound_fast,cap_reply_bound_slow,cap_reply_release_close,irq_as_event,domain_share,endpoint_crossdomain,region_mode,mem_self_grant"
-    "EXPECT_PARTIALS=caller_stack,confused_deputy,cap_chunk_span,cap_child_width")
+    "EXPECT_SKIPS=uart_service"
+    "EXPECT_PARTIALS=caller_stack")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv

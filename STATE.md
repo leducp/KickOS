@@ -1249,11 +1249,24 @@ rather than spanning nine PRs. The work exists: `m5.2.1-armv6m-partial.patch` an
 
 **TLS AND PER-THREAD KERNEL STACKS ARE THE SAME SHAPE OF PROBLEM**, which is why they share
 M5.2.1. Both are per-thread storage needing a per-arch seam and costing memory the small boards do
-not have. TLS is not optional: `TODO.md`'s per-thread-libc-state item is the one mechanism that
-fixes `errno`, newlib reent, `thread_local` AND `malloc` together, and it REFUSES a `_REENT`-swap
-hack because that leaves `thread_local` broken, so there is no cheap half-measure. Its thread
-pointer is `TPIDRURW` on ARM, `tp` on RISC-V, `THREADPTR` on Xtensa, and **RX has no TLS register at
-all**, so that backend needs a software-tp spike on the one arch with no emulator and no CI.
+not have.
+
+**TLS AND `errno` ARE TWO MECHANISMS, NOT ONE, and this file said otherwise until PR 8 measured
+it.** `_REENT_THREAD_LOCAL` is OFF on all three pinned toolchains, so `errno` is `(*__errno())`
+and `__errno` is three instructions that return `_impure_ptr`; **239 members of arm-none-eabi's
+libc.a reference that pointer** and none of them calls `__errno()`. So no amount of TLS makes
+`errno` per-thread, and swapping `_impure_ptr` per thread makes it AND every other reentrant path
+per-thread at once. The `_REENT`-swap is not a hack that leaves `thread_local` broken; it is the
+only thing that fixes `errno`, and `thread_local` is a separate mechanism that PR 8 built. Cost:
+`sizeof(struct _reent)` is 512 on ARM, 284 on RX, 288 on RISC-V.
+
+**And the thread pointer is NOT `TPIDRURW`.** Every ARM part in this fleet is M-profile and has no
+thread-pointer register at all: the compiler emits a call to `__aeabi_read_tp`, which is defined in
+NEITHER libc.a NOR libgcc.a, and the kernel provides it. It cannot read a kernel global either,
+because it runs unprivileged, so it derives the pointer from the only register that differs per
+thread, which is SP. RISC-V has `tp` and Xtensa `THREADPTR`, both written by the kernel at resume.
+**RX has neither and no native TLS**, so GCC falls back to emutls and the single-threaded
+`libgcc.a(emutls.o)` hands every thread the same storage with no diagnostic.
 
 **What M7 inherits, and neither figure is a guess.** The locked fraction is 53 percent with a 43
 percent leaf floor, which Amdahl-bounds a two-core big lock at **1.31x** and caps it at 1.40x, so

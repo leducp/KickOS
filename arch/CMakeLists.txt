@@ -185,6 +185,7 @@ elseif(KICKOS_ARCH STREQUAL "rxv3")
   # linker script.
   add_library(kickos_arch_rxv3 STATIC
     rx/rxv3/arch_rxv3.cc
+    rx/rxv3/emutls.cc
     common/arch_ram_common.cc
     common/startup_ranges.cc
     ${KICKOS_SEAM_DEFAULTS_COMMON}
@@ -273,6 +274,23 @@ if(KICKOS_BUILD_TESTS AND KICKOS_TLS AND KICKOS_ARCH_FAMILY STREQUAL "arm")
             "${CMAKE_OBJDUMP}"
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>")
   set_tests_properties(arm_read_tp PROPERTIES TIMEOUT 60 LABELS host)
+endif()
+
+# NO PRIVILEGED TU MAY REACH THREAD-LOCAL STORAGE. Read as relocations rather than as
+# source, because a thread_local reached through an inline function in a header leaves no
+# `thread_local` in the privileged .cc that emitted the access. Registered on every cross
+# board and not only where KICKOS_TLS is on: a kernel TU that grows one on a board with the
+# knob off is the same bug arriving somewhere the app cannot see it.
+if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
+  add_test(
+    NAME    no_privileged_tls
+    COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_no_privileged_tls.sh"
+            "${CMAKE_READELF}" "${CMAKE_NM}"
+            "$<TARGET_FILE:kickos_kernel>"
+            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
+            "$<TARGET_FILE:kickos_lib>")
+  set_tests_properties(no_privileged_tls PROPERTIES TIMEOUT 60 LABELS host)
 endif()
 
 # --- Chip backend (startup + linker script + clocks + console) --------------

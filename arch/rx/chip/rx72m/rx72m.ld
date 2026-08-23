@@ -203,6 +203,15 @@ SECTIONS
     .appdata : ALIGN(_appdata_size)
     {
         ___kickos_appdata_start = .;
+        /* The emutls control blocks, gathered so arch/rx/rxv3/emutls.cc can index a
+           thread_local by its position here instead of caching a pointer in the block.
+           They must be CONTIGUOUS and on a 16-byte grid; the override rejects an anchor
+           that is neither. -fdata-sections is what gives each one its own section, so a
+           TU built without it lands in the catch-all below and is refused at runtime
+           rather than shared. */
+        ___kickos_emutls_v_start = .;
+        *(SORT_BY_NAME(.data.__emutls_v.*))
+        ___kickos_emutls_v_end = .;
         *(.data .data.*)
         *(D D_1 D_2)           /* RX-native initialized data */
         . = ALIGN(4);
@@ -232,6 +241,15 @@ SECTIONS
     .data : ALIGN(4)
     {
         __sdata = .;
+        /* The emutls control blocks, gathered so arch/rx/rxv3/emutls.cc can index a
+           thread_local by its position here instead of caching a pointer in the block.
+           They must be CONTIGUOUS and on a 16-byte grid; the override rejects an anchor
+           that is neither. -fdata-sections is what gives each one its own section, so a
+           TU built without it lands in the catch-all below and is refused at runtime
+           rather than shared. */
+        ___kickos_emutls_v_start = .;
+        *(SORT_BY_NAME(.data.__emutls_v.*))
+        ___kickos_emutls_v_end = .;
         *(.data .data.*)
         *(D D_1 D_2)           /* RX-native initialized data */
         . = ALIGN(4);

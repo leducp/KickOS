@@ -5211,12 +5211,22 @@ below where they were previously mislabeled.
   exists today (newlib `--disable-threads`, threads share one flat image, only the kernel TCB is
   per-thread) -- so `errno` is a shared global, libc `malloc` is not thread-safe (`__malloc_lock`
   is a no-op stub; tracked as its own item in the M4.5.1 kernel-audit section above), and
-  `thread_local`/`__thread` silently break. "Fully usable" needs these, so real TLS is
-  the compliant mechanism (not a newlib `_REENT`-swap hack, which would still leave `thread_local`
-  broken): a per-thread TLS block in the thread's data grant + a per-arch thread pointer set on the
-  context switch (ARM `TPIDRURW`, RISC-V `tp`, Xtensa `THREADPTR`; RX has no TLS register -> sw-tp
-  spike), local-exec model (fully static / no dlopen -> offsets fixed at link). `errno` + newlib
-  reent + `thread_local` all ride on it (one mechanism). Prereq SMP (M6) needs anyway. First sibling
+  `thread_local`/`__thread` silently break. "Fully usable" needs these.
+
+  **CORRECTED BY M5.2.1 PR 8, WHICH MEASURED IT: THESE ARE TWO MECHANISMS AND NOT ONE.** This item
+  used to say real TLS fixes `errno` and that a `_REENT`-swap would leave `thread_local` broken.
+  Both halves are wrong. `_REENT_THREAD_LOCAL` is off on all three pinned toolchains, `errno` is
+  `(*__errno())`, `__errno` returns `_impure_ptr`, and 239 members of libc.a reference that pointer
+  without ever calling `__errno()`. So TLS does not touch `errno`, and swapping `_impure_ptr` per
+  thread fixes `errno` plus every other reentrant path at once. What is left of this item is the
+  `_impure_ptr` swap, at `sizeof(struct _reent)` per thread: 512 on ARM, 284 on RX, 288 on RISC-V,
+  so per-board opt-in.
+
+  `thread_local` itself is DONE (PR 8): a block carved off the low end of each thread's own stack,
+  with a per-arch thread pointer. Not `TPIDRURW`: M-profile has no such register, so the kernel
+  provides `__aeabi_read_tp` (defined in neither libc.a nor libgcc.a) deriving it from SP.
+  RISC-V `tp` and Xtensa `THREADPTR` are written by the kernel at resume; RX has neither and falls
+  back to emutls. Local-exec model (fully static / no dlopen -> offsets fixed at link). First sibling
   of this family LANDED (M4.3): the `_write` stdout re-probe -- deleted the process-global sticky
   `g_stdout_probe` (per-invocation classify against the calling thread's own cap 0; no per-thread
   storage needed for it).

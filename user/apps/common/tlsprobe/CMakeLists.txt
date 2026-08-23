@@ -29,3 +29,17 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE
   kickos_add_qemu_test(NAME qemu_riscv_tlsprobe TARGET tlsprobe BOARD qemu-riscv
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_tlsprobe.sh")
 endif()
+
+# THE RX BLOCK IS PROVED OFFLINE OR NOT AT ALL. rxv3 has no hardware here and no QEMU
+# machine, so exhaustion of the emutls block is a first-touch PANIC on silicon nobody can
+# run. Every input the bump allocator uses is a link-time constant, so the allocation is
+# replayed against the linked image instead. Registered here because this is the only RX
+# image in the tree that declares a thread_local; a consumer app that declares more is NOT
+# covered, and that is a real gap rather than an oversight.
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "rxv3")
+  add_test(
+    NAME    rx_tls_fit
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/rx_tls_fit.py"
+            "${CMAKE_NM}" "${CMAKE_OBJDUMP}" "$<TARGET_FILE:tlsprobe>")
+  set_tests_properties(rx_tls_fit PROPERTIES TIMEOUT 60 LABELS host)
+endif()

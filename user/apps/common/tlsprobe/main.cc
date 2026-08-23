@@ -39,6 +39,8 @@ namespace
         __asm__ volatile("mv %0, sp" : "=r"(sp));
 #elif defined(__XTENSA__)
         __asm__ volatile("mov %0, a1" : "=r"(sp));
+#elif defined(__RX__)
+        __asm__ volatile("mov.l r0, %0" : "=r"(sp));
 #endif
         return sp;
     }

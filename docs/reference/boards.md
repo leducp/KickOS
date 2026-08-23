@@ -39,7 +39,7 @@ code wins, then this file.
 | `qemu-m33` | mps2-an505 / M33 | -- | semihosting | `ctest --preset qemu-m33` | [x] CI, plain and under **PMSAv8** enforcement incl. full-C++ `cxxtest` + the `mpu_fault` MemManage trap |
 | `qemu-m7` | mps2-an500 / M7 | -- | semihosting | `ctest --preset qemu-m7` | [x] CI, plain and under PMSAv7 enforcement (16 MPU regions) |
 | `qemu-m3` | mps2-an385 / M3 | -- | semihosting | `ctest --preset qemu-m3` | [x] CI, plain and under PMSAv7 enforcement (soft-float; no FP switch path) |
-| `microbit` | nRF51822 / M0 | -- | semihosting | `ctest --preset microbit` | [x] CI (armv6m run gate; the fleet's only measured expected-skip list -- see *microbit* below) |
+| `microbit` | nRF51822 / M0, 32 KiB | -- | semihosting | `ctest --preset microbit` | [x] CI (armv6m run gate; the fleet's only measured expected-skip list -- see *microbit* below) |
 | `qemu-riscv` | QEMU virt / RV32IMAC | -- | semihosting | `ctest --preset qemu-riscv` | [x] CI (first RISC-V) |
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32-D0WD / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
@@ -535,9 +535,13 @@ the board".
   privileged here.** `picopi` is a Cortex-M0+ and does implement it; one arch backend spans both
   cores and nothing in the tree distinguishes them. See `design-unprivileged-root.md` section 2.
 - **microbit is the armv6m run gate, and the fleet's only board that is allowed to skip anything.**
-  16 KiB SRAM and a 2-slot pool mean part of the suite genuinely cannot run here, so
-  `microbit_selftest` and `microbit_selftest_p2` each set `EXPECT_SKIPS` to the test **names** that
-  part cannot host (the board is a two-image board, see below); every other
+  It is deliberately NOT a BBC micro:bit v1: that part is EOL and nothing here flashes one, so the
+  board takes the nRF51822's 32 KiB variant and QEMU is told the size with
+  `-global nrf51-soc.sram-size=32768` (its machine defaults to 16 KiB and ignores `-m`).
+  `arch/arm/chip/nrf51/nrf51.ld` carries the reason. At 16 KiB and a 2-slot pool this board
+  skipped TWENTY arms; it now skips ONE, `uart_service`, which is a deliberate pin and not an
+  arena outcome. `microbit_selftest` and `microbit_selftest_p2` each set `EXPECT_SKIPS` to the
+  test **names** that part cannot host (the board is a two-image board, see below); every other
   board keeps the script's default of "nothing may skip". The lists are a **measurement, not slack**
   -- each name and why it skips is at the call site
   (`../../user/apps/common/selftest/CMakeLists.txt`), so growing it should mean a board capability
