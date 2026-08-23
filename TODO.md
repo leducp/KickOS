@@ -417,18 +417,20 @@ scheduler and console core-path work, so neither rides M4.7.9. The capture behin
       that carries the weight now, and no host gate can discharge it. Wants an enforcing board with
       a fault arm under teardown pressure.
 
-- [ ] **`console_tx_write`'s overflow branch drains a full ring synchronously under `IrqLock`, so
-      any kernel print carries an unbounded term.** `kernel/init/console_tx.cc`: once the burst does
-      not fit, the branch disables the TX IRQ, calls `drain_sync()` and then pushes byte by byte,
-      all still under the lock, and the code says the stall is deliberately preferred over a
-      producer/ISR race or dropped output. At the fleet's console rates that is about 87us per byte
-      over a 512-byte ring. Measured through the M4.7.9 fault path, which prints before it exits:
-      under console pressure the preemptible THREAD FAULT dump grew from 105us to 290us
-      (xmc4800-relax) and from 132us to 876us (frdmk64f), dwarfing the `cap_teardown` sweep it
-      precedes. Never entered on silicon in these runs; the pressure was synthetic. The interest is
-      not the fault path specifically: every kernel print inherits this, and it is the single
-      largest masked window in the tree. Decide whether the drop-on-overflow the comment rejects is
-      actually worse than a multi-hundred-microsecond interrupt mask.
+- [ ] **The M4.7.9 fault-path console-pressure figures are stale and want a re-take.** Measured
+      when `console_tx_write`'s overflow branch still drained a full ring under `IrqLock`: the
+      preemptible THREAD FAULT dump grew from 105us to 290us (xmc4800-relax) and from 132us to
+      876us (frdmk64f) under synthetic console pressure. That branch no longer bit-bangs under the
+      lock -- `console_tx_write` queues in ring-sized chunks and waits UNMASKED between them, so the
+      masked window is one ring copy (at most 128 bytes on every CRLF board), independent of baud,
+      at a sub-1% duty cycle, with a bounded synchronous burst only when nothing drains at all.
+      `tests/unit/consoletx/` scores the old code at 4096 masked pushes and the new at 1. Re-take
+      the two figures under the same synthetic pressure. The drop-on-overflow the old comment
+      rejected is moot: nothing is dropped and nothing stalls.
+
+- [ ] **`console_tx_flush_sync` still drains a full ring under `IrqLock`** (up to about 44ms).
+      Unreachable from an unprivileged thread -- panic and deinit only -- so it is not the DoS the
+      producer path was, but it is now the largest masked window left in the tree.
 
 ## Left out of the M4.7.9 diagnostic catalogue, on purpose (2026-08-07)
 
@@ -938,8 +940,10 @@ triggers `push` only on `master`).
 
 ## M4.5.1 -- CI hygiene (2026-07-26)
 
-- [ ] **Reduce `--repeat until-pass:4` to 2 on the four QEMU gates** -- or better, fix the timing
-      root cause that made 4 look necessary. Four attempts hides a gate that fails most runs.
+- [x] **Reduce `--repeat until-pass:4` to 2 on the four QEMU gates** (M5.2.1): it is 2, and it is
+      scoped to the five gates that actually poll a wall-clock output window rather than to whole
+      suites. The RISC-V jobs carry no retry at all, their clock not being the coarse one the
+      retry was for.
 - [x] **Tighten the sim `mpu_fault` failure regex** (M4.5.8): the sim registration now runs
       `tests/integration/check_mpu_fault.sh`, the same script the QEMU boards use, which also pins the reported
       fault address to the one the app announces.
@@ -3388,8 +3392,32 @@ exists at all it is per-**domain** and writable by every member -- carving per-t
 of a region other tasks can write is unsound on sharing grounds before MPU geometry even enters.
 And the geometry is against it too: on the power-of-two backends (PMSAv7, RISC-V NAPOT) shaving
 kernel state off the top of a granted region forces the remainder down to the next lower power of
-two. A design whose isolation property is arch-dependent is the worst outcome. **Revisit at M7**,
+two. A design whose isolation property is arch-dependent is the worst outcome. **Revisit at M6**,
 when a page is the granule and the shape becomes available without the tax.
+
+**THE GATE CORPUS WANTS A LOOK AT M7, and M7 does its own homework on it.** No analysis is
+pre-chewed here on purpose. The one datum worth not re-deriving: M5.2.1 added roughly ten lines
+of gate per line of behaviour, and about a third of the largest gate is DECLARATION
+(`tests/static/trap_redzone_roots.txt`, `trap_redzone_indirect.txt`) rather than logic, with
+three of those declarations numerically inert today by their own mutation testing. Whether that
+is proportionate is the question; the growth is not uniform, one 185-line gate covering a whole
+escalation class while another 1563 lines cover one number per backend.
+
+**A PER-THREAD KERNEL STACK IS NO LONGER SCHEDULED HERE. RESEQUENCED to M5.2.1** (2026-08-20 to the then-M5.2.2, folded into M5.2.1 on 2026-08-21) after an external audit pass; the reasoning below is kept because the pow2-tax and arch-dependence arguments still hold, but they lost to the fact that every finding of that pass was red-zone arithmetic composition in a scheme M5.2.1 deletes. What follows is the ORIGINAL note, VERBATIM: its milestone numbers predate the 2026-08-21 swap, when M6 meant SMP and M7 meant the MMU. Both moved, so inside this note read "M6" as multicore (now M7) and "M7" as page tables (now M6).
+
+**(superseded) A per-thread kernel stack was scheduled here, decided 2026-08-20, and NOT at M6.** The
+syscall contract (`arch/include/kickos/arch/arch.h:512-518`) requires dispatch to run in privileged
+THREAD context on the calling thread's own continuation; it does NOT require the user's stack. The
+user's stack is simply the zero-memory way to get a per-thread continuation, and the cost is that
+the kernel's own frames live at addresses the user names, so isolation rests on an arithmetic bound
+rather than on the memory map. M5.2.1 found that bound wrong at the low edge on all three archs at
+once, which is the argument for eventually not needing it. A per-thread kernel stack satisfies the
+same contract, costs one extra stack times `KICKOS_MAX_THREADS` (16 by default, fatal on
+bluepill-c8's 20 KB, comfortable on the K64F), and pays the pow2 rounding above until a page is the
+granule. SMP does NOT force the question: with a big lock each core runs its own thread's kernel
+path on that thread's own stack, so nothing contends. What M6 DOES inherit is narrower, making the
+single `g_rv_trap_stack` per-core. The `-fstack-usage` margin gate M5.2.1 adds for the bound becomes
+the kernel-stack SIZING gate here, so that work transfers rather than being thrown away.
 
 **The items.** Renumbered from the spike, and item 3 below is CORRECTED against what `6be8220`
 actually did.
@@ -5189,7 +5217,7 @@ below where they were previously mislabeled.
   of this family LANDED (M4.3): the `_write` stdout re-probe -- deleted the process-global sticky
   `g_stdout_probe` (per-invocation classify against the calling thread's own cap 0; no per-thread
   storage needed for it).
-- **M6 -- multicore (AMP versus a shared kernel is OPEN; see the OPEN section of the spike).**
+- **M7 -- multicore (the AMP-versus-shared-kernel question closes PER CLASS; see the OPEN section of the spike).**
   This heading previously read "AMP first on RP2040, SMP-BKL endgame on RP2350" and attributed
   that verdict to the spike. The spike does not contain it and `roadmap.md` says the opposite
   ("not two AMP instances"), so the three records disagreed. Settle it before writing SMP code.
@@ -5656,7 +5684,7 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       `arch_mpu_apply` to mean "load a page table". A sentence of foresight prevents a wrong-shaped
       first MMU port.
 
-## M6 -- SMP
+## M7 -- multicore (SMP on the A53 port, AMP where cores are heterogeneous)
 
 - [ ] **Give the converted fields their real ORDER.** M4.9.2 turned every cross-thread field
       into a relaxed `std::atomic`, which is a type change and nothing more: relaxed says
@@ -5667,7 +5695,11 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       the ring publication barrier, then still a consumer `-D` rather than a release
       store on the ring's now-atomic index. `docs/design-m6-smp.md` carries the reasoning.
 
-## M7
+## Gate-surface re-inventory (anytime coherence, not scheduled)
+
+Parked by the user as "at M7" when M7 meant the seam rework; M7 is multicore now, and this is
+orthogonal to every milestone rather than gated by one. The user's framing, 2026-08-21: the gate
+surface grows exponentially and may not be worth its size.
 
 - [ ] **Re-inventory the test-gate surface.** M4.5.9 root-caused the binary-introspection gates'
       silent-failure paths without rewriting them; whatever is still oversized then is this pass.
@@ -6319,13 +6351,6 @@ which is the only reason they are filed rather than fixed:
 - [ ] **`task_cancel_group` and the endpoint drain publish twice under one `IrqLock` from a LIVE
       thread**, the same residue as the `sched::wake` supersede but with no dying guard involved, and
       more reachable. Not filed anywhere before.
-- [ ] **A sticky driver-death note can steal a RE-PUBLISHED console.** `cap_console_publish` does not
-      clear `g_console_driver_died`, and `console_on_driver_death` treats `USER_OWNED` as proof the
-      note is still valid: two-thread driver dies, supervisor respawns and publishes a NEW endpoint,
-      the old IRQ thread finally exits, and the retry reclaims the NEW driver's UART. Pre-existing;
-      the note-site reclaim narrows the window without closing it. The one-line fix is for
-      `cap_console_publish` to void the note, but it changes the publish protocol and its honest gate
-      needs the respawn `sim_driver_death` case 3 lacks.
 - [ ] **`teardown_depth` now has one production consumer and one fixture consumer**, so the
       `cap_teardown_active()` gate in `exit_current` is premise-less. Kept as conservative retry
       throttling; revisit when the DEV-window respawn gate lands.

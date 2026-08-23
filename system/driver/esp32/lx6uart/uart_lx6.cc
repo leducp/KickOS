@@ -29,7 +29,7 @@ namespace
 {
     namespace ru = kickos::esp32::reg::uart;
 
-    // TX-empty is armed on demand by kos_uart_write, never here.
+    // TX-empty is armed on demand by kos_uart_write.
     constexpr uint32_t RX_INT_MASK =
         ru::RXFIFO_FULL_INT | ru::RXFIFO_OVF_INT | ru::FRM_ERR_INT | ru::PARITY_ERR_INT;
 
@@ -50,8 +50,8 @@ namespace
         uint32_t const ena = r32(base + ru::OFF_INT_ENA);
         if (on)
         {
-            // Enable only: dropping the stale latch here would kill the re-raise when the
-            // burst stopped on a full FIFO.
+            // Enable only: the stale latch IS the re-raise for a burst that stopped on a
+            // full FIFO.
             r32(base + ru::OFF_INT_ENA) = ena | ru::TXFIFO_EMPTY_INT;
             return;
         }
@@ -104,14 +104,14 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     {
         return bad_cfg;
     }
-    // A rate request is refused by the handover, not by the silicon: CLKDIV is writable, but
-    // rewriting it re-times a byte still in flight and this backend cannot tell that byte has
-    // left, the FIFO count going to zero one frame early.
-    if (cfg->baud != 0u)
+    // CLKDIV is writable, but the FIFO count reaches zero one frame before the byte leaves
+    // the shifter, so a rewrite here re-times a byte still in flight.
+    int32_t const fixed_rate = kos_uart_cfg_check_fixed_rate(cfg);
+    if (fixed_rate != 0)
     {
-        return -KOS_ENOTSUP;
+        return fixed_rate;
     }
-    // CONF0 is not rewritten either, so the frame stays the 8N1 the ROM runs.
+    // The frame stays the 8N1 the ROM left in CONF0.
     if (cfg->data_bits != 8u or cfg->parity != KOS_UART_PARITY_NONE or cfg->stop_bits != 1u)
     {
         return -KOS_ENOTSUP;
@@ -139,7 +139,7 @@ uint32_t kos_uart_read(struct kos_uart* u, unsigned char* dst, uint32_t n)
 {
     // UART_FIFO_REG carries the data byte only, with no per-byte error tag: an error flag is
     // counted, and the erroneous byte itself stays in the stream. These three latches are
-    // ungated, so unlike the RX-full clear below they take immediately.
+    // ungated, so the clear takes immediately.
     uint32_t const st = r32(u->base + ru::OFF_INT_ST);
     uint32_t err_clr = 0;
     if ((st & ru::RXFIFO_OVF_INT) != 0u)
@@ -216,8 +216,8 @@ int32_t kos_uart_flush(struct kos_uart* u)
 
 int32_t kos_uart_close(struct kos_uart* u)
 {
-    // CONF0 is left alone: the ROM owns that framing, and rewriting it would truncate a frame
-    // still shifting.
+    // The ROM owns CONF0's framing, and a rewrite truncates a frame still shifting, so this
+    // drops the interrupt enables alone.
     r32(u->base + ru::OFF_INT_ENA) = 0;
     r32(u->base + ru::OFF_INT_CLR) = 0xFFFFFFFFu;
     return 0;

@@ -9,11 +9,11 @@
 // Register 10.64). CPU int 31 and CPU int 30 both deliver on silicon, which TRM section
 // 1.6.2 item 2 forbids with that enable at 0.
 //
-// A direct 0x2000_1000 readback is not reachable from any app on this port: it is a
-// Rule 7 reserved block, refused by grant_region_admissible for privileged and
-// unprivileged callers alike (kernel/grant/grant.cc), and root and every app thread run
-// unprivileged (kernel/init/kmain.cc). So the probe reads INTPRI and asks whether two
-// boot-time writes to 0x2000_1000 are visible there. Both are absolute, not deltas:
+// 0x2000_1000 is a Rule 7 reserved block, refused by grant_region_admissible for
+// privileged and unprivileged callers alike (kernel/grant/grant.cc), and root and every
+// app thread run unprivileged (kernel/init/kmain.cc). So the probe reads INTPRI and asks
+// whether two boot-time writes to 0x2000_1000 are visible there. Both are absolute, not
+// deltas:
 //
 //   A = INTPRI+0x00 bit 31, set at 0x2000_1000+0x00 by inject_doorbell_init
 //       (chip_esp32c6.cc) during arch_init.
@@ -23,10 +23,10 @@
 //       INTPRI FROM_CPU_0 -> CPU int 31, and watch the spurious counter move. Without L
 //       an all-zero INTPRI enable proves nothing.
 //
-// There is deliberately NO in-flight-write test: every 0x2000_1000 write an app can
-// provoke was already made at boot with the SAME value, so a re-issued kos_irq_unmask is
-// an idempotent re-OR whose delta is 0 whatever the answer. The call is still made as an
-// execution witness; a nonzero delta means boot state is not what is described here.
+// Every 0x2000_1000 write an app can provoke was already made at boot with the SAME
+// value, so the re-issued kos_irq_unmask is an idempotent re-OR whose delta is 0 whatever
+// the answer: it stands as an execution witness, and a nonzero delta means boot state is
+// not what is described here.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -35,8 +35,8 @@
 
 #include <stdint.h>
 
-// Without enforcement there is no Rule 7 and the grant predicates below are inline
-// `return true`, so the capture would describe a different machine.
+// Anti-vacuity: enforcement is what makes Rule 7 live and the grant predicates below
+// answer for real; built flat they are inline `return true` on a different machine.
 #if !KICKOS_HAVE_MPU
 #error "c6intpri requires enforcement: build the board's base variant, not its flat one"
 #endif
@@ -60,7 +60,7 @@ namespace
     constexpr int PROBE_LINE = 20;    // unbound: an inject on it lands on the spurious counter
 
     // The offsets where the two register maps disagree, plus the two they share. INTPRI
-    // has no read-to-clear register in this range, so snapshotting perturbs nothing.
+    // has no read-to-clear register in this range, so a snapshot perturbs nothing.
     struct regdef
     {
         uint32_t off;
@@ -194,7 +194,7 @@ namespace
 
         // Witness, NOT a discriminator: the console armed this line at boot, so every
         // register touched here is rewritten with the value it already holds and the
-        // console keeps draining (uart0_quiesce_once is latched, the binding stands).
+        // console keeps draining (uart0_quiesce_once is latched, so the binding stands).
         char a[120];
         ksnprintf(a, sizeof(a),
                   "[c6intpri] re-unmasking line %d (idempotent) -> 0x20001000+0x00 |= 0x%x\n",

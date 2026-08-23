@@ -6,12 +6,11 @@
 // thread touched someone else's memory" (kill the thread alone), and kickos_fault_stack_top
 // is where a backend puts the stub so it never runs on the exhausted stack.
 //
-// The two rx72m silicon captures this is written against pin the CONTRACT without pinning
-// the WIDTH: faultsurvive_ovf's MPDEA=0x121fc is its faulter's stack_base - 4 and must
-// escalate, and mpu_fault's 0x13200 is a cross-domain write far below domainA's stack base
-// and must die alone. So every arm here MEASURES the band off the predicate instead of
-// naming it: an arm carrying the literal would have to be rewritten the first time the width
-// is retuned against the bench, and would then be pinning the tuning rather than the rule.
+// Two rx72m silicon captures pin the CONTRACT without pinning the WIDTH:
+// faultsurvive_ovf's MPDEA=0x121fc is its faulter's stack_base - 4 and must escalate, and
+// mpu_fault's 0x13200 is a cross-domain write far below domainA's stack base and must die
+// alone. Every arm therefore MEASURES the band off the predicate instead of naming it, so
+// what the arms pin is the rule and not the bench's tuning.
 
 #include <kickos/arch/arch.h>
 #include <kickos/instance.h>
@@ -45,17 +44,11 @@ namespace kickos
                 return t;
             }
 
-            // MEASURED off the predicate, never read from the constant. The width is a ruling
-            // that the bench retunes, and an arm carrying the literal would have to be edited
-            // every time it moved, pinning the tuning instead of the rule. The constant is
-            // also file-local to fault.cc, and widening shipped code so a fixture can see it
-            // is the wrong direction (TODO.md records that ruling for cap_slab_init).
-            //
-            // Returns the largest d for which base - d still reads as an overflow. The ceiling
-            // is a guard against a predicate that says true forever, which is exactly the
-            // pre-narrowing behaviour this gate exists to refuse.
+            // fault.cc keeps the width file-local, so the fixture derives it. The ceiling
+            // refuses a predicate that answers true forever.
             constexpr uintptr_t BAND_PROBE_CEILING = 0x10000u;
 
+            // The largest d for which base - d still reads as an overflow.
             uintptr_t measured_band(uintptr_t base)
             {
                 uintptr_t last = 0;
@@ -86,9 +79,9 @@ namespace kickos
             TEST_F(FaultBand, the_denied_push_just_under_the_base_is_an_overflow)
             {
                 seat_current_with_stack(STACK_BASE, STACK_SIZE);
-                // 4 is the measured shape: faultsurvive_ovf's MPDEA is its faulter's
-                // stack_base - 4. A band that ever narrows below this stops attributing the
-                // one fault RXv3 cannot see any other way.
+                // 4 is the measured shape (faultsurvive_ovf's MPDEA is its faulter's
+                // stack_base - 4), and a band narrower than that stops attributing the one
+                // fault RXv3 gives no other evidence of.
                 EXPECT_TRUE(kickos_fault_below_stack(STACK_BASE - 4));
                 uintptr_t const w = measured_band(STACK_BASE);
                 EXPECT_GE(w, 4u);
@@ -98,9 +91,8 @@ namespace kickos
                 EXPECT_TRUE(kickos_fault_below_stack(STACK_BASE - w));
             }
 
-            // The mpu_fault shape. This is the arm the NARROWING exists for: before the band,
-            // every address below the base read as an overflow, so a cross-domain write
-            // escalated instead of killing its thread.
+            // The mpu_fault shape, and the arm the NARROWING is for: a cross-domain write
+            // below the band kills its thread instead of escalating.
             TEST_F(FaultBand, a_cross_domain_write_below_the_band_is_not_an_overflow)
             {
                 seat_current_with_stack(STACK_BASE, STACK_SIZE);
@@ -110,8 +102,8 @@ namespace kickos
             }
 
             // An address at or above the base is never an overflow, whatever the base is. This
-            // is the early return, and it is what makes the two wrap arms below the ONLY paths
-            // into the band arithmetic.
+            // early return is what makes the two wrap arms below the ONLY paths into the band
+            // arithmetic.
             TEST_F(FaultBand, a_high_address_is_not_an_overflow_of_a_low_stack)
             {
                 seat_current_with_stack(4u, STACK_SIZE);
@@ -188,7 +180,7 @@ namespace kickos
             }
 
             // Same rule, reached the other way: a thread whose stack is not known escalates
-            // too. idle() is the third such case and the backends never redirect it anyway.
+            // too.
             TEST_F(FaultBand, a_thread_with_no_stack_escalates_rather_than_dying_alone)
             {
                 Thread* const t = spawn(0, PRIO);

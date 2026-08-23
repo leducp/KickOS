@@ -154,6 +154,13 @@ namespace kickos
             {
                 kprintf(KDIAG_F_BANNER_NOHEAP);
             }
+#if KICKOS_KERNEL_STACKS
+            // Compiled out where the block does not exist: a board that allocates no kernel
+            // stacks would be reporting geometry it does not have.
+            kprintf(KDIAG_F_BANNER_KSTACK, static_cast<unsigned>(KICKOS_KERNEL_STACK_SIZE),
+                    static_cast<unsigned>(KICKOS_THREAD_SLOTS),
+                    static_cast<unsigned>(KICKOS_THREAD_SLOTS * KICKOS_KERNEL_STACK_SIZE));
+#endif
             kputs("\n");
         }
 
@@ -206,6 +213,17 @@ namespace kickos
         console_buffer_init(); // arm the buffered console TX drain (after irq_init)
         ktrace_init();       // measure probe overhead + emit the opening SESSION (no-op when off)
 
+        // Root runs userspace's ctors and then main, and every syscall it makes descends on
+        // this stack, so it is bound by the same floor a caller-provided stack is checked
+        // against. thread_create takes it with no check of its own, root being created here
+        // and not through the spawn syscall, so the relation is asserted rather than tested.
+        // Idle is exempt: it is privileged, its body is arch_idle_wait alone, and it never
+        // enters the syscall path, so what binds it is the preemption red zone and not this
+        // one (see KICKOS_IDLE_STACK_SIZE in Kconfig).
+        static_assert(KICKOS_ROOT_STACK_SIZE >= KICKOS_MIN_STACK_SIZE,
+                      "KICKOS_ROOT_STACK_SIZE is below the arch's syscall stack floor: root "
+                      "makes syscalls, so it would be refused by the trap prologue");
+
         // Idle (the smaller stack on every board) FIRST: against the bump allocator
         // the small block then sits inside the large block's natural-alignment run-up
         // instead of after it. Worth up to one root-stack's width of arena on every
@@ -214,6 +232,16 @@ namespace kickos
             boot_stack_alloc(KICKOS_IDLE_STACK_SIZE, diag::kBootIdleStack);
         void* const root_stack =
             boot_stack_alloc(KICKOS_ROOT_STACK_SIZE, diag::kBootRootStack);
+
+#if KICKOS_KERNEL_STACKS
+        // THE ONLY CALLER OF kstack_arm, and every slot is armed here before any of them is
+        // handed out. Nothing re-arms on slot reuse, so a slot's high-water and canary read
+        // since BOOT rather than per thread; thread.cc holds why that is the wanted reading.
+        for (int slot = 0; slot < KICKOS_THREAD_SLOTS; slot++)
+        {
+            kstack_arm(slot);
+        }
+#endif
 
         // Must precede the cap_slab_attach below: this rebuilds the free-chunk list from
         // scratch, so running it afterwards would hand root's run back to the free list.

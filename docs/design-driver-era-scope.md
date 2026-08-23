@@ -530,7 +530,7 @@ above where they differ.
   cyclic traffic as the victim. Direct-handoff donation on call is in the shipped contract.
 - **The transfer ABI is offset-based from day one (finding 10, the one M7 landmine).** A
   large-transfer request speaks `{region-cap, offset, len}` and never a raw pointer: cheap now, an
-  ABI break at M7 when a domain becomes a page-table root. This pulls the QW-3 DISCIPLINE, not the
+  ABI break at M6 when a domain becomes a page-table root. This pulls the QW-3 DISCIPLINE, not the
   ring implementation, into the call/reply contract.
 - **Timed / abortable IPC -> EARLY-M4: CLOSED.** The primitive ships: `KOS_SYS_SEND_TIMED`,
   `KOS_SYS_RECV_TIMED` and `KOS_SYS_CALL_TIMED` (`user/include/kickos/sys/abi.h`), dispatched in

@@ -13,8 +13,8 @@ set -u
 
 elf="${1:?usage: check_qemu_hello.sh <hello.elf>}"
 
-# The demo ping-pongs forever ("press Ctrl+C"), so it is polled rather than run to
-# completion. Round 3 of BOTH threads, so one thread looping alone is not enough.
+# The demo ping-pongs forever. Round 3 of BOTH threads, so one thread looping alone is not
+# enough.
 poll_image "$elf" "KickOS" "ping 3" "pong 3"
 
 if [ "$POLL_OK" -ne 1 ]; then

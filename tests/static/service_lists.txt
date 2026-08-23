@@ -14,16 +14,14 @@
 #           an ordinary target under its chip's branch of system/CMakeLists.txt and is in
 #           `all`), but reaching an IMAGE needs -DKICKOS_SERVICE_LIST=<provider>.
 #
-# The preset is not free choice: a provider's source lives under system/init/<board>/,
-# and the gate requires the declared preset to be a preset OF THAT BOARD. Only
-# system/init/common/ is universal, which is what lets kickos_services_none name any
-# preset. That provider is NOT special-cased away: it is the default on every board that
-# ships no service list, so it is the one provider most images actually link, and
-# exempting it would leave the common case the only undeclared one.
+# The preset is not free choice: a provider's source lives under system/init/<board>/, and
+# the gate requires the declared preset to be a preset OF THAT BOARD. Only
+# system/init/common/ is universal, which is what lets kickos_services_none name any preset.
+# That provider is declared like the rest: it is the default on every board that ships no
+# service list, so it is the one most images actually link.
 #
-# WHY THIS FILE EXISTS. Three defects this milestone found share one shape -- a
-# configuration axis whose values are never all exercised, so "not covered" and "covered
-# and passing" are indistinguishable. A provider nothing names is a provider whose
+# WHY THIS FILE EXISTS. An axis whose values are never all exercised makes "not covered"
+# and "covered and passing" indistinguishable, and a provider nothing names is one whose
 # compile failure surfaces on a bench pass months later.
 
 # --- the universal default ---------------------------------------------------

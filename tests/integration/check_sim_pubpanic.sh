@@ -12,13 +12,12 @@
 # Case 2 inverts on a backend with fault isolation: root's illegal instruction kills root
 # alone, so the claim becomes survival AND reporting together. See the case-2 block.
 #
-# Why this needs its own build: KICKOS_SERVICE_LIST selects one provider per image, so
-# the published posture cannot coexist with the default one in a single tree.
+# It needs its own build because KICKOS_SERVICE_LIST selects one provider per image, so the
+# published posture cannot coexist with the default one in a single tree.
 #
-# Why it exists: every other panic/fault gate in the fleet runs on an UNBUFFERED console
-# (mps2/microbit/virt semihosting); the sim is the only platform that is both buffered
-# and hardware-free. Case 2 covers the f302nucleo defect shape: a fault reporter that
-# produces no dump.
+# The sim is the fleet's one platform that is both BUFFERED and hardware-free, so a buffered
+# terminal report is witnessed here; every other panic gate runs semihosted and unbuffered.
+# Case 2 covers the f302nucleo defect shape: a fault reporter that produces no dump.
 #
 # The load-bearing anti-vacuity assertion is the NEGATIVE one: the app's kos_print
 # witness must be ABSENT. console_emit drops kernel-console writes while the console is
@@ -31,8 +30,8 @@ set -eu
 
 KICKOS_SRC="$1"
 CMAKE="${2:-cmake}"
-# The caller's, not this script's to sniff: what a user-thread fault DOES is a property
-# of the backend, and case 2's illegal instruction is executed by root.
+# What a user-thread fault DOES is a property of the backend, so the caller passes it in;
+# case 2's illegal instruction is executed by root.
 OUTCOME="${3:-panic}"
 
 FAULT_STATUS=132 # kfault_terminate -> arch_shutdown(132) on the host
@@ -57,8 +56,8 @@ echo "== building pubpanic1 + pubpanic2 =="
   || fail "pubpanic build failed"
 
 common_asserts() {
-    # Checked FIRST: a missing publish also strands the driver, and reporting that
-    # instead would name a symptom rather than the cause.
+    # First: a missing publish also strands the driver, so reporting that would name the
+    # symptom and not the cause.
     if has '\[pubpanic\] kernel-console witness'; then
         fail "$1: the kernel debug console is STILL live: no handover, this gate proved nothing"
     fi
@@ -122,9 +121,8 @@ fi
 # console away from a system that is meant to keep running. See
 # design-m4.7.9-fault-isolation.md section 9.5.
 #
-# Both halves are load-bearing. Without the survival assertion a permanent reclaim would
-# pass; without the record assertion the swallowed-record defect would pass, which is what
-# it did until M4.8.3.
+# Both halves are load-bearing: without the survival assertion a permanent reclaim passes,
+# and without the record assertion a swallowed record passes.
 LOG="$TMP/case2.log"
 "$APP" >"$LOG" 2>&1 &
 APID=$!
@@ -145,8 +143,8 @@ fi
 if has '=== SIM FAULT'; then
     fail "case 2: the fault reporter ran; the thread kill should have claimed this fault"
 fi
-# The record names the dead thread, so match the name too: a banner with the wrong thread in
-# it would mean the record was misattributed, not merely routed.
+# The record names the dead thread, so the name is matched too: a banner naming another
+# thread means the record was misattributed and not merely routed.
 COUNT="$(count_of "THREAD FAULT === thread 'root' killed")"
 [ "$COUNT" -ne 0 ] \
   || fail "case 2: the kill record never reached the wire; the published console swallowed it"

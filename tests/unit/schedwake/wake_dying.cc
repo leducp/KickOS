@@ -4,9 +4,8 @@
 // What sched::wake() does with a woken peer while the CURRENT thread is dying, and what
 // sched::exit_current() does with the waiters it wakes after its own teardown.
 //
-// The observable is the switch DECISION: karch_seam.cc records every arch_switch, so an arm
-// asserts which switch happened and WHEN relative to the others, and can seat a state no run
-// reaches.
+// The observable is the switch DECISION (kfixture.h note 3), and an arm can seat a state no
+// run reaches.
 //
 // The two phases of a dying thread are NOT the same and the arms keep them apart:
 //   sweep phase   current->dying, state RUNNING, still on the ready structure. A preempting
@@ -111,10 +110,10 @@ TEST_F(SchedWake, a_dying_thread_defers_an_equal_priority_peer)
     EXPECT_EQ(kernel().current, c) << "the dying thread keeps the CPU";
 }
 
-// The arm that separates the guard from its absence: the two above pass with no guard at all,
-// since pick_next declines an equal-priority peer while the dying thread is the HEAD of its
-// ready list. The list is FIFO and an RR slice expiry rotates it behind its equals, and there
-// the guard is what decides.
+// The arm that separates the guard from its absence: while the dying thread is the HEAD of
+// its ready list pick_next declines an equal-priority peer on its own, so the arm above passes
+// with no guard. The list is FIFO and an RR slice expiry rotates it behind its equals, and
+// there the guard is what decides.
 TEST_F(SchedWake, a_dying_thread_defers_an_equal_priority_peer_that_pick_next_would_take)
 {
     Thread* c = running_thread();
@@ -523,8 +522,7 @@ TEST_F(SchedWake, the_drain_epipes_every_parked_sender_not_just_the_first)
 TEST_F(SchedWake, the_exit_sweep_reclaims_the_console_once)
 {
     running_thread();
-    // Keeps k.live above zero: without it exit_current reaches kickos_terminate, which the
-    // fixture refuses by name.
+    // Keeps k.live above zero, so the exit does not take the last-thread-out path.
     seat_pool(0, PRIO_DYING + 1);
 
     run_exit(0);

@@ -5,13 +5,12 @@
 # Driver-class shadowing gate. The public class symbols of <kickos/driver/*.h>
 # (kos_uart_open... , kos_spi_bus_open...) are ordinary strong C symbols, and an image may
 # legitimately hold a MOCK definition of them: the selftest compiles spi_mock.cc straight
-# into its executable. There is no uart_mock.cc on target, the UART class being measured on
-# the host instead (tests/unit/uartclass).
+# into its executable.
 #
 # A static-archive member is extracted ONLY to satisfy a still-undefined symbol, so a mock
 # already on the link command line answers every reference first, the backend's member is
-# never extracted, and the link reports nothing. On esp32c6-wroom that meant a driver bound
-# to uart_mock.cc over the live UART register file: kernel banner, then silence.
+# never extracted, and the link reports nothing. The image then runs the mock over the live
+# register file: kernel banner, then silence.
 #
 # Usage:
 #   check_class_backend.sh <nm> <headerdirs> <map> <expect-app-definition> <source>...
@@ -114,8 +113,8 @@ require_nonempty "$TMP/class_syms" \
     "no class symbol was parsed out of the headers in $HEADERDIRS; this gate would be vacuous"
 ndeclared=$(wc -l < "$TMP/class_syms" | tr -d ' ')
 # The RX psABI prefixes every C identifier with an underscore, so the set carries BOTH
-# spellings. Without this the inventory comes back empty on such a target and legs 1 and 2
-# pass vacuously, which is how this gate once read green on rx72m.
+# spellings. Without them the inventory comes back empty on such a target and legs 1 and 2
+# pass vacuously.
 sed -e 's/^/_/' "$TMP/class_syms" > "$TMP/class_syms_u"
 cat "$TMP/class_syms_u" >> "$TMP/class_syms"
 sort -u "$TMP/class_syms" -o "$TMP/class_syms"

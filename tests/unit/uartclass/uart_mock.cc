@@ -24,6 +24,13 @@ namespace
     {
         return reinterpret_cast<struct kos_uart_mock*>(u->base);
     }
+
+    // The same model, reachable before open has bound anything: the refusals that must
+    // precede the bind key on it.
+    struct kos_uart_mock* model(struct kos_uart_config const* cfg)
+    {
+        return reinterpret_cast<struct kos_uart_mock*>(cfg->base);
+    }
 }
 
 extern "C"
@@ -36,15 +43,29 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     {
         return bad_cfg;
     }
-    // 8N1 only: any other frame is refused.
+    struct kos_uart_mock* m = model(cfg);
+    if (m->fixed_rate != 0u)
+    {
+        int32_t const fixed = kos_uart_cfg_check_fixed_rate(cfg);
+        if (fixed != 0)
+        {
+            return fixed;
+        }
+    }
     if (cfg->data_bits != 8u or cfg->parity != KOS_UART_PARITY_NONE or cfg->stop_bits != 1u)
     {
         return -KOS_ENOTSUP;
     }
+    // The drain a REPROGRAMMING backend performs before it touches the divisor or the frame.
+    // A fixed-rate one writes neither and so has no such wait. Ahead of the bind, so a
+    // refusal leaves the channel as it was found.
+    if (m->fixed_rate == 0u and m->tx_stuck != 0u)
+    {
+        return -KOS_EBUSY;
+    }
     u->base = cfg->base;
     u->stats = cfg->stats;
 
-    struct kos_uart_mock* m = model(u);
     if (m->rate <= 0)
     {
         return -KOS_ENOSYS; // no divisor to read back: the rate is unknowable, so refuse
@@ -94,6 +115,10 @@ int32_t kos_uart_flush(struct kos_uart* u)
 {
     struct kos_uart_mock* m = model(u);
     m->flushes++;
+    if (m->tx_stuck != 0u)
+    {
+        return -KOS_EBUSY; // the backend's own bound expired with bytes still in flight
+    }
     return 0;
 }
 

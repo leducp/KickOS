@@ -9,12 +9,10 @@
 #   * accounting reconciles: decoded records + dropped == attempted
 #     (attempted/dropped are printed by kickos_trace_report_counters at exit).
 #
-# Clean-tail invariant (why contiguous seq holds even under overflow): the sim
-# host drains the ring ONLY at shutdown, so once the ring fills, EVERY subsequent
-# record is dropped whole: drops form one contiguous tail, never an interior
-# gap. The file therefore holds seq 0..K with no internal holes; --assert-atomic
-# checks exactly that (whole records + no interior gap). A mid-stream gap here
-# would mean a torn/corrupt write, i.e. a real bug.
+# Clean-tail invariant, which is why contiguous seq holds even under overflow: the sim host
+# drains the ring ONLY at shutdown, so once the ring fills EVERY subsequent record is dropped
+# whole and the drops form one contiguous tail. The file holds seq 0..K with no internal
+# holes, which is what --assert-atomic checks, so a mid-stream gap is a torn write.
 
 import subprocess
 import sys

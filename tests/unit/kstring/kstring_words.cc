@@ -110,7 +110,6 @@ TEST(KStringMemcpy, EveryAlignmentPairAndSize)
                     ASSERT_EQ(dst.at(doff)[i], static_cast<unsigned char>(i ^ 0xa5u))
                         << "d=" << doff << " s=" << soff << " n=" << n << " at " << i;
                 }
-                // One byte either side of the destination range must be untouched.
                 ASSERT_EQ(dst.at(doff)[-1], fill_byte(GUARD + doff - 1u));
                 ASSERT_EQ(dst.at(doff)[n], fill_byte(GUARD + doff + n));
                 dst.expect_guards_intact();

@@ -447,15 +447,15 @@ uint64_t syscall_body(uintptr_t nr,
                 {
                     return static_cast<uint64_t>(-KOS_EOVERFLOW); // endpoint refcount ceiling
                 }
-                if (console_owner_is_kernel() != 0)
-                {
-                    console_tx_deinit(); // idempotent; skipped on re-publish
-                }
-                console_owner_set_user();    // must be LAST
+                // Refuses every NEW kernel chip writer and gives up the ring, WITHOUT
+                // handing the device over: a writer already counted below may be mid-message
+                // with no buffered path left, and it finishes synchronously here.
+                console_handover_begin();
             }
-            // Drains, with the lock RELEASED, any chip writer that raced past the pre-flip
-            // state read. Root spawns the driver only after this returns, so the preempted
-            // writer is off the device before the driver touches it.
+            // Drains, with the lock RELEASED, every chip writer counted before the refusal
+            // above. Root spawns the driver only after this returns, so those writers are off
+            // the device before the driver touches it. Converges because HANDING_OFF admits
+            // no new ones.
             //
             // A bare busy-spin here LIVELOCKS under strict priority: a writer preempted mid
             // arch_console_write_sync (a polled loop run WITHOUT IrqLock) can only finish
@@ -475,6 +475,7 @@ uint64_t syscall_body(uintptr_t nr,
                 }
             }
             sched::set_prio(pub, saved_prio);
+            console_owner_set_user(); // must be LAST, and strictly after the drain
             return 0;
         }
         case KOS_SYS_CPU_CLOCK_SET:
@@ -564,9 +565,8 @@ uint64_t syscall_body(uintptr_t nr,
             // Root's exit ends the SYSTEM, through the same terminal path a returning main
             // takes. Root's slot must not reach EXITED on THIS path: the pool, the domain table
             // and the boot arena are all sized for root holding it for the whole run, and the
-            // reclaim sweep would strip the spawner_tag off every child root ever spawned. The
-            // fault-kill path (kernel/init/fault.cc) does retire root, deliberately, and
-            // tests/integration/check_rootfault.sh is what holds that arm.
+            // reclaim sweep would strip the spawner_tag off every child root ever spawned.
+            // The fault-kill path (kernel/init/fault.cc) retires root instead.
             if (kernel().threads.is_root(c))
             {
                 if (not cap_check_authority(c, AUTH_SYSTEM))
@@ -600,19 +600,16 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
             }
-            // Flush synchronously or the buffered console loses its tail.
             console_tx_flush_sync(); // empties the ring only
-            // A byte still in the UART FIFO / shift register outruns the reset (the
-            // RP2350 bootrom reboots after ~10 ms), truncating the tail.
-            arch_console_flush_sync();
+            arch_console_flush_sync(); // FIFO and shift register: a byte here outruns the reset
             return static_cast<uint64_t>(arch_reboot());
         }
         case KOS_SYS_IRQ_INJECT:
         {
             // Test scaffolding, compiled out of the production ABI. Never
             // KICKOS_UNREACHABLE a user-supplied number: that would let a user halt the
-            // kernel. NOT privilege-gated, unlike irq_unmask/irq_attach: this simulates a
-            // DEVICE firing, and selftest injects it from an unprivileged thread.
+            // kernel. Ungated: this simulates a DEVICE firing, and selftest injects it from
+            // an unprivileged thread.
             int irq = static_cast<int>(a0);
             if (irq < 0 or irq >= KICKOS_MAX_IRQ)
             {
@@ -633,6 +630,16 @@ uint64_t syscall_body(uintptr_t nr,
         {
             return static_cast<uint64_t>(irq_spurious_count());
         }
+#if defined(KICKOS_ENABLE_SELFTEST) && defined(__riscv)
+        case KOS_SYS_NEST_WITNESS:
+        {
+            // Test scaffolding, and a plain counter read: a print HERE would put the
+            // console writer inside the syscall red zone, so the caller prints. Not
+            // privilege-gated, and not range-checked beyond what the accessor does: an
+            // unknown selector answers KOS_NEST_UNSET.
+            return static_cast<uint64_t>(kickos_nestwitness_count(static_cast<int>(a0)));
+        }
+#endif
 #if KICKOS_HAVE_MPU
         case KOS_SYS_GRANT_PROBE:
         {

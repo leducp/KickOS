@@ -24,7 +24,8 @@ namespace kickos
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
-// -DKICKOS_PANIC_DUMP=0 keeps only the one-line fault marker.
+// 0 keeps only the one-line fault marker; set it in the board defconfig or with
+// cmake -DKICKOS_PANIC_DUMP=0.
 #ifndef KICKOS_PANIC_DUMP
 #define KICKOS_PANIC_DUMP 1
 #endif
@@ -63,8 +64,8 @@ namespace
     constexpr int CCOMPARE0_INT = 6;
 
     // ESP32 internal interrupt 7 is the level-1 SOFTWARE interrupt: the only L1 line INTSET
-    // can latch. It has no peripheral source, so the dispatcher must wsr.intclear it or one
-    // inject redelivers forever.
+    // can latch. The flag is software-set only, so the dispatcher must wsr.intclear it or
+    // one inject redelivers forever.
     constexpr int SW_INT_L1 = 7;
 
     // XCHAL_INTLEVEL1_MASK for the LX6 config: only these lines reach the level-1 entry;
@@ -100,8 +101,8 @@ namespace
         return v;
     }
 
-    // PHYSICAL enable/disable (INTENABLE). NOT the public arch_irq_* seam, which is the
-    // software controller over LOGICAL device lines.
+    // PHYSICAL enable/disable (INTENABLE). The public arch_irq_* seam is the software
+    // controller over LOGICAL device lines.
     inline void phys_int_enable(uint32_t bit)
     {
         arch_irq_state_t s = arch_irq_save();
@@ -151,8 +152,8 @@ extern "C"
 
     // Chip device dispatch: ISR context, once per asserted device CPU interrupt. The chip
     // reads its own peripheral status, calls kickos_isr_irq() once per asserted sub-source
-    // (0..N logical lines), and owns the per-source clear discipline. No _default.cc
-    // fallback: a chip that binds a device route without defining this fails to LINK.
+    // (0..N logical lines), and owns the per-source clear discipline. A chip that binds a
+    // device route defines this or fails to LINK.
     void kickos_lx6_dispatch_dev(int cpu_int);
 
     // Shared with switch.S/arch_start/startup.S, written by C and by asm: the ctx of the
@@ -166,9 +167,9 @@ extern "C"
     static_assert(alignof(decltype(g_arch_current)) == alignof(struct arch_context*), "asm reads it naturally aligned");
 
     // Set by arch_switch when it defers a switch from ISR context; consumed and cleared by
-    // the level-1 interrupt exit (startup.S _kickos_int_level1). NOT derivable from
-    // g_arch_current != g_arch_next: the cooperative path advances g_arch_current without
-    // touching g_arch_next, so a stale g_arch_next is not a pending preemption.
+    // the level-1 interrupt exit (startup.S _kickos_int_level1). A flag of its own, because
+    // the cooperative path advances g_arch_current without touching g_arch_next, so
+    // g_arch_current != g_arch_next does not mean a preemption is pending.
     kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_arch_switch_pending = 0;
 
     // In-ISR depth (the IPSR!=0 analog), maintained by the level-1 interrupt entry
@@ -238,10 +239,10 @@ extern "C"
 
 // --- Context init: fabricate a first-resume interrupt frame -------------------
 // A fresh thread starts via the SAME rfe restore path as a preempted one
-// (_kickos_lx6_irq_restore, startup.S), never a fabricated `retw` underflow: a retw start
-// leaves the trampoline a phantom windowed frame with no valid base-save-area caller
-// linkage, and a non-blocking entry->run->exit wraps WindowBase around the whole 64-AR
-// file, overflowing that frame through the invalid linkage into data RAM.
+// (_kickos_lx6_irq_restore, startup.S). A fabricated `retw` underflow start would leave the
+// trampoline a phantom windowed frame whose base-save-area caller linkage is invalid, and a
+// non-blocking entry->run->exit wraps WindowBase around the whole 64-AR file, overflowing
+// that frame through the invalid linkage into data RAM.
 //
 // `entry` rotates the window by PS.CALLINC and, for a call4 frame, maps the caller's a6/a7
 // to the callee's a2/a3 (Xtensa ISA, Windowed Register Option).
@@ -250,7 +251,7 @@ void arch_context_init(struct arch_context* ctx,
                        void* stack_base, size_t stack_size,
                        int privileged)
 {
-    (void)privileged; // no privilege split on this core
+    (void)privileged; // LX6 runs every thread at one privilege level
 
     uintptr_t top = reinterpret_cast<uintptr_t>(stack_base) + stack_size;
     top &= ~static_cast<uintptr_t>(15);        // 16-byte stack alignment (ABI)
@@ -356,9 +357,9 @@ void kickos_lx6_dispatch_l1(void)
         }
     }
 
-    // Real device lines (chip-bound): no doorbell and no g_irq_masked gating. The mask is
-    // the CPU interrupt's INTENABLE bit, the clear is the driver's own peripheral register,
-    // and a CPU interrupt several routes share is demuxed ONCE.
+    // Real device lines (chip-bound). The mask is the CPU interrupt's INTENABLE bit, the
+    // clear is the driver's own peripheral register, and a CPU interrupt several routes
+    // share is demuxed ONCE.
     uint32_t served = 0;
     for (unsigned i = 0; i < LX6_DEV_ROUTES; i++)
     {
@@ -446,7 +447,7 @@ uint64_t kickos_lx6_ccount_ns(void)
 
 // --- Trace clock (telemetry timestamp seam) ---------------------------------
 // Raw 32-bit CCOUNT; the host reconstructs absolute time from the SESSION clock_hz
-// anchors. No wrap-extend and no crit section, so it is callable from the switch path.
+// anchors. Read raw, so it is callable from the switch path.
 uint32_t arch_trace_now(void)
 {
     return rd_ccount();
@@ -521,7 +522,7 @@ void arch_timer_disarm(void)
     phys_int_disable(1u << CCOMPARE0_INT);
 }
 
-// --- MPU: no hardware per-task protection on the classic ESP32 ---------------
+// --- MPU: LX6 answers every seam so the shared kernel paths run unchanged -----
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
                     struct arch_mpu_encoded const* image)
 {
@@ -530,17 +531,17 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
     (void)image;
 }
 
-// LX6 has neither an MPU nor a ring split; the self-grant path still calls this.
+// The self-grant path calls this on every arch.
 void kickos_arch_mpu_commit(void) {}
 
-// 0 keeps arch_ram_alloc byte-granular: there is nothing to enforce a region against.
+// 0 keeps arch_ram_alloc byte-granular.
 size_t arch_mpu_min_region(void)
 {
     return 0u;
 }
 
-// No descriptor to satisfy, so any nonzero 16-byte-aligned window is "encodable"; nothing
-// is actually enforced.
+// Any nonzero 16-byte-aligned window is encodable, and the answer is advisory: it feeds
+// the admission arithmetic, never a register.
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size == 0)
@@ -557,8 +558,8 @@ int arch_mpu_region_pow2(void)
     return 1;
 }
 
-// Internal SRAM, where the arena lives, is not cached on the classic ESP32: the cache
-// covers external flash and PSRAM only.
+// The classic ESP32 cache covers external flash and PSRAM only, and the arena lives in
+// internal SRAM.
 int arch_mpu_nocache_support(void)
 {
     return ARCH_MPU_NOCACHE_ALREADY;
@@ -568,9 +569,9 @@ int arch_mpu_nocache_support(void)
 
 // --- The kernel-owned mask for a REAL device line (RULE L1) -------------------
 // Clears / sets the INTENABLE bit of the CPU interrupt the matrix drives the device to.
-// INTENABLE is core state reached only by rsr/wsr, so it can never be delegated to a
-// driver; the driver's own UART_INT_ENA is off limits to the kernel.
-// A line with no device route is an injected software line: no-op.
+// INTENABLE is core state reached only by rsr/wsr, so the kernel owns it outright and the
+// driver's own UART_INT_ENA stays the driver's.
+// An injected software line has no device route, and returns leaving INTENABLE alone.
 // The INTENABLE read-modify-write is atomic only because phys_int_* raises PS.INTLEVEL
 // around it and closes with rsync; a bare wsr.intenable would be neither.
 void kickos_lx6_hw_mask(int line)
@@ -705,16 +706,15 @@ void arch_idle_wait(void)
     __asm volatile("waiti 0"); // wait for interrupt at level 0
 }
 
-// --- Syscall: a plain call, since there is no CPU ring split and so no trap ---
+// --- Syscall: a plain call on a core with one privilege level -----------------
 // A blocking syscall blocks by an ordinary synchronous arch_switch.
 //
-// So this backend ships no ipc_fastpath.cmake, and that is a property of the silicon
-// rather than a port left undone. The trap-handler IPC fastpath exists to skip an
-// exception entry, a privileged-thread trampoline and a deferred switch back; none of the
-// three happens below, where the dispatch is a call the caller makes itself. There is also
-// no saved register frame for the reply to land in and no return address to redirect, so
-// Thread::call_frame_parked cannot be given a meaning here. A fastpath on this arch would
-// be the generic path wearing another name.
+// The trap-handler IPC fastpath earns its keep by skipping an exception entry, a
+// privileged-thread trampoline and a deferred switch back. Below, the dispatch is a call
+// the caller makes itself, which already skips all three, so a fastpath here would be the
+// generic path wearing another name: the silicon settles it, and this backend ships no
+// ipc_fastpath.cmake. Thread::call_frame_parked needs a saved register frame to seat a
+// reply in, and this path answers in the caller's own registers.
 uint64_t arch_syscall64(uintptr_t nr,
                         uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
 {

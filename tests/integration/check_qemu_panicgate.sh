@@ -3,8 +3,8 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # QEMU kos_panic wire gate: boot a `panicgate` image and assert the expected panic line
-# reached the wire. The positive peer of check_app_arms.sh's absence assertion,
-# which passes trivially when the panic path is never taken.
+# reached the wire. This is the positive assertion, where check_app_arms.sh's absence one
+# passes trivially when the panic path is never taken.
 #
 # $2 is the literal line expected after the kernel's trusted banner; $3, when non-empty,
 # is a literal that must NOT appear (the tail a truncation drops). A FAULT banner is a

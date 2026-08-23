@@ -21,9 +21,8 @@ kickos_add_diagnostic_app(faultsurvive_ovf
   BOARD   ${KICKOS_BOARD})
 target_compile_definitions(faultsurvive_ovf PRIVATE KICKOS_FS_MODE=1)
 
-# Mode 2 moves SP itself, which needs the ISA's spelling for it and has no host form:
-# the sim's seam rewrites a ucontext rather than a guest frame, so there is no frame it
-# could invalidate. main.cc #errors rather than degrading if this guard is ever loosened.
+# Mode 2 moves SP itself, which needs the ISA's spelling for it (see the sim note below).
+# main.cc #errors rather than degrading if this guard is loosened.
 if(NOT KICKOS_ARCH STREQUAL "sim")
   kickos_add_diagnostic_app(faultsurvive_off
     SOURCES main.cc
@@ -31,11 +30,48 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
   target_compile_definitions(faultsurvive_off PRIVATE KICKOS_FS_MODE=2)
 endif()
 
+# The trap-stack security regression: an unprivileged thread aims its SP at a kernel word
+# and traps. Only the two backends with a SOFTWARE trap prologue (rv32imac, rxv3) can be
+# fooled into writing through a U-mode SP; the hardware-stacking ARM cores and the sim have
+# no such prologue, and main.cc #errors if an image is built there.
+if(KICKOS_ARCH STREQUAL "rv32imac" OR KICKOS_ARCH STREQUAL "rxv3")
+  kickos_add_diagnostic_app(faultsurvive_kwrite
+    SOURCES main.cc
+    BOARD   ${KICKOS_BOARD})
+  target_compile_definitions(faultsurvive_kwrite PRIVATE KICKOS_FS_MODE=3)
+
+  # Mode 5 drops SP two bytes: in bounds, deep inside the stack, and misaligned, so only the
+  # prologue's alignment leg can refuse it. Same two backends as mode 3, same per-ISA SP
+  # spelling.
+  kickos_add_diagnostic_app(faultsurvive_misalign
+    SOURCES main.cc
+    BOARD   ${KICKOS_BOARD})
+  target_compile_definitions(faultsurvive_misalign PRIVATE KICKOS_FS_MODE=5)
+endif()
+
+# Mode 4 parks SP inside the stack with too little room beneath it for the frame PLUS the
+# kernel descent. It PINS rv32imac's frame and red-zone figures from rv_trap_stack.h, so it
+# is that backend's alone: rxv3 stacks its fault frame on the ISP and defines no such
+# geometry, and main.cc #errors if an image is built there.
+if(KICKOS_ARCH STREQUAL "rv32imac")
+  kickos_add_diagnostic_app(faultsurvive_lowedge
+    SOURCES main.cc
+    BOARD   ${KICKOS_BOARD})
+  target_compile_definitions(faultsurvive_lowedge PRIVATE KICKOS_FS_MODE=4)
+endif()
+
+# arch-private include path, on these two targets only.
+if(KICKOS_ARCH STREQUAL "rv32imac")
+  foreach(_fs_tgt faultsurvive_kwrite faultsurvive_lowedge)
+    target_include_directories(${_fs_tgt} PRIVATE
+      "${PROJECT_SOURCE_DIR}/arch/riscv/rv32imac/include")
+  endforeach()
+endif()
+
 if(NOT KICKOS_BUILD_TESTS)
   return()
 endif()
 
-# Which runner this board takes.
 set(_fs_boards ${KICKOS_QEMU_MPS2_BOARDS})
 list(APPEND _fs_boards qemu-riscv sim)
 if(NOT KICKOS_BOARD IN_LIST _fs_boards)
@@ -89,3 +125,21 @@ kickos_add_qemu_test(NAME ${_fs_tag}_faultoverflow TARGET faultsurvive_ovf
 kickos_add_qemu_test(NAME ${_fs_tag}_faultoffstack TARGET faultsurvive_off
   BOARD ${KICKOS_BOARD}
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS offstack ${KICKOS_ARCH})
+
+# The kernel-write regression. Only qemu-riscv reaches here; rx72m builds the image above
+# and is witnessed on silicon through FS_CAPTURE.
+if(KICKOS_ARCH STREQUAL "rv32imac")
+  kickos_add_qemu_test(NAME ${_fs_tag}_faultkwrite TARGET faultsurvive_kwrite
+    BOARD ${KICKOS_BOARD}
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS kwrite ${KICKOS_ARCH})
+  kickos_add_qemu_test(NAME ${_fs_tag}_faultmisalign TARGET faultsurvive_misalign
+    BOARD ${KICKOS_BOARD}
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS misalign ${KICKOS_ARCH})
+endif()
+
+# The kernel-descent arm, wherever its image was built.
+if(KICKOS_ARCH STREQUAL "rv32imac")
+  kickos_add_qemu_test(NAME ${_fs_tag}_faultlowedge TARGET faultsurvive_lowedge
+    BOARD ${KICKOS_BOARD}
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS lowedge ${KICKOS_ARCH})
+endif()

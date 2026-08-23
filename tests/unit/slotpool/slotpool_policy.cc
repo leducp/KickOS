@@ -14,9 +14,8 @@
 // and a handle whose aged generation sets bit 31. A sign test on a handle would silently
 // reject the second as an error.
 //
-// Host-only: the policy is a property of the header, not of any board, and the object index
-// is not observable from userspace on a target (a thread sees cap handles, never slot indices),
-// so no on-target selftest arm can witness this.
+// Host-only: the policy is a property of the header, not of any board, and the slot index
+// alloc() returns is the observable it turns on.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -91,14 +90,13 @@ namespace
         EXPECT_EQ(cycles / busiest, N) << "wrap distance improves by the full factor N";
     }
 
-    // Completeness: a free slot must be found wherever the cursor rests, which is the leg
-    // that fails if the scan runs cursor..N-1 without wrapping.
+    // Completeness: a free slot must be found wherever the cursor rests, which is what a
+    // scan running cursor..N-1 without wrapping fails.
     //
     // The lone free slot walks BACKWARD on purpose. Each reclaim parks the cursor just past
-    // the slot it returned, so a forward walk keeps the cursor sitting exactly on the next
-    // target and never needs the wrap at all. A forward version of this case passes under
-    // a non-wrapping scan and proves nothing. Walking backward puts the target below the
-    // cursor every time, so only a scan that wraps can reach it.
+    // the slot it returned, so a forward walk keeps the cursor sitting on the next target and
+    // never needs the wrap at all: it passes under a non-wrapping scan. Walking backward puts
+    // the target below the cursor every time, so only a scan that wraps reaches it.
     template <int N>
     void lone_free_slot_found_from_any_cursor(char const* label)
     {
@@ -171,7 +169,7 @@ TEST(SlotPool, spread_pure_churn_default_sem_pool)
 }
 
 // The same measurement with part of the pool permanently occupied: the factor is the
-// number of FREE slots, not N. This is the honest, non-best-case leg.
+// number of FREE slots, not N.
 TEST(SlotPool, spread_with_resident_set)
 {
     int const cycles = 500;
@@ -223,7 +221,7 @@ TEST(SlotPool, exhaustion_is_exact)
     }
 }
 
-// resolve()/free() semantics must be untouched by the policy change.
+// resolve()/free() semantics, which the allocation policy does not bear on.
 TEST(SlotPool, resolve_semantics)
 {
     kickos::SlotPool<Obj, 4> pool;

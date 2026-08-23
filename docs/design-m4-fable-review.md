@@ -205,7 +205,7 @@ caps when a real MHz-rate GPIO consumer appears (a bit-banged bus). Fix the 3.1 
 `KOS_EP_MSG_MAX` bounds the inline payload; scope 3.2 says larger SPI transfers "want a granted shared
 buffer" and notes this is "the same physical-addressing discipline QW-3 flags" -- but scope 4.1 parks
 QW-3 with SMP. If M4's driver ABI passes raw pointers into a shared region (natural today where
-virtual==physical), every driver contract breaks at M7 when a domain becomes a page-table root: the
+virtual==physical), every driver contract breaks at M6 when a domain becomes a page-table root: the
 client's pointer means nothing in the driver's address space.
 **Recommendation:** pull the QW-3 DISCIPLINE (not the ring implementation) into the M4 call/reply gate:
 the wire format of a transfer request is {region-cap, offset, len}, never a raw address, from day one.

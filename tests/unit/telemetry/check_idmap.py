@@ -5,10 +5,10 @@
 # CI gate 3: trace-metadata de-drift, three-way. user/include/kickos/sys/abi.h is the
 # AUTHORITY for the syscall set: every KOS_SYS_* enumerator it defines must appear, at
 # the same number, in BOTH the gen_idmap C++ list and tools/kicktrace.py's SYSCALL_NAME
-# (and neither side may carry a number abi.h no longer defines). Comparing only the two
-# mirrors against each other was vacuous: both stopped at 35 while abi.h reached 37, and
-# the gate stayed green. kicktrace's label must also be the enumerator suffix lowercased,
-# which is what makes the strings checkable at all.
+# (and neither side may carry a number abi.h no longer defines). The authority is what
+# makes the check non-vacuous: two mirrors compared against each other agree while both
+# lag abi.h. kicktrace's label must also be the enumerator suffix lowercased, which is
+# what makes the strings checkable at all.
 #
 # ARCH_NAME stays a two-way check: its authority is kickos::trace::ArchId (a C++ enum in
 # include/kickos/trace/record.h), reachable only through gen_idmap.

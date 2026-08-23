@@ -2,23 +2,19 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The redirect hook in switch_to (docs/design-kill-and-slay.md sections 3.2 and 3.5). Four
-// claims, and the second is the one no other gate in the tree can make:
+// claims:
 //   * a CANCEL_SLAY thread's context is rebuilt into kickos_thread_slay_exit at the top of
-//     its own stack, and a CANCEL_KILL one's is not, so the two verbs must stay distinct at
-//     the point they diverge, or a kill silently loses its cleanup window.
+//     its own stack, and a CANCEL_KILL one's is not, the two verbs staying distinct at the
+//     point they diverge or a kill silently loses its cleanup window.
 //   * the rebuild names the INCOMING thread and happens BEFORE arch_switch. Every backend
 //     that pends saves the outgoing thread's live registers over prev->ctx and restores
-//     next->ctx, so a rebuild of prev there is overwritten and lost with no symptom. The sim
-//     swaps inline and would survive that mutant, which is why the ordered trace is the
-//     oracle here rather than a counter.
+//     next->ctx, so a rebuild of prev there is overwritten with no symptom.
 //   * `dying` declines it, so a victim preempted mid-cap_teardown is not restarted from the
 //     top of a sweep over a table that is already partly empty.
 //   * the rebuild is idempotent: applied again before the stub runs, it changes nothing.
 //
-// WHAT THIS SEAM CANNOT SEE, stated so an arm is not written against it: the fixture never
-// resumes a context, so arch_ctx_redirect here RECORDS instead of rebuilding. That the
-// rebuilt frame actually lands on the stub, privileged, is qemu's and qemu-riscv's to
-// witness, and per-backend beyond that.
+// What this gate reads is WHICH context was named and WHEN. That the rebuilt frame lands on
+// the stub, privileged, is qemu's and qemu-riscv's to witness, per backend.
 
 #include <kickos/arch/arch.h>
 #include <kickos/instance.h>
@@ -106,8 +102,8 @@ namespace kickos
                    "overwritten by the switcher's own save and restore";
         }
 
-        // The converse of the arm above, and the mutant it kills is "the hook fires on prev":
-        // the OUTGOING thread is the slain one here, and nothing may be rebuilt.
+        // The converse: the OUTGOING thread is the slain one here, and nothing may be
+        // rebuilt.
         TEST_F(SlayHook, a_slain_outgoing_thread_is_not_rebuilt)
         {
             Thread* const r = running_thread();
@@ -191,7 +187,7 @@ namespace kickos
 
         // The other half of the guard: it must be `dying` that declines, not the FIRST
         // rebuild having happened. Before the stub makes progress the rebuild is idempotent
-        // in its values, so repeating it is correct and must not be suppressed.
+        // in its values, so repeating it is correct.
         TEST_F(SlayHook, a_rebuild_repeats_while_the_stub_has_not_started)
         {
             Thread* const r = running_thread();

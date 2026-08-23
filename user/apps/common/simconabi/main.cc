@@ -113,7 +113,7 @@ namespace
                   == -KOS_EINVAL);
     }
 
-    // No RX arm at all: a 0-byte reply would read as "nothing yet".
+    // The refusal has to be explicit: a 0-byte reply would read as "nothing yet".
     void t_read_refused()
     {
         TAP_CHECK(uart_call(KOS_UART_READ, 0, 4, nullptr, nullptr, 0, nullptr)

@@ -2,15 +2,14 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# QEMU regression gate (M4.3): a root pre-publish printf must not poison a
-# post-publish worker's stdout route. Boot initdemo on QEMU via semihosting. The
-# console is DARK after publish, so the verdict rides the EXIT STATUS: initdemo
-# returns 0 iff the software console driver received exactly the worker's payload
-# byte count, else 1. arch_shutdown forwards that via semihosting SYS_EXIT_EXTENDED,
-# so QEMU's process exit code IS the verdict.
+# QEMU regression gate: a root pre-publish printf must not poison a post-publish worker's
+# stdout route. Boot initdemo on QEMU via semihosting. The console is DARK after publish, so
+# the verdict rides the EXIT STATUS: initdemo returns 0 iff the software console driver
+# received exactly the worker's payload byte count, else 1. arch_shutdown forwards that via
+# semihosting SYS_EXIT_EXTENDED, so QEMU's process exit code IS the verdict.
 #
-# PRE-fix (sticky process-wide probe): worker bytes bypass the endpoint -> count 0
-# -> exit 1 -> FAIL. POST-fix (per-invocation re-probe): exit 0 -> PASS.
+# A sticky process-wide probe sends the worker's bytes past the endpoint, taking the count to
+# 0 and the status to 1; the route is re-probed per invocation instead.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"

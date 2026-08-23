@@ -1,19 +1,17 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The handover fires on a TIMEOUT rather than at the end of the run: a board whose image
-// is otherwise misbehaving still comes back for a reflash without a button press.
-//
-// Root makes the call; selftest's reboot_priv owns the unprivileged refusal arm.
+// The handover fires on a TIMEOUT, so a board whose image is otherwise misbehaving still
+// comes back for a reflash without a button press. Root makes the call.
 //
 // On a chip with a backend (rp2040 -> PICOBOOT/UF2, rp2350 -> BOOTSEL, imxrt1062 ->
 // HalfKay) the countdown is the last line printed and the board reappears as a flashing
-// device. Everywhere else the fallback declines and the rc line is the verdict.
+// device; otherwise the fallback declines and the rc line is the verdict.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
-#include <kickos/libc/fmt.h> // ksnprintf: report the refusal rc
-#include <kickos/sys/emit.h> // publish-aware write (kos_print is dropped once published)
+#include <kickos/libc/fmt.h>
+#include <kickos/sys/emit.h> // emit: kos_print is dropped once the console is published
 
 using kickos::emit;
 

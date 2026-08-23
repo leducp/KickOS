@@ -249,23 +249,27 @@ the real statics, pads up to the granted window size, and hands the gap to the h
 ```
     . = ALIGN(4);
     _appdata_used_end = .;                 /* end of the app's real .data/.bss */
-    _appdata_fits = ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
-           "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
-    . = __kickos_appdata_start + _appdata_size;   /* pad the granted window */
+    . = MAX(., __kickos_appdata_start + _appdata_size);   /* pad the granted window */
     __kickos_appdata_end = .;
     /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
     _kickos_heap_start = ALIGN(_appdata_used_end, 8);
     _kickos_heap_limit = __kickos_appdata_end;
 ```
 
-That `_appdata_fits` line is the pow2-window chips' form, and the placement is the lesson.
-The `ASSERT` is bound to a symbol purely so it is *evaluated inside the section*, before
-the pad assignment: a bare pad to an already-overflowed window makes the location counter
-move backwards, and `ld` reports that in its own cryptic terms rather than in yours. Put
-the check after the section and the useful message never gets the chance to print. The
-SYSMPU chip quoted throughout this chapter states the same bound at the bottom of the
-script instead of inside the section, which is the arrangement that loses the message, so
-copy the in-section form when authoring a new one.
+`MAX` rather than a bare assignment is the lesson, and it is a lesson about ORDER OF
+EVALUATION rather than about where you put your checks. `ld` completes the entire layout
+pass before it evaluates any `ASSERT`, anywhere in the script. So a bare pad to a window
+the app has already overflowed moves the location counter backwards, `ld` reports that in
+its own terms, and the link is dead before one word of your message can print. Moving the
+`ASSERT` inside the section does not rescue it: an assertion bound to a symbol is still
+evaluated in the assertion pass, not at the point it is written, which is the tempting
+wrong conclusion here.
+
+`MAX` makes the pad monotonic. On every link that fits it is exactly the bare assignment,
+because the counter is already below the window end. On a link that does not fit it leaves
+the counter where the overflow put it, layout completes, and the bound then fails in the
+assertion pass with your text. The check can sit anywhere after the section; what it needs
+is for the link to still be alive when it runs.
 
 On a non-enforcement chip there is no window, and the same symbol pair instead brackets
 a standalone `.userheap` block reserved ahead of the thread-stack arena:

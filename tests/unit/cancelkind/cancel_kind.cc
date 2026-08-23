@@ -11,10 +11,11 @@
 //     die", never "was it asked to die THIS way". A reader written against CANCEL_KILL would
 //     pass every arm in the tree today and silently stop honouring the kind added next.
 //
-// The reader reachable here is the re-block refusal in kernel/irq/irq.cc, which the K-seam
-// compiles. The other one is the death point in kernel/syscall/syscall.cc: no syscall boundary
-// exists on the host side of the seam, so the sim_driver_death gate and the selftest's
-// task_group_kill arm are what witness it.
+// The reader this gate drives is the re-block refusal in kernel/irq/irq.cc, which the K-seam
+// compiles. The byte's other readers are the syscall death point (syscall.cc), the IPC
+// fastpath refusal (syscall_ipc_fast.cc) and the SLAY check at dispatch (sched.cc); the
+// sim_driver_death gate and the selftest's task_group_kill arm are what exercise the death
+// point.
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>
@@ -35,8 +36,6 @@ namespace kickos
     {
         namespace
         {
-            // Not named for the enum: the fixture class name IS the ctest suite name, and a
-            // class shadowing CancelKind would make every value below need qualifying.
             class CancelWiring : public KSeam
             {
             };
@@ -48,8 +47,8 @@ namespace kickos
             constexpr uint8_t PRIO_LOW = 4;
             constexpr uint8_t PRIO_HIGH = 6;
 
-            // Free on every board the fixture compiles for, and no arm here ever arms it:
-            // what a claim reads is the dispatch slot, so any in-range number does.
+            // Any in-range line does: what a claim reads is the dispatch slot, and no arm
+            // here ever arms it.
             constexpr int CONSOLE_LINE = 14;
             constexpr uint32_t CAP_WIDTH = KICKOS_CAP_FIRST_DYNAMIC + 2;
 
@@ -73,9 +72,9 @@ namespace kickos
                 return cap;
             }
 
-            // The waiter is CURRENT because irq_wait parks whoever calls it, and the second
-            // thread is the only other runnable one so the scheduler must pick it, which is
-            // what resolves the park (kfixture.h note 2).
+            // The waiter must be CURRENT, since irq_wait parks whoever calls it, and the peer
+            // must be the only other runnable thread, so the scheduler picking it is what
+            // resolves the park (kfixture.h note 2).
             Thread* seat_waiter_over_a_peer()
             {
                 Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
@@ -249,9 +248,9 @@ namespace kickos
                 IrqLock lock;
                 thread_cancel(waiter);
             }
-            // Armed on an arm that must NOT park: an unarmed park is a fixture exit(1), which
-            // takes the rest of the suite with it. With a waker the failure is this arm's own
-            // assertions, and reset() drops one that was never consumed.
+            // Armed even on an arm that must NOT park: an unarmed park is a fixture exit(1)
+            // that takes the rest of the suite with it, and a waker nothing consumed is
+            // dropped at reset().
             wake_next_park(hand_the_waiter_its_event);
 
             EXPECT_EQ(irq_wait(waiter, cap), -KOS_ECANCELED)

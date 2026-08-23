@@ -7,12 +7,11 @@
 # system/init/sim/service_list.cc) and require the selftest TAP stream to arrive over
 # the DRIVER, clean.
 #
-# Why this needs its own build: KICKOS_SERVICE_LIST selects one provider per image, so
-# the two console postures cannot coexist in a single tree. Every other sim and QEMU
-# gate runs kickos_services_none, where the kernel keeps the console, cap index 0 is
-# unseated, and the endpoint route is never touched. This gate is the missing half:
-# without it, a console handover that silences the whole test harness passes every
-# other gate.
+# It needs its own build because KICKOS_SERVICE_LIST selects one provider per image, so the
+# two console postures cannot coexist in a single tree. This is the gate that exercises the
+# published posture: every other sim and QEMU gate runs kickos_services_none, where the
+# kernel keeps the console, cap index 0 is unseated and the endpoint route is never touched,
+# so a handover that silences the whole test harness passes all of them.
 #
 # The load-bearing assertion is the NEGATIVE one: the console driver's own kos::print
 # banner must be ABSENT. It goes to the kernel debug console, which a published board
@@ -22,13 +21,11 @@
 #
 # usage: check_sim_published.sh <kickos-source-dir> <cmake> <expected-arms> <variant>
 #
-# <variant> is not optional and is not cosmetic. The expected arm count is computed by
-# the CALLING tree's CMake and depends on the posture; the build below is a fresh one
-# and would otherwise take the board's base variant and every knob default. A caller at
-# another posture would then compare its own expectation against a different posture's
-# stream and fail with "an arm was added or deleted", naming a regression that does not
-# exist. Every input the arm count depends on must be forwarded; do not infer the
-# posture.
+# <variant> is required. The expected arm count is computed by the CALLING tree's CMake and
+# depends on the posture, while the build below is a fresh one that would otherwise take the
+# board's base variant and every knob default. A caller at another posture then compares its
+# expectation against a different posture's stream and fails with "an arm was added or
+# deleted". Forward every input the arm count depends on; do not infer the posture.
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
@@ -69,9 +66,8 @@ if has 'kos::print diagnostic'; then
 fi
 has '^# tap route: stdout endpoint' || fail "TAP did not take the published endpoint route"
 
-# The stream verdict itself is check_tap_stream.sh's, not a second copy of it here: plan
-# vs case count vs expected arms, the completion marker, and the by-name EXPECT_SKIPS /
-# EXPECT_PARTIALS permission sets, which a private parse would drift out of step with.
+# The stream verdict is check_tap_stream.sh's, so plan against case count against expected
+# arms, the completion marker and the by-name permission sets stay in one place.
 printf '%s\n' "$OUT" | "$(dirname "$0")/check_tap_stream.sh" sim_published "$WANT_ARMS"
 
 echo "PASS: the full $WANT_ARMS-arm TAP stream is observable over a published userspace console"

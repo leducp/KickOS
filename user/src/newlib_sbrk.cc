@@ -27,6 +27,22 @@ extern char _kickos_heap_start[];
 extern char _kickos_heap_limit[];
 static char* s_brk = _kickos_heap_start;
 
+// UNSERIALISED read-modify-write. Two preempted threads can both read this s_brk, both pass
+// the bounds check and both return the same prev, aliasing the same bytes. The heap window is
+// appended to EVERY unprivileged thread, so this is not confined to one task.
+//
+// A CAS does not link on the ARMv6-M or RX boards: neither has an atomic RMW, and neither
+// toolchain ships a libatomic to emulate one, which is where sys/atomic.h's load/store
+// surface comes from. The cap table is per-thread with no runtime transfer, so a lock minted
+// on first use is unshareable by construction, and static constructors reach _sbrk before an
+// init hook could mint one earlier. Interrupt masking is privileged, and unprivileged
+// `cpsid i` on ARM is a silent nop. The fix takes the shape of
+// arch/common/arch_ram_common.cc, the same bump allocator one privilege level up under
+// arch_irq_save, which means a syscall.
+//
+// Serialising this alone would NOT make multi-threaded malloc safe: newlib's bins stay
+// unprotected while __malloc_lock is a no-op (newlib_stubs.cc), so the arena still corrupts.
+// Keep such apps single-alloc-thread.
 static void* heap_bump(intptr_t incr)
 {
     char* prev = s_brk;

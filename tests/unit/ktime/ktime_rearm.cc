@@ -5,18 +5,18 @@
 // deadline ktime_rearm hands arch_timer_arm must be a function of what is
 // pending, and of nothing else; in particular, not of when the call happens.
 //
-// Every backend dedups an arm by comparing the requested deadline against the one
+// A backend either dedups an arm by comparing the requested deadline against the one
 // already programmed (arch/arm/common: g_armed_deadline_ns; arch/rx/rxv3:
-// g_rx_armed_ns) or by writing an absolute compare that is idempotent (CLINT
-// mtimecmp, POSIX TIMER_ABSTIME). A rearm that re-derives its value from the
-// current clock defeats all four shapes at once: ktime_rearm runs on EVERY context
-// switch, so a moving value restarts the countdown before it can reach the compare
-// and the sleeper is held off for as long as the switches keep coming.
+// g_rx_armed_ns), or writes an absolute compare that is idempotent (CLINT mtimecmp,
+// POSIX TIMER_ABSTIME), or converts a delta from the clock it reads on the spot
+// (arch/xtensa/lx6: CCOMPARE0). A rearm that re-derives its value from the current
+// clock defeats every one of those: ktime_rearm runs on EVERY context switch, so a
+// moving value restarts the countdown before it can reach the compare and the sleeper
+// is held off for as long as the switches keep coming.
 //
-// Host-only of necessity, not convenience: the armed deadline is arch-internal, so
-// no on-target arm can read it: an on-target test can only time a wake and race
-// the host scheduler for the answer. This links the REAL kernel/time/time.cc
-// against a fake clock and a recording timer, so the reading is exact.
+// The armed deadline is arch-internal, and this gate links the REAL kernel/time/time.cc
+// against a fake clock and a recording timer, so it reads the exact value handed to
+// arch_timer_arm.
 
 #include <kickos/time.h>
 #include <kickos/sched.h>
@@ -36,7 +36,7 @@ namespace
     uint32_t g_disarms = 0;
 }
 
-// --- The seam under the unit: a fake clock, a recording timer, no real threads ---
+// --- the seam under the unit: a fake clock and a recording timer ---
 extern "C"
 {
     arch_irq_state_t arch_irq_save(void) { return 0; }
@@ -56,9 +56,8 @@ extern "C"
         g_disarms++;
     }
 
-    // Only referenced when the build carries telemetry: time.cc includes ktrace.h, whose
-    // inline emitters call both. The sim-telem preset links them; without these stubs the
-    // gate fails at LINK there while passing everywhere else.
+    // time.cc includes ktrace.h, whose inline emitters call both under the presets that
+    // carry telemetry; without these stubs the gate fails at LINK on sim-telem.
     uint32_t arch_trace_now(void) { return 0; }
     void kickos_rtt_write_record_ch1(void const*, unsigned long) {}
 }
@@ -69,8 +68,8 @@ namespace kickos
     {
         InstanceLocal<Kernel> g_instance;
 #if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
-        // This gate stands in for instance.cc, which it does not link, so it owes the
-        // selector's storage too. One instance, so the index stays 0.
+        // instance.cc is not linked here, so the selector's storage is owed too. One
+        // instance, so the index stays 0.
         __thread unsigned g_instance_index __attribute__((tls_model("initial-exec"))) = 0;
 #endif
     }
@@ -85,9 +84,8 @@ namespace kickos
     }
 
     // ktime_on_timer delegates every endpoint park's unwind to park.cc, which this gate does
-    // not link (it compiles time.cc alone against a fake clock). No arm here stages an
-    // endpoint park, so reaching this is a test that staged something it cannot model; abort
-    // rather than return, for the same reason as kpanic above.
+    // not link. Reaching this means an arm staged a park the gate cannot model, so abort for
+    // the same reason as kpanic above.
     void endpoint_wait_abort(Thread*, intptr_t)
     {
         fprintf(stderr, "endpoint_wait_abort: no endpoint layer in this gate\n");
@@ -96,9 +94,8 @@ namespace kickos
 
     namespace sched
     {
-        // No policy and no run set here: the unit under test is the deadline
-        // arithmetic, so the scheduler seam reports "no timed event" and parking is
-        // a no-op that leaves the thread on the sleepq for the test to inspect.
+        // The seam reports "no timed event" and parking is a no-op, which leaves the
+        // sleeper on the sleepq for an arm to read.
         uint64_t next_timed_event() { return UINT64_MAX; }
         Thread* current() { return kernel().current; }
         void block_current() {}
@@ -134,8 +131,8 @@ namespace
     }
 }
 
-// The defect, stated as a test: a deadline inside the min-delta window is the
-// one case where a rearm is tempted to substitute now+min-delta for it.
+// A deadline inside the min-delta window is the one case where a rearm is tempted to
+// substitute now+min-delta for it.
 TEST(KTime, deadline_is_stable_inside_the_window)
 {
     reset();
@@ -157,9 +154,9 @@ TEST(KTime, deadline_is_stable_inside_the_window)
     }
 }
 
-// Same, once the deadline is already due: the arch backends all floor the
-// programmed delta at one tick, so a past deadline is an immediate fire and needs
-// no help from the kernel: what it must not become is a fresh future deadline.
+// Same, once the deadline is already due: a due deadline fires immediately on every backend
+// (the delta ones floor at one tick, the absolute compares are already behind), so what it
+// must not become is a fresh future deadline.
 TEST(KTime, due_deadline_is_not_pushed_into_the_future)
 {
     reset();

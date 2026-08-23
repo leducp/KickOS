@@ -3,7 +3,7 @@
 //
 // Clock-hardening SILICON soak harness (M3 clock off the debug domain -> wide
 // peripheral monotonic timer). Gated OFF by default (-DKICKOS_CLOCKSOAK_TEST=ON).
-// It answers the "silicon-test-later" checklist that no emulator reaches:
+// It answers the "silicon-test-later" checklist on real silicon:
 //   1. idle-wrap observer: idle past >1 counter wrap period -> clock still correct
 //      (the wrap folds in the timer overflow ISR, not by a thread read).
 //   2. soak across several wraps -> no phantom 2^32-style leap, no backward stall.
@@ -45,8 +45,8 @@ namespace
 
     // A measured chunk must land at or just above the requested sleep. Short == a lost
     // wrap (the counter froze or a wrap was dropped); a large excess == a phantom leap
-    // (the DWT-style +2^32 that this whole fix exists to kill). Window is deliberately
-    // wide (tickless granularity + wake latency add a little on top).
+    // (the DWT-style +2^32). The window is wide: tickless granularity and wake latency
+    // add a little on top.
     bool chunk_ok(uint64_t requested, uint64_t measured)
     {
         uint64_t const lo = (requested * 97ull) / 100ull;  // 3% short-tolerance floor
@@ -72,7 +72,7 @@ int main(int, char**)
 
     // Phase A: idle past ONE full wrap in a single sleep. The free-running counter
     // wraps mid-sleep with no thread reading it, so the wrap MUST be folded by the
-    // overflow ISR for the sleep to resolve at the right wall time (checklist 1/4/5).
+    // overflow ISR for the sleep to resolve at the right wall time (checklist 1/4).
     uint64_t const a_req = WRAP_NS + (WRAP_NS / 2ull); // 1.5x wrap
     emit("[clocksoak] phase A: single sleep past 1 wrap (idle-wrap observer)\n");
     uint64_t const a0 = kos::clock_now();

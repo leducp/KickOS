@@ -21,10 +21,9 @@
 # Either half alone is passable by a regression. The app also requires -KOS_EPIPE from a
 # send, so no timing assumption stands in for proof the driver is gone.
 #
-# Not proven here: the sim's "device" is host fd 1, which has no register state a dead
-# driver could garble, so arch_console_reclaim is legitimately the no-op fallback. This
-# witnesses the OWNERSHIP STATE MACHINE, not a per-chip reclaim body; those stay
-# silicon-gated on mk64f and xmc4800.
+# What this witnesses is the OWNERSHIP STATE MACHINE. The sim's "device" is host fd 1, with
+# no register state a dead driver could garble, so arch_console_reclaim is the no-op
+# fallback; the per-chip reclaim bodies stay silicon-gated on mk64f and xmc4800.
 #
 # usage: check_sim_drvdeath.sh <kickos-source-dir> <cmake>
 
@@ -36,11 +35,11 @@ CMAKE="${2:-cmake}"
 fail() { echo "FAIL: $1"; exit 1; }
 # grep as a predicate, with `set -e` kept out of the way.
 has() { printf '%s\n' "$OUT" | grep -q "$1"; }
-# grep -c exits 1 on zero matches, which under `set -e` would kill the script before its
-# fail message ever prints: red for the right reason, but with no diagnostic.
+# grep -c exits 1 on zero matches, which under `set -e` kills the script before its fail
+# message prints: red for the right reason, with no diagnostic.
 count_of() { printf '%s\n' "$OUT" | grep -c "$1" || true; }
-# First matching line number, empty when absent: two markers written by different threads
-# both land on fd 1 unbuffered, so their relative order on the wire is program order.
+# First matching line number, empty when absent. Two markers written by different threads
+# both land on fd 1 unbuffered, so their order on the wire is program order.
 line_of() { printf '%s\n' "$OUT" | grep -n "$1" | head -1 | cut -d: -f1; }
 
 TMP="$(mktemp -d)"
@@ -65,8 +64,8 @@ RC=$?
 set -e
 printf '%s\n' "$OUT"
 
-# Checked FIRST: a missing publish also makes the BEFORE marker appear, and reporting the
-# marker instead would name a symptom rather than the cause.
+# First: a missing publish also makes the BEFORE marker appear, so reporting the marker
+# would name the symptom and not the cause.
 has '\[simcon\] driver up (host fd 1)' \
   || fail "the console driver never reached the wire (service bring-up failed?)"
 has '\[drvdeath\] published route live' \
@@ -94,13 +93,11 @@ COUNT="$(count_of '\[drvdeath\] kernel console AFTER death (reclaimed)')"
 [ "$RC" -eq 0 ] || fail "expected a clean exit 0, got $RC"
 
 # ---------------------------------------------------------------------------------
-# Case 2: the driver dies BEFORE it ever receives, i.e. bring-up fails. Three things
-# must hold:
-#   - the probe notices (a rendezvous on a receiver-less endpoint is -KOS_EPIPE),
-#   - the service can REPORT it, because the death gave the console back, and
-#   - boot fails LOUDLY: init returns nonzero, so no app runs on a dark console.
-# Without the probe, the service returns 0 and the app runs against a console
-# nothing is serving.
+# Case 2: the driver dies BEFORE it ever receives, i.e. bring-up fails. The probe notices
+# because a rendezvous on a receiver-less endpoint is -KOS_EPIPE, the death gives the console
+# back so the service can REPORT it, and init returns nonzero so no app runs on a dark
+# console. Without the probe the service returns 0 and the app runs against a console nothing
+# is serving.
 echo "== case 2: the driver dies during bring-up =="
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build2" \
     -DKICKOS_SERVICE_LIST=kickos_services_sim \
@@ -131,8 +128,8 @@ fi
 # ---------------------------------------------------------------------------------
 # Case 3: a TWO-THREAD driver, which is the shape every silicon console driver has. A
 # service thread receives; a second thread holds the register window and parks in
-# kos_irq_wait. Cases 1 and 2 above cannot see this at all: their driver is one thread
-# with no window, so the reclaim's device precondition never even executes.
+# kos_irq_wait. This is the only case that reaches the reclaim's device precondition, since
+# the driver in cases 1 and 2 is one thread with no window.
 #
 # The three markers are ONE assertion, not three:
 #   BEFORE the service thread dies : absent  (the handover really happened)
@@ -200,25 +197,24 @@ COUNT="$(count_of '\[drvdeath\] kernel console AFTER death (reclaimed)')"
 [ "$RC" -eq 0 ] || fail "case 3: expected a clean exit 0, got $RC"
 
 # ---------------------------------------------------------------------------------
-# Case 4: the READY TIMEOUT. Every silicon console driver waits for its IRQ thread's
-# bring-up with a bounded loop, and no test on any board had ever executed that loop's
-# expiry. KICKOS_SIMCON_IRQ_WEDGE gives the sim an IRQ thread that takes the register
-# window and never sets `ready`, with a bring-up ordered like the silicon drivers
-# (publish, claim, IRQ thread, wait, service thread).
+# Case 4: the READY TIMEOUT, the expiry of the bounded loop every silicon console driver
+# waits its IRQ thread's bring-up with. KICKOS_SIMCON_IRQ_WEDGE gives the sim an IRQ thread
+# that takes the register window and never sets `ready`, with a bring-up ordered like the
+# silicon drivers (publish, claim, IRQ thread, wait, service thread).
 #
 # The ORDER is what this defends, on three counts:
 #   - the wait precedes the SERVICE spawn: root is still E's only receiver holder, so
-#     closing E takes recv_holders to 0 and notes the console dead. rpusb waited after
-#     both spawns (fixed in 3a77013), where the service thread holds a WAIT cap on E and
-#     that close reclaims nothing.
+#     closing E takes recv_holders to 0 and notes the console dead. Waiting after both
+#     spawns leaves the service thread holding a WAIT cap on E, and that close reclaims
+#     nothing.
 #   - kos_handle_close(ep) precedes kos_thread_kill: the note must be set before the
 #     cancelled thread's exit re-runs the reclaim.
 #   - the kill is not optional: the note alone leaves the console USER_OWNED because the
 #     wedged thread still holds the window (dev_window_free in kernel/init/console.cc).
 #
-# The wedge parks IN kos_irq_wait, the one shape thread_kill can cancel; wedged before
-# that first wait it would be marked and not die, the window would never be released and
-# the tag would be legitimately lost (documented in xmcuartirq.cc).
+# The wedge parks IN kos_irq_wait, the one shape thread_kill can cancel. Wedged before that
+# first wait it is marked rather than killed, nothing releases the window and the tag is
+# legitimately lost (xmcuartirq.cc).
 #
 # The assertion is a PAIR from the SAME kos::print mechanism, as in case 1:
 #   after the publish, before the timeout : absent  (USER_OWNED drops it)
@@ -242,8 +238,8 @@ RC=$?
 set -e
 printf '%s\n' "$OUT"
 
-# Premise: the injection staged. Parked means the thread holds the window AND is sitting in
-# kos_irq_wait, so the cancel below is possible and the timeout is not a spawn failure.
+# Premise. Parked means the thread holds the window AND sits in kos_irq_wait, so the cancel
+# below is possible and the timeout is not a spawn failure.
 has '\[simcon\] wedge irq thread parked, ready never set' \
   || fail "case 4: the wedge irq thread never parked (no DEV window, or no line?)"
 
@@ -254,8 +250,8 @@ if has '\[simcon\] wedge: post-publish kernel write'; then
     fail "case 4: a post-publish kernel write REACHED the wire, so the console was never published: every assertion below would be vacuous"
 fi
 
-# A panic also reclaims, from any state (kpanic_enter). If one ran, the tag below would be
-# carried by that and not by the driver-death path.
+# A panic reclaims from any state (kpanic_enter), so one here would carry the tag below
+# instead of the driver-death path.
 if has 'KERNEL PANIC'; then
     fail "case 4: the system panicked, so the reclaim cannot be attributed to the timeout path"
 fi
