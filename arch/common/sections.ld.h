@@ -9,19 +9,16 @@
 
 /* Every image links with --orphan-handling=error, so an input section no rule names is a
  * link failure that prints the section. Before adding one here, check it is toolchain
- * debris: a section that carries content belongs in a region, named where a reader of the
- * chip script can see where it lands.
+ * debris: a section that carries content belongs in a region named in the chip script.
  *
- * rx-elf 14.2 emits DWARF 4 (.debug_loc, .debug_ranges) and the other four backends emit
- * DWARF 5 (.debug_loclists, .debug_rnglists). Both sets are named because one macro serves
- * all five.
+ * rx-elf 14.2 emits DWARF 4 (.debug_loc, .debug_ranges) and the other four backends DWARF 5
+ * (.debug_loclists, .debug_rnglists). One macro serves all five, so both sets are named.
  *
- * A static link consumes its relocations and .kickos_relocs comes out empty on every board
- * the fleet builds; riscv32-none-elf still offers the input sections to the script, and
- * with no rule ld would place them in a .rela.dyn the output does not keep. Named and
- * ASSERTed empty rather than discarded, so a link that ever does keep one fails loudly
- * instead of dropping relocations nothing would apply. KICKOS_CODE_DEBRIS_SECTIONS claims
- * .rel.iplt and .rela.iplt first, being invoked inside the code section above this.
+ * .kickos_relocs comes out empty on every board the fleet builds, riscv32-none-elf still
+ * offering the input sections to the script. Named and ASSERTed empty rather than discarded,
+ * so a link that ever does keep one fails loudly instead of dropping relocations nothing
+ * would apply. KICKOS_CODE_DEBRIS_SECTIONS claims .rel.iplt and .rela.iplt first, being
+ * invoked inside the code section above this.
  */
 #define KICKOS_NONALLOC_SECTIONS                                              \
     .comment 0 : { *(.comment) }                                              \
@@ -54,9 +51,8 @@
 
 /* Invoked INSIDE the output section that holds code. ld synthesises all of these from no
  * input object (ARM call veneers and ifunc machinery), so they belong wherever the code
- * went; they are empty on every board the fleet builds and are named so the gate has a
- * rule. The EH tables are NOT here: those carry bytes, and each chip script homes them
- * itself in the region its code grant covers.
+ * went. The EH tables are NOT here: those carry bytes, and each chip script homes them in
+ * the region its code grant covers.
  */
 #define KICKOS_CODE_DEBRIS_SECTIONS                                           \
     *(.glue_7) *(.glue_7t) *(.vfp11_veneer) *(.v4_bx)                         \
@@ -68,18 +64,15 @@
 
 /* The PT_TLS template: the bytes each thread's TLS block is initialised FROM, not the block
  * itself. Every thread gets its own copy carved off the low end of its stack, so this is
- * link-time constant data and lives in the region the script hands it.
+ * link-time constant data.
  *
  * .tbss MUST immediately follow .tdata. ld hard-errors on a non-adjacent pair, and the
  * offsets the compiler computes are relative to the two laid out back to back.
  *
- * ALIGN(8) puts the template start on a word pair wherever the region leaves it, which the
- * copy into each block reads from. It does NOT set the per-thread block's alignment: the
- * carve does that.
+ * ALIGN(8) aligns the TEMPLATE the copy reads from; the per-thread block's alignment comes
+ * from the carve and not from here.
  *
- * With no thread_local anywhere both sections come out empty, the two sizes are zero, and
- * the carve is skipped. Empty, they cost nothing: every allocated section of every image on
- * every preset keeps the address and size it had before this macro existed.
+ * With no thread_local anywhere both sections come out empty and the carve is skipped.
  */
 #define KICKOS_TLS_TEMPLATE(region)                                           \
     .tdata : ALIGN(8)                                                         \
@@ -95,12 +88,11 @@
         __kickos_tbss_end = .;                                                \
     } > region
 
-/* THE ABI BIAS BELOW THE THREAD POINTER IS align_up(KICKOS_ARCH_TLS_TCB, tls_align) ON A
- * VARIANT 1 ARCH, not the constant the header states: an object needing 16-byte alignment
- * moves the first thread_local from tp+8 to tp+16 and every offset with it. Rather than
- * derive the bias at runtime from an alignment the linker knows and C does not, refuse the
- * case. A thread_local wanting more than 8 is a build failure naming this, not a silently
- * wrong offset.
+/* On a variant 1 arch the ABI bias below the thread pointer is
+ * align_up(KICKOS_ARCH_TLS_TCB, tls_align), not the constant the header states: an object
+ * needing 16-byte alignment moves the first thread_local from tp+8 to tp+16 and every offset
+ * with it. That alignment is known to the linker and not to C, so the case is refused here
+ * rather than derived at runtime.
  *
  * Guarded on SIZEOF because ALIGNOF of an absent output section is not meaningful.
  */

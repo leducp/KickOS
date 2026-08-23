@@ -39,9 +39,9 @@
 # app links on every board. Raising it needs every board's supply raised with it.
 set(KICKOS_CAP_APP_PEAK_DEFAULT 5)
 
-# Inbound reply capabilities an undeclared task is assumed to hold. MUST stay 0: the three
-# supply-7 boards (nrf51, stm32f103, stm32f302) sit at demand == supply already, so any
-# nonzero fleet-wide value here stops them configuring. A task that really does hold
+# Inbound reply capabilities an undeclared task is assumed to hold. MUST stay 0: the
+# supply-7 boards (stm32f103, stm32f302) sit at demand == supply already, so any nonzero
+# fleet-wide value here stops them configuring. A task that really does hold
 # concurrent parked callers declares them.
 set(KICKOS_CAP_REPLY_DEFAULT 0)
 

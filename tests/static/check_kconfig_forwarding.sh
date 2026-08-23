@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Gate on the HAND-MAINTAINED forwarding lists in the root CMakeLists.txt. Kconfig owns
-# the knobs, but a `cmake -DKICKOS_X=...` only becomes a CONFIG_X= request if X is named
-# in one of those lists. A prompted symbol missing from all of them is SILENT: CMake reports
-# it under "Manually-specified variables were not used", a warning, the configure goes green,
+# Gate on the HAND-MAINTAINED forwarding lists in the root CMakeLists.txt. Kconfig owns the
+# knobs, but a `cmake -DKICKOS_X=...` only becomes a CONFIG_X= request if X is named in one
+# of those lists. A prompted symbol missing from all of them is SILENT: CMake reports it
+# under "Manually-specified variables were not used", a warning, the configure goes green,
 # and the generated board_config.h carries the symbol's DEFAULT, which can be the opposite of
 # what was asked for. A forwarded knob with a BAD VALUE is loud instead, a FATAL_ERROR, since
 # genconfig.py reads every request back.
@@ -14,17 +14,10 @@
 # three request syntaxes (`=N`, `="text"`, `=y|n`), so an int in the bool list forwards
 # `CONFIG_X=y` and is refused at configure time on a value nobody typed.
 #
-# SCOPE. Read are the prompted non-choice symbols kconfiglib resolves, and the forwarding
-# lists parsed out of the region between `set(_kcfg_req "")` and the kickos_kconfig_generate()
-# call, which is refused if the parse cannot find it. Outside it:
-#   - Choice members (BOARD_*, CONSOLE_*, TELEMETRY_*, MEMORY_MODEL_*). They are prompted
-#     but are not set by a -D of their own name: the board defconfig picks them, and the
-#     two the command line does reach go through the bespoke KICKOS_CONSOLE and
-#     KICKOS_TELEMETRY blocks, which project a string onto a choice member. Those two
-#     blocks are read only as "this name is forwarded"; their projection is not checked.
-#   - Whether a forwarded knob's value survives resolution, which is check_kconfig_gen.sh.
-#   - -D knobs that are not Kconfig symbols at all (KICKOS_RX_MPU_TRACE and friends). They
-#     live outside the parsed region and are a different mechanism.
+# Choice members (BOARD_*, CONSOLE_*, TELEMETRY_*, MEMORY_MODEL_*) are out of scope: they are
+# prompted, but no -D of their own name sets them, the board defconfig picking them. The two
+# the command line does reach go through the bespoke KICKOS_CONSOLE and KICKOS_TELEMETRY
+# blocks, which are read only as "this name is forwarded".
 #
 # Every prompted non-choice symbol in the tree is forwarded, so one that legitimately must
 # not be belongs here as a named exemption WITH its reason, not as a loosened leg.
@@ -85,8 +78,8 @@ for sym in kconf.unique_defined_syms:
                      % (prompted, kind, CLASS.get(sym.type, "unknown"), sym.name))
 PYEOF
 
-# A Kconfig that resolved to nothing leaves leg 1 with an empty left-hand side and passes
-# over zero symbols, so the landmark refuses an empty or unparseable read.
+# A Kconfig that resolved to nothing leaves leg 1 with an empty left-hand side, so the
+# landmark refuses an empty or unparseable read.
 tool_out "$TMP/syms" '^prompted plain (int|bool|string) KICKOS_' \
          "$PY" "$TMP/prompted.py" "$SRC"
 
@@ -165,8 +158,8 @@ if grep -q '^OPENREG$' "$TMP/parse"; then
     fail "$CML: the forwarding region never closes; the parse ran past it"
 fi
 
-# The lists themselves are parsed out of CMakeLists.txt; this map is the only copy the gate
-# holds. A list whose type is not named here is refused, never given a silent pass.
+# The only copy of the list-to-type map the gate holds. A list whose type is not named here
+# is refused, never given a silent pass.
 list_class() {
     case "$1" in
         _knob) echo int ;;

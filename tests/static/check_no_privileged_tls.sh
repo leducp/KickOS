@@ -11,10 +11,8 @@
 # last resume left. Every one of those is a wrong answer that looks like a right one, and
 # none of them faults.
 #
-# So the rule is not "be careful in the kernel", it is that the kernel may not do this at
-# all, and this gate is what makes that true rather than intended. It reads RELOCATIONS
-# rather than source, because a thread_local reached through an inline function in a header
-# leaves no `thread_local` anywhere in the privileged .cc file that emitted it.
+# It reads RELOCATIONS rather than source: a thread_local reached through an inline function in
+# a header leaves no `thread_local` anywhere in the privileged .cc that emitted it.
 #
 # What it looks for, per arch:
 #   R_ARM_TLS_LE32                              armv7m, armv6m
@@ -24,9 +22,8 @@
 # (__aeabi_read_tp, __emutls_get_address, __tls_get_addr), which catches an access the
 # relocation scan would miss because the linker had not resolved it yet.
 #
-# NOT A SUBSTITUTE FOR THE SAME RULE IN REVIEW: an arch that grows a fifth relocation
-# spelling passes here vacuously until its name is added, which is why the per-arch set is
-# spelled out above and not globbed.
+# An arch that grows a fifth relocation spelling passes here VACUOUSLY until its name is added,
+# which is why the per-arch set is spelled out above and not globbed.
 #
 # usage: check_no_privileged_tls.sh <readelf> <nm> <archive>...
 
@@ -44,10 +41,9 @@ command -v "$NM" >/dev/null 2>&1 || fail "nm not found: $NM"
 
 TLS_RELOCS='R_ARM_TLS_LE32|R_RISCV_TPREL_HI20|R_RISCV_TPREL_LO12_I|R_RISCV_TPREL_LO12_S|R_RISCV_TPREL_ADD|R_XTENSA_TLS_TPOFF'
 # The RX psABI prefixes a C identifier with an extra leading underscore, so C's
-# __emutls_get_address is asm ___emutls_get_address. Without the optional underscore this
-# whole gate is VACUOUS on rxv3, which is also the one backend where the relocation leg
-# below can never fire: GNURX emits no TLS relocations at all, the emutls fallback being
-# ordinary calls. The call leg is the only thing watching that arch.
+# __emutls_get_address is asm ___emutls_get_address. Without the optional underscore this gate
+# is VACUOUS on rxv3, where the relocation leg can never fire anyway: GNURX emits no TLS
+# relocations at all, the emutls fallback being ordinary calls.
 TLS_CALLS='_?__aeabi_read_tp|_?__emutls_get_address|_?__tls_get_addr'
 
 FOUND=0

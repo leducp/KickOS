@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The per-thread TLS block: how big it is, and how it is seated. The block is carved off
-// the LOW end of the thread's own stack, so it costs no MPU descriptor of its own and the
-// thread pointer IS the stack block's base.
+// The per-thread TLS block, carved off the LOW end of the thread's own stack, so it costs
+// no MPU descriptor of its own and the thread pointer IS the stack block's base.
 
 #ifndef KICKOS_TLS_H
 #define KICKOS_TLS_H
@@ -14,9 +13,8 @@
 namespace kickos
 {
 
-// Bytes to carve off the bottom of a thread's stack. ZERO when the image declares no
-// thread_local at all, which is the state of the fleet until an app declares one, and zero
-// where the board compiles no TLS.
+// Bytes to carve off the bottom of a thread's stack. Zero where the image declares no
+// thread_local at all, and zero where the board compiles no TLS.
 size_t tls_block_size();
 
 // Copy the .tdata template into a freshly carved block and zero its .tbss. `base` is the

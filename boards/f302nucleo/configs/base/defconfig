@@ -3,6 +3,9 @@
 
 CONFIG_BOARD_F302NUCLEO=y
 
+# The MINIMUM tier of docs/reference/boards.md, which states what that tier buys and what
+# it refuses; the per-board arithmetic below is what this part pays for it.
+#
 # 16 KiB of SRAM, and the root stack is one notch above the user default because the
 # suite outgrew a 1024 root.
 CONFIG_KICKOS_MAX_THREADS=2
@@ -17,9 +20,8 @@ CONFIG_KICKOS_ROOT_STACK_SIZE=1536
 # include/kickos/diag.h, and an assert names its file and line instead of its condition.
 CONFIG_KICKOS_DIAG_TERSE=1
 
-# NO TLS ON THIS PART. Deriving the ARM thread pointer from SP needs every stack block
+# NO TLS ON THIS PART: deriving the ARM thread pointer from SP needs every stack block
 # strided by one power of two, and three blocks of 2048 do not fit an arena the fattest
-# image leaves at 4672 bytes. Paying it would mean one thread instead of two, and the
-# root stack is already one notch up because the suite outgrew a 1024 root. A thread_local
-# in an app built for this board is a link error naming __aeabi_read_tp.
+# image leaves at 4672 bytes; paying it would cost one thread instead of two. A
+# thread_local in an app built for this board is a link error naming __aeabi_read_tp.
 # CONFIG_KICKOS_TLS is not set

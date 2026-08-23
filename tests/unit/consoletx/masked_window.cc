@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// kos_kconsole_write needs no capability, so an unprivileged thread reaches
-// console_tx_write with a buffer of its own choosing. These cases pin the cost of that
-// call in the only unit that matters for interrupt latency: bytes pushed to the TX data
-// register inside ONE masked span, each of which is a byte time at the line rate.
+// kos_kconsole_write needs no capability, so an unprivileged thread reaches console_tx_write
+// with a buffer of its own choosing. These cases pin the cost of that call in the unit that
+// matters for interrupt latency: bytes pushed to the TX data register inside ONE masked span,
+// each of which is a byte time at the line rate.
 
 #include <gtest/gtest.h>
 
@@ -125,10 +125,9 @@ TEST_F(ConsoleTxMaskedWindow, ProducerSeatedInTheGapInterleavesWithoutLosingByte
     EXPECT_EQ(theirs, 4u);
 }
 
-// Chunking gives up more than atomicity against another producer: console_tx_deinit can
-// land in a mask gap too. It detaches the drain handler and NVIC-masks the line, so a byte
-// queued after it is drained by nothing, and console_tx_flush_sync returns without touching
-// a disarmed ring, so not even the panic path recovers it.
+// console_tx_deinit can land in a mask gap too. It detaches the drain handler and NVIC-masks
+// the line, so a byte queued after it is drained by nothing, and console_tx_flush_sync returns
+// without touching a disarmed ring, so not even the panic path recovers it.
 namespace
 {
     // Past one ring-full, but inside the next chunk, so the write completes in the loop and

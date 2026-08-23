@@ -226,8 +226,8 @@ endif()
 # Exposes the guard-probe syscall (kos_guard_addr) used by the MPU privilege self-test;
 # out of the production syscall ABI.
 option(KICKOS_ENABLE_SELFTEST     "Expose test-only self-test syscalls"      OFF)
-# PendSV brackets the switch body with DWT CYCCNT and the `bench` app reports min/avg/max
-# switch cycles. It adds instructions to the switch path.
+# PendSV brackets the switch body with DWT CYCCNT, which adds instructions to the switch
+# path.
 option(KICKOS_BENCH               "Cycle-accurate context-switch microbench"  OFF)
 if(KICKOS_BENCH)
   add_compile_definitions(KICKOS_BENCH=1)
@@ -313,12 +313,9 @@ else()
   add_compile_definitions(KICKOS_MULTI_INSTANCE=0)
 endif()
 
-# The TLS stride, and the two knobs that have to agree for it to exist. Unprivileged ARM
-# code has no register that differs per thread except SP, so __aeabi_read_tp is SP masked
-# down to the thread's own stack block, and one image has ONE mask: root and every pool
-# stack must therefore round to the SAME power of two. The SIZES need not be powers of two,
-# because arch_ram_region_align strides each block by its own rounded size and the slack
-# just goes unused; what cannot differ is the rounding.
+# The TLS stride. Unprivileged ARM code has no register that differs per thread except SP,
+# so __aeabi_read_tp is SP masked down to the thread's own stack block, and one image has
+# ONE mask: root and every pool stack must round to the SAME power of two.
 include("${CMAKE_SOURCE_DIR}/cmake/boot_arena.cmake")
 if(KICKOS_TLS)
   kickos_pow2_ceil("${KICKOS_USER_STACK_SIZE}" _tls_stride)
@@ -334,10 +331,9 @@ if(KICKOS_TLS)
       "boards/${KICKOS_BOARD}/configs/<variant>/defconfig, or set KICKOS_TLS=n there and "
       "let a thread_local fail the link instead.")
   endif()
-  # AND THEY MUST BE THE STRIDE, not merely round to it. tls_stack_admissible requires a
-  # block of EXACTLY one stride, because two smaller blocks can sit inside one stride and
-  # mask to the same base. A pool stack is whatever KICKOS_USER_STACK_SIZE says, so a
-  # non-power-of-two here would have every spawn refused at runtime instead of at configure.
+  # AND THEY MUST BE THE STRIDE, not merely round to it: tls_stack_admissible requires a
+  # block of EXACTLY one stride, because two smaller blocks fit inside one stride and mask to
+  # the same base. A non-power-of-two here has every spawn refused at runtime, not here.
   foreach(_k KICKOS_USER_STACK_SIZE KICKOS_ROOT_STACK_SIZE)
     if(NOT ${${_k}} EQUAL _tls_stride)
       message(FATAL_ERROR
@@ -359,10 +355,9 @@ if(KICKOS_TLS)
                           KICKOS_TLS_STRIDE_LOG2=${_tls_log2})
   message(STATUS "KickOS: TLS stride ${_tls_stride} (1 << ${_tls_log2})")
 else()
-  # Defined either way so `#if KICKOS_TLS` in a TU that forgot to test defined() reads
-  # false rather than reading an undefined identifier as zero by luck. The knob reaches C
-  # HERE and not through the generated board_config.h, which is why genconfig lists it
-  # among the CMake bool knobs.
+  # Defined either way so `#if KICKOS_TLS` in a TU that forgot defined() reads false rather
+  # than reading an undefined identifier as zero by luck. The knob reaches C HERE and not
+  # through the generated board_config.h, which is why genconfig lists it among the bool knobs.
   add_compile_definitions(KICKOS_TLS=0)
 endif()
 
@@ -500,16 +495,12 @@ endif()
 
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
-# Which MPU design the v6-M/v7-M arch is built for, as ONE selector rather than two
-# independent booleans: nothing stopped a chip raising both, or neither and relying on an
-# unwritten "PMSAv7 if not the others" default. A chip's mpu.cmake above names its backend
-# by setting KICKOS_ARM_MPU_BACKEND; PMSAv7 is the fallback for the core v6-M/v7-M fleet.
-# The selector is TOTAL: a build with no MPU at all resolves to NONE instead of falling
+# Which MPU design the v6-M/v7-M arch is built for. A chip's mpu.cmake above names its
+# backend by setting KICKOS_ARM_MPU_BACKEND; PMSAv7 is the fallback for the core v6-M/v7-M
+# fleet. The selector is TOTAL: a build with no MPU resolves to NONE rather than falling
 # through to a backend it does not program, so every comparison below and in
-# arch/arm/{armv6m,armv7m}/include/kickos/arch/mpu_encoded.h and arch/arm/common/ means
-# exactly what it says, with no KICKOS_HAVE_MPU conjunction needed to make it true. A TU
-# that missed KICKOS_ARM_MPU would read a different image than the one the commit path
-# writes.
+# arch/arm/{armv6m,armv7m}/include/kickos/arch/mpu_encoded.h and arch/arm/common/ needs no
+# KICKOS_HAVE_MPU conjunction to mean what it says.
 if(NOT KICKOS_HAVE_MPU)
   set(_kickos_arm_mpu 0)
 elseif(KICKOS_ARM_MPU_BACKEND STREQUAL "SYSMPU")
@@ -533,19 +524,15 @@ add_compile_definitions(
 # --- Trap-handler IPC fastpath (KICKOS_ARCH_HAS_IPC_FASTPATH) ---------------
 # Set by an arch backend that completes the register-carrying kos_call inside the syscall
 # trap, redirecting the exception return into the target thread instead of into the
-# privileged-thread trampoline. It gates three things at once and they must not drift
-# apart: the stub's register arm, arch_syscall_reg with its result-store seam, and the
-# kernel's shared leaf.
+# privileged-thread trampoline. It gates three things that must not drift apart: the stub's
+# register arm, arch_syscall_reg with its result-store seam, and the kernel's shared leaf.
 #
-# The backend that takes the seam declares it by shipping ipc_fastpath.cmake beside its
-# switch.S, on the model of the mpu.cmake opt-in. It is included here in this scope, so a
-# plain set is what it reads. The value is the backend's own: it must be what its trap
-# implements, so the opt-in file above is the only thing that sets it.
+# A backend declares it by shipping ipc_fastpath.cmake beside its switch.S, included here in
+# this scope, so a plain set is what it reads. The value must be what that backend's trap
+# implements, so the opt-in file is the only thing that sets it.
 #
-# THE 0 ARM IS PERMANENT, AND NAMES EXACTLY TWO ARCHES: sim and xtensa/lx6. Each states why
-# at its own backend (arch/sim/sim.cc, arch/xtensa/lx6/arch_xtensa.cc). Every arch whose
-# syscall is a TRAP ships the file, so the seven arch-neutral `#if` sites this knob gates
-# resolve to the 0 arm on exactly those two.
+# The 0 arm names exactly two arches, sim and xtensa/lx6, each stating why at its own backend
+# (arch/sim/sim.cc, arch/xtensa/lx6/arch_xtensa.cc).
 set(KICKOS_ARCH_HAS_IPC_FASTPATH 0)
 set(_ipc_fastpath_optin
   "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/ipc_fastpath.cmake")
@@ -765,10 +752,9 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(panic_banners PROPERTIES TIMEOUT 120 LABELS host)
 
-  # The death path's seating on the per-thread kernel block. Registered on every preset
-  # rather than the ones that carve blocks: it derives which arches owe the arm from
-  # arch/Kconfig and reads source, so a board whose own KICKOS_KERNEL_STACKS is 0 still
-  # gates the four backends that carry it.
+  # The death path's seating on the per-thread kernel block. Registered on every preset: it
+  # derives which arches owe the arm from arch/Kconfig and reads source, so a board whose own
+  # KICKOS_KERNEL_STACKS is 0 still gates the four backends that carry it.
   _add_test(NAME death_stack_seating
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_death_stack_seating.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -780,16 +766,9 @@ if(KICKOS_BUILD_TESTS)
   # refused by the gate itself, so an unlisted variant registers nothing rather than
   # measuring the wrong configuration.
   #
-  # THIS LADDER WAS SHORT THREE TIMES, and each time the pair nobody measured was the
-  # defect: an elseif was missing and nothing said so, a registered set being indistinguishable
-  # from a complete one. So it is no longer a list. trap_redzone_roots.txt declares which
-  # (board, variant) pairs are measurable and states the rule that makes the answer "every
-  # preset of every gated arch": a variant is measurement-relevant when it changes
-  # KICKOS_BENCH, KICKOS_TELEMETRY, KICKOS_ENABLE_SELFTEST, the memory model or the console
-  # backend, each of which was MEASURED to move a class depth here, and a board's variants
-  # differ by exactly those. This block now DERIVES the preset name and asks that file whether
-  # it is declared, so the two can no longer disagree and a new preset registers by being
-  # declared once rather than in two places.
+  # trap_redzone_roots.txt declares which (board, variant) pairs are measurable, and states
+  # the rule for it. This block DERIVES the preset name and asks that file whether it is
+  # declared, so a new preset registers by being declared once rather than in two places.
   #
   # THE NAMING RULE IS THE PRESETS' OWN: the base variant is the board name and every other
   # variant is <board>-<variant>, which holds for all 52 pairs in cmake/presets/*.json. A
@@ -821,10 +800,9 @@ if(KICKOS_BUILD_TESTS)
     set_tests_properties(trap_redzone PROPERTIES TIMEOUT 1800 LABELS host)
   endif()
 
-  # UNCONDITIONAL, and outside the _fs_redzone_preset guard above on purpose: what it checks
-  # is that the declaration set covers the fleet, which is exactly the question a board whose
-  # preset is UNDECLARED cannot ask by registering trap_redzone. It configures nothing and
-  # needs no cross toolchain, so it runs on sim too.
+  # Outside the _fs_redzone_preset guard on purpose: it checks that the declaration set
+  # covers the fleet, which is exactly the question a board whose preset is UNDECLARED cannot
+  # ask by registering trap_redzone. It configures nothing and needs no cross toolchain.
   _add_test(NAME trap_redzone_decls
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_trap_redzone_decls.sh"
                     "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1055,10 +1033,9 @@ if(TARGET kickos_kernel)
       -nostartfiles
       -Wl,--gc-sections
       -Wl,--no-warn-rwx-segments
-      # Every input section must be named by a rule in the chip script. An unnamed one is
-      # a link failure printing the section, not a warning: an ALLOC orphan lands at an
-      # address nobody chose, and the .ARM.extab set used to land between the vector table
-      # and .text. arch/common/sections.ld.h carries the shared vocabulary.
+      # Every input section must be named by a rule in the chip script. An unnamed one is a
+      # link failure printing the section, not a warning: an ALLOC orphan lands at an address
+      # nobody chose. arch/common/sections.ld.h carries the shared vocabulary.
       -Wl,--orphan-handling=error
       # ARM's vector table (g_isr_vector) is a data object nothing references. RX pulls its
       # vector tables via ENTRY(_start) + KEEP(), and forcing a symbol it does not define

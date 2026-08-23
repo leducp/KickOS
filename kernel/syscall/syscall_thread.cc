@@ -67,9 +67,6 @@ namespace kickos
         }
     }
 
-    // Any syscall that resolves a thread BY HANDLE must additionally reject
-    // state == EXITED: the generation bumps at reclaim, not at exit, so an exited slot
-    // still gen-matches.
     int thread_spawn(kos_thread_params const* p, kos_thread_t* out_thread)
     {
         IrqLock lock;
@@ -104,7 +101,6 @@ namespace kickos
         {
             return -KOS_EINVAL;
         }
-        // No privilege escalation: only a privileged thread may spawn one.
         if (p->privileged != 0 and not sched::current()->privileged)
         {
             return -KOS_EPERM;
@@ -160,10 +156,8 @@ namespace kickos
             }
         }
         // THE admission boundary for a DEV window, which is the asking THREAD's own region
-        // and is carried by no task or domain: authority (EPERM), exact shape (EINVAL for
-        // zero-size, wrap or non-encodable), Rule 7 (EPERM) and exclusivity (EBUSY). This
-        // and the commit, thread_create composing the region, both run inside this
-        // function's IrqLock, so the pair is atomic.
+        // and is carried by no task or domain. This and the commit, thread_create composing
+        // the region, both run inside this function's IrqLock, so the pair is atomic.
         if (p->mmio_base != nullptr)
         {
             if (not cap_check_authority(sched::current(), AUTH_MEMORY))
@@ -447,16 +441,13 @@ namespace kickos
             attr.kstack_owned = true;
         }
         // A CALLER-SUPPLIED STACK MUST SATISFY THE TLS STRIDE. The thread pointer is SP
-        // masked down to KICKOS_TLS_STRIDE, so a block the caller chose that is not
-        // strided, or that spans more than one stride, would hand this thread a pointer
-        // into a NEIGHBOUR's thread_local storage. Refusing the spawn is the only honest
-        // answer; the pool's own blocks satisfy it by construction.
+        // masked down to KICKOS_TLS_STRIDE, so a block that is not strided, or that spans
+        // more than one stride, would hand this thread a pointer into a NEIGHBOUR's
+        // thread_local storage. The pool's own blocks satisfy it by construction.
         if (not tls_stack_admissible(reinterpret_cast<uintptr_t>(stack), stack_size))
         {
-            // The pool branch cannot reach this today, every arena block being one stride by
-            // construction, but the unwind is owed all the same: a popped block dropped here
-            // is a slot the pool never gets back, and the next reader of this code should not
-            // have to re-derive why the push is absent.
+            // Unreachable from the pool branch today, every arena block being one stride,
+            // but a popped block dropped here is a slot the pool never gets back.
             if (attr.kstack_owned)
             {
                 k.threads.stack_push(stack);

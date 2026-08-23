@@ -4,25 +4,21 @@
 #
 # Structural gate on the emitted __aeabi_read_tp (arch/arm/read_tp.S).
 #
-# WHY A GATE AND NOT A RUNTIME WITNESS. The leaf answers every thread_local access on
-# M-profile, and it derives the thread pointer from SP because unprivileged code has no
-# register that differs per thread. The one way to get it wrong is at the EDGE: a stack top
-# is exclusive, so an empty stack has SP exactly at base + stride and a plain mask returns
-# the NEIGHBOUR's block. That happened on the first run of the tlsprobe witness and showed
-# up as a data abort in the adjacent thread's memory; adding one unrelated local to main
-# moved SP and hid it again. The witness therefore CANNOT be relied on to catch it: it
-# passes with and without the subtract, because C code never runs with SP at the top.
+# WHY A GATE AND NOT A RUNTIME WITNESS. The one way to get this leaf wrong is at the EDGE: a
+# stack top is exclusive, so an empty stack has SP exactly at base + stride and a plain mask
+# returns the NEIGHBOUR's block. The tlsprobe witness passes with and without the subtract,
+# because C code never runs with SP at the top.
 #
-# So this reads the instructions instead. Four of them, in order:
-#   mov  r0, sp        take the only per-thread register unprivileged code has
+# So this reads the instructions instead. Five of them, in order:
+#   mov  r0, sp
 #   subs r0, r0, #1    move SP into (base, base + stride] before masking
-#   lsrs r0, r0, #N    mask down to the block. Shifts and not BIC: a Thumb-2 BIC
-#   lsls r0, r0, #N    immediate is a modified immediate and 0x1FFF is not one.
+#   lsrs r0, r0, #N    shifts and not BIC: a Thumb-2 BIC immediate is a modified immediate
+#   lsls r0, r0, #N    and 0x1FFF is not one
 #   bx   lr
 #
-# Also asserts nothing else appears: a memory access here would fault on an enforcing
-# board, and any register above r0 would break the AEABI restricted-clobber rule that lets
-# the compiler keep r1-r3 and the whole VFP live across the call.
+# Nothing else may appear: a memory access here would fault on an enforcing board, and any
+# register above r0 breaks the AEABI restricted-clobber rule that lets the compiler keep r1-r3
+# and the whole VFP live across the call.
 #
 # usage: check_arm_read_tp.sh <objdump> <arch.a>
 
@@ -46,10 +42,8 @@ grep -q '<__aeabi_read_tp>:' "$TMP" \
     it and neither libc.a nor libgcc.a defines it, so its absence is a link error waiting
     for the first app that declares one."
 
-# The mnemonic column only, in order, from the function body.
-# objdump separates offset, encoding, mnemonic and operands with TABS, so split on those
-# rather than on runs of spaces: the encoding column is space-padded and a space-based
-# split reads it as part of the mnemonic.
+# The mnemonic column only, in order. objdump separates its columns with TABS and the encoding
+# column is space-padded, so a space-based split would read it as part of the mnemonic.
 BODY="$(sed -n '/<__aeabi_read_tp>:/,/^$/p' "$TMP" \
         | awk -F'\t' '$3 != "" { print $3 " " $4 }' \
         | tr -s ' ' | sed 's/ *$//')"

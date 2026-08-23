@@ -6,8 +6,7 @@
 // in a mask gap of the writer it races.
 //
 // The line a byte must not cross is the END of the publish drain, not the ownership flip:
-// root spawns the driver only once the drain returns, so a bracketed writer poking the UART
-// before that is what the protocol is FOR. note_commit marks that line.
+// root spawns the driver only once the drain returns. note_commit marks that line.
 
 #include <gtest/gtest.h>
 
@@ -32,12 +31,10 @@ namespace
     constexpr uint32_t kRing = 32u;
     constexpr size_t kMsg = 100u;
 
-    // These races are addressed by mask-gap ORDINAL, so they move with the number of
-    // brackets kconsole_write_impl opens before the chip path. On a telemetry board the RTT
-    // arm is compiled in and takes an IrqLock of its own first, which consumes one gap: with
-    // it the ordinal named below would land before the writer is even admitted, where a drop
-    // is the designed answer rather than a defect, and each test would silently assert
-    // against a window it does not mean.
+    // These races are addressed by mask-gap ORDINAL, so they move with the number of brackets
+    // kconsole_write_impl opens before the chip path. The RTT arm takes an IrqLock of its own
+    // first and consumes one gap; without this base the ordinals below would land before the
+    // writer is admitted at all, where a drop is the designed answer.
 #if defined(KICKOS_CONSOLE_RTT) && KICKOS_CONSOLE_RTT
     constexpr uint32_t kGapBase = 1u;
 #else
@@ -142,9 +139,9 @@ namespace
     }
 }
 
-// Premise for the arms that seat a publish in a gap ordinal: with no publish in flight the
-// message reaches the wire whole AND the producer really does chunk, so an ordinal names a
-// real boundary.
+// Anti-vacuity premise for the arms that seat a publish in a gap ordinal: with no publish in
+// flight the message reaches the wire whole AND the producer really does chunk, so an ordinal
+// names a real boundary.
 TEST(ConsolePublishHandoff, AChunkedWriteWithNoPublishReachesTheWireWhole)
 {
     run_isolated([]() {
@@ -157,9 +154,9 @@ TEST(ConsolePublishHandoff, AChunkedWriteWithNoPublishReachesTheWireWhole)
     });
 }
 
-// The publish lands at a chunk boundary of a writer already counted in the in-flight
-// bracket; that writer's remainder has no buffered path left, so it must go out
-// synchronously while the kernel still owns the UART, not vanish.
+// The publish lands at a chunk boundary of a writer already counted in the in-flight bracket.
+// That writer's remainder has no buffered path left, so it must go out synchronously while the
+// kernel still owns the UART.
 TEST(ConsolePublishHandoff, AWriterPublishedOverMidChunkingLosesNoBytes)
 {
     run_isolated([]() {
@@ -174,9 +171,9 @@ TEST(ConsolePublishHandoff, AWriterPublishedOverMidChunkingLosesNoBytes)
     });
 }
 
-// The same window one step earlier: the publish lands after console_emit has taken the
-// bracket but before console_tx_write reads the ring's arm state, so the WHOLE message is
-// the remainder. This one routes through console_emit's own synchronous arm.
+// The same window one step earlier: the publish lands after console_emit has taken the bracket
+// but before console_tx_write reads the ring's arm state, so the WHOLE message is the
+// remainder and it routes through console_emit's own synchronous arm.
 TEST(ConsolePublishHandoff, AWriterPublishedOverBeforeTheRingCheckLosesNoBytes)
 {
     run_isolated([]() {
@@ -208,8 +205,8 @@ TEST(ConsolePublishHandoff, TheInFlightWriterIsCountedWhenThePublishBegins)
     });
 }
 
-// The drain converges only because nothing increments once the handover has begun. A writer
-// arriving after it must be refused outright, so the drain cannot be extended indefinitely.
+// The drain converges only because nothing increments once the handover has begun: a writer
+// arriving after it must be refused outright rather than extend the drain.
 TEST(ConsolePublishHandoff, AWriterArrivingAfterTheHandoverBeginsIsRefused)
 {
     run_isolated([]() {
@@ -241,9 +238,8 @@ TEST(ConsolePublishHandoff, ThePublishDoesNotWidenTheMaskedWindow)
     });
 }
 
-// The ring producer is exported, so a chip that reached it outside console_emit's bracket
-// would be invisible to the drain. Its own ownership re-read covers that, and the one state
-// it must refuse is a device a driver already has.
+// The ring producer is exported, so a caller reaching it outside console_emit's bracket is
+// invisible to the drain. Its own ownership re-read is what must refuse a driver-owned device.
 TEST(ConsolePublishHandoff, AnUnbracketedProducerRefusesADriverOwnedUart)
 {
     run_isolated([]() {
@@ -257,9 +253,8 @@ TEST(ConsolePublishHandoff, AnUnbracketedProducerRefusesADriverOwnedUart)
     });
 }
 
-// Relinquishing and handing over in one step leaves the racing writer still counted, and
-// that writer would finish its message on the driver's UART, so the handover must not
-// complete.
+// Relinquishing and handing over in one step leaves the racing writer still counted, and that
+// writer would finish its message on the driver's UART, so the handover must not complete.
 namespace
 {
     void publish_without_draining(void)
@@ -280,9 +275,9 @@ TEST(ConsolePublishHandoff, HandingOverWithAWriterStillCountedIsRefused)
     });
 }
 
-// The blind spot the sequence above closes: injecting console_tx_deinit alone, as the
-// consoletx deinit arms do, leaves the ownership state KERNEL_OWNED, so the remainder is
-// written and the arm is green whether the protocol exists or not.
+// Injecting console_tx_deinit alone, as the consoletx deinit arms do, leaves the ownership
+// state KERNEL_OWNED, so the remainder is written and the arm is green whether the protocol
+// exists or not. That blind spot is why the arms above transcribe the whole sequence.
 namespace
 {
     void deinit_only(void)

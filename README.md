@@ -50,6 +50,13 @@ Preset names are board names. What each board has actually been proven to do on 
 console pins, LED and flash recipe, are all in
 [`docs/reference/boards.md`](docs/reference/boards.md).
 
+**For a part that is not in the table below**, that file opens with a stated minimum and a
+recommended configuration: 64 KiB flash / 16 KiB SRAM buys two threads with no `thread_local`
+and a self-test split across two images, 128 KiB / 32 KiB buys four or more threads,
+`thread_local` and the self-test as one. The two floors are separate -- flash decides the
+self-test split, SRAM decides `thread_local` and the thread count -- and neither is an SRAM
+number alone, since what binds is the arena left after `.bss`.
+
 | Board (preset) | Part / core | Memory confinement |
 |---|---|---|
 | **armv7m** | | |
@@ -162,7 +169,7 @@ of [`.github/workflows/ci.yml`](.github/workflows/ci.yml) states each job's reas
 |---|---|---|
 | host `sim` | the full `ctest` suite -- the authoritative gate -- plus a UBSan build | `mprotect`, at runtime |
 | armv7m / armv8-m | four QEMU MPS2 run gates (an386, an500, an385, an505), each in both postures | PMSAv7 and PMSAv8, at runtime |
-| armv6m | QEMU run gate (micro:bit) | none: the nRF51 has no unit |
+| armv6m | QEMU run gate (`microbit`, an nRF51822 provisioned at 32 KiB and not a BBC micro:bit v1) | none: the nRF51 has no unit |
 | rv32imac | QEMU `virt` run gate, both postures | PMP, at runtime |
 | Xtensa LX6 | build gate: no upstream QEMU ESP32 machine model | none: the LX6 has no per-task unit |
 | Renesas RX | none | -- |

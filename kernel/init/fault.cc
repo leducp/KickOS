@@ -15,11 +15,9 @@
 #include <kickos/sys/abi.h> // KOS_EXIT_FAULT, the KOS_NEST_* selectors
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-// Trap-stack regression witness. A kernel .data word an unprivileged thread's trap
-// frame must never be able to reach: the faultsurvive `kwrite' arm aims an out-of-bounds
-// sp at it and traps. A backend whose software trap prologue stored through the U-mode sp
-// would overwrite this in privileged mode; the report below runs on the panic path and
-// names the corruption, and is silent when the word is intact.
+// A kernel .data word an unprivileged thread's trap frame must never be able to reach: the
+// faultsurvive `kwrite' arm aims an out-of-bounds sp at it and traps. A backend whose software
+// trap prologue stored through the U-mode sp would overwrite this in privileged mode.
 extern "C" { volatile uint32_t kickos_trapstack_witness = 0x5A5A5A5Au; }
 
 extern "C" void kickos_trapstack_witness_report(void)
@@ -31,13 +29,12 @@ extern "C" void kickos_trapstack_witness_report(void)
     }
 }
 
-// Nested-trap witness (arch.h). Written from ISR context, read through a syscall, so plain
-// counters and no lock: every writer runs with interrupts masked by the trap entry itself,
-// and a torn read of a monotone counter costs an arm one count and never a verdict.
+// Nested-trap witness (arch.h). Plain counters and no lock: every writer runs with interrupts
+// masked by the trap entry itself, and a torn read of a monotone counter costs an arm one
+// count and never a verdict.
 //
-// rv32imac ONLY: its trap prologue is the one that can place a nested frame on a thread
-// stack, so the arm runs there. Gated because the 16 bytes of kernel .bss are enough to push
-// microbit off the arena cliff.
+// rv32imac ONLY: its trap prologue is the one that can place a nested frame on a thread stack.
+// Gated because the 16 bytes of kernel .bss are enough to push microbit off the arena cliff.
 #if defined(KICKOS_ENABLE_SELFTEST) && defined(__riscv)
 namespace
 {
@@ -64,8 +61,7 @@ extern "C" void kickos_nestwitness_note(uintptr_t frame, uintptr_t lo, uintptr_t
 }
 
 // A plain read and NOT a print: a kprintf here puts kvprintf_route and the console writer
-// under the SHUTDOWN syscall and moves the red zone this instrument stands beside. The
-// caller prints.
+// under the SHUTDOWN syscall and moves the red zone this instrument stands beside.
 extern "C" uint32_t kickos_nestwitness_count(int which)
 {
     if (which == KOS_NEST_TRAPS)
@@ -93,11 +89,9 @@ namespace
 {
     // The window between the redirect and the stub is PREEMPTIBLE (`dying` is not set until
     // exit_current runs), so a second thread's fault can overwrite this before the first stub
-    // reads it. The print itself is one such point and not merely an async tick: on a
-    // published console kprintf_fault wakes the console driver, which outranks every stdout
-    // client by provisioning rule. `owner` is what keeps that honest: a stub that does not own
-    // the record prints no fault facts instead of printing another thread's. Both threads
-    // still die correctly; the cost is that the first one's PC is lost.
+    // reads it; kprintf_fault is one such point, waking a console driver that outranks every
+    // stdout client. `owner` keeps that honest: a stub that does not own the record prints no
+    // fault facts instead of printing another thread's.
     struct FaultRecord
     {
         ::kickos::Thread const* owner;
@@ -120,8 +114,7 @@ namespace
 extern "C" void kickos_fault_record(char const* status_name, uint32_t status,
                                     uintptr_t pc, uintptr_t addr, int addr_valid)
 {
-    // Runs in the faulting thread's own context, so `current` IS the thread this
-    // fault belongs to.
+    // Runs in the faulting thread's own context, so `current` IS the thread that faulted.
     FaultRecord& r = fault_record();
     r.owner = ::kickos::sched::current();
     r.status_name = status_name;
@@ -153,13 +146,10 @@ extern "C" bool kickos_fault_frame_trusted(void const* frame, size_t bytes)
 
 #if KICKOS_KERNEL_STACKS
 // The same guard for a backend whose trap entry has been moved onto the per-thread kernel
-// stack: the frame is expected in the RUNNING thread's own block, and a frame anywhere else
-// was written through a pointer the entry had no business adopting. The block is
+// stack: the frame is expected in the RUNNING thread's own block,
 // [kernel_sp - KICKOS_KERNEL_STACK_SIZE, kernel_sp), the top being what thread_create seated
-// and what the entry loads.
-//
-// A TCB with kernel_sp 0 is refused: no block was seated for it, so there is no frame of
-// this kind to believe. Idle is refused by name as well, as above.
+// and what the entry loads. kernel_sp 0 is refused: no block was seated, so there is no frame
+// of this kind to believe.
 extern "C" bool kickos_fault_frame_on_kernel_stack(void const* frame, size_t bytes)
 {
     ::kickos::Thread* const c = ::kickos::sched::current();
@@ -181,39 +171,31 @@ extern "C" bool kickos_fault_frame_on_kernel_stack(void const* frame, size_t byt
 
 // How far below a thread's stack base kickos_fault_below_stack still reads an access as that
 // thread running off the bottom of its own stack. ONE RXv3 MPU region page (16 bytes:
-// RSPAGEn/REPAGEn hold addr[31:4], RX72M UM sec.17.1.2), because the page is the unit the
-// hardware itself denies in.
+// RSPAGEn/REPAGEn hold addr[31:4], RX72M UM sec.17.1.2), the unit the hardware denies in.
 //
-// The width is a RULING, not a derivation, and its ceiling is a MEASUREMENT: it must stay
-// below the distance from a thread's stack base to the nearest legitimate cross-domain target
-// beneath it. Widening it past that gap makes a legitimate cross-domain access read as an
-// overflow; narrowing it below 4 stops attributing overflows at all, since the denied push an
-// RXv3 overflow leaves behind lands at base - 4.
+// It must stay below the distance from a thread's stack base to the nearest legitimate
+// cross-domain target beneath it, or a legitimate cross-domain access reads as an overflow;
+// below 4 it attributes no overflow at all, the denied push an RXv3 overflow leaves behind
+// landing at base - 4.
 #ifndef KICKOS_FAULT_STACK_GUARD_BAND
 #define KICKOS_FAULT_STACK_GUARD_BAND 16u
 #endif
 
 // Where a backend's redirect puts the SP, so the stub runs with the whole stack under it
-// rather than at the depth the fault reached. 0 means DO NOT RELOCATE, leaving the stub at
-// the depth the fault reached rather than aiming it at memory nobody says it may use. See
-// arch.h for the contract the backends implement against.
+// rather than at the depth the fault reached. 0 means DO NOT RELOCATE. See arch.h for the
+// contract the backends implement against. The answer is the thread's own kernel block where
+// one is seated, its user stack otherwise: a sibling sharing the dying thread's domain can
+// rewrite the frames of a descent that prints a fault record and then walks cap_teardown and
+// the scheduler.
 //
-// THE THREAD'S OWN KERNEL BLOCK WHERE ONE IS SEATED, and its user stack otherwise. The death
-// path is the last place privileged C ran on memory an unprivileged thread can write: the
-// address was always kernel-chosen, so this was never the wild-pointer class, but a sibling
-// sharing the dying thread's domain could rewrite the frames of a descent that prints a fault
-// record and then walks cap_teardown and the scheduler.
+// IT IS THE BLOCK'S TOP AND NOT WHERE THE DISPATCH LEFT OFF. Seated at the top, the stub
+// DISCARDS any syscall_dispatch frames the block still holds, which is sound because the
+// thread is dying and nothing resumes it, and it makes the block requirement the MAX of the
+// dispatch class and the exit class rather than their SUM, which no block on any arch holds.
 //
-// IT IS THE BLOCK'S TOP AND NOT WHERE THE DISPATCH LEFT OFF, and that is a requirement rather
-// than a convenience. Seated at the top, the stub DISCARDS any syscall_dispatch frames the
-// block still holds, which is sound because the thread is dying and nothing resumes it, and
-// it is what makes the block requirement the MAX of the dispatch class and the exit class.
-// Run nested under a live dispatch frame instead and the requirement becomes their SUM, which
-// no block on any arch can hold.
-//
-// A TCB with kernel_sp 0 falls back to the user stack: idle, which is outside the pool, and
-// every thread on the four armv7m presets where KICKOS_KERNEL_STACKS resolves 0. That
-// fallback is measured, as the EXIT class of check_trap_redzone.sh against the spawn floor.
+// kernel_sp 0 falls back to the user stack: idle, which is outside the pool, and every thread
+// on the four armv7m presets where KICKOS_KERNEL_STACKS resolves 0. That fallback is measured
+// as the EXIT class of check_trap_redzone.sh against the spawn floor.
 extern "C" uintptr_t kickos_fault_stack_top(void)
 {
     ::kickos::Thread* const c = ::kickos::sched::current();

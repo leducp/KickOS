@@ -3,6 +3,9 @@
 
 CONFIG_BOARD_BLUEPILL_C8=y
 
+# The MINIMUM tier of docs/reference/boards.md, which states what that tier buys and what
+# it refuses; the per-board arithmetic below is what this part pays for it.
+#
 # 20 KiB of SRAM, so both stacks sit at the low-density floor and the pools are cut.
 CONFIG_KICKOS_MAX_THREADS=2
 CONFIG_KICKOS_MAX_SEMAPHORES=4
@@ -14,15 +17,11 @@ CONFIG_KICKOS_CAP_TABLE_SUPPLY=7
 # 6128, which cannot hold idle plus root plus two 2048-byte pool stacks. STM32F103 has
 # no MPU, so arch_mpu_min_region is 0 and the size is byte-granular to 16 rather than a
 # power-of-two step. 512 + 3 x 1664 is 5504, and the arena above the fattest image
-# (selftest_p2) MEASURES 608 spare, the block growth being absorbed 16 bytes by .bss
-# alignment. A thread may use 1664 - 180 = 1484 against 2048 - 836 = 1212 before
-# (armv7m_trap_stack.h derives both red zones).
+# measures 608 bytes spare, the 16-byte gap coming from .bss alignment. A thread may use
+# 1664 - 180 = 1484 of usable stack (armv7m_trap_stack.h derives the red zone).
 #
-# THIS BOARD IS WHY THE CEILING IS PER POSTURE. Bisecting the ceiling against the link
-# puts its maximum at 1216: 1232 trips KICKOS_POOL_ARENA_ASSERT. That is 224 per slot
-# over the 992 this board was tuned at, 672 bytes, where the telemetry ceiling wants 480
-# per slot. bluepill-c8 has no telemetry variant, so a fleet-wide raise to that figure
-# would fail to link a board that never compiles the tail it pays for.
+# bluepill-c8 has no telemetry variant, so a fleet-wide raise of the pool-arena ceiling
+# to the telemetry figure would fail to link here.
 CONFIG_KICKOS_USER_STACK_SIZE=1664
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=1664
@@ -31,9 +30,8 @@ CONFIG_KICKOS_ROOT_STACK_SIZE=1664
 # include/kickos/diag.h, and an assert names its file and line instead of its condition.
 CONFIG_KICKOS_DIAG_TERSE=1
 
-# NO TLS ON THIS PART. Deriving the ARM thread pointer from SP needs every stack block
+# NO TLS ON THIS PART: deriving the ARM thread pointer from SP needs every stack block
 # strided by one power of two, and three blocks of 2048 do not fit an arena the fattest
-# image leaves at 6112 bytes. Paying it would mean one thread instead of two, and the
-# root stack is already one notch up because the suite outgrew a 1024 root. A thread_local
-# in an app built for this board is a link error naming __aeabi_read_tp.
+# image leaves at 6112 bytes; paying it would cost one thread instead of two. A
+# thread_local in an app built for this board is a link error naming __aeabi_read_tp.
 # CONFIG_KICKOS_TLS is not set

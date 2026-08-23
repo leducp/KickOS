@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The thread_local witness. Proves three things the mechanism has to give and that a
-// process-wide fallback would silently not: each thread reads back what IT wrote, the
-// storage is at a DIFFERENT address per thread, and a .tdata initialiser arrives.
+// The thread_local witness: each thread reads back what IT wrote, the storage is at a DIFFERENT
+// address per thread, and a .tdata initialiser arrives.
 
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
@@ -12,12 +11,11 @@ namespace
 {
     constexpr int WORKERS = 2;
 
-    // .tdata (a non-zero initialiser) and .tbss (no initialiser). Both must be per thread,
-    // and the template must reach a freshly spawned one.
+    // .tdata (a non-zero initialiser) and .tbss (no initialiser).
     //
-    // VOLATILE ON THE SEEDED ONE OR THE CHECK IS VACUOUS. A thread_local that is only ever
-    // read is constant-folded at -Os, .tdata comes out EMPTY, and comparing the read
-    // against the initialiser then proves nothing about any template.
+    // VOLATILE ON THE SEEDED ONE OR THE CHECK IS VACUOUS: a thread_local that is only ever read
+    // is constant-folded at -Os, .tdata comes out EMPTY, and comparing the read against the
+    // initialiser then proves nothing about any template.
     thread_local volatile unsigned g_seeded = 0xA5A5A5A5u;
     thread_local unsigned g_written = 0;
 
@@ -51,13 +49,13 @@ namespace
     {
         int const k = static_cast<int>(reinterpret_cast<uintptr_t>(arg));
         unsigned const mine = 0xC0DE0000u + static_cast<unsigned>(k);
-        // Seeded BEFORE the write, so a template that never arrived is visible as a wrong
-        // seed rather than as a zero nobody can attribute.
+        // Read BEFORE the write, so a template that never arrived is visible as a wrong seed
+        // rather than as a zero nobody can attribute.
         unsigned const seeded = g_seeded;
         g_seeded = 0;
         g_written = mine;
-        // A round trip through the scheduler: on an arch whose thread pointer is a
-        // register, this is where a switch that forgot to restore it shows up.
+        // A round trip through the scheduler: on an arch whose thread pointer is a register,
+        // this is where a switch that forgot to restore it shows up.
         kos::sleep_ns(50000000ull);
         g_report[k].addr = static_cast<unsigned>(reinterpret_cast<uintptr_t>(&g_written));
         g_report[k].sp = read_sp();
@@ -129,11 +127,10 @@ int main(int, char**)
             verdict = "SHARED WITH ROOT";
             bad++;
         }
-        // THE BLOCK MUST BE THE ONE THIS THREAD IS STANDING ON. A thread pointer derived
-        // from SP is one instruction away from naming the NEIGHBOUR's block when SP sits
-        // exactly at an exclusive stack top, and the first run of this witness did exactly
-        // that. Checking the two against each other is what makes that visible instead of
-        // showing up as a data abort in whichever thread happens to be adjacent.
+        // THE BLOCK MUST BE THE ONE THIS THREAD IS STANDING ON: a thread pointer derived from SP
+        // names the NEIGHBOUR's block when SP sits exactly at an exclusive stack top, which
+        // checking the two against each other makes visible here rather than as a data abort in
+        // whichever thread happens to be adjacent.
         else if (g_report[k].addr > g_report[k].sp)
         {
             verdict = "BLOCK ABOVE SP";
@@ -156,7 +153,6 @@ int main(int, char**)
         kos::print("[tlsprobe] w0 and w1 SHARE ONE BLOCK\n");
         bad++;
     }
-    // Root's own copy must be untouched by either worker.
     if (g_written != 0x4F4F5400u)
     {
         kos::print("[tlsprobe] ROOT COPY CLOBBERED\n");

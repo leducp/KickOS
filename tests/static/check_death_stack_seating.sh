@@ -8,36 +8,20 @@
 #
 # Run from the repo root, no arguments: tests/static/check_death_stack_seating.sh
 #
-# WHY A SOURCE GATE AND NOT A BEHAVIOURAL ONE. Two of the three claims below have no runtime
-# witness on any backend in this tree:
+# NEITHER OF TWO CLAIMS BELOW HAS A RUNTIME WITNESS, which is why this is a source gate.
+# ctx.stack_lo and ctx.stack_hi have no consumer in kernel/ at all and no switch.S guard can
+# refuse the rebuilt stub over them; and a missing `return` at the end of the block arm falls
+# through and re-runs arch_context_init on the USER stack, so every image still boots and every
+# death still completes. The host unit tests cannot cover either: the sim resolves
+# KICKOS_KERNEL_STACKS 0 and its struct arch_context has no kernel_sp, stack_lo or stack_hi.
 #
-#   * ctx.stack_lo and ctx.stack_hi have NO consumer in kernel/ at all. The only readers are
-#     the four switch.S guards, and none of them can refuse the rebuilt stub over those two
-#     fields: armv7m, armv6m and rxv3 test ctx.kernel_sp FIRST and reach the user-stack legs
-#     only for an sp the block leg already declined, and rv32imac bounds the interrupted sp
-#     on the U-mode leg alone, which a stub running M-mode on the block never takes. The
-#     fault reporter does not read them either: kickos_fault_frame_trusted and
-#     kickos_fault_below_stack both read Thread::stack_base and Thread::stack_size, which
-#     arch_ctx_redirect never touches.
-#   * the `return` that ends the block arm is invisible in its absence on a running board:
-#     falling through re-runs arch_context_init on the USER stack, which is exactly the
-#     pre-PR-7 behaviour, so every image still boots and every death still completes.
+# THREE CLAIMS. 1: every backend that defines arch_ctx_redirect carries the block arm, and the
+# corpus is not empty. 2: in that arm, the block base is kernel_sp minus
+# KICKOS_KERNEL_STACK_SIZE, arch_context_init is handed that base and size with privileged 1,
+# stack_lo, stack_hi and kernel_sp are all restored AFTER that call, and the arm RETURNS. 3:
+# kickos_fault_stack_top answers with ctx.kernel_sp BEFORE the user-stack fallback.
 #
-# The host unit tests cannot cover either: the sim resolves KICKOS_KERNEL_STACKS 0 and its
-# struct arch_context is an opaque byte array with no kernel_sp, stack_lo or stack_hi member,
-# so neither the block arm nor its fields compile there.
-#
-# THREE CLAIMS.
-#   1. Every backend that defines arch_ctx_redirect carries the block arm, and the corpus is
-#      not empty.
-#   2. In that arm: the block base is kernel_sp minus KICKOS_KERNEL_STACK_SIZE, that base and
-#      that size are what arch_context_init is handed with privileged 1, all three of
-#      stack_lo, stack_hi and kernel_sp are restored AFTER that call, and the arm RETURNS.
-#   3. kickos_fault_stack_top answers with ctx.kernel_sp, and answers BEFORE the user-stack
-#      fallback, so the block is what a seated thread gets.
-#
-# Comments and literals are blanked before anything is read, so no claim here can be
-# satisfied by prose naming the code it wants.
+# Comments and literals are blanked before anything is read, so no claim can be met by prose.
 
 set -u
 # Findings accumulate over every backend, so one run names all of them.
@@ -75,8 +59,6 @@ extract() { # <file> <fn> <outfile>
 # The records between `#if KICKOS_KERNEL_STACKS` and its matching `#endif`, and NOT past a
 # top-level `#else` or `#elif`: what follows one of those is the arm compiled when the knob is
 # 0, so folding it in would let the fallback branch satisfy a claim about the block branch.
-# Nested conditionals are counted, so an inner #if cannot end the arm early and an inner #else
-# is left alone.
 arm_records() { # <bodyfile> <outfile>
     awk -F: '
         BEGIN { depth = 0; inarm = 0 }
@@ -102,9 +84,8 @@ arm_records() { # <bodyfile> <outfile>
         }' "$1" > "$2"
 }
 
-# Every record joined into one logical line with runs of whitespace collapsed, for the shape
-# claims: the block base and the arch_context_init call each span two source lines, so a
-# per-line match would report both absent.
+# Joined into one logical line: the block base and the arch_context_init call each span two
+# source lines, so a per-line match would report both absent.
 collapse() { # <recordfile>
     awk -F: '{ text = substr($0, index($0, ":") + 1); printf("%s ", text) }' "$1" \
         | tr -s '[:space:]' ' '
@@ -186,9 +167,8 @@ fi
 
 # --- the corpus ---------------------------------------------------------------
 # WHICH ARCHES OWE THE ARM IS DERIVED FROM arch/Kconfig, never listed here. ARCH_SIM and
-# ARCH_LX6 define arch_ctx_redirect and select neither kernel-stack symbol, so no block
-# exists on them and an arm would be dead code; a new arch that selects
-# ARCH_HAS_KERNEL_STACKS joins this set by adding its stanza and nothing else.
+# ARCH_LX6 define arch_ctx_redirect and select neither kernel-stack symbol, so an arm would be
+# dead code there.
 ARCHKC=arch/Kconfig
 [ -f "$ARCHKC" ] || fail "$ARCHKC is missing; which arches carve blocks cannot be derived"
 awk '
@@ -212,8 +192,7 @@ require_nonempty "$TMP/archsrc" "git ls-files matched no arch source; every chec
 while IFS= read -r f; do
     [ -f "$f" ] || fail "tracked file is missing from the worktree: $f"
     # STRIPPED, not raw: enrolment decided off prose would let a file that merely MENTIONS
-    # arch_ctx_redirect in a comment join the corpus, and a file that defines it inside a
-    # commented-out block leave it.
+    # arch_ctx_redirect join the corpus, and one defining it inside a commented-out block leave it.
     awk -f "$STRIP" "$f" > "$TMP/disc" 2>/dev/null || fail "strip failed on $f"
     grep -qE '^[[:space:]]*(void|extern)?[^;]*arch_ctx_redirect[[:space:]]*\(' "$TMP/disc" || continue
     grep -qE 'arch_ctx_redirect[^;]*\)[[:space:]]*;' "$TMP/disc" && continue

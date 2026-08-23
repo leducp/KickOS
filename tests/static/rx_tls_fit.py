@@ -5,28 +5,14 @@
 # Replay the RX emutls bump allocator OFFLINE, against a linked image, and refuse one whose
 # thread_local set does not fit the block arch/rx/rxv3/emutls.cc reserves.
 #
-# WHY THIS EXISTS. rxv3 is the one backend whose thread pointer cannot be witnessed: there
-# is no RX hardware on this bench and QEMU has no rxv3 machine. Exhaustion there is a
-# runtime PANIC on the first thread_local access, on silicon nobody here can run, so without
-# this a too-small block is a green build and a dead board. Every input the allocator uses
-# is a link-time constant, which is what makes the replay exact rather than a model: the
-# control blocks are gathered by the linker script into __kickos_emutls_v, and the block size
-# is the .tbss the override reserves.
+# WHY OFFLINE. QEMU has no rxv3 machine, so exhaustion is a runtime PANIC on the first
+# thread_local access on silicon and a too-small block is otherwise a green build and a dead
+# board. Every input the allocator uses is a link-time constant, which is what makes the replay
+# exact rather than a model: the control blocks are gathered by the linker script into
+# __kickos_emutls_v, and the block size is the .tbss the override reserves.
 #
 # WHAT IT CANNOT SEE: whether the emitted code still bounds-checks the anchor. Removing those
-# checks builds clean and passes every gate in the tree, which is stated here because the
-# mutation was tried.
-#
-# THREE THINGS IT GOT WRONG AND NO LONGER DOES, all of them ways to pass while measuring
-# nothing:
-#   - an EMPTY gather read as "no thread_local", when it also reads that way if the linker
-#     rule that gathers the control blocks is missing. Cross-checked against whether the
-#     image references the emutls entry point at all.
-#   - alignments the RUNTIME refuses (not a power of two, or above 8) accepted here, so a
-#     first touch would panic on a layout this called fine.
-#   - allocation replayed in INDEX order. The runtime allocates on FIRST TOUCH, in whatever
-#     order the program reaches its objects, and padding makes the peak order-dependent. The
-#     bound below charges every object its full alignment run-up, which is >= any order.
+# checks builds clean and passes every gate in the tree.
 #
 # usage: rx_tls_fit.py <nm> <objdump> <image-or-directory>...
 

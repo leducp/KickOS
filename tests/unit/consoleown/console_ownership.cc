@@ -34,7 +34,6 @@ namespace
         {
             g_pokes_not_owned = g_pokes_not_owned + 1;
         }
-        // Recorded whatever the state: a poke the publish cannot see is one it cannot drain.
         g_poke_writers = console_chip_writers();
     }
 }
@@ -135,10 +134,9 @@ namespace
         });
     }
 
-    // The publish flip lands after this writer has selected the KERNEL_OWNED branch but
-    // before it takes the count: the drain then reads 0, root spawns the driver, and the
-    // woken writer bit-bangs a UART the driver owns. Reading the state and taking the count
-    // as ONE masked operation is what closes that window.
+    // Reading the ownership state and taking the writer count must be ONE masked operation:
+    // a flip between them leaves the drain reading 0 while this writer is still on its way to
+    // a UART the spawned driver owns.
     TEST(ConsoleOwnership, AWriterThatLosesThePublishRaceNeverReachesTheDevice)
     {
         run_isolated([]() {
@@ -184,9 +182,8 @@ namespace
         });
     }
 
-    // A console published AGAIN after a reclaim flips straight out of RECLAIMED, where an
-    // unbracketed polled writer is invisible to the publish drain and lands on the respawned
-    // driver's UART.
+    // A console published AGAIN flips straight out of RECLAIMED, where a polled writer would
+    // be unbracketed and so invisible to the publish drain.
     TEST(ConsoleOwnership, AReclaimedWriterThatLosesARePublishNeverReachesTheDevice)
     {
         run_isolated([]() {
@@ -223,8 +220,7 @@ namespace
     }
 
     // A death note names ONE console, so a re-publish must retire it: otherwise the deferred
-    // retry reprograms the UART under the NEW driver and leaves the system RECLAIMED, which
-    // also refuses the published route for fault records.
+    // retry reprograms the UART under the NEW driver and leaves the system RECLAIMED.
     TEST(ConsoleOwnership, ARePublishRetiresAStaleDeathNote)
     {
         run_isolated([]() {
@@ -242,8 +238,7 @@ namespace
                 << "the old driver's death note reclaimed a console the NEW driver owns";
             EXPECT_EQ(console_owner_is_kernel(), 0);
 
-            // The published route must still be the live one: RECLAIMED would refuse it and
-            // put the kernel back on the device.
+            // RECLAIMED would refuse the published route and put the kernel back on the device.
             kickos::kputs("kernel write under the new driver");
             EXPECT_EQ(g_pokes, 0)
                 << "the console left USER_OWNED, so the kernel is back on the new driver's UART";

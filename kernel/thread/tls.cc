@@ -40,12 +40,10 @@ namespace
 
 size_t tls_block_size()
 {
-    // EMPTINESS IS DECIDED BY THE TWO SECTIONS, NOT BY THE SPAN, and the span is signed.
-    // With no thread_local anywhere both sections are empty, and ld still assigns them
-    // addresses: on every ARM preset the empty .tdata's ALIGN(8) advances the location
-    // counter past where the empty .tbss lands, so tbss_end is FOUR BYTES BELOW
-    // tdata_start. Read as size_t that is 0xFFFFFFFC, and every thread takes a carve the
-    // size of the address space.
+    // EMPTINESS IS DECIDED BY THE TWO SECTIONS AND NOT BY THE SPAN. With no thread_local
+    // anywhere the empty .tdata's ALIGN(8) still advances the location counter past where the
+    // empty .tbss lands, so tbss_end is FOUR BYTES BELOW tdata_start and the span reads as
+    // 0xFFFFFFFC.
     size_t const tdata = tdata_bytes();
     size_t const tbss = static_cast<size_t>(__kickos_tbss_end - __kickos_tbss_start);
     if (tdata == 0 and tbss == 0)
@@ -53,13 +51,9 @@ size_t tls_block_size()
         return 0;
     }
     // THE SPAN AND NOT THE SUM, once there IS content. The linker may align .tbss above the
-    // end of .tdata, and the offsets the compiler computed are relative to the layout it
-    // produced, gap included. Adding the two sizes would size the block short by exactly
-    // that gap and put every .tbss object past its end. The macro emits the two adjacent
-    // and ld refuses them otherwise, so the span can only be the sum or more.
-    // No assert that the span covers both sections: ld HARD-ERRORS on a non-adjacent
-    // .tdata/.tbss pair, so a script cannot produce the case, and the check cost eight
-    // bytes on the two deepest measured chains in the fleet.
+    // end of .tdata, and the compiler's offsets are relative to the layout it produced, gap
+    // included, so the sum would size the block short by that gap. ld hard-errors on a
+    // non-adjacent .tdata/.tbss pair, so the span can only be the sum or more.
     size_t const payload = tls_payload_bytes();
     // The ABI reserve sits BELOW the thread pointer on a variant 1 arch and is zero on a
     // variant 2 one; arch/<arch>/include/kickos/arch/context.h states which.
@@ -73,12 +67,10 @@ bool tls_stack_admissible(uintptr_t base, size_t size)
     {
         return true;
     }
-    // THE STRIDE IS THE WHOLE CONTRACT, and the block must BE one, not merely fit inside
-    // one. The thread pointer is SP masked down to KICKOS_TLS_STRIDE, so two blocks smaller
-    // than a stride can sit inside the SAME one and mask to the same base: an app handing
-    // kos_thread_spawn two 1024-byte stacks 1024 apart would give both threads one
-    // thread_local. Arena blocks cannot do that, being strided by the allocator, but a
-    // caller-supplied pointer is not drawn from the arena.
+    // The block must BE one stride, not merely fit inside one: the thread pointer is SP
+    // masked down to KICKOS_TLS_STRIDE, so two blocks smaller than a stride sit inside the
+    // SAME one and mask to the same base. Arena blocks are strided by the allocator; a
+    // caller-supplied pointer is not.
     if ((base & (KICKOS_TLS_STRIDE - 1u)) != 0)
     {
         return false;

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The thread_local witness. Built only where the board compiles TLS: elsewhere the
-# thread_local would be a link error naming __aeabi_read_tp, which is the intended
-# diagnostic but not something to fail the fleet build on.
+# Built only where the board compiles TLS: elsewhere the thread_local is a link error naming
+# __aeabi_read_tp, which is the intended diagnostic but not a fleet build failure.
 if(NOT KICKOS_TLS)
   return()
 endif()
@@ -18,8 +17,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_tlsprobe.sh")
 endif()
 
-# The armv6m arm. Without it the leaf is compiled and structurally gated on picopi but run
-# nowhere, and armv6m is the half of the ARM fleet the armv7m witness does not speak for.
+# The armv6m arm, which the armv7m witness above does not speak for.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(NAME microbit_tlsprobe TARGET tlsprobe BOARD microbit
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_tlsprobe.sh")
@@ -30,12 +28,11 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_tlsprobe.sh")
 endif()
 
-# THE RX BLOCK IS PROVED OFFLINE OR NOT AT ALL. rxv3 has no hardware here and no QEMU
-# machine, so exhaustion of the emutls block is a first-touch PANIC on silicon nobody can
-# run. Every input the bump allocator uses is a link-time constant, so the allocation is
-# replayed against the linked image instead. Registered here because this is the only RX
-# image in the tree that declares a thread_local; a consumer app that declares more is NOT
-# covered, and that is a real gap rather than an oversight.
+# The RX emutls block is proved offline: rxv3 has no QEMU machine, so exhausting it is a
+# first-touch PANIC nobody can run. Every input the bump allocator uses is a link-time
+# constant, so the allocation is replayed against the linked image instead. GAP: this is the
+# only RX image in the tree that declares a thread_local, so a consumer app that declares more
+# is not covered.
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "rxv3")
   add_test(
     NAME    rx_tls_fit

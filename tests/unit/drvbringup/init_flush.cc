@@ -5,14 +5,13 @@
 // The run body calls four extern "C" seams and nothing else, so the real body runs here over
 // the recording fakes below.
 //
-// What this gate checks is STRUCTURAL: every probe carries a real deadline, and a refused
-// probe is not followed by a second one. The park behind that rule is one a fake cannot
-// stage: an untimed probe on a console service that is alive but not back in kos_recv keeps
-// recv_holders nonzero, so the endpoint never reads as dead, root parks forever and never
-// reaches kos_shutdown.
+// What is checked is STRUCTURAL: every probe carries a real deadline, and a refused probe is
+// not followed by a second one. The park behind that rule is one a fake cannot stage: an
+// untimed probe on a console service that is alive but not back in kos_recv keeps
+// recv_holders nonzero, so the endpoint never reads as dead and root parks forever.
 //
-// Leaving kos_send unfaked is the enforcement: a body that goes back to the untimed send
-// fails to LINK, before any arm runs. Do not add it.
+// kos_send is deliberately left unfaked: a body that goes back to the untimed send fails to
+// LINK, before any arm runs. Do not add it.
 //
 // HOST-ONLY: this TU defines public kos_* names, so a target image linking it would satisfy
 // them from the executable and keep the real syscall stubs' archive member out of the link.

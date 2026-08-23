@@ -10,26 +10,17 @@
 # Run from the repo root, no arguments: tests/static/check_panic_banners.sh
 #
 # THE MATCH: a single-line string literal that BOTH opens with `\n=== ` and carries a
-# closing ` ===` after that. Prose in this tree names a banner without either half, so the
-# shape separates an emit site from a comment ABOUT one with no by-name exemption list to
-# maintain. A comment that spells a WHOLE banner including its `\n` escape does report, and
-# the fix is to stop spelling an escape sequence in prose.
+# closing ` ===` after that, which separates an emit site from prose ABOUT one with no
+# by-name exemption list to maintain. A comment that spells a WHOLE banner including its
+# `\n` escape DOES report, and the fix is to stop spelling an escape sequence in prose.
 #
-# THE NAME: when the banner name is itself the conversion, `\n=== %s ===`, the reporter
-# picks it at runtime and the wire text is one line per label. The labels come from the
-# argument NAME on the emit line and from every `<name> = "..."` assignment in the same
-# file, so all three armv7m labels are checked. Every other conversion is substituted with
-# a placeholder, since the ERE keys on the fixed prefix.
+# THE NAME: where the banner name is itself the conversion, `\n=== %s ===`, the labels come
+# from the argument NAME on the emit line and from every `<name> = "..."` assignment in the
+# same file. Every other conversion is substituted with a placeholder, the ERE keying on the
+# fixed prefix.
 #
-# SCOPE. Read are the banner literals as bytes, one source line at a time, over tracked
-# *.c, *.cc, *.h and *.S under arch/, kernel/, include/, lib/ and system/, any of which
-# could grow a reporter. Outside it: a banner assembled at runtime from pieces or spelled
-# across two source lines, since nothing here parses C; a label held anywhere but a
-# `<name> = "..."` in the reporter's own file, such as a table, a function return or
-# another TU; and the reverse direction, an alternative in panic.ere matching no banner at
-# all. The three non-banner alternatives ("KERNEL PANIC:", "MPU FAULT: thread",
-# "ISOLATION FAULT:") have no `=== ` shape and are outside this gate entirely. Whether a
-# banner SHOULD be a panic is the exclusion below, and that is a ruling.
+# Residual: nothing here parses C, so a banner assembled at runtime or spelled across two
+# source lines is invisible, as is a label held in a table or in another TU.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -43,9 +34,7 @@ command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be buil
 # THE ONE EXCLUSION, and it is a ruling: the thread-fault report is what fault ISOLATION
 # prints when a thread died and the system did not. Four gates (check_rootfault.sh,
 # check_mpu_fault.sh, check_faultsurvive.sh, check_qemu_ringppb.sh) assert that line is
-# PRESENT while asserting no panic occurred, so putting it in the ERE would make every one
-# of them contradict itself. On a board with no privilege ring the same violation panics
-# instead, and the banner it prints there is one of the reporter banners below.
+# PRESENT while asserting no panic occurred, so putting it in the ERE contradicts all four.
 EXCLUDED='=== THREAD FAULT ==='
 
 # Files that MUST each yield a banner, one per fault reporter in the tree, so a shape that
@@ -125,8 +114,8 @@ while IFS= read -r f; do
                     if (index(substr(body, 6), " ===") == 0) { continue }
                     text = banner_line(body)
                     if (substr(text, 1, 7) == "=== %s ") {
-                        # The name IS the conversion, so it comes from the argument name
-                        # on this line and from every assignment to that name in this file.
+                        # The name IS the conversion: take it from the argument name on this
+                        # line and from every assignment to that name in this file.
                         tail = substr(s, start + q + 1)
                         sub(/^[ \t]*,[ \t]*/, "", tail)
                         if (match(tail, /^[A-Za-z_][A-Za-z_0-9]*/) == 0) { continue }
@@ -180,8 +169,8 @@ while IFS="$TAB" read -r f n slot text; do
     checked=$((checked + 1))
     case "$text" in
         *"$EXCLUDED"*)
-            # Named above, with the ruling. Asserted NOT matched: in the ERE it would break
-            # the four gates that read it as a survivable outcome.
+            # Asserted NOT matched: in the ERE it would break the four gates that read it
+            # as a survivable outcome.
             if printf '%s\n' "$text" | grep -qE "$KOS_PANIC_RE"; then
                 echo "FAIL: $f:$n banner '$text' IS matched by tests/lib/panic.ere, but it is" >&2
                 echo "      the fault-isolation report: the thread died and the system did" >&2

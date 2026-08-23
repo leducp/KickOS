@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The per-thread errno witness. Only meaningful where the mechanism is compiled: with the
-# knob off the app would boot and honestly report FAIL, which is not a fleet build failure
-# to carry around.
+# Built only where the mechanism is compiled: with the knob off the app boots and honestly
+# reports FAIL, which is not a fleet build failure to carry around.
 if(NOT KICKOS_LIBC_REENT)
   return()
 endif()

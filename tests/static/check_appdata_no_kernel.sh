@@ -10,20 +10,14 @@
 # domain, so a kernel object that lands in that window is directly writable by an
 # unprivileged thread: a privilege-escalation primitive, not a layout wart.
 #
-# The linker scripts' own ASSERT(_ebss > _sbss) catches TOTAL selector failure only. A
-# renamed or typoed selector drops ONE archive into the app window while the other three
-# keep the kernel .bss non-empty, and the link stays green.
+# The linker scripts' own ASSERT(_ebss > _sbss) catches TOTAL selector failure only: a
+# renamed selector drops ONE archive into the app window while the other three keep the
+# kernel .bss non-empty, and the link stays green.
 #
-# The LINK MAP is the instrument: it names the archive MEMBER behind every input section,
-# and so covers file-static globals, anonymous-namespace globals and COMMON. nm serves the
-# two window bounds only, where both symbols are global and unique; nm reports locals with
-# lowercase types and names that repeat tree-wide, so an address lookup keyed on a local
-# name is ambiguous.
-#
-# Scope: the static app window, in ONE map (selftest's, the only target linked with -Map),
-# over the archives named on the command line, which are the caller's claim of the
-# privileged set. Per-thread stack grants and the RAM pool arena are a separate mechanism
-# with their own gates.
+# The LINK MAP is the instrument, naming the archive MEMBER behind every input section, so
+# it covers file-static globals, anonymous-namespace globals and COMMON. nm serves the two
+# window bounds only: nm reports locals with lowercase types and names that repeat
+# tree-wide, so an address lookup keyed on a local name is ambiguous.
 #
 # usage: check_appdata_no_kernel.sh <nm> <elf> <map> <kernel.a> <arch.a> <chip.a> <lib.a>
 
@@ -41,7 +35,6 @@ fi
 NM="$1"; shift
 ELF="$1"; shift
 MAP="$1"; shift
-# remaining args ($@) are the privileged KickOS-owned archives
 
 command -v "$NM" >/dev/null 2>&1 || fail "nm not found: $NM"
 [ -r "$ELF" ] || fail "cannot read $ELF"
@@ -50,12 +43,12 @@ command -v "$NM" >/dev/null 2>&1 || fail "nm not found: $NM"
 
 scratch_dir
 
-# The landmark is a symbol SHAPE, not a name: the identifier prefix is per-target (below).
+# A symbol SHAPE and not a name: the identifier prefix is per-target (below).
 tool_out "$TMP/sym" '^[0-9a-fA-F]+[[:space:]]+[A-Za-z][[:space:]]' "$NM" "$ELF"
 
 # The RX ABI prefixes every C identifier with an underscore, so rx72m.ld spells the window
-# bounds ___kickos_appdata_start/_end with THREE. Both spellings, and nothing looser: a
-# substring match would also take __kickos_appdata_load_end.
+# bounds ___kickos_appdata_start/_end with THREE. Nothing looser than the two exact
+# spellings: a substring match would also take __kickos_appdata_load_end.
 win_sym() { # <name> -> the one hex address on stdout, non-zero exit if 0 or >1 found
     awk -v n="$1" '$3 == n || $3 == "_" n { seen[$1] = 1 }
                    END { c = 0; for (a in seen) { c++; last = a }
@@ -64,8 +57,7 @@ win_sym() { # <name> -> the one hex address on stdout, non-zero exit if 0 or >1 
 }
 
 # REFUSE, not skip: registration is limited to boards whose linker script carves the window,
-# so a missing bound means the registration guard drifted, and passing would report "no
-# kernel object in the app window" about an image that has none to check.
+# so a missing bound means the registration guard drifted.
 WIN_START="$(win_sym __kickos_appdata_start)" \
     || fail "$ELF defines no __kickos_appdata_start: not an enforcing image, gate would be vacuous"
 WIN_END="$(win_sym __kickos_appdata_end)" \

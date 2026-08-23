@@ -92,9 +92,9 @@ enough: one aims its stack pointer to make the kernel deposit a return descripto
 other's memory, the other edits it. Nothing in that sequence touches a privileged
 address.
 
-## The design space: three places a frame can land
+## The design space: four places a frame can land
 
-There are only three answers, and each fleet member ends up at some combination of them.
+There are only four answers, and each fleet member ends up at some combination of them.
 
 **Option 1: the hardware does it, at the pre-exception privilege.** The architecture
 defines exception entry as writing a fixed frame through the thread's stack pointer,
@@ -117,9 +117,16 @@ after proving it names room inside the thread's own recorded stack. This costs a
 of instructions on every trap and it costs a *correct check*, which is where the rest of
 this chapter lives.
 
-KickOS takes option 1 wherever the architecture provides it and option 3 everywhere the
-kernel writes bytes of its own, which is everywhere. Option 2 is not a third posture so
-much as the precondition option 3 needs: a validation step has to run *somewhere*, and it
+**Option 4: a per-thread kernel stack.** One block per thread slot, resident in kernel
+memory, which the syscall entry transfers onto before it dispatches. It is option 2's
+trust -- no thread can name the memory -- without option 2's defect, because the block
+belongs to one thread and can therefore be frozen and resumed like any other continuation.
+It costs one block per slot, unconditionally, out of RAM the arena will never see.
+
+KickOS takes option 1 wherever the architecture provides it, option 3 everywhere the
+kernel writes bytes of its own, and option 4 for the syscall dispatch on every part whose
+silicon has a privilege boundary at all. Option 2 is not a posture so much as the
+precondition option 3 needs: a validation step has to run *somewhere*, and it
 needs registers, so the prologue must already be standing on trusted memory before it can
 refuse anything. The order is the whole trick. A prologue that validates before it has
 somewhere safe to stand has nowhere to spill the scratch it needs; a prologue that adopts
@@ -143,6 +150,63 @@ trap_entry:
 `mscratch` holds the top of a small kernel-owned trap stack. The swap is a single
 instruction that both parks the untrusted pointer somewhere retrievable and installs a
 trusted one, which is exactly what a validation step needs to exist at all.
+
+## The cheap answer, why it looks sufficient, and where it still is
+
+Option 4 costs real RAM: `KICKOS_THREAD_SLOTS` blocks that exist whether or not the
+threads do, carved out of kernel memory below the arena. On a 16 KiB part that is a
+significant fraction of everything. So the obvious question is whether option 3 alone will
+do -- validate the incoming pointer, reserve a **red zone** below it deep enough for the
+whole privileged descent, and let the syscall dispatch run on the calling thread's own
+stack. No per-thread blocks, no kernel memory, and the freeze-and-resume property comes
+free because the dispatch is already standing on the thread's continuation.
+
+It is a genuinely good answer, and the argument for it is tight. The entry check proves
+the pointer names room inside the thread's own recorded stack. The red zone proves the
+room is deep enough that the deepest legitimate descent cannot run off the end. Both
+halves are measured rather than asserted, and a gate re-measures them. What is left to go
+wrong?
+
+What is left is *when* the check happens relative to *how long the exposure lasts*. The
+validation is a single act at entry. The dispatch that follows is a C descent that runs
+for as long as the syscall takes -- through the capability layer, the scheduler, a
+teardown sweep that deliberately releases and re-takes the interrupt lock between chunks.
+Throughout all of it, privileged code is reading and writing a stack that lives in the
+thread's own memory. The entry check answered a question about the pointer *at entry*. It
+cannot answer a question about the memory *during the descent*, and those are different
+questions the moment a second thread can reach that memory.
+
+And a second thread can. Threads in a task share a memory domain by design (Chapter 7):
+that is what a task *is*. So a sibling of the calling thread holds a legitimate,
+granted, read-write mapping of the very bytes the kernel's privileged dispatch is using as
+its stack. Nothing has been forged and no check has been evaded. The peer simply writes,
+on another core or in the window the teardown sweep opens, to memory it was correctly
+given. The red zone bounds the descent; it does not make the descent's memory private.
+
+That is the whole reason for option 4, and it is worth stating as a general rule rather
+than a KickOS detail:
+
+> A bounds check on a pointer is a statement about an instant. Privileged execution on
+> memory an unprivileged thread can reach is a condition that persists. When the second
+> outlasts the first, the check is not the defence you think it is.
+
+**The red zone is not thereby wrong, and KickOS still ships it.** On a part with no memory
+protection unit there is no privilege boundary for a trusted stack to protect: an
+unprivileged thread there reaches kernel memory with a plain store, so moving the dispatch
+off that thread's stack buys *robustness* -- a deep descent cannot silently corrupt the
+thread's own locals -- and buys no *isolation* at all, because there was none to buy. The
+red zone buys the same robustness at a fifth of the RAM. So the choice is not old-versus-new
+but a question asked per part: does this silicon have a boundary worth defending? Where the
+answer is yes, the block is mandatory and its size is a measured requirement. Where the
+answer is no, the red zone is the better engineering, and `stm32f302` and `sam3x8e` run it
+for exactly that reason.
+
+The knob that expresses this is `KICKOS_KERNEL_STACKS`, and it keys on the chip's
+`HAS_MPU` rather than on the board's enforcement posture, because affording the blocks is a
+RAM question and RAM does not change between a board's enforcing and flat variants.
+[`../reference/architecture.md`](../reference/architecture.md) carries the contract; this
+chapter's arithmetic for how deep the zone must be is in
+[*The frame is not the whole descent*](#the-frame-is-not-the-whole-descent) below.
 
 ## Four ISAs, four exposures
 

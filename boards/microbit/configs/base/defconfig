@@ -3,25 +3,21 @@
 
 CONFIG_BOARD_MICROBIT=y
 
-# 32 KiB of SRAM, which is a DELIBERATE DEPARTURE from the BBC micro:bit v1's 16.
-# arch/arm/chip/nrf51/nrf51.ld carries the reason and the QEMU property that makes it
-# real. What it buys is this board: the fleet's only executable armv6m target, provisioned
-# like the rest of the fleet instead of at its floor, so what runs here is what runs
-# everywhere. The arena the fattest image leaves went from 4896 bytes to 21280.
+# The RECOMMENDED tier of docs/reference/boards.md, which states what that tier buys; the
+# per-board arithmetic below is what this part pays for it.
 #
-# THE STARVATION OVERRIDES ARE GONE. KICKOS_MAX_SEMAPHORES, KICKOS_MAX_IRQ_HANDLES and
-# KICKOS_CAP_TABLE_SUPPLY were cut to 4, 4 and 7 to fit 16 KiB, and three TAP arms reported
-# SKIP as a result. They now take the fleet defaults.
+# 32 KiB of SRAM, a departure from the real device's 16 KiB (arch/arm/chip/nrf51/nrf51.ld
+# carries the reason): the fleet's only executable armv6m target, provisioned like the
+# rest of the fleet rather than at its floor.
 #
-# 2048 AND NOT 1408, because KICKOS_TLS strides every arena block by a power of two: the
-# armv6m thread pointer is SP masked down to the block, and 1408 would round the stride to
+# 2048 AND NOT 1408: KICKOS_TLS strides every arena block by a power of two, the armv6m
+# thread pointer being SP masked down to the block, and 1408 would round the stride to
 # 2048 anyway and waste the difference as padding rather than stack.
 #
-# FOUR AND NOT THE FLEET'S EIGHT. Eight does not fit even at 32 KiB: KICKOS_THREAD_SLOTS
-# blocks of KICKOS_KERNEL_STACK_SIZE (896 on armv6m) sit in kernel .bss BELOW the arena, so
-# raising the count shrinks the arena and grows the demand at once. At eight the arena is
-# about 12800 against a demand of 18944; at six it is 15488 against 14848, which fits with
-# 640 bytes and no room for the suite to grow; at four it is 18176 against 10752.
+# FOUR AND NOT EIGHT: KICKOS_THREAD_SLOTS blocks of KICKOS_KERNEL_STACK_SIZE (896 on
+# armv6m) sit in kernel .bss below the arena, so raising the thread count shrinks the
+# arena while growing the demand; four leaves the arena at 18176 against a demand of
+# 10752.
 #
 # Its CI gate is the TAP suite, so the self-test syscalls are part of the base posture
 # rather than a variant of it.

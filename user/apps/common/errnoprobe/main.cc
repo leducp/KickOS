@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The per-thread errno witness. Proves the three things a process-wide errno would fail
-// and a half-done mechanism would still pass: each thread reads back the value ITS OWN
-// libc call left, it reads it back AFTER a scheduler round trip that crossed a peer's
-// write, and the three threads resolve errno at three different addresses.
+// The per-thread errno witness: each thread reads back the value ITS OWN libc call left, it
+// reads it back AFTER a scheduler round trip that crossed a peer's write, and the threads
+// resolve errno at different addresses.
 //
-// NOTHING HERE ASSIGNS errno. An assignment would pass with the mechanism ripped out,
-// because the write and the read would land on the same wrong word. Every value below is
-// written by newlib's own _strtol_r: an overflowing literal gives ERANGE, an out-of-range
-// base gives EINVAL.
+// NOTHING HERE ASSIGNS errno. An assignment would pass with the mechanism ripped out, the write
+// and the read landing on the same wrong word. Every value below is written by newlib's own
+// _strtol_r: an overflowing literal gives ERANGE, an out-of-range base gives EINVAL.
 
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
@@ -27,9 +25,8 @@ namespace
         int provoked;      // errno straight after the call that set it
         int after_trip;    // errno after the peer has provoked its own
         unsigned trips;    // scheduler round trips waited out
-        // The publication edge, polled by root: volatile so the poll survives a build that
-        // can see through kos::sleep_ns. The fields above are written before it and read
-        // after it.
+        // Volatile so root's poll survives a build that can see through kos::sleep_ns. The
+        // fields above are written before it and read after it.
         volatile unsigned done;
     };
 
@@ -71,9 +68,9 @@ namespace
         g_report[k].addr = errno_addr();
         g_report[k].provoked = provoke(k);
         g_provoked[k] = 1;
-        // WAIT FOR THE PEER'S WRITE, not just for time to pass. The read below has to
-        // happen after another thread has put a different value in libc's state word, or
-        // an implementation that seats the pointer once at thread entry would pass.
+        // WAIT FOR THE PEER'S WRITE, not just for time to pass: the read below has to happen
+        // after another thread has put a different value in libc's state word, or an
+        // implementation that seats the pointer once at thread entry would pass.
         unsigned trips = 0;
         while (true)
         {
@@ -168,7 +165,7 @@ int main(int, char**)
         kos::print("[errnoprobe] BOTH WORKERS READ THE SAME ERRNO\n");
         bad++;
     }
-    // Root provoked ERANGE before either worker ran; worker 1 then provoked EINVAL. A
+    // Root provoked ERANGE before either worker ran and worker 1 then provoked EINVAL, so a
     // shared state hands root the peer's value.
     int const root_now = errno;
     if (root_provoked != ERANGE or root_now != ERANGE)

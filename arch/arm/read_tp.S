@@ -16,26 +16,20 @@
     .thumb_func
     .type   __aeabi_read_tp, %function
 
-/* IT RUNS UNPRIVILEGED, IN THE CALLING THREAD, WITH THAT THREAD'S GRANTS AND NOTHING MORE.
- * So it cannot read the current TCB out of a kernel global the way an RTOS with no MPU
- * would: on an enforcing board that load faults. M-profile hands unprivileged code no
- * register that differs per thread except SP, which is why the answer is derived from SP
- * and why every arena block is strided by KICKOS_TLS_STRIDE (arch_ram_region_align).
+/* Runs UNPRIVILEGED in the calling thread, so it cannot read the current TCB from a kernel
+ * global: that load faults on an enforcing board. M-profile gives unprivileged code no
+ * register that differs per thread except SP, which is what arch_ram_region_align strides
+ * every arena block by KICKOS_TLS_STRIDE for.
  *
- * Shifting rather than BIC because the mask is not encodable: a Thumb-2 BIC immediate is a
- * modified immediate and 0x1FFF is not one.
+ * AEABI restricted clobber: r0, ip, lr and the flags ONLY, so no scratch register and no
+ * memory access may be added here.
  *
- * AEABI restricted clobber: this may modify r0, ip, lr and the flags ONLY, so r1-r3 and
- * every VFP register survive it. Three instructions and no memory access satisfy that with
- * room to spare, which is also why it cannot be written in C.
+ * Shifts and not BIC: a Thumb-2 BIC immediate is a modified immediate and 0x1FFF is not one.
  *
- * THE SUBTRACT IS NOT DEFENSIVE, IT IS THE EDGE OF THE RANGE. A stack top is EXCLUSIVE, so
- * an empty stack has SP exactly at base + stride, which masks to the NEXT block and hands
- * the thread its neighbour's storage. It is reachable: the first run of the tlsprobe
- * witness took a data-abort at the neighbour's block for precisely this, and adding one
- * unrelated local to main moved SP and hid it again. Masking SP-1 puts every SP in
- * (base, base + stride] on base. SP == base cannot occur: the TLS block itself occupies the
- * bottom of the stack and stack_lo is raised above it.
+ * The subtract covers the edge of the range: a stack top is EXCLUSIVE, so an empty stack has
+ * SP at base + stride, which a plain mask sends to the NEXT block. SP-1 puts every SP in
+ * (base, base + stride] on base. SP reaching base would need the block itself overrun, and
+ * stack_lo sits above it.
  */
 __aeabi_read_tp:
     mov     r0, sp

@@ -29,11 +29,9 @@ BEGIN {
 {
     line = $0
     if (!started) {
-        # A DEFINITION and not a call or a declaration. Three tests, and the column-0 one
-        # is what makes it sound: a multiline CALL has no trailing `;` on its FIRST line
-        # either (sched.cc spreads arch_ctx_redirect over three), so "no semicolon" alone
-        # accepts calls. Every definition this gate reads sits at column 0, inside an
-        # `extern "C"` block or not; a call is always indented inside some body.
+        # A DEFINITION and not a call or a declaration. The column-0 test is what makes it
+        # sound: a multiline CALL has no trailing `;` on its FIRST line either (sched.cc
+        # spreads arch_ctx_redirect over three), so "no semicolon" alone accepts calls.
         if (index(line, FN "(") > 0 \
             && line ~ ("^[A-Za-z_][A-Za-z_0-9 *&:<>,]*" FN "[[:space:]]*\\(") \
             && line !~ /;[[:space:]]*$/) {

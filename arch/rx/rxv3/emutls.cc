@@ -2,12 +2,12 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // __emutls_get_address for rxv3, overriding libgcc's. GNURX has no native TLS, so the
-// compiler lowers every thread_local access to a call to this leaf. The
-// libgcc.a(emutls.o) that would otherwise answer it is the SINGLE-THREADED build: it
-// caches one pointer in the control block and hands every thread the same object, with no
-// diagnostic anywhere. Defining the symbol here keeps that member unextracted, which is
-// the archive rule arch/CMakeLists.txt states, and drops emutls.o's malloc/sbrk chain with
-// it (sbrk references `end`, which no KickOS linker script defines).
+// compiler lowers every thread_local access to a call to this leaf, and the
+// libgcc.a(emutls.o) that would otherwise answer it is the SINGLE-THREADED build: it caches
+// one pointer in the control block and hands every thread the same object, silently.
+// Defining the symbol here keeps that member unextracted (the archive rule
+// arch/CMakeLists.txt states) and drops emutls.o's malloc/sbrk chain with it, sbrk
+// referencing `end`, which no KickOS linker script defines.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -15,22 +15,19 @@
 #if defined(KICKOS_TLS) && KICKOS_TLS
 
 // Bytes carved off the bottom of every thread's stack for this image's thread_local
-// storage. A KNOB, where the five backends with real TLS relocations have a MEASUREMENT:
-// there the linker lays .tdata and .tbss out and the carve is their size, so the fit is
-// proven at link time. GNURX emits neither section; each object carries its own size in a
-// word the linker never sums, so on RX the fit is a RUNTIME check and rx_tls_panic() below
-// is what it costs when it fails. A multiple of 16 so it survives tls_block_size()'s
-// KICKOS_STACK_ALIGN rounding unchanged.
+// storage. A KNOB, where the backends with real TLS relocations have a MEASUREMENT: GNURX
+// emits neither .tdata nor .tbss, and each object carries its own size in a word the linker
+// never sums, so on RX the fit is a RUNTIME check that costs rx_tls_panic() when it fails.
+// A multiple of 16, so it survives tls_block_size()'s KICKOS_STACK_ALIGN rounding.
 #ifndef KICKOS_RX_TLS_BLOCK
 #define KICKOS_RX_TLS_BLOCK 256
 #endif
 
-// THE RESERVATION THE KERNEL'S CARVE IS SIZED FROM. kernel/thread/tls.cc measures the
-// carve as .tdata + .tbss; GNURX emits neither, so without this every thread's block is
-// zero bytes and thread_create skips the carve, leaving nothing between the bump allocator
-// below and live stack. It sits in THIS translation unit because the member is extracted
-// only when something references __emutls_get_address, so an image with no thread_local
-// reserves nothing, exactly as on the other five backends.
+// THE RESERVATION THE KERNEL'S CARVE IS SIZED FROM. kernel/thread/tls.cc measures the carve
+// as .tdata + .tbss, and GNURX emits neither, so without this every thread's block is zero
+// bytes and thread_create skips the carve, leaving nothing between the bump allocator below
+// and live stack. In THIS translation unit because it is extracted only when something
+// references __emutls_get_address, so an image with no thread_local reserves nothing.
 __attribute__((used, section(".tbss"), aligned(8)))
 static unsigned char g_tls_reserve[KICKOS_RX_TLS_BLOCK];
 
@@ -43,26 +40,25 @@ extern "C"
     // The reservation above, as the kernel measures it (kernel/thread/tls.cc).
     extern unsigned char __kickos_tbss_start[];
     extern unsigned char __kickos_tbss_end[];
-    // Code flash, the only region a control block's template may point into. The CODE
-    // pair and not the ROM pair: __kickos_rom_end is ORIGIN(FVECT) + LENGTH(FVECT), which
-    // is 0x1_0000_0000 and WRAPS TO 0 in a 32-bit uintptr_t, so an upper bound written
-    // against it admits every address above the base. __kickos_code_end stops at
-    // 0xFFFFFF80, the start of the fixed vectors, which no template is in anyway.
+    // Code flash, the only region a control block's template may point into. The CODE pair
+    // and not the ROM pair: __kickos_rom_end is ORIGIN(FVECT) + LENGTH(FVECT), which is
+    // 0x1_0000_0000 and WRAPS TO 0 in a 32-bit uintptr_t, so an upper bound written against
+    // it admits every address above the base.
     extern unsigned char __kickos_code_start[];
     extern unsigned char __kickos_code_end[];
 }
 
 namespace
 {
-    // What GCC emits per thread_local object, 16 bytes in .data (probed on GNURX 14.2:
+    // What GCC emits per thread_local object: 16 bytes in .data (GNURX 14.2,
     // .data.__emutls_v.<name>, size 0x10, align 4).
     //
-    // `loc` IS UPSTREAM'S PROCESS-WIDE POINTER CACHE AND THIS FILE NEVER TOUCHES IT.
-    // The per-thread index is the object's own position in the gathered array instead, so
-    // there is no first-use assignment for two threads to race over and no writable global
-    // outside the calling thread's own block. That matters twice on RX: this leaf runs
-    // unprivileged, and libkickos_arch_rxv3.a's .data lands on the KERNEL side of the
-    // enforcement split, where an unprivileged store faults.
+    // `loc` IS UPSTREAM'S PROCESS-WIDE POINTER CACHE AND THIS FILE NEVER TOUCHES IT. The
+    // per-thread index is the object's own position in the gathered array instead, so there
+    // is no first-use assignment for two threads to race over and no writable global outside
+    // the calling thread's own block. This leaf runs unprivileged, and
+    // libkickos_arch_rxv3.a's .data lands on the KERNEL side of the enforcement split, where
+    // an unprivileged store faults.
     struct EmutlsObject
     {
         uint32_t size;
@@ -73,10 +69,10 @@ namespace
     static_assert(sizeof(EmutlsObject) == 16,
                   "the gathered __emutls_v array is indexed on a 16-byte stride");
 
-    // Block layout at the thread pointer: a 4-byte header, then one uint16_t offset per
-    // emutls object in the image, then the bump area. Every offset is a byte offset from
-    // the thread pointer, and 0 means "not allocated in this thread yet"; the header can
-    // never live at a non-zero offset, so 0 is free as a sentinel.
+    // Block layout at the thread pointer: a 4-byte header, one uint16_t offset per emutls
+    // object in the image, then the bump area. Each offset is a byte offset from the thread
+    // pointer and 0 means "not allocated in this thread yet", which is free as a sentinel
+    // because the header itself can never sit at a non-zero offset.
     constexpr size_t HEADER_BYTES = 4;
     constexpr size_t PAYLOAD_ALIGN = 8;
     constexpr size_t BLOCK_BYTES = KICKOS_RX_TLS_BLOCK;
@@ -88,20 +84,16 @@ namespace
 
     // BRK, reachable from unprivileged code with no kernel read. The relocatable vector's
     // slot 0 reaches _rx_trap (chip startup.S), which reports cause 0, and cause 0 is
-    // deliberately outside rx_cause_is_thread_fault()'s set, so this stops the system
-    // rather than killing one thread.
-    //
-    // A SYSTEM PANIC AND NOT A THREAD KILL, FOR THE FORGED ANCHOR TOO. rx72m-flat runs its
-    // threads in supervisor, so PSW.PM is never set and arch_fault_is_user_thread refuses
-    // every cause there: no encoding kills one thread on all three variants. The one thing
-    // that must not happen either way is returning storage some other thread also holds.
+    // deliberately outside rx_cause_is_thread_fault()'s set, so this stops the SYSTEM rather
+    // than killing one thread. A thread kill is not available on all three variants anyway:
+    // rx72m-flat runs its threads in supervisor, so PSW.PM is never set and
+    // arch_fault_is_user_thread refuses every cause there.
     [[noreturn]] void rx_tls_panic()
     {
-        // AND THIS IS ALSO WHAT ANCHORS THE RESERVATION. The .tbss blob carries no
-        // relocation of its own, and the template in arch/common/sections.ld.h does not
-        // KEEP it, so without a reference from a live section --gc-sections drops it and
-        // the carve the kernel measures collapses back to zero bytes. It sits on the
-        // panic path so the hot path pays nothing for it.
+        // THIS IS ALSO WHAT ANCHORS THE RESERVATION. The .tbss blob carries no relocation of
+        // its own and the template in arch/common/sections.ld.h does not KEEP it, so without
+        // a reference from a live section --gc-sections drops it and the carve the kernel
+        // measures collapses to zero bytes. On the panic path, so the hot path pays nothing.
         __asm__ volatile("" : : "r"(&g_tls_reserve[0]));
         while (true)
         {
@@ -120,19 +112,14 @@ namespace
 // a thread with an empty stack has R0 exactly at base + stride, which masks to the NEXT
 // block and hands it its neighbour's storage. Masking R0 - 1 puts every R0 in
 // (base, base + stride] on base. R0 == base cannot occur: the block below is carved off the
-// stack and ctx.stack_lo is raised above it.
-//
-// ON RX THE EDGE IS ALSO UNREACHABLE, WHICH IS NOT A REASON TO DROP THE SUBTRACT. Every
-// call site is a bsr, and bsr PUSHES the return address, so R0 here is already at least
-// four bytes below the caller's; the exclusive top cannot be observed from inside this
-// function the way it is from ARM's __aeabi_read_tp, which a bl reaches with the caller's
-// own SP intact. Nothing on this bench witnesses a mutation that removes it, and nothing
-// on hardware would either.
+// stack and ctx.stack_lo is raised above it. On RX the edge happens to be unobservable from
+// inside this function, every call site being a bsr and bsr pushing the return address, but
+// ARM's __aeabi_read_tp is reached by a bl with the caller's SP intact and does see it.
 extern "C" void* __emutls_get_address(void* anchor)
 {
-    // THE ANCHOR IS THE ONLY UNTRUSTED INPUT, and everything below walks a table reached
-    // through it, so it is checked before it is dereferenced: it must be one of the
-    // image's own control blocks, on the 16-byte grid the gather produces.
+    // THE ANCHOR IS THE ONLY UNTRUSTED INPUT and everything below walks a table reached
+    // through it, so it is checked before it is dereferenced: it must be one of the image's
+    // own control blocks, on the 16-byte grid the gather produces.
     uintptr_t const a = reinterpret_cast<uintptr_t>(anchor);
     uintptr_t const vstart = reinterpret_cast<uintptr_t>(__kickos_emutls_v_start);
     uintptr_t const vend = reinterpret_cast<uintptr_t>(__kickos_emutls_v_end);
@@ -147,8 +134,8 @@ extern "C" void* __emutls_get_address(void* anchor)
     }
     size_t const index = byte_index / sizeof(EmutlsObject);
 
-    // The carve the kernel actually made, cross-checked against the reservation this file
-    // contributes: a second .tbss contributor would move one and not the other.
+    // Cross-checked against the reservation this file contributes: a second .tbss
+    // contributor would move one and not the other.
     size_t const reserved =
         static_cast<size_t>(__kickos_tbss_end - __kickos_tbss_start);
     if (reserved != BLOCK_BYTES)
@@ -167,10 +154,10 @@ extern "C" void* __emutls_get_address(void* anchor)
     unsigned char* const tp = reinterpret_cast<unsigned char*>(
         (sp - 1u) & ~static_cast<uintptr_t>(KICKOS_TLS_STRIDE - 1u));
 
-    // tls_seat() zeroes the whole carve at thread_create and nothing else writes the
-    // header, so brk == 0 means this thread has allocated nothing yet. A brk outside the
-    // block is a block that was never seated: idle's stack is below one stride so it takes
-    // no carve, and masking an SP inside it lands on whatever precedes the arena.
+    // tls_seat() zeroes the whole carve at thread_create and nothing else writes the header,
+    // so brk == 0 means this thread has allocated nothing yet. A brk outside the block is a
+    // block that was never seated: idle's stack is below one stride so it takes no carve,
+    // and masking an SP inside it lands on whatever precedes the arena.
     uint16_t* const brk = reinterpret_cast<uint16_t*>(tp);
     uint16_t* const table = reinterpret_cast<uint16_t*>(tp + HEADER_BYTES);
     if (*brk == 0)
@@ -182,10 +169,9 @@ extern "C" void* __emutls_get_address(void* anchor)
         rx_tls_panic();
     }
 
-    // BOUNDED ON THE FAST PATH TOO. The table lives in the thread's own block, which the
-    // thread can write, and an offset is only 16 bits: an unchecked one of 65535 lands
-    // eight strides away, inside a NEIGHBOUR's block, which is the cross-thread sharing
-    // this whole file exists to remove.
+    // Bounded on the fast path too: the table lives in the thread's own block, which the
+    // thread can write, and an offset is only 16 bits, so an unchecked 65535 lands eight
+    // strides away inside a NEIGHBOUR's block.
     uint16_t const cached = table[index];
     if (cached != 0)
     {
@@ -197,10 +183,9 @@ extern "C" void* __emutls_get_address(void* anchor)
     }
 
     EmutlsObject const* const obj = static_cast<EmutlsObject const*>(anchor);
-    // Read out of .appdata, which every peer thread in the task can write, so bounded
-    // before it is used to move the bump pointer. A forged size that survived would hand
-    // this thread a slot overlapping its neighbour's, which is the sharing this file
-    // removes.
+    // Read out of .appdata, which every peer thread in the task can write, so bounded before
+    // it moves the bump pointer: a forged size hands this thread a slot overlapping its
+    // neighbour's.
     size_t const want = obj->size;
     size_t const want_align = obj->align;
     if (want == 0 or want > BLOCK_BYTES)
@@ -216,9 +201,8 @@ extern "C" void* __emutls_get_address(void* anchor)
     size_t const at = align_up(*brk, want_align);
     if (at > BLOCK_BYTES or want > BLOCK_BYTES - at)
     {
-        // EXHAUSTION IS THE PANIC, and sharing is the alternative it exists to refuse.
-        // Raise KICKOS_RX_TLS_BLOCK: the total is the sum of this image's thread_local
-        // sizes plus their alignment run-ups, plus 4 + 2 bytes per object for the table.
+        // Raise KICKOS_RX_TLS_BLOCK: the total is the sum of this image's thread_local sizes
+        // plus their alignment run-ups, plus 4 + 2 bytes per object for the table.
         rx_tls_panic();
     }
     *brk = static_cast<uint16_t>(at + want);
@@ -228,17 +212,17 @@ extern "C" void* __emutls_get_address(void* anchor)
     unsigned char const* const templ = obj->templ;
     if (templ == nullptr)
     {
-        // Already zero: tls_seat() zeroed the carve and every offset is handed out once.
-        // Written anyway so the guarantee is this function's and not the seater's.
+        // Already zero (tls_seat zeroed the carve and every offset is handed out once),
+        // written anyway so the guarantee is this function's and not the seater's.
         for (size_t i = 0; i < want; i++)
         {
             dst[i] = 0;
         }
         return dst;
     }
-    // The template of a .tdata-class object is __emutls_t.<name> in .rodata, so code
-    // flash. Bounded because obj->templ is app-writable: unbounded it is an arbitrary read,
-    // and on rx72m-flat there is no MPU to turn that into a fault.
+    // The template of a .tdata-class object is __emutls_t.<name> in .rodata, so code flash.
+    // Bounded because obj->templ is app-writable: unbounded it is an arbitrary read, and on
+    // rx72m-flat there is no MPU to turn that into a fault.
     uintptr_t const t = reinterpret_cast<uintptr_t>(templ);
     uintptr_t const rom_lo = reinterpret_cast<uintptr_t>(__kickos_code_start);
     uintptr_t const rom_hi = reinterpret_cast<uintptr_t>(__kickos_code_end);

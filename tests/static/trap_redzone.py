@@ -10,15 +10,14 @@
 # `__indirect_call` for every call through a pointer. The whole tree's .ci files are merged
 # and the longest weighted path from the declared roots is the answer.
 #
-# EVERY figure comes from the declaration files or from the caller; nothing is defaulted,
-# because a red zone derived from a silent under-approximation is worse than none at all.
-# Every way this tool refuses to answer is listed in check_trap_redzone.sh.
+# NOTHING IS DEFAULTED: every figure comes from the declaration files or from the caller, a
+# red zone derived from a silent under-approximation being worse than none at all.
 #
 # NODE TITLE SCOPING. An internal-linkage function is titled "<path>:<mangled>", so titles
-# are keyed by basename plus mangled tail: two TUs each with a static `helper` do not
-# merge into one node, and the same static seen from two .ci files does. A node with no
-# "bytes (static)" is defined outside the C/C++ the compiler saw (assembly, libgcc) and
-# must be declared in the unsized-allowance list or the run fails.
+# are keyed by basename plus mangled tail: two TUs each with a static `helper` do not merge
+# into one node, and the same static seen from two .ci files does. A node with no
+# "bytes (static)" is defined outside the C/C++ the compiler saw (assembly, libgcc) and must
+# be declared in the unsized-allowance list or the run fails.
 
 import collections
 import glob
@@ -121,10 +120,9 @@ class Decl(object):
                     elif opt == 'stack=kernel':
                         on_kernel = True
                     elif opt in ('kstacks=0', 'kstacks=1'):
-                        # Read by check_trap_redzone.sh, which owns the live posture knob and
-                        # passes --not-compiled for a class this image does not contain. Only
-                        # accepted here so a marked record parses; this tool never resolves it
-                        # itself, there being no board config in a .ci tree to resolve it from.
+                        # Read by check_trap_redzone.sh, which owns the live posture knob.
+                        # Accepted here only so a marked record parses: a .ci tree carries no
+                        # board config to resolve it from.
                         pass
                     else:
                         die('%s: unknown class option "%s"' % (where, opt))
@@ -148,9 +146,8 @@ class Decl(object):
                     die('%s: root names class %s, declared nowhere for %s'
                         % (where, cls, arch))
                 sym = f[3]
-                # NONE is the deliberate twin of an omitted record: the class runs no C
-                # on this stack, so 0 is the answer rather than a silence. It carries a
-                # reason because the claim is structural and only prose can carry it.
+                # NONE is the deliberate twin of an omitted record: the class runs no C on
+                # this stack, so 0 is the answer rather than a silence.
                 if sym == 'NONE':
                     if reason is None:
                         die('%s: root NONE carries no "reason:"; a class that measures'
@@ -486,8 +483,7 @@ def root_keys(graph, decl, cls, report):
                 ' nobody measured is a path nobody bounded' % (cls, sym))
         keys.append(key)
     # A class whose roots are ALL optional and all absent has a non-empty declaration and an
-    # empty root set, so it measures 0 and passes forever. NONE is the record that says so
-    # deliberately.
+    # empty root set, so it would measure 0 and pass forever.
     if not keys and cls not in decl.rootless:
         die('%s has %d declared root(s) and not one of them is in the graph, so it would'
             ' measure 0 and always pass. Every root it names is optional; if the class truly'
@@ -512,8 +508,7 @@ def parse_argv(argv):
     opt = {}
     enforced = collections.OrderedDict()
     # Classes this image does not compile, per the caller's read of the live posture knob.
-    # Still measured and still printed; only the figure comparison is dropped, because the
-    # depth measures the same C landing on a stack this design does not put it on.
+    # Still measured and printed; only the figure comparison is dropped.
     not_compiled = set()
     i = 0
     while i < len(argv):
@@ -605,9 +600,8 @@ def run(argv):
                 ' the printed without-exclusions figure would be a duplicate' % spec)
         excluded.add(key)
 
-    # Charge the declared cost to every allowance that IS in the graph. An allowance the
-    # graph does not have is reported, not failed: the list spans the fleet's boards and a
-    # given image need not pull every libgcc helper.
+    # An allowance the graph does not have is reported, not failed: the list spans the
+    # fleet's boards and a given image need not pull every libgcc helper.
     unsized_keys = {}
     for sym, (cost, _reason) in decl.unsized.items():
         key = graph.resolve(sym)
@@ -626,8 +620,7 @@ def run(argv):
 
     # A stack=trap or stack=kernel class is measured with NOTHING excluded: the exclusion set
     # exists only to keep a THREAD's red zone under the spawn floor, and neither class spends
-    # a thread stack. So both walk `bare`, and every hard check below runs over the set that
-    # walk reaches, not over the post-exclusion one.
+    # a thread stack.
     def walk_for(cls):
         if cls in decl.off_thread():
             return bare
@@ -692,10 +685,9 @@ def run(argv):
             print('  %-6s %d bytes measured, %d over the enforced %d, red zone would be %d%s'
                   % (cls, b, b - enf_depth, enf_depth, frame + b, note))
 
-    # Every hard check runs over the reachable set the ENFORCED figure claims to cover,
-    # which is the set after exclusions: a node only the excluded tail reaches is outside
-    # the claim and reporting it would make the gate unfixable. A stack=trap class claims
-    # the tail too, so its own reachable set is the one with nothing excluded.
+    # Every hard check runs over the reachable set the ENFORCED figure claims to cover, which
+    # is the set after exclusions: a node only the excluded tail reaches is outside the claim
+    # and reporting it would make the gate unfixable.
     reach = set()
     for cls in decl.classes:
         reach |= walk_for(cls).reach(roots[cls])

@@ -38,17 +38,13 @@ namespace kickos
         // Word 0 of a slot's kernel stack, which is its LOW end and so the last word an
         // overflow reaches. 'K','C','A','N'.
         constexpr uint32_t KSTACK_CANARY = 0x4B43414Eu;
-        // Every word above the canary, as laid once at init. The
-        // deepest a stack has ever been is the first word, scanning UP from the canary, that
-        // no longer holds this. 'K','S','F','L'.
+        // Every word above the canary, laid once at init. 'K','S','F','L'.
         constexpr uint32_t KSTACK_FILL = 0x4B53464Cu;
 
         static_assert(KICKOS_KERNEL_STACK_SIZE % sizeof(uint32_t) == 0,
                       "KICKOS_KERNEL_STACK_SIZE must be a whole number of 32-bit words, or "
                       "the canary and the high-water scan would run off the block");
         constexpr size_t KSTACK_WORDS = KICKOS_KERNEL_STACK_SIZE / sizeof(uint32_t);
-        // The canary costs one word of the block, so a stack this shallow would have nothing
-        // above it to measure.
         static_assert(KSTACK_WORDS >= 2, "KICKOS_KERNEL_STACK_SIZE holds only the canary");
         // Seating an sp needs the arch's stack alignment at the TOP of every slot, which the
         // stride carries; the block's own base carries it through alignas below.
@@ -56,23 +52,15 @@ namespace kickos
                       "KICKOS_KERNEL_STACK_SIZE must be a multiple of KICKOS_STACK_ALIGN, or "
                       "slot i's stack top is misaligned for every odd i");
 
-        // KERNEL .bss, NOT AN ARENA CARVE, and both halves of that are load-bearing.
+        // KERNEL .bss AND NOT AN ARENA CARVE, for two reasons. Rule 7 confines every RAM
+        // grant to [arch_ram_base(), + arch_ram_size()) and kernel .bss sits below
+        // __kickos_ram_start, so no grant a thread can be given reaches these. And
+        // arch_ram_alloc snaps size and alignment to what one MPU descriptor can name, which
+        // on PMP/NAPOT took one 17408-byte block to 32768 at 32768 alignment; these are never
+        // granted, so the arch's stack alignment is all they need.
         //
-        // OUTSIDE THE GRANTABLE REGION. Rule 7 confines every RAM grant to
-        // [arch_ram_base(), + arch_ram_size()), which is the arena; kernel .bss sits below
-        // __kickos_ram_start and so is unreachable by any grant a thread can be given. A
-        // stack that privileged code runs on does not belong in the memory grants are drawn
-        // from.
-        //
-        // AND IT PAYS NO REGION GEOMETRY. arch_ram_alloc snaps both size and alignment to
-        // what one MPU descriptor can name, because what it hands out is USER stacks, which
-        // are granted as regions. These are never granted, so that rounding buys nothing:
-        // on PMP/NAPOT it took one 17408-byte block to 32768 at 32768 alignment. Here the
-        // only alignment anyone needs is the arch's stack alignment.
-        //
-        // Per instance for the same reason struct Kernel is: the multi-instance sim hosts
-        // one kernel per emulated MCU and each needs its own stacks. At one instance the
-        // index folds to a literal and this is one plain array.
+        // Per instance for the same reason struct Kernel is: the multi-instance sim hosts one
+        // kernel per emulated MCU. At one instance the index folds to a literal.
         struct KStackBlock
         {
             alignas(KICKOS_STACK_ALIGN)
@@ -89,16 +77,10 @@ namespace kickos
     }
 
 #if KICKOS_KERNEL_STACKS
-    // ARMED ONCE, AT INIT, AND NEVER RE-ARMED ON SLOT REUSE. Two reasons, and the second
-    // is the one that decided it. Re-arming would erase the record of an overflow that had
-    // already happened, and what a slot's canary is for is exactly that record. And the
-    // re-arm would have to run where a slot is handed out, which is inside the spawn's
-    // IrqLock, putting a whole-block write into a masked window this tree measures in single
-    // pushes.
-    //
-    // So both figures below are PER SLOT AND SINCE BOOT rather than per thread: the deepest
-    // any thread ever drove that slot, and whether any of them ever ran off it. That is also
-    // the figure that SIZES a kernel stack, where a per-thread reading is not.
+    // ARMED ONCE AT INIT AND NEVER RE-ARMED ON SLOT REUSE: re-arming would erase the record
+    // of an overflow that already happened, and it would have to run where a slot is handed
+    // out, inside the spawn's IrqLock. So both figures below are PER SLOT AND SINCE BOOT
+    // rather than per thread, which is also the reading that SIZES a kernel stack.
     void kstack_arm(int index)
     {
         uint32_t* const w = kstack_words(index);
@@ -110,9 +92,8 @@ namespace kickos
     }
 
     // Bytes from the deepest word ever written up to the slot's stack top. Scans UP because
-    // the stack grows DOWN from that top, so the untouched words are the low ones and the
-    // first word no longer holding the fill ends the run. The ceiling is
-    // KICKOS_KERNEL_STACK_SIZE minus the canary word, which is not usable stack.
+    // the stack grows DOWN from that top, so the untouched words are the low ones. The
+    // ceiling is KICKOS_KERNEL_STACK_SIZE minus the canary word, which is not usable stack.
     size_t kstack_high_water(int index)
     {
         uint32_t const* const w = kstack_words(index);
@@ -295,15 +276,13 @@ namespace kickos
 
         // THE TLS CARVE, off the LOW end of the thread's own stack, so it costs no MPU
         // descriptor: the region added above already spans it, and raising stack_lo past it
-        // is what keeps the thread's own SP out of its own thread_local storage.
+        // keeps the thread's own SP out of its own thread_local storage.
         //
-        // IDLE TAKES NONE, and it is the ONLY thread that may take none. Its block is a
-        // fraction of a stride, so no thread pointer could be derived from an SP inside it,
-        // and its body is arch_idle_wait alone. Everything else runs user code and must have
-        // a block, which is why the exemption is keyed on the idle TCB by identity rather
-        // than on the stack's size: keyed on size, a caller-supplied stack that passed
-        // admission could still skip the carve while __aeabi_read_tp went on answering for
-        // it, and the thread would read whatever lay at the bottom of its own stack.
+        // IDLE IS THE ONLY THREAD THAT MAY TAKE NONE: its block is a fraction of a stride and
+        // its body is arch_idle_wait alone. The exemption is keyed on the idle TCB by
+        // IDENTITY and not on the stack's size, because a caller-supplied stack that passed
+        // admission would otherwise skip the carve while __aeabi_read_tp went on answering
+        // for it.
         void* ustack = stack_base;
         size_t usize = stack_size;
         size_t const tls = tls_block_size();
@@ -327,15 +306,9 @@ namespace kickos
         t->reent = kickos_reent_acquire(kernel().threads.index_of(t));
 #endif
 #if KICKOS_KERNEL_STACKS
-        // The slot index IS the per-thread state: the top follows from it and the one
-        // instance-scoped block, so no base or size field joins struct Thread (whose
-        // no-tail-padding assert prices every one of them) and none joins struct Kernel
-        // either.
-        //
         // A TCB OUTSIDE THE POOL KEEPS kernel_sp AT 0, which arch_context_init just set.
-        // Idle is the only such TCB today (kernel().idle_tcb): it is privileged and its body
-        // is arch_idle_wait alone, so it never enters the syscall path and has nothing to
-        // enter it on.
+        // Idle is the only such TCB (kernel().idle_tcb): privileged, and its body is
+        // arch_idle_wait alone, so it never enters the syscall path.
         int const kslot = kernel().threads.index_of(t);
         if (kslot >= 0)
         {

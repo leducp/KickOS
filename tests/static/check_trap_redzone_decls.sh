@@ -6,39 +6,16 @@
 # trap-stack header is declared, every class that header prices is declared, and every
 # configure preset of a declared arch is registered.
 #
-# WHY THIS IS A GATE OF ITS OWN. check_trap_redzone.sh measures ONE preset per run and takes
+# Separate from check_trap_redzone.sh because that gate measures ONE preset per run and takes
 # its class set from whatever the file declares for that preset's arch, so a DELETION is
-# invisible to it in every direction: drop the rv32imac EXIT class and the run measures six
-# classes instead of seven and passes; drop a `preset` record and CMakeLists.txt registers no
-# trap_redzone test for that board at all, and a fleet sweep reports one fewer green test
-# rather than a failure. The completeness of the declaration set is a property of the
-# DECLARATIONS against the tree, which no single-preset measurement can see. This gate is
-# that cross-check, and it is why the enumeration rule the file states in prose is now
-# executable.
+# invisible to it: drop a class and the run measures one fewer and passes, drop a `preset`
+# record and CMakeLists.txt registers no trap_redzone test for that board at all.
 #
-# Source-tree gate: reads the tree through `git ls-files` plus the preset files, builds
-# nothing and configures nothing, so it needs no cross toolchain and registers on every
-# board including sim.
+# It reads the tree through `git ls-files` plus the preset files and configures nothing, so
+# it needs no cross toolchain and registers on every board including sim.
 #
-# WHAT IT PINS, in both directions:
-#   - every tracked *_trap_stack.h is named by an `arch` record, and every `arch` record's
-#     header exists. Without this leg, deleting an arch record AND its presets together
-#     un-gates that whole arch silently.
-#   - every DEPTH macro the declared header defines is measured by a `class` record of that
-#     arch. The header's DEPTH macros ARE the class list: a depth figure exists to be
-#     compared against a measurement, so one that no class names is either a class that was
-#     deleted or a figure nothing enforces.
-#   - every `frame=` and `depth=` macro a class record names is defined in that arch's
-#     header. check_trap_redzone.sh resolves these through the compiler, so it catches a
-#     rename only for the arch it is measuring.
-#   - every visible configure preset whose board's arch is a declared arch has a `preset`
-#     record, and every `preset` record names a visible preset of that same arch.
-#
-# SCOPE. An arch with no trap-stack header is not gated and is not asked to be: sim and lx6
-# have no such header, so their presets are outside every clause here by construction rather
-# than by exemption. What this gate cannot see is whether a declared figure is RIGHT; that is
-# check_trap_redzone.sh's measurement, and this gate only pins that the measurement is asked
-# for at all.
+# The invariant behind clause 2: a header's DEPTH macros ARE its class list, so a depth
+# figure no class record names is either a deleted class or a figure nothing enforces.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -63,10 +40,8 @@ FLATTEN="tests/static/preset_boards.cmake"
 [ -f "$ROOTS" ] || fail "no declaration file at $SRC/$ROOTS"
 [ -f "$FLATTEN" ] || fail "no preset flattener at $SRC/$FLATTEN"
 
-# The declaration reader, byte-for-byte the filter check_trap_redzone.sh uses, so this gate
-# and the measuring gate cannot disagree about what a record says. Comments stripped and
-# trailing-backslash continuations joined; no arch filter, because completeness is a question
-# about the whole file.
+# Byte-for-byte the filter check_trap_redzone.sh uses, so the two gates cannot disagree about
+# what a record says. Comments stripped and trailing-backslash continuations joined.
 decl() { # <kind>
     awk -v KIND="$1" '
         { sub(/#.*/, "") }
@@ -124,7 +99,6 @@ while IFS="$TAB" read -r a h; do
     N_ARCHES=$((N_ARCHES + 1))
     [ -f "$h" ] || continue
 
-    # Every macro this arch's classes name must be defined in its own header.
     awk -F"$TAB" -v A="$a" '$1 == A { print $3 "\t" $2 }' "$TMP/classmacros" > "$TMP/want"
     while IFS="$TAB" read -r m cls; do
         if ! grep -qE "^[[:space:]]*#[[:space:]]*define[[:space:]]+$m([[:space:]]|\$)" "$h"; then
@@ -132,7 +106,6 @@ while IFS="$TAB" read -r a h; do
         fi
     done < "$TMP/want"
 
-    # And every DEPTH figure the header defines must be measured by one of them.
     sed -n 's/^[[:space:]]*#[[:space:]]*define[[:space:]]\{1,\}\(KICKOS_[A-Z0-9_]*DEPTH[A-Z0-9_]*\).*/\1/p' \
         "$h" | sort -u > "$TMP/have"
     awk -F"$TAB" -v A="$a" '$1 == A { print $3 }' "$TMP/classmacros" | sort -u > "$TMP/named"
@@ -170,9 +143,9 @@ done < "$TMP/presets"
 cut -f1 "$TMP/archmap" > "$TMP/archnames"
 N_INSCOPE=0
 while IFS="$TAB" read -r p b pa; do
-    # Only an arch this file gates is asked for; sim and lx6 have no trap-stack header. An
-    # empty arch is tested for first: grep -xF "" matches every line and would put a
-    # board-less preset in scope against the first declared arch.
+    # Only an arch this file gates is asked for; sim and lx6 have no trap-stack header. The
+    # empty arch is tested FIRST: grep -xF "" matches every line and would put a board-less
+    # preset in scope against the first declared arch.
     [ -n "$pa" ] || continue
     grep -qxF "$pa" "$TMP/archnames" || continue
     N_INSCOPE=$((N_INSCOPE + 1))
