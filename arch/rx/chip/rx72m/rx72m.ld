@@ -24,6 +24,8 @@
  * symbols (e.g. _istack) are used verbatim and take no extra prefix.
  */
 
+#include <sections.ld.h>
+
 ENTRY(_start)
 
 MEMORY
@@ -66,6 +68,7 @@ SECTIONS
     .text : ALIGN(4)
     {
         *(.text .text.*)
+        KICKOS_CODE_DEBRIS_SECTIONS
         *(P P_*)               /* RX-native code (libc/libgcc) */
         *(.rodata .rodata.*)
         *(C C_1 C_2 C$*)       /* RX-native const */
@@ -109,6 +112,8 @@ SECTIONS
         KEEP(*(.fini_array))
         ___kickos_app_fini_array_end = .;
     } > ROM
+
+    KICKOS_TLS_TEMPLATE(ROM)
 
     .kickos_app_init_array : ALIGN(4)
     {
@@ -274,7 +279,11 @@ SECTIONS
     .fvectors : { KEEP(*(.fvectors)) } > FVECT
 
     /DISCARD/ : { *(.ARM.attributes) *(.comment) }
+
+    KICKOS_NONALLOC_SECTIONS
 }
+
+KICKOS_STATIC_RELOC_ASSERT()
 
 ASSERT(___kickos_ram_start <= ___kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + ISP stack)")

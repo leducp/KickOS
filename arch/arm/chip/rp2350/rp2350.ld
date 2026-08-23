@@ -25,6 +25,8 @@
  * no window.
  */
 
+#include <sections.ld.h>
+
 ENTRY(Reset_Handler)
 
 MEMORY
@@ -60,6 +62,7 @@ SECTIONS
         *(.text .text.*)
         *(.rodata .rodata.*)
         *(.glue_7) *(.glue_7t)
+        KICKOS_CODE_DEBRIS_SECTIONS
         KEEP(*(.init))
         KEEP(*(.fini))
         . = ALIGN(4);
@@ -100,6 +103,8 @@ SECTIONS
         KEEP(*(.fini_array))
         __kickos_app_fini_array_end = .;
     } > FLASH
+
+    KICKOS_TLS_TEMPLATE(FLASH)
 
     .kickos_app_init_array :
     {
@@ -249,7 +254,11 @@ SECTIONS
     __kickos_code_end = ORIGIN(FLASH) + LENGTH(FLASH);
 
     /DISCARD/ : { *(.ARM.attributes) }
+
+    KICKOS_NONALLOC_SECTIONS
 }
+
+KICKOS_STATIC_RELOC_ASSERT()
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")

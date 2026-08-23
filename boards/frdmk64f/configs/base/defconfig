@@ -6,15 +6,11 @@ CONFIG_BOARD_FRDMK64F=y
 # Only what differs from the Kconfig defaults, as savedefconfig would write it and in
 # the declaration order it uses.
 CONFIG_MEMORY_MODEL_MPU=y
-# Not the fleet default 16: enforcement pins __kickos_ram_start above the .appdata
-# window, and what is left backs 12 stacks of the 8192 below. The flat variant keeps 16
-# because its arena starts where .bss ends.
-# 7584 and not 8192: thirteen slots of KICKOS_KERNEL_STACK_SIZE (1008 on armv7m at
-# telemetry off) is 13104 bytes of kernel .bss below the arena, more than one whole
-# stack, and 608 off each of the thirteen stacks the arena backs buys it back with a
-# thread still ending up with more usable stack than before. The st variant states the
-# same figure and its comment carries the derivation.
-CONFIG_KICKOS_MAX_THREADS=12
-CONFIG_KICKOS_USER_STACK_SIZE=7584
+# Not the fleet default 16: this is one Cortex-M4 core, and an application heavy enough
+# to want more than eight threads on it wants a different part. The flat variant keeps 16
+# because its arena starts where .bss ends. The st variant states the same figures and
+# its comment carries the derivation.
+CONFIG_KICKOS_MAX_THREADS=8
+CONFIG_KICKOS_USER_STACK_SIZE=8192
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
-CONFIG_KICKOS_ROOT_STACK_SIZE=7584
+CONFIG_KICKOS_ROOT_STACK_SIZE=8192

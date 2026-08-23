@@ -321,6 +321,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
       OUTPUT "${_boot2_bin}"
       COMMAND ${CMAKE_C_COMPILER} ${KICKOS_MCPU_FLAGS} -mthumb
               -nostdlib -nostartfiles -Wl,--entry=${_boot2_entry}
+              -Wl,--orphan-handling=error
               -T "${_boot2_ld}" "${_boot2_src}" -o "${_boot2_elf}"
       COMMAND ${CMAKE_OBJCOPY} -O binary "${_boot2_elf}" "${_boot2_bin}"
       DEPENDS "${_boot2_src}" "${_boot2_ld}"
@@ -451,6 +452,22 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   if(EXISTS "${CMAKE_SOURCE_DIR}/boards/${KICKOS_BOARD}/${KICKOS_CHIP}.ld")
     set(_ld "${CMAKE_SOURCE_DIR}/boards/${KICKOS_BOARD}/${KICKOS_CHIP}.ld")
   endif()
+  # Every image links --orphan-handling=error, so a script missing the shared vocabulary
+  # fails the LINK with a section name and no hint of what is owed. Refuse at configure
+  # instead, the way KICKOS_POOL_ARENA_ASSERT is refused, and name the fix.
+  file(READ "${_ld}" _ld_sections_txt)
+  foreach(_m KICKOS_CODE_DEBRIS_SECTIONS KICKOS_NONALLOC_SECTIONS KICKOS_STATIC_RELOC_ASSERT
+              KICKOS_TLS_TEMPLATE)
+    if(NOT "${_ld_sections_txt}" MATCHES "${_m}")
+      message(FATAL_ERROR
+        "KickOS: ${_ld} does not invoke ${_m}. Every image links with "
+        "--orphan-handling=error, so an input section no rule names is a link failure. "
+        "Include <sections.ld.h> and invoke KICKOS_CODE_DEBRIS_SECTIONS inside the output "
+        "section holding .text, KICKOS_NONALLOC_SECTIONS as the last statement in SECTIONS, "
+        "and KICKOS_STATIC_RELOC_ASSERT() beside the other asserts.")
+    endif()
+  endforeach()
+
   # Preprocess the linker script through cpp so KICKOS_HAVE_MPU gates sections: a
   # non-enforcement build reserves no app-data block/region. cpp strips comments and passes
   # MEMORY/SECTIONS/LONG/wildcard tokens through unchanged. The GENERATED script is named
@@ -492,6 +509,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
             "-I${CMAKE_CURRENT_SOURCE_DIR}/common"
             "${_ld}" -o "${_ld_gen}"
     DEPENDS "${_ld}" "${CMAKE_CURRENT_SOURCE_DIR}/common/boot_arena.ld.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/common/sections.ld.h"
     COMMENT "linker: preprocess ${KICKOS_CHIP}.ld (KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})"
     VERBATIM)
   add_custom_target(kickos_ldscript_${KICKOS_CHIP} ALL DEPENDS "${_ld_gen}")

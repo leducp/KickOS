@@ -6,6 +6,8 @@
  *   SRAM  : 16 KiB @ 0x2000_0000   (tiny; provisioning is sized down to match)
  */
 
+#include <sections.ld.h>
+
 ENTRY(Reset_Handler)
 
 MEMORY
@@ -25,6 +27,7 @@ SECTIONS
         *(.text .text.*)
         *(.rodata .rodata.*)
         *(.glue_7) *(.glue_7t)
+        KICKOS_CODE_DEBRIS_SECTIONS
         KEEP(*(.init))
         KEEP(*(.fini))
         . = ALIGN(4);
@@ -53,12 +56,27 @@ SECTIONS
         __kickos_app_fini_array_end = .;
     } > FLASH
 
+    KICKOS_TLS_TEMPLATE(FLASH)
+
     .kickos_app_init_array :
     {
         __kickos_app_init_array_start = .;
         KEEP(*(SORT(.init_array.*)))
         KEEP(*(.init_array))
         __kickos_app_init_array_end = .;
+    } > FLASH
+
+    /* EHABI unwind instructions + LSDA, homed in the code window so a full-C++ image does
+       not orphan them into whatever gap follows the vector table. libstdc++ emits
+       .gcc_except_table even on EHABI. */
+    .ARM.extab :
+    {
+        *(.ARM.extab* .gnu.linkonce.armextab.*)
+    } > FLASH
+
+    .gcc_except_table :
+    {
+        *(.gcc_except_table .gcc_except_table.*)
     } > FLASH
 
     .ARM.exidx :
@@ -106,7 +124,11 @@ SECTIONS
     __kickos_sram_start = ORIGIN(RAM);
 
     /DISCARD/ : { *(.ARM.attributes) }
+
+    KICKOS_NONALLOC_SECTIONS
 }
+
+KICKOS_STATIC_RELOC_ASSERT()
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")

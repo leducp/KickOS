@@ -992,6 +992,11 @@ if(TARGET kickos_kernel)
       -nostartfiles
       -Wl,--gc-sections
       -Wl,--no-warn-rwx-segments
+      # Every input section must be named by a rule in the chip script. An unnamed one is
+      # a link failure printing the section, not a warning: an ALLOC orphan lands at an
+      # address nobody chose, and the .ARM.extab set used to land between the vector table
+      # and .text. arch/common/sections.ld.h carries the shared vocabulary.
+      -Wl,--orphan-handling=error
       # ARM's vector table (g_isr_vector) is a data object nothing references. RX pulls its
       # vector tables via ENTRY(_start) + KEEP(), and forcing a symbol it does not define
       # would leave a dangling undefined.

@@ -5,23 +5,22 @@ CONFIG_BOARD_FRDMK64F=y
 
 # Adds the test-only self-test syscalls the TAP suite calls.
 CONFIG_MEMORY_MODEL_MPU=y
-# Not the fleet default 16: enforcement pins __kickos_ram_start above the .appdata
-# window, and what is left backs 12 stacks of the 7584 below.
+# Not the fleet default 16: this is one Cortex-M4 core, and an application heavy enough
+# to want more than eight threads on it wants a different part. Enforcement also pins
+# __kickos_ram_start above the .appdata window, so the arena here is the smaller one.
 #
-# 7584 AND NOT 8192 BECAUSE THE KERNEL BLOCKS ARE IN .bss NOW, AND A THREAD STILL ENDS
-# UP WITH MORE STACK THAN BEFORE. Thirteen slots of KICKOS_KERNEL_STACK_SIZE (1008 on
-# armv7m at telemetry off) is 13104 bytes of kernel .bss below the arena, more than one
-# whole stack, and it takes the arena from 112704 to 99600. The SYSMPU is a base+limit
-# unit (arch_mpu_region_pow2 is 0), so the step is the 32-byte granule and not a power
-# of two: 512 + 13 x 7584 is 99104, and the arena above the fattest image (k64dspi)
-# MEASURES 512 spare, .bss alignment absorbing 16 of the block growth. A thread may use
-# 7584 - 180 = 7404 against 8192 - 836 = 7356 before, the red zone having gone from 836
-# to 180 (armv7m_trap_stack.h derives both).
+# 8192 AND NOT THE 7584 THIS BOARD CARRIED BEFORE. That figure existed to buy back what
+# the per-thread kernel blocks took: thirteen slots of KICKOS_KERNEL_STACK_SIZE (1008 on
+# armv7m at telemetry off) is 13104 bytes of kernel .bss below the arena, and 608 off
+# each of thirteen stacks paid for it. Nine slots is 9072, so the arena keeps 4032 of
+# that back, and eight threads of a power of two fit inside it with room to spare.
 #
-# THIS IS THE TIGHTEST ARENA IN THE armv7m FLEET, 512 bytes, so it is the board to
-# re-measure first when anything moves kernel .bss.
-CONFIG_KICKOS_MAX_THREADS=12
-CONFIG_KICKOS_USER_STACK_SIZE=7584
+# THE SIZE IS A POWER OF TWO ON PURPOSE, not for the arithmetic. The thread pointer on
+# ARM is derived as SP masked down to the stack block, which is only correct when the
+# blocks are strided by a power of two; the SYSMPU is a base+limit unit
+# (arch_mpu_region_pow2 is 0) and would otherwise stride them by the 32-byte granule.
+CONFIG_KICKOS_MAX_THREADS=8
+CONFIG_KICKOS_USER_STACK_SIZE=8192
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
-CONFIG_KICKOS_ROOT_STACK_SIZE=7584
+CONFIG_KICKOS_ROOT_STACK_SIZE=8192
 CONFIG_KICKOS_ENABLE_SELFTEST=y

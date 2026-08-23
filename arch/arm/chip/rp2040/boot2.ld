@@ -25,7 +25,21 @@ SECTIONS
         KEEP(*(.text))
         *(.text*)
         *(.rodata*)
+        *(.glue_7) *(.glue_7t) *(.vfp11_veneer) *(.v4_bx)
+    } > RAM
+
+    /* boot2 is one .S with no data of its own, and the bootrom copies the payload with no
+       .data relocation and no .bss zeroing. Named so --orphan-handling=error has a rule and
+       ASSERTed empty below, because a byte here would be loaded but never initialised. This
+       script is not preprocessed, so it cannot share arch/common/sections.ld.h. */
+    .boot2_nodata (NOLOAD) : {
+        __boot2_nodata_start = .;
+        *(.data*) *(.bss*) *(COMMON)
+        __boot2_nodata_end = .;
     } > RAM
 
     /DISCARD/ : { *(.ARM.attributes) *(.comment) *(.note*) }
 }
+
+ASSERT(__boot2_nodata_end == __boot2_nodata_start,
+       "KickOS: the RP2040 second stage grew a .data or .bss object; nothing initialises it, the bootrom copying the 252-byte payload verbatim")

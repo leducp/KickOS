@@ -22,6 +22,8 @@
  * by the app grant.
  */
 
+#include <sections.ld.h>
+
 ENTRY(_start)
 
 MEMORY
@@ -60,6 +62,7 @@ SECTIONS
 #endif
         KEEP(*(.text.init))            /* _start: must be at the RAM origin */
         *(.text .text.*)
+        KICKOS_CODE_DEBRIS_SECTIONS
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
         /* DWARF EH unwind + landing-pad tables for the full-C++ opt-in; a plain
@@ -100,6 +103,8 @@ SECTIONS
         KEEP(*(.fini_array))
         __kickos_app_fini_array_end = .;
     } > RAM
+
+    KICKOS_TLS_TEMPLATE(RAM)
 
     .kickos_app_init_array : ALIGN(4)
     {
@@ -255,7 +260,11 @@ SECTIONS
     __kickos_sram_start = ORIGIN(RAM);
 
     /DISCARD/ : { *(.comment) *(.riscv.attributes) }
+
+    KICKOS_NONALLOC_SECTIONS
 }
+
+KICKOS_STATIC_RELOC_ASSERT()
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + boot stack)")

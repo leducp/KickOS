@@ -13,6 +13,8 @@
  * the part (bricks debug access), so .fcf is placed here explicitly and KEPT.
  */
 
+#include <sections.ld.h>
+
 ENTRY(Reset_Handler)
 
 /* SRAM is two banks joined at 0x2000_0000 (SRAM_L below, SRAM_U above). Aligned
@@ -59,17 +61,23 @@ SECTIONS
         *(.text .text.*)
         *(.rodata .rodata.*)
         *(.glue_7) *(.glue_7t)
+        KICKOS_CODE_DEBRIS_SECTIONS
         KEEP(*(.init))
         KEEP(*(.fini))
         . = ALIGN(4);
     } > FLASH
 
-    /* EHABI unwind instructions (read-only). Placed explicitly in the FLASH code
-       window so the unprivileged app domain reads them via its RX code grant; left
-       orphaned they happen to land here, but the placement is now guaranteed. */
+    /* EHABI unwind instructions + LSDA (read-only). Placed explicitly in the FLASH code
+       window so the unprivileged app domain reads them via its RX code grant. libstdc++
+       emits .gcc_except_table even on EHABI. */
     .ARM.extab :
     {
         *(.ARM.extab* .gnu.linkonce.armextab.*)
+    } > FLASH
+
+    .gcc_except_table :
+    {
+        *(.gcc_except_table .gcc_except_table.*)
     } > FLASH
 
     /* Global ctors are SPLIT. .init_array keeps ONLY the closed KickOS-owned set
@@ -98,6 +106,8 @@ SECTIONS
         KEEP(*(.fini_array))
         __kickos_app_fini_array_end = .;
     } > FLASH
+
+    KICKOS_TLS_TEMPLATE(FLASH)
 
     .kickos_app_init_array :
     {
@@ -260,7 +270,11 @@ SECTIONS
     __kickos_code_end = ORIGIN(FLASH) + LENGTH(FLASH);
 
     /DISCARD/ : { *(.ARM.attributes) }
+
+    KICKOS_NONALLOC_SECTIONS
 }
+
+KICKOS_STATIC_RELOC_ASSERT()
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
