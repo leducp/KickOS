@@ -333,6 +333,79 @@
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 768
 #endif
 
+/* THE EXIT CLASS, structural half: what a preemption puts below the deepest byte the DEATH
+ * PATH uses. It is NEST_SVCK's window without the 16-byte continuation header, because no
+ * trampoline lays one here: the backend rewrites the exception frame so the return lands in
+ * the stub with sp at kickos_fault_stack_top, and the stub is entered by an exception return
+ * rather than by a call.
+ *
+ *   -4     the STKALIGN pad a preempting exception spends. It does not cancel, for the same
+ *          reason it does not in the SVCK window: what stands above is a chain of compiler
+ *          frames whose sub is a multiple of 4, so the deepest sp can be 4-mod-8 on its own.
+ *   -104   the hardware frame a device IRQ or SysTick stacks. The stub runs in THREAD mode.
+ *   -100   the PendSV that tail-chains behind it.
+ *
+ * 4 + 104 + 100 is 208.
+ *
+ * IT IS A FRAME TERM BECAUSE THE STUB IS PREEMPTIBLE, and that is the whole reason this is
+ * not rv32imac's KICKOS_RV_TRAP_FRAME_EXIT 0. That figure is justified there by the descent
+ * STARTING at the stack top, which answers where it begins and not what lands below it;
+ * exit_current reschedules, so a preemption is not merely possible here, it is the ordinary
+ * case. */
+#define KICKOS_ARMV7M_TRAP_NEST_EXIT 208
+
+/* The measured descent of the three stubs a dying thread runs PRIVILEGED on its own stack:
+ * kickos_thread_fault_exit, kickos_thread_slay_exit and kickos_thread_return. The fault stub
+ * is the deepest of the three at every posture, reaching the console through kprintf_fault;
+ * under telemetry all three converge on arch_shutdown's drain instead.
+ *
+ * THIS FIGURE IS NOW THE kstacks=0 FALLBACK AND NOTHING ELSE, so it carries no posture ladder:
+ * the four presets that enforce it, f302nucleo, f302nucleo-st, due and due-st, have neither a
+ * telemetry nor a bench variant, and all four measure 568. Where a block IS seated the two
+ * relocating stubs are measured as EXITK below and kickos_thread_return as RET, this class
+ * being skipped entirely by the stack=kernel and kstacks= markers. Folding the two would charge every non-telemetry board for
+ * a tail its image does not contain.
+ *
+ * kickos_thread_return IS MEASURED SEPARATELY, as RET below, and cannot move: see there. */
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT 568
+
+/* THE SAME TWO STUBS ON THE KERNEL BLOCK, which is where they run wherever one is seated.
+ * kickos_fault_stack_top answers with ctx.kernel_sp, so the fault redirect and the slay
+ * rebuild both land at the block TOP, discarding whatever dispatch frames it held. That
+ * discard is what keeps the block requirement the MAX of SVCK and this rather than their sum:
+ * nested under a live dispatch frame the two would add, and 992 + 784 fits no block on any
+ * arch.
+ *
+ * MEASURED WITH NOTHING EXCLUDED, because a stack=kernel class has no spawn floor to clear.
+ * That costs 120 bytes on qemu-telem alone, 824 excluded against 944, the panic tail running
+ * kpanic -> kfault_terminate -> arch_shutdown; on the other 33 armv7m presets the excluded and
+ * unexcluded readings are identical, so counting the tail costs nothing there.
+ *
+ * IT NEVER BINDS. 208 + 576 = 784 against 1004 usable off telemetry, and 208 + 944 = 1152
+ * against 1468 on, where SVCK asks 992 and 1464. So the block requirement does not move and
+ * no board pays a byte. rxv3 is the arch with least room for that to change: its EXITK would
+ * have to grow 180 bytes before it displaced SYSK. */
+#if KICKOS_TELEMETRY
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 944
+#else
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 576
+#endif
+
+/* kickos_thread_return ALONE, which is the residual the move deliberately leaves. It is an
+ * ordinary privileged thread's entry returning: no fault, no redirect, nothing to relocate it,
+ * so it runs at whatever depth the entry returned from on the thread's own stack under BOTH
+ * entry designs. Moving it would need an arch trampoline of its own and that is not this PR.
+ *
+ * 312 is xmc4800-relax-bench and 296 the other 32 non-telemetry presets. Under telemetry it is
+ * 824, IDENTICAL to what the full class measured before the move, which is why PR 7 does not
+ * relieve the KICKOS_MIN_STACK_SIZE pressure on qemu-telem at all: that floor leg is carried by
+ * this root, not by the two that moved. */
+#if KICKOS_TELEMETRY
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET 824
+#else
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET 312
+#endif
+
 /* What each guarded site enforces: room below the live PSP, in bytes. Both are loaded with
  * movw, whose imm16 range covers anything the floor can hold, so a figure that outgrew the
  * encoding fails to assemble rather than truncating. These are also the figures the red-zone

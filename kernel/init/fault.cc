@@ -194,10 +194,26 @@ extern "C" bool kickos_fault_frame_on_kernel_stack(void const* frame, size_t byt
 #endif
 
 // Where a backend's redirect puts the SP, so the stub runs with the whole stack under it
-// rather than at the depth the fault reached. A nonzero answer names the top of the current
-// thread's own stack; 0 means DO NOT RELOCATE, leaving the stub at the depth the fault
-// reached rather than aiming it at memory nobody says it may use. See arch.h for the contract
-// the backends implement against.
+// rather than at the depth the fault reached. 0 means DO NOT RELOCATE, leaving the stub at
+// the depth the fault reached rather than aiming it at memory nobody says it may use. See
+// arch.h for the contract the backends implement against.
+//
+// THE THREAD'S OWN KERNEL BLOCK WHERE ONE IS SEATED, and its user stack otherwise. The death
+// path is the last place privileged C ran on memory an unprivileged thread can write: the
+// address was always kernel-chosen, so this was never the wild-pointer class, but a sibling
+// sharing the dying thread's domain could rewrite the frames of a descent that prints a fault
+// record and then walks cap_teardown and the scheduler.
+//
+// IT IS THE BLOCK'S TOP AND NOT WHERE THE DISPATCH LEFT OFF, and that is a requirement rather
+// than a convenience. Seated at the top, the stub DISCARDS any syscall_dispatch frames the
+// block still holds, which is sound because the thread is dying and nothing resumes it, and
+// it is what makes the block requirement the MAX of the dispatch class and the exit class.
+// Run nested under a live dispatch frame instead and the requirement becomes their SUM, which
+// no block on any arch can hold.
+//
+// A TCB with kernel_sp 0 falls back to the user stack: idle, which is outside the pool, and
+// every thread on the four armv7m presets where KICKOS_KERNEL_STACKS resolves 0. That
+// fallback is measured, as the EXIT class of check_trap_redzone.sh against the spawn floor.
 extern "C" uintptr_t kickos_fault_stack_top(void)
 {
     ::kickos::Thread* const c = ::kickos::sched::current();
@@ -205,6 +221,12 @@ extern "C" uintptr_t kickos_fault_stack_top(void)
     {
         return 0;
     }
+#if KICKOS_KERNEL_STACKS
+    if (c->ctx.kernel_sp != 0)
+    {
+        return static_cast<uintptr_t>(c->ctx.kernel_sp);
+    }
+#endif
     if (c->stack_base == nullptr or c->stack_size == 0)
     {
         return 0;

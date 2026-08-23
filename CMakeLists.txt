@@ -704,6 +704,15 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(panic_banners PROPERTIES TIMEOUT 120 LABELS host)
 
+  # The death path's seating on the per-thread kernel block. Registered on every preset
+  # rather than the ones that carve blocks: it derives which arches owe the arm from
+  # arch/Kconfig and reads source, so a board whose own KICKOS_KERNEL_STACKS is 0 still
+  # gates the four backends that carry it.
+  _add_test(NAME death_stack_seating
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_death_stack_seating.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(death_stack_seating PROPERTIES TIMEOUT 120 LABELS host)
+
   # --- The trap red-zone gate --------------------------------------------------
   # It configures and cross-builds a scratch tree of its own, so it is keyed on the PRESET
   # (board plus variant) and not on this build directory. A pair it does not declare is

@@ -14,10 +14,20 @@ era plus everything for SMP that is not SMP. `M5` the integration branch is full
 deleted, along with `M5.1.1`, `M5.1.4-docrewrite`, `hotfix/wake-parks-wrong-thread` and every
 `topic/*`. Master is still `a41856d6`.
 
-**M5.2.1: EVERY PER-ARCH CONVERSION IS DOWN. TWELVE COMMITS, NONE PUSHED, TREE CLEAN AT
-`26361ecf`.** `202ba8cc` PR 3's owed proofs, `ab9a9866` PR 4 rv32imac, `9b382b18` PR 5 both ARM
-backends, `7943e6fb` PR 6 rxv3, `3699644b` the PR 4 audit corrections, `26361ecf` the armv7m
-preset coverage. Read
+**M5.2.1: EVERY PER-ARCH CONVERSION IS DOWN, AND SO IS PR 7. TWENTY-THREE COMMITS ON THE
+BRANCH, NONE PUSHED.** The tip hash is deliberately NOT written here: it names the commit that
+writes it, so any amend falsifies it immediately, which happened once. `git rev-parse --short HEAD`
+and `git rev-list --count master..HEAD` are the authorities, and this line has been wrong four
+times for exactly that reason.** The death path now runs on the dying thread's own
+kernel block on ALL FOUR backends, measured as `EXITK` against the block, with `RET`
+(`kickos_thread_return`, which nothing relocates) measured against the spawn floor and an `EXIT`
+fallback on the four armv7m presets that carve no block.** Derive the count, never copy it: this line
+has said twelve, thirteen and fifteen while `git rev-list --count master..HEAD` said otherwise, the
+disagreement coming from whether the two pre-rework commits and the session records are counted.
+`202ba8cc` PR 3's owed proofs, `ab9a9866` PR 4 rv32imac, `9b382b18` PR 5 both ARM backends,
+`7943e6fb` PR 6 rxv3, `3699644b` the PR 4 audit corrections, `26361ecf` the armv7m preset coverage,
+`72f91136` the RX privilege boundary, `57fe26c1` the re-taken witness, `ded8a659` the audit's
+surviving findings, `778918f1` PR 7's EXIT classes. Read
 `~/.claude/projects/-home-leduc-projets-KickOS/docs/m5.2.1-trusted-context-plan.md` section
 "SESSION 3" before planning PR 7: it carries what each arch's transfer actually looks like, the
 figures that moved, and the debts.
@@ -68,8 +78,21 @@ anything: it runs 12 emulator arms where picopi-st runs none, RP2040 having no Q
 
 **THE FLEET AT `72f91136`:** sim 294, sim-telem 296, qemu 53, qemu-m3 50, qemu-m33 52,
 qemu-telem 48, qemu-riscv 45, microbit 37, frdmk64f-st 22, rx72m-st 21, esp32c6-wroom-st 22,
-xmc4800-relax-st 22, picopi-st 21. Every one gained the `trap_redzone_decls` arm. The three that moved each gained exactly the
-`trap_redzone` arm it lacked. Image sweep 52 presets, 373 gates, 0 fail. Nine more boards build.
+xmc4800-relax-st 22, picopi-st 21. Every one gained the `trap_redzone_decls` arm, and
+`frdmk64f-st`, `esp32c6-wroom-st` and `xmc4800-relax-st` each gained the `trap_redzone` arm they
+lacked against the `6c200e56` baseline, which is the comparison "the three that moved" used to name
+without stating. Image sweep 52 presets, 373 gates, 0 fail, carried forward from the `26361ecf`
+paragraph rather than re-derived at this tree. Nine more boards build.
+
+**THE HOST HALF IS PAID AT `ded8a659`: 52 presets, 52 pass, 0 reused, 0 fail.** `0 reused` is
+load-bearing, `SWEEP_FORCE=1` having made every preset genuinely re-run. That is the half this file
+correctly says had never been run once.
+
+**AND THE DEFAULT SWEEP OUTPUT DIRECTORY IS A TRAP.** `/var/tmp/kickos-imagesweep`, which is
+`sweep_image_gates.sh`'s default `SWEEP_OUT`, still holds a 09:34Z run from BEFORE `ab9a9866`
+reporting **374 gates, 1 fail** (`qemu_riscv_trapnest` on `qemu-riscv-flat`). Anyone re-reading the
+default path today reads a pre-PR-4 verdict as if it were current. Name a fresh `SWEEP_OUT` per
+tree, and read the `finished` timestamp before believing any summary in there.
 
 **THE rxv3 SILICON WITNESS IS TAKEN, and it is the only execution evidence that arch can
 have: RX has no QEMU machine.** rx72m on GlaDOS, tree `72f91136` CLEAN, one boot, validated by
@@ -92,11 +115,19 @@ block. So a green run says the guard does not reject what it must accept, and sa
 what it must reject. **An RX `pspguard` is OWED**, and until it exists no rxv3 refusal figure is
 witnessed by anything.
 
-**THE FLEET SWEEP COVERS HALF THE TESTS, AND EVERY GREEN SWEEP THIS SESSION REPORTED SAID LESS
-THAN IT SOUNDED LIKE.** `tools/sweep_image_gates.sh` runs `ctest -LE host`, so a HOST gate
-failure is structurally invisible to it: it reported 0 fail on a tree where `sim-telem` had a
-failing arm, and only the 13 baseline counts caught that. `tools/sweep_host_gates.sh` is the
-other half and was never run once. Run BOTH before trusting green.
+**THE FLEET SWEEP COVERS HALF THE TESTS, AND THE REASON THE ONE FAILURE HID IS NOT THE OBVIOUS
+ONE.** `tools/sweep_image_gates.sh` runs `ctest -LE host`, so the whole `-L host` half is outside
+it and `tools/sweep_host_gates.sh` is that half. **BUT THAT IS NOT WHAT HID `sim_published_console`,
+and reading it that way sends the next session after the wrong gap.** That gate is declared `image`
+in `tests/static/test_classes.txt`, so `-LE host` SELECTS it and the sweep RUNS it; every image
+sweep scored `sim-telem` at 28 image gates, 29 run, 0 failed. It failed in the COUNT PASS
+afterwards, which ran the whole 296-test `sim-telem` suite in the sweep's own tree, and only that
+run's `LastTestsFailed.log` named the arm. The sweep runs the image half ALONE under `-j1`, which is
+the standalone condition these gates are documented to pass in; the count pass ran that gate beside
+the other 295. So a green image sweep means the image gates pass SERIALISED, and says nothing about
+the host half and nothing about the same gates batched. **Three instruments, not two.** The preset
+is `sim-telem` and not `qemu-telem`: `sim_published_console` is registered only under
+`KICKOS_ARCH STREQUAL "sim"`, so `qemu-telem` cannot run it at all.
 
 **AN OPEN FLAKE, not dismissed.** `sim_published_console` failed once during a count pass and
 passed eight runs after, five in isolation and three under the concurrent child-build load it is
@@ -106,6 +137,52 @@ run together under `-j8`. A mechanism is not a diagnosis and this one has none: 
 text was LOST because re-running overwrote `LastTest.log` before anyone read it. Read that file
 BEFORE re-running a flake.**
 
+**PR 7's MEASUREMENT HALF RAISED THE armv7m TELEMETRY FLOOR, AND THE OVERRUN IT WAS FIRST
+WRITTEN UP AS DOES NOT EXIST.** Read the correction before the finding, because this file carried
+the wrong version for two commits. The death path had an `EXIT` gate class on rv32imac and nowhere
+else; declared on the other three, armv7m under `TELEMETRY_RTT` came out at frame 208 + depth 824 =
+**1032 against a 960 `KICKOS_MIN_STACK_SIZE`**, which was written up as a floor-sized thread driving
+privileged C 72 bytes past its own stack base. **IT CANNOT.** The 208 frame term prices a preemption
+at the deepest byte, and at that depth none is possible: the 824 chain runs inside the `IrqLock`
+`exit_current` holds across its `kickos_terminate` call (`sched.cc`), and on armv7m that lock is
+BASEPRI at `PRIO_LOCK_BASEPRI` 0x20, which masks `PRIO_DEVICE` 0x30, `PRIO_SVCALL` 0xE0 and
+`PRIO_PENDSV` 0xF0 alike. Frame and depth cannot coexist, so 1032 is a MODEL CEILING and not a
+physical state.
+
+**The floor leg is KEPT anyway, and the reason is about the model rather than the risk**: the gate
+computes frame plus depth for every class on every arch, and exempting one because its deepest chain
+happens to run masked would be a second truth about what a class means, maintained by hand, in a
+file whose whole purpose is that a figure lives in one place. It costs `qemu-telem` alone. **What IS
+true and was worth finding: `PENDSV`, at zone 100, is the ONLY thread-stack class enforced on that
+preset** (`SVC` is skipped by `kstacks=0`, `SVCK` is a kernel class), so the armv7m floor had never
+been tested under telemetry at all. And the leg must sit AHEAD of the plain armv7m one, because
+**Kconfig takes the FIRST matching default and says nothing when a later one is shadowed**: the gate
+caught that ordering error when it was written after.
+
+**THE FRAME TERM IS NOT ZERO ON ANY OF THE FOUR, rv32imac's old `FRAME_EXIT 0` INCLUDED.**
+Each stub is entered by an exception return, in thread mode, interrupts enabled, and its
+`exit_current` reschedules, so a preemption below the descent is the ordinary case. armv7m 208,
+armv6m 68, rxv3 **308**, rv32imac 128. The rxv3 figure is 300 plus the 8 bytes
+`arch_fault_redirect_to_exit` skips below the block top so `kickos_rx_pendsw`'s block leg does
+not read the USP as zero distance; the rv32imac one is the msip frame a reschedule puts below
+the descent, its old 0 having been justified by the descent STARTING at the stack top, which
+answers where it begins and not what lands beneath it.
+
+**MANY FIGURES SIT AT EXACTLY ZERO SLACK, and that is the CONVENTION rather than a warning: an
+enforced depth IS the fleet maximum for its class, so a class at its setter preset always reads
+`n <= n`.** Do not count them as near-misses. `rx72m-st` `SYSK 788`, `EXITK 616`, `RET 476`;
+`qemu-telem` `SVCK 1240`, `EXITK 944`, `RET 824`; `esp32c6-wroom-st` `EXITK 720`, `RET 368`;
+`f302nucleo-st` and `due-st` `EXIT 568`. What IS a genuine near-miss is a BLOCK or FLOOR margin, and
+there the tight ones are armv6m's block at 892 usable against an 892 `SVCK` zone, and the four-byte
+pair this file already records on f302nucleo.
+
+**THE BLOCK CANARY HAS NO READERS, so one advantage of moving anything onto it is LATENT.**
+`kickos::kstack_canary_intact()` and `kickos::kstack_high_water()` are defined and declared and
+called by NOTHING anywhere in the tree; `kstack_arm()` has one caller, in `kmain`. The canary is
+laid at boot and never read back. So `check_trap_redzone.sh` telling its reader that the first
+report of a block overrun "is a runtime canary failure on whichever board goes deepest" describes a
+mechanism that cannot fire. Same class as a gate that printed `not enforced` and then enforced.
+
 **WHAT IS OWED, and none of it is a surprise waiting to be found:**
 
   - **The Book page and `docs/reference/porting.md:1464`.** Deferred by the user, deliberately,
@@ -113,18 +190,32 @@ BEFORE re-running a flake.**
     down stuff that can changes later on". With every arch converted, no backend runs the
     mechanism `docs/book/whoever-stacks-the-trap-frame-owns-the-bounds-check.md` describes, and
     its section arguing AGAINST a per-thread kernel stack now argues against what shipped.
-  - **The ungated fault/slay exit path on armv7m, armv6m and rxv3.** rv32imac got an `EXIT`
-    class; the other three relocate sp to the stack top and branch to the exit stub with no
-    class naming those symbols. armv6m's is widest: its SVC root is `NONE`, so no armv6m class
-    measures any C on a thread stack at all.
-  - **No unit test for the canary/high-water machinery.** An auditor asked for one: arming,
-    simulated depth, corruption detection, and persistence across slot reuse. That last is the
-    invariant the readings rest on and it is asserted only by a comment and by `kstack_arm`
-    having one caller.
+  - ~~The ungated fault/slay exit path~~ **PAID.** All four backends now relocate the fault
+    and slay stubs onto the dying thread's own kernel block, measured as `EXITK` against that
+    block; `kickos_thread_return`, which nothing relocates, is measured as `RET` against the
+    spawn floor; and armv7m carries `EXIT` for the four presets that carve no block. What is
+    still owed here is narrower and is listed below: the poisoned-user-stack witness.
+  - **No unit test for the canary/high-water machinery, AND NO READER FOR IT EITHER.**
+    `kickos::kstack_canary_intact()` and `kickos::kstack_high_water()` are defined, declared
+    and called by NOTHING; `kstack_arm()` has one caller, in `kmain`. So the canary is laid at
+    boot and never read back, and `check_trap_redzone.sh` telling its reader that the first
+    report of an overrun is a runtime canary failure describes something that cannot fire.
+    Wire a reader before writing the test, or the test pins a mechanism nobody runs.
+  - **No poisoned-user-stack witness for the death-path move.** It must use the SLAY path and
+    not the fault path: a fault leaves the hardware exception frame on the dying thread's own
+    stack by construction, so no fault can carry an intact-stack claim. The band has to be
+    poisoned ABOVE the parked sp as well as below it. A written but never-built attempt is at
+    `/var/tmp/kos-agent-faultsurvive.patch`, deliberately not landed.
   - **`close` INHERITS THE armv7m DUAL PATH**, not a deletion. Unlike rv32imac, the machinery
-    stays while f302nucleo keeps its red zone, which ties to whether PR 7's continuation-style
-    blocking ever converts that board. roadmap.md already anticipated this board needing either
-    a lower thread ceiling or continuation-style blocking.
+    stays while f302nucleo and due keep their red zones. **THE CONTINUATION-STYLE REWRITE IS NOT
+    WHAT THAT NEEDS, and roadmap.md's "either a lower thread ceiling or continuation-style
+    blocking" is now a false dichotomy**: a THIRD option shipped, which is armv7m carrying both
+    entry designs under `KICKOS_KERNEL_STACKS`, and that board keeps its red zone and gains 204
+    bytes of usable stack. What survives as a real residual is narrower and is recorded here
+    rather than claimed closed: **on `f302nucleo`, `f302nucleo-st`, `due` and `due-st` a blocking
+    syscall's continuation still rests on the USER stack**, those four being the presets where
+    `KICKOS_KERNEL_STACKS` resolves 0. PR 7 is complete for `KICKOS_KERNEL_STACKS=1` and NOT
+    universally, and the f302 continuation decision is deliberately NOT part of it.
   - **Two four-byte margins on one board.** f302nucleo's `DEPTH_SVC` 448 is EXACTLY its
     requirement once the STKALIGN pad is provisioned, and the panic-tail exclusion is
     load-bearing by four bytes. Both deliberate, both gated, neither slack.
@@ -1168,8 +1259,10 @@ all**, so that backend needs a software-tp spike on the one arch with no emulato
 percent leaf floor, which Amdahl-bounds a two-core big lock at **1.31x** and caps it at 1.40x, so
 per-core run queues are where the payoff is rather than a later optimisation. **Do not judge M7 by
 its speedup**: the hold-shortening that moves those numbers is M8, so re-derive both after M8
-rather than freezing a verdict. The single `g_rv_trap_stack` must become per-core, and M5.2.1 cuts
-that seam at `[0]` so M7 is a substitution rather than a four-backend change. A page granule at M6
+rather than freezing a verdict. The single `g_rv_trap_stack` becoming per-core is **DONE, not
+owed**: it is `g_rv_trap_stack[KICKOS_NUM_CORES][KICKOS_RV_TRAP_STACK_SIZE]` indexed by
+`arch_cpu_id()`, which folds to `0u` by preprocessor at one core, and `check_cpu_id_fold.sh` gates
+the fold. So M7 substitutes rather than changing four backends. A page granule at M6
 removes the pow2 tax.
 
 **"The last big reshape" is a HOPE, not a plan** (user, 2026-08-20). If the design needs reshaping

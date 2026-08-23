@@ -146,11 +146,33 @@ static_assert(KICKOS_KERNEL_STACK_SIZE <= 0xFFFF,
 // not a fleet-wide worst case: NEED_SVCK takes the telemetry tail's depth through
 // armv7m_trap_stack.h, and the Kconfig default for the ceiling carries the matching figure.
 // A board that raises one without the other fails here rather than at run time.
+// THE DEATH PATH's BLOCK HALF. EXITK is the fault and slay stubs on the thread's own kernel
+// block, held by the block above its canary word. Its two siblings, the kstacks=0 fallback
+// and the entry-return residual, are asserted BELOW this block guard and not inside it: on
+// the boards those two exist for, this guard is false, so an assertion nested here would
+// never compile on the only presets it describes.
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                  >= KICKOS_ARMV7M_TRAP_NEST_EXIT + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK,
+              "the kernel block cannot hold the relocated death path plus its canary word");
 static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t) >= KICKOS_ARMV7M_TRAP_NEED_SVCK,
               "KICKOS_KERNEL_STACK_SIZE is below the armv7m syscall kernel-stack "
               "requirement plus its canary word: raise the per-arch default in Kconfig, "
               "never the depth, which is a measurement");
 #endif
+// THE DEATH PATH's THREAD-STACK HALF, OUTSIDE THE BLOCK GUARD ON PURPOSE. RET is
+// kickos_thread_return, which relocates under NEITHER entry design, so the floor holds it on
+// every board and it is asserted unconditionally. EXIT is the fallback the four presets with
+// no block take, so it is asserted where the block guard is FALSE. Both were nested inside
+// the guard when they were written, which made each of them dead on exactly the boards it
+// describes.
+#if !KICKOS_KERNEL_STACKS
+static_assert(KICKOS_MIN_STACK_SIZE
+                  >= KICKOS_ARMV7M_TRAP_NEST_EXIT + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT,
+              "the spawn floor cannot hold the death path where no kernel block is seated");
+#endif
+static_assert(KICKOS_MIN_STACK_SIZE
+                  >= KICKOS_ARMV7M_TRAP_NEST_EXIT + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET,
+              "the spawn floor cannot hold a privileged thread's entry return");
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_ARMV7M_CTX_OFF_TRACE_TID,
               "switch.S telemetry hook reads ctx.trace_tid at F_CTX_TRACE_TID");
@@ -275,6 +297,35 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
     // only other writer. Cleared, the thread carries kernel_sp 0 through its own teardown,
     // which is the state svc_trampoline's .Lsvc_nokstack arm calls unreachable.
     uint32_t const kernel_sp = ctx->kernel_sp;
+#if KICKOS_KERNEL_STACKS
+    // THE SLAY STUB IS REBUILT ON THE THREAD'S OWN KERNEL BLOCK, so no privileged frame is
+    // fabricated on memory the thread or a domain sibling can write. The frame goes at the
+    // block TOP, which discards whatever dispatch frames the block held: the thread is dying
+    // and nothing resumes it, and it is what keeps the block requirement the MAX of the
+    // dispatch and exit classes rather than their sum.
+    //
+    // THE USER BOUNDS ARE PRESERVED ACROSS IT. arch_context_init derives stack_lo and
+    // stack_hi from what it is handed, so handing it the block would leave the context
+    // describing kernel .bss as this thread's stack.
+    //
+    // THEIR ONLY READERS ARE THE FOUR switch.S GUARDS, and NOT the fault record: that reads
+    // Thread::stack_base and Thread::stack_size, which this function never touches. So no
+    // runtime path can observe the restore being absent, every guard testing ctx.kernel_sp
+    // first and taking the block leg for this frame. tests/static/check_death_stack_seating.sh
+    // is what holds it, for exactly that reason.
+    if (kernel_sp != 0)
+    {
+        uint32_t const lo = ctx->stack_lo;
+        uint32_t const hi = ctx->stack_hi;
+        void* const block = reinterpret_cast<void*>(
+            static_cast<uintptr_t>(kernel_sp) - KICKOS_KERNEL_STACK_SIZE);
+        arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
+        ctx->stack_lo = lo;
+        ctx->stack_hi = hi;
+        ctx->kernel_sp = kernel_sp;
+        return;
+    }
+#endif
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
     ctx->kernel_sp = kernel_sp;
 }

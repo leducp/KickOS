@@ -3415,8 +3415,11 @@ once, which is the argument for eventually not needing it. A per-thread kernel s
 same contract, costs one extra stack times `KICKOS_MAX_THREADS` (16 by default, fatal on
 bluepill-c8's 20 KB, comfortable on the K64F), and pays the pow2 rounding above until a page is the
 granule. SMP does NOT force the question: with a big lock each core runs its own thread's kernel
-path on that thread's own stack, so nothing contends. What M6 DOES inherit is narrower, making the
-single `g_rv_trap_stack` per-core. The `-fstack-usage` margin gate M5.2.1 adds for the bound becomes
+path on that thread's own stack, so nothing contends. What M6 was to inherit was narrower, making
+the single `g_rv_trap_stack` per-core, and **M5.2.1 ALREADY DID IT**: the array is
+`g_rv_trap_stack[KICKOS_NUM_CORES][KICKOS_RV_TRAP_STACK_SIZE]` indexed by `arch_cpu_id()`, which
+folds to `0u` by preprocessor at one core and is gated by `check_cpu_id_fold.sh`. So M6 inherits a
+substitution rather than a change. The `-fstack-usage` margin gate M5.2.1 adds for the bound becomes
 the kernel-stack SIZING gate here, so that work transfers rather than being thrown away.
 
 **The items.** Renumbered from the spike, and item 3 below is CORRECTED against what `6be8220`

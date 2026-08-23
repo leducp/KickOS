@@ -111,6 +111,18 @@ static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RX_TRAP_REDZONE_SYS,
 // (kernel/thread/thread.cc), so the requirement has to fit ABOVE it: a ceiling that merely
 // equals the requirement reports an overflow on the deepest legitimate descent, and one below
 // it overflows the block for real.
+// THE DEATH PATH, two classes. NEST_EXIT is a plain integer because the gate scrapes it as an
+// immediate, so nothing in the language ties it to the terms it is composed of: the 8 bytes
+// arch_fault_redirect_to_exit skips below the block top so kickos_rx_pendsw's block leg does
+// not read the USP as zero distance, plus one whole switcher zone below the descent.
+static_assert(KICKOS_RX_TRAP_NEST_EXIT == 8 + KICKOS_RX_TRAP_REDZONE_PENDSW,
+              "KICKOS_RX_TRAP_NEST_EXIT is the entry skip plus a whole PENDSW zone");
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                  >= KICKOS_RX_TRAP_NEST_EXIT + KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK,
+              "the kernel block cannot hold the relocated death path plus its canary word");
+static_assert(KICKOS_MIN_STACK_SIZE
+                  >= KICKOS_RX_TRAP_NEST_EXIT + KICKOS_RX_TRAP_KERNEL_DEPTH_RET,
+              "the spawn floor cannot hold a privileged thread's entry return");
 static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t) >= KICKOS_RX_TRAP_NEED_SYSK,
               "KICKOS_KERNEL_STACK_SIZE is below the rxv3 syscall kernel-stack requirement "
               "plus its canary word: raise the per-arch default in Kconfig, never the depth, "
@@ -402,6 +414,43 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
     // only other writer. Cleared, the thread carries kernel_sp 0 through its own teardown,
     // which is the state svc_trampoline's .Lsvc_nokstack arm calls unreachable.
     uint32_t const kernel_sp = ctx->kernel_sp;
+    // THE SLAY PATH CLEARS kickos_rx_pendsw's ZERO-DISTANCE EDGE BY FOUR BYTES, INCIDENTALLY.
+    // That guard's block leg tests kernel_sp - USP with bleu, so a USP exactly at the top is
+    // read as not-on-the-block and refused; the fault path spends a deliberate 8 to stay
+    // clear (arch_fault_redirect_to_exit derives it). Here the clearance is a side effect:
+    // arch_context_init leaves its RTS-target word at the top, so the rebuilt frame starts at
+    // kernel_sp - 4. Four is enough and nothing chose it. If arch_context_init ever stops
+    // pushing that word, this path lands exactly on the top and every slain thread panics at
+    // its first preemption.
+#if KICKOS_KERNEL_STACKS
+    // THE SLAY STUB IS REBUILT ON THE THREAD'S OWN KERNEL BLOCK, so no privileged frame is
+    // fabricated on memory the thread or a domain sibling can write. The frame goes at the
+    // block TOP, which discards whatever dispatch frames the block held: the thread is dying
+    // and nothing resumes it, and it is what keeps the block requirement the MAX of the
+    // dispatch and exit classes rather than their sum.
+    //
+    // THE USER BOUNDS ARE PRESERVED ACROSS IT. arch_context_init derives stack_lo and
+    // stack_hi from what it is handed, so handing it the block would leave the context
+    // describing kernel .bss as this thread's stack.
+    //
+    // THEIR ONLY READERS ARE THE FOUR switch.S GUARDS, and NOT the fault record: that reads
+    // Thread::stack_base and Thread::stack_size, which this function never touches. So no
+    // runtime path can observe the restore being absent, every guard testing ctx.kernel_sp
+    // first and taking the block leg for this frame. tests/static/check_death_stack_seating.sh
+    // is what holds it, for exactly that reason.
+    if (kernel_sp != 0)
+    {
+        uint32_t const lo = ctx->stack_lo;
+        uint32_t const hi = ctx->stack_hi;
+        void* const block = reinterpret_cast<void*>(
+            static_cast<uintptr_t>(kernel_sp) - KICKOS_KERNEL_STACK_SIZE);
+        arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
+        ctx->stack_lo = lo;
+        ctx->stack_hi = hi;
+        ctx->kernel_sp = kernel_sp;
+        return;
+    }
+#endif
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
     ctx->kernel_sp = kernel_sp;
 }
@@ -546,10 +595,20 @@ void arch_fault_redirect_to_exit(void* frame)
     // hands over a USP that reads in-bounds and the stub would otherwise run privileged on
     // an exhausted stack. Safe to write here because the handler runs on the ISP: R0 in
     // supervisor mode is the ISP, and USP is a separate control register.
+    //
+    // EIGHT BYTES BELOW THAT TOP, AND ONLY THIS ARCH NEEDS IT. kickos_fault_stack_top now
+    // answers with the thread's kernel block, and kickos_rx_pendsw's block leg tests
+    // `kernel_sp - USP` with bleu, so a USP EXACTLY at the top reads as zero distance, falls
+    // through to the user-stack legs, and is refused as a wild USP. The window is real here
+    // and nowhere else: RX interrupt acceptance pushes PC and PSW to the ISP and leaves the
+    // USP untouched, so the guard can observe the pre-push value, where ARM exception entry
+    // stacks on the PSP itself and PendSV therefore always reads a PSP already below the top.
+    // svc_trampoline avoids the same edge the same way, reaching the block at T-8 rather than
+    // at T. Costs 8 bytes of a stack the thread is dying on.
     uint32_t const top = static_cast<uint32_t>(kickos_fault_stack_top());
     if (top != 0)
     {
-        uint32_t const sp = top & ~3u;
+        uint32_t const sp = (top - 8u) & ~3u;
         __asm volatile("mvtc %0, usp" ::"r"(sp));
     }
 }

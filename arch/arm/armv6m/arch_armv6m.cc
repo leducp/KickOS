@@ -107,6 +107,15 @@ static_assert(KICKOS_ARMV6M_TRAP_NEED_SVC > KICKOS_ARMV6M_TRAP_NEED_PENDSV,
 // guard only KICKOS_MIN_STACK_SIZE minus that frame. 32 is the basic frame, and STKALIGN
 // washes out: a 4-mod-8 SP makes entry spend 36 but hands the trampoline back the same 36.
 // The gate models no such term, which is why it lives here.
+// THE DEATH PATH, two classes: the fault and slay stubs relocate to the thread's own kernel
+// block, so the BLOCK above its canary is what holds them; kickos_thread_return does not
+// relocate, so the spawn floor is what holds it.
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                  >= KICKOS_ARMV6M_TRAP_NEST_EXIT + KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK,
+              "the kernel block cannot hold the relocated death path plus its canary word");
+static_assert(KICKOS_MIN_STACK_SIZE
+                  >= KICKOS_ARMV6M_TRAP_NEST_EXIT + KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_RET,
+              "the spawn floor cannot hold a privileged thread's entry return");
 static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV6M_TRAP_NEED_SVC + 32,
               "KICKOS_MIN_STACK_SIZE is below the armv6m syscall red zone plus the "
               "exception frame entry spends above it: raise the per-arch default in "
@@ -224,6 +233,35 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
     // only other writer. Cleared, the thread carries kernel_sp 0 through its own teardown,
     // which is the state svc_trampoline's .Lsvc_nokstack arm calls unreachable.
     uint32_t const kernel_sp = ctx->kernel_sp;
+#if KICKOS_KERNEL_STACKS
+    // THE SLAY STUB IS REBUILT ON THE THREAD'S OWN KERNEL BLOCK, so no privileged frame is
+    // fabricated on memory the thread or a domain sibling can write. The frame goes at the
+    // block TOP, which discards whatever dispatch frames the block held: the thread is dying
+    // and nothing resumes it, and it is what keeps the block requirement the MAX of the
+    // dispatch and exit classes rather than their sum.
+    //
+    // THE USER BOUNDS ARE PRESERVED ACROSS IT. arch_context_init derives stack_lo and
+    // stack_hi from what it is handed, so handing it the block would leave the context
+    // describing kernel .bss as this thread's stack.
+    //
+    // THEIR ONLY READERS ARE THE FOUR switch.S GUARDS, and NOT the fault record: that reads
+    // Thread::stack_base and Thread::stack_size, which this function never touches. So no
+    // runtime path can observe the restore being absent, every guard testing ctx.kernel_sp
+    // first and taking the block leg for this frame. tests/static/check_death_stack_seating.sh
+    // is what holds it, for exactly that reason.
+    if (kernel_sp != 0)
+    {
+        uint32_t const lo = ctx->stack_lo;
+        uint32_t const hi = ctx->stack_hi;
+        void* const block = reinterpret_cast<void*>(
+            static_cast<uintptr_t>(kernel_sp) - KICKOS_KERNEL_STACK_SIZE);
+        arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
+        ctx->stack_lo = lo;
+        ctx->stack_hi = hi;
+        ctx->kernel_sp = kernel_sp;
+        return;
+    }
+#endif
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
     ctx->kernel_sp = kernel_sp;
 }

@@ -438,7 +438,10 @@ recursive malloc owner lock, and a kernel-mediated heap break, which is what fin
 syscall path per arch BEFORE committing sizes, using the same `-fcallgraph-info` instrument that
 sizes a kernel array instead of policing a user one. Then decide PER BOARD: 16 threads times a
 kernel stack does not fit microbit's 16 KiB or bluepill-c8's 20 KiB, so that board lowers its
-thread ceiling or takes continuation-style blocking. **Never fall back to privileged execution on
+thread ceiling or takes continuation-style blocking. **A THIRD OPTION IS WHAT ACTUALLY SHIPPED, so
+read this pair as superseded**: armv7m carries BOTH entry designs under `KICKOS_KERNEL_STACKS`,
+gated on the chip capability `HAS_MPU`, and the boards that cannot afford blocks keep their red
+zone and gain usable stack rather than losing threads. **Never fall back to privileged execution on
 user stacks.** microbit is already at the arena cliff (`_ebss` IS `__kickos_ram_start`), and
 `bluepill-c8-st`/`f302nucleo-st` sit near 3 percent flash slack while trusted entry adds text.
 

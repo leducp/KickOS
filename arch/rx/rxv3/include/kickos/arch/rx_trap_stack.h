@@ -157,9 +157,10 @@
  * that measure anything. _SYSK is NOT rounded, a kernel block being sized to it directly, so a
  * byte of slack there would cost KICKOS_THREAD_SLOTS bytes of kernel .bss for nothing.
  *
- * ONE BOARD SETS EVERY FIGURE HERE. rx72m-st is the only preset trap_redzone_roots.txt
- * declares for this arch, rx72m being the only chip that selects ARCH_RXV3, so what the
- * sample does not cover is a variant with a different console backend or a telemetry build:
+ * ONE BOARD SETS EVERY FIGURE HERE, THOUGH NO LONGER ONE PRESET. trap_redzone_roots.txt
+ * declares rx72m, rx72m-st and rx72m-flat and all three are registered, rx72m being the only
+ * chip that selects ARCH_RXV3, so a figure here is the worse of three readings rather than
+ * one. What the sample still does not cover is a telemetry build:
  * _PENDSW's optional trace and bench roots are ABSENT from this preset's graph and contribute
  * 0 to the 32 above. A re-measurement MUST carry this board's -misa=v3 -mdfpu baseline; at
  * the compiler's default -misa=v1 with no DFPU every figure here comes out smaller than the
@@ -169,6 +170,48 @@
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS 0
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST 64
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK 788
+
+/* THE EXIT CLASS, structural half: what a preemption puts below the deepest byte the DEATH
+ * PATH uses. One whole PENDSW zone, 236 of save plus the 64 restore descent below it, which
+ * is KICKOS_RX_TRAP_REDZONE_PENDSW read from the other end. Device interrupts land on the
+ * ISP, so the SWINT switcher is the only writer that can reach this stack, and switch.S
+ * already computes the same term as BLOCK_USP_MAX_DROP = SIZE - REDZONE_PENDSW - 4.
+ *
+ * A plain integer and not the REDZONE_PENDSW expression, because the gate scrapes this macro
+ * as an immediate; arch_rxv3.cc asserts the two agree.
+ *
+ * A FRAME TERM and not 0: the stub runs at PSW.I = 1 with IPL = 0, which is what lets its
+ * exit_current reschedule, so a preemption below the descent is the ordinary case.
+ *
+ * PLUS THE EIGHT BYTES THE ENTRY SKIPS. arch_fault_redirect_to_exit seats the USP at
+ * kernel_sp - 8 rather than at kernel_sp, because kickos_rx_pendsw's block leg tests the
+ * distance with bleu and reads a USP exactly at the top as zero distance, refusing it. Those
+ * 8 bytes are above every byte the descent uses, so the block has to hold them too: 8 + 300
+ * is 308.
+ *
+ * A PLAIN INTEGER, not the expression, because check_trap_redzone.sh scrapes this macro as an
+ * immediate and REFUSES a figure it cannot find as one. arch_rxv3.cc asserts the composition
+ * instead, which is where the drift would otherwise hide. */
+#define KICKOS_RX_TRAP_NEST_EXIT 308
+
+/* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
+ * BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
+ * kickos_thread_slay_exit. 616, the fault stub the deeper through kprintf_fault's console
+ * chain. All THREE registered presets measure it identically, so the figure has no spread.
+ *
+ * This arch selects ARCH_KERNEL_STACKS_MANDATORY, so no kstacks=0 fallback class stands
+ * beside it. No exclusion enters it either: this arch declares none.
+ *
+ * IT NEVER BINDS, and this is the arch with least room for that to change: 300 + 616 = 916
+ * against 1100 usable, where SYSK asks 1096, so EXITK would have to grow 180 bytes before it
+ * displaced SYSK and forced a KICKOS_KERNEL_STACK_SIZE raise. */
+#define KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK 616
+
+/* kickos_thread_return ALONE, the residual the move leaves: an ordinary privileged thread's
+ * entry returning, with no fault and no redirect, so nothing relocates it and it runs at
+ * whatever depth the entry returned from on the thread's own stack. 476, identical on all
+ * three registered presets. This arch declares no exclusions, so it is both readings. */
+#define KICKOS_RX_TRAP_KERNEL_DEPTH_RET 476
 
 /* What each guard enforces: room below the USP, in bytes.
  *

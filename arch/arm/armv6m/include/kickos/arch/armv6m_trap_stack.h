@@ -149,6 +149,41 @@
 #define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVC 0
 #define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVCK 808
 
+/* THE EXIT CLASS, structural half: what a preemption puts below the deepest byte the DEATH
+   PATH uses. NEST_SVCK's window without the 16-byte continuation header, no trampoline
+   laying one here: the backend rewrites the exception frame so the return lands in the stub
+   with SP at kickos_fault_stack_top, and the stub is entered by an exception return.
+
+     -4    the STKALIGN pad a preempting exception spends, which does not cancel for the
+           reason it does not in the SVCK window.
+     -32   the hardware frame a device IRQ or SysTick stacks. The stub runs in THREAD mode.
+     -32   the PendSV that tail-chains behind it.
+
+   4 + 32 + 32 is 68. A FRAME TERM and not 0, because the stub is preemptible: exit_current
+   reschedules, so a preemption is the ordinary case rather than a possibility. */
+#define KICKOS_ARMV6M_TRAP_NEST_EXIT 68
+
+/* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
+   BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
+   kickos_thread_slay_exit. 592 on all three picopi variants against microbit's 544, the fault
+   stub the deeper of the two through kprintf_fault. NO POSTURE LADDER on this arch: it has no
+   telemetry and no bench variant, so one figure covers every registered preset.
+
+   This arch selects ARCH_KERNEL_STACKS_MANDATORY, so there is no kstacks=0 fallback class to
+   carry beside it the way armv7m carries one.
+
+   The exclusions do not enter it. This arch declares none, so an excluded and an unexcluded
+   reading are the same number, and the figure is unchanged by the class moving to the block.
+
+   IT NEVER BINDS: 68 + 592 = 660 against 892 usable, where SVCK asks 892 exactly. */
+#define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK 592
+
+/* kickos_thread_return ALONE, the residual the move leaves: an ordinary privileged thread's
+   entry returning, with no fault and no redirect, so nothing relocates it and it runs at
+   whatever depth the entry returned from on the thread's own stack. 504 on all three picopi
+   variants against microbit's 424. This arch declares no exclusions, so it is both readings. */
+#define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_RET 504
+
 /* What each guarded site enforces: room below the live PSP, in bytes. The whole red zone
    for a class, the structural half plus the measured one, which is also what the gate
    compares against KICKOS_MIN_STACK_SIZE. Loaded with `ldr rN, =`, out of the literal pool,

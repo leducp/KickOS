@@ -139,6 +139,21 @@ namespace kickos
                 EXPECT_TRUE(kickos_fault_below_stack(3u));
             }
 
+            // kickos_fault_stack_top has TWO branches and this file compiles ONE. It answers
+            // with ctx.kernel_sp wherever a per-thread kernel block is seated and with the
+            // user stack top otherwise, and ARCH_SIM selects neither ARCH_HAS_KERNEL_STACKS
+            // nor ARCH_KERNEL_STACKS_MANDATORY, so KICKOS_KERNEL_STACKS resolves 0 here and
+            // the arm below covers the only branch there is.
+            //
+            // THE OTHER BRANCH CANNOT BE REACHED ON THE HOST AT ALL: the sim's struct
+            // arch_context is an opaque byte array (arch/sim/include/kickos/arch/context.h)
+            // with no kernel_sp member, so the block arm does not compile against it.
+            // tests/static/check_death_stack_seating.sh is what gates that branch instead.
+            static_assert(KICKOS_KERNEL_STACKS == 0,
+                          "the host now compiles kickos_fault_stack_top's kernel-block arm, "
+                          "which nothing in this file covers: give the sim's arch_context a "
+                          "kernel_sp and add the block-top arm beside the one below");
+
             TEST_F(FaultBand, the_stub_lands_at_the_top_of_the_dying_threads_own_stack)
             {
                 seat_current_with_stack(STACK_BASE, STACK_SIZE);

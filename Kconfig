@@ -337,9 +337,11 @@ config KICKOS_KERNEL_STACK_SIZE
 	  below its arch is a change to the assert and to what the depth macro means, not
 	  a defconfig line.
 
-	  RXV3 IS ONE BOARD'S READING AND SAYS SO. rx72m-st is the only preset declared
-	  for that arch, rx72m being the only chip that selects ARCH_RXV3, so the 788
-	  above is not the worse of a sample the way the other three figures are.
+	  RXV3 IS ONE BOARD'S READING, THOUGH NO LONGER ONE PRESET'S. rx72m is the only
+	  chip that selects ARCH_RXV3, but rx72m, rx72m-st and rx72m-flat are all
+	  declared and all registered, so the 788 above IS the worse of a sample. What
+	  the sample does not cover is a telemetry build, that board having no such
+	  variant.
 
 	  WHICH BOARDS PAY. Only where KICKOS_KERNEL_STACKS is 1: the block is
 	  KICKOS_THREAD_SLOTS of this size in kernel .bss, and the banner reports slot
@@ -376,6 +378,23 @@ config KICKOS_TLS_SIZE
 config KICKOS_MIN_STACK_SIZE
 	int
 	default 896 if ARCH_ARMV6M
+	# TELEMETRY_RTT compiles the trace emitters and the ring drain arch_shutdown
+	# runs, which nothing else compiles and which the exit stubs reach through
+	# exit_current. The RET class measures 824 there against 312 off, so the
+	# modelled zone is 208 + 824 = 1032 and 960 does not hold it.
+	#
+	# IT IS A MODEL CEILING AND NOT AN OBSERVED OVERRUN, and the difference is
+	# worth stating because this leg was first written as a fix for one. The 208
+	# frame term prices a preemption at the deepest byte, and at THIS depth no
+	# preemption can occur: the 824 chain runs inside the IrqLock exit_current
+	# holds across its kickos_terminate call, and on armv7m that lock is BASEPRI
+	# at PRIO_LOCK_BASEPRI, which masks PRIO_DEVICE, PRIO_SVCALL and PRIO_PENDSV
+	# alike. So the frame and the depth cannot coexist and 1032 is unreachable.
+	# The leg is kept because the gate's model is frame plus depth everywhere and
+	# an arch-local exemption would be a second truth about what a class means;
+	# it costs qemu-telem alone. 1088 is 1032 at the next multiple of 64.
+	# armv7m_trap_stack.h derives both figures and names the chain each wins on.
+	default 1088 if ARCH_ARMV7M && TELEMETRY_RTT
 	default 960 if ARCH_ARMV7M
 	default 1024 if ARCH_RXV3
 	# KICKOS_BENCH compiles a syscall arm that prints, so a PRIVILEGED thread's
@@ -392,12 +411,25 @@ config KICKOS_MIN_STACK_SIZE
 	  dispatch, measured. A stack below it passes the spawn check and then
 	  overflows on exit.
 
-	  THE THREAD-EXIT CLAIM IS MEASURED ON rv32imac AND ONLY THERE, as the EXIT
-	  class of check_trap_redzone.sh, over the three stubs a dying thread runs
-	  privileged on its own stack: kickos_thread_fault_exit,
-	  kickos_thread_slay_exit and kickos_thread_return. The other three gated
-	  backends relocate to the same place and no class of theirs measures it, so
-	  on armv7m, armv6m and rxv3 this sentence is still prose.
+	  THE THREAD-EXIT CLAIM IS MEASURED ON ALL FOUR GATED BACKENDS, and it is now
+	  TWO claims rather than one, because two of the three stubs stopped spending
+	  a thread's own stack. kickos_fault_stack_top answers with ctx.kernel_sp, so
+	  kickos_thread_fault_exit and kickos_thread_slay_exit run on the dying
+	  thread's KERNEL BLOCK and are measured there as EXITK, against the block
+	  rather than against this floor. What this floor still holds is
+	  kickos_thread_return, measured as RET: an entry return, with no fault and no
+	  redirect, so nothing relocates it under any entry design. armv7m carries a
+	  third class, EXIT, for the four presets that carve no block and where all
+	  three stubs therefore stay here.
+
+	  THE FRAME TERM IS NOT ZERO ON ANY OF THE FOUR, rv32imac's old 0 included.
+	  Each stub is entered by an exception return, in thread mode, with interrupts
+	  enabled, and its exit_current reschedules, so a preemption below the descent
+	  is the ordinary case. On rv32imac that preemption is the msip frame, which
+	  is why its term is KICKOS_RV_TRAP_FRAME and not 0; the old 0 was justified
+	  by the descent STARTING at the stack top, which answers where it begins and
+	  not what lands beneath it. Each arch prices the window in its own
+	  <arch>_trap_stack.h.
 
 	  On a backend whose trap prologue enforces a red zone below the interrupted
 	  sp, this floor must also DOMINATE that red zone. A thread whose whole stack

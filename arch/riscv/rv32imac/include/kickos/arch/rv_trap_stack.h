@@ -23,19 +23,20 @@
  * The SYSPRIV class measures exactly that, against
  * KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC.
  *
- * THE DEATH PATH RUNS THERE FOR EVERY THREAD, privilege included, and it is the one place
- * privileged C descends on an UNPRIVILEGED thread's own stack: .Lfault relocates sp to
- * kickos_fault_stack_top and mrets into kickos_thread_fault_exit, and arch_ctx_redirect
- * fabricates kickos_thread_slay_exit at the same top. Not a trap prologue and not bounded by
- * one, so what covers it is the spawn floor alone. The EXIT class measures that, against
- * KICKOS_RV_TRAP_EXIT_DEPTH.
+ * THE DEATH PATH SPLIT IN TWO, and only one half still spends a thread's own stack.
+ * kickos_fault_stack_top answers with ctx.kernel_sp, so .Lfault's sp relocation and
+ * arch_ctx_redirect's rebuild both land on the thread's KERNEL BLOCK: the EXITK class
+ * measures those two against the block, at KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK.
+ * kickos_thread_return does NOT move, being an entry return with no fault and no redirect,
+ * so the spawn floor is what covers it and the RET class measures it at
+ * KICKOS_RV_TRAP_KERNEL_DEPTH_RET. Neither is a trap prologue and neither is bounded by one.
  *
- * SO THE SPAWN FLOOR ON THIS ARCH IS SET BY PRIVILEGED THREADS AND BY THE DEATH PATH, and
+ * SO THE SPAWN FLOOR ON THIS ARCH IS SET BY PRIVILEGED THREADS AND BY THE ENTRY RETURN, and
  * that is the interesting result of the transfer. Two terms, each measured as a class of its
  * own, and which of them binds depends on the build posture:
  *
- *   EVERY THREAD'S DEATH PATH, KICKOS_RV_TRAP_EXIT_DEPTH, and it spends the thread's own
- *   stack whatever its privilege. The EXIT class measures it.
+ *   A PRIVILEGED THREAD'S ENTRY RETURN, KICKOS_RV_TRAP_KERNEL_DEPTH_RET. The RET class
+ *   measures it.
  *
  *   A PRIVILEGED THREAD'S SYSCALL, KICKOS_RV_TRAP_NEED_SYSPRIV, its ecall frame and dispatch
  *   staying where they always were. This is the larger of the two in every posture, so it is
@@ -174,8 +175,8 @@
 #define KICKOS_RV_TRAP_NEED_SYSPRIV \
     (KICKOS_RV_TRAP_FRAME_SYS + KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC)
 
-/* THE DEATH PATH, and the one class here that spends an UNPRIVILEGED thread's own stack. Three
- * roots reach it and all three run privileged in thread mode on the dying thread's stack:
+/* THE DEATH PATH, WHICH IS TWO CLASSES because two of its three roots relocated to the kernel
+ * block and one could not. Both run privileged in thread mode:
  * kickos_thread_fault_exit (an accepted fault, .Lfault moving sp to kickos_fault_stack_top),
  * kickos_thread_slay_exit (arch_ctx_redirect fabricating a frame at that same top), and
  * kickos_thread_return, which is a PRIVILEGED thread's entry-return stub, a user thread's
@@ -191,12 +192,32 @@
  * instrumented site. 768 is 720 rounded up on the convention above, and that margin is free
  * because KICKOS_RV_TRAP_NEED_SYSPRIV sets the floor in both postures.
  *
- * NO FRAME TERM, AND ONE RESIDUAL. The two redirect paths start from the stack TOP, so the
- * whole stack is under the descent and 0 is right. kickos_thread_return does NOT: it runs at
- * the depth the thread's entry function returned from, so what the floor buys there is this
- * descent plus that frame, which this class does not model. */
-#define KICKOS_RV_TRAP_FRAME_EXIT 0
-#define KICKOS_RV_TRAP_EXIT_DEPTH 768
+ * THE FRAME TERM IS THE MSIP FRAME, 128, AND IT IS NOT 0. This macro read 0 with the
+ * justification that the two redirect paths start from the stack TOP so the whole stack is
+ * under the descent. That answers where the descent BEGINS, not what a preemption puts BELOW
+ * its deepest byte, and one does: the stub's exit_current reschedules, arch_switch pends msip,
+ * and an msip trap taken from M-mode keeps its KICKOS_RV_TRAP_FRAME on the interrupted sp.
+ * That is the same physics KICKOS_RV_TRAP_NEST_SYS prices as two frames.
+ *
+ * A PLAIN INTEGER and not KICKOS_RV_TRAP_FRAME, because check_trap_redzone.sh scrapes this
+ * macro as an immediate and REFUSES a figure it cannot find as one. arch_rv32imac.cc asserts
+ * the two agree. */
+#define KICKOS_RV_TRAP_NEST_EXIT 128
+
+/* THE TWO STUBS THAT RELOCATE, on the thread's own KERNEL BLOCK: kickos_fault_stack_top
+ * answers with ctx.kernel_sp, so .Lfault's sp move and arch_ctx_redirect's rebuild both land
+ * at the block top. 720 on esp32c6-wroom against 624 on qemu-riscv, the fault reporter winning
+ * on both, and no posture moves it: all four the gate runs measure the same, KICKOS_BENCH
+ * included, the exit chain reaching no instrumented site.
+ *
+ * NEVER BINDS: 128 + 720 = 848 against 1180 usable, where NEED_SYSK asks more. */
+#define KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK 720
+
+/* kickos_thread_return ALONE, the residual the move leaves. It is a PRIVILEGED thread's
+ * entry-return stub, a user thread's being the kickos_user_thread_return syscall instead, so
+ * no fault and no redirect relocates it and it runs at the depth the entry returned from on
+ * the thread's own stack. 368 excluded. */
+#define KICKOS_RV_TRAP_KERNEL_DEPTH_RET 368
 
 /* THE SYSCALL REQUIREMENT HOLDS TWO FRAMES, the second being the msip frame the deferred
  * switcher builds. A blocking dispatch pends msip and the trap fires at whatever depth the

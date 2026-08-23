@@ -116,14 +116,19 @@ static_assert(KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC <= KICKOS_RV_TRAP_KERNEL_
 // every board, which is the coverage the gate does not have.
 static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RV_TRAP_NEED_SYSPRIV,
               "the spawn floor cannot hold a privileged thread's own syscall dispatch");
-// THE DEATH PATH SPENDS EVERY THREAD'S OWN STACK, privilege included, and no prologue bounds
-// it: .Lfault relocates sp to the top of the dying thread's stack and mrets into the exit
-// stub. So the spawn floor is the only thing that covers it, which is what KICKOS_MIN_STACK_SIZE
-// has always claimed to be and nothing measured until the EXIT class. No frame term: the
-// redirect paths start from the top.
+// THE DEATH PATH IS TWO CLASSES. The fault and slay stubs relocate to the thread's own kernel
+// block, kickos_fault_stack_top answering with ctx.kernel_sp, so what has to hold them is the
+// BLOCK above its canary word. kickos_thread_return does not relocate, so the spawn floor is
+// the only thing that covers it, which is what KICKOS_MIN_STACK_SIZE has always claimed to be
+// and nothing measured until these classes existed.
+static_assert(KICKOS_RV_TRAP_NEST_EXIT == KICKOS_RV_TRAP_FRAME,
+              "the death path's frame term is the msip frame a reschedule puts below it");
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                  >= KICKOS_RV_TRAP_NEST_EXIT + KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK,
+              "the kernel block cannot hold the relocated death path plus its canary word");
 static_assert(KICKOS_MIN_STACK_SIZE
-                  >= KICKOS_RV_TRAP_FRAME_EXIT + KICKOS_RV_TRAP_EXIT_DEPTH,
-              "the spawn floor cannot hold the thread-exit dispatch");
+                  >= KICKOS_RV_TRAP_NEST_EXIT + KICKOS_RV_TRAP_KERNEL_DEPTH_RET,
+              "the spawn floor cannot hold a privileged thread's entry return");
 // THE ENTRY HAS NOWHERE ELSE TO BUILD. With no block seated, every U-mode trap takes the
 // refusal path and the first syscall a thread makes ends the system, so this arch cannot be
 // configured without the blocks.
@@ -292,6 +297,35 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
     // only other writer. Cleared, the thread carries kernel_sp 0 through its own teardown,
     // which is the state svc_trampoline's .Lsvc_nokstack arm calls unreachable.
     uint32_t const kernel_sp = ctx->kernel_sp;
+#if KICKOS_KERNEL_STACKS
+    // THE SLAY STUB IS REBUILT ON THE THREAD'S OWN KERNEL BLOCK, so no privileged frame is
+    // fabricated on memory the thread or a domain sibling can write. The frame goes at the
+    // block TOP, which discards whatever dispatch frames the block held: the thread is dying
+    // and nothing resumes it, and it is what keeps the block requirement the MAX of the
+    // dispatch and exit classes rather than their sum.
+    //
+    // THE USER BOUNDS ARE PRESERVED ACROSS IT. arch_context_init derives stack_lo and
+    // stack_hi from what it is handed, so handing it the block would leave the context
+    // describing kernel .bss as this thread's stack.
+    //
+    // THEIR ONLY READERS ARE THE FOUR switch.S GUARDS, and NOT the fault record: that reads
+    // Thread::stack_base and Thread::stack_size, which this function never touches. So no
+    // runtime path can observe the restore being absent, every guard testing ctx.kernel_sp
+    // first and taking the block leg for this frame. tests/static/check_death_stack_seating.sh
+    // is what holds it, for exactly that reason.
+    if (kernel_sp != 0)
+    {
+        uint32_t const lo = ctx->stack_lo;
+        uint32_t const hi = ctx->stack_hi;
+        void* const block = reinterpret_cast<void*>(
+            static_cast<uintptr_t>(kernel_sp) - KICKOS_KERNEL_STACK_SIZE);
+        arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
+        ctx->stack_lo = lo;
+        ctx->stack_hi = hi;
+        ctx->kernel_sp = kernel_sp;
+        return;
+    }
+#endif
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
     ctx->kernel_sp = kernel_sp;
 }
