@@ -14,10 +14,9 @@ CONFIG_BOARD_MICROBIT=y
 # thread pointer being SP masked down to the block, and 1408 would round the stride to
 # 2048 anyway and waste the difference as padding rather than stack.
 #
-# FOUR AND NOT EIGHT: KICKOS_THREAD_SLOTS blocks of KICKOS_KERNEL_STACK_SIZE (896 on
-# armv6m) sit in kernel .bss below the arena, so raising the thread count shrinks the
-# arena while growing the demand; four leaves the arena at 18176 against a demand of
-# 10752.
+# FOUR AND NOT EIGHT: a slot costs a KICKOS_KERNEL_STACK_SIZE block (896 on armv6m) in
+# kernel .bss AND a struct _reent in the app window, both below the arena, so raising the
+# thread count shrinks the arena while growing the demand.
 #
 # Its CI gate is the TAP suite, so the self-test syscalls are part of the base posture
 # rather than a variant of it.
@@ -26,4 +25,3 @@ CONFIG_KICKOS_USER_STACK_SIZE=2048
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=2048
 CONFIG_KICKOS_ENABLE_SELFTEST=y
-

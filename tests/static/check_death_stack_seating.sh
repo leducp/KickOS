@@ -100,8 +100,13 @@ line_of() { # <recordfile> <ere>
 # and which would have let a test of the field stand in for a write to it.
 BASE_RE='kernel_sp\)? *- *KICKOS_KERNEL_STACK_SIZE'
 INIT_RE='arch_context_init *\([^;]*KICKOS_KERNEL_STACK_SIZE[^;]*, *1 *\)'
-LO_RE='ctx->stack_lo *=[^=]'
-HI_RE='ctx->stack_hi *=[^=]'
+# A RESTORE AND NOT MERELY A WRITE. The bare forms matched `ctx->stack_lo = 0;`, which
+# satisfies "the field is assigned" while destroying the bounds this claim exists to protect,
+# so the RHS must be an identifier and the value must have been read out of the field first.
+SAVE_LO_RE='= *ctx->stack_lo *;'
+SAVE_HI_RE='= *ctx->stack_hi *;'
+LO_RE='ctx->stack_lo *= *[A-Za-z_][A-Za-z_0-9]* *;'
+HI_RE='ctx->stack_hi *= *[A-Za-z_][A-Za-z_0-9]* *;'
 KSP_RE='ctx->kernel_sp *=[^=] *kernel_sp'
 RET_RE='^[[:space:]]*return[[:space:]]*;'
 
@@ -151,7 +156,7 @@ arm_records "$TMP/posbody" "$TMP/posarm"
 require_nonempty "$TMP/posarm" \
     "the planted block arm came back empty, so every backend would read as carrying none"
 POSBLOB="$(collapse "$TMP/posarm")"
-for _re in "$BASE_RE" "$INIT_RE" "$LO_RE" "$HI_RE" "$KSP_RE"; do
+for _re in "$BASE_RE" "$INIT_RE" "$SAVE_LO_RE" "$SAVE_HI_RE" "$LO_RE" "$HI_RE" "$KSP_RE"; do
     printf '%s' "$POSBLOB" | grep -qE "$_re" \
         || fail "the planted positive does not match /$_re/; that claim would pass vacuously on every backend"
 done
@@ -163,6 +168,50 @@ extract "$TMP/neg.cc" arch_ctx_redirect "$TMP/negbody" \
 arm_records "$TMP/negbody" "$TMP/negarm"
 if [ -s "$TMP/negarm" ]; then
     fail "the prose twin yielded a block arm; comments are being read as code and every claim is satisfiable by a comment"
+fi
+
+# A body that ZEROES the bounds instead of restoring them must not satisfy the restore
+# claims: the bare `=[^=]` forms accepted it, which is the whole point of the tightening.
+cat > "$TMP/zero.cc" <<'EOF'
+void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
+                       void* stack_base, size_t stack_size)
+{
+    uint32_t const kernel_sp = ctx->kernel_sp;
+#if KICKOS_KERNEL_STACKS
+    if (kernel_sp != 0)
+    {
+        void* const block = reinterpret_cast<void*>(
+            static_cast<uintptr_t>(kernel_sp) - KICKOS_KERNEL_STACK_SIZE);
+        arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
+        ctx->stack_lo = 0;
+        ctx->stack_hi = 0;
+        ctx->kernel_sp = kernel_sp;
+        return;
+    }
+#endif
+    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+    ctx->kernel_sp = kernel_sp;
+}
+EOF
+extract "$TMP/zero.cc" arch_ctx_redirect "$TMP/zerobody"     || fail "the extractor refused the planted zeroing twin, so this negative proves nothing"
+arm_records "$TMP/zerobody" "$TMP/zeroarm"
+ZEROBLOB="$(collapse "$TMP/zeroarm")"
+for _re in "$LO_RE" "$HI_RE" "$SAVE_LO_RE" "$SAVE_HI_RE"; do
+    if printf '%s' "$ZEROBLOB" | grep -qE "$_re"; then
+        fail "a body that zeroes the bounds satisfies /$_re/, so the restore claim is a write claim"
+    fi
+done
+
+# A function whose name merely ENDS with the one asked for must not be read as it, or every
+# claim below is measured against the wrong body.
+cat > "$TMP/suffix.cc" <<'EOF'
+void kickos_arch_ctx_redirect(struct arch_context* ctx)
+{
+    ctx->kernel_sp = 0;
+}
+EOF
+if extract "$TMP/suffix.cc" arch_ctx_redirect "$TMP/suffixbody" 2>/dev/null; then
+    fail "the extractor read kickos_arch_ctx_redirect as arch_ctx_redirect; a name-suffixed definition is measured as the real one"
 fi
 
 # --- the corpus ---------------------------------------------------------------
@@ -263,6 +312,27 @@ while IFS="$TAB" read -r a f; do
         if [ "$_ln" -le "$INIT_LN" ]; then
             bad "$f: ctx->$_name is restored at line $_ln, above the arch_context_init at line
       $INIT_LN, which overwrites it"
+        fi
+    done
+
+    # THE VALUE MUST BE THE ONE READ OUT OF THAT FIELD, bound by NAME. The per-line claims
+    # above only ask that an identifier is assigned, which `ctx->stack_lo = hi;` satisfies
+    # while swapping the bounds, and they are matched per RECORD so a restore split across
+    # lines reads as absent. Both are settled on the collapsed arm, where the pair is one
+    # string: take the name the field was saved into, then require it back.
+    ARMBLOB="$(collapse "$TMP/arm")"
+    for _f in stack_lo stack_hi; do
+        _saved="$(printf '%s' "$ARMBLOB" \
+            | sed -n "s/.*[^A-Za-z_0-9]\\([A-Za-z_][A-Za-z_0-9]*\\) *= *ctx->$_f *;.*/\\1/p" \
+            | head -n1)"
+        if [ -z "$_saved" ]; then
+            bad "$f: the block arm never reads ctx->$_f into a local, so whatever it writes
+      back cannot be the value arch_context_init is about to overwrite"
+            continue
+        fi
+        if ! printf '%s' "$ARMBLOB" | grep -qE "ctx->$_f *= *$_saved *;"; then
+            bad "$f: the block arm saves ctx->$_f into '$_saved' and never restores that name,
+      so the bounds are zeroed, swapped, or taken from somewhere else"
         fi
     done
 

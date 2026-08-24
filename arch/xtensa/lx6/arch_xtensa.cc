@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 #include <kickos/arch/arch.h>
+#include <kickos/arch/lx6_trap_stack.h> // the figures check_trap_redzone.sh enforces
 #include <kickos/arch/xtensa_frame.h> // F_* interrupt-frame offsets, shared with startup.S
 #include <kickos/units.h> // _s == 1e9 ns
 #include <kickos/trace/record.h>
@@ -31,6 +32,15 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 #endif
 
 // switch.S + startup.S hard-code these arch_context field offsets.
+static_assert(F_SIZE == KICKOS_LX6_TRAP_FRAME,
+              "_kickos_int_level1 subtracts F_SIZE; the gate enforces KICKOS_LX6_TRAP_FRAME");
+
+// Idle never enters a syscall, so KICKOS_MIN_STACK_SIZE does not bind it; what does is the
+// involuntary frame plus the dispatch below it, which is this whole zone.
+static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_LX6_TRAP_FRAME + KICKOS_LX6_TRAP_DEPTH,
+              "the level-1 interrupt zone does not fit this board's idle stack, so idle dies on "
+              "its first preemption");
+
 static_assert(offsetof(struct arch_context, sp) == 0, "asm expects ctx.sp @0");
 static_assert(offsetof(struct arch_context, ps) == 4, "asm expects ctx.ps @4");
 static_assert(offsetof(struct arch_context, pc) == 8, "asm expects ctx.pc @8");

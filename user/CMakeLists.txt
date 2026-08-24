@@ -18,12 +18,8 @@ if(KICKOS_ARCH STREQUAL "sim")
   list(APPEND KICKOS_USER_SOURCES src/sim_exit.cc)
 else()
   list(APPEND KICKOS_USER_SOURCES src/newlib_stubs.cc src/newlib_sbrk.cc)
-  # The per-thread struct _reent array and the word the kernel swaps. Added to the source
-  # list rather than compiled to nothing under an #if, so with the knob off this archive
-  # carries no member for it at all.
-  if(KICKOS_LIBC_REENT)
-    list(APPEND KICKOS_USER_SOURCES src/newlib_reent.cc)
-  endif()
+  # The per-thread struct _reent array and the word the kernel swaps.
+  list(APPEND KICKOS_USER_SOURCES src/newlib_reent.cc)
 endif()
 
 add_library(kickos_user STATIC ${KICKOS_USER_SOURCES})

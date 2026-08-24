@@ -260,6 +260,7 @@ SECTIONS
 
 KICKOS_STATIC_RELOC_ASSERT()
 KICKOS_TLS_ALIGN_ASSERT()
+KICKOS_TLS_FIT_ASSERT()
 
 /* Static data (.data+.bss) must not eat into the user-RAM pool / MSP stack.
    Link-time guard: arch_ram_size() = end - start; a negative diff would wrap to

@@ -9,14 +9,14 @@
 #ifndef KICKOS_REENT_H
 #define KICKOS_REENT_H
 
-#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
+#if !KICKOS_ARCH_SIM
 
 // The array behind the seam is ONE array indexed by thread slot, so two kernel instances
-// would hand the same slot number the same struct _reent. Kconfig already keeps the two
-// apart (one depends on ARCH_SIM, the other on !ARCH_SIM); this refuses a build that
-// reached the compiler without going through it.
+// would hand the same slot number the same struct _reent. KICKOS_MULTI_INSTANCE depends on
+// ARCH_SIM and this block is !KICKOS_ARCH_SIM, so the pair is already exclusive; this
+// refuses a hand-built compile whose two macros disagree.
 #if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
-#error "KICKOS_LIBC_REENT and KICKOS_MULTI_INSTANCE cannot both be on"
+#error "KICKOS_MULTI_INSTANCE is set on a build that is not the sim"
 #endif
 
 extern "C"

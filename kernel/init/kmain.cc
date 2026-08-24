@@ -244,6 +244,18 @@ namespace kickos
         }
 #endif
 
+#if !KICKOS_ARCH_SIM
+        // SEEDED HERE SO A SPAWN DOES NOT PAY FOR IT UNDER THE LOCK. One struct _reent is 512
+        // bytes on arm-none-eabi, 288 on riscv32, 284 on rx, and it was the largest term in
+        // the spawn's interrupt-masked window by a factor of sixty over the TLS copy the same
+        // window makes. A slot is re-seeded on REUSE only, where the prior occupant's state
+        // has to go; syscall_thread.cc carries that half.
+        for (int slot = 0; slot < KICKOS_THREAD_SLOTS; slot++)
+        {
+            kickos_reent_init(kickos_reent_acquire(slot));
+        }
+#endif
+
         // Must precede the cap_slab_attach below: this rebuilds the free-chunk list from
         // scratch, so running it afterwards would hand root's run back to the free list.
         cap_slab_init();
@@ -319,11 +331,6 @@ namespace kickos
             IrqLock lock;
             cap_seat_authority(root_tcb, CAP_AUTH_ALL);
         }
-#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
-        // Root holds an ordinary pool slot, so it owns a struct _reent and stdio does not
-        // work until this has run. Nothing is READY yet, so it costs no masked time.
-        kickos_reent_init(root_tcb->reent);
-#endif
         sched::add(root_tcb);
 
         sched::start(); // returns only if the scheduler ever unwinds to boot

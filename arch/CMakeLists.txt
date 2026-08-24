@@ -290,12 +290,8 @@ if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
   # ONE member of libkickos_user.a, never the whole archive: the rest of that archive is
   # unprivileged and its thread_local is correct there. newlib_reent.cc owns the per-thread
   # struct _reent array and the word the context switch seats, so a thread_local in it is
-  # read on the wrong thread pointer exactly as a kernel one would be. The member exists
-  # only when the knob that adds the source is on, and the gate hard-fails on a member it
-  # cannot find, so the argument has to follow the same condition as user/CMakeLists.txt.
-  if(KICKOS_LIBC_REENT)
-    list(APPEND _no_tls_scan "$<TARGET_FILE:kickos_user>::newlib_reent.cc.obj")
-  endif()
+  # read on the wrong thread pointer exactly as a kernel one would be.
+  list(APPEND _no_tls_scan "$<TARGET_FILE:kickos_user>::newlib_reent.cc.obj")
   add_test(
     NAME    no_privileged_tls
     COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_no_privileged_tls.sh"
@@ -501,8 +497,14 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # fails the LINK with a section name and no hint of what is owed. Refuse at configure
   # instead, the way KICKOS_POOL_ARENA_ASSERT is refused, and name the fix.
   file(READ "${_ld}" _ld_sections_txt)
-  foreach(_m KICKOS_CODE_DEBRIS_SECTIONS KICKOS_NONALLOC_SECTIONS KICKOS_STATIC_RELOC_ASSERT
-              KICKOS_TLS_TEMPLATE)
+  set(_ld_required KICKOS_CODE_DEBRIS_SECTIONS KICKOS_NONALLOC_SECTIONS
+                   KICKOS_STATIC_RELOC_ASSERT KICKOS_TLS_TEMPLATE KICKOS_TLS_FIT_ASSERT)
+  # rxv3 alone has no TLS sections for the fit assert to read: its thread_local is an emutls
+  # control block, and only its own script can name the span they are gathered into.
+  if(KICKOS_ARCH STREQUAL "rxv3")
+    list(APPEND _ld_required KICKOS_TLS_EMUTLS_ASSERT)
+  endif()
+  foreach(_m IN LISTS _ld_required)
     if(NOT "${_ld_sections_txt}" MATCHES "${_m}")
       message(FATAL_ERROR
         "KickOS: ${_ld} does not invoke ${_m}. Every image links with "
@@ -521,6 +523,35 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # Per-build app-data window size. Each chip .ld carries its own freestanding default; a
   # full-C++ build needs the larger writable window for the heap and libstdc++/unwind state.
   set(_ld_defs -DKICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
+  # KICKOS_TLS_FIT_ASSERT needs the knob, the stride and the arch's ABI bias. The bias is
+  # SCRAPED from the arch's context.h rather than restated here: it is one number and the
+  # header the compiler reads is the place that owns it.
+  list(APPEND _ld_defs -DKICKOS_TLS=$<BOOL:${KICKOS_TLS}>)
+  if(KICKOS_TLS)
+    set(_tls_tcb_hdr "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include/kickos/arch/context.h")
+    if(NOT EXISTS "${_tls_tcb_hdr}")
+      message(FATAL_ERROR "KickOS: no ${_tls_tcb_hdr} to read KICKOS_ARCH_TLS_TCB from")
+    endif()
+    file(STRINGS "${_tls_tcb_hdr}" _tls_tcb_line REGEX "^#define[ \t]+KICKOS_ARCH_TLS_TCB[ \t]+[0-9]+")
+    if(_tls_tcb_line STREQUAL "")
+      message(FATAL_ERROR
+        "KickOS: ${_tls_tcb_hdr} defines no KICKOS_ARCH_TLS_TCB, so the link cannot check "
+        "that a thread_local template fits one stride.")
+    endif()
+    string(REGEX REPLACE "^#define[ \t]+KICKOS_ARCH_TLS_TCB[ \t]+([0-9]+).*" "\\1" _tls_tcb "${_tls_tcb_line}")
+    # The rounding tls_block_size() applies, scraped from the header that owns it so the link
+    # and the runtime cannot disagree about it.
+    set(_sa_hdr "${CMAKE_SOURCE_DIR}/kernel/include/kickos/config/system.h")
+    file(STRINGS "${_sa_hdr}" _sa_line REGEX "^#define[ \t]+KICKOS_STACK_ALIGN[ \t]+[0-9]+")
+    if(_sa_line STREQUAL "")
+      message(FATAL_ERROR
+        "KickOS: ${_sa_hdr} defines no KICKOS_STACK_ALIGN, so the link cannot round a "
+        "thread_local template the way tls_block_size does.")
+    endif()
+    string(REGEX REPLACE "^#define[ \t]+KICKOS_STACK_ALIGN[ \t]+([0-9]+).*" "\\1" _stack_align "${_sa_line}")
+    list(APPEND _ld_defs -DKICKOS_ARCH_TLS_TCB=${_tls_tcb} -DKICKOS_TLS_STRIDE=${_tls_stride}
+                         -DKICKOS_STACK_ALIGN=${_stack_align})
+  endif()
   if(DEFINED KICKOS_APPDATA_SIZE)
     list(APPEND _ld_defs -DKICKOS_APPDATA_SIZE=${KICKOS_APPDATA_SIZE})
   endif()

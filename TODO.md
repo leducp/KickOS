@@ -5220,7 +5220,7 @@ below where they were previously mislabeled.
   without ever calling `__errno()`. So TLS does not touch `errno`, and swapping `_impure_ptr` per
   thread fixes `errno` plus every other reentrant path at once.
 
-  **THE `_impure_ptr` SWAP LANDED IN M5.2.1 PR 9** as `KICKOS_LIBC_REENT`, default n and per-board
+  **THE `_impure_ptr` SWAP LANDED IN M5.2.1 PR 9**, on every board but the sim and per-board
   opt-in because it costs one `struct _reent` per thread SLOT out of the app window's heap pad: 512
   bytes on arm-none-eabi, 288 on riscv32-none-elf, 284 on rx-elf. The array is in `.appbss`
   (`user/src/newlib_reent.cc`), `struct Thread` carries the pointer, and `switch_book` plus
@@ -5232,6 +5232,69 @@ below where they were previously mislabeled.
   WHAT THIS DOES NOT FIX, and neither does TLS. `_REENT_INIT_PTR` points every thread's
   `_stdin`/`_stdout`/`_stderr` at the ONE shared `__sf[3]`, so stdio buffering stays process-wide
   even where `errno` no longer is.
+
+  **THE MASKED SPAWN WINDOW IS BOUNDED, AND SPLITTING THE LOCK NEEDS THE POOL CHANGED FIRST.**
+  The audit calls the interrupt-masked TLS/reent initialisation in `spawn_masked` unbounded.
+  It is not, and one of the two bounds landed in this milestone: the TLS copy is at most
+  `KICKOS_TLS_STRIDE` minus the ABI bias, which `KICKOS_TLS_FIT_ASSERT` now refuses at LINK
+  time; `kickos_reent_init` writes one `struct _reent`, 512 B on arm-none-eabi, 288 on
+  riscv32, 284 on rx; the cap loop is bounded by `KICKOS_MAX_SPAWN_GRANTS`. So the window is
+  bounded by two link/config constants and nothing an app grows at runtime. The LATENCY
+  concern is still real: a board with a full stride of `thread_local` masks on the order of
+  2.5 KB of stores.
+
+  THE OBSTACLE IS NOT THE LOCK, IT IS `ThreadPool::release`. It undoes a claim in exactly two
+  cases: an `EXITED` slot, or `i == next - 1`, and its own comment records why that is safe --
+  a fresh bump slot is "always the last one UNDER THE SPAWN LOCK". A two-phase publish breaks
+  that invariant by construction: a second spawner can claim a slot while the first is
+  initialising unmasked, so the first slot is no longer last and `release` either leaves a
+  permanent hole (`alloc` only ever revisits EXITED) or un-bumps somebody else's. So the
+  change is: give the pool a real free discipline for a claimed-but-unpublished slot, THEN
+  split the window, THEN add the reclaim so a spawner slain mid-construction frees the child
+  it was building. That third part is what the current single lock buys and must not be lost.
+
+  THE OTHER DESIGN AVOIDS THE POOL AND HITS THE MPU INSTEAD. Have the CHILD seat its own TLS
+  and reent on first run: both write the child's own memory, so nothing needs to be masked and
+  the spawn lock keeps its transaction. The kernel would pass a trampoline as `entry` and
+  carry the real entry and arg in the TCB, which needs no arch change (armv7m already enters
+  `entry` directly with lr = kickos_thread_return; only lx6 has a trampoline of its own). It
+  does not work as stated: that trampoline runs UNPRIVILEGED for a user thread, so it cannot
+  read `user_entry` back out of the TCB. Carrying the pair in the child's own stack above the
+  TLS block would work and is the version to price next.
+
+  RECOMMENDATION: neither change should be made without the numbers, because the premise the
+  audit gives for making them is wrong. Measure the masked window on a board with a real
+  `thread_local` template before touching the spawn path; if it is the few hundred bytes the
+  fleet's templates imply, the risk of either design exceeds what it buys.
+
+  **RX HAS NO CI ARM, AND THE BLOCKER IS THE TOOLCHAIN'S DISTRIBUTION.** Every other backend
+  has a job in `.github/workflows/ci.yml` (`qemu-arm`, `qemu-riscv`, `qemu-riscv-mpu`,
+  `xtensa` as a build gate, `build-boards` for the ARM silicon boards); rx72m appears in
+  none, and `build-boards` is arm-toolchain only. The three RX presets DO run in the local
+  52-preset fleet sweep, so the gap is CI and not coverage. Adding the job is one composite
+  action on the model of `.github/actions/xtensa-toolchain`, which fetches a pinned public
+  release asset -- and that is what RX lacks: the installed compiler is Renesas GNURX
+  14.2.0.202511 (`rx-elf-gcc (GCC_Build_e13a947a1) 14.2.0.202511-GNURX`), whose distribution
+  is not a stable public tarball URL the way the Arm, Espressif and RISCstar ones are. So this
+  needs a decision: a mirror to pin, or RX stays locally-verified only and the README says so.
+
+  **M5.2.1 AUDIT: THE MALFORMED-SP BLOCKER IS STILL OPEN, AND THE OBVIOUS FIX DOES NOT WORK.**
+  The four refusal paths (armv7m/armv6m `bad_psp`, `kickos_rx_bad_usp`, the rv32imac guard)
+  terminate the system rather than the offending thread. Containment itself is available and
+  the reasons the code gives for not using it are stale: `arch_ctx_redirect` rebuilds onto
+  `ctx.kernel_sp - KICKOS_KERNEL_STACK_SIZE` at the block TOP, so it needs neither a
+  trustworthy frame nor a safe SP, and with no block seated it rebuilds at the top of the
+  thread's own stack from TCB bounds. A slay-and-resume was written against armv7m and
+  MEASURED to fail: a second refusal follows the first, `PSP=0x200007e0 under stack_lo`,
+  right after a containment that itself reported correctly. NOT the guard rejecting a
+  kernel-block PSP -- `switch.S` already admits `[kernel_sp - SIZE, kernel_sp)` under
+  `#if KICKOS_KERNEL_STACKS`. Resuming the SLAIN thread from the fault path is what invites
+  the question at all; resuming a DIFFERENT thread avoids it, the dying thread's registers
+  being discarded either way. Two further traps found while writing it:
+  `kpanic_enter` masks this core's IRQs and never restores them, so it must not run on a path
+  that resumes; and `check_pspguard.sh` greps a banner printed BEFORE the outcome, so a
+  contained-but-hung image passes on the 20 s `QEMU_TIMEOUT` -- the witness has to assert the
+  system went on and exited, not that the banner appeared.
 
   **PR 9 DOES NOT CLOSE THIS ITEM.** Four pieces of the runtime-consumer scope it was opened for
   are still open, and each is a separate decision rather than more of the same swap:

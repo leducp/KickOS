@@ -23,10 +23,7 @@ config HAS_TRACE_CLOCK
 	help
 	  An arch_trace_now exists AND the core it runs on implements the counter it
 	  reads. A chip that has a usable counter selects it back on. rv32imac is
-	  per-chip because the arch reader is rdcycle: it is legal on the QEMU virt
-	  core and traps as an illegal instruction on the ESP32-C6 HP core, which
-	  implements no Zicntr counter (C6 TRM v1.2 section 1.5.1; witnessed in
-	  M-mode on silicon).
+	  per-chip: the arch reader is rdcycle, which traps on the ESP32-C6 HP core.
 
 config KICKOS_TRACE_CLOCK_DECLARED
 	int
@@ -186,10 +183,10 @@ config KICKOS_IDLE_STACK_SIZE
 	  Idle is privileged and its body is arch_idle_wait alone, so it never enters
 	  the syscall path and KICKOS_MIN_STACK_SIZE does not bind it. What does is
 	  the PREEMPTION red zone, the frame a tick or a device IRQ builds on the
-	  stack it interrupted plus whatever the kernel runs below that: 384 on
-	  rv32imac, the deepest in the fleet. The range floor is 512 rather than 256
-	  for exactly that reason, so no setting this accepts can have idle killed by
-	  the trap prologue on its first preemption.
+	  stack it interrupted plus whatever the kernel runs below that: 688 on lx6,
+	  the deepest in the fleet, against 384 on rv32imac. The range floor cannot
+	  state a per-arch figure, so each backend static_asserts its own zone against
+	  this knob and a board set below it fails the build rather than the thread.
 
 config KICKOS_ROOT_STACK_SIZE
 	int "Root thread stack"
@@ -214,43 +211,11 @@ config KICKOS_USER_HEAP_SIZE
 	  not get. Zero carves nothing and still prints: newlib falls back
 	  to unbuffered stdio when the buffer malloc fails.
 
-config KICKOS_LIBC_REENT
-	bool "Per-thread newlib reentrant state"
-	depends on !ARCH_SIM
-	default n
-	help
-	  Give every thread slot its own struct _reent and point libc at the running
-	  thread's copy on each switch. errno is that struct's first member, so this is
-	  what makes errno per-thread; every other reentrant path follows from the same
-	  store.
-
-	  KICKOS_TLS DOES NOT DO THIS, and neither does overriding __errno().
-	  _REENT_THREAD_LOCAL is off in all three pinned toolchains, so newlib reaches
-	  its state through _impure_ptr and calls __errno nowhere: a thread_local errno
-	  is one the app reads and libc never writes. The two are independent mechanisms
-	  and a program wanting both needs both on.
-
-	  ONE struct _reent PER SLOT, in the app-data window: 512 bytes on arm-none-eabi,
-	  288 on riscv32-none-elf, 284 on rx-elf. That window's unused pad IS the newlib
-	  heap, so every byte here is a byte malloc does not get, and a board with a
-	  handful of slots and kilobytes of RAM cannot afford it.
-
-	  WHAT IT STILL DOES NOT SEPARATE. _REENT_INIT_PTR aims every copy's
-	  _stdin/_stdout/_stderr at the one global __sf[3], so stdio buffering stays
-	  process-wide however many copies exist. And a freed slot is re-initialised on
-	  reuse rather than run through _reclaim_reent, so the mprec and asctime scratch
-	  a dead thread allocated through strtod or ctime never returns to the heap.
-
-	  NAMING, NOT ISOLATION. The array is unprivileged app memory, granted R/W to
-	  every unprivileged thread the way thread_local storage is, so a peer can
-	  scribble another thread's errno.
-
 config KICKOS_KERNEL_STACKS
 	int
 	range 1 1 if ARCH_KERNEL_STACKS_MANDATORY
 	default 1 if ARCH_KERNEL_STACKS_MANDATORY
 	default 1 if ARCH_HAS_KERNEL_STACKS && HAS_MPU
-	default 1 if ARCH_HAS_KERNEL_STACKS && BOARD_TAKES_KERNEL_STACKS
 	default 0
 	help
 	  Whether THIS board carves the per-thread kernel stacks, as a number the generated
@@ -269,8 +234,8 @@ config KICKOS_KERNEL_STACKS
 	  per-variant #if.
 
 	  ARCH_HAS_KERNEL_STACKS alone is not enough: on a chip with no MPU the transfer
-	  buys robustness rather than isolation, so it is a board decision.
-	  BOARD_TAKES_KERNEL_STACKS in arch/Kconfig carries that principle and its default.
+	  buys robustness and not isolation, there being no privilege boundary for a
+	  trusted stack to protect, so the red zone serves instead at a fraction of the RAM.
 
 	  ON THREE ARCHES 0 IS NOT A LEGAL RESOLUTION AT ALL. armv6m, rv32imac and rxv3
 	  select ARCH_KERNEL_STACKS_MANDATORY: their switch.S compiles the transfer with no
@@ -290,8 +255,7 @@ config KICKOS_KERNEL_STACKS
 	  left cannot back the boot stacks or the thread pool.
 
 config KICKOS_KERNEL_STACK_SIZE
-	int "Per-thread kernel stack"
-	range 256 65536
+	int
 	default 1184 if ARCH_RV32IMAC
 	default 1104 if ARCH_RXV3
 	default 1472 if ARCH_ARMV7M && TELEMETRY_RTT
@@ -302,6 +266,10 @@ config KICKOS_KERNEL_STACK_SIZE
 	  The stack a thread's PRIVILEGED dispatch runs on, the trap entry transferring to
 	  it instead of continuing on the thread's own. One size class per board, so it is
 	  a constant here and not a per-thread field.
+
+	  NOT A KNOB, which is why it has no prompt. Every default below is what the arch's
+	  deepest transferred dispatch measures, a board may only RAISE it, and a raise buys
+	  nothing the gate asks for while costing KICKOS_THREAD_SLOTS bytes per byte.
 
 	  EVERY DEFAULT ABOVE IS A MEASUREMENT, on all four arches that carve a block:
 	  rv32imac, rxv3, armv7m and armv6m. trap_redzone_roots.txt declares the
@@ -341,7 +309,8 @@ config KICKOS_TLS
 
 	  IT DOES NOT GIVE YOU A PER-THREAD errno. newlib reaches its reentrant state
 	  through _impure_ptr, not through a thread_local, so errno and the rest of that
-	  state follow KICKOS_LIBC_REENT and not this knob.
+	  state come from the per-thread struct _reent every non-sim board carries, not
+	  from this knob.
 
 	  IT COSTS NO MPU DESCRIPTOR. The stack is already one region under one descriptor,
 	  and the carve is inside it. Raising ctx.stack_lo above the carve is what keeps a
@@ -377,27 +346,14 @@ config KICKOS_TLS
 config KICKOS_MIN_STACK_SIZE
 	int
 	default 896 if ARCH_ARMV6M
-	# TELEMETRY_RTT compiles the trace emitters and the ring drain arch_shutdown
-	# runs, which the exit stubs reach through exit_current. The RET class measures
-	# 824 there against 312 off, so the modelled zone is 208 + 824 = 1032 and 1088
-	# is that at the next multiple of 64.
-	#
-	# IT IS A MODEL CEILING AND NOT AN OBSERVED OVERRUN. The 208 frame term prices
-	# a preemption at the deepest byte, and at THIS depth none can occur: the 824
-	# chain runs inside the IrqLock exit_current holds across kickos_terminate, and
-	# on armv7m that lock is BASEPRI at PRIO_LOCK_BASEPRI, which masks PRIO_DEVICE,
-	# PRIO_SVCALL and PRIO_PENDSV alike. The leg is kept because the gate's model is
-	# frame plus depth everywhere and an arch-local exemption would be a second
-	# truth about what a class means; it costs qemu-telem alone.
-	# armv7m_trap_stack.h derives both figures.
+	# A model ceiling and not an observed overrun: at this depth the chain runs inside
+	# the IrqLock exit_current holds, so the frame term cannot be spent. The leg is kept
+	# because frame plus depth is the gate's model everywhere. armv7m_trap_stack.h.
 	default 1088 if ARCH_ARMV7M && TELEMETRY_RTT
 	default 960 if ARCH_ARMV7M
 	default 1024 if ARCH_RXV3
-	# KICKOS_BENCH compiles a syscall arm that prints, so a PRIVILEGED thread's
-	# dispatch on its own stack reaches the console from inside the bench bracket
-	# and measures 816 rather than 688. Under that posture alone, or every
-	# non-bench rv32imac board would reserve for a bracket it does not compile.
-	# rv_trap_stack.h derives both figures.
+	# Under KICKOS_BENCH alone, or every non-bench rv32imac board reserves for a
+	# console bracket it does not compile. rv_trap_stack.h.
 	default 1088 if ARCH_RV32IMAC && KICKOS_BENCH
 	default 1024 if ARCH_RV32IMAC
 	default 896 if ARCH_LX6

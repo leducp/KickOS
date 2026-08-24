@@ -287,11 +287,40 @@ _kickos_rx_restore:
     rte                        /* pops PC then PSW -> resume incoming */
 
 /* The guard refused the outgoing thread's USP. R14 is banked on the ISP above, so drop it,
-   then hand the USP to the panic helper (noreturn). */
+   then hand the USP to the helper, which RETURNS ONLY WHEN THE THREAD WAS CONTAINED: R1 is
+   then the context to run instead and the refused USP is touched by nothing below. The
+   outgoing thread's R14 comes back off the ISP for the depth alone; the call clobbers it, and
+   every register of a contained thread is discarded. */
 .Lpendsw_bad_usp:
     mvfc    usp, r1
     pop     r14
     bsr.a   _kickos_rx_bad_usp
+    /* A software interrupt's ICU.IR027 survives acceptance, exactly as on the path this one
+       replaces: the switch it asked for is the one being made here. */
+    mov.l   #ICU_IR_SWINT, r15
+    mov.b   #0, [r15]
+    mov.l   #_g_arch_current, r14
+#if KICKOS_TELEMETRY
+    /* The swap is physical, so it emits: kicktrace.py's verify() requires each SWITCH `from`
+       to equal the previous `to`, and a silent swap breaks the NEXT record. R5 is the
+       outgoing thread's and discarded with the rest, so it carries from_tid across. */
+    mov.l   [r14], r15         /* outgoing ctx* = the offender */
+    mov.l   4[r15], r5         /* from_tid (ctx offset 4) */
+#endif
+    mov.l   r1, [r14]          /* g_arch_current = incoming; NO save, the frame the guard
+                                  refused to build is the one that would have carried it */
+    add     #12, r0            /* drop [R15][PC][PSW] off the ISP, uncopied */
+    setpsw  u                  /* R0 = USP */
+    mov.l   [r1], r0           /* R0 = incoming->sp */
+#if KICKOS_TELEMETRY
+    mov.l   4[r1], r2          /* to_tid */
+    mov.l   r5, r1             /* from_tid */
+    bsr.a   _kickos_trace_switch_done
+    mov.l   #_g_arch_current, r15
+    mov.l   [r15], r15
+    mov.l   [r15], r0          /* reload R0 = incoming->sp (SP survived the call) */
+#endif
+    bra.a   _kickos_rx_restore
 
 /* arch_start(boot, first): R1=boot (ignored; the ISP/boot stack is abandoned),  */
 /* R2=first. The fabricated frame's PSW (IPL=0) releases the crit level          */
@@ -492,10 +521,36 @@ _kickos_rx_syscall_trap:
     rte                        /* -> svc_trampoline, PM=0 U=1, on the USP */
 
 /* The guard refused the calling thread's USP. Nothing was written through it and the ISP
-   still carries [PC][PSW]. Hand the USP to the panic helper (noreturn). */
+   still carries [PC][PSW], the fastpath's own push being below the guard. Returns only when
+   the thread was contained, R1 naming the context to run instead.
+
+   NO ICU.IR027 WRITE HERE, unlike the pendsw twin: this is not the SWINT handler, and a
+   switch pended behind this trap costs the resumed thread one self-switch through
+   kickos_rx_pendsw rather than a live-lock. */
 .Lsys_bad_usp:
     mvfc    usp, r1
     bsr.a   _kickos_rx_bad_usp
+    mov.l   #_g_arch_current, r14
+#if KICKOS_TELEMETRY
+    /* The swap is physical, so it emits: kicktrace.py's verify() requires each SWITCH `from`
+       to equal the previous `to`, and a silent swap breaks the NEXT record. R5 is the
+       outgoing thread's and discarded with the rest, so it carries from_tid across. */
+    mov.l   [r14], r15         /* outgoing ctx* = the offender */
+    mov.l   4[r15], r5         /* from_tid (ctx offset 4) */
+#endif
+    mov.l   r1, [r14]          /* g_arch_current = incoming */
+    add     #8, r0             /* drop [userPC][userPSW] off the ISP */
+    setpsw  u                  /* R0 = USP */
+    mov.l   [r1], r0           /* R0 = incoming->sp */
+#if KICKOS_TELEMETRY
+    mov.l   4[r1], r2          /* to_tid */
+    mov.l   r5, r1             /* from_tid */
+    bsr.a   _kickos_trace_switch_done
+    mov.l   #_g_arch_current, r15
+    mov.l   [r15], r15
+    mov.l   [r15], r0          /* reload R0 = incoming->sp (SP survived the call) */
+#endif
+    bra.a   _kickos_rx_restore
 
 /* THE TRANSFER. Entered privileged (PM=0) by the trap's own RTE with R0 = the calling   */
 /* thread's USP: [R0]=userPC, [R0+4]=userPSW, a3 at [R0+12], R1-R4 = nr,a0,a1,a2, and    */

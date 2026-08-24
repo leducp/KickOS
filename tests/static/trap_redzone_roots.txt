@@ -53,10 +53,11 @@
 # the board and variant it is configuring and asks THIS FILE whether that name is declared, so a
 # new preset enters both lists by being declared once.
 #
-# LX6 IS ABSENT ON PURPOSE. CHIP_ESP32 selects no HAS_MPU, so nothing on that part isolates one
-# thread's memory from another's and a wild-sp privileged descent reaches nothing a plain store
-# from the thread itself does not already reach. The day an lx6 part gains an enforcing backend,
-# this file is where the omission has to be answered.
+# LX6 CARRIES ONE CLASS AND NOT THE ISOLATION SET. CHIP_ESP32 selects no HAS_MPU, so nothing on
+# that part isolates one thread's memory from another's and a wild-sp privileged descent reaches
+# nothing a plain store from the thread itself does not already reach: the syscall classes have
+# no one to protect and are absent. PREEMPT is a different question and applies with or without
+# an MPU -- whether the involuntary frame FITS the stack it lands on -- so it is declared.
 #
 # stack=trap says the descent runs on a static kernel stack the arch owns rather than on an
 # unprivileged thread stack. Two consequences: the SPAWN FLOOR clause does not apply, and
@@ -181,6 +182,11 @@ root    rv32imac NESTED kickos_rv_ext_dispatch_dev
 root    rv32imac NESTED kickos_rv_fault_report
 root    rv32imac NESTED kickos_fault_stack_top
 root    rv32imac NESTED ?kickos_rv_nested_witness
+# .Ltrap_wild's containment call. A U-MODE entry and not a nested M-mode trap, so it is here
+# for the STACK and not the cause: sp is the trap top at that label, which is the one this
+# class measures. kickos_arch_mpu_commit below it is charged to SWITCH instead, the containment
+# moving sp onto the incoming frame before that call exactly as .Lswitch does.
+root    rv32imac NESTED kickos_rv_contain_wild_sp
 
 # THE TWO EXCLUSIONS SERVE SYSPRIV AND EXIT, the rv32imac classes on a thread stack. They do
 # NOT reach TRAP, SYS or FAULT: a stack=kernel class is measured with nothing excluded. SWITCH
@@ -429,3 +435,18 @@ unsized armv6m __aeabi_uidiv     8 reason: measured, an alias of __udivsi3 at th
 unsized armv6m __aeabi_uidivmod  8 reason: measured, tail-branches into __udivsi3, whose worst path is its 8-byte divide-by-zero tail
 unsized armv6m __clzsi2          0 reason: measured, frameless register-only leaf
 unsized armv6m __ctzsi2           0 reason: measured, frameless register-only leaf
+
+arch    lx6 header=arch/xtensa/lx6/include/kickos/arch/lx6_trap_stack.h
+preset  lx6 esp32-wroom
+preset  lx6 esp32-wroom-st
+class   lx6 PREEMPT frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH
+root    lx6 PREEMPT kickos_lx6_dispatch_l1
+
+exclude lx6 _ZN6kickos6kpanicEPKc reason: the noreturn panic tail, which every KICKOS_ASSERT the dispatch reaches can enter. Counting it takes PREEMPT to 608 and the zone to 864, which sizes this board's idle stack for a chain that ends in a halt rather than in a resume. Excluded on the same terms as rv32imac and armv7m; the residual is stated in lx6_trap_stack.h and the tool prints the without-exclusions figure so it cannot go quiet.
+exclude lx6 ?_ZN6kickos9kpanic_atEPKcj reason: the SECOND door into the same noreturn tail, which KICKOS_ASSERT reaches where kpanic takes a message. Excluding one and not the other leaves the tail counted on whichever chain happens to enter through the other.
+# Three nodes with no .ci entry. Measured from the xtensa-esp-elf 16.1.0 esp32 multilib: the
+# windowed ABI states a frame in the `entry` immediate, so each figure is that plus the deepest
+# chain below it. __divdi3 is referenced but linked into no image, so it is read from libgcc.a.
+unsized lx6 __divdi3      64 reason: entry a1 32, then a call0 into __udivdi3 which entries another 32
+unsized lx6 __udivdi3     32 reason: entry a1 32, calls nothing
+unsized lx6 xtensa_switch 32 reason: entry a1 32, calls nothing; the swap itself leaves the interrupted stack

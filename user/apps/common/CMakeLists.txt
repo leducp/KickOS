@@ -68,7 +68,7 @@ add_subdirectory(specfault)
 add_subdirectory(tlsprobe)
 
 # The per-thread errno witness: libc's whole reentrant state following the running thread.
-# Its own CMakeLists returns early where KICKOS_LIBC_REENT is off.
+# Its own CMakeLists returns early on the sim, whose libc is the host's.
 add_subdirectory(errnoprobe)
 # kos_reboot plumbing witness + the unattended-reflash affordance. Board-agnostic;
 # its ctest arms are the declining-fallback targets only (see its CMakeLists).

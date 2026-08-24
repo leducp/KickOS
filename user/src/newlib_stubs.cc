@@ -150,22 +150,6 @@ void _fini(void)
 __attribute__((weak)) void* __dso_handle = nullptr;
 #endif
 
-#if defined(__XTENSA__) && !KICKOS_LIBC_REENT
-#include <sys/reent.h>
-// newlib_reent.cc owns __getreent where KICKOS_LIBC_REENT is on.
-// esp-elf newlib resolves _REENT through __getreent(), NOT through _impure_ptr, and
-// ships a WEAK fallback that returns NULL: without this override every stdio call
-// dereferences null and takes a LoadProhibited exception (EXCCAUSE 0x1c, EXCVADDR 0x28
-// from _puts_r's CHECK_INIT, which loads before its null test). The toolchain only
-// emits a .gnu.warning, so an otherwise green link is the sole hint. _impure_data
-// itself is present and statically initialised by libc; returning it makes stdio
-// process-global, so errno is shared across threads as on the ARM and RX ports.
-extern "C" struct _reent* __getreent(void)
-{
-    return _GLOBAL_REENT;
-}
-#endif
-
 // Newlib brackets every arena mutation with __malloc_lock/__malloc_unlock. No-op weak
 // stubs (allowlisted in tests/static/weak_allowlist.txt) so a full-C++ app that heap-allocates
 // links and a thread-safe libc port can replace them; the pinned vendor toolchains are

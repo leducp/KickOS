@@ -39,9 +39,9 @@ to 8,192 anyway, so the board provisions **8 x 8,192** rather than 12 x 7,584. R
   board here keeps the entry's red zone instead of buying per-thread kernel blocks.
 - `KICKOS_DIAG_TERSE=1`, because 64 KiB of flash cannot carry the long diagnostic column.
 
-`bluepill-c8` (STM32F103C8, 64 KiB / 20 KiB) is the same tier with the extra 4 KiB spent on the
-kernel stacks: 2 x 1,664 + root 1,664 + idle 512 is 5,504 bytes of arena, and
-`BOARD_TAKES_KERNEL_STACKS` puts 3 x 1,008 = 3,024 bytes of kernel `.bss` below it.
+`bluepill-c8` (STM32F103C8, 64 KiB / 20 KiB) is the same tier with the extra 4 KiB spent on
+stacks: 2 x 2,048 + root 2,048 + idle 512 is 6,656 bytes of arena, and the binding image
+(`selftest_p2`) leaves 3,232 spare.
 
 At 64 KiB of flash the self-test does not fit as one image and is built as `selftest` +
 `selftest_p2` -- see *Three boards run the selftest as TWO images* below.

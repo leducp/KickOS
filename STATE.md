@@ -14,7 +14,27 @@ era plus everything for SMP that is not SMP. `M5` the integration branch is full
 deleted, along with `M5.1.1`, `M5.1.4-docrewrite`, `hotfix/wake-parks-wrong-thread` and every
 `topic/*`. Master is still `a41856d6`.
 
-**M5.2.1: PR 7 AND PR 8 ARE DOWN. NONE OF IT IS PUSHED.** The tip hash and the commit count are
+**M5.2.1: PR 7, PR 8 AND PR 9 ARE DOWN, AND SO IS AN AUDIT RESPONSE. NONE OF IT IS PUSHED.**
+The work lives on `M5.2.1-squash`, NOT on `M5.2.1`: the squashed twelve are there and the audit
+response sits on top of them, while `M5.2.1` still points at the original unsquashed history and
+is now far behind. Check which branch you are on before committing; that mistake was made once.
+
+**WHAT THE AUDIT CLOSED, AND THE ONE IT DID NOT.** LX6 entered the trap-geometry gate as its own
+arch and its idle stack was 176 bytes short of the zone it has to hold. `KICKOS_TLS=n` now fails
+the LINK rather than silently sharing storage, on rv32imac through the TLS sections and on rxv3
+through the emutls control span, which has no TLS sections to read. The fit assert rounds and
+compares strictly, because the runtime does. A malformed user SP no longer ends the system on any backend: the
+offender is `g_arch_current` and NOT `kernel().current` -- a switch booked before the trap has already published the incoming
+thread, so containment aimed at `current` slays the wrong one.
+
+**CONTAINMENT IS ON ALL FOUR BACKENDS NOW**, and what is left is evidence rather than code.
+rxv3 is disassembly-verified: captured on an RX72M over SCI6, BOTH refusal arms end the system
+there and neither reaches `bad_usp`, `overflow` being MPU-denied first and `offstack` faulting
+on the privileged instruction that moves SP. So what is missing there is an arm that hands the
+trap a wild USP without tripping something else first, not a fix. The rv32imac msip clear is
+correct and unwitnessable: a stale pending msip costs one harmless self-switch.
+
+The tip hash and the commit count are
 deliberately NOT written here: the hash names the commit that writes it, so any amend falsifies it,
 which happened once, and the count has been wrong four times. `git rev-parse --short HEAD` and
 `git rev-list --count master..HEAD` are the authorities. PR 9 is in flight on `topic/pr9-reent`.
@@ -58,9 +78,12 @@ were caught by NOTHING, which is why `tests/static/rx_tls_fit.py` replays the al
 **BOARDS THAT MOVED, AND WHY.** microbit is deliberately no longer a BBC micro:bit v1: 32 KiB, four
 slots, fleet-default provisioning, and it went from skipping TWENTY TAP arms to one. QEMU is told
 the size with `-global nrf51-soc.sram-size=32768`; its machine defaults to 16 KiB and ignores `-m`.
-frdmk64f traded four thread slots for a power of two, 12 x 7584 becoming 8 x 8192. **f302nucleo and
-bluepill-c8 set `KICKOS_TLS=n`**: three blocks at a 2048 stride need 6656 bytes and their fattest
-image leaves 4672 and 6112. A `thread_local` there is a link error naming `__aeabi_read_tp`.
+frdmk64f traded four thread slots for a power of two, 12 x 7584 becoming 8 x 8192. **f302nucleo
+sets `KICKOS_TLS=n`** and a `thread_local` there is a link error naming `__aeabi_read_tp`.
+**bluepill-c8 no longer does**: deleting `BOARD_TAKES_KERNEL_STACKS` gave it back the three kernel
+blocks' worth of arena, which bought 2048-byte stacks and TLS with them. The selftest splits into
+THREE images on the 64 KiB parts and microbit, not two; microbit lists three arena skips in part 3
+that all execute on sim, so what it uniquely witnesses is not what they cover.
 
 **NO PRIVILEGED C DISPATCH RUNS ON A POINTER A THREAD CHOSE, ON ANY ARCH.** That is the
 milestone's central claim and it now holds. What each arch kept is NOT the same thing and the

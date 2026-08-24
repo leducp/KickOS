@@ -36,6 +36,18 @@
     .equ F_CTX_KERNEL_SP, KICKOS_ARMV6M_CTX_OFF_KERNEL_SP
     .equ F_CTX_TRACE_TID, KICKOS_ARMV6M_CTX_OFF_TRACE_TID
 
+/* The deepest a PSP may sit inside a kernel block and still be accepted by PendSV's block leg,
+   as a distance DOWN from the block's top because that is what the compare there holds. SIZE,
+   less the lowest word (the overflow canary in kernel/thread/thread.cc, which no frame may
+   consume), less NEST_SVCK: the room the block's own sizing reserves BELOW a dispatch for
+   every frame an exception can pile on it, the PendSV save under test among them.
+   AS TIGHT AS THE SIZING AND NO TIGHTER: this bound less the deepest legitimate PSP
+   (KERNEL_DEPTH_SVCK below the top) is (SIZE - 4) - NEED_SVCK, the block's own slack, which on
+   this arch is ZERO. So the compare must accept the equal case or the deepest legal dispatch
+   is refused. Same derivation as rxv3's BLOCK_USP_MAX_DROP. */
+    .equ BLOCK_PSP_MAX_DROP, \
+        KICKOS_KERNEL_STACK_SIZE - KICKOS_ARMV6M_TRAP_NEST_SVCK - 4
+
 /* The software block both guarded pushes write below the live PSP: {r4-r11}, eight
    words. A REGISTER COUNT, not a measured depth, and arch_armv6m.cc asserts it against
    the register list it prices. */
@@ -55,8 +67,12 @@
 
    NO ALIGNMENT LEG. CCR.STKALIGN is Read-As-One on ARMv6-M, so exception entry clears bit 2
    of the banked SP before stacking and r0 here is an 8-byte-aligned frame base whatever the
-   thread wrote to SP. */
-    .macro PSP_GUARD need
+   thread wrote to SP.
+
+   \bad is the refusal target, and the two sites pass DIFFERENT ones because the contained
+   resume below reuses PendSV's restore half, whose telemetry tail pops a spill only the
+   PendSV entry makes. */
+    .macro PSP_GUARD need, bad
     ldr     r2, =\need
     ldr     r1, [r3, #F_CTX_STACK_LO]
     cmp     r0, r1
@@ -69,7 +85,7 @@
     cmp     r0, r1
     blo     8f                      /* a PSP above the stack would push into whatever
                                        granted region carried the hardware frame */
-9:  b       .Lpsp_wild
+9:  b       \bad
 8:
     .endm
 
@@ -97,18 +113,22 @@ PendSV_Handler:
        takes. An aimed PSP forges no EXC_RETURN either: this arch's epilogue rebuilds it from
        a literal.
 
-       NO ROOM TEST ON THIS LEG. Every byte below a kernel PSP is written by privileged code
-       through a pointer the kernel seated, so what has to hold is a SIZE and not a bound;
-       armv6m_trap_stack.h's SVCK class prices it. The block's lowest word is its overflow
-       canary (kernel/thread/thread.cc). */
+       THE ROOM IS PART OF THE RANGE, AND THIS IS THE BOARD THAT PROVES IT. A bare range test
+       admits a PSP at the block's base, and the save below then writes THROUGH THE CANARY and
+       into the neighbouring slot's privileged continuation. "Every byte below a kernel PSP is
+       privileged code's" holds only where the thread cannot aim its own PSP at the block; this
+       arch selects ARCH_KERNEL_STACKS_MANDATORY, so microbit carves blocks with NO MPU and the
+       thread can. The bound stops BLOCK_PSP_MAX_DROP short of the base. */
     ldr     r1, [r3, #F_CTX_KERNEL_SP]
     subs    r1, r1, r0              /* bytes from the PSP up to the block's top */
     bls     2f                      /* at or above the top, so not on the block */
-    ldr     r2, =KICKOS_KERNEL_STACK_SIZE
+    ldr     r2, =BLOCK_PSP_MAX_DROP
     cmp     r1, r2
-    bls     3f                      /* inside this thread's own kernel block */
+    bls     3f                      /* on this thread's own block, a whole nest still below.
+                                       Accepts the EQUAL case: this arch's block has no slack,
+                                       so the deepest legal dispatch sits ON the bound. */
 2:
-    PSP_GUARD KICKOS_ARMV6M_TRAP_NEED_PENDSV
+    PSP_GUARD KICKOS_ARMV6M_TRAP_NEED_PENDSV, .Lpsp_wild
 3:
     subs    r0, #F_TRAP_FRAME       /* room for r4-r11 */
     str     r0, [r3]                /* outgoing->sp = base */
@@ -123,6 +143,9 @@ PendSV_Handler:
     ands    r0, r1
     str     r0, [r3, #4]            /* outgoing->npriv */
 1:
+/* Also the CONTAINED resume: every word below comes from a literal or from the incoming
+   context, so nothing the skipped save half would have left in a register is read here. */
+.Lrestore_incoming:
     /* g_arch_next and the deferred MPU stash are ONE pair, written together under the
        kernel lock, and PendSV must consume them as one. A device IRQ preempting between
        the two (every v6-M device line sits at reset priority 0, above PendSV)
@@ -186,6 +209,15 @@ PendSV_Handler:
     ldr     r4, =kickos_armv6m_bad_psp
     bx      r4                      /* (r0=PSP, r1=need, r2=0, r3=0) */
 
+/* The SVC entry alone. r3 is still the outgoing ctx*, which is exactly what the shared tail
+   expects to pop, so the spill the PendSV entry made is faked here rather than the pop being
+   skipped: a contained refusal IS a physical swap and must emit its switch record, or the
+   decoder's from == previous.to continuity check breaks on the next one. r2 is the pad. */
+.Lpsp_wild_svc:
+#if KICKOS_TELEMETRY
+    push    {r2, r3}
+#endif
+
 /* The PSP has no room for the software block. stack_lo is read before r3 is overwritten with
    stack_hi, and r4 carries the target for the reason above. */
 .Lpsp_wild:
@@ -195,7 +227,10 @@ PendSV_Handler:
     ldr     r2, [r3, #F_CTX_STACK_LO]
     ldr     r3, [r3, #F_CTX_STACK_HI]
     ldr     r4, =kickos_armv6m_bad_psp
-    bx      r4                      /* (r0=PSP, r1=need, r2=stack_lo, r3=stack_hi) */
+    blx     r4                      /* (r0=PSP, r1=need, r2=stack_lo, r3=stack_hi) */
+    /* Returns only when the offending thread was contained: it is slain and its next resume
+       is claimed, and g_arch_next is the thread to run instead. */
+    b       .Lrestore_incoming
 
 /* ------------------------------------------------------------------------- */
     .thumb_func
@@ -211,7 +246,7 @@ SVC_Handler:
     ldr     r3, [r3]
     cmp     r3, #0
     beq     .Lsvc_nothread          /* out of line below, and it does not return */
-    PSP_GUARD KICKOS_ARMV6M_TRAP_NEED_SVC
+    PSP_GUARD KICKOS_ARMV6M_TRAP_NEED_SVC, .Lpsp_wild_svc
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
     /* THE SEAM. KOS_SYS_CALL_REG completes here, ahead of the exception return that lands
        in svc_trampoline for the generic dispatch. The leaf decides before it mutates, so a

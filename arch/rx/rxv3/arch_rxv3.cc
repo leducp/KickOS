@@ -572,17 +572,49 @@ void arch_fault_redirect_to_exit(void* frame)
 
 // From the syscall trap and SWINT switcher (switch.S), when the live USP is neither inside
 // the running thread's stack with room to spare nor inside that thread's own kernel block.
-// Runs on the ISP. Panics rather than killing the thread: containment needs a frame worth
-// trusting and a safe USP for the exit stub, and a refused USP supplies neither.
-void kickos_rx_bad_usp(uint32_t usp)
+// Runs on the ISP.
+//
+// CONTAINS FIRST, and NEITHER A FRAME NOR THE REFUSED USP IS NEEDED FOR IT: arch_ctx_redirect
+// rebuilds the slain thread at the TOP of its own kernel block, so the exit stub runs on
+// ctx.kernel_sp and the pointer the guard refused is read by nothing. kpanic_enter belongs to
+// the terminating path alone, its IRQ mask being irreversible.
+//
+// g_arch_current and NOT the scheduler's current: this one tracks the PHYSICAL switch, so it
+// names the thread whose USP was refused even when a booked switch has already published
+// another one as current.
+//
+// Returns the context switch.S must resume, and does not return when nothing can be
+// contained.
+struct arch_context* kickos_rx_bad_usp(uint32_t usp)
 {
-    kpanic_enter();
+    struct arch_context* const next = kickos_thread_contain_wild_stack(g_arch_current, nullptr);
+    if (next == nullptr)
+    {
+        kpanic_enter();
+    }
 #if defined(KICKOS_ENABLE_SELFTEST)
+    // Silent when intact, and read on BOTH outcomes: what it witnesses is what the prologue
+    // wrote through the refused USP, which containment does not change.
     kickos_trapstack_witness_report();
 #endif
-    ::kickos::kprintf("\n=== RX EXCEPTION (wild stack) ===\n  USP=0x%x\n",
-                      static_cast<unsigned>(usp));
-    kfault_terminate();
+    // THE NOUN IS THE DISCRIMINATOR. tests/lib/panic.ere matches "=== <ARCH> EXCEPTION", so a
+    // contained refusal spelled that way is indistinguishable from one that ended the system
+    // and assert_no_panic stops meaning anything on exactly the arms that now survive.
+    if (next == nullptr)
+    {
+        ::kickos::kprintf("\n=== RX EXCEPTION (wild stack) ===\n  USP=0x%x\n",
+                          static_cast<unsigned>(usp));
+    }
+    else
+    {
+        ::kickos::kprintf("\n=== RX CONTAINED (wild stack) ===\n  USP=0x%x\n",
+                          static_cast<unsigned>(usp));
+    }
+    if (next == nullptr)
+    {
+        kfault_terminate();
+    }
+    return next;
 }
 
 // From svc_trampoline, when the calling thread has no kernel block seated. Runs supervisor

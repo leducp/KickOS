@@ -880,7 +880,7 @@ feeds the slave app.
   `__malloc_lock` when threaded, and C++ guard/lock hooks) routed to KickOS
   syscalls: the same seam under both the sim's host `libstdc++` and a target full-C++ app's
   toolchain newlib -- one newlib seam fleet-wide. (The full seam detail: `docs/design-kickcat-k64f.md`.)
-- **Per-thread reentrant state**: `KICKOS_LIBC_REENT` (default n, `depends on !ARCH_SIM`) gives every
+- **Per-thread reentrant state**: on every board but the sim, whose libc is the host's, gives every
   thread slot its own `struct _reent` and points libc at the running thread's copy from
   `switch_book` and `sched::start` (`kernel/sched/sched.cc`), through the one word libc resolves
   its state by (`&_impure_ptr`, or `__getreent`'s on Xtensa). `errno` is that struct's first

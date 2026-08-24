@@ -6,6 +6,7 @@
 
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
+#include <kickos/sys/atomic.h>
 
 namespace
 {
@@ -19,13 +20,16 @@ namespace
     thread_local volatile unsigned g_seeded = 0xA5A5A5A5u;
     thread_local unsigned g_written = 0;
 
+    // `done` PUBLISHES the four fields above it: the worker fills them and stores it last,
+    // main reads it first. Plain words gave the reader no ordering and let its poll loop keep
+    // the flag in a register, so the whole struct was a data race.
     struct Report
     {
         unsigned addr;
         unsigned sp;
         unsigned seeded;
         unsigned read_back;
-        unsigned done;
+        kickos::Atomic<unsigned, kickos::Order::ACQUIRE | kickos::Order::RELEASE> done;
     };
 
     unsigned read_sp()

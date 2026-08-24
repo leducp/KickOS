@@ -6,32 +6,19 @@ CONFIG_BOARD_BLUEPILL_C8=y
 # The MINIMUM tier of docs/reference/boards.md, which states what that tier buys and what
 # it refuses; the per-board arithmetic below is what this part pays for it.
 #
-# 20 KiB of SRAM, so both stacks sit at the low-density floor and the pools are cut.
+# 20 KiB of SRAM, so the pools are cut.
 CONFIG_KICKOS_MAX_THREADS=2
 CONFIG_KICKOS_MAX_SEMAPHORES=4
 CONFIG_KICKOS_MAX_MUTEXES=4
 CONFIG_KICKOS_MAX_IRQ_HANDLES=4
 CONFIG_KICKOS_CAP_TABLE_SUPPLY=7
-# 1664 and not 2048: three slots of KICKOS_KERNEL_STACK_SIZE (1008 on armv7m at
-# telemetry off) is 3024 bytes of kernel .bss below the arena, taking it from 9152 to
-# 6128, which cannot hold idle plus root plus two 2048-byte pool stacks. STM32F103 has
-# no MPU, so arch_mpu_min_region is 0 and the size is byte-granular to 16 rather than a
-# power-of-two step. 512 + 3 x 1664 is 5504, and the arena above the fattest image
-# measures 608 bytes spare, the 16-byte gap coming from .bss alignment. A thread may use
-# 1664 - 180 = 1484 of usable stack (armv7m_trap_stack.h derives the red zone).
-#
-# bluepill-c8 has no telemetry variant, so a fleet-wide raise of the pool-arena ceiling
-# to the telemetry figure would fail to link here.
-CONFIG_KICKOS_USER_STACK_SIZE=1664
+# selftest_p2 is the binding image here: it leaves 3232 bytes of arena past idle plus
+# root plus two pool stacks. A thread keeps 2048 - 180 of usable stack, the entry's red
+# zone being what armv7m reserves on a chip with no MPU (armv7m_trap_stack.h).
+CONFIG_KICKOS_USER_STACK_SIZE=2048
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
-CONFIG_KICKOS_ROOT_STACK_SIZE=1664
+CONFIG_KICKOS_ROOT_STACK_SIZE=2048
 
 # 64 KiB of flash: the kernel says its diagnostics in the short column of
 # include/kickos/diag.h, and an assert names its file and line instead of its condition.
 CONFIG_KICKOS_DIAG_TERSE=1
-
-# NO TLS ON THIS PART: deriving the ARM thread pointer from SP needs every stack block
-# strided by one power of two, and three blocks of 2048 do not fit an arena the fattest
-# image leaves at 6112 bytes; paying it would cost one thread instead of two. A
-# thread_local in an app built for this board is a link error naming __aeabi_read_tp.
-# CONFIG_KICKOS_TLS is not set

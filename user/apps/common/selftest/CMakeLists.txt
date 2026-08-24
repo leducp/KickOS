@@ -29,10 +29,10 @@ if(KICKOS_BOARD STREQUAL "microbit")
 endif()
 
 # The two 64 KiB FLASH parts (stm32f103 bluepill-c8, stm32f302) and microbit (nrf51) build the
-# suite as TWO images: main.cc partitions its registration list into two contiguous regions and
-# KICKOS_SELFTEST_PART selects one, so the elided region's bodies are never emitted. Each part
-# plans 1..N from its OWN registry, so the bench has to run both to cover the suite. Undefined
-# elsewhere, where main.cc defaults it to 0 and registers everything.
+# suite as THREE images: main.cc partitions its registration list into three contiguous regions
+# and KICKOS_SELFTEST_PART selects one, so the elided regions' bodies are never emitted. Each
+# part plans 1..N from its OWN registry, so the bench has to run all three to cover the suite.
+# Undefined elsewhere, where main.cc defaults it to 0 and registers everything.
 #
 # The 64 KiB parts split for FLASH; microbit splits for SRAM, its .bss being what the arena
 # starts after: eliding a region's bodies takes their statics out of .bss, so the part's arena
@@ -62,9 +62,12 @@ set(_selftest_images selftest)
 if(_selftest_split)
   kickos_add_application(selftest_p2 SOURCES ${_selftest_srcs} BOARD ${KICKOS_BOARD}
     CAPABILITIES 5 CAPABILITIES_OPTIONAL 3)
-  list(APPEND _selftest_images selftest_p2)
+  kickos_add_application(selftest_p3 SOURCES ${_selftest_srcs} BOARD ${KICKOS_BOARD}
+    CAPABILITIES 5 CAPABILITIES_OPTIONAL 3)
+  list(APPEND _selftest_images selftest_p2 selftest_p3)
   target_compile_definitions(selftest    PRIVATE KICKOS_SELFTEST_PART=1)
   target_compile_definitions(selftest_p2 PRIVATE KICKOS_SELFTEST_PART=2)
+  target_compile_definitions(selftest_p3 PRIVATE KICKOS_SELFTEST_PART=3)
 endif()
 
 foreach(_img IN LISTS _selftest_images)
@@ -139,41 +142,47 @@ if(KICKOS_ARCH STREQUAL "sim")
   math(EXPR _tap_arms "${_tap_arms} + 1") # periph_reg_write_mask
 endif()
 
-# The same count per region, mirroring the #if guards inside each. Region 1 ends at the
-# `#undef TAP_ADD` after call_donation in main.cc; region 2 is everything below it.
+# The same count per region, mirroring the #if guards inside each. The regions are separated by
+# the `#undef TAP_ADD` lines in main.cc: region 1 ends after call_donation, region 2 after
+# periph_reg_write_mask, region 3 is the rest.
 #
-# These two MUST stay independent expressions, never derived from _tap_arms above: the equality
+# These MUST stay independent expressions, never derived from _tap_arms above: the equality
 # asserted below is only a check while both sides are stated separately, and a new arm has to
 # move a clause on each side.
-#
-# RESIDUAL: the two-image scheme is near saturation on the 64 KiB parts. About 3 percent slack
-# against roughly 930 bytes per arm leaves room for two more wherever the boundary sits, and past
-# that it takes a third part.
 set(_tap_arms_p1 48) # region 1, unconditional, incl. endpoint_send_timeout, recv_timeout, timed_arg_refusals, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p1 "${_tap_arms_p1} + 1") # call_reg_fastpath: reads the fastpath counter
 endif()
 
-set(_tap_arms_p2 38) # region 2, unconditional, incl. 3 x call_donation_*, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
+set(_tap_arms_p2 18) # region 2, unconditional, incl. 3 x call_donation_*, 8 x cap_*, console_publish_priv, shutdown_priv
 if(KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
+  math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 3") # bus_device_slots, uart_service, reboot_priv
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 3") # endpoint_bound, grant_reserved, dev_window_exclusive
-endif()
-if(KICKOS_HAVE_MPU)
-  math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 1") # stackbase_arena
+  math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 1") # endpoint_bound
 endif()
 if(KICKOS_ARCH STREQUAL "sim")
   math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 1") # periph_reg_write_mask
 endif()
 
+set(_tap_arms_p3 20) # region 3, unconditional, incl. thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
+if(KICKOS_ENABLE_SELFTEST)
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 11") # 11 x irq_*
+endif()
+if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 2") # grant_reserved, dev_window_exclusive
+endif()
+if(KICKOS_HAVE_MPU)
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # stackbase_arena
+endif()
+
 # Totality, checked on EVERY board and not only the ones that split.
-math(EXPR _tap_arms_split "${_tap_arms_p1} + ${_tap_arms_p2}")
+math(EXPR _tap_arms_split "${_tap_arms_p1} + ${_tap_arms_p2} + ${_tap_arms_p3}")
 if(NOT _tap_arms_split EQUAL _tap_arms)
   message(FATAL_ERROR
     "selftest arm partition is not total: part 1 (${_tap_arms_p1}) + part 2 "
-    "(${_tap_arms_p2}) = ${_tap_arms_split}, but the whole suite registers ${_tap_arms} "
+    "(${_tap_arms_p2}) + part 3 (${_tap_arms_p3}) = ${_tap_arms_split}, but the whole suite "
+    "registers ${_tap_arms} "
     "arms in this posture. An arm was added, deleted or moved across the region boundary "
     "in main.cc without its per-part clause moving with it. Fix the counts in "
     "${CMAKE_CURRENT_LIST_FILE}, do not relax this check.")
@@ -181,8 +190,9 @@ endif()
 
 if(_selftest_split)
   message(STATUS
-    "selftest: split into two images: selftest plans ${_tap_arms_p1} arms, "
-    "selftest_p2 plans ${_tap_arms_p2} (${_tap_arms} together)")
+    "selftest: split into three images: selftest plans ${_tap_arms_p1} arms, "
+    "selftest_p2 plans ${_tap_arms_p2}, selftest_p3 plans ${_tap_arms_p3} "
+    "(${_tap_arms} together)")
 endif()
 
 # tap.cc sizes its registry from this. Per IMAGE and not per board, so it cannot go through
@@ -191,6 +201,7 @@ endif()
 if(_selftest_split)
   target_compile_definitions(selftest    PRIVATE KICKOS_TAP_MAX_TESTS=${_tap_arms_p1})
   target_compile_definitions(selftest_p2 PRIVATE KICKOS_TAP_MAX_TESTS=${_tap_arms_p2})
+  target_compile_definitions(selftest_p3 PRIVATE KICKOS_TAP_MAX_TESTS=${_tap_arms_p3})
 else()
   target_compile_definitions(selftest PRIVATE KICKOS_TAP_MAX_TESTS=${_tap_arms})
 endif()
@@ -243,10 +254,9 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   # of 21280 bytes. Collapsing it to one image means deleting the p2 registration below and
   # re-deriving _tap_arms.
   #
-  # THE TWO SETS BELOW ARE PARTITIONED BY REGION, NOT BY NAME: an arm belongs to the part whose
-  # region holds its TAP_ADD line in main.cc, the boundary being the `#undef TAP_ADD` after
-  # call_donation. check_tap_stream.sh reports a name declared in the wrong part as a NOTE and
-  # not a failure, so only that rule catches one.
+  # THE SETS BELOW ARE PARTITIONED BY REGION, NOT BY NAME: an arm belongs to the part whose
+  # region holds its TAP_ADD line in main.cc. check_tap_stream.sh reports a name declared in the
+  # wrong part as a NOTE and not a failure, so only that rule catches one.
   kickos_add_qemu_test(NAME microbit_selftest TARGET selftest BOARD microbit
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p1})
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
@@ -262,7 +272,16 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p2})
   set_property(TEST microbit_selftest_p2 APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=uart_service"
-    "EXPECT_PARTIALS=caller_stack")
+    "EXPECT_PARTIALS=")
+  # The three arena skips are the SUITE outgrowing this part, not the part failing: each
+  # wants concurrent workers past what 32 KiB seats once the per-thread struct _reent array
+  # is below the arena. All three execute on sim and on the qemu boards, so what microbit
+  # witnesses here, the armv6m entry geometry, is not what they cover.
+  kickos_add_qemu_test(NAME microbit_selftest_p3 TARGET selftest_p3 BOARD microbit
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p3})
+  set_property(TEST microbit_selftest_p3 APPEND PROPERTY ENVIRONMENT
+    "EXPECT_SKIPS=domain_share,confused_deputy,mem_self_grant"
+    "EXPECT_PARTIALS=caller_stack,mmio_grant")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv

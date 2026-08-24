@@ -51,7 +51,7 @@ printf '%s\n' "$OUT" | grep -q '\[simcon\] driver up (host fd 1)' \
 
 # The arm logic is check_faultsurvive.sh's, so the record, the survivor line, their order and
 # the exit status are judged in one place. It re-runs the image, which is deterministic here.
-"$(dirname "$0")/check_faultsurvive.sh" "$APP" survive sim \
+"$(dirname "$0")/check_faultsurvive.sh" "$APP" survive sim terminated \
   || fail "the survive arm does not hold on a published console"
 
 [ "$RC" -eq 0 ] || fail "expected a clean exit 0 once root returned, got $RC"

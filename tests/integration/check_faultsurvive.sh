@@ -3,7 +3,15 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Fault-isolation witness. One arm per image: survive and lowedge keep the system up, the four
-# refusal arms escalate to a panic.
+# refusal arms turn on what a REFUSED sp costs, which <outcome> carries.
+#
+# THE FOUR REFUSAL ARMS ARE NOT ALL ONE CLAIM ANY MORE. Where the sp is refused by the TRAP
+# ENTRY, that entry now contains the offending thread and the system runs on (`contained`);
+# where it is refused later, by the fault path's frame-validity test on a frame that was
+# already written, nothing can be contained and the system still ends (`terminated`). Which of
+# the two a backend takes is a property of where its refusal lives, so the arch clauses below
+# read under both: on rv32imac all four arms enter through trap_entry, while on the ARM
+# backends the hardware or the MPU faults first and the switcher guard never sees the sp.
 #
 # `survive' (faultsurvive, KICKOS_FS_MODE 0): an unprivileged worker executes an
 # undefined instruction and only that thread dies. The claim is ORDERING, not presence:
@@ -63,12 +71,17 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-_usage="usage: [FS_CAPTURE=<log>] check_faultsurvive.sh <elf|-> <arm: survive|overflow|offstack|kwrite|lowedge|misalign> [arch]"
+_usage="usage: [FS_CAPTURE=<log>] check_faultsurvive.sh <elf|-> <arm: survive|overflow|offstack|kwrite|lowedge|misalign> <arch> <outcome: contained|terminated>"
 elf="${1:?$_usage}"
 arm="${2:?$_usage}"
 # Which fact corroborates a refusal is a property of the backend, so it is passed in: a gate
 # that read it back out of the dump it judges would accept whichever dump it got.
-arch="${3:-armv7m}"
+arch="${3:?$_usage}"
+# WHAT A REFUSED SP COSTS, and it is carried by the caller for the same reason: `contained`
+# says the trap entry slays the offending thread and the system runs on, `terminated` says it
+# ends. Required and undefaulted, because the weaker claim is the one that passes silently on
+# a backend that has since gained containment.
+outcome="${4:?$_usage}"
 
 # FS_CAPTURE judges a captured silicon log, which is how the armv6m and rxv3 clauses below
 # execute at all; unexecuted clauses are the unfalsifiable shape this gate exists to refuse.
@@ -97,6 +110,31 @@ fi
 
 # First matching line number, so the two arms can be ordered against each other.
 line_of() { printf '%s\n' "$OUT" | grep -nE "$1" | head -n1 | cut -d: -f1; }
+
+# The banner the backend's own trap entry prints when it refuses an sp. Carried per arch and
+# not matched loosely, so a refusal that came out of another backend's reporter fails here.
+# THE NOUN CARRIES THE OUTCOME, and matching it is what keeps the two apart on the wire: a
+# contained refusal spells CONTAINED precisely so it does NOT match tests/lib/panic.ere, which
+# every "=== <ARCH> EXCEPTION" and "=== RISC-V TRAP" does.
+wild_refusal_re() { # <arch> <outcome>
+    _n=CONTAINED
+    if [ "$2" = terminated ]; then
+        _n=EXCEPTION
+    fi
+    case "$1" in
+        rv32imac)
+            if [ "$2" = terminated ]; then
+                printf '%s' "=== RISC-V TRAP \\(wild stack\\)"
+            else
+                printf '%s' "=== RISC-V CONTAINED \\(wild stack\\)"
+            fi
+            ;;
+        rxv3)     printf '%s' "=== RX $_n \\(wild stack\\)" ;;
+        armv7m)   printf '%s' "=== ARMV7M $_n \\(wild PSP" ;;
+        armv6m)   printf '%s' "=== ARMV6M $_n \\(wild PSP" ;;
+        *)        fail "no wild-stack refusal banner is defined for arch '$1'" ;;
+    esac
+}
 
 case "$arm" in
     survive | lowedge)
@@ -142,15 +180,60 @@ case "$arm" in
         if has_e "$(thread_fault_re faulter)"; then
             fail "$arm: the fault was redirected to the exit stub instead of escalating"
         fi
-        if ! has_e "$KOS_PANIC_RE"; then
-            fail "$arm: the fault reached no dump (looped, or walked into a neighbour?)"
-        fi
         # kwrite is the trap-stack security regression: the worker aimed its SP at a kernel
         # word. A backend that stored the frame through the U-mode SP prints this from its
-        # panic path, so a fixed one leaves the word intact and the line absent. The panic
-        # above is what proves the SP was refused rather than run on.
+        # panic path, so a fixed one leaves the word intact and the line absent. Claimed under
+        # BOTH outcomes: it is about what the prologue wrote, not about what it did next.
         if [ "$arm" = kwrite ] && has "trapwitness] CORRUPTED"; then
             fail "kwrite: the trap prologue stored through the U-mode SP into kernel memory"
+        fi
+        if [ "$outcome" = contained ]; then
+            # assert_no_panic IS available on this path now: a contained refusal spells its
+            # banner CONTAINED, which check_panic_banners keeps OUT of tests/lib/panic.ere
+            # precisely so the two outcomes stay apart. Without it a terminal panic AFTER the
+            # survivor line satisfied every clause below.
+            assert_no_panic "$arm: something panicked on a run that was supposed to contain"
+            refused="$(line_of "$(wild_refusal_re "$arch" "$outcome")")"
+            if [ -z "$refused" ]; then
+                fail "$arm: no $arch wild-stack refusal reached the wire, so the sp was
+    ACCEPTED and this arm witnessed nothing"
+            fi
+            survived="$(line_of "\[fs\] survivor ran after the fault")"
+            if [ -z "$survived" ]; then
+                fail "$arm: the refusal ended the system, so the whole image paid for one
+    thread's sp"
+            fi
+            if [ "$survived" -le "$refused" ]; then
+                fail "$arm: root's line is at $survived, not after the refusal at $refused"
+            fi
+            if [ "$CAPTURED" -eq 0 ] && [ "$RC" -ne 0 ]; then
+                fail "$arm: root outlived the refusal and the image still exited $RC"
+            fi
+            # ATTRIBUTION, and rv32imac is the arch that needs the clause: its trap entry
+            # catches a thread that overflowed its own stack BEFORE the PMP-denial report that
+            # used to credit the write, so without a name in the refusal itself an overflow
+            # dies anonymously. No other backend prints one here.
+            if [ "$arch" = rv32imac ]; then
+                # BOUND TO THE REFUSAL RECORD, and SEARCHED FROM IT. A bare match is
+                # satisfied by any earlier line naming the thread, including its own spawn
+                # trace; taking the first match overall and then comparing rejects a run whose
+                # attribution is present but preceded by one, so the scan starts at the
+                # refusal instead.
+                _credited="$(printf '%s\n' "$OUT" \
+                    | awk -v start="$refused" 'NR >= start && /thread '"'"'faulter'"'"'/ { print NR; exit }')"
+                if [ -z "$_credited" ]; then
+                    fail "$arm: no line at or after the refusal at $refused credits 'faulter',
+    so the containment took the attribution the panic path used to carry"
+                fi
+            fi
+            echo "PASS: $arm refused at line $refused and root ran at line $survived"
+            exit 0
+        fi
+        if [ "$outcome" != terminated ]; then
+            fail "unknown outcome '$outcome': expected 'contained' or 'terminated'"
+        fi
+        if ! has_e "$KOS_PANIC_RE"; then
+            fail "$arm: the fault reached no dump (looped, or walked into a neighbour?)"
         fi
         # Corroboration, so the arm cannot pass on ANY panic that happens to occur.
         why=""

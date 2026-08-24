@@ -244,18 +244,12 @@ question each symbol answers and who answers it.
 - **`ARCH_HAS_KERNEL_STACKS`** -- the arch's trap entry can transfer to a per-thread kernel
   stack, and its `arch_context` carries the `kernel_sp` that entry loads. NECESSARY AND NOT
   SUFFICIENT: whether a given board actually carves the blocks is `KICKOS_KERNEL_STACKS`,
-  which asks this AND the chip's `HAS_MPU`, or this AND the board's own
-  `BOARD_TAKES_KERNEL_STACKS`.
+  which asks this AND the chip's `HAS_MPU`.
 - **`ARCH_KERNEL_STACKS_MANDATORY`** -- stronger, and deliberately NOT implied by the one
   above: the arch's `switch.S` compiles the transfer with no red-zone path beside it, and
   its backend `static_assert`s the knob non-zero. An arch that writes only the transfer
   selects it; one that writes both paths does not, and then the red zone is what its
   unconverted boards depend on. armv7m is the one arch carrying both.
-- **`BOARD_TAKES_KERNEL_STACKS`** -- a BOARD symbol, not an arch one, and default off. On a
-  chip with no MPU there is no privilege boundary for a trusted kernel stack to protect, so
-  the transfer buys robustness rather than isolation and the red zone buys the same
-  robustness at a fraction of the RAM. A new board on a no-MPU chip keeps its red zone
-  until someone does the arena arithmetic and states this in the defconfig.
 
 **The escape a too-small part takes is `KICKOS_TLS=n`.** With TLS on every arena block is
 strided by a power of two, so `KICKOS_USER_STACK_SIZE` and `KICKOS_ROOT_STACK_SIZE` must
@@ -268,7 +262,7 @@ other path to compile.
 
 **`errno` is neither of these.** newlib reaches its reentrant state through `_impure_ptr`
 and calls `__errno` nowhere in the pinned toolchains, so a per-thread `errno` follows
-`KICKOS_LIBC_REENT` (default n, one `struct _reent` per slot in the app-data window) and
+The per-thread reentrant state (one `struct _reent` per slot in the app-data window) and
 never `KICKOS_TLS`. A port wanting both turns on both.
 
 ### Adding a board/chip (the five edit points)

@@ -30,6 +30,8 @@ EDGE_RE = re.compile(
     r'^edge:\s*\{\s*sourcename:\s*"([^"]*)"\s*targetname:\s*"([^"]*)"'
     r'(?:\s*label:\s*"([^"]*)")?')
 INDIRECT = '__indirect_call'
+# Appended to a CALLER key to stand for every unlocated indirect site inside it.
+UNLOCATED_SUFFIX = '@indirect'
 SITE_PREFIX = '!site '
 
 
@@ -211,8 +213,9 @@ def read_bindings(path, arch, preset):
         if f[2] != '*' and f[2] != preset:
             continue
         site = f[3]
-        if site.count(':') != 2:
-            die('%s: site "%s" is not <basename>:<line>:<col>' % (where, site))
+        if not site.endswith(UNLOCATED_SUFFIX) and site.count(':') != 2:
+            die('%s: site "%s" is not <basename>:<line>:<col> or <caller>%s'
+                % (where, site, UNLOCATED_SUFFIX))
         if site in out:
             die('%s: site %s bound twice for %s/%s' % (where, site, arch, preset))
         if f[4:] == ['NONE']:
@@ -349,9 +352,15 @@ class Graph(object):
                 tgt = node_key(m.group(2))
                 loc = m.group(3)
                 if tgt == INDIRECT:
+                    # NO LABEL MEANS PER-CALLER AND NOT PER-SITE. The xtensa backend emits its
+                    # indirect edges without a location (esp-elf gcc 16.1, where arm/riscv/rx
+                    # all label theirs), so every site in one caller collapses to a single key
+                    # a binding charges the maximum over. Coarser and still sound: the key is
+                    # only reachable when the caller is, and an unbound one is refused exactly
+                    # as a located site is.
                     if loc is None:
-                        die('%s: an __indirect_call edge from %s carries no call site, so'
-                            ' it cannot be bound' % (ci, src))
+                        self.sites[src].add(src + UNLOCATED_SUFFIX)
+                        continue
                     self.sites[src].add(site_key(loc))
                     continue
                 self.edges[src].add(tgt)

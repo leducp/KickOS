@@ -119,7 +119,7 @@ namespace kickos
         // block lock dropping and the pended switch firing.
         Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> switch_count = 0;
 
-#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
+#if !KICKOS_ARCH_SIM
         // This thread's struct _reent, seated by thread_create out of the app-side array.
         // switch_book stores it into libc's state word; nothing in the kernel dereferences
         // it. HERE, and priced by thread_head_bytes: where uint64_t aligns to 8 this is the
@@ -336,7 +336,7 @@ namespace kickos
     {
         size_t members = sizeof(arch_context) + sizeof(ListNode) + sizeof(List*)
                          + sizeof(Thread*) + sizeof(uint32_t);
-#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
+#if !KICKOS_ARCH_SIM
         members = members + sizeof(void*); // Thread::reent
 #endif
         return members + (alignof(uint64_t) - members % alignof(uint64_t)) % alignof(uint64_t);
@@ -477,13 +477,11 @@ namespace kickos
     // privileged, and its body is arch_idle_wait alone, so it never enters the syscall path
     // and has neither a stack here nor anything to measure.
     //
-    // Both readings are PER SLOT AND SINCE BOOT, not per thread. The block is armed once at
-    // init and never re-armed when a slot changes hands: re-arming would erase the record of
-    // an overflow that had already happened, and it would have to run where a slot is handed
-    // out, which is inside the spawn's IrqLock. The worst any thread ever drove a slot is
-    // also the figure that SIZES a kernel stack, where a per-thread reading is not.
+    // PER SLOT AND SINCE BOOT, not per thread. The block is armed once at init and never
+    // re-armed when a slot changes hands: re-arming would erase the record of an overflow
+    // that had already happened, and it would have to run where a slot is handed out, which
+    // is inside the spawn's IrqLock. sched::exit_current reads the canary.
     void kstack_arm(int index);
-    size_t kstack_high_water(int index);
     bool kstack_canary_intact(int index);
 #endif
 
@@ -625,6 +623,11 @@ namespace kickos
         //     correct regardless of this spawn's fate; kstack_owned is now false.
         //   * a fresh bump slot (INACTIVE, always the last one under the spawn lock): un-bump
         //     `next`, else it becomes a permanent hole (alloc only ever reclaims EXITED).
+        // TRUE WHEN THE SLOT'S reent STILL HOLDS THE PREVIOUS OCCUPANT'S STATE. Lives in the
+        // pool and not in Thread: reuse rebuilds the Thread, which is exactly when the mark
+        // has to survive. kmain seeds every slot at boot, so this starts false.
+        bool reent_stale[KICKOS_THREAD_SLOTS] = {};
+
         void release(int i)
         {
             if (slots[i].state == ThreadState::EXITED)

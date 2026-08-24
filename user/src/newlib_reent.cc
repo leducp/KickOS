@@ -3,7 +3,7 @@
 //
 // One struct _reent per thread slot, and the word the kernel seats the running thread's
 // into. The user side of kernel/include/kickos/reent.h; compiled only where
-// KICKOS_LIBC_REENT is on, and never for the sim, whose libc is the host's.
+// every board but the sim, whose libc is the host's.
 //
 // Newlib reaches its reentrant state as _REENT, which expands to _impure_ptr on every
 // pinned toolchain but the Xtensa one, and calls __errno() nowhere. Swapping that one

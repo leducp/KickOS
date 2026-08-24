@@ -803,6 +803,33 @@ uint32_t kickos_nestwitness_count(int which);
 // thread mode, on that thread's own stack.
 void kickos_thread_fault_exit(void) __attribute__((noreturn));
 
+// Contain the thread whose live stack pointer a trap prologue just refused, instead of
+// ending the system for it. Raises it to CANCEL_SLAY and hands back the context to resume.
+//
+// `offender` NAMES THE THREAD PHYSICALLY EXECUTING, and the caller must pass what the arch
+// layer switched TO and not the scheduler's own current: a switch booked before the trap has
+// already published the incoming thread there, so current names the wrong thread on every
+// asynchronous refusal.
+//
+// THE OFFENDING THREAD MAY WELL BE THE ONE RESUMED, and what makes that safe is the REBUILD
+// and not any promise to run something else. pick_next returns it whenever it is still the
+// highest-priority runnable thread, which on a synchronous refusal is the ordinary case;
+// switch_book then rebuilds its context onto the exit stub at the top of a stack the TCB
+// names. Its registers were never saved and are discarded, so the frame the guard refused to
+// build is never needed, and nothing about the refused pointer is trusted at any point.
+//
+// `slain_name`, when not null, receives the slain thread's name on success, so a reporter can
+// credit the refusal to a thread. Read on the caller's own trap or interrupt stack; the exit
+// stub is the wrong place for it, the RET class binding that descent against every thread's
+// stack floor. Untouched when this returns null.
+//
+// Returns null wherever the caller must still terminate: no thread owns `offender` (which is
+// what refuses idle, outside the pool), it is privileged, the slay could not claim it, or
+// nothing can run. Takes the kernel lock itself; the trap prologues that reach it run
+// unmasked.
+struct arch_context* kickos_thread_contain_wild_stack(struct arch_context* offender,
+                                                      char const** slain_name);
+
 // Where arch_ctx_redirect points a SLAIN thread. Runs privileged, in thread mode, at
 // the top of that thread's own stack, and prints nothing: a slay was asked for by a
 // thread that already knows. `arg` is always null and exists only to match the entry

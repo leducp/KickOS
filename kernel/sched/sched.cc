@@ -42,7 +42,7 @@ namespace kickos
             next->state = ThreadState::RUNNING;
             next->switch_count.store(next->switch_count.load() + 1u);
             kernel().policy->on_switch_in(next);
-#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
+#if !KICKOS_ARCH_SIM
             // libc resolves errno through the word this seats, so the whole reentrant
             // state follows the thread HERE. Seating it once at thread entry instead would
             // leave the last entrant owning the one word for the rest of the run.
@@ -78,6 +78,82 @@ namespace kickos
                                             static_cast<uint32_t>(next->wait_result));
             }
 #endif
+        }
+
+        // Declared in arch/arch.h and called from an arch fault reporter. Here rather than in
+        // thread.cc because switch_book is what makes the incoming thread runnable, and the
+        // outgoing one is abandoned rather than switched away from.
+        extern "C" struct arch_context* kickos_thread_contain_wild_stack(
+            struct arch_context* offender, char const** slain_name)
+        {
+            if (offender == nullptr)
+            {
+                return nullptr;
+            }
+            // Taken HERE and not by the caller: a trap prologue reaches this unmasked, PendSV
+            // being entered with PRIMASK and BASEPRI both clear.
+            IrqLock lock;
+            Kernel& k = kernel();
+            if (k.current == nullptr)
+            {
+                return nullptr;
+            }
+            // The same bounded scan task_cancel_group makes. A context no slot owns is the
+            // boot context or a freed one, and neither is a thread to contain.
+            Thread* bad = nullptr;
+            for (int s = 0; s < k.threads.next; s++)
+            {
+                if (&k.threads.slots[s].ctx == offender)
+                {
+                    bad = &k.threads.slots[s];
+                    break;
+                }
+            }
+            if (bad == nullptr)
+            {
+                return nullptr;
+            }
+            // Half of kickos_fault_kill_thread's rule: a privileged thread's wild pointer is
+            // a kernel bug, and containment would hide it behind a thread death.
+            //
+            // IDLE NEEDS NO CLAUSE HERE and must not grow one. It is kernel().idle_tcb and not
+            // a pool slot, so the scan above already returned null for it; a `bad == k.idle`
+            // test reads as what protects idle while never firing. tests/unit/wildstack pins
+            // the real reason.
+            if (bad->privileged)
+            {
+                return nullptr;
+            }
+            thread_cancel_kind(bad, CANCEL_SLAY);
+            // CONTAINMENT RESTS ENTIRELY ON THE CLAIM LANDING. The save half never ran, so
+            // ctx.sp still describes a frame from some earlier switch; what makes that
+            // harmless is switch_book rebuilding the context on the way back IN, and it does
+            // that only for a thread the slay actually claimed. One already tearing down
+            // keeps the stale sp and would be resumed from it.
+            if (bad->cancel_kind != CANCEL_SLAY or bad->dying)
+            {
+                return nullptr;
+            }
+            // Handed back for the reporter to name, and read HERE while the slot is still
+            // the slain thread's: its teardown runs only once the caller resumes it. The
+            // reporters print it on their own trap or interrupt stack, never from the exit
+            // stub, whose descent the RET class binds against every thread's stack floor.
+            if (slain_name != nullptr)
+            {
+                *slain_name = bad->name;
+            }
+            // A switch booked before the trap has already moved `current` off the offender
+            // and stashed the incoming thread's regions; that pair is resumed as it stands.
+            if (k.current == bad)
+            {
+                Thread* const next = k.policy->pick_next();
+                if (next == nullptr)
+                {
+                    return nullptr;
+                }
+                switch_book(next);
+            }
+            return &k.current->ctx;
         }
 
         void switch_to(Thread* next)
@@ -130,7 +206,7 @@ namespace kickos
             kernel().current = first;
             first->state = ThreadState::RUNNING;
             kernel().policy->on_switch_in(first);
-#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
+#if !KICKOS_ARCH_SIM
             // switch_book is not on this path: nothing else seats the FIRST thread's state,
             // and without this it would run on libc's process-wide one until its first
             // switch away and back.
@@ -276,6 +352,29 @@ namespace kickos
         void exit_current(int code)
         {
             Thread* const c = kernel().current;
+#if KICKOS_KERNEL_STACKS
+            // THE ONLY READER OF THE CANARY, and the only point where the thread that owns a
+            // block is certainly finished with it. Armed at boot and never re-armed, so a
+            // break here names an overflow that happened at any time since, on this slot.
+            // NO DIAGNOSTIC PRINT HERE. This site is measured as the RET class, which binds
+            // every thread's KICKOS_MIN_STACK_SIZE floor; a console chain off it cost 200
+            // bytes of that floor for a message the panic's own catalogue entry carries.
+            int const kslot = kernel().threads.index_of(c);
+#endif
+#if !KICKOS_ARCH_SIM
+            // The next occupant of this slot inherits the reent unless it is re-seeded.
+            int const rslot = kernel().threads.index_of(c);
+            if (rslot >= 0)
+            {
+                kernel().threads.reent_stale[rslot] = true;
+            }
+#endif
+#if KICKOS_KERNEL_STACKS
+            if (kslot >= 0 and not kstack_canary_intact(kslot))
+            {
+                kpanic(diag::kKstackOverflow);
+            }
+#endif
             // Read by the WAIT_TASK_EMPTY sweep in the second locked block, past a
             // preemptible cap_teardown. `left_task` crosses that gap as a bare POINTER, and
             // what keeps the compare unambiguous lives in task.cc: task_resolve refuses a

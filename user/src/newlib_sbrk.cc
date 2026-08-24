@@ -27,31 +27,30 @@ extern char _kickos_heap_start[];
 extern char _kickos_heap_limit[];
 static char* s_brk = _kickos_heap_start;
 
-// UNSERIALISED read-modify-write. Two preempted threads can both read this s_brk, both pass
-// the bounds check and both return the same prev, aliasing the same bytes. The heap window is
-// appended to EVERY unprivileged thread, so this is not confined to one task.
-//
-// A CAS does not link on the ARMv6-M or RX boards: neither has an atomic RMW, and neither
-// toolchain ships a libatomic to emulate one, which is where sys/atomic.h's load/store
-// surface comes from. The cap table is per-thread with no runtime transfer, so a lock minted
-// on first use is unshareable by construction, and static constructors reach _sbrk before an
-// init hook could mint one earlier. Interrupt masking is privileged, and unprivileged
-// `cpsid i` on ARM is a silent nop. The fix takes the shape of
-// arch/common/arch_ram_common.cc, the same bump allocator one privilege level up under
-// arch_irq_save, which means a syscall.
-//
-// Serialising this alone would NOT make multi-threaded malloc safe: newlib's bins stay
-// unprotected while __malloc_lock is a no-op (newlib_stubs.cc), so the arena still corrupts.
-// Keep such apps single-alloc-thread.
+// Unserialised: two preempted threads can both pass the bounds check and return the same
+// prev. The window is granted to every unprivileged thread, so no task boundary confines it.
 static void* heap_bump(intptr_t incr)
 {
-    char* prev = s_brk;
-    char* next = s_brk + incr;
-    if (next < _kickos_heap_start or next > _kickos_heap_limit)
+    // The sum is taken on integers: forming s_brk + incr first is undefined as soon as it
+    // leaves the object, which is exactly the case the bound below exists to catch.
+    uintptr_t const lo = reinterpret_cast<uintptr_t>(_kickos_heap_start);
+    uintptr_t const hi = reinterpret_cast<uintptr_t>(_kickos_heap_limit);
+    uintptr_t const cur = reinterpret_cast<uintptr_t>(s_brk);
+    uintptr_t const next = cur + static_cast<uintptr_t>(incr);
+    if (incr > 0 and next < cur)
     {
         return reinterpret_cast<void*>(-1);
     }
-    s_brk = next;
+    if (incr < 0 and next > cur)
+    {
+        return reinterpret_cast<void*>(-1);
+    }
+    if (next < lo or next > hi)
+    {
+        return reinterpret_cast<void*>(-1);
+    }
+    char* const prev = s_brk;
+    s_brk = reinterpret_cast<char*>(next);
     return prev;
 }
 

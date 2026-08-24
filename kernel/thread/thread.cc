@@ -84,25 +84,15 @@ namespace kickos
     void kstack_arm(int index)
     {
         uint32_t* const w = kstack_words(index);
+        // THE FILL HAS NO READER IN THE IMAGE, deliberately: the depth a slot reached is
+        // read off a memory dump, where the boundary between fill and written words is the
+        // measurement. A reader in here would be a second, weaker answer to what
+        // check_trap_redzone.sh already measures at build time.
         w[0] = KSTACK_CANARY;
         for (size_t i = 1; i < KSTACK_WORDS; i++)
         {
             w[i] = KSTACK_FILL;
         }
-    }
-
-    // Bytes from the deepest word ever written up to the slot's stack top. Scans UP because
-    // the stack grows DOWN from that top, so the untouched words are the low ones. The
-    // ceiling is KICKOS_KERNEL_STACK_SIZE minus the canary word, which is not usable stack.
-    size_t kstack_high_water(int index)
-    {
-        uint32_t const* const w = kstack_words(index);
-        size_t untouched = 1; // word 0 is the canary and never carries the fill
-        while (untouched < KSTACK_WORDS and w[untouched] == KSTACK_FILL)
-        {
-            untouched++;
-        }
-        return (KSTACK_WORDS - untouched) * sizeof(uint32_t);
     }
 
     // False means the low word was overwritten, so the slot's dispatch descended past the
@@ -299,7 +289,7 @@ namespace kickos
             }
         }
         arch_context_init(&t->ctx, entry, arg, ustack, usize, attr.privileged);
-#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
+#if !KICKOS_ARCH_SIM
         // The pool slot indexes the app-side array. A TCB outside the pool takes libc's
         // process-wide state: index_of returns negative for it and the seam answers that
         // with the global rather than with a slot nobody sized. Selection only; the

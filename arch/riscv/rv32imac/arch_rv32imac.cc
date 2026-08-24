@@ -725,6 +725,47 @@ void arch_fault_redirect_to_exit(void* frame)
     __asm volatile("csrw mstatus, %0" ::"r"(next) : "memory");
 }
 
+// --- Wild sp refused by the trap entry (switch.S .Ltrap_wild) -----------------
+// Contain the offending thread instead of ending the system for it. Returns the context the
+// caller must resume, and null when it must fall through to the generic dump.
+//
+// NOTHING MAY PANIC HERE. kpanic_enter masks IRQs irreversibly and belongs to the terminating
+// path alone, which is .Lfault's.
+//
+// g_arch_current and NOT the scheduler's current: this one tracks the PHYSICAL switch, so it
+// names the thread whose sp was refused even when a booked switch has already published
+// another one as current.
+struct arch_context* kickos_rv_contain_wild_sp(uint32_t sp)
+{
+    // NAMED, because this entry now catches what the PMP-denial report used to: a thread that
+    // overflows its own stack reaches the refusal before that report, so without the name a
+    // stack overflow dies anonymously. Read on the trap stack, where this reporter already
+    // runs, and never from the exit stub.
+    char const* who = "?";
+    struct arch_context* const next = kickos_thread_contain_wild_stack(g_arch_current, &who);
+    if (next == nullptr)
+    {
+        return nullptr;
+    }
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // Silent when intact, and read HERE as well as on .Lfault's path: what it witnesses is
+    // what the prologue wrote through the refused sp, which containment does not change.
+    // Left to the panic alone it would go unread on exactly the arms that now survive.
+    kickos_trapstack_witness_report();
+#endif
+    // Reached only when containment SUCCEEDED: the null return above sends switch.S to
+    // .Lfault, which prints its own. tests/lib/panic.ere matches "=== RISC-V TRAP", so
+    // spelling this one that way would make assert_no_panic blind to the difference.
+    ::kickos::kprintf("\n=== RISC-V CONTAINED (wild stack) ===\n");
+#if KICKOS_PANIC_DUMP
+    ::kickos::kprintf("  thread '%s' sp=0x%x\n", who, static_cast<unsigned>(sp));
+#else
+    (void)sp;
+    (void)who;
+#endif
+    return next;
+}
+
 // --- Unhandled trap (switch.S .Lfault) ----------------------------------------
 // A TRUE return means .Lfault must mret instead of dumping: the redirect above already
 // re-pointed mepc/mstatus at the stub. ecall-from-M (mcause 11) is demuxed before .Lfault

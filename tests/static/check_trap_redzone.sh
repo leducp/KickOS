@@ -161,10 +161,14 @@ scratch_flags_ok() {
     esac
     # A CMake list in the cache, so semicolon-separated; the flags reach the compiler one
     # per argument, and this loop compares them one at a time.
+    # PRESENT-BUT-EMPTY IS LEGAL AND ABSENT IS NOT: the xtensa toolchain names no ISA flag,
+    # the windowed ABI being the compiler's default, so grep for the KEY and let the value be
+    # empty. Testing the value alone would read a toolchain that stopped seeding the cache as
+    # a board with nothing to check.
+    grep -q '^KICKOS_MCPU_FLAGS:INTERNAL=' "$BUILD/CMakeCache.txt" \
+        || { echo "trap_redzone: scratch tree has no KICKOS_MCPU_FLAGS" >&2; return 1; }
     _mcpu="$(sed -n 's/^KICKOS_MCPU_FLAGS:INTERNAL=//p' "$BUILD/CMakeCache.txt" | head -n1 \
              | tr ';' ' ')"
-    [ -n "$_mcpu" ] || { echo "trap_redzone: scratch tree has no KICKOS_MCPU_FLAGS" >&2
-                         return 1; }
     for _tok in $_mcpu; do
         case " $_cxx " in
             *" $_tok "*) ;;

@@ -521,17 +521,23 @@ namespace kickos
             cap_install_at(child, static_cast<int>(deleg_dest[ci]), deleg_obj[ci],
                            static_cast<CapType>(deleg_type[ci]), deleg_rights[ci]);
         }
-        // INSIDE THE LOCK, and the masked cost is accepted. The per-thread libc state is
-        // 284 to 512 bytes across the pinned toolchains, so writing it here charges every
-        // spawn that much masked time. It cannot move out: between an allocated child and
-        // sched::add, the SPAWNER is preemptible, and a spawner slain in that gap never
+        // ONLY A REUSED SLOT PAYS. kmain seeds every slot's reent at boot, so a first
+        // occupant needs nothing here; a slot whose previous occupant exited is marked
+        // reent_stale and re-seeded now.
+        //
+        // WHAT IS LEFT IS STILL INSIDE THE LOCK, and deliberately. Between an allocated child
+        // and sched::add the SPAWNER is preemptible, and a spawner slain in that gap never
         // returns to its continuation at all, because switch_book redirects a CANCEL_SLAY
         // thread to the exit stub. The child would then be a fully built INACTIVE orphan
-        // holding a slot, a stack, a task reference and its delegated caps, with nothing
-        // left running that knows to finish or free it. A spawn is a transaction and the
-        // lock is what makes it one.
-#if defined(KICKOS_LIBC_REENT) && KICKOS_LIBC_REENT
-        kickos_reent_init(child->reent);
+        // holding a slot, a stack, a task reference and its delegated caps, with nothing left
+        // running that knows to finish or free it. A spawn is a transaction and the lock is
+        // what makes it one.
+#if !KICKOS_ARCH_SIM
+        if (k.threads.reent_stale[i])
+        {
+            kickos_reent_init(child->reent);
+            k.threads.reent_stale[i] = false;
+        }
 #endif
         sched::add(child);
         *out_thread = k.threads.handle_for(i);

@@ -96,6 +96,60 @@
  *
  * Guarded on SIZEOF because ALIGNOF of an absent output section is not meaningful.
  */
+/* FAIL CLOSED WHERE THE FEATURE IS OFF, AND WHERE THE BLOCK WOULD NOT FIT.
+ *
+ * At KICKOS_TLS=0 the template above still COLLECTS .tdata/.tbss, being invoked
+ * unconditionally, so nothing is orphaned and --orphan-handling=error stays quiet. Only ARM
+ * then fails, and only by accident: __aeabi_read_tp goes undefined. rv32imac resolves a TPREL
+ * access against tp with no undefined symbol at all, and rx-elf satisfies
+ * ___emutls_get_address out of libgcc's process-global emutls. Both would link an image whose
+ * thread_local is shared by every thread. So the emptiness is asserted here instead.
+ *
+ * At KICKOS_TLS=1 the carve gives each thread exactly one stride and seats the block at its
+ * base, so a template larger than a stride minus the ABI bias cannot be seated. That is a
+ * link-time fact and was a boot-time kpanic.
+ *
+ * EMPTINESS IS DECIDED ON THE SIZES AND THE FIT ON THE SPAN, the same split kernel/thread/
+ * tls.cc makes. With no thread_local anywhere the two symbols are not a span at all and their
+ * difference is meaningless, so testing it alone refuses every image that declares none.
+ *
+ * ROUNDED, AND STRICTLY LESS, because that is what tls_stack_admissible asks: it compares the
+ * stride against tls_block_size(), which is align_up(TCB + span, KICKOS_STACK_ALIGN), with
+ * `size > block`. An unrounded `<=` here admits a payload that rounds up to exactly the
+ * stride, which links and is then refused at every spawn.
+ */
+#if defined(KICKOS_TLS) && KICKOS_TLS
+#define KICKOS_TLS_FIT_ASSERT()                                               \
+    ASSERT(SIZEOF(.tdata) + SIZEOF(.tbss) == 0                                \
+               || ALIGN(__kickos_tbss_end - __kickos_tdata_start              \
+                            + KICKOS_ARCH_TLS_TCB,                            \
+                        KICKOS_STACK_ALIGN) < KICKOS_TLS_STRIDE,              \
+           "KickOS: the thread_local template plus the ABI bias below the thread pointer does not fit one KICKOS_TLS_STRIDE, so no thread's block can hold it and every spawn would be refused. Declare fewer or smaller thread_local objects, or raise this board's stack size (which is the stride) in boards/<board>/configs/<variant>/defconfig.")
+#else
+#define KICKOS_TLS_FIT_ASSERT()                                               \
+    ASSERT(SIZEOF(.tdata) == 0,                                               \
+           "KickOS: this image declares a thread_local with KICKOS_TLS=n, and on this arch that links silently into storage every thread shares. Set KICKOS_TLS=y in boards/<board>/configs/<variant>/defconfig, or remove the thread_local.")   \
+    ASSERT(SIZEOF(.tbss) == 0,                                                \
+           "KickOS: this image declares a thread_local with KICKOS_TLS=n, and on this arch that links silently into storage every thread shares. Set KICKOS_TLS=y in boards/<board>/configs/<variant>/defconfig, or remove the thread_local.")
+#endif
+
+/* THE SAME FAIL-CLOSED QUESTION WHERE THE ARCH HAS NO TLS SECTIONS AT ALL. GNURX emits
+ * neither .tdata nor .tbss: a thread_local becomes an emutls control block in
+ * .data.__emutls_v.* plus a call to ___emutls_get_address, so the assert above reads two
+ * empty sections and passes while libgcc's single-threaded emutls answers the call and hands
+ * every thread the same object. The chip script gathers those control blocks between two
+ * symbols for its own override to index; at KICKOS_TLS=0 that span must be empty.
+ *
+ * Invoked by the rxv3 chip script only, and arch/CMakeLists.txt requires it there.
+ */
+#if defined(KICKOS_TLS) && KICKOS_TLS
+#define KICKOS_TLS_EMUTLS_ASSERT(start, end) /* the override answers the calls */
+#else
+#define KICKOS_TLS_EMUTLS_ASSERT(start, end)                                  \
+    ASSERT(end == start,                                                      \
+           "KickOS: this image declares a thread_local with KICKOS_TLS=n, and on this arch that is an emutls control block libgcc's single-threaded emutls would answer, handing every thread the same object. Set KICKOS_TLS=y in boards/<board>/configs/<variant>/defconfig, or remove the thread_local.")
+#endif
+
 #define KICKOS_TLS_ALIGN_ASSERT()                                             \
     ASSERT(SIZEOF(.tdata) == 0 || ALIGNOF(.tdata) <= 8,                       \
            "KickOS: a thread_local needs more than 8-byte alignment, which moves the ABI bias below the thread pointer and every TLS offset with it. KICKOS_ARCH_TLS_TCB states a fixed bias, so this is refused rather than mis-seated.")    \

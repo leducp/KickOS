@@ -32,8 +32,14 @@ BEGIN {
         # A DEFINITION and not a call or a declaration. The column-0 test is what makes it
         # sound: a multiline CALL has no trailing `;` on its FIRST line either (sched.cc
         # spreads arch_ctx_redirect over three), so "no semicolon" alone accepts calls.
+        #
+        # THE CHARACTER BEFORE THE NAME MUST NOT BE ONE AN IDENTIFIER CAN CONTAIN, or a
+        # function whose name merely ENDS with FN is read as FN and the caller measures the
+        # wrong body. Either FN opens the line, or a return type precedes it across a
+        # separator.
         if (index(line, FN "(") > 0 \
-            && line ~ ("^[A-Za-z_][A-Za-z_0-9 *&:<>,]*" FN "[[:space:]]*\\(") \
+            && (line ~ ("^" FN "[[:space:]]*\\(") \
+                || line ~ ("^[A-Za-z_][A-Za-z_0-9 *&:<>,]*[^A-Za-z_0-9]" FN "[[:space:]]*\\(")) \
             && line !~ /;[[:space:]]*$/) {
             found = 1
         }

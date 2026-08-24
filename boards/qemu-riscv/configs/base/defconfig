@@ -10,7 +10,4 @@ CONFIG_KICKOS_USER_STACK_SIZE=8192
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=8192
 
-# ON here for the same reason the armv7m base variant has it: this is the second arch
-# the errnoprobe gate boots on. 17 slots of 288 B come out of the heap pad.
-CONFIG_KICKOS_LIBC_REENT=y
 CONFIG_KICKOS_ENABLE_SELFTEST=y

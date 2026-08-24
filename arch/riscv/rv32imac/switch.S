@@ -146,7 +146,7 @@ trap_entry:
     la      t0, g_arch_current
     lw      t0, 0(t0)
     lw      t0, F_CTX_KERNEL_SP(t0)
-    beqz    t0, .Ltrap_wild        /* a U-mode thread with no kernel stack */
+    beqz    t0, .Ltrap_nokstack    /* a U-mode thread with no kernel stack */
     addi    t0, t0, -FRAME         /* frame base on the kernel stack */
     sw      ra, F_RA(t0)           /* ra's original into the frame; ra is now scratch */
     sw      t1, F_SP(t0)           /* the sp .Lrestore mrets on */
@@ -518,17 +518,60 @@ svc_trampoline:
     lw      sp,  F_SP(sp)
     mret
 
-/* A U-mode trap the entry refused: an sp outside the thread's stack or misaligned, so mret
-   could not return on it, or a U-mode thread whose ctx.kernel_sp is 0. Nothing was stored
-   through the interrupted sp. Every path here has already restored mscratch, so the csrw
-   below rewrites the value that is there and holds the invariant for a reader arriving
-   without following one of the four branches. The reporter's frame-trusted test refuses this
+/* A U-mode thread with no kernel stack seated. NOT CONTAINED, and the split from .Ltrap_wild
+   below is the reason: containment rebuilds the slain thread onto ctx.kernel_sp, and with no
+   block there arch_ctx_redirect falls back to fabricating that privileged frame on the
+   thread's own USER stack, which is the write the block design exists to refuse. It is a
+   provisioning bug and not a pointer the thread chose, so it panics. */
+.Ltrap_nokstack:
+    csrw    mscratch, sp
+    j       .Lfault
+
+/* A U-mode trap the entry refused: an sp outside the thread's stack, or misaligned, so mret
+   could not return on it. Nothing was stored through the interrupted sp. Every path here has
+   already restored mscratch, so the csrw below rewrites the value that is there and holds the
+   invariant for a reader arriving without following one of the three branches.
+
+   t1 IS THE REFUSED SP and sp is the trap top, so the call below spends the trap stack and
+   not the pointer under test. Both t0/t1 originals sit at -4(sp)/-8(sp) and the call
+   overwrites them, which costs nothing: a contained thread's registers are discarded, and
+   .Lfault reads none of them.
+
+   .Lfault, when containment declines: the reporter's frame-trusted test refuses this
    trap-stack frame and panics, except a U-mode access fault (1/5/7), which it credits to the
    thread. This is the one path reaching .Lfault with an ECALL cause, which is why the
    reporter's cause ladder handles mcause 8. */
 .Ltrap_wild:
     csrw    mscratch, sp
-    j       .Lfault
+    mv      a0, t1
+    call    kickos_rv_contain_wild_sp
+    beqz    a0, .Lfault
+    /* Contained: a0 names the thread to run instead. The offending thread keeps a ctx.sp the
+       skipped save never wrote, and switch_book's rebuild on the way back IN is what discards
+       it. */
+    la      t0, g_arch_current
+    lw      t1, 0(t0)              /* outgoing ctx* = the offender, read before the swap */
+#if KICKOS_TELEMETRY
+    /* The swap is physical, so it emits: kicktrace.py's verify() requires each SWITCH `from`
+       to equal the previous `to`, and a silent swap breaks the NEXT record. s0/s1 survive the
+       call, and .Lrestore reloads every caller-saved register from the frame. */
+    lw      s0, 4(t1)              /* from_tid = the offender's trace_tid */
+    lw      s1, 4(a0)              /* to_tid */
+#endif
+    sw      a0, 0(t0)
+    /* The booked switch this consumes. A msip left pending would re-enter .Lswitch for a swap
+       that has already happened. */
+    la      t0, g_clint_msip
+    lw      t0, 0(t0)
+    sw      zero, 0(t0)
+    lw      sp, 0(a0)              /* the incoming frame, so the commit pushes under it */
+#if KICKOS_TELEMETRY
+    mv      a0, s0                 /* a0 is dead once sp and g_arch_current are set */
+    mv      a1, s1
+    call    kickos_trace_switch_done
+#endif
+    call    kickos_arch_mpu_commit
+    j       .Lrestore
 
 /* --- Unhandled exception. mcause/mepc/mtval/mstatus are still live, no trap having  */
 /* been taken since the vector. A NON-ZERO return means fault isolation claimed this  */

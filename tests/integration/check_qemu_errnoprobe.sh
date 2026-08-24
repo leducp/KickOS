@@ -19,6 +19,29 @@ fi
 if has "\[errnoprobe\] FAIL"; then
     fail "errnoprobe reported FAIL"
 fi
+# A VERDICT IS NOT COVERAGE. PASS is printed by whatever arms ran, so deleting one leaves the
+# gate green; each arm's own summary line is required by name. The letters are the app's
+# (main.cc): A the two workers plus root, B a reused slot, C an in-dispatch server, D a
+# preempted pair.
+for _arm in \
+    'A root at' \
+    'B t[0-9] at' \
+    'C srv' \
+    'D lo'
+do
+    if ! has "\\[errnoprobe\\] $_arm"; then
+        fail "errnoprobe printed no '$_arm' line, so that arm did not run and PASS covers less
+  than it claims"
+    fi
+done
+
+# D's own vacuity: the pair can run without the preemption it exists to witness ever landing,
+# and the arm still reports a verdict.
+if has '\[errnoprobe\] D .* overlapped 0 '; then
+    fail "errnoprobe arm D never saw the preempted thread spinning, so it witnessed no
+  preemption and its verdict is about nothing"
+fi
+
 assert_no_panic "errnoprobe panicked before reaching a verdict"
 
 echo "PASS: QEMU errnoprobe gave every thread its own errno"

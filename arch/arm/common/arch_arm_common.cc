@@ -58,6 +58,25 @@ extern "C"
 // linkage overrides the namespace, so an anonymous namespace nested in this block
 // emits an unmangled GLOBAL symbol.
 
+// A trap prologue refused the running thread's live SP. Contain the thread instead of ending
+// the system: the kernel slays it and hands back the context to run instead, which this seats
+// for the restore half the caller in switch.S branches to. Returns 1 when contained, 0 when
+// the caller must terminate.
+int kickos_arm_contain_wild_sp(void)
+{
+    // g_arch_current, not the scheduler's current: this one tracks the PHYSICAL switch, so it
+    // names the thread whose pointer was refused even when a booked switch has already
+    // published another one as current.
+    struct arch_context* const next = kickos_thread_contain_wild_stack(g_arch_current, nullptr);
+    if (next == nullptr)
+    {
+        return 0;
+    }
+    // g_arch_current is written by the restore half itself, so only the target is set here.
+    g_arch_next = next;
+    return 1;
+}
+
 // --- Switch: always deferred to PendSV (the outgoing ctx is g_arch_current) --
 void arch_switch(struct arch_context* from, struct arch_context* to)
 {

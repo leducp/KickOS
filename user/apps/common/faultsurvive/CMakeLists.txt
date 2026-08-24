@@ -90,7 +90,7 @@ endif()
 if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME ${_fs_tag}_faultsurvive
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
-            "$<TARGET_FILE:faultsurvive>" survive ${KICKOS_ARCH})
+            "$<TARGET_FILE:faultsurvive>" survive ${KICKOS_ARCH} terminated)
   set_tests_properties(${_fs_tag}_faultsurvive PROPERTIES TIMEOUT 30)
   # Same arm across a console HANDOVER, which the arm above never crosses: every other
   # faultsurvive runner keeps the console kernel-owned, and a published one DROPS the kernel
@@ -106,7 +106,26 @@ if(KICKOS_ARCH STREQUAL "sim")
 else()
   kickos_add_qemu_test(NAME ${_fs_tag}_faultsurvive TARGET faultsurvive
     BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS survive ${KICKOS_ARCH})
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS survive ${KICKOS_ARCH} terminated)
+endif()
+
+# WHAT A REFUSED SP COSTS on this backend, for the gate's <outcome>. rv32imac refuses the sp
+# in its TRAP ENTRY, which now contains the offending thread; the ARM backends reach these
+# arms through the fault path instead, where the frame-validity test refuses a frame that was
+# already written, so nothing there is contained and the system still ends.
+#
+# RXV3 IS `terminated` FOR THESE ARMS, AND THAT IS A SILICON READING, not an inference from
+# the code. Its bad_usp does contain now, but NO ARM HERE REACHES IT: captured on an RX72M
+# over SCI6 (2026-08-24), `overflow` is denied by the MPU first and reports
+# `MPU FAULT: thread 'faulter' attempted write`, and `offstack` faults on the privileged
+# instruction that moves SP before any wild USP exists,
+# `=== RX EXCEPTION (privileged instruction) PSW=0x130001`. Both captures judge PASS against
+# `terminated` and FAIL against `contained`. So RX containment stays disassembly-verified,
+# and what is missing is an arm that hands the trap a wild USP without tripping something
+# else first, not a fix.
+set(_fs_outcome terminated)
+if(KICKOS_ARCH STREQUAL "rv32imac")
+  set(_fs_outcome contained)
 endif()
 
 # The two REFUSAL arms need a hardware stack guard: they turn on the frame the fault
@@ -122,20 +141,20 @@ if(KICKOS_ARCH STREQUAL "sim" OR NOT KICKOS_HAVE_MPU)
 endif()
 kickos_add_qemu_test(NAME ${_fs_tag}_faultoverflow TARGET faultsurvive_ovf
   BOARD ${KICKOS_BOARD}
-  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS overflow ${KICKOS_ARCH})
+  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS overflow ${KICKOS_ARCH} ${_fs_outcome})
 kickos_add_qemu_test(NAME ${_fs_tag}_faultoffstack TARGET faultsurvive_off
   BOARD ${KICKOS_BOARD}
-  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS offstack ${KICKOS_ARCH})
+  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS offstack ${KICKOS_ARCH} ${_fs_outcome})
 
 # The kernel-write regression. Only qemu-riscv reaches here; rx72m builds the image above
 # and is witnessed on silicon through FS_CAPTURE.
 if(KICKOS_ARCH STREQUAL "rv32imac")
   kickos_add_qemu_test(NAME ${_fs_tag}_faultkwrite TARGET faultsurvive_kwrite
     BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS kwrite ${KICKOS_ARCH})
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS kwrite ${KICKOS_ARCH} ${_fs_outcome})
   kickos_add_qemu_test(NAME ${_fs_tag}_faultmisalign TARGET faultsurvive_misalign
     BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS misalign ${KICKOS_ARCH})
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS misalign ${KICKOS_ARCH} ${_fs_outcome})
 endif()
 
 # The low-edge arm, wherever its image was built. Not gated with the refusal arms above: this
@@ -143,5 +162,5 @@ endif()
 if(KICKOS_ARCH STREQUAL "rv32imac")
   kickos_add_qemu_test(NAME ${_fs_tag}_faultlowedge TARGET faultsurvive_lowedge
     BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS lowedge ${KICKOS_ARCH})
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS lowedge ${KICKOS_ARCH} terminated)
 endif()

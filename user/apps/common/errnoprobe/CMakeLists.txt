@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# Built only where the mechanism is compiled: with the knob off the app boots and honestly
-# reports FAIL, which is not a fleet build failure to carry around.
-if(NOT KICKOS_LIBC_REENT)
+# The sim's libc is the host's, so there is no per-thread struct _reent to probe there.
+if(KICKOS_ARCH STREQUAL "sim")
   return()
 endif()
 

@@ -102,9 +102,16 @@ for spec in "$@"; do
             ;;
     esac
     [ -f "$a" ] || fail "no archive at $a"
-    relocs="$("$READELF" -rW "$a" 2>/dev/null || true)"
+    # A TOOL THAT FAILED MUST NOT READ AS A CLEAN ARCHIVE. Swallowing the status here left
+    # both variables empty, which no pattern below matches, so a missing or broken readelf
+    # passed every board silently.
+    if ! relocs="$("$READELF" -rW "$a" 2>/dev/null)"; then
+        fail "$READELF -rW failed on $a, so this scan read nothing and would pass vacuously"
+    fi
     # `U` in nm's archive listing is an undefined reference from a member of THIS archive.
-    syms="$("$NM" "$a" 2>/dev/null || true)"
+    if ! syms="$("$NM" "$a" 2>/dev/null)"; then
+        fail "$NM failed on $a, so this scan read nothing and would pass vacuously"
+    fi
     if [ -n "$member" ]; then
         missing="$a has no member $member, so this scan would be vacuous. A renamed or
     deleted translation unit must update the no_privileged_tls argument in arch/CMakeLists.txt."

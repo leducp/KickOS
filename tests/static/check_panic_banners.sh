@@ -31,11 +31,13 @@ set -u
 [ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
 command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
 
-# THE ONE EXCLUSION, and it is a ruling: the thread-fault report is what fault ISOLATION
-# prints when a thread died and the system did not. Four gates (check_rootfault.sh,
-# check_mpu_fault.sh, check_faultsurvive.sh, check_qemu_ringppb.sh) assert that line is
-# PRESENT while asserting no panic occurred, so putting it in the ERE contradicts all four.
-EXCLUDED='=== THREAD FAULT ==='
+# THE EXCLUSIONS, and they are one ruling: these banners say a thread died and the SYSTEM DID
+# NOT, so a gate reads them while asserting no panic occurred and the ERE must not match them.
+#   - the thread-fault report, read by check_rootfault.sh, check_mpu_fault.sh,
+#     check_faultsurvive.sh and check_qemu_ringppb.sh;
+#   - every CONTAINED refusal, which the trap entry resumes from: the arch reporters spell the
+#     noun rather than substitute it precisely so this scan can see which outcome each is.
+EXCLUDED_RE='=== THREAD FAULT ===| CONTAINED '
 
 # Files that MUST each yield a banner, one per fault reporter in the tree, so a shape that
 # stops matching cannot read as "no reporter emits a banner any more".
@@ -167,20 +169,17 @@ fi
 checked=0
 while IFS="$TAB" read -r f n slot text; do
     checked=$((checked + 1))
-    case "$text" in
-        *"$EXCLUDED"*)
-            # Asserted NOT matched: in the ERE it would break the four gates that read it
-            # as a survivable outcome.
-            if printf '%s\n' "$text" | grep -qE "$KOS_PANIC_RE"; then
-                echo "FAIL: $f:$n banner '$text' IS matched by tests/lib/panic.ere, but it is" >&2
-                echo "      the fault-isolation report: the thread died and the system did" >&2
-                echo "      not. Every assert_no_panic on a thread-kill board would now fail." >&2
-                echo x >> "$TMP/rc"
-            fi
-            continue
-            ;;
-        *) ;;
-    esac
+    if printf '%s\n' "$text" | grep -qE "$EXCLUDED_RE"; then
+        # Asserted NOT matched: in the ERE it would break every gate that reads one of these
+        # as a survivable outcome.
+        if printf '%s\n' "$text" | grep -qE "$KOS_PANIC_RE"; then
+            echo "FAIL: $f:$n banner '$text' IS matched by tests/lib/panic.ere, but it says" >&2
+            echo "      the thread died and the system did not. Every assert_no_panic on a" >&2
+            echo "      board that survives this outcome would now fail." >&2
+            echo x >> "$TMP/rc"
+        fi
+        continue
+    fi
     if ! printf '%s\n' "$text" | grep -qE "$KOS_PANIC_RE"; then
         echo "FAIL: $f:$n banner '$text' ($slot) is NOT matched by tests/lib/panic.ere." >&2
         echo "      A gate asserting no panic passes on a board that printed it, and a gate" >&2

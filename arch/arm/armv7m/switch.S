@@ -30,6 +30,19 @@
     .equ F_CTX_KERNEL_SP, KICKOS_ARMV7M_CTX_OFF_KERNEL_SP
     .equ F_CTX_TRACE_TID, KICKOS_ARMV7M_CTX_OFF_TRACE_TID
 
+/* The deepest a PSP may sit inside a kernel block and still be accepted by PendSV's block leg,
+   as a distance DOWN from the block's top because that is what the compare there holds. SIZE,
+   less the lowest word (the overflow canary in kernel/thread/thread.cc, which no frame may
+   consume), less NEST_SVCK: the room the block's own sizing reserves BELOW a dispatch for
+   every frame an exception can pile on it, the PendSV save under test among them.
+   AS TIGHT AS THE SIZING AND NO TIGHTER, which is what makes it safe to enforce: the deepest
+   legitimate PSP is KERNEL_DEPTH_SVCK below the top, and this bound less that depth is
+   (SIZE - 4) - NEED_SVCK, the block's own slack. So check_trap_redzone.sh passing is exactly
+   the statement that this leg admits every legal depth. Same derivation as rxv3's
+   BLOCK_USP_MAX_DROP. */
+    .equ BLOCK_PSP_MAX_DROP, \
+        KICKOS_KERNEL_STACK_SIZE - KICKOS_ARMV7M_TRAP_NEST_SVCK - 4
+
 /* PSP bounds guard, used by both software pushes in this file.
    In:  \need = the room this site's class needs below the PSP, before the FP term;
         r0 = the live PSP, r2 = the running thread's arch_context*, lr = EXC_RETURN.
@@ -41,11 +54,14 @@
    because the SVC site's exception return leaves handler mode, so svc_trampoline keeps
    descending on this PSP until it reaches ctx.kernel_sp.
 
+   \bad is the refusal target, and the two sites pass DIFFERENT ones because only PendSV
+   spills at entry and that spill has to come back off before the shared tail runs.
+
    \fp charges the {s16-s31} block AT RUN TIME on an FP-live entry, and only PendSV may take
    it: its push IS that block, while the SVC figure is a structural constant that already
    dominates BOTH entry postures, so charging the term there charges it twice and refuses a
    legal floor-sized FP-active thread. */
-    .macro PSP_GUARD need, fp
+    .macro PSP_GUARD need, fp, bad
     movw    r1, #\need
 #if defined(__ARM_FP)
     .if \fp
@@ -56,14 +72,14 @@
 #endif
     ldr     r12, [r2, #F_CTX_STACK_LO]
     cmp     r0, r12
-    blo     .Lpsp_wild
+    blo     \bad
     sub     r12, r0, r12            /* the room REMAINING below the PSP: a bound written
                                        as psp - need could wrap under stack_lo instead */
     cmp     r12, r1
-    blo     .Lpsp_wild
+    blo     \bad
     ldr     r12, [r2, #F_CTX_STACK_HI]
     cmp     r0, r12
-    bhs     .Lpsp_wild              /* a PSP above the stack would push into whatever
+    bhs     \bad                    /* a PSP above the stack would push into whatever
                                        granted region carried the hardware frame */
     .endm
 
@@ -104,19 +120,24 @@ PendSV_Handler:
        reads 0, so the first compare fails and the user-stack legs decide, which is what idle
        takes.
 
-       NO ROOM TEST ON THIS LEG. Every byte below a kernel PSP is written by privileged code
-       through a pointer the kernel seated, so what has to hold is a SIZE and not a bound;
-       armv7m_trap_stack.h's SVCK class prices it. The block's lowest word is its overflow
-       canary (kernel/thread/thread.cc). */
+       THE ROOM IS PART OF THE RANGE. A bare range test admits a PSP at the block's base, and
+       the save below then writes THROUGH THE CANARY and into the neighbouring slot's
+       privileged continuation. "Every byte below a kernel PSP is privileged code's" is only
+       true where the thread cannot aim its own PSP at the block, which is a board property and
+       not an arch one: with enforcement the hardware refuses the entry stacking first, and on
+       an armv7m board that carves blocks and does NOT enforce (the flat presets) nothing does.
+       The bound stops BLOCK_PSP_MAX_DROP short of the base. */
     ldr     r1, [r2, #F_CTX_KERNEL_SP]
     subs    r1, r1, r0              /* bytes from the PSP up to the block's top */
     bls     2f                      /* at or above the top, so not on the block */
-    movw    r12, #KICKOS_KERNEL_STACK_SIZE
+    movw    r12, #BLOCK_PSP_MAX_DROP
     cmp     r1, r12
-    bls     3f                      /* inside this thread's own kernel block */
+    bls     3f                      /* on this thread's own block, a whole nest still below.
+                                       Accepts the EQUAL case: the deepest legal dispatch sits
+                                       exactly at the bound wherever the block has no slack. */
 2:
 #endif
-    PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_PENDSV, 1
+    PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_PENDSV, 1, .Lpsp_wild_pendsv
 #if KICKOS_KERNEL_STACKS
 3:
 #endif
@@ -208,12 +229,92 @@ PendSV_Handler:
     movs    r3, #0
     b       kickos_armv7m_bad_psp   /* (r0=PSP, r1=need, r2=0, r3=0) */
 
+/* The PendSV entry alone, because .Lpsp_wild below is shared with the SVC site, which makes
+   no such push and whose telemetry tail is not the one that would pop it. */
+.Lpsp_wild_pendsv:
+#if KICKOS_TELEMETRY
+    pop     {r2, r3}                /* the entry spill: r2 is the same ctx* it already holds */
+#endif
+
 /* The PSP has no room for the software block. stack_hi is read into r3 FIRST because r2 is
-   the ctx* both loads read. Never returns. */
+   the ctx* both loads read. */
 .Lpsp_wild:
+#if defined(__ARM_FP)
+    /* DISCARD THE OFFENDER'S PENDING LAZY FP SAVE, and do it BEFORE the call. Exception entry
+       from a thread with FPCA live only RESERVES {s0-s15,FPSCR} inside the frame it allocated
+       at the refused PSP: FPCCR.LSPACT is set, FPCAR points into that region, and the write is
+       deferred to the next FP instruction ANY context executes. Left standing it fires long
+       after the resume, flushing whatever is live then through a pointer THIS thread chose.
+       The thread is dying, so the save is dropped rather than completed.
+       AHEAD OF THE CALL because both things below it can carry FP: the reporter's C chain, and
+       the vldmia in the restore. r12 and r3 are free here, r3 being reloaded on the next line.
+       Correct on the terminating path too, where it keeps the panic dump from firing it. */
+    ldr     r12, =0xE000EF34        /* FPCCR */
+    ldr     r3, [r12]
+    bic     r3, r3, #1              /* LSPACT */
+    str     r3, [r12]
+    dsb
+    isb
+#endif
     ldr     r3, [r2, #F_CTX_STACK_HI]
     ldr     r2, [r2, #F_CTX_STACK_LO]
+#if !KICKOS_KERNEL_STACKS
+    /* No block to rebuild the exit stub on, so the reporter cannot contain and never returns
+       (arch_armv7m.cc says why). A tail branch rather than a call, so no fallthrough into the
+       restore below exists to be reached. */
     b       kickos_armv7m_bad_psp   /* (r0=PSP, r1=need, r2=stack_lo, r3=stack_hi) */
+#else
+    bl      kickos_armv7m_bad_psp   /* (r0=PSP, r1=need, r2=stack_lo, r3=stack_hi) */
+    /* Returns only when the offending thread was contained: it is slain and its next resume
+       is claimed, and g_arch_next is the thread to run instead. Falls into the restore
+       below. */
+
+/* THE RESTORE HALF ABOVE CANNOT BE REUSED HERE, for two reasons that both come from the save
+   half never having run. It expects r3 to still hold &g_arch_current, and the bl above
+   clobbered it (AAPCS caller-saved); and its telemetry hook consumes a push the save half
+   makes, which is not on the stack. So the sequence is repeated without those two, and the
+   bench and telemetry hooks are deliberately absent: this is a fault path, not a switch to
+   measure. lr held EXC_RETURN and the bl clobbered it, which costs nothing because the
+   incoming frame carries its own. */
+.Lresume_contained:
+    cpsid   i
+    ldr     r3, =g_arch_current
+    ldr     r2, [r3]                /* outgoing ctx* = the offender, read before the swap */
+    ldr     r1, =g_arch_next
+    ldr     r1, [r1]
+    str     r1, [r3]                /* g_arch_current = incoming */
+#if KICKOS_TELEMETRY
+    /* A CONTAINED REFUSAL IS A PHYSICAL SWAP AND MUST SAY SO. kicktrace.py's verify() walks
+       the SWITCH chain requiring each `from` to equal the previous `to`, so a swap that
+       emitted nothing breaks the NEXT record rather than this one. Emitted before the
+       register restore, which costs nothing: the record is the two contexts and not the
+       register file. The push keeps MSP 8-byte aligned and carries r1 across the call; lr is
+       reloaded by the ldmia below, so the bl may clobber it. */
+    push    {r1, r2}
+    ldr     r0, [r2, #F_CTX_TRACE_TID] /* from_tid = the offender's */
+    ldr     r1, [r1, #F_CTX_TRACE_TID] /* to_tid */
+    bl      kickos_trace_switch_done
+    pop     {r1, r2}
+#endif
+    ldr     r0, [r1]                /* incoming->sp */
+    ldmia   r0!, {r4-r11, lr}       /* pop callee regs + EXC_RETURN */
+#if defined(__ARM_FP)
+    tst     lr, #0x10
+    it      eq
+    vldmiaeq r0!, {s16-s31}
+#endif
+    msr     psp, r0
+    ldr     r2, [r1, #4]            /* incoming->npriv */
+    mrs     r3, control
+    bfi     r3, r2, #0, #1
+    msr     control, r3
+    isb
+    push    {r0, lr}
+    bl      kickos_arch_mpu_commit
+    pop     {r0, lr}
+    cpsie   i
+    bx      lr                      /* EXC_RETURN -> resume incoming on PSP */
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* SVC_Handler redirects the exception return into svc_trampoline, which runs */
@@ -239,7 +340,7 @@ SVC_Handler:
     cbnz    r2, 1f
     b       .Lsvc_nothread          /* no thread running, and it does not return */
 1:
-    PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_SVC, 0
+    PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_SVC, 0, .Lpsp_wild
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
     /* THE SEAM. KOS_SYS_CALL_REG completes here, ahead of the exception return that lands
        in svc_trampoline for the generic dispatch. The leaf decides before it mutates, so a

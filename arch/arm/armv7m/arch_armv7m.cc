@@ -389,6 +389,7 @@ namespace kickos
 }
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
+extern "C" int kickos_arm_contain_wild_sp(void); // arch_arm_common.cc
 
 extern "C"
 {
@@ -494,14 +495,33 @@ void arch_fault_redirect_to_exit(void* frame)
 }
 
 // From switch.S (PendSV and SVC_Handler), when the running thread's live PSP lacks room
-// BELOW it for the {r4-r11, EXC_RETURN} block about to be pushed there. Runs in handler
-// mode on the MSP and does not return: the only frame and PSP a resume could use are the
-// ones the guard just refused.
+// BELOW it for the {r4-r11, EXC_RETURN} block about to be pushed there. Runs in handler mode
+// on the MSP.
+//
+// RETURNS TO RESUME ANOTHER THREAD when the offending one could be contained; only the thread
+// that chose the pointer dies. CONTAINS BEFORE REPORTING because kpanic_enter is one-way: it
+// masks this core's IRQs and never restores them, so a system resumed after it has no timer.
 void kickos_armv7m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi)
 {
-    kpanic_enter();
+#if KICKOS_KERNEL_STACKS
+    int const contained = kickos_arm_contain_wild_sp();
+#else
+    // NO BLOCK TO REBUILD ON, so this board cannot contain: arch_ctx_redirect falls back to
+    // fabricating the privileged exit frame on the thread's OWN USER STACK, which is the
+    // write the guard above exists to refuse. A whole-board property (armv7m is the one arch
+    // that resolves this knob to 0, on f302nucleo and bluepill-c8), so it is decided here and
+    // not per thread, and the CONTAINED spelling below is compiled out with it.
+    int const contained = 0;
+#endif
+    if (contained == 0)
+    {
+        kpanic_enter();
+    }
 #if KICKOS_PANIC_DUMP
     // Re-derived rather than passed: one guard serves all three legs.
+    // THE NOUN IS THE DISCRIMINATOR. tests/lib/panic.ere matches "=== <ARCH> EXCEPTION", so a
+    // contained refusal spelled that way is indistinguishable from one that ended the system
+    // and assert_no_panic stops meaning anything on exactly the arms that now survive.
     char const* why = "no room below";
     if (psp < lo)
     {
@@ -523,7 +543,18 @@ void kickos_armv7m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi
     {
         site = "PendSV";
     }
+#if KICKOS_KERNEL_STACKS
+    if (contained == 0)
+    {
+        ::kickos::kprintf("\n=== ARMV7M EXCEPTION (wild PSP: %s) ===\n", why);
+    }
+    else
+    {
+        ::kickos::kprintf("\n=== ARMV7M CONTAINED (wild PSP: %s) ===\n", why);
+    }
+#else
     ::kickos::kprintf("\n=== ARMV7M EXCEPTION (wild PSP: %s) ===\n", why);
+#endif
     ::kickos::kprintf("  in %s PSP=0x%x need=%u stack=[0x%x,0x%x)\n", site,
                       static_cast<unsigned>(psp), static_cast<unsigned>(need),
                       static_cast<unsigned>(lo), static_cast<unsigned>(hi));
@@ -532,9 +563,23 @@ void kickos_armv7m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi
     (void)need;
     (void)lo;
     (void)hi;
+#if KICKOS_KERNEL_STACKS
+    if (contained == 0)
+    {
+        ::kickos::kprintf("\n=== ARMV7M EXCEPTION (wild PSP) ===\n");
+    }
+    else
+    {
+        ::kickos::kprintf("\n=== ARMV7M CONTAINED (wild PSP) ===\n");
+    }
+#else
     ::kickos::kprintf("\n=== ARMV7M EXCEPTION (wild PSP) ===\n");
 #endif
-    kfault_terminate();
+#endif
+    if (contained == 0)
+    {
+        kfault_terminate();
+    }
 }
 
 #if KICKOS_KERNEL_STACKS

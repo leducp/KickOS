@@ -26,6 +26,7 @@ namespace kickos
 }
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
+extern "C" int kickos_arm_contain_wild_sp(void); // arch_arm_common.cc
 
 // 0 keeps only the one-line fault marker.
 #ifndef KICKOS_PANIC_DUMP
@@ -333,13 +334,23 @@ __attribute__((naked)) void HardFault_Handler(void)
 }
 
 // From switch.S, when the running thread's live PSP lacks room BELOW it for the {r4-r11}
-// block the push is about to write. Runs in handler mode on the MSP and does not return:
-// the only frame and PSP a resume could use are the ones the guard just refused.
+// block the push is about to write. Runs in handler mode on the MSP.
+//
+// CONTAINS FIRST, and the order is load-bearing: kpanic_enter masks IRQs irreversibly, so it
+// belongs to the terminating path alone. Returns to switch.S when the offending thread was
+// contained; the caller then resumes ANOTHER thread and this one never returns.
 void kickos_armv6m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi)
 {
-    kpanic_enter();
+    int const contained = kickos_arm_contain_wild_sp();
+    if (contained == 0)
+    {
+        kpanic_enter();
+    }
 #if KICKOS_PANIC_DUMP
     // Re-derived rather than passed: the three legs share one guard.
+    // THE NOUN IS THE DISCRIMINATOR. tests/lib/panic.ere matches "=== <ARCH> EXCEPTION", so a
+    // contained refusal spelled that way is indistinguishable from one that ended the system
+    // and assert_no_panic stops meaning anything on exactly the arms that now survive.
     char const* why = "no room below";
     if (psp < lo)
     {
@@ -361,7 +372,14 @@ void kickos_armv6m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi
     {
         site = "PendSV";
     }
-    ::kickos::kprintf("\n=== ARMV6M EXCEPTION (wild PSP: %s) ===\n", why);
+    if (contained == 0)
+    {
+        ::kickos::kprintf("\n=== ARMV6M EXCEPTION (wild PSP: %s) ===\n", why);
+    }
+    else
+    {
+        ::kickos::kprintf("\n=== ARMV6M CONTAINED (wild PSP: %s) ===\n", why);
+    }
     ::kickos::kprintf("  in %s PSP=0x%x need=%u stack=[0x%x,0x%x)\n", site,
                       static_cast<unsigned>(psp), static_cast<unsigned>(need),
                       static_cast<unsigned>(lo), static_cast<unsigned>(hi));
@@ -370,9 +388,19 @@ void kickos_armv6m_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi
     (void)need;
     (void)lo;
     (void)hi;
-    ::kickos::kprintf("\n=== ARMV6M EXCEPTION (wild PSP) ===\n");
+    if (contained == 0)
+    {
+        ::kickos::kprintf("\n=== ARMV6M EXCEPTION (wild PSP) ===\n");
+    }
+    else
+    {
+        ::kickos::kprintf("\n=== ARMV6M CONTAINED (wild PSP) ===\n");
+    }
 #endif
-    kfault_terminate();
+    if (contained == 0)
+    {
+        kfault_terminate();
+    }
 }
 
 // From svc_trampoline, when the calling thread has no kernel block seated. Runs privileged

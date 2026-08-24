@@ -1842,8 +1842,13 @@ namespace
     // (C6 = 4K); the dynamic stack above covers the MPU case.
 #if !KICKOS_HAVE_MPU
     // The worker runs the deepest kernel dispatch on THIS stack, so the size must clear the
-    // per-arch KICKOS_MIN_STACK_SIZE floor.
-    KOS_STACK_DEFINE(g_cstk_static, 2048);
+    // per-arch KICKOS_MIN_STACK_SIZE floor. Under KICKOS_TLS a seated block must ALSO match the
+    // stride exactly, and a caller stack that does not is refused rather than left unseated.
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    KOS_STACK_DEFINE(g_cstk_static, KICKOS_TLS_STRIDE);
+#else
+    KOS_STACK_DEFINE(g_cstk_static, KICKOS_MIN_STACK_SIZE);
+#endif
 #endif
     void t_caller_stack()
     {
@@ -6508,6 +6513,13 @@ int main(int, char**)
     TAP_ADD("periph_reg_write_unheld", t_periph_reg_write_unheld); // same gate + the offset bound + the chip refusal
 #if KICKOS_ARCH_SIM
     TAP_ADD("periph_reg_write_mask", t_periph_reg_write_mask); // allowlist match + the per-entry value mask
+#endif
+#undef TAP_ADD
+// Region 3.
+#if KICKOS_SELFTEST_PART == 0 || KICKOS_SELFTEST_PART == 3
+#define TAP_ADD(name, fn) tap::add(name, fn)
+#else
+#define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
     TAP_ADD("privileged_spawn_refused", t_privileged_spawn_refused); // no privilege minting after boot
     TAP_ADD("thread_join", t_thread_join);   // parked join, unreclaimed exit, the refusals

@@ -75,8 +75,7 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
                 KICKOS_ROOT_STACK_SIZE KICKOS_MAX_SEMAPHORES KICKOS_MAX_MUTEXES
                 KICKOS_MAX_ENDPOINTS KICKOS_CAP_TABLE_SUPPLY KICKOS_MAX_SPAWN_GRANTS
                 KICKOS_MAX_IRQ_HANDLES KICKOS_RTT_CH1_SIZE KICKOS_USER_HEAP_SIZE
-                KICKOS_MAX_INSTANCES KICKOS_PANIC_DUMP KICKOS_DIAG_TERSE
-                KICKOS_KERNEL_STACK_SIZE)
+                KICKOS_MAX_INSTANCES KICKOS_PANIC_DUMP KICKOS_DIAG_TERSE)
     if(DEFINED ${_knob})
       list(APPEND _kcfg_req "CONFIG_${_knob}=${${_knob}}")
     endif()
@@ -98,7 +97,7 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
   endforeach()
   foreach(_flag KICKOS_ENABLE_SELFTEST KICKOS_DEBUG KICKOS_BENCH
                 KICKOS_SHUTDOWN_TO_BOOTLOADER KICKOS_MULTI_INSTANCE KICKOS_TLS
-                KICKOS_LIBC_REENT CONFIG_SCHED_PERIODIC_TICK)
+                CONFIG_SCHED_PERIODIC_TICK)
     if(DEFINED ${_flag})
       string(REGEX REPLACE "^CONFIG_" "" _sym "${_flag}")
       set(_val "n")
@@ -359,14 +358,6 @@ else()
   # than reading an undefined identifier as zero by luck. The knob reaches C HERE and not
   # through the generated board_config.h, which is why genconfig lists it among the bool knobs.
   add_compile_definitions(KICKOS_TLS=0)
-endif()
-
-# Per-thread struct _reent. Defined either way for the same reason KICKOS_TLS is, and it
-# gates a member of struct Thread, so the value also rides the export below.
-if(KICKOS_LIBC_REENT)
-  add_compile_definitions(KICKOS_LIBC_REENT=1)
-else()
-  add_compile_definitions(KICKOS_LIBC_REENT=0)
 endif()
 
 # Positive identification only: a new arch must land in the 0 branch of every
@@ -960,6 +951,9 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/slayhook/CMakeLists.txt")
     add_subdirectory(tests/unit/slayhook)
   endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/wildstack/CMakeLists.txt")
+    add_subdirectory(tests/unit/wildstack)
+  endif()
 endif()
 
 # Host-only; the reason is in tests/unit/consoletx/CMakeLists.txt. Not a K-seam consumer:
@@ -1002,7 +996,7 @@ if(TARGET kickos_kernel)
   target_compile_definitions(kickos_core INTERFACE main=kickos_app_main)
   # ODR: an out-of-tree TU including a kernel-internal header must see the same posture as
   # the prebuilt libs. KICKOS_TELEMETRY gates fields in struct Kernel (instance.h) and
-  # arch_context (context.h), KICKOS_LIBC_REENT gates one in struct Thread (thread.h),
+  # arch_context (context.h), KICKOS_ARCH_SIM gates one in struct Thread (thread.h),
   # KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h),
   # KICKOS_ARM_MPU (plus the four name constants it is compared against) picks the
   # arch_mpu_encoded layout, and without KICKOS_ARCH_SIM a sim package (which ships no
@@ -1022,7 +1016,6 @@ if(TARGET kickos_kernel)
     KICKOS_ARM_MPU=${_kickos_arm_mpu}
     KICKOS_ARCH_SIM=${_kos_iface_sim}
     KICKOS_MULTI_INSTANCE=$<BOOL:${KICKOS_MULTI_INSTANCE}>
-    KICKOS_LIBC_REENT=$<BOOL:${KICKOS_LIBC_REENT}>
     KICKOS_DEBUG=$<BOOL:${KICKOS_DEBUG}>)
   target_compile_options(kickos_core INTERFACE -include kickos/app.h)
   # Force-include the seam header so an app-TU-defined kickos_init_entry gets C linkage.

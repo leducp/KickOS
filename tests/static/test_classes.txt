@@ -83,6 +83,7 @@ host   build  tests/unit/taskdeath/task_death
 host   build  tests/unit/tlscarve/tls_carve_empty
 host   build  tests/unit/tlscarve/tls_carve_span
 host   build  tests/unit/uartclass/uart_class
+host   build  tests/unit/wildstack/wild_stack
 
 # --- gates that run an image -------------------------------------------------
 image  src    tests/integration/check_app_arms.sh
