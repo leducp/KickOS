@@ -6,9 +6,8 @@
 # list (kickos_services_simuart) and require a client's bytes to come back through the
 # real two-thread driver.
 #
-# What it defends that nothing else does. The selftest's uart_service case drives
-# kickos::uart::serve_one directly, so it covers the wire ABI and the rings but runs
-# entirely in one thread with no driver at all. This runs the ACTUAL driver:
+# This runs the ACTUAL two-thread driver, where the selftest's uart_service case covers the
+# wire ABI and the rings by driving kickos::uart::serve_one in a single thread:
 #   - the TX DOORBELL crosses threads. Nothing raises this line: the sim has no
 #     hardware source for it, so the only thing that can move a byte is the service
 #     thread's kos_irq_notify waking the IRQ thread out of kos_irq_wait. If the doorbell
@@ -17,9 +16,9 @@
 #   - content, not just counts: the loopback must return every byte in order, so a mask or
 #     wrap bug surfaces as a mismatch rather than a plausible length.
 #
-# What it does NOT prove, so the silicon pass stays owed: a hardware TX-empty interrupt
-# driving the drain, asynchronous RX from a real line, and the transition-triggered half of
-# RULE T1 (a host write cannot fail to raise). Those are xmc4800's, per design section 9.2.
+# Three things stay xmc4800's, per design section 9.2: a hardware TX-empty interrupt driving
+# the drain, asynchronous RX from a real line, and the transition-triggered half of RULE T1
+# (a host write cannot fail to raise).
 #
 # usage: check_sim_uartloop.sh <kickos-source-dir> <cmake>
 
@@ -51,33 +50,32 @@ RC=$?
 set -e
 printf '%s\n' "$OUT"
 
-# Checked first: without the service the app reports a missing endpoint, and naming that
-# is more useful than reporting the missing payload it causes.
+# First: without the service the app reports a missing endpoint, which names the cause of
+# the missing payload below.
 has '\[simuart\] UART service up' \
   || fail "the UART service never came up (bring-up failed, or the wrong service list linked)"
 if has '\[uartloop\] ERROR'; then
     fail "the app could not reach the service: see its ERROR line above"
 fi
 
-# The payload itself must appear on the wire: the IRQ thread write(2)s each byte it drains,
-# so this is the transmit half seen directly rather than through a counter.
+# The IRQ thread write(2)s each byte it drains, so the payload on the wire is the transmit
+# half seen directly rather than through a counter.
 has 'KickOS UART loopback' \
   || fail "the payload never reached the wire: the IRQ thread drained nothing, so the TX doorbell did not wake it"
 
-# SUSTAINED OUTPUT: the arm that fails when a producer stops ringing the doorbell once
-# the TX ring is full. The short payload above never fills the ring, so it passes
-# against a driver whose channel dies permanently on the first refused write. Asserted
-# on the reported byte count rather than on a timeout: a wedged channel must FAIL the
-# gate, not hang it.
+# SUSTAINED OUTPUT: the arm that fails when a producer stops ringing the doorbell once the
+# TX ring is full. The short payload above never fills the ring, so it passes against a
+# driver whose channel dies permanently on the first refused write. Asserted on the reported
+# byte count and not on a timeout, so a wedged channel FAILS the gate rather than hanging it.
 printf '%s\n' "$OUT" | grep -q '\[uartloop\] sustained=4096 of 4096' \
   || fail "sustained output stopped short: the channel wedged with a full ring and never restarted; see the sustained= line above"
 
 has '\[uartloop\] PASS (loopback in order; sustained output past a full ring)' \
   || fail "the loopback did not return the payload intact: see the wrote/read/match line above"
 
-# irq_wakes counts every irq_wait return. Zero of them means the IRQ thread never woke at
-# all, which would make a PASS above impossible; assert it anyway, because it is the
-# doorbell's own footprint and a future change could satisfy the read some other way.
+# irq_wakes counts every irq_wait return, so it is the doorbell's own footprint. A PASS above
+# is impossible at zero today, and this keeps it so if a change satisfies the read another
+# way.
 printf '%s\n' "$OUT" | grep -q 'wakes=0' \
   && fail "the IRQ thread never woke: the bytes moved without the doorbell, so this gate stopped testing it"
 

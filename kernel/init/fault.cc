@@ -12,17 +12,86 @@
 #include <kickos/sched.h>
 #include <kickos/thread.h>
 
-#include <kickos/sys/abi.h> // KOS_EXIT_FAULT
+#include <kickos/sys/abi.h> // KOS_EXIT_FAULT, the KOS_NEST_* selectors
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+// A kernel .data word an unprivileged thread's trap frame must never be able to reach: the
+// faultsurvive `kwrite' arm aims an out-of-bounds sp at it and traps. A backend whose software
+// trap prologue stored through the U-mode sp would overwrite this in privileged mode.
+extern "C" { volatile uint32_t kickos_trapstack_witness = 0x5A5A5A5Au; }
+
+extern "C" void kickos_trapstack_witness_report(void)
+{
+    uint32_t const v = kickos_trapstack_witness;
+    if (v != 0x5A5A5A5Au)
+    {
+        ::kickos::kprintf_fault("[trapwitness] CORRUPTED 0x%x\n", static_cast<unsigned>(v));
+    }
+}
+
+// Nested-trap witness (arch.h). Plain counters and no lock: every writer runs with interrupts
+// masked by the trap entry itself, and a torn read of a monotone counter costs an arm one
+// count and never a verdict.
+//
+// rv32imac ONLY: its trap prologue is the one that can place a nested frame on a thread stack.
+// Gated because the 16 bytes of kernel .bss are enough to push microbit off the arena cliff.
+#if defined(KICKOS_ENABLE_SELFTEST) && defined(__riscv)
+namespace
+{
+    uint32_t g_nest_traps = 0;
+    uint32_t g_nest_onstack = 0;
+    uint32_t g_nest_minroom = 0;
+    bool g_nest_minroom_set = false;
+}
+
+extern "C" void kickos_nestwitness_note(uintptr_t frame, uintptr_t lo, uintptr_t hi)
+{
+    g_nest_traps = g_nest_traps + 1;
+    if (lo == 0 or frame < lo or frame >= hi)
+    {
+        return;
+    }
+    g_nest_onstack = g_nest_onstack + 1;
+    uint32_t const room = static_cast<uint32_t>(frame - lo);
+    if (not g_nest_minroom_set or room < g_nest_minroom)
+    {
+        g_nest_minroom = room;
+        g_nest_minroom_set = true;
+    }
+}
+
+// A plain read and NOT a print: a kprintf here puts kvprintf_route and the console writer
+// under the SHUTDOWN syscall and moves the red zone this instrument stands beside.
+extern "C" uint32_t kickos_nestwitness_count(int which)
+{
+    if (which == KOS_NEST_TRAPS)
+    {
+        return g_nest_traps;
+    }
+    if (which == KOS_NEST_ONSTACK)
+    {
+        return g_nest_onstack;
+    }
+    if (which == KOS_NEST_ROOM)
+    {
+        if (not g_nest_minroom_set)
+        {
+            return KOS_NEST_UNSET;
+        }
+        return g_nest_minroom;
+    }
+    return KOS_NEST_UNSET;
+}
+#endif
+#endif
 
 namespace
 {
-    // The window between the redirect and the stub is PREEMPTIBLE (`dying` is not set until exit_current runs), so a second
-    // thread's fault can overwrite this before the first stub reads it. The print itself is
-    // one such point and not merely an async tick: on a published console kprintf_fault wakes
-    // the console driver, which outranks every stdout client by provisioning rule. `owner` is what
-    // keeps that honest: a stub that does not own the record prints no fault facts
-    // instead of printing another thread's. Both threads still die correctly; the cost
-    // is that the first one's PC is lost.
+    // The window between the redirect and the stub is PREEMPTIBLE (`dying` is not set until
+    // exit_current runs), so a second thread's fault can overwrite this before the first stub
+    // reads it; kprintf_fault is one such point, waking a console driver that outranks every
+    // stdout client. `owner` keeps that honest: a stub that does not own the record prints no
+    // fault facts instead of printing another thread's.
     struct FaultRecord
     {
         ::kickos::Thread const* owner;
@@ -45,8 +114,7 @@ namespace
 extern "C" void kickos_fault_record(char const* status_name, uint32_t status,
                                     uintptr_t pc, uintptr_t addr, int addr_valid)
 {
-    // Runs in the faulting thread's own context, so `current` IS the thread this
-    // fault belongs to.
+    // Runs in the faulting thread's own context, so `current` IS the thread that faulted.
     FaultRecord& r = fault_record();
     r.owner = ::kickos::sched::current();
     r.status_name = status_name;
@@ -76,24 +144,58 @@ extern "C" bool kickos_fault_frame_trusted(void const* frame, size_t bytes)
     return f >= lo and f < hi and bytes <= (hi - f);
 }
 
+#if KICKOS_KERNEL_STACKS
+// The same guard for a backend whose trap entry has been moved onto the per-thread kernel
+// stack: the frame is expected in the RUNNING thread's own block,
+// [kernel_sp - KICKOS_KERNEL_STACK_SIZE, kernel_sp), the top being what thread_create seated
+// and what the entry loads. kernel_sp 0 is refused: no block was seated, so there is no frame
+// of this kind to believe.
+extern "C" bool kickos_fault_frame_on_kernel_stack(void const* frame, size_t bytes)
+{
+    ::kickos::Thread* const c = ::kickos::sched::current();
+    if (c == nullptr or c == ::kickos::sched::idle())
+    {
+        return false;
+    }
+    uintptr_t const hi = static_cast<uintptr_t>(c->ctx.kernel_sp);
+    if (hi == 0)
+    {
+        return false;
+    }
+    uintptr_t const lo = hi - KICKOS_KERNEL_STACK_SIZE;
+    uintptr_t const f = reinterpret_cast<uintptr_t>(frame);
+    // Room REMAINING, for the reason stated above.
+    return f >= lo and f < hi and bytes <= (hi - f);
+}
+#endif
+
 // How far below a thread's stack base kickos_fault_below_stack still reads an access as that
 // thread running off the bottom of its own stack. ONE RXv3 MPU region page (16 bytes:
-// RSPAGEn/REPAGEn hold addr[31:4], RX72M UM sec.17.1.2), because the page is the unit the
-// hardware itself denies in.
+// RSPAGEn/REPAGEn hold addr[31:4], RX72M UM sec.17.1.2), the unit the hardware denies in.
 //
-// The width is a RULING, not a derivation, and its ceiling is a MEASUREMENT: it must stay
-// below the distance from a thread's stack base to the nearest legitimate cross-domain target
-// beneath it. Widening it past that gap re-creates the false positive the narrowing removes;
-// narrowing it below 4 stops attributing overflows at all, since the denied push an RXv3
-// overflow leaves behind lands at base - 4.
+// It must stay below the distance from a thread's stack base to the nearest legitimate
+// cross-domain target beneath it, or a legitimate cross-domain access reads as an overflow;
+// below 4 it attributes no overflow at all, the denied push an RXv3 overflow leaves behind
+// landing at base - 4.
 #ifndef KICKOS_FAULT_STACK_GUARD_BAND
 #define KICKOS_FAULT_STACK_GUARD_BAND 16u
 #endif
 
 // Where a backend's redirect puts the SP, so the stub runs with the whole stack under it
-// rather than at the depth the fault reached. 0 means DO NOT RELOCATE: there is no stack
-// established as this thread's own, so a reset would aim the stub at memory nobody says it
-// may use. See arch.h for the contract the five backends implement against.
+// rather than at the depth the fault reached. 0 means DO NOT RELOCATE. See arch.h for the
+// contract the backends implement against. The answer is the thread's own kernel block where
+// one is seated, its user stack otherwise: a sibling sharing the dying thread's domain can
+// rewrite the frames of a descent that prints a fault record and then walks cap_teardown and
+// the scheduler.
+//
+// IT IS THE BLOCK'S TOP AND NOT WHERE THE DISPATCH LEFT OFF. Seated at the top, the stub
+// DISCARDS any syscall_dispatch frames the block still holds, which is sound because the
+// thread is dying and nothing resumes it, and it makes the block requirement the MAX of the
+// dispatch class and the exit class rather than their SUM, which no block on any arch holds.
+//
+// kernel_sp 0 falls back to the user stack: idle, which is outside the pool, and every thread
+// on the four armv7m presets where KICKOS_KERNEL_STACKS resolves 0. That fallback is measured
+// as the EXIT class of check_trap_redzone.sh against the spawn floor.
 extern "C" uintptr_t kickos_fault_stack_top(void)
 {
     ::kickos::Thread* const c = ::kickos::sched::current();
@@ -101,6 +203,12 @@ extern "C" uintptr_t kickos_fault_stack_top(void)
     {
         return 0;
     }
+#if KICKOS_KERNEL_STACKS
+    if (c->ctx.kernel_sp != 0)
+    {
+        return static_cast<uintptr_t>(c->ctx.kernel_sp);
+    }
+#endif
     if (c->stack_base == nullptr or c->stack_size == 0)
     {
         return 0;
@@ -180,7 +288,7 @@ extern "C" void kickos_thread_fault_exit(void)
         r.valid = false;
         if (r.status_name == nullptr)
         {
-            // v6-M has no fault-status register at all, so there is no word to name.
+            // status_name is null on v6-M, whose profile supplies the PC alone.
             ::kickos::kprintf_fault(KDIAG_F_FAULT_PC, reinterpret_cast<void*>(r.pc));
         }
         else

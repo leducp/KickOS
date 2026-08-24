@@ -108,6 +108,7 @@ namespace kickos
         SlotPool<IrqBinding, KICKOS_MAX_IRQ_HANDLES> irq_bindings;
         uint8_t irq_refs[KICKOS_MAX_IRQ_HANDLES] = {};
         uint32_t irq_spurious_count = 0; // IRQs on a line with no driver (masked)
+
     };
 
     // `task_holds` costs nothing only while it occupies the two bytes of padding that a

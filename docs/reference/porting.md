@@ -91,9 +91,11 @@ that has not been ported keeps today's panic path with no edit at all.
 
 - `bool arch_fault_is_user_thread(void* frame)` answers whether the CPU was **unprivileged**
   and in **thread context** at fault time. The thread's identity is NOT the answer, and
-  neither is `ctx.resting_npriv`: syscall dispatch runs PRIVILEGED on the thread's own stack
-  (`invariants.md`, `syscall-in-priv-thread-context`), so a fault there is a kernel bug in
-  code the thread merely called and it must still panic. armv7m and armv6m read
+  neither is `ctx.resting_npriv`: syscall dispatch runs PRIVILEGED on a stack the calling
+  thread itself owns -- its own kernel block where `KICKOS_KERNEL_STACKS` is 1, its own
+  thread stack where it is 0 (`invariants.md`, `syscall-in-priv-thread-context`) -- so a
+  fault there is a kernel bug in code the thread merely called and it must still panic.
+  armv7m and armv6m read
   `CONTROL.nPRIV` plus the stacked `xPSR` IPSR field (exception entry does not modify
   `CONTROL`, so the read gives the privilege at fault time); rv32imac reads `mstatus.MPP`,
   the privilege before the trap, out of a CSR; the sim has no ring and reads its own
@@ -139,9 +141,27 @@ believe before it reads them, and this is the part that is easy to get wrong.
   frame the hardware wrote in full at an SP the thread had no business holding, which sets no
   CFSR bit at all. A core with no fault-status register (v6-M) has only the bounds test.
   rv32imac has no stacking abort to detect (its trap prologue is software and runs M-mode,
-  which bypasses the unlocked PMP entries), which is exactly what makes the bounds test
-  load-bearing there: an overflowed thread's frame is written SUCCESSFULLY below its own
-  stack, and nothing else would say so.
+  which bypasses the unlocked PMP entries), so on that backend an overflowed thread's frame
+  is written SUCCESSFULLY below its own stack and nothing on the fault path would say so.
+- **THE FAULT-PATH TESTS ARE THE SECOND LINE, NEVER THE FIRST, AND A PORT THAT STOPS HERE
+  SHIPS A PRIVILEGE ESCALATION.** Everything above runs AFTER a write has landed, and only
+  when the trap was a fault. A software prologue also stores on the ecall and interrupt
+  paths, where nothing faults and none of these tests run. So a port whose prologue is
+  software owes an ENTRY-path check, before its first store, and it owes three things the
+  fault-path tests do not:
+    1. the interrupted stack pointer must be in the running thread's stack AND aligned;
+    2. the check must be an EXTENT in the direction the frame grows, not a pointer test.
+       `sp == stack_lo` passes a range test and then puts the whole frame outside the grant,
+       and a bump allocator with no padding puts a NEIGHBOUR thread's granted region there;
+    3. the extent must cover the kernel's own descent and not just the frame, because
+       `syscall_dispatch` runs on the caller's continuation (`arch.h`, the `arch_syscall`
+       contract). That figure is measured per build, never written by hand: see
+       `tests/static/check_trap_redzone.sh` and the per-arch trap-stack headers.
+  Order the arithmetic so it cannot wrap, which means taking the subtraction only after the
+  lower bound is proven; `kickos_fault_frame_trusted` in `kernel/init/fault.cc` is the shape
+  to copy. A core that stacks in HARDWARE at the pre-exception privilege gets leg 1 free for
+  the hardware frame only: any registers the port pushes itself go BELOW the checked range
+  and need the same treatment. See `docs/book/whoever-stacks-the-trap-frame-owns-the-bounds-check.md`.
 - **A core whose exception CANCELS the faulting instruction has NO moved SP to read, and needs a
   third test.** Both tests above rest on an SP that moved: armv7m's on a stacking abort, rv32imac's
   on a software prologue that wrote the frame at one. RXv3 restores the architectural state of the
@@ -208,6 +228,43 @@ believe before it reads them, and this is the part that is easy to get wrong.
   `arch_fault_is_user_thread` declines, and the gates would then assert an outcome the
   runtime cannot produce.
 
+### Thread pointer and kernel stacks (what a new arch owes)
+
+Two mechanisms are ARCH facts before they are board ones, declared as capability symbols
+in `arch/Kconfig`. **That help text is the authority**; what follows says only which
+question each symbol answers and who answers it.
+
+- **`ARCH_HAS_TLS`** -- the arch can hand a thread its own thread pointer from
+  UNPRIVILEGED code, with no syscall and no kernel read: a register the kernel writes at
+  restore, or a leaf the kernel provides. `arch/Kconfig` names which arch answers how, and
+  names the one that CANNOT -- `ARCH_SIM` does not select it, its threads being `ucontext`
+  coroutines in one host thread sharing one `%fs`. So the arch with the largest test suite
+  cannot witness `KICKOS_TLS` at all, and a new arch must state which of the two shapes it
+  has before writing any of it.
+- **`ARCH_HAS_KERNEL_STACKS`** -- the arch's trap entry can transfer to a per-thread kernel
+  stack, and its `arch_context` carries the `kernel_sp` that entry loads. NECESSARY AND NOT
+  SUFFICIENT: whether a given board actually carves the blocks is `KICKOS_KERNEL_STACKS`,
+  which asks this AND the chip's `HAS_MPU`.
+- **`ARCH_KERNEL_STACKS_MANDATORY`** -- stronger, and deliberately NOT implied by the one
+  above: the arch's `switch.S` compiles the transfer with no red-zone path beside it, and
+  its backend `static_assert`s the knob non-zero. An arch that writes only the transfer
+  selects it; one that writes both paths does not, and then the red zone is what its
+  unconverted boards depend on. armv7m is the one arch carrying both.
+
+**The escape a too-small part takes is `KICKOS_TLS=n`.** With TLS on every arena block is
+strided by a power of two, so `KICKOS_USER_STACK_SIZE` and `KICKOS_ROOT_STACK_SIZE` must
+BE powers of two and must be the SAME one -- the root `CMakeLists.txt` refuses each failure
+by name at configure, and its message names the two ways out. On a part where that rounding
+costs a thread, turning the knob off costs a `thread_local` and keeps the thread;
+`f302nucleo` and `bluepill-c8` both make that trade. There is no equivalent escape from a
+mandatory kernel stack, which is why an arch selects that symbol only once its entry has no
+other path to compile.
+
+**`errno` is neither of these.** newlib reaches its reentrant state through `_impure_ptr`
+and calls `__errno` nowhere in the pinned toolchains, so a per-thread `errno` follows
+The per-thread reentrant state (one `struct _reent` per slot in the app-data window) and
+never `KICKOS_TLS`. A port wanting both turns on both.
+
 ### Adding a board/chip (the five edit points)
 
 1. `boards/<board>/board.cmake` -- the board descriptor: one file setting
@@ -228,7 +285,13 @@ believe before it reads them, and this is the part that is easy to get wrong.
 3. `CMakePresets.json` -- add a configure + build preset (only for boards that
    actually build/link today).
 4. `arch/arm/chip/<chip>/` -- the chip sources (`*.cc`, `*.S`, auto-globbed), a
-   linker script named exactly `<chip>.ld`,
+   linker script named exactly `<chip>.ld`, which must `#include <sections.ld.h>`
+   and invoke `KICKOS_CODE_DEBRIS_SECTIONS`, `KICKOS_NONALLOC_SECTIONS`,
+   `KICKOS_STATIC_RELOC_ASSERT` and `KICKOS_TLS_TEMPLATE` alongside the two arena
+   asserts -- every cross link passes `-Wl,--orphan-handling=error`, so an input
+   section no rule names is a LINK failure printing a section name and no hint of
+   what is owed, and configure refuses a script missing any of the four by name
+   instead (`arch/CMakeLists.txt`),
    `arch/arm/chip/<chip>/include/kickos/chip_limits.h` with the chip's own constants
    (configure REFUSES a chip that ships none), and
    `arch/arm/chip/<chip>/include/kickos/chip_mmap.h` with its peripheral base
@@ -721,9 +784,13 @@ outside `tests/static/weak_allowlist.txt`.
 | `xmc4800` | USIC0 CH1 `0x40030200` | `BRG` `0x014` | `0xF3FF7FDB` (every writable field) | same table row; only read-only and reserved bits are withheld |
 | `xmc4800` | USIC0 CH1 `0x40030200` | `CCR` `0x040` | `0x0000C00F` (`MODE[3:0]`, `RIEN`, `AIEN`) | same table row; the mask is what keeps the channel's other interrupt enables out of the grant |
 
-`xmc4800`'s U0C0 (`0x40030000`) has **no** entry: the kernel owns the console channel's
-baud and enable (`usic_uart.cc`), and an absent entry is a refusal, not an omission --
-the same rule as the K64F PIT above.
+`xmc4800`'s U0C0 (`0x40030000`) has ONE entry and only one, its `CCR` at mask `0x0000E00F`
+(`MODE[3:0]`, `TBIEN`, `RIEN`, `AIEN`), which is the CH1 mask plus `TBIEN`
+(`chip_xmc4800.cc`, `CCR_CONSOLE_GRANT`, `static_assert`ed against that literal). The extra
+bit is what lets a userspace driver arm the console channel's transmit-buffer interrupt. Its
+baud and enable stay the kernel's (`usic_uart.cc`), so `FDR`, `BRG` and every other U0C0
+register have no entry, and an absent entry is a refusal rather than an omission, the same
+rule as the K64F PIT above.
 
 A porter's in-env check is `periph_reg_write_unheld` (`selftest`, unguarded), THREE arms:
 
@@ -808,9 +875,14 @@ defconfig, and a porter had to read both. So "KickOS runs here", "KickOS is vali
 validated here with none" are three different claims about one board.
 
 A **named** reduced suite is a supported posture, not a degraded one. `microbit` (nRF51,
-16 KiB SRAM) declares the cases it cannot host as an expected-skip list checked by
-name in CI (`KICKOS_EXPECT_SKIPS` in `../../user/apps/common/selftest/CMakeLists.txt`,
-rationale in `boards.md` under *Per-board caveats*): a skip not on that list fails the gate.
+**32 KiB** SRAM -- the board deliberately takes the 32 KiB nRF51822 variant rather than the
+BBC micro:bit v1's 16, `arch/arm/chip/nrf51/nrf51.ld`) declares the cases it cannot host as
+an expected-skip list checked by name in CI (`EXPECT_SKIPS` in
+`../../user/apps/common/selftest/CMakeLists.txt`, rationale in `boards.md` under
+*Per-board caveats*): a skip not on that list fails the gate. That list is down to ONE name,
+`uart_service` on the `p2` image, and even that one is a PIN rather than an arena outcome --
+`KICKOS_SELFTEST_NO_UART_SERVICE` holds it out because its 1 KiB ring and the arena probes
+want the same region. The `p1` image expects no skip at all.
 `f302nucleo` has no gate of any kind, so its 5 skips are enumerated below instead.
 
 Every figure below names its board, its app and its optimisation level. Flash figures are
@@ -859,18 +931,27 @@ debuggability: `MinSizeRel` carries `-g`, so the symbols are all there and only 
 unavailable. No gate builds these boards in `Debug`, deliberately -- the link failure
 already names the overflow in bytes.
 
-**The tightest link in the fleet is now the POOL term, not the boot term, and it is
-`f302nucleo` at 608 B.** Configure prints only the needed side:
+**The tightest link in the fleet is the POOL term, not the boot term, and it is
+`f302nucleo-st` at 1,248 B.** Configure prints only the needed side:
 
 ```
--- KickOS: boot stacks idle=512->512/16 root=2048->2048/16 (mpu granule 0 pow2=1)
--- KickOS: arena model idle=512/16 root=2048/16 pool=2x2048/16
+-- KickOS: boot stacks idle=512->512/16 root=1536->1536/16 (mpu granule 0 pow2=1)
+-- KickOS: arena model idle=512/16 root=1536/16 pool=2x1024/16
 ```
 
-Worst-image margin against `KICKOS_POOL_ARENA_ASSERT`, tightest first: `f302nucleo` **608 B**,
-`f302nucleo-st` 704 B, `microbit` 768 B, `bluepill-c8` 2,560 B, `bluepill-c8-st` 4,096 B,
-`frdmk64f{,-st} +MPU` 7,072 B. Nothing in the fleet is at or below zero on either assert, and
-the tightest BOOT margin is `f302nucleo`'s 2,656 B. **`bluepill-c8-st` used to hold this title
+Worst-image margin against `KICKOS_POOL_ARENA_ASSERT`, tightest first (re-measured
+2026-08-23): `f302nucleo-st` **1,248 B**, `f302nucleo` 1,280 B, `bluepill-c8` 1,344 B,
+`bluepill-c8-st` 1,632 B, `microbit` 6,144 B, `frdmk64f{,-st} +MPU` 24,576 B. Nothing in the
+fleet is at or below zero on either assert, and the tightest BOOT margin is `f302nucleo`'s
+3,328 B.
+
+**A margin is not a spare-slot count.** Dividing it by the stride overestimates, because each
+added slot ALSO raises `__kickos_ram_start`: on `f302nucleo` the 1,280 B margin against a
+1,024 B stride suggests a third thread and there is none, the per-slot `.bss` run-up
+measuring +416 B there. Only where a large root alignment absorbs the whole run-up do the two
+agree. On both `frdmk64f` variants every image has the same `__kickos_ram_start`, the
+SYSMPU putting app `.bss` in the fixed `.appdata` window, so "worst image" is a tie rather
+than a pick; on the four flat ARM boards it is always `selftest_p2`. **`bluepill-c8-st` used to hold this title
 at exactly zero boot slack** (2,560 needed against 2,560 available); surrendering its 8 KiB
 heap carve in M4.9.3 took it to 8,192 B and moved the fleet's fragile edge to the 16 KiB part.
 
@@ -922,7 +1003,14 @@ linker-script symbol, so the split is readable out of any linked ELF:
 
 - **static** -- `.data` plus real `.bss`, dominated by `kickos::detail::g_instance`,
   the kernel singleton holding every object pool
-  (`kernel/include/kickos/instance.h:65-99`).
+  (`kernel/include/kickos/instance.h:65-99`), and -- wherever `KICKOS_KERNEL_STACKS` is 1
+  -- by the per-thread kernel-stack array beside it, `KICKOS_THREAD_SLOTS` blocks of
+  `KICKOS_KERNEL_STACK_SIZE` (`kernel/thread/thread.cc`, `KStackBlock`). That array is a
+  FIRST-ORDER term on a small part, and it sits BELOW the arena, so raising the slot count
+  shrinks the arena while raising the demand on it. `microbit` provisions four threads and
+  not eight for exactly that reason -- `KICKOS_THREAD_SLOTS` is `KICKOS_MAX_THREADS + 1`, so
+  that is five blocks of the armv6m 896 and not nine -- and its defconfig
+  carries the derivation (`../../boards/microbit/configs/base/defconfig`).
 - **`.userheap`** -- `KICKOS_USER_HEAP_SIZE`, carved *below* `__kickos_ram_start` by
   `stm32f302.ld`, so it trades against the arena 1:1. A knob like the stacks: its
   per-chip default is declared in `Kconfig` and a variant states its own, which reaches
@@ -946,18 +1034,29 @@ The arena must hold, allocated in this order (`kernel/init/kmain.cc:222`, `:224`
 
 for N **concurrently live** spawned threads taking a kernel-default stack
 (`kernel/syscall/syscall_thread.cc:354`). `align()` is `arch_ram_region_size` /
-`arch_ram_region_align` (`arch/include/kickos/arch/arch.h`), which have **three** modes,
-keyed on `arch_mpu_min_region()` and `arch_mpu_region_pow2()`:
+`arch_ram_region_align` (`arch/include/kickos/arch/arch.h`). The **MPU geometry** has three
+modes, keyed on `arch_mpu_min_region()` and `arch_mpu_region_pow2()`:
 
-| `min` | `pow2()` | size | align | backends |
+| `min` | `pow2()` | size | geometry align | backends |
 |---|---|---|---|---|
 | 0 | n/a | 16-byte granular | 16 | the three no-MPU chips (`nrf51/chip_nrf51.cc:110`, `stm32f103/chip_stm32f103.cc:383`, `stm32f302/chip_stm32f302.cc:321`) and LX6 |
 | != 0 | 1 | power of two, >= `min` | the size | ARM PMSAv7 (32), RISC-V PMP NAPOT (8) |
 | != 0 | 0 | multiple of `min` | `min` | ARM PMSAv8 (32), NXP SYSMPU (32), RX (16) |
 
-Only the pow2 mode pays a natural-alignment run-up, and there it can cost as much again
-as the request, so compute it rather than assuming the sum of the sizes. A base+limit
-backend pays at most one granule per block.
+**`KICKOS_TLS` is a FOURTH leg and it overrides all three.** With the knob on, the alignment
+is `pow2_ceil(want)` wherever that exceeds the geometry above, whatever the descriptor asks
+for: the ARM thread pointer is SP masked down to the thread's own block, so the blocks must
+be STRIDED by a power of two or a mask lands in a neighbour's. So the row-1 figures are the
+geometry and not the answer -- `microbit` is a no-MPU chip on that row and still strides by
+**2048**, its 2048-byte user and root stacks being their own `pow2_ceil`
+(`../../boards/microbit/configs/base/defconfig`). `f302nucleo` and `bluepill-c8` are the
+boards that set `KICKOS_TLS=n` rather than pay the rounding. `cmake/boot_arena.cmake`'s
+`kickos_region_align()` mirrors this leg, reading the knob out of the resolved
+configuration, so the link-time assert models the geometry the allocator actually produces.
+
+The pow2 mode and the TLS leg are what pay a natural-alignment run-up, and there it can cost
+as much again as the request, so compute it rather than assuming the sum of the sizes. A
+base+limit backend with `KICKOS_TLS` off pays at most one granule per block.
 
 On a v8-M chip the mode is **posture-dependent**: `arch_arm_pmsav8.cc` (which defines
 `pow2() == 0`) enters the link only at `KICKOS_HAVE_MPU=1`, so a non-enforcement build
@@ -1010,14 +1109,21 @@ base.** Each has a different owner and the demand side may be blameless:
   **+83,328 B** of headroom at `KICKOS_MAX_THREADS 16`; `KICKOS_HAVE_MPU=1` moves
   `__kickos_ram_start` to `0x20012940` and the window eats ~110 KiB of arena. There the
   demand side genuinely had to come down, which is why the enforcing variants provision
-  12 and `flat` keeps 16.
+  **8** at 8192-byte stacks (`../../boards/frdmk64f/configs/base/defconfig`, `.../st/`)
+  while `flat` states no `KICKOS_MAX_THREADS` at all and keeps the default 16. The 8192 is
+  a power of two because `KICKOS_TLS` strides every arena block by one, NOT because the
+  SYSMPU granule asks for it -- that granule is 32 and this backend is the base+limit row
+  of the table above.
 
 The model is validated against the real linker rather than by inspection, on both arena
-shapes. `f302nucleo-st` at `KICKOS_MAX_THREADS=3` measures **+704 B** and links, and at
-`-DKICKOS_MAX_THREADS=4` FAILS. `frdmk64f-st +MPU` at 12 measures
-**+7,072 B** and links, and at `-DKICKOS_MAX_THREADS=13` it FAILS. `bluepill-c8-st` at
-heap 0 measures **+4,096 B** and links, and at `-DKICKOS_USER_HEAP_SIZE=8192` it FAILS.
-The sign flip lands where the model says it does in all three.
+shapes, and re-swept 2026-08-23. `f302nucleo-st` at `KICKOS_MAX_THREADS=3` measures
+**+1,248 B** and links, and at `-DKICKOS_MAX_THREADS=4` FAILS. `frdmk64f-st +MPU` is
+provisioned at 8 with **+24,576 B**; it links at 9, 10 and 11, and FAILS at
+`-DKICKOS_MAX_THREADS=12` -- at 11 `KICKOS_POOL_TOP` computes to exactly
+`__kickos_ram_end`, margin zero, which the `<=` accepts. `bluepill-c8-st` at heap 0 measures
+**+1,632 B** on the pool assert and +5,728 B on the boot one, and at
+`-DKICKOS_USER_HEAP_SIZE=8192` it FAILS the BOOT assert first. The sign flip lands where the
+model says it does in all three.
 
 ### The heap is a per-board profile, not a requirement
 
@@ -1058,8 +1164,8 @@ the first check a porter should run.
 | `bluepill-c8` | 20,480 | `hello` | 3,456 | 2,048 | **12,928** | 2,048 |
 | `bluepill-c8` | 20,480 | `selftest`, chip defaults | 5,096 | 2,072 | **11,264** | 2,048 |
 | `bluepill-c8` | 20,480 | `selftest`, `bluepill-c8-st` | 5,096 | 24 | **13,312** | 2,048 |
-| `microbit` | 16,384 | `hello` | 2,840 | 8 | **11,488** | 2,048 |
-| `microbit` | 16,384 | `selftest` | 6,824 | 24 | **7,488** | 2,048 |
+| `microbit` | 32,768 | `hello` | -- | -- | -- | -- |
+| `microbit` | 32,768 | `selftest` | -- | -- | -- | -- |
 | `f411disco` | 131,072 | `hello` | 6,872 | 8,200 | **107,808** | 8,192 |
 | `f411disco` | 131,072 | `selftest` | 10,760 | 8,216 | **103,904** | 8,192 |
 
@@ -1073,13 +1179,18 @@ Thread capacity that follows, each board with its own stack sizes:
 | `bluepill-c8` `hello` | 512 | 2,048 | 2,048 | 10,368 | 5 | 2 | **2** |
 | `bluepill-c8` `selftest`, chip defaults | 512 | 2,048 | 2,048 | 8,704 | 4 | 2 | **2** |
 | `bluepill-c8` `selftest`, `bluepill-c8-st` | 512 | 2,048 | 2,048 | 10,752 | 5 | 2 | **2** |
-| `microbit` `hello` | 512 | 2,048 | 2,048 | 8,928 | 4 | 2 | **2** |
+| `microbit` `hello` | 512 | 2,048 | 2,048 | -- | -- | 4 | -- |
 | `f411disco` `hello` | 2,048 | 4,096 | 4,096 | 101,664 | 24 | 8 | **8** |
 
-**The `f302nucleo`, `microbit` and `f411disco` rows predate the `124b68c` right-size** (which
+**The `f302nucleo` and `f411disco` rows predate the `124b68c` right-size** (which
 took `KICKOS_ROOT_STACK_SIZE` to 1,536 and `KICKOS_MAX_THREADS` to 3; N stayed **3**, so
-those readings hold while their byte columns do not). The `bluepill-c8` rows were re-linked
-at the M4.9.3 heap right-size and are current. Either way, re-link and re-read rather than
+those readings hold while their byte columns do not). **The `microbit` rows are worse than
+stale and their byte columns are struck out rather than carried**: that board moved to the
+32 KiB nRF51822 at four thread slots, and it also acquired `KICKOS_THREAD_SLOTS` kernel-stack
+blocks in `.bss` below the arena, so both the SRAM constant and every term derived from it
+changed. Only the part constant and the stated stack sizes are kept; re-link the board and
+read the rest. The `bluepill-c8` rows were re-linked at the M4.9.3 heap right-size and are
+current. Either way, re-link and re-read rather than
 quoting (step 5 of the checklist below is that measurement) -- a stale byte column here is
 what made this board look like a thread-provisioning problem for a whole milestone.
 
@@ -1097,14 +1208,16 @@ Four readings, and they are the point of the section:
   part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways,
   measured at `124b68c`. That reading predates `9da898e`, which builds this board's suite as
   TWO images, so the board emits no single `1..63` plan today; read the plan sizes off the
-  configure line (see `boards.md`, *The 64 KiB parts run the selftest as TWO images*).
+  configure line (see `boards.md`, *Three boards run the selftest as TWO images*).
 - **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than `f302nucleo`
   and used to host *fewer* threads, missing `hello`'s second stack by 96 bytes, purely
   because its heap carve was 8K against f302's 2K. That 8K was the `CHIP_STM32F103`
   default inherited from its 128 KiB `stm32f411` sibling; at 2K (and 0 on the `st`
   variant, which carries the fleet's heaviest static image) the same part seats both of
-  `hello`'s threads with room over. `microbit`, the same 16 KiB part class, carves heap 0
-  and has the roomiest small-board arena in the fleet. **The heap carve, not the part's
+  `hello`'s threads with room over. `microbit` carves heap 0 -- the `CHIP_NRF51` default,
+  stated in `Kconfig` and not in the board -- and has the roomiest small-board arena in the
+  fleet; it is no longer the same part class, that board having moved to a 32 KiB
+  nRF51822. **The heap carve, not the part's
   SRAM, is usually what binds.** (`bluepill-c8` is build-only, so every N here is a model
   prediction, not a witness.)
 - On a comfortable board the constraint **inverts**: `f411disco`'s arena would hold 24
@@ -1256,7 +1369,9 @@ besides, plus power-of-two natural alignment on every block where
 the five is not a RAM question at all: `mutex_deadlock` wants the suite's 3 OPTIONAL
 capabilities, so it needs a board whose `KICKOS_CAP_TABLE_SUPPLY` covers the full summed
 demand of 10 -- 2 reserved (`KICKOS_CAP_FIRST_DYNAMIC`) + the suite's 5 mandatory peak + 3
-optional. Every small part in the fleet supplies 7.
+optional. Only `bluepill-c8` and `f302nucleo` still supply 7
+(`grep -rn KICKOS_CAP_TABLE_SUPPLY boards/`); `microbit` dropped its own and takes the default 16,
+so on that part the cap table is no longer what binds.
 `f411disco` is the zero-skip
 witness -- 128 KiB SRAM, 0 skips -- and it provisions `KICKOS_MAX_THREADS 8`
 (`../../boards/f411disco/configs/base/defconfig`), above the measured 4-thread
@@ -1351,9 +1466,17 @@ Given a new part's flash and SRAM, in order:
    and the raise spends static RAM to make the arena smaller.
 8. **A clean link proves that the boot stacks fit AND that the thread-stack pool fits**,
    on every board: both `KICKOS_BOOT_ARENA_ASSERT` and `KICKOS_POOL_ARENA_ASSERT` are
-   mandatory, and a linker script missing either is a configure `FATAL_ERROR`. Nothing
-   checks the other pools at build time, so an object create returning a negative handle
-   is still a hardware-first sign.
+   mandatory, and a linker script missing either is a configure `FATAL_ERROR`. Configure
+   refuses the same script for a second reason: it must also invoke the FOUR
+   shared-vocabulary macros `KICKOS_CODE_DEBRIS_SECTIONS`, `KICKOS_NONALLOC_SECTIONS`,
+   `KICKOS_STATIC_RELOC_ASSERT` and `KICKOS_TLS_TEMPLATE` (`arch/CMakeLists.txt`; their
+   bodies are in `arch/common/sections.ld.h`, which carries a fifth,
+   `KICKOS_TLS_ALIGN_ASSERT`, that configure does not demand). That check exists because
+   every cross link passes `-Wl,--orphan-handling=error` (`CMakeLists.txt` for the fleet,
+   `arch/CMakeLists.txt` for the rp2040 boot2 stage), where an input section no rule names
+   is a link failure naming the section and nothing else. Nothing checks the other pools at
+   build time, so an object create returning a negative handle is still a hardware-first
+   sign.
 9. **If your `<chip>.ld` writes an `AT` clause, decide whether the LOADER honours LMA**
    before writing it, and pin the decision with an `ASSERT` either way -- see *An `AT`
    clause in `<chip>.ld` is only valid if the LOADER honours LMA* above. An unhonoured LMA
@@ -1437,9 +1560,19 @@ is needed. **Feasibility: confirmed.**
 - The trampoline clobbers only `r0-r3,r12,lr`; the user's `r4-r11` (live since
   `svc`, untouched by exception entry/return and by the SVC handler) pass through
   to the caller intact. `syscall_dispatch` preserves `r4-r11` per AAPCS.
-- Kernel syscall work runs on the **calling thread's stack** (as on the sim).
-  User stacks must be sized for kernel call depth -- the M0 model; a separate
-  per-thread kernel stack is a later refinement.
+- Kernel syscall work runs on a stack **the calling thread alone owns**, and
+  `KICKOS_KERNEL_STACKS` says which of its two. At 1 the trampoline relocates
+  `sp` onto that thread's `ctx.kernel_sp` -- its slot in the
+  `KICKOS_THREAD_SLOTS` x `KICKOS_KERNEL_STACK_SIZE` array in kernel `.bss`
+  (`kernel/thread/thread.cc`, `KStackBlock`) -- and calls `syscall_dispatch`
+  there, below a continuation header laid at the block's top; the only bytes it
+  spends on the thread's own stack are the eight the transfer pushes inside the
+  hardware frame the exception return just popped
+  (`arch/arm/armv7m/switch.S`, `svc_trampoline`). At 0 -- the sim, and the
+  no-MPU armv7m boards that keep a red zone instead -- dispatch stays on the
+  caller's own thread stack and user stacks must be sized for kernel call
+  depth. That was the M0 model on every backend; the separate per-thread kernel
+  stack is the refinement, and it landed.
 - **Privilege is a saved/restored register, not the resting privilege.** A thread
   blocked mid-syscall is *privileged* (the trampoline raised it). PendSV therefore
   **saves the outgoing thread's current `CONTROL.nPRIV`** into its context and
@@ -1503,6 +1636,14 @@ and pends PendSV (the outgoing thread is always `g_arch_current`). PendSV:
   keyed on `EXC_RETURN` bit 4) to the outgoing thread's PSP, stores its SP;
 - loads the incoming thread's SP, restores the callee/FP registers, sets
   `CONTROL.nPRIV`, and exception-returns onto the incoming thread's PSP.
+
+**That PSP is either of the thread's two stacks, and PendSV must refuse neither.** A thread
+preempted mid-dispatch is running on its own kernel block, so where `KICKOS_KERNEL_STACKS`
+is 1 the handler first tests the PSP against THIS thread's `ctx.kernel_sp` window -- that
+one and never the whole array -- and the block leg takes no room test, every byte below a
+kernel PSP being written by privileged code through a pointer the kernel seated. Only a PSP
+outside that window falls through to the user-stack bounds guard, which is also what an
+unseated block (`kernel_sp` reads 0) and idle take.
 
 The saved-frame layout (low->high address on PSP):
 
@@ -1794,25 +1935,44 @@ The first RISC-V ISA (ESP32-C6 + the QEMU `virt` run target), sharing one arch
 (`arch/riscv/rv32imac/`) across two chips. Closest to the RX72M model: a single
 save-frame, deferred switch.
 
-- **Trap model** = ONE `mtvec` DIRECT-mode handler (`trap_entry`, switch.S) that
-  saves the FULL interrupted context (28 GPRs + `mepc` + `mstatus`, 128 B) on the
-  running thread's own stack, then demuxes on `mcause`: ecall (8/11), machine
-  software / msip (the switcher), machine timer / mtip. `gp`/`tp` are not saved
-  (link-time constant). ONE frame format for a voluntary block and a preemptive
-  wake -- the RX/PendSV property.
+- **Trap model** = a VECTORED `mtvec` table, all 32 of whose slots enter the SAME
+  handler (`trap_entry`, switch.S; `kickos_rv32_init` sets the mode bit, the ESP32-C6
+  core implementing vectored mode only). It saves the FULL interrupted context
+  (28 GPRs + `mepc` + `mstatus` + the interrupted `sp`, 128 B), then demuxes on
+  `mcause`: ecall (8/11), machine software / msip (the switcher), machine timer /
+  mtip. **Which stack the frame lands on is the entry's decision, and there are
+  three destinations**: a U-mode entry builds it on the interrupted thread's own
+  KERNEL block (`ctx.kernel_sp`, after bounds-testing the interrupted `sp`; a U-mode
+  thread with no block is refused as wild), the two M-mode causes whose frame the
+  switcher stores as `outgoing->sp` (msip, ecall-from-M) keep the `sp` they
+  interrupted, and every other M-mode trap uses the trusted per-hart trap stack.
+  `gp` and `tp` stay OUT of the frame, both being U-mode writable, and are written
+  from the kernel's own knowledge on every resume instead: `gp` from the link-time
+  `__global_pointer$`, but **`tp` is NOT a link-time constant** -- it is the running
+  context's `stack_lo` masked down to `KICKOS_TLS_STRIDE`, which is that thread's
+  own stack block and so its TLS base. ONE frame format for a voluntary block and a
+  preemptive wake -- the RX/PendSV property.
 - **Context switch** = deferred via the **CLINT machine software interrupt
   (`msip`)**. `arch_switch` records `g_arch_next` + pends msip; the physical swap
   ALWAYS happens in the msip trap (`.Lswitch`). Held off while an IrqLock masks
   `mstatus.MIE`. The CLINT base is chip-provided (`g_clint_msip`).
-- **Syscall** = **`ecall`** -> `svc_trampoline` running **M-mode (privileged) on the
-  caller's own stack** (mret with `MPP=M`), so a blocking dispatch's continuation
-  is per-thread (the arch.h contract). The frame keeps the caller's `mstatus`
-  (`MPP`=caller priv) for the return; `mepc`+4 skips the (4-byte) `ecall`.
+- **Syscall** = **`ecall`** -> `svc_trampoline` running **M-mode (privileged) with `sp`
+  at the saved frame** (mret with `MPP=M`): the calling thread's own KERNEL block for a
+  U-mode caller, the `sp` the trap interrupted for an M-mode one. Either way the
+  continuation is per-thread (the arch.h contract) and the msip switcher freezes a
+  blocking dispatch on that same stack, `sp` being callee-saved across it. This arch
+  selects `ARCH_KERNEL_STACKS_MANDATORY` (`arch/Kconfig`), so `KICKOS_KERNEL_STACKS`
+  resolves to 1 on every board and the entry compiles no red-zone path beside the
+  transfer. The frame keeps the caller's `mstatus` (`MPP`=caller priv) for the return;
+  `mepc`+4 skips the (4-byte) `ecall`.
 - **Critical section** = `mstatus.MIE` (clear via `csrrci`, restore via `csrs`);
   `arch_in_isr` reads `g_isr_depth` (bumped only by the timer/external paths).
   `arch_idle_wait` = `wfi`.
-- **Trace clock** = the `rdcycle` CSR (always present, 32-bit raw; `mcounteren`
-  lets U-mode read it). **Clock/one-shot timer** are chip-provided (virt: CLINT
+- **Trace clock** = the `rdcycle` CSR (32-bit raw; `mcounteren` lets U-mode read
+  it) **where the core implements Zicntr, which is a per-CHIP fact**: legal on
+  `virt`, an illegal instruction on the ESP32-C6 HP core in every mode, so
+  `esp32c6/caps.cmake` declares no trace clock and telemetry there is refused at
+  configure. **Clock/one-shot timer** are chip-provided (virt: CLINT
   `mtime`/`mtimecmp`; C6: SYSTIMER -- TODO(HW)).
 - **PMP** -- a **permissive bootstrap entry** (pmpaddr0 NAPOT-all, pmpcfg0 = RWX,
   U-accessible) is set in `kickos_rv32_init`. RISC-V is fail-CLOSED: once PMP is

@@ -3,13 +3,24 @@
 
 CONFIG_BOARD_MICROBIT=y
 
-# 16 KiB of SRAM with no arena slack, so every pool here is at or near its floor.
-# Its CI gate is the TAP suite, so the self-test syscalls are part of the base
-# posture rather than a variant of it.
-CONFIG_KICKOS_MAX_THREADS=2
-CONFIG_KICKOS_MAX_SEMAPHORES=4
-CONFIG_KICKOS_MAX_IRQ_HANDLES=4
-CONFIG_KICKOS_CAP_TABLE_SUPPLY=7
+# The RECOMMENDED tier of docs/reference/boards.md, which states what that tier buys; the
+# per-board arithmetic below is what this part pays for it.
+#
+# 32 KiB of SRAM, a departure from the real device's 16 KiB (arch/arm/chip/nrf51/nrf51.ld
+# carries the reason): the fleet's only executable armv6m target, provisioned like the
+# rest of the fleet rather than at its floor.
+#
+# 2048 AND NOT 1408: KICKOS_TLS strides every arena block by a power of two, the armv6m
+# thread pointer being SP masked down to the block, and 1408 would round the stride to
+# 2048 anyway and waste the difference as padding rather than stack.
+#
+# FOUR AND NOT EIGHT: a slot costs a KICKOS_KERNEL_STACK_SIZE block (896 on armv6m) in
+# kernel .bss AND a struct _reent in the app window, both below the arena, so raising the
+# thread count shrinks the arena while growing the demand.
+#
+# Its CI gate is the TAP suite, so the self-test syscalls are part of the base posture
+# rather than a variant of it.
+CONFIG_KICKOS_MAX_THREADS=4
 CONFIG_KICKOS_USER_STACK_SIZE=2048
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=2048

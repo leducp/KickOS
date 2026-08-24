@@ -1,18 +1,29 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * Linker script for the Nordic nRF51822 (BBC micro:bit v1), Cortex-M0. This is
- * the runnable armv6m CI/verification target under QEMU (-M microbit).
+ * Linker script for the Nordic nRF51822, Cortex-M0. This is the runnable armv6m
+ * CI/verification target under QEMU (-M microbit).
  *   Flash : 256 KiB @ 0x0000_0000
- *   SRAM  :  16 KiB @ 0x2000_0000   (tiny; provisioning is sized down to match)
+ *   SRAM  :  32 KiB @ 0x2000_0000   (the QFAC variant; see the MEMORY block below)
  */
+
+#include <sections.ld.h>
 
 ENTRY(Reset_Handler)
 
+/* 32 KiB AND NOT THE 16 A BBC micro:bit v1 HAS. That part is EOL and nothing in this tree
+   flashes one; what this board is FOR is being the fleet's only executable armv6m target,
+   and 16 KiB made it a target that could not run what every other board runs. The nRF51822
+   ships in a 32 KiB variant (QFAC), so this is a real part, just not the one on a micro:bit.
+
+   QEMU HAS TO BE TOLD. Its microbit machine defaults to 16 KiB and ignores -m; the size is a
+   QOM property, so every invocation passes -global nrf51-soc.sram-size=32768
+   (cmake/kickos.cmake, kickos_add_qemu_test). Without it an image linked here locks up on
+   its first push, before any vector table is live, as "can't escalate 3 to HardFault". */
 MEMORY
 {
     FLASH (rx)  : ORIGIN = 0x00000000, LENGTH = 256K
-    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 16K
+    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 32K
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);
@@ -26,6 +37,7 @@ SECTIONS
         *(.text .text.*)
         *(.rodata .rodata.*)
         *(.glue_7) *(.glue_7t)
+        KICKOS_CODE_DEBRIS_SECTIONS
         KEEP(*(.init))
         KEEP(*(.fini))
         . = ALIGN(4);
@@ -54,12 +66,27 @@ SECTIONS
         __kickos_app_fini_array_end = .;
     } > FLASH
 
+    KICKOS_TLS_TEMPLATE(FLASH)
+
     .kickos_app_init_array :
     {
         __kickos_app_init_array_start = .;
         KEEP(*(SORT(.init_array.*)))
         KEEP(*(.init_array))
         __kickos_app_init_array_end = .;
+    } > FLASH
+
+    /* EHABI unwind instructions + LSDA, homed in the code window so a full-C++ image does
+       not orphan them into whatever gap follows the vector table. libstdc++ emits
+       .gcc_except_table even on EHABI. */
+    .ARM.extab :
+    {
+        *(.ARM.extab* .gnu.linkonce.armextab.*)
+    } > FLASH
+
+    .gcc_except_table :
+    {
+        *(.gcc_except_table .gcc_except_table.*)
     } > FLASH
 
     .ARM.exidx :
@@ -111,7 +138,13 @@ SECTIONS
     __kickos_sram_start = ORIGIN(RAM);
 
     /DISCARD/ : { *(.ARM.attributes) }
+
+    KICKOS_NONALLOC_SECTIONS
 }
+
+KICKOS_STATIC_RELOC_ASSERT()
+KICKOS_TLS_ALIGN_ASSERT()
+KICKOS_TLS_FIT_ASSERT()
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")

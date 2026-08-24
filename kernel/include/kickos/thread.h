@@ -119,6 +119,15 @@ namespace kickos
         // block lock dropping and the pended switch firing.
         Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> switch_count = 0;
 
+#if !KICKOS_ARCH_SIM
+        // This thread's struct _reent, seated by thread_create out of the app-side array.
+        // switch_book stores it into libc's state word; nothing in the kernel dereferences
+        // it. HERE, and priced by thread_head_bytes: where uint64_t aligns to 8 this is the
+        // second half of the pad before deadline_ns and the pointer is free. Anywhere below
+        // it costs 8, because the TCB is a multiple of 8 there with no tail slack.
+        void* reent = nullptr;
+#endif
+
         uint64_t deadline_ns = 0;
         bool on_timer = false;
 
@@ -325,8 +334,11 @@ namespace kickos
     // last whose offset the target's context size can shift.
     constexpr size_t thread_head_bytes()
     {
-        size_t const members = sizeof(arch_context) + sizeof(ListNode) + sizeof(List*)
-                               + sizeof(Thread*) + sizeof(uint32_t);
+        size_t members = sizeof(arch_context) + sizeof(ListNode) + sizeof(List*)
+                         + sizeof(Thread*) + sizeof(uint32_t);
+#if !KICKOS_ARCH_SIM
+        members = members + sizeof(void*); // Thread::reent
+#endif
         return members + (alignof(uint64_t) - members % alignof(uint64_t)) % alignof(uint64_t);
     }
 
@@ -458,6 +470,21 @@ namespace kickos
     // KICKOS_MAX_THREADS the board states. The fault-kill path is the one that DOES set root
     // EXITED (kernel/init/fault.cc excludes only null / idle / privileged / dying), and root's
     // slot is reclaimable from then on.
+
+#if KICKOS_KERNEL_STACKS
+    // The per-slot kernel-stack instrumentation. `index` is a POOL index, 0 to
+    // KICKOS_THREAD_SLOTS - 1: idle holds its TCB outside the pool (kernel().idle_tcb), is
+    // privileged, and its body is arch_idle_wait alone, so it never enters the syscall path
+    // and has neither a stack here nor anything to measure.
+    //
+    // PER SLOT AND SINCE BOOT, not per thread. The block is armed once at init and never
+    // re-armed when a slot changes hands: re-arming would erase the record of an overflow
+    // that had already happened, and it would have to run where a slot is handed out, which
+    // is inside the spawn's IrqLock. sched::exit_current reads the canary.
+    void kstack_arm(int index);
+    bool kstack_canary_intact(int index);
+#endif
+
     struct ThreadPool
     {
         // The uint16_t generation takes the other 16, so the handle spends the whole word: a
@@ -501,15 +528,25 @@ namespace kickos
         // itself. A block enters the list only at the exited-slot reclaim point (alloc, below),
         // where its former owner is provably off-CPU.
         void* stack_free_list = nullptr;
-#if KICKOS_HAVE_MPU
-        // A demand-allocated stack is granted as ONE MPU region. PMSAv7/NAPOT require a power
-        // of two; the base+limit backends would accept any granule multiple, but the granule is
-        // a runtime seam value that cannot be asserted here.
-        static_assert((KICKOS_USER_STACK_SIZE & (KICKOS_USER_STACK_SIZE - 1)) == 0,
-                      "KICKOS_USER_STACK_SIZE must be a power of two under MPU enforcement");
-#endif
+        // The pow2 requirement a demand-allocated stack carries under some MPU backends is
+        // NOT asserted here. It holds for PMSAv7 and PMP NAPOT and not for the base+limit
+        // backends, and which one a board has is the scraped arch_mpu_region_pow2 seam,
+        // which reaches CMake and not this header: cmake/boot_arena.cmake refuses the
+        // mismatch there, naming the board and the backend. Asserting it here covered every
+        // enforcing board alike and so refused sizes SYSMPU, PMSAv8 and the RX MPU name
+        // exactly.
         static_assert(KICKOS_USER_STACK_SIZE >= sizeof(void*),
                       "a reclaimed stack block must be able to hold the free-list link");
+        // A KERNEL-DEFAULT stack has no caller to refuse it. The caller-provided path tests
+        // p->stack_size against this floor at run time (syscall_thread.cc), but a spawn that
+        // passes stack_base == nullptr takes the constant below unconditionally, so the only
+        // place the same relation can be enforced is here. Without it a legal Kconfig
+        // setting produces threads the trap prologue refuses on every syscall they make:
+        // the floor is not a preference, it is the arch's measured red zone.
+        static_assert(KICKOS_USER_STACK_SIZE >= KICKOS_MIN_STACK_SIZE,
+                      "KICKOS_USER_STACK_SIZE is below the arch's syscall stack floor: raise "
+                      "it in the board defconfig, or the default spawn makes threads that "
+                      "cannot make a syscall");
 
         void stack_push(void* block)
         {
@@ -586,6 +623,11 @@ namespace kickos
         //     correct regardless of this spawn's fate; kstack_owned is now false.
         //   * a fresh bump slot (INACTIVE, always the last one under the spawn lock): un-bump
         //     `next`, else it becomes a permanent hole (alloc only ever reclaims EXITED).
+        // TRUE WHEN THE SLOT'S reent STILL HOLDS THE PREVIOUS OCCUPANT'S STATE. Lives in the
+        // pool and not in Thread: reuse rebuilds the Thread, which is exactly when the mark
+        // has to survive. kmain seeds every slot at boot, so this starts false.
+        bool reent_stale[KICKOS_THREAD_SLOTS] = {};
+
         void release(int i)
         {
             if (slots[i].state == ThreadState::EXITED)

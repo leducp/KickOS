@@ -6,23 +6,16 @@
 // channel's receive interrupt onto the kernel console's service-request node and
 // storms it, to test whether it can deny service to the console.
 //
-// Mechanism:
-//   * The kernel console TX drains on U0C0 -> USIC0 SR0 -> NVIC 84, bound as an
-//     in-kernel handler (console_tx.cc console_tx_isr).
-//   * INPR (channel-window offset 0x018) selects the SRx node for RIF/AIF. RINP/AINP
-//     field 0 selects SR0, the console's node. INPR is U,PV and in-window.
-//   * DX0CR internal loopback makes every TBUF0 write produce a receive event; the
+// The wiring the attack exploits:
+//   * the kernel console TX drains on U0C0 -> USIC0 SR0 -> NVIC 84, bound as an in-kernel
+//     handler (console_tx.cc console_tx_isr);
+//   * INPR (channel-window offset 0x018) selects the SRx node for RIF/AIF, and RINP/AINP
+//     field 0 selects SR0, the console's node. INPR is U,PV and in-window;
+//   * DX0CR internal loopback makes every TBUF0 write produce a receive event, and the
 //     attacker arms CCR.RIEN|AIEN itself through kos_periph_reg_write, whose only
-//     credential is the U0C1 grant it legitimately holds.
-//   * The attacker reroutes INPR to SR0 and writes TBUF0 in a tight loop, injecting
-//     U0C1 receive events into the kernel console's ISR.
-//
-// So the whole attack now needs nothing from root, which is what makes the severity
-// finding below a property of the grant rather than of the bring-up split.
-//
-// The attacker is spawned BELOW root's priority, so it can never starve root by
-// hogging the CPU: a wedged console would isolate the foreign-SR0 interrupt storm as
-// the cause.
+//     credential is the U0C1 grant it holds.
+// The whole sequence needs nothing from root, which makes the finding a property of the
+// grant rather than of the bring-up split.
 //
 // MEASURED ON SILICON (XMC4800-Relax, 2026-07-28), AT ONE OPERATING POINT: the reroute
 // lands (INPR 0x1100 -> 0x0) and the injection is real. With the kernel console_tx_isr
@@ -37,27 +30,25 @@
 // (the baud divider chain) are two of the three allowlist entries the seam accepts from
 // the window holder, so the attacker sets the rate itself. Build with
 // -DKICKOS_INPRSTORM_MAX_RATE=ON (target inprstormmax) to drive every divider to its
-// minimum; the default target keeps the 115.2 kHz-profile comparison point. Neither
-// profile asserts a shift-clock frequency: the RM's fSCLK factor for SSC master is not
-// confirmed here, so both print the programmed divider fields, their read-back, and the
-// branch clock the kernel reports, and the operator reads the rate off the wire.
-// The heartbeat carries an uptime and an inter-beat delta in ms, so a cadence slowdown
-// under the storm is measurable from the capture instead of only survival.
+// minimum; the default target keeps the 115.2 kHz-profile comparison point. What each
+// profile PINS is the programmed divider fields, their read-back and the branch clock the
+// kernel reports; the shift-clock frequency itself is read off the wire, since the RM's
+// fSCLK factor for SSC master is unconfirmed here.
 //
-// Third profile (INPRSTORM_FIFO, target inprstormfifo) closes that hole: the TX FIFO
-// drains words back-to-back with no per-word CPU. RM V1.3 Table 18-20 marks TBCTR
-// (0x108), the TBUFx aperture (0x080..0x0FC) and TRBSR (0x114) all U,PV, so the window
-// holder arms the FIFO with no seam entry; only FDR/BRG/CCR are write-PV. The FIFO
-// auto-loads TBUF whenever TCSR.TDV=0 (RM 18.2.8.4), so the shift clock, not the
-// attacker's CPU share, sets the receive-event rate. This profile forces the max-rate
-// divider chain; the two effects multiply.
+// Third profile (INPRSTORM_FIFO, target inprstormfifo) removes the per-word CPU cost: the
+// TX FIFO drains words back-to-back. RM V1.3 Table 18-20 marks TBCTR (0x108), the TBUFx
+// aperture (0x080..0x0FC) and TRBSR (0x114) all U,PV, so the window holder arms the FIFO
+// with no seam entry; only FDR/BRG/CCR are write-PV. The FIFO auto-loads TBUF whenever
+// TCSR.TDV=0 (RM 18.2.8.4), so the shift clock, not the attacker's CPU share, sets the
+// receive-event rate. This profile forces the max-rate divider chain, and the two effects
+// multiply.
 //
 // Register addresses / bit fields are clean-room from the XMC4700/XMC4800 Reference
 // Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. Diagnostic app
-// (kickos_add_diagnostic_app): build-only here, validated by the operator on silicon.
-// The kernel console_tx path is exercised only when the console stays kernel-owned,
-// so build this with the kernel-console service list (KICKOS_SERVICE_LIST=
-// kickos_services_none); under the xmcuart handover the kernel path is deinit'd.
+// (kickos_add_diagnostic_app): never a production image.
+//
+// BUILD WITH THE KERNEL-CONSOLE SERVICE LIST (KICKOS_SERVICE_LIST=kickos_services_none):
+// the kernel console_tx path is the target, and the xmcuart handover deinits it.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -92,7 +83,8 @@ namespace
 {
     constexpr uint32_t U0C1_WINDOW = 0x200u;
 
-    // The two baud-divider profiles. FDR fractional mode gives fFD = fPERIPH*STEP/1024
+    // Three profiles over two distinct divider chains: the FIFO profile reuses the max-rate
+    // one. FDR fractional mode gives fFD = fPERIPH*STEP/1024
     // (RM p.18-178); BRG divides it by (PDIV+1)*(PCTQ+1)*(DCTQ+1) with CTQSEL=0 selecting
     // fPDIV as the time-quantum source (RM p.18-179). STEP is FDR[9:0]; the BRG fields sit
     // at the shifts in regs/usic.h.
@@ -144,8 +136,7 @@ namespace
 
     // One PV-classified register through the seam, then read back: a discarded store is
     // silent at the bus, and the errno separates a refused call from a dropped one.
-    // FDR.RESULT[25:16] is driven by the fractional divider, so it is excluded from the
-    // read-back comparison.
+    // FDR.RESULT[25:16] is driven by the fractional divider, so `care` excludes it.
     constexpr uint32_t FDR_RESULT_MASK = 0x03FF0000u;
 
     bool seam_write(char const* reg, uintptr_t win, uintptr_t off_reg, uint32_t val,
@@ -173,9 +164,9 @@ namespace
 
         kos::print("[inprstorm] unpriv up (granted U0C1 window 0x200)\n");
 
-        // The rate the storm will run at, before it runs: the divider chain the seam let
-        // the holder program, and the branch clock the kernel reports for this block
-        // (0 = the chip does not know it). No frequency is asserted from these.
+        // Printed before the storm runs: the divider chain the seam let the holder program,
+        // and the branch clock the kernel reports for this block (0 when the chip does not
+        // know it).
         {
             char s[128];
             ksnprintf(s, sizeof(s),
@@ -188,9 +179,9 @@ namespace
             kos::print(s);
         }
 
-        // Full bring-up from the holder: KSCFG (U,PV) first, then the U,PV config, then
-        // FDR/BRG/CCR through the seam. INPR is routed to the benign SR1 (NVIC 85,
-        // masked, no driver) so nothing storms until the reroute below.
+        // KSCFG first: until MODEN is set the channel answers nothing else. INPR starts on
+        // the benign SR1 (NVIC 85, masked, no driver), so nothing storms until the reroute
+        // below.
         r32(win + off::KSCFG) = KSCFG_MODEN | KSCFG_BPMODEN;
         uint32_t const kscfg = r32(win + off::KSCFG);
         __asm volatile("" : : "r"(kscfg) : "memory");
@@ -235,13 +226,12 @@ namespace
                       static_cast<unsigned>(tbctr), verdict);
             kos::print(s);
         }
-        // Prove the FIFO backlog and autonomous drain are real, not a no-op. A backlog
-        // only builds while the shift clock (drain) is slower than the software fill; at
-        // the profile's max divider the drain outpaces any fill and the FIFO stays empty
-        // (measured). So run this proof at the slow 115.2k divider, where fill wins:
-        // fill to TFULL, then take NO further action. A falling TBFLVL is the channel
-        // clocking the backlog out with zero attacker CPU (RM 18.2.8.4). INPR still points
-        // at the benign SR1 here, so the drained words raise no console interrupt.
+        // The backlog proof needs fill to outrun drain, so it runs at the slow 115.2k
+        // divider: at the profile's max divider the drain outpaces any fill and the FIFO
+        // stays empty (measured). Fill to TFULL, then take NO further action; a falling
+        // TBFLVL is the channel clocking the backlog out with zero attacker CPU
+        // (RM 18.2.8.4). INPR still points at the benign SR1, so the drained words raise
+        // no console interrupt.
         {
             seam_write("FDR demo-slow", win, off::FDR, FDR_DM_FRACTIONAL | FDR_STEP_367,
                        ~FDR_RESULT_MASK);
@@ -269,12 +259,12 @@ namespace
         seam_write("BRG", win, off::BRG, BRG_WORD, 0xFFFFFFFFu);
 #endif
 
-        // Hold so root prints several heartbeats that DO drain; the console is
-        // demonstrably alive right up to the storm.
+        // Root prints several heartbeats that DO drain first: the console is demonstrably
+        // alive right up to the storm.
         kos_sleep_ns(2000000000ull);
 
-        // The attack: RINP/AINP field 0 routes the receive interrupt to SR0, the
-        // console's node. INPR is U,PV and in-window, so this unprivileged store lands.
+        // The attack: RINP/AINP field 0 routes the receive interrupt to SR0. INPR is U,PV
+        // and in-window, so this unprivileged store lands.
         kos::print("[inprstorm] rerouting INPR RINP/AINP -> SR0 (console node)\n");
         show("INPR before", r32(win + off::INPR));
         r32(win + off::INPR) = 0u;
@@ -341,9 +331,9 @@ int main(int, char**)
     if (not p.valid())
     {
         // -KOS_EBUSY: a live domain already holds U0C1. Without the grant the attacker
-        // never reaches INPR, and the heartbeat below would read as "no DoS" on a probe
-        // that never fired. The kernel console path drops every byte once a driver has
-        // published, so the errno goes out through the panic path.
+        // never reaches INPR, and the heartbeat below would read as "no DoS" on a probe that
+        // never fired. The errno goes out through the panic path because the kernel console
+        // path drops every byte once a driver has published.
         char e[64];
         ksnprintf(e, sizeof(e), "[inprstorm] U0C1 spawn refused, errno %d", -p.error());
         kos_panic(e);
@@ -351,7 +341,7 @@ int main(int, char**)
 
     // Heartbeat. A DoS kills the log outright; a rate the console merely SURVIVES shows up
     // as dt drifting above the 300 ms nominal, which a bare beat counter cannot show. t is
-    // uptime, dt the interval since the previous beat, both ms from the monotonic clock.
+    // uptime and dt the interval since the previous beat, both ms from the monotonic clock.
     uint64_t const t0 = kos_clock_now();
     uint64_t prev = t0;
     uint32_t beat = 0;

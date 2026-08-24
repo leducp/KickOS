@@ -5,16 +5,15 @@
 // 0x4003_7120, spanning ch2+ch3 at the 0x10 stride) and a WAIT cap on the PIT ch2 IRQ.
 // ch2, not ch0/ch1: the kernel monotonic clock owns the chained ch0+ch1 pair.
 //
-// This app exists to DEMONSTRATE the K64F peripheral ceiling: privilege is gated by the
-// AIPS bridge (PACR) rather than by SYSMPU, so its window grant is genuinely inert and an
-// MMIO grant is not a per-thread peripheral capability on this chip. The register-level
-// argument and the one test that decides whether any given grant may be deleted are in
-// docs/reference/boards.md, "When an MMIO grant is INERT": PACRG for PIT slot 55 is the
-// slot at issue here (RM 20.2.3). The PIT_MCR read at the end sits outside the SYSMPU
-// window and is EXPECTED to succeed; that success is the demonstration, not a bug to fix.
+// This app DEMONSTRATES the K64F peripheral ceiling: privilege is gated by the AIPS
+// bridge (PACR) rather than by SYSMPU, so an MMIO grant is not a per-thread peripheral
+// capability on this chip and this window grant is inert. The register-level argument is
+// in docs/reference/boards.md, "When an MMIO grant is INERT"; the slot at issue here is
+// PIT slot 55 in PACRG (RM 20.2.3). The PIT_MCR read at the end sits outside the SYSMPU
+// window and is EXPECTED to succeed; that success is the demonstration.
 //
-// Diagnostic app (kickos_add_diagnostic_app): build-only, never a production image;
-// the operator flashes + validates.
+// Diagnostic app (kickos_add_diagnostic_app): the operator flashes and validates on
+// silicon.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -41,7 +40,7 @@ namespace
     // AIPS0_PACRG resets to 0x4444_4444 (3.3.8.4) so SP=1 => supervisor-only at reset.
     constexpr uintptr_t AIPS0_PACRG = 0x40000048u; // 20.2.3/456
     constexpr uint32_t PACR_PIT_SP = 1u << 2;      // PACR55 SP7 (supervisor-protect)
-    constexpr uint32_t TFLG_OFFSET = 0x0Cu;        // TFLG0 = base + 0x0C (41.3.5, TIF=b0 w1c)
+    constexpr uint32_t TFLG_OFFSET = 0x0Cu;        // TFLG at +0x0C (41.3.5, TIF=b0 w1c)
     constexpr uint32_t TCTRL_TEN = 1u << 0;
     constexpr uint32_t TCTRL_TIE = 1u << 1;
     constexpr int PIT2_IRQ = 50; // K64 RM Table 3-5: PIT ch2 = IRQ 50
@@ -69,8 +68,7 @@ namespace
         for (int tick = 0; tick < DRIVER_TICKS; tick++)
         {
             kos_irq_wait(h);
-            *tflg2 = 1u; // W1C TIF: clears the level so the line does not storm when the
-                         // next wait re-arms it.
+            *tflg2 = 1u; // W1C TIF
             kos::kernel_diag_led_toggle();
             char s[48];
             ksnprintf(s, sizeof(s), "[k64drv] tick %d\n", tick + 1);
@@ -86,7 +84,6 @@ namespace
                   static_cast<unsigned>(mcr));
         kos::print(s);
 
-        // Must never exit: a non-last-thread exit is unsafe on this arch.
         while (true)
         {
             kos_sleep_ns(1000000000ull);
@@ -134,7 +131,7 @@ int main(int, char**)
     if (not drv.valid())
     {
         // The console is the only oracle at the bench: without this line a failed spawn
-        // and a dead board look identical.
+        // and a dead board read the same.
         kos::print("[k64drv] ERROR: driver spawn failed\n");
     }
     if (irq != KOS_CAP_NONE)
@@ -143,7 +140,7 @@ int main(int, char**)
     }
 
     // Sleep park when the semaphore could not be created: an unmintable handle would spin
-    // a hot loop of failing sem_wait syscalls against the driver.
+    // a hot loop of failing sem_wait syscalls.
     kos_cap_t idle = KOS_CAP_NONE;
     (void)kos_sem_create(0, &idle);
     while (true)

@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // RX72M chip backend. Register addresses/fields are from the RX72M Group User's
-// Manual: Hardware (r01uh0804ej0120, Rev.1.20); hand-rolled (no vendor SDK),
-// consistent with the arch layer's clean-room regs.h.
+// Manual: Hardware (r01uh0804ej0120, Rev.1.20), derived from the manual and consistent
+// with the arch layer's clean-room regs.h.
 //
 // Board: RX72M CPU Card with RDC-IC (RTK0EMXDE0C00000BJ), R5F572MNDDBD, 24 MHz
 // main crystal (board UM r12uz0098ej0110 Table 1-1). Console = SCI6 on PB1/TXD6
@@ -252,9 +252,9 @@ namespace
         return src >> pckb;
     }
 
-    // Enable the 8 KB flash ROM cache (UM sec.64.7.1). Reset auto-invalidates it, so
-    // there is no coherency risk today; a future flash self-program must re-invalidate
-    // (write ROMCIV=1) before re-enable. Bounded invalidate poll degrades, never hangs.
+    // Enable the 8 KB flash ROM cache (UM sec.64.7.1). Reset auto-invalidates it; a
+    // flash self-program must re-invalidate (write ROMCIV=1) before re-enable. Bounded
+    // invalidate poll degrades, never hangs.
     void rom_cache_enable()
     {
         r16(flash::ROMCIV) = flash::ROMCIV_ROMCIV;
@@ -294,8 +294,8 @@ namespace
             r8(sci::SEMR) = bs.semr;
             r8(sci::BRR) = bs.brr;
         }
-        // Volatile so -Os keeps the wait. UM sec.42 requires NO settle here: Fig.42.13
-        // p.2234 has the hardware itself hold TXD high for one frame after TE goes 1.
+        // Volatile so -Os keeps the wait, which is belt-and-braces: the hardware itself
+        // holds TXD high for one frame after TE goes 1 (UM Fig.42.13 p.2234).
         for (volatile uint32_t d = 0; d < 10000u;)
         {
             d = d + 1;
@@ -352,9 +352,9 @@ void arch_init(void)
 
     rom_cache_enable(); // MEMWAIT set above; ROM cache is not PRCR-gated
 
-    // Read back, not assumed from on_pll: a bring-up that degraded to the LOCO must price
-    // its ticks and its baud at the rate it actually landed on. A tree the derivation
-    // cannot describe leaves both at their reset nominals rather than at zero.
+    // Read back, not assumed from the bring-up's return: a bring-up that degraded to the
+    // LOCO must price its ticks and its baud at the rate it actually landed on. A tree the
+    // derivation cannot describe leaves both at their reset nominals rather than at zero.
     uint32_t const src = clock_source_hz();
     uint32_t const ick = (r32(cgc::SCKCR) >> cgc::SCKCR_ICK_S) & cgc::SCKCR_DIV_MASK;
     if (src != 0u and ick <= cgc::SCKCR_DIV_MAX)
@@ -379,14 +379,14 @@ void arch_init(void)
 
 // Arch seam (arch_rxv3.cc): arm or disarm ONE group source, and the group vector itself.
 //
-// The group vector is armed lazily, and must be: nothing reaches the CPU unless it is
-// enabled, yet it is not a claimable line (owning "the group" would starve every other
-// source in it), so no line's own mask can arm it. Arming every group vector at init
-// leaves a first-level ISR reachable with the status word zero, which on a LEVEL input is
-// a silent storm rather than a diagnosable fault.
+// The group vector is armed lazily, and must be: nothing reaches the CPU unless the
+// vector is enabled, yet it is not a claimable line (owning "the group" would starve every
+// other source in it), so a source's own mask is what arms it. Arming every group vector
+// at init leaves a first-level ISR reachable with the status word zero, which on a LEVEL
+// input is a silent storm rather than a diagnosable fault.
 //
-// GENxxx is the only record of which sources are armed; there is no shadow counter for
-// repeated masks and unmasks to desynchronize (the tier-1 rearm path unmasks on every wait).
+// GENxxx is the only record of which sources are armed, so repeated masks and unmasks have
+// no shadow count to desynchronize (the tier-1 rearm path unmasks on every wait).
 //
 // Both orderings follow UM sec.15.7.1/15.7.2 p.545: ENj before IERm.IENj when arming,
 // IERm.IENj before ENj when disarming.
@@ -410,7 +410,7 @@ void kickos_rx_group_arm(int line, int on)
         r32(GROUPS[g].enable) = en | mask;
         if (en == 0u)
         {
-            arch_irq_unmask(GROUPS[g].vector); // IPR + IER for the group vector itself
+            kickos_rx_icu_line_arm(GROUPS[g].vector, 1); // IPR + IER for the group vector itself
         }
     }
     else
@@ -418,7 +418,7 @@ void kickos_rx_group_arm(int line, int on)
         uint32_t const next = en & ~mask;
         if (next == 0u)
         {
-            arch_irq_mask(GROUPS[g].vector);
+            kickos_rx_icu_line_arm(GROUPS[g].vector, 0);
         }
         r32(GROUPS[g].enable) = next;
     }
@@ -437,9 +437,8 @@ void kickos_rx_group_arm(int line, int on)
 // source's ISj (UM sec.15.2.24(3) p.504), so re-reading GRPxxx between posts loses the
 // sources not yet dispatched.
 //
-// No ICU.IR write anywhere: for a level source the IR flag must not be written at all (UM
-// sec.15.2.1(2) p.480). It goes down on its own once the driver clears the peripheral flag
-// or the mask clears ENj.
+// For a level source the IR flag must not be written at all (UM sec.15.2.1(2) p.480): it
+// goes down on its own once the driver clears the peripheral flag or the mask clears ENj.
 void kickos_rx_dev_dispatch(void)
 {
     for (unsigned g = 0; g < GROUP_COUNT; g++)
@@ -463,17 +462,17 @@ void kickos_rx_dev_dispatch(void)
 
 // Branch-clock oracle (arch.h): report the clock feeding a peripheral block so a userspace
 // driver derives its own divisor. SCI0..SCI6 run on PCLKB (UM sec.42 preamble p.2144),
-// which is READ OUT OF THE LIVE TREE on every call rather than cached from arch_init: the
-// whole point is that a driver's reported baud tracks the clock the channel is actually on.
+// which is READ OUT OF THE LIVE TREE on every call rather than cached from arch_init, so
+// a driver's reported baud tracks the clock the channel is actually on.
 //
 // The SYSTEM block this reads is kernel-reserved (arch_reserved_blocks), so the holder of
 // an SCI window has no way to read the select itself. A block this chip does not model
 // returns 0, which the contract makes the caller refuse on rather than guess.
 //
-// This definition MUST stay in this TU: the member is always anchored (arch_init lives
-// here and the kernel references it; RX gets no -u force-ref), and a dedicated TU nothing
-// else references would leave the arch/common fallback answering with 0 and no link error
-// at all.
+// This definition MUST stay in this TU. arch_init lives here and the kernel references
+// it, so the member is always anchored; an RX link relies on that anchor alone, so a
+// dedicated TU nothing else references would let the arch/common fallback answer 0 and
+// still link cleanly.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
     if (base == mmap::SCI6)
@@ -493,8 +492,8 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
 // stores until MSTPCR says otherwise (UM sec.43.16.1), and MSTPCRB/MSTPCRC sit in the
 // kernel-reserved SYSTEM block behind PRCR.PRC1, out of the window holder's reach.
 //
-// The console and timer blocks are deliberately absent: arch_init releases those, and
-// answering for them would let a grant holder gate a block the kernel is using.
+// arch_init releases the console and timer blocks, and this seam answers for neither:
+// answering would let a grant holder gate a block the kernel is using.
 //
 // Same must-stay-in-this-TU rule as arch_periph_clock_hz above.
 int arch_periph_enable(uintptr_t base)
@@ -537,8 +536,8 @@ void arch_console_write(char const* buf, size_t n)
     console_tx_write(buf, n); // buffered; the routing guard (console.cc) keeps this thread-only
 }
 
-// Bounded polled writer: panic / fault / pre-arm boot route here (console.cc). Must
-// stay reachable with the scheduler and IRQs down: no ring, no interrupt.
+// Bounded polled writer: panic / fault / pre-arm boot route here (console.cc). Must stay
+// reachable with the scheduler and IRQs down, so it polls TDRE directly.
 void arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
@@ -700,7 +699,7 @@ int arch_pinmux_set(uint32_t p, uint32_t pin, uint32_t func)
 
 void arch_shutdown(int status)
 {
-    (void)status; // no exit on bare metal
+    (void)status;
     __asm volatile("mvtipl #15" ::: "memory"); // mask all maskable interrupts
     while (true)
     {
@@ -710,9 +709,9 @@ void arch_shutdown(int status)
 
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (RX72M UM). Owns-for-life: the CMTW time base (CMTW0 @0x94200
-// timebase and CMTW1 @0x94280 bench/trace clock fit one 0x100 block), the ICU (the RX IRQ
-// controller is MPU-GOVERNED memory, unlike the ARM PPB, so it must be reserved), the
-// bus-side MPU register file, and the SYSTEM clock/reset gate block.
+// timebase and CMTW1 @0x94280 bench/trace clock fit one 0x100 block), the ICU (on RX the
+// IRQ controller is MPU-GOVERNED memory, so it must be reserved), the bus-side MPU
+// register file, and the SYSTEM clock/reset gate block.
 //
 // The ICU window must reach past GENAL1 @0x87874, not stop at IR/IER/IPR: short of that,
 // an AUTH_MEMORY holder could be granted GENBL0 and arm or disarm any group source behind

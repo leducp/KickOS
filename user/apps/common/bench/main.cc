@@ -4,8 +4,8 @@
 // Context-switch microbenchmark (KICKOS_BENCH builds only). Two equal-priority
 // threads ping-pong via semaphores; the reporter prints throughput (ctx-switches/s via
 // kos::clock_now, works on every arch) plus per-switch cost + IRQ-entry latency (cycles,
-// only where switch.S brackets the swap with a counter: armv7m DWT, rxv3 CMTW1,
-// rv32imac rdcycle/MTIME, xtensa CCOUNT; absent on M0/sim/frozen-QEMU).
+// where switch.S brackets the swap with a counter: armv7m DWT, rxv3 CMTW1, rv32imac
+// rdcycle/MTIME, xtensa CCOUNT).
 //
 // The call/reply sweep times the endpoint copy under the kernel's own IrqLock. The phase
 // table printed after it breaks that round trip's FIXED cost down by kernel phase
@@ -19,11 +19,9 @@
 // over IPC and falls back to the kernel console when index 0 is empty. kos_print alone
 // would be dropped outright once a service list publishes the UART (sys/emit.h).
 //
-// What emit CANNOT rescue is the switch line and the phase table: the KERNEL prints those
-// from inside kos_bench, straight at the kernel console. So an instrumented run still
-// wants kickos_services_none, which the `bench` config variant pins.
-//
-// The reporter is woken by the workload, not by a timer. Telemetry OFF for clean numbers.
+// The switch line and the phase table are printed by the KERNEL from inside kos_bench,
+// straight at the kernel console, so an instrumented run wants kickos_services_none,
+// which the `bench` config variant pins.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -54,9 +52,9 @@ namespace
 
     // Child cap indices (a fresh child table makes handle == index). MAIN delegates the
     // sems per spawn in this order.
-    constexpr int CH_A = 1;    // ping-pong sem A (delegated first to both players)
-    constexpr int CH_B = 2;    // ping-pong sem B (delegated second)
-    constexpr int CH_GATE = 3; // reporter-wake gate (delegated third to player_b only)
+    constexpr int CH_A = 1;    // ping-pong sem A
+    constexpr int CH_B = 2;    // ping-pong sem B
+    constexpr int CH_GATE = 3; // reporter-wake gate, delegated to player_b only
     constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
 
     // A refused op returns -KOS_E*; the cycle ops answer 0 for "did not fire", so a
@@ -103,8 +101,8 @@ namespace
         return static_cast<uint32_t>((static_cast<uint64_t>(cyc) * 1000000000ull) / hz);
     }
 
-    // The reporter is the ROOT thread, so the bench needs only 2 pool slots and fits
-    // boards with KICKOS_MAX_THREADS as low as 2 (nrf51, stm32f103/f302).
+    // The reporter is the ROOT thread, so the two players are the only slots the bench
+    // adds to root's own: a 3-slot pool carries it.
     void reporter_loop(uint32_t hz)
     {
         (void)kos_bench(KOS_BENCH_OP_IRQ_SETUP, BENCH_IRQ_LINE, 0); // no-op if refused
@@ -219,8 +217,8 @@ namespace
                 kickos::emit(s);
             }
 
-            // AFTER the report, so the next window excludes this report's own
-            // IRQ-sampling and print time.
+            // AFTER the report: the next window excludes this report's own sampling
+            // and print time.
             prev_rounds = g_rounds;
             prev_ns = kos::clock_now();
         }

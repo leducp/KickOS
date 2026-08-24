@@ -5,10 +5,10 @@
 // scheduler, the real FIFO/RR policy, the real capability teardown, the real task pool, with
 // karch_seam.cc standing in for the arch boundary and the subsystems those sources call out to.
 //
-// This header is deliberately GTEST-FREE, and kseam_test.h is the GoogleTest layer over it.
-// The fixture library is compiled -fno-exceptions -fno-rtti, gtest's headers configure
-// themselves from those flags, and including them on both sides of that boundary would put two
-// different gtest configurations into one link.
+// Keep this header GTEST-FREE; kseam_test.h is the GoogleTest layer over it. The fixture
+// library is built -fno-exceptions -fno-rtti and gtest's headers configure themselves from
+// those flags, so including them on both sides of that boundary puts two different gtest
+// configurations into one link.
 //
 // FOUR THINGS TO KNOW BEFORE WRITING AN ARM.
 //
@@ -33,22 +33,18 @@
 // 4. exit_current does not return on target: it parks in arch_idle_wait forever. run_exit()
 //    ends the arm there with a longjmp, which is safe only because the IrqLock scope closes
 //    before that park loop. Never longjmp out of a held IrqLock, and never out of a
-//    capability sweep.
+//    capability sweep. A run_in_chunk_gap action runs INSIDE a sweep, so it may not longjmp
+//    either and run_exit is not available to it.
 //
-//    A run_in_chunk_gap action runs INSIDE a sweep for the same reason, so it may not
-//    longjmp either, and run_exit is therefore not available to it.
-//
-//    THE RESET IS TOTAL FOR TWO OF THE THREE data cap.cc keeps outside the Kernel struct that
-//    `kernel() = Kernel{}` reaches, all in one TU-local constinit:
-//      - the chunk free list: reset() restores it with cap_slab_init().
-//      - g_stdout_target: reset() clears it with cap_console_reset(), which is what lets an
-//        arm publish a console at all. Without that, a stale global handle survives into an
-//        arm whose endpoint pool has been zeroed and whose gen-encoded handles therefore
-//        REPEAT, and an unrelated endpoint close matches it and notes a console death in
-//        ANOTHER arm's counter.
-//      - teardown_depth: unreachable from outside cap.cc. An arm that abandons a sweep would
-//        leave cap_teardown_active() true for every later arm, which reads as a suite that
-//        passes, so reset() REFUSES rather than continuing.
+//    reset() also restores the state cap.cc keeps outside the Kernel struct, which
+//    re-constructing the Kernel does not reach: cap_slab_init() for the chunk free list, and
+//    cap_console_reset() for g_stdout_target, which is what lets an arm publish a console at
+//    all. Without that clear, a stale global handle survives into an arm whose endpoint pool
+//    has been zeroed and whose gen-encoded handles therefore REPEAT, and an unrelated
+//    endpoint close matches it and notes a console death in ANOTHER arm's counter. cap.cc's
+//    teardown_depth is unreachable from outside it, so an arm that abandons a sweep would
+//    leave cap_teardown_active() true for every later arm, which reads as a suite that
+//    passes: reset() REFUSES rather than continuing.
 
 #ifndef KICKOS_TESTS_UNIT_KFIXTURE_KFIXTURE_H
 #define KICKOS_TESTS_UNIT_KFIXTURE_KFIXTURE_H
@@ -64,14 +60,14 @@ namespace kickos
 {
     namespace testfix
     {
-        // Answered by the arch_in_isr stub. The invariant separating thread context from
-        // ISR context is enforced by a kpanic, so a gate for it is a process that dies.
+        // Answered by the arch_in_isr stub. The thread-context/ISR-context invariant is
+        // enforced by a kpanic, so a gate for it is a death test.
         extern bool g_in_isr;
         extern uint64_t g_now_ns;
 
-        // The fake domain pool the seam's domain_for/ref/release work over. Exposed because
-        // the creator hold and the members' hold are TWO references on one domain, and
-        // telling them apart is the only way to gate which of them a death drops.
+        // The fake domain pool the seam's domain_for/ref/release work over. The creator hold
+        // and the members' hold are TWO references on one domain, and telling them apart is
+        // what gates which of them a death drops.
         extern Domain g_domains[KICKOS_MAX_TASKS];
         extern uint16_t g_domain_refs[KICKOS_MAX_TASKS];
         extern bool g_domain_live[KICKOS_MAX_TASKS];
@@ -87,8 +83,7 @@ namespace kickos
 
         // Every TCB an arm may drive without the ThreadPool. Plain storage, because nothing
         // gated here resolves a thread by handle and the pool's reclaim rules would make the
-        // arms about the pool. The two exceptions have their own helpers: endpoint() and
-        // seat_pool().
+        // arms about the pool.
         constexpr int MAX_TEST_THREADS = 8;
 
         struct Fixture
@@ -102,7 +97,6 @@ namespace kickos
         // --- the ordered trace ---------------------------------------------------------
         // Asserted as ONE string with EXPECT_STREQ, never as a set of counters: the claims
         // worth gating here are about ORDER, and a counter oracle cannot fail on a reordering.
-        // Two of the mutants this gate kills are pure reorderings.
         char const* trace();
         __attribute__((format(printf, 1, 2))) void trace_add(char const* fmt, ...);
         void trace_reset();
@@ -110,14 +104,12 @@ namespace kickos
         // --- the seam's recorders ------------------------------------------------------
         Thread* thread_of_context(struct arch_context* c);
         void note_switch(Thread* from, Thread* to);
-        // The context rebuild, recorded rather than performed: there is no real context to
-        // rebuild here and arch_switch does not switch either, so what an arm can see is
-        // WHICH thread's context was named and WITH WHAT. Its position in the trace is what
-        // pins the rebuild before the switch, which is the placement rule the pended
-        // backends need.
+        // The context rebuild, recorded rather than performed: an arm sees WHICH thread's
+        // context was named and WITH WHAT, and its position in the trace pins the rebuild
+        // before the switch, which is the placement rule the pended backends need.
         void note_ctx_redirect(Thread* t, void (*entry)(void* arg), void* base, size_t size);
-        // The last rebuild's arguments, for an arm that asserts the stub and the stack top
-        // rather than only the ordering. Null / 0 until one happens; cleared by reset().
+        // The last rebuild's arguments, for an arm that asserts the entry stub and the stack
+        // top rather than only the ordering. Null / 0 until one happens; cleared by reset().
         extern Thread* g_redirect_target;
         extern void (*g_redirect_entry)(void* arg);
         extern uintptr_t g_redirect_stack_top;
@@ -162,9 +154,9 @@ namespace kickos
         // put the REAL cap_teardown through a live entry. Dies if the slab refuses.
         void attach_caps(Thread* t, uint32_t width);
         // The creator tag task() mints with. It names NO pool slot and is not the boot tag
-        // that kill_tag_of answers for a thread outside the pool, so no arm's exiting thread
-        // orphans a hand-made group by accident, which it would at tag 1, the tag of pool
-        // slot 0 that half the arms here seat their dying thread into.
+        // kill_tag_of answers for a thread outside the pool, so no arm's exiting thread
+        // orphans a hand-made group by accident. Tag 1 would: it is pool slot 0's tag, and
+        // that is the slot the arms seat their dying thread into.
         constexpr uint16_t FIXTURE_TASK_TAG = KICKOS_THREAD_SLOTS + 1;
         static_assert(FIXTURE_TASK_TAG < 0xFFu,
                       "the fixture's creator tag would alias idle's boot tag once truncated "
@@ -180,9 +172,8 @@ namespace kickos
         // comparison over the thread pool, not a list the task holds.
         void join_task(Thread* t, Task* tk);
         // A semaphore park: the kind with NO error channel at all, so an arm can show that the
-        // cancel reaches it anyway and that the token count is left alone.
-        // out_handle may be null: an arm that never installs a cap on the semaphore does not
-        // need one, and only the object identity matters to a park.
+        // cancel reaches it anyway and that the token count is left alone. out_handle may be
+        // null; only the object identity matters to a park.
         Semaphore* semaphore(int* out_handle);
         void park_sem_waiter(Thread* w, Semaphore* s);
         // A sleeper on the timer delta list. On no wait queue, so the tag is the only edge.

@@ -8,29 +8,21 @@
 # .init_array (Reset_Handler runs those before kmain) and send every OTHER
 # ctor (app / libstdc++ / libsupc++ / newlib / KickCAT) into .kickos_app_init_array,
 # which root_entry runs LATER, kernel-live. That set is duplicated across every chip
-# linker script in the tree; a future kernel-side archive whose ctor is NOT added to
-# it would silently fall into .kickos_app_init_array and run too late: kmain would use an
-# unconstructed kernel object. This gate catches exactly that regression.
-#
-# The gate enforces the partition in BOTH directions, because the two failures are
-# different bugs:
-#   1. privilege: a NON-kernel ctor inside .init_array runs from Reset_Handler at
-#      full privilege, ahead of kmain, i.e. app code executing inside the TCB. This
-#      is what a regression to a monolithic KEEP(*(.init_array)) looks like.
-#   2. ordering: a KERNEL ctor inside .kickos_app_init_array runs after kmain has
-#      already used the object it constructs.
+# linker script in the tree, so a future kernel-side archive whose ctor is NOT added to
+# it falls into .kickos_app_init_array and runs too late, leaving kmain to use an
+# unconstructed kernel object.
 #
 # The check works on POINTERS, not symbol addresses: each _GLOBAL__sub_I/_D ctor is
-# a function in .text.startup; the two init_array sections hold POINTERS (thumb bit
-# set) to those functions. So we read the pointer words inside the app window and
-# assert none of them resolves to a ctor that came from a kernel archive.
+# a function in .text.startup, and the two init_array sections hold POINTERS (thumb bit
+# set) to those functions. The pointer words inside each window are what get resolved back
+# to the archive their ctor came from.
 #
 # ZERO CTORS ANYWHERE IS A HEALTHY RESULT: the kernel's static objects are constinit, so
 # the closed archive set defines no _GLOBAL__sub_I and both windows are legitimately
 # empty. Every count below may be zero, and each assertion engages by itself the day a
-# ctor reappears. A missing TOOL RESULT is still fatal on the spot: an archive that is not
-# on disk, an nm/objcopy that failed, an absent window symbol, or a section whose byte
-# count contradicts its window symbols. Those are what catch a renamed archive or section.
+# ctor reappears. A missing TOOL RESULT is fatal on the spot: an archive that is not on
+# disk, an nm/objcopy that failed, an absent window symbol, or a section whose byte count
+# contradicts its window symbols. Those are what catch a renamed archive or section.
 #
 # usage: check_kernel_ctor_placement.sh <elf> <nm> <objcopy> <kernel.a> <arch.a> <chip.a> <lib.a>
 
@@ -61,8 +53,8 @@ name_at() { # <even-hex address>
     "$TMP/nm_elf" | head -1
 }
 
-# One nm read of the ELF, status-checked once: a pipeline would hand back awk's status and
-# every absence-assertion below would read a dead tool as a clean image.
+# Status-checked once, since a pipeline hands back awk's status and every
+# absence-assertion below would read a dead tool as a clean image.
 tool_out "$TMP/nm_elf" '^[0-9a-fA-F]+ [A-Za-z] ' "$NM" "$ELF"
 
 # --- app-ctor window bounds (the section symbols the split defines) -----------
@@ -80,11 +72,10 @@ APP_ENTRIES=$(((EDEC - SDEC) / 4))
 echo "== app-ctor window [0x$START, 0x$END) : $APP_ENTRIES entr(y/ies) =="
 
 # The pointer words a ctor array actually holds, thumb bit cleared, sorted unique.
-# The byte count is reconciled against the entry count the window symbols imply:
-# objcopy exits 0 and writes ZERO bytes for a section that does not exist, so a linker
-# script that renamed the OUTPUT section while keeping the symbols would leave every
-# assertion below reading an empty file (i.e. vacuously satisfied) while the entry
-# counts printed above still looked healthy.
+# The byte count is reconciled against the entry count the window symbols imply, because
+# objcopy exits 0 and writes ZERO bytes for a section that does not exist: a linker script
+# that renamed the OUTPUT section while keeping the symbols would leave every assertion
+# below reading an empty file with the entry counts above still looking healthy.
 ctor_targets() { # <section> <entries> <outfile>
   "$OBJCOPY" -O binary --only-section="$1" "$ELF" "$TMP/sect.bin" \
     || fail "objcopy could not extract $1"
@@ -124,14 +115,11 @@ done < "$TMP/ctor_even.txt" > "$TMP/kernel_ctor_addrs.txt"
 # =============================================================================
 # Assertion 1 (PRIVILEGE BOUNDARY): nothing FOREIGN in the privileged window.
 # =============================================================================
-# The check above guards the "too late" direction. This guards the direction that
-# matters for privilege: .init_array runs from Reset_Handler, fully privileged,
-# before the kernel is even up, so anything landing there is inside the TCB by
-# construction. The linker partitions by input ARCHIVE, which an app cannot forge
-# (naming a section .init_array.00099 still misses every archive selector). But a
-# script that regresses to a monolithic `KEEP(*(.init_array))`, or that grows a
-# fifth selector, would silently pull app ctors privileged. Assert the privileged
-# window contains ONLY ctors from the closed archive set.
+# .init_array runs from Reset_Handler, fully privileged, before the kernel is up, so
+# anything landing there is inside the TCB by construction. The linker partitions by input
+# ARCHIVE, which an app cannot forge: naming a section .init_array.00099 still misses every
+# archive selector. A script that regresses to a monolithic `KEEP(*(.init_array))`, or that
+# grows a fifth selector, pulls app ctors privileged.
 PSTART="$(awk '$3=="__init_array_start"{print $1}' "$TMP/nm_elf")"
 PEND="$(  awk '$3=="__init_array_end"  {print $1}' "$TMP/nm_elf")"
 if [ -z "$PSTART" ] || [ -z "$PEND" ]; then
@@ -157,8 +145,7 @@ fi
 FOREIGN=""
 while read -r TGT; do
   if ! awk -v t="$TGT" '$1==t{found=1} END{exit !found}' "$TMP/kernel_ctor_addrs.txt"; then
-    # Name it if we can, so the failure is actionable rather than a bare address. POSIX awk
-    # only: strtonum/and/compl are gawk, and a green run never executes this line.
+    # POSIX awk only: strtonum/and/compl are gawk, and a green run never executes this line.
     NAME="$(awk -v t="$TGT" '$1==t{print $2}' "$TMP/ctor_even.txt" | head -1)"
     [ -n "$NAME" ] || NAME="$(name_at "$TGT")"
     [ -n "$NAME" ] || NAME="<unresolved>"
@@ -180,10 +167,10 @@ echo "PASS: privileged ctor window holds only closed-set kernel ctors"
 # =============================================================================
 # Assertion 2 (ORDERING): no kernel ctor in the late app window.
 # =============================================================================
-# On every board wired to this gate today the app window is EMPTY: --gc-sections drops
-# every app/libstdc++ ctor, and the kernel's own statics are constinit. The leg still
-# engages by itself the day an app ctor survives, and assertion 3 below is what stops an
-# empty window from passing vacuously.
+# The app window is EMPTY on every board wired to this gate: --gc-sections drops every
+# app/libstdc++ ctor and the kernel's own statics are constinit. The leg engages by itself
+# the day an app ctor survives, and assertion 3 is what keeps an empty window from passing
+# vacuously.
 : > "$TMP/app_targets.txt"
 if [ "$APP_ENTRIES" -gt 0 ]; then
   ctor_targets .kickos_app_init_array "$APP_ENTRIES" "$TMP/app_targets.txt"
@@ -211,10 +198,10 @@ echo "PASS: no kernel-owned ctor is in the app-ctor window ($APP_ENTRIES entr(y/
 # =============================================================================
 # Assertion 3 (REACHABILITY): every surviving ctor is in one of the two windows.
 # =============================================================================
-# What makes the empty app window a claim rather than an early-out. --gc-sections keeps
-# a _GLOBAL__sub_I only because a KEEP'd array entry roots it, so one that survives in
-# the image while appearing in NEITHER array is a ctor that will never run: the linker
-# script grew a third bucket, or dropped the entry and kept the code.
+# What makes the empty app window a claim rather than an early-out. --gc-sections keeps a
+# _GLOBAL__sub_I only because a KEEP'd array entry roots it, so one that survives in the
+# image while appearing in NEITHER array will never run: the linker script grew a third
+# bucket, or dropped the entry and kept the code.
 ORPHAN=""
 while read -r ADDR NAME; do
   EVEN="$(even_hex "$ADDR")"

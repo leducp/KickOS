@@ -13,9 +13,8 @@ set -u
 
 elf="${1:?usage: check_qemu_fp.sh <fp_switch.elf>}"
 
-# The checker loops forever, so it is polled until a RESULT line lands ("FP FAIL:" ->
-# corruption, "FP OK:" -> a clean 10-round batch) rather than burning the whole timeout.
-# The colon is what matches a result and not the banner text.
+# Polled until a RESULT line lands: "FP FAIL:" is corruption, "FP OK:" a clean 10-round
+# batch. The colon is what matches a result rather than the banner text.
 poll_image "$elf" "FP (OK|FAIL):"
 
 if [ "$POLL_OK" -ne 1 ]; then

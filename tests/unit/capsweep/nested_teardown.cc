@@ -6,8 +6,8 @@
 //
 // The claim these arms make is an ORDER; a counter oracle cannot fail on a reordering.
 //
-// What the arms CANNOT witness: the RR slice expiry that produces the interleaving on
-// target, which a returning arch_switch cannot reproduce. The action stands in for that thread.
+// On target the interleaving comes from RR slice expiry; here arch_switch returns, so a gap
+// action stands in for that second thread.
 
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
@@ -31,8 +31,7 @@ namespace kickos
             {
             };
 
-            // gtest runs a *DeathTest suite ahead of the others, which is the documented
-            // placement for a forking case.
+            // The *DeathTest suffix is what makes gtest run this suite ahead of the others.
             class CapSweepDeathTest : public KSeam
             {
             };
@@ -62,13 +61,12 @@ namespace kickos
                           "the first dynamic slot must fall in the FIRST chunk, or the "
                           "ordinal above names a different boundary");
 
-            // Free on every board the fixture compiles for, and not one the arms below ever
-            // arm: what a claim reads is the dispatch slot, so any in-range number does.
+            // Any in-range line does: what a claim reads is the dispatch slot, and no arm
+            // here ever arms it.
             constexpr int CONSOLE_LINE = 14;
             // The dying thread's line cap must land in a LATER chunk than the endpoint cap
             // whose EPIPE releases the peer. Below the boundary both fall in one masked
-            // window and no ordering is observable at all, which is the second reason no
-            // in-tree driver exhibits this (its grant list seats ep@2, line@3).
+            // window and no ordering is observable at all.
             constexpr uint32_t IRQ_CAP_INDEX = KCAP_TEARDOWN_CHUNK;
             static_assert(IRQ_CAP_INDEX < SWEEP_WIDTH,
                           "the line cap must still fit the sweeper's table");
@@ -125,7 +123,7 @@ namespace kickos
                 g_claim_rc = irq_claim(g_supervisor, CONSOLE_LINE, 0, &cap);
             }
 
-            // called directly rather than through exit_current: the subject is the sweep, and
+            // Called directly rather than through exit_current: the subject is the sweep, and
             // an exit ends in a longjmp that may not cross a gap action.
             Thread* dying_sweeper(int slot, uint32_t width)
             {
@@ -153,8 +151,7 @@ namespace kickos
 
             // The published console, served by `owner`. A publisher of its own, so `owner`
             // holds exactly ONE cap on the endpoint and the sweep's recv_holders arithmetic is
-            // the arm's subject rather than the seat in slot 0. reset() calls
-            // cap_console_reset (kfixture.h note 4), so the global cannot reach a later arm.
+            // the arm's subject rather than the seat in slot 0.
             int publish_console_served_by(Thread* owner, int index, int publisher_slot)
             {
                 Thread* const publisher = spawn(publisher_slot, PRIO_PEER);

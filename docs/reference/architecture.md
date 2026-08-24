@@ -880,6 +880,14 @@ feeds the slave app.
   `__malloc_lock` when threaded, and C++ guard/lock hooks) routed to KickOS
   syscalls: the same seam under both the sim's host `libstdc++` and a target full-C++ app's
   toolchain newlib -- one newlib seam fleet-wide. (The full seam detail: `docs/design-kickcat-k64f.md`.)
+- **Per-thread reentrant state**: on every board but the sim, whose libc is the host's, gives every
+  thread slot its own `struct _reent` and points libc at the running thread's copy from
+  `switch_book` and `sched::start` (`kernel/sched/sched.cc`), through the one word libc resolves
+  its state by (`&_impure_ptr`, or `__getreent`'s on Xtensa). `errno` is that struct's first
+  member, so this -- and **not `KICKOS_TLS`** -- is what makes `errno` follow the thread; the two
+  are independent mechanisms and a program wanting both turns both on. `_REENT_INIT_PTR` aims
+  every copy's `_stdin`/`_stdout`/`_stderr` at the one global `__sf[3]`, so **stdio buffering
+  stays process-wide** however many copies exist.
 
 ---
 
@@ -985,13 +993,14 @@ recipe in Book ch.8.2. The contract below is code-synced to `kernel/include/kick
   itself exceeds supply. The total is checked against the board's `KICKOS_CAP_TABLE_SUPPLY`, which
   is the only capability figure a board states. The width itself is
   **computed, and no board declares one**; three values come out across the fleet. **7** on the
-  three supply-7 boards (`bluepill-c8`, `microbit`, `f302nucleo`), whose supply clamps the
+  two supply-7 boards (`bluepill-c8`, `f302nucleo`), whose supply clamps the
   selftest's optional peak away, so the arms that wanted it reclaim and skip -- one flat chunk,
   224 B of `.bss`. **10** on a supply-16 board whose list retains nothing -- every preset default
-  except `frdmk64f`'s and `xmc4800-relax`'s, and equally under any `*_uartirq` list: root takes two
-  chunks of 8 with a 6-slot unaddressable tail while every spawned thread takes one, 1216 B where
-  `KICKOS_MAX_THREADS` is 16 and 704 B where it is 8. **Do not recompute these -- read the
-  `KickOS: cap table =` configure line, which is the authority.** Those are the widths ROOT is
+  except `frdmk64f`'s and `xmc4800-relax`'s, `microbit` included, and equally under any
+  `*_uartirq` list: root takes two chunks of 8 with a 6-slot unaddressable tail while every
+  spawned thread takes one, 1216 B where `KICKOS_MAX_THREADS` is 16, 704 B where it is 8 and
+  448 B where it is 4. **Do not recompute these -- read the `KickOS: cap table =` configure
+  line, which is the authority.** Those are the widths ROOT is
   configured at; a spawned thread gets
   `KICKOS_CAP_CHILD_WIDTH` whatever the row says. **11** only when a
   RETAINING service list is selected -- exactly three declare `RETAINED_CAPS 1`

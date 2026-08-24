@@ -8,9 +8,9 @@
 #
 # Run as: cmake -DJSON=<file> -DOUT=<file> -P tests/static/ctest_tests.cmake
 #
-# Not awk: the command arguments here carry `;`, `"` and regex backslashes, and a property
-# VALUE in this corpus spells "name" as a key, so a line-shaped parse of the pretty-printed
-# JSON misreads it. string(JSON) is a real parser.
+# The command arguments here carry `;`, `"` and regex backslashes, and a property VALUE in
+# this corpus spells "name" as a key, so a line-shaped parse of the pretty-printed JSON
+# misreads it; string(JSON) parses it.
 #
 # NO FIELD IS EVER EMPTY. The caller reads these lines with IFS set to a tab, and a tab is
 # IFS whitespace, so `read` collapses two adjacent tabs into one separator and shifts every

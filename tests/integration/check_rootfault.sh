@@ -3,16 +3,15 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # ROOT-confinement gate: boot the `rootfault` image and assert that ROOT's write into a
-# child's granted region TRAPS and is credited to root. The peer of check_mpu_fault.sh,
-# and NOT the same claim: that one proves a spawned child is confined, this one proves
-# the thread that ran the ctors and the board bring-up is. Native for the sim, QEMU when
-# QEMU_MACHINE is set.
+# child's granted region TRAPS and is credited to root. The claim is about the thread that
+# ran the ctors and the board bring-up, where check_mpu_fault.sh claims it for a spawned
+# child. Native for the sim, QEMU when QEMU_MACHINE is set.
 #
 # Registered only on an enforcing build, so the app's own "NOT confined" line is a
 # failure marker here.
 #
-# <outcome> is the caller's, not this script's to sniff, and it is the same split
-# check_mpu_fault.sh takes. On the `thread-kill' arm root itself is what dies: kmain
+# What a detected violation DOES is a property of the backend, so <outcome> is passed in.
+# On the `thread-kill' arm root itself is what dies: kmain
 # spawns root unprivileged, so the rule reaches it like any other thread. The child is
 # still parked on its semaphore afterwards, which is what keeps the image alive and why
 # that arm polls rather than waiting for an exit; the child outliving root IS the
@@ -44,9 +43,9 @@ fi
 if has "NOT confined"; then
     fail "root's cross-domain write was NOT trapped (enforcement off?)"
 fi
-# The CONTROL half must have run: the child writing its own granted region AND reading
-# the value back proves the grant machinery worked, so the fault below is about root's
-# confinement and not about a region that was never mapped in the first place.
+# The CONTROL half must have run: the child writing its own granted region AND reading the
+# value back proves the grant machinery worked, so the fault below is about root's
+# confinement and not about a region that was never mapped.
 if ! has "child: wrote my own granted region"; then
     fail "the child's write never took effect (setup failed before the test)"
 fi
@@ -66,8 +65,8 @@ if [ "$outcome" = "thread-kill" ]; then
     # The kill must be the WHOLE outcome: a redirect that fired and then escalated
     # anyway still prints the banner above.
     assert_no_panic "root's violation killed the thread AND panicked the system"
-    # Root died, so the "ERROR: child unparked" line the app prints if its wait ever
-    # returns must still be absent. Checked above with the other ERROR markers.
+    # The app's "ERROR: child unparked" line, which its wait returning would print, is
+    # covered by the ERROR check above.
 elif ! has_e "MPU FAULT: thread 'root'|=== MPU FAULT ==="; then
     fail "MPU FAULT marker missing (crash / hang / truncated run?)"
 fi

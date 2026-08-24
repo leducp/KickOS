@@ -6,17 +6,12 @@
 # is named, in tests/static/service_lists.txt, against a configure preset that compiles it.
 #
 # The axis is invisible without this. A provider is created by one
-# kickos_add_board_provider() call inside its chip's branch of system/CMakeLists.txt, so
-# a board whose chip is never configured compiles none of them and nothing reports a skip:
-# rxsci.cc reached a fleet build with no object at all, and every K-seam gate failed to
-# LINK under `sim-telem` for two milestones, both because "not covered" and "covered and
-# passing" look identical from a green run.
-#
-# Usage:
-#   check_service_lists.sh <cmake> <src-dir>
+# kickos_add_board_provider() call inside its chip's branch of system/CMakeLists.txt, so a
+# board whose chip is never configured compiles none of them and nothing reports a skip,
+# leaving "not covered" and "covered and passing" identical from a green run.
 #
 # Source-tree gate: reads the tree through `git ls-files` plus the preset files, builds
-# nothing and configures nothing, so it registers on every board like doc_names.
+# nothing and configures nothing, so it registers on every board.
 #
 # WHAT IT PINS, in both directions:
 #   - every provider the tree creates is declared, and an undeclared one is REFUSED.
@@ -28,28 +23,26 @@
 #   - `default` requires the board's Kconfig (or the root Kconfig, for the universal one)
 #     to spell `default "<provider>"`; `select` requires that no Kconfig does.
 #
-# THEREFORE NOT CAUGHT. Know these before trusting a green run:
+# SCOPE, and it is a floor on coverage rather than a map of it:
 #   - COMPILED IS NOT LINKED, AND LINKED IS NOT RUN. Every provider under a chip's branch
 #     is an ordinary target in `all`, so building that board compiles it whichever list
 #     the board defaults to. A `select` provider whose services have never been brought
-#     up on any image is green here and always will be. Nothing in this file is evidence
-#     that a provider was executed; that is the bench's half.
-#   - It builds nothing, so a provider that no longer COMPILES, and a preset that no
-#     longer CONFIGURES, are both invisible here. tools/sweep_host_gates.sh is the half
-#     that configures, and the fleet build is the half that compiles.
+#     up on any image is green here and always will be. Evidence that a provider was
+#     executed is the bench's half.
+#   - It builds nothing: tools/sweep_host_gates.sh is the half that configures a preset,
+#     and the fleet build is the half that compiles a provider.
 #   - The `default` leg pins that a board's Kconfig NAMES the provider, not that a given
 #     preset's POSTURE selects it. frdmk64f's and xmc4800-relax's defaults are conditional
 #     on MEMORY_MODEL_MPU, so their `-flat` variants fall back to kickos_services_none and
-#     this gate cannot see the difference.
+#     read the same here.
 #   - Board equality comes from the provider's own SOURCE directory. Two boards sharing a
-#     chip would both compile a provider written under one of their directories, and only
-#     the declared one is ever checked.
-#   - ONE preset per provider. A provider compiled by five presets is asserted about one,
-#     so this file is a floor on coverage and never a map of it.
+#     chip both compile a provider written under one of their directories, and the declared
+#     one is what gets checked.
+#   - ONE preset per provider. A provider compiled by five presets is asserted about one.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
-# NOT set -e: the point is to collect EVERY finding in one run, not to stop at the first.
+# Findings accumulate over the whole corpus, so set -e must stay off.
 
 if [ "$#" -ne 2 ]; then
     fail "usage: check_service_lists.sh <cmake> <src-dir>"
@@ -89,10 +82,9 @@ require_nonempty "$TMP/cand" "no tracked CMakeLists.txt calls $CALL(services_...
 
 # A call spans several lines, so the comment-stripped file is joined into one string and
 # the calls are cut out of it in order. A line-shaped state machine gets two single-line
-# calls in a row wrong, closing the first on the second's line and eating the second
-# whole. The count check below caught that. Refuses (exit 2) rather than
-# skipping a block it could not read: a dropped block is a provider that silently needs
-# no declaration.
+# calls in a row wrong, closing the first on the second's line and eating the second whole.
+# Refuses (exit 2) rather than skipping a block it could not read: a dropped block is a
+# provider that silently needs no declaration.
 : > "$TMP/providers"
 : > "$TMP/awkerr"
 while IFS= read -r f; do

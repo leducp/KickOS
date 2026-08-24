@@ -5,16 +5,23 @@
 # Diagnostic app (KICKOS_ENABLE_SELFTEST only). Board-agnostic: pure syscall, no MMIO,
 # no arena spend.
 #
-# NOT gated on KICKOS_HAVE_MPU. Case 3 is about the kernel refusing to dereference an
-# address the caller cannot reach, and the non-enforcing arm of arch_user_text_readable
-# is what answers that on every hardware board's default posture.
+# Every posture, MPU or not: case 3 turns on the kernel refusing to dereference an address
+# the caller cannot reach, which the non-enforcing arm of arch_user_text_readable answers on
+# every board's default posture.
 
 # Two spellings of each verdict: the CTest regex (sim) and the literal the QEMU script
 # greps with -F.
 set(_pg_re_1 "KERNEL PANIC: \\[panicgate\\] message on the wire")
 set(_pg_txt_1 "KERNEL PANIC: [panicgate] message on the wire")
-set(_pg_re_2 "KERNEL PANIC: user panic \\(no readable message\\)")
-set(_pg_txt_2 "KERNEL PANIC: user panic (no readable message)")
+# Cases 2 and 3 are the only ones whose text the KERNEL supplies, so they are the only
+# ones KICKOS_DIAG_TERSE rewrites: kUserPanicNoMsg is P08 in diag.h.
+if(KICKOS_DIAG_TERSE)
+  set(_pg_re_2 "KERNEL PANIC: P08")
+  set(_pg_txt_2 "KERNEL PANIC: P08")
+else()
+  set(_pg_re_2 "KERNEL PANIC: user panic \\(no readable message\\)")
+  set(_pg_txt_2 "KERNEL PANIC: user panic (no readable message)")
+endif()
 set(_pg_re_3 "${_pg_re_2}")
 set(_pg_txt_3 "${_pg_txt_2}")
 # Case 4 ends in the literal truncation marker, so the dots are escaped in the regex:
@@ -23,9 +30,8 @@ set(_pg_re_4 "KERNEL PANIC: \\[panicgate\\] abcdefghijklmnopqrstuvwxyzABCDEFGHIJ
 set(_pg_txt_4 "KERNEL PANIC: [panicgate] abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV...")
 # The tail the truncation must drop; passed as the script's third argument.
 set(_pg_absent_4 "CUTME")
-# Case 5: the four control bytes must each read back as '?' on ONE line. No absent
-# literal, because no substring can express "the LF survived": an unstripped message
-# splits the line and the expected text never appears at all.
+# Case 5: the four control bytes must each read back as '?' on ONE line. The expectation is
+# the whole line: an unstripped message splits it, so the expected text never appears.
 set(_pg_re_5 "KERNEL PANIC: \\[panicgate\\] ctl\\?\\?\\?\\? end")
 set(_pg_txt_5 "KERNEL PANIC: [panicgate] ctl???? end")
 

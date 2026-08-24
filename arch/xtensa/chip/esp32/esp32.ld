@@ -21,6 +21,8 @@
  * OWN stack, so no dedicated exception stack is reserved here.
  */
 
+#include <sections.ld.h>
+
 ENTRY(_start)
 
 MEMORY
@@ -47,6 +49,7 @@ SECTIONS
     {
         *(.literal .literal.*)
         *(.text .text.*)
+        KICKOS_CODE_DEBRIS_SECTIONS
         . = ALIGN(4);
     } > IRAM
 
@@ -79,6 +82,8 @@ SECTIONS
         KEEP(*(.fini_array))
         __kickos_app_fini_array_end = .;
     } > DRAM
+
+    KICKOS_TLS_TEMPLATE(DRAM)
 
     .kickos_app_init_array : ALIGN(4)
     {
@@ -130,7 +135,13 @@ SECTIONS
     __kickos_sram_start = ORIGIN(DRAM);
 
     /DISCARD/ : { *(.xtensa.info) *(.comment) *(.xt.*) }
+
+    KICKOS_NONALLOC_SECTIONS
 }
+
+KICKOS_STATIC_RELOC_ASSERT()
+KICKOS_TLS_ALIGN_ASSERT()
+KICKOS_TLS_FIT_ASSERT()
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows DRAM (no room for the user-RAM pool + stack)")

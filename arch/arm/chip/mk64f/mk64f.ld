@@ -13,6 +13,8 @@
  * the part (bricks debug access), so .fcf is placed here explicitly and KEPT.
  */
 
+#include <sections.ld.h>
+
 ENTRY(Reset_Handler)
 
 /* SRAM is two banks joined at 0x2000_0000 (SRAM_L below, SRAM_U above). Aligned
@@ -59,17 +61,23 @@ SECTIONS
         *(.text .text.*)
         *(.rodata .rodata.*)
         *(.glue_7) *(.glue_7t)
+        KICKOS_CODE_DEBRIS_SECTIONS
         KEEP(*(.init))
         KEEP(*(.fini))
         . = ALIGN(4);
     } > FLASH
 
-    /* EHABI unwind instructions (read-only). Placed explicitly in the FLASH code
-       window so the unprivileged app domain reads them via its RX code grant; left
-       orphaned they happen to land here, but the placement is now guaranteed. */
+    /* EHABI unwind instructions + LSDA (read-only). Placed explicitly in the FLASH code
+       window so the unprivileged app domain reads them via its RX code grant. libstdc++
+       emits .gcc_except_table even on EHABI. */
     .ARM.extab :
     {
         *(.ARM.extab* .gnu.linkonce.armextab.*)
+    } > FLASH
+
+    .gcc_except_table :
+    {
+        *(.gcc_except_table .gcc_except_table.*)
     } > FLASH
 
     /* Global ctors are SPLIT. .init_array keeps ONLY the closed KickOS-owned set
@@ -98,6 +106,8 @@ SECTIONS
         KEEP(*(.fini_array))
         __kickos_app_fini_array_end = .;
     } > FLASH
+
+    KICKOS_TLS_TEMPLATE(FLASH)
 
     .kickos_app_init_array :
     {
@@ -202,7 +212,10 @@ SECTIONS
         *(.bss .bss.* COMMON)
         . = ALIGN(4);
         _appdata_used_end = .;
-        . = __kickos_appdata_start + _appdata_size; /* pad the granted window */
+        /* ld evaluates ASSERTs after layout, so a bare `. = start + size` that moved
+           backwards would fail the link ahead of the overflow ASSERT below. MAX keeps
+           that ASSERT the thing that prints. */
+        . = MAX(., __kickos_appdata_start + _appdata_size); /* pad the granted window */
         __kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
         _kickos_heap_start = ALIGN(_appdata_used_end, 8);
@@ -257,7 +270,13 @@ SECTIONS
     __kickos_code_end = ORIGIN(FLASH) + LENGTH(FLASH);
 
     /DISCARD/ : { *(.ARM.attributes) }
+
+    KICKOS_NONALLOC_SECTIONS
 }
+
+KICKOS_STATIC_RELOC_ASSERT()
+KICKOS_TLS_ALIGN_ASSERT()
+KICKOS_TLS_FIT_ASSERT()
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
@@ -270,8 +289,7 @@ ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
 /* App globals must fit _appdata_size, the app's MPU-granted .data/.bss window.
-   SYSMPU is 32-byte granular, so any 32-byte multiple works here; there is no
-   power-of-two requirement, unlike the PMSA chips.
+   SYSMPU is 32-byte granular, so any 32-byte multiple works here.
    A zero-sized used-end means the user-path selector matched nothing. */
 #if KICKOS_HAVE_MPU
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
@@ -283,10 +301,10 @@ ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
    (kernel/arch/chip/lib) into kernel .data/.bss and lets .appdata/.appbss catch the
    rest, so a broken selector shows up as an EMPTY KERNEL side (kernel writable state
    silently leaked into the app window); that is the failure to catch, and an empty
-   .bss is the loud signal. NOT app-side: an empty .appdata is legitimate (a minimal
-   freestanding app whose only app-side state was --gc-sections'd away), so it must
-   not assert. The tight invariant (a kernel sentinel below __kickos_appdata_start)
-   is a CI nm check. */
+   .bss is the loud signal. Only the kernel side is asserted: an empty .appdata is
+   legitimate, a minimal freestanding app having had its app-side state --gc-sections'd
+   away. The appdata_no_kernel ctest (tests/static/check_appdata_no_kernel.sh) is what
+   establishes that no privileged archive lands inside the granted window. */
 ASSERT(_ebss > _sbss,
        "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
 #endif

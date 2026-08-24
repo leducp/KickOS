@@ -4,6 +4,66 @@
 
 Status of every board target: what works, what only builds, how to flash it, and
 where its console + LED live. Every flash recipe lives in [flashing.md](../flashing.md).
+Asking whether KickOS fits a part you have? Start at *Minimum and recommended
+configuration* directly below.
+
+## Minimum and recommended configuration
+
+**Two floors, and they bind different boards.** FLASH decides whether the self-test is one image
+or two. SRAM decides whether you get `thread_local`, and how many threads. A part can clear one
+and fail the other, so both are stated.
+
+| tier | flash | SRAM | what it buys |
+|---|---|---|---|
+| **minimum** | 64 KiB | 16 KiB | boots, schedules, IPC, MPU isolation where the chip has one, **2 threads**, no `thread_local`, self-test only as a split pair |
+| **recommended** | 128 KiB | 32 KiB | **4+ threads**, `thread_local`, fleet-default cap tables, self-test as **one** image |
+
+**Do not read a tier as an SRAM number.** The constraint is the arena left after `.bss`, and that
+moves with `KICKOS_THREAD_SLOTS` x `KICKOS_KERNEL_STACK_SIZE` and the cap table, neither of which
+is visible in the part's datasheet. `frdmk64f` has **256 KiB** of SRAM and still could not afford
+twelve threads once `KICKOS_TLS` required a power-of-two stride: at 7,584 bytes each block rounds
+to 8,192 anyway, so the board provisions **8 x 8,192** rather than 12 x 7,584. Read each tier as
+(threads, stack size, features) and then as the RAM that costs.
+
+### Minimum: `f302nucleo` and `bluepill-c8` ARE this tier
+
+`f302nucleo` (STM32F302R8, 64 KiB flash / 16 KiB SRAM) is the reference point:
+
+- `KICKOS_MAX_THREADS=2` at a 1,024-byte stack, root 1,536, idle 512 -> **4,096 bytes of
+  arena**. (`KICKOS_THREAD_SLOTS` is one more than that, root holding a slot of its own.)
+- `KICKOS_CAP_TABLE_SUPPLY=7`, the range floor -> 224 bytes of `.bss`
+- `KICKOS_TLS=n`. Deriving the ARM thread pointer from SP needs every arena block strided by one
+  power of two, and three 2,048-byte blocks do not fit; paying it would cost a thread. A
+  `thread_local` in an app built for this board is a link error naming `__aeabi_read_tp`.
+- `KICKOS_KERNEL_STACKS=0`. armv7m is the one arch that legitimately resolves 0, so a no-MPU
+  board here keeps the entry's red zone instead of buying per-thread kernel blocks.
+- `KICKOS_DIAG_TERSE=1`, because 64 KiB of flash cannot carry the long diagnostic column.
+
+`bluepill-c8` (STM32F103C8, 64 KiB / 20 KiB) is the same tier with the extra 4 KiB spent on
+stacks: 2 x 2,048 + root 2,048 + idle 512 is 6,656 bytes of arena, and the binding image
+(`selftest_p2`) leaves 3,232 spare.
+
+At 64 KiB of flash the self-test does not fit as one image and is built as `selftest` +
+`selftest_p2` -- see *Three boards run the selftest as TWO images* below.
+
+### Recommended: `microbit` is exactly this tier
+
+`microbit` (nRF51822 provisioned at 32 KiB, 256 KiB flash) takes the fleet defaults everywhere
+but the thread count:
+
+- `KICKOS_MAX_THREADS=4` at a 2,048-byte stack, root 2,048, idle 512 -> **10,752 bytes of
+  arena**
+- `KICKOS_KERNEL_STACKS=1`: `KICKOS_THREAD_SLOTS` blocks, so 5 x 896 = 4,480 bytes of kernel
+  `.bss` below the arena. Raising the thread count shrinks the arena while growing the demand
+  on it, which is why this board is at 4 and not 8.
+- `KICKOS_TLS=y`, TLS stride 2,048 (`1 << 11`), so every arena block is aligned to its own
+  rounded size.
+- `KICKOS_CAP_TABLE_SUPPLY` at the fleet default 16, 448 bytes of `.bss`. The two 16 KiB parts
+  above are the only boards in the fleet still cutting it to 7.
+
+At 128 KiB of flash the self-test fits as one image: a solo self-test image on `microbit`
+measures text 99,740 + data 420 (measured 2026-08-23), so it wants about 98 KiB. `microbit`
+itself still builds two, which is a residual of its 16 KiB past and not a requirement.
 
 ## This file is the status of record -- code must not restate it
 
@@ -39,7 +99,7 @@ code wins, then this file.
 | `qemu-m33` | mps2-an505 / M33 | -- | semihosting | `ctest --preset qemu-m33` | [x] CI, plain and under **PMSAv8** enforcement incl. full-C++ `cxxtest` + the `mpu_fault` MemManage trap |
 | `qemu-m7` | mps2-an500 / M7 | -- | semihosting | `ctest --preset qemu-m7` | [x] CI, plain and under PMSAv7 enforcement (16 MPU regions) |
 | `qemu-m3` | mps2-an385 / M3 | -- | semihosting | `ctest --preset qemu-m3` | [x] CI, plain and under PMSAv7 enforcement (soft-float; no FP switch path) |
-| `microbit` | nRF51822 / M0 | -- | semihosting | `ctest --preset microbit` | [x] CI (armv6m run gate; the fleet's only measured expected-skip list -- see *microbit* below) |
+| `microbit` | nRF51822 / M0, 32 KiB | -- | semihosting | `ctest --preset microbit` | [x] CI (armv6m run gate; the fleet's only measured expected-skip list -- see *microbit* below) |
 | `qemu-riscv` | QEMU virt / RV32IMAC | -- | semihosting | `ctest --preset qemu-riscv` | [x] CI (first RISC-V) |
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32-D0WD / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
@@ -97,16 +157,23 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   since `f302nucleo` is the same class (64 KiB-flash armv7m, no MPU, real privilege ring) and is on
   the bench. Links the full app set.
 
-  **MODEL PREDICTION, not a witness: `bluepill-c8` fails `hello`'s second spawn by 96 bytes.** The
-  board can never be flashed, so this is arithmetic and stays arithmetic. Arena 6,560 B, read with
-  `arm-none-eabi-nm` on the `hello` ELF at `9ba4e4b`; idle 512 and root 2,048 leave **4,000** against
-  the **4,096** two 2,048-byte stacks need (`boards/bluepill-c8/configs/base/defconfig:9`,
-  `:10`, `:11`; every figure is a multiple of the 32-byte no-MPU granule, so alignment costs nothing
-  here). The cause is the **heap carve**, not the part: 8 KiB `.userheap`
-  (`arch/arm/chip/stm32f103/stm32f103.ld`) where `f302nucleo` now takes 2K, and the C8 has 4 KiB *more*
-  SRAM. The model is the one in `porting.md`'s `## Minimum hardware requirement` section; it
-  predicted all three `f302nucleo` silicon outcomes correctly (see *`f302nucleo` on silicon* below),
-  which is the whole basis for quoting a number for a board nobody can run.
+  **MODEL ARITHMETIC, not a witness: `bluepill-c8` seats `hello`'s two spawns with room to
+  spare.** The board can never be flashed, so this is arithmetic and stays arithmetic. On the
+  `base` config the `hello` ELF links `__kickos_ram_start`..`__kickos_ram_end` = **12,896 B** of
+  arena against the **6,656 B** that idle 512 + root 2,048 + a 2x2,048 pool need
+  (`boards/bluepill-c8/configs/base/defconfig:9`, `:10`, `:11`; every figure is a multiple of the
+  32-byte no-MPU granule, so alignment costs nothing here). `stm32f103.ld` carves
+  `KICKOS_USER_HEAP_SIZE` bytes of `.userheap`, which Kconfig defaults to **2,048** for
+  `CHIP_STM32F103`; the `st` variant sets it to **0**. The model is the one in `porting.md`'s
+  `## Minimum hardware requirement` section; it predicted all three `f302nucleo` silicon outcomes
+  correctly (see *`f302nucleo` on silicon* below), which is the whole basis for quoting a number
+  for a board nobody can run.
+
+  **Neither 64 KiB-flash STM32 builds `cxxtest`.** Its heap high-water is **6,136 B**, bisected on
+  `qemu-m3` by capping the `_sbrk` arena until the STL check stops reporting `ALL PASS`. That is
+  above both the 2,048 B `CHIP_STM32F103`/`CHIP_STM32F302` carve and the 0 B their `st` defconfigs
+  set, and `KICKOS_USER_HEAP_SIZE` is per-build rather than per-app, so raising it for `cxxtest`
+  would take the bytes from every other image on a 20 KiB part.
 - **`due`** -- **retired** (see the table note above): SAM3X port proven 2026-07-09, but
   this unit now has a peripheral-I/O fault.
 - **`frdmk64f`** -- **HW-revalidated 2026-07-15** (OpenSDA J-Link): full selftest streamed
@@ -517,10 +584,13 @@ the board".
   arena was non-negative. `KICKOS_BOOT_ARENA_ASSERT` (`arch/common/boot_arena.ld.h:33-35`, same
   commit as the carve fix) now
   replays those two allocations, alignment padding included, so an arena that cannot hold them fails
-  the **build** on every chip. It still does not check user stacks or pool capacity, which is why
+  the **build** on every chip. It did not then check user stacks or pool capacity, which is why
   `f302nucleo-st` at the board's application profile linked clean and then refused every spawn on
-  hardware. The `-st` preset now provisions for the suite and passes (see *on silicon* above), but
-  the assert's blind spot is unchanged: nothing catches a user-stack or pool shortfall at build time.
+  hardware. The `-st` preset now provisions for the suite and passes (see *on silicon* above), and
+  that blind spot is closed: `KICKOS_POOL_ARENA_ASSERT` (`arch/common/boot_arena.ld.h:76-78`)
+  replays `KICKOS_MAX_THREADS` blocks of the default stack past the two boot stacks, and is
+  mandatory in every linker script the fleet links. What is still unchecked at build time is the
+  non-thread object pools.
 - **microbit has no privilege axis at all, so it witnesses nothing about the user/kernel ring.**
   The nRF51822 is a Cortex-M0, and ARMv6-M's Unprivileged/Privileged Extension is optional and
   separate from the MPU extension: the M0 does not implement it (Cortex-M0 TRM DDI0432C), so
@@ -528,9 +598,14 @@ the board".
   privileged here.** `picopi` is a Cortex-M0+ and does implement it; one arch backend spans both
   cores and nothing in the tree distinguishes them. See `design-unprivileged-root.md` section 2.
 - **microbit is the armv6m run gate, and the fleet's only board that is allowed to skip anything.**
-  16 KiB SRAM and a 2-slot pool mean part of the suite genuinely cannot run here, so
-  `microbit_selftest` sets `EXPECT_SKIPS` to the test **names** it cannot host; every other
-  board keeps the script's default of "nothing may skip". The list is a **measurement, not slack**
+  It is deliberately NOT a BBC micro:bit v1: that part is EOL and nothing here flashes one, so the
+  board takes the nRF51822's 32 KiB variant and QEMU is told the size with
+  `-global nrf51-soc.sram-size=32768` (its machine defaults to 16 KiB and ignores `-m`).
+  `arch/arm/chip/nrf51/nrf51.ld` carries the reason. At 16 KiB and a 2-slot pool this board
+  skipped TWENTY arms; it now skips ONE, `uart_service`, which is a deliberate pin and not an
+  arena outcome. `microbit_selftest` and `microbit_selftest_p2` each set `EXPECT_SKIPS` to the
+  test **names** that part cannot host (the board is a two-image board, see below); every other
+  board keeps the script's default of "nothing may skip". The lists are a **measurement, not slack**
   -- each name and why it skips is at the call site
   (`../../user/apps/common/selftest/CMakeLists.txt`), so growing it should mean a board capability
   changed, and a test that merely stopped running shows up as a breach. It is named rather than
@@ -592,11 +667,17 @@ Every recipe -- ST-Link, external SWD, USB-DFU, picotool/BOOTSEL, esptool, bossa
 `rfp-cli`, and the J-Link / RTT deep-dive -- lives in [flashing.md](../flashing.md). Nothing
 operational belongs in this file.
 
-### The 64 KiB parts run the selftest as TWO images
+### Three boards run the selftest as TWO images
 
-`bluepill-c8` and `f302nucleo` only. Every other board still produces one `selftest`, unchanged.
-The suite outgrew a 64 KiB part (`f302nucleo-st` was at 4 free bytes of 65536), so it is built as
-two self-contained images that partition the arms between them.
+`bluepill-c8`, `f302nucleo` and `microbit` only. Every other board still produces one `selftest`,
+unchanged. The suite outgrew a 64 KiB part (`f302nucleo-st` was at 4 free bytes of 65536), so it is
+built as two self-contained images that partition the arms between them. **`microbit` split for the
+opposite resource, and no longer needs to**: its FLASH is 256 KiB and never binding, but
+`__kickos_ram_start` follows `.bss` on `nrf51`, so eliding a region's test bodies took their statics
+out of `.bss` and handed the difference to the arena. At 16 KiB that was what made the arena probes
+fit; at the 32 KiB provisioning it is a RESIDUAL, and `user/apps/common/selftest/CMakeLists.txt`
+says so at the microbit gate. Collapsing it means deleting the `p2` registration and re-deriving
+`_tap_arms`.
 
 - `selftest` is **part 1**, `selftest_p2` is **part 2**; both land in
   `<build>/user/apps/common/selftest/` with the usual `.elf` / `.bin` / `.hex`.
@@ -608,7 +689,14 @@ two self-contained images that partition the arms between them.
   obvious way to be fooled here.
 - Configure prints what to expect, off the same two expressions:
   `-- selftest: split into two images: selftest plans <N1> arms, selftest_p2 plans <N2> (<N1+N2> together)`
-- These two boards run the FULL arm set: `cap_dest` and `irq_discard` are not excluded on them.
+- The two 64 KiB parts run the FULL arm set: `cap_dest` and `irq_discard` are not excluded on them.
+- **`microbit` is the only split board with a ctest gate, and it has two:** `microbit_selftest` for
+  part 1 and `microbit_selftest_p2` for part 2, each with its OWN `EXPECT_SKIPS` /
+  `EXPECT_PARTIALS`. A name has to be declared in the part whose region holds its `TAP_ADD` line,
+  because `check_tap_stream.sh` reports a name declared in the other part as a NOTE and not a
+  failure. The split recovered three arms there: `mem_self_grant`, `mem_self_grant_nonpow2` and
+  `region_mode` ran out of arena in the combined image and run in part 2 (measured at 288 B more
+  arena, part 2 base `0x20001a60` against `0x20001b80` combined).
 - Which arm sits in which part is decided by POSITION in the registration list at the bottom of
   `user/apps/common/selftest/main.cc`, not by an annotation; the boundary is the `#undef TAP_ADD`.
   Adding or moving an arm means updating the whole-suite floor AND the matching per-part clause in
@@ -618,9 +706,10 @@ two self-contained images that partition the arms between them.
 **Witnessed on `f302nucleo`, not on `bluepill-c8`.** Both `f302nucleo` images boot at `9a00e73`
 (`1..44` and `1..30`, zero `not ok`) and all three restored arms ran there: `cap_dest` pass,
 `cap_capacity` PARTIAL, `irq_discard` pass. `bluepill-c8` has no unit on the bench, so its half of
-the split is build-only. They pass today on `sim`, `qemu`, `qemu-riscv` and `microbit`,
-and `microbit` is the harsher board (`KICKOS_MAX_THREADS` 2 against 3), which is the basis for
-expecting them to pass -- not evidence that they do.
+the split is build-only. They pass today on `sim`, `qemu`, `qemu-riscv` and `microbit`, but
+`microbit` is no longer the harsher board: at four thread slots it is the roomiest of the three,
+against `f302nucleo`'s 3 and `bluepill-c8`'s 2. A pass there is weaker evidence for `bluepill-c8`
+than it was, and it was never evidence that they do pass.
 
 ## Terminal dead-ends and BOOTSEL handover -- `pizero2350`
 

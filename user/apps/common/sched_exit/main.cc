@@ -1,21 +1,20 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Two regressions on the thread-exit path, in one boot.
+// Three regressions on the thread-exit path, in one boot.
 //
 // 1. A NON-LAST thread that exits must not panic. A spawned worker runs briefly then
 // RETURNS (thread exit) while root is still alive. On an arch that defers the context
 // switch (ARM PendSV), the switch away from the exiting thread can only fire once
-// exit_current releases its crit section; the bug this guards against ran
-// KICKOS_UNREACHABLE first ("an EXITED thread was picked to run").
+// exit_current releases its crit section; taking it any earlier reaches
+// KICKOS_UNREACHABLE ("an EXITED thread was picked to run").
 //
 // 2. WAIT-UNTIL-LAST is the shutdown condition: root parks in kos_wait_last while a child
 // is alive and is released by that child's exit, and a child's own kos_wait_last is
-// refused -KOS_EPERM because the primitive is root's. It lives HERE and not in the
-// selftest suite because the condition is GLOBAL: an image carrying a service list has a
-// driver thread that never exits, so kernel().live never reaches 1 and the call never
-// returns. SCHED_EXIT_SERVICE_THREADS says which kind of image this is, and the phase is
-// skipped rather than hung when it cannot complete.
+// refused -KOS_EPERM because the primitive is root's. The condition is GLOBAL: an image
+// carrying a service list has a driver thread that never exits, so kernel().live never
+// reaches 1 and the call never returns. SCHED_EXIT_SERVICE_THREADS says which kind of
+// image this is, and the phase is skipped rather than hung when it cannot complete.
 //
 // 3. ROOT's exit ends the SYSTEM, not just root's thread. Root spawns a child that never
 // exits, then exits itself: with root's exit treated as an ordinary thread exit,
@@ -23,8 +22,7 @@
 // until the harness times out. So the witness is the exit STATUS arriving at all, and
 // EXIT_CODE is nonzero because a shutdown that dropped the status would still exit 0.
 //
-// kos_exit, not exit(): exit() and abort() reach that same KOS_SYS_EXIT on every port,
-// and apps/libc_exit is the gate on that route.
+// kos_exit, not exit(): exit() and abort() reach that same KOS_SYS_EXIT on every port.
 
 #include <kickos/kos.h>
 
@@ -81,9 +79,9 @@ int main(int, char**)
         return 0;
     }
 #if SCHED_EXIT_SERVICE_THREADS
-    // A driver thread from the service list never exits, so the live count never reaches
-    // 1: this park would never be released, and the phases after it would never run. The
-    // sleep stands in for the release, giving the refused waiter above its turn.
+    // A service-list driver thread never exits, so the live count never reaches 1 and the
+    // park would hold every phase after it. The sleep stands in for the release, giving
+    // the refused waiter above its turn.
     kos::print("root: service threads present, wait-until-last skipped\n");
     kos::sleep_ns(300000000ull);
 #else
@@ -102,8 +100,8 @@ int main(int, char**)
     auto parked_thread = kos::thread::spawn(parked, nullptr, "parked", 10);
     if (not parked_thread.valid())
     {
-        // Without the marker the gate cannot tell this run from one where root simply
-        // was the last thread out, which ends the system for an unrelated reason.
+        // The marker separates this from a run where root was simply the last thread
+        // out, which ends the system for an unrelated reason.
         kos::print("parked spawn refused\n");
         return 0;
     }

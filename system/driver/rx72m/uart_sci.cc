@@ -5,8 +5,8 @@
 // kernel has already clocked and pinned (sci6_console_init) and released at the console
 // handover.
 //
-// Every function here touches the granted register window, so all of them belong to the one
-// thread holding it; there is no locking. The register file is BYTE-mapped.
+// Every function here touches the granted register window, so all of them run in the single
+// thread holding that grant. The register file is BYTE-mapped.
 //
 // Register facts come from the RX72M Group User's Manual: Hardware (r01uh0804ej0120,
 // Rev.1.20) sec.42, via arch/rx/chip/rx72m/regs/sci.h. Four shape the whole file:
@@ -21,9 +21,9 @@
 //   4. SMR, SCMR, SEMR and BRR are writable ONLY with SCR.TE and SCR.RE both 0 (notes on
 //      sec.42.2.9/12/13/15), so open takes the channel down first.
 //
-// TEI and ERI are never armed (SCR.TEIE stays 0; RIE covers ERI): both are GROUPBL0 LEVEL
-// sources, and this driver's second line is relayed by a thread that owns no register and
-// so cannot clear the peripheral flag that would make the level drop.
+// SCR.TEIE stays 0 and RIE covers ERI: both are GROUPBL0 LEVEL sources, and the thread that
+// relays this driver's second line owns no register, so it cannot clear the peripheral flag
+// that makes the level drop.
 
 #include <kickos/driver/uart.h>
 
@@ -70,10 +70,9 @@ namespace
         // p.2317 spells out this sequence for SCR.TIE. The caller returns into kos_irq_wait,
         // which unmasks the line, so an unlanded TIE=0 rearms into a live source.
         //
-        // BOUNDED, and giving up is deliberate: this runs on the ordinary drained-queue path
-        // in the only thread servicing the device, so an unbounded spin is a silent console
-        // hang. The caller has no error channel, and a rearm into a live source costs
-        // spurious wakes rather than bytes.
+        // BOUNDED: this runs on the drained-queue path in the only thread servicing the
+        // device and the caller has no error channel, so giving up costs spurious wakes
+        // rather than bytes, where an unbounded spin costs the console.
         for (uint32_t i = 0; i < POLL_MAX; i++)
         {
             if ((r8(base + rs::SCR_OFFSET) & rs::SCR_TIE) == 0)
@@ -83,10 +82,11 @@ namespace
         }
     }
 
-    // The SMR framing bits, or false for a frame this controller cannot encode. CKS is NOT
-    // set here: it belongs to the rate. Parity is an EXTRA bit on this part, not a
-    // replacement for the eighth data bit (sec.42.2.9 p.2163), so 8 data bits plus parity is
-    // an ordinary frame; 9-bit needs SCMR.CHR1 = 0 and would not fit an unsigned char.
+    // The SMR framing bits, or false for a frame this controller cannot encode. CKS belongs
+    // to the rate, so it is left to the caller below. Parity is an EXTRA bit on this part,
+    // not a replacement for the eighth data bit (sec.42.2.9 p.2163), so 8 data bits plus
+    // parity is an ordinary frame; 9-bit needs SCMR.CHR1 = 0 and would not fit an
+    // unsigned char.
     bool encode_frame(struct kos_uart_config const* cfg, uint8_t* out_smr)
     {
         if (cfg->data_bits != 7u and cfg->data_bits != 8u)
@@ -169,17 +169,23 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     u->base = cfg->base;
     u->stats = cfg->stats;
 
-    // No kos_periph_enable: MSTPCRB.SCI6 is released by arch_init and the module-stop
-    // block is kernel-reserved.
+    // MSTPCRB.SCI6 is released by arch_init, and the module-stop block is kernel-reserved.
 
     // Wait out the byte in flight: a divisor or frame change with a frame still shifting
     // corrupts it on the wire, and the kernel banner is normally still draining here.
+    bool drained = false;
     for (uint32_t i = 0; i < POLL_MAX; i++)
     {
         if (tx_idle(u->base))
         {
+            drained = true;
             break;
         }
+    }
+    if (not drained)
+    {
+        // Nothing in the channel has been written yet, so this leaves it as it was found.
+        return -KOS_EBUSY;
     }
     r8(u->base + rs::SCR_OFFSET) = 0u; // TE, RE, TIE, RIE off; CKE = 00 = on-chip BRG
 
@@ -212,8 +218,8 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
         r8(u->base + rs::BRR_OFFSET) = bs.brr;
     }
 
-    // RIE carries ERI as well as RXI (sec.42.2.10 p.2167). TIE stays OFF until
-    // kos_uart_write is refused a byte; TEIE stays off, so TEI never asserts.
+    // RIE carries ERI as well as RXI (sec.42.2.10 p.2167). TIE arms in kos_uart_write, on a
+    // pass the device refused a byte.
     r8(u->base + rs::SCR_OFFSET) =
         static_cast<uint8_t>(rs::SCR_RIE | rs::SCR_TE | rs::SCR_RE);
 

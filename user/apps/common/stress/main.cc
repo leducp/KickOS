@@ -7,10 +7,9 @@
 // asserts exact conservation counts. A lost wakeup, a dropped timer deadline, or a
 // wait-queue corruption shows up as either a hang (the join never completes -> the
 // harness times out) or a final count mismatch (STRESS FAIL). Terminates cleanly
-// (every worker exits, main verifies and returns its failure count), so it doubles
-// as a CTest gate the way selftest does. "# stress complete" marks the end of the run,
-// PASS, FAIL or SKIP alike; the verdict is the STRESS PASS line, which is what the
-// registered ctest keys on.
+// (every worker exits, main verifies and returns its failure count), so it doubles as a
+// CTest gate. "# stress complete" marks the end of the run, PASS, FAIL or SKIP alike;
+// the verdict is the STRESS PASS line, which is what the registered ctest keys on.
 //
 // Pool use scales to the board: the soak first PROBES the concurrent thread budget
 // (spawn parked threads until one is refused), then sizes the ping-pong pairs and
@@ -48,7 +47,7 @@ namespace
     kos_cap_t g_pair_a[MAX_PAIRS];   // "ping waits A, posts B", MAIN's caps
     kos_cap_t g_pair_b[MAX_PAIRS];
 
-    // B1 well-known child cap indices (fresh child table => handle == index; delegated
+    // Well-known child cap indices (fresh child table => handle == index; delegated
     // cap i -> index i+1). MAIN owns the sems and delegates them per spawn in a fixed
     // order so the worker helpers can name them by these constants.
     constexpr int CH_DONE = 1; // completion counter, delegated FIRST to every worker
@@ -74,7 +73,7 @@ namespace
         return *s;
     }
 
-    // caps: done@1, mtx@2, pair-A@3 (CH_A), pair-B@4 (CH_B). arg = pair index (LCG seed only).
+    // arg = pair index (LCG seed only).
     void ping(void* arg)
     {
         int i = static_cast<int>(reinterpret_cast<uintptr_t>(arg));
@@ -95,7 +94,6 @@ namespace
         kos_sem_post(CH_DONE);
     }
 
-    // caps: done@1, mtx@2, pair-A@3 (CH_A), pair-B@4 (CH_B).
     void pong(void*)
     {
         for (int r = 0; r < ROUNDS; r++)
@@ -109,7 +107,6 @@ namespace
         kos_sem_post(CH_DONE);
     }
 
-    // caps: done@1, mtx@2.
     void sleeper(void* arg)
     {
         int i = static_cast<int>(reinterpret_cast<uintptr_t>(arg));
@@ -129,7 +126,6 @@ namespace
     // the driver's priority (root = KICKOS_PRIO_MIN+1): that is the guarantee it
     // reaches EXITED before the driver is rescheduled to spawn the next batch, so its
     // slot is reclaimable in time. Below root, reclaim can miss it -> spurious FAIL.
-    // caps: done@1, mtx@2.
     void churner(void*)
     {
         lock();
@@ -140,7 +136,6 @@ namespace
 
     // Budget probe: park on the gate until main releases it, then exit. Spawned
     // until one is refused, so the live count == the board's concurrent thread pool.
-    // caps: done@1, gate@2 (CH_GATE).
     void prober(void*)
     {
         kos_sem_wait(CH_GATE);
@@ -157,7 +152,7 @@ namespace
         {
             return 0;
         }
-        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_gate, CH_FULL}}; // done@1, gate@2
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_gate, CH_FULL}};
         int n = 0;
         while (n < PROBE_MAX)
         {
@@ -209,7 +204,7 @@ int run_stress_round(int pairs, int sleepers, int live)
             break;
         }
         made_pairs++;
-        uint8_t prio = static_cast<uint8_t>(8 + i); // 8,9,10
+        uint8_t prio = static_cast<uint8_t>(8 + i);
         uint8_t policy = KOS_POLICY_FIFO;
         uint32_t quantum = 0;
         if (i == pairs - 1)
@@ -217,7 +212,6 @@ int run_stress_round(int pairs, int sleepers, int live)
             policy = KOS_POLICY_RR;
             quantum = 300000u; // 300 us
         }
-        // done@1, mtx@2, this pair's A@3, B@4.
         kos_cap_grant pcaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL},
                                  {g_pair_a[i], CH_FULL}, {g_pair_b[i], CH_FULL}};
         auto a = kos::thread::spawn_caps(ping, reinterpret_cast<void*>(uintptr_t(i)), "ping",
@@ -233,8 +227,8 @@ int run_stress_round(int pairs, int sleepers, int live)
     }
     for (int i = 0; ok and i < sleepers; i++)
     {
-        uint8_t prio = static_cast<uint8_t>(6 + (i % 6)); // 6..11
-        kos_cap_grant scaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL}}; // done@1, mtx@2
+        uint8_t prio = static_cast<uint8_t>(6 + (i % 6)); // 6..11, straddling the pairs
+        kos_cap_grant scaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL}};
         auto t = kos::thread::spawn_caps(sleeper, reinterpret_cast<void*>(uintptr_t(i)), "sleep",
                                          prio, scaps, 2);
         if (not t.valid())
@@ -283,7 +277,7 @@ int run_stress_round(int pairs, int sleepers, int live)
         int batch = 0;
         for (int b = 0; b < live; b++)
         {
-            kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL}}; // done@1, mtx@2
+            kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL}};
             auto t = kos::thread::spawn_caps(churner, nullptr, "churn", 10, ccaps, 2);
             if (not t.valid())
             {

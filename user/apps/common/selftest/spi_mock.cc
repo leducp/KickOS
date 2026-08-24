@@ -47,8 +47,8 @@ int32_t kos_spi_device_open(struct kos_spi_device* d, struct kos_spi_bus* b,
     {
         return -KOS_EINVAL;
     }
-    // Unlike the silicon engines this accepts any frame size: the value is the thing under
-    // test rather than something clocked.
+    // Every width in 4..16 is accepted, wider than any silicon engine takes: here the
+    // value is the thing under test rather than something clocked.
     if (cfg->word_bits < 4u or cfg->word_bits > 16u)
     {
         return -KOS_ENOTSUP;

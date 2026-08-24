@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// PRIVILEGE-RING gate, fault arm, in its own binary because it ends the process.
-// Where ringpriv proves an unprivileged thread cannot WRITE CPU privilege state, this
-// proves it cannot READ a privileged-only region, and it does so through a real trap.
+// PRIVILEGE-RING gate, fault arm: an unprivileged thread cannot READ a privileged-only
+// region, witnessed through a real trap. Its own binary, since the trap ends the process.
 //
 // This arm is INDEPENDENT OF THE MPU, which is what lets a board with no MPU witness a
 // confinement fault at all. Two ARM ARM facts carry it (ARM DDI 0403E.e):
@@ -17,11 +16,10 @@
 //     the default system address map".
 // So the trap below fires with the MPU absent, present-and-disabled, or enforcing.
 //
-// The target is SCB->CPUID, read-only with no side effects, so an unexpectedly
-// SUCCESSFUL read cannot perturb the machine it just failed to confine. Deliberately
-// not STIR (0xE000EF00): that is the one SCS register the architecture lets a
-// privileged CCR.USERSETMPEND open to unprivileged access, so a refusal there would be
-// contingent on a control bit instead of on privilege.
+// The target is SCB->CPUID, read-only with no side effects, so an unexpectedly SUCCESSFUL
+// read cannot perturb the machine it just failed to confine. STIR (0xE000EF00) would not
+// serve: a privileged CCR.USERSETMPEND can open that one SCS register to unprivileged
+// access, which would make a refusal there contingent on a control bit and not on privilege.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -73,15 +71,13 @@ int main(int, char**)
     // kpanic_enter masks IRQs before it flushes, so anything still in the ring is at the
     // mercy of the reporter completing. Without this wait a board that dies AT the read is
     // indistinguishable from one that dies in the reporter: both emit a few bytes and stop.
-    // Boards whose console is unbuffered (mps2 writes semihosting directly) do not need it
-    // and are not harmed by it.
     kos_sleep_ns(100000000ull); // 100 ms: ~1150 byte-times at 115200, the ring is
                                 // far smaller
 
     uint32_t const cpuid = load32(SCB_CPUID);
 
-    // Reached only if the PPB did NOT refuse the access. "NOT confined" is the FAIL
-    // marker in tests/integration/check_qemu_ringppb.sh.
+    // Reached only if the PPB did NOT refuse the access; "NOT confined" is the gate's
+    // FAIL marker.
     ksnprintf(msg, sizeof(msg),
               "[ringppb] CPUID read completed: 0x%x - the ring is NOT confined\n",
               static_cast<unsigned int>(cpuid));

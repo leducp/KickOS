@@ -19,10 +19,11 @@ config HAS_MPU
 
 config HAS_TRACE_CLOCK
 	bool
-	default y if ARCH_SIM || ARCH_ARMV7M || ARCH_RXV3 || ARCH_LX6 || ARCH_RV32IMAC
+	default y if ARCH_SIM || ARCH_ARMV7M || ARCH_RXV3 || ARCH_LX6
 	help
-	  An arch_trace_now exists. The armv6m default is n and a chip that ships its
-	  own counter selects it back on.
+	  An arch_trace_now exists AND the core it runs on implements the counter it
+	  reads. A chip that has a usable counter selects it back on. rv32imac is
+	  per-chip: the arch reader is rdcycle, which traps on the ESP32-C6 HP core.
 
 config KICKOS_TRACE_CLOCK_DECLARED
 	int
@@ -54,9 +55,6 @@ config KICKOS_NUM_CORES
 choice
 	prompt "Memory model"
 	default MEMORY_MODEL_FLAT
-	help
-	  Only the models the selected chip advertises are offered, so a posture that
-	  would enforce nothing cannot be chosen.
 
 config MEMORY_MODEL_FLAT
 	bool "Flat, no protection"
@@ -65,10 +63,9 @@ config MEMORY_MODEL_MPU
 	bool "MPU / PMSA / PMP / RX-MPU region enforcement"
 	depends on HAS_MPU
 	help
-	  Offered only where a wild cross-domain access actually FAULTS, which needs
-	  the chip's linker script to carve the .appdata window AND its arch to ship a
-	  real arch_mpu_apply. Without both, arch_domain_static_regions grants zero
-	  regions and the posture enforces nothing. A chip declares the capability by
+	  Offered where a wild cross-domain access actually FAULTS, which needs the
+	  chip's linker script to carve the .appdata window AND its arch to ship a
+	  real arch_mpu_apply. A chip declares the capability by
 	  selecting HAS_MPU in arch/Kconfig, which is also where to look for the
 	  chips that can; bringing a new one up means the window, the backend, and
 	  then that select once enforcement is validated on hardware.
@@ -111,8 +108,8 @@ config KICKOS_MULTI_INSTANCE
 	  exercised at scale. Gated to the sim: the selector is keyed on the host thread,
 	  and a chip has neither host threads nor a second kernel to select.
 
-	  Off, kickos_instance_index() expands to the literal 0 and the image carries
-	  none of this: no load, no multiply, no branch and no symbol, on the arch_cpu_id
+	  Off, kickos_instance_index() folds to the literal 0, so the image carries one
+	  literal for it and no load, multiply, branch or symbol, on the arch_cpu_id
 	  model.
 
 config KICKOS_MAX_INSTANCES
@@ -172,16 +169,32 @@ config KICKOS_USER_STACK_SIZE
 	int "Default spawned-thread stack"
 	range 512 262144
 	default 65536
+	help
+	  What a spawn with no stack_base gets. Threads on it make syscalls, so it
+	  must clear KICKOS_MIN_STACK_SIZE; the range floor here cannot say that,
+	  the floor being per-arch, so thread.h asserts the relation instead and a
+	  setting below it fails the build rather than the thread.
 
 config KICKOS_IDLE_STACK_SIZE
 	int "Idle thread stack"
-	range 256 262144
+	range 512 262144
 	default 65536
+	help
+	  Idle is privileged and its body is arch_idle_wait alone, so it never enters
+	  the syscall path and KICKOS_MIN_STACK_SIZE does not bind it. What does is
+	  the PREEMPTION red zone, the frame a tick or a device IRQ builds on the
+	  stack it interrupted plus whatever the kernel runs below that: 688 on lx6,
+	  the deepest in the fleet, against 384 on rv32imac. The range floor cannot
+	  state a per-arch figure, so each backend static_asserts its own zone against
+	  this knob and a board set below it fails the build rather than the thread.
 
 config KICKOS_ROOT_STACK_SIZE
 	int "Root thread stack"
 	range 512 262144
 	default 65536
+	help
+	  Root runs userspace's ctors and main, so it makes syscalls and is bound by
+	  KICKOS_MIN_STACK_SIZE the way a spawned thread is. kmain.cc asserts it.
 
 config KICKOS_USER_HEAP_SIZE
 	int "Userspace heap the linker script carves"
@@ -198,18 +211,202 @@ config KICKOS_USER_HEAP_SIZE
 	  not get. Zero carves nothing and still prints: newlib falls back
 	  to unbuffered stdio when the buffer malloc fails.
 
+config KICKOS_KERNEL_STACKS
+	int
+	range 1 1 if ARCH_KERNEL_STACKS_MANDATORY
+	default 1 if ARCH_KERNEL_STACKS_MANDATORY
+	default 1 if ARCH_HAS_KERNEL_STACKS && HAS_MPU
+	default 0
+	help
+	  Whether THIS board carves the per-thread kernel stacks, as a number the generated
+	  header and the CMake fragment can carry, on the KICKOS_HAVE_MPU model. At 1 the
+	  KICKOS_THREAD_SLOTS blocks of KICKOS_KERNEL_STACK_SIZE are one array in kernel
+	  .bss, kmain arms each slot's canary and fill at init, and thread_create seats each
+	  pool thread's ctx.kernel_sp on its slot's block. At 0 the array is not compiled,
+	  every kernel_sp stays 0, and the arch entry keeps its red zone instead.
+
+	  IT IS KEYED ON THE CHIP CAPABILITY, NOT THE BOARD'S POSTURE. HAS_MPU says the
+	  silicon can enforce; MEMORY_MODEL_MPU, and so KICKOS_HAVE_MPU, says this variant
+	  switched it on. The question here is whether the board can AFFORD the blocks,
+	  which is a RAM question, and RAM does not change between a board's enforcing and
+	  flat variants. Keying on the capability also stops one board's variants compiling
+	  different entry paths, which would put the arch's syscall geometry inside a
+	  per-variant #if.
+
+	  ARCH_HAS_KERNEL_STACKS alone is not enough: on a chip with no MPU the transfer
+	  buys robustness and not isolation, there being no privilege boundary for a
+	  trusted stack to protect, so the red zone serves instead at a fraction of the RAM.
+
+	  ON THREE ARCHES 0 IS NOT A LEGAL RESOLUTION AT ALL. armv6m, rv32imac and rxv3
+	  select ARCH_KERNEL_STACKS_MANDATORY: their switch.S compiles the transfer with no
+	  red-zone path beside it, and their backends static_assert this knob non-zero. The
+	  `default 1 if ARCH_KERNEL_STACKS_MANDATORY` is placed FIRST for that reason, so no
+	  chip capability or board opt-in can steer the resolution below what the code it
+	  configures accepts. armv7m does NOT select it, being the one arch that legitimately
+	  resolves 0 (stm32f302 and sam3x8e).
+
+	  The `range 1 1` states that invariant rather than enforcing it: this symbol has no
+	  prompt, so tools/kconfig/genconfig.py refuses any requested value by name before it
+	  looks at ranges. The range binds only if the knob ever gains a prompt.
+
+	  NOT AN ARENA CARVE, so cmake/boot_arena.cmake names nothing here. The block grows
+	  kernel .bss, which raises __kickos_ram_start and shrinks the arena above it, and
+	  the two arena asserts in arch/common/boot_arena.ld.h refuse the link when what is
+	  left cannot back the boot stacks or the thread pool.
+
+config KICKOS_KERNEL_STACK_SIZE
+	int
+	default 1184 if ARCH_RV32IMAC
+	default 1104 if ARCH_RXV3
+	default 1472 if ARCH_ARMV7M && TELEMETRY_RTT
+	default 1008 if ARCH_ARMV7M
+	default 896 if ARCH_ARMV6M
+	default 1024
+	help
+	  The stack a thread's PRIVILEGED dispatch runs on, the trap entry transferring to
+	  it instead of continuing on the thread's own. One size class per board, so it is
+	  a constant here and not a per-thread field.
+
+	  NOT A KNOB, which is why it has no prompt. Every default below is what the arch's
+	  deepest transferred dispatch measures, a board may only RAISE it, and a raise buys
+	  nothing the gate asks for while costing KICKOS_THREAD_SLOTS bytes per byte.
+
+	  EVERY DEFAULT ABOVE IS A MEASUREMENT, on all four arches that carve a block:
+	  rv32imac, rxv3, armv7m and armv6m. trap_redzone_roots.txt declares the
+	  transferred class stack=kernel and check_trap_redzone.sh measures it against this
+	  knob rather than against the spawn floor. Each arch derives its own terms in its
+	  own <arch>_trap_stack.h, which is where to read what a figure is made of; no
+	  derivation is copied here, because a copy of a measurement goes stale.
+
+	  TELEMETRY IS ITS OWN SIZE CLASS ON armv7m, and it must not be folded into one
+	  number. KICKOS_TELEMETRY compiles the trace emitters and the ring drain
+	  arch_shutdown runs, which the dispatch reaches through exit_current as well as
+	  through the panic tail; it is the largest posture effect in the fleet. The blocks
+	  are per thread SLOT, so one byte here costs KICKOS_THREAD_SLOTS bytes of kernel
+	  .bss, and applying the telemetry figure fleet-wide fails to link the boards that
+	  have no telemetry variant.
+
+	  A BOARD MAY ONLY RAISE IT. Each arch backend static_asserts the ARCH depth macro,
+	  so a defconfig figure below the arch default fails the build even on a board whose
+	  own reading is lower. Tightening a board below its arch is a change to the assert
+	  and to what the depth macro means, not a defconfig line.
+
+	  WHICH BOARDS PAY. Only where KICKOS_KERNEL_STACKS is 1: the block is
+	  KICKOS_THREAD_SLOTS of this size in kernel .bss, and the banner reports slot size,
+	  slot count and their product. An arch that carves the blocks stops reserving a red
+	  zone for the dispatch, so no board ever holds both.
+
+config KICKOS_TLS
+	bool "Per-thread thread_local storage"
+	depends on ARCH_HAS_TLS
+	default y
+	help
+	  Give each thread its own copy of every thread_local, carved off the LOW end of
+	  that thread's own stack block. The SIZE is not a knob: it is .tdata plus .tbss as
+	  the linker lays the template out, plus whatever the ABI reserves below the thread
+	  pointer. A number typed into a defconfig cannot track a template the linker owns.
+	  With no thread_local declared the carve is zero bytes and this costs nothing.
+
+	  IT DOES NOT GIVE YOU A PER-THREAD errno. newlib reaches its reentrant state
+	  through _impure_ptr, not through a thread_local, so errno and the rest of that
+	  state come from the per-thread struct _reent every non-sim board carries, not
+	  from this knob.
+
+	  IT COSTS NO MPU DESCRIPTOR. The stack is already one region under one descriptor,
+	  and the carve is inside it. Raising ctx.stack_lo above the carve is what keeps a
+	  thread's own SP out of its own TLS.
+
+	  WHAT IT IS NOT: an isolation boundary. Peers in a task share the whole .appdata
+	  window, so a thread_local is a NAMING mechanism, private by convention and not by
+	  hardware.
+
+	  THE MECHANISM IS NOT ONE REGISTER ON EVERY ISA. RISC-V and Xtensa have a thread
+	  pointer (tp, THREADPTR) the kernel writes at restore. Every ARM part in this fleet
+	  is M-profile and has none, so the compiler emits a call to __aeabi_read_tp, which
+	  libc and libgcc both leave undefined and the kernel must answer. RX has neither
+	  and falls back to emutls. ARCH_HAS_TLS in arch/Kconfig says which arch answers
+	  how, and which one cannot.
+
+	  ON RISC-V `tp` IS USER-WRITABLE. An unprivileged thread can put anything in it, so
+	  privileged code that read thread-local state through the incoming tp would trust a
+	  value the thread chose. The entry never reads it: tp is written FROM the control
+	  block at both ends, exactly as gp already is.
+
+	  IT FORCES POWER-OF-TWO STACK SIZES. Unprivileged code on ARM has no register that
+	  differs per thread except SP, so __aeabi_read_tp is SP masked down to the thread's
+	  own block. That is correct only when the blocks are STRIDED by a power of two, so
+	  with this on every arena block is aligned to its own rounded size and
+	  KICKOS_USER_STACK_SIZE and KICKOS_ROOT_STACK_SIZE must be powers of two and must
+	  round to the SAME one. The top-level CMakeLists.txt refuses each failure by name at
+	  configure time, and cmake/boot_arena.cmake mirrors the align leg so the link-time
+	  assert models the geometry the allocator produces. On a part too small to pay that
+	  rounding, turning this off costs a thread_local and keeps a thread: f302nucleo and
+	  bluepill-c8 both make that trade.
+
 config KICKOS_MIN_STACK_SIZE
 	int
-	default 512 if ARCH_ARMV6M
-	default 640 if ARCH_ARMV7M
-	default 640 if ARCH_RXV3
-	default 896 if ARCH_RV32IMAC
+	default 896 if ARCH_ARMV6M
+	# A model ceiling and not an observed overrun: at this depth the chain runs inside
+	# the IrqLock exit_current holds, so the frame term cannot be spent. The leg is kept
+	# because frame plus depth is the gate's model everywhere. armv7m_trap_stack.h.
+	default 1088 if ARCH_ARMV7M && TELEMETRY_RTT
+	default 960 if ARCH_ARMV7M
+	default 1024 if ARCH_RXV3
+	# Under KICKOS_BENCH alone, or every non-bench rv32imac board reserves for a
+	# console bracket it does not compile. rv_trap_stack.h.
+	default 1088 if ARCH_RV32IMAC && KICKOS_BENCH
+	default 1024 if ARCH_RV32IMAC
 	default 896 if ARCH_LX6
 	default 1024
 	help
-	  The floor for a caller-provided stack: the arch's deepest thread-exit
-	  dispatch, measured. A stack below it passes the spawn check and then
-	  overflows on exit.
+	  The floor for a caller-provided stack: the arch's deepest thread-exit dispatch,
+	  measured. A stack below it passes the spawn check and then overflows on exit.
+
+	  WHAT IT STILL COVERS, now that a thread has a kernel block.
+	  kickos_fault_stack_top answers with ctx.kernel_sp, so kickos_thread_fault_exit and
+	  kickos_thread_slay_exit run on the dying thread's KERNEL block and are measured
+	  against that block, as EXITK, not against this floor. What this floor holds is
+	  kickos_thread_return, measured as RET: an entry return, with no fault and no
+	  redirect, so no entry design relocates it. armv7m carries a third class, EXIT, for
+	  the presets that carve no block and where all three stubs therefore stay here.
+
+	  THE FRAME TERM IS NOT ZERO ON ANY ARCH. Each stub is entered by an exception
+	  return, in thread mode, with interrupts enabled, and its exit_current reschedules,
+	  so a preemption below the descent is the ordinary case. Each arch prices that
+	  window in its own <arch>_trap_stack.h, which is where to read the terms; no figure
+	  is repeated here, because a copy of a measurement goes stale.
+
+	  IT MUST ALSO DOMINATE ANY RED ZONE. On a backend whose trap prologue enforces one
+	  below the interrupted sp, a thread whose whole stack is smaller cannot satisfy the
+	  prologue at all: it does not overflow on a syscall, it is refused every time.
+	  Three backends enforce a red zone and none of them over a C dispatch: the two ARM
+	  backends over the window svc_trampoline spends on the thread's PSP before it
+	  reaches ctx.kernel_sp, and rxv3 over that same window plus the context SAVE its
+	  two trap arms leave on the caller's own USP, which they leave there because the
+	  ISA's return path computes the resume SP from where that save sits.
+
+	  RV32IMAC ENFORCES NONE, its entry having moved every U-mode frame onto the
+	  thread's kernel stack, so there this floor covers the two descents that still
+	  spend a thread's own stack. A PRIVILEGED thread's SYSCALL is one: its ecall
+	  arrives with mstatus.MPP=M and keeps frame and dispatch on the sp it interrupted,
+	  and no bound exists to refuse a floor-sized privileged thread's syscall. The death
+	  path is the other, and it spends the stack of every thread whatever its privilege.
+
+	  THE ARM BACKENDS AND RXV3 HAVE NO SUCH SPLIT. SVC_Handler clears CONTROL.nPRIV for
+	  every caller and svc_trampoline transfers on a PSP write rather than on a cause
+	  branch, so a privileged thread's syscall runs on its kernel block exactly as an
+	  unprivileged one's does. RX is the same shape for the same reason: INT #SYS is one
+	  vector whichever mode issued it, its rewrite clears PSW.PM unconditionally, and
+	  the transfer is a write to R0.
+
+	  TWO THINGS CHECK THE RELATION, AND THEY ARE NOT THE SAME CHECK.
+	  check_trap_redzone.sh compares this floor against every class that spends a thread
+	  stack, per board, on the presets it is registered for. Each arch backend ALSO
+	  static_asserts it, on every build of every board, and on the two ARM backends that
+	  assertion is the stricter one: it adds the exception frame entry stacks ABOVE the
+	  pointer the guard validates, which the gate does not model and which a floor-sized
+	  thread pays before the guard ever runs. Keeping both buys coverage, not
+	  strictness: the gate runs on registered presets, the assert on every image.
 
 endmenu
 
@@ -232,17 +429,12 @@ config CONSOLE_RTT
 
 config CONSOLE_BOTH
 	bool "chip + RTT"
-	help
-	  Both paths off the board at once, which is what a part with a native
-	  transport AND an attached probe can do.
 
 endchoice
 
-# Neither RTT arm depends on HAS_TRACE_CLOCK, and that is deliberate: the console
-# transport is a plain RAM ring (lib/rtt.cc reads no clock), so a trace clock has
-# nothing to do with it. Telemetry is the one that needs arch_trace_now, and says so.
-# What decides whether RTT can actually DELIVER is an attached debug probe, a fact
-# about the rig rather than the part, and nothing here models it.
+# The RTT console transport is a plain RAM ring (lib/rtt.cc reads no clock); telemetry is
+# the arm that needs arch_trace_now, and says so. Whether RTT can DELIVER depends on an
+# attached debug probe, which is a fact about the rig rather than the part.
 
 config KICKOS_CONSOLE
 	string
@@ -276,8 +468,7 @@ config KICKOS_RTT_CH1_SIZE
 	default 4096
 	help
 	  A whole run has to fit, so a long trace raises it. The default matches the
-	  rtt.cc fallback. It sizes up1_buf, which the RTT CONSOLE links, so it is
-	  offered wherever that transport is selected and not only under telemetry.
+	  rtt.cc fallback. It sizes up1_buf, which the RTT CONSOLE links.
 
 endmenu
 
@@ -305,10 +496,9 @@ config KICKOS_BENCH
 	bool "Cycle-accurate context-switch microbench"
 	default n
 	help
-	  Brackets the switch body with the core's own cycle counter, which is not
-	  arch_trace_now and so does not answer to HAS_TRACE_CLOCK: the brackets live
-	  in each switch.S that carries them, and an arch without them builds the knob
-	  and measures nothing.
+	  Brackets the switch body with the core's own cycle counter. That counter is
+	  not arch_trace_now, so this knob does not answer to HAS_TRACE_CLOCK; the
+	  brackets live in each switch.S that carries them.
 
 config SCHED_PERIODIC_TICK
 	bool "Force a classic periodic scheduler tick"

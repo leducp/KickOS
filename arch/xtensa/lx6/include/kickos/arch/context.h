@@ -16,6 +16,12 @@
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
 
+// Bytes the ABI reserves BELOW the thread pointer, which the TLS carve has to
+// carry on top of .tdata + .tbss.
+// Xtensa TLS is variant 1: THREADPTR points at a reserved two-word TCB and the
+// first thread_local sits above it.
+#define KICKOS_ARCH_TLS_TCB 8
+
 #include <stdint.h>
 
 // resume_kind discriminator (below). A cooperatively-suspended thread is resumed

@@ -390,8 +390,9 @@ endfunction()
 #   kos_guard_addr, ...) that is deliberately kept OUT of the production ABI, and/or
 #   deliberately faults. A production build carries no diagnostic image. Callers
 #   should `if(NOT TARGET <name>) return() endif()` before registering its tests so
-#   a non-diagnostic build skips them cleanly. Distinct from kickos_add_application,
-#   which is for user/demo apps that build on every configuration.
+#   a non-diagnostic build skips them cleanly. It returns SILENTLY, so a caller that
+#   wants the operator told states the requirement itself. Distinct from
+#   kickos_add_application, which is for user/demo apps that build on every configuration.
 # ---------------------------------------------------------------------------
 function(kickos_add_diagnostic_app name)
   if(NOT KICKOS_ENABLE_SELFTEST)
@@ -470,6 +471,12 @@ function(kickos_add_qemu_test)
     set(_env QEMU=qemu-system-riscv32 "QEMU_EXTRA=-bios none")
     set(_machine virt)
   elseif(QT_BOARD STREQUAL "microbit")
+    # 32 KiB and not the 16 the machine defaults to. QEMU's nRF51 SoC exposes the size as a
+    # QOM property and nothing else does: -m is ignored by a fixed-SoC machine, and an image
+    # linked for 32 KiB without this locks up on its first push, before any vector table is
+    # live, as "can't escalate 3 to HardFault". arch/arm/chip/nrf51/nrf51.ld carries why the
+    # board takes the larger part.
+    set(_env QEMU_EXTRA=-global\ nrf51-soc.sram-size=32768)
     set(_machine microbit)
   elseif(QT_BOARD STREQUAL "qemu")
     set(_machine mps2-an386)

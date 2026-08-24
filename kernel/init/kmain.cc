@@ -12,6 +12,7 @@
 #include <kickos/grant.h>
 #include <kickos/instance.h> // kernel(): root's TCB is an ordinary thread-pool slot
 #include <kickos/irqlock.h>
+#include <kickos/reent.h>
 #include <kickos/time.h>
 #include <kickos/irq.h>
 #include <kickos/app.h>
@@ -154,6 +155,13 @@ namespace kickos
             {
                 kprintf(KDIAG_F_BANNER_NOHEAP);
             }
+#if KICKOS_KERNEL_STACKS
+            // Compiled out where the block does not exist: a board that allocates no kernel
+            // stacks would be reporting geometry it does not have.
+            kprintf(KDIAG_F_BANNER_KSTACK, static_cast<unsigned>(KICKOS_KERNEL_STACK_SIZE),
+                    static_cast<unsigned>(KICKOS_THREAD_SLOTS),
+                    static_cast<unsigned>(KICKOS_THREAD_SLOTS * KICKOS_KERNEL_STACK_SIZE));
+#endif
             kputs("\n");
         }
 
@@ -206,6 +214,17 @@ namespace kickos
         console_buffer_init(); // arm the buffered console TX drain (after irq_init)
         ktrace_init();       // measure probe overhead + emit the opening SESSION (no-op when off)
 
+        // Root runs userspace's ctors and then main, and every syscall it makes descends on
+        // this stack, so it is bound by the same floor a caller-provided stack is checked
+        // against. thread_create takes it with no check of its own, root being created here
+        // and not through the spawn syscall, so the relation is asserted rather than tested.
+        // Idle is exempt: it is privileged, its body is arch_idle_wait alone, and it never
+        // enters the syscall path, so what binds it is the preemption red zone and not this
+        // one (see KICKOS_IDLE_STACK_SIZE in Kconfig).
+        static_assert(KICKOS_ROOT_STACK_SIZE >= KICKOS_MIN_STACK_SIZE,
+                      "KICKOS_ROOT_STACK_SIZE is below the arch's syscall stack floor: root "
+                      "makes syscalls, so it would be refused by the trap prologue");
+
         // Idle (the smaller stack on every board) FIRST: against the bump allocator
         // the small block then sits inside the large block's natural-alignment run-up
         // instead of after it. Worth up to one root-stack's width of arena on every
@@ -214,6 +233,28 @@ namespace kickos
             boot_stack_alloc(KICKOS_IDLE_STACK_SIZE, diag::kBootIdleStack);
         void* const root_stack =
             boot_stack_alloc(KICKOS_ROOT_STACK_SIZE, diag::kBootRootStack);
+
+#if KICKOS_KERNEL_STACKS
+        // THE ONLY CALLER OF kstack_arm, and every slot is armed here before any of them is
+        // handed out. Nothing re-arms on slot reuse, so a slot's high-water and canary read
+        // since BOOT rather than per thread; thread.cc holds why that is the wanted reading.
+        for (int slot = 0; slot < KICKOS_THREAD_SLOTS; slot++)
+        {
+            kstack_arm(slot);
+        }
+#endif
+
+#if !KICKOS_ARCH_SIM
+        // SEEDED HERE SO A SPAWN DOES NOT PAY FOR IT UNDER THE LOCK. One struct _reent is 512
+        // bytes on arm-none-eabi, 288 on riscv32, 284 on rx, and it was the largest term in
+        // the spawn's interrupt-masked window by a factor of sixty over the TLS copy the same
+        // window makes. A slot is re-seeded on REUSE only, where the prior occupant's state
+        // has to go; syscall_thread.cc carries that half.
+        for (int slot = 0; slot < KICKOS_THREAD_SLOTS; slot++)
+        {
+            kickos_reent_init(kickos_reent_acquire(slot));
+        }
+#endif
 
         // Must precede the cap_slab_attach below: this rebuilds the free-chunk list from
         // scratch, so running it afterwards would hand root's run back to the free list.
@@ -232,6 +273,9 @@ namespace kickos
         // Idle is created first, so it MUST be trace id 0 (the telemetry decoder
         // keys CPU% off tid 0 == idle). Assert the invariant, not just assume it.
         KICKOS_ASSERT(kernel().idle_tcb.id == KICKOS_TID_IDLE);
+        // Idle holds no pool slot, so it carries libc's process-wide state and there is
+        // nothing to initialise for it.
+        sched::add(&kernel().idle_tcb);
 
         // Root runs at a low priority so a worker's completion post never preempts the
         // orchestrator. That is the only scheduling property the priority buys, and it is
@@ -287,6 +331,7 @@ namespace kickos
             IrqLock lock;
             cap_seat_authority(root_tcb, CAP_AUTH_ALL);
         }
+        sched::add(root_tcb);
 
         sched::start(); // returns only if the scheduler ever unwinds to boot
         return 0;

@@ -156,7 +156,7 @@ enum kos_syscall_nr
                                //   under this handle), -KOS_EPERM (the caller did not spawn
                                //   it), -KOS_EDEADLK (naming yourself).
     KOS_SYS_WAIT_LAST = 49,    // () -> 0 once the caller is the last live thread, or
-                               //   -KOS_EPERM to any thread but root. Takes NO deadline.
+                               //   -KOS_EPERM to any thread but root.
     KOS_SYS_SEND_TIMED = 50,   // (cap, buf, len, timeout_us) -> as KOS_SYS_SEND, plus
                                //   -KOS_ETIMEDOUT
     KOS_SYS_TASK_CREATE = 51,  // (mem_base, mem_size, kos_task_t* out, kos_mem_flags) -> 0,
@@ -191,17 +191,29 @@ enum kos_syscall_nr
                                //   normal image returns -KOS_EINVAL.
     KOS_SYS_CALL_REG = 56,     // (ep_cap, kos_call_lens_pack(send_len, recv_cap), payload in
                                //   the remaining argument registers) -> as KOS_SYS_CALL, with
-                               //   the reply delivered in registers too. INTERNAL: no stub
-                               //   spells it, kos_call selects it on size alone. Implemented
+                               //   the reply delivered in registers too. INTERNAL:
+                               //   kos_call selects it on size alone. Implemented
                                //   ONLY in the trap-handler fastpath; the generic dispatch
                                //   answers KOS_CALL_REG_FALLBACK, the stub's cue to re-issue
                                //   as KOS_SYS_CALL.
-    KOS_SYS_IPC_FAST_TAKEN = 57 // ()  -> count of calls the trap-handler IPC fastpath
+    KOS_SYS_IPC_FAST_TAKEN = 57, // ()  -> count of calls the trap-handler IPC fastpath
                                //   COMPLETED (self-test only). The fastpath and the buffer
                                //   form answer a caller identically, so this counter is the
-                               //   only thing that separates them. Reads 0 on a backend with
-                               //   no fastpath.
+                               //   only thing that separates them. Reads 0 on a backend
+                               //   whose calls all take the generic path.
+    KOS_SYS_NEST_WITNESS = 58  // (which) -> one nested-trap counter (self-test only), or
+                               //   KOS_NEST_UNSET for a figure nothing recorded. A COUNTER
+                               //   READ and not a report: a kernel-side report puts the
+                               //   console's varargs route inside the SYSCALL red zone.
 };
+
+// Selectors for KOS_SYS_NEST_WITNESS. NEST_ROOM is the bytes between the lowest nested frame
+// seen on a thread stack and that stack's base; compare it against the arch's own interrupt
+// red zone, since less than that means the ISR below the frame had no bound.
+#define KOS_NEST_TRAPS   0
+#define KOS_NEST_ONSTACK 1
+#define KOS_NEST_ROOM    2
+#define KOS_NEST_UNSET   0xFFFFFFFFu
 
 // The generic dispatch's answer for KOS_SYS_CALL_REG: retry through KOS_SYS_CALL. Outside
 // the result range by construction, a kos_call answering a byte count in [0, KOS_EP_MSG_MAX]
@@ -244,9 +256,9 @@ enum kos_mem_flags
 {
     // Map the block Normal non-cacheable, for a block a bus master reads or writes. A chip
     // whose region descriptors carry no memory type and whose data cache sits over the arena
-    // REFUSES it with -KOS_EPERM; a chip with no cache in that path accepts it. There is no
-    // cache-maintenance call anywhere in this tree, so an unhonoured request would be silent
-    // data corruption.
+    // REFUSES it with -KOS_EPERM; a chip with no cache in that path accepts it. Honouring is
+    // checked and not assumed: an accepted-but-unhonoured request is silent data corruption,
+    // the caller having no cache-maintenance call to repair it with.
     KOS_MEM_NOCACHE = 1u << 0
 };
 #define KOS_MEM_FLAGS_ALL (KOS_MEM_NOCACHE)
@@ -254,8 +266,8 @@ enum kos_mem_flags
 // `op` selector for KOS_SYS_BENCH (KICKOS_BENCH images only). Values are a frozen
 // contract: append, never reorder. A BAD op returns -KOS_EINVAL.
 //
-// The two PRINT ops make the KERNEL write the line, so they need the kernel console
-// (kickos_services_none): under a published userspace console driver they reach nothing.
+// The two PRINT ops make the KERNEL write the line, so they land on the kernel console
+// (kickos_services_none) alone.
 enum kos_bench_op
 {
     KOS_BENCH_OP_RESET = 0,       // ()          -> 0. Switch AND phase accumulators.
@@ -309,12 +321,17 @@ _Static_assert(offsetof(struct kos_recv_timed_opts, info) == 4,
 // P-state selector for KOS_SYS_CPU_CLOCK_SET, NOT a raw Hz: the landed Hz is the syscall's
 // return value. Carried as a plain u32 in the syscall register, so the width is the stable
 // ABI: append new states, never reorder.
-typedef enum kos_pstate_e : uint32_t
+enum kos_pstate_e
 {
     KOS_PSTATE_MAX = 0, // full PLL (the boot clock: XMC 144 / K64F 120 MHz)
     KOS_PSTATE_MID,     // a reduced locked-PLL / staged point (chip rounds to nearest)
     KOS_PSTATE_LOW      // deep power saving (crystal/RC direct or a low staged point)
-} kos_pstate_t;
+};
+// An enum's own width is implementation-defined before C23 (arm-none-eabi short-enums this
+// one to a single byte; GNURX does not), and a fixed underlying type is not ISO C11, so the
+// ABI type is the u32 and not the enum. A caller wanting -Wswitch exhaustiveness back
+// switches on `(enum kos_pstate_e)x`; the u32 alone carries no enumerator set.
+typedef uint32_t kos_pstate_t;
 
 // Shared payload bound: send REJECTS a len above this; recv clamps its capacity to it.
 #define KOS_EP_MSG_MAX 256
@@ -406,10 +423,10 @@ enum kos_cap_rights
 };
 
 // The thread's authority word (must mirror kickos::CapAuthority): its own field, sharing no
-// numbering with kos_cap_rights. It is TCB state, not a capability: there is no table entry
-// for it and nothing can delegate it. A thread may pass a bit to a child
-// (kos_thread_params::authority) only if it holds that bit, and may drop bits with
-// kos_cap_narrow(KOS_CAP_AUTHORITY, mask). Nothing widens.
+// numbering with kos_cap_rights. It is TCB state and not a table entry, so a spawning parent
+// is what seats it. A thread may pass a bit to a child (kos_thread_params::authority) only if
+// it holds that bit, and may drop bits with kos_cap_narrow(KOS_CAP_AUTHORITY, mask). Nothing
+// widens.
 enum kos_cap_authority
 {
     KOS_AUTH_MEMORY = 1 << 0,  // kos_ram_alloc, the spawn-time MMIO grant, kos_mem_self_grant

@@ -51,17 +51,15 @@ REC_LEN = {
 
 # TODO(de-drift): generate ARCH_NAME from kickos::trace::ArchId
 # (include/kickos/trace/record.h), which it mirrors by hand. The number is the WIRE
-# contract, the string here a human label, and the tests/unit/telemetry idmap
-# cross-check fails the build if the number set drifts.
+# contract, the string here a human label, and the telemetry_idmap ctest gate fails if
+# the number set drifts.
 ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv"}
 
-# syscall numbers -> names. *sleep_ns* and *sem_wait* are BLOCKING: their ENTER..EXIT
-# span includes intended block time, so judge them by on-CPU overhead.
+# syscall numbers -> names.
 #
 # TODO(de-drift): generate this from enum kos_syscall_nr (user/include/kickos/sys/abi.h),
-# which it mirrors by hand. The tests/unit/telemetry idmap gate parses abi.h and fails if
-# a number is missing or stale here, or if a label is not the enumerator suffix
-# lowercased, so keep the names mechanical.
+# which it mirrors by hand. Keep each label the enumerator suffix lowercased;
+# tests/unit/telemetry/check_idmap.py gates the numbers and the labels.
 SYSCALL_NAME = {
     1: "kconsole_write", 2: "yield", 3: "sleep_ns", 4: "sem_create", 5: "sem_wait",
     6: "sem_post", 7: "thread_spawn", 8: "exit", 9: "irq_inject", 10: "guard_addr",
@@ -78,14 +76,12 @@ SYSCALL_NAME = {
     48: "thread_join", 49: "wait_last", 50: "send_timed",
     51: "task_create", 52: "task_kill", 53: "thread_slay",
     54: "task_slay", 55: "bench", 56: "call_reg", 57: "ipc_fast_taken",
+    58: "nest_witness",
 }
 
 TRACE_MAGIC = 0x4B545243
 TIMER_LINE = 0xFFFE
 NO_THREAD = 0xFFFF
-# KOS_SYS_EXIT is a no-return syscall, recorded as SYSCALL_ENTER with no matching
-# EXIT (one per exiting thread). The structural check tolerates unmatched ENTERs and
-# flags only orphan EXITs.
 SEQ_MOD = 1 << 16
 TS_MOD = 1 << 32
 
@@ -321,8 +317,6 @@ def analyze(records, model, gaps):
             switches.append((idx, r))
     run_ns = {}          # tid -> ns run
     slices = []          # (tid, start_ns, end_ns) for chrome/cpu
-    # rule (f): a run slice whose index range crosses a seq gap is poisoned. Drop it
-    # from BOTH the numerator (run_ns) AND the denominator (excluded).
     excluded = 0.0
     for (ia, a), (ib, b) in zip(switches, switches[1:]):
         start, end = ns(a), ns(b)
@@ -423,7 +417,6 @@ def _union_len(spans):
 
 
 def _corrected(d, probe_ns):
-    # subtract one probe read's cost, clamped at 0.
     d -= probe_ns
     if d < 0.0:
         return 0.0
@@ -594,8 +587,6 @@ def cmd_summary(records, model, lost, gaps, errors):
     for tid in sorted(a["run_ns"]):
         label = "idle" if tid == 0 else ("tid %d" % tid)
         print("  %-8s %.1f %s" % (label, a["run_ns"][tid], unit))
-    # On-CPU overhead is the real syscall cost; the raw enter->exit SPAN includes
-    # intended block time for blocking calls (sleep_ns/sem_wait).
     print("syscall overhead (on-CPU) :")
     print(_fmt_stat(a["syscall_overhead"], unit))
     if a["syscall_by_nr"]:
@@ -879,8 +870,7 @@ def main():
     unwrap(records)
     model = clock_model(records)
     if args.clock_hz:
-        # Explicit trace-clock frequency: ns = tick * 1e9 / hz, from the clock
-        # origin. Works with zero SESSION anchors (mid-stream capture).
+        # ns = tick * 1e9 / hz, from the clock origin.
         model = (1e9 / args.clock_hz, 0.0, 0.0)
     lost, gaps = loss_scan(records)
 

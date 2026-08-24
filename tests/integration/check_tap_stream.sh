@@ -41,16 +41,33 @@ fi
 if ! echo "$out" | grep -q "# all tests passed"; then
     fail "TAP completion marker missing (crash / hang / truncated run?)"
 fi
-# THE SELFTEST NEVER FAULTS. The deliberate cross-domain fault is a separate binary
-# (faultsurvive), so a thread-fault record in this stream is an arm whose thread died the
-# wrong way, and thread-scoped isolation means it dies anyway, so every plan, case and
-# directive check above still reconciles and the run reads green. A slay redirect that
-# rebuilds an UNPRIVILEGED context faults the stub on its first kernel access, is caught
-# by kickos_fault_kill_thread, and reaches the same observable end state as a correct one.
+# THE SELFTEST NEVER FAULTS: the deliberate cross-domain fault lives in a separate binary
+# (faultsurvive). A thread-fault record here is an arm whose thread died the wrong way, and
+# thread-scoped isolation means the plan, case and directive checks above still reconcile and
+# read green, so only this clause can see it. A slay redirect that rebuilds an UNPRIVILEGED
+# context faults the stub on its first kernel access and reaches the same observable end
+# state as a correct one.
 if echo "$out" | grep -q "=== THREAD FAULT ==="; then
     echo "$out" | grep "=== THREAD FAULT ==="
     fail "a thread faulted during the suite: this stream's arms must never fault"
 fi
+
+# The arm numbers, in order, one per line.
+arm_numbers() { sed -n 's/^\(not \)\?ok \([0-9][0-9]*\).*/\2/p'; }
+
+# The first place the numbers are not strictly +1, or empty. STRICTLY +1 AND NOT A COUNT: one
+# duplicated number paired with one missing number leaves both the case count and the span
+# untouched, so neither of those tests can see it.
+seq_break() { awk 'NR == 1 { prev = $1; next } { if ($1 != prev + 1) { print prev "->" $1; exit } prev = $1 }'; }
+
+# Proven on planted input before it is trusted, because a checker that never fires reports
+# every stream clean.
+_probe="$(printf 'ok 1\nok 1\nok 3\n' | arm_numbers | seq_break)"
+[ "$_probe" = "1->1" ] \
+    || fail "seq_break did not catch a duplicated arm number on planted input (got '$_probe')"
+_probe="$(printf 'ok 1\nok 2\nok 3\n' | arm_numbers | seq_break)"
+[ -z "$_probe" ] \
+    || fail "seq_break fired on a clean planted sequence (got '$_probe')"
 
 cases="$(echo "$out" | grep -c '^\(not \)\?ok [0-9]')"
 # Parsed after the completion marker so a truncated run is reported as truncated.
@@ -79,10 +96,7 @@ if [ -n "${TAP_HEADLESS_LAST:-}" ]; then
         fail "arms $first..$last span $((last - first + 1)) numbers but $cases were reported:
   the stream has a HOLE, which a head-truncated capture must never have"
     fi
-    # STRICTLY +1 EACH: the span test counts LINES, so one duplicated number paired with one
-    # missing number leaves both count and span untouched.
-    seq_bad="$(printf '%s\n' "$out" | sed -n 's/^\(not \)\?ok \([0-9][0-9]*\).*/\2/p' \
-        | awk 'NR == 1 { prev = $1; next } { if ($1 != prev + 1) { print prev "->" $1; exit } prev = $1 }')"
+    seq_bad="$(printf '%s\n' "$out" | arm_numbers | seq_break)"
     if [ -n "$seq_bad" ]; then
         fail "arm numbers are not strictly consecutive at $seq_bad: a repeat or an
   out-of-order line, either of which a span test cannot see"
@@ -100,11 +114,22 @@ else
     if [ "$plan" -ne "$want_arms" ]; then
         fail "TAP plan is $plan, expected exactly $want_arms: an arm was added or deleted"
     fi
+    # THE COUNTS RECONCILE AND THE NUMBERING STILL MAY NOT. `1..3` with `ok 1, ok 1, ok 3`
+    # satisfies both tests above, so the plan is checked against the SEQUENCE as well.
+    first="$(printf '%s\n' "$out" | arm_numbers | head -1)"
+    if [ "$first" != "1" ]; then
+        fail "the first arm is numbered $first, not 1, against a plan of 1..$plan"
+    fi
+    seq_bad="$(printf '%s\n' "$out" | arm_numbers | seq_break)"
+    if [ -n "$seq_bad" ]; then
+        fail "arm numbers are not strictly consecutive at $seq_bad: a repeat or an
+  out-of-order line, which neither the plan nor the case count can see"
+    fi
 fi
 
 # One directive class. The harness spells both as a passing case carrying a directive,
-# `ok <n> - <name> # <DIRECTIVE> <reason>`, plus a matching `# <label>: N` summary line;
-# parse and permission are identical, only the tokens differ. Sets N to the count.
+# `ok <n> - <name> # <DIRECTIVE> <reason>`, plus a matching `# <label>: N` summary line.
+# Sets N to the count.
 check_directive() { # <DIRECTIVE> <summary-label> <permitted names>
     _dir="$1"
     _label="$2"

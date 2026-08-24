@@ -292,6 +292,11 @@ _kickos_int_level1:
     movi    a2, g_arch_current
     s32i    a3, a2, 0
 
+    /* THE THIRD SEATING SITE. An interrupt that decides a switch never enters
+       xtensa_switch, so seating THREADPTR there alone leaves the incoming thread
+       running on the OUTGOING thread's pointer until its next cooperative switch. */
+    SEAT_THREADPTR a3, a2, a4
+
     /* Resume the incoming thread by the path its resume_kind selects. */
     l32i    a2, a3, CTX_KIND
     bnez    a2, .Lint_resume_irq

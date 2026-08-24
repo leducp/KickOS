@@ -3,7 +3,8 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # ONE board, ONE already-built image: flash it, capture the console, and refuse rather
-# than produce a plausible-looking wrong log. No build step and no ssh knowledge here.
+# than produce a plausible-looking wrong log. It takes an already-built image and a resolved
+# board; bench.sh owns the build and the ssh.
 #
 #   bench-capture.sh <board> <app> <image-base> <log> [jlink-sn]
 #
@@ -59,12 +60,12 @@ mkdir -p "$(dirname "$LOG")" || refuse "cannot create the log directory for $LOG
 #
 # WHICH DEVICE, AND WHERE THAT COMES FROM. A J-Link VCOM carries the probe serial the
 # caller resolved live, so the row derives the path outright. The others are cables, and
-# a cable is rig data. A row states a by-id pattern only where the prefix names the probe
-# on its own; the FTDI consoles have NO pattern, because this bench carries a second
+# a cable is rig data. A row states a by-id pattern where the prefix names the probe on its
+# own; the FTDI cables are named by rig.conf instead, because this bench carries a second
 # FT232 and a CP210x belonging to other work and a vendor-keyed glob picks whichever
 # enumerated first, so the capture that follows is complete, plausible, and the wrong
-# board. Those refuse by name until rig.conf says which cable. Any row can be pinned
-# there, and a pin always wins: do that the day a second ST-Link or CH34x joins the bus.
+# board. A board with neither refuses by name. Any row can be pinned in rig.conf, and a pin
+# always wins: do that the day a second ST-Link or CH34x joins the bus.
 PORT=""
 PATTERN=""
 case $BOARD in
@@ -72,7 +73,7 @@ case $BOARD in
   f302nucleo)             PATTERN="/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_*-if02" ;;
   esp32c6-wroom)          PATTERN="/dev/serial/by-id/usb-1a86_USB_Single_Serial_*" ;;
   esp32-wroom)            PATTERN="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0" ;;
-  rx72m|picopi|pizero2350|teensy41) ;;
+  f411disco|rx72m|picopi|pizero2350|teensy41) ;;
   *) refuse "no console row for $BOARD; add one rather than guessing its probe" ;;
 esac
 RIGKEY="RIG_CONSOLE_$(printf '%s' "$BOARD" | tr 'a-z-' 'A-Z_')"
@@ -127,10 +128,13 @@ resolve_console() {
 
 # A reader for a console that DOES NOT EXIST YET, spinning on the path from before the
 # flash. The device appears when the image boots and leaves when it ends, and with
-# KICKOS_SHUTDOWN_TO_BOOTLOADER=ON that is about as long as a poll loop takes to notice:
-# there is no window to arm inside, so the reader must already be waiting.
+# KICKOS_SHUTDOWN_TO_BOOTLOADER=ON that is about as long as a poll loop takes to notice, so
+# the reader must already be waiting.
 #
 # The glob resolves per open, the path not existing to pin when this is armed.
+#
+# The HEAD of the stream is unrecoverable on this route: the banner is out before the host
+# finishes enumerating, so a capture taken this way is read for its body.
 arm_waiting_reader() {
   setsid bash -c '
     shopt -s nullglob
@@ -155,8 +159,8 @@ arm_waiting_reader() {
   READER=$!
 }
 
-# Answered from the LOG, the device having usually gone by now. The refusal names the two
-# failures it cannot separate; dmesg_restrict is 1 here, so the kernel log cannot either.
+# Answered from the LOG, the device having usually gone by now. dmesg_restrict is 1 here, so
+# the kernel log cannot separate the two failures either.
 check_cdc_capture() {
   if [ -s "$LOG" ]; then
     return 0
@@ -208,8 +212,8 @@ stop_wrapped_reader() {
   [ -n "$READER" ] || return 0
   kill -- "-$READER" 2>/dev/null
   sleep 1
-  # A self-USB console has no pinned $PORT and is usually off the bus by now, so there is
-  # no port to find a holder on.
+  # The holder check needs a pinned $PORT; a self-USB console has none, and is usually off
+  # the bus by now.
   [ -n "$PORT" ] || return 0
   if fuser "$PORT" 2>/dev/null; then
     echo "WARNING: $PORT is STILL held after the reader teardown. Kill the PID fuser" >&2
@@ -229,8 +233,11 @@ case $BOARD in
     FLASH_PORT="$PORT" FLASH_IMAGE="$IMG" "$ROOT/tools/flash.sh" "$BOARD" "$APP" || refuse "the flash failed"
     "$PYBIN" "$HERE/cap_esp.py" "$PORT" "$LOG" "${CAP_SECS:-40}" '^1\.\.[0-9]+' > /dev/null 2>&1
     ;;
-  f302nucleo)
-    # THERE IS NO SEPARATE RESET STEP, AND REMOVING IT IS WHAT MADE THIS BOARD A RELIABLE
+  f302nucleo|f411disco)
+    # One arm, two consoles. f302nucleo's is the ST-Link V2.1's own VCOM; f411disco's probe
+    # is a V2 with NO VCP, so its console is a separate FTDI named by RIG_CONSOLE_F411DISCO
+    # and the stty re-arm below is what keeps that cable from returning EOF at once.
+    # THERE IS NO SEPARATE RESET STEP, AND REMOVING IT IS WHAT MADE THE f302 A RELIABLE
     # INSTRUMENT (measured 2026-08-13). Releasing NRST at the end of the write already starts
     # the image, so the write's own boot IS the authoritative run. This branch used to follow
     # the write with `st-flash reset` to guarantee a single boot; what that actually did was cut
@@ -247,13 +254,8 @@ case $BOARD in
     # ST-Link property, not a general one: on a J-Link, arming before the flash yields an empty
     # log or one missing its head.
     #
-    # THE WRITE GOES THROUGH tools/flash.sh, SO THE RECIPE A HUMAN RUNS AND THE ONE THE BENCH
-    # Runs are one path: with no reset step left here, the two are now literally the same
-    # command. They were two, and the divergence is what hid the f302 bug for weeks: this
-    # branch inlined a correct `--connect-under-reset write` while the shipped
-    # tools/flash-stlink.sh carried a `--reset` alongside it that halts the core at
-    # HardFault_Handler, so every bench capture was healthy and every hand flash looked like a
-    # dead board.
+    # THE WRITE GOES THROUGH tools/flash.sh, so the bench recipe and the hand recipe are one
+    # command; tools/flash-stlink.sh carries why that command has no reset step.
     #
     # FLASH_TOOL IS PINNED, not left to the dispatcher: candidates_for() offers "stlink jlink"
     # for stm32f302 and takes the first on PATH, so on a host without stlink-tools this would
@@ -285,8 +287,6 @@ case $BOARD in
     if [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
       # Armed FIRST, though what it reads does not exist yet (see arm_waiting_reader).
       # BOOTSEL and the image's console are different devices, never on the bus together.
-      # The HEAD of the stream is unrecoverable: the banner is out before the host finishes
-      # enumerating, so a capture from this route is read for its body.
       arm_waiting_reader
       sleep 1
       check_reader "on arming"
@@ -298,8 +298,7 @@ case $BOARD in
     else
       # picotool load -x reboots straight into the app, so the run is over before a reader armed
       # afterwards would exist. The console is a SEPARATE FTDI from the RP2 Boot interface, so
-      # arming it first cannot disturb programming. Same FTDI re-arm as rx72m: the driver reverts
-      # min/time when the last opener closes, and a bare cat then takes the next 0-byte read as EOF.
+      # arming it first cannot disturb programming. Same FTDI re-arm as rx72m.
       stty -F "$PORT" 115200 raw -echo -hupcl clocal min 1 time 0 || refuse "stty failed on $PORT"
       arm_wrapped_reader "$PORT"
       sleep 1
@@ -324,9 +323,8 @@ case $BOARD in
     # is what captures the banner. Same FTDI re-arm as rx72m.
     command -v teensy_loader_cli > /dev/null || refuse "teensy_loader_cli not on PATH"
     if [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
-      # The console does not exist until the image boots, so the reader polls for it.
-      # HalfKay and the image's CDC are never on the bus together. The banner is lost:
-      # it is out before the host finishes enumerating.
+      # Armed FIRST; see arm_waiting_reader. HalfKay and the image's CDC are never on the
+      # bus together.
       arm_waiting_reader
       sleep 1
       check_reader "on arming"
@@ -402,7 +400,7 @@ case $BOARD in
     # /dev/null, so it surfaces as a hang or as "Failed to halt CPU" and reads as dead
     # silicon. The descending-speed probe below turns that into a refusal that names the
     # cure, and catches a genuinely absent probe BEFORE the flash instead of after the
-    # capture is spent. It is bounded, not quick: three attempts under `timeout 30`.
+    # capture is spent. It is bounded, not quick.
     # SPEED IS TRIED DESCENDING, and 4000 alone was a MISDIAGNOSIS ENGINE. Measured
     # 2026-08-13 on frdmk64f SN 000621000000: at `-speed 4000` the connect stops right after
     # InitTarget() and never prints "identified.", while at 1000 the SAME probe on the SAME
@@ -531,11 +529,11 @@ if [ "$RUNS" -gt 1 ]; then
   echo "NOTE: $RUNS plan lines. The counts above are the LAST run only; the earlier one(s)" >&2
   echo "  are a board restart inside the capture window, not extra arms." >&2
 fi
-# A TAP VERDICT IS OWED ONLY BY A TAP APP. faultsurvive, faultsurvive_ovf/_off, mpu_fault and
-# rxdrv announce no plan by design, so demanding one refused every one of them, and the
-# refusal propagated far enough to skip the caller's log FETCH, throwing away a capture that
-# was complete and correct. The EXPECTATION comes from the app name; the verdict still comes
-# from the log, so a non-TAP app that does emit a plan is judged on it anyway.
+# A TAP VERDICT IS OWED ONLY BY A TAP APP. The diagnostic apps announce no plan by design, so
+# demanding one refused every one of them, and the refusal propagated far enough to skip the
+# caller's log FETCH, throwing away a capture that was complete and correct. The EXPECTATION
+# comes from the app name; the verdict still comes from the log, so a non-TAP app that does
+# emit a plan is judged on it anyway.
 case $APP in
   selftest*) WANT_TAP=1 ;;
   *)         WANT_TAP=0 ;;
@@ -544,8 +542,8 @@ if [ -z "$LAST" ]; then
   if [ "$WANT_TAP" -eq 1 ] && [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
     # A console that IS the device cannot deliver its own head, so the plan line is gone
     # and demanding one refuses every capture taken this way. The verdict falls back to the
-    # completion marker and the not-ok count; reconcile the arm total by eye against
-    # user/apps/common/selftest/CMakeLists.txt.
+    # ok count alone; reconcile the arm total by eye against the count
+    # user/apps/common/selftest/CMakeLists.txt hands the gates.
     if [ "$OKC" -eq 0 ]; then
       refuse "$LOG carries no plan line AND no ok lines: nothing of the suite arrived"
     fi

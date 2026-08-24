@@ -20,21 +20,15 @@ whenever it is ready, tagged as such in `TODO.md`.
   (armv7m, armv6m, RXv3, RV32IMAC, Xtensa LX6) up on hardware, privilege + SVC (no HW MPU yet),
   each with a console, tickless timer, fault dump, and inject-driven IRQ path; plus telemetry,
   the buffered console, and per-chip clock bring-up. Full record in `docs/archive/M1_state.md`.
+- **M2 -- hardware MPU enforcement.** A cross-domain access faults on real silicon.
+- **M3 -- capabilities & object model**, and user clock-select.
+- **M4 -- the driver era.** M3 made real fleet-wide. The sub-milestone ledger below is the only
+  place a number is assigned.
+- **M5 -- the driver era completed, and everything for SMP that is not SMP.** Ten PRs, `M5.1.1`
+  through `M5.1.10`, master `a41856d6`.
 
-## Next
-
-> **Sequencing, decided 2026-07-27: driver breadth and SMP wait behind goal 1** -- the fleet
-> flip to an unprivileged root, `arch_periph_enable`, `kos_cap_narrow`, and the MPU region-encoding
-> classes. The flip itself is no longer a posture: root is **unprivileged on every board by
-> construction**, and both privileged-access seams a confined root needs now exist
-> (`arch_periph_enable`, then `arch_periph_reg_write`). The cleanup that makes the seam pattern
-> non-regressible is done too: M4.5.6 removed the weak-symbol seam mechanism and put a CI gate
-> (`seam_defaults`) on every board -- see `TODO.md`, *M4.5.6*. Goal 1 is complete.
-> Both the driver era and SMP multiply capability and memory complexity across the whole fleet,
-> so doing either first widens exactly the surface goal 1 then has to confine -- more drivers
-> poking MMIO from root, and on the SMP side a
-> second core's worth of region sets and capability tables. Finish confining one core's worth
-> first. This reorders effort, not scope: nothing below is cancelled.
+The `###` sections that follow carry the detail for each of the above. They stay because the
+reasoning in them is the reference for how those subsystems work, not because anything is pending.
 
 ### M2 -- hardware MPU enforcement
 Make per-task isolation real on silicon. **Status:** the enforcement mechanism has landed on
@@ -409,27 +403,114 @@ decisions:
   fixing on their own merits: the claim-then-commit window, the non-atomic `uint8_t` refcounts, and
   the probe/install TOCTOU whose assert becomes a hang in release.
 
-Explicitly NOT here: a second core, cross-core anything, the AMP-versus-shared-kernel decision, or
-MMU work. That decision is OPEN on purpose.
+Explicitly NOT here: a second core, cross-core anything, or MMU work. The
+AMP-versus-shared-kernel question was left open here and closes in M7, per class.
 
-### M6 -- SMP (one kernel image across cores)
-Run a multi-core part at 100% under a single KickOS -- not two AMP instances. Reworks the
-foundation: `IrqLock` ("interrupts off => exclusive") is single-core-only. Plan: a **Big Kernel
-Lock** first (redefine `IrqLock` = local-IRQ-off + one global spinlock -- coarse but correct, and
-byte-identical on single-core builds), then per-core run-queues + finer locks as optimisation only
-where real atomics exist. Fits the seL4 big-lock lineage. Candidate ranking by the real gate
-(inter-core atomic + arch-switch maturity: RP2350 M33/Hazard3 best -> RP2040 big-lock-only ->
-ESP32 LX6 last), the staged model, and the SMP-is-per-chip-capability constraint are spiked in
-`docs/design-m6-smp.md`, which also carries the AMP-vs-SMP feasibility and the cross-core IPC
-invariants. M5 lands the single-core half of this deliberately, so what remains here is the second
-core and nothing else.
+## Next
+
+> **Sequencing, decided 2026-08-21: FINISH THE KERNEL BEFORE WIDENING SUPPORT.** The order is
+> escalation/TLS, then the MMU, then multicore, then IPC/IRQ optimisation, and the driver era LAST.
+> The reasoning is that the driver era improves *support* while everything above it changes the
+> *foundation*, and a foundation reworked under shipped drivers costs the drivers twice.
+>
+> Two consequences worth stating, because both reverse an earlier plan. **The MMU now precedes
+> multicore**: a first A-profile port already brings exception levels, VMSA, a GIC and a new boot
+> path, and a first SMP port brings secondary bring-up, IPIs, per-CPU data and TLB shootdown.
+> Doing both at once is how the switch path stays undebuggable, and both reference kernels come up
+> unicore on A-class first. **Optimisation now follows multicore** rather than preceding it,
+> because a fastpath tuned before the exclusion contract exists is a fastpath shaped for one core
+> and then reshaped for the lock.
+
+### M5.2.1 -- trusted execution context, and the TLS that depends on it
+**One milestone, one review**: this absorbs what was scheduled as M5.2.2 and M5.2.3, because the
+second half deletes machinery the first half would otherwise have shipped and had reviewed.
+
+Privileged code must never run on memory a thread can choose. Per-thread kernel stacks from
+kernel-owned RAM, trusted entry and dispatch on every trapping ISA, blocking that keeps its
+continuation on the kernel stack, and then **DELETE** the measured red zones and the panic-tail
+exclusions the current scheme needs. The trap stack is indexed per core from the start, folding to
+`[0]` at one core, so multicore is a substitution rather than a four-backend change. On top of that
+foundation: per-thread newlib `_reent` and `errno`, C++ exception globals, thread identity, a
+recursive malloc owner lock, and a kernel-mediated heap break, which is what finally closes
+`heap_bump`.
+
+**Two decision gates, or the sizing is a guess.** Measure kernel-stack high-water on the deepest
+syscall path per arch BEFORE committing sizes, using the same `-fcallgraph-info` instrument that
+sizes a kernel array instead of policing a user one. Then decide PER BOARD: 16 threads times a
+kernel stack does not fit microbit's 16 KiB or bluepill-c8's 20 KiB, so that board lowers its
+thread ceiling or takes continuation-style blocking. **A THIRD OPTION IS WHAT ACTUALLY SHIPPED, so
+read this pair as superseded**: armv7m carries BOTH entry designs under `KICKOS_KERNEL_STACKS`,
+gated on the chip capability `HAS_MPU`, and the boards that cannot afford blocks keep their red
+zone and gain usable stack rather than losing threads. **Never fall back to privileged execution on
+user stacks.** microbit is already at the arena cliff (`_ebss` IS `__kickos_ram_start`), and
+`bluepill-c8-st`/`f302nucleo-st` sit near 3 percent flash slack while trusted entry adds text.
+
+### M6 -- the MMU: a unicore A53 on QEMU `virt`
+The memory model today is **one physical address space + per-thread MPU regions**. A real **MMU
+(VMSA / page tables)** adds virtual address spaces: foundational, not a port. The **Domain seam** is
+shaped to absorb it (a domain becomes a page-table root instead of an MPU region set).
+
+Unicore FIRST, and the SMP seams are cut here while they still compile to nothing at one core:
+EL1/EL0 and exception vectors, identity map and then `arch_aspace_activate` (TTBR0 + ASID), GICv2/v3
+for the UART and the timer PPI with the table keyed `(line, kind)` rather than a flat NVIC index,
+the Generic Timer as the tickless one-shot, `arch_ipi_send`/`arch_ipi_wait` as empty macros, a
+per-CPU struct reached through `TPIDR_EL1`, an `arch_aspace_flush` that is a local TLBI, and an
+`arch_dcache_clean`/`invalidate` seam for DMA. Two decisions this milestone must FREEZE rather than
+defer: **high-half versus fully separate address spaces** (it drives `kaccess_from_user` and whether
+a kernel pointer survives `arch_aspace_activate`), and that **one lock spans capability
+resolve-to-use**. Do not let the identity map become the allocator: prove boot, trap, switch and
+UART on a 1:1 map, then cut `arch_aspace_*` before any second core.
+
+### M7 -- multicore: SMP on the A53 port, and AMP where the cores are heterogeneous
+The AMP-versus-shared-kernel question closes **per class**, not as one kernel-wide verdict. A
+homogeneous A53 cluster shares one kernel image; heterogeneous companions (i.MX8MP's Cortex-M7, the
+ESP32-C6 LP core) stay AMP over a ring, and homogeneous MCU dual-core parts are an AMP candidate
+rather than a shared-kernel one.
+
+`IrqLock` ("interrupts off => exclusive") is single-core-only, so the rework is a **Big Kernel Lock**
+first (local-IRQ-off + one spinlock, byte-identical on single-core builds), then per-core run queues
+and finer locks only where real atomics exist. Cross-core object reclamation and TLB shootdown use a
+blocking IPI rendezvous over the same transport, so the doorbell cannot be fire-and-forget only.
+**Do not judge this milestone by its speedup**: on today's measured 53 percent `IrqLock` hold, Amdahl
+caps two cores at 1.31x and four at 1.55x, and the hold-shortening that moves those numbers is M8.
+Re-derive both after M8 rather than freezing a verdict here. Spikes: `docs/design-m6-smp.md`
+(candidate ranking, cross-core IPC invariants), `docs/design-m6-state-inventory.md` (per-core versus
+global), `docs/design-capability-table.md` section 8.
+
+### M8 -- IPC and IRQ optimisation, on measured evidence
+Rebaseline FIRST: per-thread kernel stacks and the MMU both change trap and continuation costs, so
+no percentage measured before them is a planning input. Then, in order of structural value rather
+than micro-cost: an end-to-end instrument (physical IRQ assertion through first userspace MMIO, plus
+the outermost lock-hold distribution, reporting p50/p99/max and not minima); `kos_reply_recv` fusing
+reply and receive under one kernel entry; donation to the already-blocked receiver on the rendezvous
+fastpath; a sticky IRQ notification with overflow accounting instead of a saturating counting
+semaphore; binding an IRQ notification to the endpoint receive wait so ONE driver thread waits on
+both; and edge-only persistent arming under a kernel-held storm budget.
+
+**Protection is not assumed cheap here.** `MPU_APPLY` measures 443 cycles per switch on
+`esp32c6-wroom` and both switches are inside the lock, which is 886 of a 3651-cycle locked round
+trip; `docs/design-m5-ipc-fastpath.md` section 3.0.4 prices its removal at `f = 0.457`, **1.37x**.
+Bulk transfer is a SEPARATE object from the endpoint, and its wire format is
+**`{region-cap, offset, len}`, never a raw address** -- the M4 review's finding 10, which stays
+one paragraph only until the first large-transfer path lands.
+
+### M9 -- back to the driver era
+Remaining drivers and breadth, plus the SPI class work of `deferred-after-pr-train.md` -- the
+validation hoist and the nine divergences. This sits after the foundation on purpose: it improves
+support on a base that is no longer moving under it.
+
+### M10 -- KickCAT as the reality check
+**After** the driver era, not inside it. KickCAT has been deferred through the whole driver era, and
+porting it to the driver APIs as they then stand is what judges them: if it asks for an API change,
+that is the most valuable output, and the answer is to change the API rather than bend KickCAT.
+It runs last because it judges a finished surface; judging one still being widened tests nothing.
 
 ## Later
 Multi-domain isolation + cross-domain shared-memory IPC; message-passing IPC + userspace drivers;
 **service publication** (naming/discovery, capability delegation, badged endpoints, an interface
 convention); runloops + multi-object waiting; timed wait (`sem_timedwait`) as one unified wait
 primitive; introspection; a HAL/driver model; pluggable EDF / rate-monotonic policies; loadable
-MPU-isolated user modules; POSIX / CMSIS-RTOS2 compat; TLSF heap; RP2040 SMP; Renode CI; and
+MPU-isolated user modules; POSIX / CMSIS-RTOS2 compat; TLSF heap; RP2040 AMP; Renode CI; and
 **the Book** as the durable how-&-why reference (see `docs/book/`).
 
 ### RISC-V context-switch cost -- optimization (post-MMU, not scheduled)
@@ -502,18 +583,14 @@ Authority is a delegatable clock-control CAPABILITY (the service holds it like a
 an MMIO grant), not full privilege. This is the console-handover pattern applied to the clock:
 machinery -> userspace service, kernel keeps only the re-anchor + privileged-step residue.
 
-### M7 -- the MMU / new-platform horizon (foundational)
-The biggest axis beyond the MCU fleet: today the whole memory model is **one physical address
-space + per-thread MPU regions**. A real **MMU (VMSA / page tables)** adds virtual address spaces
--- a foundational change, not a port, and its own milestone-class effort. The **Domain seam** is
-deliberately shaped to absorb it (a domain becomes a page-table root instead of an MPU region set).
-Concrete targets that motivate it:
-- **x86_64 PC target** -- KickOS as an actual OS on a PC (QEMU-first, then bare metal): MMU
-  paging, a different boot/privilege/interrupt model (long mode, ring0/3, APIC). This is where
-  `__KickOS__` earns its name.
-- **i.MX8MP -- heterogeneous AMP across profiles** -- an **MMU KickOS on the Cortex-A53(s)**
-  (VMSA) alongside an **MPU KickOS on the Cortex-M7**, one per core-cluster, over cross-core IPC.
-  Extends the SMP milestone's AMP/IPC work from homogeneous cores to a heterogeneous application-core +
-  MCU-core split under a shared IPC contract.
-Captured, not scheduled -- an exploratory design/research spike scopes feasibility (the MMU memory
-model, the two boot models, the A53/M7 IPC seam) when M5 (the driver era) and M6 (SMP) have settled.
+### Platform targets past the A53 (captured, not scheduled)
+The MMU itself is **M6** and multicore is **M7**; what stays here is the hardware these two unlock,
+each wanting a feasibility spike rather than a slot:
+- **x86_64 PC target** -- KickOS as an actual OS on a PC (QEMU first, then bare metal): paging plus
+  a different boot, privilege and interrupt model (long mode, ring0/3, APIC). This is where
+  `__KickOS__` earns its name. The MMU spike originally aimed its unicore stepping stone here; M6
+  aims it at QEMU `virt` A53 instead, because that is the machine multicore then runs on.
+- **i.MX8MP -- heterogeneous AMP across profiles** -- an **MMU KickOS on the Cortex-A53(s)** (VMSA)
+  beside an **MPU KickOS on the Cortex-M7**, one per core cluster, over cross-core IPC. This is M7's
+  AMP contract carried from homogeneous to heterogeneous cores, and it is the case that needs the
+  cache-maintenance seam: the A53-to-M7 window is not coherent.

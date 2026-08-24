@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// kos_panic wire gate, in its own binary because the panic ends the system. One source,
-// five images selected by KICKOS_PANICGATE_CASE, because only one panic can be observed
-// per run:
+// kos_panic wire gate. One source, five images selected by KICKOS_PANICGATE_CASE, because
+// only one panic can be observed per run:
 //   1  a readable message must reach the wire after the kernel's trusted banner
 //   2  a null pointer must reach the documented fallback text
 //   3  a pointer in no region this thread holds and outside every linker-defined extent
@@ -19,7 +18,7 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
-#include <kickos/sys/emit.h> // publish-aware write (kos_print is dropped once published)
+#include <kickos/sys/emit.h> // emit: kos_print is dropped once the console is published
 
 #ifndef KICKOS_PANICGATE_CASE
 #error "KICKOS_PANICGATE_CASE must be 1, 2, 3, 4 or 5"
@@ -31,8 +30,7 @@ namespace
 {
     // Mapped on no board in the fleet: below every RAM origin the ports use
     // (0x20000000 armv7m, 0x38000000 an505, 0x40800000 esp32c6, 0x80000000 virt) and
-    // above every flash/ROM extent. A read here BUSFAULTS rather than returning junk,
-    // which is what makes the case a gate and not a formality.
+    // above every flash/ROM extent, so a read here BUSFAULTS instead of returning junk.
     constexpr uintptr_t WILD = 0xCCCCCCC0u;
 
     // The kernel buffer is 64 including the terminator, so 63 bytes survive, and the

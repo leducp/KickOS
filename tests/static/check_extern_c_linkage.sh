@@ -23,7 +23,7 @@
 # spelling and neither of them is this one, so anything the scan finds is a defect.
 #
 # Source-tree gate: reads the tree through `git ls-files` and never opens the build
-# directory, so it registers on every board like doc_names and requires no build.
+# directory, so it registers on every board and requires no build.
 #
 # usage: check_extern_c_linkage.sh    (from the repo root)
 

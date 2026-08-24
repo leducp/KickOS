@@ -82,12 +82,14 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     {
         return bad_cfg;
     }
-    // A rate request is refused by KickOS policy, not by the silicon: FDR and BRG are
-    // Write = PV (RM Table 18-20, p.18-155) and the seam's allowlist carries a CCR entry only
-    // for U0C0, so the kernel's divisor stands.
-    if (cfg->baud != 0u)
+    // FDR and BRG are Write = PV (RM Table 18-20, p.18-155) and the seam's allowlist carries
+    // a CCR entry only for U0C0, so the kernel's divisor stands. -KOS_ENOTSUP and not the
+    // -KOS_EPERM the two CCR read-backs below use: no store is attempted here, so a consumer
+    // must not read this as a grant that could have been widened.
+    int32_t const fixed_rate = kos_uart_cfg_check_fixed_rate(cfg);
+    if (fixed_rate != 0)
     {
-        return -KOS_EPERM;
+        return fixed_rate;
     }
     if (cfg->data_bits != FRAME_DATA_BITS or cfg->parity != KOS_UART_PARITY_NONE or
         cfg->stop_bits != FRAME_STOP_BITS)
@@ -118,16 +120,16 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
 
 uint32_t kos_uart_read(struct kos_uart*, unsigned char*, uint32_t)
 {
-    // TX-only channel: CCR carries neither RIEN nor AIEN, so no byte is ever latched for this
-    // side to collect and 0 is the true count.
+    // TX-only channel: CCR_WORD arms MODE_ASC and TBIEN alone, so nothing latches a received
+    // byte and 0 is the true count.
     return 0;
 }
 
 uint32_t kos_uart_write(struct kos_uart* u, unsigned char const* src, uint32_t n)
 {
-    // Neither arms nor disarms TBIEN: the transmit-buffer event is edge-per-word, raised when
-    // a word is loaded from TBUF into the shift register (RM 18.2.2.4, p.18-18; ASC-specific
-    // p.18-64), so an idle channel raises nothing.
+    // TBIEN stays as CCR_WORD left it: the transmit-buffer event is edge-per-word, raised
+    // when a word is loaded from TBUF into the shift register (RM 18.2.2.4, p.18-18;
+    // ASC-specific p.18-64), so an idle channel raises nothing.
     //
     // TCSR.TDV == 1 means TBUF still HOLDS a word (RM p.18-189), so a store without testing
     // it first overwrites the byte still queued.

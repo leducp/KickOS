@@ -27,15 +27,30 @@ extern char _kickos_heap_start[];
 extern char _kickos_heap_limit[];
 static char* s_brk = _kickos_heap_start;
 
+// Unserialised: two preempted threads can both pass the bounds check and return the same
+// prev. The window is granted to every unprivileged thread, so no task boundary confines it.
 static void* heap_bump(intptr_t incr)
 {
-    char* prev = s_brk;
-    char* next = s_brk + incr;
-    if (next < _kickos_heap_start or next > _kickos_heap_limit)
+    // The sum is taken on integers: forming s_brk + incr first is undefined as soon as it
+    // leaves the object, which is exactly the case the bound below exists to catch.
+    uintptr_t const lo = reinterpret_cast<uintptr_t>(_kickos_heap_start);
+    uintptr_t const hi = reinterpret_cast<uintptr_t>(_kickos_heap_limit);
+    uintptr_t const cur = reinterpret_cast<uintptr_t>(s_brk);
+    uintptr_t const next = cur + static_cast<uintptr_t>(incr);
+    if (incr > 0 and next < cur)
     {
         return reinterpret_cast<void*>(-1);
     }
-    s_brk = next;
+    if (incr < 0 and next > cur)
+    {
+        return reinterpret_cast<void*>(-1);
+    }
+    if (next < lo or next > hi)
+    {
+        return reinterpret_cast<void*>(-1);
+    }
+    char* const prev = s_brk;
+    s_brk = reinterpret_cast<char*>(next);
     return prev;
 }
 

@@ -10,8 +10,8 @@
 # two protocols leaves the caller blocked forever. A hang is indistinguishable from slow,
 # so this test's TIMEOUT is part of the assertion.
 #
-# The sim driver shares none of uart_service.h's serve_one, which the selftest covers
-# separately. This is the only coverage of this one.
+# The sim driver answers on its own code, not on uart_service.h's serve_one, so this is its
+# only coverage; serve_one is the selftest's.
 #
 # usage: check_sim_conabi.sh <kickos-source-dir> <cmake>
 
@@ -49,8 +49,8 @@ has '\[simcon\] driver up (host fd 1)' \
 
 [ "$RC" -eq 0 ] || fail "simconabi exited $RC"
 
-# The stream verdict is check_tap_stream.sh's, not a second copy of it here: plan against
-# case count, the completion marker, and the skip/partial permission sets.
+# The stream verdict is check_tap_stream.sh's, so plan against case count, the completion
+# marker and the skip/partial permission sets stay in one place.
 printf '%s\n' "$OUT" | "$(dirname "$0")/check_tap_stream.sh" sim_console_abi 9
 
 # The framed WRITE's payload reaches the wire as BYTES. Every line above is a verdict the

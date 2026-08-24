@@ -16,6 +16,8 @@
  * arch_ram_alloc pool) and _estack (initial MSP = vector[0]).
  */
 
+#include <sections.ld.h>
+
 ENTRY(Reset_Handler)
 
 MEMORY
@@ -51,6 +53,7 @@ SECTIONS
         *(.text .text.*)
         *(.rodata .rodata.*)
         *(.glue_7) *(.glue_7t)
+        KICKOS_CODE_DEBRIS_SECTIONS
         KEEP(*(.init))
         KEEP(*(.fini))
         . = ALIGN(4);
@@ -79,12 +82,27 @@ SECTIONS
         __kickos_app_fini_array_end = .;
     } > FLASH
 
+    KICKOS_TLS_TEMPLATE(FLASH)
+
     .kickos_app_init_array :
     {
         __kickos_app_init_array_start = .;
         KEEP(*(SORT(.init_array.*)))
         KEEP(*(.init_array))
         __kickos_app_init_array_end = .;
+    } > FLASH
+
+    /* EHABI unwind instructions + LSDA, homed in the code window so a full-C++ image does
+       not orphan them into whatever gap follows the vector table. libstdc++ emits
+       .gcc_except_table even on EHABI. */
+    .ARM.extab :
+    {
+        *(.ARM.extab* .gnu.linkonce.armextab.*)
+    } > FLASH
+
+    .gcc_except_table :
+    {
+        *(.gcc_except_table .gcc_except_table.*)
     } > FLASH
 
     .ARM.exidx :
@@ -175,9 +193,9 @@ SECTIONS
         *(.bss .bss.* COMMON)
         . = ALIGN(4);
         _appdata_used_end = .;
-        _appdata_fits = ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
-               "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
-        . = __kickos_appdata_start + _appdata_size; /* pad the granted window */
+        /* MAX, not a bare set: ASSERTs are evaluated after layout, so a backwards move
+           fails the link before the overflow ASSERT below can print. */
+        . = MAX(., __kickos_appdata_start + _appdata_size); /* pad the granted window */
         __kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
         _kickos_heap_start = ALIGN(_appdata_used_end, 8);
@@ -239,7 +257,13 @@ SECTIONS
 #endif
 
     /DISCARD/ : { *(.ARM.attributes) }
+
+    KICKOS_NONALLOC_SECTIONS
 }
+
+KICKOS_STATIC_RELOC_ASSERT()
+KICKOS_TLS_ALIGN_ASSERT()
+KICKOS_TLS_FIT_ASSERT()
 
 /* Static data (.data+.bss) must not eat into the user-RAM pool / MSP stack.
    Link-time guard: arch_ram_size() = end - start; a negative diff would wrap to

@@ -3,19 +3,18 @@
 //
 // PRIVILEGED runtime clock-retune silicon harness (M3 clock-select coherence tail).
 // Gated OFF by default (-DKICKOS_CLOCK_RETUNE_TEST=ON); XMC4800 / K64F only, both of
-// which strong-override arch_cpu_clock_set. The existing selftest cpu_clock_set case
-// only proves the UNPRIVILEGED returns-0 path; nothing in the sim/QEMU exercises the
-// privileged retune, so this is the FIRST real exercise of the mask/disarm/flush-to-
-// shift-idle/re-anchor/baud/re-arm sequence (kernel/time/clock_select.cc, section 2.3
-// of docs/design-m3-clock-select.md).
+// which strong-override arch_cpu_clock_set. It drives the privileged
+// mask/disarm/flush-to-shift-idle/re-anchor/baud/re-arm sequence on silicon
+// (kernel/time/clock_select.cc, section 2.3 of docs/design-m3-clock-select.md); the
+// selftest cpu_clock_set case covers the UNPRIVILEGED returns-0 path.
 //
 // kos_cpu_clock_set needs AUTH_PSTATE, carried only by this app's KICKOS_APP_AUTHORITY
 // below. It returns 0 rather than an errno when refused. The app is single-shot: it
 // returns, so the terminal path flushes the console synchronously: every printed byte
 // reaches the wire.
 //
-// It does NOT hand the console to a userspace driver: a retune is REFUSED while the
-// console is USER_OWNED (S4), so the console must stay KERNEL_OWNED throughout.
+// The console must stay KERNEL_OWNED throughout: a retune is REFUSED while the console
+// is USER_OWNED (S4).
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -46,7 +45,6 @@ namespace
         }
     }
 
-    // Measure one fixed_spin() with the monotonic clock and print the duration in ns.
     uint64_t timed_spin(char const* label)
     {
         uint64_t const a = kos::clock_now();
@@ -71,7 +69,6 @@ namespace
     }
 }
 
-// Retunes the core clock from root, and returns.
 KICKOS_APP_AUTHORITY(KOS_AUTH_SYSTEM | KOS_AUTH_PSTATE);
 
 int main(int, char**)
@@ -80,23 +77,21 @@ int main(int, char**)
 
     emit("[clockretune] START privileged retune harness\n");
 
-    // 1. boot state (MAX).
     uint32_t const hz_boot = kos::cpu_clock_hz();
     uint64_t const t0 = kos::clock_now();
     ksnprintf(s, sizeof(s), "[clockretune] boot: cpu_clock_hz = %u  clock_now t0 = %llu ns\n",
               static_cast<unsigned>(hz_boot), static_cast<unsigned long long>(t0));
     emit(s);
 
-    // 2. fixed spin AT MAX.
     uint64_t const spin_max = timed_spin("MAX");
 
-    // 3. retune -> LOW. Sample now() immediately BEFORE the seam so step 4 can bound
+    // 1. retune -> LOW. Sample now() immediately BEFORE the seam so step 2 can bound
     //    the mispriced-window delta across the actual PLL/divider move.
     uint64_t const t_pre = kos::clock_now();
     uint32_t const hz_low = kos_cpu_clock_set(KOS_PSTATE_LOW);
     print_hz("after set(LOW)", hz_low);
 
-    // 4. IMMEDIATELY re-read now() several times. Assert monotonic (no backward step)
+    // 2. IMMEDIATELY re-read now() several times. Assert monotonic (no backward step)
     //    and no phantom forward jump (a jump == the B1/B2 hazard surviving on silicon:
     //    the seam-crossing delta would be seconds-to-minutes, not the tens-of-us to
     //    ~1 ms masked transition).
@@ -128,7 +123,7 @@ int main(int, char**)
         emit("[clockretune] MONOTONIC OK: no backward step, no phantom jump\n");
     }
 
-    // 5. fixed spin AT LOW: same work, must read ~(MAX/LOW ratio) LONGER, proving both
+    // 3. fixed spin AT LOW: same work, must read ~(MAX/LOW ratio) LONGER, proving both
     //    that the clock actually changed AND that now() stayed coherent (same physical
     //    work priced at the new rate).
     uint64_t const spin_low = timed_spin("LOW");
@@ -145,7 +140,7 @@ int main(int, char**)
         emit(s);
     }
 
-    // 6. known sleep at LOW: the capture's wall-clock timing must land near SLEEP_NS
+    // 4. known sleep at LOW: the capture's wall-clock timing must land near SLEEP_NS
     //    (timer re-armed at the new rate, not ratio-off).
     uint64_t const s0 = kos::clock_now();
     kos::sleep_ns(SLEEP_NS);
@@ -156,13 +151,12 @@ int main(int, char**)
               static_cast<unsigned long long>(s1 - s0));
     emit(s);
 
-    // 7. retune -> MAX; console must STILL be readable after both retunes (baud
+    // 5. retune -> MAX; console must STILL be readable after both retunes (baud
     //    re-derived at each rate).
     uint32_t const hz_max = kos_cpu_clock_set(KOS_PSTATE_MAX);
     print_hz("after set(MAX)", hz_max);
     emit("[clockretune] console still readable after both retunes (this line proves baud)\n");
 
-    // 8. final marker.
     emit("[clockretune] clock retune test done\n");
     return 0;
 }

@@ -23,8 +23,7 @@
 // Reference Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. "RM
 // p.NN" citations are the manual's printed page numbers.
 //
-// Diagnostic app (kickos_add_diagnostic_app): build-only, never a production image;
-// the operator flashes + validates on silicon.
+// Diagnostic app (kickos_add_diagnostic_app): build-only, never a production image.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -49,9 +48,8 @@ namespace
     // (U0C1_BASE = 0x4003_0200).
 
     // PMSA-encodable in one exact-cover descriptor: 512 is pow2 >= the 32 B minimum and
-    // 0x4003_0200 is 0x200-aligned, so no pad or split. Every register the driver
-    // touches (CCR 0x40, PSR 0x48, PSCR 0x4C, RBUF 0x54, TBUF0 0x80) lies inside
-    // 0x000..0x1FF.
+    // 0x4003_0200 is 0x200-aligned, so no pad or split. Every register the driver touches
+    // lies inside the window, TBUF0 (0x080) being the highest.
     constexpr uint32_t U0C1_WINDOW = 0x200u;
 
     // A single-word frame is the FIRST word of its frame (RBUFSR.SOF=1), so it raises
@@ -169,8 +167,8 @@ namespace
             kos_irq_wait(h);             // block until AIF/RIF raises NVIC 85
             uint32_t rx = *rbuf & 0xFFu; // read RX: releases the standard buffer
 
-            *pscr = PSCR_CLEAR_RX; // W1C AIF/RIF BEFORE the ack: an uncleared level
-                                   // re-asserts SR1 on unmask and storms it.
+            *pscr = PSCR_CLEAR_RX; // W1C AIF/RIF BEFORE the ack, so the flag is already
+                                   // clear when kos_irq_ack unmasks the line.
 
             char s[64];
             char const* verdict = "PASS";
@@ -242,10 +240,10 @@ int main(int, char**)
                                   caps, 1);
     if (not drv.valid())
     {
-        // -KOS_EBUSY: a live domain already holds U0C1, which this app needs
-        // exclusively, so no service list carrying an SSC/SPI entry may run alongside
-        // it. The kernel console path drops every byte once a driver has published, so
-        // the errno goes out through the panic path.
+        // -KOS_EBUSY: a live domain already holds U0C1, which this app needs exclusively,
+        // so no service list carrying an SSC/SPI entry may run alongside it. The errno goes
+        // out through the panic path because the kernel console path drops every byte once a
+        // driver has published.
         char e[64];
         ksnprintf(e, sizeof(e), "[xmcspi] U0C1 driver spawn refused, errno %d", -drv.error());
         kos_panic(e);

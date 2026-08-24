@@ -14,13 +14,15 @@
  * UNPRIVILEGED thread needs under PMP enforcement (see arch_domain_static_regions):
  *   __kickos_code_start/_end     app code+rodata as ONE pow2 NAPOT region (RX)
  *   __kickos_appdata_start/_end  app .data/.bss as ONE pow2 NAPOT region (RW-NX)
- * There is no separate flash on this all-SRAM target, so the code region is carved
- * from the SRAM image at ORIGIN (2^31-aligned, so any pow2 sub-block is naturally
- * NAPOT-aligned). The single gp small-data window (__global_pointer$ +/- 0x800) is
+ * This target is all-SRAM, so the code region is carved from the SRAM image at ORIGIN,
+ * which is 2^31-aligned, and any pow2 sub-block of it is naturally NAPOT-aligned.
+ * The single gp small-data window (__global_pointer$ +/- 0x800) is
  * anchored INSIDE .appdata: the KickOS libs are built -msmall-data-limit=0 (emit no
  * small-data), so the window holds only app + C++-runtime small-data and is covered
  * by the app grant.
  */
+
+#include <sections.ld.h>
 
 ENTRY(_start)
 
@@ -38,9 +40,9 @@ _kernel_stack_size = 16K;              /* boot/trap stack reservation */
    base is naturally aligned to its size. Raise _code_size / _appdata_size to the
    next pow2 if an ASSERT below trips. */
 #if KICKOS_HAVE_MPU
-/* Full-C++ under PMP folds .eh_frame + .gcc_except_table into the code region and
-   pulls libstdc++/libsupc++ text; the cxxtest link measures ~80K of code+rodata, so
-   128K is the fitting pow2. The ASSERT below trips if it grows past 128K. */
+/* Full-C++ under PMP folds .eh_frame + .gcc_except_table into the code region and pulls
+   libstdc++/libsupc++ text; the cxxtest link measures ~80K of code+rodata, so 128K is the
+   fitting pow2. */
 _code_size = 128K;
 /* App writable window: the pad (window minus app statics + runtime + gp small-data) IS
    the newlib heap. cxxtest's measured peak (~4.2K on RISC-V DWARF) and printf both fit
@@ -60,15 +62,15 @@ SECTIONS
 #endif
         KEEP(*(.text.init))            /* _start: must be at the RAM origin */
         *(.text .text.*)
+        KICKOS_CODE_DEBRIS_SECTIONS
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
-        /* DWARF EH unwind + landing-pad tables for the full-C++ opt-in (a plain
-           freestanding app is built -fno-exceptions and emits none of these, so the
-           section is empty bar the terminator). With -nostartfiles there is no crtbegin
-           frame_dummy, so Reset_Handler registers the table at boot via a WEAK
-           __register_frame (chip_virt.cc). KEEP so --gc-sections cannot drop it,
-           contiguous, with the LONG(0) terminator standing in for crtend's
-           __FRAME_END__. */
+        /* DWARF EH unwind + landing-pad tables for the full-C++ opt-in; a plain
+           freestanding app is built -fno-exceptions, which leaves the section holding just
+           the terminator. Under -nostartfiles the boot-time registration is
+           Reset_Handler's, through a WEAK __register_frame (chip_virt.cc), standing in for
+           crtbegin's frame_dummy. KEEP so --gc-sections cannot drop it, contiguous, with
+           the LONG(0) terminator standing in for crtend's __FRAME_END__. */
         *(.gcc_except_table .gcc_except_table.*)
         . = ALIGN(4);
         __eh_frame_start = .;
@@ -101,6 +103,8 @@ SECTIONS
         KEEP(*(.fini_array))
         __kickos_app_fini_array_end = .;
     } > RAM
+
+    KICKOS_TLS_TEMPLATE(RAM)
 
     .kickos_app_init_array : ALIGN(4)
     {
@@ -197,9 +201,9 @@ SECTIONS
         *(.bss .bss.* COMMON)
         . = ALIGN(4);
         _appdata_used_end = .;
-        _appdata_fits = ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
-               "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
-        . = __kickos_appdata_start + _appdata_size; /* pad the block up to pow2 */
+        /* MAX, not a bare set: ASSERTs are evaluated after layout, so a backwards move
+           fails the link before the overflow ASSERT below can print. */
+        . = MAX(., __kickos_appdata_start + _appdata_size); /* pad the block up to pow2 */
         __kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
         _kickos_heap_start = ALIGN(_appdata_used_end, 8);
@@ -256,7 +260,13 @@ SECTIONS
     __kickos_sram_start = ORIGIN(RAM);
 
     /DISCARD/ : { *(.comment) *(.riscv.attributes) }
+
+    KICKOS_NONALLOC_SECTIONS
 }
+
+KICKOS_STATIC_RELOC_ASSERT()
+KICKOS_TLS_ALIGN_ASSERT()
+KICKOS_TLS_FIT_ASSERT()
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + boot stack)")
@@ -269,12 +279,8 @@ ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
 #if KICKOS_HAVE_MPU
-/* Real code+rodata must fit the pow2 code region (raise _code_size to the next pow2
-   if this trips). */
 ASSERT(_code_used_end <= __kickos_code_end,
        "KickOS: app code overflows _code_size (raise it to the next pow2)")
-/* App globals must fit the pow2 app-data region (raise _appdata_size to the next pow2
-   if this trips). */
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
 /* Selector-mismatch guard for the inverted closed-set .data/.bss capture: the colon
@@ -284,9 +290,8 @@ ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
    state into the app catch-all. */
 ASSERT(__kernel_bss_end > __kernel_bss_start,
        "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
-/* The gp small-data window must fit __global_pointer$ +/- 0x800 (psABI reach): a future
-   runtime that grows its small-data past the window fails loudly here rather than
-   silently mis-addressing gp-relative loads. */
+/* The gp small-data window must fit __global_pointer$ +/- 0x800 (psABI reach); past that
+   reach, gp-relative loads resolve at the wrong addresses. */
 ASSERT(__sdata_end <= __global_pointer$ + 0x800,
        "KickOS: runtime small-data overflows the gp + 0x800 reach")
 ASSERT(__sdata_start >= __global_pointer$ - 0x800,

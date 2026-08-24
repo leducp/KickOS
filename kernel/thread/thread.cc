@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/kernel.h>
+#include <kickos/instance_local.h>
 #include <kickos/sched.h>
 #include <kickos/domain.h>
 #include <kickos/grant.h> // grant_hits_reserved (backstop assert)
@@ -9,6 +10,8 @@
 #include <kickos/irqlock.h>
 #include <kickos/libc/string.h>
 #include <kickos/task.h>
+#include <kickos/reent.h>
+#include <kickos/tls.h>
 
 namespace kickos
 {
@@ -30,7 +33,75 @@ namespace kickos
             k.next_tid = static_cast<uint16_t>(n);
             return id;
         }
+
+#if KICKOS_KERNEL_STACKS
+        // Word 0 of a slot's kernel stack, which is its LOW end and so the last word an
+        // overflow reaches. 'K','C','A','N'.
+        constexpr uint32_t KSTACK_CANARY = 0x4B43414Eu;
+        // Every word above the canary, laid once at init. 'K','S','F','L'.
+        constexpr uint32_t KSTACK_FILL = 0x4B53464Cu;
+
+        static_assert(KICKOS_KERNEL_STACK_SIZE % sizeof(uint32_t) == 0,
+                      "KICKOS_KERNEL_STACK_SIZE must be a whole number of 32-bit words, or "
+                      "the canary and the high-water scan would run off the block");
+        constexpr size_t KSTACK_WORDS = KICKOS_KERNEL_STACK_SIZE / sizeof(uint32_t);
+        static_assert(KSTACK_WORDS >= 2, "KICKOS_KERNEL_STACK_SIZE holds only the canary");
+        // Seating an sp needs the arch's stack alignment at the TOP of every slot, which the
+        // stride carries; the block's own base carries it through alignas below.
+        static_assert(KICKOS_KERNEL_STACK_SIZE % KICKOS_STACK_ALIGN == 0,
+                      "KICKOS_KERNEL_STACK_SIZE must be a multiple of KICKOS_STACK_ALIGN, or "
+                      "slot i's stack top is misaligned for every odd i");
+
+        // KERNEL .bss AND NOT AN ARENA CARVE, for two reasons. Rule 7 confines every RAM
+        // grant to [arch_ram_base(), + arch_ram_size()) and kernel .bss sits below
+        // __kickos_ram_start, so no grant a thread can be given reaches these. And
+        // arch_ram_alloc snaps size and alignment to what one MPU descriptor can name, which
+        // on PMP/NAPOT took one 17408-byte block to 32768 at 32768 alignment; these are never
+        // granted, so the arch's stack alignment is all they need.
+        //
+        // Per instance for the same reason struct Kernel is: the multi-instance sim hosts one
+        // kernel per emulated MCU. At one instance the index folds to a literal.
+        struct KStackBlock
+        {
+            alignas(KICKOS_STACK_ALIGN)
+                unsigned char slot[KICKOS_THREAD_SLOTS][KICKOS_KERNEL_STACK_SIZE];
+        };
+        constinit ::kickos::InstanceLocal<KStackBlock> g_kstacks = {};
+
+        uint32_t* kstack_words(int index)
+        {
+            KICKOS_ASSERT(index >= 0 and index < KICKOS_THREAD_SLOTS);
+            return reinterpret_cast<uint32_t*>(g_kstacks.get().slot[index]);
+        }
+#endif
     }
+
+#if KICKOS_KERNEL_STACKS
+    // ARMED ONCE AT INIT AND NEVER RE-ARMED ON SLOT REUSE: re-arming would erase the record
+    // of an overflow that already happened, and it would have to run where a slot is handed
+    // out, inside the spawn's IrqLock. So both figures below are PER SLOT AND SINCE BOOT
+    // rather than per thread, which is also the reading that SIZES a kernel stack.
+    void kstack_arm(int index)
+    {
+        uint32_t* const w = kstack_words(index);
+        // THE FILL HAS NO READER IN THE IMAGE, deliberately: the depth a slot reached is
+        // read off a memory dump, where the boundary between fill and written words is the
+        // measurement. A reader in here would be a second, weaker answer to what
+        // check_trap_redzone.sh already measures at build time.
+        w[0] = KSTACK_CANARY;
+        for (size_t i = 1; i < KSTACK_WORDS; i++)
+        {
+            w[i] = KSTACK_FILL;
+        }
+    }
+
+    // False means the low word was overwritten, so the slot's dispatch descended past the
+    // whole block. It reports an overflow that has ALREADY happened; it cannot prevent one.
+    bool kstack_canary_intact(int index)
+    {
+        return kstack_words(index)[0] == KSTACK_CANARY;
+    }
+#endif
 
     // ONE HOLDER PER DEVICE WINDOW. Matched on RANGES, not on region slots: an encodable
     // window can span several peripheral sub-units or cover part of one, so equal, containing
@@ -193,13 +264,57 @@ namespace kickos
         }
 #endif
 
-        arch_context_init(&t->ctx, entry, arg, stack_base, stack_size, attr.privileged);
+        // THE TLS CARVE, off the LOW end of the thread's own stack, so it costs no MPU
+        // descriptor: the region added above already spans it, and raising stack_lo past it
+        // keeps the thread's own SP out of its own thread_local storage.
+        //
+        // IDLE IS THE ONLY THREAD THAT MAY TAKE NONE: its block is a fraction of a stride and
+        // its body is arch_idle_wait alone. The exemption is keyed on the idle TCB by
+        // IDENTITY and not on the stack's size, because a caller-supplied stack that passed
+        // admission would otherwise skip the carve while __aeabi_read_tp went on answering
+        // for it.
+        void* ustack = stack_base;
+        size_t usize = stack_size;
+        size_t const tls = tls_block_size();
+        if (tls != 0)
+        {
+            bool const admissible =
+                tls_stack_admissible(reinterpret_cast<uintptr_t>(stack_base), stack_size);
+            KICKOS_ASSERT(admissible or t == &kernel().idle_tcb);
+            if (admissible)
+            {
+                tls_seat(stack_base);
+                ustack = static_cast<unsigned char*>(stack_base) + tls;
+                usize = stack_size - tls;
+            }
+        }
+        arch_context_init(&t->ctx, entry, arg, ustack, usize, attr.privileged);
+#if !KICKOS_ARCH_SIM
+        // The pool slot indexes the app-side array. A TCB outside the pool takes libc's
+        // process-wide state: index_of returns negative for it and the seam answers that
+        // with the global rather than with a slot nobody sized. Selection only; the
+        // hundreds of bytes kickos_reent_init writes are the caller's, and on the spawn
+        // path they are written under the spawn's own lock.
+        t->reent = kickos_reent_acquire(kernel().threads.index_of(t));
+#endif
+#if KICKOS_KERNEL_STACKS
+        // A TCB OUTSIDE THE POOL KEEPS kernel_sp AT 0, which arch_context_init just set.
+        // Idle is the only such TCB (kernel().idle_tcb): privileged, and its body is
+        // arch_idle_wait alone, so it never enters the syscall path.
+        int const kslot = kernel().threads.index_of(t);
+        if (kslot >= 0)
+        {
+            uintptr_t const top = reinterpret_cast<uintptr_t>(kstack_words(kslot))
+                + KICKOS_KERNEL_STACK_SIZE;
+            KICKOS_ASSERT((top & (KICKOS_STACK_ALIGN - 1u)) == 0);
+            t->ctx.kernel_sp = static_cast<uint32_t>(top);
+        }
+#endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
         // Stamp the trace id into the saved context so the arch switch path can
         // emit it from the physically-swapped contexts (never re-reading sched state).
         arch_trace_stamp_id(&t->ctx, t->id);
 #endif
-        sched::add(t);
     }
 
 }

@@ -70,8 +70,8 @@ int main(int, char**)
     report_rc("console_publish (undeclared bit)", rc);
     check(rc == -KOS_EPERM, "undeclared KOS_AUTH_CONSOLE was dropped by the narrow");
 
-    // Must precede the narrow below, which drops KOS_AUTH_MEMORY. Leaks one 16-byte
-    // bump block; kos_ram_alloc never frees.
+    // Must precede the narrow below, which drops KOS_AUTH_MEMORY. Leaks one block of
+    // arch_ram_region_size(1); kos_ram_alloc never frees.
     void* mem = kos_ram_alloc(1);
     check(mem != nullptr, "declared KOS_AUTH_MEMORY reached kos_ram_alloc");
 

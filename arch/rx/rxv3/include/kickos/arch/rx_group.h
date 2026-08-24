@@ -5,10 +5,10 @@
 // core branches arch_irq_mask / arch_irq_unmask / arch_irq_clear_pending on the split, the
 // chip owns the group -> register mapping behind kickos_rx_group_arm.
 //
-// An RX group vector collapses up to 32 sources onto ONE vector (RX72M UM sec.15.4.4),
-// so a group source has no vector of its own, no ICU.IR flag of its own and no ICU.IER
-// bit of its own: its kernel-owned mask is GENxxx.ENj. It cannot be numbered inside the
-// 256-entry vector space, so it is numbered above it:
+// An RX group vector collapses up to 32 sources onto ONE vector (RX72M UM sec.15.4.4).
+// The vector owns the ICU.IR flag and the ICU.IER bit for the whole group, and a group
+// source's own kernel-owned mask is GENxxx.ENj. Numbering therefore starts above the
+// 256-entry vector space:
 //
 //     line = GROUP_LINE_BASE + group_index * GROUP_LINE_STRIDE + bit
 //
@@ -29,5 +29,13 @@ namespace kickos
         constexpr int GROUP_LINE_STRIDE = 32;
     }
 }
+
+// Arm a REAL ICU vector's IPR/IER, without the group dispatch that arch_irq_mask and
+// arch_irq_unmask do first. kickos_rx_group_arm arms the group's own vector and must come
+// through here: routing it back through the seam is a cycle to any call-graph analysis,
+// terminating only on the value-range invariant that a group vector is below
+// GROUP_LINE_BASE, which no graph can see. Caller holds arch_irq_save; `line` must be a
+// real vector, neither a soft line nor a group line.
+extern "C" void kickos_rx_icu_line_arm(int line, int on);
 
 #endif

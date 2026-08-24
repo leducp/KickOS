@@ -3,12 +3,18 @@
 
 CONFIG_BOARD_BLUEPILL_C8=y
 
-# 20 KiB of SRAM, so both stacks sit at the low-density floor and the pools are cut.
+# The MINIMUM tier of docs/reference/boards.md, which states what that tier buys and what
+# it refuses; the per-board arithmetic below is what this part pays for it.
+#
+# 20 KiB of SRAM, so the pools are cut.
 CONFIG_KICKOS_MAX_THREADS=2
 CONFIG_KICKOS_MAX_SEMAPHORES=4
 CONFIG_KICKOS_MAX_MUTEXES=4
 CONFIG_KICKOS_MAX_IRQ_HANDLES=4
 CONFIG_KICKOS_CAP_TABLE_SUPPLY=7
+# selftest_p2 is the binding image here: it leaves 3232 bytes of arena past idle plus
+# root plus two pool stacks. A thread keeps 2048 - 180 of usable stack, the entry's red
+# zone being what armv7m reserves on a chip with no MPU (armv7m_trap_stack.h).
 CONFIG_KICKOS_USER_STACK_SIZE=2048
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=2048

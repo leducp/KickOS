@@ -1,0 +1,452 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Declarations for tests/static/check_trap_redzone.sh: WHICH symbols a trap prologue can reach,
+# WHICH macro holds the figure it enforces, and WHAT the graph is allowed not to know. The macro
+# names are resolved through the compiler under the flags the image was built with, so a figure
+# lives in exactly one place: the arch header the assembler and the C both read.
+#
+# A CLASS is one (FRAME, DEPTH) pair with its own root set. A trap prologue reserves FRAME plus
+# DEPTH at the bottom of the interrupted stack and refuses the trap when less room than that
+# remains below sp. DEPTH is the half this gate MEASURES, the worst-case bytes the kernel C
+# dispatch descends on that same stack; FRAME is everything else in the zone, which on armv7m
+# also carries the hardware frame a preempting exception stacks and no call graph can see. The
+# two halves stay separate macros: folded into one, a growing dispatch could eat the structural
+# allowance while the gate still reported room to spare.
+#
+# The hardware separates the entries: mcause on RISC-V, a separate vector on RX, a separate
+# exception on ARM. Collapsing the classes would reserve the syscall figure under every tick.
+#
+# FILE FORMAT, one record per line, '#' starts a comment:
+#   arch    <arch> header=<path-relative-to-source-dir>
+#   preset  <arch> <configure-preset>
+#   class   <arch> <CLASS> frame=<MACRO> depth=<MACRO> [stack=trap|stack=kernel] \
+#                                                        [kstacks=0|kstacks=1]
+#   root    <arch> <CLASS> [?]<symbol>
+#   root    <arch> <CLASS> NONE reason: <text to end of line>
+#   exclude <arch> <mangled-symbol> reason: <text to end of line>
+#   unsized <arch> <symbol> <bytes> reason: <text to end of line>
+#
+# A '?' before a root or an `exclude` marks it OPTIONAL: the symbol is compiled out under some
+# option, or absent from some boards' graphs, so its absence contributes 0 instead of failing.
+# A root with no '?' that is missing is a hard failure, a root the graph does not have being a
+# path nobody measured. A '?' exclusion the graph does not have is reported as unused.
+#
+# NONE declares that the class runs NO C on the guarded stack, so its depth is 0 and there is
+# nothing to walk. It is the deliberate twin of an omitted root: a class with no record at all
+# is refused, because a root set that is empty by accident measures 0 and passes forever.
+#
+# A `root` symbol matches the graph as an exact name or as the mangled tail of a file-scoped
+# one; the match must be UNIQUE, and an ambiguous name is refused rather than guessed at.
+#
+# EVERY PRESET OF EVERY ARCH BELONGS HERE. A `preset` record is what makes a (board, variant)
+# pair measurable at all, and a variant is measurement-relevant when it changes any of
+# KICKOS_BENCH (a syscall arm that prints), KICKOS_TELEMETRY (the trace emitters and the ring
+# drain arch_shutdown runs, reached through exit_current and through the panic tail),
+# KICKOS_ENABLE_SELFTEST (syscall arms of its own), the memory model (MPU against FLAT moves the
+# grant and commit chains BOTH ways, so a flat variant is not automatically the cheaper one), or
+# the console backend (per BOARD, and the tail every printing chain ends in). A board's variants
+# differ by exactly those knobs. The cost is one scratch cross-build per preset, reused across
+# runs and charged to whoever runs that board's ctest.
+#
+# THE ctest LADDER IS NOT A SECOND LIST: the top-level CMakeLists derives the preset name from
+# the board and variant it is configuring and asks THIS FILE whether that name is declared, so a
+# new preset enters both lists by being declared once.
+#
+# LX6 CARRIES ONE CLASS AND NOT THE ISOLATION SET. CHIP_ESP32 selects no HAS_MPU, so nothing on
+# that part isolates one thread's memory from another's and a wild-sp privileged descent reaches
+# nothing a plain store from the thread itself does not already reach: the syscall classes have
+# no one to protect and are absent. PREEMPT is a different question and applies with or without
+# an MPU -- whether the involuntary frame FITS the stack it lands on -- so it is declared.
+#
+# stack=trap says the descent runs on a static kernel stack the arch owns rather than on an
+# unprivileged thread stack. Two consequences: the SPAWN FLOOR clause does not apply, and
+# neither does the declared `exclude` set, a panic tail being excluded only to keep a THREAD's
+# red zone under the spawn floor.
+#
+# stack=kernel says the descent runs on the interrupted thread's PER-THREAD KERNEL block, one
+# KICKOS_KERNEL_STACK_SIZE per thread slot in kernel .bss, so frame plus depth is a requirement
+# on THAT knob and the gate compares it against the block. The lowest word of a block is its
+# overflow canary, so the fit has to leave that word alone. Same two consequences as stack=trap,
+# and it also drops BOTH halves where KICKOS_KERNEL_STACKS is 0, which is the mirror of
+# kstacks=1 and why no record carries that marker. stack=trap and stack=kernel are exclusive.
+#
+# kstacks=<n> says the class belongs to ONE of the two entry designs an arch can compile, the
+# one KICKOS_KERNEL_STACKS selects at <n>. Where the knob disagrees the image does not contain
+# the path, so check_trap_redzone.sh measures the class, PRINTS that it is not enforcing it, and
+# drops both halves. It is NOT the same field as stack=: stack= says which stack a descent lands
+# on, kstacks= whether the image contains that descent at all. Only armv7m needs it; rv32imac,
+# rxv3 and armv6m each static_assert KICKOS_KERNEL_STACKS != 0.
+
+# --- rv32imac ------------------------------------------------------------------
+# SEVEN classes. Two registers separate the six trap ones, both readable before the frame is
+# built. mcause picks the entry: the .Lintr arms take TRAP, msip takes SWITCH, an ecall takes
+# SYS or SYSPRIV, and any other exception takes FAULT. mstatus.MPP then picks the stack: an
+# ecall from U-mode is SYS on the thread's kernel block, the same ecall from M-mode is SYSPRIV
+# on the sp it interrupted, and every M-mode cause that is not msip or an ecall is NESTED on the
+# kernel's own trap stack.
+#
+# THE SEVENTH IS NOT A TRAP CLASS. EXIT measures the death path, which runs after the entry has
+# handed control back: .Lfault relocates sp to the top of the dying thread's own stack and mrets
+# into the exit stub, so the descent is privileged on the stack of a thread of any privilege.
+# The SPAWN FLOOR clause is the only thing that bounds it.
+#
+# SYSPRIV is the SYS entry reached from M-mode: same FRAME_SYS, same roots, but the frame stays
+# on the sp it interrupted, that thread's own stack, so it takes the depth macro with the panic
+# tail excluded. With EXIT it is what sets KICKOS_MIN_STACK_SIZE on this arch. Its depth macro
+# is the one posture-dependent figure in this file, resolving per KICKOS_BENCH in
+# rv_trap_stack.h, which is why the gate resolves the arch header through the compiler rather
+# than scraping it as text.
+#
+# FAULT is the accepted U-mode fault: .Lfault runs the reporter with sp on the frame the entry
+# built, which is the kernel block, so the whole dump chain lands there. Same reporter chain
+# NESTED measures, and a class of its own because it is the KERNEL BLOCK it has to fit.
+#
+# SWITCH IS THE ONE CLASS STILL ON A THREAD STACK, and that is why it must not be deleted:
+# .Lswitch and arch_start call kickos_arch_mpu_commit with sp = incoming->sp, which for a thread
+# that has never trapped is the frame arch_context_init fabricated on its USER stack. Measuring
+# 0 there is what says no privileged C frame stands on user memory. rv_trap_stack.h also
+# composes this class INTO the syscall requirement, a blocking dispatch or a tick's wake taking
+# the msip trap at whatever depth the dispatch had reached.
+arch    rv32imac header=arch/riscv/rv32imac/include/kickos/arch/rv_trap_stack.h
+preset  rv32imac qemu-riscv
+preset  rv32imac qemu-riscv-flat
+preset  rv32imac qemu-riscv-bench
+preset  rv32imac esp32c6-wroom
+preset  rv32imac esp32c6-wroom-st
+preset  rv32imac esp32c6-wroom-flat
+preset  rv32imac esp32c6-wroom-bench
+class   rv32imac TRAP   frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_KERNEL_DEPTH stack=kernel
+class   rv32imac SYS    frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYS stack=kernel
+class   rv32imac SYSPRIV frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC
+class   rv32imac FAULT  frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_NESTED_DEPTH stack=kernel
+class   rv32imac SWITCH frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_SWITCH_DEPTH
+class   rv32imac NESTED frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_NESTED_DEPTH stack=trap
+class   rv32imac EXITK  frame=KICKOS_RV_TRAP_NEST_EXIT depth=KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK stack=kernel
+class   rv32imac RET    frame=KICKOS_RV_TRAP_NEST_EXIT depth=KICKOS_RV_TRAP_KERNEL_DEPTH_RET
+
+# The symbols the .Lintr arms of switch.S branch to.
+root    rv32imac TRAP kickos_isr_timer
+root    rv32imac TRAP kickos_rv_dispatch_soft
+root    rv32imac TRAP kickos_rv_ext_dispatch
+root    rv32imac TRAP kickos_rv_ext_dispatch_dev
+# Called from the prologue/epilogue itself, on the same stack, so charged to every class.
+root    rv32imac TRAP kickos_arch_mpu_commit
+root    rv32imac TRAP ?kickos_trace_switch_done
+root    rv32imac TRAP ?kickos_bench_switch_done
+# The .Lintr demux calls this ahead of the arm it picked, in selftest builds only. A sibling of
+# the ISR call rather than an ancestor, so it adds to this class's MAX and not to its chain.
+root    rv32imac TRAP ?kickos_rv_nested_witness
+
+# .Lecall_slow mrets into svc_trampoline, which calls syscall_dispatch; .Lecall calls
+# kickos_ipc_fastpath inline, and the taken fastpath runs the same hooks.
+root    rv32imac SYS  syscall_dispatch
+root    rv32imac SYS  kickos_ipc_fastpath
+root    rv32imac SYS  kickos_arch_mpu_commit
+root    rv32imac SYS  ?kickos_trace_switch_done
+root    rv32imac SYS  ?kickos_bench_switch_done
+
+root    rv32imac SYSPRIV syscall_dispatch
+root    rv32imac SYSPRIV kickos_ipc_fastpath
+root    rv32imac SYSPRIV kickos_arch_mpu_commit
+root    rv32imac SYSPRIV ?kickos_trace_switch_done
+root    rv32imac SYSPRIV ?kickos_bench_switch_done
+
+# .Lfault, for a U-mode fault the entry ACCEPTED: the reporter and the stack-top query run on
+# the frame the entry built, which is the kernel block. This charges the deeper of the kill and
+# panic paths, so no claim about C control flow is needed.
+root    rv32imac FAULT kickos_rv_fault_report
+root    rv32imac FAULT kickos_fault_stack_top
+
+# EXITK is the fault and slay stubs on the thread's own KERNEL BLOCK: .Lfault relocates sp to
+# kickos_fault_stack_top, which answers with ctx.kernel_sp, and arch_ctx_redirect rebuilds the
+# slay frame at that same top. RET is kickos_thread_return, which nothing relocates, so the
+# SPAWN FLOOR clause is the whole of ITS enforcement. The frame term is the msip frame on both:
+# the stubs reschedule, and an msip trap from M-mode keeps its frame on the interrupted sp.
+root    rv32imac EXITK kickos_thread_fault_exit
+root    rv32imac EXITK kickos_thread_slay_exit
+root    rv32imac RET   kickos_thread_return
+
+# What .Lswitch itself calls, below the frame it just saved.
+root    rv32imac SWITCH kickos_arch_mpu_commit
+root    rv32imac SWITCH ?kickos_trace_switch_done
+root    rv32imac SWITCH ?kickos_bench_switch_done
+
+# The four .Lintr arms again, an M-mode entry running them on the trap stack instead, plus
+# .Lfault's reporter. kickos_arch_mpu_commit is NOT here: .Lswitch and .Lecall are its only
+# callers and neither is a nested path.
+root    rv32imac NESTED kickos_isr_timer
+root    rv32imac NESTED kickos_rv_dispatch_soft
+root    rv32imac NESTED kickos_rv_ext_dispatch
+root    rv32imac NESTED kickos_rv_ext_dispatch_dev
+root    rv32imac NESTED kickos_rv_fault_report
+root    rv32imac NESTED kickos_fault_stack_top
+root    rv32imac NESTED ?kickos_rv_nested_witness
+# .Ltrap_wild's containment call. A U-MODE entry and not a nested M-mode trap, so it is here
+# for the STACK and not the cause: sp is the trap top at that label, which is the one this
+# class measures. kickos_arch_mpu_commit below it is charged to SWITCH instead, the containment
+# moving sp onto the incoming frame before that call exactly as .Lswitch does.
+root    rv32imac NESTED kickos_rv_contain_wild_sp
+
+# THE TWO EXCLUSIONS SERVE SYSPRIV AND EXIT, the rv32imac classes on a thread stack. They do
+# NOT reach TRAP, SYS or FAULT: a stack=kernel class is measured with nothing excluded. SWITCH
+# is on a thread stack too, but its roots cannot reach the tail, and if one ever did, failing it
+# would be the right answer: that would be a privileged panic descent on user memory.
+exclude rv32imac _ZN6kickos6kpanicEPKc reason: the noreturn panic tail, which every KICKOS_ASSERT in the dispatch reaches. Counting it puts the SYSPRIV requirement at 1168, above every rv32imac KICKOS_MIN_STACK_SIZE, so a PRIVILEGED thread spawned at the floor could not make a syscall at all. The residual is stated in rv_trap_stack.h; the tool prints the without-exclusions figure so it cannot go quiet.
+exclude rv32imac ?_ZN6kickos9kpanic_atEPKcj reason: the SECOND door into the same noreturn panic tail, which KICKOS_ASSERT reaches where kpanic takes a message. Excluding one and not the other left the tail counted on any board whose deepest chain happens to enter through this one, which is a figure the exclusion above was meant to remove. Same residual, stated once in rv_trap_stack.h.
+
+# Assembly and libgcc bodies have no .ci entry, so their frames are declared here. riscv gcc
+# reports 0 bytes (static) for a frameless leaf too, so 0 is the graph's own unit and no
+# return-address slot is added. Re-derive with riscv32-none-elf-objdump -d --disassemble=<sym>.
+unsized rv32imac __udivdi3 0 reason: measured from the ELF, frameless register-only leaf
+unsized rv32imac __umoddi3 0 reason: measured from the ELF, frameless register-only leaf
+unsized rv32imac __clzsi2  0 reason: measured from the ELF, frameless register-only leaf
+unsized rv32imac __divdi3  0 reason: measured from libgcc.a for this multilib, frameless register-only leaf: its body touches sp nowhere and ends in a bare ret, exactly as the two above. It is in every board's graph and only a KICKOS_BENCH measurement REACHES it, that arm's print dividing signed 64-bit where nothing else in the trap path does.
+
+# NOT AN UNMEASURED BODY BUT AN ALIAS. gcc emits the complete-object destructor as a triangle
+# node with no "bytes (static)" and an edge to the base-object one, and the two are the same
+# address, so 0 is its own frame and the edge below it carries the real cost.
+unsized rv32imac _ZN6kickos10BenchScopeD1Ev 0 reason: measured from the object, a same-address alias of the base-object destructor rather than a body of its own
+
+# --- rxv3 ----------------------------------------------------------------------
+# FOUR classes. PENDSW is the deferred-switch vector (INTB[27]); the syscall trap then splits,
+# kickos_rx_syscall_trap's `cmp #56, r1` picking between a generic arm that stashes the
+# [userPC][userPSW] head and RTEs into svc_trampoline, and a fastpath arm that saves the whole
+# 236-byte context and runs kickos_ipc_fastpath inline. Different frame AND different descent,
+# so each is its own class: folded together, KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST would be
+# enforced by the assembly and measured by nobody.
+#
+# The generic arm's dispatch is SYSK, stack=kernel, svc_trampoline's first act being to move R0
+# onto the calling thread's own kernel block.
+#
+# THE SYS CLASS IS NOT DELETABLE FOR THAT, and it is the one class here with no root at all. The
+# head the trap commits before its RTE still lands on the thread's own stack, because RTE pops
+# PC then PSW from R0 and R0 is the USP while PSW.U is set, so the resume USP is that head's
+# address plus eight. KICKOS_RX_TRAP_NEST_SYS prices the head plus the switcher zone a SWINT can
+# put below it while svc_trampoline is still on that stack.
+arch    rxv3 header=arch/rx/rxv3/include/kickos/arch/rx_trap_stack.h
+# Every rxv3 preset, per the knob rule above.
+preset  rxv3 rx72m
+preset  rxv3 rx72m-st
+preset  rxv3 rx72m-flat
+class   rxv3 PENDSW   frame=KICKOS_RX_TRAP_FRAME_PENDSW   depth=KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW
+class   rxv3 SYS      frame=KICKOS_RX_TRAP_NEST_SYS       depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYS
+class   rxv3 SYS_FAST frame=KICKOS_RX_TRAP_FRAME_SYS_FAST depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST
+class   rxv3 SYSK     frame=KICKOS_RX_TRAP_NEST_SYSK      depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK stack=kernel
+# THE DEATH PATH. The backend rewrites the stacked PC so the RTE lands in a stub with R0 at
+# kickos_fault_stack_top, which answers with ctx.kernel_sp. EXITK is the two relocating stubs on
+# the block; RET is kickos_thread_return, which cannot move.
+class   rxv3 EXITK    frame=KICKOS_RX_TRAP_NEST_EXIT      depth=KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK stack=kernel
+class   rxv3 RET      frame=KICKOS_RX_TRAP_NEST_EXIT      depth=KICKOS_RX_TRAP_KERNEL_DEPTH_RET
+
+root    rxv3 PENDSW kickos_arch_mpu_commit
+root    rxv3 PENDSW ?kickos_trace_switch_done
+root    rxv3 PENDSW ?kickos_bench_switch_done
+
+root    rxv3 SYS    NONE reason: svc_trampoline moves R0 to ctx.kernel_sp before it calls anything, so syscall_dispatch and the tree under it are measured as SYSK. What is left on the thread's own USP at this site writes no C frame: the trap's [userPC][userPSW] head, which the RTE's resume-USP arithmetic requires there. KICKOS_RX_TRAP_NEST_SYS prices it plus the switcher zone a SWINT can put below it. THE SECOND DOOR runs no C frame here either: .Lsvc_nokstack reaches kickos_rx_no_kernel_stack, whose console chain is far past what this class reserves, and clrpsw u puts that reporter on the ISP before the call.
+
+root    rxv3 SYSK   syscall_dispatch
+root    rxv3 SYSK   kickos_ipc_fastpath
+
+root    rxv3 EXITK  kickos_thread_fault_exit
+root    rxv3 EXITK  kickos_thread_slay_exit
+root    rxv3 RET    kickos_thread_return
+
+# The taken fastpath switches, so it runs the same epilogue hooks the switcher does, and after
+# the transfer that epilogue is ALL it runs on a thread stack.
+root    rxv3 SYS_FAST kickos_arch_mpu_commit
+root    rxv3 SYS_FAST ?kickos_trace_switch_done
+root    rxv3 SYS_FAST ?kickos_bench_switch_done
+
+# No rxv3 exclusion: both C dispatches are on the block, where a stack=kernel class is measured
+# with nothing excluded anyway, and the roots left on a thread stack cannot reach the tail.
+
+# On rx-elf the unit `bytes (static)` reports is the prologue push plus the incoming
+# return-address slot, so a frameless leaf reports 4 and not 0: arch_bitband_present
+# (`mov.l #0, r1; rts`) reports 4. arch_switch is switch.S and touches no stack at all.
+unsized rxv3 arch_switch 0  reason: switch.S leaf, records the target and pends SWINT, touches no stack
+unsized rxv3 __udivdi3   28 reason: measured from the ELF, prologue push plus return-address slot
+unsized rxv3 __umoddi3   32 reason: measured from the ELF, prologue push plus return-address slot
+unsized rxv3 __divdi3    32 reason: measured from libgcc.a, pushm r6-r12 is 28 plus the return-address slot
+unsized rxv3 __clzsi2     4 reason: measured from libgcc.a, frameless leaf so the return-address slot only
+
+# --- armv7m --------------------------------------------------------------------
+# THREE classes, and TWO OF THEM ARE THE SAME DISPATCH UNDER THE TWO ENTRY DESIGNS THIS ARCH
+# COMPILES. KICKOS_KERNEL_STACKS picks which one an image links: at 1 svc_trampoline moves SP
+# onto the calling thread's own kernel block before it calls anything, so the dispatch is SVCK,
+# stack=kernel; at 0 it runs the dispatch on the caller's own PSP and the dispatch is SVC, on
+# the thread stack. armv7m_trap_stack.h says which chips take which.
+#
+# BOTH CLASSES ARE MEASURED ON EVERY PRESET, and only ONE of them is enforced on any given one.
+# The call graph cannot say which design an object linked, so the measurement has to be taken
+# either way; what the gate CAN read is KICKOS_KERNEL_STACKS out of the board config it just
+# generated, which is what the kstacks=0 marker on SVC and stack=kernel on SVCK are spent on.
+#
+# The SVC class is what the SPAWN FLOOR clause binds, and the four f302nucleo and due presets
+# are the boards it exists for. PENDSV takes FRAME_MAX, its own worst-case push, and is the same
+# under both designs and therefore unmarked, handler mode putting everything it calls on the
+# MSP.
+arch    armv7m header=arch/arm/armv7m/include/kickos/arch/armv7m_trap_stack.h
+# Every armv7m preset, per the knob rule above. Grouped by board, the console backend being per
+# board and the tail every printing chain ends in.
+preset  armv7m qemu
+preset  armv7m qemu-flat
+preset  armv7m qemu-telem
+preset  armv7m qemu-m3
+preset  armv7m qemu-m3-flat
+preset  armv7m qemu-m7
+preset  armv7m qemu-m7-flat
+preset  armv7m qemu-m33
+preset  armv7m qemu-m33-flat
+preset  armv7m frdmk64f
+preset  armv7m frdmk64f-flat
+preset  armv7m frdmk64f-st
+preset  armv7m teensy41
+preset  armv7m teensy41-flat
+preset  armv7m teensy41-st
+preset  armv7m xmc4800-relax
+preset  armv7m xmc4800-relax-flat
+preset  armv7m xmc4800-relax-st
+preset  armv7m xmc4800-relax-bench
+preset  armv7m f411disco
+preset  armv7m f411disco-flat
+preset  armv7m f411disco-st
+preset  armv7m blackpill
+preset  armv7m blackpill-flat
+preset  armv7m blackpill-st
+preset  armv7m due
+preset  armv7m due-st
+preset  armv7m pizero2350
+preset  armv7m pizero2350-flat
+preset  armv7m pizero2350-st
+# The two 64 KiB FLASH parts, whose OWN dispatch is smaller than the fleet worst case.
+preset  armv7m f302nucleo
+preset  armv7m f302nucleo-st
+preset  armv7m bluepill-c8
+preset  armv7m bluepill-c8-st
+class   armv7m PENDSV frame=KICKOS_ARMV7M_TRAP_FRAME_MAX \
+                      depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV
+# NEST_SVC_DISPATCH and not NEST_SVC: the class is kstacks=0, and that posture puts the
+# dispatch's compiler frames between the trampoline and the preemption point, so the preempting
+# entry's STKALIGN pad stops cancelling. Provisioning it in the frame is what makes the depth
+# comparison below (measured <= depth) the right test for every parity.
+class   armv7m SVC    frame=KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH \
+                      depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC kstacks=0
+class   armv7m SVCK   frame=KICKOS_ARMV7M_TRAP_NEST_SVCK \
+                      depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK stack=kernel
+# THE DEATH PATH, THREE CLASSES, none of them a trap class: no prologue guards them.
+#
+# EXITK is the two relocating stubs wherever a block is seated. kickos_fault_stack_top answers
+# with ctx.kernel_sp, so the fault redirect and the slay rebuild both land at the block TOP.
+class   armv7m EXITK  frame=KICKOS_ARMV7M_TRAP_NEST_EXIT \
+                      depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK stack=kernel
+# EXIT is the FALLBACK, and this arch is the only one that needs one: f302nucleo, f302nucleo-st,
+# due and due-st resolve KICKOS_KERNEL_STACKS 0, so all three stubs stay on the thread's own
+# stack against the spawn floor.
+class   armv7m EXIT   frame=KICKOS_ARMV7M_TRAP_NEST_EXIT \
+                      depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT kstacks=0
+# RET is unmarked because it applies under BOTH designs: kickos_thread_return is an ordinary
+# privileged thread's entry returning, with no fault and no redirect, so nothing relocates it.
+# Folding it into EXIT would leave it unmeasured on the 30 presets that carve blocks.
+class   armv7m RET    frame=KICKOS_ARMV7M_TRAP_NEST_EXIT \
+                      depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET
+
+root    armv7m PENDSV NONE reason: PendSV_Handler and the SVC fastpath arm run in handler mode, where ARMv7-M forces SP_main, so kickos_arch_mpu_commit, kickos_ipc_fastpath and the trace/bench hooks all descend on the MSP. What the MSP has to hold is a kernel-stack sizing question, not a privilege one, and no figure here bounds it.
+
+# svc_trampoline's only call, and the SAME ROOT SET serves both classes: what differs is the
+# stack it lands on and, with it, whether the panic tail is charged. The fastpath is NOT a
+# root of either: it is reached with lr still an EXC_RETURN, in handler mode, on the MSP.
+root    armv7m SVC    syscall_dispatch
+root    armv7m SVCK   syscall_dispatch
+
+# The two stubs that relocate, on the block.
+root    armv7m EXITK  kickos_thread_fault_exit
+root    armv7m EXITK  kickos_thread_slay_exit
+# The same two on the thread stack, where no block is seated to move them to.
+root    armv7m EXIT   kickos_thread_fault_exit
+root    armv7m EXIT   kickos_thread_slay_exit
+root    armv7m EXIT   kickos_thread_return
+root    armv7m RET    kickos_thread_return
+
+# THE TWO EXCLUSIONS SERVE SVC AND EXIT, the two armv7m classes on a thread stack whose roots
+# reach the tail. They do NOT reach SVCK: a stack=kernel class is measured with nothing
+# excluded.
+exclude armv7m _ZN6kickos6kpanicEPKc reason: the noreturn panic tail, which every KICKOS_ASSERT in the dispatch reaches. LOAD-BEARING BY FOUR BYTES, and the binding clause is the FLOOR ASSERT rather than the red zone against the floor directly. Counting the tail takes the deepest of the four presets that enforce this class to 680 (f302nucleo, f302nucleo-st; due and due-st reach 656), so the red zone to 860, and arch_armv7m.cc asks for that plus the FP-live frame entry spends ABOVE it: 964 against a 960 KICKOS_MIN_STACK_SIZE, f302nucleo being -mfpu=fpv4-sp-d16 -mfloat-abi=softfp and so taking the 104 leg. Excluded it is 628 + 104 = 732 with 228 to spare. Independent of what KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC is set to: the exclusion picks which chains are walked, the figure sizes the walked ones. The residual is stated in armv7m_trap_stack.h; the tool prints the without-exclusions figure so it cannot go quiet, and SVCK is that figure enforced where it belongs, against the kernel block.
+exclude armv7m ?_ZN6kickos9kpanic_atEPKcj reason: the SECOND door into the same noreturn panic tail. f302nucleo and bluepill-c8 reach 680 and 672 THROUGH this symbol where every board measured before them reached its depth by another chain entirely, so excluding one door and not the other made the figure depend on which door a board's deepest path used. Both are unexcluded readings; f302nucleo is one of the four presets that still ENFORCE this class and it measures 444 with the exclusions applied. Same residual, stated once in armv7m_trap_stack.h.
+
+# The AEABI 64-bit divide helpers are libgcc, so they have no .ci entry and neither does
+# __udivmoddi4 below them; measured from libgcc.a for this multilib (thumb/v7e-m+fp/softfp).
+# On arm-none-eabi a frameless leaf costs 0, the return address arriving in LR rather than on
+# the stack.
+unsized armv7m __aeabi_ldivmod  56 reason: measured, 16-byte head plus __udivmoddi4's 40
+unsized armv7m __aeabi_uldivmod 56 reason: measured, 16-byte head plus __udivmoddi4's 40
+
+# --- armv6m --------------------------------------------------------------------
+# THREE classes, the same split as armv7m and for the same reason: both guarded pushes in
+# switch.S happen in HANDLER mode, where ARMv6-M forces SP_main (ARMv6-M ARM B1.4.1), so the
+# switcher's calls and the SVC fastpath's kickos_ipc_fastpath descend on the MSP and not on a
+# thread stack. The SVC slow path leaves handler mode and svc_trampoline moves SP onto the
+# calling thread's own KERNEL BLOCK, so SVCK is what measures the dispatch.
+#
+# The SVC class is NOT deletable for that: the fastpath arm's callee block and the trampoline's
+# eight scratch bytes still land on the thread's PSP, and NEST_SVC prices them plus the
+# exception pair that can preempt the window between them. PENDSV takes the push itself. There
+# is no FP term on this arch.
+arch    armv6m header=arch/arm/armv6m/include/kickos/arch/armv6m_trap_stack.h
+# Every armv6m preset, per the knob rule above.
+preset  armv6m microbit
+preset  armv6m picopi
+preset  armv6m picopi-st
+preset  armv6m picopi-flat
+class   armv6m PENDSV frame=KICKOS_ARMV6M_TRAP_FRAME \
+                      depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_PENDSV
+class   armv6m SVC    frame=KICKOS_ARMV6M_TRAP_NEST_SVC \
+                      depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVC
+# THE DEATH PATH. EXITK is the two relocating stubs on the block; RET is kickos_thread_return,
+# which cannot move and stays against the spawn floor.
+class   armv6m EXITK  frame=KICKOS_ARMV6M_TRAP_NEST_EXIT \
+                      depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK stack=kernel
+class   armv6m RET    frame=KICKOS_ARMV6M_TRAP_NEST_EXIT \
+                      depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_RET
+class   armv6m SVCK   frame=KICKOS_ARMV6M_TRAP_NEST_SVCK \
+                      depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVCK stack=kernel
+
+root    armv6m PENDSV NONE reason: PendSV_Handler and the SVC fastpath arm run in handler mode, where ARMv6-M forces SP_main, so kickos_arch_mpu_commit, kickos_ipc_fastpath and the telemetry hook all descend on the MSP. What the MSP has to hold is a kernel-stack sizing question, not a privilege one, and no figure here bounds it.
+root    armv6m SVC    NONE reason: svc_trampoline moves SP to ctx.kernel_sp before it calls anything, so syscall_dispatch and the tree under it are measured as SVCK. What is left on the thread's PSP at this site writes no C frame at all: the fastpath arm's callee block, in handler mode, and the trampoline's own scratch push. NEST_SVC prices both plus the exception pair that can preempt the window between them.
+
+# svc_trampoline's only call, on the calling thread's kernel block. The fastpath is NOT a
+# root of this class: it is reached with lr still an EXC_RETURN, in handler mode, on the MSP.
+root    armv6m SVCK   syscall_dispatch
+
+root    armv6m EXITK  kickos_thread_fault_exit
+root    armv6m EXITK  kickos_thread_slay_exit
+root    armv6m RET    kickos_thread_return
+
+# The AEABI helpers are libgcc, with no .ci entry and none for anything they call, so each
+# figure is the symbol's own prologue plus the deepest chain below it, from libgcc.a for this
+# multilib (thumb/v6-m/nofp). On arm-none-eabi a frameless leaf costs 0, the return address
+# arriving in LR. The chains: __aeabi_ldivmod pushes 16 and calls __gnu_ldivmod_helper (32)
+# which calls __divdi3 (40) which calls __clzdi2 (8); __aeabi_uldivmod pushes 16 and calls
+# __udivmoddi4 (48) which calls __clzdi2 (8).
+unsized armv6m __aeabi_ldivmod  96 reason: measured, 16-byte head plus __gnu_ldivmod_helper's 80
+unsized armv6m __aeabi_uldivmod 72 reason: measured, 16-byte head plus __udivmoddi4's 56
+unsized armv6m __aeabi_lmul     24 reason: measured, pushes {r4-r7,lr} then {lr}, calls nothing
+unsized armv6m __aeabi_uidiv     8 reason: measured, an alias of __udivsi3 at the same address
+unsized armv6m __aeabi_uidivmod  8 reason: measured, tail-branches into __udivsi3, whose worst path is its 8-byte divide-by-zero tail
+unsized armv6m __clzsi2          0 reason: measured, frameless register-only leaf
+unsized armv6m __ctzsi2           0 reason: measured, frameless register-only leaf
+
+arch    lx6 header=arch/xtensa/lx6/include/kickos/arch/lx6_trap_stack.h
+preset  lx6 esp32-wroom
+preset  lx6 esp32-wroom-st
+class   lx6 PREEMPT frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH
+root    lx6 PREEMPT kickos_lx6_dispatch_l1
+
+exclude lx6 _ZN6kickos6kpanicEPKc reason: the noreturn panic tail, which every KICKOS_ASSERT the dispatch reaches can enter. Counting it takes PREEMPT to 608 and the zone to 864, which sizes this board's idle stack for a chain that ends in a halt rather than in a resume. Excluded on the same terms as rv32imac and armv7m; the residual is stated in lx6_trap_stack.h and the tool prints the without-exclusions figure so it cannot go quiet.
+exclude lx6 ?_ZN6kickos9kpanic_atEPKcj reason: the SECOND door into the same noreturn tail, which KICKOS_ASSERT reaches where kpanic takes a message. Excluding one and not the other leaves the tail counted on whichever chain happens to enter through the other.
+# Three nodes with no .ci entry. Measured from the xtensa-esp-elf 16.1.0 esp32 multilib: the
+# windowed ABI states a frame in the `entry` immediate, so each figure is that plus the deepest
+# chain below it. __divdi3 is referenced but linked into no image, so it is read from libgcc.a.
+unsized lx6 __divdi3      64 reason: entry a1 32, then a call0 into __udivdi3 which entries another 32
+unsized lx6 __udivdi3     32 reason: entry a1 32, calls nothing
+unsized lx6 xtensa_switch 32 reason: entry a1 32, calls nothing; the swap itself leaves the interrupted stack

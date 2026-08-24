@@ -40,6 +40,9 @@
     .set CTX_TID,      16             /* trace_tid (telemetry builds only) */
     .set RESUME_COOP,  0
 
+#include <kickos/arch/xtensa_frame.h>
+
+
 /* SPILL_ALL_WINDOWS: XCHAL_NUM_AREGS == 64 on LX6, so rotate the window a full
  * 360 degrees (total rotw = 16 == 64/4). Each `and a12,a12,a12` is a no-op write
  * that, when a12 belongs to a still-live ancestor window, triggers a window
@@ -126,6 +129,7 @@ xtensa_switch:
        retw continuation, since its full state is a 256-byte interrupt frame, so it is
        resumed by the shared rfe epilogue instead. */
     l32i    a3, a1, 0             /* reload `to` */
+    SEAT_THREADPTR a3, a4, a5
     l32i    a5, a3, CTX_KIND      /* to->resume_kind */
     bnez    a5, .Lsw_resume_irq
     l32i    a1, a3, CTX_SP        /* a1 = to->sp   (switch stacks) */
@@ -181,6 +185,7 @@ arch_start:
     SPILL_ALL_WINDOWS
 
     l32i    a3, a1, 0
+    SEAT_THREADPTR a3, a4, a5
     l32i    a5, a3, CTX_KIND      /* first->resume_kind */
     bnez    a5, .Lstart_resume_irq
     l32i    a1, a3, CTX_SP       /* a1 = first->sp */

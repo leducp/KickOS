@@ -13,6 +13,8 @@
  * arch_ram_alloc pool) and _estack (initial MSP = vector[0]).
  */
 
+#include <sections.ld.h>
+
 ENTRY(Reset_Handler)
 
 MEMORY
@@ -28,9 +30,9 @@ _kernel_stack_size = 16K;              /* boot/handler (MSP) stack */
    own .data/.bss but not the kernel's. PMSA needs the region pow2-sized AND aligned
    to its size, so the app window is padded to this pow2 and section-aligned to its
    size above the kernel data; an app whose globals exceed it trips the ASSERT.
-   The window pad IS the newlib heap. 4 MiB of RAM here, so unlike the 128 KiB parts
-   the pad costs nothing: 64K comfortably covers the selftest image's app-side .bss
-   plus the ~5.9K measured cxxtest heap peak. Power of two only. */
+   The window pad IS the newlib heap. 4 MiB of RAM here affords a 64K pad, which covers
+   the selftest image's app-side .bss plus the ~5.9K measured cxxtest heap peak. Power of
+   two only. */
 #if KICKOS_HAVE_MPU
 #ifndef KICKOS_APPDATA_SIZE
 #define KICKOS_APPDATA_SIZE 64K
@@ -50,6 +52,7 @@ SECTIONS
         *(.text .text.*)
         *(.rodata .rodata.*)
         *(.glue_7) *(.glue_7t)
+        KICKOS_CODE_DEBRIS_SECTIONS
         KEEP(*(.init))
         KEEP(*(.fini))
         . = ALIGN(4);
@@ -78,12 +81,27 @@ SECTIONS
         __kickos_app_fini_array_end = .;
     } > FLASH
 
+    KICKOS_TLS_TEMPLATE(FLASH)
+
     .kickos_app_init_array :
     {
         __kickos_app_init_array_start = .;
         KEEP(*(SORT(.init_array.*)))
         KEEP(*(.init_array))
         __kickos_app_init_array_end = .;
+    } > FLASH
+
+    /* EHABI unwind instructions + LSDA, homed in the code window so a full-C++ image does
+       not orphan them into whatever gap follows the vector table. libstdc++ emits
+       .gcc_except_table even on EHABI. */
+    .ARM.extab :
+    {
+        *(.ARM.extab* .gnu.linkonce.armextab.*)
+    } > FLASH
+
+    .gcc_except_table :
+    {
+        *(.gcc_except_table .gcc_except_table.*)
     } > FLASH
 
     .ARM.exidx :
@@ -173,9 +191,10 @@ SECTIONS
         *(.bss .bss.* COMMON)
         . = ALIGN(4);
         _appdata_used_end = .;
-        _appdata_fits = ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
-               "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
-        . = __kickos_appdata_start + _appdata_size; /* pad the granted window */
+        /* ld evaluates ASSERTs after layout, so a bare `. = start + size` that moved
+           backwards would fail the link ahead of the overflow ASSERT below. MAX keeps
+           that ASSERT the thing that prints. */
+        . = MAX(., __kickos_appdata_start + _appdata_size); /* pad the granted window */
         __kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
         _kickos_heap_start = ALIGN(_appdata_used_end, 8);
@@ -235,7 +254,13 @@ SECTIONS
 #endif
 
     /DISCARD/ : { *(.ARM.attributes) }
+
+    KICKOS_NONALLOC_SECTIONS
 }
+
+KICKOS_STATIC_RELOC_ASSERT()
+KICKOS_TLS_ALIGN_ASSERT()
+KICKOS_TLS_FIT_ASSERT()
 
 /* Static data (.data+.bss) must not eat into the user-RAM pool / MSP stack.
    Link-time guard: arch_ram_size() = end - start; a negative diff would wrap to
@@ -262,8 +287,9 @@ ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
    into kernel .data/.bss and lets .appdata/.appbss catch the rest, so a broken selector
    shows up as an EMPTY KERNEL side (kernel writable state silently leaked into the app
    window). libkickos_kernel.a always contributes .bss, so an empty kernel .bss is the
-   loud signal the colon selectors matched nothing (a renamed lib). NOT app-side: an
-   empty .appdata is legitimate (a minimal freestanding app --gc-sections'd bare). */
+   loud signal the colon selectors matched nothing (a renamed lib). Only the kernel side
+   is asserted: an empty .appdata is legitimate, a minimal freestanding app being
+   --gc-sections'd bare. */
 ASSERT(_ebss > _sbss,
        "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
 #endif

@@ -417,18 +417,20 @@ scheduler and console core-path work, so neither rides M4.7.9. The capture behin
       that carries the weight now, and no host gate can discharge it. Wants an enforcing board with
       a fault arm under teardown pressure.
 
-- [ ] **`console_tx_write`'s overflow branch drains a full ring synchronously under `IrqLock`, so
-      any kernel print carries an unbounded term.** `kernel/init/console_tx.cc`: once the burst does
-      not fit, the branch disables the TX IRQ, calls `drain_sync()` and then pushes byte by byte,
-      all still under the lock, and the code says the stall is deliberately preferred over a
-      producer/ISR race or dropped output. At the fleet's console rates that is about 87us per byte
-      over a 512-byte ring. Measured through the M4.7.9 fault path, which prints before it exits:
-      under console pressure the preemptible THREAD FAULT dump grew from 105us to 290us
-      (xmc4800-relax) and from 132us to 876us (frdmk64f), dwarfing the `cap_teardown` sweep it
-      precedes. Never entered on silicon in these runs; the pressure was synthetic. The interest is
-      not the fault path specifically: every kernel print inherits this, and it is the single
-      largest masked window in the tree. Decide whether the drop-on-overflow the comment rejects is
-      actually worse than a multi-hundred-microsecond interrupt mask.
+- [ ] **The M4.7.9 fault-path console-pressure figures are stale and want a re-take.** Measured
+      when `console_tx_write`'s overflow branch still drained a full ring under `IrqLock`: the
+      preemptible THREAD FAULT dump grew from 105us to 290us (xmc4800-relax) and from 132us to
+      876us (frdmk64f) under synthetic console pressure. That branch no longer bit-bangs under the
+      lock -- `console_tx_write` queues in ring-sized chunks and waits UNMASKED between them, so the
+      masked window is one ring copy (at most 128 bytes on every CRLF board), independent of baud,
+      at a sub-1% duty cycle, with a bounded synchronous burst only when nothing drains at all.
+      `tests/unit/consoletx/` scores the old code at 4096 masked pushes and the new at 1. Re-take
+      the two figures under the same synthetic pressure. The drop-on-overflow the old comment
+      rejected is moot: nothing is dropped and nothing stalls.
+
+- [ ] **`console_tx_flush_sync` still drains a full ring under `IrqLock`** (up to about 44ms).
+      Unreachable from an unprivileged thread -- panic and deinit only -- so it is not the DoS the
+      producer path was, but it is now the largest masked window left in the tree.
 
 ## Left out of the M4.7.9 diagnostic catalogue, on purpose (2026-08-07)
 
@@ -938,8 +940,10 @@ triggers `push` only on `master`).
 
 ## M4.5.1 -- CI hygiene (2026-07-26)
 
-- [ ] **Reduce `--repeat until-pass:4` to 2 on the four QEMU gates** -- or better, fix the timing
-      root cause that made 4 look necessary. Four attempts hides a gate that fails most runs.
+- [x] **Reduce `--repeat until-pass:4` to 2 on the four QEMU gates** (M5.2.1): it is 2, and it is
+      scoped to the five gates that actually poll a wall-clock output window rather than to whole
+      suites. The RISC-V jobs carry no retry at all, their clock not being the coarse one the
+      retry was for.
 - [x] **Tighten the sim `mpu_fault` failure regex** (M4.5.8): the sim registration now runs
       `tests/integration/check_mpu_fault.sh`, the same script the QEMU boards use, which also pins the reported
       fault address to the one the app announces.
@@ -3388,8 +3392,35 @@ exists at all it is per-**domain** and writable by every member -- carving per-t
 of a region other tasks can write is unsound on sharing grounds before MPU geometry even enters.
 And the geometry is against it too: on the power-of-two backends (PMSAv7, RISC-V NAPOT) shaving
 kernel state off the top of a granted region forces the remainder down to the next lower power of
-two. A design whose isolation property is arch-dependent is the worst outcome. **Revisit at M7**,
+two. A design whose isolation property is arch-dependent is the worst outcome. **Revisit at M6**,
 when a page is the granule and the shape becomes available without the tax.
+
+**THE GATE CORPUS WANTS A LOOK AT M7, and M7 does its own homework on it.** No analysis is
+pre-chewed here on purpose. The one datum worth not re-deriving: M5.2.1 added roughly ten lines
+of gate per line of behaviour, and about a third of the largest gate is DECLARATION
+(`tests/static/trap_redzone_roots.txt`, `trap_redzone_indirect.txt`) rather than logic, with
+three of those declarations numerically inert today by their own mutation testing. Whether that
+is proportionate is the question; the growth is not uniform, one 185-line gate covering a whole
+escalation class while another 1563 lines cover one number per backend.
+
+**A PER-THREAD KERNEL STACK IS NO LONGER SCHEDULED HERE. RESEQUENCED to M5.2.1** (2026-08-20 to the then-M5.2.2, folded into M5.2.1 on 2026-08-21) after an external audit pass; the reasoning below is kept because the pow2-tax and arch-dependence arguments still hold, but they lost to the fact that every finding of that pass was red-zone arithmetic composition in a scheme M5.2.1 deletes. What follows is the ORIGINAL note, VERBATIM: its milestone numbers predate the 2026-08-21 swap, when M6 meant SMP and M7 meant the MMU. Both moved, so inside this note read "M6" as multicore (now M7) and "M7" as page tables (now M6).
+
+**(superseded) A per-thread kernel stack was scheduled here, decided 2026-08-20, and NOT at M6.** The
+syscall contract (`arch/include/kickos/arch/arch.h:512-518`) requires dispatch to run in privileged
+THREAD context on the calling thread's own continuation; it does NOT require the user's stack. The
+user's stack is simply the zero-memory way to get a per-thread continuation, and the cost is that
+the kernel's own frames live at addresses the user names, so isolation rests on an arithmetic bound
+rather than on the memory map. M5.2.1 found that bound wrong at the low edge on all three archs at
+once, which is the argument for eventually not needing it. A per-thread kernel stack satisfies the
+same contract, costs one extra stack times `KICKOS_MAX_THREADS` (16 by default, fatal on
+bluepill-c8's 20 KB, comfortable on the K64F), and pays the pow2 rounding above until a page is the
+granule. SMP does NOT force the question: with a big lock each core runs its own thread's kernel
+path on that thread's own stack, so nothing contends. What M6 was to inherit was narrower, making
+the single `g_rv_trap_stack` per-core, and **M5.2.1 ALREADY DID IT**: the array is
+`g_rv_trap_stack[KICKOS_NUM_CORES][KICKOS_RV_TRAP_STACK_SIZE]` indexed by `arch_cpu_id()`, which
+folds to `0u` by preprocessor at one core and is gated by `check_cpu_id_fold.sh`. So M6 inherits a
+substitution rather than a change. The `-fstack-usage` margin gate M5.2.1 adds for the bound becomes
+the kernel-stack SIZING gate here, so that work transfers rather than being thrown away.
 
 **The items.** Renumbered from the spike, and item 3 below is CORRECTED against what `6be8220`
 actually did.
@@ -5180,16 +5211,119 @@ below where they were previously mislabeled.
   exists today (newlib `--disable-threads`, threads share one flat image, only the kernel TCB is
   per-thread) -- so `errno` is a shared global, libc `malloc` is not thread-safe (`__malloc_lock`
   is a no-op stub; tracked as its own item in the M4.5.1 kernel-audit section above), and
-  `thread_local`/`__thread` silently break. "Fully usable" needs these, so real TLS is
-  the compliant mechanism (not a newlib `_REENT`-swap hack, which would still leave `thread_local`
-  broken): a per-thread TLS block in the thread's data grant + a per-arch thread pointer set on the
-  context switch (ARM `TPIDRURW`, RISC-V `tp`, Xtensa `THREADPTR`; RX has no TLS register -> sw-tp
-  spike), local-exec model (fully static / no dlopen -> offsets fixed at link). `errno` + newlib
-  reent + `thread_local` all ride on it (one mechanism). Prereq SMP (M6) needs anyway. First sibling
+  `thread_local`/`__thread` silently break. "Fully usable" needs these.
+
+  **CORRECTED BY M5.2.1 PR 8, WHICH MEASURED IT: THESE ARE TWO MECHANISMS AND NOT ONE.** This item
+  used to say real TLS fixes `errno` and that a `_REENT`-swap would leave `thread_local` broken.
+  Both halves are wrong. `_REENT_THREAD_LOCAL` is off on all three pinned toolchains, `errno` is
+  `(*__errno())`, `__errno` returns `_impure_ptr`, and 239 members of libc.a reference that pointer
+  without ever calling `__errno()`. So TLS does not touch `errno`, and swapping `_impure_ptr` per
+  thread fixes `errno` plus every other reentrant path at once.
+
+  **THE `_impure_ptr` SWAP LANDED IN M5.2.1 PR 9**, on every board but the sim and per-board
+  opt-in because it costs one `struct _reent` per thread SLOT out of the app window's heap pad: 512
+  bytes on arm-none-eabi, 288 on riscv32-none-elf, 284 on rx-elf. The array is in `.appbss`
+  (`user/src/newlib_reent.cc`), `struct Thread` carries the pointer, and `switch_book` plus
+  `sched::start` store it into the one word libc reads (`&_impure_ptr`, or what `__getreent`
+  returns on Xtensa). It is NAMING AND NOT ISOLATION: the window is granted R/W to every
+  unprivileged thread, so a peer can still scribble another thread's `errno`. On by default in the
+  `qemu` and `qemu-riscv` base variants, where `errnoprobe` boots it.
+
+  WHAT THIS DOES NOT FIX, and neither does TLS. `_REENT_INIT_PTR` points every thread's
+  `_stdin`/`_stdout`/`_stderr` at the ONE shared `__sf[3]`, so stdio buffering stays process-wide
+  even where `errno` no longer is.
+
+  **THE MASKED SPAWN WINDOW IS BOUNDED, AND SPLITTING THE LOCK NEEDS THE POOL CHANGED FIRST.**
+  The audit calls the interrupt-masked TLS/reent initialisation in `spawn_masked` unbounded.
+  It is not, and one of the two bounds landed in this milestone: the TLS copy is at most
+  `KICKOS_TLS_STRIDE` minus the ABI bias, which `KICKOS_TLS_FIT_ASSERT` now refuses at LINK
+  time; `kickos_reent_init` writes one `struct _reent`, 512 B on arm-none-eabi, 288 on
+  riscv32, 284 on rx; the cap loop is bounded by `KICKOS_MAX_SPAWN_GRANTS`. So the window is
+  bounded by two link/config constants and nothing an app grows at runtime. The LATENCY
+  concern is still real: a board with a full stride of `thread_local` masks on the order of
+  2.5 KB of stores.
+
+  THE OBSTACLE IS NOT THE LOCK, IT IS `ThreadPool::release`. It undoes a claim in exactly two
+  cases: an `EXITED` slot, or `i == next - 1`, and its own comment records why that is safe --
+  a fresh bump slot is "always the last one UNDER THE SPAWN LOCK". A two-phase publish breaks
+  that invariant by construction: a second spawner can claim a slot while the first is
+  initialising unmasked, so the first slot is no longer last and `release` either leaves a
+  permanent hole (`alloc` only ever revisits EXITED) or un-bumps somebody else's. So the
+  change is: give the pool a real free discipline for a claimed-but-unpublished slot, THEN
+  split the window, THEN add the reclaim so a spawner slain mid-construction frees the child
+  it was building. That third part is what the current single lock buys and must not be lost.
+
+  THE OTHER DESIGN AVOIDS THE POOL AND HITS THE MPU INSTEAD. Have the CHILD seat its own TLS
+  and reent on first run: both write the child's own memory, so nothing needs to be masked and
+  the spawn lock keeps its transaction. The kernel would pass a trampoline as `entry` and
+  carry the real entry and arg in the TCB, which needs no arch change (armv7m already enters
+  `entry` directly with lr = kickos_thread_return; only lx6 has a trampoline of its own). It
+  does not work as stated: that trampoline runs UNPRIVILEGED for a user thread, so it cannot
+  read `user_entry` back out of the TCB. Carrying the pair in the child's own stack above the
+  TLS block would work and is the version to price next.
+
+  RECOMMENDATION: neither change should be made without the numbers, because the premise the
+  audit gives for making them is wrong. Measure the masked window on a board with a real
+  `thread_local` template before touching the spawn path; if it is the few hundred bytes the
+  fleet's templates imply, the risk of either design exceeds what it buys.
+
+  **RX HAS NO CI ARM, AND THE BLOCKER IS THE TOOLCHAIN'S DISTRIBUTION.** Every other backend
+  has a job in `.github/workflows/ci.yml` (`qemu-arm`, `qemu-riscv`, `qemu-riscv-mpu`,
+  `xtensa` as a build gate, `build-boards` for the ARM silicon boards); rx72m appears in
+  none, and `build-boards` is arm-toolchain only. The three RX presets DO run in the local
+  52-preset fleet sweep, so the gap is CI and not coverage. Adding the job is one composite
+  action on the model of `.github/actions/xtensa-toolchain`, which fetches a pinned public
+  release asset -- and that is what RX lacks: the installed compiler is Renesas GNURX
+  14.2.0.202511 (`rx-elf-gcc (GCC_Build_e13a947a1) 14.2.0.202511-GNURX`), whose distribution
+  is not a stable public tarball URL the way the Arm, Espressif and RISCstar ones are. So this
+  needs a decision: a mirror to pin, or RX stays locally-verified only and the README says so.
+
+  **M5.2.1 AUDIT: THE MALFORMED-SP BLOCKER IS STILL OPEN, AND THE OBVIOUS FIX DOES NOT WORK.**
+  The four refusal paths (armv7m/armv6m `bad_psp`, `kickos_rx_bad_usp`, the rv32imac guard)
+  terminate the system rather than the offending thread. Containment itself is available and
+  the reasons the code gives for not using it are stale: `arch_ctx_redirect` rebuilds onto
+  `ctx.kernel_sp - KICKOS_KERNEL_STACK_SIZE` at the block TOP, so it needs neither a
+  trustworthy frame nor a safe SP, and with no block seated it rebuilds at the top of the
+  thread's own stack from TCB bounds. A slay-and-resume was written against armv7m and
+  MEASURED to fail: a second refusal follows the first, `PSP=0x200007e0 under stack_lo`,
+  right after a containment that itself reported correctly. NOT the guard rejecting a
+  kernel-block PSP -- `switch.S` already admits `[kernel_sp - SIZE, kernel_sp)` under
+  `#if KICKOS_KERNEL_STACKS`. Resuming the SLAIN thread from the fault path is what invites
+  the question at all; resuming a DIFFERENT thread avoids it, the dying thread's registers
+  being discarded either way. Two further traps found while writing it:
+  `kpanic_enter` masks this core's IRQs and never restores them, so it must not run on a path
+  that resumes; and `check_pspguard.sh` greps a banner printed BEFORE the outcome, so a
+  contained-but-hung image passes on the 20 s `QEMU_TIMEOUT` -- the witness has to assert the
+  system went on and exited, not that the banner appeared.
+
+  **PR 9 DOES NOT CLOSE THIS ITEM.** Four pieces of the runtime-consumer scope it was opened for
+  are still open, and each is a separate decision rather than more of the same swap:
+
+  - **malloc locking.** `__malloc_lock`/`__malloc_unlock` are still no-ops, so multi-threaded
+    `malloc` corrupts the arena. Tracked as its own item in the M4.5.1 section; the reent swap does
+    not touch it, `__malloc_sbrk_base` and the bin array living in libc's own statics.
+  - **Heap-break serialisation.** `_sbrk` (`user/src/newlib_sbrk.cc`) moves one process-wide break
+    with no lock, so two threads growing the heap at once hand out the same page.
+  - **C++ exception state.** The unwinder's per-thread state (`__cxa_eh_globals`) is reached
+    through `__cxa_get_globals`, which is neither `_impure_ptr` nor a `thread_local` here, so a
+    throw crossing a switch is not covered by either mechanism.
+  - **Safe reclaim.** A reused slot is re-initialised at the next spawn rather than run through
+    `_reclaim_reent`, so the per-reent mprec/asctime scratch a `strtod`/`ctime` caller allocated is
+    never returned to the arena. `_reclaim_reent` cannot simply be called on the death path: it
+    CLOSES stdio, and every thread's `_stdin`/`_stdout`/`_stderr` point at the one shared
+    `__sf[3]`, so reclaiming one thread's state would tear down the whole image's. A reclaim needs
+    a newlib-internal-aware sweep of the scratch lists alone, run from a kernel-to-user call on the
+    death path PR 7 reworked.
+
+  `thread_local` itself is DONE (PR 8): a block carved off the low end of each thread's own stack,
+  with a per-arch thread pointer. Not `TPIDRURW`: M-profile has no such register, so the kernel
+  provides `__aeabi_read_tp` (defined in neither libc.a nor libgcc.a) deriving it from SP.
+  RISC-V `tp` and Xtensa `THREADPTR` are written by the kernel at resume; RX has neither and falls
+  back to emutls. Local-exec model (fully static / no dlopen -> offsets fixed at link). First sibling
   of this family LANDED (M4.3): the `_write` stdout re-probe -- deleted the process-global sticky
   `g_stdout_probe` (per-invocation classify against the calling thread's own cap 0; no per-thread
   storage needed for it).
-- **M6 -- multicore (AMP versus a shared kernel is OPEN; see the OPEN section of the spike).**
+- **M7 -- multicore (the AMP-versus-shared-kernel question closes PER CLASS; see the OPEN section of the spike).**
   This heading previously read "AMP first on RP2040, SMP-BKL endgame on RP2350" and attributed
   that verdict to the spike. The spike does not contain it and `roadmap.md` says the opposite
   ("not two AMP instances"), so the three records disagreed. Settle it before writing SMP code.
@@ -5656,7 +5790,7 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       `arch_mpu_apply` to mean "load a page table". A sentence of foresight prevents a wrong-shaped
       first MMU port.
 
-## M6 -- SMP
+## M7 -- multicore (SMP on the A53 port, AMP where cores are heterogeneous)
 
 - [ ] **Give the converted fields their real ORDER.** M4.9.2 turned every cross-thread field
       into a relaxed `std::atomic`, which is a type change and nothing more: relaxed says
@@ -5667,7 +5801,11 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       the ring publication barrier, then still a consumer `-D` rather than a release
       store on the ring's now-atomic index. `docs/design-m6-smp.md` carries the reasoning.
 
-## M7
+## Gate-surface re-inventory (anytime coherence, not scheduled)
+
+Parked by the user as "at M7" when M7 meant the seam rework; M7 is multicore now, and this is
+orthogonal to every milestone rather than gated by one. The user's framing, 2026-08-21: the gate
+surface grows exponentially and may not be worth its size.
 
 - [ ] **Re-inventory the test-gate surface.** M4.5.9 root-caused the binary-introspection gates'
       silent-failure paths without rewriting them; whatever is still oversized then is this pass.
@@ -6319,13 +6457,6 @@ which is the only reason they are filed rather than fixed:
 - [ ] **`task_cancel_group` and the endpoint drain publish twice under one `IrqLock` from a LIVE
       thread**, the same residue as the `sched::wake` supersede but with no dying guard involved, and
       more reachable. Not filed anywhere before.
-- [ ] **A sticky driver-death note can steal a RE-PUBLISHED console.** `cap_console_publish` does not
-      clear `g_console_driver_died`, and `console_on_driver_death` treats `USER_OWNED` as proof the
-      note is still valid: two-thread driver dies, supervisor respawns and publishes a NEW endpoint,
-      the old IRQ thread finally exits, and the retry reclaims the NEW driver's UART. Pre-existing;
-      the note-site reclaim narrows the window without closing it. The one-line fix is for
-      `cap_console_publish` to void the note, but it changes the publish protocol and its honest gate
-      needs the respawn `sim_driver_death` case 3 lacks.
 - [ ] **`teardown_depth` now has one production consumer and one fixture consumer**, so the
       `cap_teardown_active()` gate in `exit_current` is premise-less. Kept as conservative retry
       throttling; revisit when the DEV-window respawn gate lands.

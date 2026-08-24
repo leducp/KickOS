@@ -24,6 +24,8 @@
  * symbols (e.g. _istack) are used verbatim and take no extra prefix.
  */
 
+#include <sections.ld.h>
+
 ENTRY(_start)
 
 MEMORY
@@ -42,9 +44,9 @@ _kernel_stack_size = 8K;               /* ISP (boot/ISR) stack reservation */
    bounds, but the shared alloc/linker path shapes regions as a power of two, so the
    app data is padded up to this pow2 size; a real app whose globals exceed it trips
    the ASSERT below. Keep it pow2. Gated on KICKOS_HAVE_MPU (the script is
-   cpp-preprocessed): a non-enforcement build reserves no app-data block.
-   The window pad (window minus app statics + runtime) IS the newlib heap: a 32K
-   window leaves ~14K, which cxxtest's measured peak (~4.2K-5.9K) and printf fit. */
+   cpp-preprocessed). The window pad (window minus app statics + runtime) IS the newlib
+   heap: a 32K window leaves ~14K, which cxxtest's measured peak (~4.2K-5.9K) and
+   printf fit. */
 #if KICKOS_HAVE_MPU
 #ifndef KICKOS_APPDATA_SIZE
 #define KICKOS_APPDATA_SIZE 32K
@@ -66,6 +68,7 @@ SECTIONS
     .text : ALIGN(4)
     {
         *(.text .text.*)
+        KICKOS_CODE_DEBRIS_SECTIONS
         *(P P_*)               /* RX-native code (libc/libgcc) */
         *(.rodata .rodata.*)
         *(C C_1 C_2 C$*)       /* RX-native const */
@@ -109,6 +112,17 @@ SECTIONS
         KEEP(*(.fini_array))
         ___kickos_app_fini_array_end = .;
     } > ROM
+
+    KICKOS_TLS_TEMPLATE(ROM)
+
+    /* The RX psABI prefixes a C identifier with an extra leading underscore, so C's
+       __kickos_tdata_start is asm ___kickos_tdata_start. The shared template spells the
+       asm names every other backend needs; these four are what the RX compiler emits. */
+    ___kickos_tdata_start = __kickos_tdata_start;
+    ___kickos_tdata_end = __kickos_tdata_end;
+    ___kickos_tbss_start = __kickos_tbss_start;
+    ___kickos_tbss_end = __kickos_tbss_end;
+
 
     .kickos_app_init_array : ALIGN(4)
     {
@@ -189,6 +203,15 @@ SECTIONS
     .appdata : ALIGN(_appdata_size)
     {
         ___kickos_appdata_start = .;
+        /* The emutls control blocks, gathered so arch/rx/rxv3/emutls.cc can index a
+           thread_local by its position here instead of caching a pointer in the block.
+           They must be CONTIGUOUS and on a 16-byte grid; the override rejects an anchor
+           that is neither. -fdata-sections is what gives each one its own section, so a
+           TU built without it lands in the catch-all below and is refused at runtime
+           rather than shared. */
+        ___kickos_emutls_v_start = .;
+        *(SORT_BY_NAME(.data.__emutls_v.*))
+        ___kickos_emutls_v_end = .;
         *(.data .data.*)
         *(D D_1 D_2)           /* RX-native initialized data */
         . = ALIGN(4);
@@ -205,9 +228,9 @@ SECTIONS
         *(B B_1 B_2)           /* RX-native bss */
         . = ALIGN(4);
         _appdata_used_end = .;
-        _appdata_fits = ASSERT(_appdata_used_end <= ___kickos_appdata_start + _appdata_size,
-               "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
-        . = ___kickos_appdata_start + _appdata_size; /* pad the block up to pow2 */
+        /* MAX, not a bare set: ASSERTs are evaluated after layout, so a backwards move
+           fails the link before the overflow ASSERT below can print. */
+        . = MAX(., ___kickos_appdata_start + _appdata_size); /* pad the block up to pow2 */
         ___kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). Double
            underscore: C `_kickos_heap_*` gains the RX one-underscore psABI prefix. */
@@ -218,6 +241,15 @@ SECTIONS
     .data : ALIGN(4)
     {
         __sdata = .;
+        /* The emutls control blocks, gathered so arch/rx/rxv3/emutls.cc can index a
+           thread_local by its position here instead of caching a pointer in the block.
+           They must be CONTIGUOUS and on a 16-byte grid; the override rejects an anchor
+           that is neither. -fdata-sections is what gives each one its own section, so a
+           TU built without it lands in the catch-all below and is refused at runtime
+           rather than shared. */
+        ___kickos_emutls_v_start = .;
+        *(SORT_BY_NAME(.data.__emutls_v.*))
+        ___kickos_emutls_v_end = .;
         *(.data .data.*)
         *(D D_1 D_2)           /* RX-native initialized data */
         . = ALIGN(4);
@@ -236,11 +268,9 @@ SECTIONS
 #endif
 
 #if !KICKOS_HAVE_MPU
-    /* Non-enforcement build: no .appdata window, so the newlib heap is an explicit
-       section carved from RAM before the thread arena. Double underscore per the RX
-       psABI (C `_kickos_heap_*`). */
-    /* RX prepends one underscore, so the C `_kickos_heap_*` resolves to the
-       double-underscore symbols defined here. */
+    /* Non-enforcement build: the newlib heap is an explicit section carved from RAM
+       before the thread arena. RX prepends one underscore, so the C `_kickos_heap_*`
+       resolves to the double-underscore symbols defined here. */
     .userheap (NOLOAD) :
     {
         . = ALIGN(8);
@@ -276,7 +306,14 @@ SECTIONS
     .fvectors : { KEEP(*(.fvectors)) } > FVECT
 
     /DISCARD/ : { *(.ARM.attributes) *(.comment) }
+
+    KICKOS_NONALLOC_SECTIONS
 }
+
+KICKOS_STATIC_RELOC_ASSERT()
+KICKOS_TLS_ALIGN_ASSERT()
+KICKOS_TLS_FIT_ASSERT()
+KICKOS_TLS_EMUTLS_ASSERT(___kickos_emutls_v_start, ___kickos_emutls_v_end)
 
 ASSERT(___kickos_ram_start <= ___kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + ISP stack)")

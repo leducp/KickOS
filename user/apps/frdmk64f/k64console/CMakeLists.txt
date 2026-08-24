@@ -22,10 +22,19 @@ kickos_add_application(k64console
 # Scramble-then-panic reclaim test mode. OFF by default: this is a deliberate HARDWARE
 # test, not the normal handover demo. When ON, k64console spawns an unprivileged
 # scrambler (NO MMIO grant) that garbles UART0 through the open AIPS slot to the silent-
-# loss state (TXCTSE/baud/TXINV, TX off) and then forces a SYSMPU memory fault, so an
-# operator can confirm the "=== HARD FAULT ===" banner STILL reaches the wire
-# (arch_console_reclaim recovered the UART). Enable with -DK64CONSOLE_SCRAMBLE_TEST=ON.
-# PASS is silicon-observable.
+# loss state (TXCTSE/baud/TXINV, TX off) and then panics, so an operator can confirm the
+# "KERNEL PANIC: [k64console] PASS: the dead channel came back" line STILL reaches the
+# wire (arch_console_reclaim recovered the UART out of the PUBLISHED state, with the
+# userspace driver still holding it). Enable with -DK64CONSOLE_SCRAMBLE_TEST=ON.
+#
+# kos_panic is the only terminal path that reclaims: fault isolation answers the scrambler's
+# fault by killing the thread, and the thread-kill path does not reclaim (main.cc records
+# why). This criterion has never been witnessed on K64F silicon; take the capture on the next
+# pass.
+#
+# The only arm in the tree that reclaims out of USER_OWNED, the state a real board with a
+# console driver panics in, and the only one whose garbler reaches the device with no MMIO
+# grant at all (coarse AIPS). conreclaim's console is KERNEL_OWNED and never published.
 option(K64CONSOLE_SCRAMBLE_TEST "k64console: scramble-then-panic console-reclaim test mode" OFF)
 if(K64CONSOLE_SCRAMBLE_TEST)
   target_compile_definitions(k64console PRIVATE K64CONSOLE_SCRAMBLE_TEST=1)
@@ -33,6 +42,7 @@ else()
   target_compile_definitions(k64console PRIVATE K64CONSOLE_SCRAMBLE_TEST=0)
 endif()
 
-# No CTest gate: this app answers a HARDWARE question (userspace UART ownership +
-# the client->driver->wire path + panic-path reclaim) and is validated by the operator
-# on K64F silicon, not by the in-env sim (a live publish silences the sim TAP).
+# An OPERATOR on silicon is the reader of both arms: this app answers a HARDWARE question
+# (userspace UART ownership + the client->driver->wire path + panic-path reclaim), and a live
+# publish silences the TAP stream (docs/reference/boards.md carries which boards a QEMU
+# machine covers).

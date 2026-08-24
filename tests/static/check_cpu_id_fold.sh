@@ -35,15 +35,15 @@
 # the statement, so leg 2 keys on the definition shape: the opening brace, on the line or
 # on the next non-blank one (this tree is Allman, so the next line is the usual case).
 #
-# THEREFORE NOT CAUGHT. Know these before trusting a green run:
-#   - this reads SOURCE, never the link. A definition reaching the image from a generated
-#     or untracked file is invisible here; check_seam_defaults.sh is what reads symbols.
-#   - a macro whose literal is the WRONG literal. Leg 1 pins the shape, not the value; at
-#     one core the only correct index is 0, and nothing here says so.
-#   - a caller that spells the seam without parentheses. That cannot compile against a
-#     function-like macro, so the compiler is the check, not this.
-#   - arch.h being on no include path, or a second arch.h shadowing it. The path is
-#     hard-coded below and its absence is a refusal, but its REACHABILITY is not tested.
+# What a green run states:
+#   - the corpus is tracked SOURCE, never the link, so check_seam_defaults.sh is what reads
+#     symbols out of an image.
+#   - leg 1 pins the SHAPE of the expansion, not the value: any integer literal folds, and at
+#     one core the correct index is 0.
+#   - a caller must spell the seam with parentheses to compile against a function-like macro
+#     at all, so the compiler holds that half.
+#   - the seam path is hard-coded below and its absence is a refusal; whether that arch.h is
+#     the one on a build's include path is a separate question.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -94,8 +94,8 @@ if [ -z "$MACRO" ]; then
     LEG1=1
 else
     # One layer of wrapping parentheses is idiomatic around a macro body and folds just the
-    # same, so judge the literal inside them. Only one layer: nesting past that is not a
-    # spelling anyone reaches for, and unwrapping arbitrarily deep would need a real parser.
+    # same, so judge the literal inside them. One layer only: unwrapping arbitrarily deep
+    # would need a real parser.
     BODY="$MACRO"
     case "$BODY" in
         '('*')') BODY="$(printf '%s' "$BODY" | sed 's|^([[:space:]]*||; s|[[:space:]]*)$||')" ;;
@@ -120,7 +120,7 @@ SOURCES="$(wc -l < "$TMP/sources" | tr -d ' ')"
 : > "$TMP/refused"
 while IFS= read -r f; do
     [ -f "$f" ] || fail "tracked file is missing from the worktree: $f"
-    # Cheap pre-filter: most of the corpus never names the seam at all.
+    # Pre-filter only: most of the corpus never names the seam.
     grep -q 'arch_cpu_id' "$f" || continue
     awk -v F="$f" '
         # Strip a whole-line comment and any trailing // comment before judging, so the

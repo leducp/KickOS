@@ -131,6 +131,7 @@ elseif(KICKOS_ARCH STREQUAL "armv7m")
     ${KICKOS_SEAM_DEFAULTS_ARM}
     arm/armv7m/arch_fault_report_extra_default.cc
     arm/armv7m/arch_trace_now_default.cc
+    arm/read_tp.S
     arm/armv7m/switch.S)
   kickos_apply_freestanding(kickos_arch_armv7m)
   # The DWT arch_trace_now fallback runs on the PendSV-tail emit path, so its TU (and
@@ -166,6 +167,7 @@ elseif(KICKOS_ARCH STREQUAL "armv6m")
     common/startup_ranges.cc
     ${KICKOS_SEAM_DEFAULTS_COMMON}
     ${KICKOS_SEAM_DEFAULTS_ARM}
+    arm/read_tp.S
     arm/armv6m/switch.S)
   kickos_apply_freestanding(kickos_arch_armv6m)
   target_include_directories(kickos_arch_armv6m PUBLIC
@@ -183,6 +185,7 @@ elseif(KICKOS_ARCH STREQUAL "rxv3")
   # linker script.
   add_library(kickos_arch_rxv3 STATIC
     rx/rxv3/arch_rxv3.cc
+    rx/rxv3/emutls.cc
     common/arch_ram_common.cc
     common/startup_ranges.cc
     ${KICKOS_SEAM_DEFAULTS_COMMON}
@@ -259,6 +262,44 @@ endif()
 target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../system/include")
 
+# STRUCTURAL GATE ON __aeabi_read_tp. The leaf answers every thread_local access on
+# M-profile and the one way to get it wrong is at the edge of the range, which the tlsprobe
+# witness cannot see: C code never runs with SP at an exclusive stack top, so the witness
+# passes with and without the subtract that makes that case correct. The instructions are
+# what gets checked.
+if(KICKOS_BUILD_TESTS AND KICKOS_TLS AND KICKOS_ARCH_FAMILY STREQUAL "arm")
+  add_test(
+    NAME    arm_read_tp
+    COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_arm_read_tp.sh"
+            "${CMAKE_OBJDUMP}"
+            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>")
+  set_tests_properties(arm_read_tp PROPERTIES TIMEOUT 60 LABELS host)
+endif()
+
+# NO PRIVILEGED TU MAY REACH THREAD-LOCAL STORAGE. Read as relocations rather than as
+# source, because a thread_local reached through an inline function in a header leaves no
+# `thread_local` in the privileged .cc that emitted the access. Registered on every cross
+# board and not only where KICKOS_TLS is on: a kernel TU that grows one on a board with the
+# knob off is the same bug arriving somewhere the app cannot see it.
+if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
+  set(_no_tls_scan
+      "$<TARGET_FILE:kickos_kernel>"
+      "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+      "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
+      "$<TARGET_FILE:kickos_lib>")
+  # ONE member of libkickos_user.a, never the whole archive: the rest of that archive is
+  # unprivileged and its thread_local is correct there. newlib_reent.cc owns the per-thread
+  # struct _reent array and the word the context switch seats, so a thread_local in it is
+  # read on the wrong thread pointer exactly as a kernel one would be.
+  list(APPEND _no_tls_scan "$<TARGET_FILE:kickos_user>::newlib_reent.cc.obj")
+  add_test(
+    NAME    no_privileged_tls
+    COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_no_privileged_tls.sh"
+            "${CMAKE_READELF}" "${CMAKE_NM}"
+            ${_no_tls_scan})
+  set_tests_properties(no_privileged_tls PROPERTIES TIMEOUT 60 LABELS host)
+endif()
+
 # --- Chip backend (startup + linker script + clocks + console) --------------
 # Built when the selected board resolves to a chip that is brought up. Sources:
 # every .cc + .S under <family>/chip/<chip>/. The family (arm|rx|xtensa) routes the
@@ -321,6 +362,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
       OUTPUT "${_boot2_bin}"
       COMMAND ${CMAKE_C_COMPILER} ${KICKOS_MCPU_FLAGS} -mthumb
               -nostdlib -nostartfiles -Wl,--entry=${_boot2_entry}
+              -Wl,--orphan-handling=error
               -T "${_boot2_ld}" "${_boot2_src}" -o "${_boot2_elf}"
       COMMAND ${CMAKE_OBJCOPY} -O binary "${_boot2_elf}" "${_boot2_bin}"
       DEPENDS "${_boot2_src}" "${_boot2_ld}"
@@ -451,6 +493,28 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   if(EXISTS "${CMAKE_SOURCE_DIR}/boards/${KICKOS_BOARD}/${KICKOS_CHIP}.ld")
     set(_ld "${CMAKE_SOURCE_DIR}/boards/${KICKOS_BOARD}/${KICKOS_CHIP}.ld")
   endif()
+  # Every image links --orphan-handling=error, so a script missing the shared vocabulary
+  # fails the LINK with a section name and no hint of what is owed. Refuse at configure
+  # instead, the way KICKOS_POOL_ARENA_ASSERT is refused, and name the fix.
+  file(READ "${_ld}" _ld_sections_txt)
+  set(_ld_required KICKOS_CODE_DEBRIS_SECTIONS KICKOS_NONALLOC_SECTIONS
+                   KICKOS_STATIC_RELOC_ASSERT KICKOS_TLS_TEMPLATE KICKOS_TLS_FIT_ASSERT)
+  # rxv3 alone has no TLS sections for the fit assert to read: its thread_local is an emutls
+  # control block, and only its own script can name the span they are gathered into.
+  if(KICKOS_ARCH STREQUAL "rxv3")
+    list(APPEND _ld_required KICKOS_TLS_EMUTLS_ASSERT)
+  endif()
+  foreach(_m IN LISTS _ld_required)
+    if(NOT "${_ld_sections_txt}" MATCHES "${_m}")
+      message(FATAL_ERROR
+        "KickOS: ${_ld} does not invoke ${_m}. Every image links with "
+        "--orphan-handling=error, so an input section no rule names is a link failure. "
+        "Include <sections.ld.h> and invoke KICKOS_CODE_DEBRIS_SECTIONS inside the output "
+        "section holding .text, KICKOS_NONALLOC_SECTIONS as the last statement in SECTIONS, "
+        "and KICKOS_STATIC_RELOC_ASSERT() beside the other asserts.")
+    endif()
+  endforeach()
+
   # Preprocess the linker script through cpp so KICKOS_HAVE_MPU gates sections: a
   # non-enforcement build reserves no app-data block/region. cpp strips comments and passes
   # MEMORY/SECTIONS/LONG/wildcard tokens through unchanged. The GENERATED script is named
@@ -459,6 +523,35 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # Per-build app-data window size. Each chip .ld carries its own freestanding default; a
   # full-C++ build needs the larger writable window for the heap and libstdc++/unwind state.
   set(_ld_defs -DKICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
+  # KICKOS_TLS_FIT_ASSERT needs the knob, the stride and the arch's ABI bias. The bias is
+  # SCRAPED from the arch's context.h rather than restated here: it is one number and the
+  # header the compiler reads is the place that owns it.
+  list(APPEND _ld_defs -DKICKOS_TLS=$<BOOL:${KICKOS_TLS}>)
+  if(KICKOS_TLS)
+    set(_tls_tcb_hdr "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include/kickos/arch/context.h")
+    if(NOT EXISTS "${_tls_tcb_hdr}")
+      message(FATAL_ERROR "KickOS: no ${_tls_tcb_hdr} to read KICKOS_ARCH_TLS_TCB from")
+    endif()
+    file(STRINGS "${_tls_tcb_hdr}" _tls_tcb_line REGEX "^#define[ \t]+KICKOS_ARCH_TLS_TCB[ \t]+[0-9]+")
+    if(_tls_tcb_line STREQUAL "")
+      message(FATAL_ERROR
+        "KickOS: ${_tls_tcb_hdr} defines no KICKOS_ARCH_TLS_TCB, so the link cannot check "
+        "that a thread_local template fits one stride.")
+    endif()
+    string(REGEX REPLACE "^#define[ \t]+KICKOS_ARCH_TLS_TCB[ \t]+([0-9]+).*" "\\1" _tls_tcb "${_tls_tcb_line}")
+    # The rounding tls_block_size() applies, scraped from the header that owns it so the link
+    # and the runtime cannot disagree about it.
+    set(_sa_hdr "${CMAKE_SOURCE_DIR}/kernel/include/kickos/config/system.h")
+    file(STRINGS "${_sa_hdr}" _sa_line REGEX "^#define[ \t]+KICKOS_STACK_ALIGN[ \t]+[0-9]+")
+    if(_sa_line STREQUAL "")
+      message(FATAL_ERROR
+        "KickOS: ${_sa_hdr} defines no KICKOS_STACK_ALIGN, so the link cannot round a "
+        "thread_local template the way tls_block_size does.")
+    endif()
+    string(REGEX REPLACE "^#define[ \t]+KICKOS_STACK_ALIGN[ \t]+([0-9]+).*" "\\1" _stack_align "${_sa_line}")
+    list(APPEND _ld_defs -DKICKOS_ARCH_TLS_TCB=${_tls_tcb} -DKICKOS_TLS_STRIDE=${_tls_stride}
+                         -DKICKOS_STACK_ALIGN=${_stack_align})
+  endif()
   if(DEFINED KICKOS_APPDATA_SIZE)
     list(APPEND _ld_defs -DKICKOS_APPDATA_SIZE=${KICKOS_APPDATA_SIZE})
   endif()
@@ -492,6 +585,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
             "-I${CMAKE_CURRENT_SOURCE_DIR}/common"
             "${_ld}" -o "${_ld_gen}"
     DEPENDS "${_ld}" "${CMAKE_CURRENT_SOURCE_DIR}/common/boot_arena.ld.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/common/sections.ld.h"
     COMMENT "linker: preprocess ${KICKOS_CHIP}.ld (KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})"
     VERBATIM)
   add_custom_target(kickos_ldscript_${KICKOS_CHIP} ALL DEPENDS "${_ld_gen}")

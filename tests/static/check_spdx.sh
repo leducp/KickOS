@@ -7,41 +7,29 @@
 # copyright line sits directly beneath it. docs/SPDX-header-template.txt spells the
 # per-language forms.
 #
-# Run from the repo root, no arguments, no build directory:
-#   tests/static/check_spdx.sh
+# Run from the repo root, no arguments: tests/static/check_spdx.sh
 #
-#   corpus     every tracked file, from `git ls-files`, classified one file at a time by
-#              the table in classify() below.
+# Every tracked file from `git ls-files` is classified one at a time by classify() below:
+# `need` when the FORMAT has a comment production, `none` when it has none and a header
+# would have to be data, and `refuse` for a type this gate has never been told about, whose
+# verdict is UNKNOWN and whose run FAILS naming it. A new file type gets a line in
+# classify() with its reason, or it stops the gate. NOTHING outside classify() is exempt,
+# and classify() exempts a format, never a file, with one named exception carrying its own
+# reason.
 #
-#   verdicts   `need`   the file's FORMAT has a comment production, so the header is
-#                       representable and is required.
-#              `none`   the format has no comment production at all, so a header would have
-#                       to be data: JSON has none in its grammar, and CMake's preset parser
-#                       rejects one.
-#              `refuse` this gate has never been told what the type can carry, so its
-#                       verdict is UNKNOWN and the run FAILS naming it. A new file type
-#                       gets a line in classify() with the reason, or it stops the gate.
+# "BESIDE" means the copyright line is the line DIRECTLY AFTER the first SPDX line. The
+# loose reading has a live false green, since a file may hold the WORDS
+# "SPDX-License-Identifier" and "copyright" in prose and read as headered, which
+# docs/SPDX-header-template.txt does.
 #
-#   "beside"   the copyright line must be the line DIRECTLY AFTER the first SPDX line, not
-#              merely somewhere near it. The loose reading has a live false green: a file
-#              may hold the WORDS "SPDX-License-Identifier" and "copyright" in prose and
-#              read as headered, which docs/SPDX-header-template.txt does.
-#
-# NOTHING outside classify() is exempt, and classify() exempts a format, never a file, with
-# one named exception carrying its own reason.
-#
-# THEREFORE NOT CAUGHT. Know these before trusting a green run:
-#   - the identifier VALUE. A file declaring some other licence passes; the rule
-#     style.md states is about the header being present, not about which licence.
-#   - the copyright HOLDER and YEAR: any line saying "copyright" satisfies the second
-#     leg, so a stale year and a wrong name both pass.
-#   - whether the header is actually inside a comment. A `need` file whose first five
-#     lines quote the words in prose reads as headered; the adjacency rule above is what
-#     makes that hard rather than impossible.
+# SCOPE. What is read is the presence and adjacency of the two lines within the first five,
+# which is what the rule in style.md states. The identifier's VALUE, the copyright HOLDER
+# and YEAR, and whether either line sits inside a comment rather than in prose are all
+# outside it; the adjacency rule is what makes prose hard to pass off as a header.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
-# NOT set -e: the point is to collect EVERY finding in one run, not to stop at the first.
+# Findings accumulate over the whole corpus, so set -e must stay off.
 
 [ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
 # `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
@@ -59,7 +47,7 @@ classify() {
             printf 'none\n'; return ;;
     esac
     case "$1" in
-        # JSON: no comment production in the grammar.
+        # JSON: no comment production in the grammar, and CMake's preset parser rejects one.
         *.json)
             printf 'none\n' ;;
         # `//` or `/* */`.
@@ -119,7 +107,7 @@ while IFS= read -r f; do
         printf '%s: no SPDX-License-Identifier in the first five lines\n' "$f" >> "$TMP/findings"
         continue
     fi
-    # The FIRST such line is the header; see "beside" above.
+    # The FIRST such line is the header, so the copyright line is the one after it.
     NEXT="$(sed -n "$((SPDX + 1))p" "$f" | grep -ci 'copyright')"
     if [ "$NEXT" -eq 0 ]; then
         printf '%s: SPDX on line %s, but line %s is not the copyright line\n' \

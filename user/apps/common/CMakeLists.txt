@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The runnable QEMU MPS2 boards: ONE chip backend (mps2) behind four FPGA images:
-# an386/M4 (`qemu`), an505/M33 (`qemu-m33`, PMSAv8), an500/M7 (`qemu-m7`, 16 MPU
-# regions) and an385/M3 (`qemu-m3`, no FPU). They share a console and a clock, so a gate
-# that holds on one image holds on all of them. The memory map is NOT shared: qemu-m33
-# carries its own boards/qemu-m33/mps2.ld. Inherited by every
-# add_subdirectory below. Exception: qemu-m3 is soft-float, so fp_switch is not built
-# for it (see its inclusion list further down).
+# The runnable QEMU MPS2 boards, in the order below: ONE chip backend (mps2) behind four
+# FPGA images, an386/M4, an505/M33 (PMSAv8), an500/M7 (16 MPU regions) and an385/M3
+# (soft-float). They share a console and a clock, so a gate that holds on one image holds on
+# all of them. qemu-m33 has its own memory map (boards/qemu-m33/mps2.ld); the other three
+# take the chip's. Inherited by every add_subdirectory below.
 set(KICKOS_QEMU_MPS2_BOARDS qemu qemu-m33 qemu-m7 qemu-m3)
 # The board name as a CTest-name prefix, so each image reports under its own name
 # (qemu_hello, qemu_m33_selftest, ...).
@@ -16,30 +14,30 @@ string(REPLACE "-" "_" KICKOS_QEMU_MPS2_TAG "${KICKOS_BOARD}")
 add_subdirectory(hello)
 add_subdirectory(hello_c)
 add_subdirectory(mpu_fault)
-# Root confinement (mpu_fault covers a spawned child). Diagnostic app, self-gated.
+# Root confinement (mpu_fault covers a spawned child).
 add_subdirectory(rootfault)
-# Root's AUTHORITY narrow (rootfault covers its memory confinement). Self-gated.
+# Root's AUTHORITY narrow (rootfault covers its memory confinement).
 add_subdirectory(rootauth)
-# The CPU privilege RING, the one confinement axis an MPU trap cannot reach (so the only
-# one a no-MPU board can witness). ARM-only and self-gated; see its CMakeLists.
+# The CPU privilege RING. mpu_fault and rootfault prove MEMORY confinement; this is the
+# other axis.
 add_subdirectory(ringpriv)
-# kos_panic on the wire: one image per case, because a run observes one panic. Self-gated.
+# kos_panic on the wire: one image per case, because a run observes one panic.
 add_subdirectory(panicgate)
 # The same wire, POST-HANDOVER: kos_panic and a CPU fault with a userspace driver owning
-# the console. Sim-only and self-gated; its gate builds its own published tree.
+# the console. Its gate builds its own published tree.
 add_subdirectory(pubpanic)
 # The same wire again, when the DRIVER dies rather than the system: the console must come
-# back to the kernel instead of going permanently mute. Sim-only and self-gated.
+# back to the kernel instead of going permanently mute.
 add_subdirectory(drvdeath)
 # The same property on SILICON, plus the terminate drain: the app publishes the console to a
-# driver it spawns itself, so it needs no service list. Diagnostic and self-gated.
+# driver it spawns itself, so it needs no service list.
 add_subdirectory(reclaimwit)
 # The FRAMED arm of that same endpoint: a console driver must answer a kos_call rather
-# than write the request frame out as text and leave the caller parked. Sim-only and
-# self-gated; its gate builds its own published tree.
+# than write the request frame out as text and leave the caller parked. Its gate builds its
+# own published tree.
 add_subdirectory(simconabi)
 # The buffered UART end to end against the real two-thread driver, over the sim's loopback
-# device. Sim-only and self-gated; its gate builds its own tree.
+# device. Its gate builds its own tree.
 add_subdirectory(uartloop)
 add_subdirectory(sched_exit)
 # The C library's own exit() on every port: it must link and reach KOS_SYS_EXIT.
@@ -48,9 +46,8 @@ add_subdirectory(libc_exit)
 add_subdirectory(selftest)
 add_subdirectory(stress)
 
-# GPIO pin-allocator demo (M4.3): board-agnostic (the pin is two compile defs), so
-# built for every board - a chip whose register layout is not known there compiles to a
-# park-only stub, since the kernel has no GPIO syscall to decline.
+# GPIO pin-allocator demo (M4.3): board-agnostic (the pin is two compile defs), so built for
+# every board. A chip whose register layout is not known there compiles to a park-only stub.
 add_subdirectory(gpioblink)
 
 # Diagnostic apps, self-gated on KICKOS_ENABLE_SELFTEST via kickos_add_diagnostic_app
@@ -58,7 +55,21 @@ add_subdirectory(gpioblink)
 # illegal instruction; it is never built into a production image.
 add_subdirectory(fault)
 add_subdirectory(faultsurvive)
+# The PSP-bounds security regression: a thread aims its PSP just above its own stack base,
+# where the hardware frame fits and the switcher's software block does not.
+add_subdirectory(pspguard)
+# The nested-trap security regression: an interrupt taken while the kernel is running a
+# thread's syscall dispatch must put its frame on a trusted stack.
+add_subdirectory(trapnest)
 add_subdirectory(specfault)
+# The thread_local witness: per-thread storage at a per-thread ADDRESS, with the .tdata
+# template arriving in a freshly spawned thread. Its own CMakeLists returns early where the
+# board compiles no TLS.
+add_subdirectory(tlsprobe)
+
+# The per-thread errno witness: libc's whole reentrant state following the running thread.
+# Its own CMakeLists returns early on the sim, whose libc is the host's.
+add_subdirectory(errnoprobe)
 # kos_reboot plumbing witness + the unattended-reflash affordance. Board-agnostic;
 # its ctest arms are the declining-fallback targets only (see its CMakeLists).
 add_subdirectory(rebootdemo)
@@ -79,10 +90,9 @@ add_subdirectory(clockretune)
 add_subdirectory(clocksoak)
 
 # Full-C++ opt-in smoke test (Stage B of docs/design-kickcat-k64f.md): exercises
-# exceptions + STL + RTTI over the toolchain libstdc++/newlib. Gated to the K64F
-# silicon target, the runnable QEMU armv7m/RISC-V verification boards, and the 64K-flash
-# boards that fit after the M4.5 vterminate reclaim (a strong __verbose_terminate_handler
-# stops the linker pulling libstdc++'s demangle + float dtoa, ~63K .text). Each board's
+# exceptions + STL + RTTI over the toolchain libstdc++/newlib. It fits a 64K-flash board
+# after the M4.5 vterminate reclaim (a strong __verbose_terminate_handler stops the linker
+# pulling libstdc++'s demangle + float dtoa, ~63K .text). Each board's
 # RAM must also cover the runtime heap: the freestanding chips carve a fixed .userheap
 # (the MPU chips route the runtime writable state into the granted .appdata window).
 # frdmk64f builds under MPU enforcement too, the KickOS full-C++-under-isolation gate.
@@ -110,21 +120,12 @@ if(KICKOS_BOARD STREQUAL "frdmk64f"
         OR KICKOS_BOARD STREQUAL "esp32c6-wroom"
         OR KICKOS_BOARD STREQUAL "qemu-riscv")
        AND KICKOS_HAVE_MPU)
-   OR (KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE_MPU)
-   # bluepill-c8 (stm32f103, 64K/20K, silicon non-MPU): cxxtest is 57K .text after the
-   # vterminate reclaim (fits 64K flash) and its 8K .userheap clears the 5.9K measured
-   # cxxtest heap peak. Operator-run on silicon (no QEMU model).
-   # f302nucleo (stm32f302, 64K/16K) is deliberately NOT here: cxxtest fits its flash too,
-   # but the 4K .userheap the 16K SRAM allows is below the 5.9K peak, so malloc would fail
-   # at runtime. Not inflating the heap to force it (no-deferral).
-   OR KICKOS_BOARD STREQUAL "bluepill-c8")
+   OR (KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE_MPU))
   add_subdirectory(cxxtest)
 endif()
 
-# Telemetry gate apps. tele_pingpong (bounded, self-terminating) also drives the
-# QEMU structural gate (it exits, so mps2 flushes the ring via semihosting), so it
-# builds for the sim AND the qemu board when telemetry is on. tele_flood's
-# ring-wrap gate is sim-only.
+# Telemetry gate apps. tele_pingpong is bounded and self-terminating, so it exits and mps2
+# flushes the ring via semihosting, which is what drives the QEMU structural gate.
 if(KICKOS_TELEMETRY_ON AND (KICKOS_ARCH STREQUAL "sim" OR KICKOS_BOARD STREQUAL "qemu"))
   add_subdirectory(tele_pingpong)
 endif()

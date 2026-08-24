@@ -12,6 +12,7 @@
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
+#include <kickos/reent.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h> // wq_confirm_resume
 #include <kickos/task.h>
@@ -20,6 +21,7 @@
 
 #include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
+#include <kickos/tls.h>
 
 #include "syscall_internal.h"
 
@@ -66,10 +68,8 @@ namespace kickos
         }
     }
 
-    // Any syscall that resolves a thread BY HANDLE must additionally reject
-    // state == EXITED: the generation bumps at reclaim, not at exit, so an exited slot
-    // still gen-matches.
-    int thread_spawn(kos_thread_params const* p, kos_thread_t* out_thread)
+    static int spawn_masked(kos_thread_params const* p, kos_thread_t* out_thread,
+                            Thread** out_child)
     {
         IrqLock lock;
         *out_thread = KOS_THREAD_NONE; // every early return below leaves the sentinel seated
@@ -103,7 +103,6 @@ namespace kickos
         {
             return -KOS_EINVAL;
         }
-        // No privilege escalation: only a privileged thread may spawn one.
         if (p->privileged != 0 and not sched::current()->privileged)
         {
             return -KOS_EPERM;
@@ -159,10 +158,8 @@ namespace kickos
             }
         }
         // THE admission boundary for a DEV window, which is the asking THREAD's own region
-        // and is carried by no task or domain: authority (EPERM), exact shape (EINVAL for
-        // zero-size, wrap or non-encodable), Rule 7 (EPERM) and exclusivity (EBUSY). This
-        // and the commit, thread_create composing the region, both run inside this
-        // function's IrqLock, so the pair is atomic.
+        // and is carried by no task or domain. This and the commit, thread_create composing
+        // the region, both run inside this function's IrqLock, so the pair is atomic.
         if (p->mmio_base != nullptr)
         {
             if (not cap_check_authority(sched::current(), AUTH_MEMORY))
@@ -445,6 +442,21 @@ namespace kickos
             stack_size = KICKOS_USER_STACK_SIZE;
             attr.kstack_owned = true;
         }
+        // A CALLER-SUPPLIED STACK MUST SATISFY THE TLS STRIDE. The thread pointer is SP
+        // masked down to KICKOS_TLS_STRIDE, so a block that is not strided, or that spans
+        // more than one stride, would hand this thread a pointer into a NEIGHBOUR's
+        // thread_local storage. The pool's own blocks satisfy it by construction.
+        if (not tls_stack_admissible(reinterpret_cast<uintptr_t>(stack), stack_size))
+        {
+            // Unreachable from the pool branch today, every arena block being one stride,
+            // but a popped block dropped here is a slot the pool never gets back.
+            if (attr.kstack_owned)
+            {
+                k.threads.stack_push(stack);
+            }
+            k.threads.release(i);
+            return -KOS_EINVAL;
+        }
         // Taken BEFORE the reference loop so one unwind path serves both failures.
         if (not cap_slab_attach(&attr.cap_run, KICKOS_CAP_CHILD_WIDTH, &attr.cap_free_head,
                                 &attr.cap_width))
@@ -509,8 +521,34 @@ namespace kickos
             cap_install_at(child, static_cast<int>(deleg_dest[ci]), deleg_obj[ci],
                            static_cast<CapType>(deleg_type[ci]), deleg_rights[ci]);
         }
+        // ONLY A REUSED SLOT PAYS. kmain seeds every slot's reent at boot, so a first
+        // occupant needs nothing here; a slot whose previous occupant exited is marked
+        // reent_stale and re-seeded now.
+        //
+        // WHAT IS LEFT IS STILL INSIDE THE LOCK, and deliberately. Between an allocated child
+        // and sched::add the SPAWNER is preemptible, and a spawner slain in that gap never
+        // returns to its continuation at all, because switch_book redirects a CANCEL_SLAY
+        // thread to the exit stub. The child would then be a fully built INACTIVE orphan
+        // holding a slot, a stack, a task reference and its delegated caps, with nothing left
+        // running that knows to finish or free it. A spawn is a transaction and the lock is
+        // what makes it one.
+#if !KICKOS_ARCH_SIM
+        if (k.threads.reent_stale[i])
+        {
+            kickos_reent_init(child->reent);
+            k.threads.reent_stale[i] = false;
+        }
+#endif
+        sched::add(child);
         *out_thread = k.threads.handle_for(i);
+        *out_child = child;
         return 0;
+    }
+
+    int thread_spawn(kos_thread_params const* p, kos_thread_t* out_thread)
+    {
+        Thread* child = nullptr;
+        return spawn_masked(p, out_thread, &child);
     }
 
     // NOT a destroy. This MARKS the target and breaks whatever park it is in; the target

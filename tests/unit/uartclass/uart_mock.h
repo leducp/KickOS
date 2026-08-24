@@ -39,6 +39,14 @@ struct kos_uart_mock
     uint32_t flushes;
     uint32_t closes;
     uint32_t opened;
+
+    // Non-zero models a channel whose divisor this backend cannot reprogram, as the lx6 and
+    // USIC engines cannot.
+    uint32_t fixed_rate;
+
+    // Non-zero models a transmit path that never goes idle, so both bounded waits in the
+    // class expire: the drain open does before it reprograms, and flush.
+    uint32_t tx_stuck;
 };
 
 #endif

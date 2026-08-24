@@ -5,8 +5,8 @@
 # Configures every visible configure preset and runs `ctest -L host` on each.
 #
 # An OPERATOR TOOL and deliberately not a gate. It configures and builds one tree per
-# visible configure preset, needs all four cross toolchain families on the box, and runs
-# for hours; a ctest entry doing that would invoke ctest from inside ctest, and since the
+# visible configure preset and needs all four cross toolchain families on the box; a ctest
+# entry doing that would invoke ctest from inside ctest, and since the
 # source-tree gates register on every board it would be registered once per preset, each
 # copy sweeping the whole fleet.
 # tests/static/ is for checks that are cheap, build nothing and can run everywhere.
@@ -28,7 +28,8 @@
 #
 # Env:
 #   SWEEP_OUT=<dir>       build trees, logs and the summary  (default /var/tmp/kickos-hostsweep)
-#   SWEEP_JOBS=<n>        build parallelism                  (default 8)
+#   SWEEP_JOBS=<n>        build parallelism WITHIN one preset (default 4)
+#   SWEEP_PAR=<n>         presets at once                     (default nproc / SWEEP_JOBS)
 #   SWEEP_GTEST_PREFIX    CMAKE_PREFIX_PATH for GTest        (default /var/tmp/kickos-conan)
 #                         `-` disables it, which SHRINKS the sim suite; see below.
 #   SWEEP_FORCE=1         redo presets a previous run already passed
@@ -53,9 +54,18 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)" || exit 1
 OUT="${SWEEP_OUT:-/var/tmp/kickos-hostsweep}"
-JOBS="${SWEEP_JOBS:-8}"
+JOBS="${SWEEP_JOBS:-4}"
 GPREFIX="${SWEEP_GTEST_PREFIX:-/var/tmp/kickos-conan}"
 FORCE="${SWEEP_FORCE:-0}"
+
+# PRESETS AT ONCE. Sized so SWEEP_PAR x SWEEP_JOBS is the core count, because the two
+# multiply: neither layer starves the other and the box is not left idle. Only the BUILD
+# is parallel here; `ctest -L host` is the batchable set by design (see the header), so it
+# rides along with it. The `-LE host` half is not run by this tool at all and must never
+# be batched.
+NCPU="$(nproc 2>/dev/null || echo 4)"
+PAR="${SWEEP_PAR:-$(( NCPU / JOBS ))}"
+[ "$PAR" -lt 1 ] && PAR=1
 
 SUMMARY="$OUT/summary.txt"
 SENTINEL="$OUT/DONE"
@@ -80,6 +90,62 @@ if [ "$GPREFIX" != "-" ]; then
       point SWEEP_GTEST_PREFIX at another one, or pass SWEEP_GTEST_PREFIX=- to sweep the
       sim with its host unit tests OFF and know that is what you measured."
     PREFIX_ARG="-DCMAKE_PREFIX_PATH=$GPREFIX"
+fi
+
+# ONE PRESET, in its own process, writing only its own status file. That is what lets the
+# loop below fan out: nothing here is shared but the log and status directories, and each
+# preset owns one entry in each. The counts are totted up afterwards FROM those files, so a
+# preset that dies without writing one is missing rather than silently counted as a pass.
+sweep_one() {
+    p="$1"
+    ST="$OUT/status/$p"
+    LOG="$OUT/logs/$p.log"
+    DIR="$OUT/trees/$p"
+
+    if [ "$FORCE" != 1 ] && [ -f "$ST" ] && grep -q '^PASS' "$ST"; then
+        : > "$OUT/status/$p.reused"
+        return 0
+    fi
+    rm -f "$OUT/status/$p.reused"
+
+    echo "=== $p ===" >&2
+    : > "$LOG"
+    STAGE=""
+    if ! cmake --preset "$p" -B "$DIR" $PREFIX_ARG >> "$LOG" 2>&1; then
+        STAGE=configure
+    elif ! cmake --build "$DIR" "-j$JOBS" >> "$LOG" 2>&1; then
+        STAGE=build
+    fi
+
+    if [ -n "$STAGE" ]; then
+        printf 'FAIL    %-22s %s failed, see logs/%s.log\n' "$p" "$STAGE" "$p" > "$ST"
+        return 0
+    fi
+
+    ctest --test-dir "$DIR" -L host --output-on-failure >> "$LOG" 2>&1
+    RC=$?
+    # "N% tests passed, F tests failed out of T". A run whose total cannot be read is
+    # refused: a suite that registered nothing passes 100% of nothing.
+    TOTAL="$(sed -n 's/.*tests failed out of \([0-9][0-9]*\).*/\1/p' "$LOG" | tail -n1)"
+    FAILED="$(sed -n 's/.*, \([0-9][0-9]*\) tests* failed out of.*/\1/p' "$LOG" | tail -n1)"
+    if [ -z "$TOTAL" ]; then
+        printf 'FAIL    %-22s ctest printed no total, see logs/%s.log\n' "$p" "$p" > "$ST"
+    elif [ "$TOTAL" -eq 0 ]; then
+        printf 'FAIL    %-22s registered ZERO host tests\n' "$p" > "$ST"
+    elif [ "$RC" -ne 0 ]; then
+        printf 'FAIL    %-22s %s of %s host test(s) failed, see logs/%s.log\n' \
+            "$p" "$FAILED" "$TOTAL" "$p" > "$ST"
+    else
+        printf 'PASS    %-22s %s host test(s)\n' "$p" "$TOTAL" > "$ST"
+    fi
+}
+
+# Re-entry point for the fan-out below. Kept as a hidden argument rather than an exported
+# shell function because this is /bin/sh, which does not export functions.
+if [ "${1:-}" = "--sweep-one" ]; then
+    shift
+    sweep_one "$1"
+    exit 0
 fi
 
 # The preset list comes from the same flattener the service-list gate uses, so the two
@@ -113,13 +179,20 @@ N_REUSED=0
     echo ""
 } > "$SUMMARY"
 
+printf '%s\n' $LIST | xargs -P "$PAR" -n1 "$0" --sweep-one
+
+# The counts come from the status files and not from the workers, which ran in their own
+# processes. A preset whose file is ABSENT is reported as such: the alternative is a run
+# that lost a worker and still prints a plausible total.
 for p in $LIST; do
     N_TOTAL=$((N_TOTAL + 1))
     ST="$OUT/status/$p"
-    LOG="$OUT/logs/$p.log"
-    DIR="$OUT/trees/$p"
-
-    if [ "$FORCE" != 1 ] && [ -f "$ST" ] && grep -q '^PASS' "$ST"; then
+    if [ ! -f "$ST" ]; then
+        printf 'FAIL    %-22s no status written, the worker died\n' "$p" >> "$SUMMARY"
+        N_FAIL=$((N_FAIL + 1))
+        continue
+    fi
+    if [ -f "$OUT/status/$p.reused" ]; then
         N_REUSED=$((N_REUSED + 1))
         N_PASS=$((N_PASS + 1))
         # Reprinted from the recorded status, never re-asserted: a reused line has to
@@ -127,42 +200,10 @@ for p in $LIST; do
         printf 'REUSED  %s\n' "$(cat "$ST")" >> "$SUMMARY"
         continue
     fi
-
-    echo "=== $p ===" >&2
-    : > "$LOG"
-    STAGE=""
-    if ! cmake --preset "$p" -B "$DIR" $PREFIX_ARG >> "$LOG" 2>&1; then
-        STAGE=configure
-    elif ! cmake --build "$DIR" "-j$JOBS" >> "$LOG" 2>&1; then
-        STAGE=build
-    fi
-
-    if [ -n "$STAGE" ]; then
-        printf 'FAIL    %-22s %s failed, see logs/%s.log\n' "$p" "$STAGE" "$p" > "$ST"
-        N_FAIL=$((N_FAIL + 1))
-        cat "$ST" >> "$SUMMARY"
-        continue
-    fi
-
-    ctest --test-dir "$DIR" -L host --output-on-failure >> "$LOG" 2>&1
-    RC=$?
-    # "N% tests passed, F tests failed out of T". A run whose total cannot be read is
-    # refused: a suite that registered nothing passes 100% of nothing.
-    TOTAL="$(sed -n 's/.*tests failed out of \([0-9][0-9]*\).*/\1/p' "$LOG" | tail -n1)"
-    FAILED="$(sed -n 's/.*, \([0-9][0-9]*\) tests* failed out of.*/\1/p' "$LOG" | tail -n1)"
-    if [ -z "$TOTAL" ]; then
-        printf 'FAIL    %-22s ctest printed no total, see logs/%s.log\n' "$p" "$p" > "$ST"
-        N_FAIL=$((N_FAIL + 1))
-    elif [ "$TOTAL" -eq 0 ]; then
-        printf 'FAIL    %-22s registered ZERO host tests\n' "$p" > "$ST"
-        N_FAIL=$((N_FAIL + 1))
-    elif [ "$RC" -ne 0 ]; then
-        printf 'FAIL    %-22s %s of %s host test(s) failed, see logs/%s.log\n' \
-            "$p" "$FAILED" "$TOTAL" "$p" > "$ST"
-        N_FAIL=$((N_FAIL + 1))
-    else
-        printf 'PASS    %-22s %s host test(s)\n' "$p" "$TOTAL" > "$ST"
+    if grep -q '^PASS' "$ST"; then
         N_PASS=$((N_PASS + 1))
+    else
+        N_FAIL=$((N_FAIL + 1))
     fi
     cat "$ST" >> "$SUMMARY"
 done
