@@ -179,12 +179,12 @@ port order with loopback at open ports, supporting redundancy and RUNTIME wire b
 injection. It is driven by `simulation/network_simulator.cc` from JSON configs which already
 include a `freedom-k64f` one.
 
-So the blocker is entirely on the KickOS side, and it is the one `design-m6-state-inventory.md`
+So the blocker is entirely on the KickOS side, and it is the one `design-m7-state-inventory.md`
 describes. **That blocker has since been taken down for the sim**: `KICKOS_MULTI_INSTANCE` is a
 real build knob (`Kconfig`, `CMakeLists.txt`), the selector is a thread-local
 (`include/kickos/instance_local.h`), `arch/sim/sim.cc` carries the guarded per-instance state, and
 `tests/integration/check_sim_multi_instance.sh` is a registered gate. Read
-`design-m6-state-inventory.md` section 6 for what implementing it corrected, including the shared
+`design-m7-state-inventory.md` section 6 for what implementing it corrected, including the shared
 `sigaltstack` this paragraph called the sharpest item, which was a live bug and is fixed.
 What this section recorded as the state before that work: the seam was authored (`kernel()` and
 `SimInstance`) but unreachable, no thread-local storage existed anywhere in the tree, and around

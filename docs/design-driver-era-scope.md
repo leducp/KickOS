@@ -441,7 +441,7 @@ different hot/cold profile.
    fleet-wide, the driver framework (call/reply IPC, taxonomy, multi-instance), and the enabling
    services init, clock-tree/power-manager, pinmux, gpio.
 2. **SMP (M6)**: one kernel image across cores (RP2040/RP2350), which reworks the foundation because
-   `IrqLock` ("IRQs off means exclusive") is single-core-only (`design-m6-smp.md`).
+   `IrqLock` ("IRQs off means exclusive") is single-core-only (`design-m7-smp.md`).
 3. **MMU / new-platform (M7)**: x86_64 PC plus i.MX8MP heterogeneous AMP, MMU KickOS on the A53 and
    MPU KickOS on the M7 over cross-core IPC (`design-mmu-era-exploration.md`).
 
