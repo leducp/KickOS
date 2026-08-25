@@ -224,6 +224,26 @@ elseif(KICKOS_ARCH STREQUAL "lx6")
   install(TARGETS kickos_arch_lx6 EXPORT KickOSTargets
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xtensa/lx6/include" PARENT_SCOPE)
+elseif(KICKOS_ARCH STREQUAL "armv8a")
+  # ARMv8-A in AArch64 state (QEMU virt, Cortex-A53), the first 64-bit ISA in the fleet.
+  # SKELETON: every seam body in arch_armv8a.cc is a stub, so this configures and links
+  # nothing runnable yet. The chip layer (arch/arm64/chip/virt_arm64) supplies
+  # arch_init/console/shutdown + the clock/timer + linker script.
+  add_library(kickos_arch_armv8a STATIC
+    arm64/armv8a/arch_armv8a.cc
+    arm64/armv8a/vectors.S
+    arm64/armv8a/switch.S
+    common/arch_ram_common.cc
+    common/startup_ranges.cc
+    ${KICKOS_SEAM_DEFAULTS_COMMON})
+  kickos_apply_freestanding(kickos_arch_armv8a)
+  target_include_directories(kickos_arch_armv8a PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/arm64/armv8a/include>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+  install(TARGETS kickos_arch_armv8a EXPORT KickOSTargets
+          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+  set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arm64/armv8a/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "rv32imac")
   # RISC-V RV32IMAC (ESP32-C6 + QEMU virt): single mtvec trap that demuxes on
   # mcause. ONE deferred switcher via CLINT msip (the RX SWINT / ARM PendSV

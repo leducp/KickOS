@@ -82,6 +82,21 @@ config ARCH_ARMV7M
 	select ARCH_HAS_TLS
 	select ARCH_HAS_KERNEL_STACKS
 
+# ARCH_HAS_TLS is still absent, and that is the rule this stanza has been keeping since
+# S1: a select here is a promise the gates hold this backend to, so each one lands with the
+# step that earns it. The thread pointer arrives at S8.
+#
+# The two kernel-stack symbols land NOW because the exception-level split is what earns
+# them. EL0 runs on SP_EL0 and a trap to EL1 selects SP_EL1: two different registers, so
+# privileged dispatch never continues on a pointer a thread chose, and it is the hardware
+# rather than a prologue that guarantees it. This arch therefore writes the transfer and no
+# red-zone path beside it, which is exactly the case ARCH_KERNEL_STACKS_MANDATORY names.
+config ARCH_ARMV8A
+	bool
+	select ARCH_HAS_TLS
+	select ARCH_HAS_KERNEL_STACKS
+	select ARCH_KERNEL_STACKS_MANDATORY
+
 config ARCH_RXV3
 	bool
 	select ARCH_HAS_TLS
@@ -106,6 +121,7 @@ config KICKOS_ARCH
 	string
 	default "armv6m" if ARCH_ARMV6M
 	default "armv7m" if ARCH_ARMV7M
+	default "armv8a" if ARCH_ARMV8A
 	default "rxv3" if ARCH_RXV3
 	default "rv32imac" if ARCH_RV32IMAC
 	default "lx6" if ARCH_LX6
@@ -114,6 +130,7 @@ config KICKOS_ARCH
 config KICKOS_ARCH_FAMILY
 	string
 	default "arm" if ARCH_ARMV6M || ARCH_ARMV7M
+	default "arm64" if ARCH_ARMV8A
 	default "rx" if ARCH_RXV3
 	default "riscv" if ARCH_RV32IMAC
 	default "xtensa" if ARCH_LX6
@@ -181,11 +198,15 @@ config CHIP_ESP32C6
 	select ARCH_RV32IMAC
 	select HAS_MPU
 
-config CHIP_VIRT
+config CHIP_VIRT_RV32
 	bool
 	select ARCH_RV32IMAC
 	select HAS_MPU
 	select HAS_TRACE_CLOCK
+
+config CHIP_VIRT_ARM64
+	bool
+	select ARCH_ARMV8A
 
 config CHIP_RX72M
 	bool
@@ -209,6 +230,7 @@ config KICKOS_CHIP
 	default "xmc4800" if CHIP_XMC4800
 	default "esp32" if CHIP_ESP32
 	default "esp32c6" if CHIP_ESP32C6
-	default "virt" if CHIP_VIRT
+	default "virt_rv32" if CHIP_VIRT_RV32
+	default "virt_arm64" if CHIP_VIRT_ARM64
 	default "rx72m" if CHIP_RX72M
 	default ""

@@ -58,6 +58,10 @@ config BOARD_QEMU
 	bool "qemu (mps2-an386, Cortex-M4)"
 	select CHIP_MPS2
 
+config BOARD_QEMU_ARM64
+	bool "qemu-arm64 (virt, Cortex-A53)"
+	select CHIP_VIRT_ARM64
+
 config BOARD_QEMU_M3
 	bool "qemu-m3 (mps2-an385, Cortex-M3)"
 	select CHIP_MPS2
@@ -72,7 +76,7 @@ config BOARD_QEMU_M7
 
 config BOARD_QEMU_RISCV
 	bool "qemu-riscv (virt)"
-	select CHIP_VIRT
+	select CHIP_VIRT_RV32
 
 config BOARD_RX72M
 	bool "rx72m (Renesas RX72M)"
@@ -106,6 +110,7 @@ config KICKOS_BOARD
 	default "picopi" if BOARD_PICOPI
 	default "pizero2350" if BOARD_PIZERO2350
 	default "qemu" if BOARD_QEMU
+	default "qemu-arm64" if BOARD_QEMU_ARM64
 	default "qemu-m3" if BOARD_QEMU_M3
 	default "qemu-m33" if BOARD_QEMU_M33
 	default "qemu-m7" if BOARD_QEMU_M7

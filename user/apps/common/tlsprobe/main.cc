@@ -37,6 +37,12 @@ namespace
         unsigned sp = 0;
 #if defined(__arm__)
         __asm__ volatile("mov %0, sp" : "=r"(sp));
+#elif defined(__aarch64__)
+        // Through a 64-bit temporary: `mov w0, sp` is not an encoding, and the report field
+        // is 32 bits, which every address on the boards that run this fits in.
+        unsigned long long sp64 = 0;
+        __asm__ volatile("mov %0, sp" : "=r"(sp64));
+        sp = static_cast<unsigned>(sp64);
 #elif defined(__riscv)
         __asm__ volatile("mv %0, sp" : "=r"(sp));
 #elif defined(__XTENSA__)

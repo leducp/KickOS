@@ -257,6 +257,12 @@ config KICKOS_KERNEL_STACKS
 config KICKOS_KERNEL_STACK_SIZE
 	int
 	default 1184 if ARCH_RV32IMAC
+	# PROVISIONAL, not measured yet, and deliberately above every 32-bit figure: this
+	# arch's uniform exception frame is 800 bytes (31 GPRs, ELR, SPSR, SP_EL0, FPCR, FPSR
+	# and all THIRTY-TWO vector registers, which an asynchronous entry has to keep),
+	# and a blocking syscall holds two of them on the block at once, the trap's and the
+	# switch's, before the dispatch's own C frames. Two frames alone are 1600.
+	default 4096 if ARCH_ARMV8A
 	default 1104 if ARCH_RXV3
 	default 1472 if ARCH_ARMV7M && TELEMETRY_RTT
 	default 1008 if ARCH_ARMV7M
@@ -352,6 +358,13 @@ config KICKOS_MIN_STACK_SIZE
 	default 1088 if ARCH_ARMV7M && TELEMETRY_RTT
 	default 960 if ARCH_ARMV7M
 	default 1024 if ARCH_RXV3
+	# PROVISIONAL on this arch, and flagged rather than left to read as measured: every
+	# other figure in this ladder is what its arch's deepest exit dispatch measures, and
+	# nobody has run that instrument here. It is raised off the generic 1024 because the
+	# uniform exception frame is 800 bytes against armv7m's ~100, so a preemption inside
+	# the exit descent, which the help text below calls the ordinary case, costs eight
+	# times what it does on the arches this ladder was built from.
+	default 2048 if ARCH_ARMV8A
 	# Under KICKOS_BENCH alone, or every non-bench rv32imac board reserves for a
 	# console bracket it does not compile. rv_trap_stack.h.
 	default 1088 if ARCH_RV32IMAC && KICKOS_BENCH

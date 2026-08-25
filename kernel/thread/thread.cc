@@ -307,7 +307,12 @@ namespace kickos
             uintptr_t const top = reinterpret_cast<uintptr_t>(kstack_words(kslot))
                 + KICKOS_KERNEL_STACK_SIZE;
             KICKOS_ASSERT((top & (KICKOS_STACK_ALIGN - 1u)) == 0);
-            t->ctx.kernel_sp = static_cast<uint32_t>(top);
+            // A narrower field truncates a high-half block silently, and the entry then loads
+            // an address in the low half.
+            static_assert(sizeof(arch_context::kernel_sp) >= sizeof(uintptr_t),
+                          "ctx.kernel_sp is loaded as an address by a trusted entry, so it must "
+                          "be pointer-width on every arch that seats a block");
+            t->ctx.kernel_sp = top;
         }
 #endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY

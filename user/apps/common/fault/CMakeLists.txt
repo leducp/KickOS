@@ -28,6 +28,8 @@ else()
     set(_fault_marker "SIM FAULT")
   elseif(KICKOS_ARCH STREQUAL "rv32imac")
     set(_fault_marker "RISC-V TRAP")
+  elseif(KICKOS_ARCH STREQUAL "armv8a")
+    set(_fault_marker "ARMV8A EXCEPTION")
   else()
     set(_fault_marker "HARD FAULT")
   endif()
@@ -60,6 +62,14 @@ endif()
 # qemu-riscv (rv32imac): illegal instruction -> kickos_rv_fault_report.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_fault_dump TARGET fault BOARD qemu-riscv
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh"
+    ARGS "${_fault_marker}" ${_fault_status})
+endif()
+
+# qemu-arm64: .inst 0x00000000 -> EC 0x00 -> kickos_armv8a_exception. This arch isolates no
+# fault yet, so the marker is the panic banner and the status kfault_terminate's.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
+  kickos_add_qemu_test(NAME qemu_arm64_fault_dump TARGET fault BOARD qemu-arm64
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh"
     ARGS "${_fault_marker}" ${_fault_status})
 endif()

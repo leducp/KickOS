@@ -180,6 +180,33 @@ jobs:
           # this arm would leave the suite one test shorter and still green.
           ctest --preset microbit -R '^microbit_pspguard_block$' --no-tests=error --output-on-failure
 
+  # armv8a (virt) under QEMU: the first 64-bit ISA, a Cortex-A53 at EL1 with an unprivileged
+  # EL0 and a 1:1 map. The generic timer keeps counting in WFI, so a timed sleep advances
+  # with every thread idle and QEMU_TIMEOUT is failure headroom rather than a clock crutch.
+  # qemu-system-aarch64 ships in the qemu-system-arm package on Ubuntu.
+  qemu-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      QEMU_TIMEOUT: "30"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kconfiglib
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build qemu-system-arm curl xz-utils
+      - uses: ./.github/actions/aarch64-toolchain
+      - name: armv8a (virt, Cortex-A53)
+        run: |
+          cmake --preset qemu-arm64 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          cmake --build --preset qemu-arm64
+          ctest --preset qemu-arm64 --no-tests=error --output-on-failure
+          # Capability pin, not just a result: armv8a selects both kernel-stack symbols and
+          # TLS, so these three gates are what hold the backend to those promises. Naming
+          # them makes an empty selection the failure rather than a silent de-registration.
+          ctest --preset qemu-arm64 --no-tests=error --output-on-failure \
+            -R 'death_stack_seating|no_privileged_tls|qemu_arm64_tlsprobe'
+
   # rv32imac (virt) under QEMU, plus build-only checks of three more rv32 presets,
   # on the pinned RISCstar toolchain (newlib, soft-float rv32imac/ilp32 multilib).
   # RISC-V clocks off the CLINT mtime, which keeps ticking during WFI, so a timed sleep

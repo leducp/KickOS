@@ -100,6 +100,14 @@ if(KICKOS_ARCH STREQUAL "sim")
   # arms find nothing to take.
   list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
 endif()
+if(KICKOS_ARCH STREQUAL "armv8a")
+  # virt_arm64 names no MMIO window a driver could be granted: it declares no reserved blocks
+  # and its map keeps the device gigabyte EL1-only, so the arm's free-window half finds
+  # nothing to take and reports PARTIAL. Declared rather than left to fail the witness, and
+  # it is a real gap in coverage rather than a quirk: the held arm runs only where a board
+  # mints a window.
+  list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
+endif()
 # cap_chunk_span needs a table WIDER than the chunk granule (KICKOS_CAP_CHUNK_TARGET) to reach a
 # segmented index; below that it runs the flat-decode half and reports PARTIAL. The summed width
 # is not readable here, cmake/cap_table.cmake resolving it after this directory is added, but the
@@ -287,6 +295,15 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
   set_property(TEST qemu_riscv_selftest APPEND PROPERTY ENVIRONMENT
+    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
+endif()
+
+# The arm64 witness. ARGS is the arm count computed above, so an arm that stops registering
+# shortens the plan and fails here rather than passing quietly.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
+  kickos_add_qemu_test(NAME qemu_arm64_selftest TARGET selftest BOARD qemu-arm64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
+  set_property(TEST qemu_arm64_selftest APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
 endif()
 

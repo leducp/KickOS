@@ -40,3 +40,10 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE
   kickos_add_qemu_test(NAME qemu_riscv_hello TARGET hello BOARD qemu-riscv
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_hello.sh")
 endif()
+
+# qemu-arm64 (armv8a): the same demo at EL0 on a Cortex-A53, end-to-end proof of the
+# reset/1:1-map/GIC/generic-timer/svc path.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
+  kickos_add_qemu_test(NAME qemu_arm64_hello TARGET hello BOARD qemu-arm64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_hello.sh")
+endif()
