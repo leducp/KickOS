@@ -68,7 +68,7 @@ SECTIONS
         /* DWARF EH unwind + landing-pad tables for the full-C++ opt-in; a plain
            freestanding app is built -fno-exceptions, which leaves the section holding just
            the terminator. Under -nostartfiles the boot-time registration is
-           Reset_Handler's, through a WEAK __register_frame (chip_virt.cc), standing in for
+           Reset_Handler's, through a WEAK __register_frame (chip_virt_rv32.cc), standing in for
            crtbegin's frame_dummy. KEEP so --gc-sections cannot drop it, contiguous, with
            the LONG(0) terminator standing in for crtend's __FRAME_END__. */
         *(.gcc_except_table .gcc_except_table.*)
@@ -89,7 +89,7 @@ SECTIONS
         __init_array_start = .;
         KEEP(*libkickos_kernel.a:*(SORT(.init_array.*) .init_array))
         KEEP(*libkickos_arch_rv32imac.a:*(SORT(.init_array.*) .init_array))
-        KEEP(*libkickos_chip_virt.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_chip_virt_rv32.a:*(SORT(.init_array.*) .init_array))
         KEEP(*libkickos_lib.a:*(SORT(.init_array.*) .init_array))
         __init_array_end = .;
     } > RAM
@@ -145,7 +145,7 @@ SECTIONS
         _sdata = .;
         *libkickos_kernel.a:*(.data .data.*)
         *libkickos_arch_rv32imac.a:*(.data .data.*)
-        *libkickos_chip_virt.a:*(.data .data.*)
+        *libkickos_chip_virt_rv32.a:*(.data .data.*)
         *libkickos_lib.a:*(.data .data.*)
         . = ALIGN(4);
         _edata = .;
@@ -162,11 +162,11 @@ SECTIONS
         __kernel_bss_start = .;
         *libkickos_kernel.a:*(.bss .bss.*)
         *libkickos_arch_rv32imac.a:*(.bss .bss.*)
-        *libkickos_chip_virt.a:*(.bss .bss.*)
+        *libkickos_chip_virt_rv32.a:*(.bss .bss.*)
         *libkickos_lib.a:*(.bss .bss.*)
         *libkickos_kernel.a:*(COMMON)
         *libkickos_arch_rv32imac.a:*(COMMON)
-        *libkickos_chip_virt.a:*(COMMON)
+        *libkickos_chip_virt_rv32.a:*(COMMON)
         *libkickos_lib.a:*(COMMON)
         __kernel_bss_end = .;
         . = ALIGN(4);

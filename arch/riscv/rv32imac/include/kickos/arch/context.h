@@ -55,7 +55,7 @@ struct arch_context
     // the mret; a privileged thread's ecall arrives mstatus.MPP=M and does not convert. Read
     // at F_CTX_KERNEL_SP in switch.S. Zero for a TCB outside the pool, which reaches neither
     // site.
-    uint32_t kernel_sp;
+    uintptr_t kernel_sp;
 };
 
 #endif

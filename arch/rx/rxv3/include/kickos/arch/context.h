@@ -52,7 +52,7 @@ struct arch_context
     // inside the user stack, because a thread preempted mid-dispatch is running there. Read at
     // F_CTX_KERNEL_SP in switch.S. Zero for a TCB outside the pool, which reaches neither
     // site.
-    uint32_t kernel_sp;
+    uintptr_t kernel_sp;
 };
 
 #endif

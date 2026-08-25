@@ -269,7 +269,7 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
     // fresh TCB and wrong for a live pool thread whose block is seated by slot: cleared,
     // the thread carries 0 through its own teardown and every syscall on the way takes
     // svc_trampoline's .Lsvc_nokstack arm.
-    uint32_t const kernel_sp = ctx->kernel_sp;
+    uintptr_t const kernel_sp = ctx->kernel_sp;
 #if KICKOS_KERNEL_STACKS
     // The stub is rebuilt on the thread's own kernel block, so no privileged frame is
     // fabricated on memory the thread or a domain sibling can write. The frame goes at the
@@ -285,7 +285,7 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
         uint32_t const lo = ctx->stack_lo;
         uint32_t const hi = ctx->stack_hi;
         void* const block = reinterpret_cast<void*>(
-            static_cast<uintptr_t>(kernel_sp) - KICKOS_KERNEL_STACK_SIZE);
+            kernel_sp - KICKOS_KERNEL_STACK_SIZE);
         arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
         ctx->stack_lo = lo;
         ctx->stack_hi = hi;
