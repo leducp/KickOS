@@ -82,7 +82,7 @@ with fallback TUs, so the port is a chip-backend fill and not arch-layer surgery
     custom-controller combination is precisely the C6 pattern, so the SHAPE of the work is
     known; only the register/CSR facts are new.
   - **Software IPI for SMP later:** the RP2350 SIO doorbells and FIFOs
-    (`docs/design-m6-smp.md`) are the cross-core notify primitive and are core-agnostic,
+    (`docs/design-m7-smp.md`) are the cross-core notify primitive and are core-agnostic,
     an M6 concern and not needed for single-core bring-up.
 - **4.4 Privilege + extensions.** Hazard3 on RP2350 implements M and U modes **[to-verify
   Hazard3 has_user is enabled on RP2350]**, and like the C6 it is expected to be M/U-only
@@ -149,13 +149,13 @@ touch PLUS re-validating every existing RISC-V board (C6, virt) against the wide
 
 A driver-era demonstrator, neither gated by the driver era nor gating it. It pairs with M6
 SMP, since Hazard3 has its own dual-core story on the same die, so the per-CPU-seam and BKL
-work can be validated on dual-Hazard3 AND dual-M33 from one board; `docs/design-m6-smp.md`
+work can be validated on dual-Hazard3 AND dual-M33 from one board; `docs/design-m7-smp.md`
 calls RP2350 a rare cross-ISA test vehicle for the same SMP and AMP code paths.
 
 ## See also
 
 - `docs/design-rp2350.md` -- the ARM sibling port and the source of the ~70%-shared claim.
-- `docs/design-m6-smp.md` -- RP2350 hardware facts (ARCHSEL 3.9, SIO 3.1, platform timer
+- `docs/design-m7-smp.md` -- RP2350 hardware facts (ARCHSEL 3.9, SIO 3.1, platform timer
   3.1.8, core-1 launch 5.3); the SMP pairing.
 - `docs/design-riscv-gp-split.md` + `docs/design-cxx-under-mpu.md` -- full-C++ under PMP,
   backend-shared with Hazard3.

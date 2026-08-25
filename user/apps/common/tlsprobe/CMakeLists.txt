@@ -28,6 +28,13 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_tlsprobe.sh")
 endif()
 
+# The only arch in the fleet that SEATS the thread pointer instead of masking SP down to a
+# stride, so this arm is what says the seating is real rather than the mask by another name.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
+  kickos_add_qemu_test(NAME qemu_arm64_tlsprobe TARGET tlsprobe BOARD qemu-arm64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_tlsprobe.sh")
+endif()
+
 # The RX emutls block is proved offline: rxv3 has no QEMU machine, so exhausting it is a
 # first-touch PANIC nobody can run. Every input the bump allocator uses is a link-time
 # constant, so the allocation is replayed against the linked image instead. GAP: this is the

@@ -2142,7 +2142,7 @@ re-witnesses the ARCH CLASS on real silicon and confirms the emulator is faithfu
 discriminating measurement the way `rx72m`'s `48` is against a pow2 backend.
 
 **`virt.ld` is the COUNTER-CASE, and it belongs here as a trap for the next reader.**
-`arch/riscv/chip/virt/virt.ld` carries the SAME `> RAM AT > RAM` construct and shows the SAME
+`arch/riscv/chip/virt_rv32/virt_rv32.ld` carries the SAME `> RAM AT > RAM` construct and shows the SAME
 divergence -- `_sidata=0x80010ce8` against `_sdata=0x80020000`, the segment reading
 `VirtAddr=0x80020000 PhysAddr=0x80010ce8` -- and **there it is CORRECT**. QEMU's ELF loader honours
 PhysAddr, so `.data`'s bytes really are at the LMA and the `Reset_Handler` copy does real work; the

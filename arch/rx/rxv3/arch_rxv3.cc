@@ -387,7 +387,7 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
     // fresh TCB and wrong for a live pool thread whose block is seated by slot: cleared,
     // the thread carries 0 through its own teardown and every syscall on the way takes
     // svc_trampoline's .Lsvc_nokstack arm.
-    uint32_t const kernel_sp = ctx->kernel_sp;
+    uintptr_t const kernel_sp = ctx->kernel_sp;
     // THE FOUR BYTES OF CLEARANCE BELOW THE BLOCK TOP ARE INCIDENTAL. kickos_rx_pendsw's
     // block leg tests kernel_sp - USP with bleu, so a USP exactly at the top reads as
     // not-on-the-block and is refused; the fault path spends a deliberate 8 to stay clear
@@ -410,7 +410,7 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
         uint32_t const lo = ctx->stack_lo;
         uint32_t const hi = ctx->stack_hi;
         void* const block = reinterpret_cast<void*>(
-            static_cast<uintptr_t>(kernel_sp) - KICKOS_KERNEL_STACK_SIZE);
+            kernel_sp - KICKOS_KERNEL_STACK_SIZE);
         arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
         ctx->stack_lo = lo;
         ctx->stack_hi = hi;

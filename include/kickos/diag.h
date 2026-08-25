@@ -96,7 +96,7 @@ namespace kickos
                                               "\n=== THREAD FAULT === thread '%s' killed\n")
 #define KDIAG_F_FAULT_PC_LOST KICKOS_DIAG_PICK("  PC lost to a later fault\n", "F1\n")
 #define KDIAG_F_FAULT_PC      KICKOS_DIAG_PICK("  PC=%p\n", "F2 %p\n")
-#define KDIAG_F_FAULT_PC_STAT KICKOS_DIAG_PICK("  PC=%p %s=0x%x\n", "F3 %p %s %x\n")
+#define KDIAG_F_FAULT_PC_STAT KICKOS_DIAG_PICK("  PC=%p %s=0x%llx\n", "F3 %p %s %llx\n")
 #define KDIAG_F_FAULT_ADDR    KICKOS_DIAG_PICK("  ADDR=%p\n", "ADDR=%p\n")
 #define KDIAG_F_FAULT_STUB_DEEP KICKOS_DIAG_PICK("  STUB DEEP: %u bytes below the stack top\n", \
                                                 "F4 %u\n")
@@ -119,5 +119,13 @@ namespace kickos
 // RISC-V trap dump.
 #define KDIAG_F_RV_CAUSE  KICKOS_DIAG_PICK("  mcause=0x%x mepc=0x%x\n", "V1 %x %x\n")
 #define KDIAG_F_RV_STATUS KICKOS_DIAG_PICK("  mtval=0x%x mstatus=0x%x\n", "V2 %x mstatus=0x%x\n")
+
+// AArch64 EL1 exception dump. The conversions are %lx and not %x: this is the first arch
+// in the tree where a register does not fit an int, and %x would print half of one.
+#define KDIAG_F_A64_VECTOR KICKOS_DIAG_PICK("  vector=%s LR=0x%lx\n", "A1 %s %lx\n")
+#define KDIAG_F_A64_SYND   KICKOS_DIAG_PICK("  ESR=0x%lx ELR=0x%lx\n", "A2 %lx %lx\n")
+#define KDIAG_F_A64_SPSR   KICKOS_DIAG_PICK("  SPSR=0x%lx\n", "A3 %lx\n")
+#define KDIAG_F_A64_FAR    KICKOS_DIAG_PICK("  FAR=0x%lx\n", "A4 %lx\n")
+#define KDIAG_F_A64_FAR_NA KICKOS_DIAG_PICK("  FAR not valid for this exception class\n", "A5\n")
 
 #endif

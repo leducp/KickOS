@@ -190,6 +190,9 @@ emulator_for() {
     if [ "$1" = qemu-riscv ]; then
         echo qemu-system-riscv32
     fi
+    if [ "$1" = qemu-arm64 ]; then
+        echo qemu-system-aarch64
+    fi
 }
 
 # census <preset> <tree> <tag>

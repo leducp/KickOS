@@ -10,7 +10,7 @@ cannot tell whether a document describes the current system, a plan, or a road n
 separate call for the maintainer to make; this index exists so they can be found by status without
 moving anything.
 
-**Coverage is total: 39 documents = 25 LANDED + 10 ACTIVE + 4 EXPLORATORY + 0 SUPERSEDED.** Every
+**Coverage is total: 40 documents = 25 LANDED + 11 ACTIVE + 4 EXPLORATORY + 0 SUPERSEDED.** Every
 `../design-*.md` appears in exactly one table, and no table names a file that does not exist.
 `ls ../design-*.md | wc -l` is the check; run it before trusting the number.
 
@@ -36,12 +36,16 @@ Two things follow from this that are easy to get wrong:
 - **A LANDED record is not the contract.** It says what was decided and why, frozen at decision
   time. The code-synced contract is `../reference/`, and where the two disagree the Reference
   wins (and the code wins over that).
-- **Milestone numbers inside older documents may predate a renumbering.** The driver wave has been
-  renumbered twice. The driver era now holds **M4** and **M5**, SMP is **M6**, and the MMU /
-  new-platform horizon is **M7**, with everything beyond it **M8**; the first of those decisions is
-  recorded in `../design-driver-era-scope.md` section 4. A document written before it may say
-  "M4 = SMP", and one written between the two may say "M5 = SMP" or "M6 = MMU".
-  `../../roadmap.md` is authoritative.
+- **Milestone numbers inside older documents may predate a renumbering.** The wave has been
+  renumbered three times, and the LAST one SWAPPED TWO NUMBERS rather than shifting them. The driver
+  era holds **M4** and **M5**; the **MMU is M6** and **multicore is M7** (they were the other way
+  round until 2026-08-21); IPC and IRQ optimisation is **M8**, the driver era returns at **M9**, and
+  KickCAT closes at **M10**. The first of those decisions is recorded in
+  `../design-driver-era-scope.md` section 4 and the swap in `../../roadmap.md`, which is
+  authoritative. So a document written before the swap may say "M6 = SMP" or "M7 = MMU" and mean the
+  opposite of what it now reads as -- `../design-m7-smp.md` and `../design-mmu-era-exploration.md`
+  were both in that state and have been RENAMED to the numbers they now carry, so a
+  reference to either under its old `m6-` name is a stale link rather than a milestone claim.
 
 ## LANDED
 
@@ -86,16 +90,17 @@ Two things follow from this that are easy to get wrong:
 | [`design-m5-i2c-seam.md`](../design-m5-i2c-seam.md) | The I2C class contract, judged against three unrelated controllers and nine parts before an engine existed. The class header and the RX72M RIICa backend came out of it; the proxy and the service have not |
 | [`design-m5-ipc-fastpath.md`](../design-m5-ipc-fastpath.md) | Bounding the IPC critical section: the measured call/reply baseline, which section 1 fixes as a measurement, and the fastpath judged against it |
 | [`design-m5-kickcat-reality-check.md`](../design-m5-kickcat-reality-check.md) | KickCAT brought back at the end of the driver era to JUDGE the driver APIs rather than consume them: the SPI-class collision, the ruling, and what writing the backend found. Header status: written and compiled, never linked, never run |
-| [`design-m6-state-inventory.md`](../design-m6-state-inventory.md) | Kernel state classified per-core versus genuinely global, and what the multi-instance sim corrected about that classification once part of it became executable. Read section 6 before the tables |
+| [`design-m7-state-inventory.md`](../design-m7-state-inventory.md) | Kernel state classified per-core versus genuinely global, and what the multi-instance sim corrected about that classification once part of it became executable. Read section 6 before the tables |
+| [`design-m6-mmu.md`](../design-m6-mmu.md) | The M6 design contract: a unicore A53 on QEMU `virt`, with RV64 Sv39 as the litmus that falsifies the aspace seam and x86_64 falsifying the entry and boot paths, what it FREEZES (a high-half kernel, a domain becoming an address space so a task becomes a process, a 4 KiB granule, two backends before the seam is trusted), the seams below the arch boundary that are rewritten, and the step plan with the expected result of each step |
 
 ## EXPLORATORY
 
 | Document | Subject |
 |---|---|
-| [`design-m6-smp.md`](../design-m6-smp.md) | SMP candidate ranking by the one gate that decides it, the big-kernel-lock-first staged model, the per-chip hardware mechanics and the cross-core IPC invariants |
+| [`design-m7-smp.md`](../design-m7-smp.md) | SMP candidate ranking by the one gate that decides it, the big-kernel-lock-first staged model, the per-chip hardware mechanics and the cross-core IPC invariants |
 | [`design-rp2350-hazard3.md`](../design-rp2350-hazard3.md) | Porting to the RP2350's RISC-V Hazard3 cores as a sibling of the M33 port |
 | [`design-riscv-switch-cost.md`](../design-riscv-switch-cost.md) | Whether the RISC-V switch gap is worth a cooperative fast-path and/or Zcmp |
-| [`design-mmu-era-exploration.md`](../design-mmu-era-exploration.md) | Growing from an MPU RTOS to real virtual address spaces (x86_64, i.MX8MP heterogeneous AMP) |
+| [`design-mmu-era-exploration.md`](../design-mmu-era-exploration.md) | Growing from an MPU RTOS to real virtual address spaces. PARTLY ABSORBED: `design-m6-mmu.md` is the contract that came out of it and picked a different first target, so what stays live here is the platform exploration (x86_64 as a PC target, i.MX8MP heterogeneous AMP) |
 
 ## SUPERSEDED
 

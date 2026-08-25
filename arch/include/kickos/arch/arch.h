@@ -774,7 +774,13 @@ bool kickos_fault_below_stack(uintptr_t addr);
 // permanently, and the system is meant to survive this fault. `status_name` names the
 // arch fault-status word for the reader (armv7m: "CFSR"). `addr` is read only when
 // `addr_valid`, since a fault-address register holds stale contents otherwise.
-void kickos_fault_record(char const* status_name, uint32_t status,
+//
+// `status` is 64-bit because a status REGISTER is, on the arches that have one that wide:
+// AArch64's ESR_EL1, and RV64's mcause, whose interrupt bit is bit 63. Narrower backends
+// promote and pay nothing. The alternative was to truncate and argue per arch that nothing
+// above bit 31 is ever set, which is an argument about each CALLER's filtering rather than
+// about the register, and it would have to be re-made for every 64-bit backend.
+void kickos_fault_record(char const* status_name, uint64_t status,
                          uintptr_t pc, uintptr_t addr, int addr_valid);
 
 #if defined(KICKOS_ENABLE_SELFTEST)

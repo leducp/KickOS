@@ -396,7 +396,7 @@ decisions:
   inline the optimiser must prove away. It is what delivers the byte-identical single-core build
   M6 demands, and both reference kernels do it this way.
 - **The atomics get their real ORDER.** `Order` has one enumerator; ACQUIRE and RELEASE join it and
-  are spent at the three residues `../STATE.md` and `design-m6-smp.md` name.
+  are spent at the three residues `../STATE.md` and `design-m7-smp.md` name.
 - **`struct Kernel` annotated per-core versus genuinely global**, on paper. Cheap, because the
   struct is the complete inventory and `kernel()` the single accessor; `cap_slab` sits outside it.
 - **The latent uniprocessor bugs from `docs/design-capability-table.md` section 8** that are worth
@@ -450,12 +450,43 @@ The memory model today is **one physical address space + per-thread MPU regions*
 (VMSA / page tables)** adds virtual address spaces: foundational, not a port. The **Domain seam** is
 shaped to absorb it (a domain becomes a page-table root instead of an MPU region set).
 
+**And it ships TWO backends, not one, because that is the only way the seam can be shown not to be
+one backend's shape with a header around it.** `arch_mpu_region` is frozen today because five
+backends and the RX72M litmus earned it that status; an `arch_aspace_*` family designed against a
+single A-profile core would carry A64 assumptions that nothing in the tree could detect. The second
+backend is **x86_64 on QEMU**, chosen because it is maximally different where it matters -- one root
+register instead of two, so activating an address space replaces the kernel's mapping as well;
+feature-gated 12-bit address-space identifiers instead of 16-bit ones always present; and a syscall
+entry that does NOT switch stacks, where A64 hands the kernel a separate stack pointer in hardware.
+It costs no silicon.
+
+**THREE backends, and the second is RV64 rather than x86_64.** A64 and x86_64 agree on 64-bit
+addresses, a hardware table walker, a 4 KiB granule, a generous high half and byte order, differing on
+only two axes, so an empty signature diff across that pair reads as proof of SIMILARITY. The litmus is
+**RV64 with Sv39**: its physical address space is wider than its virtual one, which breaks a
+full-direct-map assumption on a mainstream part; its paging mode and level count are selectable on one
+chip; the identifier length may be hardwired to zero; and it is buyable, the C906 in the Allwinner D1
+being a unicore Sv39 part, which is the RX72M property that made that litmus credible. x86_64 stays,
+falsifying the ENTRY AND BOOT paths instead -- a syscall entry that loads no stack pointer, and
+adopting a translation regime firmware already turned on.
+
+**They go in order and never concurrently.** The reason the MMU precedes multicore is that two firsts
+in one bite makes the switch path undebuggable; three at once is worse. Sub-milestones, and each is a PR:
+**M6.1** the A53 port on a 1:1 map, proving boot, trap, switch and UART with no allocator work;
+**M6.2** translation, processes and enforcement; **M6.3** the RV64 Sv39 backend and the aspace-seam
+verdict; **M6.4** the x86_64 backend and the entry-path verdict; **M6.5** frame-level capabilities,
+designed against three backends instead of one.
+
 Unicore FIRST, and the SMP seams are cut here while they still compile to nothing at one core:
-EL1/EL0 and exception vectors, identity map and then `arch_aspace_activate` (TTBR0 + ASID), GICv2/v3
-for the UART and the timer PPI with the table keyed `(line, kind)` rather than a flat NVIC index,
-the Generic Timer as the tickless one-shot, `arch_ipi_send`/`arch_ipi_wait` as empty macros, a
-per-CPU struct reached through `TPIDR_EL1`, an `arch_aspace_flush` that is a local TLBI, and an
-`arch_dcache_clean`/`invalidate` seam for DMA. Two decisions this milestone must FREEZE rather than
+EL1/EL0 and exception vectors, identity map and then an aspace ACTIVATE, GICv2/v3 for the UART and
+the timer PPI with the table keyed `(line, kind)` rather than a flat NVIC index, the Generic Timer as
+the tickless one-shot, `arch_ipi_send`/`arch_ipi_wait` as empty macros, a per-CPU struct reached
+through `TPIDR_EL1`, and an `arch_dcache_clean`/`invalidate` seam for DMA. **The aspace family names
+concepts and not mechanisms**, which is the seam's standing doctrine: no architecture's registers and
+no architecture's maintenance instruction appear in it. `docs/design-m6-mmu.md` carries the frozen
+family -- create, destroy, map, unmap, activate, a
+page-window acquire/release pair and a granule query, with map and unmap coherence-complete so no
+flush call exists to schedule and no address-space identifier appears above the seam at all. Two decisions this milestone must FREEZE rather than
 defer: **high-half versus fully separate address spaces** (it drives `kaccess_from_user` and whether
 a kernel pointer survives `arch_aspace_activate`), and that **one lock spans capability
 resolve-to-use**. Do not let the identity map become the allocator: prove boot, trap, switch and
@@ -473,8 +504,8 @@ and finer locks only where real atomics exist. Cross-core object reclamation and
 blocking IPI rendezvous over the same transport, so the doorbell cannot be fire-and-forget only.
 **Do not judge this milestone by its speedup**: on today's measured 53 percent `IrqLock` hold, Amdahl
 caps two cores at 1.31x and four at 1.55x, and the hold-shortening that moves those numbers is M8.
-Re-derive both after M8 rather than freezing a verdict here. Spikes: `docs/design-m6-smp.md`
-(candidate ranking, cross-core IPC invariants), `docs/design-m6-state-inventory.md` (per-core versus
+Re-derive both after M8 rather than freezing a verdict here. Spikes: `docs/design-m7-smp.md`
+(candidate ranking, cross-core IPC invariants), `docs/design-m7-state-inventory.md` (per-core versus
 global), `docs/design-capability-table.md` section 8.
 
 ### M8 -- IPC and IRQ optimisation, on measured evidence
@@ -586,10 +617,13 @@ machinery -> userspace service, kernel keeps only the re-anchor + privileged-ste
 ### Platform targets past the A53 (captured, not scheduled)
 The MMU itself is **M6** and multicore is **M7**; what stays here is the hardware these two unlock,
 each wanting a feasibility spike rather than a slot:
-- **x86_64 PC target** -- KickOS as an actual OS on a PC (QEMU first, then bare metal): paging plus
-  a different boot, privilege and interrupt model (long mode, ring0/3, APIC). This is where
-  `__KickOS__` earns its name. The MMU spike originally aimed its unicore stepping stone here; M6
-  aims it at QEMU `virt` A53 instead, because that is the machine multicore then runs on.
+- **x86_64 as a PC target, beyond the M6.4 backend** -- M6.4 brings up x86_64 as the entry-path
+  falsifier, on QEMU with UEFI firmware and under a hypervisor as a second firmware, rather than as a
+  product. What stays captured here is the rest of
+  being an actual OS on a PC: bare metal rather than QEMU, a disk bootloader instead of `-kernel`, and
+  the device breadth that implies. This is where `__KickOS__` earns its name. The MMU spike aimed its
+  unicore stepping stone at x86_64 FIRST; M6 aims that at QEMU `virt` A53 instead, because that is
+  the machine multicore then runs on, and uses x86_64 as the falsifier behind it.
 - **i.MX8MP -- heterogeneous AMP across profiles** -- an **MMU KickOS on the Cortex-A53(s)** (VMSA)
   beside an **MPU KickOS on the Cortex-M7**, one per core cluster, over cross-core IPC. This is M7's
   AMP contract carried from homogeneous to heterogeneous cores, and it is the case that needs the

@@ -394,7 +394,7 @@ then went silent, and bisecting found nothing. The fix was to drop the `AT` and 
 `ASSERT(_sidata == _sdata)` so it cannot regress. `arch/xtensa/chip/esp32/esp32.ld`
 carried the same latent construct and took the same assert (image-neutral there).
 
-CORRECT case, and the trap: `arch/riscv/chip/virt/virt.ld` carries the SAME
+CORRECT case, and the trap: `arch/riscv/chip/virt_rv32/virt_rv32.ld` carries the SAME
 `> RAM AT > RAM` construct and the SAME divergence (`_sidata = 0x80010ce8` against
 `_sdata = 0x80020000`), and there it is RIGHT -- QEMU's ELF loader places each segment at
 its PhysAddr, so `.data`'s bytes really are at the LMA and the `Reset_Handler` copy does
@@ -627,7 +627,7 @@ believes every core is core 0. The knob is an ordinary Kconfig int, so it reache
 generated `kickos/board_config.h` like every other provisioning integer and needs no CMake edit.
 
 Splitting per-core kernel state is NOT part of this seam and is not done yet;
-`../design-m6-state-inventory.md` classifies what would have to move.
+`../design-m7-state-inventory.md` classifies what would have to move.
 
 ### Privileged register write (`arch_periph_reg_write`)
 
@@ -2017,7 +2017,7 @@ save-frame, deferred switch.
 A runnable rv32imac target validates the arch on real emulated RISC-V:
 `qemu-system-riscv32 -M virt -bios none -nographic -semihosting`. `-bios none`
 runs our image directly in **machine mode** (no OpenSBI). The `virt` chip
-(`arch/riscv/chip/virt/`) uses the standard CLINT (`mtime`/`mtimecmp` @ 10 MHz,
+(`arch/riscv/chip/virt_rv32/`) uses the standard CLINT (`mtime`/`mtimecmp` @ 10 MHz,
 `msip`) + RISC-V **semihosting** for the console (`SYS_WRITEC`) and exit
 (`SYS_EXIT_EXTENDED`) -- the mps2 model -- so it needs no UART; the image links to
 run from DRAM at `0x8000_0000`. `ctest --preset qemu-riscv` boots `hello` and

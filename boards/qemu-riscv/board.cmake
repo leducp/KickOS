@@ -13,7 +13,7 @@
 set(KICKOS_BOARD_ID    "qemu-riscv")
 set(KICKOS_ARCH_FAMILY "riscv")
 set(KICKOS_ARCH        "rv32imac")
-set(KICKOS_CHIP        "virt")
+set(KICKOS_CHIP        "virt_rv32")
 
 # RV32IMAC + ILP32: integer core (no F/D -> soft-float), atomics + compressed.
 # Zicsr is explicit (modern binutils split the CSR opcodes out of the base ISA;

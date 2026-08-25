@@ -2368,7 +2368,7 @@ Three strands, the first two of which need no board.
 
 ### The `volatile` -> relaxed `std::atomic` conversion
 
-Moved here from M6 rather than left recorded in three places. `docs/design-m6-smp.md` carries the
+Moved here from M6 rather than left recorded in three places. `docs/design-m7-smp.md` carries the
 reasoning and now records what is DONE and what is residue; `docs/reference/style.md` states the
 rule.
 
@@ -4906,7 +4906,7 @@ Book + exploratory (M3-adjacent, not milestone-gating):
       receiver + register/bounded-copy; KickOS's sem_post already hands the token off and drives an
       immediate switch, so the fastpath shape exists) for control/RPC, and (b) shared-memory + async
       notifications (non-blocking) for throughput -- the M6 cross-core design
-      (`docs/design-m6-smp.md`) already uses an SPSC ring + doorbell, exactly that shape.
+      (`docs/design-m7-smp.md`) already uses an SPSC ring + doorbell, exactly that shape.
       Survey the literature, map both to CAP_ENDPOINT (#4) + the M6 rings, recommend the
       control-plane-vs-data-plane IPC strategy + a micro-benchmark. Good deep-research candidate.
 
@@ -5330,7 +5330,7 @@ below where they were previously mislabeled.
   The deciding measurement is TAKEN: 53 percent of a call/reply round-trip is inside `IrqLock`
   on `esp32c6-wroom` (floor 43 percent), which Amdahl-bounds a two-core big lock at 1.31x --
   see `docs/design-m5-ipc-fastpath.md` 3.0.4. Design spike:
-  `docs/design-m6-smp.md` carries the cross-core IPC invariants, the
+  `docs/design-m7-smp.md` carries the cross-core IPC invariants, the
   per-chip hardware mechanics, the SMP candidate ranking + staged model and the
   SMP-is-per-chip-capability constraint. Candidate
   ranking by the real gate (inter-core atomic + arch-switch maturity): **RP2350 BEST** (M33
@@ -5383,7 +5383,7 @@ below where they were previously mislabeled.
     refactor: AMP de-risks the shared mechanics (core-1 launch, IPC, console arbitration) that
     SMP also needs, and sidesteps the no-atomics problem entirely.
   - **Cross-core IPC -- required for AMP; none exists today** (`Semaphore`/`Mutex` are intra-core
-    only). Design in `docs/design-m6-smp.md`: a per-direction SPSC ring in a shared-SRAM
+    only). Design in `docs/design-m7-smp.md`: a per-direction SPSC ring in a shared-SRAM
     window (one writer per index + `DMB` ordering -> no lock, no atomics needed on M0+) with the
     SIO 8x32 FIFO used only as a doorbell (write a tag, raise `SIO_IRQ_PROCn`). API = a `Channel`
     (ring + a `Semaphore` in the receiver's kernel) exposed as `KOS_SYS_chan_{open,send,recv}`;
@@ -5744,6 +5744,43 @@ shared case only.
       rather than following it: with no class methods the wire protocol IS the API, and extracting a
       class later would mean deriving it from its own transport.
 
+## M6 -- the per-thread-privacy restatement, owed WITH the behaviour (2026-08-24)
+
+`docs/design-m6-mmu.md` freeze F9 moves the portable contract: a task's grants are sibling-visible, a
+thread-scoped grant guarantees access to its HOLDER, and portable code may not rely on sibling
+denial. MPU backends keep per-thread denial as a documented strengthening; a translating backend maps
+task-wide with grant AUTHORITY still thread-local.
+
+**Deferred by the user to land WITH the T5 code change, not before**, because every statement below is
+true of the tree as it stands and rewriting them early puts the Reference and the code in
+disagreement the other way round. The list is here so the deferral is tracked rather than
+remembered.
+
+- [ ] **`docs/reference/invariants.md` -- four sites.** `dev-window-access-is-thread-scoped-its-lifetime-task-scoped`
+      and `dev-window-exclusivity-is-bounded-by-the-silicon` both argue that a task-wide window would
+      hand registers to a peer that never asked, which is exactly what a translating backend does; the
+      private-stack clause of `mpu-apply-on-every-switch-in`; and `privileged-write-seam-possession-and-allowlist`,
+      which is REPAIRED rather than qualified once possession becomes thread-local authority instead
+      of a walk over reachable regions. `tls-carve-sits-below-stack-lo` is the precedent for the
+      wording: it already says outright that it is naming and not isolation.
+- [ ] **Four kernel comments claiming a sibling cannot reach another thread's stack**, in
+      `kernel/include/kickos/domain.h`, `kernel/thread/thread.cc` (two) and `kernel/syscall/syscall.cc`.
+      `kernel/init/fault.cc` already admits the sharing and needs nothing.
+- [ ] **`docs/reference/architecture.md` -- two statements** that per-thread private stacks stop a
+      sibling scribbling another's.
+- [ ] **The Book.** `privilege-is-three-axes-not-one-bit.md` teaches the private stack as a
+      guarantee. `whoever-stacks-the-trap-frame-owns-the-bounds-check.md` already frames a sibling's
+      access as a legitimate granted mapping, which is the telling to converge on.
+- [ ] **The ABI headers.** `user/include/kickos/sys.h` states the `-KOS_EPERM` non-holder contract for
+      the periph seam and describes the self-grant budget as per-thread. These stay TRUE if and only
+      if possession becomes thread-local authority, so they are the check on that work rather than
+      text to soften.
+- [ ] **Do not touch the two board-registered arms.** `periph_enable_unheld` and
+      `periph_reg_write_unheld` (`user/apps/common/selftest/main.cc`) assert a non-holder is refused
+      from a thread other than the holder, and they must keep passing on every backend. They are the
+      executable check that authority stayed thread-local; a change that needs them relaxed has
+      widened possession by mistake.
+
 ## MMU-era groundwork quick wins (from `docs/design-mmu-era-exploration.md` section 5)
 
 Cheap seam/groundwork changes worth making WHILE the M4-M6 code is written, so the MMU era does not
@@ -5761,7 +5798,7 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       pressure. A one-file accessor contains the blast radius of the single biggest below-seam
       change.
 - [ ] **QW-3. Keep the shared-IPC ring contract PHYSICALLY addressed from day one.** When the IPC
-      ring lands (`docs/design-m6-smp.md`), specify that ring control words and slot
+      ring lands (`docs/design-m7-smp.md`), specify that ring control words and slot
       references are offsets or physical addresses, NEVER a pointer valid in one core's space, even
       though on RP2040 (homogeneous, one physical space) a raw pointer would work. It costs nothing
       there and is the exact property a heterogeneous A53/M7 pairing needs. Baking a VA into the
@@ -5769,6 +5806,14 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       the wire format; getting the invariant into the design text is free, retrofitting it after
       apps depend on the layout is not. The same discipline is what
       `docs/design-m4-fable-review.md` finding 10 wants pulled into the M4 call/reply gate.
+      **IT IS LOAD-BEARING FOR M6 NOW, and in the direction of it NOT having landed (2026-08-24).**
+      `docs/design-m6-mmu.md` F10 contracts the reserve-then-hand-to-a-task idiom as a same-frame
+      handoff at the SAME virtual address, and the reason it must be the same address rather than
+      merely the same frames is that nothing guarantees a shared block's CONTENTS are
+      position-independent: an address the donor computed can be sitting inside it. This item is
+      exactly what would relax that, so landing it buys M6 the freedom to relocate a child's view,
+      and leaving it open makes the same-address rule a requirement rather than a convenience.
+      Either way it stops being cheap groundwork and becomes a dependency to state.
 - [ ] **QW-4. Isolate the pow2/natural-alignment MPU shaping so a page allocator can sit beside the
       bump allocator.** `arch_ram_region_size` / `arch_ram_region_align` encode MPU-descriptor
       geometry into the ALLOCATOR. Flag them as "MPU shaping" belonging behind the same arch family
@@ -5799,7 +5844,7 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       `volatile` (a relaxed 64-bit load is a `__atomic_load_8` libcall), the six per-chip
       `_high`/`_last` clock anchors that `IrqLock` alone makes coherent, and
       the ring publication barrier, then still a consumer `-D` rather than a release
-      store on the ring's now-atomic index. `docs/design-m6-smp.md` carries the reasoning.
+      store on the ring's now-atomic index. `docs/design-m7-smp.md` carries the reasoning.
 
 ## Gate-surface re-inventory (anytime coherence, not scheduled)
 
@@ -6096,7 +6141,7 @@ workflow YAML rot invisibly.
       `design-m4.6-irq-driver` and `roadmap.md`; every measurement kept as taken, and the one
       verbatim capture line fenced rather than edited. Three more superseded verdicts came out with
       it: `invariants.md` and `console.md` stated the PRE-2026-08-02 console reclaim (keyed on the
-      endpoint's last receiver) as the contract, `design-m6-smp.md` asserted the retracted
+      endpoint's last receiver) as the contract, `design-m7-smp.md` asserted the retracted
       both-cores-WFI debug-bus story as chip fact, and the `arch_console_reclaim` body count was
       wrong in six files. `architecture.md`'s cap-slab figures were both one chunk high, and are now
       read off the `KickOS: cap table =` configure line instead of a formula.

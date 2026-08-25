@@ -78,7 +78,7 @@ because they are written here and read in review.
     out taking one from the toolchain -- a lock-bracketed RMW is implementable everywhere.
     It stays closed because the cheapest CORRECT mechanism differs per backend, so an RMW
     belongs behind a per-arch seam like the MPU backends, and no such seam exists yet.
-    `../design-m6-smp.md` carries the measured costs and the one correctness rule such a
+    `../design-m7-smp.md` carries the measured costs and the one correctness rule such a
     seam would have to enforce, namely that `IrqLock`-bracketing is wrong on a dual-core part.
     The gate catches the named spellings outright (`.fetch_add(`, `.exchange(`,
     `.compare_exchange_*(`, the C11 generics, and the `__atomic_` / `__sync_` builtins that

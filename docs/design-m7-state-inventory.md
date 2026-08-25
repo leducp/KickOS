@@ -5,11 +5,12 @@
 > **Status: ON PAPER for the SMP half; the SIM half is now implemented.** This is the classification
 > a shared kernel needs, made while it is still cheap to make: `struct Kernel` is the inventory and
 > `kernel()` is the single accessor, so the question is answerable by reading one header. Sections 2
-> to 5 are the paper classification, produced in M5 and consumed in M6. **Section 6 is what happened
+> to 5 are the paper classification, produced in M5 and consumed in M7 (it was M6 until the
+> 2026-08-21 swap put the MMU there; this file was renamed to match). **Section 6 is what happened
 > when the multi-instance sim made part of it executable**, including the one classification it
 > corrected and the class of state it missed entirely -- read it before trusting the tables above.
 
-Companion to `design-m6-smp.md` (the staged model and the candidate ranking) and to
+Companion to `design-m7-smp.md` (the staged model and the candidate ranking) and to
 `design-capability-table.md` section 8 (the uniprocessor hazards in the capability path). Neither
 of those carries an inventory; this does.
 
@@ -152,7 +153,7 @@ CCU40 slices into ONE free-running 64-bit HARDWARE counter precisely so that "th
 wrap word, so no read can manufacture a wrap" -- and it did that to dodge an unreliable DWT, not
 for SMP, which is why it is an existence proof rather than a plan. **Prefer a hardware 64-bit
 counter on every chip that can build one.** Where the silicon genuinely cannot, a seqlock over the
-pair is the fallback, and a per-core anchor is the other option `design-m6-smp.md` already names.
+pair is the fallback, and a per-core anchor is the other option `design-m7-smp.md` already names.
 
 This is the same residue that document lists under the atomics conversion, and the reason it is
 listed as ordering work rather than type work: the pair being two relaxed atomics instead of two

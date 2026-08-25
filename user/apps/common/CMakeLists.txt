@@ -141,7 +141,10 @@ if(KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "xmc4800-relax"
    OR KICKOS_BOARD STREQUAL "qemu"
    OR KICKOS_BOARD STREQUAL "qemu-m33"
-   OR KICKOS_BOARD STREQUAL "qemu-m7")
+   OR KICKOS_BOARD STREQUAL "qemu-m7"
+   # A64 stacks no FP state on exception entry, so this board owes the whole vector bank
+   # rather than the callee-saved half the M-profile boards owe.
+   OR KICKOS_BOARD STREQUAL "qemu-arm64")
   add_subdirectory(fp_switch)
 endif()
 

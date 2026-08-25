@@ -88,7 +88,7 @@ measurable at about 4 percent.
 
 ### 1.2 It also sizes the SMP decision
 
-`design-m6-smp.md` states that a shared kernel's payoff is Amdahl-bounded by the fraction of a
+`design-m7-smp.md` states that a shared kernel's payoff is Amdahl-bounded by the fraction of a
 round trip spent inside `IrqLock`, and that its "about 2x" figure is unproven. The bound cannot be
 computed from the numbers above, because the fixed term is not yet split into locked and unlocked
 parts -- that is section 3. What section 1 already settles is that the fraction is NOT dominated
@@ -329,7 +329,7 @@ carries the cheaper absolute numbers.
 > things it could not see have since been measured: the correction rule it read the table under
 > was wrong for composites (4.10), and a call/reply round trip has a THIRD locked leg, the
 > server's own `kos_recv` park, which this section never counted. Kept unedited because 31
-> percent is the number `design-m6-smp.md` and `STATE.md` planned against.
+> percent is the number `design-m7-smp.md` and `STATE.md` planned against.
 
 Summing only the leaves that sit INSIDE `IrqLock` -- `CALL_RESOLVE`, `CALL_PROBE`, `CALL_COPY`,
 `CALL_MINT`, `CALL_PARK` on the call side, and `REPLY_LOOKUP`, `REPLY_COPY`, `REPLY_FUNNEL`,
@@ -337,7 +337,7 @@ Summing only the leaves that sit INSIDE `IrqLock` -- `CALL_RESOLVE`, `CALL_PROBE
 
 **At least 31 percent of a call/reply round trip is spent under the kernel lock.** It is a FLOOR:
 the wake path's ready-queue work is inside the lock and is not separately bracketed, and
-`CALL_VALIDATE` and `CALL_RESUME` are correctly outside it. `design-m6-smp.md` states that a shared
+`CALL_VALIDATE` and `CALL_RESUME` are correctly outside it. `design-m7-smp.md` states that a shared
 kernel's payoff is Amdahl-bounded by exactly this fraction and that its "about 2x" figure is
 unproven. A floor of 31 percent bounds the speedup of a two-core big-lock kernel at
 1 / (0.31 + 0.69/2), about **1.45x**, before any contention -- which is materially below 2x and is
@@ -436,7 +436,7 @@ uninstrumented capture would not change the decision and is not worth a second k
 **This is an ENFORCING board, and that is not what carries the result.** `MPU_APPLY` is 443 cycles
 per switch and both switches are inside the lock, so the PMP reprogram alone is 886 of the 3651.
 Removing it entirely gives 2765 locked of 6050, `f = 0.457`, and **1.37x**. So no posture of this
-board reaches the "about 2x" `design-m6-smp.md` assumes.
+board reaches the "about 2x" `design-m7-smp.md` assumes.
 
 **What this replaces, and by how much.** Section 3.0.1's floor was 31 percent bounding 1.45x. The
 new floor is 43 percent bounding 1.40x, and the direct number is 53 percent giving 1.31x. The

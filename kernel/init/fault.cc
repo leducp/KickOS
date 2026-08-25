@@ -96,7 +96,7 @@ namespace
     {
         ::kickos::Thread const* owner;
         char const* status_name;
-        uint32_t status;
+        uint64_t status;
         uintptr_t pc;
         uintptr_t addr;
         bool addr_valid;
@@ -111,7 +111,7 @@ namespace
     }
 }
 
-extern "C" void kickos_fault_record(char const* status_name, uint32_t status,
+extern "C" void kickos_fault_record(char const* status_name, uint64_t status,
                                     uintptr_t pc, uintptr_t addr, int addr_valid)
 {
     // Runs in the faulting thread's own context, so `current` IS the thread that faulted.
@@ -157,7 +157,7 @@ extern "C" bool kickos_fault_frame_on_kernel_stack(void const* frame, size_t byt
     {
         return false;
     }
-    uintptr_t const hi = static_cast<uintptr_t>(c->ctx.kernel_sp);
+    uintptr_t const hi = c->ctx.kernel_sp;
     if (hi == 0)
     {
         return false;
@@ -206,7 +206,7 @@ extern "C" uintptr_t kickos_fault_stack_top(void)
 #if KICKOS_KERNEL_STACKS
     if (c->ctx.kernel_sp != 0)
     {
-        return static_cast<uintptr_t>(c->ctx.kernel_sp);
+        return c->ctx.kernel_sp;
     }
 #endif
     if (c->stack_base == nullptr or c->stack_size == 0)
@@ -293,10 +293,11 @@ extern "C" void kickos_thread_fault_exit(void)
         }
         else
         {
-            // uint32_t is `unsigned long` on ARM and `unsigned` on the host, so the cast
-            // is what keeps ONE format string -Wformat-clean on both.
+            // uint64_t is `unsigned long` on a 64-bit target and `unsigned long long` on a
+            // 32-bit one, so the cast is what keeps ONE format string -Wformat-clean on both.
             ::kickos::kprintf_fault(KDIAG_F_FAULT_PC_STAT, reinterpret_cast<void*>(r.pc),
-                                    r.status_name, static_cast<unsigned>(r.status));
+                                    r.status_name,
+                                    static_cast<unsigned long long>(r.status));
         }
         if (r.addr_valid)
         {

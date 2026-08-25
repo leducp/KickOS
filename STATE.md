@@ -447,7 +447,7 @@ arm `a_voluntary_close_reclaims_before_the_wake_it_admits` is the only oracle th
 move.
 
 **THE MILESTONE NUMBERS MOVED AND THE ABI FREEZE IS KEYED TO A NAME.** SMP is M6
-(`docs/design-m6-smp.md`), the seam rework is M7, and the freeze is M8, the last milestone.
+(`docs/design-m7-smp.md`), the seam rework is M7, and the freeze is M8, the last milestone.
 Prose says "the ABI-freeze milestone" rather than a bare number, so the next renumber does not
 falsify it again. `TODO.md` M4.7.4 also records what the freeze itself owes: a full doc and
 comment sync pass, because `check_doc_names.sh` validates a path and an UPPERCASE-prefixed

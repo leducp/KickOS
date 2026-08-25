@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# QEMU virt (AArch64). No pads and no driver handover, so the board declares neither a
+# service list nor a pin map; what IS this board's rather than its chip's is how much RAM
+# it has, which is what the heap the linker script carves is bounded by.
+
+if BOARD_QEMU_ARM64
+
+config KICKOS_USER_HEAP_SIZE
+	int
+	default 65536
+
+endif

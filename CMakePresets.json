@@ -6,6 +6,7 @@
     "cmake/presets/arm.json",
     "cmake/presets/rx.json",
     "cmake/presets/xtensa.json",
-    "cmake/presets/riscv.json"
+    "cmake/presets/riscv.json",
+    "cmake/presets/arm64.json"
   ]
 }

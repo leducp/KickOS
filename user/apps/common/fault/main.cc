@@ -32,6 +32,11 @@ int main(int, char**)
     __asm volatile(".word 0x00000000"); // all-zero encoding: illegal on RV32
 #elif defined(__arm__) || defined(__thumb__)
     __asm volatile("udf #0");
+#elif defined(__aarch64__)
+    // All-zero is a permanently-undefined A64 encoding, reported with EC 0x00; the RV32 arm
+    // above uses the same idiom. NOT __builtin_trap, which is `brk` on this ISA and raises a
+    // DEBUG exception (EC 0x3C) instead: a different vector cause and a different report.
+    __asm volatile(".inst 0x00000000");
 #elif defined(__RX__)
     __asm volatile("brk"); // BRK traps through rvector[0]
 #else
