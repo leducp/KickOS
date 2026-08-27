@@ -37,6 +37,14 @@ extern "C"
 // The symbol the kernel boot path calls after kernel init.
 int kickos_init_entry(int argc, char** argv);
 
+// The root thread's own entry, which kmain hands to thread_create. It walks the app's ctor
+// window and then calls kickos_init_entry above.
+//
+// MUST stay defined app-side (libkickos_user.a), for the reason kickos_init_args below
+// gives and one more: root is UNPRIVILEGED from its first instruction, so on a translating
+// board this text is fetched at EL0. Kernel-half text is unreachable there at any address.
+void kickos_root_entry(void* arg);
+
 // The kernel -> init argument handoff. kmain fills it; the root thread reads it
 // immediately before calling kickos_init_entry above.
 //

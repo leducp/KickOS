@@ -27,6 +27,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config.h> // KICKOS_MPU_MAX_REGIONS
+#include <kickos/vrange.h>
 
 namespace kickos
 {
@@ -46,6 +47,12 @@ namespace kickos
         // destroyed at the last release; null on the two immortal singletons, neither of
         // which is ever a task's own space.
         struct arch_aspace* space = nullptr;
+        // What that space NAMES, which is the syscall entry's oracle. The region array
+        // above is what a descriptor board seats and what every grant path still records;
+        // this list carries what no region array on this backend describes, the process
+        // image mapped into the space (docs/design-m6-mmu.md section 3.3). Seeded with the
+        // space and thrown away with it.
+        VirtualRanges ranges;
 #endif
         bool privileged = false;
         bool immortal = false; // kernel + default-user singletons: never freed
@@ -64,6 +71,19 @@ namespace kickos
     // nothing else from either. Null-safe.
     unsigned domain_space_id(Domain const* d);
 
+    // The address space this domain's task runs under, or null where the backend
+    // translates nothing and on the two immortal singletons. Null-safe.
+    struct arch_aspace* domain_space(Domain const* d);
+
+#if KICKOS_HAVE_ASPACE
+    // The granted-range list of that space, or null on a domain holding none. Null-safe.
+    VirtualRanges const* domain_ranges(Domain const* d);
+
+    // The same list, writable: F10's allocator reserves into it and its self-grant turns a
+    // reservation into a mapping, both on behalf of the task holding this domain.
+    VirtualRanges* domain_ranges_mut(Domain* d);
+#endif
+
     // Boot: build the two immortal domains (kernel = whole arena/privileged,
     // default-user = empty/unprivileged). Call once, after arch_init.
     void domain_init(void);
@@ -74,6 +94,18 @@ namespace kickos
     // slot of its own, since joining would put two kill groups in one address space
     // (docs/design-m6-mmu.md F2).
     Domain* domain_default_user(void);
+
+    // The CALLER's posture, as ONE word rather than two bool parameters, and the reason is
+    // stack rather than taste: domain_for and task_for sit on the deepest chain the syscall
+    // dispatch has, a further argument is a word in the CALLER's frame on a 32-bit ABI, and
+    // that frame is what the trap red zone of a KICKOS_KERNEL_STACKS=0 board is measured
+    // against (arch/arm/armv7m/include/kickos/arch/armv7m_trap_stack.h). F10's handoff needed
+    // an argument and this is what paid for it.
+    enum : uint32_t
+    {
+        DOM_CALLER_PRIVILEGED = 1u << 0, // resolves the kernel domain, whole arena
+        DOM_CALLER_MEM_AUTH = 1u << 1    // the GRANTING thread's AUTH_MEMORY answer
+    };
 
     // Resolve the domain a group of threads shares. privileged -> kernel; with a data
     // region -> a domain of its own; otherwise -> the default-user domain or an instance
@@ -90,16 +122,23 @@ namespace kickos
     //
     // The Rule 7 chokepoint for a SHARED grant: the PROSPECTIVE COMMITTED geometry (rounded
     // to arch_ram_region_size, R|W plus mem_attr) goes through grant_region_admissible
-    // before a slot is taken. caller_authorized is the GRANTING thread's AUTH_MEMORY answer
+    // before a slot is taken. DOM_CALLER_MEM_AUTH is the GRANTING thread's AUTH_MEMORY answer
     // and MUST come from the caller; it is never read from sched::current() here. A
     // per-THREAD grant is admitted at the spawn boundary instead.
     //
+    // `donor` is the domain the grant's memory was RESERVED IN, and it is what makes F10's
+    // handoff expressible: where a backend translates, the block is mapped into the new
+    // space at the SAME virtual address and recorded borrowed, so the new space unmaps it
+    // and frees nothing. Null where there is none (boot's own tasks, which ask for no
+    // grant); a grant whose donor holds no such reservation is refused.
+    //
     // Returns null on refusal and writes the reason to *err (never null; 0 on success):
-    //   KOS_EPERM   inadmissible grant: reserved-block hit, out-of-arena, or a memory type
-    //               this chip cannot honour
-    //   KOS_ENOMEM  the domain pool is full, or no address space could be built
-    Domain* domain_for(bool privileged, void* mem_base, size_t mem_size, uint32_t mem_attr,
-                       bool caller_authorized, int* err);
+    //   KOS_EPERM   inadmissible grant: reserved-block hit, out-of-arena, a memory type
+    //               this chip cannot honour, or a range the donor never reserved
+    //   KOS_ENOMEM  the domain pool is full, no address space could be built, or the new
+    //               space cannot take the range at the donor's address
+    Domain* domain_for(uint32_t caller, void* mem_base, size_t mem_size, uint32_t mem_attr,
+                       Domain const* donor, int* err);
 
     // Held by the TASK, not by each of its threads: task_ref, task_release and the explicit
     // task's creator hold (task.h) are the only callers outside domain_init.

@@ -57,7 +57,7 @@ int main(int, char**)
 {
     kos::print("[oot-mcu] hello from an out-of-tree bare-metal KickOS app\n");
 
-    kos::thread::spawn(blinker, nullptr, "blink", 10);
+    kos::thread::create(blinker, nullptr, "blink", 10);
 
     // Bare metal has nowhere to return to, so the root thread parks forever.
     kos_cap_t idle = KOS_CAP_NONE;

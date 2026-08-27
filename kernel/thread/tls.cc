@@ -6,7 +6,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/config/system.h>
 #include <kickos/debug.h>
-#include <kickos/libc/string.h>
+#include <kickos/kruntime.h>
 
 namespace kickos
 {
@@ -67,10 +67,16 @@ bool tls_stack_admissible(uintptr_t base, size_t size)
     {
         return true;
     }
-    // The block must BE one stride, not merely fit inside one: the thread pointer is SP
-    // masked down to KICKOS_TLS_STRIDE, so two blocks smaller than a stride sit inside the
-    // SAME one and mask to the same base. Arena blocks are strided by the allocator; a
-    // caller-supplied pointer is not.
+#if KICKOS_TLS_FROM_SP
+    // WHERE THE THREAD POINTER IS SP MASKED down to KICKOS_TLS_STRIDE the block must BE one
+    // stride and sit on one: two blocks smaller than a stride lie inside the SAME one and
+    // mask to the same base, so one thread would read another's thread-local storage. Arena
+    // blocks are strided by the allocator; a caller-supplied pointer is not.
+    //
+    // AN ARCH THAT SEATS THE REGISTER OWES NEITHER, and that is the whole of this guard: it
+    // computes the block base from the stack by SUBTRACTION, so any size at any
+    // KICKOS_STACK_ALIGN boundary carves correctly, which is what lets a stack be frames
+    // with a guard page rather than a power-of-two arena block (docs/design-m6-mmu.md F7).
     if ((base & (KICKOS_TLS_STRIDE - 1u)) != 0)
     {
         return false;
@@ -79,6 +85,14 @@ bool tls_stack_admissible(uintptr_t base, size_t size)
     {
         return false;
     }
+#else
+    if ((base & (KICKOS_STACK_ALIGN - 1u)) != 0)
+    {
+        return false;
+    }
+#endif
+    // BOTH ARMS OWE THIS ONE: the carve comes off the block, so a block that is not strictly
+    // larger than it leaves the thread no stack at all.
     return size > tls_block_size();
 }
 
@@ -92,10 +106,10 @@ void tls_seat(void* base)
     unsigned char* const p = static_cast<unsigned char*>(base) + KICKOS_ARCH_TLS_TCB;
     size_t const initialised = tdata_bytes();
     size_t const payload = tls_payload_bytes();
-    memcpy(p, __kickos_tdata_start, initialised);
+    kmemcpy(p, __kickos_tdata_start, initialised);
     // From the end of the template to the end of the span: any alignment gap the linker
     // inserted, then .tbss. Both must read as zero.
-    memset(p + initialised, 0, payload - initialised);
+    kmemset(p + initialised, 0, payload - initialised);
 }
 
 #else

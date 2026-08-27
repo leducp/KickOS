@@ -272,14 +272,14 @@ int main(int, char**)
     kos::print(g);
     kos::print("[c6intpri] 0x20001000 is Rule 7 reserved and root is unprivileged: no direct readback\n");
 
-    auto const drv = kos::thread::spawn(probe, reinterpret_cast<void*>(INTPRI_BASE),
-                                        "c6intpri", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                        /*mem=*/nullptr, /*mem_size=*/0,
-                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                        /*mmio=*/reinterpret_cast<void*>(INTPRI_BASE),
-                                        INTPRI_WINDOW,
-                                        /*caps=*/nullptr, /*cap_count=*/0,
-                                        KOS_AUTH_IRQ);
+    auto const drv = kos::thread::create(probe, reinterpret_cast<void*>(INTPRI_BASE),
+                                         "c6intpri", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                         /*mem=*/nullptr, /*mem_size=*/0,
+                                         /*stack=*/nullptr, /*stack_size=*/0,
+                                         /*mmio=*/reinterpret_cast<void*>(INTPRI_BASE),
+                                         INTPRI_WINDOW,
+                                         /*caps=*/nullptr, /*cap_count=*/0,
+                                         KOS_AUTH_IRQ);
     if (not drv.valid())
     {
         char e[80];

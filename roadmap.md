@@ -482,9 +482,9 @@ Unicore FIRST, and the SMP seams are cut here while they still compile to nothin
 EL1/EL0 and exception vectors, identity map and then an aspace ACTIVATE, GICv2/v3 for the UART and
 the timer PPI with the table keyed `(line, kind)` rather than a flat NVIC index, the Generic Timer as
 the tickless one-shot, `arch_ipi_send`/`arch_ipi_wait` as empty macros, a per-CPU struct reached
-through `TPIDR_EL1` (**already spent as the EL0 entry scratch by the landed port, so freeing it is
-part of the work rather than a given; `docs/design-m6-mmu.md` section 3 carries the resolution and
-why it shares T6's edit**), and an `arch_dcache_clean`/`invalidate` seam for DMA. **The aspace family names
+through `TPIDR_EL1` (**freed at M6.2's T6a: seating the kernel stack pointer before the initial
+frame is built made `SP_EL1` trustworthy on entry, so the EL0 entry spends no scratch register and
+the collision with this line is gone**), and an `arch_dcache_clean`/`invalidate` seam for DMA. **The aspace family names
 concepts and not mechanisms**, which is the seam's standing doctrine: no architecture's registers and
 no architecture's maintenance instruction appear in it. `docs/design-m6-mmu.md` carries the frozen
 family -- create, destroy, map, unmap, activate, a

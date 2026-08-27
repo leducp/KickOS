@@ -5,16 +5,19 @@
 // point (reschedule) and the context switch. The ready structure is policy-owned, never
 // this file's.
 
+#include <kickos/aspace.h>
 #include <kickos/sched.h>
 #include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/console_tx.h> // console_on_driver_death
 #include <kickos/kernel.h>
 #include <kickos/instance.h>
+#include <kickos/domain.h>
 #include <kickos/task.h>
 #include <kickos/time.h>
 #include <kickos/irqlock.h>
 #include <kickos/reent.h>
+#include <kickos/ustack.h>
 
 #include <kickos/sys/abi.h> // KOS_EXIT_CANCELLED
 
@@ -42,16 +45,28 @@ namespace kickos
             next->state = ThreadState::RUNNING;
             next->switch_count.store(next->switch_count.load() + 1u);
             kernel().policy->on_switch_in(next);
-#if !KICKOS_ARCH_SIM
-            // libc resolves errno through the word this seats, so the whole reentrant
-            // state follows the thread HERE. Seating it once at thread entry instead would
-            // leave the last entrant owning the one word for the rest of the run.
-            kickos_reent_seat(next->reent);
-#endif
             KICKOS_BENCH_SPAN(PH_SWITCH_BOOK, bm_book);
             KICKOS_BENCH_MARK(bm_mpu);
+            // The translation root and the region set are the same step of the switch: what
+            // the incoming thread may touch is installed here and nowhere else.
+            aspace_activate_for(next);
             next->mpu.apply();
             KICKOS_BENCH_SPAN(PH_MPU_APPLY, bm_mpu);
+#if !KICKOS_ARCH_SIM
+            // libc resolves errno through the word this seats, so the whole reentrant state
+            // follows the thread HERE. Seating it once at thread entry instead would leave
+            // the last entrant owning the one word for the rest of the run.
+            //
+            // AFTER mpu.apply, not before: both this and the prime it may do first write
+            // memory the INCOMING thread owns, so they belong on the far side of the target's
+            // memory view being installed.
+            if (next->reent_fresh)
+            {
+                next->reent_fresh = false;
+                reent_prime(next->reent);
+            }
+            reent_seat(next->reent);
+#endif
             // Must arm for the INCOMING thread before the jump: nothing else will program
             // its policy deadline (RR slice).
             ktime_rearm();
@@ -206,13 +221,19 @@ namespace kickos
             kernel().current = first;
             first->state = ThreadState::RUNNING;
             kernel().policy->on_switch_in(first);
-#if !KICKOS_ARCH_SIM
-            // switch_book is not on this path: nothing else seats the FIRST thread's state,
-            // and without this it would run on libc's process-wide one until its first
-            // switch away and back.
-            kickos_reent_seat(first->reent);
-#endif
+            aspace_activate_for(first);
             first->mpu.apply();
+#if !KICKOS_ARCH_SIM
+            // switch_book is not on this path: nothing else seats or primes the FIRST
+            // thread's state, and without this it would run on libc's process-wide one until
+            // its first switch away and back.
+            if (first->reent_fresh)
+            {
+                first->reent_fresh = false;
+                reent_prime(first->reent);
+            }
+            reent_seat(first->reent);
+#endif
             ktime_rearm();
             arch_start(&kernel().boot, &first->ctx);
         }
@@ -349,7 +370,7 @@ namespace kickos
             t->prio = p;
         }
 
-        void exit_current(int code)
+        void exit_current(int code, ExitCause cause)
         {
             Thread* const c = kernel().current;
 #if KICKOS_KERNEL_STACKS
@@ -360,14 +381,6 @@ namespace kickos
             // every thread's KICKOS_MIN_STACK_SIZE floor; a console chain off it cost 200
             // bytes of that floor for a message the panic's own catalogue entry carries.
             int const kslot = kernel().threads.index_of(c);
-#endif
-#if !KICKOS_ARCH_SIM
-            // The next occupant of this slot inherits the reent unless it is re-seeded.
-            int const rslot = kernel().threads.index_of(c);
-            if (rslot >= 0)
-            {
-                kernel().threads.reent_stale[rslot] = true;
-            }
 #endif
 #if KICKOS_KERNEL_STACKS
             if (kslot >= 0 and not kstack_canary_intact(kslot))
@@ -390,14 +403,45 @@ namespace kickos
                 c->dying = true;
                 // TASK-SCOPED DEATH (docs/design-task-layer.md section 6). Must precede
                 // task_release, which may free the slot and leave c->task a dangling name.
-                // THE KIND TRAVELS WITH THE DEATH: a slain member slays its peers, and the
-                // floor at CANCEL_KILL ends the group cooperatively for every other exit.
-                uint8_t group_kind = CANCEL_KILL;
-                if (c->cancel_kind > group_kind)
+                //
+                // A FAULT is the only death reaching the group from HERE, and it is the only
+                // one that has to: the faulting thread's siblings share the address space it
+                // was writing when it died, and no caller is watching a fault. Every other
+                // death that wants the group has a caller who could name it, and kos_task_kill
+                // and kos_task_slay each cancel every member themselves before this runs.
+                //
+                // COOPERATIVE, which is the kind a fault already carried before a plain spawn
+                // put siblings in the group: a peer keeps the window it holds long enough to
+                // quiet its device.
+                if (cause == EXIT_FAULTED)
                 {
-                    group_kind = c->cancel_kind;
+                    task_cancel_group(c->task, CANCEL_KILL);
                 }
-                task_cancel_group(c->task, group_kind);
+#if KICKOS_HAVE_ASPACE
+                // THE STACK GOES BACK BEFORE THE TASK REFERENCE DOES, and that ordering is
+                // the whole of it: task_release below can destroy the address space this
+                // stack is mapped into, and a space frees what it MAPS, so a release after
+                // it would hand the pool frames the space had already returned. Unbounded
+                // accumulation is the other half: a plain spawn is a thread of the caller's
+                // task, so waiting for the space would hold every dead sibling's frames for
+                // the life of the group.
+                //
+                // Safe here because the descent is on this thread's own KERNEL block: it is
+                // reached from the syscall dispatch or from a redirect stub, and nothing
+                // between here and the switch away touches the user stack. Cleared rather
+                // than left naming freed frames, so the fault reporter and the slot reclaim
+                // read "no stack" and not a dead address.
+                if (c->kstack_owned)
+                {
+                    ustack_free(domain_space(task_domain(c->task)),
+                                reinterpret_cast<uintptr_t>(c->stack_base), c->stack_size);
+                    c->stack_base = nullptr;
+                    c->stack_size = 0;
+                    // The reclaim-point harvest reads this flag to push an ARENA block onto
+                    // the free list, which is not what was just returned.
+                    c->kstack_owned = false;
+                }
+#endif
                 // BEFORE the sweep, not after: the sweep's endpoint arm EPIPE-wakes a
                 // supervisor that may respawn immediately, and the DEV-window exclusivity
                 // check (kernel.h) refuses while a live thread holds the window; `dying`
@@ -527,5 +571,5 @@ namespace kickos
 extern "C" void kickos_thread_slay_exit(void* arg)
 {
     (void)arg;
-    ::kickos::sched::exit_current(KOS_EXIT_CANCELLED);
+    ::kickos::sched::exit_current(KOS_EXIT_CANCELLED, ::kickos::sched::EXIT_RETURN);
 }

@@ -53,6 +53,7 @@
 
 #include <kickos/domain.h>
 #include <kickos/endpoint.h>
+#include <kickos/sched.h> // sched::ExitCause: run_exit_as picks the death scope
 #include <kickos/task.h>
 #include <kickos/thread.h>
 
@@ -189,6 +190,11 @@ namespace kickos
         void park_mutex_waiter(Thread* w, Mutex* m);
         // Runs the REAL sched::exit_current and returns once it parks.
         void run_exit(int code);
+        // The same exit as a CONTAINED FAULT rather than a return, which is the only thing
+        // exit_current cannot derive from the thread: a fault carries no cancel_kind, and the
+        // two scope the death differently (kernel/sched/sched.cc).
+        void run_exit_faulted(int code);
+        void run_exit_as(int code, sched::ExitCause cause);
 
         // Called INSIDE a death test's forked child, by KICKOS_EXPECT_PANIC only. gtest matches
         // the child's STDERR and karch_seam.cc's kpanic writes stdout, which it must keep doing:

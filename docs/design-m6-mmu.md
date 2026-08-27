@@ -26,6 +26,15 @@ page tables means this milestone.
 were implicit and are cheaper stated. A freeze is a decision the milestone may not reopen without
 saying so; the deliberately open questions are section 7.
 
+**A FREEZE MAY REST ONLY ON ANOTHER DECISION, NEVER ON AN OBSERVATION OF THE TREE.** T5c had to
+delete a premise from F2 and a consumer from F10 that were neither of them ever decided: both traced
+back to one sentence recording what `task_for` HAPPENED to do, written in the present tense, and
+load-bearing in a second freeze one step later. Nothing argued for the behaviour, so there was
+nothing to reverse -- but a reader meeting the change without this note will hunt for the reasoning
+behind the old position and find none. The shortcut is cheap to repeat: when a freeze needs a fact
+about the code, say whether that fact is a decision or a measurement, and cite the decision if there
+is one.
+
 ### F1. The kernel lives at a fixed high range in every address space
 
 A64 selects the translation table from the top bits of the virtual address: `TTBR1_EL1` translates
@@ -134,24 +143,46 @@ substance of section 3.1.
   the same frames.
   **What "mapping the same frames" means before M6.5 is answered in F10, not deferred to it.** One
   set of frames really is mapped in both spaces, at the same address, by a kernel-mediated handoff at
-  handover time, whether that is an explicit create or an implicit spawn -- because the driver bring-up idiom requires exactly that and would otherwise break.
+  handover time, whether that is an explicit create or a grant-carrying spawn -- because the driver
+  bring-up idiom requires exactly that and would otherwise break. **That idiom takes the EXPLICIT
+  path**, and this document had it the other way round: `user/src/driver_service.cc` allocates the
+  ring block, self-grants it, then hands it to `kos_task_create` and spawns every member INTO that
+  task with no memory grant of its own. So the real consumer of the handoff is a task create, and the
+  grant-carrying spawn is the secondary one.
   What M6.5 adds is a general way to express sharing; it does not introduce sharing.
   **The existing `domain_share` arm needs a decision, and calling it a sibling test would be wrong.**
-  It is two IMPLICIT spawns carrying the same reserved range, and resolving a spawn's task always
-  spends a fresh task slot, so those two were never siblings: the dedup is what made them share a
-  domain. After F2 they are two tasks, two spaces and two handoffs of one range -- and the arm STILL
-  PASSES, because F10 maps those frames at the same address in both. So it is KEPT and re-described as
+  It is two spawns carrying the same reserved range, and a spawn that carries one still takes a task
+  of its own (T5c), so those two are not siblings: the dedup is what made them share a domain. After
+  F2 they are two tasks, two spaces and two handoffs of one range -- and the arm STILL PASSES,
+  because F10 maps those frames at the same address in both. So it is KEPT and re-described as
   the two-handoff witness it becomes, which tests F10 better than it tested F2. A genuine
   sibling-sharing witness is a NEW arm -- one task create with two members, not a rewrite of this one
   -- and it belongs at T6, beside the process witness, since sibling visibility is only observable
   once two members have a mapped image to share.
+
+  **A PREMISE IS DELETED HERE RATHER THAN CORRECTED, and the difference matters to a reader.** This
+  paragraph used to say that resolving a spawn's task ALWAYS spends a fresh task slot, so an
+  implicit spawn is a new task too. **Nobody decided that, and the ALWAYS was not even true of the
+  tree it described**: `task_resolve` has always answered a spawn that NAMES a task, and that arm
+  spends no slot. The decision that does license an implicit task for a spawn naming none exists and
+  went uncited here -- `docs/design-task-layer.md` section 5.3, which rules that naming no task
+  creates one holding exactly that thread, and which explicitly leaves the dedup a separable
+  question. What the ALWAYS added on top of that decision was what `task_for` happened to do,
+  observed once and written in the present tense, and by F10 it was carrying an argument. There is
+  no reasoning behind it to look for and nothing here is being reversed: T5c states the intent the
+  tree never had (a plain spawn is `pthread_create`), and the sentence simply stops describing the
+  code. What survives of it is narrower and is stated above: a spawn that brings its OWN data grant
+  still takes a task of its own, because there is no domain of the caller's for that grant to land
+  in.
   **The harder half is the singleton BEFORE that dedup.** Every unprivileged task with no explicit
   grant is returned the one immortal default-user domain, which is a shared identity by construction
   and by comment. That is the COMMON case, not an edge: two ordinary tasks would still share one
   root after the dedup arm is gone, and F2 would still be false. On a translating build the
   default-user state becomes a TEMPLATE that each task instantiates, not an identity that each task
-  joins. T5 therefore owes a no-grant two-task witness beside its same-grant one, and the no-grant
-  case is the one that fails today.
+  joins. **T5 landed that**: `domain_for` claims a fresh slot for a no-grant unprivileged task on a
+  translating build and returns the singleton only on a region build, and the two-task witness is
+  registered in both flavours, same-grant and no-grant. The no-grant case was the one that failed
+  before it.
 
 ### F3. Frame-level capabilities are M6.5, and they GENERALISE sharing rather than introducing it
 
@@ -168,7 +199,7 @@ the MPU era's stand-in for a shared frame mapping. Sharing between two tasks doe
 importantly, **does not pause until M6.5**. F10 contracts the one sharing case the tree actually
 needs during M6.2: the reserve, write, hand-it-over idiom, where one set of frames is mapped in two
 spaces at the same address by a kernel-mediated handoff. F10 covers BOTH ways a range is handed over,
-an explicit task create and an implicit spawn carrying it, and above that freeze the distinction does
+an explicit task create and a grant-carrying spawn, and above that freeze the distinction does
 not show.
 
 So what M6.5 adds is GENERALITY, not the capability to share: a frame that any holder may map
@@ -183,15 +214,25 @@ the whole resolve-to-use span survives with or without address translation, wher
 on "no address translation exists" does not. M6 introduces translation, so it inherits the
 obligation to not widen that span.
 
-### F5. A translation fault kills the thread. There is no demand paging
+### F5. A translation fault kills the faulting thread's task. There is no demand paging
 
 An unmapped access is a fault the kernel reports and contains, exactly as an MPU denial is today:
 no swap, no overcommit, no copy-on-write, and no BACKING STORE decision in a fault -- the kernel
-never allocates memory, performs I/O, or extends a mapping there. This keeps the
+never allocates memory, performs I/O, or extends a mapping there. The
 M4.7.9 fault-isolation machinery -- `arch_fault_is_user_thread` and `arch_fault_redirect_to_exit`
-(`arch/include/kickos/arch/arch.h`) -- as the whole of the answer, with the syndrome register
+(`arch/include/kickos/arch/arch.h`) -- is what decides and contains it, with the syndrome register
 decoded into the existing report. Stating it matters because "the MMU arrived" is otherwise read as
 "demand paging arrived for free".
+
+**IT KILLS THE TASK AND NOT ONE THREAD, and that reading only became distinguishable at T5c.** A
+fault ends the faulting thread's whole group (`docs/design-task-layer.md` section 6), which read as
+"the thread" for as long as a plain spawn was alone in its task. Under a process model the group is
+the process, and containing a fault to one member of a shared address space would not contain it.
+
+**AND THAT MACHINERY IS NOT YET REACHED ON THIS BOARD.** `KICKOS_FAULT_ISOLATION` is gated on an
+arch list that does not include armv8a, so `qemu-arm64` links the fallback translation units and a
+fault PANICS instead of being contained. T8 owns that debt; nothing before it may be read as
+witnessing containment on this board.
 
 **What this freeze must NOT say is "no mapping is ever populated in a handler", and an earlier draft
 said exactly that.** On an architecture with a software-refilled TLB the refill exception is not an
@@ -252,20 +293,44 @@ carry an MPU backend and a translating backend at once. ARM is the same story re
 family already spans PMSAv7, PMSAv8 and no-MPU parts.
 
 **But adding a third memory-model arm is NOT the whole of it, and taking it for the whole is
-dangerous.** `KICKOS_HAVE_MPU` currently carries two meanings at once -- "this build has MPU
+dangerous.** `KICKOS_HAVE_MPU` carried two meanings at once -- "this build has MPU
 descriptors" and "memory protection is live" -- and an MMU board sets it to 0 on the first meaning
-while needing the second. With it at 0 today, grant admission degrades to the memory-type check
-alone, losing arena confinement and the reserved-block refusal, and the region encoder reports every
-region as enforced unconditionally. A self-grant can then add an arbitrary range that `user_range_ok`
+while needing the second. With it at 0, grant admission degraded to the memory-type check
+alone, losing arena confinement and the reserved-block refusal, and the region encoder reported every
+region as enforced unconditionally. A self-grant could then add an arbitrary range that `user_range_ok`
 trusts and the access helpers dereference PRIVILEGED. On an MPU-less board that is merely honest,
 there being no protection to breach; on a TRANSLATING board with a high-half kernel it is a
 user-reachable privileged access to a kernel address.
 
 So this freeze has a second half: **the two meanings are split before any MMU board configures.**
-Enforcement-live becomes its own fact that the MMU arm sets, Rule 7 and reserved-block admission stay
-active under it, and the self-grant path is either a real map operation or refused by name. T5 does
-not land before that split, and T8 owes a hostile witness: an authorized unprivileged caller
-self-granting a high-half kernel address must be REFUSED, not merely fail to fault.
+**THAT SPLIT LANDED.** Enforcement-live is `KICKOS_MEMORY_ENFORCED`, DERIVED in the top-level
+`CMakeLists.txt` from `KICKOS_HAVE_MPU` or `KICKOS_HAVE_ASPACE` rather than declared per board, so no
+board can state it and disagree with its own backend. Rule 7 and reserved-block admission are keyed on
+it, and T5 made the self-grant a refusal by name rather than a silent widening. **Its unfinished half
+is the pair of static-data hooks, and section 3.3 carries it**: those are still keyed on
+`KICKOS_HAVE_MPU`, so on this board they take the non-enforcing arm and admit app globals out of a
+linker whitelist. T8 still owes the hostile witness: an authorized unprivileged caller self-granting a
+kernel address must be REFUSED, not merely fail to fault.
+
+**BUT "a HIGH-HALF address" cannot be that witness on this board, and the reason is the layout rather
+than a flaw in the freeze.** `grant_region_admissible` (`kernel/grant/grant.cc`) confines every RAM
+grant to `[arch_ram_base(), arch_ram_base() + arch_ram_size())`, with no privileged waiver -- and on
+`qemu-arm64` that arena is ITSELF high-half. `virt_arm64.ld` carves it out of a `MEMORY` region based
+at `KICKOS_ARM64_VA_BASE`, so `__kickos_ram_start` carries the same high-half prefix as kernel text,
+and `arch_ram_alloc` hands out high-half addresses as its ordinary output. Admission contains no
+canonical-address or high-half test at all; the only high-half refusal in the tree is below the seam,
+inside the map body. So a high-half address INSIDE the arena is admitted BY DESIGN, and one outside it
+is refused for being OUT-OF-ARENA -- the right answer for a reason that says nothing about the kernel
+half. A witness worded against "high-half" therefore passes on the arena bound and proves nothing.
+
+So the witness names a specific kernel TEXT or DATA address OUTSIDE the arena. `__kickos_rom_start`
+and `_sdata` are the self-describing choices, both far below `__kickos_ram_start` on this layout and
+both aligned enough that the geometry arm cannot claim the refusal first. **The arena is high-half
+here until T6 moves it**, at which point the wording can tighten; T8 does not wait for that.
+**T5b.3 supplied the address without naming a linker symbol**, and a hostile witness should take the
+same one: `arch_mpu_probe_addr` is now keyed on `KICKOS_MEMORY_ENFORCED` and answers with a word in
+kernel-side `.bss`. App text cannot name a kernel-half symbol at all under this board's code model,
+so a witness worded against one is a witness that does not link.
 
 Consequence worth stating once: the A53 backend reports no enforceable region granule, which is
 the existing signal for byte-granular allocation, so the power-of-two and natural-alignment
@@ -302,16 +367,37 @@ stride-aligned, with the build refusing a non-power-of-two stack knob and the Re
 constraint as universal. So a translating backend inherits the tax through the generic path even
 though its own architecture does not need it.
 
-The reason it is generic is worth knowing, because it decides the fix. Only the M-profile backends are
-FORCED to derive the thread pointer by masking the stack pointer, that ISA offering no per-thread
-register. The three arches that DO have one currently mask anyway, deriving the pointer from the
-stack rather than seating it from the thread's own block. That is a chosen uniformity, not a
-requirement -- and it means A64, which has a thread-pointer register, escapes the tax only if it
-SEATS that register from the thread control block instead of copying the masking idiom. Doing so is
-what makes the fragmentation win real; copying the idiom would keep power-of-two stacks and let T6
-pass while the claimed target state quietly did not hold. The universal statement in the Reference
-gets a per-mechanism qualification, and the non-power-of-two stack witness lands at T6,
-which is where a stack stops being an arena block and becomes frames with a guard page.
+The reason it is generic is worth knowing, because it decides the fix -- and the fix this paragraph
+named was already made, while the tax it was aimed at lives somewhere else. Only the M-profile
+backends are FORCED to derive the thread pointer by masking the stack pointer, that ISA offering no
+per-thread register; RISC-V and RX mask anyway, deriving it from the stack rather than from the
+thread's own block, which is a chosen uniformity and not a requirement.
+
+**A64 never copied the idiom, so the conditional this paragraph set had no unmet half.** It SEATS its
+thread-pointer register from the context, and the context derives that value from the block by
+SUBTRACTION rather than by a mask -- deliberately, so the stack's low bound owes no alignment past the
+ABI's sixteen bytes (`arch/arm64/armv8a/arch_armv8a.cc`, and the field's own comment in that arch's
+`context.h`). "Escapes the tax only if it SEATS that register" was an observation about the other
+three arches turned into a condition on this one; there was never a masking A64 to argue out of.
+
+**The tax was GENERIC, in two places that knew nothing about the arch, and T6.1 qualified both.**
+`tls_stack_admissible` (`kernel/thread/tls.cc`) refused any block that was not stride-ALIGNED and not
+EXACTLY one stride, on every backend; and the top-level `CMakeLists.txt` refused at configure time any
+`KICKOS_USER_STACK_SIZE` or `KICKOS_ROOT_STACK_SIZE` that was not already a power of two whenever
+`KICKOS_TLS` was on. Both now key on the MECHANISM rather than on the feature.
+
+*The mechanism is an arch fact and is declared as one.* `ARCH_TLS_FROM_SP` (`arch/Kconfig`) is
+selected by armv6m, armv7m, rv32imac, rxv3 and lx6 and NOT by armv8a, and reaches CMake and C as
+`KICKOS_TLS_FROM_SP`. Where it is set the two refusals stand unchanged; where it is clear
+`tls_stack_admissible` asks only for the ABI's alignment, both arms still requiring a block strictly
+larger than the carve. The stride is still DERIVED on every board, the link-time assert that the
+thread-local template fits inside one reading it.
+
+*The witness is the whole board and not an arm.* `qemu-arm64` states 12288 for a pool stack and 20480
+for root's -- three pages and five, neither a power of two, neither the same stride -- and every image
+and every selftest arm runs on them. Beside it, `tests/unit/tlscarve` gained a THIRD target,
+`tls_carve_seat`, one configuration clause apart from the other two: same fabrication, same stride,
+same reserve, `TLSCARVE_FROM_SP` 0, so what the two report is attributable to that clause.
 
 **What the granule does remove, and what it does not.** The power-of-two rule taxes TWO axes and the
 granule retires one of them. Rounding: a 17 KiB request costs 32 KiB under one MPU descriptor and 20 KiB in
@@ -497,12 +583,14 @@ paid for the strengthening:
 **That last clause is load-bearing and it is what keeps the ABI intact.** The privileged-write seam
 promises `-KOS_EPERM` when the caller does not hold a device window, and two selftest arms registered
 on a board -- not sim-only -- assert exactly that from a thread other than the holder. Both would
-break under task-wide mapping, and the reason is precise: possession is currently DERIVED from the
-caller's region set, so widening the mapping silently widens possession with it. **So possession must
-become explicit thread-local authority rather than a walk over what the caller can reach.** That is a
-real change, it is a precondition of T5 rather than a consequence of it, and once made it preserves
-both the ABI promise and the two arms unchanged on every backend. Conflating authority with
-reachability is the actual defect here; the MMU only exposes it.
+break under task-wide mapping, and the reason was precise: possession WAS derived from the caller's
+region set, so widening the mapping would have silently widened possession with it. **Possession is
+now explicit thread-local authority rather than a walk over what the caller can reach**, landed at
+T5 as the precondition this paragraph called for: the answer comes from the thread's own possession
+record, seated before the region composition that maps the window, and never from what the thread can
+reach (`kernel/thread/thread.cc`, `kernel/syscall/syscall_internal.h`). The ABI promise and the two
+arms are unchanged on every backend. Conflating authority with reachability was the actual defect;
+the MMU only exposed it.
 
 **What has to be re-stated, and the house already has the wording for it.** The Reference carries a
 precedent: the invariant covering the thread-local storage carve says in as many words that it is
@@ -550,15 +638,24 @@ new task's space at the SAME virtual address**, and root's own mapping persists 
 one.
 
 **And it applies to BOTH consumers, which is easy to miss because only one of them is a create call.**
-The explicit path hands a reserved range to a task create. The IMPLICIT path is older and is the one
-the allocation header actually names -- a reserved range handed to a plain spawn as that thread's
-domain data region -- and resolving a spawn's task always spends a fresh task slot, so an implicit
-spawn is a new task too. Today the dedup is what let two such spawns land on one domain; once F2
-deletes it, an implicit spawn carrying a reserved range IS this handoff, arriving through a different
-syscall. Contracting only the create call would leave every implicit-task spawn without a mapping,
-which is most of the spawns in the tree. Two live mappings of one block is not a new state: the task-create contract already warns that
+The explicit path hands a reserved range to a task create. The other path is older and is the one
+the allocation header actually names -- a reserved range handed to a SPAWN as that thread's domain
+data region. A spawn carrying a grant takes a task of its own (T5c), so that range crosses into a
+space the caller does not hold, and it IS this handoff arriving through a different syscall. Today
+the dedup is what let two such spawns land on one domain; once F2 deletes it, each is its own space
+and each needs the mapping. Two live mappings of one block is not a new state: the task-create contract already warns that
 mismatched memory-type flags leave exactly that, and that rule becomes the coherence rule for the
 pair.
+
+**A CONSUMER NAMED HERE NEVER EXISTED AS AN INTENT, and it goes with F2's deleted premise rather
+than being deferred or narrowed.** An earlier reading of this clause covered every implicit-task
+spawn, "which is most of the spawns in the tree" -- and that reach was inferred one step downstream
+from F2's observation that resolving a spawn's task always spends a fresh task slot. It was never a
+decision about handoff, and with the observation gone there is nothing left of it: a GRANT-FREE
+spawn is a thread of the caller's task, sharing the caller's space, so there is no second space for
+a handoff to reach and nothing to contract. The handoff's consumers are the task create and the
+grant-carrying spawn, both of which really do open a space the donor does not hold. The address and
+the refusal freeze unchanged; only the count of callers does.
 
 **WHO FREES THE FRAMES, decided at T4 because destroy forced the question.** An address space frees
 what it MAPS, and this handoff deliberately maps one block into two spaces, so the second space to be
@@ -612,9 +709,17 @@ M6.2. M6.5 generalises it; it does not introduce it.
     correct caller; the thing being asked is not.
   - **The natural-alignment refusal does not arise.** The header already parenthesises that arm as
     holding "under an MPU", and a page-granular reservation cannot trip it.
-  - **The region-budget refusal evaporates.** The bound is a count of hardware descriptors, and
-    section 3.1 has already established that ceiling has no analogue under paging, so exhaustion
-    becomes a frame question or does not occur.
+  - **The region-budget refusal RE-KEYS onto the range list's own bound.** It was written here as
+    EVAPORATING, which was inferred one step downstream from section 3.1's descriptor argument rather
+    than decided, and 3.1 no longer supports it. Two quantities were collapsed into one: how much
+    memory a domain can DESCRIBE has no analogue under paging, and how many ranges it may NAME is a
+    property of the validation list and survives paging untouched. **T6.2 moved the admission all the
+    way onto the range list and took the region array out of this path**, which the clause above
+    still allowed either way: a second, ROUNDED entry beside an exact one is two answers to one
+    question, and the array is per-THREAD where the mapping is task-wide, so a sibling reaching a
+    self-granted block would have been reading the range list regardless. The `-KOS_ENOMEM` therefore
+    comes from `KICKOS_ASPACE_RANGES`, and because ALLOCATION is what spends a slot there, it is the
+    allocation that reports it -- as a NULL, the pointer return having no room for a code.
 
 **Ownership follows F9 and is worth spelling out here too**, since this is the syscall pair where a
 reader is most likely to assume otherwise: a successful self-grant maps into the TASK's address space
@@ -655,21 +760,25 @@ A64 also has a thread pointer, `TPIDR_EL0`, readable by unprivileged code. So th
 costs a register write at switch-in, where every existing arch needed something bespoke -- the
 kernel-provided helper on M-profile, an emulated-TLS override on RX.
 
-**`TPIDR_EL1` is the per-core pointer M7 wants, and this port has ALREADY SPENT IT**, which the
-tri-arch spike caught and which `roadmap.md` still states as a plan. `ENTER_FROM_EL0`
-(`arch/arm64/armv8a/switch.S`) uses it as the entry scratch, and its own comment names the collision
-while creating it. The two intentions are circular rather than merely conflicting: the scratch is
-needed only because `SP_EL1` cannot be trusted on entry, and `SP_EL1` cannot be trusted only because
-`thread_create` seats `ctx.kernel_sp` AFTER `arch_context_init` returns, so a new thread's first trap
-arrives with `SP_EL1` still on its user stack.
+**`TPIDR_EL1` WAS spent as the EL0 entry scratch, and T6a released it.** This paragraph asserted the
+collision in the present tense long enough to stop a reader starting T6 three times, which is why it
+is corrected here first: section 2 is where an implementer starting that step reads.
 
-So the resolution is to seat the kernel stack pointer inside `arch_context_init`, which makes
-`SP_EL1` trustworthy on entry and frees the register. **That is the same edit T6 already owes** for a
-different reason: T6 must stop building a thread's privileged return state on the thread's own stack,
-and both changes are about `arch_context_init` establishing trusted state before the first trap
-rather than after it. Doing them together is cheaper than doing either alone, and neither is M7 work.
-One further M7 note while it is in view: `kickos_armv8a_kernel_sp` is a single global, so it becomes
-per-core at the same time the pointer does.
+The collision the tri-arch spike caught was real, and circular rather than merely conflicting.
+`ENTER_FROM_EL0` (`arch/arm64/armv8a/switch.S`) needed a scratch register only because `SP_EL1` could
+not be trusted on entry, and `SP_EL1` could not be trusted only because `thread_create` seated
+`ctx.kernel_sp` AFTER `arch_context_init` returned, so a new thread's first trap arrived with `SP_EL1`
+still on its user stack. One edit answered both ends of that.
+
+T6a made it. `kernel_sp` is seated by `thread_create` BEFORE `arch_context_init`, which READS it to
+place an unprivileged thread's first frame, and the field's own comment in that arch's `context.h`
+records the ordering; `ENTER_FROM_EL0` seats nothing and spends no scratch, and the comment above the
+macro states the invariant and states that this is what releases the register. The reporting slots in
+`vectors.S` still seat `SP_EL1` from `kickos_armv8a_kernel_sp`, deliberately: a slot this port never
+enters proves nothing about the register.
+
+So M7 inherits a FREE `TPIDR_EL1`. One note while it is in view: `kickos_armv8a_kernel_sp` is a single
+global and becomes per-core when the pointer does.
 
 ---
 
@@ -693,11 +802,20 @@ today being the region-set apply, which an address-space activation has to reach
 And "three rewrites" groups subsystems by what changes about them; it is not a count of files or of
 call sites, and the sites that must change outnumber the headings.
 
-### 3.1 The region array becomes an opaque address space
+### 3.1 The region array gains an address space beside it
 
 `domain_region_count` / `domain_region_at` (`kernel/domain/domain.cc`) are already the only
 sanctioned readers, and `kernel/thread/thread.cc` composes a thread's set through them. That was
 the spike's QW-1 accessor half and it is what makes the representation swap local.
+
+**THE SWAP DID NOT HAPPEN, and this heading claimed it would.** T5 added `space` BESIDE `regions[]`
+and `region_count` rather than behind them: `kernel/include/kickos/domain.h` still declares both, and
+its own header comment is the accurate version -- on a translating backend the region set is
+validation data beside the space rather than the enforcement. `domain_for` still writes
+`regions[0]` directly. Nothing argued for hiding the array; the old heading was a description of an
+intended end state written as though it had a decision behind it, and the knock-on is F10's
+region-budget bullet, corrected there. What IS true is the narrower thing the accessors buy: the
+readers are enumerable, so the array can be retired later without a hunt.
 
 **The dedup goes, and it does not come back in this shape.** `domain_for`
 (`kernel/domain/domain.cc`) reuses a live unprivileged domain when its single region matches on
@@ -724,14 +842,28 @@ full pool are the two answers, and a refusal must still leave no half-built doma
 paging means no frame leaked and no partial mapping installed. A transaction, exactly as a spawn
 became one in M5.2.1.
 
-**Nor does a domain currently get destroyed, which F2's "freed at the last release" quietly assumes.**
-Release decrements a refcount and does nothing else; there is no destroy path anywhere in the tree,
-and a slot is reused by scanning for a zero refcount and reinitialising it in place. Under an MPU
-that is complete, the region set being pure description. Under paging the same slot reuse strands a
+**A domain had no destroy path, which F2's "freed at the last release" quietly assumed away -- and
+T4 and T5 built one.** This paragraph used to say there was no destroy path anywhere in the tree,
+which was a MEASUREMENT and not a position: release decremented a refcount and did nothing else, and
+a slot was reused by scanning for a zero refcount and reinitialising it in place. Under an MPU that
+is complete, the region set being pure description. Under paging the same slot reuse strands a
 page-table root, its tables, and every data and stack frame the process held -- so a build can pass
-the mapping and process witnesses while leaking every process that exits. Destruction is therefore
-part of this rewrite and not an afterthought: an aspace destroy contract, ordered invalidation before
-the root or identifier is reused, and a complete unwind on every failure path.
+the mapping and process witnesses while leaking every process that exits.
+
+**What the tree has now**, so a reader does not re-derive it: `domain_release`
+(`kernel/domain/domain.cc`) calls `aspace_release` (`kernel/mem/aspace.cc`) at the last release, and
+that call re-activates the BOOT space when the space being destroyed is the running one, unmaps the
+extents the space only BORROWED from the image, then hands the rest to `arch_aspace_destroy`, whose
+walk frees every still-valid leaf output rather than only the tables. `claim_slot` reaches the same
+call on its two unwind arms and on a free slot still holding a stale space. The frame pool counts
+REFUSED frees and two selftest arms require that count to be zero, so a double free fails a test
+instead of being swallowed.
+
+What is not built is the ordered invalidation being witnessed, the unwind arms being witnessed, and
+any frame a process allocated FOR ITSELF -- section 3.4's per-process copy does not exist, the
+granted-range list has no production caller and the self-grant installs no mapping, so every frame a
+space maps today came from the image. T8b is scoped against that residue and not against a missing
+destroy.
 
 Worth stating because it is easy to assume otherwise: **there is no address-space identifier concept
 in the tree at all today.** F1's remark that recycling is not a design problem is about the hardware
@@ -750,9 +882,19 @@ virtual the same number, so every consumer written during stage 1 works whether 
 allocator exists -- which is precisely how an identity map becomes the allocator by accident.
 `roadmap.md` already forbids it; section 5 makes it a stage boundary with its own gate.
 
-**And there is a public ABI in the way.** The RAM-allocation syscall returns the arena bump pointer verbatim and grants nothing; the
-self-grant syscall then takes that same number as a PHYSICAL base and admits it by rounded size and
-natural alignment. The number is load-bearing in THREE places, not one: the self-grant, the domain
+**And there is a public ABI in the way, and the two halves of it DISAGREE ALREADY.** The
+RAM-allocation syscall returns the arena bump pointer verbatim and grants nothing; the self-grant
+syscall then takes that same number as a PHYSICAL base and admits it by rounded size and natural
+alignment. **What "verbatim" hides is that the header ahead of it already promises PAGE ALIGNMENT**
+(`user/include/kickos/sys.h`), and the allocator does not keep that promise here. `arch_ram_alloc`
+aligns to `arch_ram_region_align`, which on a backend seating no descriptors is sixteen bytes floored
+by the thread-pointer stride, so any request smaller than a page comes back sixteen-byte aligned. The
+page-aligned promise is therefore not something F10 introduces: it is in the shipped header ALREADY,
+and the first allocation only looks compliant because the arena's own base happens to sit on a page
+boundary. A defect in the pair rather than a decision to revisit, and F10 is where the repaired
+meaning is frozen.
+
+The number is load-bearing in THREE places, not one: the self-grant, the domain
 region a spawn derives from it, and the app's own dereference of it. The driver framework's ring
 block goes through exactly this pair, so it is not a test-only path, and the contract is written down
 in the public headers.
@@ -781,19 +923,48 @@ virtual ranges keeps validation at the cost it has today and leaves the page tab
 enforcement rather than the oracle. Walking the tables on every syscall argument would put a
 multi-level memory traversal on the entry path to buy an answer the kernel already knows.
 
-**And that list must be SEEDED with the process image, or ordinary code stops working.** Today the two
-static-data hooks are what admit a buffer or an out-pointer living in app globals, and under an
-enforcing backend they already return false because the region set is the whole oracle. A translating
-backend keeps them false -- their surviving branch compares against link-time PHYSICAL extents, which
-name nothing in a process's low half -- so what admits app globals has to be the range list itself,
-seeded at T6 with the mapped text as read-execute and the copied static data as read-write. Miss that
-and every syscall taking a pointer into a global fails while the memory is perfectly valid and
-mapped, which reads as a validation bug and is a seeding bug. T6 therefore owes two more arms: a
-syscall whose INPUT buffer is a global, and one whose OUT-POINTER is a global.
+**And that list must be SEEDED with the process image, or ordinary code stops working.** The open
+decision this section used to carry is CLOSED, and it closed the way the section assumed rather than
+the way the tree happened to work. What the tree did was branch `arch_user_text_readable` and
+`arch_user_data_writable` (`arch/common/arch_ram_common.cc`) on `KICKOS_HAVE_MPU` rather than on
+enforcement, which on this board resolves 0 while `KICKOS_MEMORY_ENFORCED` is 1: the other arm ran,
+and that arm is a WHITELIST of the chip's link-time extents plus, since T5b.1, a second weakly
+declared pair covering the app's own low window. So app globals were admitted by a linker whitelist on
+an enforcing translating board, and the two arms this section assigns to T6 would have passed with no
+range list of any kind.
 
-Worth noting where the linker window comes from, because it is the same conflation again: the
-app-data window is carved under the descriptors-exist gate, so F6's split is what makes it available
-to a translating build at all.
+**Both hooks are now keyed on `KICKOS_MEMORY_ENFORCED`, and the reasoning is the one already spent one
+level down.** A whitelist answers about an ADDRESS, and an address cannot express a per-space
+reservation: a range F10 reserves in task A is not valid in task B. Two oracles for one question is a
+second truth, so the real authority is made TOTAL instead. It admits a whole linked window rather
+than a process's own mapped ranges, which is the same over-admission F6 removed for descriptors. The
+re-key changes ONE board: an MPU board answered false already and a non-enforcing board still
+whitelists, both because enforcement and descriptors agree there.
+
+**Where the seeding lives, and it is not on the arch side.** The list is a member of `Domain` beside
+the space it describes, seeded by `aspace_image_seed` (`kernel/mem/aspace.cc`) with the same two
+extents and the same rights it maps -- text read-execute, static data read-write -- and reserved then
+granted, so nothing enters it that no reservation named. `user_range_ok`
+(`kernel/syscall/syscall_mem.cc`) consults it BESIDE the region-set walk rather than in place of it:
+the region array is what every grant path records and the only oracle a descriptor board has, so the
+walk stays live on both, and the list answers for what no region array on this backend describes.
+`arch_mpu_probe_addr` stays keyed on `KICKOS_HAVE_MPU`, that one being a question about descriptors.
+
+**What the two arms now witness, measured rather than argued.** `writable_global` (an out-pointer in
+an app global) and `readable_global` (a read buffer in app rodata) are both RED with the seeding
+removed and both green with it. Removing only the DATA range leaves `readable_global` green and
+`writable_global` red, so each arm is pinned to its own seeded extent. Removing only the TEXT range
+takes five arms down and the image does not survive to reach either of them, which is a fact about how
+load-bearing app rodata is to the suite's own scaffolding rather than a sharper isolation.
+`readable_global` runs from ROOT and not from a worker deliberately: root is unprivileged, a worker is
+a sibling in root's task holding root's space, so the worker would add nothing while making a refusal
+present as a failed spawn.
+
+Where the linker window comes from was stated wrongly here too, and the same way. The app-data window
+is not "carved under the descriptors-exist gate": `virt_arm64.ld` says in as many words that the app
+window is a LINK split and not a grant -- four output sections in `MEMORY` regions of their own, with
+no gate over them -- and F6's split has nothing to do with its being available to a translating
+build.
 
 **A range contiguous in virtual memory is not contiguous in physical memory.** This is the new
 invariant, and it applies to all three access helpers: a validated user range may span pages
@@ -819,13 +990,33 @@ and user/user forms, and every call site passes what it already holds.
 
 **And the funnel has a leak that must be closed FIRST, because the whole plan rests on it.** The
 tree's own comment says every kernel-side user-pointer dereference funnels through these helpers, and
-that is not true today. Two endpoint sites hand a PARKED peer's address to the kernel/user helpers,
-which resolve against the RUNNING space -- the payload delivery and the receive-info write -- and
-both already have the peer thread in hand, so the owner is available and simply not passed. One
-console syscall dereferences a user pointer directly, outside the funnel entirely, after validating
-it. Under one physical space all three are correct; under F2 the first two silently read or write the
-wrong process and the third has no seam to fix. Closing the leak is a precondition of T7 and not a
-tidy-up after it.
+that is not true today. **"Two endpoint sites" was a MISCOUNT, not a position since revised.**
+Nobody decided the leak was a pair; the sentence was written from a reading that stopped inside
+`syscall_ipc.cc`, and the site it missed is the one no arm on this board covers. The enumeration
+replaces the count. FIVE call sites, all in `kernel/syscall/`, hand a PARKED peer's address to a
+helper that resolves against the RUNNING space:
+
+  - `cap_console_deliver` (`kernel/syscall/syscall_ipc.cc`) hands the popped receiver's parked
+    buffer to `kaccess_to_user`. This is the payload delivery.
+  - `write_recv_info` is reached with a peer's parked out-pointer from three sites in that same
+    file: `endpoint_send`'s parked-receiver arm, `cap_console_deliver`, and `endpoint_call`'s
+    parked-receiver arm.
+  - and from one site in `kernel/syscall/syscall_ipc_fast.cc`, inside `kickos_ipc_fastpath`. This
+    document never named that file, and it is the site with no arm behind it on this board: the
+    fastpath is not implemented on this arch, so `call_reg_fastpath` exercises the other backends'
+    copy of this bug and none of it here.
+
+All five already hold the peer thread, so the owner is available and simply not passed.
+
+**Which is why the fix is not "change the body".** `write_recv_info` is ONE body, in
+`kernel/syscall/syscall_mem.cc`, and two of its callers -- both arms of `endpoint_recv` -- pass the
+RUNNING caller's own out-pointer and are correct exactly as they stand. The owner therefore arrives
+per CALLER, which makes this five edits at four functions rather than one edit at a helper.
+
+One console syscall additionally dereferences a user pointer directly, outside the funnel entirely,
+after validating it, and its own comment names the exposure. Under one physical space every one of
+these is correct; under F2 the five silently read or write the wrong process and the console site has
+no seam to fix. Closing the leak is a precondition of T7 and not a tidy-up after it.
 
 `ep_copy` is the hard one and its own comment already says so: it is the endpoint payload move,
 both ends user memory, one of them belonging to a PARKED peer. Today the waker reaches the peer's
@@ -853,16 +1044,72 @@ first user of "two spaces, one frame".
 writing one physical page of globals are one process with a memory bug. So per-process static data
 is a COPY: frames allocated per space, initialised from the image's initialised-data contents, and
 the zero-initialised span cleared. This is the first thing in the port that a linked-in image does
-not simply provide, and the amount of it is knowable at build time from the same window the MPU
-backends already carve for app data.
+not simply provide, and the amount of it is knowable at build time from the app's own low window.
 
-**Thread stacks stop being arena blocks and become mappings.** Today an unprivileged thread's stack
-is an `arch_ram_alloc` block shaped so one descriptor covers it, and it is composed into the
-thread's region set at switch-in. In a process it is frames mapped at a chosen virtual address in
-a DISTINCT virtual range in its task's shared address space per F9, with no power-of-two size and no
-natural alignment -- and, since placement
-is free, with an unmapped page below it, so a stack overrun faults instead of reaching a neighbour.
-That guard page is free here and is worth taking on the first pass rather than the second.
+**THE COPY LANDED AT T6.2 AND ROOT IS THE ONE SPACE THAT DOES NOT GET ONE, which is forced rather
+than chosen.** `kernel/mem/aspace.cc` maps the app's text extent read-execute onto the image's own
+pages in every space; the data extent goes to a frame-pool run per space, copied a page at a time
+from the space that holds the image's own data pages. **That space is root's, and it has to be:** the
+app's constructors run in `root_entry`, in a thread, after root's space exists (`kmain.cc`), so a
+root holding a copy would construct ITS copy and leave the image pages carrying link-time bytes for
+every process created afterwards. Making root the template also settles the two consequences the copy
+was going to have, without a second mechanism for either -- `kickos_init_args` is written into
+app-side `.bss` before any space exists and is therefore in the template, and every ctor's output is
+in it too, because the copy is taken from what root has, not from what the linker laid down.
+
+*A space now knows which of its mappings it OWNS.* The range list carries two flags per entry,
+BORROWED and IMAGE (`kernel/include/kickos/vrange.h`), and `aspace_release` walks it: a borrowed
+range is unmapped and no frame of it is freed, a reservation that was never mapped has its frames
+handed back by hand, and everything else is left for destroy, which frees what the space MAPS. That
+replaces the two hard-coded extents release used to unmap, and it is what makes F10's handoff
+expressible: the block the donor reserved is BORROWED in the receiving space.
+
+**Thread stacks stopped being arena blocks and became mappings, and that LANDED at T6.1.** An
+unprivileged thread's stack was an `arch_ram_alloc` block shaped so one descriptor covers it. In a
+process it is frames mapped in its task's shared address space per F9, with no power-of-two size and
+no natural alignment, and with an unmapped page below it so an overrun faults instead of reaching a
+neighbour. `kernel/mem/ustack.cc` is the whole of it, and `ustack.h` carries the contract. It still
+goes into the thread's region set at switch-in, which is what admits a stack pointer at the syscall
+entry on both backends.
+
+*The address is the frame's own output address, and that is a decision.* Placement is free, so the
+cheapest free choice was taken: the run's physical base IS its virtual base, exactly as it already is
+for the image. Three things fall out of it. The kernel can write a stack whose space is not the
+running one -- a spawn seats the TLS block before the child's first switch-in -- by asking the frame
+pool for the same bytes through the physical map, so no per-page translation stands in front of a
+memcpy and no second address is carried in the TCB. The range is globally unique, so the guard page
+below it cannot be another space's mapping. And nothing needs a per-space virtual-address allocator,
+which F10 owns and T6.2 lands.
+
+*The guard page is charged to the FRAME POOL and not to virtual space alone.* The allocation takes
+`pages + 1` consecutive frames and maps all but the lowest, so the page below a stack belongs to that
+stack and no later allocation can map it. F7 budgets one granule per thread for exactly this. That is
+what `FrameAllocator::alloc_run` exists for, and its refusal is by RUN rather than by count: it sweeps
+the whole bitmap rather than starting from the single-allocation hint, so a fragmented pool refuses a
+run while the free count still allows one.
+
+*The release is at thread EXIT and deliberately not at slot reclaim.* `sched::exit_current` frees the
+stack inside its first locked block, BEFORE the task reference is dropped: a space frees what it maps,
+and `task_release` can destroy the space, so a later release would hand the pool frames the space had
+already returned. The other half is accumulation -- a plain spawn is a thread of the caller's task, so
+waiting for the space would hold every dead sibling's frames for the life of the group. It is safe
+there because the descent runs on the thread's own kernel block. An unmap that REFUSES frees only the
+guard frame and leaves the rest to destroy, that being the one owner left.
+
+*Root's stack comes out of the same allocator, which forces one ordering.* `kmain` resolves root's
+task explicitly before allocating, because the frames go into root's own space and that space does not
+exist until its domain does -- and it does so AFTER idle is built, `task_for` taking no reference, so
+an uncommitted task slot is still free and idle's own resolve would otherwise hand root's slot to the
+kernel domain. Idle keeps an arena block: it is privileged, and the kernel's half is mapped in every
+space by construction.
+
+*A caller-supplied stack re-keyed at T6.2 and is no longer arena-confined.* Where a backend
+translates, the block must be a range the space the CHILD runs in already maps and that is not the
+process image, which is exactly what F10's allocator hands out; the arena predicate does not run
+there, describing a bump arena that holds no reservation. It still gets no guard page. **And the
+kernel stopped asking the frame pool who owns a stack:** F10's allocator hands the app frames out of
+that same pool, so a caller-supplied stack answers `ustack_kptr` exactly as a kernel-allocated one
+does, and `Thread::kstack_owned` is what the release paths read instead.
 
 **Kernel objects do not move.** Threads, domains, endpoints and the kernel stacks stay where they
 are, in kernel memory reached through the high half, and the object pools in
@@ -883,8 +1130,14 @@ first-thread start, immediately before control leaves for the first context; and
 mid-syscall, which widens the running thread's own set and makes it effective without a switch.
 
 **Only the first two are ACTIVATIONS.** The third is a MAP of the space already active, never a root
-switch -- and saying so narrows this seam usefully: activate has two callers, map has three, and
-conflating them would have had the self-grant reloading a root it never left.
+switch, and conflating the two would have had the self-grant reloading a root it never left.
+**The clause that used to close this sentence -- "activate has two callers, map has three" --
+corresponded to nothing countable and is DELETED rather than corrected.** Three was the number of
+region-set install sites in the paragraph above, of which exactly one is a map; nobody counted map's
+callers, the figure was carried across the sentence. A call-site count is not what this seam freezes
+in any case, and today's is already different: map is reached from the image seed and from the
+selftest scaffolding, and activate from the switch path, from the boot-space restore inside
+`aspace_release`, and from that same scaffolding.
 
 **There is no `flush` in this family, and removing it is the single most important thing in this
 section.** A flush call names a TLB operation, which is a mechanism, and it hands the KERNEL the
@@ -986,6 +1239,20 @@ place and that is a finding about this design rather than about the board.
 ---
 
 ## 5. The plan: steps and expected results
+
+**BEFORE ADDING A PRESENT-TENSE SENTENCE ABOUT THE TREE TO THIS DOCUMENT, READ THIS.** Section 1
+states the rule for freezes; it is the same rule and this is the general form of it. A description of
+what the code does today is indistinguishable, one paragraph later, from a decision -- and a step then
+reasons FROM it. This document has now had ten such sentences corrected, across the freezes, the
+rewrite descriptions and the step text alike, and not one of them was ever chosen by anybody: each
+was a measurement that outlived the tree it measured, and several cost a step.
+
+So a sentence about the tree either carries a STEP STAMP (`landed at T5`, `still true at T5b.1`) or it
+cites the decision behind it. If it can do neither, it is an observation, and **an observation may not
+be a premise**: nothing downstream may derive an obligation, a witness or a refusal from it. When one
+turns out to be wrong, say which kind it was -- a decision being revised, or a premise being removed
+because nobody made it -- because a reader who cannot tell will go looking for reasoning that was
+never there.
 
 Every step carries an identifier so a finding can name one. A step is DONE when its expected result
 is observable, and where the only honest result is "it builds" that is what the step says rather
@@ -1141,16 +1408,28 @@ lying, and T8 is scored against this list.
 
 **THE SKIP LIST, KEPT, and it is EMPTY.** S9 says to read it and warns that a short list means
 an arm is lying, so it was checked against another board rather than accepted: `qemu-flat` on
-armv7m, also non-enforcing, also reports zero skips over the same 101 arms that board ran at M6.1. On a flat board the
+armv7m, also non-enforcing, also reports zero skips. On a flat board the
 enforcement arms are NOT REGISTERED rather than registered-and-skipped, so there is no list to keep
-and nothing is passing vacuously. What T8 is therefore scored against is the pair of facts below it,
+and nothing is passing vacuously. What T8 is therefore scored against is the facts below it,
 not a skip list:
-- **one PARTIAL**, `periph_reg_write_unheld`, declared in the selftest's expected set: this chip
-  names no MMIO window a driver could be granted, so the arm's free-window half finds nothing to
-  take. A real coverage gap, and T8 closing it means minting a window.
-- **the arms that do not register at all**, which on this board are `bus_device_slots`,
-  `uart_service`, `reboot_priv` and `call_reg_fastpath`. The first three want a driver, a service
-  list or `arch_reboot`; the fourth wants the IPC fastpath this arch does not implement.
+- **one PARTIAL**, `periph_reg_write_unheld`, the sole member of this board's expected-partials set
+  (`user/apps/common/selftest/CMakeLists.txt` appends it on the `armv8a` arm and
+  `tests/integration/check_tap_stream.sh` matches it by NAME): this chip names no MMIO window a
+  driver could be granted, so the arm's free-window half finds nothing to take. A real coverage gap,
+  and T8 closing it means minting a window.
+- **the arms that do not register at all -- and the list written here was WRONG, in the direction
+  that flatters the board.** It named `bus_device_slots`, `uart_service`, `reboot_priv` and
+  `call_reg_fastpath`. All four gate on `KICKOS_ENABLE_SELFTEST` alone, this board's defconfig sets
+  it, and all four register. Nobody decided those four were absent; the names were read off another
+  posture and written in the present tense. The five genuinely absent are `endpoint_bound`,
+  `stackbase_arena`, `grant_reserved` and `dev_window_exclusive`, gated on `KICKOS_HAVE_MPU` which is
+  0 here, and `periph_reg_write_mask`, gated on `KICKOS_ARCH_SIM` which is 0 too. All five are
+  enforcement or simulator arms, which is a different -- and much better -- reading of this board's
+  coverage than four missing platform features.
+- **and the registered arm COUNT is 112 here, not 101.** 101 is `qemu-flat`'s, and the two are not
+  one figure: this board additionally registers `caller_stack_arena` and the ten
+  `KICKOS_HAVE_ASPACE` arms. Derive it from `user/apps/common/selftest/CMakeLists.txt`, which
+  computes it and hands it to the ctest registration; do not quote either number.
 
 A third fact belongs with them because it was nearly a silent hole. The eleven `irq_*` arms are the
 only exercise the GIC gets from the suite at all, and they hung until the board pointed
@@ -1239,10 +1518,11 @@ Removing that invalidate changes nothing on this emulator, so the arms cannot te
 there. It is written because the architecture requires it, not because a run showed it, and the
 first target that caches a negative translation is where it stops being unwitnessed.
 
-**T5. The domain backend field, the dedup deleted, and possession made explicit.** The region array
-becomes the opaque handle behind the accessors, the reuse arm in `domain_for` goes and the
-default-user singleton becomes a template (F2), and possession stops being a walk over the caller's
-reachable regions and becomes thread-local authority (F9). That last one is a PRECONDITION of the
+**T5. The domain backend field, the dedup deleted, and possession made explicit.** A backend field
+is added BESIDE the region array rather than behind the accessors -- see 3.1, which used to claim
+otherwise -- the reuse arm in `domain_for` goes and the default-user singleton becomes a template
+(F2), and possession stops being a walk over the caller's reachable regions and becomes thread-local
+authority (F9). That last one is a PRECONDITION of the
 rest of this step, not a follow-up: widening the mapping first would silently widen possession with
 it.
 *Expected:* the entire existing fleet green with no per-board change -- the regression gate of section
@@ -1256,7 +1536,7 @@ until F10's allocator lands and the task's space is not activated until T6, so m
 allocation page-granularly there would over-grant its neighbours. What T5 buys is that admission is
 restored, the escalation F6 names being refused by name, and that the encoder stops asking a
 descriptor question of a backend that seats none. Every outcome is a map-to-be or a named refusal and
-none is a silent claim. **T6 owns F10's allocator and is where the refusal becomes a map**, and T8
+none is a silent claim. **T6.2 owns F10's allocator and is where the refusal becomes a map**, and T8
 owns the hostile witness.
 
 *Also owed here:* the driver-service bring-up flow CONFIGURES and runs, and the `domain_share` arm is
@@ -1281,6 +1561,246 @@ ABI frame while asynchronous entries keep the full one is a decision, and it nee
 first rather than an argument. Measure it beside M8's instrument rather than inventing a
 second one.
 
+**T5b. The app leaves the kernel's half.** Found while starting T6, and it is a MISSING STEP rather
+than an implementation problem, so it is written here rather than worked around. The app links into
+the kernel's high half, and the high half GRANTS EL0: both translation roots share one level-2 table
+whose code block is read-only at EL0 and whose data blocks are read-write at EL0. Retiring the
+identity map therefore removes nothing, and a per-process root cannot map an image living at an
+address the low half cannot name. **A process is not expressible until the app links LOW and the
+kernel's half grants EL0 nothing.**
+
+Three consequences, and the second is what makes this a step rather than a linker edit:
+  - Moving app static data low drags app TEXT low with it. High-half text cannot name a low-half
+    symbol under the small code model, measured as a truncated `ADR_PREL_PG_HI21` relocation rather
+    than reasoned about. So the split covers app text and rodata as well as data and bss, expressed
+    as the archive-selector inversion `mk64f.ld` already uses for the app-data window.
+  - Every EL0-reachable leaf carries privileged-execute-never, so the kernel may no longer CALL app
+    text. It calls four such functions today: three are the libc reentrant-state seam, one of them on
+    every switch, and the fourth pair is reached from `kmain`.
+  - **The seam therefore INVERTS.** Its three calls become kernel-side code driven by a base, a
+    stride and one pointer address registered at boot. `reent.h` argues for a call because the kernel
+    cannot name the state's type and a typed store would violate strict aliasing, with an LTO folding
+    hazard on one backend; a `memcpy` answers both without naming the type. The seat runs AFTER the
+    target space is activated, so it is an ordinary store into the active space and needs none of
+    T7's owner-carrying access, and a child's initialisation moves to its first switch-in for the
+    same reason.
+
+*Expected:* the fleet green with no per-board change, and on the new board a user thread executing
+text its OWN root maps while the kernel's half grants EL0 nothing. That second half is what makes
+T6's witnesses mean anything, so it is CHECKED here rather than assumed there.
+
+**AND T5b's OWN ORDERING IS WRONG, found by running the revocation rather than reasoning about it.**
+Two blockers, both measured, and together they re-order the rest of this milestone.
+
+**The kernel's half holds everything EL0 dereferences, not just the image.** Revoking EL0 there faults
+immediately: with the whole half EL1-only, an instruction abort at `root_entry`'s high address; with
+the code block re-granted and only data revoked, an EL0 WRITE abort whose fault address is root's
+stack. Thread stacks and TLS blocks come from `arch_ram_alloc` over an arena linked high, the newlib
+heap is a carve in the same high region, and so is the TLS template. So the revocation cannot precede
+the step that moves those low, which is T6's stack mapping plus work on TLS and the heap that no step
+currently owns. It drags a third thing in: once EL0 passes a low pointer into a syscall, the admission
+bounds must name low addresses, and high-half text cannot name a low absolute symbol, which is T7's
+access seam arriving early.
+
+**And one runtime archive is called from BOTH sides, which a linker split cannot express.**
+`memcpy`, `memset` and `strlen` are undefined in the kernel-side archives AND in the app's, and the
+map shows the member pulled by the app rather than by the kernel. A global symbol has one value:
+kernel-side, and EL0's call is a high address it cannot reach; app-side, and the kernel calls text
+that carries privileged-execute-never. Neither side can opt out, the compiler emitting all three for
+aggregate copies and 120 `libc.a` members referencing them. Two copies in one static link need
+distinct names, which compiler-emitted names cannot have.
+
+**So this step SPLITS and the revocation moves last:**
+  - **T5b.1** decides who owns the shared runtime and lands the app's low link regions. The ownership
+    question has no cheap answer: a partial link plus symbol localisation breaks the archive selectors
+    every board's script uses; a shared low text region the kernel may call contradicts
+    privileged-execute-never on EL0-reachable leaves; a kernel-half code block granted EL0
+    read-execute contradicts granting EL0 nothing. It wants a decision, not an implementation.
+    **The ownership half LANDED, and the link regions were left to their own pass**, so that the
+    fleet's symbol ownership moved on a tree that otherwise works.
+    *The decision:* the KERNEL takes private names and the app keeps the ordinary ones. A shared low
+    region would make the kernel's ability to execute depend on the ACTIVE user root mapping it, and
+    one process root without it is an instruction abort inside a syscall; kernel text in the high half
+    is mapped in every space through TTBR1 by construction. The app is the side that cannot be
+    renamed anyway, `libc.a` referencing the ordinary names from its own members.
+    *The mechanism, and why a source rule was not enough:* the kernel links its own copies of
+    `lib/libc/string.cc` and `lib/libc/fmt.cc` under `kmemcpy`/`kmemset`/`kstrlen`/`kfmt_vsnprintf`
+    (`kernel/klib/`, declared in `kickos/kruntime.h`), and its explicit calls name those. But only six
+    of thirteen kernel-side references were explicit calls. The rest the COMPILER emitted with no call
+    in the `.cc` at all, and the population is a property of the toolchain rather than of the source:
+    one on aarch64, three on rv32imac, four on armv7m, five on armv6m, none on rxv3. Two of them come
+    from `ThreadAttr attr;`, the plain default construction of a struct with default member
+    initialisers, whose zeroing lowers to a `memset` libcall at `-Os` that NO flag suppresses
+    (`-fno-builtin`, `-fno-builtin-memset`, `-fno-tree-loop-distribute-patterns` and `-O2` were each
+    measured and each still emits it). Since a type's defaults are its contract, there is no de-typed
+    spelling to write instead, so those are rewritten after `ar` by `objcopy --redefine-syms`
+    (`kickos_privatise_runtime`, map in `cmake/kernel_runtime.syms`) over the three archives that hold
+    kernel text. `tests/static/check_kernel_runtime.sh` then reads the archive the linker will read
+    and refuses an ordinary name in it, which is what catches an archive the rewrite never reached.
+    *And it is scoped to `KICKOS_HAVE_ASPACE`, measured rather than chosen:* a region backend serves
+    both privilege levels from ONE text mapping, so a second copy there protects nothing, and it does
+    not fit. The duplicate costs 624 bytes of text on armv7m (456 of them the formatter) against 368
+    bytes of headroom on `bluepill-c8-st` and 360 on `f302nucleo-st`, so a fleet-wide copy overflows
+    those two 64 KB parts by 256 and 264 bytes. On a region backend the header aliases the app's names
+    instead and every kernel call site reads the same, which also leaves the trap-stack depths those
+    boards are measured against untouched.
+
+    **THE LINK-REGIONS HALF LANDED TOO, and the accounting that preceded it found FOUR crossing
+    classes an archive-level sweep does not show.** `qemu-arm64` only; the layout is BOOT (16 KiB
+    identity) then the kernel's text high with its LMA below the 2 MiB code block, then the app's text
+    identity-linked in the rest of that block, then the app's data, bss and heap at the boundary, then
+    the kernel's writable state above them. VMA == LMA on both app regions, so nothing is copied into
+    place; only `.appbss` is zeroed, by Reset_Handler, off its own pair of symbols.
+    *The whole crossing set is SEVEN symbols*, `arch_syscall`/`arch_syscall64` app-to-kernel and
+    `kickos_init_args`, `kickos_reent_seam`, `kickos_user_thread_return`, `kickos_init_entry`,
+    `kickos_app_build_stamp` kernel-to-app, plus the optional `__register_frame`. No compiler-emitted
+    class survived T5b.1's rewrite, so nothing needed a second objcopy pass.
+    *`arch_syscall` takes T5b.1's own answer: the kernel is renamed and the app keeps the ordinary
+    names.* The app's copy has to be text an EL0 thread executes, so it links low and carries
+    privileged-execute-never; the kernel's `karch_syscall` sits in the half TTBR1 maps in every space.
+    Both references are explicit calls, so this is a source fix, and the two leaves are `svc`+`ret`.
+    It lives in the arch archive under its own section name, `.apptrap`, because the script selects
+    the kernel half by ARCHIVE and that archive is kernel-side.
+    *A CALL needed nothing at all:* ld inserts a long-branch veneer for an out-of-range
+    `R_AARCH64_CALL26` in EITHER direction, measured before designing around it. Two survive in the
+    image, both the kernel calling app text (`kickos_init_entry` and `kickos_app_build_stamp`), and
+    both are T5b.3's problem rather than the link's.
+    *What actually forced a decision was the GOT, and it is the one constraint with no cheap
+    alternative.* A static link has ONE `.got`, a slot is reached by `adrp` like anything else, and
+    there were users in BOTH halves: the kernel side through weak externs (`__register_frame`,
+    `kickos_app_build_stamp`, `_kickos_heap_start`, the MPU-window symbols a flat chip leaves
+    undefined), the app side through newlib's `__libc_fini_array` and `__call_exitprocs` reaching
+    `__fini_array_start` and `__libc_fini`. It cannot be split and it cannot be placed. The answer is
+    `-mcmodel=large` on the three archives holding kernel text (`kickos_apply_split_image`): it emits
+    no GOT reference at all, which leaves the one `.got` entirely to the app, AND it materialises
+    every external address as a 64-bit literal, which retires all four kernel-to-app data crossings
+    with no source change. Measured cost on the `selftest` link: kernel text 45,561 to 53,000 bytes,
+    in a 1 MiB region. `-mno-direct-extern-access` does not exist on this GCC.
+    *An FDE reaches the code it describes with a 32-bit PC-relative field*, so `.eh_frame` and
+    `.gcc_except_table` have to sit in the same half as that code. Only the toolchain archives emit
+    either here and those are app-side, so both moved down whole and one table still covers everything
+    that unwinds. This was a truncated `R_AARCH64_PREL32` out of `libc_a-memchr.o`, not a prediction.
+    *LINKER-SCRIPT SYMBOLS ARE A CROSSING CLASS THE ARCHIVE SWEEP CANNOT SEE*, being defined in no
+    archive at all. One mattered: `user/src/newlib_sbrk.cc` names `_kickos_heap_start` STRONGLY from
+    app text, so the newlib heap moved into the app's window with the rest of the app's writable
+    state. T6 was going to move it anyway; the relocation moved it first.
+    *And the user-pointer admission had to learn a second extent, which is T7's access seam arriving
+    early and pulled in by the LINK rather than by the revocation.* `arch_ram_common.cc` whitelists ONE
+    contiguous rom pair and ONE contiguous sram pair, and the split puts the app's rodata and the app's
+    `.data` outside both, so a syscall taking a pointer into either would be refused. It now consults a
+    SECOND, weakly declared pair the chip script may carve; a chip that carves none leaves all four
+    zero and `range_within` admits nothing extra.
+  - **T5b.2** is the fleet-wide seam mechanics, which stand alone: three calls become a base, a stride
+    and one pointer address, the child's initialisation moves to first switch-in, and the write is a
+    `memcpy`. Independent of the linker split, and correct on every board.
+    **LANDED**, with four decisions a re-reading cannot re-derive.
+    *The descriptor is the seam.* `kickos_reent_seam` (slots base, shared state, seat-word address,
+    stride, count) is defined by `user/src/newlib_reent.cc` and READ ONCE at boot into kernel `.bss`
+    (`kernel/thread/reent.cc`); every kernel-side answer comes out of that copy. Today the kernel
+    names the app symbol directly and the link resolves it out of the RESCAN group, which is exactly
+    what the split replaces, and nothing below it. Every member is `void*`/`size_t`/`int` so the app's
+    initialiser needs no cast: a cast would sink the object into a ctor, and this file's ctors run
+    from `root_entry`, after the kernel has already read it.
+    *The pristine image is the PROCESS-WIDE STATE, not a template of the seam's own.* Measured on all
+    five toolchains: newlib's `_impure_data` is a `.data` object statically initialised to
+    `_REENT_INIT`, byte-identical to what `_REENT_INIT_PTR` produces, and its ONLY relocations point
+    at the shared `__sf`, so it holds no pointer into itself that a byte copy would carry to the wrong
+    owner. That matters because a template of its own costs one `struct _reent` (240 to 568 bytes) and
+    the two 64 KB parts have about 500 bytes of headroom at their selftest preset. What keeps it
+    pristine is that only a TCB OUTSIDE the pool is ever seated on it, which is idle, and idle holds
+    no capability and runs `arch_idle_wait` alone.
+    *Priming is per thread and uniform.* Every pool thread is primed at its own first switch-in, so
+    the boot seeding loop in `kmain` and the pool's `reent_stale[]` array both go; the mark is a
+    `bool` in `Thread`'s existing padding before `id`, free on every target. The seat moved AFTER
+    `mpu.apply()`, both halves writing memory the INCOMING thread owns.
+    *The seat must stay a leaf, and `-ffreestanding` is why it is spelled oddly.* The ordinary
+    `memcpy` is never expanded under it, so a pointer-width copy lowers to a CALL on every switch;
+    `__builtin_memcpy` plus `__builtin_assume_aligned` is expanded regardless and compiles to three
+    instructions on all five backends. The prime keeps `kmemcpy`, its size being a runtime value.
+    *And the fourth kernel-to-app call went the same way.* `root_entry`'s `kos_shutdown`/`kos_panic`
+    become `arch_syscall(KOS_SYS_SHUTDOWN/KOS_SYS_PANIC, ...)`. The TRAP is still required, root not
+    always being privileged, but the trap leaf is arch text rather than app text. `arch_syscall` is
+    itself called from both sides, which is T5b.1's problem class and takes T5b.1's answer.
+  - **T6.1** moves the stack and the TLS block low along with the image (the heap having gone with
+    T5b.1's relocation), and the admission bounds learn to name a low address from high-half text.
+    **LANDED**; the granted-range list is what names those addresses, and the stack's frames are
+    mapped at their own output addresses so the pool answers for the same bytes kernel-side.
+  - **T5b.3** revokes EL0 from the kernel's half, LAST, and is the check that makes T6's witnesses
+    mean anything rather than a precondition of reaching them.
+    **LANDED**, and the accounting that preceded it found the FIRST of the two measured blockers
+    still standing, so the claim that both were gone was checked rather than taken.
+    *The two roots stop sharing a level-2 table.* `kickos_arm64_kernel_ram_table` describes the
+    same DRAM as `kickos_arm64_ram_table` with AP naming no EL0 access and UXN set, PXN clear on
+    the code block alone; the boot identity root keeps the grants the untranslated entry path was
+    built with. The fourth table page raised `KICKOS_ARM64_BOOT_SIZE` from 16K to 20K, which
+    shortens APPTEXT by the same 4K and links clean.
+    *`root_entry` WAS STILL KERNEL TEXT, and root is unprivileged from its first instruction*, so
+    the earlier attempt's instruction abort at its high address had nothing to do with the app's
+    link and was not retired by moving it. It is now `kickos_root_entry` in `libkickos_user.a`
+    (`user/src/root_entry.cc`, declared beside `kickos_init_args` because it is the same class of
+    app-side storage), which puts it in `.apptext` on the split board and leaves every other board
+    unchanged, a region backend serving both levels from one text mapping. It also drags the app's
+    ctor ARRAY down: `.kickos_app_init_array` holds app-text addresses but its WALKER is now
+    unprivileged, so the array moved from KTEXT to APPTEXT and `__kickos_app_rom_start` names the
+    region origin rather than `.apptext`'s. `karch_syscall` goes with it: an app-side walker calls
+    the app's own trap leaf, which is what T5b.1's rename left in place for it.
+    *The two link veneers did NOT both go, and the reason is the exception LEVEL rather than the
+    half.* `kickos_init_entry`'s is gone with `root_entry`, both ends now being app text. The
+    `kickos_app_build_stamp` one SURVIVES and is correct: it is reached from `kbanner` at EL1,
+    before `domain_init`, so the root installed is the boot identity one whose code block leaves
+    PXN clear. Revoking EL0 from TTBR1 does not touch it. What it does depend on is that no
+    address space is activated before the banner, which the call site now states; the same
+    dependency already carried `Reset_Handler`'s `.init_array` walk, whose bodies moved app-side at
+    T5b.1.
+    *The witness is `user/apps/common/kernelhalf`*, gated by
+    `tests/integration/check_kernel_half.sh`: an unprivileged thread reads the word
+    `arch_mpu_probe_addr` names and takes `ESR=0x9200000e`, a level-2 PERMISSION fault on a read
+    from the lower exception level, at a FAR the image announced first. A PERMISSION fault and not
+    a translation one is the assertion that matters: the kernel's half is mapped at that same
+    address for the privileged side of the same core, so a translation fault would mean the
+    kernel's own window had been lost rather than EL0's revoked. With the revocation reverted the
+    same read returns a value, the image survives and the gate fails, so the arm passes one way
+    only.
+    *`arch_mpu_probe_addr` was re-keyed on `KICKOS_MEMORY_ENFORCED`*, which is the F6 split applied
+    to one more hook: it answered 0 exactly on the board carrying the strongest refusal, and the
+    word it names is kernel-side `.bss`, outside every arena and inside no granted range, which is
+    what F6 asked a denial witness to name.
+    *WHAT IS STILL REACHABLE, and it is not the high half.* The boot identity root grants EL0
+    read-write over all of low DRAM, which includes the kernel's own `.data` and `.bss` at their
+    LOAD addresses. No unprivileged thread runs under it today, `aspace_activate_for` installing a
+    task's own root before its first instruction, and revoking EL0 there as well was MEASURED to
+    leave all nine image gates and the whole 117-arm stream green. It is not taken here: the boot
+    root is what the fault reporter and `aspace_release` install, and what `arch_aspace_boot`
+    hands out, so making it grant EL0 nothing changes what that space MEANS. It wants a decision.
+
+*Sequencing note:* the trusted-initial-frame work T6 inherits landed before this step, F9 having made
+the exposure real at T5, so it is recorded as T6a in the history and reads as a T6 prerequisite.
+
+**T5c. A plain spawn is a thread of the caller's task.** A semantic step, not a port step, and it is
+here because T6 could not be written without it: per-process static data breaks 71 selftest arms
+while every worker is its own task and its own space, since every worker reports to its parent
+through an app global. **A plain spawn resolves to the CALLER's task and its domain**, spending no
+task slot and no domain; an explicit task create still spends one, and so does a spawn that brings
+its own data grant, there being no domain of the caller's for that grant to land in. That is F2's
+own definition of a task applied to the spawn path: the set of threads that share one memory domain.
+
+*Exit semantics follow forcibly.* `exit_current` applied task-scoped death to EVERY exit, which is
+correct only while the group is one thread; once siblings share a task the first worker to return
+would end root. **A FAULT is now the only death that reaches the group from there** -- it is the one
+nobody asked for, and every death a caller asked for is a caller who could have named the group,
+`kos_task_kill` and `kos_task_slay` each cancelling every member themselves. Section 6 of
+`docs/design-task-layer.md` carries the reasoning and what it revises.
+
+*Expected:* the entire existing fleet green with no per-board change, and the fault witnesses giving
+their victim an explicit task, which is what makes containment observable at all rather than an
+artifact of every thread being accidentally its own process.
+
+*Measured, since the step exists to move this number.* T6's data-copy delta over `qemu-arm64`
+fails **71** distinct selftest arms without T5c and **20** with it. The residue is not the same
+class: what is left is the arms whose worker carries a spawn grant, so it is still a task and a
+space of its own, plus the object-pool exhaustion a per-space copy brings. T5c removes the
+sibling-through-a-global class and nothing else, which is what it claims.
+
 **T6. The image mapped, and a task becomes a process.** Shared read-execute text, per-process copied
 static data, stacks mapped with a guard page below (section 3.4).
 *Expected:* THE PROCESS WITNESS -- two tasks whose text and data sit at the SAME virtual addresses,
@@ -1292,9 +1812,99 @@ ADDRESS, covering the handoff contract, the two-live-mappings rule and the flags
 arm. And a stack whose size is NOT a power of two, which F7 owes and which is only expressible once
 stacks are frames with a guard page rather than arena blocks.
 
+**THIS STEP SPLIT, and the split is what makes a process EXPRESSIBLE before anything changes what the
+app layer sees.** T6.1 is everything that does not need the per-process static-data copy; T6.2 is the
+copy, F10's allocator, the handoff readback and the process witness. Three earlier attempts at T6
+stopped rather than pull the copy forward, and all three were right to.
+  - **T6.1 LANDED.** The app's runtime memory moved LOW -- thread stacks and their TLS carves became
+    frames mapped in the task's own space with an unmapped guard page below (section 3.4); the newlib
+    heap had already moved at T5b.1. The granted-range list became the validation oracle: both
+    static-data hooks re-keyed onto `KICKOS_MEMORY_ENFORCED`, every space's list seeded with the image,
+    and `user_range_ok` reading it beside the region-set walk (section 3.3). And F7's stride tax was
+    qualified per mechanism, so this board's stacks are three pages and five.
+    *Measured:* the two section 3.3 arms both go RED with the seeding removed, which is what says the
+    whitelist has stopped answering; a guard page below root's stack takes a level-3 translation fault
+    on a write from EL0 at the address the image last named (`user/apps/common/stackguard`,
+    `tests/integration/check_stack_guard.sh`); one live thread holds four frames and gives all four
+    back with the pool refusing no free (`stack_is_frames`). The registered arm count moved from 112 to
+    114 and the host unit layer from 336 to 343.
+    *What T6.1 deliberately did NOT do:* a caller-supplied stack is still an arena block and still
+    arena-confined, so it carries no guard page and stops working at T5b.3. The low range an app hands
+    in is F10's allocator, which is T6.2's.
+  - **T6.2 LANDED.** Per-process copied static data (section 3.4), F10's allocator, the handoff and
+    its readback, and the arm repairs the copy forces.
+    *The allocator, concretely:* `kos_ram_alloc` reserves a page-aligned range in the calling task's
+    space and maps nothing, taking a frame-pool RUN and using its output address as the virtual one,
+    exactly as a stack does; the self-grant maps that run and admits only a range the caller itself
+    reserved; the handoff maps the donor's run into the new space at the same address and records it
+    BORROWED. All three of section 3.2's load-bearing places move together, the self-grant, the
+    domain region a spawn derives, and the app's own dereference.
+    *Two bounds moved with it, and both are stated rather than tuned.* `KICKOS_ASPACE_RANGES` went
+    from 8 to 32: it was mirrored from the descriptor bound, and F10 makes it the ALLOCATION budget
+    too, a reservation costing a slot that nothing frees, which left an app six blocks for its whole
+    life. And the self-grant records NOTHING in the region array on a translating build, so the
+    -KOS_ENOMEM F10 keeps is the reservation list's and surfaces at the allocation: the array would
+    otherwise carry a second, ROUNDED answer to a question the range list already answers exactly,
+    and it is per-thread where the mapping is task-wide.
+    *AND F10's HANDOFF COST AN ARGUMENT, WHICH THE REGION FLEET WOULD HAVE PAID FOR IN TRAP
+    STACK.* `domain_for` sits on the deepest chain `syscall_dispatch` has, and on a 32-bit ABI
+    a seventh argument is a word in its CALLER's frame: `task_for` grew 8 bytes and the armv7m
+    SVC depth went 444 to 452 against a red zone of 448, failing `trap_redzone` on the four
+    `KICKOS_KERNEL_STACKS=0` presets. Rounding the figure up to 512 was the documented move and
+    the wrong one: those four are region boards and the argument is a translating backend's.
+    So the two caller booleans, `privileged` and `caller_authorized`, became one posture word
+    (`DOM_CALLER_*`), which puts the argument count back where it was and the measurement back
+    at 444 exactly. **A control tree confirmed the attribution before the fix**: the same tree
+    with the donor argument dropped measures 444 with `task_for` at 24 bytes rather than 32.
+    *One seam outside T6.2's list had to move, and it is a piece of T7 pulled in by F10:* the endpoint
+    copy reaches a PARKED peer's buffer, which is in a space that is not the running one, and moving
+    the app's allocations low left it unreachable. A reservation and a stack are frame-pool runs whose
+    virtual address IS their output address, so `ep_copy` reaches both ends through the pool's own
+    map; a buffer the pool never handed out is app static data, and reaching another process's copy of
+    that is still T7's.
+    *Measured:* the process witness reports three DIFFERENT frame numbers under one address and one
+    shared text frame, and with the copy removed it reports the same number three times
+    (`process_private_data`); a handoff given frames of its own instead of the donor's takes seven arms
+    red including the readback's frame identity (`task_handoff_readback`); a reader spawned with its
+    own grant instead of joining the group takes exactly one arm red (`task_siblings_share`); a stack
+    block left reserved and never mapped takes exactly one (`caller_stack`); and the pre-T6.2
+    `domain_share` shape, two spawn grants, takes exactly one (`domain_share`). The registered arm
+    count moved from 114 to 117 and the host unit layer from 343 to 347.
+    *What T6.2 deliberately did NOT do:* the same-address REFUSAL is implemented and untested, because
+    the reservation namespace this backend chose is globally unique -- an address is a frame-pool
+    output address -- so no correct caller can collide, which is the policy F10 demotes system-wide
+    uniqueness to.
+
 *Plus the sibling-sharing witness F2 assigns here*, one task create with two members, which is the
 arm `domain_share` was mistaken for and which only becomes observable once two members share a mapped
 image.
+
+**`domain_share` DID NOT survive this step as it stood, and T5c is what made that visible rather
+than what caused it.** Its two workers each carry the shared range as a spawn grant, so each is
+still its own task and its own space, and F10's handoff is what makes the range itself work. The
+range is not the problem. The arm's `g_dshared`, `g_dreadback`, `g_dwrote` and `g_dread` are APP
+GLOBALS that root writes and both workers read, and per-process copied static data gives each
+process its own copy: the workers read a null pointer and root reads back a value it was never
+written. That was equally true before T5c and no earlier step could show it. The repair is the
+ruling, applied: drop the spawn grants so the two workers are SIBLINGS of root.
+**The ruling's second half did not survive contact with the region fleet and the applied repair is
+narrower.** It said root would self-grant the range and the siblings would inherit it, F9 mapping it
+task-wide -- true where a backend translates, and false on a descriptor board, where a grant is the
+holding THREAD's region and a sibling that never asked faults on it, which is F9's own floor read the
+other way round. So each of the three threads asks for the range itself, which costs a descriptor on
+the boards that have them and nothing at all where the already-mapped short-circuit answers. Sibling
+VISIBILITY, which only a translating backend promises, moved to `task_siblings_share`, and the
+two-handoff witness F2 keeps became `task_handoff_readback`, which shares no app global across the
+pair. **All three belong to T6 with the data copy, not to T5c**, which lands the ruling and nothing
+else.
+
+**AND THE SAME CLASS REACHED THREE ARMS THE RULING DID NOT NAME**, which is worth recording because
+the shape is what a reader will meet next: `endpoint_crossdomain`, `irq_as_event` and the two
+`aspace_two_spaces_*` helpers all had a worker carrying a grant -- so a process -- report to root
+through an app global. Each is repaired by the channel it already had rather than by a new one: the
+endpoint arm makes the worker's verdict a reply over the endpoint under test, the IRQ arm writes what
+the driver saw into the ring block root handed it, the same-grant pair answers in the block it was
+handed, and the no-grant pair, which by definition shares no byte, answers down an endpoint.
 
 *Plus the two arms section 3.3 assigns here*, which pin the granted-range list being SEEDED with the
 image rather than inheriting an oracle that no longer answers: a syscall whose input buffer is an app
@@ -1302,8 +1912,11 @@ global, and one whose out-pointer is. Both are ordinary code today, and both fai
 backend if the seeding is missed -- presenting as a validation bug when it is a seeding bug.
 
 **T7. The access seams, page-split, owner-carrying, and cross-address-space.** The two kernel-user
-helpers and the endpoint copy, per section 3.3, plus the three sites that bypass or mis-scope the
-funnel today.
+helpers and the endpoint copy, per section 3.3, plus the five peer-crossing sites that section
+enumerates and the one console site outside the funnel. **`syscall_ipc_fast.cc` is named here because
+it is the site no arm on this board reaches**, this arch implementing no IPC fastpath; and because
+`write_recv_info` is one body whose callers are a mix of correct and wrong, the owner is threaded
+through each caller rather than added once to the helper.
 *Expected:* three arms, and the second is the one no existing arm can stand in for. A validated range
 spanning two non-adjacent frames copies correctly, which catches a helper still written as one
 `memcpy` over a translated base. Two processes at the SAME virtual addresses exchange a message and
@@ -1317,17 +1930,37 @@ of T5, per F6 itself, since T5 must not configure an MMU board down the permissi
 is the WITNESS that the split holds, which is a different thing from the split.
 *Expected:* two denials, and the second is the one a permissive gate would let through. An
 unprivileged thread touching a virtual address its space does not map is reported and killed, and the
-system survives. And an authorized unprivileged caller self-granting a HIGH-HALF kernel address is
-REFUSED by name rather than merely failing to fault -- which is the arm that fails if the MMU board
-inherited the no-protection admission path. Then diff the skip list against S9's: the arms that MOVED are the
-enforcement this stage bought, and any arm still skipping owes a reason in the record.
+system survives. And an authorized unprivileged caller self-granting a kernel TEXT or DATA address
+OUTSIDE THE ARENA is REFUSED by name rather than merely failing to fault -- which is the arm that fails
+if the MMU board inherited the no-protection admission path. **Not "a high-half address", which F6
+records as unable to separate the two cases while the arena is itself high-half.** Two mechanics that
+save a rediscovery: the grant-probe scaffolding is compiled out here, being gated on
+`KICKOS_HAVE_MPU`, so the arm goes through a real path -- the self-grant, a task create, or a spawn's
+memory grant -- and the address is taken from a linker symbol rather than written as a literal.
 
-**T8b. Teardown, and the churn that proves it.** The aspace destroy contract of section 3.1: free the
-root, its tables and every frame the process held, invalidate before the slot or identifier is
-reused, and unwind completely on every failure path.
-*Expected:* repeated create-and-exit and forced-failure churn returns the frame and root counts to
-where they started. A build with no destroy path at all passes every earlier T-step, so nothing before
-this one can stand in for it.
+*How T8 is SCORED, because the instruction it used to carry has no signal.* "Diff the skip list
+against S9's" compares two EMPTY lists on this board -- S9 itself records that a non-enforcing board
+does not register its enforcement arms rather than skipping them, so neither list ever had a member,
+and the diff was carried over from a fleet where skips exist. Score it against the two things S9 does
+leave behind. The registered arm COUNT rises from 112 by exactly the arms this stage adds and by
+whichever of the five S9 enumerates it registers, so an arm that failed to register shows up as a
+count that did not move; `user/apps/common/selftest/CMakeLists.txt` is the authority and the ctest
+registration carries the same figure. And `periph_reg_write_unheld` leaves
+`KICKOS_EXPECT_PARTIALS`: minting the MMIO window is what retires the partial, and
+`tests/integration/check_tap_stream.sh` reports a listed name that never fired as a NOTE to trim
+rather than as a pass, so the entry comes out in the same change.
+
+**T8b. Teardown, and the churn that proves it.** Section 3.1's destroy contract is BUILT, at T4 and
+T5, so this step is the residue and not the whole of it: the root, its tables and every still-valid
+leaf go back to the pool, the boot space is put back when the dying one is running, and the borrowed
+image extents are unmapped first.
+*Expected:* three things the existing balance arms do not say. The FORCED-FAILURE half, there being
+no failure injection anywhere in the tree, so `claim_slot`'s and `domain_release`'s unwind arms are
+written and unwitnessed. Frames a process allocated FOR ITSELF rather than borrowed from the image,
+which is unreachable until section 3.4's copy and F10's allocator give a space a frame of its own --
+so the count this step balances gets its first non-trivial term at T6, and a churn arm run before
+that balances a destroy that freed nothing. And the ordered invalidation before a root or identifier
+is reused, which the emulator cannot witness by passing.
 
 **T9. The multicore seams, compiled to nothing, and the cache seam that is not.** The per-core
 pointer, the doorbell as empty macros, and the TLB maintenance INSIDE `map` and `unmap` staying a
@@ -1488,7 +2121,7 @@ wider than it is today.
 
 **C3. Sharing GENERALISED, not restored.** One frame mapped into two processes by an explicit grant,
 at addresses the holders choose -- where M6.2 had exactly one hard-wired case of this, the handoff
-F10 contracts at handover time, whether that handover is an explicit task create or an implicit
+F10 contracts at handover time, whether that handover is an explicit task create or a grant-carrying
 spawn. T5 removed the dedup, never the sharing.
 *Expected:* two processes reading one frame through separate address spaces, with T8's denial arms
 still failing closed for everything not granted.
@@ -1527,8 +2160,12 @@ inventory stops being worth having.
   It is one indirection either way and the answer follows from where M6.5 puts frame capabilities.
 - **The virtual layout of a user address space, in what remains of it.** Placement decoupling from
   allocation makes layout free in principle, but F10 and T6 have since frozen a partition of it: the
-  image sits at addresses shared across processes, and a reservation's address is system-wide unique
-  so the handoff can reproduce it. What is still open is the layout of everything else, and whether
+  image sits at addresses shared across processes, and the handoff carries the DONOR's space and
+  address while the destination answers -- which is what lets it reproduce the address, and is not
+  the same claim as a reservation address being unique system-wide. F10 demotes that stronger
+  property to a POLICY a wide-address backend may adopt for itself, and this entry asserted it as a
+  freeze; the two were in contradiction and F10 is the one that reasoned about it. What is still
+  open is the layout of everything else, and whether
   the reservation range and the image range are adjacent or far apart, which is a fragmentation
   question rather than a correctness one.
 - **Whether a user mapping ever uses a block rather than a page.** The granule is frozen at 4 KiB

@@ -10,10 +10,9 @@
  *
  * ALL THIRTY-TWO VECTOR REGISTERS, because three of the four users are ASYNCHRONOUS: an
  * interrupt entered code that called nothing, so anything the AAPCS lets a call clobber may
- * be live in it. No FP opt-in gates this. AArch64 GCC stages wide struct copies through q
- * registers and the switch path does exactly that, kickos_reent_seat compiling its 512-byte
- * copy to 77 SIMD instructions, so the callee-saved subset would corrupt any thread
- * interrupted mid-copy. FPCR and FPSR are thread state for the same reason.
+ * be live in it. No FP opt-in gates this: AArch64 GCC stages a wide struct copy through q
+ * registers with no source-level FP in sight, so the callee-saved subset would corrupt any
+ * thread interrupted mid-copy. FPCR and FPSR are thread state for the same reason.
  */
 
 #define FRAME_SIZE  800
@@ -137,11 +136,12 @@ kickos_armv8a_irq_entry:
     ldr     x1, [x0]
     cbz     x1, .Lirq_resume
     str     xzr, [x0]                       /* consume the request */
-    adrp    x2, kickos_armv8a_switch_from
-    add     x2, x2, :lo12:kickos_armv8a_switch_from
+    adrp    x2, kickos_armv8a_ctx_current
+    add     x2, x2, :lo12:kickos_armv8a_ctx_current
     ldr     x3, [x2]
     mov     x4, sp
-    str     x4, [x3, #CTX_SP]               /* park the outgoing thread on its own frame */
+    str     x4, [x3, #CTX_SP]               /* park the frame on the context that built it */
+    str     x1, [x2]                        /* the incoming one is now the physical current */
     ldr     x4, [x1, #CTX_SP]
     mov     sp, x4                          /* stand on the incoming thread's frame */
 .Lirq_resume:
@@ -210,11 +210,12 @@ kickos_armv8a_el0_irq_entry:
     ldr     x1, [x0]
     cbz     x1, .Lel0_irq_resume
     str     xzr, [x0]
-    adrp    x2, kickos_armv8a_switch_from
-    add     x2, x2, #:lo12:kickos_armv8a_switch_from
+    adrp    x2, kickos_armv8a_ctx_current
+    add     x2, x2, #:lo12:kickos_armv8a_ctx_current
     ldr     x3, [x2]
     mov     x4, sp
     str     x4, [x3, #CTX_SP]
+    str     x1, [x2]
     ldr     x4, [x1, #CTX_SP]
     mov     sp, x4
 .Lel0_irq_resume:
@@ -223,11 +224,33 @@ kickos_armv8a_el0_irq_entry:
 /* --- The user side of the trap --------------------------------------------
  * arch_syscall(nr, a0, a1, a2, a3). arch_syscall64 is the same entry, the seam's psABI pair
  * collapsing at this width.
+ *
+ * TWO COPIES, because this leaf is called from both halves of a split image
+ * (docs/design-m6-mmu.md, T5b.1). The ordinary names are the APP's and link into the app's
+ * low text, which an EL0 thread executes and which therefore carries
+ * privileged-execute-never; the kernel takes the private name, in its own half, mapped
+ * through TTBR1 in every space by construction. Both references are explicit calls, so the
+ * rename is a source fix and needs no objcopy pass.
+ *
+ * .apptrap and not .text.*: virt_arm64.ld selects the kernel half by ARCHIVE, and this
+ * archive is kernel-side, so the app's copy needs a section name those selectors do not
+ * match.
  */
+    .section .apptrap, "ax"
     .global arch_syscall
     .global arch_syscall64
 arch_syscall:
 arch_syscall64:
+    svc     #0
+    ret
+
+    .section .text.switch, "ax"
+/* The kernel's own trap leaf (kickos/arch/arch.h). root_entry descends through it for
+ * shutdown and panic, root not always being privileged. */
+    .global karch_syscall
+    .global karch_syscall64
+karch_syscall:
+karch_syscall64:
     svc     #0
     ret
 

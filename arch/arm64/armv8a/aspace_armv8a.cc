@@ -524,10 +524,8 @@ void kickos_armv8a_ttbr0_to_boot(void)
     }
 }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
 // The space the boot path installed. There is no other handle for it, its tables being
-// link-time constants rather than something this seam created, so a scenario that activates
-// one of its own could not put the running one back.
+// link-time constants rather than something this seam created.
 struct arch_aspace* arch_aspace_boot(void)
 {
     arch_irq_state_t const s = arch_irq_save();
@@ -536,7 +534,6 @@ struct arch_aspace* arch_aspace_boot(void)
     return reinterpret_cast<struct arch_aspace*>(
         table_at(static_cast<arch_phys_addr_t>(g_boot_ttbr0 & DESC_OA_MASK)));
 }
-#endif
 
 // An addition, so any number are live at once and the seam's floor of two costs nothing.
 void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)

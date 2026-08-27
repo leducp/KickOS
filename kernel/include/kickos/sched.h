@@ -91,10 +91,19 @@ namespace kickos
         // Does NOT reschedule; the caller decides.
         void set_prio(Thread* t, uint8_t p);
 
+        // What this death is, which is the one thing exit_current cannot derive: a fault
+        // carries no cancel_kind, so a contained fault and an ordinary return arrive
+        // indistinguishable and scope the death differently.
+        enum ExitCause : uint8_t
+        {
+            EXIT_RETURN = 0, // an ordinary return, kos_exit, or a cancel honoured at a death point
+            EXIT_FAULTED = 1 // a fault the arch reporter contained (kernel/init/fault.cc)
+        };
+
         // Terminate the current thread with exit code `code`; never returns. The
         // code is used only if this is the last non-idle thread (it ends the
         // process); otherwise the thread just leaves the run set.
-        void exit_current(int code) __attribute__((noreturn));
+        void exit_current(int code, ExitCause cause) __attribute__((noreturn));
 
         Thread* current();
         Thread* idle();

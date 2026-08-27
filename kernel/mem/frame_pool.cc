@@ -63,6 +63,41 @@ namespace kickos
         return g_refused;
     }
 
+    arch_phys_addr_t frame_pool_alloc_run(size_t pages)
+    {
+        IrqLock lock;
+        uintptr_t const p = g_frames.alloc_run(pages);
+        if (p == 0)
+        {
+            return 0;
+        }
+        return static_cast<arch_phys_addr_t>(p - pool_delta());
+    }
+
+    void* frame_pool_span(arch_phys_addr_t addr, size_t bytes)
+    {
+        if (bytes == 0)
+        {
+            return nullptr;
+        }
+        size_t const g = arch_aspace_granule();
+        uintptr_t const first = static_cast<uintptr_t>(addr) & ~static_cast<uintptr_t>(g - 1u);
+        uintptr_t const last =
+            (static_cast<uintptr_t>(addr) + bytes - 1u) & ~static_cast<uintptr_t>(g - 1u);
+        if (last < first)
+        {
+            return nullptr; // the span wraps
+        }
+        for (uintptr_t p = first; p <= last; p += g)
+        {
+            if (not g_frames.is_allocated(p + pool_delta()))
+            {
+                return nullptr;
+            }
+        }
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(addr) + pool_delta());
+    }
+
     void* frame_pool_ptr(arch_phys_addr_t frame)
     {
         uintptr_t const p = static_cast<uintptr_t>(frame) + pool_delta();

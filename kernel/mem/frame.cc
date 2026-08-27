@@ -125,6 +125,44 @@ namespace kickos
         return 0;
     }
 
+    uintptr_t FrameAllocator::alloc_run(size_t pages)
+    {
+        if (pages == 0 or free_ < pages)
+        {
+            return 0;
+        }
+        // ONE forward sweep from the bitmap's own frames, and deliberately not from hint_:
+        // hint_ chases single allocations, so starting there would refuse a run that fits
+        // below it while the count says one is free. A run is rare and a whole-bitmap scan
+        // is what makes the refusal mean exhaustion of RUNS.
+        size_t run = 0;
+        for (size_t i = reserved_; i < frames_; i++)
+        {
+            if ((bits_[i / 8u] & (1u << (i % 8u))) != 0)
+            {
+                run = 0;
+                continue;
+            }
+            run++;
+            if (run < pages)
+            {
+                continue;
+            }
+            size_t const first = i + 1u - pages;
+            for (size_t j = first; j <= i; j++)
+            {
+                bits_[j / 8u] = static_cast<uint8_t>(bits_[j / 8u] | (1u << (j % 8u)));
+            }
+            free_ -= pages;
+            if (hint_ < i + 1u)
+            {
+                hint_ = i + 1u;
+            }
+            return base_ + first * granule_;
+        }
+        return 0;
+    }
+
     bool FrameAllocator::release(uintptr_t addr)
     {
         size_t i = 0;

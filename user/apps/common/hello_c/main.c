@@ -65,7 +65,7 @@ static int spawn(void (*entry)(void*), char const* name)
     p.prio = 10;
     p.caps = caps;
     p.cap_count = 2;
-    return kos_thread_spawn(&p, &h);
+    return kos_thread_create(&p, &h);
 }
 
 int main(int argc, char** argv)

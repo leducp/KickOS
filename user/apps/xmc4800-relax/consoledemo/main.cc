@@ -62,7 +62,7 @@ int main(int, char**)
     fflush(stdout);
     // Spawned after the init's publish, so cap_install_defaults seats this worker's index-0
     // cap to the published endpoint.
-    auto const w = kos::thread::spawn(worker, nullptr, "worker", WORKER_PRIO);
+    auto const w = kos::thread::create(worker, nullptr, "worker", WORKER_PRIO);
     if (not w.valid())
     {
         char e[64];

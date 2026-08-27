@@ -9,6 +9,7 @@
 // boundary.
 
 #include <kickos/arch/arch.h>
+#include <kickos/aspace.h>
 #include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/config.h>
@@ -22,6 +23,8 @@
 #include <kickos/irqlock.h>
 #include <kickos/ktrace.h>
 #include <kickos/console_tx.h>
+#include <kickos/domain.h>
+#include <kickos/task.h>
 
 #include <kickos/sys/abi.h>
 
@@ -203,7 +206,7 @@ extern "C" uint64_t syscall_dispatch(uintptr_t nr,
     Thread* const caller = sched::current();
     if (caller != nullptr and caller->cancel_kind != CANCEL_NONE and not caller->dying)
     {
-        sched::exit_current(KOS_EXIT_CANCELLED); // noreturn
+        sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
     }
     return syscall_body(nr, a0, a1, a2, a3);
 }
@@ -494,7 +497,7 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(
                 cpu_clock_set(static_cast<kos_pstate_t>(a0)));
         }
-        case KOS_SYS_THREAD_SPAWN:
+        case KOS_SYS_THREAD_CREATE:
         {
             // Checked BEFORE the child is created: a spawn that cannot deliver its handle
             // leaves a thread nothing can name or kill.
@@ -504,7 +507,7 @@ uint64_t syscall_body(uintptr_t nr,
                 return static_cast<uint64_t>(rc);
             }
             kos_thread_t h = KOS_THREAD_NONE;
-            rc = thread_spawn(reinterpret_cast<kos_thread_params const*>(a0), &h);
+            rc = thread_create_call(reinterpret_cast<kos_thread_params const*>(a0), &h);
             return cap_out_deliver(a1, rc, h);
         }
         case KOS_SYS_THREAD_KILL:
@@ -577,7 +580,7 @@ uint64_t syscall_body(uintptr_t nr,
                 }
                 kickos_terminate(static_cast<int>(a0)); // noreturn
             }
-            sched::exit_current(static_cast<int>(a0)); // noreturn
+            sched::exit_current(static_cast<int>(a0), sched::EXIT_RETURN); // noreturn
             return 0;
         }
         case KOS_SYS_SHUTDOWN:
@@ -846,12 +849,25 @@ uint64_t syscall_body(uintptr_t nr,
             // would be a non-NULL pointer, so EVERY failure path returns 0 (NULL) and the
             // documented `if (p == NULL)` check stays correct.
             IrqLock lock;
-            if (not cap_check_authority(sched::current(), AUTH_MEMORY))
+            Thread* const c = sched::current();
+            if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
             {
                 return 0; // NULL, not (uintptr_t)-1
             }
+#if KICKOS_HAVE_ASPACE
+            // F10: a page-aligned range RESERVED in the calling task's own space, mapped
+            // nowhere. The number is a virtual address in that space, and the frames under
+            // it are what makes it a globally unique name the handoff can carry.
+            //
+            // A PRIVILEGED CALLER GETS NULL, holding the kernel domain, which carries no
+            // space: there is no address space for a reservation of its own to live in, and
+            // such a thread executes out of the kernel's half.
+            return aspace_reserve(domain_ranges_mut(task_domain(c->task)),
+                                  static_cast<size_t>(a0));
+#else
             return reinterpret_cast<uintptr_t>(
                 arch_ram_alloc(static_cast<size_t>(a0)));
+#endif
         }
         case KOS_SYS_MEM_SELF_GRANT:
         {
@@ -897,6 +913,29 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return 0;
             }
+#if KICKOS_HAVE_ASPACE
+            // THE MAP HALF OF F10, and the admission with it: the range must be one this
+            // task RESERVED, which is what narrows the old "any reserved-clear in-arena
+            // range" and what refuses an address another task reserved. The arena and
+            // natural-alignment arms below do not run here: a reservation names frame-pool
+            // frames, which the bump arena does not contain, and a page-granular range
+            // cannot trip an alignment rule no descriptor imposes.
+            enum arch_map_memtype mtype = ARCH_MAP_NORMAL;
+            if ((attr & ARCH_MPU_NOCACHE) != 0)
+            {
+                mtype = ARCH_MAP_NOCACHE;
+            }
+            int const grc = aspace_self_grant(domain_space(task_domain(c->task)),
+                                              domain_ranges_mut(task_domain(c->task)), base,
+                                              size, ARCH_MAP_R | ARCH_MAP_W, mtype);
+            // NO REGION RECORD BESIDE IT. The range list already carries this mapping, and it
+            // carries the EXACT extent where a region would carry the rounded one; a second
+            // entry could only be the wider of two answers to one question. It is also what
+            // moves the -KOS_ENOMEM budget onto KICKOS_ASPACE_RANGES, the reservation being
+            // what runs out (F10), and what makes the grant reach every sibling: the array is
+            // per-THREAD while the mapping is task-wide (F9).
+            return static_cast<uint64_t>(grc);
+#else
             // Rule 7 admission on the geometry that will actually be committed: a window
             // rounded up AFTER admission could cover a neighbour the unrounded extent did
             // not.
@@ -923,15 +962,7 @@ uint64_t syscall_body(uintptr_t nr,
             // would fault the thread on memory it was told it had. NOT -KOS_EMFILE: that
             // code names the capability table, and the knob here is
             // KICKOS_MPU_MAX_REGIONS.
-#if KICKOS_HAVE_ASPACE
-            // A translating backend seats no descriptor, so there is nothing to ask
-            // add_enforced. Every outcome here is still named: the admission above
-            // refuses an out-of-arena or reserved range -KOS_EPERM, and a full budget is
-            // -KOS_ENOMEM.
-            if (not c->mpu.add(base, rsz, attr))
-#else
             if (not c->mpu.add_enforced(base, rsz, attr))
-#endif
             {
                 return static_cast<uint64_t>(-KOS_ENOMEM);
             }
@@ -942,6 +973,7 @@ uint64_t syscall_body(uintptr_t nr,
             c->mpu.apply();
             kickos_arch_mpu_commit();
             return 0;
+#endif
         }
         case KOS_SYS_PERIPH_ENABLE:
         {

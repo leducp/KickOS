@@ -11,6 +11,10 @@
 // range and maps nothing, and the self-grant maps it. Only a GRANTED range admits a pointer,
 // so a caller cannot pass the kernel a buffer it has reserved but never made reachable.
 //
+// IT IS ALSO THE SPACE'S MAP RECORD, which is what teardown reads: a space frees what it MAPS
+// and the borrower unmaps first (F10), so an entry carries whether these frames are the
+// space's own or another space's, and destroy cannot be told apart from a leak without it.
+//
 // The granule is a parameter and no figure appears here (F7).
 
 #ifndef KICKOS_VRANGE_H
@@ -30,6 +34,19 @@ namespace kickos
         Granted = 2
     };
 
+    enum : uint8_t
+    {
+        // The frames under this range belong to another space. Teardown unmaps them and
+        // frees none: the process image's pages came from the linked image and a handed-over
+        // block is the donor's, and handing either to the frame pool frees an address it
+        // never owned.
+        VR_BORROWED = 1u << 0,
+        // The process image seeded into every space, rather than a range the app reserved.
+        // A caller may name its own reservations and not these: an app global is not a
+        // block anybody allocated, so it is not a stack a spawn may be handed either.
+        VR_IMAGE = 1u << 1
+    };
+
     struct VirtualRange
     {
         uintptr_t base = 0;
@@ -37,6 +54,10 @@ namespace kickos
         // The ARCH_MAP_* word the mapping carries. The same vocabulary as the map editor's,
         // so no translation sits between what was granted and what was installed.
         uint32_t rights = 0;
+        // enum arch_map_memtype, narrowed. Two live mappings of one block must agree on it,
+        // and the already-mapped short-circuit cannot answer without it.
+        uint8_t memtype = 0;
+        uint8_t flags = 0; // VR_*
         VirtualState state = VirtualState::Free;
     };
 
@@ -48,11 +69,11 @@ namespace kickos
         bool init(size_t granule);
 
         // A page-aligned range no live entry overlaps. Reserving maps nothing.
-        bool reserve(uintptr_t base, size_t pages);
+        bool reserve(uintptr_t base, size_t pages, uint8_t flags = 0);
 
         // Turn a reservation into a granted range. EXACT: the pair must name a reservation
         // this space made, which is what stops one task naming a range another reserved.
-        bool grant(uintptr_t base, size_t pages, uint32_t rights);
+        bool grant(uintptr_t base, size_t pages, uint32_t rights, uint8_t memtype = 0);
 
         // Drop the entry starting at `base`, whatever its state.
         bool release(uintptr_t base);
@@ -63,6 +84,11 @@ namespace kickos
         bool covers(uintptr_t addr, size_t len, uint32_t rights) const;
 
         bool overlaps(uintptr_t base, size_t pages) const;
+
+        // The ONE live entry [addr, addr + len) lies inside, or null. The identity question
+        // the self-grant asks: a caller may only map a range it reserved, and an address
+        // another space reserved is in no entry of this list.
+        VirtualRange const* find(uintptr_t addr, size_t len) const;
 
         // Live entries, and the slot count they are spread over. `at` walks slots, not live
         // entries, so a free slot answers null rather than shifting its neighbours down.

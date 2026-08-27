@@ -14,7 +14,7 @@
 
 #include <kickos/arch/arch.h> // ARCH_MPU_NOCACHE
 #include <kickos/cap.h>       // KCAP_INVALID (the minting out-parameter's failure value)
-#include <kickos/sys/abi.h>   // kos_thread_params (thread_spawn parameter), kos_mem_flags
+#include <kickos/sys/abi.h>   // kos_thread_params (thread_create_call parameter), kos_mem_flags
 
 namespace kickos
 {
@@ -118,7 +118,7 @@ namespace kickos
     // --- Thread lifecycle (syscall_thread.cc) ----------------------------------
     // Same minting shape as the cap creators above: *out_thread is written on EVERY path
     // (KOS_THREAD_NONE on failure).
-    int thread_spawn(kos_thread_params const* p, kos_thread_t* out_thread);
+    int thread_create_call(kos_thread_params const* p, kos_thread_t* out_thread);
     // Cancels a thread the caller spawned: marks it, and breaks whatever park it is in with
     // -KOS_ECANCELED so it reaches its own death point. Returns 0, -KOS_EBADF, -KOS_EPERM or
     // -KOS_EINVAL. Takes its own IrqLock.

@@ -40,7 +40,7 @@ namespace kickos::rp2350::mmap
     // 8/16/32-bit accesses and has NO set/clear aliases (DS 12.7.3.7).
     constexpr uintptr_t USBCTRL_DPRAM_BASE = 0x50100000u;
     constexpr uintptr_t USBCTRL_REGS_BASE = 0x50110000u;
-    // One grant covering both. NOT byte-granular: thread_spawn validates every MMIO
+    // One grant covering both. NOT byte-granular: thread_create_call validates every MMIO
     // window through arch_mpu_region_encodable, which is NOT gated on KICKOS_HAVE_MPU
     // while the byte-granular PMSAv8 backend that would accept an arbitrary size IS.
     // With enforcement off the link falls back to a default that requires a power of

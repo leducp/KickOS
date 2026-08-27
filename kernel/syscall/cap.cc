@@ -10,12 +10,11 @@
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
+#include <kickos/kruntime.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 
 #include <kickos/sys/errno.h>
-
-#include <string.h>
 
 namespace kickos
 {
@@ -642,7 +641,7 @@ namespace kickos
         // Required, not tidiness: take() left its own free-list link in entry 0.
         for (uint32_t i = 0; i < chunks; i++)
         {
-            memset(run->chunk[i], 0, KCAP_CHUNK_SLOTS * sizeof(CapEntry));
+            kmemset(run->chunk[i], 0, KCAP_CHUNK_SLOTS * sizeof(CapEntry));
         }
         uint32_t capacity = width;
 #if KCAP_RUN_CHUNKS == 1

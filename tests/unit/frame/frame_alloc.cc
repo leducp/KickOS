@@ -144,6 +144,71 @@ class FrameGranule : public ::testing::TestWithParam<size_t>
 {
 };
 
+TEST(Frame, a_run_is_contiguous_and_wholly_allocated)
+{
+    kickos::FrameAllocator f;
+    ASSERT_TRUE(f.init(arena_base(), ARENA_BYTES, 4096));
+    size_t const before = f.frames_free();
+    uintptr_t const run = f.alloc_run(4);
+    ASSERT_NE(run, 0u);
+    EXPECT_EQ(f.frames_free(), before - 4u) << "a run of four costs four frames";
+    for (size_t i = 0; i < 4; i++)
+    {
+        EXPECT_TRUE(f.is_allocated(run + i * 4096u)) << "frame " << i << " of the run";
+    }
+    // The point of a run: the caller reaches every page of it through ONE address, so the
+    // frames have to be consecutive and not merely four of them.
+    EXPECT_FALSE(f.is_allocated(run + 4u * 4096u)) << "the run is exactly four frames wide";
+    // Released one at a time, which is the whole of the accounting: no run-shaped free.
+    for (size_t i = 0; i < 4; i++)
+    {
+        EXPECT_TRUE(f.release(run + i * 4096u));
+    }
+    EXPECT_EQ(f.frames_free(), before);
+}
+
+TEST(Frame, a_run_longer_than_the_range_is_refused)
+{
+    kickos::FrameAllocator f;
+    ASSERT_TRUE(f.init(arena_base(), ARENA_BYTES, 4096));
+    size_t const total = f.frames_total();
+    EXPECT_EQ(f.alloc_run(0), 0u) << "an empty run is not a request";
+    EXPECT_EQ(f.alloc_run(total + 1u), 0u) << "longer than the range holds";
+    EXPECT_EQ(f.frames_free(), total) << "a refused run takes nothing";
+    // The whole usable range as ONE run, which the bitmap's own frames must not break.
+    uintptr_t const all = f.alloc_run(total);
+    ASSERT_NE(all, 0u);
+    EXPECT_EQ(f.frames_free(), 0u);
+}
+
+TEST(Frame, a_run_is_refused_by_FRAGMENTATION_and_not_by_the_free_count)
+{
+    // The refusal a single-frame allocator cannot have, and the reason alloc_run may not
+    // start from the single-allocation hint: the count says a run fits and the layout says
+    // it does not.
+    kickos::FrameAllocator f;
+    ASSERT_TRUE(f.init(arena_base(), ARENA_BYTES, 4096));
+    std::vector<uintptr_t> all;
+    while (true)
+    {
+        uintptr_t const p = f.alloc();
+        if (p == 0)
+        {
+            break;
+        }
+        all.push_back(p);
+    }
+    ASSERT_GE(all.size(), 8u);
+    // Every other frame back, so half the pool is free and no two free frames are adjacent.
+    for (size_t i = 0; i < all.size(); i += 2)
+    {
+        ASSERT_TRUE(f.release(all[i]));
+    }
+    ASSERT_GE(f.frames_free(), 2u);
+    EXPECT_EQ(f.alloc_run(2), 0u) << "no two adjacent frames, though the count allows a run";
+    EXPECT_NE(f.alloc(), 0u) << "a single frame is still available";
+}
+
 TEST_P(FrameGranule, allocates_the_whole_range_at_any_granule)
 {
     size_t const granule = GetParam();

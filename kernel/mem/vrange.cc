@@ -57,7 +57,7 @@ namespace kickos
         return false;
     }
 
-    bool VirtualRanges::reserve(uintptr_t base, size_t pages)
+    bool VirtualRanges::reserve(uintptr_t base, size_t pages, uint8_t flags)
     {
         if (granule_ == 0 or pages == 0 or (base & (granule_ - 1u)) != 0)
         {
@@ -79,6 +79,8 @@ namespace kickos
                 ranges_[i].base = base;
                 ranges_[i].pages = pages;
                 ranges_[i].rights = 0;
+                ranges_[i].memtype = 0;
+                ranges_[i].flags = flags;
                 ranges_[i].state = VirtualState::Reserved;
                 return true;
             }
@@ -86,7 +88,7 @@ namespace kickos
         return false;
     }
 
-    bool VirtualRanges::grant(uintptr_t base, size_t pages, uint32_t rights)
+    bool VirtualRanges::grant(uintptr_t base, size_t pages, uint32_t rights, uint8_t memtype)
     {
         if (granule_ == 0 or rights == 0)
         {
@@ -103,6 +105,7 @@ namespace kickos
                 return false;
             }
             ranges_[i].rights = rights;
+            ranges_[i].memtype = memtype;
             ranges_[i].state = VirtualState::Granted;
             return true;
         }
@@ -120,6 +123,33 @@ namespace kickos
             }
         }
         return false;
+    }
+
+    VirtualRange const* VirtualRanges::find(uintptr_t addr, size_t len) const
+    {
+        if (granule_ == 0 or len == 0)
+        {
+            return nullptr;
+        }
+        uintptr_t const end = addr + len;
+        if (end < addr)
+        {
+            return nullptr;
+        }
+        for (size_t i = 0; i < KICKOS_ASPACE_RANGES; i++)
+        {
+            if (ranges_[i].state == VirtualState::Free)
+            {
+                continue;
+            }
+            uintptr_t const lo = ranges_[i].base;
+            uintptr_t const hi = lo + static_cast<uintptr_t>(ranges_[i].pages) * granule_;
+            if (addr >= lo and end <= hi)
+            {
+                return &ranges_[i];
+            }
+        }
+        return nullptr;
     }
 
     bool VirtualRanges::covers(uintptr_t addr, size_t len, uint32_t rights) const

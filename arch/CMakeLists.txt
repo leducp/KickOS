@@ -283,6 +283,14 @@ endif()
 target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../system/include")
 
+# Arch text runs in the kernel's half, so its compiler-emitted runtime references are
+# privatised with the kernel's (cmake/kickos.cmake). No arch backend emits one today, and
+# nothing keeps that so: an aggregate added to a backend would arrive already covered.
+if(KICKOS_HAVE_ASPACE)
+  kickos_privatise_runtime(kickos_arch_${KICKOS_ARCH})
+  kickos_apply_split_image(kickos_arch_${KICKOS_ARCH})
+endif()
+
 # STRUCTURAL GATE ON __aeabi_read_tp. The leaf answers every thread_local access on
 # M-profile and the one way to get it wrong is at the edge of the range, which the tlsprobe
 # witness cannot see: C code never runs with SP at an exclusive stack top, so the witness
@@ -319,6 +327,24 @@ if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
             "${CMAKE_READELF}" "${CMAKE_NM}"
             ${_no_tls_scan})
   set_tests_properties(no_privileged_tls PROPERTIES TIMEOUT 60 LABELS host)
+endif()
+
+# NO ARCHIVE HOLDING KERNEL TEXT MAY NAME THE APP'S RUNTIME. The kernel links its own
+# memcpy/memset/strlen and formatter under the kickos/kruntime.h names; the app keeps the
+# ordinary ones. Read AFTER kickos_privatise_runtime has rewritten the emitted references,
+# so a hit means the rewrite never reached this archive. kickos_lib is not scanned, being
+# where the app's copies are defined.
+# Registered where the image splits, which is where an ordinary name is a wrong answer; a
+# region backend serves both privilege levels from one text mapping and has nothing to hold.
+if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_ASPACE)
+  add_test(
+    NAME    kernel_runtime
+    COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_kernel_runtime.sh"
+            "${CMAKE_NM}"
+            "$<TARGET_FILE:kickos_kernel>"
+            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
+  set_tests_properties(kernel_runtime PROPERTIES TIMEOUT 60 LABELS host)
 endif()
 
 # --- Chip backend (startup + linker script + clocks + console) --------------
@@ -405,6 +431,10 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
 
   add_library(kickos_chip_${KICKOS_CHIP} STATIC ${_chip_src})
   kickos_apply_freestanding(kickos_chip_${KICKOS_CHIP})
+  if(KICKOS_HAVE_ASPACE)
+    kickos_privatise_runtime(kickos_chip_${KICKOS_CHIP})
+    kickos_apply_split_image(kickos_chip_${KICKOS_CHIP})
+  endif()
   # M7 D-cache: forward the option to the imxrt chip TU so arch_init calls
   # kickos_armv7m_dcache_enable(). Default ON, silicon-validated (selftest 43/43 plus a
   # ~38 M-switch soak under enforcement). Safe while the M7 is single-core with no DMA; M4

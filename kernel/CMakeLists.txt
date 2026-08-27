@@ -6,6 +6,7 @@ set(KICKOS_KERNEL_SOURCES
   sched/policy_fifo_rr.cc
   thread/thread.cc
   thread/tls.cc
+  thread/reent.cc
   thread/park.cc
   domain/domain.cc
   task/task.cc
@@ -19,7 +20,7 @@ set(KICKOS_KERNEL_SOURCES
   init/kmain.cc)
 
 # Optional components are appended as they land (kept bisectable).
-foreach(_f mem/frame.cc mem/frame_pool.cc mem/vrange.cc sync/sync.cc time/time.cc time/clock_select.cc syscall/syscall.cc syscall/syscall_aspace.cc syscall/syscall_mem.cc syscall/syscall_obj.cc syscall/syscall_ipc.cc syscall/syscall_ipc_fast.cc syscall/syscall_thread.cc syscall/cap.cc irq/irq.cc)
+foreach(_f mem/aspace.cc mem/frame.cc mem/frame_pool.cc mem/ustack.cc mem/vrange.cc sync/sync.cc time/time.cc time/clock_select.cc syscall/syscall.cc syscall/syscall_aspace.cc syscall/syscall_mem.cc syscall/syscall_obj.cc syscall/syscall_ipc.cc syscall/syscall_ipc_fast.cc syscall/syscall_thread.cc syscall/cap.cc irq/irq.cc)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_f}")
     list(APPEND KICKOS_KERNEL_SOURCES "${_f}")
   endif()
@@ -34,8 +35,27 @@ if(KICKOS_BENCH)
   list(APPEND KICKOS_KERNEL_SOURCES bench/bench.cc)
 endif()
 
+# The kernel's own copies of the runtime, under the private names kickos/kruntime.h declares.
+# ONLY where a translating backend splits the image in two: a region backend serves both
+# privilege levels from one text mapping, so there the header aliases the app's names and a
+# second copy would be flash spent on nothing (it does not fit on the two 64 KB parts).
+if(KICKOS_HAVE_ASPACE)
+  list(APPEND KICKOS_KERNEL_SOURCES klib/kstring.cc klib/kfmt.cc)
+endif()
+
 add_library(kickos_kernel STATIC ${KICKOS_KERNEL_SOURCES})
 kickos_apply_freestanding(kickos_kernel)
+
+if(KICKOS_HAVE_ASPACE)
+  kickos_privatise_runtime(kickos_kernel)
+  kickos_apply_split_image(kickos_kernel)
+  # The word loops the included source carries are the memcpy/memset idiom, and the pass
+  # that rewrites that idiom into a library call would rewrite each of them into a call to
+  # the APP's copy under its ordinary name. lib/CMakeLists.txt carries the same flag for the
+  # same reason.
+  set_source_files_properties(klib/kstring.cc PROPERTIES
+    COMPILE_OPTIONS "-fno-tree-loop-distribute-patterns")
+endif()
 
 # Build-time stamp (kickos_build_time[]/kickos_build_commit[], read by the kmain banner).
 # Regenerated on EVERY build so the banner reflects the image actually linked;

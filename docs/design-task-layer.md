@@ -274,7 +274,7 @@ Three consequences worth stating, because each is a place a reader would expect 
   capability sweep so a supervisor woken by the sweep's EPIPE could respawn into the window at once,
   and with a thread-scoped window `dying` is the flag that does the same job.
 - the DEV window's Rule 7 admission and its exclusivity check move OUT of `domain_for` and INTO
-  `thread_spawn`, which is where the grant is asked for. `domain_for` keeps only the shared RAM
+  `thread_create_call`, which is where the grant is asked for. `domain_for` keeps only the shared RAM
   grant, which is the one a task creates.
 - an MMIO-bearing spawn no longer skips the dedup scan, because there is no MMIO in `domain_for` to
   skip it for. Two threads granting the same block therefore share ONE domain slot where they used to
@@ -323,25 +323,68 @@ saying "per-task table" become wrong and must be reworded, which is part of 4.1'
 
 ## 6. Death semantics
 
-Thread-scoped **fault** death stays exactly as M4.7.9 ruled it. The question is whether a task dies
-when one of its threads does, and what the default is.
+What M4.7.9 ruled about **fault** death is untouched: a fault is CONTAINED rather than a panic, and
+the arch seam decides only whether the fault is a thread's own. What a death does to the REST of the
+dying thread's task is this section's question, and the answer here is a REVISION of the one this
+document originally gave.
 
-The proposal notes that a driver task and a pool of independent workers want opposite defaults.
-**That tension dissolves once grouping is explicit, and the spike takes the simpler answer.**
+### The original ruling, and the premise it rested on
 
-**Decision: task-scoped death is the rule, with no policy flag, because under 5.3's default a task
-of one thread makes it a no-op.**
+> **Decision: task-scoped death is the rule, with no policy flag, because under 5.3's default a task
+> of one thread makes it a no-op.**
+>
+> - A thread that named no task is alone in its task. Task-scoped death then means "this thread
+>   dies", which is today's behaviour, bit for bit, for all 230 existing call sites and every worker
+>   pool.
+> - A thread that joined a task declared itself part of one unit. Coupling its fate is the meaning
+>   of having joined, not a policy on top of it.
 
-- A thread that named no task is alone in its task. Task-scoped death then means "this thread dies",
-  which is today's behaviour, bit for bit, for all 230 existing call sites and every worker pool.
-- A thread that joined a task declared itself part of one unit. Coupling its fate is the meaning of
-  having joined, not a policy on top of it.
+The second bullet is the decision. The first is the reason no flag was needed, and it is a claim
+about GROUPING rather than about death: it holds only while a thread that names no task is alone in
+one. M6.2/T5c rules that a plain spawn is `pthread_create` -- a thread of the SPAWNER's task,
+sharing its address space -- so that premise is gone, and with it the argument that task-scoped
+death is free. The first worker to return would end its parent.
 
-A flag would be a knob whose default is inferable from the grouping. **Deferred, not rejected:** if a
-real case appears that wants a multi-thread task with independent thread fates, add
+### The ruling, revised at M6.2/T5c
+
+**A FAULT ends the whole task. Every death a caller asked for ends one thread, and the task ends
+when its last member leaves.**
+
+The line is not drawn between kinds of cancellation. It is drawn at whether anyone is WATCHING the
+death:
+
+- **A fault** has no caller. Nobody chose it, nobody is positioned to clean up after it, and the
+  faulting thread's siblings share the address space it was writing when it died. This is the
+  fault-isolation property and it is the half that must not weaken: every group whose members had
+  coupled fates before still has them, because such a group is exactly an explicit task. It
+  propagates `CANCEL_KILL`, the kind a fault already carried, so a peer keeps the window it holds
+  long enough to quiet its device.
+- **An ordinary return** is one thread finishing. Its siblings end at their own returns, and the
+  task ends at `task_release`'s last decrement, where it always ended.
+- **A cooperative kill** (`CANCEL_KILL`) and **a slay** (`CANCEL_SLAY`) are aimed at ONE NAMED
+  THREAD by a caller holding its handle. `kos_task_kill` and `kos_task_slay` are the verbs for the
+  group and each cancels every member itself, before the first victim reaches `exit_current`. So
+  propagating a victim's kind from its own exit adds nothing to the group paths, and it would
+  collapse `kos_thread_slay` into `kos_task_slay`: a parent could no longer stop one uncooperative
+  worker without dying with it. Under the pthread reading this ruling adopts, cancelling a thread
+  does not cancel its peers.
+
+**`exit_current` cannot derive this from the thread.** A fault sets no `cancel_kind`, so a contained
+fault and an ordinary return arrive identical; the fault path says which it is
+(`sched::EXIT_FAULTED`). Deriving it from the exit CODE instead would put the boundary inside a
+number an app may hand to `kos_exit`.
+
+**A flag would be a knob whose default is inferable from the grouping. Deferred, not rejected:** if a
+real case appears that wants a multi-thread task whose members' FAULTS do not couple, add
 a per-task independence flag (name proposed in the fenced sketch above) at task-create then. The tree has no such case today: the six multi-thread
-drivers all want the coupled behaviour, and the worker pools are all one-thread tasks under the
-default.
+drivers all want the coupled behaviour.
+
+### What the revision costs the witnesses
+
+An arm that faulted a plain-spawned worker and watched root survive was not witnessing containment;
+it survived because every thread was accidentally its own task, and it could not tell "died alone"
+apart from "ended a one-member group". Such an arm now spawns its victim into a task of its own
+through `kos_task_create`, which is the shape that makes containment observable at all.
 
 **What this needs that does not exist:** a group kill. `thread_kill` today only sets
 `t->cancelled = true` (`kernel/syscall/syscall_thread.cc:531`) and is honoured at exactly one
@@ -414,11 +457,11 @@ subtracted.
 
 | surface | sites | shape under 5.3's default |
 | --- | --- | --- |
-| `kos::thread::spawn_caps` | 147 | **no change.** Task is a defaulted parameter |
-| `kos::thread::spawn` | 68 | **no change** |
-| `kos_thread_spawn` | 5 | **no change** |
+| `kos::thread::create_caps` | 147 | **no change.** Task is a defaulted parameter |
+| `kos::thread::create` | 68 | **no change** |
+| `kos_thread_create` | 5 | **no change** |
 | `kickos::driver::spawn_unprivileged` | 6 | changed, this is the driver seam |
-| kernel `thread_spawn` / `thread_create` | 4 (`syscall.cc:499`, `syscall_thread.cc:483`, `kmain.cc:233`, `:278`) | changed |
+| kernel `thread_create_call` / `thread_create` | 4 (`syscall.cc:499`, `syscall_thread.cc:483`, `kmain.cc:233`, `:278`) | changed |
 | **total spawn sites** | **230** | **~10 must change** |
 
 Concentration worth knowing: `user/apps/common/selftest/main.cc` holds 152 of the 230. If the task
@@ -631,13 +674,17 @@ is what puts it back. Landing 9.4 alone would have shipped a window that a survi
    over `WaitKind` and the DEATH POINT is the syscall entry, which are two mechanisms rather than
    one. Section 6.1 has it. What survives unanswered is the residual it names -- a thread that never
    re-enters the kernel -- and that one does need preemption.
-2. **Does the `domain_for` dedup survive? KEPT, and 9.4 widened its reach without meaning to.**
-   With the MMIO window out of `domain_for` an MMIO-bearing spawn no longer skips the scan, so two
-   threads granting the same block now share one domain where they used to burn two. It is a slot
-   economy and it is explicitly NOT an expression of intent any more -- which task a thread is in is
-   what a `Task` says, and two tasks landing on one domain stay two tasks. Deleting it is still
-   available and is now cheap to argue for, because only an explicit task's grant reaches a fresh
-   slot at all and `KICKOS_MAX_DOMAINS` (`MAX_THREADS + 2`) is over-provisioned for that.
+2. **Does the `domain_for` dedup survive? IT DID NOT: DELETED AT M6.2's T5.** The ruling below is
+   kept as the argument that made deleting it cheap, and the prediction in its last sentence is what
+   happened. What forced it was `docs/design-m6-mmu.md` F2: under a process model the dedup puts two
+   kill groups inside one address space, and then "the set of threads sharing a domain" names
+   something bigger than a task. The harder half was not the scan at all but the immortal
+   default-user domain every no-grant task was handed, which is a shared identity by construction;
+   that became a per-task template at the same step.
+   *The argument, as it stood:* with the MMIO window out of `domain_for` an MMIO-bearing spawn no
+   longer skipped the scan, so two threads granting the same block shared one domain where they used
+   to burn two. It was a slot economy and explicitly NOT an expression of intent, and
+   `KICKOS_MAX_DOMAINS` was over-provisioned for the alternative.
 3. **What is a task's identity in the handle space? ANSWERED: a plain word, not a capability.**
    `kos_task_t` is generation over a biased index, resolved against the task pool, and the cap codec
    is untouched -- 5.4 holds. Possession is NOT authority, exactly as a thread handle's is not: the

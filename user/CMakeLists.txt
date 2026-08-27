@@ -4,9 +4,9 @@
 # uart_service_dev.cc is a TU of its own so the archive pulls it only for a driver that also
 # links a UART class backend; merged into uart_service.cc it would make the ring side
 # undefined on a board that has no backend at all.
-set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/init_args.cc src/console_ring.cc
-                        src/driver_service.cc src/uart_service.cc src/uart_service_dev.cc
-                        src/usb_cdc_service.cc)
+set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/init_args.cc src/root_entry.cc
+                        src/console_ring.cc src/driver_service.cc src/uart_service.cc
+                        src/uart_service_dev.cc src/usb_cdc_service.cc)
 
 # The newlib porting layer clashes with host libc on the sim; it is linked from
 # M1 when userspace rides the ARM toolchain libc. newlib_sbrk.cc is a separate TU so

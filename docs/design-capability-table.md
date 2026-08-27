@@ -791,7 +791,7 @@ Not settled by this document:
 - **`KCAP_RUN_OFF_POOL` is 1, where the true peak of concurrently attached runs is
   `KICKOS_THREAD_SLOTS`.** `ThreadPool::alloc` detaches the reclaimed slot's run BEFORE
   `cap_slab_attach` takes the new one (`kernel/include/kickos/thread.h`), so the pool term and
-  `thread_spawn`'s in-flight term never both count: the slot a spawn targets holds no run while
+  `thread_create_call`'s in-flight term never both count: the slot a spawn targets holds no run while
   the in-flight one is live. `0` would save one child-width run,
   `KCAP_CHILD_CHUNKS * KCAP_CHUNK_SLOTS * 8` bytes of `.bss`.
   Left alone deliberately: it spends the last

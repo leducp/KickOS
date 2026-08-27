@@ -142,8 +142,8 @@ int main(int, char**)
     // Spawned before the publish so a refused spawn still reports on a kernel-owned
     // console. Unprivileged: kos_thread_slay refuses a privileged target.
     kos_cap_grant const caps[1] = {{ep, KOS_CAP_WAIT}};
-    auto const drv = kos::thread::spawn_caps(console_sink, nullptr, "rwdrv", DRIVER_PRIO,
-                                             caps, /*cap_count=*/1);
+    auto const drv = kos::thread::create_caps(console_sink, nullptr, "rwdrv", DRIVER_PRIO,
+                                              caps, /*cap_count=*/1);
     if (not drv.valid())
     {
         print_rc("FAIL driver spawn", drv.error());

@@ -156,7 +156,7 @@ namespace
         int n = 0;
         while (n < PROBE_MAX)
         {
-            auto t = kos::thread::spawn_caps(prober, nullptr, "probe", 4, caps, 2);
+            auto t = kos::thread::create_caps(prober, nullptr, "probe", 4, caps, 2);
             if (not t.valid())
             {
                 break;
@@ -214,10 +214,10 @@ int run_stress_round(int pairs, int sleepers, int live)
         }
         kos_cap_grant pcaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL},
                                  {g_pair_a[i], CH_FULL}, {g_pair_b[i], CH_FULL}};
-        auto a = kos::thread::spawn_caps(ping, reinterpret_cast<void*>(uintptr_t(i)), "ping",
-                                         prio, pcaps, 4, policy, quantum);
-        auto b = kos::thread::spawn_caps(pong, reinterpret_cast<void*>(uintptr_t(i)), "pong",
-                                         prio, pcaps, 4, policy, quantum);
+        auto a = kos::thread::create_caps(ping, reinterpret_cast<void*>(uintptr_t(i)), "ping",
+                                          prio, pcaps, 4, policy, quantum);
+        auto b = kos::thread::create_caps(pong, reinterpret_cast<void*>(uintptr_t(i)), "pong",
+                                          prio, pcaps, 4, policy, quantum);
         if (not a.valid() or not b.valid())
         {
             ok = false;
@@ -229,8 +229,8 @@ int run_stress_round(int pairs, int sleepers, int live)
     {
         uint8_t prio = static_cast<uint8_t>(6 + (i % 6)); // 6..11, straddling the pairs
         kos_cap_grant scaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL}};
-        auto t = kos::thread::spawn_caps(sleeper, reinterpret_cast<void*>(uintptr_t(i)), "sleep",
-                                         prio, scaps, 2);
+        auto t = kos::thread::create_caps(sleeper, reinterpret_cast<void*>(uintptr_t(i)), "sleep",
+                                          prio, scaps, 2);
         if (not t.valid())
         {
             ok = false;
@@ -278,7 +278,7 @@ int run_stress_round(int pairs, int sleepers, int live)
         for (int b = 0; b < live; b++)
         {
             kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL}};
-            auto t = kos::thread::spawn_caps(churner, nullptr, "churn", 10, ccaps, 2);
+            auto t = kos::thread::create_caps(churner, nullptr, "churn", 10, ccaps, 2);
             if (not t.valid())
             {
                 break;

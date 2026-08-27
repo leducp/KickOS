@@ -75,10 +75,13 @@ is where a bus-side unit reports: `mk64f` reads SYSMPU `CESR`, decodes the per-s
 `SPERR` nibble, and says so explicitly when NO protection error is latched -- which is the tell
 for a peripheral-bridge fault rather than an MPU one.
 
-### Fault-isolation contract (a faulting thread dies alone)
+### Fault-isolation contract (a faulting thread takes its task and nothing beyond)
 
 **The rule.** A fault taken in unprivileged thread context, in a thread that is not already
-dying, kills that thread and nothing else; every other fault panics exactly as before. The
+dying, kills that thread and its TASK; every other fault panics exactly as before. The scope
+is the task because siblings share the address space the faulting thread was writing, and a
+plain spawn is a thread of the caller's task. A backend implements no part of that scoping: it
+decides only WHETHER the fault is a thread's own, and `sched::exit_current` draws the rest. The
 core half is `kernel/init/fault.cc`: a backend's fault handler calls
 `kickos_fault_kill_thread(frame)` BEFORE it starts its dump and simply RETURNS when that
 answers true, and the exception return then lands in `kickos_thread_fault_exit`. The
@@ -1279,7 +1282,7 @@ not only about the message: each of the two now creates staging semaphores befor
 spawns, and a board too small to host the workers is also too small to supply those, so a
 probe is what keeps the outcome a skip rather than a create failure. Detecting the shortfall
 from a negative spawn return instead would not say which limit was hit, because
-`kos_thread_spawn` answers `-KOS_ENOMEM` for a full slot table and for a missing stack block
+`kos_thread_create` answers `-KOS_ENOMEM` for a full slot table and for a missing stack block
 alike. The other 61 cases
 need no 4th worker, so a small part loses one chained-priority-inheritance case and
 one call/reply case, not the suite. The 6-semaphore peak is `mutex_deadlock`: two permanent
@@ -1407,7 +1410,7 @@ re-provisioning bought. `caller_stack` still reports PARTIAL (`t_caller_stack`:
 `confused_deputy` carries the same construct and did not trip it on this part.
 
 **8 of the 9 former skips were arena STARVATION wearing a "pool too small" label.** That
-label is not sloppiness in the cases: `kos_thread_spawn` returns `-KOS_ENOMEM` for BOTH
+label is not sloppiness in the cases: `kos_thread_create` returns `-KOS_ENOMEM` for BOTH
 "slot table full" and "no stack block", so the two are INDISTINGUISHABLE at runtime and a
 case that only sees a negative spawn return cannot tell which limit it hit. This is the
 same trap *What binds beyond memory* states from the other end -- a spawn failure is not

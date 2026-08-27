@@ -135,7 +135,7 @@ list(JOIN KICKOS_EXPECT_PARTIALS "," KICKOS_EXPECT_PARTIALS)
 # RUNTIME registry, so plan and case count shrink together when an arm is deleted and only an
 # expectation from OUTSIDE the image can see it. The conditions mirror the #if guards around the
 # registration block at the bottom of main.cc, one clause per guard.
-set(_tap_arms 86) # unconditional, incl. endpoint_send_timeout, recv_timeout, timed_arg_refusals, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
+set(_tap_arms 87) # unconditional, incl. readable_global, endpoint_send_timeout, recv_timeout, timed_arg_refusals, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
   math(EXPR _tap_arms "${_tap_arms} + 1") # call_reg_fastpath (region 1)
@@ -153,7 +153,7 @@ if(KICKOS_ARCH STREQUAL "sim")
   math(EXPR _tap_arms "${_tap_arms} + 1") # periph_reg_write_mask
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms "${_tap_arms} + 10") # aspace_seam, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_balance, aspace_domain_balance, 2 x aspace_two_spaces_*, parked_frame_hostile
+  math(EXPR _tap_arms "${_tap_arms} + 14") # aspace_seam, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_balance, aspace_domain_balance, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, parked_frame_hostile
 endif()
 
 # The same count per region, mirroring the #if guards inside each. The regions are separated by
@@ -168,7 +168,7 @@ if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p1 "${_tap_arms_p1} + 1") # call_reg_fastpath: reads the fastpath counter
 endif()
 
-set(_tap_arms_p2 18) # region 2, unconditional, incl. 3 x call_donation_*, 8 x cap_*, console_publish_priv, shutdown_priv
+set(_tap_arms_p2 19) # region 2, unconditional, incl. readable_global, 3 x call_donation_*, 8 x cap_*, console_publish_priv, shutdown_priv
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 3") # bus_device_slots, uart_service, reboot_priv
 endif()
@@ -193,7 +193,7 @@ if(KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # caller_stack_arena
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 10") # 9 x aspace_* + parked_frame_hostile
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 14") # 9 x aspace_* + stack_is_frames + process_private_data + task_siblings_share + task_handoff_readback + parked_frame_hostile
 endif()
 
 # Totality, checked on EVERY board and not only the ones that split.

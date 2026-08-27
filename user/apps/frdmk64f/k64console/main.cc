@@ -133,7 +133,7 @@ int main(int, char**)
     // The driver needs a beat to emit its first-light banner before the scrambler, which
     // holds no grant of any kind, garbles UART0 under it.
     kos_sleep_ns(200000000ull); // 200 ms
-    auto const s = kos::thread::spawn(
+    auto const s = kos::thread::create(
         scrambler, nullptr, "scrambler",
         /*prio=*/SCRAMBLER_PRIO, KOS_POLICY_FIFO, /*quantum_ns=*/0,
         /*privileged=*/false);
@@ -149,7 +149,7 @@ int main(int, char**)
     fflush(stdout);
     // The worker's index-0 cap is seated to the published endpoint by
     // cap_install_defaults, because it is spawned after the init's publish.
-    auto const w = kos::thread::spawn(worker, nullptr, "worker", WORKER_PRIO);
+    auto const w = kos::thread::create(worker, nullptr, "worker", WORKER_PRIO);
     if (not w.valid())
     {
         kos::print("[k64console] ERROR: worker spawn failed\n");

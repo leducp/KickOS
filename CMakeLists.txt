@@ -312,14 +312,28 @@ else()
   add_compile_definitions(KICKOS_MULTI_INSTANCE=0)
 endif()
 
-# The TLS stride. Unprivileged ARM code has no register that differs per thread except SP,
-# so __aeabi_read_tp is SP masked down to the thread's own stack block, and one image has
-# ONE mask: root and every pool stack must round to the SAME power of two.
+# The TLS stride. Where the arch derives the thread pointer by MASKING SP, having no register
+# that differs per thread at the unprivileged level (or masking anyway), one image has ONE
+# mask, so root and every pool stack must round to the SAME power of two and must BE that
+# power of two.
+#
+# THE TWO REFUSALS BELOW ARE KEYED ON KICKOS_TLS_FROM_SP AND NOT ON KICKOS_TLS, which is the
+# per-mechanism qualification docs/design-m6-mmu.md F7 asks for. An arch that SEATS the
+# register from the context computes the block base by subtraction, so it owes the stride
+# nothing and a stack there may be any number of pages at any page boundary. The stride
+# itself is still derived on every board: the link-time assert that the thread-local template
+# fits inside one reads it.
 include("${CMAKE_SOURCE_DIR}/cmake/boot_arena.cmake")
+# Defined either way, so a `#if KICKOS_TLS_FROM_SP` in a TU that forgot defined() reads false
+# rather than reading an undefined identifier as zero by luck.
+if(NOT DEFINED KICKOS_TLS_FROM_SP)
+  set(KICKOS_TLS_FROM_SP 0)
+endif()
+add_compile_definitions(KICKOS_TLS_FROM_SP=${KICKOS_TLS_FROM_SP})
 if(KICKOS_TLS)
   kickos_pow2_ceil("${KICKOS_USER_STACK_SIZE}" _tls_stride)
   kickos_pow2_ceil("${KICKOS_ROOT_STACK_SIZE}" _tls_root_stride)
-  if(NOT _tls_stride EQUAL _tls_root_stride)
+  if(KICKOS_TLS_FROM_SP AND NOT _tls_stride EQUAL _tls_root_stride)
     message(FATAL_ERROR
       "KickOS: KICKOS_TLS is on and this board's stacks do not share a stride. "
       "KICKOS_USER_STACK_SIZE ${KICKOS_USER_STACK_SIZE} rounds to ${_tls_stride} and "
@@ -331,10 +345,11 @@ if(KICKOS_TLS)
       "let a thread_local fail the link instead.")
   endif()
   # AND THEY MUST BE THE STRIDE, not merely round to it: tls_stack_admissible requires a
-  # block of EXACTLY one stride, because two smaller blocks fit inside one stride and mask to
-  # the same base. A non-power-of-two here has every spawn refused at runtime, not here.
+  # block of EXACTLY one stride wherever the mask is real, because two smaller blocks fit
+  # inside one stride and mask to the same base. A non-power-of-two there has every spawn
+  # refused at runtime, not here.
   foreach(_k KICKOS_USER_STACK_SIZE KICKOS_ROOT_STACK_SIZE)
-    if(NOT ${${_k}} EQUAL _tls_stride)
+    if(KICKOS_TLS_FROM_SP AND NOT ${${_k}} EQUAL _tls_stride)
       message(FATAL_ERROR
         "KickOS: KICKOS_TLS is on and ${_k} is ${${_k}}, which is not a power of two: it "
         "rounds to a stride of ${_tls_stride}. The thread pointer is SP masked down to that "
@@ -352,6 +367,12 @@ if(KICKOS_TLS)
   add_compile_definitions(KICKOS_TLS=1
                           KICKOS_TLS_STRIDE=${_tls_stride}
                           KICKOS_TLS_STRIDE_LOG2=${_tls_log2})
+  # Where the two knobs differ the stride derived above describes only the larger, so on a
+  # masking arch they are refused above and this can only be reached where the mask is not
+  # real. Stated so the stride's meaning per board is not left to be inferred.
+  if(KICKOS_TLS_FROM_SP)
+    message(STATUS "KickOS: the thread pointer is SP masked to the stride")
+  endif()
   message(STATUS "KickOS: TLS stride ${_tls_stride} (1 << ${_tls_log2})")
 else()
   # Defined either way so `#if KICKOS_TLS` in a TU that forgot defined() reads false rather

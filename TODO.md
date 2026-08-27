@@ -254,7 +254,7 @@ rejected alternatives especially. Read them as why the ABI looks the way it does
 - [x] **Root's own kill tag is an enabler, but a weaker one than it reads.** Root now holds a real
       tag (`ThreadPool::ROOT_INDEX`, `ThreadPool::is_root`) instead of sharing `KILL_TAG_BOOT` with
       idle, and that is what makes root nameable by a handle and by a reply capability. It is NOT
-      what makes killing a child possible: `thread_spawn` seats `attr.spawner_tag` from
+      what makes killing a child possible: `thread_create_call` seats `attr.spawner_tag` from
       `kill_tag_of(spawner)` and a BOOT-tagged root already matched its BOOT-tagged children on
       `master`. The load-bearing fact for reaping is the other one: root's children can never be
       orphaned, because orphaning happens only in `ThreadPool::alloc`'s sweep over a reclaimed
@@ -266,7 +266,7 @@ rejected alternatives especially. Read them as why the ABI looks the way it does
       demand widens root only. `KICKOS_MAX_SPAWN_GRANTS` is a Kconfig knob with `range 2 16` and
       `default 6`, no board in the tree overrides it, and no service list or app declares an inbound
       reply cap, so the width is 7 on every board today. Its Kconfig help states the cost is caller
-      stack and not `.bss`, because `thread_spawn` stages the grant list in arrays on the calling
+      stack and not `.bss`, because `thread_create_call` stages the grant list in arrays on the calling
       thread's own stack. The residual constraint worth stating is only that ONE width serves every
       child, so whatever `main` needs sets the floor for every worker in the image.
 - [x] **`ktime_on_timer` cannot be reused as the timeout unwind.** It does a generic `sleepq_remove`
@@ -764,7 +764,7 @@ triggers `push` only on `master`).
       is an argument, not a demonstration, and that is worth saying.
 - [x] **Split `domain_for`'s refusal** -- `m4.5.1: split domain_for's refusal reasons`
       (296e030). An out-parameter errno (EPERM inadmissible / EINVAL malformed /
-      ENOMEM exhausted), forwarded verbatim by `thread_spawn`. The spawn-boundary pre-check
+      ENOMEM exhausted), forwarded verbatim by `thread_create_call`. The spawn-boundary pre-check
       that existed only to recover the errno the chokepoint could not express is gone, so the
       duplication went with the fix. Gate: `grant_reserved`, checked to fail on ENOMEM.
 - [x] **Debug asserts on the intrusive list** -- `m4.5.1: assert list membership on push_back
@@ -822,8 +822,8 @@ triggers `push` only on `master`).
       userspace driver still holds queued bytes loses them: `console_tx_flush_sync()` is a no-op
       (the ring was disarmed by `console_tx_deinit`) and `arch_shutdown` then spins forever.
       Shutdown has to drain through the owning driver, not the retired kernel ring.
-- [x] **Give `thread_spawn`'s two READ checks the same static-data fallback the write side just
-      got.** -- `m4.5.1: use user_readable_ok for thread_spawn's two read checks`
+- [x] **Give `thread_create_call`'s two READ checks the same static-data fallback the write side just
+      got.** -- `m4.5.1: use user_readable_ok for thread_create_call's two read checks`
       (fe68c72). One word at each site; byte-identical on an enforcing backend, where the
       fallback arm returns false. Gate: the `authority_cap` worker's params struct and grant
       array became GLOBALS -- exactly the shape that failed -- and the comment recording the bug
@@ -1220,7 +1220,7 @@ posture that is still selectable.
       bus driver: `docs/design-unprivileged-root.md` sections 7 and 9.
 - [x] **The call site is the DRIVER, not root**, which is what makes the seam's bound a fact rather
       than an aspiration: root holds no DEV region on any board (`ARCH_MPU_DEV` is attached only in
-      `domain_for`, reached with MMIO only from `thread_spawn`, and `KOS_SYS_MEM_SELF_GRANT`
+      `domain_for`, reached with MMIO only from `thread_create_call`, and `KOS_SYS_MEM_SELF_GRANT`
       hardcodes `R|W`), so a holder of one window can only ever ask the kernel to configure that
       window's device.
 - [x] **No PIT entry on K64F, refused by design.** One AIPS `PACR` slot covers a whole 4 KiB block,
@@ -1393,7 +1393,7 @@ Blockers and limits:
   stores need a privileged executor, and the flip needs a seam for them. Given that seam the
   bring-up moves **wholesale** into the granted driver and must, because no path exists by which a
   post-flip root holds a DEV region: `ARCH_MPU_DEV` is attached only in `domain_for`, reached with
-  MMIO only from `thread_spawn`, and `KOS_SYS_MEM_SELF_GRANT` hardcodes `ARCH_MPU_R | ARCH_MPU_W`.
+  MMIO only from `thread_create_call`, and `KOS_SYS_MEM_SELF_GRANT` hardcodes `ARCH_MPU_R | ARCH_MPU_W`.
   So the driver is the only possible caller of the seam. The
   earlier entry here said the opposite ("contradicted, not untested", from `consoledemo`'s scrambler
   garbling the UART); that was **invalid inference** -- the scrambler also writes SCTR/TCSR/PCR (`U,PV`) and
@@ -1664,7 +1664,7 @@ one, so those captures cannot be re-derived from history.
       diagnostic LOST every time** -- the worst possible shape for a path whose only job is to
       report. The kernel now panics kernel-side with the caller's message, so the report survives.
       Two implementation constraints, kept because neither is visible at the call site:
-        - **Userspace pointer validation reuses the existing `thread_spawn` name-copy pattern**
+        - **Userspace pointer validation reuses the existing `thread_create_call` name-copy pattern**
           rather than inventing a second one: a panic message is the same untrusted-pointer problem
           as a thread name.
         - **The 64-byte message buffer lives in a `noinline` helper.** A syscall runs on the
@@ -1886,7 +1886,7 @@ duplicated.
       `user/apps/common/panicgate/CMakeLists.txt`). Compare named transcripts and not totals: plan
       counts move for reasons unrelated to any one change.
 
-- [ ] **`kos_thread_spawn` returns `-KOS_ENOMEM` for two different failures**, so arena starvation is
+- [ ] **`kos_thread_create` returns `-KOS_ENOMEM` for two different failures**, so arena starvation is
       indistinguishable from a legitimate pool limit at runtime:
       `kernel/syscall/syscall_thread.cc:306` is "thread pool exhausted" and `:375` is "stack arena
       exhausted". That ambiguity mislabelled
@@ -3511,8 +3511,8 @@ with the consequence that comes with them, because each was chosen against a rea
    design that consumption lands in the server's own declared run and nowhere else. **The current
    exposure is preserved exactly, not widened.**
 3. **Spawn-time slab drain.** Real, and the mitigation is NOT "spawn is authority-gated" -- it
-   isn't. `KOS_SYS_THREAD_SPAWN` dispatches with no authority check
-   (`kernel/syscall/syscall.cc`); inside `thread_spawn` only the privileged flag, the MMIO window
+   isn't. `KOS_SYS_THREAD_CREATE` dispatches with no authority check
+   (`kernel/syscall/syscall.cc`); inside `thread_create_call` only the privileged flag, the MMIO window
    (`AUTH_MEMORY`) and the authority word are gated, so any task can spawn an unprivileged default
    child. The mitigations that actually hold: every spawned child costs a TCB slot, so drain is
    bounded by `KICKOS_MAX_THREADS`; the same ungated actor can already deny every future spawn by
@@ -3814,7 +3814,7 @@ is a claim I could not verify either way. Each item says which.
       - **Userspace is already ready for it**: `irq_loop` breaks on `kos_irq_wait(...) != 0` and
         then calls `kos_exit(0)` (`uart_service.h:139-165`), so a cancelled IRQ thread exits
         cleanly with no driver change at all.
-      - **Thread handles exist but nothing resolves one.** `kos_thread_spawn` returns
+      - **Thread handles exist but nothing resolves one.** `kos_thread_create` returns
         `handle_for(i)` = `(gen << 8) | index` (`syscall_thread.cc:487`, `thread.h:365-368`), and
         `syscall_thread.cc:32-33` states that a resolver must reject `state == EXITED`. There is no
         thread capability type -- `CapType` is EMPTY/SEM/MUTEX/ENDPOINT/REPLY/IRQ and nothing else
@@ -5078,7 +5078,7 @@ below where they were previously mislabeled.
   - [x] **MMIO-grant mechanism (task #9)** -- DONE + committed 2026-07-16.
         `kos_thread_params.mmio_base/mmio_size` (grant-at-spawn), the
         `arch_mpu_region_encodable` arch seam (exact-cover, no rounding), privileged-only
-        `thread_spawn` validation, `domain_for` appends MMIO as a never-shared capability.
+        `thread_create_call` validation, `domain_for` appends MMIO as a never-shared capability.
         PLUS a Critical fix: an unprivileged `mem_base` grant is now arena-bounds-checked
         (closed a peripheral/kernel-SRAM self-grant escalation). See `docs/design-task9-mmio-driver.md`.
   - [x] **K64F first unprivileged driver (k64drv, PIT)** -- DONE on silicon 2026-07-16;
@@ -5159,7 +5159,7 @@ below where they were previously mislabeled.
   (no MPU to contain an OOB access -- see the `user-args-validated-at-boundary` invariant).
   Cheap parts DONE (fable code review): thread name copied into a bounded TCB buffer (fault path
   never derefs/`%s` a user pointer); `clock_now` out-pointer null+8-byte-alignment checked;
-  `thread_spawn` stack `base+size` wrap checked; `SlotPool::resolve` rejects a dirty handle top
+  `thread_create_call` stack `base+size` wrap checked; `SlotPool::resolve` rejects a dirty handle top
   byte. Remaining: copy-in the `kos_thread_params` struct via a checked read, and bound-check
   writable out-pointers (`clock_now`) + the `write()` buffer against the caller's granted region
   -- this last part wants the M1 region-ownership model pinned (privileged = whole arena,
@@ -5242,6 +5242,14 @@ below where they were previously mislabeled.
   bounded by two link/config constants and nothing an app grows at runtime. The LATENCY
   concern is still real: a board with a full stride of `thread_local` masks on the order of
   2.5 KB of stores.
+
+  **THE REENT TERM IS GONE AS OF M6.2 T5b.2, and NOT by either design priced below.** The kernel
+  now primes a slot at its own FIRST SWITCH-IN, so the write happens under the switch's lock and
+  never under a spawn's, for every thread rather than for a reused slot alone (the boot seeding
+  loop and the pool's `reent_stale[]` went with it). It was moved because a per-process space
+  makes a spawn-time write land in the SPAWNER's frame, not to buy latency. What is left in the
+  masked spawn window is the TLS copy and the cap loop, so the numbers this section asks for are
+  still the ones to take before touching the lock.
 
   THE OBSTACLE IS NOT THE LOCK, IT IS `ThreadPool::release`. It undoes a claim in exactly two
   cases: an `EXITED` slot, or `i == next - 1`, and its own comment records why that is safe --
@@ -5765,6 +5773,31 @@ shared case only.
       fleet sweep and no CI job, and a change that breaks it is invisible until somebody remembers
       the flag.
 
+## Found while witnessing T5b.3 (2026-08-26)
+
+- [ ] **`appdata_no_kernel` does not run on the one board that splits its image.** The gate is
+      registered under `KICKOS_HAVE_MPU` and keys on `__kickos_appdata_start/_end`, which
+      `virt_arm64.ld` does not define. So the guard against a kernel archive silently landing in the
+      app's low window is absent exactly where that window is now **the only memory EL0 can reach**,
+      and a kernel object landing there would be an isolation hole with no gate over it. The script's
+      own `ASSERT(_ebss > _sbss)` catches total selector failure and nothing narrower. Enabling it
+      needs the two bounds plus a SECOND window pair for `.apptext`, the EL0-executable one, which
+      the existing gate has no concept of. Pre-existing since the app moved low; T5b.3 is what made
+      it matter.
+
+## Found while witnessing T5b.2, and predating it (2026-08-25)
+
+- [x] **`errnoprobe` HANGS on `qemu-arm64`.** Root-caused to the armv8a backend, not to the probe:
+      `arch_switch` latched BOTH `from` and `to` into a single deferred-switch request, so a second
+      reschedule inside one ISR (`ktime_on_timer` wakes every expired sleeper in one sweep) left
+      `from` naming a thread the scheduler had merely published. The IRQ exit then saved the
+      interrupted frame through that wrong context and lost the real one. The M-profile and RISC-V
+      backends ignore `from` and save `g_arch_current`; armv8a now has the same cell,
+      `kickos_armv8a_ctx_current`, re-seated by the IRQ exit. The gate is registered
+      (`qemu_arm64_errnoprobe`), the four arms reach their verdicts, and the failure was NOT
+      errnoprobe-specific: any two threads whose deadlines expired in one timer sweep corrupted a
+      context on this arch.
+
 ## Found while witnessing T5, and predating it (2026-08-25)
 
 - [ ] **`fault_dump` HANGS under a non-default service list.** Configured with
@@ -6254,7 +6287,7 @@ that changed the answer.** Kept in full because the mis-filings are the lesson:
       `Task::creator_tag` at the creator's death, and a never-freed task has `gen == 0` so its handle
       is `index + 1` -- which the selftest itself notes is guessable. So the SUCCESSOR of a dead
       creator's thread slot passes `task_created_by` for the predecessor's groups: it can kill them,
-      and it can `kos_thread_spawn` a child into one and hand that child the group's domain regions.
+      and it can `kos_thread_create` a child into one and hand that child the group's domain regions.
       `t_task_creator_gate` covers only a concurrently-live stranger. **This refutes the filed option
       "declare the hold the creator's for life" -- that IS the escape.** Fixed by
       `task_orphan_created_by` from `exit_current`, which is total over deaths where
@@ -6793,7 +6826,7 @@ follows is what survived that.
       the sweep wants the task.
 - [ ] **M6/SMP: the claim-then-commit shape in `domain_for` and `task_for` is safe only because
       `IrqLock` is enough on one core.** Both hand out a pool slot at refcount 0 and are committed by
-      a later `domain_ref`/`task_ref`, and what makes the window atomic is that `thread_spawn`
+      a later `domain_ref`/`task_ref`, and what makes the window atomic is that `thread_create_call`
       declares a FUNCTION-SCOPE `IrqLock` as its first statement, spanning the claim, the thread-slot
       alloc and `thread_create`. `IrqLock` masks LOCAL interrupts only, so under SMP a peer core can
       claim the same slot: two threads would then share one task and the loser's domain would sit at

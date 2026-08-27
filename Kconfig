@@ -95,6 +95,14 @@ config KICKOS_HAVE_MPU
 	default 1 if MEMORY_MODEL_MPU
 	default 0
 
+# The arch fact ARCH_TLS_FROM_SP, in the form CMake and C read. Both need it: CMake refuses
+# a non-power-of-two stack knob only where the mask is real, and tls_stack_admissible refuses
+# a block that is not one stride only there.
+config KICKOS_TLS_FROM_SP
+	int
+	default 1 if ARCH_TLS_FROM_SP
+	default 0
+
 # --- Userspace services and pin mux -----------------------------------------
 # Both name a CMake target: the one defining kickos_board_services, and the one
 # defining kickos_board_pinmap. A board states its own default in
@@ -170,7 +178,7 @@ config KICKOS_MAX_SPAWN_GRANTS
 	range 2 16
 	default 6
 	help
-	  Costs caller stack, not .bss: thread_spawn stages the grant list in arrays
+	  Costs caller stack, not .bss: thread_create_call stages the grant list in arrays
 	  on the calling thread's own stack. The floor is 2, not 1: the child width is
 	  this plus one plus the reply peak, and a width inside the reserved index
 	  range leaves a child no slot of its own, which configure refuses.

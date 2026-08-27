@@ -57,6 +57,12 @@ add_subdirectory(fault)
 # The map editor's fourth transition: a page unmapped under the RUNNING translation must
 # fault. Self-gated on a translating backend, so only qemu-arm64 builds it today.
 add_subdirectory(aspacefault)
+# The guard page below a mapped thread stack: an overrun must fault instead of reaching a
+# neighbour. Self-gated the same way, a region backend having no unmapped page to find.
+add_subdirectory(stackguard)
+# The kernel's half from EL0: a word of kernel writable state must refuse an unprivileged
+# read. Self-gated the same way, a region backend refusing it by descriptor instead.
+add_subdirectory(kernelhalf)
 add_subdirectory(faultsurvive)
 # The PSP-bounds security regression: a thread aims its PSP just above its own stack base,
 # where the hardware frame fits and the switcher's software block does not.

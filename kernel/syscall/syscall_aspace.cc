@@ -15,6 +15,7 @@
 
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
 
+#include <kickos/aspace.h>
 #include <kickos/domain.h>
 #include <kickos/frame_pool.h>
 #include <kickos/irqlock.h>
@@ -318,6 +319,10 @@ namespace kickos
             // on this chip and this space maps neither, so any ISR taken here would run
             // against a space that cannot reach them.
             IrqLock lock;
+            // The switch path caches which space is installed, and this activates one behind
+            // its back, so the cache is dropped rather than left naming a space that is no
+            // longer the root.
+            aspace_forget_current();
             arch_aspace_activate(space);
             uint32_t const seen = *word_at(reinterpret_cast<void*>(VA_A));
             (void)arch_aspace_unmap(space, VA_A, 1);
@@ -325,7 +330,10 @@ namespace kickos
             // Reached only where the load above did NOT fault, which is the failure this arm
             // exists to catch: a backend whose unmap left the translation standing answers a
             // value here instead of a dump.
-            arch_aspace_activate(arch_aspace_boot());
+            //
+            // BACK TO THE CALLER'S OWN SPACE, not to the boot one: the caller returns to app
+            // text its own root maps, and the boot map is not that root.
+            aspace_activate_for(sched::current());
             arch_aspace_destroy(space);
             kickos_frame_free(frame);
             if (seen != PATTERN_B)
@@ -361,7 +369,7 @@ namespace kickos
             for (int i = 0; i < 4; i++)
             {
                 int derr = 0;
-                Domain* const d = domain_for(false, nullptr, 0, 0, true, &derr);
+                Domain* const d = domain_for(DOM_CALLER_MEM_AUTH, nullptr, 0, 0, nullptr, &derr);
                 if (d == nullptr)
                 {
                     return 0; // no frame for a root: nothing to weigh
@@ -375,7 +383,7 @@ namespace kickos
             // space a missing release destroy kept, and the pair would read as balanced
             // while every dead process held its tables until its slot was next claimed.
             int derr = 0;
-            Domain* const one = domain_for(false, nullptr, 0, 0, true, &derr);
+            Domain* const one = domain_for(DOM_CALLER_MEM_AUTH, nullptr, 0, 0, nullptr, &derr);
             if (one == nullptr)
             {
                 return 0;
@@ -439,6 +447,32 @@ namespace kickos
             case KOS_ASPACE_OP_DOMAIN_BALANCE:
             {
                 return op_domain_balance();
+            }
+            case KOS_ASPACE_OP_RANGES_FREE:
+            {
+                Thread const* const c = sched::current();
+                if (c == nullptr)
+                {
+                    return 0;
+                }
+                VirtualRanges const* const r = domain_ranges(task_domain(c->task));
+                if (r == nullptr)
+                {
+                    return 0;
+                }
+                return VirtualRanges::capacity() - r->count();
+            }
+            case KOS_ASPACE_OP_FRAME_AT:
+            {
+                // Two tasks comparing this for one address is what witnesses that per-process
+                // static data is a COPY (section 3.4). aspace.h states what the number is and
+                // why it is not the frame's own address.
+                Thread const* const c = sched::current();
+                if (c == nullptr)
+                {
+                    return 0;
+                }
+                return aspace_frame_token(domain_space(task_domain(c->task)), a1);
             }
             case KOS_ASPACE_OP_SPACE_ID:
             {

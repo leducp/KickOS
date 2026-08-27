@@ -214,7 +214,7 @@ A thread that can create a privileged child can create one that does anything at
 including creating more of them -- so narrowing such a capability is meaningless, and
 delegating it is unbounded escalation with extra steps. There is nothing to gain from
 making it nameable, and a great deal to lose. So it stays where it cannot be handed
-around: a property of the creating thread, checked directly (`thread_spawn` refuses an
+around: a property of the creating thread, checked directly (`thread_create_call` refuses an
 unprivileged caller with `-KOS_EPERM`; invariant `privilege-escalation-gated`).
 
 ## What a privileged thread IS: a kthread
@@ -480,7 +480,7 @@ each one separately. Passing one does not imply the other.
 **1. Confined execution -- run it where accesses are actually checked.** The code
 under test must run in an **unprivileged** thread, so its every load and store is
 subject to the protection unit. In KickOS that is
-`kos::thread::spawn(..., privileged = false)` -- the default. `cxxtest` does exactly
+`kos::thread::create(..., privileged = false)` -- the default. `cxxtest` does exactly
 this: rather than run the body inline, it spawns `cxx_worker` unprivileged
 (`user/apps/common/cxxtest/main.cc`) and the throw/catch/unwind/RTTI/STL all execute
 there, under the unit, reaching only the worker's granted regions. `selftest`

@@ -69,8 +69,8 @@ int main(int, char**)
               static_cast<char*>(rA) + REGION);
     emit(msg);
 
-    kos::thread::spawn(domainA_worker, rA, "domainA", 10, KOS_POLICY_FIFO, 0,
-                       /*privileged=*/false, rA, REGION);
+    kos::thread::create(domainA_worker, rA, "domainA", 10, KOS_POLICY_FIFO, 0,
+                        /*privileged=*/false, rA, REGION);
     kos_cap_t idle = KOS_CAP_NONE;
     (void)kos_sem_create(0, &idle);
     while (true)

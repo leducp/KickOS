@@ -147,6 +147,61 @@ function(kickos_apply_freestanding target)
   endif()
 endfunction()
 
+# kickos_privatise_runtime(<target>)
+#   Rewrites every runtime name a compiler EMITS in this archive to the kernel's private one
+#   (cmake/kernel_runtime.syms). For the archives that hold kernel text, and only where a
+#   translating backend splits the image: that text runs from the privileged half and may not
+#   call the app's copies, whose pages carry privileged-execute-never once EL0 can reach them
+#   (docs/design-m6-mmu.md, T5b). The caller is what decides that, KICKOS_HAVE_ASPACE being
+#   the same condition kickos/kruntime.h keys its declarations on.
+#
+#   An EXPLICIT call is renamed at its call site instead and needs nothing from this; what
+#   needs it is the reference with no call in the .cc at all, which `ThreadAttr attr;` emits
+#   and no compiler flag suppresses. The syms file carries the measurement.
+#
+#   In place, after `ar`, so the archive the linker reads is the rewritten one. objcopy
+#   rebuilds the member list and the index unchanged, and an entry matching no symbol is a
+#   no-op, so a second run over an already-rewritten archive changes nothing.
+#
+#   The syms file is NOT a dependency of this command, so adding a name to it does not
+#   re-archive anything: tests/static/check_kernel_runtime.sh is what turns that into a
+#   failure, and it is also what catches an archive this was never called for.
+function(kickos_privatise_runtime target)
+  if(NOT CMAKE_OBJCOPY)
+    message(FATAL_ERROR "kickos_privatise_runtime(${target}): no CMAKE_OBJCOPY. The kernel "
+                        "would call the app's memcpy/memset under their ordinary names.")
+  endif()
+  set(_syms "${PROJECT_SOURCE_DIR}/cmake/kernel_runtime.syms")
+  add_custom_command(TARGET ${target} POST_BUILD
+    COMMAND "${CMAKE_OBJCOPY}" "--redefine-syms=${_syms}" "$<TARGET_FILE:${target}>"
+    COMMENT "kickos: privatising the runtime references in ${target}"
+    VERBATIM)
+endfunction()
+
+# kickos_apply_split_image(<target>)
+#   For the archives holding KERNEL text where a translating backend splits the image in
+#   two. The kernel's half and the app's are 2^40 apart on AArch64 and adrp reaches 4 GiB,
+#   so a kernel reference to an app symbol truncates at link time (measured as
+#   R_AARCH64_ADR_PREL_PG_HI21 on kickos_reent_seam, kickos_init_args and
+#   kickos_user_thread_return). The large code model materialises every external address as
+#   a 64-bit literal in the referencing section, which reaches either half.
+#
+#   IT ALSO REMOVES EVERY KERNEL-SIDE GOT REFERENCE, and that is the load-bearing half. A
+#   static link has ONE .got and a GOT slot is reached by adrp like anything else, so a GOT
+#   with users in both halves cannot be placed at all. Under the small model a weak extern
+#   is what produces one (__register_frame, kickos_app_build_stamp, _kickos_heap_start, the
+#   MPU-window symbols a flat chip leaves undefined); under the large model none of them
+#   does, and the .got is left to newlib's __libc_fini_array and __call_exitprocs, which are
+#   app-side.
+#
+#   A CALL needs none of this: ld inserts a long-branch veneer for an out-of-range
+#   R_AARCH64_CALL26 in either direction.
+function(kickos_apply_split_image target)
+  if(KICKOS_ARCH STREQUAL "armv8a")
+    target_compile_options(${target} PRIVATE -mcmodel=large)
+  endif()
+endfunction()
+
 # hosted C++ TUs: the sim arch backend only
 function(kickos_apply_hosted target)
   target_compile_features(${target} PRIVATE ${KICKOS_CXX_STANDARD})

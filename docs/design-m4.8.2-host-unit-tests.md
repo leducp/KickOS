@@ -33,7 +33,7 @@ because its customer did not need one. **The U-seam is 11 functions, it is the c
 should land first.** Measured, on `7bdf1067`: `nm --undefined-only` over one host TU that takes the
 address of `kickos::driver::bring_up` reports exactly eleven symbols, every one an `extern "C"` free
 function -- `kos_print`, `kos_sleep_ns`, `kos_ram_alloc`, `kos_mem_self_grant`,
-`kos_endpoint_create`, `kos_console_publish`, `kos_irq_claim`, `kos_thread_spawn`,
+`kos_endpoint_create`, `kos_console_publish`, `kos_irq_claim`, `kos_thread_create`,
 `kos_thread_kill`, `kos_handle_close`, `kos_send_timed`. Add `kickos::driver::edge_relay_thread` and
 it is fourteen (`kos_irq_wait`, `kos_irq_notify`, `exit`).
 
@@ -249,7 +249,7 @@ cmake --preset sim && cmake --build build/sim && ctest --test-dir build/sim -R '
 
 `user/include/kickos/sys/driver_service.h` is the single bring-up path for every driver in the tree.
 Its failure branches -- a refused `kos_irq_claim`, a readiness timeout, a refused
-`kos_thread_spawn`, a refused `block_init`, a refused publish -- had **zero** coverage of any kind
+`kos_thread_create`, a refused `block_init`, a refused publish -- had **zero** coverage of any kind
 before this gate, and three separate reasons they could not get any:
 
 - `tests/integration/check_sim_drvdeath.sh` case 2 covers the handover tail's EPIPE arm, which is DOWNSTREAM of

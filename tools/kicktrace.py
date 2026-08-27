@@ -62,7 +62,7 @@ ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv
 # tests/unit/telemetry/check_idmap.py gates the numbers and the labels.
 SYSCALL_NAME = {
     1: "kconsole_write", 2: "yield", 3: "sleep_ns", 4: "sem_create", 5: "sem_wait",
-    6: "sem_post", 7: "thread_spawn", 8: "exit", 9: "irq_inject", 10: "guard_addr",
+    6: "sem_post", 7: "thread_create", 8: "exit", 9: "irq_inject", 10: "guard_addr",
     11: "irq_attach", 12: "clock_now", 13: "ram_alloc", 14: "irq_claim",
     15: "irq_wait", 16: "irq_ack", 17: "handle_close", 18: "irq_spurious",
     19: "diag_led_set", 20: "diag_led_toggle", 21: "irq_unmask", 22: "cpu_clock_hz",

@@ -638,13 +638,12 @@ void arch_aspace_activate(struct arch_aspace* space);
 void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va);
 void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
 
-#if defined(KICKOS_ENABLE_SELFTEST)
 // The space the boot path installed, and the ONLY handle for it: its tables are link-time
-// constants rather than something this seam created. Test scaffolding, the same shape as
-// arch_mpu_probe_addr, and it exists because a scenario that activates a space of its own
-// has no other way to put the running one back.
+// constants rather than something this seam created. It is what the kernel installs when
+// the running process's space is DESTROYED under it, the last thread of a task being the
+// one executing when its domain is released, and a freed root left in the translation
+// control is a walk into the frame pool.
 struct arch_aspace* arch_aspace_boot(void);
-#endif
 
 // --- Rule 7: kernel-reserved MMIO blocks (docs/design-m4-driver-model.md sec.7) --
 // The owns-for-life peripherals a grant must NEVER hand to userspace: the timebase
@@ -701,6 +700,23 @@ uintptr_t arch_syscall(uintptr_t nr,
                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
 uint64_t arch_syscall64(uintptr_t nr,
                         uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
+
+// THE SAME TRAP, SPELLED FROM KERNEL TEXT. Where a translating backend splits the image,
+// the leaf above links into the app's half: an EL0 thread executes it, so it carries
+// privileged-execute-never and kernel text may not call it (docs/design-m6-mmu.md, T5b.1).
+// The backend therefore assembles a second copy under these names, in its own half, which
+// every address space maps by construction. Spell these in kernel code and the trap is
+// correct on every backend; where the image is not split there is nothing to duplicate and
+// the names alias the ones above.
+#if KICKOS_HAVE_ASPACE
+uintptr_t karch_syscall(uintptr_t nr,
+                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
+uint64_t karch_syscall64(uintptr_t nr,
+                         uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
+#else
+#define karch_syscall arch_syscall
+#define karch_syscall64 arch_syscall64
+#endif
 
 // --- Register-carrying IPC trap (KOS_SYS_CALL_REG) -------------------------
 // Declared only under KICKOS_ARCH_HAS_IPC_FASTPATH, so a backend without the

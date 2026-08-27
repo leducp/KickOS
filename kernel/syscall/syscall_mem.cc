@@ -10,10 +10,12 @@
 // place a kernel-side user-pointer dereference lives.
 
 #include <kickos/arch/arch.h>
+#include <kickos/domain.h>
+#include <kickos/frame_pool.h>
 #include <kickos/kernel.h>
+#include <kickos/kruntime.h>
 #include <kickos/sched.h>
-
-#include <kickos/libc/string.h>
+#include <kickos/task.h>
 
 #include <kickos/sys/abi.h>
 
@@ -22,6 +24,38 @@
 
 namespace kickos
 {
+#if KICKOS_HAVE_ASPACE
+    namespace
+    {
+        // ARCH_MPU_* and ARCH_MAP_* are two vocabularies that happen to agree on their low
+        // three bits. Spelled out so a later bit added to either does not silently make one
+        // stand in for the other.
+        uint32_t map_rights_of(uint32_t need)
+        {
+            uint32_t rights = 0;
+            if ((need & ARCH_MPU_R) != 0)
+            {
+                rights |= ARCH_MAP_R;
+            }
+            if ((need & ARCH_MPU_W) != 0)
+            {
+                rights |= ARCH_MAP_W;
+            }
+            if ((need & ARCH_MPU_X) != 0)
+            {
+                rights |= ARCH_MAP_X;
+            }
+            return rights;
+        }
+
+        // The running task's granted-range list, or null where it holds no space.
+        VirtualRanges const* current_ranges(Thread const* c)
+        {
+            return domain_ranges(task_domain(c->task));
+        }
+    }
+#endif
+
     // Confused-deputy floor: syscall_dispatch runs privileged (it bypasses the
     // MPU), so it must never dereference a user pointer the CALLER could not
     // itself reach. A range passes iff it lies within one region the current
@@ -31,6 +65,14 @@ namespace kickos
     // args are caller STACK locals; a read buffer / name string may instead point
     // into the app's code/rodata/.data; see user_readable_ok for how those are
     // recognized on every backend (real MPU regions on HW, the host image on sim).
+    //
+    // TWO SOURCES ON A TRANSLATING BACKEND, AND THEY DESCRIBE DIFFERENT THINGS. The region
+    // array is what every grant path records and the only oracle a descriptor board has, so
+    // the walk below stays live on both. Beside it, the address space's granted-range list
+    // answers for what no region array on that backend describes: the process image, mapped
+    // into the space rather than granted to a thread (docs/design-m6-mmu.md section 3.3).
+    // Nothing else admits an app global there, the link-time whitelist having been retired
+    // with the re-key of arch_user_text_readable.
     bool user_range_ok(uintptr_t ptr, size_t len, uint32_t need)
     {
         Thread* c = sched::current();
@@ -63,6 +105,13 @@ namespace kickos
                 return true;
             }
         }
+#if KICKOS_HAVE_ASPACE
+        VirtualRanges const* const ranges = current_ranges(c);
+        if (ranges != nullptr and ranges->covers(ptr, len, map_rights_of(need)))
+        {
+            return true;
+        }
+#endif
         return false;
     }
 
@@ -78,6 +127,26 @@ namespace kickos
         {
             return false; // address-space wrap
         }
+#if KICKOS_HAVE_ASPACE
+        // The mapping's own memory type, which is where a translating backend records it:
+        // a self-grant seats no region there, so the array below holds no entry for a block
+        // this question is ever asked about.
+        VirtualRanges const* const ranges = current_ranges(c);
+        if (ranges != nullptr)
+        {
+            uint8_t memtype = static_cast<uint8_t>(ARCH_MAP_NORMAL);
+            if ((need & ARCH_MPU_NOCACHE) != 0)
+            {
+                memtype = static_cast<uint8_t>(ARCH_MAP_NOCACHE);
+            }
+            VirtualRange const* const e = ranges->find(ptr, len);
+            if (e != nullptr and e->state == VirtualState::Granted and e->memtype == memtype
+                and (e->rights & map_rights_of(need)) == map_rights_of(need))
+            {
+                return true;
+            }
+        }
+#endif
         for (arch_mpu_region const& r : c->mpu)
         {
             // EXACT, not a superset: a region carrying a memory type the caller did not ask
@@ -202,20 +271,20 @@ namespace kickos
     // user_readable_ok / user_writable_ok): this is the ACCESS, never the check.
     //
     // THE SEAM DOES NOT COPY OVERLAPPING RANGES, and the primitive below is the
-    // ascending-only memcpy, not memmove. A caller that needs overlap reaches for
-    // memmove here rather than widening a range.
+    // ascending-only kmemcpy, not kmemmove. A caller that needs overlap reaches for
+    // kmemmove here rather than widening a range.
 
     // kdst is kernel storage (a stack local or a kernel global) and usrc is user
     // memory, so the two ends are disjoint by construction.
     void kaccess_from_user(void* kdst, uintptr_t usrc, size_t n)
     {
-        memcpy(kdst, reinterpret_cast<void const*>(usrc), n);
+        kmemcpy(kdst, reinterpret_cast<void const*>(usrc), n);
     }
 
     // ksrc is kernel storage, udst is user memory: disjoint for the same reason.
     void kaccess_to_user(uintptr_t udst, void const* ksrc, size_t n)
     {
-        memcpy(reinterpret_cast<void*>(udst), ksrc, n);
+        kmemcpy(reinterpret_cast<void*>(udst), ksrc, n);
     }
 
     // Bounded copy (<= KOS_EP_MSG_MAX). Both endpoints do it under IrqLock,
@@ -232,7 +301,28 @@ namespace kickos
     void ep_copy(uintptr_t dst, uintptr_t src, size_t n)
     {
         KICKOS_ASSERT(dst + n <= src or src + n <= dst);
-        memcpy(reinterpret_cast<void*>(dst), reinterpret_cast<void const*>(src), n);
+        void* d = reinterpret_cast<void*>(dst);
+        void const* s = reinterpret_cast<void const*>(src);
+#if KICKOS_HAVE_ASPACE
+        // ONE END IS IN A SPACE THAT IS NOT THE RUNNING ONE, the peer being parked, and
+        // under translation that end has no address the running walk can reach. A
+        // reservation and a thread stack are frame-pool runs whose virtual address IS their
+        // output address (section 3.4), so the pool answers for the same bytes and no
+        // per-page translation stands in front of the copy. A buffer the pool never handed
+        // out is app static data, whose per-process copy this cannot reach: that is the
+        // cross-address-space seam T7 owns, and it is the caller's own space here.
+        void* const dalias = frame_pool_span(static_cast<arch_phys_addr_t>(dst), n);
+        if (dalias != nullptr)
+        {
+            d = dalias;
+        }
+        void* const salias = frame_pool_span(static_cast<arch_phys_addr_t>(src), n);
+        if (salias != nullptr)
+        {
+            s = salias;
+        }
+#endif
+        kmemcpy(d, s, n);
     }
 
     // Deliver a receiver's kos_recv_info (badge + reply_cap) into its parked out-ptr,

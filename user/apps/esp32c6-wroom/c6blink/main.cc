@@ -207,18 +207,33 @@ int main(int, char**)
         kos::print("[c6blink] ERROR: pinmux_set failed\n");
     }
 
-    auto drv = kos::thread::spawn(blink_driver,
-                                  reinterpret_cast<void*>(GPIO_MMIO_WINDOW_BASE),
-                                  "c6blink", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                  /*mem=*/nullptr, /*mem_size=*/0,
-                                  /*stack=*/nullptr, /*stack_size=*/0,
-                                  /*mmio=*/reinterpret_cast<void*>(GPIO_MMIO_WINDOW_BASE),
-                                  GPIO_MMIO_WINDOW);
-    if (not drv.valid())
+    // The driver ends on the negative test's fault, and a fault cancels the faulting
+    // thread's whole TASK: spawned plain it would join root's task and take root with it,
+    // leaving no survivor to keep the board up. Root holds the handle for the life of the
+    // image, since it never reaches a point past the driver.
+    kos_task_t victim = KOS_TASK_NONE;
+    if (kos_task_create(nullptr, 0, 0, &victim) != 0)
     {
         // The console is the only oracle at the bench: without this line a failed spawn
         // and a dead board look identical.
-        kos::print("[c6blink] ERROR: driver spawn failed\n");
+        kos::print("[c6blink] ERROR: no task slot for the driver\n");
+    }
+    else
+    {
+        auto drv = kos::thread::create(blink_driver,
+                                       reinterpret_cast<void*>(GPIO_MMIO_WINDOW_BASE),
+                                       "c6blink", 10, KOS_POLICY_FIFO, 0,
+                                       /*privileged=*/false,
+                                       /*mem=*/nullptr, /*mem_size=*/0,
+                                       /*stack=*/nullptr, /*stack_size=*/0,
+                                       /*mmio=*/reinterpret_cast<void*>(GPIO_MMIO_WINDOW_BASE),
+                                       GPIO_MMIO_WINDOW,
+                                       /*caps=*/nullptr, /*cap_count=*/0,
+                                       /*authority=*/0, /*cap_dest=*/nullptr, victim);
+        if (not drv.valid())
+        {
+            kos::print("[c6blink] ERROR: driver spawn failed\n");
+        }
     }
 
     // Sleep park when the semaphore could not be created: an unmintable handle would

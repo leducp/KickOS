@@ -45,8 +45,9 @@ typedef uint32_t kos_thread_t;
 // unrelated to either pool above. The bias is what makes the all-zero word unmintable.
 typedef uint32_t kos_task_t;
 
-// "No task", and the spawn default: a thread naming no task gets an implicit one holding
-// itself.
+// "No task", and the spawn default: the child is a thread of the SPAWNER's task, sharing its
+// memory domain, as pthread_create makes a thread of the calling process. A spawn that brings
+// its own mem_base, or that changes privilege, gets an implicit task holding itself instead.
 #define KOS_TASK_NONE 0u
 
 // The exit code a thread killed by a CPU fault reports: what a joiner reads back, and the
@@ -68,7 +69,7 @@ enum kos_syscall_nr
     KOS_SYS_SEM_WAIT = 5,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EPERM
     KOS_SYS_SEM_POST = 6,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EPERM
     KOS_SYS_HANDLE_CLOSE = 17,  // (cap)   -> 0, -KOS_EBADF (bad cap), -KOS_EBUSY (own a held mutex)
-    KOS_SYS_THREAD_SPAWN = 7,   // (kos_thread_params*, kos_thread_t* out) -> 0, or -KOS_E*
+    KOS_SYS_THREAD_CREATE = 7,   // (kos_thread_params*, kos_thread_t* out) -> 0, or -KOS_E*
                                 //   (EINVAL/EFAULT/EPERM/EBADF/EBUSY/ENOMEM/EOVERFLOW)
     KOS_SYS_EXIT = 8,           // (code)                -> does not return. Ends the calling
                                 //   thread, or the SYSTEM when the caller is root, which
@@ -160,10 +161,12 @@ enum kos_syscall_nr
     KOS_SYS_SEND_TIMED = 50,   // (cap, buf, len, timeout_us) -> as KOS_SYS_SEND, plus
                                //   -KOS_ETIMEDOUT
     KOS_SYS_TASK_CREATE = 51,  // (mem_base, mem_size, kos_task_t* out, kos_mem_flags) -> 0,
-                               //   or -KOS_E*: EPERM (inadmissible shared grant, a memory
-                               //   type this chip cannot honour, or a caller no member could
+                               //   or -KOS_E*: EPERM (inadmissible shared grant, a range the
+                               //   caller never reserved, a memory type this chip cannot
+                               //   honour, or a caller no member could
                                //   name), EINVAL (the window wraps, or an undefined flag
-                               //   bit), ENOMEM (task or domain pool full), EFAULT (bad
+                               //   bit), ENOMEM (task or domain pool full, or the new space
+                               //   cannot take the range at the caller's address), EFAULT (bad
                                //   out-pointer). The task is EMPTY:
                                //   kos_thread_params::task is what seats members.
     KOS_SYS_TASK_KILL = 52,    // (kos_task_t) -> 0, -KOS_EBADF (never created / freed under
@@ -235,8 +238,17 @@ enum kos_aspace_op
                                  //   space, 0 when it holds none. Two tasks answering the
                                  //   same number are one address space; the number is not a
                                  //   kernel address and nothing else may be read out of it
-    KOS_ASPACE_OP_DOMAIN_BALANCE = 10 // () -> frames a run of domain resolves and releases
+    KOS_ASPACE_OP_DOMAIN_BALANCE = 10, // () -> frames a run of domain resolves and releases
                                  //   did not return; 0 is balanced
+    KOS_ASPACE_OP_RANGES_FREE = 11, // () -> range slots the CALLING task's space has left.
+                                 //   Allocation spends one and there is no free, so this is
+                                 //   how many more blocks the caller may reserve
+    KOS_ASPACE_OP_FRAME_AT = 12  // (a virtual address) -> a small stable name for the frame
+                                 //   backing it in the CALLING task's space, 0 when the page
+                                 //   is not mapped. Two tasks answering DIFFERENT numbers for
+                                 //   one address are two copies of it; the number counts frames
+                                 //   from the image's first text page, which is no address at
+                                 //   all, and nothing else may be read out of it
 };
 
 // KOS_ASPACE_OP_ROUNDTRIP: how far the cycle got, so a failure names its transition.
@@ -508,13 +520,18 @@ struct kos_thread_params
     uint8_t policy;      // enum kos_policy
     uint8_t privileged;  // 0 => unprivileged user thread
     uint32_t quantum_ns; // RR slice; 0 => none
-    void* mem_base;      // domain data region granted to the thread (0 => none)
+    void* mem_base;      // domain data region granted to the thread (0 => none). A block
+                         // kos_ram_alloc handed the CALLER; the child's task maps it at the
+                         // same address, and a range the caller never reserved is refused.
     uint32_t mem_size;   // size of that region (bytes)
     void* mmio_base;     // device/MMIO region granted to the thread (0 => none); attr implied R|W|DEV
                          // EXCLUSIVE for an unprivileged child: overlapping a window a live
                          // thread holds -> -KOS_EBUSY
     uint32_t mmio_size;  // size of that region (bytes)
-    void* stack_base;    // caller-owned thread stack; 0 => kernel default (KICKOS_USER_STACK_SIZE)
+    void* stack_base;    // caller-owned thread stack; 0 => kernel default (KICKOS_USER_STACK_SIZE).
+                         // Must be memory the space the CHILD runs in already reaches: an
+                         // in-arena block under an MPU, a kos_ram_alloc block made reachable
+                         // in that task under translation. App static data is neither.
     uint32_t stack_size; // size of the caller stack (bytes); ignored when stack_base == 0
     struct kos_cap_grant const* caps; // optional caps to delegate to the child (0 => none)
     uint8_t cap_count;   // number of entries in caps[]; under default placement they land
@@ -541,11 +558,12 @@ struct kos_thread_params
     // 0 => none. Only a thread that already holds each bit may pass it: narrows, never
     // widens, like a cap_grant mask. This 8-bit field bounds the authority word to 8 bits.
     uint8_t authority;
-    // The task the child JOINS, from kos_task_create, or KOS_TASK_NONE for an implicit task
-    // holding the child alone. Only the task's creator may seat a member. A member shares the
-    // task's data region and dies with the group, so it may bring NO mem_base of its own
+    // The task the child JOINS, from kos_task_create, or KOS_TASK_NONE to make the child a
+    // thread of the SPAWNER's task (KOS_TASK_NONE above). Only the task's creator may seat a
+    // member. A member shares the task's data region, so it may bring NO mem_base of its own
     // (-KOS_EINVAL) and may not be privileged (-KOS_EINVAL); mmio_base is per-thread and is
-    // still its own.
+    // still its own. A NAMED task is the only way to put a thread in a group of its own, which
+    // is what an arm witnessing fault containment needs: a fault ends the whole task.
     kos_task_t task;
 };
 

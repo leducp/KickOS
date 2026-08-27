@@ -33,6 +33,16 @@ namespace kickos
         // A frame's base address, or 0 when exhausted.
         uintptr_t alloc();
 
+        // `pages` CONSECUTIVE frames, or 0 when no run that long is free. The run's base
+        // address is returned; every frame in it must be released individually, this keeping
+        // release() the only accounting there is.
+        //
+        // A run and not a page walk, because the caller that needs one needs the whole run
+        // to have ONE kernel address: a thread's stack is written by the kernel through the
+        // physical map before its own space is ever the running one, and a per-page walk
+        // there would put a translation in front of a plain memcpy.
+        uintptr_t alloc_run(size_t pages);
+
         // Refuses, and changes nothing, unless `addr` is an allocated frame of this range:
         // unaligned, out of range, the bitmap's own, or ALREADY FREE.
         bool release(uintptr_t addr);

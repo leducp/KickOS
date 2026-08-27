@@ -498,7 +498,7 @@ the kernel is unreachable without preemption. `docs/design-task-layer.md` is the
   **non-negative**, so `rc < 0` is unambiguously an error and never aliases a valid count (counts
   and byte-counts stay small). **A handle is never a return value**, and that is what buys the
   handle word its full width: every minting syscall -- `KOS_SYS_SEM_CREATE`, `KOS_SYS_MUTEX_CREATE`,
-  `KOS_SYS_ENDPOINT_CREATE`, `KOS_SYS_IRQ_CLAIM`, `KOS_SYS_THREAD_SPAWN`
+  `KOS_SYS_ENDPOINT_CREATE`, `KOS_SYS_IRQ_CLAIM`, `KOS_SYS_THREAD_CREATE`
   (`user/include/kickos/sys/abi.h`) -- returns a status and writes the handle through an
   out-parameter. So every handle class spends all 32 bits and a live handle may have bit 31 set:
   `cap.h`'s `KCAP_INDEX_BITS` / `KCAP_GEN_BITS`, the "NO SIGN TEST" notes on `free()` and
@@ -714,7 +714,7 @@ descriptor (no rounding) + not a bit-band alias, or for a **RAM** grant require
 privileged waiver) -- power-of-two size plus natural alignment on a pow2-mode backend
 (PMSAv7, PMP NAPOT), a granule multiple on a base+limit one (PMSAv8, SYSMPU, RX). `domain_for` (`kernel/domain`) runs it at the **region-commit chokepoint** on the
 prospective committed geometry before it allocates a domain slot; the caller-owned-stack path in
-`thread_spawn` runs the same predicate on the stack region, and `thread_create` carries a backstop
+`thread_create_call` runs the same predicate on the stack region, and `thread_create` carries a backstop
 assert. Each enforcing chip declares its owns-for-life set via `arch_reserved_blocks` (`arch.h`) --
 there is **no fallback TU on purpose**, so an enforcing port that forgets one fails to *link* (affirmative
 fail-closed); the set is owns-for-life only (a neutralize-then-grant watchdog is excluded unless

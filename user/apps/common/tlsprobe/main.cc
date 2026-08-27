@@ -93,8 +93,8 @@ int main(int, char**)
 
     for (int k = 0; k < WORKERS; k++)
     {
-        kos::thread::spawn(worker, reinterpret_cast<void*>(static_cast<uintptr_t>(k)),
-                           "tlsw", 10);
+        kos::thread::create(worker, reinterpret_cast<void*>(static_cast<uintptr_t>(k)),
+                            "tlsw", 10);
     }
 
     for (int spin = 0; spin < 200; spin++)

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The fault-isolation witness: a thread that faults must die alone.
+// The fault-isolation witness: a fault must be contained to the faulting thread's TASK, and
+// the system must outlive it. The victim is spawned into a task of its OWN, which is what
+// makes the containment observable: root is the survivor and shares no space with it.
 //
 // KICKOS_FS_MODE
 //   0  an unprivileged worker executes a trapping instruction; root must run AFTER it and end
@@ -243,11 +245,25 @@ int main(int, char**)
     stack = reinterpret_cast<void*>(lo);
     stack_size = FS_STACK_SIZE;
 #endif
+    // THE FAULTER GETS A TASK OF ITS OWN, and that is the arm rather than a detail of it. A
+    // fault ends the faulting thread's whole task, and a plain spawn is a thread OF THE
+    // CALLER'S task, so a victim spawned the plain way would take root with it and this would
+    // witness the fault reaching root instead of being contained.
+    kos_task_t victim = KOS_TASK_NONE;
+    if (kos_task_create(nullptr, 0, 0, &victim) != 0)
+    {
+        emit("[fs] ERROR: no task slot for the faulter\n");
+        return 1;
+    }
     emit("[fs] spawning the faulter\n");
-    kos::thread::Handle t = kos::thread::spawn(faulter, nullptr, "faulter", 10,
-                                               KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                               nullptr, 0, stack, stack_size);
+    kos::thread::Handle t = kos::thread::create(faulter, nullptr, "faulter", 10,
+                                                KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                                nullptr, 0, stack, stack_size,
+                                                nullptr, 0, nullptr, 0, 0, nullptr, victim);
     int const rc = t.join(KOS_TIMEOUT_NONE);
+    // Drops root's hold on a group that is already empty, so the slot goes back here rather
+    // than at root's own exit.
+    (void)kos_task_kill(victim);
     emit("[fs] survivor ran after the fault\n");
 #if KICKOS_FS_MODE == 4
     // Both outcomes PRINT: a silent arm is indistinguishable from a deleted band check, a spawn

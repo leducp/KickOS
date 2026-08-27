@@ -2,9 +2,14 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Fault isolation: a fault taken in unprivileged thread context, in a thread that is
-// not already dying, kills that thread and nothing else. Every other fault panics.
-// The arch handler asks kickos_fault_kill_thread and returns when it says yes; the
-// exception return then lands in kickos_thread_fault_exit, which prints and exits.
+// not already dying, kills that thread and its TASK, and nothing beyond. Every other
+// fault panics. The arch handler asks kickos_fault_kill_thread and returns when it says
+// yes; the exception return then lands in kickos_thread_fault_exit, which prints and exits.
+//
+// The task and not the thread because siblings share the address space the faulting thread
+// was writing when it died. sched::exit_current draws that line and needs EXIT_FAULTED to
+// draw it: a fault sets no cancel_kind, so a contained fault and an ordinary return arrive
+// indistinguishable there.
 
 #include <kickos/arch/arch.h>
 #include <kickos/instance.h>
@@ -304,5 +309,5 @@ extern "C" void kickos_thread_fault_exit(void)
             ::kickos::kprintf_fault(KDIAG_F_FAULT_ADDR, reinterpret_cast<void*>(r.addr));
         }
     }
-    ::kickos::sched::exit_current(KOS_EXIT_FAULT);
+    ::kickos::sched::exit_current(KOS_EXIT_FAULT, ::kickos::sched::EXIT_FAULTED);
 }

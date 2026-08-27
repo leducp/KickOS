@@ -647,7 +647,7 @@ the board".
   recurs:
   1. That commit gave `nrf51.ld` the fleet-uniform 4 KiB `.userheap`, carved from RAM *ahead of*
      the thread arena. On 16 KiB SRAM that left ~1.5 KiB of arena -- not one 2 KiB thread stack --
-     so **every** `kos::thread::spawn` failed and the suite cascaded to 39 `not ok`. The heap is
+     so **every** `kos::thread::create` failed and the suite cascaded to 39 `not ok`. The heap is
      now empty on this chip: no app built for the board allocates, so the arena gets the RAM.
      (`_sbrk` shares a TU with `_exit` and the link force-links it, so the section has to stay,
      at zero length -- an allocating app here fails at runtime, not at link. See `nrf51.ld`.)
@@ -1300,7 +1300,7 @@ bring-up, not surviving a narrow. What the rows do witness is that the re-cut, t
 and `kos_cap_narrow` are all correct on two MPU families -- `ok 46 - authority_cap` carries the
 narrow arms, where a worker drops its only authority and the gate that had just answered for it
 returns `-KOS_EPERM` -- plus the fact that a real per-app mask takes effect at all, since root
-demonstrably still held `AUTH_PINMUX` (it hands that bit to `auth_worker`, which `thread_spawn`
+demonstrably still held `AUTH_PINMUX` (it hands that bit to `auth_worker`, which `thread_create_call`
 refuses for a caller that lacks it) and `AUTH_CONSOLE` (`console_publish_priv` asserts `-KOS_EBADF`,
 which becomes `-KOS_EPERM` without the bit).
 
@@ -2234,7 +2234,7 @@ left over.
 
 - **8 of the board's 9 former skips were ARENA starvation, not the pool**, and every one of them was
   MISLABELLED `SKIP pool too small`. The reason is a real ambiguity, not sloppy text:
-  `kos_thread_spawn` returns `-KOS_ENOMEM` for BOTH "slot table full" and "no stack block", and a
+  `kos_thread_create` returns `-KOS_ENOMEM` for BOTH "slot table full" and "no stack block", and a
   test cannot tell those apart at runtime. So a message naming the pool was the honest guess and it
   named the wrong resource eight times out of nine. The right-size recovered FOUR of the eight; the
   remaining four want more arena than right-sizing can free on a 16 KiB part, so they stay skipped --

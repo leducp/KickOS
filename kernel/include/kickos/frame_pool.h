@@ -35,6 +35,18 @@ namespace kickos
     // this pool handed out. SCOPED TO THE CARVE the linker described: it is not a map of
     // physical memory, and a backend's own map is a different thing that answers more.
     void* frame_pool_ptr(arch_phys_addr_t frame);
+
+    // The pointer the kernel reaches `bytes` bytes at output address `addr` through, or
+    // null when any granule of that span is not a frame this pool handed out. `addr` need
+    // not be granule-aligned. The unaligned, spanning peer of frame_pool_ptr, for the one
+    // caller that is handed a length rather than a frame: an endpoint copy whose far end is
+    // a PARKED peer's buffer, in a space that is not the running one.
+    void* frame_pool_span(arch_phys_addr_t addr, size_t bytes);
+
+    // `pages` CONSECUTIVE frames, or 0 when no run that long is free. Every frame of the run
+    // is released one at a time through kickos_frame_free, so the pool's accounting and its
+    // refusal counter stay the only ones there are.
+    arch_phys_addr_t frame_pool_alloc_run(size_t pages);
 }
 
 #endif

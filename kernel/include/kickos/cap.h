@@ -41,7 +41,7 @@ static_assert(KICKOS_CAP_CHILD_WIDTH > KICKOS_CAP_FIRST_DYNAMIC,
 // KICKOS_CAP_CHILD_WIDTH - 1 - max(d, KICKOS_CAP_FIRST_DYNAMIC-1) own slots: delegates spend
 // the reserved plane rather than being handed it on top, and an app declares for the delegates
 // and not just for the creates. This assert is what keeps a full DEFAULTED grant list inside
-// the child width; thread_spawn bound-tests every destination against the run the child got.
+// the child width; thread_create_call bound-tests every destination against the run the child got.
 static_assert(KICKOS_MAX_SPAWN_GRANTS < KICKOS_CAP_CHILD_WIDTH,
               "a full grant list must fit the child table at indices 1..cap_count");
 

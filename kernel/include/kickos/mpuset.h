@@ -46,7 +46,7 @@ namespace kickos
         }
 
         // Drops every region. The zeroed image that follows grants nothing, which is also
-        // what a memset'd TCB carries before its first append.
+        // what a kmemset'd TCB carries before its first append.
         void clear()
         {
             count_ = 0;

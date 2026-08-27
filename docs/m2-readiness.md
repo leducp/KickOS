@@ -18,7 +18,7 @@
 
 ## 1. Thread-slot reclamation (FIRST PRIORITY) -- [x] DONE
 
-`thread_spawn` reclaims EXITED pool slots at spawn (twin of the sem freelist),
+`thread_create_call` reclaims EXITED pool slots at creation (twin of the sem freelist),
 generation-tagged handles, full TCB/context reset on reuse. Validated: sim
 (deterministic) + qemu-arm (PendSV) + qemu-riscv (msip) stress churn all PASS; the
 full selftest (15/15 on sim) now runs on a **2-slot pool** (`-DKICKOS_MAX_THREADS=2`),
@@ -257,7 +257,7 @@ freestanding demo can still override the size down. imxrt1062 (teensy41) keeps a
 128K default and fail-closes its base alignment (`ALIGN(_appdata_size)`).
 
 **Scope of the cxxtest evidence (honest):** the committed cxxtest spawns an UNPRIVILEGED worker
-(`kos::thread::spawn(cxx_worker, ..., privileged=false)`, 8K app-arena stack) that throws/catches/
+(`kos::thread::create(cxx_worker, ..., privileged=false)`, 8K app-arena stack) that throws/catches/
 unwinds under the MPU. On qemu-riscv (rv32imac PMP) this is RUN-PROVEN: `qemu_riscv_cxxtest` is
 ALL PASS from the U-mode worker -- a confined unprivileged throw under PMP, not merely
 layout-verified. On the five silicon arches `-DKICKOS_HAVE_MPU=1` LINKS the now-U-mode cxxtest
@@ -277,7 +277,7 @@ and surfaced the fleet's per-thread-peripheral ceiling.
 
 **MMIO-grant mechanism (task #9): LANDED + committed.** `kos_thread_params.mmio_base/
 mmio_size` (Option A grant-at-spawn), the `arch_mpu_region_encodable(base,size)` arch seam
-(exact-cover, no rounding), `thread_spawn` boundary validation (privileged-only, no-wrap,
+(exact-cover, no rounding), `thread_create_call` boundary validation (privileged-only, no-wrap,
 encodable), and `domain_for` appending the MMIO region as a never-shared capability. Also
 closed a Critical: an unprivileged caller's `mem_base` grant is now arena-bounds-checked
 (was a peripheral/kernel-SRAM self-grant escalation). See `design-task9-mmio-driver.md`.

@@ -198,7 +198,7 @@ them.
 The design collapses to a single invariant that holds on every arch: **the read-only two
 pieces (EH tables + RTTI) ride the app's code grant, the writable two (heap + unwinder
 state) ride the app's data grant, and a confined unprivileged thread never reaches past
-either.** A worker spawned unprivileged (`kos::thread::spawn(cxx_worker, ...,
+either.** A worker spawned unprivileged (`kos::thread::create(cxx_worker, ...,
 privileged=false)`) can throw, catch, unwind a non-trivial local destructor,
 `dynamic_cast`, and `typeid` entirely inside its own granted regions -- the same region
 count as a bare freestanding thread (code + data + stack), no extra region for the

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// One struct _reent per thread slot, and the word the kernel seats the running thread's
-// into. The user side of kernel/include/kickos/reent.h; compiled only where
-// every board but the sim, whose libc is the host's.
+// One struct _reent per thread slot, the word the kernel seats the running thread's into,
+// and the descriptor that tells the kernel where both are. The user side of
+// kernel/include/kickos/reent.h; compiled on every board but the sim, whose libc is the
+// host's.
 //
 // Newlib reaches its reentrant state as _REENT, which expands to _impure_ptr on every
 // pinned toolchain but the Xtensa one, and calls __errno() nowhere. Swapping that one
@@ -12,7 +13,6 @@
 #include <kickos/config/system.h> // KICKOS_THREAD_SLOTS
 #include <kickos/reent.h>
 
-#include <string.h> // memset, reached by _REENT_INIT_PTR
 #include <sys/reent.h>
 
 // UNPRIVILEGED APP MEMORY. This lands in .appbss, the window granted R/W to every
@@ -35,37 +35,18 @@ extern "C" struct _reent* __getreent(void)
 extern "C"
 {
 
-void* kickos_reent_acquire(int slot)
-{
-    if (slot < 0 or slot >= static_cast<int>(KICKOS_THREAD_SLOTS))
-    {
-        return _GLOBAL_REENT;
-    }
-    return &s_reent[slot];
-}
-
-void kickos_reent_init(void* reent)
-{
-    struct _reent* const r = static_cast<struct _reent*>(reent);
-    if (r == _GLOBAL_REENT)
-    {
-        return;
-    }
-    // A REUSED SLOT LEAKS THE PRIOR OCCUPANT'S SCRATCH. _REENT_INIT_PTR overwrites the
-    // mprec and asctime pointers a strtod or ctime caller allocated, and _reclaim_reent,
-    // which would return them, cannot be called here: it closes stdio, and every thread's
-    // _stdin/_stdout/_stderr point at the one process-wide __sf[3].
-    _REENT_INIT_PTR(r);
-}
-
-void kickos_reent_seat(void* reent)
-{
-    // The store the kernel is not allowed to make itself: struct _reent* is the object's
-    // real type, and it is in scope only here.
+// NO CAST IN ANY INITIALISER. Every member takes the implicit conversion to void*, so this
+// is statically initialised; a cast would sink it into a ctor, and this file's ctors run
+// from root_entry, long after the kernel has read the descriptor.
+KickosReentSeam const kickos_reent_seam = {
+    s_reent,
+    _GLOBAL_REENT,
 #ifdef __XTENSA__
-    s_current = static_cast<struct _reent*>(reent);
+    &s_current,
 #else
-    _impure_ptr = static_cast<struct _reent*>(reent);
+    &_impure_ptr,
 #endif
-}
+    sizeof(struct _reent),
+    KICKOS_THREAD_SLOTS,
+};
 }

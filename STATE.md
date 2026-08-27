@@ -16,7 +16,11 @@ say.
 
 ## Where we are
 
-**M6.2 is the live track and T3 is next.** The step plan is `docs/design-m6-mmu.md` section 5:
+**M6.2 is the live track. T1 to T5 and T6a are landed; T5b.1 is next and it needs a DECISION before
+code.** Two steps the contract did not have were found by trying to run it, and both are written into
+section 5 rather than worked around. The blocking one: `memcpy`, `memset` and `strlen` are called from
+the kernel AND from the app, so an app/kernel link split cannot give one symbol two addresses, and
+every option costs something the freezes forbid. Read T5b before touching T6. The step plan is `docs/design-m6-mmu.md` section 5:
 M6.1 was S1..S9 and is merged, M6.2 is T1..T9 plus T8b, and T1 and T2 are landed and pushed.
 `git log master..M6.2` and `ctest` are the authorities for anything countable.
 
@@ -66,6 +70,9 @@ The whole point of this file. A green fleet pass says none of the following.
   not read those as near-misses. Only a BLOCK or FLOOR margin is one.
 - **`qemu-riscv` under enforcement is the only posture reporting zero partials** where every ARM
   enforcing posture reports one. An encoded per-arch difference, not a defect.
+- **`errnoprobe`'s arm C does NOT witness the IPC fastpath on arm64.** There is no
+  `ipc_fastpath.cmake` for armv8a, so the arm exercises the generic path there while its name says
+  otherwise. Its assertions still hold; only its name over-promises on that board.
 - **The invalidate a FRESH map owes is unwitnessed.** Architectures cache negative translations, so
   a leaf installed where the slot was empty needs one; QEMU does not model that, and removing the
   invalidate leaves every arm green. It is in the code because the architecture requires it, and no

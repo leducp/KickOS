@@ -89,7 +89,7 @@ namespace
         // EDGE: the receive flags are W1C'd by the engine before it acks.
         .lines = {{USIC0_SR1_IRQ, KOS_IRQ_EDGE}},
         // No register access by root: it holds no DEV region at all (ARCH_MPU_DEV is attached
-        // only by thread_spawn), so this thread is the only one that can address the channel.
+        // only by thread_create_call), so this thread is the only one that can address the channel.
         // USIC0's module clock is already ungated by the console (U0C0) bring-up.
         .threads = {{.entry = bus_thread,
                      .name = nullptr,

@@ -71,15 +71,42 @@ config ARCH_HAS_TLS
 	  segfaults. So the arch with the largest test suite cannot witness this
 	  feature at all, and that is stated here rather than left to be discovered.
 
+# HOW that thread pointer is DERIVED, which is a different fact and the one the stack
+# geometry pays for. Where the arch has no per-thread register at the unprivileged level it
+# masks SP down to KICKOS_TLS_STRIDE, so a stack block must BE one stride and sit on one, or
+# two threads mask to the same thread-local storage. Declared here beside ARCH_HAS_TLS
+# because which register or idiom answers is written per arch and a chip selects nothing.
+config ARCH_TLS_FROM_SP
+	bool
+	help
+	  The unprivileged thread pointer is the STACK POINTER masked down to
+	  KICKOS_TLS_STRIDE, so the stride is a real constraint on every stack block:
+	  power-of-two size, natural alignment, and one stride exactly.
+
+	  armv6m and armv7m have no choice, the M profile offering no per-thread register
+	  to unprivileged code. rv32imac has `tp` and rxv3 an emutls anchor, and both mask
+	  anyway, deriving the pointer from the stack rather than from the thread's own
+	  block: a chosen uniformity, so the select states it rather than the ISA implying
+	  it. lx6 masks in its frame macros.
+
+	  ARMV8A DOES NOT SELECT IT. It seats TPIDR_EL0 from the context, and the context
+	  derives that value from the block by SUBTRACTION, so the stack's low bound owes no
+	  alignment past the ABI's sixteen bytes. That is what lets a stack there be frames
+	  of any page count at any page boundary (docs/design-m6-mmu.md F7).
+
+	  ARCH_SIM does not select it and cannot: it does not select ARCH_HAS_TLS either.
+
 config ARCH_ARMV6M
 	bool
 	select ARCH_HAS_TLS
+	select ARCH_TLS_FROM_SP
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
 
 config ARCH_ARMV7M
 	bool
 	select ARCH_HAS_TLS
+	select ARCH_TLS_FROM_SP
 	select ARCH_HAS_KERNEL_STACKS
 
 # ARCH_HAS_TLS is still absent, and that is the rule this stanza has been keeping since
@@ -100,18 +127,21 @@ config ARCH_ARMV8A
 config ARCH_RXV3
 	bool
 	select ARCH_HAS_TLS
+	select ARCH_TLS_FROM_SP
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
 
 config ARCH_RV32IMAC
 	bool
 	select ARCH_HAS_TLS
+	select ARCH_TLS_FROM_SP
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
 
 config ARCH_LX6
 	bool
 	select ARCH_HAS_TLS
+	select ARCH_TLS_FROM_SP
 
 config ARCH_SIM
 	bool

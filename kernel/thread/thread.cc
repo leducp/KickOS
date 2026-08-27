@@ -8,10 +8,11 @@
 #include <kickos/grant.h> // grant_hits_reserved (backstop assert)
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
-#include <kickos/libc/string.h>
+#include <kickos/kruntime.h>
 #include <kickos/task.h>
 #include <kickos/reent.h>
 #include <kickos/tls.h>
+#include <kickos/ustack.h>
 
 namespace kickos
 {
@@ -113,7 +114,7 @@ namespace kickos
     // EXITED or DYING is not a holder: the dying arm is what keeps a respawn issued from the
     // teardown's EPIPE wake from being refused by the very thread whose death freed the
     // device. Both the check and the commit (thread_create's composition) sit inside
-    // thread_spawn's function-scope IrqLock, so they are atomic together.
+    // thread_create_call's function-scope IrqLock, so they are atomic together.
     bool dev_window_free(uintptr_t base, size_t size)
     {
         uintptr_t const last = base + size - 1u;
@@ -137,8 +138,8 @@ namespace kickos
     void thread_create(Thread* t, void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size, ThreadAttr const& attr)
     {
-        memset(t, 0, sizeof(*t));
-        // Must follow the memset, which would otherwise zero the chunk directory AND the
+        kmemset(t, 0, sizeof(*t));
+        // Must follow the kmemset, which would otherwise zero the chunk directory AND the
         // free-list head the caller already reserved and threaded.
         t->caps = attr.cap_run;
         t->cap_free_head = attr.cap_free_head;
@@ -147,7 +148,7 @@ namespace kickos
 #endif
         t->spawner_tag = attr.spawner_tag;
         t->id = assign_thread_id();
-        // NEVER alias attr.name: via thread_spawn it can be a user pointer, and the fault
+        // NEVER alias attr.name: via thread_create_call it can be a user pointer, and the fault
         // reporter %s-prints t->name, so an unbounded strlen of a bad user pointer would
         // crash the fault path itself.
         size_t ni = 0;
@@ -173,20 +174,25 @@ namespace kickos
         // slice_deadline_ns is policy-owned: the RR policy arms it on switch-in,
         // before the thread runs; the core carries no slice sentinel.
 
-        // The task, which owns the memory domain: pre-resolved by thread_spawn (so a pool
+        // The task, which owns the memory domain: pre-resolved by thread_create_call (so a pool
         // exhaustion fails the spawn), else resolved here (idle/root), where it never
         // fails. A reference is held for the thread's lifetime and released at exit
         // (sched::exit_current).
         t->task = attr.task;
         if (t->task == nullptr)
         {
-            // idle/root only (thread_spawn pre-resolves the task). Neither requests a data
+            // idle/root only (thread_create_call pre-resolves the task). Neither requests a data
             // or MMIO grant, so domain_for short-circuits before the grant predicate and
             // caller_authorized=true is inert, not a waiver; and both are among the first
             // task-pool slots, so the pool arm cannot fire either. No failure arm here, so
             // derr cannot be set.
             int derr = 0;
-            t->task = task_for(attr.privileged, attr.mem_base, attr.mem_size, true, &derr);
+            uint32_t caller = DOM_CALLER_MEM_AUTH;
+            if (attr.privileged)
+            {
+                caller |= DOM_CALLER_PRIVILEGED;
+            }
+            t->task = task_for(caller, attr.mem_base, attr.mem_size, nullptr, &derr);
         }
         task_ref(t->task);
 
@@ -289,7 +295,19 @@ namespace kickos
             KICKOS_ASSERT(admissible or t == &kernel().idle_tcb);
             if (admissible)
             {
-                tls_seat(stack_base);
+                // SEATED THROUGH THE FRAME POOL WHERE THE STACK IS ONE OF ITS RUNS. A mapped
+                // stack is named by a virtual address in the CHILD's space, which is not the
+                // running one at spawn, so the block is reached through the physical map
+                // instead; VA == PA there, so the pool answers for the same bytes. An arena
+                // block and a caller-supplied pointer are not pool frames, the pool says so,
+                // and both are directly dereferenceable.
+                void* seat = stack_base;
+                void* const alias = ustack_kptr(reinterpret_cast<uintptr_t>(stack_base));
+                if (alias != nullptr)
+                {
+                    seat = alias;
+                }
+                tls_seat(seat);
                 ustack = static_cast<unsigned char*>(stack_base) + tls;
                 usize = stack_size - tls;
             }
@@ -329,10 +347,15 @@ namespace kickos
 #if !KICKOS_ARCH_SIM
         // The pool slot indexes the app-side array. A TCB outside the pool takes libc's
         // process-wide state: index_of returns negative for it and the seam answers that
-        // with the global rather than with a slot nobody sized. Selection only; the
-        // hundreds of bytes kickos_reent_init writes are the caller's, and on the spawn
-        // path they are written under the spawn's own lock.
-        t->reent = kickos_reent_acquire(kernel().threads.index_of(t));
+        // with the shared state rather than with a slot nobody sized.
+        //
+        // SELECTION ONLY. A slot still holds whatever the previous occupant left, and a
+        // first occupant's is zeroed .appbss, so both want the same priming; it happens at
+        // this thread's first switch-in. The shared state is never primed: libc built it and
+        // it is what every prime copies from (kernel/thread/reent.cc).
+        int const rslot = kernel().threads.index_of(t);
+        t->reent = reent_state_for_slot(rslot);
+        t->reent_fresh = rslot >= 0;
 #endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
         // Stamp the trace id into the saved context so the arch switch path can
@@ -346,6 +369,6 @@ namespace kickos
 // The arch trampoline routes here when a thread's entry function returns.
 extern "C" void kickos_thread_return(void)
 {
-    ::kickos::sched::exit_current(0); // a worker returning normally exits 0
+    ::kickos::sched::exit_current(0, ::kickos::sched::EXIT_RETURN);
     KICKOS_UNREACHABLE(::kickos::diag::kPastExitCurrent);
 }

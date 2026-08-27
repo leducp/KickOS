@@ -18,8 +18,9 @@
  *
  * EVERYTHING IN .text.init IS REACHED UNTRANSLATED, so an absolute literal here holds a high
  * virtual address that no walk can resolve yet and `adrp` to a high symbol is out of its
- * 4 GiB reach. x9 carries the offset back to the physical address, and the last instruction
- * of the section is the branch that stops needing it.
+ * 4 GiB reach. x9 carries the offset back to the physical address, and the branch into the
+ * high half is what stops needing it. The EL refusal reporter is linked into this section
+ * for the same reason (chip_virt_arm64.cc).
  */
 
 /* Level-1 block descriptor (4 KiB granule, so one block spans 1 GiB). */
@@ -33,8 +34,16 @@
 #define PXN             (1 << 53)       /* never executable at EL1 */
 #define AP_RW_EL0       (1 << 6)        /* AP=0b01: read/write at EL1 and at EL0 */
 #define AP_RO_EL0       (3 << 6)        /* AP=0b11: read-only at EL1 and at EL0 */
+#define AP_RW_EL1       (0 << 6)        /* AP=0b00: read/write at EL1, no access at EL0 */
+#define AP_RO_EL1       (2 << 6)        /* AP=0b10: read-only at EL1, no access at EL0 */
 
-/* THE CODE/DATA SPLIT IS FORCED. A region writable at EL0 is not executable at EL1, so
+/* THE TWO ROOTS DESCRIBE THE SAME DRAM WITH DIFFERENT PERMISSIONS, so each carries its own
+ * level-2 table. TTBR1's grants EL0 nothing: an unprivileged thread reaches what its own
+ * TTBR0 root maps and nothing else, which is what makes the high half the kernel's alone.
+ * TTBR0's boot table keeps the EL0 grants the identity map was built with; a per-process
+ * root replaces it before any unprivileged thread runs.
+ *
+ * THE CODE/DATA SPLIT IS FORCED. A region writable at EL0 is not executable at EL1, so
  * giving all of DRAM AP=0b01 for EL0 stacks makes the kernel's next instruction fetch a
  * permission fault (EC 0x21, IFSC 0x0D). One flat block cannot serve both levels, which
  * makes this a W^X split by arithmetic rather than by policy.
@@ -143,12 +152,10 @@ _start:
     ldr     x0, =kickos_arm64_boot_high
     br      x0
 
-    /* The level stays in x0 as the argument. The MMU is still off here, so the callee runs
-       at its physical alias and must touch no unaligned address. */
+    /* The level stays in x0 as the argument. A direct branch, the callee being linked into
+       this same section: no literal to unbias, and nothing it reads sits in the high half. */
 .Lbad_el:
-    ldr     x1, =kickos_arm64_bad_el /* noreturn (chip_virt_arm64.cc) */
-    sub     x1, x1, x9
-    br      x1
+    b       kickos_arm64_bad_el     /* noreturn (chip_virt_arm64.cc) */
 
 /* Reached through TTBR1. SP and VBAR_EL1 still hold the physical aliases .text.init needed
  * before the walk existed.
@@ -189,31 +196,51 @@ kickos_arm64_ident_table:
  * kernel window and the map of all physical RAM, so the level-1 indices are the ones above.
  * A SECOND ROOT and not the same page: TTBR0's becomes per-address-space once a domain owns
  * one, while this one is the half every space shares.
- *
- * EL0 permissions match TTBR0's: the identity map grants EL0 the same frames until T6
- * replaces it with a per-process root.
  */
     .balign 4096
     .global kickos_arm64_kernel_table
 kickos_arm64_kernel_table:
     .quad   BLOCK + AF + ATTR_DEVICE + UXN + PXN
-    .quad   kickos_arm64_ram_table + TABLE
+    .quad   kickos_arm64_kernel_ram_table + TABLE
     .fill   510, 8, 0
 
-/* Level 2 for 0x4000_0000..0x8000_0000, one entry per 2 MiB, reached from both roots. */
+/* Level 2 for 0x4000_0000..0x8000_0000 through TTBR0's boot root, one entry per 2 MiB.
+ * The EL0 grants here are the identity map's own: .text.init runs untranslated against
+ * these addresses, and nothing unprivileged is scheduled before its task's root replaces
+ * this one.
+ */
     .balign 4096
     .global kickos_arm64_ram_table
 kickos_arm64_ram_table:
-    /* Code and rodata. UXN stays clear: an EL0 thread runs its own text out of here. */
-    .quad   __kickos_dram_base + BLOCK + AF + ATTR_NORMAL + SH_INNER + AP_RO_EL0
-    /* Writable, executable at neither level. */
+    /* EL1-ONLY, and nothing runs at EL0 under this root: a task's own root is installed
+       before its first instruction, and the three other holders of this space (the fault
+       reporter, aspace release, and the boot answer itself) all run privileged. PXN stays
+       clear because kbanner reaches the app's build stamp at EL1 before any space exists. */
+    .quad   __kickos_dram_base + BLOCK + AF + ATTR_NORMAL + SH_INNER + AP_RO_EL1 + UXN
     .set    _blk, 1
     .rept   RAM_L2_BLOCKS - 1
     .quad   __kickos_dram_base + (_blk * L2_BLOCK_SIZE) + BLOCK + AF + ATTR_NORMAL + \
-            SH_INNER + AP_RW_EL0 + UXN + PXN
+            SH_INNER + AP_RW_EL1 + UXN + PXN
     .set    _blk, _blk + 1
     .endr
     /* Past the end of DRAM: invalid, so a stray access faults rather than aliasing. */
+    .fill   512 - RAM_L2_BLOCKS, 8, 0
+
+/* The same DRAM through TTBR1, and the whole point of the second page: AP names no EL0
+ * access and UXN forbids the fetch, so the half every address space shares grants an
+ * unprivileged thread nothing. PXN stays clear on the code block alone, the kernel
+ * executing out of it.
+ */
+    .balign 4096
+    .global kickos_arm64_kernel_ram_table
+kickos_arm64_kernel_ram_table:
+    .quad   __kickos_dram_base + BLOCK + AF + ATTR_NORMAL + SH_INNER + AP_RO_EL1 + UXN
+    .set    _blk, 1
+    .rept   RAM_L2_BLOCKS - 1
+    .quad   __kickos_dram_base + (_blk * L2_BLOCK_SIZE) + BLOCK + AF + ATTR_NORMAL + \
+            SH_INNER + AP_RW_EL1 + UXN + PXN
+    .set    _blk, _blk + 1
+    .endr
     .fill   512 - RAM_L2_BLOCKS, 8, 0
 
     .end

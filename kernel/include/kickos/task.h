@@ -6,16 +6,22 @@
 // live TASKS, not directly by threads, so a domain returns to its pool when the
 // last task holding it dies.
 //
-// Two ways in. A thread that names no task gets an IMPLICIT task holding exactly
-// itself, so every spawn written before this layer existed means what it always
-// meant. A thread that names one joins an EXPLICIT task, created by task_create
-// before any of its threads exist, and is then coupled to its peers: the group is
-// killed as a unit (task_cancel_group) and any member's death ends the rest.
+// Three ways in. A plain spawn is pthread_create: the child is a thread of the
+// SPAWNER's task, sharing that task's domain, and spends no slot here. A spawn
+// bringing its own data grant, or changing privilege, cannot be a member of the
+// spawner's group and gets an IMPLICIT task of its own (task_for). A thread that
+// names a task joins an EXPLICIT one, created by task_create before any of its
+// threads exist.
+//
+// A FAULT is the only death that ends the group from a member's own exit
+// (docs/design-task-layer.md section 6). Every death a caller asked for ends one
+// thread, the task ending when its last member leaves; a caller that wants the group
+// calls task_cancel_group itself.
 //
 // A task owns a DEV window's LIFETIME and never its ACCESS: the window is a region
 // of the asking THREAD (thread.cc), so a peer that did not ask for it cannot reach
-// the registers, and task-scoped death is what returns the window when the group
-// goes. See docs/design-task-layer.md sections 5.2 and 6.
+// the registers, and the group cancel is what returns the window when the group goes.
+// See docs/design-task-layer.md sections 5.2 and 6.
 
 #ifndef KICKOS_TASK_H
 #define KICKOS_TASK_H
@@ -83,8 +89,10 @@ namespace kickos
     Domain* task_domain(Task const* t);
 
     // Create the IMPLICIT task a new thread belongs to, resolving its domain through
-    // domain_for and wrapping the result. Takes no reference on either the task or
-    // the domain: task_ref, from thread_create, is the commit. A task nobody
+    // domain_for and wrapping the result. Reached only where the child cannot be a member
+    // of the spawner's group: a spawn carrying its own data grant, a spawn that changes
+    // privilege, and idle and root, which have no spawner at all. Takes no reference on
+    // either the task or the domain: task_ref, from thread_create, is the commit. A task nobody
     // references stays at refcount 0 with no creator, which is a free slot, so a spawn
     // that fails after this point leaves nothing to unwind.
     //
@@ -99,8 +107,11 @@ namespace kickos
     // live at once (the static_assert in task.cc), which is what makes the
     // -KOS_ENOMEM a thread-pool exhaustion already returns stay the first refusal
     // a caller sees.
-    Task* task_for(bool privileged, void* mem_base, size_t mem_size,
-                   bool caller_authorized, int* err);
+    // `caller` is domain_for's posture word (DOM_CALLER_*), and `donor` is the domain the
+    // grant's memory was reserved in, so F10's handoff can map it into the new space at the
+    // same address. Null where there is none.
+    Task* task_for(uint32_t caller, void* mem_base, size_t mem_size, Domain const* donor,
+                   int* err);
 
     // Create an EXPLICIT task: the group exists, empty, before any thread joins it, and its
     // domain is built from THIS grant rather than from whatever the first thread happened to
@@ -111,12 +122,13 @@ namespace kickos
     // so refcount 0 does not free it. Refusals are domain_for's, plus KOS_ENOMEM.
     // mem_attr is domain_for's: the memory TYPE the shared region is committed with
     // (ARCH_MPU_NOCACHE, or 0). task_for passes 0; an implicit task cannot ask for one.
-    Task* task_create(uint16_t creator_tag, void* mem_base, size_t mem_size,
-                      uint32_t mem_attr, bool caller_authorized, int* err);
+    Task* task_create(uint16_t creator_tag, uint32_t caller, void* mem_base, size_t mem_size,
+                      uint32_t mem_attr, Domain const* donor, int* err);
 
     // Resolve a handle to an EXPLICIT task, or null. An implicit task is deliberately
-    // unnameable: idle's and root's carry the kernel domain, and a resolvable handle to one
-    // would let an unprivileged spawn join the whole arena.
+    // unnameable: idle's carries the kernel domain, so a resolvable handle to it would let an
+    // unprivileged spawn join the whole arena. A plain spawn reaches the caller's own task by
+    // construction and never by name.
     Task* task_resolve(kos_task_t handle);
     kos_task_t task_handle(Task const* t);
     // The creator gate. False for an implicit task and for KILL_TAG_NONE, so a thread with
@@ -162,7 +174,7 @@ namespace kickos
     //
     // `kind` is information the callee cannot derive, which is what makes it unlike the
     // "except" argument this deliberately does NOT take: the group must die by ONE rule, so
-    // a member slain slays its peers rather than leaving them their windows. The caller that
+    // kos_task_slay leaves no member the window a kill would have kept. The caller that
     // has a thread to spare is exit_current, whose thread is `dying` by then, and
     // thread_cancel_kind already refuses a dying thread; a second guard for that fact would
     // be the one that goes stale.

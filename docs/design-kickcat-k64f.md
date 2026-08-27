@@ -58,7 +58,7 @@ Delta, both in the KickCAT tree rather than this repo: one new
 has no `_gettimeofday`/`clock_gettime`/pthreads, so `std::chrono` clocks and any POSIX-time backend
 return 0 -- the KickOS backend MUST route time through `kos_clock_now()` directly (cannot reuse
 `OS/Unix/Time.cc` or the default `SinceEpoch.cc`). (Optional later, for multi-threaded use:
-`kickcat::Thread`->`kos::thread::spawn`, `Mutex`->binary `kos::Semaphore` -- priority models
+`kickcat::Thread`->`kos::thread::create`, `Mutex`->binary `kos::Semaphore` -- priority models
 differ; not needed for freedom-k64f.)
 
 ## The ESC transport (LAN9252 over DSPI0) -- k64dspi loopback -> transport delta

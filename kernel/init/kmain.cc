@@ -22,21 +22,13 @@
 #include <kickos/config/system.h>
 #include <kickos/ktrace.h>
 #include <kickos/task.h>
+#include <kickos/ustack.h>
 
 extern "C"
 {
     // Buffered-console bring-up (console_tx.cc): binds the TX drain ISR + arms the
     // ring once the chip offers a backend. No-op on sim / polled-only chips.
     void console_buffer_init(void);
-    // End the system: drain the buffered console (kpanic/fault already flush), then
-    // chip shutdown. Reached through the syscall trap because root is not always
-    // privileged (see <kickos/sys.h>). Declared here rather than including the
-    // userspace header into a kernel TU.
-    int kos_shutdown(int status);
-    // Panic THROUGH the syscall trap, never kpanic directly: root is unprivileged, and
-    // kpanic masks IRQs and reads kernel .bss, so a call from root's frame faults there
-    // and the message is lost.
-    void kos_panic(char const* msg) __attribute__((noreturn));
     // Generated per-build by CMake (cmake/build_stamp.cmake) so the banner reflects the
     // image actually linked, not the (stale-on-incremental) __DATE__/__TIME__ of a TU.
     // Local build time (with offset) + the commit (git describe --dirty --always).
@@ -45,22 +37,6 @@ extern "C"
     // Per-app source compile time. Weak REFERENCE: null when no app TU defines it.
     // See app.h and tests/static/weak_allowlist.txt.
     char const* kickos_app_build_stamp(void) __attribute__((weak));
-
-    // Non-kernel (app / libstdc++ / newlib / library) global ctors. The linker script
-    // routes them here, OUT of .init_array (which keeps only the kernel ctors that
-    // Reset_Handler must run before kmain constructs the instance). Run from
-    // root_entry, in a thread with the kernel live, because a ctor may issue a KickOS
-    // syscall (kos_clock_now) that needs ktime_init + a current thread.
-    //
-    // STRONG on purpose: every target must STATE its window (the sim states an
-    // explicitly EMPTY one, arch/sim/start.cc).
-    //   present but empty -> start == end -> the walk below iterates zero times, silent
-    //   absent            -> undefined symbol -> the link FAILS, loudly
-    // Weak bounds would collapse "absent" into a silent skip, leaving a script that
-    // forgot to partition .init_array running every app ctor privileged with no
-    // diagnostic.
-    extern void (*__kickos_app_init_array_start[])();
-    extern void (*__kickos_app_init_array_end[])();
 
     // Userspace heap window bounds (chip .ld): [_kickos_heap_start, _kickos_heap_limit).
     // Weak: the sim (host heap) and a malloc-free image define neither -> both null ->
@@ -173,38 +149,20 @@ namespace kickos
                 arch_idle_wait();
             }
         }
-
-        void root_entry(void*)
-        {
-            // App/library ctors run here (kernel live, in a thread), before main.
-            // No null guard: the bounds are strong, so an empty window is start == end
-            // and this loop simply does not run (see the decl).
-            for (void (**fn)() = __kickos_app_init_array_start;
-                 fn != __kickos_app_init_array_end; fn++)
-            {
-                (*fn)();
-            }
-            // Read the handoff from app-side storage, not from a thread argument: this
-            // is the first thing root touches, and it must stay reachable when root is
-            // unprivileged (see <kickos/sys/init.h>).
-            int status = kickos_init_entry(kickos_init_args.argc, kickos_init_args.argv);
-            // A returning init is a single-shot system: end it with that status. A
-            // persistent init never returns here (it parks or loops). kos_shutdown
-            // returning means root was refused; report it rather than running on.
-            kos_shutdown(status);
-            kos_panic("root: shutdown refused");
-        }
     }
 
     int kmain(int argc, char** argv)
     {
         // Publish the handoff into app-side storage before anything can read it. Not a
-        // frame local: root_entry reads it as an unprivileged thread on an enforcing
-        // board, and the boot stack this frame sits on is outside the arena.
+        // frame local: kickos_root_entry reads it as an unprivileged thread on an
+        // enforcing board, and the boot stack this frame sits on is outside the arena.
         kickos_init_args.argc = argc;
         kickos_init_args.argv = argv;
 
         kdiag_led_init(); // early: usable as a fault indicator from here on
+        // BEFORE ANY ADDRESS SPACE IS ACTIVATED. kickos_app_build_stamp is APP text, which
+        // a translating backend maps privileged-execute-never in a process root; the boot
+        // root reached here still grants the privileged fetch.
         kbanner();
         sched::init();
         domain_init(); // build the immortal kernel + default-user domains (arena ready)
@@ -230,18 +188,25 @@ namespace kickos
         // the small block then sits inside the large block's natural-alignment run-up
         // instead of after it. Worth up to one root-stack's width of arena on every
         // pow2-descriptor board, so KICKOS_BOOT_ARENA_ASSERT models this exact order.
+        //
+        // WHERE ROOT'S STACK IS FRAMES that model over-reserves rather than describing this,
+        // idle being the only arena block left. Both link asserts are floors, so a
+        // conservative model refuses nothing that fits; a board tight enough for the
+        // difference to matter is a board with no frame pool to move a stack into.
         void* const idle_stack =
             boot_stack_alloc(KICKOS_IDLE_STACK_SIZE, diag::kBootIdleStack);
-        void* const root_stack =
-            boot_stack_alloc(KICKOS_ROOT_STACK_SIZE, diag::kBootRootStack);
 
 #if KICKOS_HAVE_ASPACE
-        // Its own linker carve, so it takes nothing from the arena the two stacks above came
-        // out of and the boot-arena model still describes what the bump allocator hands out.
+        // Its own linker carve, so it takes nothing from the arena idle's stack came out of.
+        // FIRST, because root's stack now comes out of it.
         if (not frame_pool_init())
         {
             kpanic(diag::kBootFramePool);
         }
+#else
+        void* const root_stack =
+            boot_stack_alloc(KICKOS_ROOT_STACK_SIZE, diag::kBootRootStack);
+        size_t const root_stack_size = KICKOS_ROOT_STACK_SIZE;
 #endif
 
 #if KICKOS_KERNEL_STACKS
@@ -255,15 +220,8 @@ namespace kickos
 #endif
 
 #if !KICKOS_ARCH_SIM
-        // SEEDED HERE SO A SPAWN DOES NOT PAY FOR IT UNDER THE LOCK. One struct _reent is 512
-        // bytes on arm-none-eabi, 288 on riscv32, 284 on rx, and it was the largest term in
-        // the spawn's interrupt-masked window by a factor of sixty over the TLS copy the same
-        // window makes. A slot is re-seeded on REUSE only, where the prior occupant's state
-        // has to go; syscall_thread.cc carries that half.
-        for (int slot = 0; slot < KICKOS_THREAD_SLOTS; slot++)
-        {
-            kickos_reent_init(kickos_reent_acquire(slot));
-        }
+        // Must precede the two thread_create calls below, which acquire out of it.
+        reent_seam_read();
 #endif
 
         // Must precede the cap_slab_attach below: this rebuilds the free-chunk list from
@@ -304,6 +262,34 @@ namespace kickos
         // instant: root is unprivileged from its first instruction. idle above is the
         // only privileged thread in the system.
         root_attr.privileged = false;
+#if KICKOS_HAVE_ASPACE
+        // ROOT'S TASK IS RESOLVED HERE AND NOT INSIDE thread_create, which is what makes a
+        // mapped stack expressible at all: the frames go into root's own address space, and
+        // that space does not exist until its domain does. thread_create is then told which
+        // task it is, or it would resolve a second one and root would run on frames its own
+        // space does not name.
+        //
+        // AFTER IDLE IS BUILT, and that ordering is not cosmetic: task_for takes no
+        // reference, so an uncommitted task slot is still FREE, and idle's own resolve would
+        // hand root's slot to the kernel domain, leaving root's stack mapped in a space
+        // nothing points at. Neither refusal can fire here (root asks for no grant, and the
+        // task and domain pools are all but empty), so there is nothing to unwind.
+        int root_derr = 0;
+        Task* const root_task = task_for(DOM_CALLER_MEM_AUTH, nullptr, 0, nullptr, &root_derr);
+        if (root_task == nullptr)
+        {
+            kpanic(diag::kBootRootStack);
+        }
+        root_attr.task = root_task;
+        UserStack const root_us =
+            ustack_alloc(domain_space(task_domain(root_task)), KICKOS_ROOT_STACK_SIZE);
+        if (root_us.base == 0)
+        {
+            kpanic(diag::kBootRootStack);
+        }
+        void* const root_stack = reinterpret_cast<void*>(root_us.base);
+        size_t const root_stack_size = root_us.bytes;
+#endif
         // Root is the only holder of the full summed width; the slab backs exactly this one
         // widening over the child width.
         if (not cap_slab_attach(&root_attr.cap_run, KICKOS_MAX_HANDLES,
@@ -326,8 +312,11 @@ namespace kickos
         // name slots[-1], which this rejects too.
         KICKOS_ASSERT(root_slot == ThreadPool::ROOT_INDEX);
         Thread* const root_tcb = &kernel().threads.slots[root_slot];
-        thread_create(root_tcb, root_entry, nullptr,
-                      root_stack, KICKOS_ROOT_STACK_SIZE, root_attr);
+        // kickos_root_entry and not a local: root is unprivileged from its first
+        // instruction, so its text is fetched at EL0, and on a translating board the
+        // kernel's half grants EL0 nothing (<kickos/sys/init.h>).
+        thread_create(root_tcb, kickos_root_entry, nullptr,
+                      root_stack, root_stack_size, root_attr);
         // Root's unkillability rests entirely on this default, which nothing above states.
         KICKOS_ASSERT(root_tcb->spawner_tag == ThreadPool::KILL_TAG_NONE);
         // True would push a KICKOS_ROOT_STACK_SIZE block onto a free list whose one size class

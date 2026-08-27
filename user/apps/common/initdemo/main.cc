@@ -109,8 +109,8 @@ int main(int, char**)
     kos_cap_grant const caps[1] = {
         { .source_cap = ep, .rights_mask = KOS_CAP_WAIT },
     };
-    auto const drv = kos::thread::spawn_caps(console_sink, nullptr, "sink", DRIVER_PRIO,
-                                             caps, /*cap_count=*/1);
+    auto const drv = kos::thread::create_caps(console_sink, nullptr, "sink", DRIVER_PRIO,
+                                              caps, /*cap_count=*/1);
     if (not drv.valid())
     {
         kos::print("[initdemo] ERROR: sink spawn failed\n");
@@ -122,7 +122,7 @@ int main(int, char**)
     kos_handle_close(ep);
 
     // Spawn the printing worker AFTER publish, so its cap 0 is seated to the endpoint.
-    auto const w = kos::thread::spawn(worker, nullptr, "worker", WORKER_PRIO);
+    auto const w = kos::thread::create(worker, nullptr, "worker", WORKER_PRIO);
     if (not w.valid())
     {
         kos::print("[initdemo] ERROR: worker spawn failed\n");

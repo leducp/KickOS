@@ -31,11 +31,17 @@ extern "C" void kickos_armv8a_switch_now(struct arch_context* from, struct arch_
 extern "C" void kickos_armv8a_start(struct arch_context* first);
 extern "C" void kickos_armv8a_thread_exit(void);
 
-// The deferred-switch request, read by the IRQ exit in switch.S. Written from ISR context
-// with interrupts masked, consumed by the exit that follows.
+// kickos_armv8a_ctx_current names the context PHYSICALLY on the CPU, which is not
+// arch_switch's `from`: one ISR can reschedule several times (one timer expiry waking two
+// sleepers is enough), and every call after the first names a thread the scheduler has
+// merely published, whose registers are still nowhere. Saving the interrupted frame through
+// such a `from` writes it over a context that never ran and loses the one that did. The
+// M-profile and RISC-V backends ignore `from` for the same reason; this cell is their
+// g_arch_current. The IRQ exit in switch.S saves through it and re-seats it to the incoming
+// context, so the request below is a target alone and the last one written wins.
 extern "C"
 {
-    struct arch_context* kickos_armv8a_switch_from = nullptr;
+    struct arch_context* kickos_armv8a_ctx_current = nullptr;
     struct arch_context* kickos_armv8a_switch_to = nullptr;
 }
 // switch.S spells these as literal displacements, so a change on one side alone is a silent
@@ -260,7 +266,7 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
     {
         // DEFERRED, which arch.h permits: the interrupted thread's state is already in the
         // frame the IRQ entry built, so the swap is two stores at the exception exit.
-        kickos_armv8a_switch_from = from;
+        // `from` is dropped here on purpose; see kickos_armv8a_ctx_current.
         kickos_armv8a_switch_to = to;
         kickos_armv8a_kernel_sp = to->kernel_sp;
 #if defined(KICKOS_TLS) && KICKOS_TLS
@@ -272,12 +278,16 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
 #if defined(KICKOS_TLS) && KICKOS_TLS
     armv8a_seat_thread_pointer(to);
 #endif
+    // Thread context under the kernel IrqLock, so no interrupt observes the cell between
+    // this write and the frame it describes being the one on the CPU.
+    kickos_armv8a_ctx_current = to;
     kickos_armv8a_switch_now(from, to);
 }
 
 void arch_start(struct arch_context* boot, struct arch_context* first)
 {
     (void)boot; // abandoned, as arch.h permits and the M-profile backend also does
+    kickos_armv8a_ctx_current = first;
     kickos_armv8a_kernel_sp = first->kernel_sp;
 #if defined(KICKOS_TLS) && KICKOS_TLS
     armv8a_seat_thread_pointer(first);

@@ -190,7 +190,7 @@ int main(int, char**)
     // is the board's own KICKOS_USER_STACK_SIZE, demand-allocated from the app arena, so
     // the EH unwind and the libstdc++ working set are charged to that arena.
     kos_cap_grant caps[] = {{g_done, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}}; // g_done@1
-    auto w = kos::thread::spawn_caps(cxx_worker, nullptr, "cxxwork", 10, caps, 1);
+    auto w = kos::thread::create_caps(cxx_worker, nullptr, "cxxwork", 10, caps, 1);
     if (not w.valid())
     {
         kos::print("SOME FAILED\n"); // spawn failure: fail loud, do not fall back to privileged

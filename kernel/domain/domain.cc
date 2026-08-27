@@ -3,6 +3,7 @@
 
 #include <kickos/domain.h>
 
+#include <kickos/aspace.h> // aspace_image_seed / aspace_release
 #include <kickos/grant.h> // grant_region_admissible (Rule 7 chokepoint)
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
@@ -54,7 +55,7 @@ namespace kickos
             // the reinitialisation below would drop the only handle to them.
             if (d->space != nullptr)
             {
-                arch_aspace_destroy(d->space);
+                aspace_release(d->space, &d->ranges);
                 d->space = nullptr;
             }
 #endif
@@ -65,6 +66,16 @@ namespace kickos
             if (d->space == nullptr)
             {
                 *err = KOS_ENOMEM; // no frame for a root: freeing frames and retrying can work
+                return nullptr;
+            }
+            // A space with no image is a space no unprivileged thread can run in: its first
+            // instruction fetch would fault. So the seed is part of claiming the slot, and
+            // its failure leaves the slot free rather than half built.
+            if (not aspace_image_seed(d->space, &d->ranges))
+            {
+                aspace_release(d->space, &d->ranges);
+                d->space = nullptr;
+                *err = KOS_ENOMEM;
                 return nullptr;
             }
 #endif
@@ -145,11 +156,46 @@ namespace kickos
 #endif
     }
 
-    Domain* domain_for(bool privileged, void* mem_base, size_t mem_size, uint32_t mem_attr,
-                       bool caller_authorized, int* err)
+    struct arch_aspace* domain_space(Domain const* d)
+    {
+#if KICKOS_HAVE_ASPACE
+        if (d == nullptr)
+        {
+            return nullptr;
+        }
+        return d->space;
+#else
+        (void)d;
+        return nullptr;
+#endif
+    }
+
+#if KICKOS_HAVE_ASPACE
+    VirtualRanges const* domain_ranges(Domain const* d)
+    {
+        if (d == nullptr or d->space == nullptr)
+        {
+            return nullptr;
+        }
+        return &d->ranges;
+    }
+
+    VirtualRanges* domain_ranges_mut(Domain* d)
+    {
+        if (d == nullptr or d->space == nullptr)
+        {
+            return nullptr;
+        }
+        return &d->ranges;
+    }
+#endif
+
+    Domain* domain_for(uint32_t caller, void* mem_base, size_t mem_size, uint32_t mem_attr,
+                       Domain const* donor, int* err)
     {
         *err = 0;
-        if (privileged)
+        (void)donor;
+        if ((caller & DOM_CALLER_PRIVILEGED) != 0)
         {
             return domain_kernel();
         }
@@ -165,25 +211,62 @@ namespace kickos
 #endif
         }
         uintptr_t const base = reinterpret_cast<uintptr_t>(mem_base);
-        size_t const rsz = arch_ram_region_size(mem_size);
         // Access is the grant's own; only the memory-type bits come from the caller.
         uint32_t const attr = ARCH_MPU_R | ARCH_MPU_W | (mem_attr & ARCH_MPU_NOCACHE);
+#if KICKOS_HAVE_ASPACE
+        // NOT the arena predicate here. What a reservation names on this backend is frames
+        // of the frame pool's own carve, which the bump arena does not contain, so the arena
+        // arm would refuse every correct grant. The admission that replaces it is the handoff
+        // below: the range must be one the DONOR reserved, which no MMIO block and no
+        // kernel address can be.
+        if (not grant_nocache_admissible(attr))
+        {
+            *err = KOS_EPERM; // a memory type this chip cannot honour
+            return nullptr;
+        }
+#else
+        size_t const rsz = arch_ram_region_size(mem_size);
         // Rule 7 admits the PROSPECTIVE COMMITTED geometry, and must run before a slot is
         // allocated: a refusal must leave no half-built domain.
-        if (not grant_region_admissible(base, rsz, attr, caller_authorized))
+        if (not grant_region_admissible(base, rsz, attr,
+                                        (caller & DOM_CALLER_MEM_AUTH) != 0))
         {
             *err = KOS_EPERM; // out-of-arena / reserved block / unhonourable memory type
             return nullptr;
         }
+#endif
         Domain* d = claim_slot(err);
         if (d == nullptr)
         {
             return nullptr;
         }
+#if KICKOS_HAVE_ASPACE
+        // F10's handoff, and the ONE place both of its consumers meet: a task create and a
+        // grant-carrying spawn each open a space the donor does not hold, and each arrives
+        // here. A refusal leaves no half-built domain, the release below freeing the space
+        // and leaving the slot free.
+        enum arch_map_memtype mtype = ARCH_MAP_NORMAL;
+        if ((mem_attr & ARCH_MPU_NOCACHE) != 0)
+        {
+            mtype = ARCH_MAP_NOCACHE;
+        }
+        int const hrc = aspace_handoff(domain_ranges(donor), d->space, &d->ranges, base,
+                                       mem_size, mtype);
+        if (hrc != 0)
+        {
+            domain_release(d);
+            *err = -hrc;
+            return nullptr;
+        }
+        // NO REGION RECORD BESIDE THE MAPPING. The range list carries the handoff with the
+        // EXACT extent where a region would carry the rounded one, and it is what the entry
+        // path answers from on this backend (section 3.3).
+#else
         d->regions[0].base = base;
         d->regions[0].size = rsz;
         d->regions[0].attr = attr;
         d->region_count = 1;
+#endif
         return d;
     }
 
@@ -225,7 +308,7 @@ namespace kickos
         // root, its tables and every frame the space still held.
         if (d->refcount == 0 and d->space != nullptr)
         {
-            arch_aspace_destroy(d->space);
+            aspace_release(d->space, &d->ranges);
             d->space = nullptr;
         }
 #endif

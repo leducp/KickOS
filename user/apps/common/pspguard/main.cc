@@ -490,7 +490,7 @@ int main(int, char**)
         return 1;
     }
 #if KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5
-    kos::thread::Handle const tk = kos::thread::spawn(ticker, nullptr, "ticker", 20);
+    kos::thread::Handle const tk = kos::thread::create(ticker, nullptr, "ticker", 20);
     if (not tk.valid())
     {
         emit("[pspguard] ERROR: ticker spawn refused\n");
@@ -498,8 +498,8 @@ int main(int, char**)
     }
 #endif
     kos::thread::Handle const w =
-        kos::thread::spawn(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                           mem, mem_size, st, STACK_BYTES);
+        kos::thread::create(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                            mem, mem_size, st, STACK_BYTES);
     if (not w.valid())
     {
         emit("[pspguard] ERROR: wild spawn refused\n");
@@ -518,8 +518,8 @@ int main(int, char**)
     // it and faults (MMFSR DACCVIOL), the wild thread that owned it is gone, and the
     // reservation must live where the refused frame put it.
     kos::thread::Handle const fc =
-        kos::thread::spawn(fpcheck, &g_arm, "fpcheck", 10, KOS_POLICY_FIFO, 0,
-                           /*privileged=*/false, st, STACK_BYTES);
+        kos::thread::create(fpcheck, &g_arm, "fpcheck", 10, KOS_POLICY_FIFO, 0,
+                            /*privileged=*/false, st, STACK_BYTES);
     if (not fc.valid())
     {
         emit("[pspguard] ERROR: fpcheck spawn refused\n");

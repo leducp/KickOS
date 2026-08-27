@@ -196,7 +196,9 @@ namespace kickos
 
         // Driven through the paths that DO write the byte rather than asserted over a pool
         // nothing touched: a sweep that finds no slay because no cancel ran at all would pass
-        // on a broken kill.
+        // on a broken kill. The FAULT exit is what makes the group cancel run: an ordinary
+        // return is scoped to one thread (kernel/sched/sched.cc) and would leave the sweep
+        // reading only the direct kill.
         TEST_F(CancelWiring, a_cooperative_death_never_writes_slay)
         {
             Task* const group = task(0);
@@ -211,18 +213,20 @@ namespace kickos
                 IrqLock lock;
                 thread_cancel(peer);
             }
-            run_exit(0);
+            run_exit_faulted(0);
 
             EXPECT_EQ(slots_holding(CANCEL_SLAY), 0)
-                << "an ordinary exit ends its group cooperatively; only a slain member "
-                   "escalates its peers";
+                << "a fault ends its group cooperatively; only a slain member escalates "
+                   "its peers";
             EXPECT_EQ(slots_holding(CANCEL_KILL), 2)
                 << "and the sweep is not vacuous; the direct kill and the group's both landed";
         }
 
-        // The kind travels with the death, which is the whole of "the group dies by ONE rule".
-        // A peer left at CANCEL_KILL here keeps a cleanup window its sibling was denied.
-        TEST_F(CancelWiring, a_slain_members_exit_slays_its_peers)
+        // A SLAY IS AIMED AT ONE THREAD, so the byte it writes must not spread from the
+        // victim's own exit. kos_task_slay is the verb for the group and writes the byte over
+        // every member itself; a member's exit doing it too would leave a parent unable to
+        // stop one worker without dying with it.
+        TEST_F(CancelWiring, a_slain_members_exit_spares_its_peers)
         {
             Task* const group = task(0);
             Thread* const c = seat_pool(SLOT_KILLER, PRIO_HIGH);
@@ -234,8 +238,8 @@ namespace kickos
 
             run_exit(0);
 
-            EXPECT_EQ(peer->cancel_kind, CANCEL_SLAY)
-                << "the dying member's kind is what the group cancel carries";
+            EXPECT_EQ(peer->cancel_kind, CANCEL_NONE)
+                << "the victim's kind reaches the victim and stops there";
         }
 
         // --- what a reader does with the kind ------------------------------------------
