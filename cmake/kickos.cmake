@@ -452,7 +452,7 @@ endfunction()
 #     microbit   -> microbit    (armv6m Cortex-M0)
 #     qemu-riscv -> virt, plus QEMU=qemu-system-riscv32 QEMU_EXTRA=-bios none
 #                   (RV32IMAC bare-metal in M-mode, no OpenSBI).
-#     qemu-arm64 -> virt, plus QEMU=qemu-system-aarch64 QEMU_EXTRA=-cpu cortex-a53
+#     qemu-arm64 -> virt, plus QEMU=qemu-system-aarch64 QEMU_EXTRA=-cpu cortex-a53 -nic none
 #                   (AArch64 bare metal at EL1).
 #   QEMU_MACHINE is always passed, never left to the scripts' mps2-an386 fallback:
 #   most boards would silently run on the wrong core, and check_fault_dump.sh reads
@@ -476,7 +476,9 @@ function(kickos_add_qemu_test)
     # -cpu is MANDATORY and not a default worth relying on: qemu-system-aarch64 -M virt
     # comes up as a cortex-a15 and REFUSES an A64 image outright. `-bios none` is the
     # RISC-V line's need and errors here, there being no firmware to suppress.
-    set(_env QEMU=qemu-system-aarch64 "QEMU_EXTRA=-cpu cortex-a53")
+    # -nic none drops the virt machine's default virtio-net-pci, whose option ROM ships in
+    # a separate distro package QEMU aborts without. No gate here uses a NIC.
+    set(_env QEMU=qemu-system-aarch64 "QEMU_EXTRA=-cpu cortex-a53 -nic none")
     set(_machine virt)
   elseif(QT_BOARD STREQUAL "microbit")
     # 32 KiB and not the 16 the machine defaults to. QEMU's nRF51 SoC exposes the size as a

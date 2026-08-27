@@ -146,8 +146,14 @@ endif()
 if(KICKOS_HAVE_MPU)
   math(EXPR _tap_arms "${_tap_arms} + 1") # stackbase_arena
 endif()
+if(KICKOS_HAVE_ASPACE)
+  math(EXPR _tap_arms "${_tap_arms} + 1") # caller_stack_arena
+endif()
 if(KICKOS_ARCH STREQUAL "sim")
   math(EXPR _tap_arms "${_tap_arms} + 1") # periph_reg_write_mask
+endif()
+if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
+  math(EXPR _tap_arms "${_tap_arms} + 10") # aspace_seam, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_balance, aspace_domain_balance, 2 x aspace_two_spaces_*, parked_frame_hostile
 endif()
 
 # The same count per region, mirroring the #if guards inside each. The regions are separated by
@@ -182,6 +188,12 @@ if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
 endif()
 if(KICKOS_HAVE_MPU)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # stackbase_arena
+endif()
+if(KICKOS_HAVE_ASPACE)
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # caller_stack_arena
+endif()
+if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 10") # 9 x aspace_* + parked_frame_hostile
 endif()
 
 # Totality, checked on EVERY board and not only the ones that split.

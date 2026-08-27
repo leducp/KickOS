@@ -263,6 +263,29 @@ void kickos_armv8a_gic_dispatch(void)
     *r32p(GICC_EOIR) = iar;
 }
 
+#if KICKOS_MEMORY_ENFORCED
+// Rule 7. Only the GIC is here: the timebase is the architected generic timer, reached
+// through system registers, and so are the translation controls, so neither is nameable by
+// a grant. This machine has no clock or reset gates.
+size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+{
+    static struct arch_reserved_block const blocks[] = {
+        {GICD_BASE, 0x10000u}, // distributor
+        {GICC_BASE, 0x10000u}, // CPU interface
+    };
+    size_t n = sizeof(blocks) / sizeof(blocks[0]);
+    if (n > max)
+    {
+        n = max;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        out[i] = blocks[i];
+    }
+    return n;
+}
+#endif
+
 // The PL011 comes out of QEMU's reset already enabled at the machine's default baud, so
 // the polled path needs no bring-up.
 void arch_console_write(char const* buf, size_t n)

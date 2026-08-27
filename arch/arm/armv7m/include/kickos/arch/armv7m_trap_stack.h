@@ -198,11 +198,11 @@
  * is the deepest at every posture, reaching the console through kprintf_fault; under
  * telemetry all three converge on arch_shutdown's drain.
  *
- * The kstacks=0 fallback and nothing else, so it carries no posture ladder: the four presets
- * that enforce it have neither a telemetry nor a bench variant and all four measure 568.
+ * The kstacks=0 fallback and nothing else, so it carries no posture ladder: the six presets
+ * that enforce it have neither a telemetry nor a bench variant and all six measure 576.
  * Where a block IS seated the two relocating stubs are EXITK below and kickos_thread_return
  * is RET. */
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT 568
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT 576
 
 /* THE SAME TWO STUBS ON THE KERNEL BLOCK. kickos_fault_stack_top answers with ctx.kernel_sp,
  * so the fault redirect and the slay rebuild both land at the block TOP, discarding whatever
@@ -211,13 +211,13 @@
  * 992 + 784 fits no block on any arch.
  *
  * Measured with nothing excluded, a stack=kernel class having no spawn floor to clear. It
- * never binds: 208 + 576 = 784 against 1004 usable off telemetry, 208 + 944 = 1152 against
+ * never binds: 208 + 584 = 792 against 1004 usable off telemetry, 208 + 952 = 1160 against
  * 1468 on, where SVCK asks 992 and 1464. rxv3 is the arch with least room for that to change,
- * its EXITK needing 180 more bytes before it displaced SYSK. */
+ * its EXITK needing 168 more bytes before it displaced SYSK. */
 #if KICKOS_TELEMETRY
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 944
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 952
 #else
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 576
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 584
 #endif
 
 /* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault

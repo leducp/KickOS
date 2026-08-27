@@ -47,6 +47,7 @@ CMAKE_STRING_KNOBS = [
 # CMake computes with belongs here; one only C reads does not.
 CMAKE_INT_KNOBS = [
     "KICKOS_HAVE_MPU",
+    "KICKOS_HAVE_ASPACE",
     "KICKOS_KERNEL_STACKS",
     "KICKOS_TRACE_CLOCK_DECLARED",
     "KICKOS_MIN_STACK_SIZE",

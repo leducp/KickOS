@@ -640,13 +640,23 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(kickos_nestwitness_count(static_cast<int>(a0)));
         }
 #endif
+#if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
+        case KOS_SYS_ASPACE_PROBE:
+        {
+            // Test scaffolding for the address-space seam. Not privilege-gated: every op is
+            // a kernel-side scenario over a space of its own, and none of them takes a
+            // caller-supplied address.
+            return aspace_probe(a0, a1);
+        }
+#endif
 #if KICKOS_HAVE_MPU
         case KOS_SYS_GRANT_PROBE:
         {
             // Test scaffolding for the Rule 7 grant predicates. Pure reads, so not
             // privilege-gated. op selects the predicate and posture; the kernel supplies the
-            // attr, so userspace needs no ARCH_MPU_* enum. Compiled only under enforcement
-            // (grant_hits_reserved / arch_reserved_blocks exist only then).
+            // attr, so userspace needs no ARCH_MPU_* enum. Its arms are region-backend
+            // shaped (DEV encodability, a descriptor budget), which is why this stays on
+            // the descriptor fact and not on KICKOS_MEMORY_ENFORCED.
             uintptr_t const op = a0;
             uintptr_t const base = a1;
             size_t const size = static_cast<size_t>(a2);
@@ -848,8 +858,10 @@ uint64_t syscall_body(uintptr_t nr,
             // KOS_SYS_RAM_ALLOC reserves arena memory and grants nothing; this is the
             // grant half.
             //
-            // Added to the CALLER's own region set, not to its domain: a domain is shared,
-            // and widening it would hand the same window to every sibling thread.
+            // Added to the CALLER's own region set, not to its domain. AUTHORITY is
+            // thread-local by contract; how wide the resulting reach is belongs to the
+            // backend, and a translating one maps into the task's space (F9, F10). So no
+            // caller may infer sibling denial from this.
             IrqLock lock;
             Thread* const c = sched::current();
             if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
@@ -911,7 +923,15 @@ uint64_t syscall_body(uintptr_t nr,
             // would fault the thread on memory it was told it had. NOT -KOS_EMFILE: that
             // code names the capability table, and the knob here is
             // KICKOS_MPU_MAX_REGIONS.
+#if KICKOS_HAVE_ASPACE
+            // A translating backend seats no descriptor, so there is nothing to ask
+            // add_enforced. Every outcome here is still named: the admission above
+            // refuses an out-of-arena or reserved range -KOS_EPERM, and a full budget is
+            // -KOS_ENOMEM.
+            if (not c->mpu.add(base, rsz, attr))
+#else
             if (not c->mpu.add_enforced(base, rsz, attr))
+#endif
             {
                 return static_cast<uint64_t>(-KOS_ENOMEM);
             }

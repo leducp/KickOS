@@ -7,8 +7,9 @@
 // MPU/PMP twin and any bus-side gate) and the clock/reset gates. Each enforcing chip
 // declares it via arch_reserved_blocks (arch.h).
 //
-// The geometry and Rule 7 checks compile only under KICKOS_HAVE_MPU (grant.cc); the stubs
-// below keep the call sites #if-free.
+// The geometry and Rule 7 checks compile only where memory protection is LIVE
+// (KICKOS_MEMORY_ENFORCED), which a translating backend sets while carrying no region
+// descriptors at all; the stubs below keep the call sites #if-free.
 
 #ifndef KICKOS_GRANT_H
 #define KICKOS_GRANT_H
@@ -17,7 +18,7 @@
 #include <stdint.h>
 
 #include <kickos/arch/arch.h> // ARCH_MPU_NOCACHE, arch_mpu_nocache_support
-#include <kickos/config.h>    // KICKOS_HAVE_MPU
+#include <kickos/config.h>    // the configuration umbrella
 
 // Fill target for arch_reserved_blocks: must stay >= the most blocks any chip declares
 // (imxrt1062 = 7 today). Every body truncates silently once it hits this cap.
@@ -45,7 +46,7 @@ namespace kickos
         return arch_mpu_nocache_support() != ARCH_MPU_NOCACHE_REFUSED;
     }
 
-#if KICKOS_HAVE_MPU
+#if KICKOS_MEMORY_ENFORCED
     // True iff [base, base+size) touches any reserved block, or on a bit-band chip the
     // alias image of a reserved block lying in the aliasable 1 MB peripheral region.
     // size 0 touches nothing (shape checks live in grant_region_admissible); a wrapping

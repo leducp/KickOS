@@ -472,7 +472,8 @@ adopting a translation regime firmware already turned on.
 
 **They go in order and never concurrently.** The reason the MMU precedes multicore is that two firsts
 in one bite makes the switch path undebuggable; three at once is worse. Sub-milestones, and each is a PR:
-**M6.1** the A53 port on a 1:1 map, proving boot, trap, switch and UART with no allocator work;
+**M6.1** the A53 port on a 1:1 map, proving boot, trap, switch and UART with no allocator work --
+**merged, PR 37**, master `3681624f`;
 **M6.2** translation, processes and enforcement; **M6.3** the RV64 Sv39 backend and the aspace-seam
 verdict; **M6.4** the x86_64 backend and the entry-path verdict; **M6.5** frame-level capabilities,
 designed against three backends instead of one.
@@ -481,7 +482,9 @@ Unicore FIRST, and the SMP seams are cut here while they still compile to nothin
 EL1/EL0 and exception vectors, identity map and then an aspace ACTIVATE, GICv2/v3 for the UART and
 the timer PPI with the table keyed `(line, kind)` rather than a flat NVIC index, the Generic Timer as
 the tickless one-shot, `arch_ipi_send`/`arch_ipi_wait` as empty macros, a per-CPU struct reached
-through `TPIDR_EL1`, and an `arch_dcache_clean`/`invalidate` seam for DMA. **The aspace family names
+through `TPIDR_EL1` (**already spent as the EL0 entry scratch by the landed port, so freeing it is
+part of the work rather than a given; `docs/design-m6-mmu.md` section 3 carries the resolution and
+why it shares T6's edit**), and an `arch_dcache_clean`/`invalidate` seam for DMA. **The aspace family names
 concepts and not mechanisms**, which is the seam's standing doctrine: no architecture's registers and
 no architecture's maintenance instruction appear in it. `docs/design-m6-mmu.md` carries the frozen
 family -- create, destroy, map, unmap, activate, a

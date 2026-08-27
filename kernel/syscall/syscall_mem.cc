@@ -97,26 +97,21 @@ namespace kickos
 
     namespace
     {
-        // The live DEV region whose base is EXACTLY `base`, or nullptr. Exact base, not
-        // containment, so a sub-block window cannot reach a whole-block table entry
-        // (K64F PIT ch2 base 0x40037120, block 0x40037000). R|W is required with DEV: a
-        // read-only DEV window is possession of the readable side only, and neither seam
-        // member is a read.
-        arch_mpu_region const* mmio_block_of(Thread const* c, uintptr_t base)
+        // The caller's own DEV window when its base is EXACTLY `base`, else 0. Exact base,
+        // not containment, so a sub-block window cannot reach a whole-block table entry
+        // (K64F PIT ch2 base 0x40037120, block 0x40037000).
+        //
+        // READS THE THREAD'S POSSESSION RECORD, NEVER ITS REACHABLE REGIONS. Authority here
+        // is thread-local by contract while the mapping that carries the window is
+        // task-wide on a translating backend, so deriving one from the other would make
+        // every peer in the task a holder (docs/design-m6-mmu.md F9).
+        size_t mmio_block_of(Thread const* c, uintptr_t base)
         {
-            for (arch_mpu_region const& r : c->mpu)
+            if (c->dev_size == 0 or c->dev_base != base)
             {
-                uint32_t const need = ARCH_MPU_DEV | ARCH_MPU_R | ARCH_MPU_W;
-                if ((r.attr & need) != need)
-                {
-                    continue;
-                }
-                if (r.base == base)
-                {
-                    return &r;
-                }
+                return 0;
             }
-            return nullptr;
+            return c->dev_size;
         }
     }
 
@@ -135,7 +130,7 @@ namespace kickos
         {
             return true;
         }
-        return mmio_block_of(c, base) != nullptr;
+        return mmio_block_of(c, base) != 0;
     }
 
     bool caller_holds_mmio_reg(uintptr_t base, uintptr_t offset)
@@ -149,18 +144,18 @@ namespace kickos
         {
             return true;
         }
-        arch_mpu_region const* r = mmio_block_of(c, base);
-        if (r == nullptr)
+        size_t const size = mmio_block_of(c, base);
+        if (size == 0)
         {
             return false;
         }
-        // Compared against the size, never as base + offset + 4: the region size is the
+        // Compared against the size, never as base + offset + 4: the window size is the
         // only operand that cannot wrap here.
-        if (offset > r->size)
+        if (offset > size)
         {
             return false;
         }
-        return r->size - offset >= sizeof(uint32_t);
+        return size - offset >= sizeof(uint32_t);
     }
 
     // A user-supplied READ buffer (console output, a name string) the kernel

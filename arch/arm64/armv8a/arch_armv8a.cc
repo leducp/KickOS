@@ -22,6 +22,10 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 // architectural and its addresses are not, so ownership follows the addresses.
 extern "C" void kickos_armv8a_gic_dispatch(void);
 
+// aspace_armv8a.cc. Every device the reporter below touches is a LOW address, so a fault
+// taken while a user space is on TTBR0_EL1 would print nothing at all.
+extern "C" void kickos_armv8a_ttbr0_to_boot(void);
+
 // switch.S.
 extern "C" void kickos_armv8a_switch_now(struct arch_context* from, struct arch_context* to);
 extern "C" void kickos_armv8a_start(struct arch_context* first);
@@ -55,8 +59,10 @@ static_assert(ARMV8A_F_FP % 16 == 0, "the vector bank needs 16-byte alignment fo
 static_assert(KICKOS_KERNEL_STACKS != 0,
               "armv8a selects ARCH_KERNEL_STACKS_MANDATORY, so the blocks must exist");
 
-// The incoming thread's kernel block top, published because the vector entry cannot reach
-// the TCB. One core, so one cell; M7 moves it behind the TPIDR_EL1 per-CPU pointer.
+// The incoming thread's kernel block top, published because a vector slot cannot reach the
+// TCB. Read by the REPORTING slots alone (vectors.S): those cover exception classes this port
+// never enters, so SP_EL1 carries no promise there. The syscall and IRQ entries trust SP_EL1
+// and read this cell not at all. One core, so one cell.
 extern "C"
 {
     uintptr_t kickos_armv8a_kernel_sp = 0;
@@ -154,17 +160,34 @@ void arch_context_init(struct arch_context* ctx,
 {
     ctx->stack_lo = reinterpret_cast<uintptr_t>(stack_base);
     ctx->stack_hi = ctx->stack_lo + stack_size;
-    ctx->kernel_sp = 0;
+    // ctx->kernel_sp IS READ, NOT WRITTEN, HERE: thread_create seats the block before this
+    // call and owns the zero that means none is seated.
 #if defined(KICKOS_TLS) && KICKOS_TLS
     // A subtraction rather than a mask, so stack_lo owes no alignment past the ABI's 16.
     ctx->tls_base = ctx->stack_lo - ::kickos::tls_block_size();
 #endif
 
-    // At the top of the stack, 16-byte aligned. For an EL0 thread that is its USER stack and
-    // the one eret that starts it consumes this frame; every later frame lands on the kernel
-    // block, which thread_create has not seated yet (switch.S reads it from the record).
-    uintptr_t top = (ctx->stack_hi) & ~static_cast<uintptr_t>(15);
-    uintptr_t base = top - ARMV8A_FRAME_SIZE;
+    // WHERE THIS FRAME SITS IS THE PRIVILEGE BOUNDARY. It carries SPSR and ELR, so whoever
+    // can write it chooses the exception level and the PC of the one eret that starts the
+    // thread. An EL0 thread's stack is a TASK-WIDE mapping (docs/design-m6-mmu.md F9), so a
+    // sibling can write both fields: the frame goes on this thread's own KERNEL block, which
+    // EL0 cannot reach at any address. A privileged thread resumes AT EL1 ON THIS SP and
+    // would then run its whole life on a block sized for one dispatch, so its frame stays on
+    // the stack it was handed.
+    //
+    // The eret pops the frame, leaving SP_EL1 at the block top, so the first trap an EL0
+    // thread takes already arrives on its own block: that is what lets ENTER_FROM_EL0 trust
+    // SP_EL1 and spend no scratch register (switch.S).
+    uintptr_t const user_top = (ctx->stack_hi) & ~static_cast<uintptr_t>(15);
+    uintptr_t frame_top = user_top;
+    if (privileged == 0)
+    {
+        // Never zero here: this arch selects ARCH_KERNEL_STACKS_MANDATORY, every unprivileged
+        // thread holds a pool slot, and the one TCB outside the pool is the privileged idle.
+        // thread_create asserts it.
+        frame_top = ctx->kernel_sp;
+    }
+    uintptr_t const base = frame_top - ARMV8A_FRAME_SIZE;
     uint64_t* f = reinterpret_cast<uint64_t*>(base);
     for (size_t i = 0; i < ARMV8A_FRAME_SIZE / sizeof(uint64_t); i++)
     {
@@ -184,7 +207,7 @@ void arch_context_init(struct arch_context* ctx,
     {
         f[ARMV8A_F_X30 / 8] = reinterpret_cast<uint64_t>(&kickos_user_thread_return);
         f[ARMV8A_F_SPSR / 8] = SPSR_EL0T_IRQ_ON;
-        f[ARMV8A_F_SP_EL0 / 8] = top; // its own stack, the consumed frame included again
+        f[ARMV8A_F_SP_EL0 / 8] = user_top; // its own stack, whole: no frame stands on it
     }
     ctx->sp = base;
 }
@@ -194,8 +217,9 @@ void arch_context_init(struct arch_context* ctx,
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
-    // kernel_sp SURVIVES THE REBUILD: arch_context_init clears it, which is right for a
-    // fresh TCB and wrong for a live pool thread whose block is seated by slot.
+    // kernel_sp SURVIVES THE REBUILD, put back explicitly rather than assumed untouched.
+    // The stub is privileged, so the rebuild below places its frame from the block it is
+    // HANDED and not from this field.
     uintptr_t const kernel_sp = ctx->kernel_sp;
 #if defined(KICKOS_TLS) && KICKOS_TLS
     uintptr_t const tls_base = ctx->tls_base;
@@ -359,6 +383,7 @@ int arch_bitband_present(void)
 // path arrives with the enforcement that can act on it.
 void kickos_armv8a_exception(unsigned long slot, unsigned long lr)
 {
+    kickos_armv8a_ttbr0_to_boot(); // before the console is touched
     kpanic_enter(); // mask IRQs + force the sync console + flush queued bytes, in order
     if (slot == SLOT_SP_EL1_SYNC)
     {

@@ -166,6 +166,15 @@ namespace kickos
 
         void* stack_base = nullptr;
         size_t stack_size = 0;
+        // THE DEV WINDOW THIS THREAD HOLDS, and the whole of the periph seam's possession
+        // gate. Seated once at create from the spawn's grant; dev_size 0 means none, and a
+        // window at base 0 is not expressible.
+        //
+        // This is AUTHORITY, not the mapping, and the two are only the same thing under an
+        // MPU: a translating backend maps task-wide, so a walk over what the caller can
+        // reach would answer yes for a peer that never asked (docs/design-m6-mmu.md F9).
+        uintptr_t dev_base = 0;
+        size_t dev_size = 0;
         // stack_base was demand-allocated by the kernel and must be harvested onto the free
         // list when this slot is reclaimed. A caller-owned stack is never harvested.
         bool kstack_owned = false;
@@ -358,7 +367,9 @@ namespace kickos
 #if KCAP_RUN_CHUNKS > 1
         bytes = bytes + 2 * sizeof(uint16_t); // cap_width + cap_reply_live
 #endif
-        return bytes;
+        // Thread::dev_base + Thread::dev_size, in the pointer-aligned run beside
+        // stack_base/stack_size, so neither adds padding on any target.
+        return bytes + sizeof(uintptr_t) + sizeof(size_t);
     }
 
     constexpr size_t KICKOS_THREAD_EXPECTED_SIZE =

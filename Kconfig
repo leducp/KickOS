@@ -25,6 +25,24 @@ config HAS_TRACE_CLOCK
 	  reads. A chip that has a usable counter selects it back on. rv32imac is
 	  per-chip: the arch reader is rdcycle, which traps on the ESP32-C6 HP core.
 
+config HAS_ASPACE
+	bool
+	help
+	  The chip translates rather than describing regions: its arch ships the
+	  arch_aspace_* family and its linker script carves the frame pool those
+	  tables come from. The two families are exclusive, so a chip selecting this
+	  must not select HAS_MPU.
+
+config KICKOS_HAVE_ASPACE
+	int
+	default 1 if HAS_ASPACE
+	default 0
+	help
+	  HAS_ASPACE as a number the generated fragment can carry. The capability is
+	  stated twice: here, and by arch/<family>/chip/<chip>/aspace.cmake. This is
+	  the half CMake cannot compute, so it is what the agreement check in
+	  CMakeLists.txt compares against.
+
 config KICKOS_TRACE_CLOCK_DECLARED
 	int
 	default 1 if HAS_TRACE_CLOCK

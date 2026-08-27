@@ -367,6 +367,11 @@ uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size)
 {
     return arch_syscall(KOS_SYS_GRANT_PROBE, op, base, size, 0);
 }
+
+uintptr_t kos_aspace_probe(uintptr_t op, uintptr_t a1)
+{
+    return arch_syscall(KOS_SYS_ASPACE_PROBE, op, a1, 0, 0);
+}
 #endif
 
 int kos_irq_attach(int irq, kos_cap_t sem_cap)

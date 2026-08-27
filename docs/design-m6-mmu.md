@@ -75,6 +75,19 @@ offset, so at 1 GiB block descriptors the whole map is at most 1024 level-one en
 configured virtual-address size requires. T3 reports the actual table-page budget from the layout it
 picks rather than taking this paragraph's arithmetic on trust.
 
+**T3 measured it, and BOTH terms of that estimate are absent from the layout it picked.** The map
+costs no page of its own. At `T1SZ` 25 the level-1 table IS the root, so there is no upper level to
+pay for; and the map is two of five hundred and twelve level-1 descriptors, one 1 GiB device block
+and one table into the existing 2 MiB split over DRAM, so it fits the root page the kernel window
+needed anyway. The whole image spends THREE table pages: a root per `TTBR`, and one level-2 table
+that both roots reach through their entry 1. The estimate above assumed the full 40-bit physical
+space mapped at 1 GiB, which is not what a 39-bit half can address.
+
+**What replaces the arithmetic is a CEILING rather than a page count.** A 39-bit high half describes
+at most 512 GiB of physical space, half of this core's 40-bit maximum, so a target whose RAM sits
+above that boundary needs `T1SZ` 24 and gains a level-0 page. That is the figure a later backend has
+to check, and it is a property of the chosen virtual-address size rather than of the map.
+
 **Address-space identifiers do not appear above the seam at all**, and that is a freeze rather than an
 omission. The kernel names spaces by handle; whether the hardware tags translations with an
 identifier, how wide it is, and what must be invalidated before one is reused are entirely the
@@ -429,6 +442,34 @@ features there are enumerated by CPUID (SDM Vol 3 section 5.1.4) exactly as A64'
 reported by an identity register -- so on BOTH backends the rule is the same: ask the hardware, do not
 assume. That symmetry is worth more than either fact.
 
+**And the RV64 spike falsified exactly that symmetry, which is what the litmus was for.** Memory TYPE
+is not enumerated on RISC-V the way granules and paging features are on the other two: Svpbmt carries
+no architectural identification bit, and the C906 gates its vendor page attributes behind a
+machine-mode control bit an S-mode kernel neither owns nor can observe. So a backend written as
+"read the identity register" has nowhere to read. The durable rule is the qualified one: **ask the
+hardware where it answers, and the board where it does not** -- which is the shape
+`arch_mpu_nocache_support` already has, being a per-CHIP answer rather than a probe.
+
+**The x86_64 spike returned the verdict this section exists to collect, and it is an empty diff.**
+Nineteen calls held against a booting image, nine on the entry path and ten on the aspace family,
+with NO signature change on any of them, including the two the roadmap picked this architecture to
+falsify: a `SYSCALL` entry that loads no stack pointer reaches a C handler on a per-CPU kernel stack
+in three instructions, and a single root register keeps the kernel half in step at the cost of two
+stores per create. Three findings landed as BODIES rather than signatures, which is exactly the
+shape a good seam produces: the parked caller's stack pointer belongs in the frame and not in the
+per-CPU slot, an incoming kernel stack must be published to TWO places where A64 needs one, and the
+trap path owes a conditional register-base swap the syscall path gets for free. And `acquire`
+collapsing to a single addition there is the argument FOR the seam rather than against it: written
+as an addition above the seam it would have passed on both 64-bit architectures and then forced a
+transient-window rewrite in kernel code on Sv39.
+
+Two negative results worth keeping. `ARCH_ASPACE_ECAPACITY` is unproducible on x86_64 as it is on
+RV64, all three M6 backends being radix, so the refusal is untestable rather than untested and stays
+for the first hashed-table backend. And the identifier freeze gets hardware confirmation rather than
+argument: the machine this was measured on exposes the identifier-invalidation instruction and NOT
+the identifier feature itself, so an address-space tag is not merely narrower on this architecture,
+it may be absent on a current part.
+
 A freeze that survives two unrelated architectures is a property of the problem; one that holds on a
 single architecture is an untested guess.
 
@@ -519,6 +560,15 @@ which is most of the spawns in the tree. Two live mappings of one block is not a
 mismatched memory-type flags leave exactly that, and that rule becomes the coherence rule for the
 pair.
 
+**WHO FREES THE FRAMES, decided at T4 because destroy forced the question.** An address space frees
+what it MAPS, and this handoff deliberately maps one block into two spaces, so the second space to be
+destroyed would free frames the first no longer owns. The rule is that the BORROWER unmaps before it
+dies, leaving exactly one space holding the block; there is no refcount, because a refcount here would
+duplicate the ownership M6.5 is going to express properly and would have to be unpicked again. T4
+makes a violation loud rather than absorbed: the frame pool counts refused frees and an arm requires
+that count to be zero, so a double free fails a test instead of being swallowed by the allocator's own
+guard. T5 and T6 honour the rule or T8b replaces it with something better.
+
 **Same virtual address, and not merely the same frames, and the reason is the block's CONTENTS.**
 Nothing in the tree guarantees that what root writes into a shared block is position-independent, so
 an address root computed can be sitting inside it. Relocating the child's view would silently
@@ -603,8 +653,23 @@ capability it does not have. No ladder edit is owed.
 
 A64 also has a thread pointer, `TPIDR_EL0`, readable by unprivileged code. So thread-local storage
 costs a register write at switch-in, where every existing arch needed something bespoke -- the
-kernel-provided helper on M-profile, an emulated-TLS override on RX. And `TPIDR_EL1` is the
-per-core pointer M7 wants.
+kernel-provided helper on M-profile, an emulated-TLS override on RX.
+
+**`TPIDR_EL1` is the per-core pointer M7 wants, and this port has ALREADY SPENT IT**, which the
+tri-arch spike caught and which `roadmap.md` still states as a plan. `ENTER_FROM_EL0`
+(`arch/arm64/armv8a/switch.S`) uses it as the entry scratch, and its own comment names the collision
+while creating it. The two intentions are circular rather than merely conflicting: the scratch is
+needed only because `SP_EL1` cannot be trusted on entry, and `SP_EL1` cannot be trusted only because
+`thread_create` seats `ctx.kernel_sp` AFTER `arch_context_init` returns, so a new thread's first trap
+arrives with `SP_EL1` still on its user stack.
+
+So the resolution is to seat the kernel stack pointer inside `arch_context_init`, which makes
+`SP_EL1` trustworthy on entry and frees the register. **That is the same edit T6 already owes** for a
+different reason: T6 must stop building a thread's privileged return state on the thread's own stack,
+and both changes are about `arch_context_init` establishing trusted state before the first trap
+rather than after it. Doing them together is cheaper than doing either alone, and neither is M7 work.
+One further M7 note while it is in view: `kickos_armv8a_kernel_sp` is a single global, so it becomes
+per-core at the same time the pointer does.
 
 ---
 
@@ -1076,7 +1141,7 @@ lying, and T8 is scored against this list.
 
 **THE SKIP LIST, KEPT, and it is EMPTY.** S9 says to read it and warns that a short list means
 an arm is lying, so it was checked against another board rather than accepted: `qemu-flat` on
-armv7m, also non-enforcing, also reports zero skips over the same 101 arms. On a flat board the
+armv7m, also non-enforcing, also reports zero skips over the same 101 arms that board ran at M6.1. On a flat board the
 enforcement arms are NOT REGISTERED rather than registered-and-skipped, so there is no list to keep
 and nothing is passing vacuously. What T8 is therefore scored against is the pair of facts below it,
 not a skip list:
@@ -1107,13 +1172,50 @@ largest new subsystem and it needs no hardware, so it is tested in the host unit
 wait for a board. Note that layer is OFF unless CMake is pointed at a GTest, so confirm the arm count
 ROSE rather than that the suite passed.
 
-**T2. The parallel arch family.** Build an address space, activate it, map, flush -- declared in the
-arch seam BESIDE the region calls and never replacing them (F6).
-*Expected:* the seam still compiles on every existing arch with no MPU backend touched. This is the
-cheapest possible falsifier for F6 and it is available before any of it works. Note that ACTIVATE is
-not just a register write: changing the table base and the ASID together has an architecturally
-documented ordering (DDI 0487 M.b Example D8-1, whose shape depends on `TCR_EL1.A1`), so the backend
-follows that sequence rather than inventing one.
+**T2. The parallel arch family.** Declared in the arch seam BESIDE the region calls and never
+replacing them (F6). What it freezes is section 3.4b's list, which is longer than the verbs this line
+used to name: the opaque address-space type; create, destroy, map, unmap and activate; the page
+acquire and release pair of section 3.3; the granule query F7 requires; the error and transaction
+semantics of each, with a capacity refusal DISTINCT from frame exhaustion; and the context-association
+path. **There is no flush and no address-space identifier.** Until 2026-08-25 this line said
+`flush`, against both section 3.4b, which calls removing it the most important thing in that section,
+and `roadmap.md`, which already described the family as coherence-complete with no flush call.
+*Expected:* the seam still compiles on every existing arch with no MPU backend touched, and the host
+unit count does not MOVE. A rise there would mean behaviour landed at T2 that belongs at T4. This is
+the cheapest possible falsifier for F6 and it is available before any of it works.
+*Decided here rather than discovered later,* section 3.4b having required that it be: activation is
+driven from the incoming thread's TASK and a context stays ignorant of its space, so
+`arch_context_init` keeps the four parameters it has. The alternative, a root carried in the context,
+is a second copy of what the domain already owns and would need keeping in step with it.
+*Four corrections the RV64 spike forced back into this freeze,* which is the F8 litmus doing its job
+one milestone early rather than at M6.3:
+  - **`map` takes a physical address that is NOT `uintptr_t`.** The first cut typed `pa` as a pointer
+    width, which F1's own Sv32 citation (32 bits of virtual against 34 of physical) makes
+    unrepresentable on a mainstream 32-bit target. It is a dedicated `arch_phys_addr_t`, free on all
+    three M6 backends and an ABI break if it had waited.
+  - **There is no zero-rights mapping.** A leaf with R, W and X all clear is how RISC-V spells "this
+    entry points at the next level", so the encoding is spoken for. A guard page is the ABSENCE of a
+    mapping, and the `ARCH_MAP_NONE` the first cut carried over from the region seam was an
+    invitation to write the one call that cannot work.
+  - **The acquire pair owes a simultaneous-depth floor, and it is at least two.** `ep_copy` holds a
+    source page in one space and a destination page in another at the same time. On a backend where
+    acquire is an addition the depth is unbounded and the requirement invisible, so a windowed
+    backend would have discovered it as a corruption rather than a refusal.
+  - **`ARCH_ASPACE_ECAPACITY` is unreachable on all three M6 backends,** every one of them being
+    radix. It stays, because the caller shape it forces is the reason to distinguish it and a
+    hashed-table backend cannot be added later without it, but it is untestable rather than untested
+    and no coverage gate may demand an arm for it.
+
+*The freeze gained one member at T4, and it is recorded here rather than left to a reader to notice:*
+`arch_aspace_boot`, which answers with the space the kernel booted under. Nothing else can put the
+boot translation back, so without it no scenario can activate a space of its own and survive. It is
+selftest-gated and shaped like `arch_mpu_probe_addr`, which is the same kind of member on the region
+seam, and it becomes ordinary rather than test-only at the step where the idle thread needs a space.
+
+*A constraint on whichever step lands the body, rather than on this one:* ACTIVATE is not just a
+register write. Changing the table base and the ASID together has an architecturally documented
+ordering (DDI 0487 M.b Example D8-1, whose shape depends on `TCR_EL1.A1`), so that backend follows
+the documented sequence rather than inventing one.
 
 **T3. The kernel into the high half, with the physical map.** Kernel link addresses move to the top of
 the space and all physical RAM is mapped there (F1).
@@ -1124,6 +1226,18 @@ T4 and fail T6 in a way that reads as a copy bug.
 **T4. Per-address-space virtual bookkeeping and the map editor.**
 *Expected:* map a page, write it, read it back, unmap it, and FAULT on the next access. Four
 transitions, and the fourth is the one usually missing from a first implementation.
+*Where each lands, because the fourth cannot be a TAP arm:* the first three are reached through the
+acquire pair and stay inside the selftest, which has to survive them. The fourth is an ordinary load
+taken by the CPU under the RUNNING translation, so it ends the image and lives in one of its own
+(`user/apps/common/aspacefault`, gated by `tests/integration/check_aspace_fault.sh`), which compares
+the address the kernel announced against the dump's `FAR` and pins the syndrome to a level-3
+translation fault. An arm reached through the acquire pair cannot see the TLB at all, which is
+exactly what the fourth transition is about.
+*And one requirement T4 satisfies WITHOUT witnessing, which is worth more than a silent pass:* a map
+into a slot that was empty owes an invalidate too, architectures caching negative translations.
+Removing that invalidate changes nothing on this emulator, so the arms cannot tell whether it is
+there. It is written because the architecture requires it, not because a run showed it, and the
+first target that caches a negative translation is where it stops being unwitnessed.
 
 **T5. The domain backend field, the dedup deleted, and possession made explicit.** The region array
 becomes the opaque handle behind the accessors, the reuse arm in `domain_for` goes and the
@@ -1136,6 +1250,15 @@ it.
 which is the arm pair that fails if possession is still derived from reachability. On the new board,
 two tasks granting the same block hold two address spaces, AND two tasks granting nothing at all hold
 two address spaces, which is the case the same-grant witness misses.
+*What T5 discharges of F6's self-grant clause, and what it does NOT:* F6 asks that the self-grant be
+either a real map or refused by name. At T5 it is the refusal. A reservation is not page-granular
+until F10's allocator lands and the task's space is not activated until T6, so mapping a small
+allocation page-granularly there would over-grant its neighbours. What T5 buys is that admission is
+restored, the escalation F6 names being refused by name, and that the encoder stops asking a
+descriptor question of a backend that seats none. Every outcome is a map-to-be or a named refusal and
+none is a silent claim. **T6 owns F10's allocator and is where the refusal becomes a map**, and T8
+owns the hostile witness.
+
 *Also owed here:* the driver-service bring-up flow CONFIGURES and runs, and the `domain_share` arm is
 re-described per F2 as the two-handoff witness it becomes. **The same-address READBACK is not owed
 here and must not be claimed here** -- the child is a user thread and its image is not mapped until
@@ -1207,8 +1330,46 @@ where they started. A build with no destroy path at all passes every earlier T-s
 this one can stand in for it.
 
 **T9. The multicore seams, compiled to nothing, and the cache seam that is not.** The per-core
-pointer, the doorbell as empty macros, and the flush as a local invalidate a broadcast later
-replaces. **Plus the data-cache clean and invalidate seam, which `roadmap.md` lists as an M6
+pointer, the doorbell as empty macros, and the TLB maintenance INSIDE `map` and `unmap` staying a
+local invalidate that a broadcast later replaces. That maintenance is below the seam and never a
+call of its own, per section 3.4b, so what M7 changes here is a body and not a signature.
+
+**AND THE TRI-ARCH SPIKE FOUND THAT LAST SENTENCE TOO OPTIMISTIC, which is what T9 now owes a
+decision about.** "Coherence-complete when it returns, visible to this core" is a ONE-CORE
+definition. The initiator waits on all three architectures; the finding is what it waits on. A64's
+`TLBI ...IS` plus `DSB ISH` blocks until every PE in the shareable domain has finished, including
+draining its own accesses through the stale entry, with no code on the far side and no way to
+deadlock. RV64 and x86_64 have no broadcast, and both specifications prescribe a software protocol
+instead, which means waiting on other cores EXECUTING a handler. The strongest evidence that the
+wait is intrinsic rather than an artefact of the IPI: the one vendor that did build a hardware
+broadcast shipped a separate BLOCKING instruction beside it. So the seam reads broadcast-then-wait,
+never IPI-then-wait.
+
+Three consequences, and the third is a decision rather than a note:
+  - **Coherence-complete splits in two.** An unmap whose frames are being FREED may defer its
+    remote half, because every one of the three specifications puts the boundary at REUSE rather
+    than at the edit, which moves that barrier into the frame allocator. An unmap that REVOKES
+    cannot defer, and this system revokes capabilities, so the synchronous cross-core wait is
+    reachable rather than hypothetical.
+  - **The lock and this seam become ONE design.** The far side's handler must take no kernel lock,
+    and the lock's acquire loop must service a pending doorbell. Otherwise an initiator holding the
+    lock waits on a core spinning to acquire it and the system stops. That is a deadlock A64 cannot
+    have and the other two can, so it may not be discovered by the first backend.
+  - **OPEN, and the one thing in this family still unfrozen.** The rendezvous needs to know which
+    cores have the space active, which is knowledge the seam does not currently carry. Either
+    `unmap` gains a core-set parameter, which is a signature change and puts a multicore concept in
+    every backend's face at one core, or the opaque address space carries an active-core set the
+    kernel can read, which keeps the signature but weakens the handle's opacity. The spike
+    recommends the second. Nothing in M6 needs the answer, `arch_aspace` being opaque, so adding
+    the field later costs nothing above the seam; the parameter would not be free later, which is
+    why the choice is named here rather than left to M7 to discover.
+
+*Also corrected by that spike, in `docs/design-m7-smp.md` rather than here:* two claims that do not
+hold. The blocking all-core rendezvous is not owed by the milestone that adds the second core on
+A64, the data-side rendezvous being the hardware's; what IS owed there is narrower and was unnamed,
+`ISB` not being broadcast, so a change to an EXECUTABLE mapping still needs the far side poked. And
+`sbi_remote_sfence_vma` is not promised synchronous by its specification, where success means the
+request was sent; one implementation happening to block is not a contract. **Plus the data-cache clean and invalidate seam, which `roadmap.md` lists as an M6
 deliverable.** The seam lands here; what stays open is who calls it, which is section 7's entry.
 *Expected:* `tests/static/check_cpu_id_fold.sh` passes with `KICKOS_NUM_CORES` at 1, so the core
 identity folds to a literal and there is no fallback path to drift out of date.

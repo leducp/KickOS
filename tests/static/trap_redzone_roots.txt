@@ -341,8 +341,9 @@ class   armv7m SVCK   frame=KICKOS_ARMV7M_TRAP_NEST_SVCK \
 class   armv7m EXITK  frame=KICKOS_ARMV7M_TRAP_NEST_EXIT \
                       depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK stack=kernel
 # EXIT is the FALLBACK, and this arch is the only one that needs one: f302nucleo, f302nucleo-st,
-# due and due-st resolve KICKOS_KERNEL_STACKS 0, so all three stubs stay on the thread's own
-# stack against the spawn floor.
+# due, due-st, bluepill-c8 and bluepill-c8-st resolve KICKOS_KERNEL_STACKS 0, so all three stubs
+# stay on the thread's own stack against the spawn floor. KICKOS_KERNEL_STACKS needs the chip's
+# HAS_MPU, which stm32f103, stm32f302 and sam3x8e do not select.
 class   armv7m EXIT   frame=KICKOS_ARMV7M_TRAP_NEST_EXIT \
                       depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT kstacks=0
 # RET is unmarked because it applies under BOTH designs: kickos_thread_return is an ordinary

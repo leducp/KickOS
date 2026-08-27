@@ -226,11 +226,12 @@ elseif(KICKOS_ARCH STREQUAL "lx6")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xtensa/lx6/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "armv8a")
   # ARMv8-A in AArch64 state (QEMU virt, Cortex-A53), the first 64-bit ISA in the fleet.
-  # SKELETON: every seam body in arch_armv8a.cc is a stub, so this configures and links
-  # nothing runnable yet. The chip layer (arch/arm64/chip/virt_arm64) supplies
-  # arch_init/console/shutdown + the clock/timer + linker script.
+  # The chip layer (arch/arm64/chip/virt_arm64) supplies arch_init/console/shutdown + the
+  # clock/timer + linker script. This is the fleet's only TRANSLATING backend, so
+  # aspace_armv8a.cc has no region-descriptor counterpart in any other branch here.
   add_library(kickos_arch_armv8a STATIC
     arm64/armv8a/arch_armv8a.cc
+    arm64/armv8a/aspace_armv8a.cc
     arm64/armv8a/vectors.S
     arm64/armv8a/switch.S
     common/arch_ram_common.cc

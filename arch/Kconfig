@@ -207,6 +207,7 @@ config CHIP_VIRT_RV32
 config CHIP_VIRT_ARM64
 	bool
 	select ARCH_ARMV8A
+	select HAS_ASPACE
 
 config CHIP_RX72M
 	bool

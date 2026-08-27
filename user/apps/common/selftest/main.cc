@@ -1837,10 +1837,12 @@ namespace
     // undersized or misaligned one -------------------------------------------------------
     kos_cap_t g_cstk_sem = KOS_CAP_NONE;
     void caller_stack_worker(void*) { kos_sem_post(CH_DONE); } // g_cstk_sem at CH_DONE
-    // No-MPU builds ONLY: KOS_STACK_DEFINE aligns to 16 bytes without an MPU. Under MPU it
-    // aligns to a whole region and the static would not fit a fixed small .appdata window
-    // (C6 = 4K); the dynamic stack above covers the MPU case.
-#if !KICKOS_HAVE_MPU
+    // NON-ENFORCING builds ONLY: KOS_STACK_DEFINE aligns to 16 bytes without an MPU. Under
+    // MPU it aligns to a whole region and the static would not fit a fixed small .appdata
+    // window (C6 = 4K); the dynamic stack above covers the MPU case. A TRANSLATING backend
+    // has no descriptors either, but it does confine an unprivileged stack to the arena,
+    // and a static lives outside it.
+#if !KICKOS_MEMORY_ENFORCED
     // The worker runs the deepest kernel dispatch on THIS stack, so the size must clear the
     // per-arch KICKOS_MIN_STACK_SIZE floor. Under KICKOS_TLS a seated block must ALSO match the
     // stride exactly, and a caller stack that does not is refused rather than left unseated.
@@ -1881,7 +1883,7 @@ namespace
         TAP_CHECK(t.valid());
         kos_sem_wait(g_cstk_sem);
         kos_sem_destroy(g_cstk_sem);
-#if !KICKOS_HAVE_MPU
+#if !KICKOS_MEMORY_ENFORCED
         // This buffer is only 16-byte aligned (no MPU), and spawn must still accept and run
         // it: with no region descriptor the natural-alignment check must not apply.
         kos_sem_create(0, &g_cstk_sem);
@@ -1896,10 +1898,37 @@ namespace
 #endif
     }
 
-    // --- Memory domains: two unprivileged threads granted the SAME region share one
-    // domain, each reading/writing it, while each keeps its own private stack. ---------
+    // --- Caller-owned stack outside the arena ------------------------------------
+    // A KOS_STACK_DEFINE stack lands in app .bss, which is outside the user-RAM arena, and
+    // an unprivileged child's stack is an arena-confined grant: -KOS_EPERM, and no other
+    // code, a block failing geometry or the TLS seat answering -KOS_EINVAL. Sized AND
+    // aligned to the TLS stride so the seat would admit it and only the arena bound can
+    // refuse it.
+    // Translating backends only. An enforcing MPU board refuses the same block, but a
+    // stride-aligned static does not fit every .appdata window (esp32c6 carves 4K) and
+    // stackbase_arena witnesses the bound there.
+#if KICKOS_HAVE_ASPACE
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    alignas(KICKOS_TLS_STRIDE) unsigned char g_cstk_outside[KICKOS_TLS_STRIDE];
+#else
+    KOS_STACK_DEFINE(g_cstk_outside, KICKOS_MIN_STACK_SIZE);
+#endif
+    void t_caller_stack_arena()
+    {
+        TAP_CHECK(kos::thread::spawn(caller_stack_worker, nullptr, "cstkO", 10, KOS_POLICY_FIFO,
+                                     0, false, nullptr, 0, g_cstk_outside,
+                                     static_cast<uint32_t>(sizeof(g_cstk_outside))).error()
+                  == -KOS_EPERM);
+    }
+#endif
+
+    // --- Two handoffs of ONE reserved range ----------------------------------------
+    // Both workers are IMPLICIT spawns, and resolving a spawn's task always spends a fresh
+    // task slot, so these two were never siblings: they are two tasks handed the same
+    // reserved range, and the writer's store must be visible to the reader through it.
+    // A sibling-sharing witness is a different arm (one task create, two members).
     volatile int* g_dshared = nullptr;
-    kos_cap_t g_dwrote = KOS_CAP_NONE; // writer -> reader handoff (through the shared domain)
+    kos_cap_t g_dwrote = KOS_CAP_NONE; // writer -> reader handoff (through the handed-over range)
     kos_cap_t g_dread = KOS_CAP_NONE;  // reader -> main handoff
     int g_dreadback = -1;
     constexpr int DOM_SENTINEL = 0x5A5A;
@@ -1927,8 +1956,8 @@ namespace
         // (allocated, never granted), and only the reader writes g_dreadback.
         kos_sem_create(0, &g_dwrote);
         kos_sem_create(0, &g_dread);
-        // Spawn BOTH before either runs (spawn does not preempt): same mem_base =>
-        // they reference the ONE shared domain concurrently, each with its own stack.
+        // Spawn BOTH before either runs (spawn does not preempt), so the two handoffs of
+        // the range are live at the same time.
         kos_cap_grant wcaps[] = {{g_dwrote, CH_FULL}};
         kos_cap_grant rcaps[] = {{g_dwrote, CH_FULL}, {g_dread, CH_FULL}};
         auto w = kos::thread::spawn_caps(dom_writer, nullptr, "domW", 10, wcaps, 1, KOS_POLICY_FIFO,
@@ -2375,6 +2404,258 @@ namespace
         kos_sem_destroy(g_cd_kidsem); // close cd_worker's own cap
         kos_sem_post(CH_DONE);        // g_cd_done (delegated from main)
     }
+#if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
+    // --- The address-space seam (kos_aspace_probe) ------------------------------
+    // The map editor is a KERNEL seam, so each arm asks for a whole scenario rather than
+    // for a mapping; the probe answers a number. What every arm is really guarding against
+    // is an identity map answering in the editor's place, which passes a careless version
+    // of all of them (docs/design-m6-mmu.md section 3.2).
+    void t_aspace_seam()
+    {
+        uintptr_t const g = kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0);
+        TAP_CHECK(g != 0);
+        TAP_CHECK((g & (g - 1u)) == 0);
+        // All three types honoured, so no grant is admitted and then quietly downgraded.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE, 0) == 1); // normal
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE, 1) == 1); // non-cacheable
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE, 2) == 1); // device
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE, 3) == 0); // no such type
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0) != 0);
+        tap::diag("aspace: granule %u, %u frames free",
+                  static_cast<unsigned>(g),
+                  static_cast<unsigned>(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0)));
+    }
+
+    void t_aspace_map_cycle()
+    {
+        // Map, write, read back, unmap, and the page GONE. The fourth is the one a first
+        // implementation leaves out, and an editor that never removed the entry stops here.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_ROUNDTRIP, 0) == KOS_ASPACE_TRIP_GONE);
+    }
+
+    void t_aspace_translate()
+    {
+        // Two unequal virtual pages onto ONE frame, the write through either seen through
+        // the other and in the frame itself. An identity map hands back two distinct pages
+        // and cannot pass this.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_ALIAS, 0) == 1);
+    }
+
+    void t_aspace_refusals()
+    {
+        // Every refusal, as one word: a kernel-half address, a sub-granule base, an empty
+        // range, permissions this architecture cannot express, an unknown right, and an
+        // unmap of a range not wholly mapped.
+        uintptr_t const bits = kos_aspace_probe(KOS_ASPACE_OP_REFUSALS, 0);
+        TAP_CHECK(bits == KOS_ASPACE_REFUSE_ALL);
+    }
+
+    void t_aspace_span()
+    {
+        // 600 pages from the last slot of one level-3 table, so the range crosses two table
+        // boundaries: the shape a process image has, and the one a miscounted last slot
+        // silently truncates.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_SPAN, 0) == 1);
+    }
+
+    void t_aspace_balance()
+    {
+        // Create, map, unmap, destroy, four times over: every frame back, tables included.
+        // A build whose destroy is a stub passes every arm above while leaking each space.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
+    }
+
+    void t_aspace_domain_balance()
+    {
+        // A domain resolved and dropped must return the address space it took, and a free
+        // slot must not be reused with its predecessor's space still standing.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_DOMAIN_BALANCE, 0) == 0);
+    }
+
+    // --- Two tasks, two address spaces (docs/design-m6-mmu.md F2) -----------------
+    // BOTH workers are spawned before either runs, so the two domains coexist and a slot
+    // freed by an early exit cannot be handed to the second and answer with the first's
+    // name.
+    Atomic<uint32_t, Order::RELAXED> g_spid_a{0};
+    Atomic<uint32_t, Order::RELAXED> g_spid_b{0};
+    void space_id_worker(void* arg)
+    {
+        uint32_t const id = static_cast<uint32_t>(kos_aspace_probe(KOS_ASPACE_OP_SPACE_ID, 0));
+        if (arg == nullptr)
+        {
+            g_spid_a = id;
+        }
+        else
+        {
+            g_spid_b = id;
+        }
+        kos_sem_post(CH_DONE);
+    }
+
+    // Spawns the pair and answers false when the pool could not seat both. Whichever worker
+    // DID spawn is still waited for: g_done is shared with every later arm, so an unclaimed
+    // post would arrive inside one of theirs.
+    bool two_space_ids(void* mem_base, uint32_t mem_size)
+    {
+        g_spid_a = 0;
+        g_spid_b = 0;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}};
+        int seated = 0;
+        if (kos::thread::spawn_caps(space_id_worker, nullptr, "spidA", 10, caps, 1,
+                                    KOS_POLICY_FIFO, 0, false, mem_base, mem_size).valid())
+        {
+            seated++;
+        }
+        if (kos::thread::spawn_caps(space_id_worker, reinterpret_cast<void*>(1), "spidB", 10,
+                                    caps, 1, KOS_POLICY_FIFO, 0, false, mem_base,
+                                    mem_size).valid())
+        {
+            seated++;
+        }
+        wait_n(seated);
+        return seated == 2;
+    }
+
+    void t_aspace_two_spaces_same_grant()
+    {
+        void* const shared = kos_ram_alloc(256);
+        if (shared == nullptr)
+        {
+            tap::skip("arena cannot spare the shared region");
+            return;
+        }
+        if (not two_space_ids(shared, 256))
+        {
+            tap::skip("thread pool too small for 2 concurrent");
+            return;
+        }
+        uint32_t const ida = g_spid_a;
+        uint32_t const idb = g_spid_b;
+        TAP_CHECK(ida != 0 and idb != 0);
+        TAP_CHECK(ida != idb);
+    }
+
+    void t_aspace_two_spaces_no_grant()
+    {
+        // The case the arm above misses. Two ordinary tasks with nothing granted used to be
+        // handed the ONE immortal default-user domain, which is the common spawn and not an
+        // edge, so F2 stayed false with the reuse arm already gone.
+        if (not two_space_ids(nullptr, 0))
+        {
+            tap::skip("thread pool too small for 2 concurrent");
+            return;
+        }
+        uint32_t const ida = g_spid_a;
+        uint32_t const idb = g_spid_b;
+        TAP_CHECK(ida != 0 and idb != 0);
+        TAP_CHECK(ida != idb);
+    }
+
+    // --- A sibling scribbling a PARKED member's frame (docs/design-m6-mmu.md F9, T6) ----
+    // Thread stacks are TASK-WIDE mappings here, so a member can write a not-yet-run
+    // member's stack. What must not be reachable there is the privileged return state: the
+    // saved processor state and the return address that the one exception return starting
+    // the victim consumes. The sibling fills the whole top-of-stack frame window with the
+    // AArch64 EL1h state word, so whichever slot holds the saved state reads "resume
+    // privileged" and whichever holds the return address reads a value the sibling picked.
+    // FILLING THE WINDOW rather than two known offsets is what keeps the arm from going
+    // vacuous when the frame layout moves.
+    //
+    // The victim proves both halves. Reaching its own body says the return address was its
+    // entry; kos_shutdown answering -KOS_EPERM says it runs unprivileged. Were it privileged
+    // that call would SUCCEED and end the run, which the TAP gate reads as a truncated
+    // stream, so the arm cannot pass by escalating quietly.
+    //
+    // THE SIBLING MUST NOT EXIT: a member's exit cancels its group, which would end the
+    // victim at its first syscall before it could answer. It parks on a semaphore nothing
+    // posts, and the victim's own exit collects it.
+    constexpr uint64_t HOSTILE_EL1H = 0x205u; // M[3:0] = EL1h, plus the debug mask
+    constexpr uint32_t HOSTILE_WINDOW = 1024; // spans the whole armv8a exception frame
+    constexpr uint32_t HOSTILE_JOIN_US = 60000;
+    constexpr int CH_HPARK = 2; // delegated SECOND to the sibling
+    Atomic<int32_t, Order::RELAXED> g_hostile_rc{-99};
+    void hostile_victim(void*)
+    {
+        g_hostile_rc = kos_shutdown(0);
+        kos_exit(0);
+    }
+    void hostile_sibling(void* arg) // caps: done@1, park@2
+    {
+        uintptr_t const top = reinterpret_cast<uintptr_t>(arg);
+        volatile uint64_t* const w = reinterpret_cast<volatile uint64_t*>(top - HOSTILE_WINDOW);
+        for (uint32_t i = 0; i < HOSTILE_WINDOW / sizeof(uint64_t); i++)
+        {
+            w[i] = HOSTILE_EL1H;
+        }
+        kos_sem_post(CH_DONE);
+        kos_sem_wait(CH_HPARK);
+        kos_exit(1); // unreachable: nothing posts that semaphore
+    }
+    void t_parked_frame_hostile()
+    {
+#if defined(KICKOS_TLS) && KICKOS_TLS
+        // The TLS seat admits a caller stack of exactly one stride, stride-aligned.
+        constexpr uint32_t VSTK = KICKOS_TLS_STRIDE;
+#else
+        constexpr uint32_t VSTK = 8192;
+#endif
+        kos_cap_t park = KOS_CAP_NONE;
+        if (kos_sem_create(0, &park) != 0)
+        {
+            tap::skip("no semaphore slot");
+            return;
+        }
+        // Twice the stack, so the aligned block fits wherever the bump allocator lands.
+        void* const raw = kos_ram_alloc(2u * VSTK);
+        if (raw == nullptr)
+        {
+            (void)kos_handle_close(park);
+            tap::skip("arena cannot spare a strided victim stack");
+            return;
+        }
+        uintptr_t const vbase = (reinterpret_cast<uintptr_t>(raw) + (VSTK - 1u))
+            & ~static_cast<uintptr_t>(VSTK - 1u);
+        kos_task_t task = KOS_TASK_NONE;
+        TAP_CHECK(kos_task_create(nullptr, 0, 0, &task) == 0);
+        g_hostile_rc = -99;
+        // PRIORITY 1 IS BELOW ROOT'S OWN, so the victim cannot be scheduled while this arm
+        // still runs and its frame stays parked until the join below releases root. Its stack
+        // is caller-owned because the sibling has to be able to NAME its top.
+        auto const victim = kos::thread::spawn(hostile_victim, nullptr, "hvic", 1,
+                                               KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                               reinterpret_cast<void*>(vbase), VSTK,
+                                               nullptr, 0, nullptr, 0, 0, nullptr, task);
+        if (not victim.valid())
+        {
+            (void)kos_task_kill(task);
+            (void)kos_handle_close(park);
+            tap::skip("pool too small for the victim");
+            return;
+        }
+        kos_cap_grant const caps[2] = {{g_done, CH_FULL}, {park, KOS_CAP_WAIT}};
+        auto const sibling = kos::thread::spawn(hostile_sibling,
+                                               reinterpret_cast<void*>(vbase + VSTK), "hsib",
+                                               10, KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                               nullptr, 0, nullptr, 0, caps, 2, 0, nullptr,
+                                               task);
+        if (not sibling.valid())
+        {
+            (void)kos_task_kill(task);
+            (void)victim.join(HOSTILE_JOIN_US);
+            (void)kos_handle_close(park);
+            tap::skip("pool too small for the sibling");
+            return;
+        }
+        wait_n(1); // the scribble is COMPLETE before the victim is let go
+        int const jrc = victim.join(HOSTILE_JOIN_US);
+        int const rc = g_hostile_rc;
+        (void)kos_task_kill(task);
+        (void)sibling.join(HOSTILE_JOIN_US);
+        (void)kos_handle_close(park);
+        TAP_CHECK(jrc == 0);
+        TAP_CHECK(rc == -KOS_EPERM);
+    }
+#endif
     void t_confused_deputy()
     {
         kos_sem_create(0, &g_cd_done);
@@ -6549,10 +6830,13 @@ int main(int, char**)
     TAP_ADD("irq_reclaim", t_irq_reclaim);
 #endif
     TAP_ADD("caller_stack", t_caller_stack); // caller-owned stack API (no test-only syscalls)
+#if KICKOS_HAVE_ASPACE
+    TAP_ADD("caller_stack_arena", t_caller_stack_arena); // app .bss caller stack is out of arena
+#endif
     // Here, not beside mem_self_grant: see the run-order note at t_selfgrant_nonpow2.
     TAP_ADD("mem_self_grant_nonpow2", t_selfgrant_nonpow2); // non-pow2 region self-grants
     TAP_ADD("region_mode", t_region_mode);                  // which region-encoding mode is live
-    TAP_ADD("domain_share", t_domain_share); // two threads share one memory domain
+    TAP_ADD("domain_share", t_domain_share); // two tasks, one reserved range handed to each
     TAP_ADD("mmio_grant", t_mmio_grant);     // MMIO-grant boundary: privileged-only + encodable-only
 #if KICKOS_HAVE_MPU
     TAP_ADD("stackbase_arena", t_stackbase_arena); // unprivileged out-of-arena stack_base refused
@@ -6560,6 +6844,18 @@ int main(int, char**)
     TAP_ADD("grant_reserved", t_grant_reserved);   // Rule 7: overlap matrix + RAM/DEV admission (probe syscall)
     TAP_ADD("dev_window_exclusive", t_dev_window_exclusive); // one holder per DEV window (-KOS_EBUSY)
 #endif
+#endif
+#if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
+    TAP_ADD("aspace_seam", t_aspace_seam);           // granule, the three memory types, the frame pool
+    TAP_ADD("aspace_map_cycle", t_aspace_map_cycle); // map, write, read back, unmap, gone
+    TAP_ADD("aspace_translate", t_aspace_translate); // two virtual pages, one frame: not an identity map
+    TAP_ADD("aspace_refusals", t_aspace_refusals);   // the map editor's refusal set, as one word
+    TAP_ADD("aspace_span", t_aspace_span);           // a range crossing two table boundaries
+    TAP_ADD("aspace_balance", t_aspace_balance);     // destroy returns every frame a space took
+    TAP_ADD("aspace_domain_balance", t_aspace_domain_balance); // a dropped domain returns its space
+    TAP_ADD("aspace_two_spaces_same_grant", t_aspace_two_spaces_same_grant); // one block, two spaces
+    TAP_ADD("aspace_two_spaces_no_grant", t_aspace_two_spaces_no_grant);     // no grant, still two spaces
+    TAP_ADD("parked_frame_hostile", t_parked_frame_hostile); // a sibling scribbles a parked member's frame
 #endif
     TAP_ADD("confused_deputy", t_confused_deputy); // readable-buffer/name floor (accept rodata, reject bogus)
     // Last, deliberately: the blocks it buys are never returned (bump allocator), so

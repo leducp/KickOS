@@ -201,11 +201,59 @@ enum kos_syscall_nr
                                //   form answer a caller identically, so this counter is the
                                //   only thing that separates them. Reads 0 on a backend
                                //   whose calls all take the generic path.
-    KOS_SYS_NEST_WITNESS = 58  // (which) -> one nested-trap counter (self-test only), or
+    KOS_SYS_NEST_WITNESS = 58, // (which) -> one nested-trap counter (self-test only), or
                                //   KOS_NEST_UNSET for a figure nothing recorded. A COUNTER
                                //   READ and not a report: a kernel-side report puts the
                                //   console's varargs route inside the SYSCALL red zone.
+    KOS_SYS_ASPACE_PROBE = 59  // (op, a1) -> per-op (see enum kos_aspace_op), or -KOS_EINVAL
+                               //   for a bad op and -KOS_ENOSYS on a board that describes
+                               //   regions instead of translating (self-test only). The map
+                               //   editor is a KERNEL seam and never a syscall of its own, so
+                               //   each op runs a whole scenario in the kernel and answers a
+                               //   number rather than handing userspace a mapping primitive.
 };
+
+// `op` selector for KOS_SYS_ASPACE_PROBE (self-test only). Values are a frozen contract:
+// append, never reorder.
+enum kos_aspace_op
+{
+    KOS_ASPACE_OP_GRANULE = 0,   // () -> the map editor's granule in bytes
+    KOS_ASPACE_OP_MEMTYPE = 1,   // (enum arch_map_memtype as a number) -> 1 honoured, 0 not
+    KOS_ASPACE_OP_FRAMES_FREE = 2, // () -> frames the kernel's one pool has left
+    KOS_ASPACE_OP_ROUNDTRIP = 3, // () -> how far map, write, read back, unmap got (0..4)
+    KOS_ASPACE_OP_ALIAS = 4,     // () -> 1 when two unequal virtual pages reached the one
+                                 //   frame the caller chose, which an identity map cannot do
+    KOS_ASPACE_OP_REFUSALS = 5,  // () -> the KOS_ASPACE_REFUSE_* bits that held
+    KOS_ASPACE_OP_BALANCE = 6,   // () -> frames a create/map/unmap/destroy cycle did not
+                                 //   return; 0 is balanced, and all ones means the cycle
+                                 //   asked the pool to free a frame it does not own
+    KOS_ASPACE_OP_TOUCH_UNMAPPED = 7, // () -> activates a space and reads a page it just
+                                 //   unmapped, so on a working backend it does not return
+    KOS_ASPACE_OP_SPAN = 8,      // () -> 1 when a range crossing two table boundaries mapped
+                                 //   contiguously and unmapped whole
+    KOS_ASPACE_OP_SPACE_ID = 9,  // () -> a small stable name for the CALLING task's address
+                                 //   space, 0 when it holds none. Two tasks answering the
+                                 //   same number are one address space; the number is not a
+                                 //   kernel address and nothing else may be read out of it
+    KOS_ASPACE_OP_DOMAIN_BALANCE = 10 // () -> frames a run of domain resolves and releases
+                                 //   did not return; 0 is balanced
+};
+
+// KOS_ASPACE_OP_ROUNDTRIP: how far the cycle got, so a failure names its transition.
+#define KOS_ASPACE_TRIP_MAPPED    1
+#define KOS_ASPACE_TRIP_READBACK  2
+#define KOS_ASPACE_TRIP_UNMAPPED  3
+#define KOS_ASPACE_TRIP_GONE      4
+
+// KOS_ASPACE_OP_REFUSALS: one bit per refusal the map editor must make.
+#define KOS_ASPACE_REFUSE_HIGH_HALF     0x01u /* a kernel-half address */
+#define KOS_ASPACE_REFUSE_UNALIGNED     0x02u /* a base below the granule */
+#define KOS_ASPACE_REFUSE_EMPTY         0x04u /* zero pages */
+#define KOS_ASPACE_REFUSE_NO_READ       0x08u /* write or execute with no read */
+#define KOS_ASPACE_REFUSE_UNKNOWN_RIGHT 0x10u /* a bit outside ARCH_MAP_R/W/X */
+#define KOS_ASPACE_REFUSE_PART_UNMAP    0x20u /* unmap of a range not wholly mapped */
+#define KOS_ASPACE_REFUSE_WRITE_EXEC    0x40u /* writable and executable at once */
+#define KOS_ASPACE_REFUSE_ALL           0x7Fu
 
 // Selectors for KOS_SYS_NEST_WITNESS. NEST_ROOM is the bytes between the lowest nested frame
 // seen on a thread stack and that stack's base; compare it against the arch's own interrupt

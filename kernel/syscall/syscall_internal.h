@@ -59,10 +59,10 @@ namespace kickos
     }
 
     // --- MMIO possession (syscall_mem.cc) --------------------------------------
-    // The current thread holds a live DEV region whose base is exactly `base`. The
-    // whole authorisation for arch_periph_enable; no authority bit gates it. Exact
-    // base, not containment, so a sub-block window cannot reach a whole-block table
-    // entry.
+    // The current thread's own DEV window has base exactly `base`. The whole
+    // authorisation for arch_periph_enable; no authority bit gates it. Exact base, not
+    // containment, so a sub-block window cannot reach a whole-block table entry. The
+    // answer comes from the thread's possession record and never from what it can reach.
     bool caller_holds_mmio_block(uintptr_t base);
 
     // The write seam's stronger twin: the region matched by the exact base must also
@@ -148,6 +148,12 @@ namespace kickos
     // capability sweep unfinished.
     int thread_slay(kos_thread_t thread, uint32_t timeout_us);
     int task_slay(kos_task_t task, uint32_t timeout_us);
+
+#if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
+    // Test scaffolding for the address-space seam (syscall_aspace.cc). One scenario per op,
+    // run entirely kernel-side, so no mapping primitive is exposed to a caller.
+    uint64_t aspace_probe(uintptr_t op, uintptr_t a1);
+#endif
 }
 
 #endif

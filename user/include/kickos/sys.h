@@ -287,6 +287,11 @@ uint32_t kos_ipc_fast_taken(void);
 // Only meaningful under enforcement (returns -KOS_EINVAL where the kernel has no
 // grant module).
 uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size);
+// Test-only: run one address-space seam scenario in the kernel and return its answer (see
+// enum kos_aspace_op in sys/abi.h). The map editor has no syscall of its own, so an arm asks
+// for a whole scenario rather than for a mapping. -KOS_ENOSYS where the board describes
+// regions instead of translating, cast up through the uintptr_t return.
+uintptr_t kos_aspace_probe(uintptr_t op, uintptr_t a1);
 // Test-only: enable a controller line directly, so an injected raise reaches the
 // default handler on masked-by-default controllers (ARM NVIC, RX). Needs KOS_AUTH_IRQ.
 int kos_irq_unmask(int line); // 0, or -KOS_EPERM (no KOS_AUTH_IRQ) / -KOS_EINVAL (bad line)

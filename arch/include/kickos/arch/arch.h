@@ -313,9 +313,9 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 // (the sim) or where there is no MPU.
 void kickos_arch_mpu_commit(void);
 
-// MMU-era NOTE: this seam is a flat, NON-TRANSLATING protection-region set, and stays
-// one. A VMSA/paging port gets its own parallel arch_aspace_* family (build/switch/map a
-// page-table root). See docs/design-mmu-era-exploration.md.
+// This seam is a flat, NON-TRANSLATING protection-region set. A VMSA/paging port gets the
+// parallel arch_aspace_* family declared below, and no backend implements both. See
+// docs/design-m6-mmu.md F6.
 
 // The smallest region this arch's MPU can enforce: ARM PMSA 32 bytes, RISC-V PMP
 // NAPOT 8, one host page on the sim. A return of 0 means this arch has NO enforceable
@@ -512,6 +512,140 @@ bool arch_user_data_writable(uintptr_t ptr, size_t len);
 // domain owns). Used by the isolation self-test.
 uintptr_t arch_mpu_probe_addr(void);
 
+// --- Address space: a translating memory backend ----------------------------
+// The parallel family beside the region calls. A chip selects region descriptors or
+// translation on the axis mpu.cmake already uses, and no backend implements both.
+// docs/design-m6-mmu.md F6.
+//
+// Opaque: the kernel names a space by pointer and never sizes or embeds one. Translation
+// tags are the backend's, allocated and invalidated inside destroy and activate.
+struct arch_aspace;
+
+// The access a mapping grants the UNPRIVILEGED level; the kernel occupies a fixed high
+// range of every space. At least one bit is required, a guard page being an unmapped
+// page: R=W=X=0 marks a next-level pointer on RISC-V.
+enum
+{
+    ARCH_MAP_R = 1u << 0,
+    ARCH_MAP_W = 1u << 1,
+    ARCH_MAP_X = 1u << 2
+};
+
+// A physical address, wider than uintptr_t because Sv39 pairs a 39-bit virtual range with
+// a 56-bit physical one and Sv32 pairs 32 with 34.
+typedef uint64_t arch_phys_addr_t;
+
+// A memory type, never the bits a backend encodes it to: the entry format varies by
+// ratified extension, by vendor, and by a machine-mode enable an S-mode kernel does not
+// own.
+enum arch_map_memtype
+{
+    ARCH_MAP_NORMAL = 0,  // cacheable, write-back
+    ARCH_MAP_NOCACHE = 1, // Normal, outer and inner non-cacheable
+    ARCH_MAP_DEVICE = 2   // device / MMIO
+};
+
+// Whether this backend can honour `type`. Read at grant ADMISSION, never on a map path: a
+// quietly downgraded type hands a driver a cacheable view of a DMA buffer. The answer may
+// come from the board rather than a register, Svpbmt carrying no identification bit.
+bool arch_aspace_memtype_support(enum arch_map_memtype type);
+
+// TOTAL OR FAIL: on anything but ARCH_ASPACE_OK the space is as it was, with no frame
+// leaked and no partial mapping installed.
+enum arch_aspace_result
+{
+    ARCH_ASPACE_OK = 0,
+    // No frame for a table the backend needed. Freeing frames and retrying can succeed.
+    ARCH_ASPACE_ENOMEM = 1,
+    // The backend's structure cannot hold the mapping with frames still available, so
+    // retrying is futile. A hashed page table must evict from a full bucket during a map.
+    ARCH_ASPACE_ECAPACITY = 2,
+    // Not expressible: a misaligned or empty range, a right or type this backend refuses,
+    // or an unmap of a range not wholly mapped.
+    ARCH_ASPACE_EINVAL = 3
+};
+
+// The mapping granule in bytes, a power of two, and the unit `va`, `pa` and `pages` are
+// counted in. The frame allocator and the guard-page arithmetic read this one answer.
+// Larger mappings are not a second granule.
+size_t arch_aspace_granule(void);
+
+// A space with the kernel's fixed high range present and nothing else mapped, or null
+// when a root cannot be allocated. A backend with a SINGLE root register installs the
+// kernel half here by copying the TOP-LEVEL entries, so every space shares the tables
+// below them and a later kernel-half edit stays in step; copying one level deeper makes
+// the kernel half per-space state that every edit must walk.
+struct arch_aspace* arch_aspace_create(void);
+
+// Release the root, every table under it and every frame the space still holds, with the
+// backend's invalidation ordered BEFORE the root or its tag can be reused. Null is a
+// no-op. Activate another space before destroying the running one.
+//
+// HOLDS MEANS MAPPED, so a space must not still map a frame it does not own when this
+// runs. F10's handoff maps ONE block into two spaces, and destroying the borrower would
+// return that block to the allocator while the donor's leaf still stands: the second
+// destroy then frees a frame the pool has already handed to someone else, which the
+// allocator's already-free guard cannot see. The borrower unmaps its range first.
+void arch_aspace_destroy(struct arch_aspace* space);
+
+// Map `pages` granules at `va` onto the frames at `pa`, or remove that many at `va`.
+//
+// COHERENCE-COMPLETE: when either returns the change is visible to this core, whatever
+// maintenance that took having happened inside. A64 requires break-before-make when
+// replacing a live entry, so the invalidate belongs between the two writes. A map into a
+// slot that was empty needs one too, architectures caching negative translations.
+// Batching, where it pays, is begin and commit on the space.
+//
+// At more than one core the initiator waits: A64's broadcast barrier blocks until every
+// other PE has drained, while RV64 and x86_64 wait on far-side code. An unmap whose frames
+// are being FREED may defer the remote half, the boundary being reuse; an unmap that
+// REVOKES may not, and the far-side handler takes no kernel lock. docs/design-m6-mmu.md T9.
+//
+// Three callers against activate's two, none of them a root switch: the self-grant, which
+// widens the RUNNING space mid-syscall, and the image and stacks a process is built from.
+enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+                                        arch_phys_addr_t pa, size_t pages,
+                                        uint32_t rights, enum arch_map_memtype type);
+enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t va,
+                                          size_t pages);
+
+// Make `space` the translation the unprivileged level runs under. Two callers: the switch
+// bookkeeper, which the IPC fastpath shares, and the first-thread start. The self-grant
+// widens the running space and is a map.
+//
+// TOTAL: every backend answers and the signature carries no failure return, as
+// arch_ctx_redirect's does not.
+//
+// Where a root and a translation tag change together the architecture documents the ORDER,
+// and its shape depends on a translation-control field this seam does not expose.
+//
+// The space is reached from the incoming thread's TASK; arch_context_init takes an entry
+// point, an argument, a stack and a privilege posture, and no memory parameter.
+void arch_aspace_activate(struct arch_aspace* space);
+
+// Reach the frame backing one page of `space` through a kernel-usable pointer, and release
+// it, rather than adding an offset to a user address: a backend mapping all of physical
+// memory in its high half inlines this to an addition, and one whose physical space is
+// wider than its virtual has no offset to add.
+//
+// AT LEAST TWO are holdable at once per core: the endpoint copy holds a source page in one
+// space and a destination page in another, so a backend with a finite window pool sizes it
+// for that.
+//
+// `va` need not be granule-aligned and the pointer addresses the same byte. Null when the
+// page is not mapped in `space`. A range contiguous in virtual memory is not contiguous in
+// physical memory, so a caller splits at granule boundaries and acquires each page.
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va);
+void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+// The space the boot path installed, and the ONLY handle for it: its tables are link-time
+// constants rather than something this seam created. Test scaffolding, the same shape as
+// arch_mpu_probe_addr, and it exists because a scenario that activates a space of its own
+// has no other way to put the running one back.
+struct arch_aspace* arch_aspace_boot(void);
+#endif
+
 // --- Rule 7: kernel-reserved MMIO blocks (docs/design-m4-driver-model.md sec.7) --
 // The owns-for-life peripherals a grant must NEVER hand to userspace: the timebase
 // block, the IRQ controller, every access-permission controller (the MPU/PMP twin
@@ -526,9 +660,10 @@ struct arch_reserved_block
 
 // Fill `out` (capacity `max`, the kernel passes KICKOS_MAX_RESERVED) with this chip's
 // reserved blocks and return the count. KICKOS_RESERVED_NONE (0) is legal, the sim owning
-// nothing MPU-governable. Every definition is per enforcing chip under #if
-// KICKOS_HAVE_MPU, so an enforcing port that forgets to declare its set is a LINK error
-// rather than a silent open hole (affirmative fail-closed).
+// nothing MPU-governable. Every definition is per chip under #if KICKOS_MEMORY_ENFORCED,
+// the fact that protection is LIVE, which a translating chip sets while carrying no region
+// descriptors. A port that forgets to declare its set is therefore a LINK error rather than
+// a silent open hole (affirmative fail-closed).
 #define KICKOS_RESERVED_NONE 0u
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max);
 
@@ -724,6 +859,18 @@ uint64_t syscall_dispatch(uintptr_t nr,
                           uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
 // A memory-protection violation was caught (sim: SIGSEGV over the arena).
 void kickos_isr_fault(uintptr_t addr, int is_write);
+
+// One frame for a translating backend's own tables, and its release. ONE allocator exists
+// and the kernel owns it, so a backend that kept a pool of its own would make destroy's
+// accounting unverifiable against the kernel's counters.
+//
+// PHYSICAL, because destroy reads what it frees out of a descriptor, where an output
+// address is all there is. The frame is granule-sized and granule-aligned; its CONTENTS are
+// undefined, so a backend that needs zeroes writes them. 0 is exhaustion, which maps to
+// ARCH_ASPACE_ENOMEM rather than to a panic. Compiled where a translating backend is
+// (KICKOS_HAVE_ASPACE).
+arch_phys_addr_t kickos_frame_alloc(void);
+void kickos_frame_free(arch_phys_addr_t frame);
 
 // Fault isolation, called from the arch fault handler BEFORE it starts its dump.
 // Applies the kill rule and, when it holds, calls arch_fault_redirect_to_exit.

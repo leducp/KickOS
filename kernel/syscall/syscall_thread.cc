@@ -120,10 +120,11 @@ namespace kickos
             {
                 return -KOS_EINVAL;
             }
-            // An unprivileged thread's stack is committed as ONE R|W MPU region, so the
-            // block must be nameable by one descriptor on this arch; otherwise PMSA/NAPOT
-            // snap the base and the enforced window covers the wrong span.
-#if KICKOS_HAVE_MPU
+            // An unprivileged thread's stack is committed as ONE R|W region, so the block
+            // must be nameable by one descriptor on this arch; otherwise PMSA/NAPOT snap
+            // the base and the enforced window covers the wrong span. The arena
+            // confinement below binds wherever protection is LIVE, descriptors or not.
+#if KICKOS_MEMORY_ENFORCED
             // Keys on the CHILD's privilege: a privileged child gets the whole arena plus
             // the background region and needs no stack descriptor.
             if (p->privileged == 0)

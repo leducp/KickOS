@@ -148,23 +148,20 @@ kickos_armv8a_irq_entry:
     RESTORE_FRAME_AND_ERET
 
 /* --- The EL0 side ---------------------------------------------------------
- * SP_EL1 cannot be trusted to name this thread's block on entry: thread_create seats
- * ctx.kernel_sp only AFTER arch_context_init returns, so a freshly created thread's first
- * trap arrives with SP_EL1 still on its user stack. The entry seats it from the kernel's
- * own record instead, which also puts a stale or wild SP_EL1 out of reach of a store.
+ * SP_EL1 ALREADY NAMES THIS THREAD'S KERNEL BLOCK, so the entry seats nothing and spends no
+ * scratch register. EL0 cannot write SP_EL1, and every path that puts a thread at EL0 is an
+ * eret off a frame that stood on its own block: arch_context_init builds an EL0 thread's
+ * first frame there (arch_armv8a.cc), and every frame after it is one this macro pushed. The
+ * frame is popped before the eret, so SP_EL1 is at the block top whenever EL0 is running.
  *
- * TPIDR_EL1 is the scratch that needs no stack and no free register, and is invisible to
- * EL0. M7 wants it for the per-CPU pointer.
+ * This is what releases TPIDR_EL1, which M7 wants for the per-CPU pointer. The reporting
+ * slots in vectors.S still seat SP_EL1 from kickos_armv8a_kernel_sp, because a slot this port
+ * never enters proves nothing about the register.
  *
  * The transfer is all this arch writes: no red-zone check and no validation of the
  * interrupted sp, the sp being replaced being SP_EL0 and the one stored through SP_EL1.
  */
     .macro  ENTER_FROM_EL0
-    msr     tpidr_el1, x0
-    adrp    x0, kickos_armv8a_kernel_sp
-    ldr     x0, [x0, #:lo12:kickos_armv8a_kernel_sp]
-    mov     sp, x0
-    mrs     x0, tpidr_el1
     SAVE_FRAME
     mrs     x0, elr_el1
     mrs     x1, spsr_el1

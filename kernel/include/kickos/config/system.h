@@ -61,10 +61,12 @@
 #ifndef KICKOS_MAX_SPAWN_GRANTS
 #define KICKOS_MAX_SPAWN_GRANTS 6
 #endif
-// Memory-domain pool (see domain.h). Worst case is one distinct domain per thread plus
-// the two immortal singletons (the kernel domain + the default unprivileged domain).
-#ifndef KICKOS_MAX_DOMAINS
-#define KICKOS_MAX_DOMAINS (KICKOS_MAX_THREADS + 2)
+// Virtual ranges one address space can name (see vrange.h): its process image, its stacks
+// and whatever it has reserved. A page table has no describable-extent ceiling, so unlike
+// KICKOS_MPU_MAX_REGIONS this bounds the VALIDATION list alone and buys back none of what a
+// descriptor budget cost.
+#ifndef KICKOS_ASPACE_RANGES
+#define KICKOS_ASPACE_RANGES 8
 #endif
 // Task pool (see task.h). One task per LIVE THREAD, since grouping is implicit today, so
 // the bound is every TCB that can exist at once: KICKOS_THREAD_SLOTS (root + the threads
@@ -74,6 +76,22 @@
 // have seated (task.cc static_asserts the floor).
 #ifndef KICKOS_MAX_TASKS
 #define KICKOS_MAX_TASKS (KICKOS_THREAD_SLOTS + 1)
+#endif
+// Memory-domain pool (see domain.h), plus the two immortal singletons (the kernel domain
+// and the default unprivileged one).
+//
+// THE TWO BACKENDS COUNT DIFFERENTLY, and it is a count of DOMAINS: nothing here is paid
+// out of KICKOS_MPU_MAX_REGIONS, which bounds how much ONE domain describes. A region
+// backend reaches at most one distinct domain per thread, every no-grant task resolving to
+// the shared singleton. A translating one spends one per TASK instead: a domain carries an
+// address space there, so no two tasks may share one and the singleton is a template
+// rather than a domain to join (docs/design-m6-mmu.md F2).
+#ifndef KICKOS_MAX_DOMAINS
+#if KICKOS_HAVE_ASPACE
+#define KICKOS_MAX_DOMAINS (KICKOS_MAX_TASKS + 2)
+#else
+#define KICKOS_MAX_DOMAINS (KICKOS_MAX_THREADS + 2)
+#endif
 #endif
 // Independent kernels co-resident in ONE address space (instance.h). One on a chip, and
 // one per emulated MCU under the multi-instance sim. It is a provisioning bound, not a

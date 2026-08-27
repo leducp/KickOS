@@ -35,9 +35,11 @@
     b       kickos_armv8a_irq_entry
     .endm
 
-/* A lower-EL slot that only REPORTS still has to seat SP_EL1 first: before a thread's first
- * syscall or IRQ, SP_EL1 is still on its user stack, and the reporter would build privileged
- * frames on memory an unprivileged thread can write. Reachable through EL0 SError. Nothing
+/* A lower-EL slot that only REPORTS still seats SP_EL1 from the kernel's own record. The
+ * syscall and IRQ entries trust the register (switch.S), but they are the classes this port
+ * enters: these slots are AArch32 entries and an EL0 SError, so reaching one means the core
+ * was configured behind the kernel's back and SP_EL1 carries no promise. Unseated, the
+ * reporter would build privileged frames on memory an unprivileged thread can write. Nothing
  * is preserved on this path, so it needs no scratch register.
  */
     .macro  LOWER_EL_SLOT index

@@ -5744,6 +5744,37 @@ shared case only.
       rather than following it: with no class methods the wire protocol IS the API, and extracting a
       class later would mean deriving it from its own transport.
 
+## Found reconciling the reference documents with the tree (2026-08-25)
+
+- [ ] **RX owes a `pspguard` witness, and the app as it stands cannot give it one.**
+      `user/apps/common/pspguard/CMakeLists.txt` returns immediately unless `KICKOS_ARCH` is
+      `armv7m` or `armv6m`, and `main.cc` moves SP with ARM asm and `#error`s anywhere else, so the
+      PSP-bounds class is machine-checked on two backends of the four that carry it. On rxv3 the
+      refusal sites are `.Lsys_bad_usp`, `.Lpendsw_bad_usp` and `kickos_rx_bad_usp`
+      (`arch/rx/rxv3/switch.S`); the fourth, `.Lsvc_nokstack`, is structurally unreachable there --
+      `thread_create` seats a kernel block on every pool thread and idle is privileged and runs
+      `arch_idle_wait` alone, as the site says itself -- so nothing in the tree reaches the REFUSE
+      side of the trusted-stack guard on RX. An RX prober needs its own SP-moving arm, and rx72m has
+      no emulator, so the witness is a bench step whichever way the app is written.
+- [ ] **`usbcdcwit` is built by no default configuration of any board.**
+      `user/apps/common/usbcdcwit/CMakeLists.txt` returns unless `KICKOS_SERVICE_LIST` matches
+      `_usbcdc$`, and no board defconfig or `Kconfig` sets such a list. The three that exist --
+      `kickos_services_picopi_usbcdc`, `kickos_services_pizero2350_usbcdc` and
+      `kickos_services_teensy41_usbcdc` (`system/CMakeLists.txt`) -- are reachable only from a
+      `-DKICKOS_SERVICE_LIST=` on the configure line, so the app compiles in no preset, no local
+      fleet sweep and no CI job, and a change that breaks it is invisible until somebody remembers
+      the flag.
+
+## Found while witnessing T5, and predating it (2026-08-25)
+
+- [ ] **`fault_dump` HANGS under a non-default service list.** Configured with
+      `-DKICKOS_SERVICE_LIST=kickos_services_simuart`, the ctest `fault_dump` gate times out: the
+      fault dump prints correctly and the process then never exits. Reproduced on a clean worktree at
+      `364aea7a`, so T5 did not cause it. **It is invisible to both sweeps by construction**, nothing
+      in `sweep_host_gates.sh` selecting an alternative provider, which is why it survived this long.
+      A dump that completes and then fails to terminate is a drain or an exit-path defect rather than
+      a reporting one.
+
 ## M6 -- the per-thread-privacy restatement, owed WITH the behaviour (2026-08-24)
 
 `docs/design-m6-mmu.md` freeze F9 moves the portable contract: a task's grants are sibling-visible, a
@@ -5756,30 +5787,35 @@ true of the tree as it stands and rewriting them early puts the Reference and th
 disagreement the other way round. The list is here so the deferral is tracked rather than
 remembered.
 
-- [ ] **`docs/reference/invariants.md` -- four sites.** `dev-window-access-is-thread-scoped-its-lifetime-task-scoped`
+- [x] **`docs/reference/invariants.md` -- four sites.** `dev-window-access-is-thread-scoped-its-lifetime-task-scoped`
       and `dev-window-exclusivity-is-bounded-by-the-silicon` both argue that a task-wide window would
       hand registers to a peer that never asked, which is exactly what a translating backend does; the
       private-stack clause of `mpu-apply-on-every-switch-in`; and `privileged-write-seam-possession-and-allowlist`,
       which is REPAIRED rather than qualified once possession becomes thread-local authority instead
       of a walk over reachable regions. `tls-carve-sits-below-stack-lo` is the precedent for the
       wording: it already says outright that it is naming and not isolation.
-- [ ] **Four kernel comments claiming a sibling cannot reach another thread's stack**, in
+- [x] **Four kernel comments claiming a sibling cannot reach another thread's stack**, in
       `kernel/include/kickos/domain.h`, `kernel/thread/thread.cc` (two) and `kernel/syscall/syscall.cc`.
       `kernel/init/fault.cc` already admits the sharing and needs nothing.
-- [ ] **`docs/reference/architecture.md` -- two statements** that per-thread private stacks stop a
+- [x] **`docs/reference/architecture.md` -- two statements** that per-thread private stacks stop a
       sibling scribbling another's.
-- [ ] **The Book.** `privilege-is-three-axes-not-one-bit.md` teaches the private stack as a
+- [x] **The Book.** `privilege-is-three-axes-not-one-bit.md` teaches the private stack as a
       guarantee. `whoever-stacks-the-trap-frame-owns-the-bounds-check.md` already frames a sibling's
       access as a legitimate granted mapping, which is the telling to converge on.
-- [ ] **The ABI headers.** `user/include/kickos/sys.h` states the `-KOS_EPERM` non-holder contract for
+- [x] **The ABI headers.** `user/include/kickos/sys.h` states the `-KOS_EPERM` non-holder contract for
       the periph seam and describes the self-grant budget as per-thread. These stay TRUE if and only
       if possession becomes thread-local authority, so they are the check on that work rather than
-      text to soften.
-- [ ] **Do not touch the two board-registered arms.** `periph_enable_unheld` and
+      text to soften. **CHECKED at T5: both stay true with no edit.** The non-holder contract is
+      now read off `Thread::dev_base`/`dev_size`, and the self-grant budget is still
+      `KICKOS_MPU_MAX_REGIONS` on every backend that has landed; F10 is what makes the budget
+      clause evaporate under paging, and that is not this step.
+- [x] **Do not touch the two board-registered arms.** `periph_enable_unheld` and
       `periph_reg_write_unheld` (`user/apps/common/selftest/main.cc`) assert a non-holder is refused
       from a thread other than the holder, and they must keep passing on every backend. They are the
       executable check that authority stayed thread-local; a change that needs them relaxed has
-      widened possession by mistake.
+      widened possession by mistake. **CHECKED at T5 and untouched**: both pass on every backend,
+      and both FAIL when the possession helper is mutated to answer for a caller holding nothing,
+      so they discriminate on the record and not on the region set.
 
 ## MMU-era groundwork quick wins (from `docs/design-mmu-era-exploration.md` section 5)
 
@@ -5787,16 +5823,11 @@ Cheap seam/groundwork changes worth making WHILE the M4-M6 code is written, so t
 force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`kaccess_from_user` /
 `kaccess_to_user`, `kernel/syscall/syscall_mem.cc`) and is not repeated here.
 
-- [ ] **QW-1. Give `Domain` an opaque backend field instead of a bare region array**, or at least
-      route ALL region access through accessors. Today `struct Domain` exposes
-      `arch_mpu_region regions[]` directly and callers (`domain_for` dedup, `thread.cc` compose, any
-      future reader) touch it as a raw array. Keep it MPU-only in BEHAVIOR but funnel every read
-      through a small accessor surface (`domain_regions(d, &n)` / an opaque `domain_backend(d)`) so
-      the field can later become `arch_aspace*` without touching callers. Cheap now because there
-      are only a handful of readers; expensive later, once caps, IPC endpoints, MMIO grants and the
-      console-handover work all read `regions[]` directly and the representation has to swap under
-      pressure. A one-file accessor contains the blast radius of the single biggest below-seam
-      change.
+- [x] **QW-1. Give `Domain` an opaque backend field instead of a bare region array.** LANDED at
+      T5: every read outside `domain.cc` goes through `domain_region_count`/`domain_region_at`,
+      and `Domain::space` (an `arch_aspace*`, compiled only where the backend translates) is the
+      backend field beside them. The accessor half is what kept the representation swap to one
+      file, which was the whole reason to do it early.
 - [ ] **QW-3. Keep the shared-IPC ring contract PHYSICALLY addressed from day one.** When the IPC
       ring lands (`docs/design-m7-smp.md`), specify that ring control words and slot
       references are offsets or physical addresses, NEVER a pointer valid in one core's space, even

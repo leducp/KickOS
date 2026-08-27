@@ -75,6 +75,11 @@ namespace kickos
         // and changes nothing when the set is full or the backend seats no descriptor for
         // the region, so the caller returns an error instead of handing back memory the
         // thread would fault on.
+        //
+        // NOT COMPILED ON A TRANSLATING BACKEND. There the enforcement is the mapping and
+        // no descriptor is ever seated, so encode() below has no honest answer to give and
+        // a caller reading its all-seated one would take a description for a guarantee.
+#if !KICKOS_HAVE_ASPACE
         [[nodiscard]] bool add_enforced(uintptr_t base, size_t size, uint32_t attr)
         {
             if (full())
@@ -93,6 +98,7 @@ namespace kickos
             encode();
             return false;
         }
+#endif
 
         // Appends the arch's app-wide static regions (code and static data). They come from
         // the linker script, so they are encodable by construction and there are never more
@@ -121,6 +127,9 @@ namespace kickos
             return count_ >= KICKOS_MPU_MAX_REGIONS;
         }
 
+        // The seating bitmask. Where no descriptor exists the answer is all-seated, which
+        // is honest only because nothing is enforced there either; add_enforced is
+        // compiled out on the one backend where that pair comes apart.
         uint32_t encode()
         {
 #if KICKOS_HAVE_MPU

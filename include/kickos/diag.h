@@ -57,6 +57,7 @@
     X(kRebootImxrt,     "arch_reboot: imxrt1062 bkpt resumed (no MKL02?)",           "P15")       \
     X(kParkNoKind,      "unreachable: park abort on a thread with no wait edge",     "P16")       \
     X(kKstackOverflow,  "kernel stack canary broken on this thread's slot",          "P17")       \
+    X(kBootFramePool,   "kmain: the frame carve is too small to describe",           "P18")       \
     X(kBannerRule,      "  ==============================================\n",        "\n")
 
 namespace kickos

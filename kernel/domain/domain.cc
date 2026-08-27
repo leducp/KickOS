@@ -35,6 +35,41 @@ namespace kickos
             }
             return nullptr;
         }
+
+        // A fresh unprivileged domain, with the address space it needs where a backend
+        // translates. TRANSACTIONAL: on either refusal the slot is left reinitialised, so
+        // it is free again and no half-built domain survives. *err is written on refusal.
+        Domain* claim_slot(int* err)
+        {
+            Domain* d = free_slot();
+            if (d == nullptr)
+            {
+                *err = KOS_ENOMEM; // pool exhausted: retry later
+                return nullptr;
+            }
+#if KICKOS_HAVE_ASPACE
+            // A FREE SLOT CAN STILL HOLD A SPACE. task_for resolves a domain before the
+            // spawn commits and takes no reference, so a spawn that fails after that point
+            // leaves the slot at refcount 0 with its root and tables still allocated, and
+            // the reinitialisation below would drop the only handle to them.
+            if (d->space != nullptr)
+            {
+                arch_aspace_destroy(d->space);
+                d->space = nullptr;
+            }
+#endif
+            *d = Domain{};
+            d->privileged = false;
+#if KICKOS_HAVE_ASPACE
+            d->space = arch_aspace_create();
+            if (d->space == nullptr)
+            {
+                *err = KOS_ENOMEM; // no frame for a root: freeing frames and retrying can work
+                return nullptr;
+            }
+#endif
+            return d;
+        }
     }
 
     void domain_init(void)
@@ -58,7 +93,9 @@ namespace kickos
             kdom->region_count = 1;
         }
         // Default user domain: no granted arena region, unprivileged. Immortal because
-        // every unprivileged thread with no explicit grant shares it.
+        // it is what every unprivileged thread with no explicit grant resolves to: the
+        // domain itself on a region backend, and the template it is copied from where a
+        // domain carries an address space.
         Domain* const udom = &k.domains[KDOM_DEFAULT_USER_INDEX];
         udom->privileged = false;
         udom->immortal = true;
@@ -92,6 +129,22 @@ namespace kickos
         return &kernel().domains[KDOM_DEFAULT_USER_INDEX];
     }
 
+    unsigned domain_space_id(Domain const* d)
+    {
+#if KICKOS_HAVE_ASPACE
+        if (d == nullptr or d->space == nullptr)
+        {
+            return 0;
+        }
+        // The slot index biased by one, so 0 stays "no space" and no kernel address
+        // crosses the syscall boundary.
+        return static_cast<unsigned>(d - &kernel().domains[0]) + 1u;
+#else
+        (void)d;
+        return 0;
+#endif
+    }
+
     Domain* domain_for(bool privileged, void* mem_base, size_t mem_size, uint32_t mem_attr,
                        bool caller_authorized, int* err)
     {
@@ -102,7 +155,14 @@ namespace kickos
         }
         if (mem_base == nullptr or mem_size == 0)
         {
+#if KICKOS_HAVE_ASPACE
+            // The template is instantiated, never joined: two no-grant tasks sharing one
+            // root would be two kill groups in one address space, and that is the COMMON
+            // case rather than an edge (docs/design-m6-mmu.md F2).
+            return claim_slot(err);
+#else
             return domain_default_user();
+#endif
         }
         uintptr_t const base = reinterpret_cast<uintptr_t>(mem_base);
         size_t const rsz = arch_ram_region_size(mem_size);
@@ -115,32 +175,11 @@ namespace kickos
             *err = KOS_EPERM; // out-of-arena / reserved block / unhonourable memory type
             return nullptr;
         }
-        Kernel& k = kernel();
-        // A live unprivileged domain describing exactly this region is reused. The key is
-        // the ROUNDED size and the FULL attribute word, so a non-cacheable grant of a block
-        // never lands on a domain that maps it cacheably. Slot economy and NOT an expression
-        // of intent: two tasks landing on one domain here stay two tasks
-        // (docs/design-task-layer.md open question 2).
-        for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)
-        {
-            Domain& d = k.domains[i];
-            if (d.refcount > 0 and not d.privileged and domain_region_count(&d) == 1)
-            {
-                arch_mpu_region const* r0 = domain_region_at(&d, 0);
-                if (r0->base == base and r0->size == rsz and r0->attr == attr)
-                {
-                    return &d;
-                }
-            }
-        }
-        Domain* d = free_slot();
+        Domain* d = claim_slot(err);
         if (d == nullptr)
         {
-            *err = KOS_ENOMEM; // pool exhausted: retry later
             return nullptr;
         }
-        *d = Domain{};
-        d->privileged = false;
         d->regions[0].base = base;
         d->regions[0].size = rsz;
         d->regions[0].attr = attr;
@@ -181,6 +220,15 @@ namespace kickos
         {
             d->refcount--;
         }
+#if KICKOS_HAVE_ASPACE
+        // The slot alone is not the resource here: reusing it without this would strand the
+        // root, its tables and every frame the space still held.
+        if (d->refcount == 0 and d->space != nullptr)
+        {
+            arch_aspace_destroy(d->space);
+            d->space = nullptr;
+        }
+#endif
     }
 }
 

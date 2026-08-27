@@ -356,9 +356,9 @@ void arch_context_init(struct arch_context* ctx,
     ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
     ctx->stack_hi = static_cast<uint32_t>(top);
 
-    // 0 means no block seated, which is what svc_trampoline's refusal path keys on; the
-    // TCB slab would otherwise hand this field whatever it last held.
-    ctx->kernel_sp = 0;
+    // ctx->kernel_sp IS DELIBERATELY UNTOUCHED. thread_create seats it BEFORE this call and
+    // is the only writer of the zero that means no block seated, which svc_trampoline's
+    // refusal path keys on; clearing it here would wipe the block off every fresh thread.
 }
 
 #if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
@@ -383,9 +383,8 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
-    // kernel_sp SURVIVES THE REBUILD. arch_context_init clears it, which is right for a
-    // fresh TCB and wrong for a live pool thread whose block is seated by slot: cleared,
-    // the thread carries 0 through its own teardown and every syscall on the way takes
+    // kernel_sp SURVIVES THE REBUILD, put back explicitly rather than assumed untouched:
+    // lost, the thread carries 0 through its own teardown and every syscall on the way takes
     // svc_trampoline's .Lsvc_nokstack arm.
     uintptr_t const kernel_sp = ctx->kernel_sp;
     // THE FOUR BYTES OF CLEARANCE BELOW THE BLOCK TOP ARE INCIDENTAL. kickos_rx_pendsw's

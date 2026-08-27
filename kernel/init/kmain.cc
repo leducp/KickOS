@@ -9,6 +9,7 @@
 #include <kickos/sched.h>
 #include <kickos/cap.h> // cap_seat_authority + CAP_AUTH_ALL (the unprivileged-root seat)
 #include <kickos/domain.h>
+#include <kickos/frame_pool.h>
 #include <kickos/grant.h>
 #include <kickos/instance.h> // kernel(): root's TCB is an ordinary thread-pool slot
 #include <kickos/irqlock.h>
@@ -233,6 +234,15 @@ namespace kickos
             boot_stack_alloc(KICKOS_IDLE_STACK_SIZE, diag::kBootIdleStack);
         void* const root_stack =
             boot_stack_alloc(KICKOS_ROOT_STACK_SIZE, diag::kBootRootStack);
+
+#if KICKOS_HAVE_ASPACE
+        // Its own linker carve, so it takes nothing from the arena the two stacks above came
+        // out of and the boot-arena model still describes what the bump allocator hands out.
+        if (not frame_pool_init())
+        {
+            kpanic(diag::kBootFramePool);
+        }
+#endif
 
 #if KICKOS_KERNEL_STACKS
         // THE ONLY CALLER OF kstack_arm, and every slot is armed here before any of them is

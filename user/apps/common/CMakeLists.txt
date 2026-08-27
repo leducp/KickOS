@@ -54,6 +54,9 @@ add_subdirectory(gpioblink)
 # (see each CMakeLists), so no per-board list here. `fault` deliberately executes an
 # illegal instruction; it is never built into a production image.
 add_subdirectory(fault)
+# The map editor's fourth transition: a page unmapped under the RUNNING translation must
+# fault. Self-gated on a translating backend, so only qemu-arm64 builds it today.
+add_subdirectory(aspacefault)
 add_subdirectory(faultsurvive)
 # The PSP-bounds security regression: a thread aims its PSP just above its own stack base,
 # where the hardware frame fits and the switcher's software block does not.

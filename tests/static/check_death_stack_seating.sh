@@ -298,8 +298,9 @@ while IFS="$TAB" read -r a f; do
         bad "$f: the block arm calls no arch_context_init, so nothing seats a frame on the block"
         continue
     fi
-    # arch_context_init DERIVES stack_lo and stack_hi from what it is handed and clears
-    # kernel_sp, so a restore placed above the call is overwritten by it.
+    # arch_context_init DERIVES stack_lo and stack_hi from what it is handed, so a restore
+    # placed above the call is overwritten by it. kernel_sp is restored on the same side of
+    # the call, which is what keeps the three claims one rule rather than three.
     for _pair in "stack_lo:$LO_RE" "stack_hi:$HI_RE" "kernel_sp:$KSP_RE"; do
         _name="${_pair%%:*}"
         _re="${_pair#*:}"

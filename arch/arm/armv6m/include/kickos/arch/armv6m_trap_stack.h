@@ -129,14 +129,14 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
    BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
-   kickos_thread_slay_exit. 592 on picopi, the fault stub the deeper of the two through
+   kickos_thread_slay_exit. 608 on picopi, the fault stub the deeper of the two through
    kprintf_fault. NO POSTURE LADDER on this arch: it has neither a telemetry nor a bench
    variant, so one figure covers every registered preset. This arch selects
    ARCH_KERNEL_STACKS_MANDATORY, so no kstacks=0 fallback class stands beside it the way one
    does on armv7m.
 
-   IT NEVER BINDS: 68 + 592 = 660 against 892 usable, where SVCK asks 892 exactly. */
-#define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK 592
+   IT NEVER BINDS: 68 + 608 = 676 against 892 usable, where SVCK asks 892 exactly. */
+#define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK 608
 
 /* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
    and no redirect to relocate it, so it runs at whatever depth the entry returned from on the

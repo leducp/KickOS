@@ -238,11 +238,26 @@ correction that matters, and leaves the other two exactly as they were.
 - **Cross-core TLB maintenance is INHERITED, not deferred.** An MPU has no translation cache, so
   when this document was written there was nothing to shoot down and the obligation sat in a later
   milestone. With page tables landing FIRST, the milestone that adds the second core arrives with
-  translation already in the tree -- so the BLOCKING all-core rendezvous both reference kernels use
-  (seL4's `doRemoteMaskOp` plus `ipi_wait`, or firmware `sbi_remote_sfence_vma` on RISC-V) is owed
-  by that same milestone rather than layered on afterwards. A doorbell that can carry ONLY
-  asynchronous fire-and-forget notification is therefore not sufficient on its own at any point:
-  design it so a blocking rendezvous is expressible from the start.
+  translation already in the tree, so that obligation is owed by that same milestone rather than
+  layered on afterwards. A doorbell that can carry ONLY asynchronous fire-and-forget notification
+  is therefore not sufficient on its own at any point: design it so a blocking rendezvous is
+  expressible from the start.
+
+  **Two claims this bullet used to make do not hold, corrected 2026-08-25 from the tri-arch
+  spike, and the correction is per ARCHITECTURE rather than universal.** It said a blocking
+  all-core rendezvous is what the milestone owes, on the strength of two reference kernels using
+  one. On A64 the DATA-side rendezvous is not owed at all: `TLBI ...IS` followed by `DSB ISH`
+  blocks until every PE in the shareable domain has finished, draining its own in-flight accesses
+  through the stale entry, with no far-side code and no deadlock available. What IS owed there is
+  narrower and this document never named it: `ISB` is not broadcast, so a change to an EXECUTABLE
+  mapping still needs the far side poked to discard its fetched instructions. And
+  `sbi_remote_sfence_vma` is NOT promised synchronous by its specification, where a success return
+  means the request was sent rather than completed; one implementation happening to block is an
+  implementation detail and not a contract to build on. Where the rendezvous IS owed, and on RV64
+  and x86_64 it is, the hazard is a deadlock rather than a cost: a far side with interrupts masked
+  cannot answer, so an initiator holding the kernel lock while a target spins to take it stops the
+  system. The doorbell handler taking no lock, and the lock's acquire loop servicing a pending
+  doorbell, are therefore one design and not two.
 - **The primitive gap closes exactly where the MMU appears.** A blocking rendezvous
   needs fetch-add, which armv6m and rxv3 cannot emit -- but no MMU-class target is
   armv6m. The parts that force the no-RMW constraint are not the parts that will

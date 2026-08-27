@@ -546,8 +546,10 @@ the kernel is unreachable without preemption. `docs/design-task-layer.md` is the
   region set is reloaded on every switch-in (`arch_mpu_apply` stashes it; `kickos_arch_mpu_commit`
   programs the hardware after the physical swap). A thread touching a domain
   region not granted to it faults -> kernel reports. Granted **data** regions were isolated from
-  M0; **per-thread private stacks** -- so a sibling cannot scribble another's stack -- came with
-  the M2 `Domain` object, which moved a thread's stack out of the kernel pool and into the arena.
+  M0; **per-thread stack regions** came with the M2 `Domain` object, which moved a thread's stack
+  out of the kernel pool and into the arena. Under a region backend that set is per-thread, so a
+  sibling faults on another's stack -- a BACKEND STRENGTHENING, not the portable promise, since a
+  translating backend maps a task's stacks task-wide (`design-m6-mmu.md` F9).
 - **Sim isolation**: back "physical RAM" with one `mmap` arena; on every switch-in the running
   thread's regions are `mprotect`-ed (grant its domain data region, everything else no-access) so
   a cross-domain pointer raises `SIGSEGV`, translated into the same fault path. **Per-domain data
@@ -569,12 +571,15 @@ implied); ThreadX Modules and ChibiOS/SB are the loadable-code cousins.
 
 - **A domain owns a region set** -- code (RX), data/heap (RW-NX), and any granted MMIO -- plus a
   **privilege posture**.
-- **Threads belong to a TASK, which owns the domain they share** (cooperative within a domain), **but each
-  thread keeps its own private stack region** -- a sibling cannot scribble another thread's stack.
-  So a domain switch reloads the domain regions and every switch-in also loads the incoming
-  thread's stack region; the MPU is therefore reprogrammed on **every** context switch (there is
-  no "same-domain skip": the stack region differs per thread, and the privilege posture can
-  differ moment-to-moment across the syscall boundary).
+- **Threads belong to a TASK, which owns the domain they share** (cooperative within a domain), **and
+  each thread's set carries its own stack region**. So a domain switch reloads the domain regions and
+  every switch-in also loads the incoming thread's stack region; the MPU is therefore reprogrammed on
+  **every** context switch (there is no "same-domain skip": the stack region differs per thread, and
+  the privilege posture can differ moment-to-moment across the syscall boundary). **That per-thread
+  set is what denies a sibling another's stack, and it is a region-backend strengthening rather than
+  the portable contract**: the floor is that a thread-scoped grant guarantees access to its HOLDER,
+  and a translating backend maps a task's stacks task-wide, where a sibling reaches them
+  (`design-m6-mmu.md` F9).
 - **The kernel is a degenerate, static, privileged domain.** Its real protection is the ARM
   **background region** (`PRIVDEFENA`) / SYSMPU supervisor default, so it spends almost no
   explicit regions; MPU regions are spent describing what *unprivileged* code may reach.

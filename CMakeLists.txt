@@ -486,6 +486,46 @@ endif()
 
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
+# The other half of the same axis: a chip declares a TRANSLATING backend by shipping
+# arch/<family>/chip/<chip>/aspace.cmake. No chip ships both files, the two families being
+# exclusive (docs/design-m6-mmu.md F6).
+set(KICKOS_CHIP_TRANSLATES OFF)
+if(KICKOS_CHIP)
+  set(_aspace_optin
+      "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/aspace.cmake")
+  if(EXISTS "${_aspace_optin}")
+    include("${_aspace_optin}")
+  endif()
+endif()
+if(KICKOS_HAVE_ASPACE AND NOT KICKOS_CHIP_TRANSLATES)
+  message(FATAL_ERROR
+    "The configuration resolved a translating backend on board '${KICKOS_BOARD}' "
+    "(arch=${KICKOS_ARCH} chip=${KICKOS_CHIP}), which ships no aspace.cmake, so the two "
+    "declarations of one fact disagree: arch/Kconfig selects HAS_ASPACE for this chip and "
+    "arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/aspace.cmake does not exist. The kernel "
+    "would build the frame allocator over a pool the linker script never carved. Either "
+    "drop the select, or carve __kickos_frame_pool_start/_end and drop an aspace.cmake "
+    "(KICKOS_CHIP_TRANSLATES ON) beside it.")
+endif()
+if(KICKOS_CHIP_TRANSLATES AND KICKOS_HAVE_MPU)
+  message(FATAL_ERROR
+    "Board '${KICKOS_BOARD}' resolved BOTH the enforcing region posture and a translating "
+    "backend. No backend implements both families (docs/design-m6-mmu.md F6): a chip "
+    "selects region descriptors or translation, never both.")
+endif()
+add_compile_definitions(KICKOS_HAVE_ASPACE=${KICKOS_HAVE_ASPACE})
+
+# The two facts above name a MECHANISM; this one names whether memory protection is LIVE,
+# and admission policy keys on it. A translating board carries no region descriptors, so it
+# resolves KICKOS_HAVE_MPU 0 while needing Rule 7, the reserved-block refusal and arena
+# confinement every bit as much as an MPU board (docs/design-m6-mmu.md F6). DERIVED here
+# rather than declared beside them, so no board can state it and disagree with its backend.
+set(KICKOS_MEMORY_ENFORCED 0)
+if(KICKOS_HAVE_MPU OR KICKOS_HAVE_ASPACE)
+  set(KICKOS_MEMORY_ENFORCED 1)
+endif()
+add_compile_definitions(KICKOS_MEMORY_ENFORCED=${KICKOS_MEMORY_ENFORCED})
+
 # Which MPU design the v6-M/v7-M arch is built for. A chip's mpu.cmake above names its
 # backend by setting KICKOS_ARM_MPU_BACKEND; PMSAv7 is the fallback for the core v6-M/v7-M
 # fleet. The selector is TOTAL: a build with no MPU resolves to NONE rather than falling
@@ -870,6 +910,18 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   add_subdirectory(tests/unit/kstring)
 endif()
 
+# Host-only; the reason is in tests/unit/frame/CMakeLists.txt.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/frame/CMakeLists.txt")
+  add_subdirectory(tests/unit/frame)
+endif()
+
+# Host-only; the reason is in tests/unit/vrange/CMakeLists.txt.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/vrange/CMakeLists.txt")
+  add_subdirectory(tests/unit/vrange)
+endif()
+
 # Host-only; the reason is in tests/unit/ktime/CMakeLists.txt.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/ktime/CMakeLists.txt")
@@ -997,7 +1049,9 @@ if(TARGET kickos_kernel)
   # ODR: an out-of-tree TU including a kernel-internal header must see the same posture as
   # the prebuilt libs. KICKOS_TELEMETRY gates fields in struct Kernel (instance.h) and
   # arch_context (context.h), KICKOS_ARCH_SIM gates one in struct Thread (thread.h),
-  # KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h),
+  # KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h) and, with KICKOS_HAVE_ASPACE and the
+  # KICKOS_MEMORY_ENFORCED derived from the pair, the grant seam (grant.h) and the domain
+  # backend field (domain.h),
   # KICKOS_ARM_MPU (plus the four name constants it is compared against) picks the
   # arch_mpu_encoded layout, and without KICKOS_ARCH_SIM a sim package (which ships no
   # chip_limits.h) hits config/board.h's #error.
@@ -1009,6 +1063,8 @@ if(TARGET kickos_kernel)
     KICKOS_TELEMETRY=${_telem} KICKOS_TELEMETRY_RTT=${_telem}
     KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
     KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU}
+    KICKOS_HAVE_ASPACE=${KICKOS_HAVE_ASPACE}
+    KICKOS_MEMORY_ENFORCED=${KICKOS_MEMORY_ENFORCED}
     KICKOS_ARM_MPU_NONE=0
     KICKOS_ARM_MPU_PMSAV7=1
     KICKOS_ARM_MPU_PMSAV8=2
