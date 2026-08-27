@@ -321,13 +321,13 @@ int main(int, char**)
     // Priority 1 (KICKOS_PRIO_MIN) is BELOW root's KICKOS_PRIO_MIN+1: the storm thread
     // can never starve root by hogging the CPU, so a wedged console would isolate the
     // foreign-SR0 interrupt storm as the cause.
-    auto const p = kos::thread::spawn(storm, reinterpret_cast<void*>(U0C1_BASE),
-                                      "inprstorm", 1, KOS_POLICY_FIFO, 0,
-                                      /*privileged=*/false,
-                                      /*mem=*/nullptr, /*mem_size=*/0,
-                                      /*stack=*/nullptr, /*stack_size=*/0,
-                                      /*mmio=*/reinterpret_cast<void*>(U0C1_BASE),
-                                      U0C1_WINDOW);
+    auto const p = kos::thread::create(storm, reinterpret_cast<void*>(U0C1_BASE),
+                                       "inprstorm", 1, KOS_POLICY_FIFO, 0,
+                                       /*privileged=*/false,
+                                       /*mem=*/nullptr, /*mem_size=*/0,
+                                       /*stack=*/nullptr, /*stack_size=*/0,
+                                       /*mmio=*/reinterpret_cast<void*>(U0C1_BASE),
+                                       U0C1_WINDOW);
     if (not p.valid())
     {
         // -KOS_EBUSY: a live domain already holds U0C1. Without the grant the attacker

@@ -216,13 +216,25 @@ int main(int, char**)
     // MemManage before the probe ever ran.
     kos::print("[pvprobe] XMC4800 U0C1 PV-write probe (RM V1.3 Table 18-20)\n");
 
-    auto const p = kos::thread::spawn(probe, reinterpret_cast<void*>(U0C1_BASE),
-                                      "pvprobe", 10, KOS_POLICY_FIFO, 0,
-                                      /*privileged=*/false,
-                                      /*mem=*/nullptr, /*mem_size=*/0,
-                                      /*stack=*/nullptr, /*stack_size=*/0,
-                                      /*mmio=*/reinterpret_cast<void*>(U0C1_BASE),
-                                      U0C1_WINDOW);
+    // The probe ends on the negative control's fault, and a fault cancels the faulting
+    // thread's whole TASK: spawned plain it would join root's task and take root with it,
+    // leaving no survivor to keep the board up. Root holds the handle for the life of the
+    // image, since it never reaches a point past the probe.
+    kos_task_t victim = KOS_TASK_NONE;
+    if (kos_task_create(nullptr, 0, 0, &victim) != 0)
+    {
+        kos_panic("[pvprobe] no task slot for the probe");
+    }
+
+    auto const p = kos::thread::create(probe, reinterpret_cast<void*>(U0C1_BASE),
+                                       "pvprobe", 10, KOS_POLICY_FIFO, 0,
+                                       /*privileged=*/false,
+                                       /*mem=*/nullptr, /*mem_size=*/0,
+                                       /*stack=*/nullptr, /*stack_size=*/0,
+                                       /*mmio=*/reinterpret_cast<void*>(U0C1_BASE),
+                                       U0C1_WINDOW,
+                                       /*caps=*/nullptr, /*cap_count=*/0,
+                                       /*authority=*/0, /*cap_dest=*/nullptr, victim);
     if (not p.valid())
     {
         // -KOS_EBUSY: a live domain already holds U0C1, and without the grant the probe

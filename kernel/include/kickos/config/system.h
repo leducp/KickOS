@@ -34,7 +34,7 @@
 #define KICKOS_MAX_ENDPOINTS 4
 #endif
 
-// Threads the syscall thread_spawn can seat CONCURRENTLY (+ their kernel stacks). This is
+// Threads the syscall thread_create_call can seat CONCURRENTLY (+ their kernel stacks). This is
 // what every defconfig states and what the boot arena backs one default stack per; it does
 // NOT count root, which holds a slot of its own.
 #ifndef KICKOS_MAX_THREADS
@@ -53,7 +53,7 @@
 #ifndef KICKOS_CAP_TABLE_SUPPLY
 #define KICKOS_CAP_TABLE_SUPPLY 16
 #endif
-// Caps one spawn may delegate. NOT tied to KICKOS_MAX_HANDLES: thread_spawn stages the
+// Caps one spawn may delegate. NOT tied to KICKOS_MAX_HANDLES: thread_create_call stages the
 // grant list in CALLER-stack arrays (16 bytes per entry) and root's stack can be 1 KiB,
 // so raising this costs caller stack, not .bss, and tying it to the table ceiling would
 // turn every ceiling lift into a stack overflow. Grants land at child indices
@@ -61,10 +61,16 @@
 #ifndef KICKOS_MAX_SPAWN_GRANTS
 #define KICKOS_MAX_SPAWN_GRANTS 6
 #endif
-// Memory-domain pool (see domain.h). Worst case is one distinct domain per thread plus
-// the two immortal singletons (the kernel domain + the default unprivileged domain).
-#ifndef KICKOS_MAX_DOMAINS
-#define KICKOS_MAX_DOMAINS (KICKOS_MAX_THREADS + 2)
+// Virtual ranges one address space can name (see vrange.h): its process image and whatever
+// it has reserved. A page table has no describable-extent ceiling, so nothing here is paid
+// out of KICKOS_MPU_MAX_REGIONS and no hardware bounds it.
+//
+// IT IS THE ALLOCATION BUDGET TOO, which is what separates it from a descriptor count: a
+// reservation takes a slot and there is no free, so this is how many distinct blocks one
+// process may allocate over its life, over and above the two the image spends. A figure
+// mirrored from the descriptor bound left an app with six.
+#ifndef KICKOS_ASPACE_RANGES
+#define KICKOS_ASPACE_RANGES 32
 #endif
 // Task pool (see task.h). One task per LIVE THREAD, since grouping is implicit today, so
 // the bound is every TCB that can exist at once: KICKOS_THREAD_SLOTS (root + the threads
@@ -74,6 +80,22 @@
 // have seated (task.cc static_asserts the floor).
 #ifndef KICKOS_MAX_TASKS
 #define KICKOS_MAX_TASKS (KICKOS_THREAD_SLOTS + 1)
+#endif
+// Memory-domain pool (see domain.h), plus the two immortal singletons (the kernel domain
+// and the default unprivileged one).
+//
+// THE TWO BACKENDS COUNT DIFFERENTLY, and it is a count of DOMAINS: nothing here is paid
+// out of KICKOS_MPU_MAX_REGIONS, which bounds how much ONE domain describes. A region
+// backend reaches at most one distinct domain per thread, every no-grant task resolving to
+// the shared singleton. A translating one spends one per TASK instead: a domain carries an
+// address space there, so no two tasks may share one and the singleton is a template
+// rather than a domain to join (docs/design-m6-mmu.md F2).
+#ifndef KICKOS_MAX_DOMAINS
+#if KICKOS_HAVE_ASPACE
+#define KICKOS_MAX_DOMAINS (KICKOS_MAX_TASKS + 2)
+#else
+#define KICKOS_MAX_DOMAINS (KICKOS_MAX_THREADS + 2)
+#endif
 #endif
 // Independent kernels co-resident in ONE address space (instance.h). One on a chip, and
 // one per emulated MCU under the multi-instance sim. It is a provisioning bound, not a

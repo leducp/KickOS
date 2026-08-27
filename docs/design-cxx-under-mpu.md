@@ -11,7 +11,7 @@ Scope: make the full-C++ opt-in (exceptions + STL + RTTI, commit dc632bd [DEAD H
 UNPRIVILEGED, MPU-isolated userspace thread -- the convergence the north star needs
 (unprivileged C++ servers/drivers reached by IPC). `cxxtest` was gated
 `AND NOT KICKOS_HAVE_MPU`; this doc scopes lifting that gate. The committed `cxxtest` now spawns
-an UNPRIVILEGED worker (`kos::thread::spawn(cxx_worker, ..., privileged=false)`, 8 KB app-arena
+an UNPRIVILEGED worker (`kos::thread::create(cxx_worker, ..., privileged=false)`, 8 KB app-arena
 stack) that runs the whole throw/catch/unwind + STL + RTTI body under the MPU. On qemu-riscv
 (rv32imac PMP) that is RUN-PROVEN: `ctest -R qemu_riscv_cxxtest` is ALL PASS from the U-mode
 worker -- the deterministic RISC-V/PMP gate. On silicon, frdmk64f (SYSMPU, EHABI), xmc4800-relax
@@ -210,7 +210,7 @@ an RX-mangled `sbrk` sufficed.
 qemu-riscv `virt`, `cmake --preset qemu-riscv` (its base variant enforces by default), RISCStar
 newlib toolchain. The original throwaway app
 `cxxumpu` -- root, privileged as it still was then, spawns an **unprivileged** worker
-(`kos::thread::spawn(..., privileged=false)`) that runs full C++ -- has since been folded into the
+(`kos::thread::create(..., privileged=false)`) that runs full C++ -- has since been folded into the
 committed `cxxtest` (same spawn shape, now the standing `qemu_riscv_cxxtest` gate), so the
 U-mode-confined claim now rests on a running in-tree test, not this record. The changes below are
 all LANDED:

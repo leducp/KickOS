@@ -104,8 +104,21 @@ The region set an MPU (or the sim's `mprotect`) enforces is assembled in
 - **Privileged**: the whole arena, plus the backend's permissive background covering
   code, kernel data and stack. One region suffices.
 - **Unprivileged**: app code (RX) plus app static data (RW, no-execute), the
-  domain's granted region(s), and the thread's own private stack -- assembled
+  domain's granted region(s), and the thread's own stack -- assembled
   explicitly, because an unprivileged thread has no background default.
+
+A word on that stack, because it is easy to read more into it than it promises.
+Because the set is *per thread*, a sibling in the same task faults on it: the region
+is in one thread's set and not the other's. That denial is real, and it is a
+property of *this* mechanism rather than of the operating system. Where memory
+protection is a page table instead of a descriptor list, per-thread tables would buy
+nothing the family asks for, so a task's stacks are mapped once for the whole task
+and a sibling reaches them. What portable code may rely on is the weaker statement
+that holds on both: **a thread-scoped grant guarantees access to its holder.** The
+same distinction the thread-local carve makes -- naming, not isolation -- and
+Chapter 7.7, *[Whoever stacks the trap frame owns the bounds
+check](whoever-stacks-the-trap-frame-owns-the-bounds-check.md)*, is where it starts
+to matter.
 
 Composed *once*, from a flag that does not change afterwards, which is the axis-1
 argument arriving on the memory side: there is no moment at which the set has to be
@@ -201,7 +214,7 @@ A thread that can create a privileged child can create one that does anything at
 including creating more of them -- so narrowing such a capability is meaningless, and
 delegating it is unbounded escalation with extra steps. There is nothing to gain from
 making it nameable, and a great deal to lose. So it stays where it cannot be handed
-around: a property of the creating thread, checked directly (`thread_spawn` refuses an
+around: a property of the creating thread, checked directly (`thread_create_call` refuses an
 unprivileged caller with `-KOS_EPERM`; invariant `privilege-escalation-gated`).
 
 ## What a privileged thread IS: a kthread
@@ -467,7 +480,7 @@ each one separately. Passing one does not imply the other.
 **1. Confined execution -- run it where accesses are actually checked.** The code
 under test must run in an **unprivileged** thread, so its every load and store is
 subject to the protection unit. In KickOS that is
-`kos::thread::spawn(..., privileged = false)` -- the default. `cxxtest` does exactly
+`kos::thread::create(..., privileged = false)` -- the default. `cxxtest` does exactly
 this: rather than run the body inline, it spawns `cxx_worker` unprivileged
 (`user/apps/common/cxxtest/main.cc`) and the throw/catch/unwind/RTTI/STL all execute
 there, under the unit, reaching only the worker's granted regions. `selftest`

@@ -207,7 +207,7 @@ extern "C"
         return 0;
     }
 
-    int kos_thread_spawn(struct kos_thread_params const* params, kos_thread_t* out_thread)
+    int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_thread)
     {
         g_spawns++;
         if (params == nullptr)

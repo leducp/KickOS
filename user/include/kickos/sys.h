@@ -149,7 +149,7 @@ int kos_sem_destroy(kos_cap_t cap); // alias of kos_handle_close
 // live thread holds, ENOMEM thread pool / stack arena / domain pool, EOVERFLOW a delegated
 // object's refcount at its ceiling). `*out_thread` is ALWAYS written, KOS_THREAD_NONE on
 // every failure, and the out-pointer is validated BEFORE the child is created.
-int kos_thread_spawn(struct kos_thread_params const* params, kos_thread_t* out_thread);
+int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_thread);
 
 // End the CALLING thread with `code`, or the whole system when the caller is root: root's
 // exit is a kos_shutdown(code), exactly as returning from main is, so plain C exit() and
@@ -157,7 +157,7 @@ int kos_thread_spawn(struct kos_thread_params const* params, kos_thread_t* out_t
 // KOS_AUTH_SYSTEM to call this at all (see <kickos/sys/init.h>) and panics without it.
 void kos_exit(int code) __attribute__((noreturn));
 
-// Cancel a thread YOU spawned, named by the handle kos_thread_spawn delivered. Returns 0,
+// Cancel a thread YOU created, named by the handle kos_thread_create delivered. Returns 0,
 // -KOS_EBADF (bad / stale / already-exited handle, KOS_THREAD_NONE included), -KOS_EPERM
 // (you did not spawn it) or -KOS_EINVAL (naming yourself; that is kos_exit).
 //
@@ -287,6 +287,11 @@ uint32_t kos_ipc_fast_taken(void);
 // Only meaningful under enforcement (returns -KOS_EINVAL where the kernel has no
 // grant module).
 uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size);
+// Test-only: run one address-space seam scenario in the kernel and return its answer (see
+// enum kos_aspace_op in sys/abi.h). The map editor has no syscall of its own, so an arm asks
+// for a whole scenario rather than for a mapping. -KOS_ENOSYS where the board describes
+// regions instead of translating, cast up through the uintptr_t return.
+uintptr_t kos_aspace_probe(uintptr_t op, uintptr_t a1);
 // Test-only: enable a controller line directly, so an injected raise reaches the
 // default handler on masked-by-default controllers (ARM NVIC, RX). Needs KOS_AUTH_IRQ.
 int kos_irq_unmask(int line); // 0, or -KOS_EPERM (no KOS_AUTH_IRQ) / -KOS_EINVAL (bad line)
@@ -383,40 +388,57 @@ uint32_t kos_cpu_clock_set(kos_pstate_t pstate);
 // Does NOT affect kos_clock_now(): that stays a pure monotonic counter.
 void kos_clock_set_realtime(uint64_t unix_ns);
 
-// Allocate a page-aligned block from the MPU-governed user-RAM pool, to hand to a thread as
-// its domain data region (see kos_thread_params.mem_base). NULL if exhausted.
+// Allocate a page-aligned block of user RAM, to hand to a thread as its domain data region
+// (see kos_thread_params.mem_base) or to a task create as the group's. NULL if exhausted.
 //
-// Allocating reserves arena memory and grants nothing: reachability comes from handing the
-// block to a spawn, or from asking for it explicitly with kos_mem_self_grant.
+// Allocating RESERVES memory and grants nothing: reachability comes from handing the block
+// to a spawn or a task create, or from asking for it explicitly with kos_mem_self_grant.
+//
+// THE NUMBER IS AN ADDRESS IN THE CALLING TASK'S OWN NAMESPACE. Where a backend translates,
+// it names a range reserved in that task's address space and mapped nowhere until the
+// self-grant maps it; a reservation another task made is not nameable here at all. Handing
+// the block over maps it in the receiving task at the SAME address, so a pointer written
+// into the block still means the same thing on the far side.
+//
+// EXHAUSTION HAS TWO SOURCES on a translating backend and NULL is both: the memory itself,
+// and the number of distinct blocks one task may hold, a reservation costing a slot of a
+// bounded per-space list that nothing frees.
 void* kos_ram_alloc(size_t size);
 
-// Add [base, base+size) to the CALLING thread's own region set, so the caller may
-// dereference memory it allocated: kos_ram_alloc reserves, this grants, and nothing grants
-// implicitly.
+// Make [base, base+size) reachable by the CALLER: kos_ram_alloc reserves, this grants, and
+// nothing grants implicitly.
 //
-// Requires AUTH_MEMORY. The region is run through the same Rule 7 admission predicate as a
-// spawn-time grant, so it must be inside the user arena and clear of every kernel-reserved
-// block; the committed extent is rounded up to what the MPU can describe
-// (arch_ram_region_size). The gate admits ANY reserved-clear in-arena range, not only memory
-// the caller itself allocated.
+// Requires AUTH_MEMORY. `base` must name a block the CALLING TASK reserved with
+// kos_ram_alloc; the whole reservation is what becomes reachable, and an address some other
+// task reserved is refused. Under an MPU the reachability is one region of the calling
+// THREAD's set, run through the same Rule 7 admission predicate as a spawn-time grant and
+// rounded up to what the MPU can describe (arch_ram_region_size); under translation it is a
+// mapping in the calling task's address space, which every thread of that task then reaches
+// (a grant guarantees access to its HOLDER, never denial to a peer).
 //
-// BOUNDED by the hardware region budget: a thread already spends up to 5 of
-// KICKOS_MPU_MAX_REGIONS on code, static data, its domain and its stack, so self-grants draw
-// on a small remainder.
+// BOUNDED, and by a different budget on each: the hardware region budget under an MPU, where
+// a thread already spends up to 5 of KICKOS_MPU_MAX_REGIONS on code, static data, its domain
+// and its stack; the reservation list under translation, which the allocation above is what
+// spends.
 //
 // `flags` is kos_mem_flags: the memory TYPE to commit the region with. Where the chip
 // PROGRAMS that type, asking for it spends a descriptor even on a block the caller can
 // already reach cacheably, a privileged caller's whole-arena background-map reach included.
 //
+// THE SAME MEMORY TYPE IS COMPARED IN BOTH DIRECTIONS. Where the mapping carries the type, a
+// request naming NO type over a block mapped non-cacheable is as much a change as the reverse
+// and is committed as one: that direction is the way back from a DMA buffer to ordinary memory,
+// and answering it on reachability alone would report a cacheability that was never restored.
+//
 // Returns 0 on success (including when the range is ALREADY reachable with the same memory
-// type, which costs no descriptor), or:
+// type, which costs no descriptor and no mapping), or:
 //   -KOS_EPERM   no AUTH_MEMORY, the range is inadmissible (outside the arena, or
-//                overlapping a reserved block), or this chip cannot honour the memory
-//                type asked for
+//                overlapping a reserved block), a range this task never reserved, or this
+//                chip cannot honour the memory type asked for
 //   -KOS_EINVAL  size 0, the range wraps, an undefined flag bit, or (under an MPU) the
 //                base is not naturally aligned to the rounded region size (a base from
 //                kos_ram_alloc never trips this)
-//   -KOS_ENOMEM  the caller's region budget is full
+//   -KOS_ENOMEM  the budget is full
 int kos_mem_self_grant(void* base, size_t size, uint32_t flags);
 
 // Borrow the KERNEL'S single diagnostic LED, which the kernel also drives for itself (solid

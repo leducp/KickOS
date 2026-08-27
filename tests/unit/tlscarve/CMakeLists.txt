@@ -25,3 +25,13 @@ foreach(_case span empty)
     INCLUDES $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>
     DEFINITIONS $<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS>)
 endforeach()
+
+# A THIRD, and it differs from the two above in ONE clause: TLSCARVE_FROM_SP 0, the arch that
+# SEATS the thread pointer from the context instead of masking SP down to a stride. Same
+# fabrication, same stride, same reserve, so what it reports is attributable to that clause.
+# Its own target because the mechanism is an #if inside the kernel source the shim compiles,
+# and one binary can only carry one answer.
+kickos_add_unit_test(NAME tls_carve_seat
+  SOURCES tlscarve_shim.cc tlscarve_seat.cc
+  INCLUDES $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>
+  DEFINITIONS $<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS> TLSCARVE_FROM_SP=0)

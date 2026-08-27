@@ -59,6 +59,10 @@ classify() {
         # `#`.
         *.sh|*.py|*.cmake|*.awk|*.txt|*.yml|*.yaml|*.conf|*.example)
             printf 'need\n' ;;
+        # objcopy --redefine-syms input: `#` starts a comment there too, which a reader who
+        # takes the file for a bare two-column table would not expect.
+        *.syms)
+            printf 'need\n' ;;
         # VCS metadata, not authored content.
         .gitignore|*/.gitignore|.gitattributes|*/.gitattributes)
             printf 'none\n' ;;

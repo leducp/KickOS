@@ -46,6 +46,18 @@ _kickos_heap_start
 __kickos_heap_start
 _kickos_heap_limit
 __kickos_heap_limit
+# The app's own low window, carved only where a translating backend splits the image
+# (docs/design-m6-mmu.md, T5b.1). arch/common/arch_ram_common.cc consults it as a SECOND
+# admitted extent beside the chip's rom/sram pair; range_within refuses a zero pair, so a
+# chip that carves no such window admits nothing extra.
+__kickos_app_rom_start
+___kickos_app_rom_start
+__kickos_app_rom_end
+___kickos_app_rom_end
+__kickos_app_sram_start
+___kickos_app_sram_start
+__kickos_app_sram_end
+___kickos_app_sram_end
 # libgcc's unwinder registration. Absent from a freestanding image, so the RISC-V chip
 # bring-up calls it only when the link supplied it.
 __register_frame

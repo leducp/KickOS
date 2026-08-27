@@ -136,7 +136,7 @@ namespace
         kos::thread::Handle t;
         for (uintptr_t b : SIMCON_WIN_BASES)
         {
-            t = kos::thread::spawn(
+            t = kos::thread::create(
                 entry, nullptr, name, prio, KOS_POLICY_FIFO, /*quantum_ns=*/0,
                 /*privileged=*/false, /*mem=*/nullptr, /*mem_size=*/0,
                 /*stack=*/nullptr, /*stack_size=*/0,

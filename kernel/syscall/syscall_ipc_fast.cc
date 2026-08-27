@@ -128,19 +128,24 @@ namespace kickos
         {
             n = w->ipc.len; // receiver-side request truncation
         }
-        ep_copy(w->ipc.buf, reinterpret_cast<uintptr_t>(&args[3]), n);
+        // The request end is the caller's SAVED TRAP FRAME and so kernel storage, which
+        // is what a null owner names; the receiver's end is its own space.
+        ep_copy(ipc_buf_space(w), w->ipc.buf, nullptr, reinterpret_cast<uintptr_t>(&args[3]),
+                n);
         c->call_seq++; // new epoch BEFORE the mint: the reply cap rides this seq
         uint32_t rcap = KCAP_INVALID;
         int const minted = cap_install_reply(w, c, &rcap);
         KICKOS_ASSERT(minted == 0); // cap_can_take_reply probed w above
         (void)minted;
-        write_recv_info(w->ipc.badge_out, KOS_BADGE_NONE, rcap);
+        write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, rcap);
         w->wait_result = static_cast<intptr_t>(n);
 
         // The reply target is the caller's OWN saved frame, so endpoint_reply's ep_copy
         // lands the payload straight in the registers the restore will pop. That is what
         // makes the register form a round trip rather than half of one, and it is why this
-        // path needs no user buffer and no bound check on one.
+        // path needs no user buffer and no bound check on one. call_frame_parked is what
+        // tells endpoint_reply that this ipc.buf is kernel storage and not a user address
+        // in the caller's space, so it is set below rather than at the park.
         c->ipc.buf = reinterpret_cast<uintptr_t>(&args[1]);
         c->ipc.len = recv_cap;
         c->ipc.badge_out = 0;

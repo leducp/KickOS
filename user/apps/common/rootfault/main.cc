@@ -72,7 +72,7 @@ int main(int, char**)
     kos_cap_grant caps[] = {
         { done, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER },
     };
-    auto const child = kos::thread::spawn_caps(confined_child, rA, "confined", 10,
+    auto const child = kos::thread::create_caps(confined_child, rA, "confined", 10,
                                              caps, 1, KOS_POLICY_FIFO, 0,
                                              /*privileged=*/false, rA, 4096);
     if (not child.valid())

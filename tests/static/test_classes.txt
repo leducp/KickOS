@@ -39,6 +39,8 @@ host   src    tests/static/check_include_guards.sh
 host   src    tests/static/check_kconfig_forwarding.sh
 host   src    tests/static/check_kconfig_gen.sh
 host   src    tests/static/check_kernel_ctor_placement.sh
+host   src    tests/static/check_kernel_got.sh
+host   src    tests/static/check_kernel_runtime.sh
 host   src    tests/static/check_panic_banners.sh
 host   src    tests/static/check_arm_read_tp.sh
 host   src    tests/static/check_no_privileged_tls.sh
@@ -74,6 +76,8 @@ host   build  tests/unit/drvbringup/init_flush
 host   build  tests/unit/faultband/fault_band
 host   build  tests/unit/grantnocache/grant_nocache
 host   build  tests/unit/kstring/kstring_words
+host   build  tests/unit/frame/frame_alloc
+host   build  tests/unit/vrange/vrange_list
 host   build  tests/unit/ktime/ktime_rearm
 host   build  tests/unit/parkresult/park_result
 host   build  tests/unit/schedwake/sched_wake
@@ -82,16 +86,20 @@ host   build  tests/unit/slotpool/slotpool_policy
 host   build  tests/unit/taskdeath/task_death
 host   build  tests/unit/tlscarve/tls_carve_empty
 host   build  tests/unit/tlscarve/tls_carve_span
+host   build  tests/unit/tlscarve/tls_carve_seat
 host   build  tests/unit/uartclass/uart_class
 host   build  tests/unit/wildstack/wild_stack
 
 # --- gates that run an image -------------------------------------------------
 image  src    tests/integration/check_app_arms.sh
+image  src    tests/integration/check_aspace_fault.sh
+image  src    tests/integration/check_stack_guard.sh
 image  src    tests/integration/check_fault_dump.sh
 image  src    tests/integration/check_faultsurvive.sh
 image  src    tests/integration/check_pspguard.sh
 image  src    tests/integration/check_trapnest.sh
 image  src    tests/integration/check_hello.py
+image  src    tests/integration/check_kernel_half.sh
 image  src    tests/integration/check_libc_exit.sh
 image  src    tests/integration/check_mpu_fault.sh
 image  src    tests/integration/check_oot_export.sh

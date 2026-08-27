@@ -54,7 +54,7 @@
  *               -> kpanic[16] -> kputs[16] -> kconsole_write[0] -> kconsole_write_impl[176]
  *               -> console_emit[48] -> arch_console_write[0] -> console_tx_write[80]
  *               -> drain_sync[32] -> wait_slot[16]        (qemu-riscv: 384)
- *   _SYS   912  syscall_dispatch[32] -> syscall_body[128] -> thread_spawn[272]
+ *   _SYS   912  syscall_dispatch[32] -> syscall_body[128] -> thread_create_call[272]
  *               -> thread_create[96] -> the same tail from kpanic down (qemu-riscv: 816)
  *
  * EACH FIGURE IS ITS MEASUREMENT, not rounded up to the next multiple of 64 the way a
@@ -84,7 +84,7 @@
  *
  *   KICKOS_BENCH 0, 704 over 688 measured on BOTH boards, the console tail being gone so the
  *   chain no longer walks a per-board backend:
- *     688  syscall_dispatch[32] -> syscall_body[128] -> thread_spawn[272]
+ *     688  syscall_dispatch[32] -> syscall_body[128] -> thread_create_call[272]
  *          -> thread_create[96] -> task_for[16] -> domain_for[32]
  *          -> grant_region_admissible[32] -> grant_hits_reserved[80]
  *
@@ -136,8 +136,10 @@
 
 /* kickos_thread_return ALONE: a PRIVILEGED thread's entry-return stub, a user thread's being
  * the kickos_user_thread_return syscall instead, so no fault and no redirect relocates it and
- * it runs at the depth the entry returned from on the thread's own stack. 368 excluded. */
-#define KICKOS_RV_TRAP_KERNEL_DEPTH_RET 368
+ * it runs at the depth the entry returned from on the thread's own stack. 384 excluded, on
+ * qemu-riscv; KICKOS_MIN_STACK_SIZE is set by NEED_SYSPRIV and not by this class, so the
+ * 128 + 384 red zone is checked against the floor rather than setting it. */
+#define KICKOS_RV_TRAP_KERNEL_DEPTH_RET 384
 
 /* THE SYSCALL REQUIREMENT HOLDS TWO FRAMES, the second being the msip frame the deferred
  * switcher builds. A blocking dispatch pends msip and the trap fires at whatever depth the

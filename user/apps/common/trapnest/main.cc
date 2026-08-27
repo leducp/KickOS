@@ -113,13 +113,13 @@ namespace
     kos_thread_params g_tn_params = {};
     kos_thread_t g_tn_out = 0;
 
-    // KOS_SYS_THREAD_SPAWN with a stack size under the floor: syscall_thread.cc refuses it, but
-    // only after thread_spawn's own frame is live, which is the depth this arm needs. Same
+    // KOS_SYS_THREAD_CREATE with a stack size under the floor: syscall_thread.cc refuses it, but
+    // only after thread_create_call's own frame is live, which is the depth this arm needs. Same
     // one-asm-block discipline as the inject.
     void spawn_from(uintptr_t sp_target)
     {
         uint32_t saved = 0;
-        uint32_t const nr = KOS_SYS_THREAD_SPAWN;
+        uint32_t const nr = KOS_SYS_THREAD_CREATE;
         uintptr_t const p = reinterpret_cast<uintptr_t>(&g_tn_params);
         uintptr_t const out = reinterpret_cast<uintptr_t>(&g_tn_out);
         __asm volatile("mv   %[sv], sp   \n\t"
@@ -185,7 +185,7 @@ int main(int, char**)
     g_tn_stack_lo = lo;
 
     // WHERE the refusal happens decides the depth reached. A stack under the floor is refused
-    // near the TOP of thread_spawn; an INADMISSIBLE memory region is refused in
+    // near the TOP of thread_create_call; an INADMISSIBLE memory region is refused in
     // grant_region_admissible, the deep end of the chain rv_trap_stack.h measures the syscall
     // red zone against. So: a kernel-default stack, and a region outside the arena.
     g_tn_params.entry = worker;
@@ -208,16 +208,16 @@ int main(int, char**)
         return 1;
     }
 
-    kos::thread::Handle const tk = kos::thread::spawn(ticker, nullptr, "tntick", 20);
+    kos::thread::Handle const tk = kos::thread::create(ticker, nullptr, "tntick", 20);
     if (not tk.valid())
     {
         emit("[trapnest] ERROR: ticker spawn refused\n");
         return 1;
     }
     kos::thread::Handle const w =
-        kos::thread::spawn(worker, nullptr, "tnwork", 10, KOS_POLICY_FIFO, 0,
-                           /*privileged=*/false, nullptr, 0,
-                           reinterpret_cast<void*>(lo), TN_STACK_SIZE);
+        kos::thread::create(worker, nullptr, "tnwork", 10, KOS_POLICY_FIFO, 0,
+                            /*privileged=*/false, nullptr, 0,
+                            reinterpret_cast<void*>(lo), TN_STACK_SIZE);
     if (not w.valid())
     {
         emit("[trapnest] ERROR: worker spawn refused\n");

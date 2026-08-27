@@ -235,7 +235,7 @@ int main(int, char**)
     }
     kos_cap_grant const caps[2] = {{g_done, KOS_CAP_WAIT | KOS_CAP_SIGNAL},
                                    {ep, KOS_CAP_SIGNAL}};
-    auto const cl = kos::thread::spawn_caps(client, nullptr, "uartcl", 10, caps, 2);
+    auto const cl = kos::thread::create_caps(client, nullptr, "uartcl", 10, caps, 2);
     if (not cl.valid())
     {
         kos_print("[uartloop] ERROR: client spawn failed\n");

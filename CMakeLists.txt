@@ -312,14 +312,28 @@ else()
   add_compile_definitions(KICKOS_MULTI_INSTANCE=0)
 endif()
 
-# The TLS stride. Unprivileged ARM code has no register that differs per thread except SP,
-# so __aeabi_read_tp is SP masked down to the thread's own stack block, and one image has
-# ONE mask: root and every pool stack must round to the SAME power of two.
+# The TLS stride. Where the arch derives the thread pointer by MASKING SP, having no register
+# that differs per thread at the unprivileged level (or masking anyway), one image has ONE
+# mask, so root and every pool stack must round to the SAME power of two and must BE that
+# power of two.
+#
+# THE TWO REFUSALS BELOW ARE KEYED ON KICKOS_TLS_FROM_SP AND NOT ON KICKOS_TLS, which is the
+# per-mechanism qualification docs/design-m6-mmu.md F7 asks for. An arch that SEATS the
+# register from the context computes the block base by subtraction, so it owes the stride
+# nothing and a stack there may be any number of pages at any page boundary. The stride
+# itself is still derived on every board: the link-time assert that the thread-local template
+# fits inside one reads it.
 include("${CMAKE_SOURCE_DIR}/cmake/boot_arena.cmake")
+# Defined either way, so a `#if KICKOS_TLS_FROM_SP` in a TU that forgot defined() reads false
+# rather than reading an undefined identifier as zero by luck.
+if(NOT DEFINED KICKOS_TLS_FROM_SP)
+  set(KICKOS_TLS_FROM_SP 0)
+endif()
+add_compile_definitions(KICKOS_TLS_FROM_SP=${KICKOS_TLS_FROM_SP})
 if(KICKOS_TLS)
   kickos_pow2_ceil("${KICKOS_USER_STACK_SIZE}" _tls_stride)
   kickos_pow2_ceil("${KICKOS_ROOT_STACK_SIZE}" _tls_root_stride)
-  if(NOT _tls_stride EQUAL _tls_root_stride)
+  if(KICKOS_TLS_FROM_SP AND NOT _tls_stride EQUAL _tls_root_stride)
     message(FATAL_ERROR
       "KickOS: KICKOS_TLS is on and this board's stacks do not share a stride. "
       "KICKOS_USER_STACK_SIZE ${KICKOS_USER_STACK_SIZE} rounds to ${_tls_stride} and "
@@ -331,10 +345,11 @@ if(KICKOS_TLS)
       "let a thread_local fail the link instead.")
   endif()
   # AND THEY MUST BE THE STRIDE, not merely round to it: tls_stack_admissible requires a
-  # block of EXACTLY one stride, because two smaller blocks fit inside one stride and mask to
-  # the same base. A non-power-of-two here has every spawn refused at runtime, not here.
+  # block of EXACTLY one stride wherever the mask is real, because two smaller blocks fit
+  # inside one stride and mask to the same base. A non-power-of-two there has every spawn
+  # refused at runtime, not here.
   foreach(_k KICKOS_USER_STACK_SIZE KICKOS_ROOT_STACK_SIZE)
-    if(NOT ${${_k}} EQUAL _tls_stride)
+    if(KICKOS_TLS_FROM_SP AND NOT ${${_k}} EQUAL _tls_stride)
       message(FATAL_ERROR
         "KickOS: KICKOS_TLS is on and ${_k} is ${${_k}}, which is not a power of two: it "
         "rounds to a stride of ${_tls_stride}. The thread pointer is SP masked down to that "
@@ -352,6 +367,12 @@ if(KICKOS_TLS)
   add_compile_definitions(KICKOS_TLS=1
                           KICKOS_TLS_STRIDE=${_tls_stride}
                           KICKOS_TLS_STRIDE_LOG2=${_tls_log2})
+  # Where the two knobs differ the stride derived above describes only the larger, so on a
+  # masking arch they are refused above and this can only be reached where the mask is not
+  # real. Stated so the stride's meaning per board is not left to be inferred.
+  if(KICKOS_TLS_FROM_SP)
+    message(STATUS "KickOS: the thread pointer is SP masked to the stride")
+  endif()
   message(STATUS "KickOS: TLS stride ${_tls_stride} (1 << ${_tls_log2})")
 else()
   # Defined either way so `#if KICKOS_TLS` in a TU that forgot defined() reads false rather
@@ -418,10 +439,17 @@ if(KICKOS_HAVE_PRIV_RING
       OR KICKOS_ARCH STREQUAL "armv6m"
       OR KICKOS_ARCH STREQUAL "rv32imac"
       OR KICKOS_ARCH STREQUAL "rxv3"
+      OR KICKOS_ARCH STREQUAL "armv8a"
       OR (KICKOS_ARCH STREQUAL "sim" AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")))
   set(KICKOS_FAULT_ISOLATION 1)
   set(KICKOS_FAULT_OUTCOME thread-kill)
 endif()
+# Published to C++ as well, not left a CMake-only fact: an in-tree witness has to be able to
+# ask whether a deliberate fault is survivable here, and gating such an arm on a proxy
+# (KICKOS_HAVE_ASPACE, KICKOS_MEMORY_ENFORCED) would register it on a board whose backend
+# builds no resumable frame. NOT on the exported kickos_core interface: it gates test
+# scaffolding, not a consumer API.
+add_compile_definitions(KICKOS_FAULT_ISOLATION=${KICKOS_FAULT_ISOLATION})
 if(NOT DEFINED KICKOS_TRACE_ARCH)
   set(KICKOS_TRACE_ARCH 0)
   if(KICKOS_ARCH STREQUAL "armv7m")
@@ -485,6 +513,46 @@ if(KICKOS_HAVE_MPU AND NOT KICKOS_CHIP_ENFORCES_MPU)
 endif()
 
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
+
+# The other half of the same axis: a chip declares a TRANSLATING backend by shipping
+# arch/<family>/chip/<chip>/aspace.cmake. No chip ships both files, the two families being
+# exclusive (docs/design-m6-mmu.md F6).
+set(KICKOS_CHIP_TRANSLATES OFF)
+if(KICKOS_CHIP)
+  set(_aspace_optin
+      "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/aspace.cmake")
+  if(EXISTS "${_aspace_optin}")
+    include("${_aspace_optin}")
+  endif()
+endif()
+if(KICKOS_HAVE_ASPACE AND NOT KICKOS_CHIP_TRANSLATES)
+  message(FATAL_ERROR
+    "The configuration resolved a translating backend on board '${KICKOS_BOARD}' "
+    "(arch=${KICKOS_ARCH} chip=${KICKOS_CHIP}), which ships no aspace.cmake, so the two "
+    "declarations of one fact disagree: arch/Kconfig selects HAS_ASPACE for this chip and "
+    "arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/aspace.cmake does not exist. The kernel "
+    "would build the frame allocator over a pool the linker script never carved. Either "
+    "drop the select, or carve __kickos_frame_pool_start/_end and drop an aspace.cmake "
+    "(KICKOS_CHIP_TRANSLATES ON) beside it.")
+endif()
+if(KICKOS_CHIP_TRANSLATES AND KICKOS_HAVE_MPU)
+  message(FATAL_ERROR
+    "Board '${KICKOS_BOARD}' resolved BOTH the enforcing region posture and a translating "
+    "backend. No backend implements both families (docs/design-m6-mmu.md F6): a chip "
+    "selects region descriptors or translation, never both.")
+endif()
+add_compile_definitions(KICKOS_HAVE_ASPACE=${KICKOS_HAVE_ASPACE})
+
+# The two facts above name a MECHANISM; this one names whether memory protection is LIVE,
+# and admission policy keys on it. A translating board carries no region descriptors, so it
+# resolves KICKOS_HAVE_MPU 0 while needing Rule 7, the reserved-block refusal and arena
+# confinement every bit as much as an MPU board (docs/design-m6-mmu.md F6). DERIVED here
+# rather than declared beside them, so no board can state it and disagree with its backend.
+set(KICKOS_MEMORY_ENFORCED 0)
+if(KICKOS_HAVE_MPU OR KICKOS_HAVE_ASPACE)
+  set(KICKOS_MEMORY_ENFORCED 1)
+endif()
+add_compile_definitions(KICKOS_MEMORY_ENFORCED=${KICKOS_MEMORY_ENFORCED})
 
 # Which MPU design the v6-M/v7-M arch is built for. A chip's mpu.cmake above names its
 # backend by setting KICKOS_ARM_MPU_BACKEND; PMSAv7 is the fallback for the core v6-M/v7-M
@@ -870,6 +938,18 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   add_subdirectory(tests/unit/kstring)
 endif()
 
+# Host-only; the reason is in tests/unit/frame/CMakeLists.txt.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/frame/CMakeLists.txt")
+  add_subdirectory(tests/unit/frame)
+endif()
+
+# Host-only; the reason is in tests/unit/vrange/CMakeLists.txt.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/vrange/CMakeLists.txt")
+  add_subdirectory(tests/unit/vrange)
+endif()
+
 # Host-only; the reason is in tests/unit/ktime/CMakeLists.txt.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/ktime/CMakeLists.txt")
@@ -997,7 +1077,9 @@ if(TARGET kickos_kernel)
   # ODR: an out-of-tree TU including a kernel-internal header must see the same posture as
   # the prebuilt libs. KICKOS_TELEMETRY gates fields in struct Kernel (instance.h) and
   # arch_context (context.h), KICKOS_ARCH_SIM gates one in struct Thread (thread.h),
-  # KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h),
+  # KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h) and, with KICKOS_HAVE_ASPACE and the
+  # KICKOS_MEMORY_ENFORCED derived from the pair, the grant seam (grant.h) and the domain
+  # backend field (domain.h),
   # KICKOS_ARM_MPU (plus the four name constants it is compared against) picks the
   # arch_mpu_encoded layout, and without KICKOS_ARCH_SIM a sim package (which ships no
   # chip_limits.h) hits config/board.h's #error.
@@ -1009,6 +1091,8 @@ if(TARGET kickos_kernel)
     KICKOS_TELEMETRY=${_telem} KICKOS_TELEMETRY_RTT=${_telem}
     KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
     KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU}
+    KICKOS_HAVE_ASPACE=${KICKOS_HAVE_ASPACE}
+    KICKOS_MEMORY_ENFORCED=${KICKOS_MEMORY_ENFORCED}
     KICKOS_ARM_MPU_NONE=0
     KICKOS_ARM_MPU_PMSAV7=1
     KICKOS_ARM_MPU_PMSAV8=2

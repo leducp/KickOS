@@ -310,7 +310,7 @@ namespace kos
     };
 }
 
-// Define a caller-owned thread stack buffer for kos::thread::spawn's `stack` argument.
+// Define a caller-owned thread stack buffer for kos::thread::create's `stack` argument.
 // Leave it off and the kernel demand-allocates a KICKOS_USER_STACK_SIZE default.
 // Under MPU enforcement the stack is granted as ONE region. Power-of-two size and
 // natural alignment is a conservative compile-time superset: PMSAv7/NAPOT require it,
@@ -329,7 +329,7 @@ namespace kos
 
 namespace kos::thread
 {
-    // What spawn hands back: the handle and the code kos_thread_spawn returned. `valid()` is
+    // What create hands back: the handle and the code kos_thread_create returned. `valid()` is
     // the ONLY correct success test: there is no negative handle to compare against, and a
     // live handle looks negative cast to int.
     //
@@ -356,7 +356,7 @@ namespace kos::thread
         {
             return err_;
         }
-        // Returns -KOS_EBADF on a failed spawn: KOS_THREAD_NONE names nothing to cancel.
+        // Returns -KOS_EBADF on a failed create: KOS_THREAD_NONE names nothing to cancel.
         int kill() const
         {
             return kos_thread_kill(id_);
@@ -370,7 +370,7 @@ namespace kos::thread
             return kos_thread_slay(id_, timeout_us);
         }
         // Wait for the thread to be gone (see kos_thread_join): 0 also for a thread that
-        // had already exited, and -KOS_EBADF on a failed spawn. Unbounded by default, which
+        // had already exited, and -KOS_EBADF on a failed create. Unbounded by default, which
         // is what a caller wants when it has just kill()ed a cooperative target.
         int join(uint32_t timeout_us = KOS_TIMEOUT_NONE) const
         {
@@ -385,17 +385,19 @@ namespace kos::thread
     // Start a thread (not a process: KickOS has one address space, isolation is
     // by MPU + privilege). Unprivileged by default. `mem`/`mem_size` grant the
     // thread a domain data region (threads sharing one region share a domain).
-    // Spawning does NOT preempt the caller, even for a higher-priority thread:
+    // Creating a thread does NOT preempt the caller, even for a higher-priority thread:
     // the new thread runs once the caller next blocks or yields.
     // `stack`/`stack_size` are optional: pass a caller-owned buffer to size a thread's
     // stack to its need, or leave them 0 to get the kernel default (KICKOS_USER_STACK_SIZE).
     // `mmio`/`mmio_size` grant a device register block (R|W|DEV); the caller needs
     // AUTH_MEMORY (privilege implies every authority). It is the new thread's ALONE, whatever
     // group it joins.
-    // `task` names a group from kos_task_create for the thread to JOIN, coupling its fate and
-    // its shared memory to its peers'; the default leaves it in a group of its own, which is
-    // what every spawn meant before tasks existed.
-    inline Handle spawn(void (*entry)(void*), void* arg, char const* name,
+    // `task` names a group from kos_task_create for the thread to JOIN, coupling its shared
+    // memory to its peers'; the DEFAULT makes the thread a member of the CALLER's task, as
+    // pthread_create makes a thread of the calling process. Passing a named task is therefore
+    // the only way to give a thread a group of its OWN, which is what an arm witnessing fault
+    // containment needs: a fault ends the faulting thread's whole task.
+    inline Handle create(void (*entry)(void*), void* arg, char const* name,
                         uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
                         uint32_t quantum_ns = 0, bool privileged = false,
                         void* mem = nullptr, uint32_t mem_size = 0,
@@ -425,13 +427,13 @@ namespace kos::thread
         p.cap_dest = cap_dest;
         p.task = task;
         kos_thread_t h = KOS_THREAD_NONE;
-        int const rc = kos_thread_spawn(&p, &h);
+        int const rc = kos_thread_create(&p, &h);
         return Handle(h, rc);
     }
 
     // Delegate a fixed cap list to the child (B1 default: cap i -> child index i+1, and a
     // grant may name its own index instead).
-    inline Handle spawn_caps(void (*entry)(void*), void* arg, char const* name, uint8_t prio,
+    inline Handle create_caps(void (*entry)(void*), void* arg, char const* name, uint8_t prio,
                              kos_cap_grant const* caps, uint8_t cap_count,
                              uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0,
                              bool privileged = false, void* mem = nullptr, uint32_t mem_size = 0,
@@ -439,7 +441,7 @@ namespace kos::thread
                              kos_task_t task = KOS_TASK_NONE, void* stack = nullptr,
                              uint32_t stack_size = 0)
     {
-        return spawn(entry, arg, name, prio, policy, quantum_ns, privileged, mem, mem_size,
+        return create(entry, arg, name, prio, policy, quantum_ns, privileged, mem, mem_size,
                      stack, stack_size, nullptr, 0, caps, cap_count, authority, cap_dest, task);
     }
 }

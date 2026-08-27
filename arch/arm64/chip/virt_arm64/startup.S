@@ -14,7 +14,13 @@
  * mandates natural alignment whatever SCTLR_EL1.A says, and AArch64 GCC stages array and
  * struct copies through unaligned `ldur`/`stur` of q registers, as does newlib inside memcpy.
  * So compiled code alignment-faults (EC 0x25, DFSC 0x21) on its first wide copy, and the
- * table below is what buys Normal memory and with it the caches. A link-time constant.
+ * tables below are what buy Normal memory and with it the caches. Link-time constants.
+ *
+ * EVERYTHING IN .text.init IS REACHED UNTRANSLATED, so an absolute literal here holds a high
+ * virtual address that no walk can resolve yet and `adrp` to a high symbol is out of its
+ * 4 GiB reach. x9 carries the offset back to the physical address, and the branch into the
+ * high half is what stops needing it. The EL refusal reporter is linked into this section
+ * for the same reason (chip_virt_arm64.cc).
  */
 
 /* Level-1 block descriptor (4 KiB granule, so one block spans 1 GiB). */
@@ -28,8 +34,16 @@
 #define PXN             (1 << 53)       /* never executable at EL1 */
 #define AP_RW_EL0       (1 << 6)        /* AP=0b01: read/write at EL1 and at EL0 */
 #define AP_RO_EL0       (3 << 6)        /* AP=0b11: read-only at EL1 and at EL0 */
+#define AP_RW_EL1       (0 << 6)        /* AP=0b00: read/write at EL1, no access at EL0 */
+#define AP_RO_EL1       (2 << 6)        /* AP=0b10: read-only at EL1, no access at EL0 */
 
-/* THE CODE/DATA SPLIT IS FORCED. A region writable at EL0 is not executable at EL1, so
+/* THE TWO ROOTS DESCRIBE THE SAME DRAM WITH DIFFERENT PERMISSIONS, so each carries its own
+ * level-2 table. TTBR1's grants EL0 nothing: an unprivileged thread reaches what its own
+ * TTBR0 root maps and nothing else, which is what makes the high half the kernel's alone.
+ * TTBR0's boot table keeps the EL0 grants the identity map was built with; a per-process
+ * root replaces it before any unprivileged thread runs.
+ *
+ * THE CODE/DATA SPLIT IS FORCED. A region writable at EL0 is not executable at EL1, so
  * giving all of DRAM AP=0b01 for EL0 stacks makes the kernel's next instruction fetch a
  * permission fault (EC 0x21, IFSC 0x0D). One flat block cannot serve both levels, which
  * makes this a W^X split by arithmetic rather than by policy.
@@ -40,21 +54,34 @@
 #define L2_BLOCK_SIZE   0x200000
 #define RAM_L2_BLOCKS   32              /* 64 MiB of DRAM in 2 MiB blocks */
 
-/* MAIR_EL1: Attr0 Normal write-back read/write-allocate, Attr1 Device-nGnRnE. */
-#define MAIR_VALUE      0x00FF
+/* MAIR_EL1: Attr0 Normal write-back read/write-allocate, Attr1 Device-nGnRnE, Attr2 Normal
+ * outer and inner non-cacheable (DDI 0487 M.b section D24.2.126: oooo and iiii both 0b0100,
+ * and neither half may be 0b0000, which is what would make the attribute Device instead).
+ * All three slots are filled here so arch_aspace_memtype_support can honour every type
+ * rather than refusing one; a quietly downgraded type is a cacheable view of a DMA buffer.
+ */
+#define MAIR_VALUE      0x4400FF
 
-/* TCR_EL1. T0SZ 25 is a 39-bit VA, which puts the walk's first lookup at level 1 and
- * makes the blocks below reachable. IPS 0b010 is the A53's 40-bit output (F7). EPD1
- * disables the TTBR1 walk, no TTBR1 being set yet. */
+/* TCR_EL1. T0SZ and T1SZ are both 25, so each half is a 39-bit VA whose walk starts at
+ * level 1 and reaches the blocks below. IPS 0b010 is the A53's 40-bit output (F7).
+ *
+ * TG1's 4 KiB encoding is 0b10 and TG0's is 0b00 (DDI 0487 M.b, TCR_EL1): the two granule
+ * fields do NOT share an encoding, so TG0's constant is the wrong value here.
+ */
 #define TCR_T0SZ        25
 #define TCR_IRGN0_WB    (1 << 8)
 #define TCR_ORGN0_WB    (1 << 10)
 #define TCR_SH0_INNER   (3 << 12)
 #define TCR_TG0_4K      (0 << 14)
-#define TCR_EPD1        (1 << 23)
+#define TCR_T1SZ        (25 << 16)
+#define TCR_IRGN1_WB    (1 << 24)
+#define TCR_ORGN1_WB    (1 << 26)
+#define TCR_SH1_INNER   (3 << 28)
+#define TCR_TG1_4K      (2 << 30)
 #define TCR_IPS_40BIT   (2 << 32)
 #define TCR_VALUE       (TCR_T0SZ | TCR_IRGN0_WB | TCR_ORGN0_WB | TCR_SH0_INNER | \
-                         TCR_TG0_4K | TCR_EPD1 | TCR_IPS_40BIT)
+                         TCR_TG0_4K | TCR_T1SZ | TCR_IRGN1_WB | TCR_ORGN1_WB | \
+                         TCR_SH1_INNER | TCR_TG1_4K | TCR_IPS_40BIT)
 
 #define SCTLR_M         (1 << 0)
 #define SCTLR_C         (1 << 2)
@@ -63,8 +90,11 @@
     .section .text.init, "ax"
     .global _start
 _start:
+    ldr     x9, =__kickos_arm64_va_base
+
     /* SP first, so the refusal path below can call C. */
     ldr     x0, =_estack            /* boot/exception stack: top of RAM, 16-byte aligned */
+    sub     x0, x0, x9
     mov     sp, x0
 
     /* Stated rather than inherited: the vector table's first four slots are unreachable
@@ -87,11 +117,13 @@ _start:
     msr     MAIR_EL1, x0
     ldr     x0, =TCR_VALUE
     msr     TCR_EL1, x0
-    adrp    x0, kickos_arm64_ident_table
-    add     x0, x0, :lo12:kickos_arm64_ident_table
+    /* Both roots are identity-linked, so these literals are already physical. */
+    ldr     x0, =kickos_arm64_ident_table
     msr     TTBR0_EL1, x0
+    ldr     x0, =kickos_arm64_kernel_table
+    msr     TTBR1_EL1, x0
 
-    /* The table has to be visible to the walker before the walker exists. */
+    /* The tables have to be visible to the walker before the walker exists. */
     dsb     sy
     isb
     tlbi    vmalle1
@@ -101,9 +133,10 @@ _start:
     /* Before the MMU and before the C runtime, so the whole boot path is covered rather
        than the part after arch_init where the RISC-V chip installs mtvec: an exception with
        no vector base runs whatever bytes VBAR points at. The reporter it reaches touches
-       only the console and .rodata, both live here. */
-    adrp    x0, kickos_armv8a_vectors
-    add     x0, x0, :lo12:kickos_armv8a_vectors
+       only the console and .rodata, both live here. Reseated at its high address past the
+       branch below, where the physical alias stops being the one the kernel runs at. */
+    ldr     x0, =kickos_armv8a_vectors
+    sub     x0, x0, x9
     msr     VBAR_EL1, x0
     isb
 
@@ -114,20 +147,40 @@ _start:
     msr     SCTLR_EL1, x0
     isb                             /* the next instruction is fetched translated */
 
+    /* TTBR0's identity map is what keeps this section fetching across the write above.
+       Through a register: the displacement to the high half exceeds every branch's. */
+    ldr     x0, =kickos_arm64_boot_high
+    br      x0
+
+    /* The level stays in x0 as the argument. A direct branch, the callee being linked into
+       this same section: no literal to unbias, and nothing it reads sits in the high half. */
+.Lbad_el:
+    b       kickos_arm64_bad_el     /* noreturn (chip_virt_arm64.cc) */
+
+/* Reached through TTBR1. SP and VBAR_EL1 still hold the physical aliases .text.init needed
+ * before the walk existed.
+ */
+    .section .text.boot_high, "ax"
+    .global kickos_arm64_boot_high
+kickos_arm64_boot_high:
+    ldr     x0, =_estack
+    mov     sp, x0
+    ldr     x0, =kickos_armv8a_vectors
+    msr     VBAR_EL1, x0
+    isb
+
     bl      Reset_Handler           /* C runtime + kmain (noreturn) */
 .Lhang:
     wfi
     b       .Lhang
 
-    /* The level stays in x0 as the argument; the unconditional branch reaches past b.ne's
-       1 MiB. The MMU is still off here, so the callee must touch no unaligned address. */
-.Lbad_el:
-    b       kickos_arm64_bad_el     /* noreturn (chip_virt_arm64.cc) */
-
-/* The 1:1 map, whole and constant: entry 0 covers the device window that holds the GIC
- * and the PL011, entry 1 the DRAM this image links into. Every other entry is invalid,
- * so a stray access outside the two faults rather than reading a neighbour. M6.2 moves
- * this under the aspace family, where a table stops being a constant.
+/* THE TABLES ARE IDENTITY-LINKED (virt_arm64.ld places .rodata.mmu_ident in .text.init):
+ * a descriptor names its output by physical address, so every expression here has to be one.
+ *
+ * Whole and constant, both roots: entry 0 covers the device window that holds the GIC and
+ * the PL011, entry 1 the DRAM this image links into. Every other entry is invalid, so a
+ * stray access outside the two faults rather than reading a neighbour. TTBR0's is replaced by
+ * a per-task root once a domain owns an address space; TTBR1's stays a constant.
  */
     .section .rodata.mmu_ident, "a"
     .balign 4096
@@ -139,20 +192,55 @@ kickos_arm64_ident_table:
     .quad   kickos_arm64_ram_table + TABLE
     .fill   510, 8, 0
 
-/* Level 2 for 0x4000_0000..0x8000_0000, one entry per 2 MiB. */
+/* The high half, VA = PA + __kickos_arm64_va_base. One set of descriptors is both the
+ * kernel window and the map of all physical RAM, so the level-1 indices are the ones above.
+ * A SECOND ROOT and not the same page: TTBR0's becomes per-address-space once a domain owns
+ * one, while this one is the half every space shares.
+ */
+    .balign 4096
+    .global kickos_arm64_kernel_table
+kickos_arm64_kernel_table:
+    .quad   BLOCK + AF + ATTR_DEVICE + UXN + PXN
+    .quad   kickos_arm64_kernel_ram_table + TABLE
+    .fill   510, 8, 0
+
+/* Level 2 for 0x4000_0000..0x8000_0000 through TTBR0's boot root, one entry per 2 MiB.
+ * The EL0 grants here are the identity map's own: .text.init runs untranslated against
+ * these addresses, and nothing unprivileged is scheduled before its task's root replaces
+ * this one.
+ */
     .balign 4096
     .global kickos_arm64_ram_table
 kickos_arm64_ram_table:
-    /* Code and rodata. UXN stays clear: an EL0 thread runs its own text out of here. */
-    .quad   __kickos_dram_base + BLOCK + AF + ATTR_NORMAL + SH_INNER + AP_RO_EL0
-    /* Writable, executable at neither level. */
+    /* EL1-ONLY, and nothing runs at EL0 under this root: a task's own root is installed
+       before its first instruction, and the three other holders of this space (the fault
+       reporter, aspace release, and the boot answer itself) all run privileged. PXN stays
+       clear because kbanner reaches the app's build stamp at EL1 before any space exists. */
+    .quad   __kickos_dram_base + BLOCK + AF + ATTR_NORMAL + SH_INNER + AP_RO_EL1 + UXN
     .set    _blk, 1
     .rept   RAM_L2_BLOCKS - 1
     .quad   __kickos_dram_base + (_blk * L2_BLOCK_SIZE) + BLOCK + AF + ATTR_NORMAL + \
-            SH_INNER + AP_RW_EL0 + UXN + PXN
+            SH_INNER + AP_RW_EL1 + UXN + PXN
     .set    _blk, _blk + 1
     .endr
     /* Past the end of DRAM: invalid, so a stray access faults rather than aliasing. */
+    .fill   512 - RAM_L2_BLOCKS, 8, 0
+
+/* The same DRAM through TTBR1, and the whole point of the second page: AP names no EL0
+ * access and UXN forbids the fetch, so the half every address space shares grants an
+ * unprivileged thread nothing. PXN stays clear on the code block alone, the kernel
+ * executing out of it.
+ */
+    .balign 4096
+    .global kickos_arm64_kernel_ram_table
+kickos_arm64_kernel_ram_table:
+    .quad   __kickos_dram_base + BLOCK + AF + ATTR_NORMAL + SH_INNER + AP_RO_EL1 + UXN
+    .set    _blk, 1
+    .rept   RAM_L2_BLOCKS - 1
+    .quad   __kickos_dram_base + (_blk * L2_BLOCK_SIZE) + BLOCK + AF + ATTR_NORMAL + \
+            SH_INNER + AP_RW_EL1 + UXN + PXN
+    .set    _blk, _blk + 1
+    .endr
     .fill   512 - RAM_L2_BLOCKS, 8, 0
 
     .end

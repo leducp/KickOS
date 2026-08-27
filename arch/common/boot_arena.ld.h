@@ -71,6 +71,6 @@
  */
 #define KICKOS_POOL_ARENA_ASSERT(ram_start, ram_end)                    \
     ASSERT(KICKOS_POOL_TOP(ram_start) <= (ram_end),                     \
-           "KickOS: the user-RAM arena cannot back KICKOS_MAX_THREADS default stacks of KICKOS_USER_STACK_SIZE past the two boot stacks, so this board advertises thread slots it cannot seat; kos_thread_spawn would return -KOS_ENOMEM for a slot the board claims to have, indistinguishable at runtime from a full slot table. Lower KICKOS_MAX_THREADS / KICKOS_USER_STACK_SIZE in the board's variant defconfig (boards/<board>/configs/<variant>/defconfig), or cut this image's static footprint, which where KICKOS_KERNEL_STACKS is 1 includes KICKOS_THREAD_SLOTS blocks of KICKOS_KERNEL_STACK_SIZE in kernel .bss below the arena.")
+           "KickOS: the user-RAM arena cannot back KICKOS_MAX_THREADS default stacks of KICKOS_USER_STACK_SIZE past the two boot stacks, so this board advertises thread slots it cannot seat; kos_thread_create would return -KOS_ENOMEM for a slot the board claims to have, indistinguishable at runtime from a full slot table. Lower KICKOS_MAX_THREADS / KICKOS_USER_STACK_SIZE in the board's variant defconfig (boards/<board>/configs/<variant>/defconfig), or cut this image's static footprint, which where KICKOS_KERNEL_STACKS is 1 includes KICKOS_THREAD_SLOTS blocks of KICKOS_KERNEL_STACK_SIZE in kernel .bss below the arena.")
 
 #endif

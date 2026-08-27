@@ -404,8 +404,8 @@ namespace kickos
             }
             int err = 0;
             Task* const tk =
-                task_create(FIXTURE_TASK_TAG, nullptr, 0, /*mem_attr=*/0u,
-                            /*caller_authorized=*/false, &err);
+                task_create(FIXTURE_TASK_TAG, /*caller=*/0u, nullptr, 0, /*mem_attr=*/0u,
+                            /*donor=*/nullptr, &err);
             if (tk == nullptr)
             {
                 printf("FIXTURE FAIL: task_create refused (%d)\n", err);
@@ -483,10 +483,20 @@ namespace kickos
 
         void run_exit(int code)
         {
+            run_exit_as(code, sched::EXIT_RETURN);
+        }
+
+        void run_exit_faulted(int code)
+        {
+            run_exit_as(code, sched::EXIT_FAULTED);
+        }
+
+        void run_exit_as(int code, sched::ExitCause cause)
+        {
             if (setjmp(g_park_jmp) == 0)
             {
                 g_park_armed = true;
-                sched::exit_current(code);
+                sched::exit_current(code, cause);
             }
             // Cleared on BOTH paths. exit_current cannot return without parking, but a stale
             // arm would let a later stray arch_idle_wait longjmp into this dead frame.

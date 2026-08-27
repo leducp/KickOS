@@ -103,7 +103,7 @@
  *                    COUNTED, trap_redzone_roots.txt declaring SYSK stack=kernel and a
  *                    stack=kernel class being measured with no exclusion. kickos_ipc_fastpath
  *                    measures 456 there and is dominated; syscall_dispatch sets it:
- *                    syscall_dispatch[36] -> syscall_body[108] -> thread_spawn[244]
+ *                    syscall_dispatch[36] -> syscall_body[108] -> thread_create_call[244]
  *                    -> cap_install_defaults[4] -> cap_seat_stdout[40] -> obj_ref_inc[20]
  *                    -> ref_counters[28] -> kpanic[8] -> kputs[8] -> kconsole_write[4]
  *                    -> kconsole_write_impl[152] -> console_emit[32]
@@ -122,8 +122,8 @@
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW 64
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS 0
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST 64
-/* 792 and not the 788 the chain above sums to: kos_thread_spawn validates a CALLER-SUPPLIED
- * stack against the TLS stride, and that inlined check grows thread_spawn's own frame, the
+/* 792 and not the 788 the chain above sums to: kos_thread_create validates a CALLER-SUPPLIED
+ * stack against the TLS stride, and that inlined check grows thread_create_call's own frame, the
  * deepest on the chain, to 248. The zone becomes 1100 against a 1104-byte block. */
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK 792
 
@@ -145,13 +145,13 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
  * BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
- * kickos_thread_slay_exit. 616, the fault stub the deeper through kprintf_fault's console
+ * kickos_thread_slay_exit. 620, the fault stub the deeper through kprintf_fault's console
  * chain, identical on all three registered presets.
  *
- * IT NEVER BINDS, and this is the arch with least room for that to change: 300 + 616 = 916
- * against 1100 usable, where SYSK asks 1096, so EXITK would have to grow 180 bytes before it
+ * IT NEVER BINDS, and this is the arch with least room for that to change: 308 + 620 = 928
+ * against 1100 usable, where SYSK asks 1096, so EXITK would have to grow 168 bytes before it
  * displaced SYSK and forced a KICKOS_KERNEL_STACK_SIZE raise. */
-#define KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK 616
+#define KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK 620
 
 /* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
  * and no redirect, so it runs at whatever depth the entry returned from on the thread's own

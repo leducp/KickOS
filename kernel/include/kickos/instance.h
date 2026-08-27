@@ -89,7 +89,7 @@ namespace kickos
         Thread idle_tcb;
         // Thread pool (see ThreadPool in thread.h): the TCBs + their kernel stacks,
         // intrinsic liveness (a slot is free iff state==EXITED), generation bumped at
-        // reclaim (ABA). All allocation goes through thread_spawn().
+        // reclaim (ABA). All allocation goes through thread_create_call().
         ThreadPool threads;
         // Memory-domain pool (see domain.h): shared region sets threads reference.
         // domains[0] = kernel domain, domains[1] = default-user (both immortal);

@@ -62,7 +62,7 @@ ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv
 # tests/unit/telemetry/check_idmap.py gates the numbers and the labels.
 SYSCALL_NAME = {
     1: "kconsole_write", 2: "yield", 3: "sleep_ns", 4: "sem_create", 5: "sem_wait",
-    6: "sem_post", 7: "thread_spawn", 8: "exit", 9: "irq_inject", 10: "guard_addr",
+    6: "sem_post", 7: "thread_create", 8: "exit", 9: "irq_inject", 10: "guard_addr",
     11: "irq_attach", 12: "clock_now", 13: "ram_alloc", 14: "irq_claim",
     15: "irq_wait", 16: "irq_ack", 17: "handle_close", 18: "irq_spurious",
     19: "diag_led_set", 20: "diag_led_toggle", 21: "irq_unmask", 22: "cpu_clock_hz",
@@ -76,7 +76,7 @@ SYSCALL_NAME = {
     48: "thread_join", 49: "wait_last", 50: "send_timed",
     51: "task_create", 52: "task_kill", 53: "thread_slay",
     54: "task_slay", 55: "bench", 56: "call_reg", 57: "ipc_fast_taken",
-    58: "nest_witness",
+    58: "nest_witness", 59: "aspace_probe",
 }
 
 TRACE_MAGIC = 0x4B545243

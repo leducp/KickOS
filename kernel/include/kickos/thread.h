@@ -40,7 +40,7 @@ namespace kickos
 
     // A thread is CALL_NONE unless it is mid-kos_call: CALL_SEND_WAIT while parked on an
     // endpoint's send_waiters before a receiver has taken its request, CALL_REPLY_WAIT while
-    // parked queue-less waiting for the reply. Zero == CALL_NONE, so the thread_create memset
+    // parked queue-less waiting for the reply. Zero == CALL_NONE, so the thread_create kmemset
     // leaves a fresh TCB call-idle.
     enum CallState : uint8_t
     {
@@ -70,7 +70,7 @@ namespace kickos
     };
 
     // Has this thread been asked to die, and how. Zero == CANCEL_NONE, so the thread_create
-    // memset leaves a fresh TCB un-cancelled. Test against CANCEL_NONE and never for one kind:
+    // kmemset leaves a fresh TCB un-cancelled. Test against CANCEL_NONE and never for one kind:
     // the death point (kernel/syscall/syscall.cc) and the re-block refusal (kernel/irq/irq.cc)
     // are total over the non-zero values.
     enum CancelKind : uint8_t
@@ -131,6 +131,13 @@ namespace kickos
         uint64_t deadline_ns = 0;
         bool on_timer = false;
 
+#if !KICKOS_ARCH_SIM
+        // TRUE WHILE `reent` STILL HOLDS WHATEVER THE PREVIOUS OCCUPANT LEFT. Cleared by the
+        // first switch-in, which is what primes it. FREE HERE: on_timer's padding before `id`
+        // absorbs it on every target, so thread_scalar_bytes is unmoved.
+        bool reent_fresh = false;
+#endif
+
         // Assigned in thread_create (KICKOS_TID_* above); 0 is idle-only after wrap.
         uint16_t id = 0;
 
@@ -166,6 +173,15 @@ namespace kickos
 
         void* stack_base = nullptr;
         size_t stack_size = 0;
+        // THE DEV WINDOW THIS THREAD HOLDS, and the whole of the periph seam's possession
+        // gate. Seated once at create from the spawn's grant; dev_size 0 means none, and a
+        // window at base 0 is not expressible.
+        //
+        // This is AUTHORITY, not the mapping, and the two are only the same thing under an
+        // MPU: a translating backend maps task-wide, so a walk over what the caller can
+        // reach would answer yes for a peer that never asked (docs/design-m6-mmu.md F9).
+        uintptr_t dev_base = 0;
+        size_t dev_size = 0;
         // stack_base was demand-allocated by the kernel and must be harvested onto the free
         // list when this slot is reclaimed. A caller-owned stack is never harvested.
         bool kstack_owned = false;
@@ -242,7 +258,7 @@ namespace kickos
 
         // Per-THREAD capability table (cap.h). The run is reserved from the slab by the CALLER
         // before thread_create, as `task` is, so an exhausted slab fails the spawn instead of
-        // leaving a half-built thread. thread_create's memset zeroes the directory, so it
+        // leaving a half-built thread. thread_create's kmemset zeroes the directory, so it
         // re-establishes it from ThreadAttr afterwards.
         //
         // Every scan site must be bounded by thread_cap_capacity and never by
@@ -250,7 +266,7 @@ namespace kickos
         // cap_run_held (cap.h) enumerates the threads that have none.
         CapRun caps = {};
         // Head of the run's free-slot list (cap.h), a slot index biased by one. KCAP_FREE_NONE
-        // is 0, so the thread_create memset leaves it EMPTY and not "slot 0": a thread whose
+        // is 0, so the thread_create kmemset leaves it EMPTY and not "slot 0": a thread whose
         // list was never threaded refuses every mint.
         uint16_t cap_free_head = KCAP_FREE_NONE;
 #if KCAP_RUN_CHUNKS > 1
@@ -267,7 +283,7 @@ namespace kickos
         // Endpoints where ep->server == this thread, chained through Endpoint::next_served
         // (endpoint.h). The SEND_WAIT donor enumeration for thread_effective_prio, which runs
         // interrupt-masked and may walk neither the capability table nor the endpoint pool.
-        // EP_SERVED_NONE is 0, so the thread_create memset leaves it empty.
+        // EP_SERVED_NONE is 0, so the thread_create kmemset leaves it empty.
         uint16_t served_head = EP_SERVED_NONE;
 
         // The one teardown writer for the edge wq_block and park_queueless establish. All
@@ -358,7 +374,9 @@ namespace kickos
 #if KCAP_RUN_CHUNKS > 1
         bytes = bytes + 2 * sizeof(uint16_t); // cap_width + cap_reply_live
 #endif
-        return bytes;
+        // Thread::dev_base + Thread::dev_size, in the pointer-aligned run beside
+        // stack_base/stack_size, so neither adds padding on any target.
+        return bytes + sizeof(uintptr_t) + sizeof(size_t);
     }
 
     constexpr size_t KICKOS_THREAD_EXPECTED_SIZE =
@@ -436,11 +454,11 @@ namespace kickos
         // thread's own region set and never in its task's domain. base==0 => none.
         void* mmio_base = nullptr;
         size_t mmio_size = 0;
-        // Pre-resolved task: thread_spawn sets it so a task- or domain-pool exhaustion fails
+        // Pre-resolved task: thread_create_call sets it so a task- or domain-pool exhaustion fails
         // the spawn before anything is built. null => thread_create resolves from privileged +
         // mem_base, which only idle and root do.
         Task* task = nullptr;
-        // Who is allowed to cancel the new thread (a kill tag). thread_spawn seats the
+        // Who is allowed to cancel the new thread (a kill tag). thread_create_call seats the
         // caller's; idle and root leave it NONE and are so un-killable. A handle DOES name
         // root, so this is the whole of its protection.
         uint16_t spawner_tag = 0;
@@ -623,11 +641,6 @@ namespace kickos
         //     correct regardless of this spawn's fate; kstack_owned is now false.
         //   * a fresh bump slot (INACTIVE, always the last one under the spawn lock): un-bump
         //     `next`, else it becomes a permanent hole (alloc only ever reclaims EXITED).
-        // TRUE WHEN THE SLOT'S reent STILL HOLDS THE PREVIOUS OCCUPANT'S STATE. Lives in the
-        // pool and not in Thread: reuse rebuilds the Thread, which is exactly when the mark
-        // has to survive. kmain seeds every slot at boot, so this starts false.
-        bool reent_stale[KICKOS_THREAD_SLOTS] = {};
-
         void release(int i)
         {
             if (slots[i].state == ThreadState::EXITED)

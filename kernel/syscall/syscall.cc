@@ -9,6 +9,7 @@
 // boundary.
 
 #include <kickos/arch/arch.h>
+#include <kickos/aspace.h>
 #include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/config.h>
@@ -22,6 +23,8 @@
 #include <kickos/irqlock.h>
 #include <kickos/ktrace.h>
 #include <kickos/console_tx.h>
+#include <kickos/domain.h>
+#include <kickos/task.h>
 
 #include <kickos/sys/abi.h>
 
@@ -80,9 +83,34 @@ namespace kickos
         {
             if (rc == 0)
             {
-                kaccess_to_user(out, &handle, sizeof(handle));
+                kaccess_to_user(user_space_of(sched::current()), out, &handle,
+                                sizeof(handle));
             }
             return static_cast<uint64_t>(rc);
+        }
+
+        // The console's user buffer, moved through the funnel a chunk at a time.
+        // kconsole_write streams privileged whatever it is handed, so a user pointer
+        // reaching it names whatever the RUNNING process holds at that address.
+        //
+        // noinline is load-bearing for user_panic's reason below: the chunk must not widen
+        // syscall_dispatch's frame.
+        __attribute__((noinline)) void console_write_user(uintptr_t buf, size_t len)
+        {
+            char chunk[64];
+            struct arch_aspace* const space = user_space_of(sched::current());
+            size_t done = 0;
+            while (done < len)
+            {
+                size_t n = len - done;
+                if (n > sizeof(chunk))
+                {
+                    n = sizeof(chunk);
+                }
+                kaccess_from_user(chunk, space, buf + done, n);
+                kconsole_write(chunk, n); // fan-out (chip + RTT), not the raw transport
+                done += n;
+            }
         }
 
         // noinline is load-bearing: the message buffer must not widen syscall_dispatch's
@@ -92,6 +120,7 @@ namespace kickos
         {
             char buf[64];
             buf[0] = '\0';
+            struct arch_aspace* const space = user_space_of(sched::current());
             // A privileged caller passes user_readable_ok wholesale, so null must be
             // rejected here and not by the per-byte check.
             if (msg != 0)
@@ -107,7 +136,7 @@ namespace kickos
                     {
                         break;
                     }
-                    kaccess_from_user(&buf[i], msg + i, 1);
+                    kaccess_from_user(&buf[i], space, msg + i, 1);
                     if (buf[i] == '\0')
                     {
                         break;
@@ -129,7 +158,7 @@ namespace kickos
                 if (i + 1 == sizeof(buf) and user_readable_ok(msg + i, 1))
                 {
                     char probe = '\0';
-                    kaccess_from_user(&probe, msg + i, 1);
+                    kaccess_from_user(&probe, space, msg + i, 1);
                     if (probe != '\0')
                     {
                         buf[i - 3] = '.';
@@ -203,7 +232,7 @@ extern "C" uint64_t syscall_dispatch(uintptr_t nr,
     Thread* const caller = sched::current();
     if (caller != nullptr and caller->cancel_kind != CANCEL_NONE and not caller->dying)
     {
-        sched::exit_current(KOS_EXIT_CANCELLED); // noreturn
+        sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
     }
     return syscall_body(nr, a0, a1, a2, a3);
 }
@@ -224,10 +253,6 @@ uint64_t syscall_body(uintptr_t nr,
             // so an unbounded buffer would launder another domain's arena page out through
             // the console. Reject => wrote nothing.
             constexpr size_t MAX_CONSOLE_WRITE = 4096;
-            // MMU-era NOTE: this hands a user pointer straight to kconsole_write, which
-            // streams it privileged. The one kernel-side user read NOT funnelled through
-            // kaccess_from_user.
-            char const* buf = reinterpret_cast<char const*>(a0);
             size_t len = static_cast<size_t>(a1);
             if (len > MAX_CONSOLE_WRITE)
             {
@@ -239,7 +264,7 @@ uint64_t syscall_body(uintptr_t nr,
                 // len-0 write legitimately returns 0, so 0 must not double as reject.
                 return static_cast<uint64_t>(-KOS_EFAULT);
             }
-            kconsole_write(buf, len); // fan-out (chip + RTT), not the raw transport
+            console_write_user(a0, len);
             return len;
         }
         case KOS_SYS_YIELD:
@@ -494,7 +519,7 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(
                 cpu_clock_set(static_cast<kos_pstate_t>(a0)));
         }
-        case KOS_SYS_THREAD_SPAWN:
+        case KOS_SYS_THREAD_CREATE:
         {
             // Checked BEFORE the child is created: a spawn that cannot deliver its handle
             // leaves a thread nothing can name or kill.
@@ -504,7 +529,7 @@ uint64_t syscall_body(uintptr_t nr,
                 return static_cast<uint64_t>(rc);
             }
             kos_thread_t h = KOS_THREAD_NONE;
-            rc = thread_spawn(reinterpret_cast<kos_thread_params const*>(a0), &h);
+            rc = thread_create_call(reinterpret_cast<kos_thread_params const*>(a0), &h);
             return cap_out_deliver(a1, rc, h);
         }
         case KOS_SYS_THREAD_KILL:
@@ -577,7 +602,7 @@ uint64_t syscall_body(uintptr_t nr,
                 }
                 kickos_terminate(static_cast<int>(a0)); // noreturn
             }
-            sched::exit_current(static_cast<int>(a0)); // noreturn
+            sched::exit_current(static_cast<int>(a0), sched::EXIT_RETURN); // noreturn
             return 0;
         }
         case KOS_SYS_SHUTDOWN:
@@ -640,13 +665,23 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(kickos_nestwitness_count(static_cast<int>(a0)));
         }
 #endif
+#if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
+        case KOS_SYS_ASPACE_PROBE:
+        {
+            // Test scaffolding for the address-space seam. Not privilege-gated: every op is
+            // a kernel-side scenario over a space of its own, and none of them takes a
+            // caller-supplied address.
+            return aspace_probe(a0, a1);
+        }
+#endif
 #if KICKOS_HAVE_MPU
         case KOS_SYS_GRANT_PROBE:
         {
             // Test scaffolding for the Rule 7 grant predicates. Pure reads, so not
             // privilege-gated. op selects the predicate and posture; the kernel supplies the
-            // attr, so userspace needs no ARCH_MPU_* enum. Compiled only under enforcement
-            // (grant_hits_reserved / arch_reserved_blocks exist only then).
+            // attr, so userspace needs no ARCH_MPU_* enum. Its arms are region-backend
+            // shaped (DEV encodability, a descriptor budget), which is why this stays on
+            // the descriptor fact and not on KICKOS_MEMORY_ENFORCED.
             uintptr_t const op = a0;
             uintptr_t const base = a1;
             size_t const size = static_cast<size_t>(a2);
@@ -836,20 +871,35 @@ uint64_t syscall_body(uintptr_t nr,
             // would be a non-NULL pointer, so EVERY failure path returns 0 (NULL) and the
             // documented `if (p == NULL)` check stays correct.
             IrqLock lock;
-            if (not cap_check_authority(sched::current(), AUTH_MEMORY))
+            Thread* const c = sched::current();
+            if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
             {
                 return 0; // NULL, not (uintptr_t)-1
             }
+#if KICKOS_HAVE_ASPACE
+            // F10: a page-aligned range RESERVED in the calling task's own space, mapped
+            // nowhere. The number is a virtual address in that space, and the frames under
+            // it are what makes it a globally unique name the handoff can carry.
+            //
+            // A PRIVILEGED CALLER GETS NULL, holding the kernel domain, which carries no
+            // space: there is no address space for a reservation of its own to live in, and
+            // such a thread executes out of the kernel's half.
+            return aspace_reserve(domain_ranges_mut(task_domain(c->task)),
+                                  static_cast<size_t>(a0));
+#else
             return reinterpret_cast<uintptr_t>(
                 arch_ram_alloc(static_cast<size_t>(a0)));
+#endif
         }
         case KOS_SYS_MEM_SELF_GRANT:
         {
             // KOS_SYS_RAM_ALLOC reserves arena memory and grants nothing; this is the
             // grant half.
             //
-            // Added to the CALLER's own region set, not to its domain: a domain is shared,
-            // and widening it would hand the same window to every sibling thread.
+            // Added to the CALLER's own region set, not to its domain. AUTHORITY is
+            // thread-local by contract; how wide the resulting reach is belongs to the
+            // backend, and a translating one maps into the task's space (F9, F10). So no
+            // caller may infer sibling denial from this.
             IrqLock lock;
             Thread* const c = sched::current();
             if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
@@ -873,18 +923,49 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
             }
-            // Already reachable costs no descriptor. EXCEPT where the chip PROGRAMS the
-            // memory type: privileged reach comes from the CACHEABLE background map, so a
-            // block initialised through it keeps dirty lines a bus master then reads.
-            bool already = user_range_ok(base, size, ARCH_MPU_R | ARCH_MPU_W);
-            if ((attr & ARCH_MPU_NOCACHE) != 0 and arch_mpu_nocache_support() == ARCH_MPU_NOCACHE_PROGRAMMED)
+            // Already reachable costs no descriptor. EXCEPT where the mapping CARRIES the
+            // memory type, and then the question is asked of the TYPE and not of the rights,
+            // in BOTH directions: a request that names no type over a block mapped
+            // non-cacheable is the way back from a DMA buffer to ordinary memory, and answering
+            // it on rights alone tells the caller cacheability was restored while the mapping
+            // stays exactly as it was. Privileged reach comes from the CACHEABLE background map
+            // on a region chip, which is the other half of the same asymmetry.
+            bool already = false;
+            if (grant_memtype_programmed())
             {
                 already = user_range_typed_ok(base, size, attr);
+            }
+            else
+            {
+                already = user_range_ok(base, size, ARCH_MPU_R | ARCH_MPU_W);
             }
             if (already)
             {
                 return 0;
             }
+#if KICKOS_HAVE_ASPACE
+            // THE MAP HALF OF F10, and the admission with it: the range must be one this
+            // task RESERVED, which is what narrows the old "any reserved-clear in-arena
+            // range" and what refuses an address another task reserved. The arena and
+            // natural-alignment arms below do not run here: a reservation names frame-pool
+            // frames, which the bump arena does not contain, and a page-granular range
+            // cannot trip an alignment rule no descriptor imposes.
+            enum arch_map_memtype mtype = ARCH_MAP_NORMAL;
+            if ((attr & ARCH_MPU_NOCACHE) != 0)
+            {
+                mtype = ARCH_MAP_NOCACHE;
+            }
+            int const grc = aspace_self_grant(domain_space(task_domain(c->task)),
+                                              domain_ranges_mut(task_domain(c->task)), base,
+                                              size, ARCH_MAP_R | ARCH_MAP_W, mtype);
+            // NO REGION RECORD BESIDE IT. The range list already carries this mapping, and it
+            // carries the EXACT extent where a region would carry the rounded one; a second
+            // entry could only be the wider of two answers to one question. It is also what
+            // moves the -KOS_ENOMEM budget onto KICKOS_ASPACE_RANGES, the reservation being
+            // what runs out (F10), and what makes the grant reach every sibling: the array is
+            // per-THREAD while the mapping is task-wide (F9).
+            return static_cast<uint64_t>(grc);
+#else
             // Rule 7 admission on the geometry that will actually be committed: a window
             // rounded up AFTER admission could cover a neighbour the unrounded extent did
             // not.
@@ -911,7 +992,13 @@ uint64_t syscall_body(uintptr_t nr,
             // would fault the thread on memory it was told it had. NOT -KOS_EMFILE: that
             // code names the capability table, and the knob here is
             // KICKOS_MPU_MAX_REGIONS.
-            if (not c->mpu.add_enforced(base, rsz, attr))
+            //
+            // RETYPING, and not a second descriptor: a block this thread already names with
+            // another memory type reaches here only where the descriptor CARRIES the type, and
+            // two of them over one block would leave the range checks and the hardware reading
+            // different ones. The whole of it sits inside MpuSet deliberately, a `prior` region
+            // held across the call here being caller stack the SVC red zone is measured on.
+            if (not c->mpu.add_enforced_retyping(base, rsz, attr))
             {
                 return static_cast<uint64_t>(-KOS_ENOMEM);
             }
@@ -922,6 +1009,7 @@ uint64_t syscall_body(uintptr_t nr,
             c->mpu.apply();
             kickos_arch_mpu_commit();
             return 0;
+#endif
         }
         case KOS_SYS_PERIPH_ENABLE:
         {

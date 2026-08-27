@@ -4,9 +4,9 @@
 #
 # Verdict on a completed TAP stream, read from stdin. Shared by every selftest gate.
 #
-# EXPECT_SKIPS and EXPECT_PARTIALS (both default empty) are permission sets, not budgets:
-# a skip or a partial whose name is not listed fails the gate, and a listed name that did
-# not skip / go partial is a NOTE, never a failure.
+# EXPECT_SKIPS, EXPECT_PARTIALS and EXPECT_FAULTS (all default empty) are permission sets,
+# not budgets: a skip, a partial or a faulting thread whose name is not listed fails the
+# gate, and a listed name that did not skip / go partial / fault is a NOTE, never a failure.
 #
 # A PARTIAL is an arm that ran its invariant and left a sub-case unexercised on this
 # board. It reports `ok`, so no plan/case reconciliation can see it and only the by-name
@@ -33,6 +33,7 @@ out="$(tr -d '\r')"
 # because the membership tests below are `case` globs against " $name ".
 expect_skips="$(printf '%s' "${EXPECT_SKIPS:-}" | tr ',;\t\n' '    ')"
 expect_partials="$(printf '%s' "${EXPECT_PARTIALS:-}" | tr ',;\t\n' '    ')"
+expect_faults="$(printf '%s' "${EXPECT_FAULTS:-}" | tr ',;\t\n' '    ')"
 
 if echo "$out" | grep -q "not ok"; then
     echo "$out" | grep "not ok"
@@ -41,16 +42,37 @@ fi
 if ! echo "$out" | grep -q "# all tests passed"; then
     fail "TAP completion marker missing (crash / hang / truncated run?)"
 fi
-# THE SELFTEST NEVER FAULTS: the deliberate cross-domain fault lives in a separate binary
-# (faultsurvive). A thread-fault record here is an arm whose thread died the wrong way, and
-# thread-scoped isolation means the plan, case and directive checks above still reconcile and
-# read green, so only this clause can see it. A slay redirect that rebuilds an UNPRIVILEGED
-# context faults the stub on its first kernel access and reaches the same observable end
-# state as a correct one.
-if echo "$out" | grep -q "=== THREAD FAULT ==="; then
+# ONLY A NAMED THREAD MAY FAULT. A thread-fault record from any other thread is an arm whose
+# thread died the wrong way, and thread-scoped isolation means the plan, case and directive
+# checks above still reconcile and read green, so only this clause can see it. A slay redirect
+# that rebuilds an UNPRIVILEGED context faults the stub on its first kernel access and reaches
+# the same observable end state as a correct one.
+#
+# The list is by THREAD and not by arm, because the record names the thread and nothing else:
+# the containment arm's own worker is the one deliberate fault in the stream (F5, T8), and
+# every neighbouring arm's worker stays forbidden. A listed thread that did NOT fault is a
+# NOTE here rather than a failure: the arm's join is what asserts the death, and a fault that
+# never happened times that join out and reports `not ok` above.
+_faulted="$(echo "$out" \
+    | sed -n "s/.*=== THREAD FAULT === thread '\([^']*\)'.*/\1/p")"
+_badfault=""
+for _t in $_faulted; do
+    case " $expect_faults " in
+        *" $_t "*) ;;
+        *) _badfault="$_badfault $_t" ;;
+    esac
+done
+if [ -n "$_badfault" ]; then
     echo "$out" | grep "=== THREAD FAULT ==="
-    fail "a thread faulted during the suite: this stream's arms must never fault"
+    echo "      expected to fault:${expect_faults:+ $expect_faults}"
+    fail "thread(s)$_badfault faulted during the suite and are not declared"
 fi
+for _t in $expect_faults; do
+    case " $_faulted " in
+        *" $_t "*) ;;
+        *) echo "NOTE: '$_t' is on the expected-fault list but never faulted; trim it" ;;
+    esac
+done
 
 # The arm numbers, in order, one per line.
 arm_numbers() { sed -n 's/^\(not \)\?ok \([0-9][0-9]*\).*/\2/p'; }

@@ -122,12 +122,12 @@ int main(int, char**)
     }
     kos_cap_grant const caps[1] = {{irq, KOS_CAP_WAIT}};
 
-    auto drv = kos::thread::spawn(pit_driver, reinterpret_cast<void*>(PIT_CH2), "k64drv", 10,
-                                  KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                  /*mem=*/nullptr, /*mem_size=*/0,
-                                  /*stack=*/nullptr, /*stack_size=*/0,
-                                  /*mmio=*/reinterpret_cast<void*>(PIT_CH2), PIT_CH2_WINDOW,
-                                  caps, 1);
+    auto drv = kos::thread::create(pit_driver, reinterpret_cast<void*>(PIT_CH2), "k64drv", 10,
+                                   KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                   /*mem=*/nullptr, /*mem_size=*/0,
+                                   /*stack=*/nullptr, /*stack_size=*/0,
+                                   /*mmio=*/reinterpret_cast<void*>(PIT_CH2), PIT_CH2_WINDOW,
+                                   caps, 1);
     if (not drv.valid())
     {
         // The console is the only oracle at the bench: without this line a failed spawn

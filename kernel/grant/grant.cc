@@ -3,7 +3,7 @@
 
 #include <kickos/grant.h>
 
-#if KICKOS_HAVE_MPU
+#if KICKOS_MEMORY_ENFORCED
 
 #include <kickos/arch/arch.h>
 #include <kickos/domain.h> // arch_domain_static_regions
@@ -179,4 +179,4 @@ namespace kickos
     }
 }
 
-#endif // KICKOS_HAVE_MPU
+#endif // KICKOS_MEMORY_ENFORCED

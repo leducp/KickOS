@@ -290,13 +290,13 @@ int kos_sem_destroy(kos_cap_t cap)
     return kos_handle_close(cap);
 }
 
-int kos_thread_spawn(struct kos_thread_params const* params, kos_thread_t* out_thread)
+int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_thread)
 {
     if (out_thread != nullptr)
     {
         *out_thread = KOS_THREAD_NONE; // defined on the paths the kernel never reaches
     }
-    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_SPAWN,
+    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_CREATE,
                                          reinterpret_cast<uintptr_t>(params),
                                          reinterpret_cast<uintptr_t>(out_thread), 0, 0));
 }
@@ -366,6 +366,11 @@ uint32_t kos_nest_witness(int which)
 uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size)
 {
     return arch_syscall(KOS_SYS_GRANT_PROBE, op, base, size, 0);
+}
+
+uintptr_t kos_aspace_probe(uintptr_t op, uintptr_t a1)
+{
+    return arch_syscall(KOS_SYS_ASPACE_PROBE, op, a1, 0, 0);
 }
 #endif
 

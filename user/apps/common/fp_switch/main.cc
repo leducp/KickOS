@@ -218,8 +218,8 @@ int main(int, char**)
     kos::print("  (no hardware FPU on this target; nothing to test)\n");
 #endif
 
-    kos::thread::spawn(checker, nullptr, "checker", 20);
-    kos::thread::spawn(trasher, nullptr, "trasher", 5);
+    kos::thread::create(checker, nullptr, "checker", 20);
+    kos::thread::create(trasher, nullptr, "trasher", 5);
 
     kos::Semaphore idle(0);
     while (true)

@@ -74,16 +74,19 @@ namespace
         return EINVAL;
     }
 
-    unsigned errno_addr()
+    // uintptr_t and not unsigned: on a 64-bit target a truncated address can make two
+    // distinct slots compare EQUAL, and arm B reads that equality as "the slot was not
+    // reused" and suppresses its own fault.
+    uintptr_t errno_addr()
     {
-        return static_cast<unsigned>(reinterpret_cast<uintptr_t>(&errno));
+        return reinterpret_cast<uintptr_t>(&errno);
     }
 
     // --- arm A: a cooperative round trip that crossed a peer's write -------------------
 
     struct Report
     {
-        unsigned addr;  // where libc resolves this thread's errno
+        uintptr_t addr; // where libc resolves this thread's errno
         int provoked;   // errno straight after the call that set it
         int after_trip; // errno after the peer has provoked its own
         unsigned trips; // scheduler round trips waited out
@@ -125,14 +128,14 @@ namespace
 
     void arm_cooperative()
     {
-        unsigned const root_addr = errno_addr();
+        uintptr_t const root_addr = errno_addr();
         int const root_provoked = provoke(0); // root takes ERANGE, like worker 0
 
         kos::thread::Handle w[WORKERS];
         for (int k = 0; k < WORKERS; k++)
         {
-            w[k] = kos::thread::spawn(worker, reinterpret_cast<void*>(static_cast<uintptr_t>(k)),
-                                      "errw", 10);
+            w[k] = kos::thread::create(worker, reinterpret_cast<void*>(static_cast<uintptr_t>(k)),
+                                       "errw", 10);
         }
 
         for (int spin = 0; spin < 300; spin++)
@@ -174,8 +177,9 @@ namespace
                 g_bad++;
             }
             ksnprintf(g_line, sizeof(g_line),
-                      "[errnoprobe] A w%d at %x provoked %d after %d trips %u %s\n", k,
-                      g_report[k].addr, g_report[k].provoked, g_report[k].after_trip,
+                      "[errnoprobe] A w%d at %lx provoked %d after %d trips %u %s\n", k,
+                      static_cast<unsigned long>(g_report[k].addr), g_report[k].provoked,
+                      g_report[k].after_trip,
                       g_report[k].trips, verdict);
             say(g_line);
         }
@@ -196,8 +200,8 @@ namespace
             g_bad++;
         }
         ksnprintf(g_line, sizeof(g_line),
-                  "[errnoprobe] A root at %x provoked %d now %d (want %d)\n", root_addr,
-                  root_provoked, root_now, ERANGE);
+                  "[errnoprobe] A root at %lx provoked %d now %d (want %d)\n",
+                  static_cast<unsigned long>(root_addr), root_provoked, root_now, ERANGE);
         say(g_line);
 
         for (int k = 0; k < WORKERS; k++)
@@ -215,7 +219,7 @@ namespace
 
     struct Reuse
     {
-        unsigned addr;
+        uintptr_t addr;
         int first;    // errno BEFORE this thread has called anything that sets it
         int provoked; // and after its own call
         Flag done;
@@ -236,7 +240,7 @@ namespace
     {
         for (int k = 0; k < 2; k++)
         {
-            kos::thread::Handle const h = kos::thread::spawn(
+            kos::thread::Handle const h = kos::thread::create(
                 reuse_worker, reinterpret_cast<void*>(static_cast<uintptr_t>(k)), "reus", 10);
             if (not h.valid())
             {
@@ -267,8 +271,9 @@ namespace
                 g_bad++;
             }
             ksnprintf(g_line, sizeof(g_line),
-                      "[errnoprobe] B t%d at %x first %d provoked %d %s\n", k, g_reuse[k].addr,
-                      g_reuse[k].first, g_reuse[k].provoked, verdict);
+                      "[errnoprobe] B t%d at %lx first %d provoked %d %s\n", k,
+                      static_cast<unsigned long>(g_reuse[k].addr), g_reuse[k].first,
+                      g_reuse[k].provoked, verdict);
             say(g_line);
         }
         if (g_reuse[0].addr != g_reuse[1].addr)
@@ -288,8 +293,8 @@ namespace
 
     struct Fast
     {
-        unsigned server_addr;
-        unsigned client_addr;
+        uintptr_t server_addr;
+        uintptr_t client_addr;
         int server_provoked;
         int server_in_dispatch; // errno as the server sees it on the fastpath resume
         int client_provoked;
@@ -355,7 +360,7 @@ namespace
         // donation, so a caller that outranked the server would silently take the generic
         // path and this arm would witness the wrong one.
         kos::thread::Handle const sv =
-            kos::thread::spawn_caps(fast_server, nullptr, "fpS", 12, scaps, 3);
+            kos::thread::create_caps(fast_server, nullptr, "fpS", 12, scaps, 3);
         if (not sv.valid())
         {
             fault("[errnoprobe] C SERVER SPAWN FAILED\n");
@@ -366,7 +371,7 @@ namespace
         ready.wait();
 
         kos::thread::Handle const cl =
-            kos::thread::spawn_caps(fast_client, nullptr, "fpC", 10, ccaps, 2);
+            kos::thread::create_caps(fast_client, nullptr, "fpC", 10, ccaps, 2);
         if (not cl.valid())
         {
             fault("[errnoprobe] C CLIENT SPAWN FAILED\n");
@@ -407,8 +412,9 @@ namespace
             g_bad++;
         }
         ksnprintf(g_line, sizeof(g_line),
-                  "[errnoprobe] C srv %x in-dispatch %d cli %x after %d rc %d/%d %s\n",
-                  g_fast.server_addr, g_fast.server_in_dispatch, g_fast.client_addr,
+                  "[errnoprobe] C srv %lx in-dispatch %d cli %lx after %d rc %d/%d %s\n",
+                  static_cast<unsigned long>(g_fast.server_addr), g_fast.server_in_dispatch,
+                  static_cast<unsigned long>(g_fast.client_addr),
                   g_fast.client_after, static_cast<int>(g_fast.recv_rc),
                   static_cast<int>(g_fast.call_rc), verdict);
         say(g_line);
@@ -428,8 +434,8 @@ namespace
 
     struct Preempt
     {
-        unsigned lo_addr;
-        unsigned hi_addr;
+        uintptr_t lo_addr;
+        uintptr_t hi_addr;
         int lo_provoked;
         int lo_after;
         int hi_provoked;
@@ -485,9 +491,9 @@ namespace
         kos::Semaphore done(0);
         kos_cap_grant caps[] = {{done.id(), CH_FULL}};
         kos::thread::Handle const hi =
-            kos::thread::spawn_caps(preempt_high, nullptr, "prH", 20, caps, 1);
+            kos::thread::create_caps(preempt_high, nullptr, "prH", 20, caps, 1);
         kos::thread::Handle const lo =
-            kos::thread::spawn_caps(preempt_low, nullptr, "prL", 8, caps, 1);
+            kos::thread::create_caps(preempt_low, nullptr, "prL", 8, caps, 1);
         if (not hi.valid() or not lo.valid())
         {
             fault("[errnoprobe] D SPAWN FAILED\n");
@@ -530,9 +536,10 @@ namespace
             g_bad++;
         }
         ksnprintf(g_line, sizeof(g_line),
-                  "[errnoprobe] D lo %x after %d hi %x set %d overlapped %u %s\n", g_pre.lo_addr,
-                  g_pre.lo_after, g_pre.hi_addr, g_pre.hi_provoked, g_pre.saw_lo_spinning,
-                  verdict);
+                  "[errnoprobe] D lo %lx after %d hi %lx set %d overlapped %u %s\n",
+                  static_cast<unsigned long>(g_pre.lo_addr), g_pre.lo_after,
+                  static_cast<unsigned long>(g_pre.hi_addr), g_pre.hi_provoked,
+                  g_pre.saw_lo_spinning, verdict);
         say(g_line);
 
         (void)hi.join();

@@ -288,8 +288,8 @@ int main(int, char**)
         kos_cap_grant const caps[1] = {
             { .source_cap = ep, .rights_mask = KOS_CAP_SIGNAL },
         };
-        auto const c = kos::thread::spawn_caps(spi_client, nullptr, "k64spi-cli", 9,
-                                               caps, /*cap_count=*/1);
+        auto const c = kos::thread::create_caps(spi_client, nullptr, "k64spi-cli", 9,
+                                                caps, /*cap_count=*/1);
         if (not c.valid())
         {
             kos::print("[k64dspi] ERROR: client spawn failed\n");

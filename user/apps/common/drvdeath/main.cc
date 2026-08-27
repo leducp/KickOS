@@ -68,9 +68,9 @@ namespace
     void nest_child(void*) // caps: done@1, park@2, probe@3
     {
         kos_cap_grant const caps[1] = {{NEST_PARK, KOS_CAP_WAIT}};
-        g_grandchild = kos::thread::spawn(nest_grandchild, nullptr, "nestgc", 9,
-                                          KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                          nullptr, 0, nullptr, 0, nullptr, 0, caps, 1)
+        g_grandchild = kos::thread::create(nest_grandchild, nullptr, "nestgc", 9,
+                                           KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                           nullptr, 0, nullptr, 0, nullptr, 0, caps, 1)
                            .id();
         // Root is unkillable: it leaves spawner_tag at KILL_TAG_NONE and kill_tag_of never
         // answers NONE. Issued from a CHILD, because root aiming at itself is -KOS_EINVAL
@@ -112,9 +112,9 @@ namespace
             return;
         }
         kos_cap_grant const caps[3] = {{done, CAP_FULL}, {park, CAP_FULL}, {probe, CAP_FULL}};
-        auto const child = kos::thread::spawn(nest_child, nullptr, "nestch", 9,
-                                              KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                              nullptr, 0, nullptr, 0, nullptr, 0, caps, 3);
+        auto const child = kos::thread::create(nest_child, nullptr, "nestch", 9,
+                                               KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                               nullptr, 0, nullptr, 0, nullptr, 0, caps, 3);
         if (not child.valid())
         {
             return;

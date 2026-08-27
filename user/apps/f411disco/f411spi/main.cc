@@ -241,17 +241,30 @@ int main(int, char**)
     }
     kos_cap_grant const caps[1] = {{irq, KOS_CAP_WAIT}};
 
-    auto drv = kos::thread::spawn(spi_driver, reinterpret_cast<void*>(SPI1_BASE),
-                                  "f411spi", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                  /*mem=*/nullptr, /*mem_size=*/0,
-                                  /*stack=*/nullptr, /*stack_size=*/0,
-                                  /*mmio=*/reinterpret_cast<void*>(SPI1_BASE), SPI1_WINDOW,
-                                  caps, 1);
-    if (not drv.valid())
+    // The driver ends on the negative test's fault, and a fault cancels the faulting
+    // thread's whole TASK: spawned plain it would join root's task and take root with it,
+    // leaving no survivor to keep the board up. Root holds the handle for the life of the
+    // image, since it never reaches a point past the driver.
+    kos_task_t victim = KOS_TASK_NONE;
+    if (kos_task_create(nullptr, 0, 0, &victim) != 0)
     {
         // The console is the only oracle at the bench: without this line a failed spawn
         // and a dead board read the same.
-        kos::print("[f411spi] ERROR: driver spawn failed\n");
+        kos::print("[f411spi] ERROR: no task slot for the driver\n");
+    }
+    else
+    {
+        auto drv = kos::thread::create(spi_driver, reinterpret_cast<void*>(SPI1_BASE),
+                                       "f411spi", 10, KOS_POLICY_FIFO, 0,
+                                       /*privileged=*/false,
+                                       /*mem=*/nullptr, /*mem_size=*/0,
+                                       /*stack=*/nullptr, /*stack_size=*/0,
+                                       /*mmio=*/reinterpret_cast<void*>(SPI1_BASE), SPI1_WINDOW,
+                                       caps, 1, /*authority=*/0, /*cap_dest=*/nullptr, victim);
+        if (not drv.valid())
+        {
+            kos::print("[f411spi] ERROR: driver spawn failed\n");
+        }
     }
     if (irq != KOS_CAP_NONE)
     {

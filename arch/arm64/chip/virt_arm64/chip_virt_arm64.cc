@@ -11,6 +11,14 @@
 
 #include <stdint.h>
 
+// THE EL REFUSAL PATH IS LINKED INTO THE IDENTITY-MAPPED BOOT SPAN (virt_arm64.ld).
+// startup.S branches to it with SCTLR_EL1.M still 0, where no walk resolves a high-half
+// address, so it names the PL011 by its physical base rather than through dev_va and may
+// not call out of the section: ld's veneer for an out-of-range branch still targets the
+// callee's high address.
+#define KICKOS_BOOT_TEXT __attribute__((section(".text.init"), noinline, used))
+#define KICKOS_BOOT_RODATA __attribute__((section(".rodata.init"), used))
+
 namespace kickos
 {
     int kmain(int argc, char** argv);
@@ -20,6 +28,11 @@ extern "C"
 {
     // Linker-script symbols (virt_arm64.ld).
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
+    // VA - PA for the kernel's half; see dev_va below.
+    extern unsigned char __kickos_arm64_va_base[];
+    // The app's .bss lives in the low window, outside _sbss.._ebss, so the boot zeroing
+    // covers it separately. Its .data needs no copy: the low window links VMA == LMA.
+    extern uint32_t __kickos_appbss_start, __kickos_appbss_end;
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
@@ -38,7 +51,19 @@ extern "C"
 
 namespace
 {
-    inline volatile uint32_t* r32p(uintptr_t a) { return reinterpret_cast<volatile uint32_t*>(a); }
+    // EVERY DEVICE REGISTER IS REACHED THROUGH THE KERNEL'S OWN HALF. The device gigabyte
+    // is mapped at PA + __kickos_arm64_va_base by TTBR1, which every address space shares;
+    // TTBR0 carries a per-process root that maps no device at all, so a low literal here
+    // would translate against whatever process happened to be running.
+    inline uintptr_t dev_va(uintptr_t pa)
+    {
+        return pa + reinterpret_cast<uintptr_t>(__kickos_arm64_va_base);
+    }
+
+    inline volatile uint32_t* r32p(uintptr_t a)
+    {
+        return reinterpret_cast<volatile uint32_t*>(dev_va(a));
+    }
 
     // QEMU `virt` PL011.
     constexpr uintptr_t UART0_BASE = 0x09000000;
@@ -52,17 +77,37 @@ namespace
     // hang. The same reasoning binds the writer below.
     constexpr uint32_t UART_POLL_BOUND = 100000;
 
+    // The refusal path's own writer, with the PL011 at the address the bus sees: the MMU
+    // is off, so dev_va's high alias translates through nothing.
+    KICKOS_BOOT_TEXT void boot_console_write(char const* buf, size_t n)
+    {
+        volatile uint32_t* fr = reinterpret_cast<volatile uint32_t*>(UART_FR);
+        volatile uint32_t* dr = reinterpret_cast<volatile uint32_t*>(UART_DR);
+        for (size_t i = 0; i < n; i++)
+        {
+            uint32_t spin = 0;
+            while ((*fr & UART_FR_TXFF) != 0 and spin < UART_POLL_BOUND)
+            {
+                spin++;
+            }
+            *dr = static_cast<uint32_t>(static_cast<unsigned char>(buf[i]));
+        }
+    }
+
     // File scope, so they are .rodata for certain: as locals the compiler is free to
     // stage them on the stack through memcpy, and this path runs before the C runtime.
-    char const BAD_EL_HEAD[] = "KickOS: qemu-arm64 entered at EL";
-    char const BAD_EL_TAIL[] = ", and this port implements EL1 only\n";
+    // In the boot span because the reader runs there.
+    KICKOS_BOOT_RODATA char const BAD_EL_HEAD[] = "KickOS: qemu-arm64 entered at EL";
+    KICKOS_BOOT_RODATA char const BAD_EL_TAIL[] = ", and this port implements EL1 only\n";
     char const BAD_CNTFRQ[] =
         "KickOS: qemu-arm64 CNTFRQ_EL0 does not divide a second exactly\n";
 
     // AArch64 semihosting: `hlt #0xF000` with the operation in x0 and the parameter in x1.
     // The console does NOT go through here, this chip having a real PL011, so the only
-    // caller is the exit below.
-    inline long semihost(long op, void* arg)
+    // callers are the two exits below.
+    // ALWAYS inlined: one of those exits sits in the boot span and can call nothing outside
+    // it.
+    inline __attribute__((always_inline)) long semihost(long op, void* arg)
     {
         register long x0 __asm("x0") = op;
         register void* x1 __asm("x1") = arg;
@@ -73,7 +118,10 @@ namespace
     constexpr long SYS_EXIT = 0x18;
     constexpr uint64_t ADP_Stopped_ApplicationExit = 0x20026u;
 
-    volatile uint8_t* r8p(uintptr_t a) { return reinterpret_cast<volatile uint8_t*>(a); }
+    volatile uint8_t* r8p(uintptr_t a)
+    {
+        return reinterpret_cast<volatile uint8_t*>(dev_va(a));
+    }
 
     // GICv2 on QEMU `virt`. The distributor is global, the CPU interface is this core's.
     constexpr uintptr_t GICD_BASE = 0x08000000;
@@ -263,6 +311,27 @@ void kickos_armv8a_gic_dispatch(void)
     *r32p(GICC_EOIR) = iar;
 }
 
+// Rule 7. Only the GIC is here: the timebase is the architected generic timer, reached
+// through system registers, and so are the translation controls, so neither is nameable by
+// a grant. This machine has no clock or reset gates.
+size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+{
+    static struct arch_reserved_block const blocks[] = {
+        {GICD_BASE, 0x10000u}, // distributor
+        {GICC_BASE, 0x10000u}, // CPU interface
+    };
+    size_t n = sizeof(blocks) / sizeof(blocks[0]);
+    if (n > max)
+    {
+        n = max;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        out[i] = blocks[i];
+    }
+    return n;
+}
+
 // The PL011 comes out of QEMU's reset already enabled at the machine's default baud, so
 // the polled path needs no bring-up.
 void arch_console_write(char const* buf, size_t n)
@@ -316,14 +385,28 @@ void kfault_terminate(void)
 }
 
 // startup.S branches here when the handover was not at EL1. Runs before .data and .bss, so
-// it touches neither.
-void kickos_arm64_bad_el(unsigned long el)
+// it touches neither, and inside the boot span, so it reaches neither arch_console_write nor
+// kfault_terminate: both are kernel text and only a walk names those.
+KICKOS_BOOT_TEXT void kickos_arm64_bad_el(unsigned long el)
 {
     char const digit = static_cast<char>('0' + (el & 3));
-    arch_console_write(BAD_EL_HEAD, sizeof(BAD_EL_HEAD) - 1);
-    arch_console_write(&digit, 1);
-    arch_console_write(BAD_EL_TAIL, sizeof(BAD_EL_TAIL) - 1);
-    kfault_terminate();
+    boot_console_write(BAD_EL_HEAD, sizeof(BAD_EL_HEAD) - 1);
+    boot_console_write(&digit, 1);
+    boot_console_write(BAD_EL_TAIL, sizeof(BAD_EL_TAIL) - 1);
+
+    // 16-byte aligned: every access is Device-nGnRnE while the MMU is off, which faults on
+    // an unaligned one whatever SCTLR_EL1.A says, and the compiler stores this pair wide.
+    uint64_t block[2] __attribute__((aligned(16)));
+    block[0] = ADP_Stopped_ApplicationExit;
+    block[1] = 132;
+    semihost(SYS_EXIT, block);
+
+    // Reached only when nothing is listening for semihosting calls.
+    __asm volatile("msr daifset, #0xf" ::: "memory");
+    while (true)
+    {
+        __asm volatile("wfi");
+    }
 }
 
 void Reset_Handler(void)
@@ -335,6 +418,10 @@ void Reset_Handler(void)
         *dst++ = *src++;
     }
     for (uint32_t* b = &_sbss; b < &_ebss; b++)
+    {
+        *b = 0;
+    }
+    for (uint32_t* b = &__kickos_appbss_start; b < &__kickos_appbss_end; b++)
     {
         *b = 0;
     }

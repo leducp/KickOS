@@ -177,7 +177,7 @@ int main(int, char**)
            static_cast<unsigned>(PORT), static_cast<unsigned>(PIN));
     fflush(stdout);
 
-    auto const w = kos::thread::spawn(
+    auto const w = kos::thread::create(
         worker, reinterpret_cast<void*>(WINDOW_BASE), "gpioblink", 10,
         KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
         /*mem=*/nullptr, /*mem_size=*/0, /*stack=*/nullptr, /*stack_size=*/0,

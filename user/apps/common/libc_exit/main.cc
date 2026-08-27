@@ -25,7 +25,7 @@ namespace
 int main(int, char**)
 {
     kos::print("KickOS libc exit() regression\n");
-    auto exiter = kos::thread::spawn(worker, nullptr, "exiter", 10);
+    auto exiter = kos::thread::create(worker, nullptr, "exiter", 10);
     if (not exiter.valid())
     {
         // The marker separates a refused spawn from a worker that exited.

@@ -185,7 +185,7 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt ld
   kickos_region_size("${_root}" "${_mn}" "${_p2}" _rsz)
   kickos_region_align("${_root}" "${_mn}" "${_p2}" _ral)
   # The post-boot arena also has to back KICKOS_MAX_THREADS default stacks, or the board
-  # advertises KICKOS_MAX_THREADS it cannot seat: kos_thread_spawn returns -KOS_ENOMEM
+  # advertises KICKOS_MAX_THREADS it cannot seat: kos_thread_create returns -KOS_ENOMEM
   # for a slot the board claims to have, and it returns the SAME code for a full slot
   # table, so the shortfall is indistinguishable from a legitimate limit at runtime.
   # SLOTS MINUS ROOT, not the slot count: the pool holds KICKOS_THREAD_SLOTS, and root's

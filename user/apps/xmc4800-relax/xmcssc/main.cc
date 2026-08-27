@@ -217,7 +217,7 @@ int main(int, char**)
         kos_cap_grant const caps[1] = {
             { .source_cap = irq, .rights_mask = KOS_CAP_WAIT },
         };
-        auto const c = kos::thread::spawn(
+        auto const c = kos::thread::create(
             spi_client, reinterpret_cast<void*>(U0C1_BASE), "xmcssc-cli", 9, KOS_POLICY_FIFO,
             /*quantum_ns=*/0, /*privileged=*/false, /*mem=*/nullptr, /*mem_size=*/0,
             /*stack=*/nullptr, /*stack_size=*/0, reinterpret_cast<void*>(U0C1_BASE), U0C1_WINDOW,
@@ -242,8 +242,8 @@ int main(int, char**)
         kos_cap_grant const caps[1] = {
             { .source_cap = ep, .rights_mask = KOS_CAP_SIGNAL },
         };
-        auto const c = kos::thread::spawn_caps(spi_client, nullptr, "xmcssc-cli", 9,
-                                               caps, /*cap_count=*/1);
+        auto const c = kos::thread::create_caps(spi_client, nullptr, "xmcssc-cli", 9,
+                                                caps, /*cap_count=*/1);
         if (not c.valid())
         {
             kos::print("[xmcssc] ERROR: client spawn failed\n");

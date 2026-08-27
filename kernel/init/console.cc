@@ -10,8 +10,7 @@
 #include <kickos/cap.h> // cap_console_deliver (the fault record's route to a published console)
 #include <kickos/console_tx.h>
 #include <kickos/irqlock.h>
-#include <kickos/libc/string.h>
-#include <kickos/libc/fmt.h>
+#include <kickos/kruntime.h>
 #include <kickos/sys/atomic.h>
 
 #include <stdarg.h>
@@ -287,7 +286,7 @@ namespace kickos
 
     void kputs(char const* s)
     {
-        kconsole_write(s, strlen(s));
+        kconsole_write(s, kstrlen(s));
     }
 
     namespace
@@ -295,8 +294,8 @@ namespace kickos
         void kvprintf_route(char const* fmt, va_list ap, bool route)
         {
             char buf[256];
-            kvsnprintf(buf, sizeof(buf), fmt, ap);
-            size_t const n = strlen(buf);
+            kfmt_vsnprintf(buf, sizeof(buf), fmt, ap);
+            size_t const n = kstrlen(buf);
             kconsole_write(buf, n);
             // USER_OWNED only. RECLAIMED means the kernel has the device back and the driver
             // is gone, so routing there would send into an endpoint nobody serves.
@@ -339,7 +338,7 @@ namespace kickos
 
 #if KICKOS_DIAG_TERSE
     // kputs plus a hand-rolled decimal: an assert fires in whatever thread context tripped
-    // it, and kvsnprintf's 256-byte frame does not fit the 512-byte idle stack the boards
+    // it, and kfmt_vsnprintf's 256-byte frame does not fit the 512-byte idle stack the boards
     // that select this posture provision.
     void kpanic_at(char const* file, unsigned line)
     {

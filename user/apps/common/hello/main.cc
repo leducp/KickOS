@@ -64,8 +64,8 @@ int main(int, char**)
     g_pong = &pong_sem;
 
     kos_cap_grant caps[] = {{ping_sem.id(), CH_FULL}, {pong_sem.id(), CH_FULL}};
-    kos::thread::spawn_caps(ping, nullptr, "ping", 10, caps, 2);
-    kos::thread::spawn_caps(pong, nullptr, "pong", 10, caps, 2);
+    kos::thread::create_caps(ping, nullptr, "ping", 10, caps, 2);
+    kos::thread::create_caps(pong, nullptr, "pong", 10, caps, 2);
 
     // A daemon: returning from main would exit, so root parks on a semaphore nobody posts
     // and the two players run until interrupted.

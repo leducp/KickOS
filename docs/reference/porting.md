@@ -75,10 +75,13 @@ is where a bus-side unit reports: `mk64f` reads SYSMPU `CESR`, decodes the per-s
 `SPERR` nibble, and says so explicitly when NO protection error is latched -- which is the tell
 for a peripheral-bridge fault rather than an MPU one.
 
-### Fault-isolation contract (a faulting thread dies alone)
+### Fault-isolation contract (a faulting thread takes its task and nothing beyond)
 
 **The rule.** A fault taken in unprivileged thread context, in a thread that is not already
-dying, kills that thread and nothing else; every other fault panics exactly as before. The
+dying, kills that thread and its TASK; every other fault panics exactly as before. The scope
+is the task because siblings share the address space the faulting thread was writing, and a
+plain spawn is a thread of the caller's task. A backend implements no part of that scoping: it
+decides only WHETHER the fault is a thread's own, and `sched::exit_current` draws the rest. The
 core half is `kernel/init/fault.cc`: a backend's fault handler calls
 `kickos_fault_kill_thread(frame)` BEFORE it starts its dump and simply RETURNS when that
 answers true, and the exception return then lands in `kickos_thread_fault_exit`. The
@@ -627,7 +630,75 @@ believes every core is core 0. The knob is an ordinary Kconfig int, so it reache
 generated `kickos/board_config.h` like every other provisioning integer and needs no CMake edit.
 
 Splitting per-core kernel state is NOT part of this seam and is not done yet;
-`../design-m7-state-inventory.md` classifies what would have to move.
+`../design-m7-state-inventory.md` classifies what would have to move. Where an arch already
+needs a per-core block it declares its OWN, on the same two-arm shape: armv8a's
+`struct armv8a_percpu` (`arch/arm64/armv8a/include/kickos/arch/percpu.h`) is reached by an
+accessor that folds to the array's first element at one core and reads TPIDR_EL1 above one.
+That block is the arch's and not this seam's, the register it is reached through being A64's.
+
+### The cross-core doorbell (`arch_ipi_send`, `arch_ipi_wait`)
+
+**A port does nothing here today either, and for the same reason:** at
+`KICKOS_NUM_CORES == 1` both are EMPTY MACROS that consume their argument, so no symbol exists
+and no image carries the seam. The argument is a bitmask of core indices; 0 names nobody.
+
+**Two calls and not one, from the first line.** A doorbell that can only be fire-and-forget
+cannot express a rendezvous, and a rendezvous is what a TLB shootdown is on an architecture with
+no broadcast invalidate. So the send is separate from the wait, and an initiator pokes every
+target once and then waits once.
+
+**A broadcast architecture's `arch_aspace_map`/`arch_aspace_unmap` do NOT go through this pair.**
+A64 invalidates and waits with two instructions and no far-side code at all, so the maintenance
+inside those two stays a local sequence; routing it through a doorbell would invent a deadlock
+that architecture cannot have. Where a port DOES need the far side to execute, its handler takes
+no kernel lock and the lock's own acquire loop services a pending doorbell, or an initiator
+holding the lock waits on a core spinning to take it.
+
+### Data-cache maintenance (`arch_dcache_flush`, `arch_dcache_invalidate`)
+
+Make this core's writes over a range visible to an observer that does not snoop, and such an
+observer's writes visible to this core. A DMA engine on a non-snooping bus is the ordinary case;
+a companion core across a window that is not coherent is the other.
+
+**Concepts, so no line size crosses the seam.** The backend reads its own line size and rounds
+the range out to it, which is what keeps a caller from carrying a figure that has to stay in step:
+armv8a reads `CTR_EL0` rather than trusting the A53's 64 bytes, because a smaller line anywhere in
+the hierarchy would leave lines untouched at 64.
+
+**The invalidate may not discard what sits beside the buffer.** A range whose ends fall inside a
+line shares those lines with its neighbours, so the backend CLEANS as it invalidates
+(`dc civac` on A64, not `dc ivac`). That costs nothing a caller can measure and removes an
+alignment rule no caller would honour.
+
+`addr` is a KERNEL-usable pointer, which is what `arch_aspace_acquire` answers. A range named by a
+user virtual address is not one operation on a backend whose physical space is discontiguous, so
+the page splitting belongs above this seam.
+
+**There is no `arch/common/` fallback and nothing in the tree calls it yet.** Who calls it is open
+(`../design-m6-mmu.md` section 7), so a port defines it when its first caller arrives and fails the
+LINK until then: a no-op default would report maintenance it never did, which is the one answer
+worse than a link error.
+
+### The map editor's acquire pair (`arch_aspace_acquire`, `arch_aspace_release`)
+
+Reach the frame backing one page of a space through a kernel-usable pointer, and release it. A
+backend that maps all of physical memory in its high half inlines the acquire to an addition; one
+whose physical space is wider than its virtual, or that reaches frames through a fixed set of
+windows, does real work and can RUN OUT.
+
+**`ARCH_ASPACE_ACQUIRE_MIN` (`arch/include/kickos/arch/arch.h`) is how many are holdable at once
+per core, and a windowed backend sizes its pool for that figure and `static_assert`s against it.**
+The figure counts OUTSTANDING CALLS and not distinct pages: two acquires of one page are two holds
+unless the backend counts references. `arch/arm64/armv8a/aspace_armv8a.cc` carries the assert in
+the shape a windowed port fills in, its own capacity being unbounded.
+
+**It is measured from the tree rather than chosen.** The deepest holder is the page-split access
+scenario behind `KOS_ASPACE_OP_SPLIT_ACCESS` (`kernel/syscall/syscall_aspace.cc`): four pages held
+across two spaces while `ep_copy` acquires one end in each, six at the peak. The endpoint copy
+alone holds two, which is the floor a caller doing nothing else meets. **A caller of the seam owes
+the other half:** a walk over many pages releases each before taking the next, as
+`KOS_ASPACE_OP_SPAN` does, or it puts the whole tree over the figure for a reason that is the
+walk's and not the seam's.
 
 ### Privileged register write (`arch_periph_reg_write`)
 
@@ -1279,7 +1350,7 @@ not only about the message: each of the two now creates staging semaphores befor
 spawns, and a board too small to host the workers is also too small to supply those, so a
 probe is what keeps the outcome a skip rather than a create failure. Detecting the shortfall
 from a negative spawn return instead would not say which limit was hit, because
-`kos_thread_spawn` answers `-KOS_ENOMEM` for a full slot table and for a missing stack block
+`kos_thread_create` answers `-KOS_ENOMEM` for a full slot table and for a missing stack block
 alike. The other 61 cases
 need no 4th worker, so a small part loses one chained-priority-inheritance case and
 one call/reply case, not the suite. The 6-semaphore peak is `mutex_deadlock`: two permanent
@@ -1407,7 +1478,7 @@ re-provisioning bought. `caller_stack` still reports PARTIAL (`t_caller_stack`:
 `confused_deputy` carries the same construct and did not trip it on this part.
 
 **8 of the 9 former skips were arena STARVATION wearing a "pool too small" label.** That
-label is not sloppiness in the cases: `kos_thread_spawn` returns `-KOS_ENOMEM` for BOTH
+label is not sloppiness in the cases: `kos_thread_create` returns `-KOS_ENOMEM` for BOTH
 "slot table full" and "no stack block", so the two are INDISTINGUISHABLE at runtime and a
 case that only sees a negative spawn return cannot tell which limit it hit. This is the
 same trap *What binds beyond memory* states from the other end -- a spawn failure is not

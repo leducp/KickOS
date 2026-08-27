@@ -58,7 +58,7 @@ namespace kickos
         }
     }
 
-    // task_for must never be the refusal a caller sees first: thread_spawn resolves the
+    // task_for must never be the refusal a caller sees first: thread_create_call resolves the
     // task BEFORE it claims a thread slot, so a pool one slot short would turn a
     // thread-pool exhaustion into a task-pool exhaustion one spawn earlier. Both answer
     // -KOS_ENOMEM, but only this bound keeps the two coincident. The +1 is idle, which
@@ -110,13 +110,14 @@ namespace kickos
         return t->domain;
     }
 
-    Task* task_for(bool privileged, void* mem_base, size_t mem_size,
-                   bool caller_authorized, int* err)
+    Task* task_for(uint32_t caller, void* mem_base, size_t mem_size, Domain* donor,
+                   int* err)
     {
-        // FIRST: the dedup scan must run before a task slot is spent, or a refused grant
-        // leaves debris the next scan has to reason about.
+        // FIRST: admission must run before a task slot is spent, or a refused grant leaves
+        // debris behind. (This named a dedup scan in domain_for; T5 deleted that scan and
+        // the ordering requirement outlived it.)
         // 0 memory type: the spawn ABI has no field to ask for another.
-        Domain* const d = domain_for(privileged, mem_base, mem_size, 0u, caller_authorized, err);
+        Domain* const d = domain_for(caller, mem_base, mem_size, 0u, donor, err);
         if (d == nullptr)
         {
             return nullptr;
@@ -124,6 +125,11 @@ namespace kickos
         Task* const t = free_slot();
         if (t == nullptr)
         {
+            // The domain is at refcount 0 and nothing will ever hold it, so release it here
+            // rather than leaving the pool to recycle the slot: a domain built by a handoff
+            // holds a reference on its DONOR, and an abandoned slot pins that donor's space
+            // and every frame in it until the slot happens to be reused.
+            domain_release(d);
             *err = KOS_ENOMEM; // pool exhausted: retry later
             return nullptr;
         }
@@ -134,8 +140,8 @@ namespace kickos
         return t;
     }
 
-    Task* task_create(uint16_t creator_tag, void* mem_base, size_t mem_size,
-                      uint32_t mem_attr, bool caller_authorized, int* err)
+    Task* task_create(uint16_t creator_tag, uint32_t caller, void* mem_base, size_t mem_size,
+                      uint32_t mem_attr, Domain* donor, int* err)
     {
         *err = 0;
         if (creator_tag == ThreadPool::KILL_TAG_NONE)
@@ -143,7 +149,10 @@ namespace kickos
             *err = KOS_EPERM; // a creator that matches nobody could never name the result
             return nullptr;
         }
-        Domain* const d = domain_for(/*privileged=*/false, mem_base, mem_size, mem_attr, caller_authorized, err);
+        // Always unprivileged, whatever the creator is: DOM_CALLER_PRIVILEGED is dropped
+        // here rather than forwarded.
+        Domain* const d = domain_for(caller & DOM_CALLER_MEM_AUTH, mem_base, mem_size, mem_attr,
+                                     donor, err);
         if (d == nullptr)
         {
             return nullptr;
@@ -151,6 +160,7 @@ namespace kickos
         Task* const t = free_slot();
         if (t == nullptr)
         {
+            domain_release(d); // as in task_for: an abandoned domain still pins its donor
             *err = KOS_ENOMEM;
             return nullptr;
         }

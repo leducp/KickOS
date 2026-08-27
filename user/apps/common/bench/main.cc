@@ -352,8 +352,8 @@ namespace
         kos::Semaphore done(0);
         kos_cap_grant scaps[] = {{ep, KOS_CAP_WAIT}, {done.id(), CH_FULL}};   // E(WAIT)@1, done@2
         kos_cap_grant ccaps[] = {{ep, KOS_CAP_SIGNAL}, {done.id(), CH_FULL}}; // E(SIGNAL)@1, done@2
-        auto sv = kos::thread::spawn_caps(callreply_server, nullptr, "cr_srv", server_prio, scaps, 2);
-        auto cl = kos::thread::spawn_caps(callreply_caller, nullptr, "cr_cl", caller_prio, ccaps, 2);
+        auto sv = kos::thread::create_caps(callreply_server, nullptr, "cr_srv", server_prio, scaps, 2);
+        auto cl = kos::thread::create_caps(callreply_caller, nullptr, "cr_cl", caller_prio, ccaps, 2);
         if (not sv.valid() or not cl.valid())
         {
             // A lone peer holds its slot for the whole run unless drained HERE: the server
@@ -431,8 +431,8 @@ int main(int, char**)
     // them when player_b posts the gate.
     kos_cap_grant acaps[] = {{a.id(), CH_FULL}, {b.id(), CH_FULL}};                    // A@1, B@2
     kos_cap_grant bcaps[] = {{a.id(), CH_FULL}, {b.id(), CH_FULL}, {gate.id(), CH_FULL}}; // +gate@3
-    auto ra = kos::thread::spawn_caps(player_a, nullptr, "bench_a", 1, acaps, 2);
-    auto rb = kos::thread::spawn_caps(player_b, nullptr, "bench_b", 1, bcaps, 3);
+    auto ra = kos::thread::create_caps(player_a, nullptr, "bench_a", 1, acaps, 2);
+    auto rb = kos::thread::create_caps(player_b, nullptr, "bench_b", 1, bcaps, 3);
     if (not ra.valid() or not rb.valid())
     {
         // Do not park here: on a bootloader-handover board a parked app costs a physical

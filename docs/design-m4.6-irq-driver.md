@@ -560,7 +560,7 @@ drivers are spawned by the service list with their resources already in hand.
 
 The fourth shape, recorded because it is the one a reviewer reaches for on seeing H3 and
 wanting the unowned interval gone by construction: put an `irq_line` field in
-`kos_thread_params` next to `mmio_base`/`mmio_size`, and have `thread_spawn` mint the binding
+`kos_thread_params` next to `mmio_base`/`mmio_size`, and have `thread_create_call` mint the binding
 and install the IRQ cap directly into the child. No parent ever holds the cap, so there is no
 window at all. It dies on sec.2.1's own argument. The two-thread driver needs ONE binding
 shared into TWO children with DIFFERENT rights: WAIT for the IRQ thread, SIGNAL for the service

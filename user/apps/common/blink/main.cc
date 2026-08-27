@@ -34,7 +34,7 @@ int main(int, char**)
 {
     kos_print("blink: heartbeat on the kernel diagnostic LED\n");
 
-    kos::thread::spawn(blinker, nullptr, "blink", 10);
+    kos::thread::create(blinker, nullptr, "blink", 10);
 
     // Root parks so the blinker owns the CPU; blocking here proves the switch.
     kos_cap_t idle = KOS_CAP_NONE;

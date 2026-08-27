@@ -2,7 +2,11 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The per-thread TLS block, carved off the LOW end of the thread's own stack, so it costs
-// no MPU descriptor of its own and the thread pointer IS the stack block's base.
+// no MPU descriptor of its own.
+//
+// Whether the thread pointer IS that base or is SEATED from the thread's own record is per
+// arch: an M-profile backend has no thread-pointer register and derives it by masking SP,
+// while a backend that has one writes it and owes the stack no alignment past the ABI's.
 
 #ifndef KICKOS_TLS_H
 #define KICKOS_TLS_H

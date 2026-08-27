@@ -46,7 +46,7 @@ namespace kickos
         }
 
         // Drops every region. The zeroed image that follows grants nothing, which is also
-        // what a memset'd TCB carries before its first append.
+        // what a kmemset'd TCB carries before its first append.
         void clear()
         {
             count_ = 0;
@@ -75,6 +75,11 @@ namespace kickos
         // and changes nothing when the set is full or the backend seats no descriptor for
         // the region, so the caller returns an error instead of handing back memory the
         // thread would fault on.
+        //
+        // NOT COMPILED ON A TRANSLATING BACKEND. There the enforcement is the mapping and
+        // no descriptor is ever seated, so encode() below has no honest answer to give and
+        // a caller reading its all-seated one would take a description for a guarantee.
+#if !KICKOS_HAVE_ASPACE
         [[nodiscard]] bool add_enforced(uintptr_t base, size_t size, uint32_t attr)
         {
             if (full())
@@ -93,6 +98,43 @@ namespace kickos
             encode();
             return false;
         }
+
+        // add_enforced, except that a region already naming EXACTLY this base and size is
+        // RETYPED IN PLACE rather than joined by a second one. Two descriptors over one block
+        // are two answers to one question: the kernel's range checks read the first and the
+        // hardware obeys the last. Keeping the index is the other half, region precedence
+        // being positional on PMSAv7.
+        //
+        // Answers false and changes NOTHING when the new attributes are unencodable, the old
+        // ones going straight back, so a refused re-type takes no reach away.
+        //
+        // noinline is LOAD-BEARING, for the reason console_write_user gives in syscall.cc: its
+        // one caller is `syscall_body`, whose frame the SVC and SYSK red zones are measured on,
+        // and inlined this search cost that frame a spill slot on every board including the
+        // ones no chip reaches this path from.
+        [[nodiscard]] __attribute__((noinline)) bool add_enforced_retyping(uintptr_t base,
+                                                                          size_t size,
+                                                                          uint32_t attr)
+        {
+            for (uint8_t i = 0; i < count_; i++)
+            {
+                if (regions_[i].base != base or regions_[i].size != size)
+                {
+                    continue;
+                }
+                uint32_t const was = regions_[i].attr;
+                regions_[i].attr = attr;
+                if ((encode() >> i) & 1u)
+                {
+                    return true;
+                }
+                regions_[i].attr = was;
+                encode();
+                return false;
+            }
+            return add_enforced(base, size, attr);
+        }
+#endif
 
         // Appends the arch's app-wide static regions (code and static data). They come from
         // the linker script, so they are encodable by construction and there are never more
@@ -121,6 +163,9 @@ namespace kickos
             return count_ >= KICKOS_MPU_MAX_REGIONS;
         }
 
+        // The seating bitmask. Where no descriptor exists the answer is all-seated, which
+        // is honest only because nothing is enforced there either; add_enforced is
+        // compiled out on the one backend where that pair comes apart.
         uint32_t encode()
         {
 #if KICKOS_HAVE_MPU

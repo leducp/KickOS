@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Task-scoped death and the group kill (docs/design-task-layer.md sections 6 and 9.5).
+// Death scoped by kind, and the group kill (docs/design-task-layer.md sections 6 and 9.5).
 //
-// Two claims, and only one of them is a counter:
+// Three claims, and only one of them is a counter:
+//   * the SCOPE boundary. A FAULT ends the whole group, because siblings share the address
+//     space the faulting thread was writing and no caller is watching a fault. Every death
+//     a caller asked for ends one thread; the caller that wants the group has kos_task_kill
+//     and kos_task_slay, which cancel every member themselves. Both directions are
+//     asserted: a boundary tested one way passes with the group cancel deleted, and tested
+//     the other way passes with it unconditional.
 //   * the REACH of a cancel. Every park has to end, whatever the primitive under it, or a
 //     group kill is only a kill of the threads that happened to park somewhere cancellable.
 //   * the ORDER of a member's death against its peers'. Asserted through the fixture's
@@ -49,7 +55,7 @@ namespace kickos
             constexpr uint8_t PRIO_HIGH = 6;
         }
 
-        // The inert-by-default claim: a thread alone in its task takes nobody with it.
+        // The SCOPE claim: even a death that ends its whole group reaches that group only.
         TEST_F(TaskDeath, a_lone_member_takes_nobody)
         {
             Task* const alone = task(0);
@@ -60,13 +66,105 @@ namespace kickos
             join_task(stranger, other);
             kernel().current = c;
 
-            run_exit(0);
+            run_exit_faulted(0);
 
             EXPECT_EQ(stranger->cancel_kind, CANCEL_NONE)
                 << "a thread in a DIFFERENT task must not be cancelled by this exit";
             EXPECT_NE(stranger->state, ThreadState::EXITED) << "the stranger keeps running";
         }
 
+        // --- the SCOPE boundary --------------------------------------------------------
+        // An ORDINARY RETURN ends one thread. A sibling is a thread of the same process and
+        // its own return is what ends it; the task ends when the last member leaves. This is
+        // the arm that fails if the group cancel is unconditional, which is what it was while
+        // every spawn was alone in its task and the two readings could not be told apart.
+        TEST_F(TaskDeath, an_ordinary_return_spares_its_peers)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            Semaphore* const s = semaphore(nullptr);
+            park_sem_waiter(peer, s);
+            kernel().current = c;
+
+            run_exit(0);
+
+            EXPECT_EQ(peer->cancel_kind, CANCEL_NONE)
+                << "a sibling's ordinary return is not a request for this thread to die";
+            EXPECT_EQ(peer->state, ThreadState::BLOCKED) << "and it is left parked where it was";
+            EXPECT_EQ(peer->wait_kind, WAIT_SEM) << "with its wait edge intact";
+            EXPECT_EQ(task_member_count(group), 1u) << "the group outlives the member that left";
+        }
+
+        // A COOPERATIVE KILL is aimed at ONE thread and takes nobody else: kos_task_kill is
+        // the verb for the group and marks every member itself, so propagating here would make
+        // a single-thread kill unexpressible.
+        TEST_F(TaskDeath, a_cooperative_kill_spares_its_peers)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            Semaphore* const s = semaphore(nullptr);
+            park_sem_waiter(peer, s);
+            c->cancel_kind = CANCEL_KILL;
+            kernel().current = c;
+
+            run_exit(0);
+
+            EXPECT_EQ(peer->cancel_kind, CANCEL_NONE)
+                << "cancelling a thread does not cancel its peers";
+            EXPECT_EQ(peer->state, ThreadState::BLOCKED) << "and leaves them parked";
+        }
+
+        // A SLAY is aimed at ONE named thread and takes nobody else. kos_thread_slay and
+        // kos_task_slay are two syscalls, and the second cancels every member itself; making
+        // a member's slay reach the group would collapse them into one and leave "stop this
+        // worker" unexpressible by its own parent.
+        TEST_F(TaskDeath, a_slain_member_spares_its_peers)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            Semaphore* const s = semaphore(nullptr);
+            park_sem_waiter(peer, s);
+            c->cancel_kind = CANCEL_SLAY;
+            kernel().current = c;
+
+            run_exit(0);
+
+            EXPECT_EQ(peer->cancel_kind, CANCEL_NONE)
+                << "slaying one member is not slaying the group";
+            EXPECT_EQ(peer->state, ThreadState::BLOCKED) << "and leaves it parked";
+        }
+
+        // A FAULT ends the group, and this is the fault-isolation property: the faulting
+        // thread's siblings share the address space it was writing when it died. Cooperative,
+        // so a peer keeps the window it holds long enough to quiet its device.
+        TEST_F(TaskDeath, a_fault_ends_the_whole_task)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            Semaphore* const s = semaphore(nullptr);
+            park_sem_waiter(peer, s);
+            kernel().current = c;
+
+            run_exit_faulted(0);
+
+            EXPECT_EQ(peer->cancel_kind, CANCEL_KILL)
+                << "a contained fault ends the group it was contained to";
+            EXPECT_NE(peer->state, ThreadState::BLOCKED) << "and the park ends";
+        }
+
+        // --- the REACH of the cancel ---------------------------------------------------
         // Two members, one exit. The peer is marked AND made runnable, which is what carries
         // it to its own death point.
         TEST_F(TaskDeath, a_member_exit_cancels_its_peer)
@@ -80,7 +178,7 @@ namespace kickos
             park_sem_waiter(peer, s);
             kernel().current = c;
 
-            run_exit(0);
+            run_exit_faulted(0);
 
             EXPECT_NE(peer->cancel_kind, CANCEL_NONE)
                 << "a task-mate is cancelled by its peer's exit";
@@ -103,7 +201,7 @@ namespace kickos
             park_sem_waiter(peer, s);
             kernel().current = c;
 
-            run_exit(0);
+            run_exit_faulted(0);
 
             EXPECT_EQ(s->count, 0) << "no token was minted to unpark the waiter";
             EXPECT_TRUE(s->waiters.head == nullptr) << "the waiter is off the semaphore queue";
@@ -124,7 +222,7 @@ namespace kickos
             park_plain_sender(peer, ep);
             kernel().current = c;
 
-            run_exit(0);
+            run_exit_faulted(0);
 
             EXPECT_TRUE(ep->send_waiters.head == nullptr)
                 << "the sender is unlinked from send_waiters";
@@ -145,7 +243,7 @@ namespace kickos
             park_sleeper(peer, 1000000u);
             kernel().current = c;
 
-            run_exit(0);
+            run_exit_faulted(0);
 
             EXPECT_FALSE(peer->on_timer) << "the cancel drops the sleeper's deadline";
             EXPECT_NE(peer->state, ThreadState::BLOCKED) << "the sleeper is no longer parked";
@@ -170,7 +268,7 @@ namespace kickos
             sched::set_prio(owner, PRIO_HIGH);
             kernel().current = c;
 
-            run_exit(0);
+            run_exit_faulted(0);
 
             EXPECT_EQ(owner->prio, PRIO_LOW)
                 << "the owner falls back to its base priority once the waiter is gone";
@@ -195,7 +293,7 @@ namespace kickos
             kernel().current = c;
             trace_reset();
 
-            run_exit(0);
+            run_exit_faulted(0);
 
             EXPECT_STREQ(trace(), "switch10>11 reclaim")
                 << "the cancelled peer runs before the rest of the exit";
@@ -218,7 +316,7 @@ namespace kickos
             kernel().current = c;
             trace_reset();
 
-            run_exit(0);
+            run_exit_faulted(0);
 
             EXPECT_STREQ(trace(), "reclaim switch10>11")
                 << "the exit completes first, then hands over once";

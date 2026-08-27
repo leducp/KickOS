@@ -1,41 +1,31 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# ISA family routes the chip glob + per-arch include path. The arm toolchain
-# predates the seam and does not set it, so default to "arm"; the rx toolchain
-# (and, separately, an xtensa one) set it explicitly.
+# ISA family routes the chip glob + per-arch include path. The arm toolchain does not set it;
+# every other family's toolchain does.
 if(NOT KICKOS_ARCH_FAMILY)
   set(KICKOS_ARCH_FAMILY "arm")
 endif()
 
 # --- Seam fallbacks: the lone-TU rule ----------------------------------------
-# A seam whose backend is optional gets its fallback body in a translation unit of its
-# OWN, named <symbol>_default.cc, that defines EXACTLY ONE symbol. A backend that
-# defines the symbol satisfies the reference from its own member, so the fallback member
-# is never extracted; a second symbol in a fallback TU would drag the member in anyway
-# and collide with that backend. tests/static/check_seam_defaults.sh asserts both the
-# one-symbol rule and the per-board resolution.
+# A seam whose backend is optional gets its fallback body in a translation unit of its OWN,
+# named <symbol>_default.cc, defining EXACTLY ONE symbol: a second symbol in a fallback TU
+# drags the member in beside a backend that defines the seam and collides with it.
+# tests/static/check_seam_defaults.sh asserts the one-symbol rule and the per-board resolution.
 #
-# This is LINKER behaviour, not language semantics. It is behaviour every Unix-like
-# linker and MSVC `.lib` share, unlike __attribute__((weak)), whose archive interaction
-# is implementation-defined.
+# The load-bearing invariant is on the backend side: a backend's definition must live in an
+# archive member that is ALWAYS ANCHORED, one the link pulls for some other reason
+# (chip_<chip>.cc, force-loaded via -u g_isr_vector -> startup.S -> Reset_Handler;
+# usic_uart.cc, pulled for arch_console_tx_backend). A backend whose definition sits in a
+# dedicated TU nothing else references is not protected by scan order: the fallback resolves
+# the reference first and the board SILENTLY DECLINES at runtime. Leg 2 of the gate enforces
+# the anchoring rule.
 #
-# THE LOAD-BEARING INVARIANT IS ON THE BACKEND SIDE: a backend's definition must live in
-# an archive member that is ALWAYS ANCHORED, i.e. one the link pulls for some other
-# reason (chip_<chip>.cc, force-loaded via -u g_isr_vector -> startup.S ->
-# Reset_Handler; usic_uart.cc, pulled for arch_console_tx_backend). A backend that puts
-# its definition in a dedicated TU nothing else references is NOT protected by scan
-# order: the fallback resolves the reference first and the board SILENTLY DECLINES at
-# runtime. Scan order (fallbacks live in kickos_arch_*, which the rescan group scans
-# AFTER kickos_chip_*) is a backstop only. Leg 2 of the gate is what enforces the
-# anchoring rule.
-#
-# Arch-neutral fallbacks for seams the KERNEL declares. They must NOT sit in
-# kickos_kernel: the group scans the kernel archive before the chip archive, so a
-# fallback there would be extracted in the same pass that makes the symbol undefined and
-# then collide with the chip's definition. Each list below drops the members that the
-# arch backend itself defines: two definitions of one symbol in ONE archive resolve by
-# member order, which is exactly the implementation-defined behaviour this replaces.
+# Arch-neutral fallbacks for seams the KERNEL declares must NOT sit in kickos_kernel: the
+# group scans the kernel archive before the chip archive, so a fallback there is extracted in
+# the same pass that makes the symbol undefined and then collides with the chip's definition.
+# Each list below drops the members the arch backend itself defines: two definitions of one
+# symbol in ONE archive resolve by member order.
 set(KICKOS_SEAM_DEFAULTS_COMMON
   common/arch_console_flush_sync_default.cc
   common/arch_console_reclaim_default.cc
@@ -53,8 +43,8 @@ set(KICKOS_SEAM_DEFAULTS_COMMON
   common/arch_periph_reg_write_default.cc
   common/arch_pinmux_set_default.cc
   common/kfault_terminate_default.cc)
-# arch_reboot must be ABSENT from a production image, so its fallback follows the same
-# gate as its callers and its chip backends.
+# arch_reboot must be absent from a production image, so its fallback follows the same gate
+# as its callers and its chip backends.
 if(KICKOS_ENABLE_SELFTEST)
   list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/arch_reboot_default.cc)
 endif()
@@ -83,10 +73,10 @@ if(KICKOS_HAVE_MPU)
 endif()
 
 if(KICKOS_ARCH STREQUAL "sim")
-  # sim.cc IS the backend for arch_console_write_sync, arch_console_tx_backend,
+  # sim.cc is the backend for arch_console_write_sync, arch_console_tx_backend,
   # arch_console_reclaim_window, kfault_terminate and arch_periph_reg_write, so those fallbacks
-  # are dropped: the sim has no chip archive, and a fallback beside a backend in ONE
-  # archive resolves by member order. SystemCoreClock has no chip to define it here.
+  # are dropped: a fallback beside a backend in ONE archive resolves by member order.
+  # SystemCoreClock has no chip to define it here.
   set(_sim_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
   list(REMOVE_ITEM _sim_defaults
     common/arch_console_tx_backend_default.cc
@@ -102,8 +92,7 @@ if(KICKOS_ARCH STREQUAL "sim")
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/sim/include>"
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-  # Telemetry: the sim flushes the RTT ch1 ring to a file at shutdown, so it reads
-  # lib's rtt.h (arch -> lib is the ordinary downward direction; lib is the leaf).
+  # Telemetry: the sim flushes the RTT ch1 ring to a file at shutdown, so it reads lib's rtt.h.
   target_include_directories(kickos_arch_sim PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../lib/include")
   if(KICKOS_MULTI_INSTANCE)
@@ -114,13 +103,8 @@ if(KICKOS_ARCH STREQUAL "sim")
   endif()
   install(TARGETS kickos_arch_sim EXPORT KickOSTargets
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-  # Kernel headers for the reverse-direction callbacks are pulled via arch.h.
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sim/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "armv7m")
-  # Context switch (PendSV) + syscall trap (SVC trampoline) in switch.S,
-  # the Cortex-M core-generic seam in arch_armv7m.cc. The chip layer
-  # (arch/arm/chip/*) adds arch_init/arch_console_write + the
-  # linker script; until then this builds as a static library only.
   add_library(kickos_arch_armv7m STATIC
     arm/armv7m/arch_armv7m.cc
     arm/armv7m/cache.cc
@@ -135,8 +119,7 @@ elseif(KICKOS_ARCH STREQUAL "armv7m")
     arm/armv7m/switch.S)
   kickos_apply_freestanding(kickos_arch_armv7m)
   # The DWT arch_trace_now fallback runs on the PendSV-tail emit path, so its TU (and
-  # arch_armv7m.cc, which carries the rest of that path) must be FP-register-free
-  # (v7-M has an FPU). Both TUs are integer-only, so -mgeneral-regs-only is safe.
+  # arch_armv7m.cc, which carries the rest of that path) must be FP-register-free.
   if(KICKOS_TELEMETRY_ON)
     set_source_files_properties(arm/armv7m/arch_armv7m.cc
                                 arm/armv7m/arch_trace_now_default.cc
@@ -150,11 +133,10 @@ elseif(KICKOS_ARCH STREQUAL "armv7m")
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv7m/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "armv6m")
-  # Cortex-M0/M0+ (RP2040). PRIMASK crit + v6-M-subset switch.S; the
-  # chip supplies arch_clock_now (no DWT) + arch_init/console + linker script.
-  # No arch_trace_now fallback: v6-M has no DWT, so the trace clock is a chip contract.
-  # Fault isolation has a real v6-M backend (it reads CONTROL.nPRIV), linked in place of
-  # the declining fallbacks removed from KICKOS_SEAM_DEFAULTS_COMMON under the same gate.
+  # Cortex-M0/M0+ (RP2040). No arch_trace_now fallback: v6-M has no DWT, so the trace clock
+  # is a chip contract. Fault isolation has a real v6-M backend (it reads CONTROL.nPRIV),
+  # linked in place of the declining fallbacks removed from KICKOS_SEAM_DEFAULTS_COMMON under
+  # the same gate.
   set(KICKOS_ARMV6M_FAULT "")
   if(KICKOS_FAULT_ISOLATION)
     set(KICKOS_ARMV6M_FAULT arm/armv6m/arch_armv6m_fault.cc)
@@ -178,11 +160,7 @@ elseif(KICKOS_ARCH STREQUAL "armv6m")
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv6m/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "rxv3")
-  # Renesas RX72M (RXv3). Uniform SWINT deferred context switch +
-  # INT-based syscall trap (supervisor-on-USP) in switch.S; the core-generic seam
-  # (crit section via MVTIPL, CMTW clock/timer, ICUD mask/unmask) in arch_rxv3.cc.
-  # The chip layer (arch/rx/chip/*) supplies arch_init/arch_console_write + the
-  # linker script.
+  # Renesas RX72M (RXv3). The syscall trap enters supervisor on the USP (switch.S).
   add_library(kickos_arch_rxv3 STATIC
     rx/rxv3/arch_rxv3.cc
     rx/rxv3/emutls.cc
@@ -203,12 +181,9 @@ elseif(KICKOS_ARCH STREQUAL "rxv3")
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rx/rxv3/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "lx6")
-  # ESP32 Xtensa LX6, the first non-ARM ISA. Windowed ABI, so the
-  # context switch spills all live register windows to the outgoing thread's stack
-  # before the SP swap (switch.S); the mandatory window over/underflow + interrupt
-  # vectors live in the chip startup.S. Syscall is a plain call (no privilege
-  # split); RSIL crit section; CCOUNT/CCOMPARE0 timer. The chip supplies
-  # arch_init/console/shutdown + startup vectors + linker script.
+  # ESP32 Xtensa LX6. Windowed ABI, so the context switch spills all live register windows
+  # to the outgoing thread's stack before the SP swap (switch.S); the mandatory window
+  # over/underflow and interrupt vectors live in the chip startup.S.
   add_library(kickos_arch_lx6 STATIC
     xtensa/lx6/arch_xtensa.cc
     common/arch_ram_common.cc
@@ -225,12 +200,12 @@ elseif(KICKOS_ARCH STREQUAL "lx6")
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xtensa/lx6/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "armv8a")
-  # ARMv8-A in AArch64 state (QEMU virt, Cortex-A53), the first 64-bit ISA in the fleet.
-  # SKELETON: every seam body in arch_armv8a.cc is a stub, so this configures and links
-  # nothing runnable yet. The chip layer (arch/arm64/chip/virt_arm64) supplies
-  # arch_init/console/shutdown + the clock/timer + linker script.
+  # ARMv8-A in AArch64 state (QEMU virt, Cortex-A53). The fleet's only TRANSLATING backend,
+  # so aspace_armv8a.cc has no region-descriptor counterpart in any other branch here.
   add_library(kickos_arch_armv8a STATIC
     arm64/armv8a/arch_armv8a.cc
+    arm64/armv8a/aspace_armv8a.cc
+    arm64/armv8a/cache_armv8a.cc
     arm64/armv8a/vectors.S
     arm64/armv8a/switch.S
     common/arch_ram_common.cc
@@ -245,13 +220,9 @@ elseif(KICKOS_ARCH STREQUAL "armv8a")
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arm64/armv8a/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "rv32imac")
-  # RISC-V RV32IMAC (ESP32-C6 + QEMU virt): single mtvec trap that demuxes on
-  # mcause. ONE deferred switcher via CLINT msip (the RX SWINT / ARM PendSV
-  # model), ecall syscall trap -> a privileged-thread trampoline (switch.S); the
-  # core-generic seam (mstatus.MIE crit, rdcycle trace clock, wfi idle, PMP stub)
-  # in arch_rv32imac.cc. No F/D extension -> soft-float, so the switch banks no FP.
-  # The chip layer (arch/riscv/chip/{virt,esp32c6}) supplies arch_init/console/
-  # shutdown + the clock/timer + the CLINT base + linker script + startup.
+  # RISC-V RV32IMAC (ESP32-C6 + QEMU virt). A single mtvec trap demuxes on mcause, and the
+  # ecall syscall trap enters a privileged-thread trampoline (switch.S). No F/D extension, so
+  # soft-float and the switch banks no FP.
   add_library(kickos_arch_rv32imac STATIC
     riscv/rv32imac/arch_rv32imac.cc
     common/arch_ram_common.cc
@@ -276,17 +247,25 @@ else()
   message(FATAL_ERROR "KickOS: arch backend '${KICKOS_ARCH}' not available")
 endif()
 
-# The declining fallbacks name the KOS_E* taxonomy and the backends' cross-thread fields
-# name kickos/sys/atomic.h; both are kickos_system headers, and kickos_system cannot be
-# LINKED here because it sits above the arch layer.
+# kickos_system sits above the arch layer, so its headers (the KOS_E* taxonomy the declining
+# fallbacks name, kickos/sys/atomic.h for the backends' cross-thread fields) are included here
+# and never linked.
 target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../system/include")
 
-# STRUCTURAL GATE ON __aeabi_read_tp. The leaf answers every thread_local access on
-# M-profile and the one way to get it wrong is at the edge of the range, which the tlsprobe
-# witness cannot see: C code never runs with SP at an exclusive stack top, so the witness
-# passes with and without the subtract that makes that case correct. The instructions are
-# what gets checked.
+# Arch text runs in the kernel's half, so its compiler-emitted runtime references are
+# privatised with the kernel's (cmake/kickos.cmake).
+if(KICKOS_HAVE_ASPACE)
+  kickos_privatise_runtime(kickos_arch_${KICKOS_ARCH})
+  # arch_context_init builds a thread's first frame with kickos_user_thread_return as its
+  # return address, which is app text.
+  kickos_split_image_tu(kickos_arch_${KICKOS_ARCH}
+    arm64/armv8a/arch_armv8a.cc)
+endif()
+
+# Structural gate on __aeabi_read_tp: C code never runs with SP at an exclusive stack top, so
+# the tlsprobe witness passes with and without the subtract that makes that case correct. The
+# instructions are what gets checked.
 if(KICKOS_BUILD_TESTS AND KICKOS_TLS AND KICKOS_ARCH_FAMILY STREQUAL "arm")
   add_test(
     NAME    arm_read_tp
@@ -296,11 +275,10 @@ if(KICKOS_BUILD_TESTS AND KICKOS_TLS AND KICKOS_ARCH_FAMILY STREQUAL "arm")
   set_tests_properties(arm_read_tp PROPERTIES TIMEOUT 60 LABELS host)
 endif()
 
-# NO PRIVILEGED TU MAY REACH THREAD-LOCAL STORAGE. Read as relocations rather than as
-# source, because a thread_local reached through an inline function in a header leaves no
-# `thread_local` in the privileged .cc that emitted the access. Registered on every cross
-# board and not only where KICKOS_TLS is on: a kernel TU that grows one on a board with the
-# knob off is the same bug arriving somewhere the app cannot see it.
+# No privileged TU may reach thread-local storage. Read as relocations and not as source: a
+# thread_local reached through an inline function in a header leaves no `thread_local` in the
+# privileged .cc that emitted the access. Registered on every cross board and not only where
+# KICKOS_TLS is on.
 if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
   set(_no_tls_scan
       "$<TARGET_FILE:kickos_kernel>"
@@ -308,9 +286,8 @@ if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
       "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
       "$<TARGET_FILE:kickos_lib>")
   # ONE member of libkickos_user.a, never the whole archive: the rest of that archive is
-  # unprivileged and its thread_local is correct there. newlib_reent.cc owns the per-thread
-  # struct _reent array and the word the context switch seats, so a thread_local in it is
-  # read on the wrong thread pointer exactly as a kernel one would be.
+  # unprivileged and its thread_local is correct there. newlib_reent.cc holds the word the
+  # context switch seats, so a thread_local in it is read on the wrong thread pointer.
   list(APPEND _no_tls_scan "$<TARGET_FILE:kickos_user>::newlib_reent.cc.obj")
   add_test(
     NAME    no_privileged_tls
@@ -320,44 +297,64 @@ if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
   set_tests_properties(no_privileged_tls PROPERTIES TIMEOUT 60 LABELS host)
 endif()
 
+# No archive holding kernel text may name the app's runtime: the kernel links its own
+# memcpy/memset/strlen and formatter under the kickos/kruntime.h names. Read AFTER
+# kickos_privatise_runtime has rewritten the emitted references, so a hit means the rewrite
+# never reached this archive. kickos_lib is not scanned, being where the app's copies are
+# defined.
+if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_ASPACE)
+  add_test(
+    NAME    kernel_runtime
+    COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_kernel_runtime.sh"
+            "${CMAKE_NM}"
+            "$<TARGET_FILE:kickos_kernel>"
+            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
+  set_tests_properties(kernel_runtime PROPERTIES TIMEOUT 60 LABELS host)
+endif()
+
+# And no GOT reference from those same archives. The code model is scoped per TU
+# (kickos_split_image_tu), and a weak extern in a TU left off that list emits one silently:
+# the symbol resolves, so nothing fails the link until something else forces the one .got to
+# be placed.
+if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_ASPACE)
+  add_test(
+    NAME    kernel_got
+    COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_kernel_got.sh"
+            "${CMAKE_READELF}"
+            "$<TARGET_FILE:kickos_kernel>"
+            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
+  set_tests_properties(kernel_got PROPERTIES TIMEOUT 60 LABELS host)
+endif()
+
 # --- Chip backend (startup + linker script + clocks + console) --------------
-# Built when the selected board resolves to a chip that is brought up. Sources:
-# every .cc + .S under <family>/chip/<chip>/. The family (arm|rx|xtensa) routes the
-# chip glob + arch-include path so a non-ARM ISA is a drop-in. Exports the linker
-# script path to the parent scope so the `kickos` interface target bakes it in.
 if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}")
-  # CONFIGURE_DEPENDS: adding/removing a chip source reconfigures automatically.
   file(GLOB _chip_src CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/*.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/*.S")
 
-  # The class/ subdir holds the Rule 6 class-driver leaf (below); it is built as
-  # its OWN kickos_class_<chip> lib, never into the chip library. The glob above is
-  # non-recursive so class/*.cc is already excluded, but filter defensively so a
-  # future recursive glob cannot silently pull the leaf into the kernel-linked chip
-  # object (which would break the leaf's separate bare-include-path contract).
+  # class/ holds the class-driver leaf, built as its OWN kickos_class_<chip> lib below. The
+  # glob above is non-recursive so class/*.cc is already excluded; the filter keeps a future
+  # recursive glob from pulling the leaf into the kernel-linked chip object, which would break
+  # the leaf's bare-include-path contract.
   list(FILTER _chip_src EXCLUDE REGEX "/class/")
 
-  # PMSAv8 MPU backend (Cortex-M33): a v8-M chip's mpu.cmake sets
-  # KICKOS_ARM_PMSAV8_SOURCE to arm/common/arch_arm_pmsav8.cc. It is NOT in the
-  # always-compiled armv7m arch list (the v6-M/v7-M fleet must never link it); it is
-  # pulled into the CHIP library only for an enforcement build so its strong
-  # kickos_arch_mpu_commit + arch_mpu_region_encodable replace the v7-M fallback TUs.
-  # Gated on KICKOS_HAVE_MPU so a non-enforcement build of the same chip stays
-  # byte-identical to the plain armv7m fleet.
+  # PMSAv8 MPU backend (Cortex-M33): a v8-M chip's mpu.cmake sets KICKOS_ARM_PMSAV8_SOURCE
+  # to arm/common/arch_arm_pmsav8.cc. It is NOT in the always-compiled armv7m arch list (the
+  # v6-M/v7-M fleet must never link it); it is pulled into the CHIP library only for an
+  # enforcement build, where its strong kickos_arch_mpu_commit + arch_mpu_region_encodable
+  # replace the v7-M fallback TUs.
   if(KICKOS_HAVE_MPU AND KICKOS_ARM_PMSAV8_SOURCE)
     list(APPEND _chip_src "${KICKOS_ARM_PMSAV8_SOURCE}")
   endif()
 
-  # A chip whose flash boot needs a checksummed second-stage loader ships a
-  # boot2.S. It is NOT compiled into the library directly: it must be assembled +
-  # linked to a raw binary, wrapped with a ROM-verified CRC, and re-emitted as a
-  # data blob in the .boot2 linker section. (RP2040: the bootrom loads the first
-  # 256 bytes of flash, checks a CRC-32/MPEG-2 over bytes 0..251, then runs it.)
-  # Everything is keyed on ${KICKOS_CHIP}: the CPU baseline comes from the
-  # toolchain (KICKOS_MCPU_FLAGS), the checksum tool is cmake/<chip>_checksum.py,
-  # and the forced blob symbol is g_<chip>_boot2, so a future boot2 chip that
-  # doesn't supply those fails loudly instead of building a silently-wrong image.
+  # A chip whose flash boot needs a checksummed second-stage loader ships a boot2.S. It is
+  # NOT compiled into the library directly: it must be assembled + linked to a raw binary,
+  # wrapped with a ROM-verified CRC, and re-emitted as a data blob in the .boot2 linker
+  # section. (RP2040: the bootrom loads the first 256 bytes of flash, checks a CRC-32/MPEG-2
+  # over bytes 0..251, then runs it.) Everything is keyed on ${KICKOS_CHIP}: the checksum tool
+  # is cmake/<chip>_checksum.py and the forced blob symbol is g_<chip>_boot2.
   set(_boot2_src "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/boot2.S")
   if(EXISTS "${_boot2_src}")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
@@ -373,11 +370,9 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     set(_boot2_elf "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}_boot2.elf")
     set(_boot2_bin "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}_boot2.bin")
     set(_boot2_gen "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}_boot2_checksummed.S")
-    # Stage 1: assemble + link the position-independent loader to a raw image.
-    # It is self-contained (no libc/startfiles); its own linker script caps it at
-    # 252 bytes. The -T is passed at the DRIVER level (see boot2.ld); with the
-    # newlib toolchain no default linker script is injected, so this form only
-    # applies our boot2.ld.
+    # The loader is self-contained (no libc/startfiles) and its own linker script caps it at
+    # 252 bytes. The -T is passed at the DRIVER level (see boot2.ld); with the newlib
+    # toolchain no default linker script is injected, so this form applies boot2.ld alone.
     add_custom_command(
       OUTPUT "${_boot2_bin}"
       COMMAND ${CMAKE_C_COMPILER} ${KICKOS_MCPU_FLAGS} -mthumb
@@ -388,7 +383,6 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
       DEPENDS "${_boot2_src}" "${_boot2_ld}"
       COMMENT "boot2: assembling ${KICKOS_CHIP} second stage -> raw binary"
       VERBATIM)
-    # Stage 2: append the CRC and re-emit as a .boot2 data section.
     add_custom_command(
       OUTPUT "${_boot2_gen}"
       COMMAND ${Python3_EXECUTABLE} "${_boot2_tool}" "${_boot2_bin}" "${_boot2_gen}"
@@ -404,10 +398,18 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
 
   add_library(kickos_chip_${KICKOS_CHIP} STATIC ${_chip_src})
   kickos_apply_freestanding(kickos_chip_${KICKOS_CHIP})
+  if(KICKOS_HAVE_ASPACE)
+    kickos_privatise_runtime(kickos_chip_${KICKOS_CHIP})
+    # Reset_Handler zeroes .appbss off __kickos_appbss_start/_end and registers the app's
+    # unwind table from __eh_frame_start, all three app-half, and reaches the frame
+    # registrar through a weak __register_frame. Absolute because the chip sources are
+    # globbed absolute above.
+    kickos_split_image_tu(kickos_chip_${KICKOS_CHIP}
+      "${CMAKE_CURRENT_SOURCE_DIR}/arm64/chip/virt_arm64/chip_virt_arm64.cc")
+  endif()
   # M7 D-cache: forward the option to the imxrt chip TU so arch_init calls
-  # kickos_armv7m_dcache_enable(). Default ON, silicon-validated (selftest 43/43 plus a
-  # ~38 M-switch soak under enforcement). Safe while the M7 is single-core with no DMA; M4
-  # DMA drivers MUST add clean/invalidate cache maintenance around DMA buffers.
+  # kickos_armv7m_dcache_enable(). Safe while the M7 is single-core with no DMA; an M4 DMA
+  # driver MUST add clean/invalidate cache maintenance around its DMA buffers.
   #
   # KICKOS_USB_CONSOLE is derived from the service list in the top-level CMakeLists, above
   # add_subdirectory(arch).
@@ -420,9 +422,8 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # option() CACHES, so an existing build directory switched onto a USB service list keeps a
   # stale ON.
   #
-  # Coherency with the cache on rests entirely on KOS_MEM_NOCACHE reaching BOTH of the
-  # block's grants, so that no cacheable mapping of it survives (stage S7,
-  # docs/design-m4.6.2-usb-cdc.md).
+  # Coherency with the cache on rests on KOS_MEM_NOCACHE reaching BOTH of the block's grants,
+  # so that no cacheable mapping of it survives (stage S7, docs/design-m4.6.2-usb-cdc.md).
   if(KICKOS_CHIP STREQUAL "imxrt1062" AND KICKOS_USB_CONSOLE AND KICKOS_IMXRT_DCACHE)
     message(WARNING
       "KickOS: KICKOS_IMXRT_DCACHE=ON with a USB console on imxrt1062 is UNWITNESSED ON "
@@ -446,9 +447,8 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   if(KICKOS_CHIP STREQUAL "imxrt1062" AND KICKOS_IMXRT_DCACHE)
     target_compile_definitions(kickos_chip_${KICKOS_CHIP} PRIVATE KICKOS_IMXRT_DCACHE=1)
   endif()
-  # A v7-M chip that OVERRIDES arch_trace_now (mps2's semihosting clock) has that
-  # function on the PendSV-tail emit path, so its TU must be FP-register-free too.
-  # (v6-M chips have no FPU, so -mgeneral-regs-only is moot there.)
+  # A v7-M chip that OVERRIDES arch_trace_now (mps2's semihosting clock) has that function on
+  # the PendSV-tail emit path, so its TU must be FP-register-free too.
   if(KICKOS_TELEMETRY_ON AND KICKOS_CHIP STREQUAL "mps2")
     set_source_files_properties(
       "${CMAKE_CURRENT_SOURCE_DIR}/arm/chip/${KICKOS_CHIP}/chip_${KICKOS_CHIP}.cc"
@@ -457,9 +457,8 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   target_include_directories(kickos_chip_${KICKOS_CHIP} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include"
-    # The family-common backend headers (arm/common/regs.h: core SCB/SysTick regs +
-    # the shared kickos_armv7m_enable_fpu). A chip has no regs.h of its own, so a
-    # chip #include "regs.h" resolves here.
+    # A chip has no regs.h of its own, so a chip #include "regs.h" resolves to
+    # <family>/common/regs.h here.
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/common"
     "${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include"
     # A retunable chip (arch_cpu_clock_set) names the KOS_PSTATE_* selector from the
@@ -468,32 +467,26 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     "${CMAKE_CURRENT_SOURCE_DIR}/../user/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../system/include"
     # Telemetry: a chip's arch_shutdown may dump the ch1 ring via the transport
-    # (mps2 semihosting file), so it reads lib's rtt.h (chip -> lib, downward).
+    # (mps2 semihosting file), so it reads lib's rtt.h.
     "${CMAKE_CURRENT_SOURCE_DIR}/../lib/include")
   install(TARGETS kickos_chip_${KICKOS_CHIP} EXPORT KickOSTargets
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 
-  # --- Rule 6 class-driver leaf (M4, decision R-A) -----------------------------
-  # A chip that factors register logic shared between the kernel and an
-  # unprivileged userspace driver puts it in a FREESTANDING, STATELESS leaf under
-  # <family>/chip/<chip>/class/: POD + free functions by explicit base, no
-  # ctor/dtor, no mutable static (rules 3/4). It is built as kickos_class_<chip>,
-  # its OWN static lib on a bare include path: repo include/ + this chip's register
-  # dir ONLY, deliberately NOT kernel/include. KickOS links kernel + driver into one
-  # MPU-partitioned ELF, so this leaf is ONE shared read-only copy consumed from two
-  # trust domains, so it must carry no writable state. The kernel-side
-  # (timebase) consumer is DEFERRED to Phase A; today the leaf is pulled in by the
-  # chip's userspace driver/app so it is not --gc-sections-stripped.
+  # --- Class-driver leaf -------------------------------------------------------
+  # A chip that factors register logic shared between the kernel and an unprivileged
+  # userspace driver puts it in a FREESTANDING, STATELESS leaf under
+  # <family>/chip/<chip>/class/: POD + free functions by explicit base, no ctor/dtor, no
+  # mutable static. It is built as kickos_class_<chip>, its OWN static lib on a bare include
+  # path: repo include/ + this chip's register dir ONLY, not kernel/include. KickOS links
+  # kernel + driver into one MPU-partitioned ELF, so this leaf is ONE shared read-only copy
+  # consumed from two trust domains and must carry no writable state.
   set(_class_dir
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/class")
   if(EXISTS "${_class_dir}")
     file(GLOB _class_src CONFIGURE_DEPENDS "${_class_dir}/*.cc")
     add_library(kickos_class_${KICKOS_CHIP} STATIC ${_class_src})
     kickos_apply_freestanding(kickos_class_${KICKOS_CHIP})
-    # PUBLIC: the class/ dir carries the leaf's own header, propagated to whichever
-    # driver/app links this lib. PRIVATE: repo include/ + the chip register dir,
-    # the leaf's whole world. NO kernel/include (verified via compile_commands): the
-    # leaf must compile under the kernel bar without seeing kernel headers.
+    # NO kernel/include: the leaf must compile without seeing kernel headers.
     target_include_directories(kickos_class_${KICKOS_CHIP}
       PUBLIC
         "$<BUILD_INTERFACE:${_class_dir}>"
@@ -505,17 +498,17 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
             ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   endif()
 
-  # Linker script: a board that knows its silicon size (e.g. a genuine 20 KiB C8
-  # vs the 10 KiB clone floor) overrides the chip default with its own copy under
-  # boards/<board>/<chip>.ld; otherwise use the chip default. The shipped copy is
-  # always named <chip>.ld so the INSTALL_INTERFACE -T path is board-independent.
+  # Linker script: a board that knows its silicon size (a genuine 20 KiB C8 against the
+  # 10 KiB clone floor) overrides the chip default with its own copy under
+  # boards/<board>/<chip>.ld. The shipped copy is always named <chip>.ld so the
+  # INSTALL_INTERFACE -T path is board-independent.
   set(_ld "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/${KICKOS_CHIP}.ld")
   if(EXISTS "${CMAKE_SOURCE_DIR}/boards/${KICKOS_BOARD}/${KICKOS_CHIP}.ld")
     set(_ld "${CMAKE_SOURCE_DIR}/boards/${KICKOS_BOARD}/${KICKOS_CHIP}.ld")
   endif()
   # Every image links --orphan-handling=error, so a script missing the shared vocabulary
   # fails the LINK with a section name and no hint of what is owed. Refuse at configure
-  # instead, the way KICKOS_POOL_ARENA_ASSERT is refused, and name the fix.
+  # instead, and name the fix.
   file(READ "${_ld}" _ld_sections_txt)
   set(_ld_required KICKOS_CODE_DEBRIS_SECTIONS KICKOS_NONALLOC_SECTIONS
                    KICKOS_STATIC_RELOC_ASSERT KICKOS_TLS_TEMPLATE KICKOS_TLS_FIT_ASSERT)
@@ -536,16 +529,14 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   endforeach()
 
   # Preprocess the linker script through cpp so KICKOS_HAVE_MPU gates sections: a
-  # non-enforcement build reserves no app-data block/region. cpp strips comments and passes
-  # MEMORY/SECTIONS/LONG/wildcard tokens through unchanged. The GENERATED script is named
+  # non-enforcement build reserves no app-data block/region. The GENERATED script is named
   # <chip>.ld too, so the INSTALL_INTERFACE -T path is unchanged.
   set(_ld_gen "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}.ld")
   # Per-build app-data window size. Each chip .ld carries its own freestanding default; a
   # full-C++ build needs the larger writable window for the heap and libstdc++/unwind state.
   set(_ld_defs -DKICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
   # KICKOS_TLS_FIT_ASSERT needs the knob, the stride and the arch's ABI bias. The bias is
-  # SCRAPED from the arch's context.h rather than restated here: it is one number and the
-  # header the compiler reads is the place that owns it.
+  # scraped from the arch's context.h, the header the compiler reads being what owns it.
   list(APPEND _ld_defs -DKICKOS_TLS=$<BOOL:${KICKOS_TLS}>)
   if(KICKOS_TLS)
     set(_tls_tcb_hdr "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include/kickos/arch/context.h")
@@ -560,7 +551,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     endif()
     string(REGEX REPLACE "^#define[ \t]+KICKOS_ARCH_TLS_TCB[ \t]+([0-9]+).*" "\\1" _tls_tcb "${_tls_tcb_line}")
     # The rounding tls_block_size() applies, scraped from the header that owns it so the link
-    # and the runtime cannot disagree about it.
+    # and the runtime cannot disagree.
     set(_sa_hdr "${CMAKE_SOURCE_DIR}/kernel/include/kickos/config/system.h")
     file(STRINGS "${_sa_hdr}" _sa_line REGEX "^#define[ \t]+KICKOS_STACK_ALIGN[ \t]+[0-9]+")
     if(_sa_line STREQUAL "")
@@ -580,15 +571,14 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   if(DEFINED KICKOS_USER_HEAP_SIZE)
     list(APPEND _ld_defs -DKICKOS_USER_HEAP_SIZE=${KICKOS_USER_HEAP_SIZE})
   endif()
-  # Opt-in link-time heap floor: the .ld ASSERTs at least this many bytes are available.
+  # Opt-in link-time heap floor: the .ld asserts at least this many bytes are available.
   # Undefined by default, so a too-small heap is a runtime bump failure, not a link error.
   if(DEFINED KICKOS_HEAP_MIN)
     list(APPEND _ld_defs -DKICKOS_HEAP_MIN=${KICKOS_HEAP_MIN})
   endif()
-  # Boot-stack geometry for the KICKOS_BOOT_ARENA_ASSERT every chip .ld carries: the
-  # arena must hold kmain's idle + root stacks INCLUDING the natural-alignment padding
-  # the bump allocator pays, and only the linker knows where the arena starts. A .ld
-  # without the assert fails the configure.
+  # Boot-stack geometry for the KICKOS_BOOT_ARENA_ASSERT every chip .ld carries: the arena
+  # must hold kmain's idle + root stacks INCLUDING the natural-alignment padding the bump
+  # allocator pays. A .ld without the assert fails the configure.
   include("${CMAKE_SOURCE_DIR}/cmake/boot_arena.cmake")
   kickos_boot_arena_defs("${CMAKE_CURRENT_SOURCE_DIR}"
                          "kickos_arch_${KICKOS_ARCH}" "kickos_chip_${KICKOS_CHIP}"
@@ -609,8 +599,8 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     COMMENT "linker: preprocess ${KICKOS_CHIP}.ld (KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})"
     VERBATIM)
   add_custom_target(kickos_ldscript_${KICKOS_CHIP} ALL DEPENDS "${_ld_gen}")
-  # Ship the generated linker script so an out-of-tree consumer can link an image (the
-  # `kickos` INTERFACE bakes an INSTALL_INTERFACE -T pointing at this copy).
+  # Shipped so an out-of-tree consumer can link an image: the `kickos` INTERFACE bakes an
+  # INSTALL_INTERFACE -T pointing at this copy.
   install(FILES "${_ld_gen}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
   set(KICKOS_LINKER_SCRIPT "${_ld_gen}" PARENT_SCOPE)
 endif()

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The fault-isolation witness: a thread that faults must die alone.
+// The fault-isolation witness: a fault must be contained to the faulting thread's TASK, and
+// the system must outlive it. The victim is spawned into a task of its OWN, which is what
+// makes the containment observable: root is the survivor and shares no space with it.
 //
 // KICKOS_FS_MODE
 //   0  an unprivileged worker executes a trapping instruction; root must run AFTER it and end
@@ -54,6 +56,10 @@ extern "C" volatile unsigned kickos_trapstack_witness;
 #define KICKOS_FS_TRAP() __asm volatile(".word 0x00000000") // illegal on RV32
 #elif defined(__arm__) || defined(__thumb__)
 #define KICKOS_FS_TRAP() __asm volatile("udf #0")
+#elif defined(__aarch64__)
+// All-zero is a permanently-undefined A64 encoding, reported with EC 0x00. NOT
+// __builtin_trap, which is `brk` on this ISA and raises a DEBUG exception (EC 0x3C).
+#define KICKOS_FS_TRAP() __asm volatile(".inst 0x00000000")
 #elif defined(__RX__)
 // MVTIPL in user mode is a defined privileged-instruction exception (RXv3 ISA UM sec.5.1.2).
 // IPL is already 0, so an execution that lands in supervisor mode changes nothing.
@@ -96,9 +102,13 @@ namespace
 #endif
 #endif
 #if KICKOS_FS_MODE == 2
-#if !defined(__riscv) && !defined(__arm__) && !defined(__thumb__) && !defined(__RX__)
+#if !defined(__riscv) && !defined(__arm__) && !defined(__thumb__) && !defined(__RX__) \
+    && !defined(__aarch64__)
 #error "KICKOS_FS_MODE 2 needs this ISA's spelling for moving SP; it must not be built here"
 #endif
+// BUILT ON armv8a, NEVER REGISTERED THERE: the sp this moves is SP_EL0 and the trap entry
+// builds its frame through SP_EL1, which EL0 cannot write, so no wild sp reaches a frame and
+// there is no stack-bounds refusal on that backend for this arm to witness.
     // Outside every thread stack, and inside the app's own granted data so the frame is really
     // WRITTEN rather than faulting a second time. The whole frame has to land inside it: armv7m
     // may stack an FP frame of 104 bytes and the RISC-V trap prologue pushes 128.
@@ -243,11 +253,25 @@ int main(int, char**)
     stack = reinterpret_cast<void*>(lo);
     stack_size = FS_STACK_SIZE;
 #endif
+    // THE FAULTER GETS A TASK OF ITS OWN, and that is the arm rather than a detail of it. A
+    // fault ends the faulting thread's whole task, and a plain spawn is a thread OF THE
+    // CALLER'S task, so a victim spawned the plain way would take root with it and this would
+    // witness the fault reaching root instead of being contained.
+    kos_task_t victim = KOS_TASK_NONE;
+    if (kos_task_create(nullptr, 0, 0, &victim) != 0)
+    {
+        emit("[fs] ERROR: no task slot for the faulter\n");
+        return 1;
+    }
     emit("[fs] spawning the faulter\n");
-    kos::thread::Handle t = kos::thread::spawn(faulter, nullptr, "faulter", 10,
-                                               KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                               nullptr, 0, stack, stack_size);
+    kos::thread::Handle t = kos::thread::create(faulter, nullptr, "faulter", 10,
+                                                KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                                nullptr, 0, stack, stack_size,
+                                                nullptr, 0, nullptr, 0, 0, nullptr, victim);
     int const rc = t.join(KOS_TIMEOUT_NONE);
+    // Drops root's hold on a group that is already empty, so the slot goes back here rather
+    // than at root's own exit.
+    (void)kos_task_kill(victim);
     emit("[fs] survivor ran after the fault\n");
 #if KICKOS_FS_MODE == 4
     // Both outcomes PRINT: a silent arm is indistinguishable from a deleted band check, a spawn

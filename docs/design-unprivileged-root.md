@@ -103,7 +103,7 @@ privileged-implies-everything arm *inside* that function so no call site can enc
   no longer a *distinguishable* wrong value in a mask, so the non-authority-bits spawn refusal catches
   only bits above the six. (A dedicated TCB byte keeps the six-bit set and the accepted price alike,
   and buys two more bits before anything has to widen.)
-- **The `obj` move had one blocker, closed first.** The delegation copy in `thread_spawn` copies `obj`
+- **The `obj` move had one blocker, closed first.** The delegation copy in `thread_create_call` copies `obj`
   and `type` with no type test, so with the word in `obj` a delegable authority cap becomes a full
   forgery in a child table. That copy took an explicit refusal of the authority cap TYPE **first**,
   rather than resting on rights, so it did not depend on the byte this change repurposes. (Moving the
@@ -196,7 +196,7 @@ seams' contract is `privileged-write-seam-possession-and-allowlist`. What lives 
   board went dark. The enumeration that stays true is the grep, every gate being a
   `cap_check_authority` call site. The `Thread::privileged` reads this design keeps: that privileged
   arm; spawn-a-privileged-child, deliberately not a capability because holding it equals holding
-  everything forever; the child-privilege memory-posture selection in `thread_spawn`; the
+  everything forever; the child-privilege memory-posture selection in `thread_create_call`; the
   confused-deputy bypass in `syscall_mem.cc`.
 
 ## 8. The four blockers

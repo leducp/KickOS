@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// THE KickOS porting interface. Every target implements exactly this seam.
+// The KickOS porting interface. Every target implements exactly this seam.
 //
-// ISA-neutral by design: it names *concepts* (switch, crit-section, timer,
-// mpu, syscall), never *mechanisms*. PendSV/SVC/BASEPRI live inside arch/arm,
-// never here. Litmus test: a non-ARM port (Renesas RX72M) must fit this seam
-// with no signature changes.
+// ISA-neutral: it names *concepts* (switch, crit-section, timer, mpu, syscall), never
+// *mechanisms*. PendSV/SVC/BASEPRI live inside arch/arm, never here. A non-ARM port
+// (Renesas RX72M) must fit this seam with no signature changes.
 
 #ifndef KICKOS_ARCH_ARCH_H
 #define KICKOS_ARCH_ARCH_H
@@ -37,7 +36,7 @@
 struct arch_mpu_encoded;
 #endif
 
-// C++ ONLY: the extern "C" below is UNGUARDED, so a C includer breaks here.
+// C++ only: the extern "C" below is unguarded, so a C includer breaks here.
 extern "C"
 {
 
@@ -64,14 +63,36 @@ int arch_reboot(void);
 // --- Core identity ----------------------------------------------------------
 // The 0-based index of the core executing this code, in [0, KICKOS_NUM_CORES).
 //
-// At one core a MACRO, so the value is folded at every use: -Os out-lines an
-// always_inline candidate in system/include/kickos/sys/atomic.h. The multi-core arm is a
-// declaration only, so a port that raises KICKOS_NUM_CORES and ships no definition is a
-// LINK error rather than a kernel that believes it is on core 0.
+// At one core a MACRO and not a static inline, so a single-core image carries no symbol
+// for it (tests/static/check_cpu_id_fold.sh). The multi-core arm is a declaration only, so
+// a port that raises KICKOS_NUM_CORES and ships no definition is a link error rather than
+// a kernel that believes it is on core 0.
 #if KICKOS_NUM_CORES > 1
 uint32_t arch_cpu_id(void);
 #else
 #define arch_cpu_id() 0u
+#endif
+
+// --- The cross-core doorbell ------------------------------------------------
+// Poke the cores in `cores`, a bitmask of core indices, and wait until every core in it
+// has answered. `cores` at 0 names nobody and both calls are then a no-op.
+//
+// The send is separate from the wait so an initiator can poke every core once and then
+// wait once, which is what a rendezvous such as a TLB shootdown needs
+// (docs/design-m6-mmu.md T9). This pair is for the architectures with no broadcast: where
+// arch_aspace_map and arch_aspace_unmap can invalidate and wait in the instruction stream
+// (A64), the maintenance seam does its own and must not route through a doorbell.
+//
+// The far side takes NO kernel lock, and the lock's own acquire loop services a pending
+// doorbell: otherwise an initiator holding the lock waits on a core spinning to acquire it.
+//
+// At one core both are empty macros: the argument is consumed, never evaluated for effect.
+#if KICKOS_NUM_CORES > 1
+void arch_ipi_send(uint32_t cores);
+void arch_ipi_wait(uint32_t cores);
+#else
+#define arch_ipi_send(cores) ((void)(cores))
+#define arch_ipi_wait(cores) ((void)(cores))
 #endif
 
 // --- Context / switching ---------------------------------------------------
@@ -85,18 +106,15 @@ void arch_context_init(struct arch_context* ctx,
                        int privileged);
 
 // Discard every frame `ctx` holds and rebuild it so the thread resumes at `entry`,
-// PRIVILEGED, in thread mode, at the top of [stack_base, stack_base + stack_size).
-// `ctx` must NOT be the running context: this writes a saved context, and the fault
-// path's arch_fault_redirect_to_exit is what rewrites a live one (the two share no
-// code, because a live frame cannot be rebuilt, and the fault seam additionally reads and
-// clears sticky status registers that a scheduler-driven redirect must not touch).
+// privileged, in thread mode, at the top of [stack_base, stack_base + stack_size).
+// `ctx` must NOT be the running context: the fault path's arch_fault_redirect_to_exit is
+// what rewrites a live one, and it also reads and clears sticky status registers that a
+// scheduler-driven redirect must not touch.
 //
 // Idempotent in its values: `entry` and the stack top are absolute, so applying it
 // twice before the thread resumes changes nothing.
 //
-// TOTAL: every backend answers, and the signature carries no failure return. A backend
-// able to host a thread can express a privileged thread-mode resume at a given stack top,
-// and a decline here would downgrade a slay to a cooperative kill without saying so.
+// TOTAL: every backend answers, and the signature carries no failure return.
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size);
 
@@ -135,15 +153,14 @@ uint32_t arch_cpu_clock_hz(void);
 // baud/prescaler. `base` is the peripheral register-BLOCK base (e.g. a K64F UART
 // at 0x4006A000); a backend MAY range-match within a block, but the contract only
 // promises correctness for the block base itself. Returns 0 when this chip does
-// not know the block's clock. The fallback TU returns 0 for every block, and a wrong
-// branch clock silently garbles the wire, so 0 rather than the core clock is the safe
-// unknown: the driver then falls back to its own explicit constant. Read-only and
+// not know the block's clock, never the core clock as a guess: a wrong branch clock
+// silently garbles the wire. The fallback TU returns 0 for every block. Read-only and
 // cascade-free, so a rate change reaches a driver only when it asks again.
 uint32_t arch_periph_clock_hz(uintptr_t base);
 
 // Ungate the clock and drop the bus-side supervisor-protect for the register block
-// at `base`. `base` is the peripheral register-BLOCK base and must match a per-chip
-// table EXACTLY; backends never range-match. Both bits are derived from `base`, so a
+// at `base`. `base` is the peripheral register-block base and must match a per-chip
+// table exactly; backends never range-match. Both bits are derived from `base`, so a
 // caller cannot name a shared block's register or bit. Idempotent. Returns 0,
 // -KOS_EINVAL (no entry for that base), or -KOS_ENOSYS (the fallback TU, no backend).
 // A base has an entry only where the bus gate cannot open a kernel-reserved register:
@@ -177,12 +194,12 @@ int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value);
 // function code `func` (the PC/PCR encoding, opaque to the caller). Returns 0,
 // -KOS_EINVAL (out of range), or -KOS_EBUSY (a kernel-owned pin the backend
 // refuses). The fallback TU returns -KOS_ENOSYS so a non-empty board pin-map
-// fails LOUD on a chip with no PORT/IOCR backend; a chip that owns its mux block
+// fails loud on a chip with no PORT/IOCR backend; a chip that owns its mux block
 // (XMC4800, K64F) strong-overrides this.
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 
 // Retune the core/bus clock to a P-state and return the ACTUALLY-LANDED core Hz.
-// ALWAYS the truth about where the clock now sits, never a status:
+// Always the truth about where the clock now sits, never a status:
 //   - a retune that fully succeeds returns the requested point's Hz;
 //   - a retune that FAILS and parks on a safe fallback (e.g. K64F fail_to_fei ->
 //     ~20.97 MHz) returns THAT fallback Hz: non-zero, the clock DID move, so the
@@ -191,20 +208,19 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 //     / unsupported backend). 0 NEVER means "failed but moved".
 // The backend performs the flash-wait-state / voltage step and the arch_clock_now
 // re-anchor INTERNALLY, bracketing the exact PLL/divider write (the re-anchor is the
-// SOLE writer of the arch_clock_now mult on a re-anchor chip). MUST be called from
+// sole writer of the arch_clock_now mult on a re-anchor chip). MUST be called from
 // privileged thread context with interrupts already masked by the caller and NOT from
 // ISR context (see the coherence sequence, docs/design-m3-clock-select.md sec 2.3).
 // Weak default returns 0 (this chip cannot change its clock).
 //
 // `target` carries a kos_pstate_t (sys/abi.h) as a plain u32; a backend that opts in
 // includes sys/abi.h itself to name the KOS_PSTATE_* points. The achievable set is small
-// and chip-specific; the truthful landed Hz is the RETURN value, not this selector.
+// and chip-specific; the truthful landed Hz is the return value, not this selector.
 uint32_t arch_cpu_clock_set(uint32_t target);
 
 // Console coherence hooks (both no-op fallbacks):
 //   arch_console_flush_sync: block until the TX shift register is fully idle
-//     (transmission-complete, NOT merely buffer-empty). TWO callers need exactly this one
-//     act, so it is one seam rather than two names for it:
+//     (transmission-complete, NOT merely buffer-empty). Two callers:
 //       - a clock retune, so no in-flight byte is still clocking out at the OLD baud when
 //         the peripheral clock moves (S6). Called under the caller's IrqLock, BEFORE the
 //         rate change. Only a chip whose console clock moves with the core clock cares.
@@ -220,18 +236,17 @@ void arch_console_flush_sync(void);
 void arch_console_retune(void);
 
 // --- Trace clock (telemetry timestamp seam) --------------------------------
-// A dedicated high-resolution monotonic counter for telemetry timestamps: the
-// ns arch_clock_now is too coarse to time a context switch (~1-5 us). u32 by
-// design (wraps; the decoder reconstructs absolute time from the SESSION
-// anchors). Per-arch source: armv7m = DWT CYCCNT (cycles); armv6m/chip-provided
-// (rp2040 = the 1 MHz TIMER low half; nrf51 = semihosting us); sim = clock_now
-// scaled to us. A target that has no such source does NOT define
+// A dedicated high-resolution monotonic counter for telemetry timestamps, finer than
+// arch_clock_now's nanoseconds. u32, so it WRAPS; the decoder reconstructs absolute time
+// from the session anchors. Per-arch source: armv7m = DWT CYCCNT (cycles);
+// armv6m/chip-provided (rp2040 = the 1 MHz TIMER low half; nrf51 = semihosting us);
+// sim = clock_now scaled to us. A target that has no such source does NOT define
 // KICKOS_HAVE_TRACE_CLOCK and cannot enable telemetry (build-time FATAL).
 uint32_t arch_trace_now(void);
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 // Stamp the owning thread's trace id into a saved context, so the arch context-
-// switch path can emit {from,to} tids read from the PHYSICALLY-swapped contexts,
+// switch path can emit {from,to} tids read from the physically-swapped contexts,
 // NEVER by re-reading shared scheduler state (which an ISR can rewrite between
 // the switch decision and the physical swap). Telemetry-only: this seam does not
 // exist when telemetry is compiled out (the id field is elided too). Called once
@@ -261,11 +276,11 @@ enum arch_mpu_nocache
     ARCH_MPU_NOCACHE_ALREADY = 2
 };
 
-// Read at grant ADMISSION (kernel/grant), never on a commit path: a commit backend drops
-// a region it cannot encode SILENTLY. Answers for the enforcement posture actually built,
+// Read at grant admission (kernel/grant), never on a commit path: a commit backend drops
+// a region it cannot encode silently. Answers for the enforcement posture actually built,
 // not only for the silicon: with KICKOS_HAVE_MPU=0 no region is programmed at all.
 //
-// ONE answer for the whole chip, while the property is per REGION: a Cortex-M7 caches OCRAM
+// One answer for the whole chip, while the property is per region: a Cortex-M7 caches OCRAM
 // but not TCM. Every backend answers for the band its arena lives in, so a linker script
 // that moves the arena into a differently cached band must revisit its chip's answer.
 int arch_mpu_nocache_support(void);
@@ -283,14 +298,14 @@ struct arch_mpu_region
 // misaligned request is refused here rather than widened in hardware. Slots past `n`
 // are written inactive, so an image encoded from a zero-length set grants nothing.
 //
-// Called at MUTATION, never on a switch path. Defined only where KICKOS_HAVE_MPU.
+// Called at mutation, never on a switch path. Defined only where KICKOS_HAVE_MPU.
 uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
                          struct arch_mpu_encoded* out);
 
 // Load the running thread's regions on switch-in (replaces the whole active
 // set). sim: mprotect over the user-RAM arena, granting the listed regions and
 // no-access everywhere else. Regions are non-overlapping; attr is the
-// UNPRIVILEGED access (supervisor comes from the background region / SYSMPU RGD0).
+// unprivileged access (supervisor comes from the background region / SYSMPU RGD0).
 //
 // `image` is what the hardware is programmed from and is `regions` already encoded;
 // the raw set travels beside it for the backends that need the addresses themselves
@@ -303,7 +318,7 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 // only STASHES; the switch epilogue calls this after the physical swap. See
 // docs/design-mpu-commit-deferred.md.
 //
-// The kernel calls this DIRECTLY in exactly one situation: the RUNNING thread's own
+// The kernel calls this directly in exactly one situation: the running thread's own
 // region set was just widened and must be effective before the syscall returns
 // (KOS_SYS_MEM_SELF_GRANT). Sound because outgoing and incoming are the same thread.
 // Do NOT call it to make another thread's set live.
@@ -313,9 +328,9 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 // (the sim) or where there is no MPU.
 void kickos_arch_mpu_commit(void);
 
-// MMU-era NOTE: this seam is a flat, NON-TRANSLATING protection-region set, and stays
-// one. A VMSA/paging port gets its own parallel arch_aspace_* family (build/switch/map a
-// page-table root). See docs/design-mmu-era-exploration.md.
+// This seam is a flat, NON-TRANSLATING protection-region set. A VMSA/paging port gets the
+// parallel arch_aspace_* family declared below, and no backend implements both. See
+// docs/design-m6-mmu.md F6.
 
 // The smallest region this arch's MPU can enforce: ARM PMSA 32 bytes, RISC-V PMP
 // NAPOT 8, one host page on the sim. A return of 0 means this arch has NO enforceable
@@ -378,9 +393,8 @@ static inline size_t arch_ram_region_size(size_t want)
     return p;
 }
 
-// Round up to a power of two. Separate from arch_ram_region_size because that one
-// answers a DESCRIPTOR question and on a base+limit backend does not round to a power of
-// two at all.
+// Round up to a power of two, which arch_ram_region_size does not do on a base+limit
+// backend: that one answers a descriptor question.
 static inline size_t kickos_pow2_ceil(size_t want)
 {
     size_t p = 1;
@@ -396,15 +410,12 @@ static inline size_t kickos_pow2_ceil(size_t want)
     return p;
 }
 
-// Natural ALIGNMENT the block must sit on. In pow2 mode this is the region size itself,
+// Natural alignment the block must sit on. In pow2 mode this is the region size itself,
 // since PMSA/NAPOT snap the base to it; only that mode pays an alignment gap.
 //
-// UNDER KICKOS_TLS EVERY BLOCK IS STRIDED BY A POWER OF TWO, whatever the descriptor
-// geometry asks for. Unprivileged ARM code has no register that differs per thread except
-// SP, so __aeabi_read_tp is SP masked down to the thread's own block, and a block that
-// does not start on a multiple of that stride masks into its neighbour's. The mask in
-// arch_ram_alloc needs a power of two anyway, which is why this rounds rather than
-// returning arch_ram_region_size.
+// Under KICKOS_TLS every block is strided by a power of two, whatever the descriptor
+// geometry asks for: on ARM, __aeabi_read_tp is SP masked down to the thread's own block,
+// so a block that does not start on a multiple of that stride masks into its neighbour's.
 static inline size_t arch_ram_region_align(size_t want)
 {
     size_t const min = arch_mpu_min_region();
@@ -490,7 +501,7 @@ size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max);
 //   host sim: app + kernel share one binary, sections are not MPU regions, so a range
 //     wholly inside the host image (and not the arena) is admitted; a wild pointer
 //     outside both is rejected. It cannot separate app rodata from kernel statics;
-//     the security boundary it DOES enforce (cross-domain arena reads) stays closed.
+//     the security boundary it does enforce (cross-domain arena reads) stays closed.
 bool arch_user_text_readable(uintptr_t ptr, size_t len);
 
 // The WRITE twin of the hook above: true iff [ptr, ptr+len) is app static data the
@@ -512,6 +523,190 @@ bool arch_user_data_writable(uintptr_t ptr, size_t len);
 // domain owns). Used by the isolation self-test.
 uintptr_t arch_mpu_probe_addr(void);
 
+// --- Address space: a translating memory backend ----------------------------
+// The parallel family beside the region calls. A chip selects region descriptors or
+// translation on the axis mpu.cmake already uses, and no backend implements both.
+// docs/design-m6-mmu.md F6.
+//
+// Opaque: the kernel names a space by pointer and never sizes or embeds one. Translation
+// tags are the backend's, allocated and invalidated inside destroy and activate.
+struct arch_aspace;
+
+// The access a mapping grants the UNPRIVILEGED level; the kernel occupies a fixed high
+// range of every space. At least one bit is required, a guard page being an unmapped
+// page: R=W=X=0 marks a next-level pointer on RISC-V.
+enum
+{
+    ARCH_MAP_R = 1u << 0,
+    ARCH_MAP_W = 1u << 1,
+    ARCH_MAP_X = 1u << 2
+};
+
+// A physical address, wider than uintptr_t because Sv39 pairs a 39-bit virtual range with
+// a 56-bit physical one and Sv32 pairs 32 with 34.
+typedef uint64_t arch_phys_addr_t;
+
+// A memory type, never the bits a backend encodes it to.
+enum arch_map_memtype
+{
+    ARCH_MAP_NORMAL = 0,  // cacheable, write-back
+    ARCH_MAP_NOCACHE = 1, // Normal, outer and inner non-cacheable
+    ARCH_MAP_DEVICE = 2   // device / MMIO
+};
+
+// Whether this backend can honour `type`. Read at grant admission, never on a map path: a
+// quietly downgraded type hands a driver a cacheable view of a DMA buffer. The answer may
+// come from the board rather than from a register.
+bool arch_aspace_memtype_support(enum arch_map_memtype type);
+
+// TOTAL OR FAIL: on anything but ARCH_ASPACE_OK the space is as it was, with no frame
+// leaked and no partial mapping installed.
+enum arch_aspace_result
+{
+    ARCH_ASPACE_OK = 0,
+    // No frame for a table the backend needed. Freeing frames and retrying can succeed.
+    ARCH_ASPACE_ENOMEM = 1,
+    // The backend's structure cannot hold the mapping with frames still available, so
+    // retrying is futile. A hashed page table must evict from a full bucket during a map.
+    ARCH_ASPACE_ECAPACITY = 2,
+    // Not expressible: a misaligned or empty range, a right or type this backend refuses,
+    // or an unmap of a range not wholly mapped.
+    ARCH_ASPACE_EINVAL = 3
+};
+
+// The mapping granule in bytes, a power of two, and the unit `va`, `pa` and `pages` are
+// counted in. The frame allocator and the guard-page arithmetic read this one answer.
+// Larger mappings are not a second granule.
+size_t arch_aspace_granule(void);
+
+// A space with the kernel's fixed high range present and nothing else mapped, or null
+// when a root cannot be allocated. A backend with a single root register installs the
+// kernel half here by copying the top-level entries, so every space shares the tables
+// below them and a later kernel-half edit stays in step; copying one level deeper makes
+// the kernel half per-space state that every edit must walk.
+struct arch_aspace* arch_aspace_create(void);
+
+// Release the root, every table under it and every frame the space still holds, with the
+// backend's invalidation ordered BEFORE the root or its tag can be reused. Null is a
+// no-op. Activate another space before destroying the running one.
+//
+// Holds means mapped, so a space must not still map a frame it does not own when this
+// runs. F10's handoff maps one block into two spaces, and destroying the borrower would
+// return that block to the allocator while the donor's leaf still stands: the second
+// destroy then frees a frame the pool has already handed to someone else, which the
+// allocator's already-free guard cannot see. The borrower unmaps its range first.
+void arch_aspace_destroy(struct arch_aspace* space);
+
+// Map `pages` granules at `va` onto the frames at `pa`, or remove that many at `va`.
+//
+// COHERENCE-COMPLETE: when either returns the change is visible to this core, whatever
+// maintenance that took having happened inside. A64 requires break-before-make when
+// replacing a live entry, so the invalidate belongs between the two writes. A map into a
+// slot that was empty needs one too, architectures caching negative translations.
+//
+// At more than one core the initiator waits: A64's broadcast barrier blocks until every
+// other PE has drained, while RV64 and x86_64 wait on far-side code. An unmap whose frames
+// are being FREED may defer the remote half, the boundary being reuse; an unmap that
+// REVOKES may not, and the far-side handler takes no kernel lock. docs/design-m6-mmu.md T9.
+//
+// A map may target the space this core is RUNNING on: the self-grant widens it mid-syscall.
+enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+                                        arch_phys_addr_t pa, size_t pages,
+                                        uint32_t rights, enum arch_map_memtype type);
+enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t va,
+                                          size_t pages);
+
+// Make `space` the translation the unprivileged level runs under.
+//
+// TOTAL: every backend answers and the signature carries no failure return.
+//
+// Where a root and a translation tag change together the architecture documents the ORDER,
+// and its shape depends on a translation-control field this seam does not expose.
+//
+// The space is reached from the incoming thread's task; arch_context_init carries no
+// memory parameter.
+void arch_aspace_activate(struct arch_aspace* space);
+
+// Reach the frame backing one page of `space` through a kernel-usable pointer, and release
+// it, rather than adding an offset to a user address: a backend mapping all of physical
+// memory in its high half inlines this to an addition, and one whose physical space is
+// wider than its virtual has no offset to add.
+//
+// ARCH_ASPACE_ACQUIRE_MIN are holdable at once per core, and a backend with a finite
+// window pool sizes that pool for the figure and asserts against it. A backend where
+// acquire is an addition has no pool and meets any figure. Counted as outstanding calls
+// and not as distinct pages: two acquires of one page are two holds unless the backend
+// counts references.
+//
+// `va` need not be granule-aligned and the pointer addresses the same byte. Null when the
+// page is not mapped in `space`. A range contiguous in virtual memory is not contiguous in
+// physical memory, so a caller splits at granule boundaries and acquires each page.
+//
+// A release pairs with an acquire that ANSWERED, and a null answer took no hold: releasing
+// beside one surrenders somebody else's, since the count is of calls. A backend whose release
+// is a no-op is exactly where a caller gets that wrong and no arm can see it, so a caller
+// checks each acquire before it releases anything.
+#define ARCH_ASPACE_ACQUIRE_MIN 6u
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va);
+void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
+
+// SELFTEST ONLY, and shaped like arch_mpu_probe_addr: what the implementation reports
+// about the translation it provides, so the port's figures are checked against the machine
+// rather than against constants of their own.
+//   bits 0..7    ARCH_ASPACE_MODEL_* : one per figure of this port's that the machine bore out
+//   bits 8..15   the address-space identifier width reported, in bits
+//   bits 16..23  the physical address range reported, in bits
+//   bits 24..31  one bit per granule reported supported, bit N naming the Nth granule the
+//                ARCHITECTURE defines, smallest first (A64: 4 KiB, 16 KiB, 64 KiB)
+#define ARCH_ASPACE_MODEL_GRANULE 0x01u /* the granule this port programs is supported */
+#define ARCH_ASPACE_MODEL_ASID    0x02u /* the identifier is as wide as the port's record */
+#define ARCH_ASPACE_MODEL_PA      0x04u /* the physical range covers what the port programs */
+#define ARCH_ASPACE_MODEL_ALL     0x07u
+#define ARCH_ASPACE_MODEL_ASID_SHIFT 8u
+#define ARCH_ASPACE_MODEL_PA_SHIFT   16u
+#define ARCH_ASPACE_MODEL_GRAN_SHIFT 24u
+#define ARCH_ASPACE_MODEL_FIELD_MASK 0xFFu
+uint64_t arch_aspace_model(void);
+
+// The space the boot path installed, and the ONLY handle for it: its tables are link-time
+// constants rather than something this seam created. It is what the kernel installs when
+// the running process's space is destroyed under it, the last thread of a task being the
+// one executing when its domain is released, and a freed root left in the translation
+// control is a walk into the frame pool.
+struct arch_aspace* arch_aspace_boot(void);
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+// Page-invalidation sequences the map editor has ISSUED in the high 32 bits, and the ones
+// it ELIDED in the low 32, both since boot. The issued count alone cannot tell an elision
+// from an edit that never happened.
+uint64_t arch_aspace_tlbi_counts(void);
+#endif
+
+// --- Data-cache maintenance for an observer that does not snoop -------------
+// Make this core's writes over [addr, addr + bytes) visible to an observer outside the
+// coherency the CPU participates in, and make such an observer's writes over that range
+// visible to this core. A DMA engine on a bus that does not snoop is the ordinary one; a
+// companion core across a window that is not coherent is the other.
+//
+// Concepts only: no architecture's maintenance instruction and no line size appears here.
+// The backend reads its own line size and rounds the range out to it, so a caller never
+// has a figure to keep in step.
+//
+// The invalidate may NOT discard what sits beside the buffer. A range whose ends fall
+// inside a line shares those lines with its neighbours, so a backend that plainly discards
+// them loses writes it was never handed: it CLEANS as it invalidates.
+//
+// `addr` is a kernel-usable pointer, which is what arch_aspace_acquire answers. A range
+// named by a user virtual address is not one operation on a backend whose physical space is
+// discontiguous, so the split belongs above this seam with the rest of the page splitting.
+//
+// There is no fallback definition (docs/design-m6-mmu.md section 7): a port defines these
+// when its first caller arrives and fails the LINK until then, rather than carrying a
+// no-op that reports maintenance it never did.
+// Does NOT invalidate: the lines stay valid and this core keeps reading them from cache.
+void arch_dcache_flush(void const* addr, size_t bytes);
+void arch_dcache_invalidate(void* addr, size_t bytes);
+
 // --- Rule 7: kernel-reserved MMIO blocks (docs/design-m4-driver-model.md sec.7) --
 // The owns-for-life peripherals a grant must NEVER hand to userspace: the timebase
 // block, the IRQ controller, every access-permission controller (the MPU/PMP twin
@@ -526,9 +721,10 @@ struct arch_reserved_block
 
 // Fill `out` (capacity `max`, the kernel passes KICKOS_MAX_RESERVED) with this chip's
 // reserved blocks and return the count. KICKOS_RESERVED_NONE (0) is legal, the sim owning
-// nothing MPU-governable. Every definition is per enforcing chip under #if
-// KICKOS_HAVE_MPU, so an enforcing port that forgets to declare its set is a LINK error
-// rather than a silent open hole (affirmative fail-closed).
+// nothing MPU-governable. Every definition is per chip under #if KICKOS_MEMORY_ENFORCED,
+// the fact that protection is LIVE, which a translating chip sets while carrying no region
+// descriptors. A port that forgets to declare its set is therefore a LINK error rather than
+// a silent open hole (affirmative fail-closed).
 #define KICKOS_RESERVED_NONE 0u
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max);
 
@@ -551,12 +747,11 @@ int arch_bitband_present(void);
 // this; arch_in_isr() must read false during dispatch.
 //   sim: arch_syscall is a plain call, so dispatch already runs in thread
 //        context and arch_switch swaps synchronously.
-//   ARM (later): SVC raises privilege and continues dispatch in privileged
+//   ARM: SVC raises privilege and continues dispatch in privileged
 //        thread mode (so a blocking switch/PendSV saves the mid-dispatch
 //        continuation and resumes it), rather than running dispatch in the SVC
 //        handler where a switch could only be deferred.
-// 64-bit ARGUMENTS are split into uintptr_t halves (see sys/abi.h), so no
-// arch-specific argument-marshalling seam is needed.
+// 64-bit ARGUMENTS are split into uintptr_t halves (see sys/abi.h).
 //
 // The result comes back at the ABI's 64-bit return width: arch_syscall takes the low
 // half, arch_syscall64 both. They are the SAME trap, the pair being whatever the psABI
@@ -566,6 +761,24 @@ uintptr_t arch_syscall(uintptr_t nr,
                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
 uint64_t arch_syscall64(uintptr_t nr,
                         uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
+
+// The same trap, spelled from kernel text. Where a translating backend splits the image,
+// the leaf above links into the app's half: on AArch64 an EL0 thread executes it, so it
+// carries privileged-execute-never and kernel text may not call it
+// (docs/design-m6-mmu.md, T5b.1).
+// The backend therefore assembles a second copy under these names, in its own half, which
+// every address space maps by construction. Spell these in kernel code and the trap is
+// correct on every backend; where the image is not split there is nothing to duplicate and
+// the names alias the ones above.
+#if KICKOS_HAVE_ASPACE
+uintptr_t karch_syscall(uintptr_t nr,
+                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
+uint64_t karch_syscall64(uintptr_t nr,
+                         uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
+#else
+#define karch_syscall arch_syscall
+#define karch_syscall64 arch_syscall64
+#endif
 
 // --- Register-carrying IPC trap (KOS_SYS_CALL_REG) -------------------------
 // Declared only under KICKOS_ARCH_HAS_IPC_FASTPATH, so a backend without the
@@ -614,8 +827,7 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result);
 // and the per-line pending bit is cleared as it is rung. So AT MOST ONE unmask with
 // a pending redelivery may occur per IrqLock/interrupts-masked region; a second
 // would clobber the first's identity and lose an event. irq_claim/wait/ack each unmask
-// exactly one line per lock section, which is what holds it; a bulk-rearm path would
-// need the identity-free dispatcher (see TODO M4).
+// exactly one line per lock section, which is what holds it.
 void arch_irq_mask(int line);
 
 // Enable delivery of a line, PRESERVING any raise latched while it was masked: a
@@ -725,6 +937,18 @@ uint64_t syscall_dispatch(uintptr_t nr,
 // A memory-protection violation was caught (sim: SIGSEGV over the arena).
 void kickos_isr_fault(uintptr_t addr, int is_write);
 
+// One frame for a translating backend's own tables, and its release. One allocator exists
+// and the kernel owns it, so a backend that kept a pool of its own would make destroy's
+// accounting unverifiable against the kernel's counters.
+//
+// PHYSICAL, because destroy reads what it frees out of a descriptor, where an output
+// address is all there is. The frame is granule-sized and granule-aligned; its contents are
+// undefined, so a backend that needs zeroes writes them. 0 is exhaustion, which maps to
+// ARCH_ASPACE_ENOMEM rather than to a panic. Compiled where a translating backend is
+// (KICKOS_HAVE_ASPACE).
+arch_phys_addr_t kickos_frame_alloc(void);
+void kickos_frame_free(arch_phys_addr_t frame);
+
 // Fault isolation, called from the arch fault handler BEFORE it starts its dump.
 // Applies the kill rule and, when it holds, calls arch_fault_redirect_to_exit.
 // Returns true when the handler must simply RETURN: the exception return then lands
@@ -775,11 +999,9 @@ bool kickos_fault_below_stack(uintptr_t addr);
 // arch fault-status word for the reader (armv7m: "CFSR"). `addr` is read only when
 // `addr_valid`, since a fault-address register holds stale contents otherwise.
 //
-// `status` is 64-bit because a status REGISTER is, on the arches that have one that wide:
+// `status` is 64-bit because a status register is, on the arches that have one that wide:
 // AArch64's ESR_EL1, and RV64's mcause, whose interrupt bit is bit 63. Narrower backends
-// promote and pay nothing. The alternative was to truncate and argue per arch that nothing
-// above bit 31 is ever set, which is an argument about each CALLER's filtering rather than
-// about the register, and it would have to be re-made for every 64-bit backend.
+// promote and pay nothing.
 void kickos_fault_record(char const* status_name, uint64_t status,
                          uintptr_t pc, uintptr_t addr, int addr_valid);
 
@@ -798,7 +1020,7 @@ void kickos_trapstack_witness_report(void);
 // to per-thread kernel stacks holds because the dispatch it interrupts is not there either. A
 // backend calls this once per such trap with the frame it built and the interrupted thread's
 // stack bounds (`lo` 0 when there is no current thread). The counters are kernel-side so one
-// syscall serves every backend, and KOS_SYS_NEST_WITNESS reads them. A COUNTER READ and not a
+// syscall serves every backend, and KOS_SYS_NEST_WITNESS reads them. A counter read and not a
 // print: a kprintf on the shutdown path would put the console's varargs route inside the
 // syscall descent it stands beside.
 void kickos_nestwitness_note(uintptr_t frame, uintptr_t lo, uintptr_t hi);
@@ -812,17 +1034,16 @@ void kickos_thread_fault_exit(void) __attribute__((noreturn));
 // Contain the thread whose live stack pointer a trap prologue just refused, instead of
 // ending the system for it. Raises it to CANCEL_SLAY and hands back the context to resume.
 //
-// `offender` NAMES THE THREAD PHYSICALLY EXECUTING, and the caller must pass what the arch
+// `offender` names the thread physically executing, and the caller must pass what the arch
 // layer switched TO and not the scheduler's own current: a switch booked before the trap has
 // already published the incoming thread there, so current names the wrong thread on every
 // asynchronous refusal.
 //
-// THE OFFENDING THREAD MAY WELL BE THE ONE RESUMED, and what makes that safe is the REBUILD
+// The offending thread may well be the one resumed, and what makes that safe is the rebuild
 // and not any promise to run something else. pick_next returns it whenever it is still the
-// highest-priority runnable thread, which on a synchronous refusal is the ordinary case;
-// switch_book then rebuilds its context onto the exit stub at the top of a stack the TCB
-// names. Its registers were never saved and are discarded, so the frame the guard refused to
-// build is never needed, and nothing about the refused pointer is trusted at any point.
+// highest-priority runnable thread; switch_book then rebuilds its context onto the exit stub
+// at the top of a stack the TCB names. Its registers were never saved and are discarded, so
+// nothing about the refused pointer is trusted at any point.
 //
 // `slain_name`, when not null, receives the slain thread's name on success, so a reporter can
 // credit the refusal to a thread. Read on the caller's own trap or interrupt stack; the exit

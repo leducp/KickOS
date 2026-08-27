@@ -122,13 +122,13 @@ kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg
 
     // No mem grant of its own: the ring block is the TASK's shared region, and a member
     // bringing one is refused -KOS_EINVAL.
-    return kos::thread::spawn(t.entry, arg, name,
-                              static_cast<uint8_t>(cfg->prio + t.prio_delta),
-                              KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
-                              /*mem=*/nullptr, /*mem_size=*/0,
-                              /*stack=*/nullptr, /*stack_size=*/0,
-                              win, win_size, grants, t.cap_count,
-                              /*authority=*/0, /*cap_dest=*/nullptr, task);
+    return kos::thread::create(t.entry, arg, name,
+                               static_cast<uint8_t>(cfg->prio + t.prio_delta),
+                               KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
+                               /*mem=*/nullptr, /*mem_size=*/0,
+                               /*stack=*/nullptr, /*stack_size=*/0,
+                               win, win_size, grants, t.cap_count,
+                               /*authority=*/0, /*cap_dest=*/nullptr, task);
 }
 
 int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* out_ep)

@@ -232,12 +232,22 @@ int main(int, char**)
     }
     kos_cap_grant const caps[1] = {{irq, KOS_CAP_WAIT}};
 
-    auto drv = kos::thread::spawn(spi_driver, reinterpret_cast<void*>(U0C1_BASE),
-                                  "xmcspi", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                  /*mem=*/nullptr, /*mem_size=*/0,
-                                  /*stack=*/nullptr, /*stack_size=*/0,
-                                  /*mmio=*/reinterpret_cast<void*>(U0C1_BASE), U0C1_WINDOW,
-                                  caps, 1);
+    // The driver ends on the negative test's fault, and a fault cancels the faulting
+    // thread's whole TASK: spawned plain it would join root's task and take root with it,
+    // leaving no survivor to keep the board up. Root holds the handle for the life of the
+    // image, since it never reaches a point past the driver.
+    kos_task_t victim = KOS_TASK_NONE;
+    if (kos_task_create(nullptr, 0, 0, &victim) != 0)
+    {
+        kos_panic("[xmcspi] no task slot for the driver");
+    }
+
+    auto drv = kos::thread::create(spi_driver, reinterpret_cast<void*>(U0C1_BASE),
+                                   "xmcspi", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                   /*mem=*/nullptr, /*mem_size=*/0,
+                                   /*stack=*/nullptr, /*stack_size=*/0,
+                                   /*mmio=*/reinterpret_cast<void*>(U0C1_BASE), U0C1_WINDOW,
+                                   caps, 1, /*authority=*/0, /*cap_dest=*/nullptr, victim);
     if (not drv.valid())
     {
         // -KOS_EBUSY: a live domain already holds U0C1, which this app needs exclusively,

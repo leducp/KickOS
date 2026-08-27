@@ -29,7 +29,8 @@ INC="$PREFIX/include"
 # whole thing arrives as one unrecognised argument and every define is dropped.
 DEFS=(-Dmain=kickos_app_main -D__KickOS__=1
       -DKICKOS_TELEMETRY=0 -DKICKOS_TELEMETRY_RTT=0 -DKICKOS_TRACE_ARCH=0
-      -DKICKOS_HAVE_MPU=1 -DKICKOS_DEBUG=0)
+      -DKICKOS_HAVE_MPU=1 -DKICKOS_HAVE_ASPACE=0 -DKICKOS_MEMORY_ENFORCED=1
+      -DKICKOS_DEBUG=0)
 # A sim package ships no chip_limits.h, and config/board.h refuses to guess an IRQ count
 # without one. The real consumer gets this from the target's INTERFACE definitions.
 if [ ! -f "$INC/kickos/chip_limits.h" ]; then

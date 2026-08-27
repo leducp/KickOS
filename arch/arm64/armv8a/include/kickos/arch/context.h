@@ -38,9 +38,10 @@ struct arch_context
     uintptr_t tls_base;
 #endif
 
-    // TOP of this thread's kernel stack, seated by thread_create and preserved across
+    // TOP of this thread's kernel stack, seated by thread_create BEFORE arch_context_init,
+    // which reads it to place an unprivileged thread's first frame, and preserved across
     // arch_ctx_redirect. Write-once per slot, so no switch saves it. Zero for a TCB outside
-    // the pool, which the trap entry reads as "no block seated".
+    // the pool, which is privileged and never returns to EL0.
     uintptr_t kernel_sp;
 };
 

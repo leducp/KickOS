@@ -10,10 +10,9 @@
  *
  * ALL THIRTY-TWO VECTOR REGISTERS, because three of the four users are ASYNCHRONOUS: an
  * interrupt entered code that called nothing, so anything the AAPCS lets a call clobber may
- * be live in it. No FP opt-in gates this. AArch64 GCC stages wide struct copies through q
- * registers and the switch path does exactly that, kickos_reent_seat compiling its 512-byte
- * copy to 77 SIMD instructions, so the callee-saved subset would corrupt any thread
- * interrupted mid-copy. FPCR and FPSR are thread state for the same reason.
+ * be live in it. No FP opt-in gates this: AArch64 GCC stages a wide struct copy through q
+ * registers with no source-level FP in sight, so the callee-saved subset would corrupt any
+ * thread interrupted mid-copy. FPCR and FPSR are thread state for the same reason.
  */
 
 #define FRAME_SIZE  800
@@ -137,34 +136,32 @@ kickos_armv8a_irq_entry:
     ldr     x1, [x0]
     cbz     x1, .Lirq_resume
     str     xzr, [x0]                       /* consume the request */
-    adrp    x2, kickos_armv8a_switch_from
-    add     x2, x2, :lo12:kickos_armv8a_switch_from
+    adrp    x2, kickos_armv8a_ctx_current
+    add     x2, x2, :lo12:kickos_armv8a_ctx_current
     ldr     x3, [x2]
     mov     x4, sp
-    str     x4, [x3, #CTX_SP]               /* park the outgoing thread on its own frame */
+    str     x4, [x3, #CTX_SP]               /* park the frame on the context that built it */
+    str     x1, [x2]                        /* the incoming one is now the physical current */
     ldr     x4, [x1, #CTX_SP]
     mov     sp, x4                          /* stand on the incoming thread's frame */
 .Lirq_resume:
     RESTORE_FRAME_AND_ERET
 
 /* --- The EL0 side ---------------------------------------------------------
- * SP_EL1 cannot be trusted to name this thread's block on entry: thread_create seats
- * ctx.kernel_sp only AFTER arch_context_init returns, so a freshly created thread's first
- * trap arrives with SP_EL1 still on its user stack. The entry seats it from the kernel's
- * own record instead, which also puts a stale or wild SP_EL1 out of reach of a store.
+ * SP_EL1 ALREADY NAMES THIS THREAD'S KERNEL BLOCK, so the entry seats nothing and spends no
+ * scratch register. EL0 cannot write SP_EL1, and every path that puts a thread at EL0 is an
+ * eret off a frame that stood on its own block: arch_context_init builds an EL0 thread's
+ * first frame there (arch_armv8a.cc), and every frame after it is one this macro pushed. The
+ * frame is popped before the eret, so SP_EL1 is at the block top whenever EL0 is running.
  *
- * TPIDR_EL1 is the scratch that needs no stack and no free register, and is invisible to
- * EL0. M7 wants it for the per-CPU pointer.
+ * This is what releases TPIDR_EL1, which the per-CPU block is reached through above one core
+ * (percpu.h). The reporting slots in vectors.S still seat SP_EL1 from that block, because a
+ * slot this port never enters proves nothing about the register.
  *
  * The transfer is all this arch writes: no red-zone check and no validation of the
  * interrupted sp, the sp being replaced being SP_EL0 and the one stored through SP_EL1.
  */
     .macro  ENTER_FROM_EL0
-    msr     tpidr_el1, x0
-    adrp    x0, kickos_armv8a_kernel_sp
-    ldr     x0, [x0, #:lo12:kickos_armv8a_kernel_sp]
-    mov     sp, x0
-    mrs     x0, tpidr_el1
     SAVE_FRAME
     mrs     x0, elr_el1
     mrs     x1, spsr_el1
@@ -196,9 +193,22 @@ kickos_armv8a_el0_sync_entry:
     str     x0, [sp, #0]
     RESTORE_FRAME_AND_ERET
 
-/* A fault. This arch isolates none yet, so it reports and stops; x30 comes out of the frame,
- * the entry above having spent the register. */
+/* A fault. The frame ENTER_FROM_EL0 just built is resumable, so containment is an ordinary
+ * exception return off it: kickos_fault_kill_thread rewrites ELR and SPSR when the kill rule
+ * holds (arch_fault_redirect_to_exit) and the eret lands in kickos_thread_fault_exit at EL1.
+ *
+ * NOTHING MAY PRINT ABOVE THIS CALL. kickos_armv8a_exception enters kpanic_enter, whose
+ * console reclaim is permanent, and this fault is meant to be survivable.
+ *
+ * The call clobbers x0-x18 and x30, all of which the frame holds and the restore reloads, so
+ * the panic arm below reads x30 back out of the frame rather than trusting the register.
+ */
 .Lel0_fault:
+    mov     x0, sp
+    bl      kickos_fault_kill_thread
+    cbz     w0, .Lel0_fault_panic
+    RESTORE_FRAME_AND_ERET
+.Lel0_fault_panic:
     mov     x0, #8                          /* the vector slot, for the dump to name */
     ldr     x1, [sp, #F_X30]
     b       kickos_armv8a_exception
@@ -213,11 +223,12 @@ kickos_armv8a_el0_irq_entry:
     ldr     x1, [x0]
     cbz     x1, .Lel0_irq_resume
     str     xzr, [x0]
-    adrp    x2, kickos_armv8a_switch_from
-    add     x2, x2, #:lo12:kickos_armv8a_switch_from
+    adrp    x2, kickos_armv8a_ctx_current
+    add     x2, x2, #:lo12:kickos_armv8a_ctx_current
     ldr     x3, [x2]
     mov     x4, sp
     str     x4, [x3, #CTX_SP]
+    str     x1, [x2]
     ldr     x4, [x1, #CTX_SP]
     mov     sp, x4
 .Lel0_irq_resume:
@@ -226,11 +237,33 @@ kickos_armv8a_el0_irq_entry:
 /* --- The user side of the trap --------------------------------------------
  * arch_syscall(nr, a0, a1, a2, a3). arch_syscall64 is the same entry, the seam's psABI pair
  * collapsing at this width.
+ *
+ * TWO COPIES, because this leaf is called from both halves of a split image
+ * (docs/design-m6-mmu.md, T5b.1). The ordinary names are the APP's and link into the app's
+ * low text, which an EL0 thread executes and which therefore carries
+ * privileged-execute-never; the kernel takes the private name, in its own half, mapped
+ * through TTBR1 in every space by construction. Both references are explicit calls, so the
+ * rename is a source fix and needs no objcopy pass.
+ *
+ * .apptrap and not .text.*: virt_arm64.ld selects the kernel half by ARCHIVE, and this
+ * archive is kernel-side, so the app's copy needs a section name those selectors do not
+ * match.
  */
+    .section .apptrap, "ax"
     .global arch_syscall
     .global arch_syscall64
 arch_syscall:
 arch_syscall64:
+    svc     #0
+    ret
+
+    .section .text.switch, "ax"
+/* The kernel's own trap leaf (kickos/arch/arch.h). root_entry descends through it for
+ * shutdown and panic, root not always being privileged. */
+    .global karch_syscall
+    .global karch_syscall64
+karch_syscall:
+karch_syscall64:
     svc     #0
     ret
 

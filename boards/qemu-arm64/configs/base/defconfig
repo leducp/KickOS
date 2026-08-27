@@ -5,16 +5,14 @@ CONFIG_BOARD_QEMU_ARM64=y
 
 # Only what differs from the Kconfig defaults, as savedefconfig would write it and in
 # the declaration order it uses.
-CONFIG_KICKOS_USER_STACK_SIZE=8192
-# 512 is what the other boards use and it FAULTS here, bisected: idle takes a timer
-# interrupt on its own stack, and this arch's uniform exception frame is 800 bytes, so the
-# suspended frame plus the interrupt's frame plus the dispatch above it does not fit. Two
-# frames alone are 1600, which is why this is 4096 and not the 2048 that held when the
-# frame was 336.
+# A stack size here owes no stride alignment: this arch seats the thread pointer from the
+# context rather than masking SP down to a stride, so it selects no ARCH_TLS_FROM_SP.
+CONFIG_KICKOS_USER_STACK_SIZE=12288
+# Idle takes a timer interrupt on its own stack and this arch's uniform exception frame is
+# 800 bytes, so the suspended frame, the interrupt's frame and the dispatch above it must
+# fit: two frames alone are 1600.
 CONFIG_KICKOS_IDLE_STACK_SIZE=4096
-CONFIG_KICKOS_ROOT_STACK_SIZE=8192
+CONFIG_KICKOS_ROOT_STACK_SIZE=20480
 
-# The selftest scaffolding, which is what registers the eleven irq_* arms. Those are the
-# only real exercise this board's GIC gets: without them S5's controller is witnessed by
-# nothing the suite runs.
+# Registers the irq_* arms, which are this board's only exercise of the GIC.
 CONFIG_KICKOS_ENABLE_SELFTEST=y

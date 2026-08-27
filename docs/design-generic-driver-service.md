@@ -78,7 +78,7 @@ way, for one reason only, given in section 3.4.
 
 **Seam A is the new thing, and it needs no template.** The bring-up never calls a class
 function. It calls `kos_ram_alloc`, `kos_mem_self_grant`, `kos_endpoint_create`,
-`kos_console_publish`, `kos_irq_claim`, `kos_thread_spawn`, `kos_handle_close`, `kos_sleep_ns`
+`kos_console_publish`, `kos_irq_claim`, `kos_thread_create`, `kos_handle_close`, `kos_sleep_ns`
 and `kos_send_timed`. Not one class symbol. So it is **plain data plus function pointers**, and
 the descriptor is a POD aggregate.
 
@@ -653,7 +653,7 @@ inline kos::thread::Handle spawn_one(Descriptor const& d, Thread const& t,
     // Stack is always the kernel default: zero per-chip stack variation exists across the
     // nine instances. A descriptor field would need to point at a real KOS_STACK_DEFINE
     // buffer, which is expressible, and is left out until one instance needs it.
-    return kos::thread::spawn(t.entry, arg, name,
+    return kos::thread::create(t.entry, arg, name,
                               static_cast<uint8_t>(cfg->prio + t.prio_delta),
                               KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
                               mem, mem_size, /*stack=*/nullptr, /*stack_size=*/0,

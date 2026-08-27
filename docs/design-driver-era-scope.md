@@ -402,7 +402,7 @@ kernel-mediated fleet default. Verdict: direct-MMIO mode-2 CS is viable on every
 toggle nowhere hot.
 
 **Still DEFERRED, all four verified unbuilt.**
-- **N MMIO windows per spawn.** `thread_spawn` carries exactly ONE window (`attr.mmio_base`,
+- **N MMIO windows per creation.** `thread_create_call` carries exactly ONE window (`attr.mmio_base`,
   `user/include/kickos/sys/abi.h`), while an XMC SPI driver with a mode-2 CS needs TWO (USIC channel
   plus port) and a C6 driver needs its peripheral window plus the W1TS/W1TC entry. Additive: a small
   bounded N, each admissibility-checked and region/PMP-budget-checked as today, no new object model.

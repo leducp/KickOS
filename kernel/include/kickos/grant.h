@@ -7,8 +7,9 @@
 // MPU/PMP twin and any bus-side gate) and the clock/reset gates. Each enforcing chip
 // declares it via arch_reserved_blocks (arch.h).
 //
-// The geometry and Rule 7 checks compile only under KICKOS_HAVE_MPU (grant.cc); the stubs
-// below keep the call sites #if-free.
+// The geometry and Rule 7 checks compile only where memory protection is LIVE
+// (KICKOS_MEMORY_ENFORCED), which a translating backend sets while carrying no region
+// descriptors at all; the stubs below keep the call sites #if-free.
 
 #ifndef KICKOS_GRANT_H
 #define KICKOS_GRANT_H
@@ -17,7 +18,7 @@
 #include <stdint.h>
 
 #include <kickos/arch/arch.h> // ARCH_MPU_NOCACHE, arch_mpu_nocache_support
-#include <kickos/config.h>    // KICKOS_HAVE_MPU
+#include <kickos/config.h>    // the configuration umbrella
 
 // Fill target for arch_reserved_blocks: must stay >= the most blocks any chip declares
 // (imxrt1062 = 7 today). Every body truncates silently once it hits this cap.
@@ -36,16 +37,37 @@ namespace kickos
 
     // A commit backend silently DROPS a region whose memory type it cannot encode, so an
     // unencodable ARCH_MPU_NOCACHE must be refused here. Live in BOTH postures.
+    //
+    // THE QUESTION GOES TO WHICHEVER FAMILY COMMITS THE MAPPING (F6). A translating board
+    // seats no region descriptor and answers ARCH_MPU_NOCACHE_REFUSED to the region query
+    // whatever its page tables can encode, so asking that one there refuses every memory
+    // type the map editor honours.
     inline bool grant_nocache_admissible(uint32_t attr)
     {
         if ((attr & ARCH_MPU_NOCACHE) == 0)
         {
             return true;
         }
+#if KICKOS_HAVE_ASPACE
+        return arch_aspace_memtype_support(ARCH_MAP_NOCACHE);
+#else
         return arch_mpu_nocache_support() != ARCH_MPU_NOCACHE_REFUSED;
+#endif
     }
 
-#if KICKOS_HAVE_MPU
+    // Whether the mapping itself CARRIES the memory type, so a block already reachable
+    // cacheably is not already reachable as the caller asked. A page table always carries
+    // it; a region set carries it only where the descriptor has the field.
+    inline bool grant_memtype_programmed(void)
+    {
+#if KICKOS_HAVE_ASPACE
+        return true;
+#else
+        return arch_mpu_nocache_support() == ARCH_MPU_NOCACHE_PROGRAMMED;
+#endif
+    }
+
+#if KICKOS_MEMORY_ENFORCED
     // True iff [base, base+size) touches any reserved block, or on a bit-band chip the
     // alias image of a reserved block lying in the aliasable 1 MB peripheral region.
     // size 0 touches nothing (shape checks live in grant_region_admissible); a wrapping

@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# objcopy --redefine-syms input: the runtime names a COMPILER emits on its own, mapped to
+# the kernel's private ones (kernel/include/kickos/kruntime.h). Applied to the archives that
+# hold kernel text by kickos_privatise_runtime() in cmake/kickos.cmake.
+#
+# WHY A REWRITE AND NOT A SOURCE FIX. An explicit call is renamed at its call site and needs
+# nothing here. What needs this is the reference the compiler emits with no call in the .cc
+# at all: `ThreadAttr attr;`, a struct with default member initialisers, lowers its zeroing
+# to a memset libcall at -Os, and no flag suppresses it (-fno-builtin, -fno-builtin-memset,
+# -fno-tree-loop-distribute-patterns and -O2 were all measured and all still emit it). The
+# defaults are the type's contract, so there is no de-typed spelling of that construction to
+# write instead.
+#
+# BOTH SPELLINGS OF EACH NAME. The RX ABI prefixes every C identifier with an underscore, so
+# a single-spelling map would rewrite nothing at all on that board and pass unnoticed.
+# objcopy ignores an entry that matches no symbol, so listing both costs nothing elsewhere.
+#
+# CLOSED ON THE NAMES THAT HAVE A KERNEL TWIN. bcmp, bzero, __memcpy_chk and __memset_chk are
+# deliberately absent: nothing in the tree defines a kernel twin for them, so a toolchain that
+# starts emitting one is a change worth a human reading rather than a silent redirect.
+# tests/static/check_kernel_runtime.sh refuses those, and refuses any name below that this
+# rewrite failed to reach, which is what catches an archive it was never applied to. It also
+# refuses kvsnprintf and ksnprintf: no compiler emits either, so a kernel-side reference to
+# one is an explicit call and belongs corrected in the source.
+memcpy kmemcpy
+memset kmemset
+memmove kmemmove
+memcmp kmemcmp
+strlen kstrlen
+strnlen kstrnlen
+_memcpy _kmemcpy
+_memset _kmemset
+_memmove _kmemmove
+_memcmp _kmemcmp
+_strlen _kstrlen
+_strnlen _kstrnlen

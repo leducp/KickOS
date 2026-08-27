@@ -66,11 +66,11 @@ int main(int, char**)
     g_pong = &pong_s;
 
     kos_cap_grant caps[] = {{ping_s.id(), CH_FULL}, {pong_s.id(), CH_FULL}};
-    kos::thread::spawn_caps(ping, nullptr, "ping", 10, caps, 2);
-    kos::thread::spawn_caps(pong, nullptr, "pong", 10, caps, 2);
+    kos::thread::create_caps(ping, nullptr, "ping", 10, caps, 2);
+    kos::thread::create_caps(pong, nullptr, "pong", 10, caps, 2);
     for (int i = 0; i < SLEEPERS; i++)
     {
-        kos::thread::spawn(sleeper, nullptr, "sleeper", 5);
+        kos::thread::create(sleeper, nullptr, "sleeper", 5);
     }
 
     // Let the daemons run for a bounded time (root is prio 2, below the workers,

@@ -15,4 +15,12 @@
 // pointer. Picking the non-zero one keeps the reserve inside every arithmetic check.
 #define TLSCARVE_TCB 8u
 
+// WHICH MECHANISM DERIVES THE THREAD POINTER, and it is the one clause the `seat` case
+// differs from the others in. 1 is the masking arch, where the stride is a real constraint
+// on every stack block; the `seat` target overrides it to 0, which is the arch that seats
+// the register from the context and so owes the stride nothing.
+#ifndef TLSCARVE_FROM_SP
+#define TLSCARVE_FROM_SP 1
+#endif
+
 #endif

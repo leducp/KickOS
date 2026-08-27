@@ -254,7 +254,7 @@ rejected alternatives especially. Read them as why the ABI looks the way it does
 - [x] **Root's own kill tag is an enabler, but a weaker one than it reads.** Root now holds a real
       tag (`ThreadPool::ROOT_INDEX`, `ThreadPool::is_root`) instead of sharing `KILL_TAG_BOOT` with
       idle, and that is what makes root nameable by a handle and by a reply capability. It is NOT
-      what makes killing a child possible: `thread_spawn` seats `attr.spawner_tag` from
+      what makes killing a child possible: `thread_create_call` seats `attr.spawner_tag` from
       `kill_tag_of(spawner)` and a BOOT-tagged root already matched its BOOT-tagged children on
       `master`. The load-bearing fact for reaping is the other one: root's children can never be
       orphaned, because orphaning happens only in `ThreadPool::alloc`'s sweep over a reclaimed
@@ -266,7 +266,7 @@ rejected alternatives especially. Read them as why the ABI looks the way it does
       demand widens root only. `KICKOS_MAX_SPAWN_GRANTS` is a Kconfig knob with `range 2 16` and
       `default 6`, no board in the tree overrides it, and no service list or app declares an inbound
       reply cap, so the width is 7 on every board today. Its Kconfig help states the cost is caller
-      stack and not `.bss`, because `thread_spawn` stages the grant list in arrays on the calling
+      stack and not `.bss`, because `thread_create_call` stages the grant list in arrays on the calling
       thread's own stack. The residual constraint worth stating is only that ONE width serves every
       child, so whatever `main` needs sets the floor for every worker in the image.
 - [x] **`ktime_on_timer` cannot be reused as the timeout unwind.** It does a generic `sleepq_remove`
@@ -764,7 +764,7 @@ triggers `push` only on `master`).
       is an argument, not a demonstration, and that is worth saying.
 - [x] **Split `domain_for`'s refusal** -- `m4.5.1: split domain_for's refusal reasons`
       (296e030). An out-parameter errno (EPERM inadmissible / EINVAL malformed /
-      ENOMEM exhausted), forwarded verbatim by `thread_spawn`. The spawn-boundary pre-check
+      ENOMEM exhausted), forwarded verbatim by `thread_create_call`. The spawn-boundary pre-check
       that existed only to recover the errno the chokepoint could not express is gone, so the
       duplication went with the fix. Gate: `grant_reserved`, checked to fail on ENOMEM.
 - [x] **Debug asserts on the intrusive list** -- `m4.5.1: assert list membership on push_back
@@ -822,8 +822,8 @@ triggers `push` only on `master`).
       userspace driver still holds queued bytes loses them: `console_tx_flush_sync()` is a no-op
       (the ring was disarmed by `console_tx_deinit`) and `arch_shutdown` then spins forever.
       Shutdown has to drain through the owning driver, not the retired kernel ring.
-- [x] **Give `thread_spawn`'s two READ checks the same static-data fallback the write side just
-      got.** -- `m4.5.1: use user_readable_ok for thread_spawn's two read checks`
+- [x] **Give `thread_create_call`'s two READ checks the same static-data fallback the write side just
+      got.** -- `m4.5.1: use user_readable_ok for thread_create_call's two read checks`
       (fe68c72). One word at each site; byte-identical on an enforcing backend, where the
       fallback arm returns false. Gate: the `authority_cap` worker's params struct and grant
       array became GLOBALS -- exactly the shape that failed -- and the comment recording the bug
@@ -1220,7 +1220,7 @@ posture that is still selectable.
       bus driver: `docs/design-unprivileged-root.md` sections 7 and 9.
 - [x] **The call site is the DRIVER, not root**, which is what makes the seam's bound a fact rather
       than an aspiration: root holds no DEV region on any board (`ARCH_MPU_DEV` is attached only in
-      `domain_for`, reached with MMIO only from `thread_spawn`, and `KOS_SYS_MEM_SELF_GRANT`
+      `domain_for`, reached with MMIO only from `thread_create_call`, and `KOS_SYS_MEM_SELF_GRANT`
       hardcodes `R|W`), so a holder of one window can only ever ask the kernel to configure that
       window's device.
 - [x] **No PIT entry on K64F, refused by design.** One AIPS `PACR` slot covers a whole 4 KiB block,
@@ -1393,7 +1393,7 @@ Blockers and limits:
   stores need a privileged executor, and the flip needs a seam for them. Given that seam the
   bring-up moves **wholesale** into the granted driver and must, because no path exists by which a
   post-flip root holds a DEV region: `ARCH_MPU_DEV` is attached only in `domain_for`, reached with
-  MMIO only from `thread_spawn`, and `KOS_SYS_MEM_SELF_GRANT` hardcodes `ARCH_MPU_R | ARCH_MPU_W`.
+  MMIO only from `thread_create_call`, and `KOS_SYS_MEM_SELF_GRANT` hardcodes `ARCH_MPU_R | ARCH_MPU_W`.
   So the driver is the only possible caller of the seam. The
   earlier entry here said the opposite ("contradicted, not untested", from `consoledemo`'s scrambler
   garbling the UART); that was **invalid inference** -- the scrambler also writes SCTR/TCSR/PCR (`U,PV`) and
@@ -1664,7 +1664,7 @@ one, so those captures cannot be re-derived from history.
       diagnostic LOST every time** -- the worst possible shape for a path whose only job is to
       report. The kernel now panics kernel-side with the caller's message, so the report survives.
       Two implementation constraints, kept because neither is visible at the call site:
-        - **Userspace pointer validation reuses the existing `thread_spawn` name-copy pattern**
+        - **Userspace pointer validation reuses the existing `thread_create_call` name-copy pattern**
           rather than inventing a second one: a panic message is the same untrusted-pointer problem
           as a thread name.
         - **The 64-byte message buffer lives in a `noinline` helper.** A syscall runs on the
@@ -1886,7 +1886,7 @@ duplicated.
       `user/apps/common/panicgate/CMakeLists.txt`). Compare named transcripts and not totals: plan
       counts move for reasons unrelated to any one change.
 
-- [ ] **`kos_thread_spawn` returns `-KOS_ENOMEM` for two different failures**, so arena starvation is
+- [ ] **`kos_thread_create` returns `-KOS_ENOMEM` for two different failures**, so arena starvation is
       indistinguishable from a legitimate pool limit at runtime:
       `kernel/syscall/syscall_thread.cc:306` is "thread pool exhausted" and `:375` is "stack arena
       exhausted". That ambiguity mislabelled
@@ -3511,8 +3511,8 @@ with the consequence that comes with them, because each was chosen against a rea
    design that consumption lands in the server's own declared run and nowhere else. **The current
    exposure is preserved exactly, not widened.**
 3. **Spawn-time slab drain.** Real, and the mitigation is NOT "spawn is authority-gated" -- it
-   isn't. `KOS_SYS_THREAD_SPAWN` dispatches with no authority check
-   (`kernel/syscall/syscall.cc`); inside `thread_spawn` only the privileged flag, the MMIO window
+   isn't. `KOS_SYS_THREAD_CREATE` dispatches with no authority check
+   (`kernel/syscall/syscall.cc`); inside `thread_create_call` only the privileged flag, the MMIO window
    (`AUTH_MEMORY`) and the authority word are gated, so any task can spawn an unprivileged default
    child. The mitigations that actually hold: every spawned child costs a TCB slot, so drain is
    bounded by `KICKOS_MAX_THREADS`; the same ungated actor can already deny every future spawn by
@@ -3814,7 +3814,7 @@ is a claim I could not verify either way. Each item says which.
       - **Userspace is already ready for it**: `irq_loop` breaks on `kos_irq_wait(...) != 0` and
         then calls `kos_exit(0)` (`uart_service.h:139-165`), so a cancelled IRQ thread exits
         cleanly with no driver change at all.
-      - **Thread handles exist but nothing resolves one.** `kos_thread_spawn` returns
+      - **Thread handles exist but nothing resolves one.** `kos_thread_create` returns
         `handle_for(i)` = `(gen << 8) | index` (`syscall_thread.cc:487`, `thread.h:365-368`), and
         `syscall_thread.cc:32-33` states that a resolver must reject `state == EXITED`. There is no
         thread capability type -- `CapType` is EMPTY/SEM/MUTEX/ENDPOINT/REPLY/IRQ and nothing else
@@ -5078,7 +5078,7 @@ below where they were previously mislabeled.
   - [x] **MMIO-grant mechanism (task #9)** -- DONE + committed 2026-07-16.
         `kos_thread_params.mmio_base/mmio_size` (grant-at-spawn), the
         `arch_mpu_region_encodable` arch seam (exact-cover, no rounding), privileged-only
-        `thread_spawn` validation, `domain_for` appends MMIO as a never-shared capability.
+        `thread_create_call` validation, `domain_for` appends MMIO as a never-shared capability.
         PLUS a Critical fix: an unprivileged `mem_base` grant is now arena-bounds-checked
         (closed a peripheral/kernel-SRAM self-grant escalation). See `docs/design-task9-mmio-driver.md`.
   - [x] **K64F first unprivileged driver (k64drv, PIT)** -- DONE on silicon 2026-07-16;
@@ -5159,7 +5159,7 @@ below where they were previously mislabeled.
   (no MPU to contain an OOB access -- see the `user-args-validated-at-boundary` invariant).
   Cheap parts DONE (fable code review): thread name copied into a bounded TCB buffer (fault path
   never derefs/`%s` a user pointer); `clock_now` out-pointer null+8-byte-alignment checked;
-  `thread_spawn` stack `base+size` wrap checked; `SlotPool::resolve` rejects a dirty handle top
+  `thread_create_call` stack `base+size` wrap checked; `SlotPool::resolve` rejects a dirty handle top
   byte. Remaining: copy-in the `kos_thread_params` struct via a checked read, and bound-check
   writable out-pointers (`clock_now`) + the `write()` buffer against the caller's granted region
   -- this last part wants the M1 region-ownership model pinned (privileged = whole arena,
@@ -5242,6 +5242,14 @@ below where they were previously mislabeled.
   bounded by two link/config constants and nothing an app grows at runtime. The LATENCY
   concern is still real: a board with a full stride of `thread_local` masks on the order of
   2.5 KB of stores.
+
+  **THE REENT TERM IS GONE AS OF M6.2 T5b.2, and NOT by either design priced below.** The kernel
+  now primes a slot at its own FIRST SWITCH-IN, so the write happens under the switch's lock and
+  never under a spawn's, for every thread rather than for a reused slot alone (the boot seeding
+  loop and the pool's `reent_stale[]` went with it). It was moved because a per-process space
+  makes a spawn-time write land in the SPAWNER's frame, not to buy latency. What is left in the
+  masked spawn window is the TLS copy and the cap loop, so the numbers this section asks for are
+  still the ones to take before touching the lock.
 
   THE OBSTACLE IS NOT THE LOCK, IT IS `ThreadPool::release`. It undoes a claim in exactly two
   cases: an `EXITED` slot, or `i == next - 1`, and its own comment records why that is safe --
@@ -5744,6 +5752,275 @@ shared case only.
       rather than following it: with no class methods the wire protocol IS the API, and extracting a
       class later would mean deriving it from its own transport.
 
+## Found reconciling the reference documents with the tree (2026-08-25)
+
+- [ ] **RX owes a `pspguard` witness, and the app as it stands cannot give it one.**
+      `user/apps/common/pspguard/CMakeLists.txt` returns immediately unless `KICKOS_ARCH` is
+      `armv7m` or `armv6m`, and `main.cc` moves SP with ARM asm and `#error`s anywhere else, so the
+      PSP-bounds class is machine-checked on two backends of the four that carry it. On rxv3 the
+      refusal sites are `.Lsys_bad_usp`, `.Lpendsw_bad_usp` and `kickos_rx_bad_usp`
+      (`arch/rx/rxv3/switch.S`); the fourth, `.Lsvc_nokstack`, is structurally unreachable there --
+      `thread_create` seats a kernel block on every pool thread and idle is privileged and runs
+      `arch_idle_wait` alone, as the site says itself -- so nothing in the tree reaches the REFUSE
+      side of the trusted-stack guard on RX. An RX prober needs its own SP-moving arm, and rx72m has
+      no emulator, so the witness is a bench step whichever way the app is written.
+- [ ] **`usbcdcwit` is built by no default configuration of any board.**
+      `user/apps/common/usbcdcwit/CMakeLists.txt` returns unless `KICKOS_SERVICE_LIST` matches
+      `_usbcdc$`, and no board defconfig or `Kconfig` sets such a list. The three that exist --
+      `kickos_services_picopi_usbcdc`, `kickos_services_pizero2350_usbcdc` and
+      `kickos_services_teensy41_usbcdc` (`system/CMakeLists.txt`) -- are reachable only from a
+      `-DKICKOS_SERVICE_LIST=` on the configure line, so the app compiles in no preset, no local
+      fleet sweep and no CI job, and a change that breaks it is invisible until somebody remembers
+      the flag.
+
+## External audit of the M6.2 branch, 2026-08-26
+
+Report at `~/.cursor/projects/home-leduc-projets-KickOS/canvases/m6-2-branch-audit.canvas.tsx`.
+Its two merge-gate items are FIXED (the donated-frame lifetime, and `region_mode` deriving geometry
+from allocation order). These are the rest. **The five CORRECTNESS items and the two SMP-readiness
+items are FIXED (2026-08-27), each with a witness whose mutation fails it**; the four performance
+items and the DRY item are a separate pass and are untouched.
+
+**Correctness**
+- [x] **A NORMAL re-grant of a NOCACHE mapping returns success and changes nothing.** FIXED: where
+      the mapping CARRIES the type (`grant_memtype_programmed`), the short circuit is now decided by
+      `user_range_typed_ok` in BOTH directions and never by rights alone. On the region family the
+      descriptor is REPLACED rather than stacked (`MpuSet::add_enforced_retyping`), so one block never carries
+      two types with the range checks reading the first and the hardware obeying the last, and a
+      refused re-type puts the old descriptor back. Witnessed by `self_grant_retype` (qemu-arm64),
+      which drives NORMAL -> NOCACHE -> NORMAL and reads `KOS_ASPACE_OP_MEMTYPE_AT` after each; with
+      the check restored to its NOCACHE-only form the NORMAL-over-NOCACHE leg fails. Recorded in
+      `user/include/kickos/sys.h` (kos_mem_self_grant) and `docs/design-m6-mmu.md`.
+- [x] **After root dies, a later process becomes the mutable data template.** FIXED with an
+      immutable pool-backed snapshot, taken on the HOME'S WAY OUT rather than at the first copy.
+      Its frames come off the pool while root is seeded (so no balance window sees them leave) and
+      `aspace_release` fills them from root's still-standing mappings before clearing `g_data_home`.
+      While root lives the source is unchanged, which is load-bearing: `irq_driver` and its peers
+      read a global root writes AFTER its ctors, and freezing the snapshot early broke them
+      outright. A seed reaching a lost home with no snapshot behind it is refused, and no process
+      other than root is ever the template. Witnessed by `process_data_template`, which stages the
+      loss of the home, moves root's own word, and reads a later process's copy back; without the
+      snapshot clause the later process answers root's FRAME and root's LIVE word. Recorded in
+      `docs/design-m6-mmu.md` section 3.4 and `kernel/include/kickos/aspace.h`.
+- [x] **Reentrancy seating dereferences low-half user addresses directly.** FIXED by stating the
+      distinction and asserting it: `aspace_seated_for` answers whether THIS CORE's translation root
+      is the thread's own space, and the switch path (both `switch_book` and `start`) primes and
+      seats nothing when it is not. A privileged spawn resolves to the kernel domain, which carries
+      no space, so this is the posture rather than an edge; idle needs no prime, which is the whole
+      reason it was survivable. Witnessed by `reent_seating`: bit 1 counts app-half writes made
+      while unseated, counted inside `reent.cc` where the guard is NOT, so removing the guard trips
+      it; bit 0 is the positive control that the posture is reached at all, counted in
+      `aspace_activate_for`. Recorded at `root-unprivileged-idle-alone-privileged`
+      (`docs/reference/invariants.md`) and in `docs/design-m6-mmu.md`.
+- [x] **`aspace_frame_token` releases acquisitions that may have failed.** FIXED: each acquire is
+      checked before anything is released, and the reference hold is released on the second
+      acquire's failure path. Every acquire in `aspace.cc` now goes through one `acquire_page` /
+      `release_page` pair, so the pairing is a property of two functions rather than a rule each
+      call site keeps; the same pass removed a leaked hold in `data_copy` (a null `dst` beside a
+      live `src`). Witnessed by `aspace_acquire_balance`, which reads a new selftest counter of
+      unpaired releases after taking a token for an unmapped page; the old release-before-check
+      order reports 1 unpaired. Recorded beside `arch_aspace_acquire` in
+      `arch/include/kickos/arch/arch.h`.
+- [x] **`VirtualRanges::overlaps` computes `base + pages * granule` with no overflow defence.**
+      FIXED: it now runs the same checked extent arithmetic `reserve` does and FAILS CLOSED, a
+      wrapping window overlapping everything the list could name, so a caller that has not checked
+      its own arithmetic is refused rather than admitted on a wrapped end. `vrange.h` states that it
+      has no precondition. Witnessed by the host arm
+      `VRange.overlaps_fails_closed_on_an_extent_whose_arithmetic_wraps` (sim), over both a wrapping
+      byte count and a wrapping end; without the check both legs answer false.
+
+**SMP readiness, and M7 cannot start on top of these**
+- [x] **`g_current` is process-global rather than per-core.** FIXED as
+      `g_current[KICKOS_NUM_CORES]` keyed by `arch_cpu_id()`, which folds to a literal at one core,
+      matching `g_rv_trap_stack`'s precedent; T9's `armv8a_percpu` could not host it, `vectors.S`
+      spelling that block's one displacement as a literal and `kernel/mem/aspace.cc` being portable
+      code. `aspace_release` now clears the cell on EVERY core and rewrites only the running core's
+      root. **NO BEHAVIOURAL WITNESS EXISTS AT ONE CORE** and none is claimed: the change is
+      byte-equivalent there. What holds it is a `static_assert` on the cell count, the whole
+      aspace suite as the no-regression witness, and the `cpu_id_fold` gate, which caught the first
+      spelling of it. Classified in `docs/design-m7-state-inventory.md` and stated in
+      `docs/design-m6-mmu.md` section 3.4b.
+- [x] **`frame_pool_ptr` reads allocator bitmap state without the lock its siblings take**, and
+      `g_data_home` has no ownership or publication model. FIXED both. `frame_pool_ptr`,
+      `frame_pool_free` and `frame_pool_refused` take the pool's `IrqLock` (nesting-safe, and the
+      seed path already holds one); `frame_pool_init` and `frame_pool_total` are the two documented
+      exceptions. `g_data_home` now has an owner and a publication rule: published by the first
+      seed, read only by `data_copy`, and cleared by the release of that space AFTER the snapshot
+      beside it is frozen, so every read after that point resolves to the snapshot. Both are stated
+      in `kernel/include/kickos/frame_pool.h` and classified in
+      `docs/design-m7-state-inventory.md`. **NO BEHAVIOURAL WITNESS AT ONE CORE** for the lock
+      itself: nothing in the tree allocates or frees frames from an interrupt, so there is no
+      single-core interleaving to construct. The publication half is witnessed by
+      `process_data_template`.
+
+**Performance, measured by the audit**
+- [x] **Process creation keeps interrupts masked across image cloning**: about 104 KiB of memcpy and
+      roughly 57 page-invalidation sequences inside one `IrqLock`, four synchronising instructions
+      per page. Worst-case interrupt latency then grows with app data size, and it dwarfs the
+      syscall-frame latency T7 already owes a number for. A space not yet published can be seeded
+      without masking globally.
+      HALF FIXED, and the other half is REFUSED with its reason. **The invalidations are gone
+      outright**: nothing tags a translation, so `write_ttbr0` drops the whole low half on every root
+      change, and a space whose root this core has never installed holds neither a cached entry nor a
+      cached absence. `invalidate_page_if` takes that answer from `installed_here` (TTBR0_EL1 against
+      the space's own root), asked once per `arch_aspace_map`/`unmap` call. Measured inside the
+      `IrqLock` of ONE `kos_task_create` on `qemu-arm64`: **62 page-invalidation sequences before
+      (248 synchronising instructions), 0 after**; the running space's own widening still pays every
+      page of it. Elided above one core, a sibling's TTBR0 not being readable here. Witnessed by
+      `map_tlbi_elided` over the new `KOS_ASPACE_OP_MAP_TLBI`; two mutations fail it, and the
+      positive control is load-bearing because eliding UNCONDITIONALLY is invisible to every other
+      arm (QEMU models no stale entry, which is T8b's own negative-control result).
+      **The 32-page copy stays masked deliberately, and the audit's reasoning does not reach it.**
+      Everything a seed WRITES needs no global mask, but the SOURCE is root's LIVE static data, and
+      the mask is what makes those 32 pages one point-in-time snapshot of it: with interrupts on, a
+      user IRQ handler or a sibling thread of root's task can write an app global between two pages
+      and the child starts on an image no writer ever saw. Nothing in the suite would show it.
+      Removing the mask needs an immutable template with a fault handler behind it, not a lock
+      change. A second blocker sits under that one: the copy is inside `spawn_masked`'s
+      function-scope lock, and a spawner slain in an unmasked gap never returns, so a slot claimed
+      and an image seeded there have nothing left to free them. Recorded at T11a in
+      `docs/design-m6-mmu.md` and beside `data_copy` in `kernel/mem/aspace.cc`.
+- [x] **`-mcmodel=large` is applied to whole targets to reach a few cross-half symbols**, costing
+      3832 bytes of kernel text (78998 to 75166 recompiled small), on a fixed 1 MiB budget and on the
+      scheduler and syscall paths' I-cache. Scope it to the translation units that name those
+      symbols, or publish linker-filled pointer cells.
+      FIXED as `kickos_split_image_tu(<target> <sources>...)`, scoped to the **six** TUs that name
+      the app's half: `kernel/init/kmain.cc`, `kernel/thread/reent.cc`, `kernel/mem/aspace.cc`,
+      `kernel/domain/domain.cc`, `arch/arm64/armv8a/arch_armv8a.cc` and
+      `arch/arm64/chip/virt_arm64/chip_virt_arm64.cc`. No pointer cells: no new ABI surface was
+      needed. The list is DERIVED from two sweeps over a fully small tree, and both are needed
+      because the classes differ in loudness: the reach class fails the link (7 truncations, all
+      `R_AARCH64_ADR_PREL_PG_HI21`), while `mem/aspace.cc` and `domain/domain.cc` hold only weak
+      externs whose GOT references LINK CLEANLY and break nothing until something else forces the one
+      `.got` to be placed. Whole-target cost was 4076 bytes of archive text over a fully small build;
+      naming the six recovers 2724 of it. Measured on this tree, `qemu-arm64` selftest link:
+      archive text 81092 -> 78292, ELF `.text.init`+`.text` 82368 -> 80032. In a
+      selftest-OFF build the whole pass is 75539 -> 73308.
+      **The kernel still calls no app text**, which is what T5b.3's witness rests on: 1864
+      kernel-half branches swept, 0 into `.apptext`, with the same range test over `.apptext` itself
+      firing 3224 times as the positive control. `kernel_runtime` stays green.
+      **The silent GOT class now has a gate**: `kernel_got`
+      (`tests/static/check_kernel_got.sh`) refuses any `_GOT` relocation in the three archives, with
+      the relocation count as its positive control. Dropping `kernel/mem/aspace.cc` from the list
+      turns it red and names the four symbols while the link and the runtime suite stay green, which
+      is the whole point. **`qemu-arm64` is therefore 33 tests, not 32.**
+- [x] **The frame bitmap is scanned one bit at a time under the lock.** A host micro-benchmark of the
+      same scan shape measured word-wise at 19.5x the shipped 8 MiB pool and 75x to 86x at 128 to
+      512 MiB. Keep the bitmap and first-fit, skip whole words, and count trailing zeros.
+      FIXED. The scan reads a `size_t` at a time and takes the lowest free bit with a count of
+      trailing zeros; the bitmap and first-fit are unchanged. **Allocation ORDER is unchanged and
+      that is measured, not argued**: old and new return the same offset from base in every shape,
+      every pool size and both optimisation levels.
+      **THE FIRST WORD-WISE DRAFT WAS A REGRESSION ON THE PATH THAT NEVER SCANS.** `release` parks
+      the hint on the frame it freed, so the common case tests one bit and answers; routed through
+      the two-pass word loop it measured 2.1x to 2.4x SLOWER, unchanged by the aliasing fix since
+      that path never reaches the word load. A hint test ahead of the loop returns it to parity,
+      and both paths exit through one `take_one`, so a single place still turns an index into an
+      address. Measured at 8 MiB, the size a real pool resembles: no-scan path at parity (one cell
+      1.13x faster), scan-heavy 11.28x at `-O2` and 15.72x at `-O3`.
+      The tail word needs no upper mask: bits at and past the frame count read as ALLOCATED, and
+      the assembling loop stops at the bitmap's own byte length rather than reading past it.
+      Witnessed by new host arms in `tests/unit/frame/frame_alloc.cc` over the wrap pass and the
+      tail word.
+- [x] **Per-domain range bookkeeping is 43.6 percent of the kernel instance**: `VirtualRange` 24
+      bytes, `VirtualRanges` 776, times 20 domain slots is 15520 of 35592. Narrow `pages` and
+      `rights` after a static proof, and compile `Domain::regions` out of translating domains.
+      FIXED. `VirtualRange` 24 -> 16 bytes (`pages` `uint32_t`, `rights` `uint8_t`), `VirtualRanges`
+      776 -> 520. **Neither width is assumed.** Three `static_assert`s in
+      `kernel/include/kickos/vrange.h` say the widest value each setter can be handed ROUND-TRIPS
+      through its field, and the setters refuse rather than truncate: `reserve` refuses above
+      `VR_MAX_PAGES`, `grant` refuses a rights word carrying a bit the entry cannot hold. Both
+      refusals are witnessed by new host arms
+      (`VRange.reserve_refuses_a_page_count_the_entry_cannot_hold`,
+      `VRange.grant_refuses_a_right_the_entry_cannot_hold`), each failing when its refusal is
+      deleted. `Domain::regions` is `KICKOS_DOMAIN_REGIONS`, which is 1 where a backend translates:
+      the kernel singleton's whole-arena descriptor is the only one any domain there records, and
+      `domain_region_at` now debug-asserts the bound. `region_count` is a byte.
+      **Measured on `kickos::detail::g_instance`: 35752 -> 27112 bytes**, of which 5120 is the range
+      lists (20 x 256), 3360 the region arrays and 160 the region counts. Per-domain range
+      bookkeeping falls from 43.4 percent of the instance to 38.4.
+
+**DRY, with the audit's own caution attached**
+- [x] Power-of-two checks are identical in `frame.cc` and `vrange.cc`; frame-run free loops are
+      identical in `aspace.cc` and `ustack.cc`; `pages * granule` with its overflow check recurs in
+      `vrange.cc`, `aspace.cc` and `aspace_armv8a.cc`. **Share the checked extent arithmetic and NOT
+      the loops**: the traversals differ in bypass and exact-attribute semantics, and a flag-driven
+      merge of security-sensitive range walks would be easier to misuse than the duplication.
+      SHARED, in `include/kickos/extent.h` rather than under `kernel/` or `arch/`: both layers reach
+      it and neither includes the other's headers, which is the same shape
+      `include/kickos/units.h` already has. It carries `is_pow2` and `extent_end`, the latter
+      FAILING CLOSED on a byte count that overflows a pointer and on an end that wraps. It is
+      C++-only, so it stays out of the `c_headers` corpus and drags nothing into any
+      `extern "C"` include closure. The two identical frame-run free loops became
+      `frame_pool_free_run`, in the pool's own header beside `frame_pool_alloc_run`: byte-identical
+      bodies, no parameter added, and the pool's refusal counter stays the only accounting.
+      **DELIBERATELY LEFT DUPLICATED**, and the audit's caution is the reason: `VirtualRanges::find`,
+      `covers` and `overlaps` are three traversals of ONE array with three different admission rules
+      (any live entry, `Granted` plus a rights superset, any live entry with a fail-closed extent),
+      and the map editor's leaf walks in `aspace_armv8a.cc` differ in break-before-make and in
+      attribute handling. Unifying either set takes a flag over a security-sensitive traversal.
+      `aspace_armv8a.cc`'s `range_ok` DOES now use the shared `extent_end`, which was the third site
+      the audit named, and it keeps its own alignment and low-half bound on top; `aspace_refusals`
+      reports `bits 63 of 63` across the change, which is what says the refusal set did not move.
+      `kernel/mem/aspace.cc` had no `pages * granule` of its own to share: its arithmetic is the
+      BYTES-to-pages round-up (`bytes > SIZE_MAX - g`) and the page alignment of a linker extent,
+      both different computations, and its share of this item was the frame-run loop.
+
+## Found while witnessing T5b.3 (2026-08-26)
+
+- [ ] **`appdata_no_kernel` does not run on the one board that splits its image.** The gate is
+      registered under `KICKOS_HAVE_MPU` and keys on `__kickos_appdata_start/_end`, which
+      `virt_arm64.ld` does not define. So the guard against a kernel archive silently landing in the
+      app's low window is absent exactly where that window is now **the only memory EL0 can reach**,
+      and a kernel object landing there would be an isolation hole with no gate over it. The script's
+      own `ASSERT(_ebss > _sbss)` catches total selector failure and nothing narrower. Enabling it
+      needs the two bounds plus a SECOND window pair for `.apptext`, the EL0-executable one, which
+      the existing gate has no concept of. Pre-existing since the app moved low; T5b.3 is what made
+      it matter.
+
+## Found while witnessing T5b.2, and predating it (2026-08-25)
+
+- [x] **`errnoprobe` HANGS on `qemu-arm64`.** Root-caused to the armv8a backend, not to the probe:
+      `arch_switch` latched BOTH `from` and `to` into a single deferred-switch request, so a second
+      reschedule inside one ISR (`ktime_on_timer` wakes every expired sleeper in one sweep) left
+      `from` naming a thread the scheduler had merely published. The IRQ exit then saved the
+      interrupted frame through that wrong context and lost the real one. The M-profile and RISC-V
+      backends ignore `from` and save `g_arch_current`; armv8a now has the same cell,
+      `kickos_armv8a_ctx_current`, re-seated by the IRQ exit. The gate is registered
+      (`qemu_arm64_errnoprobe`), the four arms reach their verdicts, and the failure was NOT
+      errnoprobe-specific: any two threads whose deadlines expired in one timer sweep corrupted a
+      context on this arch.
+
+## Found while witnessing T5, and predating it (2026-08-25)
+
+- [ ] **`fault_dump` HANGS under a non-default service list.** Configured with
+      `-DKICKOS_SERVICE_LIST=kickos_services_simuart`, the ctest `fault_dump` gate times out: the
+      fault dump prints correctly and the process then never exits. Reproduced on a clean worktree at
+      `364aea7a`, so T5 did not cause it. **It is invisible to both sweeps by construction**, nothing
+      in `sweep_host_gates.sh` selecting an alternative provider, which is why it survived this long.
+      A dump that completes and then fails to terminate is a drain or an exit-path defect rather than
+      a reporting one.
+
+## M6.2 closing sweep: two debts the pass could not discharge (2026-08-26)
+
+Both are recorded in `docs/design-m6-mmu.md` beside the obligation they belong to. They are here so
+they are known debts rather than forgotten ones.
+
+- [ ] **T7's OWED LATENCY MEASUREMENT, and there is no instrument to take it with.** T7 makes the
+      compact-SVC-frame decision wait on an aarch64 round-trip figure: the exception frame is 800
+      bytes and a syscall moves about 1.6 KiB with interrupts masked. No such figure exists anywhere.
+      The blocker is the rig: `boards/qemu-arm64/configs/` holds a `base` variant alone, so there is
+      no `KICKOS_BENCH` image for the board, and `tools/bench/bench-fleet.sh` does not list it.
+      **Standing up a bench variant for this arch is a step of its own** and belongs with M8's
+      instrument, where the comparison it feeds lives. Until it is taken, no compact-frame decision
+      may be argued -- which is what T7 froze.
+- [ ] **`qemu-arm64` declares no SERVICE LIST, so F10's real consumer never runs on the one board
+      that translates.** F10 makes `drv::bring_up` the gate for the whole allocation ABI and says in
+      terms that no selftest arm substitutes for it. It runs on region boards and against host fakes,
+      where nothing translates and the same-address rule is vacuous. `task_handoff_readback` is the
+      substitution, and it is a good arm that is not the gate. Porting a service list to this board
+      is its own step; M6.2 records the gap rather than closing it.
+
 ## M6 -- the per-thread-privacy restatement, owed WITH the behaviour (2026-08-24)
 
 `docs/design-m6-mmu.md` freeze F9 moves the portable contract: a task's grants are sibling-visible, a
@@ -5756,30 +6033,35 @@ true of the tree as it stands and rewriting them early puts the Reference and th
 disagreement the other way round. The list is here so the deferral is tracked rather than
 remembered.
 
-- [ ] **`docs/reference/invariants.md` -- four sites.** `dev-window-access-is-thread-scoped-its-lifetime-task-scoped`
+- [x] **`docs/reference/invariants.md` -- four sites.** `dev-window-access-is-thread-scoped-its-lifetime-task-scoped`
       and `dev-window-exclusivity-is-bounded-by-the-silicon` both argue that a task-wide window would
       hand registers to a peer that never asked, which is exactly what a translating backend does; the
       private-stack clause of `mpu-apply-on-every-switch-in`; and `privileged-write-seam-possession-and-allowlist`,
       which is REPAIRED rather than qualified once possession becomes thread-local authority instead
       of a walk over reachable regions. `tls-carve-sits-below-stack-lo` is the precedent for the
       wording: it already says outright that it is naming and not isolation.
-- [ ] **Four kernel comments claiming a sibling cannot reach another thread's stack**, in
+- [x] **Four kernel comments claiming a sibling cannot reach another thread's stack**, in
       `kernel/include/kickos/domain.h`, `kernel/thread/thread.cc` (two) and `kernel/syscall/syscall.cc`.
       `kernel/init/fault.cc` already admits the sharing and needs nothing.
-- [ ] **`docs/reference/architecture.md` -- two statements** that per-thread private stacks stop a
+- [x] **`docs/reference/architecture.md` -- two statements** that per-thread private stacks stop a
       sibling scribbling another's.
-- [ ] **The Book.** `privilege-is-three-axes-not-one-bit.md` teaches the private stack as a
+- [x] **The Book.** `privilege-is-three-axes-not-one-bit.md` teaches the private stack as a
       guarantee. `whoever-stacks-the-trap-frame-owns-the-bounds-check.md` already frames a sibling's
       access as a legitimate granted mapping, which is the telling to converge on.
-- [ ] **The ABI headers.** `user/include/kickos/sys.h` states the `-KOS_EPERM` non-holder contract for
+- [x] **The ABI headers.** `user/include/kickos/sys.h` states the `-KOS_EPERM` non-holder contract for
       the periph seam and describes the self-grant budget as per-thread. These stay TRUE if and only
       if possession becomes thread-local authority, so they are the check on that work rather than
-      text to soften.
-- [ ] **Do not touch the two board-registered arms.** `periph_enable_unheld` and
+      text to soften. **CHECKED at T5: both stay true with no edit.** The non-holder contract is
+      now read off `Thread::dev_base`/`dev_size`, and the self-grant budget is still
+      `KICKOS_MPU_MAX_REGIONS` on every backend that has landed; F10 is what makes the budget
+      clause evaporate under paging, and that is not this step.
+- [x] **Do not touch the two board-registered arms.** `periph_enable_unheld` and
       `periph_reg_write_unheld` (`user/apps/common/selftest/main.cc`) assert a non-holder is refused
       from a thread other than the holder, and they must keep passing on every backend. They are the
       executable check that authority stayed thread-local; a change that needs them relaxed has
-      widened possession by mistake.
+      widened possession by mistake. **CHECKED at T5 and untouched**: both pass on every backend,
+      and both FAIL when the possession helper is mutated to answer for a caller holding nothing,
+      so they discriminate on the record and not on the region set.
 
 ## MMU-era groundwork quick wins (from `docs/design-mmu-era-exploration.md` section 5)
 
@@ -5787,16 +6069,11 @@ Cheap seam/groundwork changes worth making WHILE the M4-M6 code is written, so t
 force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`kaccess_from_user` /
 `kaccess_to_user`, `kernel/syscall/syscall_mem.cc`) and is not repeated here.
 
-- [ ] **QW-1. Give `Domain` an opaque backend field instead of a bare region array**, or at least
-      route ALL region access through accessors. Today `struct Domain` exposes
-      `arch_mpu_region regions[]` directly and callers (`domain_for` dedup, `thread.cc` compose, any
-      future reader) touch it as a raw array. Keep it MPU-only in BEHAVIOR but funnel every read
-      through a small accessor surface (`domain_regions(d, &n)` / an opaque `domain_backend(d)`) so
-      the field can later become `arch_aspace*` without touching callers. Cheap now because there
-      are only a handful of readers; expensive later, once caps, IPC endpoints, MMIO grants and the
-      console-handover work all read `regions[]` directly and the representation has to swap under
-      pressure. A one-file accessor contains the blast radius of the single biggest below-seam
-      change.
+- [x] **QW-1. Give `Domain` an opaque backend field instead of a bare region array.** LANDED at
+      T5: every read outside `domain.cc` goes through `domain_region_count`/`domain_region_at`,
+      and `Domain::space` (an `arch_aspace*`, compiled only where the backend translates) is the
+      backend field beside them. The accessor half is what kept the representation swap to one
+      file, which was the whole reason to do it early.
 - [ ] **QW-3. Keep the shared-IPC ring contract PHYSICALLY addressed from day one.** When the IPC
       ring lands (`docs/design-m7-smp.md`), specify that ring control words and slot
       references are offsets or physical addresses, NEVER a pointer valid in one core's space, even
@@ -6223,7 +6500,7 @@ that changed the answer.** Kept in full because the mis-filings are the lesson:
       `Task::creator_tag` at the creator's death, and a never-freed task has `gen == 0` so its handle
       is `index + 1` -- which the selftest itself notes is guessable. So the SUCCESSOR of a dead
       creator's thread slot passes `task_created_by` for the predecessor's groups: it can kill them,
-      and it can `kos_thread_spawn` a child into one and hand that child the group's domain regions.
+      and it can `kos_thread_create` a child into one and hand that child the group's domain regions.
       `t_task_creator_gate` covers only a concurrently-live stranger. **This refutes the filed option
       "declare the hold the creator's for life" -- that IS the escape.** Fixed by
       `task_orphan_created_by` from `exit_current`, which is total over deaths where
@@ -6762,7 +7039,7 @@ follows is what survived that.
       the sweep wants the task.
 - [ ] **M6/SMP: the claim-then-commit shape in `domain_for` and `task_for` is safe only because
       `IrqLock` is enough on one core.** Both hand out a pool slot at refcount 0 and are committed by
-      a later `domain_ref`/`task_ref`, and what makes the window atomic is that `thread_spawn`
+      a later `domain_ref`/`task_ref`, and what makes the window atomic is that `thread_create_call`
       declares a FUNCTION-SCOPE `IrqLock` as its first statement, spanning the claim, the thread-slot
       alloc and `thread_create`. `IrqLock` masks LOCAL interrupts only, so under SMP a peer core can
       claim the same slot: two threads would then share one task and the loser's domain would sit at

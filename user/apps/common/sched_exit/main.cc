@@ -69,10 +69,10 @@ namespace
 int main(int, char**)
 {
     kos::print("KickOS sched-exit regression\n");
-    kos::thread::spawn(worker, nullptr, "worker", 10);
+    kos::thread::create(worker, nullptr, "worker", 10);
     kos::sleep_ns(300000000ull); // 0.3s: root blocks here -> worker runs + exits
     kos::print("root: survived worker exit\n");
-    auto second = kos::thread::spawn(second_waiter, nullptr, "wlast", 10);
+    auto second = kos::thread::create(second_waiter, nullptr, "wlast", 10);
     if (not second.valid())
     {
         kos::print("wait_last spawn refused\n");
@@ -97,7 +97,7 @@ int main(int, char**)
 #endif // SCHED_EXIT_SERVICE_THREADS
     // Reuses the previous phase's reclaimed slot, as every phase here does: the whole
     // image never holds more than ONE concurrent child, so it runs on a two-slot pool.
-    auto parked_thread = kos::thread::spawn(parked, nullptr, "parked", 10);
+    auto parked_thread = kos::thread::create(parked, nullptr, "parked", 10);
     if (not parked_thread.valid())
     {
         // The marker separates this from a run where root was simply the last thread

@@ -8,10 +8,11 @@
 #include <kickos/grant.h> // grant_hits_reserved (backstop assert)
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
-#include <kickos/libc/string.h>
+#include <kickos/kruntime.h>
 #include <kickos/task.h>
 #include <kickos/reent.h>
 #include <kickos/tls.h>
+#include <kickos/ustack.h>
 
 namespace kickos
 {
@@ -107,12 +108,13 @@ namespace kickos
     // window can span several peripheral sub-units or cover part of one, so equal, containing
     // and straddling requests must all refuse while an ADJACENT window stays admissible.
     //
-    // Scans THREADS, because a window is a thread's own region and never its task's domain. A
-    // thread that has not started yet (INACTIVE) has no regions composed, and one that is
+    // Reads each thread's own possession record, never its reachable regions: under a
+    // translating backend the window is mapped task-wide and every peer would read as a
+    // holder. A thread that has not started yet (INACTIVE) holds nothing, and one that is
     // EXITED or DYING is not a holder: the dying arm is what keeps a respawn issued from the
     // teardown's EPIPE wake from being refused by the very thread whose death freed the
     // device. Both the check and the commit (thread_create's composition) sit inside
-    // thread_spawn's function-scope IrqLock, so they are atomic together.
+    // thread_create_call's function-scope IrqLock, so they are atomic together.
     bool dev_window_free(uintptr_t base, size_t size)
     {
         uintptr_t const last = base + size - 1u;
@@ -121,20 +123,13 @@ namespace kickos
         {
             Thread const& t = k.threads.slots[i];
             if (t.state == ThreadState::EXITED or t.state == ThreadState::INACTIVE
-                or t.dying)
+                or t.dying or t.dev_size == 0)
             {
                 continue;
             }
-            for (arch_mpu_region const& r : t.mpu)
+            if (grant_ranges_overlap(base, last, t.dev_base, t.dev_base + t.dev_size - 1u))
             {
-                if ((r.attr & ARCH_MPU_DEV) == 0)
-                {
-                    continue;
-                }
-                if (grant_ranges_overlap(base, last, r.base, r.base + r.size - 1u))
-                {
-                    return false;
-                }
+                return false;
             }
         }
         return true;
@@ -143,8 +138,8 @@ namespace kickos
     void thread_create(Thread* t, void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size, ThreadAttr const& attr)
     {
-        memset(t, 0, sizeof(*t));
-        // Must follow the memset, which would otherwise zero the chunk directory AND the
+        kmemset(t, 0, sizeof(*t));
+        // Must follow the kmemset, which would otherwise zero the chunk directory AND the
         // free-list head the caller already reserved and threaded.
         t->caps = attr.cap_run;
         t->cap_free_head = attr.cap_free_head;
@@ -153,7 +148,7 @@ namespace kickos
 #endif
         t->spawner_tag = attr.spawner_tag;
         t->id = assign_thread_id();
-        // NEVER alias attr.name: via thread_spawn it can be a user pointer, and the fault
+        // NEVER alias attr.name: via thread_create_call it can be a user pointer, and the fault
         // reporter %s-prints t->name, so an unbounded strlen of a bad user pointer would
         // crash the fault path itself.
         size_t ni = 0;
@@ -179,20 +174,25 @@ namespace kickos
         // slice_deadline_ns is policy-owned: the RR policy arms it on switch-in,
         // before the thread runs; the core carries no slice sentinel.
 
-        // The task, which owns the memory domain: pre-resolved by thread_spawn (so a pool
+        // The task, which owns the memory domain: pre-resolved by thread_create_call (so a pool
         // exhaustion fails the spawn), else resolved here (idle/root), where it never
         // fails. A reference is held for the thread's lifetime and released at exit
         // (sched::exit_current).
         t->task = attr.task;
         if (t->task == nullptr)
         {
-            // idle/root only (thread_spawn pre-resolves the task). Neither requests a data
+            // idle/root only (thread_create_call pre-resolves the task). Neither requests a data
             // or MMIO grant, so domain_for short-circuits before the grant predicate and
             // caller_authorized=true is inert, not a waiver; and both are among the first
             // task-pool slots, so the pool arm cannot fire either. No failure arm here, so
             // derr cannot be set.
             int derr = 0;
-            t->task = task_for(attr.privileged, attr.mem_base, attr.mem_size, true, &derr);
+            uint32_t caller = DOM_CALLER_MEM_AUTH;
+            if (attr.privileged)
+            {
+                caller |= DOM_CALLER_PRIVILEGED;
+            }
+            t->task = task_for(caller, attr.mem_base, attr.mem_size, nullptr, &derr);
         }
         task_ref(t->task);
 
@@ -203,12 +203,17 @@ namespace kickos
         //   [app code (RX) + app static-data (RW-NX)]  so it can run at all
         //   + [domain data region(s)]                  what its TASK shares
         //   + [its own DEV window, if it asked]        one holder per window
-        //   + [its own private stack]                  a sibling can't scribble it
+        //   + [its own stack]                          reachable by its holder
         // Region sizes round to the shape this MPU can describe: a pow2 or a granule
         // multiple, per arch_mpu_region_pow2 (arch_ram_region_size).
-        // On the host sim, app code/data live outside the mprotect'd arena so the sim skips
-        // those regions, but a kernel-default stack is arena-resident, so the sim DOES
-        // enforce the private-stack region: a sibling faults on another's stack.
+        //
+        // A REGION BACKEND MAKES THE STACK PRIVATE, AND THAT IS A STRENGTHENING RATHER THAN
+        // THE PORTABLE PROMISE. The set is per-thread and reloaded on every switch-in, so a
+        // sibling faults on another's stack here and on the sim (where app code/data sit
+        // outside the mprotect'd arena and are skipped, but a kernel-default stack is
+        // arena-resident). A translating backend maps task-wide instead, and a sibling
+        // reaches it. Portable code may rely only on the floor: a thread-scoped grant
+        // guarantees access to its HOLDER (docs/design-m6-mmu.md F9).
         if (not attr.privileged)
         {
             // App-wide code + static-data regions (linker-defined; empty on no-MPU
@@ -219,6 +224,14 @@ namespace kickos
             (not attr.privileged and stack_base != nullptr and stack_size != 0);
         bool const wants_window =
             (not attr.privileged and attr.mmio_base != nullptr and attr.mmio_size != 0);
+        // The possession record, seated before the region composition that MAPS the window:
+        // one is the authority and the other the reach, and only an MPU makes them the same
+        // bytes (docs/design-m6-mmu.md F9).
+        if (wants_window)
+        {
+            t->dev_base = reinterpret_cast<uintptr_t>(attr.mmio_base);
+            t->dev_size = attr.mmio_size;
+        }
         // The whole set MUST fit: a truncated set (especially one that drops the thread's
         // OWN stack) would fault the thread on its own memory, or hand it a hardware
         // window snapped to the wrong span. Worst case today is 5 of 8 (code + appdata +
@@ -238,9 +251,8 @@ namespace kickos
         if (wants_window)
         {
             // The EXACT window, validated encodable and exclusive at the spawn boundary.
-            // NEVER rounded: rounding would over-grant the neighbouring registers. It is
-            // this thread's alone, since a task-wide window would hand registers to a peer that
-            // never asked (docs/design-task-layer.md section 5.2).
+            // NEVER rounded: rounding would over-grant the neighbouring registers. REACH
+            // only: the periph seam is gated on t->dev_base above, never on this region.
             fitted = t->mpu.add(reinterpret_cast<uintptr_t>(attr.mmio_base), attr.mmio_size,
                                 ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV)
                 and fitted;
@@ -257,7 +269,7 @@ namespace kickos
         // a region source that bypasses domain_for's admission, at composition, before the
         // thread ever runs. Privileged threads carry the whole-arena region, which
         // grant_reserved_validate proved reserved-disjoint at boot.
-#if KICKOS_HAVE_MPU
+#if KICKOS_MEMORY_ENFORCED
         for (arch_mpu_region const& r : t->mpu)
         {
             KICKOS_ASSERT(not grant_hits_reserved(r.base, r.size));
@@ -283,25 +295,37 @@ namespace kickos
             KICKOS_ASSERT(admissible or t == &kernel().idle_tcb);
             if (admissible)
             {
-                tls_seat(stack_base);
+                // SEATED THROUGH THE FRAME POOL WHERE THE STACK IS ONE OF ITS RUNS. A mapped
+                // stack is named by a virtual address in the CHILD's space, which is not the
+                // running one at spawn, so the block is reached through the physical map
+                // instead; VA == PA there, so the pool answers for the same bytes. An arena
+                // block and a caller-supplied pointer are not pool frames, the pool says so,
+                // and both are directly dereferenceable.
+                void* seat = stack_base;
+                void* const alias = ustack_kptr(reinterpret_cast<uintptr_t>(stack_base));
+                if (alias != nullptr)
+                {
+                    seat = alias;
+                }
+                tls_seat(seat);
                 ustack = static_cast<unsigned char*>(stack_base) + tls;
                 usize = stack_size - tls;
             }
         }
-        arch_context_init(&t->ctx, entry, arg, ustack, usize, attr.privileged);
-#if !KICKOS_ARCH_SIM
-        // The pool slot indexes the app-side array. A TCB outside the pool takes libc's
-        // process-wide state: index_of returns negative for it and the seam answers that
-        // with the global rather than with a slot nobody sized. Selection only; the
-        // hundreds of bytes kickos_reent_init writes are the caller's, and on the spawn
-        // path they are written under the spawn's own lock.
-        t->reent = kickos_reent_acquire(kernel().threads.index_of(t));
-#endif
 #if KICKOS_KERNEL_STACKS
-        // A TCB OUTSIDE THE POOL KEEPS kernel_sp AT 0, which arch_context_init just set.
-        // Idle is the only such TCB (kernel().idle_tcb): privileged, and its body is
-        // arch_idle_wait alone, so it never enters the syscall path.
+        // SEATED BEFORE arch_context_init, WHICH READS IT: a backend may build the thread's
+        // privileged return state on this block rather than on the stack it is handed, and it
+        // cannot do that before the block exists. It is also what lets a trusted entry trust
+        // its own stack pointer on the FIRST trap a thread takes.
+        //
+        // A TCB OUTSIDE THE POOL KEEPS kernel_sp AT 0 and this is its only writer: no
+        // arch_context_init touches the field, and the TCB slab hands it whatever it last
+        // held, so the unconditional zero has to precede the seating. A stale non-zero value
+        // would have a trusted entry load a wild stack pointer. Idle is the only such TCB
+        // (kernel().idle_tcb): privileged, and its body is arch_idle_wait alone, so it never
+        // enters the syscall path.
         int const kslot = kernel().threads.index_of(t);
+        t->ctx.kernel_sp = 0;
         if (kslot >= 0)
         {
             uintptr_t const top = reinterpret_cast<uintptr_t>(kstack_words(kslot))
@@ -314,6 +338,24 @@ namespace kickos
                           "be pointer-width on every arch that seats a block");
             t->ctx.kernel_sp = top;
         }
+        // A backend may put an unprivileged thread's SPSR and ELR on this block. With no
+        // block that state falls back to the thread's own stack, where a task sibling reaches
+        // it. Idle is the only blockless TCB and it is privileged.
+        KICKOS_ASSERT(attr.privileged or t->ctx.kernel_sp != 0);
+#endif
+        arch_context_init(&t->ctx, entry, arg, ustack, usize, attr.privileged);
+#if !KICKOS_ARCH_SIM
+        // The pool slot indexes the app-side array. A TCB outside the pool takes libc's
+        // process-wide state: index_of returns negative for it and the seam answers that
+        // with the shared state rather than with a slot nobody sized.
+        //
+        // SELECTION ONLY. A slot still holds whatever the previous occupant left, and a
+        // first occupant's is zeroed .appbss, so both want the same priming; it happens at
+        // this thread's first switch-in. The shared state is never primed: libc built it and
+        // it is what every prime copies from (kernel/thread/reent.cc).
+        int const rslot = kernel().threads.index_of(t);
+        t->reent = reent_state_for_slot(rslot);
+        t->reent_fresh = rslot >= 0;
 #endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
         // Stamp the trace id into the saved context so the arch switch path can
@@ -327,6 +369,6 @@ namespace kickos
 // The arch trampoline routes here when a thread's entry function returns.
 extern "C" void kickos_thread_return(void)
 {
-    ::kickos::sched::exit_current(0); // a worker returning normally exits 0
+    ::kickos::sched::exit_current(0, ::kickos::sched::EXIT_RETURN);
     KICKOS_UNREACHABLE(::kickos::diag::kPastExitCurrent);
 }

@@ -25,4 +25,12 @@
 #endif
 #define KICKOS_TLS_STRIDE TLSCARVE_STRIDE
 
+// The sim build resolves this 0, its arch seating no thread pointer at all, so without the
+// override the shim would compile the seating half of tls_stack_admissible for every case
+// and the stride arms would gate nothing.
+#ifdef KICKOS_TLS_FROM_SP
+#undef KICKOS_TLS_FROM_SP
+#endif
+#define KICKOS_TLS_FROM_SP TLSCARVE_FROM_SP
+
 #include "../../../kernel/thread/tls.cc"
