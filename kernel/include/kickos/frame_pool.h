@@ -36,17 +36,27 @@ namespace kickos
     // physical memory, and a backend's own map is a different thing that answers more.
     void* frame_pool_ptr(arch_phys_addr_t frame);
 
-    // The pointer the kernel reaches `bytes` bytes at output address `addr` through, or
-    // null when any granule of that span is not a frame this pool handed out. `addr` need
-    // not be granule-aligned. The unaligned, spanning peer of frame_pool_ptr, for the one
-    // caller that is handed a length rather than a frame: an endpoint copy whose far end is
-    // a PARKED peer's buffer, in a space that is not the running one.
-    void* frame_pool_span(arch_phys_addr_t addr, size_t bytes);
-
     // `pages` CONSECUTIVE frames, or 0 when no run that long is free. Every frame of the run
     // is released one at a time through kickos_frame_free, so the pool's accounting and its
     // refusal counter stay the only ones there are.
     arch_phys_addr_t frame_pool_alloc_run(size_t pages);
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // FORCED FAILURE, and the only injection in the tree. Refuse the `nth` next allocation,
+    // by either entry point, taking nothing; then disarm. 0 disarms without refusing.
+    //
+    // Every unwind arm under a create is written and unreachable otherwise: an exhausted
+    // pool is not a state a test can produce on a board sized for the image, and without
+    // this each arm is code nothing ever ran. Walking `nth` up from 1 reaches
+    // them one at a time, so a refusal is attributable to ONE allocation rather than to a
+    // pool that ran dry somewhere.
+    void frame_pool_fail_in(size_t nth);
+
+    // Whether an arming is still waiting for its attempt. A sweep reads this to tell "the
+    // injected attempt refused" from "the sequence ended before reaching it", which is what
+    // says the sweep has covered every allocation the path makes.
+    bool frame_pool_fail_armed();
+#endif
 }
 
 #endif

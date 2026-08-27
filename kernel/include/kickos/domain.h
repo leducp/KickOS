@@ -82,6 +82,15 @@ namespace kickos
     // The same list, writable: F10's allocator reserves into it and its self-grant turns a
     // reservation into a mapping, both on behalf of the task holding this domain.
     VirtualRanges* domain_ranges_mut(Domain* d);
+
+    // How many pool slots hold an address space at all, live or free. The ROOT count beside
+    // the frame count: churn that ends with more slots occupied than it started with has
+    // stranded a root, and this names it where a frame delta only implies it.
+    //
+    // A FREE SLOT LEGITIMATELY HOLDS ONE: task_for resolves a domain before a spawn commits
+    // and takes no reference, so a count above the number of live tasks is not a leak by
+    // itself. What it answers is whether a sequence RETURNED to where it began.
+    size_t domain_spaces_held(void);
 #endif
 
     // Boot: build the two immortal domains (kernel = whole arena/privileged,

@@ -56,6 +56,10 @@ extern "C" volatile unsigned kickos_trapstack_witness;
 #define KICKOS_FS_TRAP() __asm volatile(".word 0x00000000") // illegal on RV32
 #elif defined(__arm__) || defined(__thumb__)
 #define KICKOS_FS_TRAP() __asm volatile("udf #0")
+#elif defined(__aarch64__)
+// All-zero is a permanently-undefined A64 encoding, reported with EC 0x00. NOT
+// __builtin_trap, which is `brk` on this ISA and raises a DEBUG exception (EC 0x3C).
+#define KICKOS_FS_TRAP() __asm volatile(".inst 0x00000000")
 #elif defined(__RX__)
 // MVTIPL in user mode is a defined privileged-instruction exception (RXv3 ISA UM sec.5.1.2).
 // IPL is already 0, so an execution that lands in supervisor mode changes nothing.
@@ -98,9 +102,13 @@ namespace
 #endif
 #endif
 #if KICKOS_FS_MODE == 2
-#if !defined(__riscv) && !defined(__arm__) && !defined(__thumb__) && !defined(__RX__)
+#if !defined(__riscv) && !defined(__arm__) && !defined(__thumb__) && !defined(__RX__) \
+    && !defined(__aarch64__)
 #error "KICKOS_FS_MODE 2 needs this ISA's spelling for moving SP; it must not be built here"
 #endif
+// BUILT ON armv8a, NEVER REGISTERED THERE: the sp this moves is SP_EL0 and the trap entry
+// builds its frame through SP_EL1, which EL0 cannot write, so no wild sp reaches a frame and
+// there is no stack-bounds refusal on that backend for this arm to witness.
     // Outside every thread stack, and inside the app's own granted data so the frame is really
     // WRITTEN rather than faulting a second time. The whole frame has to land inside it: armv7m
     // may stack an FP frame of 104 bytes and the RISC-V trap prologue pushes 128.

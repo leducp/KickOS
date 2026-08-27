@@ -127,9 +127,19 @@ if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
     list(APPEND KICKOS_EXPECT_PARTIALS dev_window_exclusive)
   endif()
 endif()
+# The threads permitted to fault, by NAME. Every other thread-fault record in the stream is an
+# arm dying the wrong way, and a contained fault reconciles the plan and the case count, so
+# this set is the only thing that can tell the two apart (tests/integration/check_tap_stream.sh).
+# One entry, and it is the containment arm's own worker.
+set(KICKOS_EXPECT_FAULTS "")
+if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
+  list(APPEND KICKOS_EXPECT_FAULTS fvic)
+endif()
+
 # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a raw list
 # deref would split the value into further bogus environment entries.
 list(JOIN KICKOS_EXPECT_PARTIALS "," KICKOS_EXPECT_PARTIALS)
+list(JOIN KICKOS_EXPECT_FAULTS "," KICKOS_EXPECT_FAULTS)
 
 # The EXACT number of tap::add calls main.cc reaches in this posture. tap.cc plans `1..N` from the
 # RUNTIME registry, so plan and case count shrink together when an arm is deleted and only an
@@ -153,7 +163,12 @@ if(KICKOS_ARCH STREQUAL "sim")
   math(EXPR _tap_arms "${_tap_arms} + 1") # periph_reg_write_mask
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms "${_tap_arms} + 14") # aspace_seam, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_balance, aspace_domain_balance, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, parked_frame_hostile
+  math(EXPR _tap_arms "${_tap_arms} + 23") # aspace_seam, aspace_model, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_balance, aspace_domain_balance, aspace_forced_unwind, aspace_churn, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, self_grant_cross_task, reservation_teardown, parked_frame_hostile, split_access, process_ipc_same_addr, process_call_reply, grant_kernel_word_refused
+endif()
+# T8's containment arm alone: it faults on purpose, so a translating backend that builds no
+# resumable frame would panic the suite instead of failing an arm.
+if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
+  math(EXPR _tap_arms "${_tap_arms} + 1") # fault_kills_task
 endif()
 
 # The same count per region, mirroring the #if guards inside each. The regions are separated by
@@ -193,7 +208,10 @@ if(KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # caller_stack_arena
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 14") # 9 x aspace_* + stack_is_frames + process_private_data + task_siblings_share + task_handoff_readback + parked_frame_hostile
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 23") # 12 x aspace_* + stack_is_frames + process_private_data + task_siblings_share + task_handoff_readback + self_grant_cross_task + reservation_teardown + parked_frame_hostile + split_access + process_ipc_same_addr + process_call_reply + grant_kernel_word_refused
+endif()
+if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # fault_kills_task
 endif()
 
 # Totality, checked on EVERY board and not only the ones that split.
@@ -234,7 +252,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
             ${_tap_arms})
   set_tests_properties(selftest PROPERTIES TIMEOUT 30)
   set_property(TEST selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
+    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
+    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
 
   # The sim's only coverage of the published console route (kos_send on stdout cap index 0 ->
   # userspace driver). One provider links per image, so the script makes its own build tree, and
@@ -248,7 +267,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(sim_published_console PROPERTIES TIMEOUT 300)
   # Its own build tree, at the same board posture, so the same two permission sets.
   set_property(TEST sim_published_console APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
+    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
+    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
 
   # An out-of-tree app builds against the exported KickOS package and runs.
   add_test(
@@ -266,7 +286,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_selftest TARGET selftest BOARD ${KICKOS_BOARD}
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
   set_property(TEST ${KICKOS_QEMU_MPS2_TAG}_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
+    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
+    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
 endif()
 # microbit (nrf51) runs the same suite on armv6m.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
@@ -281,7 +302,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p1})
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS="
-    "EXPECT_PARTIALS=")
+    "EXPECT_PARTIALS="
+    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
   # The one skip is a PIN and not an arena outcome: uart_service is held out by
   # KICKOS_SELFTEST_NO_UART_SERVICE at the top of this file, its 1 KiB ring and the arena probes
   # wanting the SAME region.
@@ -292,7 +314,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p2})
   set_property(TEST microbit_selftest_p2 APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=uart_service"
-    "EXPECT_PARTIALS=")
+    "EXPECT_PARTIALS="
+    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
   # The three arena skips are the SUITE outgrowing this part, not the part failing: each
   # wants concurrent workers past what 32 KiB seats once the per-thread struct _reent array
   # is below the arena. All three execute on sim and on the qemu boards, so what microbit
@@ -301,13 +324,15 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p3})
   set_property(TEST microbit_selftest_p3 APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=domain_share,confused_deputy,mem_self_grant"
-    "EXPECT_PARTIALS=caller_stack,mmio_grant")
+    "EXPECT_PARTIALS=caller_stack,mmio_grant"
+    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
   set_property(TEST qemu_riscv_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
+    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
+    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
 endif()
 
 # The arm64 witness. ARGS is the arm count computed above, so an arm that stops registering
@@ -316,7 +341,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
   kickos_add_qemu_test(NAME qemu_arm64_selftest TARGET selftest BOARD qemu-arm64
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
   set_property(TEST qemu_arm64_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
+    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
+    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
 endif()
 
 # The same for a bare-metal package: install it, then build an out-of-tree app against it with

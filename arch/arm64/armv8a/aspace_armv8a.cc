@@ -34,6 +34,10 @@ namespace
     constexpr int LEVEL_ROOT = 1;
     constexpr int LEVEL_LEAF = 3;
 
+    // Acquire adds the high-half map's base to an output address, spending no window, so
+    // the count of live holds is bounded by nothing this backend owns.
+    constexpr size_t ACQUIRE_CAPACITY = SIZE_MAX;
+
     // Descriptor fields, Table D8-50 and Table D8-52 (DDI 0487 M.b section D8.3).
     constexpr uint64_t DESC_VALID = 1ull << 0;
     constexpr uint64_t DESC_BIT1 = 1ull << 1; // table below level 3, page at level 3
@@ -65,6 +69,25 @@ namespace
     {
         return reinterpret_cast<uintptr_t>(__kickos_arm64_va_base);
     }
+
+    // ID_AA64MMFR0_EL1 and TCR_EL1.IPS share one encoding of the physical address range
+    // (DDI 0487 M.b, ID_AA64MMFR0_EL1.PARange). Anything past the table is a range this
+    // port does not know how to compare, so it reads as 0 rather than as a guess.
+    unsigned pa_bits_of(unsigned field)
+    {
+        constexpr unsigned char BITS[] = {32, 36, 40, 42, 44, 48, 52, 56};
+        if (field >= sizeof(BITS))
+        {
+            return 0;
+        }
+        return BITS[field];
+    }
+
+    // What F7 read out of the core manuals, held here so the machine can be asked whether
+    // it agrees. TCR_EL1.AS is left at 0, an 8-bit identifier, because nothing in this
+    // tree tags a translation; 16 is the figure the RECORD carries, not one the port
+    // programs (DDI 0500J section 4.3.21, Table 4-56).
+    constexpr unsigned ASID_BITS_RECORDED = 16;
 
     // The high-half map of all physical RAM, which is what makes this an addition rather
     // than a window (arch.h, arch_aspace_acquire).
@@ -388,6 +411,62 @@ size_t arch_aspace_granule(void)
     return GRANULE;
 }
 
+uint64_t arch_aspace_model(void)
+{
+    uint64_t mmfr0 = 0;
+    __asm volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(mmfr0));
+    uint64_t tcr = 0;
+    __asm volatile("mrs %0, tcr_el1" : "=r"(tcr));
+    // TGran4 at 31:28, TGran64 at 27:24, TGran16 at 23:20, ASIDBits at 7:4, PARange at 3:0.
+    //
+    // TGran16 STATES THE SENSE OF ITS ANSWER THE OPPOSITE WAY ROUND from the other two:
+    // 0b0000 means NOT supported there, while for TGran4 and TGran64 it means supported and
+    // 0b1111 means not. Reading "zero means supported" across all three gets 16 KiB exactly
+    // backwards.
+    unsigned const tg4 = static_cast<unsigned>((mmfr0 >> 28) & 0xFu);
+    unsigned const tg64 = static_cast<unsigned>((mmfr0 >> 24) & 0xFu);
+    unsigned const tg16 = static_cast<unsigned>((mmfr0 >> 20) & 0xFu);
+    uint64_t granules = 0;
+    if (tg4 != 0xFu)
+    {
+        granules |= 1u; // the architecture's smallest, and the one TCR_EL1.TG0 selects here
+    }
+    if (tg16 != 0u)
+    {
+        granules |= 2u;
+    }
+    if (tg64 != 0xFu)
+    {
+        granules |= 4u;
+    }
+    unsigned asid_bits = 8;
+    if (((mmfr0 >> 4) & 0xFu) == 2u)
+    {
+        asid_bits = 16;
+    }
+    unsigned const pa_bits = pa_bits_of(static_cast<unsigned>(mmfr0 & 0xFu));
+    // The figure startup.S programmed, read back rather than restated: a range the machine
+    // does not have is a translation control this port cannot legally write.
+    unsigned const ips_bits = pa_bits_of(static_cast<unsigned>((tcr >> 32) & 0x7u));
+    uint64_t out = 0;
+    if ((granules & 1u) != 0 and GRANULE == 4096u)
+    {
+        out |= ARCH_ASPACE_MODEL_GRANULE;
+    }
+    if (asid_bits == ASID_BITS_RECORDED)
+    {
+        out |= ARCH_ASPACE_MODEL_ASID;
+    }
+    if (pa_bits != 0 and ips_bits != 0 and pa_bits >= ips_bits)
+    {
+        out |= ARCH_ASPACE_MODEL_PA;
+    }
+    out |= static_cast<uint64_t>(asid_bits) << ARCH_ASPACE_MODEL_ASID_SHIFT;
+    out |= static_cast<uint64_t>(pa_bits) << ARCH_ASPACE_MODEL_PA_SHIFT;
+    out |= granules << ARCH_ASPACE_MODEL_GRAN_SHIFT;
+    return out;
+}
+
 bool arch_aspace_memtype_support(enum arch_map_memtype type)
 {
     uint64_t attr = 0;
@@ -535,7 +614,11 @@ struct arch_aspace* arch_aspace_boot(void)
         table_at(static_cast<arch_phys_addr_t>(g_boot_ttbr0 & DESC_OA_MASK)));
 }
 
-// An addition, so any number are live at once and the seam's floor of two costs nothing.
+// An addition, so any number are live at once and the seam's floor costs nothing. The
+// assert is the shape a WINDOWED backend fills in with its pool size.
+static_assert(ARCH_ASPACE_ACQUIRE_MIN <= ACQUIRE_CAPACITY,
+              "this backend cannot hold as many acquires live as arch.h promises");
+
 void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
 {
     if (space == nullptr)

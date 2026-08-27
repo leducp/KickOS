@@ -16,32 +16,49 @@ say.
 
 ## Where we are
 
-**M6.2 is the live track. T1 to T5 and T6a are landed; T5b.1 is next and it needs a DECISION before
-code.** Two steps the contract did not have were found by trying to run it, and both are written into
-section 5 rather than worked around. The blocking one: `memcpy`, `memset` and `strlen` are called from
-the kernel AND from the app, so an app/kernel link split cannot give one symbol two addresses, and
-every option costs something the freezes forbid. Read T5b before touching T6. The step plan is `docs/design-m6-mmu.md` section 5:
-M6.1 was S1..S9 and is merged, M6.2 is T1..T9 plus T8b, and T1 and T2 are landed and pushed.
-`git log master..M6.2` and `ctest` are the authorities for anything countable.
+**M6.2 is CLOSED, every T-step landed, and `qemu-arm64` is the fleet's first ISOLATING translating
+board.** M6.3 is next: the RV64 Sv39 backend and the aspace-seam VERDICT. The verdict is the one
+piece of M6 evidence that cannot be gathered early -- F8's empty-diff claim is about a FAMILY, so a
+one-backend seam is UNPROVEN rather than proven, and R2 (a target that cannot direct-map its own
+physical space) is what settles it. "Unproven" is the better thing to say in a review.
 
-**Four spike branches exist and MUST NOT be merged**: `spike/m6-virt`, `spike/m63-rv64-sv39`,
-`spike/m64-x86_64`, `spike/m7-smp-triarch`. De-risking runs, not ports. Everything they found
-that moves the contract is already folded into `arch/include/kickos/arch/arch.h`,
-`docs/design-m6-mmu.md` (F8, T9, section 3) and `docs/design-m7-smp.md`. Read those, never the
-branches, and do not re-litigate the T2 freeze from spike code: it has already absorbed four
-RV64 corrections and three from the tri-arch run.
+**A CLOSING ASSIGNMENT SWEEP over `docs/design-m6-mmu.md` found 8 obligations of 41 not discharged,
+and five of them were closeable by running them.** S2's model confirmation, F10's cross-task refusal
+and teardown release, T2's acquire-depth floor and T6's flags-match rule are witnesses now; two are
+recorded as debts (T7's latency figure and the driver gate on this board) because the rig, not the
+step, blocks them; four records that contradicted the tree were corrected in place. **The general
+finding is the one already at section 5's opening note:** every one of the five was implemented and
+believed, and what was missing was the arm -- so an obligation that reads as satisfied because the
+CODE exists is the class to sweep for, and reading the document again is not what finds it.
 
-**The one thing in the aspace family still deliberately unfrozen** is where the active-core set
-a TLB rendezvous needs comes from: an `unmap` parameter, or a readable field on the opaque
-space. T9 owns it. Nothing in M6 needs the answer and the field is free later where the
-parameter would not be, which is why it is named rather than decided.
+**THE CONTRACT NOW MATCHES THE TREE, AND FOR MOST OF THIS MILESTONE IT DID NOT.** An audit
+(`docs: the contract stops asserting what the tree stopped doing`) corrected ten present-tense claims
+the M6 contract made that were FALSE against the code, each with a freeze, a step obligation or a
+witness resting on it: F1, F2, F5, F6, F7, F10 and sections 2, 3.1, 3.3, 3.4b and S9. T6 took three
+attempts that stopped short, and T5b is an entire STEP the contract did not have, found by trying to
+run T6 rather than by reading it. So the doc reads as a contract NOW; it did not for most of M6.2,
+and a reader assuming it always could will misattribute the next finding. **Read section 5's opening
+note before adding a present-tense sentence there** -- the audit did not retire the habit, four more
+of the class were corrected in the steps after it, the last at T8b.
 
-**T6 and the per-core pointer are ONE edit, and neither is M7 work.** `TPIDR_EL1` is already
-spent as the EL0 entry scratch by `ENTER_FROM_EL0`, and it is needed there only because
-`SP_EL1` cannot be trusted on entry, and that is only because `thread_create` seats
-`ctx.kernel_sp` after `arch_context_init` returns. Seating it inside `arch_context_init` frees
-the register and is the same change T6 owes to get a thread's privileged return state off its
-own stack. `kickos_armv8a_kernel_sp` is a single global and becomes per-core at the same time.
+**Four spike branches exist and MUST NOT be merged.** `spike/m6-virt` is SPENT, M6 having shipped.
+The other three carry MEASURED answers the next milestones need, and are why several M6 freezes were
+already right: `spike/m63-rv64-sv39`, `spike/m64-x86_64`, `spike/m7-smp-triarch`. De-risking runs,
+not ports. Everything they found that moves the contract is already folded into
+`arch/include/kickos/arch/arch.h`, `docs/design-m6-mmu.md` (F8, T2's four RV64 corrections, T9,
+section 3) and `docs/design-m7-smp.md`. Read those, never the branches.
+
+**The active-core set a TLB rendezvous needs is DECIDED at T9 and NOT BUILT**: a readable field on
+the opaque space, never an `unmap` parameter, because `arch_aspace` being opaque makes the field free
+to add later where the parameter's signature fan-out would not be. Nothing in M6 reads one, so
+neither is in the tree. `docs/design-m6-mmu.md` T9 carries the reasoning; M7 implements it rather
+than re-litigating it.
+
+**`TPIDR_EL1` is written by NOTHING on armv8a, and that is deliberate.** T6a took the EL0 entry
+scratch off it by seating the kernel block BEFORE `arch_context_init`; T9 then made the per-core cell
+the first field of `struct armv8a_percpu`, whose address is a link-time constant at one core. The
+register is held for the multi-core arm that reads the block out of it, so a port that spends it
+takes M7's only free one.
 
 ## What the fleet does NOT witness
 
@@ -49,34 +66,96 @@ The whole point of this file. A green fleet pass says none of the following.
 
 - **arm64 is QEMU `virt` only.** No A-profile silicon on this bench, so every armv8a claim is
   emulator-grade. Its selftest declares one PARTIAL, `periph_reg_write_unheld`, which is a real
-  coverage gap -- and a PARTIAL reports `ok`, so no count reconciliation can ever see it.
+  coverage gap -- and a PARTIAL reports `ok`, so no count reconciliation can ever see it. Minting an
+  MMIO window is what retires it.
+- **The model's OWN report now agrees with the manuals, and that is all it says.** `aspace_model`
+  reads `ID_AA64MMFR0_EL1` and gets the A53's reset value: 4 KiB and 64 KiB supported, **16 KiB
+  not**, 16 identifier bits, a 40-bit physical range. So S2's clause is discharged and there is no
+  divergence to record. What it still does not say: nothing tags a translation, so `TCR_EL1.AS`
+  stays at an 8-bit identifier and the 16 the machine offers is a figure nobody spends; and a
+  granule arm that re-reads `arch_aspace_granule`'s own constant is still beside it, which is why
+  that arm was never the confirmation.
+- **F10's REAL CONSUMER never runs on the translating board.** F10 makes the driver framework the
+  gate for the allocation ABI, in terms saying no selftest arm substitutes for it -- but `qemu-arm64`
+  declares no service list, so `drv::bring_up` runs only on region boards and against host fakes.
+  What discharged the readback there is `task_handoff_readback`, which is that substitution. It now
+  covers the flags-match rule too, a block of its own going through a self-grant and a task create
+  at `KOS_MEM_NOCACHE` with both sides reporting the type recorded -- but a grant-carrying SPAWN has
+  no memory-type field in its ABI at all, so that consumer maps Normal whatever the donor holds and
+  no caller can obey the rule through it. Detail at `TODO.md`.
+- **A non-cacheable mapping is witnessed as a RECORD and never as a cache behaviour.** QEMU models
+  no data cache, so what the flags-match leg asserts is that both mappings carry the same memory
+  type, not that either is actually uncached. The type reaching the descriptor at all is unwitnessed
+  on this bench, and the first bus master is where that stops being true.
 - **There is no riscv64 and no x86_64 board.** RV64 Sv39 and x86_64 are spikes. A doc saying M6
   "ships THREE backends" is a plan, not a tree.
-- **RX and LX6 have no emulator and no CI gate.** `rx72m` and `esp32-wroom` silicon is the only
-  check either arch ever gets; a green fleet pass says nothing whatever about them.
+- **Neither RX nor LX6 has an emulator, and only RX has no CI gate either.** `ci.yml` runs a
+  dedicated `xtensa` job that builds `esp32-wroom` and `-st` and runs `ctest -L host`; `rx72m`
+  appears in no job at all, so `rx72m` silicon is the only check that arch ever gets.
 - **An RX `pspguard` is OWED.** `pspguard` is armv7m/armv6m only, and `.Lsvc_nokstack` is
   structurally unreachable on RX, so nothing there can reach the REFUSE side of the
   trusted-stack guard. Green on RX means "accepts what it must", never "refuses what it must".
 - **No poisoned-user-stack witness for the death-path move.** It must use the SLAY path, not the
   fault path: a fault stacks its own frame on the dying thread's stack by construction, so no
   fault can carry an intact-stack claim. The band must be poisoned ABOVE the parked sp too. An
-  unlanded attempt sits at `/var/tmp/kos-agent-faultsurvive.patch`.
-- **`f302nucleo`, `f302nucleo-st`, `due`, `due-st` rest a blocking syscall's continuation on the
-  USER stack.** The four presets where `KICKOS_KERNEL_STACKS` resolves 0, and it is deliberate.
+  unlanded attempt sits at `/var/tmp/kos-agent-faultsurvive.patch`. T6a's `parked_frame_hostile` is
+  NOT this arm -- it corrupts a SIBLING's parked frame, and says nothing about the death path.
+- **SIX armv7m presets rest a blocking syscall's continuation on the USER stack**, not the four
+  this file used to name: `f302nucleo`, `f302nucleo-st`, `due`, `due-st` and ALSO `bluepill-c8` and
+  `bluepill-c8-st`, `CHIP_STM32F103` selecting no MPU exactly as the other two chips do. Those are
+  the presets where `KICKOS_KERNEL_STACKS` resolves 0, and it is deliberate.
   `roadmap.md`'s "either a lower thread ceiling or continuation-style blocking" is a false
   dichotomy: a third option shipped, both entry designs under one knob.
 - **Zero slack is the CONVENTION in `trap_redzone_roots.txt`, not a warning.** An enforced depth
   IS the fleet maximum for its class, so a class at its setter preset always reads `n <= n`. Do
   not read those as near-misses. Only a BLOCK or FLOOR margin is one.
+- **And armv8a has NO record in that file at all**, so the depth the fault-exit stub descends on a
+  4 KiB kernel block is UNGATED. The stub starts at the block top with the whole block under it and
+  the fault frame already popped, the most favourable position any backend gives it -- but no figure
+  is enforced. Declaring the arch is a step of its own.
 - **`qemu-riscv` under enforcement is the only posture reporting zero partials** where every ARM
   enforcing posture reports one. An encoded per-arch difference, not a defect.
-- **`errnoprobe`'s arm C does NOT witness the IPC fastpath on arm64.** There is no
-  `ipc_fastpath.cmake` for armv8a, so the arm exercises the generic path there while its name says
-  otherwise. Its assertions still hold; only its name over-promises on that board.
+- **NO BOARD IN THE FLEET WITNESSES THE IPC FASTPATH'S OWNER ARGUMENTS.** `armv8a` has no
+  `ipc_fastpath.cmake`, and no arch that HAS one (`armv7m`, `armv6m`, `rv32imac`, `rxv3`) has an
+  `aspace.cmake` -- so T7's two owner arguments are a compile-time null everywhere, and `errnoprobe`'s
+  arm C exercises the generic path on arm64 while its name says otherwise. `call_reg_fastpath`
+  witnesses the site compiling and behaving and nothing more. The owner needs a fastpath on a
+  translating arch, which is M6.3's backend.
+- **No arm asserts console CONTENT.** T7 funnelled the console site, but only root writes to the
+  console here, so a misdirected read has nothing to distinguish it. Truncating the funnelled helper
+  visibly splices the TAP stream, which is the MECHANISM witness; the content witness wants the
+  published-console route, where root reads back what the kernel actually streamed.
 - **The invalidate a FRESH map owes is unwitnessed.** Architectures cache negative translations, so
   a leaf installed where the slot was empty needs one; QEMU does not model that, and removing the
   invalidate leaves every arm green. It is in the code because the architecture requires it, and no
-  run on this bench can tell whether it is there.
+  run on this bench can tell whether it is there. Re-measured at T8b, and its SIBLING is not the
+  same case: removing `unmap`'s per-page invalidate DOES fail `aspacefault`, so the two halves of
+  the map editor's maintenance have opposite witness status.
+- **Neither of destroy's two orderings is witnessed either**, measured the same way. Removing
+  `arch_aspace_destroy`'s whole-TLB sweep from ahead of `free_subtree` leaves every arm green, and so
+  does moving `aspace_release`'s restore of the BOOT space to after the destroy that frees the dying
+  root. Both are held by source order and review. The second one's window is not interrupt-masked,
+  so a preemption inside it would return to EL0 on a freed root, and nothing on this bench can
+  produce that. Identifier reuse is VACUOUS rather than witnessed, nothing allocating one.
+- **The forced-failure sweep reaches FIVE injection points, not six**, and the EQUALITY of the two
+  sweeps is what says so. `domain_for`'s own inner unwind -- a handoff that MAPPED and then failed to
+  record -- is unreachable by frame injection here: the donor block sits under a level-3 table the
+  image already built, so every refusal lands in `claim_slot` ahead of `aspace_handoff`. Reaching it
+  wants a second injector, into `VirtualRanges::reserve`, and it is not built.
+- **One of F10's three ABI rules is still IMPLEMENTED AND UNTESTED, and it is the third one.** The
+  CROSS-TASK self-grant refusal and the teardown release are arms now (`self_grant_cross_task`,
+  `reservation_teardown`). What is left is T6.2's: the handoff destination's COLLISION refusal, a
+  target space that cannot take the range at the donor's address. It is untestable rather than
+  untested here -- this backend's reservation namespace is globally unique, an address being a
+  frame-pool output address, so no correct caller can collide.
+- **The data-cache clean and invalidate seam has no caller and no witness.** T9 landed
+  `arch_dcache_clean`/`arch_dcache_invalidate` with an armv8a backend; QEMU models no data cache, so
+  an arm exercising it would pass with the loop bounds wrong. The member is compiled and never
+  extracted, so no image carries it and no gate can see it. Section 7 owns the consumers.
+- **`appdata_no_kernel` does not run on the one board that splits its image.** It is registered under
+  `KICKOS_HAVE_MPU` and keys on `__kickos_appdata_start`/`_end`, which `virt_arm64.ld` does not
+  define -- so the guard against a kernel archive landing in the app's low window is absent exactly
+  where that window is now the only memory EL0 can reach. Detail at `TODO.md`.
 
 ## Debts and declines a command cannot re-derive
 
@@ -91,11 +170,19 @@ The whole point of this file. A green fleet pass says none of the following.
 - **The reclaim-window invariant is ONE-WAY.** The window must COVER what the reclaim WRITES; it
   need not match the service-list grant. `dev_window_free` tests OVERLAP. So this is not a
   coupling wanting enforcement across `arch/` and `system/init/`.
-- **`_appdata_fits` had never fired on any board.** GNU ld completes layout before evaluating
-  assertions, so an app-data overflow died on `cannot move location counter backwards` and the
-  actionable message was unreachable in exactly its own case. `. = MAX(., ...)` fixes it. Do not
-  re-derive this by reading the scripts: the condition was always correct, the assert was simply
-  never reached.
+- **The acquire pair's floor is `ARCH_ASPACE_ACQUIRE_MIN` = SIX, and NO BACKEND EXERCISES IT.** The
+  figure was measured off the page-split scenario (four pages across two spaces, plus one end each
+  inside `ep_copy`) and is asserted by the armv8a backend against a capacity of its own, which is
+  unbounded -- acquire there is an addition. So the constant and its assert are a shape a WINDOWED
+  port fills in, and nothing on this bench can fail them. The measurement also found `SPAN` walking
+  600 pages while holding every one, which is now released page by page: a caller's defect, not the
+  seam's, and the kind only counting finds.
+- **The app-data-fits assert had never fired on any board.** GNU ld completes layout before
+  evaluating assertions, so an app-data overflow died on `cannot move location counter backwards`
+  and the actionable message was unreachable in exactly its own case. `. = MAX(., ...)` fixes it,
+  and it is in all eleven enforcing scripts -- not in `virt_arm64.ld`, which carves no MPU window.
+  Do not re-derive this by reading them: the condition was always correct, the assert was simply
+  never reached. It no longer has a name of its own; do not go looking for `_appdata_fits`.
 - **A capture's CRLF names the transport ONLY on a polled driver.** `uart_service.h`'s
   `cook_crlf` voids the tell on `_uartirq` boards. It has already been read once as "the console
   was never published".
@@ -105,6 +192,12 @@ The whole point of this file. A green fleet pass says none of the following.
   postures wants a posture-dependent macro, not a bigger number. *A preset nobody measured*:
   closed structurally now, the ctest ladder deriving the name and asking
   `trap_redzone_roots.txt`.
+- **An added ARGUMENT is caller stack, and the fix is a posture word rather than a bigger figure.**
+  F10's handoff grew `task_for` by 8 bytes on the deepest chain `syscall_dispatch` has, which took
+  the armv7m SVC depth past its red zone on the four `KICKOS_KERNEL_STACKS=0` presets -- region
+  boards paying for a translating backend's argument. Two caller booleans became one posture word and
+  the measurement came back exactly. A control tree with the argument dropped is what ATTRIBUTED it
+  before the fix.
 - **The fleet shipped `-O0` until M4.5.2, at roughly 2x footprint**, so every silicon witness
   taken before it is invalid. On the K64F, `-Os` then dropped a PIT clock-gate-race write that
   `-O0` had masked. `build: optimise the fleet (MinSizeRel)` is the commit to revert when
@@ -126,6 +219,12 @@ The whole point of this file. A green fleet pass says none of the following.
 - **The `KCAP_`/`CAP_` left-word-boundary defect**: 26 names were valid only as substrings.
 - **A line-number citation is what the doc gate cannot check**, and this file used to carry one
   (`porting.md:1464`) that had drifted onto unrelated text. Cite a path and an identifier.
+- **Turning CONTAINMENT on flips what a gate may assert.** `kernelhalf` and `stackguard` were
+  dying-image gates reading the panic dump; once armv8a joined `KICKOS_FAULT_ISOLATION` the same
+  encodings had to be read off the thread-kill record instead, and `check_tap_stream.sh`'s blanket
+  refusal of ANY thread-fault record became a by-name permission set. `aspacefault` STAYS a
+  dying-image gate and that is the scenario, its read being the kernel's own at the current-EL
+  vector where the kill rule declines it.
 
 ## Board caveats a matrix does not carry
 
@@ -135,10 +234,14 @@ The whole point of this file. A green fleet pass says none of the following.
   shape that really is pinned is an enforcement window.
 - **`usbcdcwit` is built by no default configuration of any board** (gated on
   `KICKOS_SERVICE_LIST MATCHES "_usbcdc$"`).
-- **`picopi` owes a slay capture** -- the fleet's only armv6m enforcement unit.
+- **`picopi`'s slay capture EXISTS and is not valid for this tree.** The five slay arms passed on
+  it in a 2026-08-16 session log, which is why "owed" was the wrong word -- but that log attests the
+  M4.9.1 tip, and M6.2 has since changed `arch/arm/armv6m/arch_armv6m.cc` at T6a. A witness is valid
+  for a TREE. It is still the fleet's only armv6m enforcement unit, so nothing else can stand in.
 - **The bench chain refuses BY NAME on an absent rig value**, and `bench-fleet.sh` ending
-  `INCOMPLETE` with a non-zero exit is the EXPECTED result for a fleet pass (frdmk64f is out by
-  ruling).
+  `INCOMPLETE` with a non-zero exit is the EXPECTED result for a fleet pass, frdmk64f being out by
+  ruling. **That ruling exists NOWHERE but this line** -- `bench-fleet.sh` still lists and probes the
+  board, and an absent one records `ABSENT` without failing, leaving its service lists uncovered.
 
 ## Open, and verified still open
 
@@ -148,11 +251,20 @@ The whole point of this file. A green fleet pass says none of the following.
   Detail at `TODO.md`.
 - **No emulated gate for a buffered-ring panic flush**; the sim's ring is provably empty at
   panic time. Detail at `TODO.md`.
-- **Four apps grant a DEV window a live driver holds**: `xmcspi`, `xmccshold`, `pvprobe`,
-  `inprstorm`. **`KICKOS_APP_AUTHORITY` surfaces only at runtime.**
-- **`kstack_high_water` has no caller.** Its sibling `kstack_canary_intact` DOES, at
-  `kernel/sched/sched.cc`. This file previously claimed both were uncalled and concluded the
-  gate described a mechanism that cannot fire; that conclusion was false.
+- **Four app SOURCES grant a DEV window a live driver holds**: `xmcspi`, `xmccshold`, `pvprobe`,
+  `inprstorm` -- six targets, `inprstorm` now building three ELFs from one source.
+  **`KICKOS_APP_AUTHORITY` surfaces only at runtime**, one consumer at boot and no build file
+  reading it.
+- **T7's OWED LATENCY MEASUREMENT WAS NEVER TAKEN, and there is no instrument to take it with.**
+  The doc makes a compact-SVC-frame decision wait on the number; `qemu-arm64` has only a `base`
+  preset, `bench-fleet.sh` does not list the board, and no aarch64 round-trip figure exists
+  anywhere. Recorded as a debt at T7 and in `TODO.md` since 2026-08-26, so this line is no longer
+  the only thing that says so.
+- **The boot identity root still grants EL0 read-write over all of low DRAM**, the kernel's own
+  `.data` and `.bss` at their LOAD addresses included. No unprivileged thread runs under it today,
+  and revoking EL0 there was MEASURED green -- but that root is what the fault reporter and
+  `aspace_release` install and what `arch_aspace_boot` hands out, so revoking changes what the space
+  MEANS. It wants a decision, not a patch.
 - **`M8` is unnumbered in one place and contradicted in another.** `roadmap.md` has M8 as
   IPC/IRQ optimisation with the list running to M9 and M10, and names an ABI-freeze milestone
   without assigning it a number. This wants a ruling, not a carry-forward.
@@ -186,10 +298,9 @@ stamps stay as written.
 **ELEVEN HASHES CITED ACROSS THIS FILE AND `TODO.md` SURVIVE ON THIS BOX ONLY.** Re-derived
 2026-08-16, and the earlier wording -- that squashes "destroyed" them -- was wrong in the direction
 that matters: every one still resolves HERE, each held by a local backup branch, and NONE of those
-branches is pushed (`git ls-remote --heads origin` carries 43 heads and only the two
-`backup/m4.5.2-*` among them). So a fresh clone loses all eleven, and so does one `git branch -D`.
-The squashed commits carry only their final tree; every hash below is an INTERMEDIATE tree that no
-current commit reproduces.
+branches is pushed. So a fresh clone loses all eleven, and so does one `git branch -D`. The squashed
+commits carry only their final tree; every hash below is an INTERMEDIATE tree that no current commit
+reproduces.
 
 | hash | what it stamps | reachable only from |
 | --- | --- | --- |
@@ -215,4 +326,5 @@ after it touched docs plus one redundant cast, with the armv7m object byte-ident
 - `roadmap.md` -- the milestone plan, and the sub-milestone ledger: the only place a number is
   ASSIGNED. This file carries the locked ORDER and cites those numbers.
 - `docs/reference/` -- the exact contract; the code wins, drift is a bug.
+- `docs/design-m6-mmu.md` -- the M6 contract; section 5 is the step plan M6.3 continues.
 - `CONTEXT.local.md` -- local rig ops. Gitignored: it exists only in the main checkout.

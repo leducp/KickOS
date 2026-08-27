@@ -122,7 +122,7 @@ namespace kickos
             return -KOS_EFAULT;
         }
         kos_thread_params params;
-        kaccess_from_user(&params, pu, sizeof(params));
+        kaccess_from_user(&params, user_space_of(sched::current()), pu, sizeof(params));
         p = &params;
         // prio indexes the ready lists and drives a 1u<<prio bitmap shift, so an
         // out-of-range value is an OOB write and UB. Priority 0 is idle's alone.
@@ -326,7 +326,7 @@ namespace kickos
             kos_cap_grant gbuf[KICKOS_MAX_SPAWN_GRANTS];
             for (int ci = 0; ci < ncaps; ci++)
             {
-                kaccess_from_user(&gbuf[ci],
+                kaccess_from_user(&gbuf[ci], user_space_of(spawner),
                                   cu + static_cast<size_t>(ci) * sizeof(kos_cap_grant),
                                   sizeof(kos_cap_grant));
             }
@@ -349,7 +349,7 @@ namespace kickos
                 }
                 for (int ci = 0; ci < ncaps; ci++)
                 {
-                    kaccess_from_user(&dbuf[ci],
+                    kaccess_from_user(&dbuf[ci], user_space_of(spawner),
                                       du + static_cast<size_t>(ci) * sizeof(uint16_t),
                                       sizeof(uint16_t));
                 }
@@ -489,7 +489,7 @@ namespace kickos
                 {
                     break;
                 }
-                kaccess_from_user(&namebuf[ni], np + ni, 1);
+                kaccess_from_user(&namebuf[ni], user_space_of(sched::current()), np + ni, 1);
                 if (namebuf[ni] == '\0')
                 {
                     name_ok = true;

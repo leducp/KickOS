@@ -72,17 +72,49 @@ namespace kickos
     // arm answers -KOS_EINVAL for those).
     bool caller_holds_mmio_reg(uintptr_t base, uintptr_t offset);
 
-    // The kernel<->user byte-access seam (identity today; one physical space).
-    void kaccess_from_user(void* kdst, uintptr_t usrc, size_t n);
-    void kaccess_to_user(uintptr_t udst, void const* ksrc, size_t n);
+    // --- The owner of a user end -----------------------------------------------
+    // Every access below names the address space each user end belongs to, and a NULL
+    // space means the address is directly kernel-dereferenceable: kernel storage, and
+    // every backend that translates nothing. An owner cannot be recovered from an
+    // address once two processes hold different frames at one virtual address, so a
+    // site passes what it already holds (docs/design-m6-mmu.md section 3.3).
+    struct Thread;
+#if KICKOS_HAVE_ASPACE
+    // The space a thread's own user pointers lie in.
+    struct arch_aspace* user_space_of(Thread const* t);
+    // The space a PARKED thread's ipc.buf lies in: its own, EXCEPT under the fastpath's
+    // park, whose buffer is the caller's saved trap frame and therefore kernel storage.
+    struct arch_aspace* ipc_buf_space(Thread const* t);
+#else
+    inline struct arch_aspace* user_space_of(Thread const* t)
+    {
+        (void)t;
+        return nullptr;
+    }
+    inline struct arch_aspace* ipc_buf_space(Thread const* t)
+    {
+        (void)t;
+        return nullptr;
+    }
+#endif
+
+    // The kernel<->user byte-access seam: split at granule boundaries, each page reached
+    // through the acquire seam of the space that owns it.
+    void kaccess_from_user(void* kdst, struct arch_aspace* sspace, uintptr_t usrc, size_t n);
+    void kaccess_to_user(struct arch_aspace* dspace, uintptr_t udst, void const* ksrc,
+                         size_t n);
 
     // The user<->user endpoint-payload peer of the kaccess seam (both ends user
-    // memory); bounded (<= KOS_EP_MSG_MAX), done under IrqLock at the copy site.
-    void ep_copy(uintptr_t dst, uintptr_t src, size_t n);
+    // memory, and one of them a PARKED peer's); bounded (<= KOS_EP_MSG_MAX), done under
+    // IrqLock at the copy site.
+    void ep_copy(struct arch_aspace* dspace, uintptr_t dst, struct arch_aspace* sspace,
+                 uintptr_t src, size_t n);
 
     // Deliver a receiver's kos_recv_info (badge + reply_cap) into its parked
-    // out-ptr, or nothing when out == 0. KCAP_INVALID marks a plain send.
-    void write_recv_info(uintptr_t out, uint32_t badge, uint32_t reply_cap);
+    // out-ptr, or nothing when out == 0. KCAP_INVALID marks a plain send. `ospace` is the
+    // owner of `out`, which is the RECEIVER at four of the six callers.
+    void write_recv_info(struct arch_aspace* ospace, uintptr_t out, uint32_t badge,
+                         uint32_t reply_cap);
 
     // How many calls the trap-handler IPC fastpath COMPLETED; a refusal does not count.
     // The two paths answer a caller identically, so this is the only thing that separates

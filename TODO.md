@@ -5808,6 +5808,26 @@ shared case only.
       A dump that completes and then fails to terminate is a drain or an exit-path defect rather than
       a reporting one.
 
+## M6.2 closing sweep: two debts the pass could not discharge (2026-08-26)
+
+Both are recorded in `docs/design-m6-mmu.md` beside the obligation they belong to. They are here so
+they are known debts rather than forgotten ones.
+
+- [ ] **T7's OWED LATENCY MEASUREMENT, and there is no instrument to take it with.** T7 makes the
+      compact-SVC-frame decision wait on an aarch64 round-trip figure: the exception frame is 800
+      bytes and a syscall moves about 1.6 KiB with interrupts masked. No such figure exists anywhere.
+      The blocker is the rig: `boards/qemu-arm64/configs/` holds a `base` variant alone, so there is
+      no `KICKOS_BENCH` image for the board, and `tools/bench/bench-fleet.sh` does not list it.
+      **Standing up a bench variant for this arch is a step of its own** and belongs with M8's
+      instrument, where the comparison it feeds lives. Until it is taken, no compact-frame decision
+      may be argued -- which is what T7 froze.
+- [ ] **`qemu-arm64` declares no SERVICE LIST, so F10's real consumer never runs on the one board
+      that translates.** F10 makes `drv::bring_up` the gate for the whole allocation ABI and says in
+      terms that no selftest arm substitutes for it. It runs on region boards and against host fakes,
+      where nothing translates and the same-address rule is vacuous. `task_handoff_readback` is the
+      substitution, and it is a good arm that is not the gate. Porting a service list to this board
+      is its own step; M6.2 records the gap rather than closing it.
+
 ## M6 -- the per-thread-privacy restatement, owed WITH the behaviour (2026-08-24)
 
 `docs/design-m6-mmu.md` freeze F9 moves the portable contract: a task's grants are sibling-visible, a

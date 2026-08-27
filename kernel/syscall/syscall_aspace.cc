@@ -258,6 +258,9 @@ namespace kickos
             if (arch_aspace_map(space, SPAN_VA, SPAN_PA, SPAN_PAGES, ARCH_MAP_R,
                                 ARCH_MAP_DEVICE) == ARCH_ASPACE_OK)
             {
+                // ONE PAGE HELD AT A TIME BESIDE THE REFERENCE, so this walk stays inside
+                // ARCH_ASPACE_ACQUIRE_MIN: a backend with a finite window pool would
+                // otherwise run out here for a reason that is this loop's and not the seam's.
                 unsigned char* const first =
                     static_cast<unsigned char*>(arch_aspace_acquire(space, SPAN_VA));
                 bool contiguous = first != nullptr;
@@ -266,7 +269,9 @@ namespace kickos
                     unsigned char* const at = static_cast<unsigned char*>(
                         arch_aspace_acquire(space, SPAN_VA + i * g));
                     contiguous = at == first + i * g;
+                    arch_aspace_release(space, SPAN_VA + i * g);
                 }
+                arch_aspace_release(space, SPAN_VA);
                 bool const bounded =
                     arch_aspace_acquire(space, SPAN_VA + SPAN_PAGES * g) == nullptr and
                     arch_aspace_acquire(space, SPAN_VA - g) == nullptr;
@@ -281,6 +286,161 @@ namespace kickos
             }
             arch_aspace_destroy(space);
             return ok;
+        }
+
+        // --- The page split, witnessed where no caller can build it ------------------
+        // A validated range contiguous in VIRTUAL memory need not be contiguous in
+        // PHYSICAL memory, and no userspace arm can construct one here: a reservation's
+        // virtual address IS its output address, so virtual adjacency and physical
+        // adjacency are the same question from a caller (section 3.4). The scenario is
+        // therefore built with the map editor: three CONSECUTIVE frames, the OUTER two
+        // mapped at two adjacent virtual pages and the middle one left unmapped.
+        //
+        // THE MIDDLE FRAME IS THE INSTRUMENT. It is where a copy written as one memcpy
+        // over a translated base spills, so reading it back is what separates a helper
+        // that splits from one that merely appears to work on the first page.
+        uint64_t op_split_access()
+        {
+            constexpr size_t HALF = 8; // bytes each side of the page boundary
+            size_t const g = arch_aspace_granule();
+            size_t const before = frame_pool_free();
+            uint32_t const rw = ARCH_MAP_R | ARCH_MAP_W;
+            struct arch_aspace* const sa = arch_aspace_create();
+            struct arch_aspace* const sb = arch_aspace_create();
+            arch_phys_addr_t const ra = frame_pool_alloc_run(3);
+            arch_phys_addr_t const rb = frame_pool_alloc_run(3);
+            uint64_t bits = 0;
+            if (sa != nullptr and sb != nullptr and ra != 0 and rb != 0)
+            {
+                arch_phys_addr_t const step = static_cast<arch_phys_addr_t>(g);
+                // The SAME two virtual pages in both spaces, which is what makes the copy
+                // below a pair of equal numbers naming different memory.
+                bool const built =
+                    arch_aspace_map(sa, VA_A, ra, 1, rw, ARCH_MAP_NORMAL) == ARCH_ASPACE_OK and
+                    arch_aspace_map(sa, VA_A + g, ra + 2 * step, 1, rw, ARCH_MAP_NORMAL) ==
+                        ARCH_ASPACE_OK and
+                    arch_aspace_map(sb, VA_A, rb, 1, rw, ARCH_MAP_NORMAL) == ARCH_ASPACE_OK and
+                    arch_aspace_map(sb, VA_A + g, rb + 2 * step, 1, rw, ARCH_MAP_NORMAL) ==
+                        ARCH_ASPACE_OK;
+                unsigned char* const alo =
+                    static_cast<unsigned char*>(arch_aspace_acquire(sa, VA_A));
+                unsigned char* const ahi =
+                    static_cast<unsigned char*>(arch_aspace_acquire(sa, VA_A + g));
+                unsigned char* const blo =
+                    static_cast<unsigned char*>(arch_aspace_acquire(sb, VA_A));
+                unsigned char* const bhi =
+                    static_cast<unsigned char*>(arch_aspace_acquire(sb, VA_A + g));
+                // Reached by the pool's own route, so it is never mapped in either space and
+                // an access that lands there did not split.
+                unsigned char* const spill =
+                    static_cast<unsigned char*>(frame_pool_ptr(ra + step));
+                if (built and alo != nullptr and ahi != nullptr and blo != nullptr and
+                    bhi != nullptr and spill != nullptr)
+                {
+                    uintptr_t const cross = VA_A + g - HALF;
+                    if (ahi != alo + g and bhi != blo + g)
+                    {
+                        bits |= KOS_ASPACE_SPLIT_NONADJACENT;
+                    }
+                    // Written a byte at a time and never through the seam under test.
+                    for (size_t i = 0; i < HALF; i++)
+                    {
+                        alo[g - HALF + i] = 0;
+                        ahi[i] = 0;
+                        spill[i] = 0;
+                        blo[g - HALF + i] = static_cast<unsigned char>(0xB0u + i);
+                        bhi[i] = static_cast<unsigned char>(0xC0u + i);
+                    }
+                    unsigned char pat[2 * HALF];
+                    for (size_t i = 0; i < sizeof(pat); i++)
+                    {
+                        pat[i] = static_cast<unsigned char>(0x40u + i);
+                    }
+                    kaccess_to_user(sa, cross, pat, sizeof(pat));
+                    bool landed = true;
+                    bool untouched = true;
+                    for (size_t i = 0; i < HALF; i++)
+                    {
+                        landed = landed and alo[g - HALF + i] == pat[i];
+                        landed = landed and ahi[i] == pat[HALF + i];
+                        untouched = untouched and spill[i] == 0;
+                    }
+                    if (landed)
+                    {
+                        bits |= KOS_ASPACE_SPLIT_TO_USER;
+                    }
+                    if (untouched)
+                    {
+                        bits |= KOS_ASPACE_SPLIT_NEIGHBOUR;
+                    }
+                    unsigned char back[2 * HALF];
+                    for (size_t i = 0; i < sizeof(back); i++)
+                    {
+                        back[i] = 0;
+                    }
+                    kaccess_from_user(back, sa, cross, sizeof(back));
+                    bool read_both = true;
+                    for (size_t i = 0; i < HALF; i++)
+                    {
+                        read_both = read_both and back[i] == alo[g - HALF + i];
+                        read_both = read_both and back[HALF + i] == ahi[i];
+                    }
+                    if (read_both)
+                    {
+                        bits |= KOS_ASPACE_SPLIT_FROM_USER;
+                    }
+                    // ONE address, two spaces, and the range straddles the boundary in both.
+                    // The destination's numbers equal the source's, which is what a
+                    // per-process image makes ordinary.
+                    ep_copy(sa, cross, sb, cross, 2 * HALF);
+                    bool crossed = true;
+                    for (size_t i = 0; i < HALF; i++)
+                    {
+                        crossed = crossed and alo[g - HALF + i] == blo[g - HALF + i];
+                        crossed = crossed and ahi[i] == bhi[i];
+                        crossed = crossed and spill[i] == 0;
+                    }
+                    if (crossed)
+                    {
+                        bits |= KOS_ASPACE_SPLIT_CROSS_SPACE;
+                    }
+                }
+                arch_aspace_release(sa, VA_A);
+                arch_aspace_release(sa, VA_A + g);
+                arch_aspace_release(sb, VA_A);
+                arch_aspace_release(sb, VA_A + g);
+            }
+            // Unmapped and freed here rather than left to destroy: a map that failed leaves
+            // its frame unmapped, so the space cannot be the one owner of all six.
+            if (sa != nullptr)
+            {
+                (void)arch_aspace_unmap(sa, VA_A, 1);
+                (void)arch_aspace_unmap(sa, VA_A + g, 1);
+            }
+            if (sb != nullptr)
+            {
+                (void)arch_aspace_unmap(sb, VA_A, 1);
+                (void)arch_aspace_unmap(sb, VA_A + g, 1);
+            }
+            for (size_t i = 0; i < 3; i++)
+            {
+                arch_phys_addr_t const off = static_cast<arch_phys_addr_t>(i * g);
+                if (ra != 0)
+                {
+                    kickos_frame_free(ra + off);
+                }
+                if (rb != 0)
+                {
+                    kickos_frame_free(rb + off);
+                }
+            }
+            arch_aspace_destroy(sa);
+            arch_aspace_destroy(sb);
+            if (frame_pool_refused() == 0 and frame_pool_free() == before)
+            {
+                bits |= KOS_ASPACE_SPLIT_BALANCED;
+            }
+            return bits;
         }
 
         // The fourth transition, taken by the CPU rather than by a walk of our own: with the
@@ -353,6 +513,110 @@ namespace kickos
             return before - after;
         }
 
+        // --- The forced failure, swept one allocation at a time ---------------------
+        // NOTHING ELSE IN THE TREE INJECTS ONE, so claim_slot's and domain_for's unwind arms
+        // are written and unreached: an exhausted pool is not a state an arm can produce on a
+        // board sized for its own image. The instrument is frame_pool_fail_in, and the sweep
+        // walks the refused attempt from the first allocation a create makes to past its last.
+        //
+        // MEASURED IMMEDIATELY AFTER EACH REFUSAL, which is the whole point: a refusal that
+        // left the slot holding a half-built space balances anyway once the NEXT claim_slot
+        // releases it, so a balance read at the end of the sweep cannot see it.
+        //
+        // The refusal counter carries the other half. A leaf left standing over a frame the
+        // unwind already returned is not a frame delta; it is a second free when destroy
+        // walks the tree, and the pool refuses that rather than swallowing it.
+        // `donor_base` at 0 sweeps the NO-GRANT create, which is claim_slot alone. Anything
+        // else names a range the CALLING task reserved and sweeps the GRANT-CARRYING create
+        // instead, which adds the successful tail rather than a sixth injection point: the
+        // donor block sits under a level-3 table the image already built, so the handoff's
+        // map allocates nothing and every refusal still lands in claim_slot ahead of it.
+        // Reaching aspace_handoff's own unwind wants an injector into VirtualRanges::reserve.
+        // The size is taken from the caller's own list rather than from the caller, so a
+        // number nobody reserved names no sweep.
+        uint64_t op_forced_unwind(uintptr_t donor_base)
+        {
+            IrqLock lock;
+            Domain const* donor = nullptr;
+            void* mem_base = nullptr;
+            size_t mem_size = 0;
+            if (donor_base != 0)
+            {
+                Thread const* const c = sched::current();
+                if (c == nullptr)
+                {
+                    return 0;
+                }
+                donor = task_domain(c->task);
+                VirtualRanges const* const r = domain_ranges(donor);
+                if (r == nullptr)
+                {
+                    return 0;
+                }
+                VirtualRange const* const e = r->find(donor_base, 1);
+                if (e == nullptr)
+                {
+                    return 0;
+                }
+                mem_base = reinterpret_cast<void*>(e->base);
+                mem_size = e->pages * arch_aspace_granule();
+            }
+            // Far past the allocations a create makes, so the sweep ends by running out of
+            // injection points rather than by running out of sweep.
+            constexpr size_t SWEEP_LIMIT = 64;
+            size_t const before = frame_pool_free();
+            size_t const refused_before = frame_pool_refused();
+            uint64_t bits = KOS_ASPACE_UNWIND_REFUSED | KOS_ASPACE_UNWIND_ENOMEM
+                            | KOS_ASPACE_UNWIND_BALANCED;
+            size_t depth = 0;
+            for (size_t nth = 1; nth <= SWEEP_LIMIT; nth++)
+            {
+                frame_pool_fail_in(nth);
+                int derr = 0;
+                Domain* const d = domain_for(DOM_CALLER_MEM_AUTH, mem_base,
+                                             mem_size, 0, donor, &derr);
+                bool const spent = not frame_pool_fail_armed();
+                frame_pool_fail_in(0);
+                if (not spent)
+                {
+                    // The create finished with the arming untouched, so `nth` is past its
+                    // last allocation and every point before this one has been injected.
+                    bits |= KOS_ASPACE_UNWIND_SWEPT;
+                    if (d != nullptr)
+                    {
+                        domain_release(d);
+                        if (frame_pool_free() == before)
+                        {
+                            bits |= KOS_ASPACE_UNWIND_REUSABLE;
+                        }
+                    }
+                    break;
+                }
+                depth++;
+                if (d != nullptr)
+                {
+                    // A refused allocation the create carried on past: the arm under it is
+                    // not total-or-fail.
+                    domain_release(d);
+                    bits &= ~static_cast<uint64_t>(KOS_ASPACE_UNWIND_REFUSED);
+                    continue;
+                }
+                if (derr != KOS_ENOMEM)
+                {
+                    bits &= ~static_cast<uint64_t>(KOS_ASPACE_UNWIND_ENOMEM);
+                }
+                if (frame_pool_free() != before)
+                {
+                    bits &= ~static_cast<uint64_t>(KOS_ASPACE_UNWIND_BALANCED);
+                }
+            }
+            if (frame_pool_refused() == refused_before)
+            {
+                bits |= KOS_ASPACE_UNWIND_NO_DOUBLE;
+            }
+            return bits | (static_cast<uint64_t>(depth) << KOS_ASPACE_UNWIND_DEPTH_SHIFT);
+        }
+
         // A domain carries an address space where a backend translates, so a domain that is
         // resolved and dropped must hand the root and its tables back. TWO ways it does not,
         // and they MASK EACH OTHER under one measurement because both free the same table:
@@ -403,6 +667,15 @@ namespace kickos
         }
     }
 
+    // The model word crosses the ABI unchanged, so the two vocabularies must agree bit for
+    // bit; nothing else in this file translates an arch answer into an ABI one.
+    static_assert(KOS_ASPACE_MODEL_GRANULE == ARCH_ASPACE_MODEL_GRANULE, "model bit drift");
+    static_assert(KOS_ASPACE_MODEL_ASID == ARCH_ASPACE_MODEL_ASID, "model bit drift");
+    static_assert(KOS_ASPACE_MODEL_PA == ARCH_ASPACE_MODEL_PA, "model bit drift");
+    static_assert(KOS_ASPACE_MODEL_ASID_SHIFT == ARCH_ASPACE_MODEL_ASID_SHIFT, "model bit drift");
+    static_assert(KOS_ASPACE_MODEL_PA_SHIFT == ARCH_ASPACE_MODEL_PA_SHIFT, "model bit drift");
+    static_assert(KOS_ASPACE_MODEL_GRAN_SHIFT == ARCH_ASPACE_MODEL_GRAN_SHIFT, "model bit drift");
+
     uint64_t aspace_probe(uintptr_t op, uintptr_t a1)
     {
         switch (op)
@@ -444,9 +717,21 @@ namespace kickos
             {
                 return op_span();
             }
+            case KOS_ASPACE_OP_SPLIT_ACCESS:
+            {
+                return op_split_access();
+            }
             case KOS_ASPACE_OP_DOMAIN_BALANCE:
             {
                 return op_domain_balance();
+            }
+            case KOS_ASPACE_OP_FORCED_UNWIND:
+            {
+                return op_forced_unwind(a1);
+            }
+            case KOS_ASPACE_OP_SPACES_HELD:
+            {
+                return domain_spaces_held();
             }
             case KOS_ASPACE_OP_RANGES_FREE:
             {
@@ -473,6 +758,31 @@ namespace kickos
                     return 0;
                 }
                 return aspace_frame_token(domain_space(task_domain(c->task)), a1);
+            }
+            case KOS_ASPACE_OP_MODEL:
+            {
+                // Passed straight through: the two vocabularies are one word and the asserts
+                // above are what keep them so.
+                return arch_aspace_model();
+            }
+            case KOS_ASPACE_OP_MEMTYPE_AT:
+            {
+                Thread const* const c = sched::current();
+                if (c == nullptr)
+                {
+                    return 0;
+                }
+                VirtualRanges const* const r = domain_ranges(task_domain(c->task));
+                if (r == nullptr)
+                {
+                    return 0;
+                }
+                VirtualRange const* const e = r->find(a1, 1);
+                if (e == nullptr or e->state != VirtualState::Granted)
+                {
+                    return 0;
+                }
+                return static_cast<uint64_t>(e->memtype) + 1u;
             }
             case KOS_ASPACE_OP_SPACE_ID:
             {

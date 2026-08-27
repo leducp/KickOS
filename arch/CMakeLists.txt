@@ -232,6 +232,7 @@ elseif(KICKOS_ARCH STREQUAL "armv8a")
   add_library(kickos_arch_armv8a STATIC
     arm64/armv8a/arch_armv8a.cc
     arm64/armv8a/aspace_armv8a.cc
+    arm64/armv8a/cache_armv8a.cc
     arm64/armv8a/vectors.S
     arm64/armv8a/switch.S
     common/arch_ram_common.cc

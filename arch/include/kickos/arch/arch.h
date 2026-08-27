@@ -74,6 +74,33 @@ uint32_t arch_cpu_id(void);
 #define arch_cpu_id() 0u
 #endif
 
+// --- The cross-core doorbell ------------------------------------------------
+// Poke the cores in `cores`, a bitmask of core indices, and wait until every core in it
+// has answered. `cores` at 0 names nobody and both calls are then a no-op.
+//
+// TWO CALLS AND NOT ONE, from the first line of code: a doorbell that can only be
+// fire-and-forget cannot express a rendezvous, and a rendezvous is what a TLB shootdown on
+// an architecture with no broadcast is (docs/design-m6-mmu.md T9). The send is separate
+// from the wait so an initiator can poke every core once and then wait once.
+//
+// NOT WHAT arch_aspace_map AND arch_aspace_unmap USE ON A BROADCAST ARCHITECTURE. A64
+// invalidates and waits with two instructions and no far-side code at all, so the
+// maintenance seam reads broadcast-then-wait; routing it through a doorbell would invent a
+// deadlock A64 cannot have. This pair is for the architectures that have no broadcast.
+//
+// THE FAR SIDE TAKES NO KERNEL LOCK, and the lock's own acquire loop services a pending
+// doorbell: otherwise an initiator holding the lock waits on a core spinning to acquire it.
+//
+// At one core there is no other core to poke and nothing to wait for, so both are EMPTY
+// MACROS and the argument is consumed rather than evaluated for effect.
+#if KICKOS_NUM_CORES > 1
+void arch_ipi_send(uint32_t cores);
+void arch_ipi_wait(uint32_t cores);
+#else
+#define arch_ipi_send(cores) ((void)(cores))
+#define arch_ipi_wait(cores) ((void)(cores))
+#endif
+
 // --- Context / switching ---------------------------------------------------
 // Build an initial frame in `ctx` so the first switch-in "returns" into
 // entry(arg) on [stack_base, stack_base+stack_size). `privileged` selects the
@@ -628,15 +655,37 @@ void arch_aspace_activate(struct arch_aspace* space);
 // memory in its high half inlines this to an addition, and one whose physical space is
 // wider than its virtual has no offset to add.
 //
-// AT LEAST TWO are holdable at once per core: the endpoint copy holds a source page in one
-// space and a destination page in another, so a backend with a finite window pool sizes it
-// for that.
+// ARCH_ASPACE_ACQUIRE_MIN are holdable at once per core, and a backend with a finite
+// window pool sizes that pool for the figure and asserts against it. A backend where
+// acquire is an addition has no pool and meets any figure. Counted as OUTSTANDING calls
+// and not as distinct pages: two acquires of one page are two holds unless the backend
+// counts references.
 //
 // `va` need not be granule-aligned and the pointer addresses the same byte. Null when the
 // page is not mapped in `space`. A range contiguous in virtual memory is not contiguous in
 // physical memory, so a caller splits at granule boundaries and acquires each page.
+#define ARCH_ASPACE_ACQUIRE_MIN 6u
 void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va);
 void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
+
+// SELFTEST ONLY, and shaped like arch_mpu_probe_addr: what the IMPLEMENTATION reports
+// about the translation it provides, so the port's figures are checked against the machine
+// rather than against constants of their own. A manual gives the SILICON's answer and the
+// first target is an emulator; a divergence is a fact about the model.
+//   bits 0..7    ARCH_ASPACE_MODEL_* : one per figure of this port's that the machine bore out
+//   bits 8..15   the address-space identifier width reported, in bits
+//   bits 16..23  the physical address range reported, in bits
+//   bits 24..31  one bit per granule reported supported, bit N naming the Nth granule the
+//                ARCHITECTURE defines, smallest first (A64: 4 KiB, 16 KiB, 64 KiB)
+#define ARCH_ASPACE_MODEL_GRANULE 0x01u /* the granule this port programs is supported */
+#define ARCH_ASPACE_MODEL_ASID    0x02u /* the identifier is as wide as the port's record */
+#define ARCH_ASPACE_MODEL_PA      0x04u /* the physical range covers what the port programs */
+#define ARCH_ASPACE_MODEL_ALL     0x07u
+#define ARCH_ASPACE_MODEL_ASID_SHIFT 8u
+#define ARCH_ASPACE_MODEL_PA_SHIFT   16u
+#define ARCH_ASPACE_MODEL_GRAN_SHIFT 24u
+#define ARCH_ASPACE_MODEL_FIELD_MASK 0xFFu
+uint64_t arch_aspace_model(void);
 
 // The space the boot path installed, and the ONLY handle for it: its tables are link-time
 // constants rather than something this seam created. It is what the kernel installs when
@@ -644,6 +693,32 @@ void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
 // one executing when its domain is released, and a freed root left in the translation
 // control is a walk into the frame pool.
 struct arch_aspace* arch_aspace_boot(void);
+
+// --- Data-cache maintenance for an observer that does not snoop -------------
+// Make this core's writes over [addr, addr + bytes) visible to an observer outside the
+// coherency the CPU participates in, and make such an observer's writes over that range
+// visible to this core. A DMA engine on a bus that does not snoop is the ordinary one; a
+// companion core across a window that is not coherent is the other.
+//
+// CONCEPTS: no architecture's maintenance instruction and no LINE SIZE appears here. The
+// backend reads its own line size and rounds the range out to it, so a caller never has a
+// figure to keep in step.
+//
+// THE INVALIDATE MAY NOT DISCARD WHAT SITS BESIDE THE BUFFER. A range whose ends fall
+// inside a line shares those lines with its neighbours, so a backend that plainly discards
+// them loses writes it was never handed: it CLEANS as it invalidates, which costs nothing a
+// caller can measure and removes an alignment rule no caller would honour.
+//
+// `addr` IS A KERNEL-USABLE POINTER, which is what arch_aspace_acquire answers. A range
+// named by a user virtual address is not one operation on a backend whose physical space is
+// discontiguous, so the split belongs above this seam with the rest of the page splitting.
+//
+// NO CALLER IN THE TREE YET (docs/design-m6-mmu.md section 7): who calls this follows from
+// the heterogeneous case, and a unicore emulator exercises none of it. So a port defines it
+// when its first caller arrives and fails the LINK until then, rather than carrying a
+// no-op that reports maintenance it never did.
+void arch_dcache_clean(void const* addr, size_t bytes);
+void arch_dcache_invalidate(void* addr, size_t bytes);
 
 // --- Rule 7: kernel-reserved MMIO blocks (docs/design-m4-driver-model.md sec.7) --
 // The owns-for-life peripherals a grant must NEVER hand to userspace: the timebase

@@ -439,10 +439,17 @@ if(KICKOS_HAVE_PRIV_RING
       OR KICKOS_ARCH STREQUAL "armv6m"
       OR KICKOS_ARCH STREQUAL "rv32imac"
       OR KICKOS_ARCH STREQUAL "rxv3"
+      OR KICKOS_ARCH STREQUAL "armv8a"
       OR (KICKOS_ARCH STREQUAL "sim" AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")))
   set(KICKOS_FAULT_ISOLATION 1)
   set(KICKOS_FAULT_OUTCOME thread-kill)
 endif()
+# Published to C++ as well, not left a CMake-only fact: an in-tree witness has to be able to
+# ask whether a deliberate fault is survivable here, and gating such an arm on a proxy
+# (KICKOS_HAVE_ASPACE, KICKOS_MEMORY_ENFORCED) would register it on a board whose backend
+# builds no resumable frame. NOT on the exported kickos_core interface: it gates test
+# scaffolding, not a consumer API.
+add_compile_definitions(KICKOS_FAULT_ISOLATION=${KICKOS_FAULT_ISOLATION})
 if(NOT DEFINED KICKOS_TRACE_ARCH)
   set(KICKOS_TRACE_ARCH 0)
   if(KICKOS_ARCH STREQUAL "armv7m")

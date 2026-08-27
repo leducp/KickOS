@@ -66,8 +66,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
     ARGS "${_fault_marker}" ${_fault_status})
 endif()
 
-# qemu-arm64: .inst 0x00000000 -> EC 0x00 -> kickos_armv8a_exception. This arch isolates no
-# fault yet, so the marker is the panic banner and the status kfault_terminate's.
+# qemu-arm64: .inst 0x00000000 -> EC 0x00 through the EL0 synchronous entry, which root
+# reaches unprivileged, so the isolation arm above picks the marker and the status.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
   kickos_add_qemu_test(NAME qemu_arm64_fault_dump TARGET fault BOARD qemu-arm64
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh"

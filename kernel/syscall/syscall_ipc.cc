@@ -124,8 +124,9 @@ namespace kickos
                 {
                     n = w->ipc.len; // datagram truncation, not an error
                 }
-                ep_copy(w->ipc.buf, buf, n);
-                write_recv_info(w->ipc.badge_out, KOS_BADGE_NONE, KCAP_INVALID);
+                ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n);
+                write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE,
+                                KCAP_INVALID);
                 w->wait_result = static_cast<intptr_t>(n);
                 sched::wake(w);
                 return static_cast<int>(n); // did not block: no resume barrier
@@ -172,8 +173,8 @@ namespace kickos
         {
             n = w->ipc.len; // datagram truncation, as for any sender
         }
-        kaccess_to_user(w->ipc.buf, buf, n);
-        write_recv_info(w->ipc.badge_out, KOS_BADGE_NONE, KCAP_INVALID);
+        kaccess_to_user(ipc_buf_space(w), w->ipc.buf, buf, n);
+        write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, KCAP_INVALID);
         w->wait_result = static_cast<intptr_t>(n);
         sched::wake(w);
         return static_cast<int32_t>(n);
@@ -194,6 +195,13 @@ namespace kickos
         if (cap_len > KOS_EP_MSG_MAX)
         {
             cap_len = KOS_EP_MSG_MAX; // capacity clamp is harmless
+        }
+        // Resolved before the validation below, which the opts read needs it for: the
+        // caller OWNS every pointer this function is handed.
+        Thread* c = sched::current();
+        if (c == nullptr)
+        {
+            return -KOS_EPERM;
         }
         if (not user_writable_ok(buf, cap_len))
         {
@@ -221,7 +229,7 @@ namespace kickos
             }
             // Copied ONCE, before anything can park: the struct stays user-writable, so a
             // re-read after the park would see whatever the caller has since put there.
-            kaccess_from_user(&timeout_us,
+            kaccess_from_user(&timeout_us, user_space_of(c),
                               badge_out + offsetof(kos_recv_timed_opts, timeout_us),
                               sizeof(timeout_us));
             badge_out = badge_out + offsetof(kos_recv_timed_opts, info);
@@ -241,11 +249,6 @@ namespace kickos
                 return -KOS_EINVAL; // alignment load-bearing for the privileged store below
             }
             return -KOS_EFAULT;
-        }
-        Thread* c = sched::current();
-        if (c == nullptr)
-        {
-            return -KOS_EPERM;
         }
         uint32_t epoch = 0;
         {
@@ -319,12 +322,12 @@ namespace kickos
                     {
                         n = cap_len; // truncate the request into our capacity
                     }
-                    ep_copy(buf, s->ipc.buf, n);
+                    ep_copy(user_space_of(c), buf, ipc_buf_space(s), s->ipc.buf, n);
                     uint32_t rcap = KCAP_INVALID;
                     // Not inside the assert: a compiled-out condition would drop the mint.
                     int const minted = cap_install_reply(c, s, &rcap);
                     KICKOS_ASSERT(minted == 0);
-                    write_recv_info(badge_out, KOS_BADGE_NONE, rcap);
+                    write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, rcap);
                     s->ipc.len = s->call_rx_cap;
                     s->ipc.badge_out = 0;
                     s->call_state = CALL_REPLY_WAIT;
@@ -346,8 +349,8 @@ namespace kickos
                 {
                     n = cap_len; // truncate into the receiver's capacity
                 }
-                ep_copy(buf, s->ipc.buf, n);
-                write_recv_info(badge_out, KOS_BADGE_NONE, KCAP_INVALID);
+                ep_copy(user_space_of(c), buf, ipc_buf_space(s), s->ipc.buf, n);
+                write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, KCAP_INVALID);
                 s->wait_result = static_cast<intptr_t>(n);
                 if (sched::wake_no_resched(s) and (woke_top == nullptr or s->prio > woke_top->prio))
                 {
@@ -468,7 +471,7 @@ namespace kickos
                     n = w->ipc.len; // receiver-side request truncation
                 }
                 KICKOS_BENCH_MARK(bm_copy);
-                ep_copy(w->ipc.buf, buf, n);
+                ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n);
                 KICKOS_BENCH_SPAN(PH_CALL_COPY, bm_copy);
                 c->call_seq++; // new epoch BEFORE packing (the reply cap rides this seq)
                 uint32_t rcap = KCAP_INVALID;
@@ -479,7 +482,7 @@ namespace kickos
                 KICKOS_BENCH_SPAN(PH_CALL_MINT_CAP, bm_mint_cap);
                 KICKOS_ASSERT(minted == 0);
                 KICKOS_BENCH_MARK(bm_mint_info);
-                write_recv_info(w->ipc.badge_out, KOS_BADGE_NONE, rcap);
+                write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, rcap);
                 KICKOS_BENCH_SPAN(PH_CALL_MINT_INFO, bm_mint_info);
                 KICKOS_BENCH_SPAN(PH_CALL_MINT, bm_mint);
                 w->wait_result = static_cast<intptr_t>(n);
@@ -612,7 +615,7 @@ namespace kickos
             n = caller->call_rx_cap; // reply truncation into the caller's capacity
         }
         KICKOS_BENCH_MARK(bm_copy);
-        ep_copy(caller->ipc.buf, buf, n);
+        ep_copy(ipc_buf_space(caller), caller->ipc.buf, user_space_of(c), buf, n);
         KICKOS_BENCH_SPAN(PH_REPLY_COPY, bm_copy);
         caller->wait_result = static_cast<intptr_t>(n);
         caller->call_state = CALL_NONE;

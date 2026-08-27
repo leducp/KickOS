@@ -243,13 +243,64 @@ enum kos_aspace_op
     KOS_ASPACE_OP_RANGES_FREE = 11, // () -> range slots the CALLING task's space has left.
                                  //   Allocation spends one and there is no free, so this is
                                  //   how many more blocks the caller may reserve
-    KOS_ASPACE_OP_FRAME_AT = 12  // (a virtual address) -> a small stable name for the frame
+    KOS_ASPACE_OP_FRAME_AT = 12, // (a virtual address) -> a small stable name for the frame
                                  //   backing it in the CALLING task's space, 0 when the page
                                  //   is not mapped. Two tasks answering DIFFERENT numbers for
                                  //   one address are two copies of it; the number counts frames
                                  //   from the image's first text page, which is no address at
                                  //   all, and nothing else may be read out of it
+    KOS_ASPACE_OP_SPLIT_ACCESS = 13, // () -> the KOS_ASPACE_SPLIT_* bits that held for a
+                                 //   virtually contiguous range whose two pages are backed by
+                                 //   NON-ADJACENT frames. No caller can build such a range: a
+                                 //   reservation's virtual address is its output address, so
+                                 //   virtual adjacency and physical adjacency are one question
+                                 //   from userspace
+    KOS_ASPACE_OP_FORCED_UNWIND = 14, // (0, or a range this task reserved) -> the
+                                 //   KOS_ASPACE_UNWIND_* bits that held, with the number of
+                                 //   injection points the sweep reached above bit
+                                 //   KOS_ASPACE_UNWIND_DEPTH_SHIFT. A forced allocation failure
+                                 //   is walked through the domain-create path one allocation at
+                                 //   a time, so every unwind arm under it runs once. At 0 the
+                                 //   path is the no-grant create; with a reservation named it is
+                                 //   the grant-carrying one, whose handoff unwinds separately
+    KOS_ASPACE_OP_SPACES_HELD = 15, // () -> how many domain slots hold an address space at all.
+                                 //   The ROOT count beside the frame count: churn that ends
+                                 //   with a different answer stranded a root, which a frame
+                                 //   delta only implies
+    KOS_ASPACE_OP_MODEL = 16,    // () -> what the IMPLEMENTATION reports about its own
+                                 //   translation, as the KOS_ASPACE_MODEL_* bits and the
+                                 //   three widths beside them. The port's granule, identifier
+                                 //   width and physical range come from a manual; this is the
+                                 //   machine's own answer, so the two can be compared
+    KOS_ASPACE_OP_MEMTYPE_AT = 17 // (a virtual address) -> 1 + the memory TYPE the CALLING
+                                 //   task's mapping of it carries (enum arch_map_memtype),
+                                 //   or 0 when the page is not mapped. The flag belongs to
+                                 //   the block, so two mappings of one block answering
+                                 //   differently is the disagreement kos_mem_flags warns of
 };
+
+// KOS_ASPACE_OP_SPLIT_ACCESS: one bit per property of an access split at a page boundary.
+// NONADJACENT is what makes the rest mean anything, and NEIGHBOUR is where a single copy over
+// one translated base spills.
+#define KOS_ASPACE_SPLIT_NONADJACENT 0x01u /* the two virtually adjacent pages are not physically */
+#define KOS_ASPACE_SPLIT_TO_USER     0x02u /* a straddling kaccess_to_user reached both frames */
+#define KOS_ASPACE_SPLIT_FROM_USER   0x04u /* a straddling kaccess_from_user read both frames */
+#define KOS_ASPACE_SPLIT_CROSS_SPACE 0x08u /* a straddling ep_copy between TWO spaces at ONE address */
+#define KOS_ASPACE_SPLIT_NEIGHBOUR   0x10u /* the frame physically after the low page was untouched */
+#define KOS_ASPACE_SPLIT_BALANCED    0x20u /* every frame the scenario took came back */
+#define KOS_ASPACE_SPLIT_ALL         0x3Fu
+
+// KOS_ASPACE_OP_MODEL: one bit per figure of the port's the machine bore out, with the
+// figures it reported beside them. The widths are in BITS and the granule field carries one
+// bit per granule the architecture defines, smallest first.
+#define KOS_ASPACE_MODEL_GRANULE     0x01u /* the granule this port programs is supported */
+#define KOS_ASPACE_MODEL_ASID        0x02u /* the identifier is as wide as the port's record */
+#define KOS_ASPACE_MODEL_PA          0x04u /* the physical range covers what the port programs */
+#define KOS_ASPACE_MODEL_ALL         0x07u
+#define KOS_ASPACE_MODEL_ASID_SHIFT  8u
+#define KOS_ASPACE_MODEL_PA_SHIFT    16u
+#define KOS_ASPACE_MODEL_GRAN_SHIFT  24u
+#define KOS_ASPACE_MODEL_FIELD_MASK  0xFFu
 
 // KOS_ASPACE_OP_ROUNDTRIP: how far the cycle got, so a failure names its transition.
 #define KOS_ASPACE_TRIP_MAPPED    1
@@ -266,6 +317,21 @@ enum kos_aspace_op
 #define KOS_ASPACE_REFUSE_PART_UNMAP    0x20u /* unmap of a range not wholly mapped */
 #define KOS_ASPACE_REFUSE_WRITE_EXEC    0x40u /* writable and executable at once */
 #define KOS_ASPACE_REFUSE_ALL           0x7Fu
+
+// KOS_ASPACE_OP_FORCED_UNWIND: one bit per property of the swept forced failure. The DEPTH
+// is what stops the whole word passing vacuously: with every bit set and a depth of 0 the
+// sweep injected nothing and refused nothing, so an arm reads the depth too.
+#define KOS_ASPACE_UNWIND_REFUSED   0x01u /* every injected attempt refused the create */
+#define KOS_ASPACE_UNWIND_ENOMEM    0x02u /* and every refusal answered exactly KOS_ENOMEM */
+#define KOS_ASPACE_UNWIND_BALANCED  0x04u /* each refusal returned every frame, read at once */
+#define KOS_ASPACE_UNWIND_NO_DOUBLE 0x08u /* the pool refused no free over the whole sweep */
+#define KOS_ASPACE_UNWIND_SWEPT     0x10u /* the sweep ran past the last allocation a create makes */
+#define KOS_ASPACE_UNWIND_REUSABLE  0x20u /* a create after the sweep succeeded and balanced */
+#define KOS_ASPACE_UNWIND_ALL       0x3Fu
+#define KOS_ASPACE_UNWIND_DEPTH_SHIFT 8
+// A create allocates a root, a table for the image text, a run for the private data copy and
+// a table for it, so a sweep reaching fewer points than this did not walk the path.
+#define KOS_ASPACE_UNWIND_MIN_DEPTH 4
 
 // Selectors for KOS_SYS_NEST_WITNESS. NEST_ROOM is the bytes between the lowest nested frame
 // seen on a thread stack and that stack's base; compare it against the arch's own interrupt
@@ -311,13 +377,16 @@ enum kos_grant_op
 // masked off.
 //
 // The flag belongs to the BLOCK: pass it identically to EVERY call that maps it, or two live
-// mappings end up disagreeing about its type.
+// mappings end up disagreeing about its type. **A grant carried by a SPAWN has no field for it
+// here**, so that mapping is always Normal and a block reaching a task that way cannot be given
+// another type at all.
 enum kos_mem_flags
 {
     // Map the block Normal non-cacheable, for a block a bus master reads or writes. A chip
     // whose region descriptors carry no memory type and whose data cache sits over the arena
-    // REFUSES it with -KOS_EPERM; a chip with no cache in that path accepts it. Honouring is
-    // checked and not assumed: an accepted-but-unhonoured request is silent data corruption,
+    // REFUSES it with -KOS_EPERM; a chip with no cache in that path accepts it; a chip that
+    // TRANSLATES answers from its page tables, its region descriptors saying nothing. Honouring
+    // is checked and not assumed: an accepted-but-unhonoured request is silent data corruption,
     // the caller having no cache-maintenance call to repair it with.
     KOS_MEM_NOCACHE = 1u << 0
 };

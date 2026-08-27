@@ -37,13 +37,34 @@ namespace kickos
 
     // A commit backend silently DROPS a region whose memory type it cannot encode, so an
     // unencodable ARCH_MPU_NOCACHE must be refused here. Live in BOTH postures.
+    //
+    // THE QUESTION GOES TO WHICHEVER FAMILY COMMITS THE MAPPING (F6). A translating board
+    // seats no region descriptor and answers ARCH_MPU_NOCACHE_REFUSED to the region query
+    // whatever its page tables can encode, so asking that one there refuses every memory
+    // type the map editor honours.
     inline bool grant_nocache_admissible(uint32_t attr)
     {
         if ((attr & ARCH_MPU_NOCACHE) == 0)
         {
             return true;
         }
+#if KICKOS_HAVE_ASPACE
+        return arch_aspace_memtype_support(ARCH_MAP_NOCACHE);
+#else
         return arch_mpu_nocache_support() != ARCH_MPU_NOCACHE_REFUSED;
+#endif
+    }
+
+    // Whether the mapping itself CARRIES the memory type, so a block already reachable
+    // cacheably is not already reachable as the caller asked. A page table always carries
+    // it; a region set carries it only where the descriptor has the field.
+    inline bool grant_memtype_programmed(void)
+    {
+#if KICKOS_HAVE_ASPACE
+        return true;
+#else
+        return arch_mpu_nocache_support() == ARCH_MPU_NOCACHE_PROGRAMMED;
+#endif
     }
 
 #if KICKOS_MEMORY_ENFORCED

@@ -154,9 +154,9 @@ kickos_armv8a_irq_entry:
  * first frame there (arch_armv8a.cc), and every frame after it is one this macro pushed. The
  * frame is popped before the eret, so SP_EL1 is at the block top whenever EL0 is running.
  *
- * This is what releases TPIDR_EL1, which M7 wants for the per-CPU pointer. The reporting
- * slots in vectors.S still seat SP_EL1 from kickos_armv8a_kernel_sp, because a slot this port
- * never enters proves nothing about the register.
+ * This is what releases TPIDR_EL1, which the per-CPU block is reached through above one core
+ * (percpu.h). The reporting slots in vectors.S still seat SP_EL1 from that block, because a
+ * slot this port never enters proves nothing about the register.
  *
  * The transfer is all this arch writes: no red-zone check and no validation of the
  * interrupted sp, the sp being replaced being SP_EL0 and the one stored through SP_EL1.
@@ -193,9 +193,22 @@ kickos_armv8a_el0_sync_entry:
     str     x0, [sp, #0]
     RESTORE_FRAME_AND_ERET
 
-/* A fault. This arch isolates none yet, so it reports and stops; x30 comes out of the frame,
- * the entry above having spent the register. */
+/* A fault. The frame ENTER_FROM_EL0 just built is resumable, so containment is an ordinary
+ * exception return off it: kickos_fault_kill_thread rewrites ELR and SPSR when the kill rule
+ * holds (arch_fault_redirect_to_exit) and the eret lands in kickos_thread_fault_exit at EL1.
+ *
+ * NOTHING MAY PRINT ABOVE THIS CALL. kickos_armv8a_exception enters kpanic_enter, whose
+ * console reclaim is permanent, and this fault is meant to be survivable.
+ *
+ * The call clobbers x0-x18 and x30, all of which the frame holds and the restore reloads, so
+ * the panic arm below reads x30 back out of the frame rather than trusting the register.
+ */
 .Lel0_fault:
+    mov     x0, sp
+    bl      kickos_fault_kill_thread
+    cbz     w0, .Lel0_fault_panic
+    RESTORE_FRAME_AND_ERET
+.Lel0_fault_panic:
     mov     x0, #8                          /* the vector slot, for the dump to name */
     ldr     x1, [sp, #F_X30]
     b       kickos_armv8a_exception

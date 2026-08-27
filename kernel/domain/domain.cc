@@ -188,6 +188,20 @@ namespace kickos
         }
         return &d->ranges;
     }
+
+    size_t domain_spaces_held(void)
+    {
+        Kernel& k = kernel();
+        size_t held = 0;
+        for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)
+        {
+            if (k.domains[i].space != nullptr)
+            {
+                held++;
+            }
+        }
+        return held;
+    }
 #endif
 
     Domain* domain_for(uint32_t caller, void* mem_base, size_t mem_size, uint32_t mem_attr,

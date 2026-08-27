@@ -83,9 +83,34 @@ namespace kickos
         {
             if (rc == 0)
             {
-                kaccess_to_user(out, &handle, sizeof(handle));
+                kaccess_to_user(user_space_of(sched::current()), out, &handle,
+                                sizeof(handle));
             }
             return static_cast<uint64_t>(rc);
+        }
+
+        // The console's user buffer, moved through the funnel a chunk at a time.
+        // kconsole_write streams privileged whatever it is handed, so a user pointer
+        // reaching it names whatever the RUNNING process holds at that address.
+        //
+        // noinline is load-bearing for user_panic's reason below: the chunk must not widen
+        // syscall_dispatch's frame.
+        __attribute__((noinline)) void console_write_user(uintptr_t buf, size_t len)
+        {
+            char chunk[64];
+            struct arch_aspace* const space = user_space_of(sched::current());
+            size_t done = 0;
+            while (done < len)
+            {
+                size_t n = len - done;
+                if (n > sizeof(chunk))
+                {
+                    n = sizeof(chunk);
+                }
+                kaccess_from_user(chunk, space, buf + done, n);
+                kconsole_write(chunk, n); // fan-out (chip + RTT), not the raw transport
+                done += n;
+            }
         }
 
         // noinline is load-bearing: the message buffer must not widen syscall_dispatch's
@@ -95,6 +120,7 @@ namespace kickos
         {
             char buf[64];
             buf[0] = '\0';
+            struct arch_aspace* const space = user_space_of(sched::current());
             // A privileged caller passes user_readable_ok wholesale, so null must be
             // rejected here and not by the per-byte check.
             if (msg != 0)
@@ -110,7 +136,7 @@ namespace kickos
                     {
                         break;
                     }
-                    kaccess_from_user(&buf[i], msg + i, 1);
+                    kaccess_from_user(&buf[i], space, msg + i, 1);
                     if (buf[i] == '\0')
                     {
                         break;
@@ -132,7 +158,7 @@ namespace kickos
                 if (i + 1 == sizeof(buf) and user_readable_ok(msg + i, 1))
                 {
                     char probe = '\0';
-                    kaccess_from_user(&probe, msg + i, 1);
+                    kaccess_from_user(&probe, space, msg + i, 1);
                     if (probe != '\0')
                     {
                         buf[i - 3] = '.';
@@ -227,10 +253,6 @@ uint64_t syscall_body(uintptr_t nr,
             // so an unbounded buffer would launder another domain's arena page out through
             // the console. Reject => wrote nothing.
             constexpr size_t MAX_CONSOLE_WRITE = 4096;
-            // MMU-era NOTE: this hands a user pointer straight to kconsole_write, which
-            // streams it privileged. The one kernel-side user read NOT funnelled through
-            // kaccess_from_user.
-            char const* buf = reinterpret_cast<char const*>(a0);
             size_t len = static_cast<size_t>(a1);
             if (len > MAX_CONSOLE_WRITE)
             {
@@ -242,7 +264,7 @@ uint64_t syscall_body(uintptr_t nr,
                 // len-0 write legitimately returns 0, so 0 must not double as reject.
                 return static_cast<uint64_t>(-KOS_EFAULT);
             }
-            kconsole_write(buf, len); // fan-out (chip + RTT), not the raw transport
+            console_write_user(a0, len);
             return len;
         }
         case KOS_SYS_YIELD:
@@ -905,7 +927,7 @@ uint64_t syscall_body(uintptr_t nr,
             // memory type: privileged reach comes from the CACHEABLE background map, so a
             // block initialised through it keeps dirty lines a bus master then reads.
             bool already = user_range_ok(base, size, ARCH_MPU_R | ARCH_MPU_W);
-            if ((attr & ARCH_MPU_NOCACHE) != 0 and arch_mpu_nocache_support() == ARCH_MPU_NOCACHE_PROGRAMMED)
+            if ((attr & ARCH_MPU_NOCACHE) != 0 and grant_memtype_programmed())
             {
                 already = user_range_typed_ok(base, size, attr);
             }

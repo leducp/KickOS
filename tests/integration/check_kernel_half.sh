@@ -9,12 +9,17 @@
 #
 # Four assertions, and the third is the one that separates this from every other fault gate.
 # The image must announce the address, so a run that could not obtain one fails instead of
-# passing on a silent skip. The dump's fault address must equal that announcement, so a
+# passing on a silent skip. The reported fault address must equal that announcement, so a
 # fault raised somewhere else cannot stand in. The syndrome must be a PERMISSION fault and
 # not a translation fault: the kernel's half is mapped, at the same address, for the
 # privileged side of the same core, so an image reporting a translation fault has lost the
 # kernel's own window rather than revoked EL0's. And no ERROR line may appear, so a read
 # that quietly returned a value cannot pass as a refusal.
+#
+# THE SYNDROME IS READ OFF THE THREAD-KILL RECORD AND NOT A PANIC DUMP. The read is an EL0
+# access, so armv8a now contains it: the same ESR and the same address arrive through
+# kickos_fault_record as `ESR_EL1=` and `ADDR=` instead of the reporter's `ESR=` and `FAR=`
+# (docs/design-m6-mmu.md F5, T8). The image dies of it and the system does not.
 #
 # ESR 0x9200000e is EC 0x24 (data abort, lower exception level), IL 1 (a 32-bit
 # instruction), WnR clear (a read) and DFSC 0b001110 (permission fault, level 2), which is
@@ -53,13 +58,13 @@ if [ "$banners" -ne 1 ]; then
     fail "fault-dump marker '$marker' appeared $banners times"
 fi
 
-if ! has "FAR=0x${addr}"; then
-    printf '%s\n' "$OUT" | grep -E 'FAR=|ESR='
-    fail "the dump faults somewhere other than 0x${addr}, the word the image named"
+if ! has "ADDR=0x${addr}"; then
+    printf '%s\n' "$OUT" | grep -E 'ADDR=|ESR_EL1='
+    fail "the record faults somewhere other than 0x${addr}, the word the image named"
 fi
 
-if ! has "ESR=0x9200000e"; then
-    printf '%s\n' "$OUT" | grep -E 'ESR='
+if ! has "ESR_EL1=0x9200000e"; then
+    printf '%s\n' "$OUT" | grep -E 'ESR_EL1='
     fail "the syndrome is not a level-2 permission fault on a read from the lower level"
 fi
 

@@ -16,12 +16,12 @@ if(NOT TARGET stackguard)
   return() # diagnostics off -> app not built; skip its tests
 endif()
 
-# 132 is kfault_terminate's status and "ARMV8A EXCEPTION" the panic banner this arch prints;
-# both are restated here rather than computed from the sources that produce them, so the gate
-# asserts something about them. This arch isolates no fault yet, so the thread does not
-# survive and the marker is the panic banner rather than a THREAD FAULT line.
+# 139 is KOS_EXIT_FAULT and "THREAD FAULT" the thread-kill banner; both are restated here
+# rather than computed from the sources that produce them, so the gate asserts something about
+# them. The access is an EL0 one, so armv8a CONTAINS it (docs/design-m6-mmu.md F5, T8): the
+# faulting thread's task dies and the marker is the kill banner, not the panic dump.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
   kickos_add_qemu_test(NAME qemu_arm64_stack_guard TARGET stackguard BOARD qemu-arm64
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_stack_guard.sh"
-    ARGS "ARMV8A EXCEPTION" 132)
+    ARGS "THREAD FAULT" 139)
 endif()

@@ -35,6 +35,25 @@ namespace kickos
         {
             return reinterpret_cast<uintptr_t>(__kickos_frame_pool_delta);
         }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+        // Attempts left before the armed refusal; 0 is disarmed. Every caller holds the
+        // IrqLock, so this needs no ordering of its own.
+        size_t g_fail_in = 0;
+
+        // AHEAD OF THE ALLOCATOR at both entry points, so a refused attempt takes nothing
+        // and the caller's unwind runs against the pool it started with. One-shot: the
+        // arming is spent by the attempt it refuses.
+        bool fail_this_attempt()
+        {
+            if (g_fail_in == 0)
+            {
+                return false;
+            }
+            g_fail_in--;
+            return g_fail_in == 0;
+        }
+#endif
     }
 
     bool frame_pool_init()
@@ -63,39 +82,35 @@ namespace kickos
         return g_refused;
     }
 
+#if defined(KICKOS_ENABLE_SELFTEST)
+    void frame_pool_fail_in(size_t nth)
+    {
+        IrqLock lock;
+        g_fail_in = nth;
+    }
+
+    bool frame_pool_fail_armed()
+    {
+        IrqLock lock;
+        return g_fail_in != 0;
+    }
+#endif
+
     arch_phys_addr_t frame_pool_alloc_run(size_t pages)
     {
         IrqLock lock;
+#if defined(KICKOS_ENABLE_SELFTEST)
+        if (fail_this_attempt())
+        {
+            return 0;
+        }
+#endif
         uintptr_t const p = g_frames.alloc_run(pages);
         if (p == 0)
         {
             return 0;
         }
         return static_cast<arch_phys_addr_t>(p - pool_delta());
-    }
-
-    void* frame_pool_span(arch_phys_addr_t addr, size_t bytes)
-    {
-        if (bytes == 0)
-        {
-            return nullptr;
-        }
-        size_t const g = arch_aspace_granule();
-        uintptr_t const first = static_cast<uintptr_t>(addr) & ~static_cast<uintptr_t>(g - 1u);
-        uintptr_t const last =
-            (static_cast<uintptr_t>(addr) + bytes - 1u) & ~static_cast<uintptr_t>(g - 1u);
-        if (last < first)
-        {
-            return nullptr; // the span wraps
-        }
-        for (uintptr_t p = first; p <= last; p += g)
-        {
-            if (not g_frames.is_allocated(p + pool_delta()))
-            {
-                return nullptr;
-            }
-        }
-        return reinterpret_cast<void*>(static_cast<uintptr_t>(addr) + pool_delta());
     }
 
     void* frame_pool_ptr(arch_phys_addr_t frame)
@@ -115,6 +130,12 @@ extern "C"
 arch_phys_addr_t kickos_frame_alloc(void)
 {
     kickos::IrqLock lock;
+#if defined(KICKOS_ENABLE_SELFTEST)
+    if (kickos::fail_this_attempt())
+    {
+        return 0;
+    }
+#endif
     uintptr_t const p = kickos::g_frames.alloc();
     if (p == 0)
     {

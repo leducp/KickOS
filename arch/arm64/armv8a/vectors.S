@@ -41,11 +41,16 @@
  * was configured behind the kernel's back and SP_EL1 carries no promise. Unseated, the
  * reporter would build privileged frames on memory an unprivileged thread can write. Nothing
  * is preserved on this path, so it needs no scratch register.
+ *
+ * The block is per core and kernel_sp sits at displacement 0 (percpu.h, which static_asserts
+ * it). At one core the array's first element IS this core's block, so the address is a
+ * link-time constant; above one core the block address comes from TPIDR_EL1 instead, and
+ * that is the edit, not the load below.
  */
     .macro  LOWER_EL_SLOT index
     .balign 128
-    adrp    x0, kickos_armv8a_kernel_sp
-    ldr     x0, [x0, #:lo12:kickos_armv8a_kernel_sp]
+    adrp    x0, kickos_armv8a_percpu
+    ldr     x0, [x0, #:lo12:kickos_armv8a_percpu]
     mov     sp, x0
     mov     x0, #\index
     mov     x1, x30

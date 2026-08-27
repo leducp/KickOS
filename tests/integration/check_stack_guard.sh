@@ -9,12 +9,17 @@
 # Four assertions, and the first is the one that separates a guard page from a short stack.
 # The image announces every probe BEFORE making it, so the number of announcements says how
 # many pages of the stack were written successfully: at least two means a page inside the
-# stack really was reachable and a lower one was not, which is the property. The dump's FAR
-# must equal the LAST announced address, so a fault anywhere else fails rather than counting.
-# The syndrome must be a level-3 TRANSLATION fault on a WRITE taken from the lower exception
-# level, which is what says the page carries no entry at all: a permission fault would mean
-# the neighbour was mapped and merely read-only. And the image must print no ERROR line, so a
-# write that quietly succeeded past the whole stack cannot pass as a fault.
+# stack really was reachable and a lower one was not, which is the property. The record's
+# ADDR must equal the LAST announced address, so a fault anywhere else fails rather than
+# counting. The syndrome must be a level-3 TRANSLATION fault on a WRITE taken from the lower
+# exception level, which is what says the page carries no entry at all: a permission fault
+# would mean the neighbour was mapped and merely read-only. And the image must print no ERROR
+# line, so a write that quietly succeeded past the whole stack cannot pass as a fault.
+#
+# THE SYNDROME IS READ OFF THE THREAD-KILL RECORD AND NOT A PANIC DUMP. The walk is an EL0
+# access, so armv8a now contains it: the same ESR and the same address arrive through
+# kickos_fault_record as `ESR_EL1=` and `ADDR=` instead of the reporter's `ESR=` and `FAR=`
+# (docs/design-m6-mmu.md F5, T8). The image dies of it and the system does not.
 #
 # ESR 0x92000047 is EC 0x24 (data abort, lower exception level), IL 1 (a 32-bit
 # instruction), WnR set (a write) and DFSC 0b000111 (translation fault, level 3)
@@ -54,13 +59,13 @@ if [ "$banners" -ne 1 ]; then
     fail "fault-dump marker '$marker' appeared $banners times"
 fi
 
-if ! has "FAR=0x${last}"; then
-    printf '%s\n' "$OUT" | grep -E 'FAR=|ESR='
-    fail "the dump faults somewhere other than 0x${last}, the page the image last named"
+if ! has "ADDR=0x${last}"; then
+    printf '%s\n' "$OUT" | grep -E 'ADDR=|ESR_EL1='
+    fail "the record faults somewhere other than 0x${last}, the page the image last named"
 fi
 
-if ! has "ESR=0x92000047"; then
-    printf '%s\n' "$OUT" | grep -E 'ESR='
+if ! has "ESR_EL1=0x92000047"; then
+    printf '%s\n' "$OUT" | grep -E 'ESR_EL1='
     fail "the syndrome is not a level-3 translation fault on a write from the lower level"
 fi
 
