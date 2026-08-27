@@ -52,6 +52,15 @@ namespace kickos
     // them. That first space is root's, and it has to be: the app's ctors run in root, in a
     // thread, so a root holding a copy would construct its copy and leave the image pages
     // holding link-time bytes for every process after it (kmain.cc, root_entry).
+    //
+    // ROOT WHILE ROOT LIVES, AND A SNAPSHOT OF ROOT ONCE IT DOES NOT. A process created while
+    // root runs copies what root holds NOW, so an app global root writes before a spawn is
+    // one the child reads out of its own copy. The snapshot's frames come off the pool while
+    // root is seeded and its bytes are taken on root's way out, from aspace_release, with
+    // root's mappings still standing; from then on the home is never read again. A seed
+    // reaching a lost home with no snapshot behind it FAILS. What none of these paths does is
+    // let a LATER process map the image's own pages and become the template, which would hand
+    // every process after it a live process's mutable globals.
     bool aspace_image_seed(struct arch_aspace* space, VirtualRanges* ranges);
 
     // Unmap what the space borrows, return the frames of a reservation it never mapped, then
@@ -100,13 +109,42 @@ namespace kickos
     // sweep on a backend with no translation tag.
     void aspace_activate_for(Thread const* t);
 
-    // Forget the cached current space. The selftest scaffolding activates spaces of its
-    // own behind the switch path's back, so the cache has to be droppable.
+    // Whether the translation root THIS CORE holds is `t`'s own space, which is the condition
+    // for the app's half being addressable on its behalf at all.
+    //
+    // FALSE FOR A THREAD WHOSE TASK HOLDS NO SPACE, and the low half then still names whichever
+    // process was installed last. Only a privileged thread can be in that posture: every
+    // privileged spawn resolves to the kernel domain, which carries no space. A kernel write
+    // to an app-half address made for such a thread lands in another process's memory, and a
+    // backend that forbids privileged access to the low half faults on it, so the switch path
+    // asks this before it primes or seats libc's reentrant state (kernel/sched/sched.cc).
+    bool aspace_seated_for(Thread const* t);
+
+    // Forget the cached current space, for this core. The selftest scaffolding activates
+    // spaces of its own behind the switch path's back, so the cache has to be droppable.
     void aspace_forget_current(void);
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // Outstanding acquires in the high half of the word, releases that paired with no acquire
+    // in the low half. Both must be 0 outside a map-editing call: arch_aspace_release is a
+    // no-op on the backend that translates today, so an arm has nothing else to read a
+    // mispaired release off (arch.h, arch_aspace_acquire).
+    uint64_t aspace_acquire_balance(void);
+
+    // Switch-ins of a thread whose task holds no space, so an arm can state that the posture
+    // aspace_seated_for exists for is reached rather than hypothetical.
+    uint64_t aspace_unseated_switch_ins(void);
+
+    // Drop the space holding the image's own data pages, as its release would. What an arm
+    // stages to witness that a process created afterwards still copies the snapshot rather
+    // than becoming a second template.
+    void aspace_data_home_forget(void);
+#endif
 
 #else
 
     inline void aspace_activate_for(Thread const*) {}
+    inline bool aspace_seated_for(Thread const*) { return true; }
 
 #endif
 }

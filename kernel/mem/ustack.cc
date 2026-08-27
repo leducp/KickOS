@@ -15,20 +15,12 @@ namespace kickos
 {
     namespace
     {
-        // The stack's frames plus the guard's. The guard is charged to the pool rather than
-        // taken out of virtual space alone, so the page below a stack belongs to that stack
-        // and no later allocation can map it (F7 budgets one granule per thread for this).
+        // The stack's frames plus the guard's. The guard is charged to the pool, so the page
+        // below a stack belongs to that stack and no later allocation can map it (F7 budgets
+        // one granule per thread).
         size_t run_pages(size_t stack_pages)
         {
             return stack_pages + 1u;
-        }
-
-        void give_back(arch_phys_addr_t run, size_t pages, size_t granule)
-        {
-            for (size_t i = 0; i < pages; i++)
-            {
-                kickos_frame_free(run + static_cast<arch_phys_addr_t>(i * granule));
-            }
         }
     }
 
@@ -50,14 +42,14 @@ namespace kickos
         {
             return out;
         }
-        // The LOW frame of the run is the guard and is never mapped. The stack starts one
+        // The low frame of the run is the guard and is never mapped. The stack starts one
         // granule above it, so the first store below the stack's base has no translation.
         arch_phys_addr_t const stack = run + static_cast<arch_phys_addr_t>(g);
         uintptr_t const va = static_cast<uintptr_t>(stack);
         if (arch_aspace_map(space, va, stack, pages, ARCH_MAP_R | ARCH_MAP_W,
                             ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
         {
-            give_back(run, run_pages(pages), g);
+            frame_pool_free_run(run, run_pages(pages), g);
             return out;
         }
         out.base = va;
@@ -78,20 +70,21 @@ namespace kickos
             return;
         }
         enum arch_aspace_result const rc = arch_aspace_unmap(space, base, pages);
-        // THE GUARD FRAME IS NEVER MAPPED, so no space will ever free it and it comes back
+        // The guard frame is never mapped, so no space will ever free it and it comes back
         // here whatever the unmap did.
         kickos_frame_free(static_cast<arch_phys_addr_t>(base) - g);
         if (rc != ARCH_ASPACE_OK)
         {
             // The unmap is total-or-fail, so a refusal left every entry standing: the space
-            // still MAPS these frames and destroy is what frees them (F10). Freeing them
-            // here as well would be exactly the double release the pool's refusal counter
-            // exists to catch, and it would be attributed to destroy.
+            // still maps these frames and destroy is what frees them (F10). Freeing them
+            // here as well would be a double release.
             return;
         }
-        give_back(static_cast<arch_phys_addr_t>(base), pages, g);
+        frame_pool_free_run(static_cast<arch_phys_addr_t>(base), pages, g);
     }
 
+    // ustack_alloc maps the run at va == its own physical base, which is what lets a
+    // stack address be handed to the pool as a frame here and in ustack_free.
     void* ustack_kptr(uintptr_t base)
     {
         if (base == 0)

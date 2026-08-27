@@ -178,7 +178,7 @@ namespace kickos
     // NO DEDUP: every call hands back a distinct domain, where the real domain_for returns
     // the shared default-user singleton for a no-grant unprivileged task. That is what lets
     // an arm read one task's reference count without another task's holds in it.
-    Domain* domain_for(uint32_t, void*, size_t, uint32_t, Domain const*, int* err)
+    Domain* domain_for(uint32_t, void*, size_t, uint32_t, Domain*, int* err)
     {
         *err = 0;
         for (int i = 0; i < KICKOS_MAX_TASKS; i++)

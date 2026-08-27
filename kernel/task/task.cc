@@ -110,7 +110,7 @@ namespace kickos
         return t->domain;
     }
 
-    Task* task_for(uint32_t caller, void* mem_base, size_t mem_size, Domain const* donor,
+    Task* task_for(uint32_t caller, void* mem_base, size_t mem_size, Domain* donor,
                    int* err)
     {
         // FIRST: admission must run before a task slot is spent, or a refused grant leaves
@@ -125,6 +125,11 @@ namespace kickos
         Task* const t = free_slot();
         if (t == nullptr)
         {
+            // The domain is at refcount 0 and nothing will ever hold it, so release it here
+            // rather than leaving the pool to recycle the slot: a domain built by a handoff
+            // holds a reference on its DONOR, and an abandoned slot pins that donor's space
+            // and every frame in it until the slot happens to be reused.
+            domain_release(d);
             *err = KOS_ENOMEM; // pool exhausted: retry later
             return nullptr;
         }
@@ -136,7 +141,7 @@ namespace kickos
     }
 
     Task* task_create(uint16_t creator_tag, uint32_t caller, void* mem_base, size_t mem_size,
-                      uint32_t mem_attr, Domain const* donor, int* err)
+                      uint32_t mem_attr, Domain* donor, int* err)
     {
         *err = 0;
         if (creator_tag == ThreadPool::KILL_TAG_NONE)
@@ -155,6 +160,7 @@ namespace kickos
         Task* const t = free_slot();
         if (t == nullptr)
         {
+            domain_release(d); // as in task_for: an abandoned domain still pins its donor
             *err = KOS_ENOMEM;
             return nullptr;
         }

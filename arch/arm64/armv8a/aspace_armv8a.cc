@@ -3,13 +3,13 @@
 //
 // The AArch64 stage-1 map editor: the arch_aspace_* family of arch.h over VMSAv8-64
 // translation tables (DDI 0487 M.b chapter D8). TTBR0_EL1 alone is edited here; TTBR1_EL1
-// holds the kernel half and the map of physical RAM that startup.S built, and no call in
-// this file touches it.
+// holds the kernel half and the map of physical RAM that startup.S built.
 //
 // TCR_EL1.T0SZ is 25 (startup.S), so a 39-bit low half whose walk starts at level 1: the
-// root IS the level-1 table and the leaves sit at level 3.
+// root is the level-1 table and the leaves sit at level 3.
 
 #include <kickos/arch/arch.h>
+#include <kickos/extent.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -17,7 +17,7 @@
 extern "C"
 {
     // Chip<->arch contract (arch/arm64/chip/virt_arm64/virt_arm64.ld). NOT weak: a chip
-    // whose script omits it must fail the LINK rather than translate against a zero base.
+    // whose script omits it must fail the link rather than translate against a zero base.
     extern unsigned char __kickos_arm64_va_base[];
 
     arch_phys_addr_t kickos_frame_alloc(void);
@@ -26,16 +26,15 @@ extern "C"
 
 namespace
 {
-    // TCR_EL1.TG0 selects the granule and startup.S programs 4 KiB. Unlike T0SZ below it is
-    // baked in here, because every table size and index width follows from it.
+    // TCR_EL1.TG0 selects the granule and startup.S programs 4 KiB. Every table size and
+    // index width below follows from it.
     constexpr unsigned GRANULE_SHIFT = 12;
     constexpr size_t GRANULE = static_cast<size_t>(1) << GRANULE_SHIFT;
     constexpr size_t PTES = GRANULE / sizeof(uint64_t);
     constexpr int LEVEL_ROOT = 1;
     constexpr int LEVEL_LEAF = 3;
 
-    // Acquire adds the high-half map's base to an output address, spending no window, so
-    // the count of live holds is bounded by nothing this backend owns.
+    // Acquire is an addition and spends no window, so nothing here bounds the live holds.
     constexpr size_t ACQUIRE_CAPACITY = SIZE_MAX;
 
     // Descriptor fields, Table D8-50 and Table D8-52 (DDI 0487 M.b section D8.3).
@@ -56,8 +55,7 @@ namespace
     constexpr uint64_t ATTR_DEVICE = 1;
     constexpr uint64_t ATTR_NOCACHE = 2;
 
-    // T0SZ is startup.S's, and reading it back is what keeps this file from carrying a
-    // second copy of the figure that decides which addresses exist at all.
+    // T0SZ is startup.S's, read back rather than restated here.
     unsigned va_bits()
     {
         uint64_t tcr = 0;
@@ -71,25 +69,24 @@ namespace
     }
 
     // ID_AA64MMFR0_EL1 and TCR_EL1.IPS share one encoding of the physical address range
-    // (DDI 0487 M.b, ID_AA64MMFR0_EL1.PARange). Anything past the table is a range this
-    // port does not know how to compare, so it reads as 0 rather than as a guess.
+    // (DDI 0487 M.b, ID_AA64MMFR0_EL1.PARange). Anything past the table reads as 0, never
+    // as a guess.
     unsigned pa_bits_of(unsigned field)
     {
         constexpr unsigned char BITS[] = {32, 36, 40, 42, 44, 48, 52, 56};
-        if (field >= sizeof(BITS))
+        if (field >= sizeof(BITS) / sizeof(BITS[0]))
         {
             return 0;
         }
         return BITS[field];
     }
 
-    // What F7 read out of the core manuals, held here so the machine can be asked whether
-    // it agrees. TCR_EL1.AS is left at 0, an 8-bit identifier, because nothing in this
-    // tree tags a translation; 16 is the figure the RECORD carries, not one the port
-    // programs (DDI 0500J section 4.3.21, Table 4-56).
+    // TCR_EL1.AS is left at 0, an 8-bit identifier, nothing here tagging a translation; 16
+    // is the figure the record carries, not one the port programs (DDI 0500J section
+    // 4.3.21, Table 4-56).
     constexpr unsigned ASID_BITS_RECORDED = 16;
 
-    // The high-half map of all physical RAM, which is what makes this an addition rather
+    // The high-half map of all physical RAM, which is what makes acquire an addition rather
     // than a window (arch.h, arch_aspace_acquire).
     uint64_t* table_at(arch_phys_addr_t pa)
     {
@@ -119,10 +116,20 @@ namespace
         return static_cast<uintptr_t>(1) << shift;
     }
 
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // Page-invalidation sequences issued, and the ones a not-installed space skipped. Every
+    // writer holds the caller's IrqLock, so these need no ordering of their own.
+    uint32_t g_tlbi_issued = 0;
+    uint32_t g_tlbi_elided = 0;
+#endif
+
     // The descriptor write must reach the walker before the invalidate, and the invalidate
     // must complete before the next translated access (DDI 0487 M.b section D8.17).
     void invalidate_page(uintptr_t va)
     {
+#if defined(KICKOS_ENABLE_SELFTEST)
+        g_tlbi_issued++;
+#endif
         __asm volatile("dsb ishst" ::: "memory");
         // VAAE1 and not VAE1: nothing here tags a translation, so an entry must be dropped
         // whatever ASID it was cached under.
@@ -131,8 +138,41 @@ namespace
         __asm volatile("isb" ::: "memory");
     }
 
-    // The unwind paths clear entries over a whole range, so one sweep costs less than a
-    // walk and is the only correct answer for a table entry whose span is 1 GiB.
+    // Whether this core's TTBR0 names `space`. The register holds nothing but the root's
+    // output address here: TCR_EL1.A1 is 0 and no identifier is assigned, so the mask below
+    // covers every field write_ttbr0 sets.
+    bool installed_here(struct arch_aspace* space)
+    {
+        uint64_t ttbr = 0;
+        __asm volatile("mrs %0, ttbr0_el1" : "=r"(ttbr));
+        return (ttbr & DESC_OA_MASK) == static_cast<uint64_t>(phys_of(root_of(space)));
+    }
+
+    // Drop the entry for `va` only where the walker can hold one. Nothing tags a
+    // translation, so write_ttbr0 drops the whole low half on every root change: an entry
+    // for a space this core does not have installed cannot survive the switch that installed
+    // the current one, and an absence cached for it cannot either.
+    //
+    // At one core `installed` is the whole question. A second core holds a TTBR0 this one
+    // cannot read, so the elision is compiled out above one core (docs/design-m6-mmu.md T9).
+    void invalidate_page_if(uintptr_t va, bool installed)
+    {
+#if KICKOS_NUM_CORES == 1
+        if (not installed)
+        {
+#if defined(KICKOS_ENABLE_SELFTEST)
+            g_tlbi_elided++;
+#endif
+            return;
+        }
+#else
+        (void)installed;
+#endif
+        invalidate_page(va);
+    }
+
+    // A range sweep: a cleared table entry spans up to 1 GiB, which no by-address
+    // invalidate covers.
     void invalidate_all()
     {
         __asm volatile("dsb ishst" ::: "memory");
@@ -141,9 +181,9 @@ namespace
         __asm volatile("isb" ::: "memory");
     }
 
-    // The root the boot path installed. Captured the last moment it is still readable, and
-    // put back by the fault reporter: every device this chip's reporter touches is a LOW
-    // address, so a fault taken under a user space would otherwise print nothing at all.
+    // The root the boot path installed, put back by the fault reporter: every device this
+    // chip's reporter touches is a low address, so a fault taken under a user space would
+    // otherwise print nothing at all.
     uint64_t g_boot_ttbr0 = 0;
 
     void capture_boot()
@@ -193,7 +233,7 @@ namespace
         if (type == ARCH_MAP_NOCACHE)
         {
             // Normal non-cacheable behaves as outer shareable whatever SH says, so the
-            // field is left at 0 rather than claiming a shareability that is ignored.
+            // field is left at 0.
             *out = (ATTR_NOCACHE << 2);
             return true;
         }
@@ -205,7 +245,7 @@ namespace
         return false;
     }
 
-    // A leaf for the UNPRIVILEGED level. AP has no read-disable and no execute-only form
+    // A leaf for the unprivileged level. AP has no read-disable and no execute-only form
     // (Table D8-63), so a request without ARCH_MAP_R names permissions this architecture
     // cannot express and is refused rather than widened.
     bool leaf_attrs(uint32_t rights, enum arch_map_memtype type, uint64_t* out)
@@ -215,9 +255,9 @@ namespace
         {
             return false;
         }
-        // Writable AND executable at EL0 is expressible here and refused anyway: the
-        // architecture offers nothing finer than the descriptor to take it back with, so a
-        // page granted both is a page an unprivileged thread can turn into code.
+        // Writable and executable at EL0 is expressible here and refused anyway: a page
+        // granted both is one an unprivileged thread can turn into code, and the descriptor
+        // is the only thing there is to take it back with.
         if ((rights & ARCH_MAP_W) != 0 and (rights & ARCH_MAP_X) != 0)
         {
             return false;
@@ -227,9 +267,7 @@ namespace
         {
             return false;
         }
-        // nG set: the entry belongs to one space. Nothing assigns a tag yet, so it buys no
-        // scoping today and costs nothing, and the step that assigns one edits activate
-        // rather than every leaf.
+        // nG set: the entry belongs to one space, though nothing here assigns a tag yet.
         uint64_t desc = DESC_VALID | DESC_BIT1 | DESC_AF | DESC_NG | DESC_AP_EL0 | attr;
         if ((rights & ARCH_MAP_W) == 0)
         {
@@ -256,20 +294,22 @@ namespace
                 continue;
             }
             arch_phys_addr_t const out = static_cast<arch_phys_addr_t>(desc & DESC_OA_MASK);
-            if (level < LEVEL_LEAF)
+            // A block descriptor at a non-leaf level is an output, not a table, and
+            // recursing into one would read its frame as descriptors.
+            if (level < LEVEL_LEAF and (desc & DESC_BIT1) != 0)
             {
                 free_subtree(table_at(out), level + 1);
             }
-            // A leaf output the pool never handed out is refused inside the callback, which
-            // is what lets a space hold a device page without destroy trying to reclaim it.
+            // A leaf output the pool never handed out is refused inside the free, which is
+            // what lets a space hold a device page without destroy reclaiming it.
             kickos_frame_free(out);
             table[i] = 0;
         }
     }
 
-    // Recursion is bounded by the level count and its frames are two pointers wide.
+    // Recursion is bounded by the level count.
     enum arch_aspace_result map_into(uint64_t* table, int level, uintptr_t va, size_t pages,
-                                     arch_phys_addr_t pa, uint64_t leaf)
+                                     arch_phys_addr_t pa, uint64_t leaf, bool installed)
     {
         while (pages != 0)
         {
@@ -282,12 +322,12 @@ namespace
                     // both descriptors are live at once and a walk may take fields from
                     // each.
                     table[idx] = 0;
-                    invalidate_page(va);
+                    invalidate_page_if(va, installed);
                 }
                 table[idx] = leaf | (static_cast<uint64_t>(pa) & DESC_OA_MASK);
                 // A fresh slot needs one too: an absence is cached like a presence, so the
                 // new leaf is invisible until the stale negative entry is dropped.
-                invalidate_page(va);
+                invalidate_page_if(va, installed);
                 va += GRANULE;
                 pa += GRANULE;
                 pages--;
@@ -306,7 +346,7 @@ namespace
                 desc = static_cast<uint64_t>(frame) | DESC_VALID | DESC_BIT1;
                 __asm volatile("dsb ishst" ::: "memory");
                 table[idx] = desc;
-                // No invalidate for the table entry itself: an invalidate BY ADDRESS drops
+                // No invalidate for the table entry itself: an invalidate by address drops
                 // the cached intermediate entries for that address too, so the per-leaf one
                 // below covers every page this call makes reachable. A page in the new
                 // table's span that this call does NOT map stays unmapped, and a cached
@@ -323,7 +363,7 @@ namespace
             }
             arch_phys_addr_t const child_pa = static_cast<arch_phys_addr_t>(desc & DESC_OA_MASK);
             enum arch_aspace_result const rc =
-                map_into(table_at(child_pa), level + 1, va, here, pa, leaf);
+                map_into(table_at(child_pa), level + 1, va, here, pa, leaf, installed);
             if (rc != ARCH_ASPACE_OK)
             {
                 return rc;
@@ -337,7 +377,7 @@ namespace
 
     // Returns true when `table` is empty once its empty children are gone. Every table a
     // failed map allocated is empty by then, the leaf rollback having run first; a table an
-    // earlier unmap left empty goes back to the pool with them, which removes no mapping.
+    // earlier unmap left empty goes back to the pool with them, removing no mapping.
     bool prune_empty(uint64_t* table, int level)
     {
         if (level == LEVEL_LEAF)
@@ -383,19 +423,14 @@ namespace
 
     bool range_ok(uintptr_t va, size_t pages)
     {
-        if (pages == 0 or (va & (GRANULE - 1)) != 0)
+        if ((va & (GRANULE - 1)) != 0)
         {
             return false;
         }
-        uintptr_t const bytes = static_cast<uintptr_t>(pages) * GRANULE;
-        if (bytes / GRANULE != pages)
+        uintptr_t end = 0;
+        if (not kickos::extent_end(va, pages, GRANULE, &end))
         {
-            return false;
-        }
-        uintptr_t const end = va + bytes;
-        if (end < va)
-        {
-            return false;
+            return false; // 0 pages, a byte count past the pointer width, or a wrapped end
         }
         // The low half only. A high-half address is the kernel's window, reached through
         // TTBR1, and nothing below this seam may edit it.
@@ -419,7 +454,7 @@ uint64_t arch_aspace_model(void)
     __asm volatile("mrs %0, tcr_el1" : "=r"(tcr));
     // TGran4 at 31:28, TGran64 at 27:24, TGran16 at 23:20, ASIDBits at 7:4, PARange at 3:0.
     //
-    // TGran16 STATES THE SENSE OF ITS ANSWER THE OPPOSITE WAY ROUND from the other two:
+    // TGran16 states the sense of its answer the opposite way round from the other two:
     // 0b0000 means NOT supported there, while for TGran4 and TGran64 it means supported and
     // 0b1111 means not. Reading "zero means supported" across all three gets 16 KiB exactly
     // backwards.
@@ -486,8 +521,7 @@ struct arch_aspace* arch_aspace_create(void)
     // No kernel half is copied in: this architecture selects the table from the top bits of
     // the address, so the kernel window is TTBR1's and no space carries a copy of it.
     //
-    // The handle IS the root table's address. The space owns nothing else, so a separate
-    // handle record would add a second bound to run out of and a second thing to free.
+    // The handle is the root table's address; the space owns nothing else.
     return reinterpret_cast<struct arch_aspace*>(table);
 }
 
@@ -514,8 +548,8 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     {
         return ARCH_ASPACE_EINVAL;
     }
-    // The mask covers both the granule bits and everything above the output field, so a
-    // separate alignment test would be the same question asked twice.
+    // The mask covers the granule bits and everything above the output field, so this is
+    // the alignment test too.
     if ((pa & ~DESC_OA_MASK) != 0)
     {
         return ARCH_ASPACE_EINVAL;
@@ -525,10 +559,14 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     {
         return ARCH_ASPACE_EINVAL;
     }
-    enum arch_aspace_result const rc = map_into(root_of(space), LEVEL_ROOT, va, pages, pa, leaf);
+    // A space installed on no core has no cached entry and no cached absence, so its whole
+    // seeding costs no maintenance; the running space's own widening still pays.
+    bool const installed = installed_here(space);
+    enum arch_aspace_result const rc =
+        map_into(root_of(space), LEVEL_ROOT, va, pages, pa, leaf, installed);
     if (rc != ARCH_ASPACE_OK)
     {
-        // Masked across the whole unwind: this space can be the RUNNING one, the self-grant
+        // Masked across the whole unwind: this space can be the running one, the self-grant
         // widening it mid-syscall, and a walk between the invalidate and the frees would
         // cache a table about to go back to the pool.
         arch_irq_state_t const s = arch_irq_save();
@@ -545,8 +583,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
             }
             *entry = 0;
         }
-        // One sweep each side of the frees: a cleared table entry spans up to a gigabyte,
-        // which no by-address invalidate covers.
+        // One sweep each side of the frees.
         invalidate_all();
         (void)prune_empty(root_of(space), LEVEL_ROOT);
         invalidate_all();
@@ -568,26 +605,26 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
             return ARCH_ASPACE_EINVAL; // not wholly mapped, and nothing has been cleared
         }
     }
+    bool const installed = installed_here(space);
     for (size_t i = 0; i < pages; i++)
     {
         uintptr_t const at = va + static_cast<uintptr_t>(i) * GRANULE;
         uint64_t* const entry = leaf_entry(root_of(space), at);
         *entry = 0;
-        invalidate_page(at);
+        invalidate_page_if(at, installed);
     }
     // An intermediate table left empty is not a leak: destroy walks the tree and frees
-    // every table under the root, so nothing else has to notice.
+    // every table under the root.
     return ARCH_ASPACE_OK;
 }
 
 void arch_aspace_activate(struct arch_aspace* space)
 {
     uint64_t const ttbr = static_cast<uint64_t>(phys_of(root_of(space)));
-    // NO TRANSLATION TAG, so every space is cached under the same identifier and the whole
+    // No translation tag, so every space is cached under the same identifier and the whole
     // low half has to be dropped on every switch. Masked because the drop cannot be atomic
     // with the base change: between the two, a low-half access would resolve against the
-    // outgoing space. A tag is what removes both the sweep and this window, and it lands
-    // with the step that first switches between two live spaces often.
+    // outgoing space.
     arch_irq_state_t const s = arch_irq_save();
     capture_boot();
     write_ttbr0(ttbr);
@@ -603,8 +640,7 @@ void kickos_armv8a_ttbr0_to_boot(void)
     }
 }
 
-// The space the boot path installed. There is no other handle for it, its tables being
-// link-time constants rather than something this seam created.
+// The space the boot path installed (arch.h, arch_aspace_boot).
 struct arch_aspace* arch_aspace_boot(void)
 {
     arch_irq_state_t const s = arch_irq_save();
@@ -614,8 +650,7 @@ struct arch_aspace* arch_aspace_boot(void)
         table_at(static_cast<arch_phys_addr_t>(g_boot_ttbr0 & DESC_OA_MASK)));
 }
 
-// An addition, so any number are live at once and the seam's floor costs nothing. The
-// assert is the shape a WINDOWED backend fills in with its pool size.
+// An addition, so any number are live at once.
 static_assert(ARCH_ASPACE_ACQUIRE_MIN <= ACQUIRE_CAPACITY,
               "this backend cannot hold as many acquires live as arch.h promises");
 
@@ -640,5 +675,12 @@ void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
     (void)space;
     (void)va;
 }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+uint64_t arch_aspace_tlbi_counts(void)
+{
+    return (static_cast<uint64_t>(g_tlbi_issued) << 32) | static_cast<uint64_t>(g_tlbi_elided);
+}
+#endif
 
 }

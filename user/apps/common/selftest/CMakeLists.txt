@@ -5,15 +5,14 @@
 # console, linking the freestanding harness in tests/tap directly.
 
 # The posture knobs the image(s) below carry. A list, because on the split parts they have to
-# reach TWO targets and one applied to only one of them gives the two halves different suites.
+# reach TWO targets and one applied to only one of them gives the halves different suites.
 set(_selftest_defs "")
 
 # The two `return <int>;` literals cmake/boot_arena.cmake scraped out of the backend .cc this
 # link resolves. Unset on the sim, which reaches no scrape without a KICKOS_CHIP and a linker
-# script, and region_mode then falls back to a weaker self-consistency check. Both derefs MUST
-# stay quoted: get_property leaves the variable UNSET for a property never set, and an unquoted
-# unset name compares as its own literal, so the guard would pass and define both macros EMPTY,
-# which still satisfies `#if defined`.
+# script. Both derefs MUST stay quoted: get_property leaves the variable UNSET for a property
+# never set, and an unquoted unset name compares as its own literal, so the guard would pass
+# and define both macros EMPTY, which still satisfies `#if defined`.
 get_property(_mpu_min_region_cfg GLOBAL PROPERTY KICKOS_MPU_MIN_REGION_CFG)
 get_property(_mpu_region_pow2_cfg GLOBAL PROPERTY KICKOS_MPU_REGION_POW2_CFG)
 if(NOT "${_mpu_min_region_cfg}" STREQUAL "" AND NOT "${_mpu_region_pow2_cfg}" STREQUAL "")
@@ -34,9 +33,9 @@ endif()
 # part plans 1..N from its OWN registry, so the bench has to run all three to cover the suite.
 # Undefined elsewhere, where main.cc defaults it to 0 and registers everything.
 #
-# The 64 KiB parts split for FLASH; microbit splits for SRAM, its .bss being what the arena
-# starts after: eliding a region's bodies takes their statics out of .bss, so the part's arena
-# base drops and the arena probes at the bottom of region 2 fit again.
+# microbit splits for SRAM and not FLASH, its .bss being what the arena starts after: eliding
+# a region's bodies takes their statics out of .bss, so the part's arena base drops and the
+# arena probes at the bottom of region 2 fit again.
 set(_selftest_split 0)
 if(KICKOS_CHIP STREQUAL "stm32f103" OR KICKOS_CHIP STREQUAL "stm32f302"
    OR KICKOS_CHIP STREQUAL "nrf51")
@@ -73,8 +72,7 @@ endif()
 foreach(_img IN LISTS _selftest_images)
   target_include_directories(${_img} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
   target_compile_definitions(${_img} PRIVATE ${_selftest_defs})
-  # At the fleet Debug default this app's .text overflows the 64K-flash parts. Only its own TUs
-  # are affected; the kernel/arch/lib archives stay at the board build type.
+  # At the fleet Debug default this app's .text overflows the 64K-flash parts.
   if(NOT (KICKOS_ARCH STREQUAL "sim"))
     target_compile_options(${_img} PRIVATE -Os)
   endif()
@@ -103,9 +101,8 @@ endif()
 if(KICKOS_ARCH STREQUAL "armv8a")
   # virt_arm64 names no MMIO window a driver could be granted: it declares no reserved blocks
   # and its map keeps the device gigabyte EL1-only, so the arm's free-window half finds
-  # nothing to take and reports PARTIAL. Declared rather than left to fail the witness, and
-  # it is a real gap in coverage rather than a quirk: the held arm runs only where a board
-  # mints a window.
+  # nothing to take and reports PARTIAL. That is a real gap in coverage and not a quirk: the
+  # held arm runs only where a board mints a window.
   list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
 endif()
 # cap_chunk_span needs a table WIDER than the chunk granule (KICKOS_CAP_CHUNK_TARGET) to reach a
@@ -129,8 +126,8 @@ if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
 endif()
 # The threads permitted to fault, by NAME. Every other thread-fault record in the stream is an
 # arm dying the wrong way, and a contained fault reconciles the plan and the case count, so
-# this set is the only thing that can tell the two apart (tests/integration/check_tap_stream.sh).
-# One entry, and it is the containment arm's own worker.
+# this set is the only thing that can tell the two apart
+# (tests/integration/check_tap_stream.sh).
 set(KICKOS_EXPECT_FAULTS "")
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   list(APPEND KICKOS_EXPECT_FAULTS fvic)
@@ -145,7 +142,7 @@ list(JOIN KICKOS_EXPECT_FAULTS "," KICKOS_EXPECT_FAULTS)
 # RUNTIME registry, so plan and case count shrink together when an arm is deleted and only an
 # expectation from OUTSIDE the image can see it. The conditions mirror the #if guards around the
 # registration block at the bottom of main.cc, one clause per guard.
-set(_tap_arms 87) # unconditional, incl. readable_global, endpoint_send_timeout, recv_timeout, timed_arg_refusals, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
+set(_tap_arms 86) # unconditional, incl. readable_global, endpoint_send_timeout, recv_timeout, timed_arg_refusals, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
   math(EXPR _tap_arms "${_tap_arms} + 1") # call_reg_fastpath (region 1)
@@ -159,11 +156,17 @@ endif()
 if(KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms "${_tap_arms} + 1") # caller_stack_arena
 endif()
+# region_mode reads an MPU region encoding out of two consecutive kos_ram_alloc results. A
+# translating backend has neither the encoding nor a monotonic allocator, so the arm is not
+# registered there (main.cc, next to its definition).
+if(NOT KICKOS_HAVE_ASPACE)
+  math(EXPR _tap_arms "${_tap_arms} + 1") # region_mode
+endif()
 if(KICKOS_ARCH STREQUAL "sim")
   math(EXPR _tap_arms "${_tap_arms} + 1") # periph_reg_write_mask
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms "${_tap_arms} + 23") # aspace_seam, aspace_model, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_balance, aspace_domain_balance, aspace_forced_unwind, aspace_churn, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, self_grant_cross_task, reservation_teardown, parked_frame_hostile, split_access, process_ipc_same_addr, process_call_reply, grant_kernel_word_refused
+  math(EXPR _tap_arms "${_tap_arms} + 29") # aspace_seam, aspace_model, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_balance, aspace_domain_balance, aspace_forced_unwind, aspace_churn, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, task_handoff_donor_exits, self_grant_cross_task, reservation_teardown, parked_frame_hostile, split_access, process_ipc_same_addr, process_call_reply, grant_kernel_word_refused, self_grant_retype, reent_seating, aspace_acquire_balance, map_tlbi_elided, process_data_template
 endif()
 # T8's containment arm alone: it faults on purpose, so a translating backend that builds no
 # resumable frame would panic the suite instead of failing an arm.
@@ -194,7 +197,7 @@ if(KICKOS_ARCH STREQUAL "sim")
   math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 1") # periph_reg_write_mask
 endif()
 
-set(_tap_arms_p3 20) # region 3, unconditional, incl. thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
+set(_tap_arms_p3 19) # region 3, unconditional, incl. thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 11") # 11 x irq_*
 endif()
@@ -207,8 +210,11 @@ endif()
 if(KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # caller_stack_arena
 endif()
+if(NOT KICKOS_HAVE_ASPACE)
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # region_mode
+endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 23") # 12 x aspace_* + stack_is_frames + process_private_data + task_siblings_share + task_handoff_readback + self_grant_cross_task + reservation_teardown + parked_frame_hostile + split_access + process_ipc_same_addr + process_call_reply + grant_kernel_word_refused
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 29") # 13 x aspace_* + stack_is_frames + process_private_data + process_data_template + task_siblings_share + task_handoff_readback + task_handoff_donor_exits + self_grant_cross_task + self_grant_retype + reservation_teardown + parked_frame_hostile + split_access + process_ipc_same_addr + process_call_reply + grant_kernel_word_refused + reent_seating + map_tlbi_elided
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # fault_kills_task
@@ -256,9 +262,9 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
     "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
 
   # The sim's only coverage of the published console route (kos_send on stdout cap index 0 ->
-  # userspace driver). One provider links per image, so the script makes its own build tree, and
-  # every input the arm count depends on has to travel with it: a fresh build otherwise takes the
-  # board's base variant and every knob default.
+  # userspace driver). One provider links per image, so the script makes its own build tree,
+  # and every input the arm count depends on has to travel with it: a fresh build otherwise
+  # takes the board's base variant and every knob default.
   add_test(
     NAME    sim_published_console
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_published.sh"
@@ -291,13 +297,9 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
 endif()
 # microbit (nrf51) runs the same suite on armv6m.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
-  # RESIDUAL: the split no longer earns its keep on this part, which now has 32 KiB and an arena
-  # of 21280 bytes. Collapsing it to one image means deleting the p2 registration below and
-  # re-deriving _tap_arms.
-  #
-  # THE SETS BELOW ARE PARTITIONED BY REGION, NOT BY NAME: an arm belongs to the part whose
-  # region holds its TAP_ADD line in main.cc. check_tap_stream.sh reports a name declared in the
-  # wrong part as a NOTE and not a failure, so only that rule catches one.
+  # The sets below are partitioned BY REGION, NOT BY NAME: an arm belongs to the part whose
+  # region holds its TAP_ADD line in main.cc. check_tap_stream.sh reports a name declared in
+  # the wrong part as a NOTE and not a failure, so only that rule catches one.
   kickos_add_qemu_test(NAME microbit_selftest TARGET selftest BOARD microbit
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p1})
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
@@ -305,21 +307,20 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
     "EXPECT_PARTIALS="
     "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
   # The one skip is a PIN and not an arena outcome: uart_service is held out by
-  # KICKOS_SELFTEST_NO_UART_SERVICE at the top of this file, its 1 KiB ring and the arena probes
-  # wanting the SAME region.
+  # KICKOS_SELFTEST_NO_UART_SERVICE at the top of this file, its 1 KiB ring and the arena
+  # probes wanting the SAME region.
   #
-  # BOTH LISTS ARE A MEASUREMENT AND NOT SLACK: a listed arm that did NOT skip is only a NOTE, so
-  # a stale list quietly permits a regression.
+  # Both lists are a MEASUREMENT and not slack: a listed arm that did NOT skip is only a NOTE,
+  # so a stale list quietly permits a regression.
   kickos_add_qemu_test(NAME microbit_selftest_p2 TARGET selftest_p2 BOARD microbit
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p2})
   set_property(TEST microbit_selftest_p2 APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=uart_service"
     "EXPECT_PARTIALS="
     "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
-  # The three arena skips are the SUITE outgrowing this part, not the part failing: each
-  # wants concurrent workers past what 32 KiB seats once the per-thread struct _reent array
-  # is below the arena. All three execute on sim and on the qemu boards, so what microbit
-  # witnesses here, the armv6m entry geometry, is not what they cover.
+  # The three arena skips are the SUITE outgrowing this part, not the part failing: each wants
+  # concurrent workers past what 32 KiB seats once the per-thread struct _reent array is below
+  # the arena.
   kickos_add_qemu_test(NAME microbit_selftest_p3 TARGET selftest_p3 BOARD microbit
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p3})
   set_property(TEST microbit_selftest_p3 APPEND PROPERTY ENVIRONMENT
@@ -335,8 +336,6 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
     "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
 endif()
 
-# The arm64 witness. ARGS is the arm count computed above, so an arm that stops registering
-# shortens the plan and fails here rather than passing quietly.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
   kickos_add_qemu_test(NAME qemu_arm64_selftest TARGET selftest BOARD qemu-arm64
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
@@ -353,9 +352,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_export_mcu.sh"
             "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
             "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
-  # FIXTURES_REQUIRED is named explicitly: without it ctest -j runs cmake --install on the build
-  # dir concurrently with kickos_build and fails about one run in ten. The root add_test wrapper
-  # would supply the same value, so this restates rather than bypasses it.
+  # FIXTURES_REQUIRED is named explicitly: without it ctest -j runs cmake --install on the
+  # build dir concurrently with kickos_build and fails about one run in ten.
   set_tests_properties(oot_export_mcu PROPERTIES TIMEOUT 120
                        FIXTURES_REQUIRED kickos_build LABELS host)
 endif()

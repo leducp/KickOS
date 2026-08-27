@@ -16,8 +16,8 @@
 
 extern "C"
 {
-    // The chip<->kernel contract of a translating board. NOT weak: a chip that selects
-    // HAS_ASPACE and carves no pool must fail the LINK, an absent carve being a pool of
+    // The chip<->kernel contract of a translating board. Not weak: a chip that selects
+    // HAS_ASPACE and carves no pool must fail the link, an absent carve being a pool of
     // zero frames that reads to every caller as ordinary exhaustion.
     extern unsigned char __kickos_frame_pool_start[];
     extern unsigned char __kickos_frame_pool_end[];
@@ -41,9 +41,8 @@ namespace kickos
         // IrqLock, so this needs no ordering of its own.
         size_t g_fail_in = 0;
 
-        // AHEAD OF THE ALLOCATOR at both entry points, so a refused attempt takes nothing
-        // and the caller's unwind runs against the pool it started with. One-shot: the
-        // arming is spent by the attempt it refuses.
+        // Called ahead of the allocator at both entry points, so a refused attempt takes
+        // nothing. One-shot: the arming is spent by the attempt it refuses.
         bool fail_this_attempt()
         {
             if (g_fail_in == 0)
@@ -58,6 +57,7 @@ namespace kickos
 
     bool frame_pool_init()
     {
+        // No lock: this runs at boot, before the first caller that could race it exists.
         uintptr_t const base = reinterpret_cast<uintptr_t>(__kickos_frame_pool_start);
         uintptr_t const top = reinterpret_cast<uintptr_t>(__kickos_frame_pool_end);
         if (top <= base)
@@ -69,16 +69,19 @@ namespace kickos
 
     size_t frame_pool_free()
     {
+        IrqLock lock;
         return g_frames.frames_free();
     }
 
     size_t frame_pool_total()
     {
+        // No lock: the carve's frame count is written by init and never again.
         return g_frames.frames_total();
     }
 
     size_t frame_pool_refused()
     {
+        IrqLock lock;
         return g_refused;
     }
 
@@ -113,8 +116,21 @@ namespace kickos
         return static_cast<arch_phys_addr_t>(p - pool_delta());
     }
 
+    // No lock across the run: each frame is freed under kickos_frame_free's own. A run
+    // is unbounded, and masking interrupts for its length is what that would cost.
+    void frame_pool_free_run(arch_phys_addr_t run, size_t pages, size_t granule)
+    {
+        for (size_t i = 0; i < pages; i++)
+        {
+            kickos_frame_free(run + static_cast<arch_phys_addr_t>(i * granule));
+        }
+    }
+
     void* frame_pool_ptr(arch_phys_addr_t frame)
     {
+        // The question is asked of the allocator's live bitmap, so a reader outside the lock
+        // reads a word another core is editing.
+        IrqLock lock;
         uintptr_t const p = static_cast<uintptr_t>(frame) + pool_delta();
         if (not g_frames.is_allocated(p))
         {
@@ -147,9 +163,9 @@ arch_phys_addr_t kickos_frame_alloc(void)
 void kickos_frame_free(arch_phys_addr_t frame)
 {
     kickos::IrqLock lock;
-    // COUNTED rather than refused in silence: release() already protects the allocator from
-    // a double free, and that protection is exactly what would hide a space destroyed while
-    // it still mapped a frame it does not own.
+    // Counted rather than refused in silence: release() already protects the allocator from
+    // a double free, and that protection is what would otherwise hide a space destroyed
+    // while it still mapped a frame it does not own.
     if (not kickos::g_frames.release(static_cast<uintptr_t>(frame) + kickos::pool_delta()))
     {
         kickos::g_refused++;

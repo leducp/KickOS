@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // AArch64 data-cache maintenance to the Point of Coherency, the backend of arch.h's
-// clean/invalidate seam. Clean-room from the Armv8-A ARM (DDI 0487, section D7 cache
+// flush/invalidate seam. Clean-room from the Armv8-A ARM (DDI 0487, section D7 cache
 // maintenance) and the Cortex-A53 TRM (DDI 0500J section 4.3.26, CTR_EL0).
 //
 // NOTHING IN THE TREE CALLS THIS YET (docs/design-m6-mmu.md section 7), so this member is
@@ -52,7 +52,7 @@ namespace
 extern "C"
 {
 
-void arch_dcache_clean(void const* addr, size_t bytes)
+void arch_dcache_flush(void const* addr, size_t bytes)
 {
     uintptr_t p = 0;
     uintptr_t end = 0;
@@ -66,7 +66,7 @@ void arch_dcache_clean(void const* addr, size_t bytes)
         __asm volatile("dc cvac, %0" ::"r"(p) : "memory");
     }
     // The observer's read may be issued by hardware that never executes our code, so the
-    // barrier is what orders the cleans against whatever the caller writes next to start it.
+    // barrier is what orders the writes out against whatever the caller writes next to start it.
     __asm volatile("dsb ish" ::: "memory");
 }
 

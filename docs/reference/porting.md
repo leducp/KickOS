@@ -654,7 +654,7 @@ that architecture cannot have. Where a port DOES need the far side to execute, i
 no kernel lock and the lock's own acquire loop services a pending doorbell, or an initiator
 holding the lock waits on a core spinning to take it.
 
-### Data-cache maintenance (`arch_dcache_clean`, `arch_dcache_invalidate`)
+### Data-cache maintenance (`arch_dcache_flush`, `arch_dcache_invalidate`)
 
 Make this core's writes over a range visible to an observer that does not snoop, and such an
 observer's writes visible to this core. A DMA engine on a non-snooping bus is the ordinary case;

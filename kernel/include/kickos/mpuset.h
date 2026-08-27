@@ -98,6 +98,42 @@ namespace kickos
             encode();
             return false;
         }
+
+        // add_enforced, except that a region already naming EXACTLY this base and size is
+        // RETYPED IN PLACE rather than joined by a second one. Two descriptors over one block
+        // are two answers to one question: the kernel's range checks read the first and the
+        // hardware obeys the last. Keeping the index is the other half, region precedence
+        // being positional on PMSAv7.
+        //
+        // Answers false and changes NOTHING when the new attributes are unencodable, the old
+        // ones going straight back, so a refused re-type takes no reach away.
+        //
+        // noinline is LOAD-BEARING, for the reason console_write_user gives in syscall.cc: its
+        // one caller is `syscall_body`, whose frame the SVC and SYSK red zones are measured on,
+        // and inlined this search cost that frame a spill slot on every board including the
+        // ones no chip reaches this path from.
+        [[nodiscard]] __attribute__((noinline)) bool add_enforced_retyping(uintptr_t base,
+                                                                          size_t size,
+                                                                          uint32_t attr)
+        {
+            for (uint8_t i = 0; i < count_; i++)
+            {
+                if (regions_[i].base != base or regions_[i].size != size)
+                {
+                    continue;
+                }
+                uint32_t const was = regions_[i].attr;
+                regions_[i].attr = attr;
+                if ((encode() >> i) & 1u)
+                {
+                    return true;
+                }
+                regions_[i].attr = was;
+                encode();
+                return false;
+            }
+            return add_enforced(base, size, attr);
+        }
 #endif
 
         // Appends the arch's app-wide static regions (code and static data). They come from

@@ -110,7 +110,7 @@ namespace kickos
     // `caller` is domain_for's posture word (DOM_CALLER_*), and `donor` is the domain the
     // grant's memory was reserved in, so F10's handoff can map it into the new space at the
     // same address. Null where there is none.
-    Task* task_for(uint32_t caller, void* mem_base, size_t mem_size, Domain const* donor,
+    Task* task_for(uint32_t caller, void* mem_base, size_t mem_size, Domain* donor,
                    int* err);
 
     // Create an EXPLICIT task: the group exists, empty, before any thread joins it, and its
@@ -123,7 +123,7 @@ namespace kickos
     // mem_attr is domain_for's: the memory TYPE the shared region is committed with
     // (ARCH_MPU_NOCACHE, or 0). task_for passes 0; an implicit task cannot ask for one.
     Task* task_create(uint16_t creator_tag, uint32_t caller, void* mem_base, size_t mem_size,
-                      uint32_t mem_attr, Domain const* donor, int* err);
+                      uint32_t mem_attr, Domain* donor, int* err);
 
     // Resolve a handle to an EXPLICIT task, or null. An implicit task is deliberately
     // unnameable: idle's carries the kernel domain, so a resolvable handle to it would let an

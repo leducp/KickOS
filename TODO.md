@@ -5773,6 +5773,199 @@ shared case only.
       fleet sweep and no CI job, and a change that breaks it is invisible until somebody remembers
       the flag.
 
+## External audit of the M6.2 branch, 2026-08-26
+
+Report at `~/.cursor/projects/home-leduc-projets-KickOS/canvases/m6-2-branch-audit.canvas.tsx`.
+Its two merge-gate items are FIXED (the donated-frame lifetime, and `region_mode` deriving geometry
+from allocation order). These are the rest. **The five CORRECTNESS items and the two SMP-readiness
+items are FIXED (2026-08-27), each with a witness whose mutation fails it**; the four performance
+items and the DRY item are a separate pass and are untouched.
+
+**Correctness**
+- [x] **A NORMAL re-grant of a NOCACHE mapping returns success and changes nothing.** FIXED: where
+      the mapping CARRIES the type (`grant_memtype_programmed`), the short circuit is now decided by
+      `user_range_typed_ok` in BOTH directions and never by rights alone. On the region family the
+      descriptor is REPLACED rather than stacked (`MpuSet::add_enforced_retyping`), so one block never carries
+      two types with the range checks reading the first and the hardware obeying the last, and a
+      refused re-type puts the old descriptor back. Witnessed by `self_grant_retype` (qemu-arm64),
+      which drives NORMAL -> NOCACHE -> NORMAL and reads `KOS_ASPACE_OP_MEMTYPE_AT` after each; with
+      the check restored to its NOCACHE-only form the NORMAL-over-NOCACHE leg fails. Recorded in
+      `user/include/kickos/sys.h` (kos_mem_self_grant) and `docs/design-m6-mmu.md`.
+- [x] **After root dies, a later process becomes the mutable data template.** FIXED with an
+      immutable pool-backed snapshot, taken on the HOME'S WAY OUT rather than at the first copy.
+      Its frames come off the pool while root is seeded (so no balance window sees them leave) and
+      `aspace_release` fills them from root's still-standing mappings before clearing `g_data_home`.
+      While root lives the source is unchanged, which is load-bearing: `irq_driver` and its peers
+      read a global root writes AFTER its ctors, and freezing the snapshot early broke them
+      outright. A seed reaching a lost home with no snapshot behind it is refused, and no process
+      other than root is ever the template. Witnessed by `process_data_template`, which stages the
+      loss of the home, moves root's own word, and reads a later process's copy back; without the
+      snapshot clause the later process answers root's FRAME and root's LIVE word. Recorded in
+      `docs/design-m6-mmu.md` section 3.4 and `kernel/include/kickos/aspace.h`.
+- [x] **Reentrancy seating dereferences low-half user addresses directly.** FIXED by stating the
+      distinction and asserting it: `aspace_seated_for` answers whether THIS CORE's translation root
+      is the thread's own space, and the switch path (both `switch_book` and `start`) primes and
+      seats nothing when it is not. A privileged spawn resolves to the kernel domain, which carries
+      no space, so this is the posture rather than an edge; idle needs no prime, which is the whole
+      reason it was survivable. Witnessed by `reent_seating`: bit 1 counts app-half writes made
+      while unseated, counted inside `reent.cc` where the guard is NOT, so removing the guard trips
+      it; bit 0 is the positive control that the posture is reached at all, counted in
+      `aspace_activate_for`. Recorded at `root-unprivileged-idle-alone-privileged`
+      (`docs/reference/invariants.md`) and in `docs/design-m6-mmu.md`.
+- [x] **`aspace_frame_token` releases acquisitions that may have failed.** FIXED: each acquire is
+      checked before anything is released, and the reference hold is released on the second
+      acquire's failure path. Every acquire in `aspace.cc` now goes through one `acquire_page` /
+      `release_page` pair, so the pairing is a property of two functions rather than a rule each
+      call site keeps; the same pass removed a leaked hold in `data_copy` (a null `dst` beside a
+      live `src`). Witnessed by `aspace_acquire_balance`, which reads a new selftest counter of
+      unpaired releases after taking a token for an unmapped page; the old release-before-check
+      order reports 1 unpaired. Recorded beside `arch_aspace_acquire` in
+      `arch/include/kickos/arch/arch.h`.
+- [x] **`VirtualRanges::overlaps` computes `base + pages * granule` with no overflow defence.**
+      FIXED: it now runs the same checked extent arithmetic `reserve` does and FAILS CLOSED, a
+      wrapping window overlapping everything the list could name, so a caller that has not checked
+      its own arithmetic is refused rather than admitted on a wrapped end. `vrange.h` states that it
+      has no precondition. Witnessed by the host arm
+      `VRange.overlaps_fails_closed_on_an_extent_whose_arithmetic_wraps` (sim), over both a wrapping
+      byte count and a wrapping end; without the check both legs answer false.
+
+**SMP readiness, and M7 cannot start on top of these**
+- [x] **`g_current` is process-global rather than per-core.** FIXED as
+      `g_current[KICKOS_NUM_CORES]` keyed by `arch_cpu_id()`, which folds to a literal at one core,
+      matching `g_rv_trap_stack`'s precedent; T9's `armv8a_percpu` could not host it, `vectors.S`
+      spelling that block's one displacement as a literal and `kernel/mem/aspace.cc` being portable
+      code. `aspace_release` now clears the cell on EVERY core and rewrites only the running core's
+      root. **NO BEHAVIOURAL WITNESS EXISTS AT ONE CORE** and none is claimed: the change is
+      byte-equivalent there. What holds it is a `static_assert` on the cell count, the whole
+      aspace suite as the no-regression witness, and the `cpu_id_fold` gate, which caught the first
+      spelling of it. Classified in `docs/design-m7-state-inventory.md` and stated in
+      `docs/design-m6-mmu.md` section 3.4b.
+- [x] **`frame_pool_ptr` reads allocator bitmap state without the lock its siblings take**, and
+      `g_data_home` has no ownership or publication model. FIXED both. `frame_pool_ptr`,
+      `frame_pool_free` and `frame_pool_refused` take the pool's `IrqLock` (nesting-safe, and the
+      seed path already holds one); `frame_pool_init` and `frame_pool_total` are the two documented
+      exceptions. `g_data_home` now has an owner and a publication rule: published by the first
+      seed, read only by `data_copy`, and cleared by the release of that space AFTER the snapshot
+      beside it is frozen, so every read after that point resolves to the snapshot. Both are stated
+      in `kernel/include/kickos/frame_pool.h` and classified in
+      `docs/design-m7-state-inventory.md`. **NO BEHAVIOURAL WITNESS AT ONE CORE** for the lock
+      itself: nothing in the tree allocates or frees frames from an interrupt, so there is no
+      single-core interleaving to construct. The publication half is witnessed by
+      `process_data_template`.
+
+**Performance, measured by the audit**
+- [x] **Process creation keeps interrupts masked across image cloning**: about 104 KiB of memcpy and
+      roughly 57 page-invalidation sequences inside one `IrqLock`, four synchronising instructions
+      per page. Worst-case interrupt latency then grows with app data size, and it dwarfs the
+      syscall-frame latency T7 already owes a number for. A space not yet published can be seeded
+      without masking globally.
+      HALF FIXED, and the other half is REFUSED with its reason. **The invalidations are gone
+      outright**: nothing tags a translation, so `write_ttbr0` drops the whole low half on every root
+      change, and a space whose root this core has never installed holds neither a cached entry nor a
+      cached absence. `invalidate_page_if` takes that answer from `installed_here` (TTBR0_EL1 against
+      the space's own root), asked once per `arch_aspace_map`/`unmap` call. Measured inside the
+      `IrqLock` of ONE `kos_task_create` on `qemu-arm64`: **62 page-invalidation sequences before
+      (248 synchronising instructions), 0 after**; the running space's own widening still pays every
+      page of it. Elided above one core, a sibling's TTBR0 not being readable here. Witnessed by
+      `map_tlbi_elided` over the new `KOS_ASPACE_OP_MAP_TLBI`; two mutations fail it, and the
+      positive control is load-bearing because eliding UNCONDITIONALLY is invisible to every other
+      arm (QEMU models no stale entry, which is T8b's own negative-control result).
+      **The 32-page copy stays masked deliberately, and the audit's reasoning does not reach it.**
+      Everything a seed WRITES needs no global mask, but the SOURCE is root's LIVE static data, and
+      the mask is what makes those 32 pages one point-in-time snapshot of it: with interrupts on, a
+      user IRQ handler or a sibling thread of root's task can write an app global between two pages
+      and the child starts on an image no writer ever saw. Nothing in the suite would show it.
+      Removing the mask needs an immutable template with a fault handler behind it, not a lock
+      change. A second blocker sits under that one: the copy is inside `spawn_masked`'s
+      function-scope lock, and a spawner slain in an unmasked gap never returns, so a slot claimed
+      and an image seeded there have nothing left to free them. Recorded at T11a in
+      `docs/design-m6-mmu.md` and beside `data_copy` in `kernel/mem/aspace.cc`.
+- [x] **`-mcmodel=large` is applied to whole targets to reach a few cross-half symbols**, costing
+      3832 bytes of kernel text (78998 to 75166 recompiled small), on a fixed 1 MiB budget and on the
+      scheduler and syscall paths' I-cache. Scope it to the translation units that name those
+      symbols, or publish linker-filled pointer cells.
+      FIXED as `kickos_split_image_tu(<target> <sources>...)`, scoped to the **six** TUs that name
+      the app's half: `kernel/init/kmain.cc`, `kernel/thread/reent.cc`, `kernel/mem/aspace.cc`,
+      `kernel/domain/domain.cc`, `arch/arm64/armv8a/arch_armv8a.cc` and
+      `arch/arm64/chip/virt_arm64/chip_virt_arm64.cc`. No pointer cells: no new ABI surface was
+      needed. The list is DERIVED from two sweeps over a fully small tree, and both are needed
+      because the classes differ in loudness: the reach class fails the link (7 truncations, all
+      `R_AARCH64_ADR_PREL_PG_HI21`), while `mem/aspace.cc` and `domain/domain.cc` hold only weak
+      externs whose GOT references LINK CLEANLY and break nothing until something else forces the one
+      `.got` to be placed. Whole-target cost was 4076 bytes of archive text over a fully small build;
+      naming the six recovers 2724 of it. Measured on this tree, `qemu-arm64` selftest link:
+      archive text 81092 -> 78292, ELF `.text.init`+`.text` 82368 -> 80032. In a
+      selftest-OFF build the whole pass is 75539 -> 73308.
+      **The kernel still calls no app text**, which is what T5b.3's witness rests on: 1864
+      kernel-half branches swept, 0 into `.apptext`, with the same range test over `.apptext` itself
+      firing 3224 times as the positive control. `kernel_runtime` stays green.
+      **The silent GOT class now has a gate**: `kernel_got`
+      (`tests/static/check_kernel_got.sh`) refuses any `_GOT` relocation in the three archives, with
+      the relocation count as its positive control. Dropping `kernel/mem/aspace.cc` from the list
+      turns it red and names the four symbols while the link and the runtime suite stay green, which
+      is the whole point. **`qemu-arm64` is therefore 33 tests, not 32.**
+- [x] **The frame bitmap is scanned one bit at a time under the lock.** A host micro-benchmark of the
+      same scan shape measured word-wise at 19.5x the shipped 8 MiB pool and 75x to 86x at 128 to
+      512 MiB. Keep the bitmap and first-fit, skip whole words, and count trailing zeros.
+      FIXED. The scan reads a `size_t` at a time and takes the lowest free bit with a count of
+      trailing zeros; the bitmap and first-fit are unchanged. **Allocation ORDER is unchanged and
+      that is measured, not argued**: old and new return the same offset from base in every shape,
+      every pool size and both optimisation levels.
+      **THE FIRST WORD-WISE DRAFT WAS A REGRESSION ON THE PATH THAT NEVER SCANS.** `release` parks
+      the hint on the frame it freed, so the common case tests one bit and answers; routed through
+      the two-pass word loop it measured 2.1x to 2.4x SLOWER, unchanged by the aliasing fix since
+      that path never reaches the word load. A hint test ahead of the loop returns it to parity,
+      and both paths exit through one `take_one`, so a single place still turns an index into an
+      address. Measured at 8 MiB, the size a real pool resembles: no-scan path at parity (one cell
+      1.13x faster), scan-heavy 11.28x at `-O2` and 15.72x at `-O3`.
+      The tail word needs no upper mask: bits at and past the frame count read as ALLOCATED, and
+      the assembling loop stops at the bitmap's own byte length rather than reading past it.
+      Witnessed by new host arms in `tests/unit/frame/frame_alloc.cc` over the wrap pass and the
+      tail word.
+- [x] **Per-domain range bookkeeping is 43.6 percent of the kernel instance**: `VirtualRange` 24
+      bytes, `VirtualRanges` 776, times 20 domain slots is 15520 of 35592. Narrow `pages` and
+      `rights` after a static proof, and compile `Domain::regions` out of translating domains.
+      FIXED. `VirtualRange` 24 -> 16 bytes (`pages` `uint32_t`, `rights` `uint8_t`), `VirtualRanges`
+      776 -> 520. **Neither width is assumed.** Three `static_assert`s in
+      `kernel/include/kickos/vrange.h` say the widest value each setter can be handed ROUND-TRIPS
+      through its field, and the setters refuse rather than truncate: `reserve` refuses above
+      `VR_MAX_PAGES`, `grant` refuses a rights word carrying a bit the entry cannot hold. Both
+      refusals are witnessed by new host arms
+      (`VRange.reserve_refuses_a_page_count_the_entry_cannot_hold`,
+      `VRange.grant_refuses_a_right_the_entry_cannot_hold`), each failing when its refusal is
+      deleted. `Domain::regions` is `KICKOS_DOMAIN_REGIONS`, which is 1 where a backend translates:
+      the kernel singleton's whole-arena descriptor is the only one any domain there records, and
+      `domain_region_at` now debug-asserts the bound. `region_count` is a byte.
+      **Measured on `kickos::detail::g_instance`: 35752 -> 27112 bytes**, of which 5120 is the range
+      lists (20 x 256), 3360 the region arrays and 160 the region counts. Per-domain range
+      bookkeeping falls from 43.4 percent of the instance to 38.4.
+
+**DRY, with the audit's own caution attached**
+- [x] Power-of-two checks are identical in `frame.cc` and `vrange.cc`; frame-run free loops are
+      identical in `aspace.cc` and `ustack.cc`; `pages * granule` with its overflow check recurs in
+      `vrange.cc`, `aspace.cc` and `aspace_armv8a.cc`. **Share the checked extent arithmetic and NOT
+      the loops**: the traversals differ in bypass and exact-attribute semantics, and a flag-driven
+      merge of security-sensitive range walks would be easier to misuse than the duplication.
+      SHARED, in `include/kickos/extent.h` rather than under `kernel/` or `arch/`: both layers reach
+      it and neither includes the other's headers, which is the same shape
+      `include/kickos/units.h` already has. It carries `is_pow2` and `extent_end`, the latter
+      FAILING CLOSED on a byte count that overflows a pointer and on an end that wraps. It is
+      C++-only, so it stays out of the `c_headers` corpus and drags nothing into any
+      `extern "C"` include closure. The two identical frame-run free loops became
+      `frame_pool_free_run`, in the pool's own header beside `frame_pool_alloc_run`: byte-identical
+      bodies, no parameter added, and the pool's refusal counter stays the only accounting.
+      **DELIBERATELY LEFT DUPLICATED**, and the audit's caution is the reason: `VirtualRanges::find`,
+      `covers` and `overlaps` are three traversals of ONE array with three different admission rules
+      (any live entry, `Granted` plus a rights superset, any live entry with a fail-closed extent),
+      and the map editor's leaf walks in `aspace_armv8a.cc` differ in break-before-make and in
+      attribute handling. Unifying either set takes a flag over a security-sensitive traversal.
+      `aspace_armv8a.cc`'s `range_ok` DOES now use the shared `extent_end`, which was the third site
+      the audit named, and it keeps its own alignment and low-half bound on top; `aspace_refusals`
+      reports `bits 63 of 63` across the change, which is what says the refusal set did not move.
+      `kernel/mem/aspace.cc` had no `pages * granule` of its own to share: its arithmetic is the
+      BYTES-to-pages round-up (`bytes > SIZE_MAX - g`) and the page alignment of a linker extent,
+      both different computations, and its share of this item was the frame-run loop.
+
 ## Found while witnessing T5b.3 (2026-08-26)
 
 - [ ] **`appdata_no_kernel` does not run on the one board that splits its image.** The gate is

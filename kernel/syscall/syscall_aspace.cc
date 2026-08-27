@@ -2,12 +2,12 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Test scaffolding for the address-space seam (KOS_SYS_ASPACE_PROBE). The map editor is a
-// KERNEL seam and never a syscall, so each op runs a whole scenario here and answers a
+// kernel seam and never a syscall, so each op runs a whole scenario here and answers a
 // number; nothing hands userspace a mapping primitive.
 //
-// THE ADDRESSES ARE DELIBERATELY NOT THE FRAME'S. An identity map answers every arm of this
-// step correctly, so a scenario that mapped a frame at its own output address would prove
-// only that the memory exists (docs/design-m6-mmu.md section 3.2).
+// The addresses are deliberately not the frame's: an identity map answers every arm of
+// this step correctly, so a scenario that mapped a frame at its own output address would
+// prove only that the memory exists (docs/design-m6-mmu.md section 3.2).
 
 #include <kickos/arch/arch.h>
 
@@ -20,6 +20,7 @@
 #include <kickos/frame_pool.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
+#include <kickos/reent.h>
 #include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/sys/abi.h>
@@ -41,9 +42,8 @@ namespace kickos
             return static_cast<uint32_t volatile*>(p);
         }
 
-        // map, write, read back, unmap, and the page gone: the four transitions, reached
-        // through the acquire pair rather than through the running translation, so an arm
-        // that fails leaves the caller alive to report it.
+        // Reached through the acquire pair rather than through the running translation, so
+        // an arm that fails leaves the caller alive to report it.
         uint64_t op_roundtrip()
         {
             struct arch_aspace* const space = arch_aspace_create();
@@ -84,16 +84,15 @@ namespace kickos
             arch_aspace_destroy(space);
             if (frame != 0 and not mapped)
             {
-                // Destroy reclaims what a space still HOLDS, so a frame no leaf points at
+                // Destroy reclaims what a space still holds, so a frame no leaf points at
                 // when it runs is the caller's to return.
                 kickos_frame_free(frame);
             }
             return trip;
         }
 
-        // Two unequal virtual pages onto the one frame the caller chose, then a write
-        // through one seen through the other, and the frame's own bytes agreeing. An
-        // identity map cannot produce this: it would give two different pages.
+        // An identity map cannot produce this: two unequal virtual pages onto one frame
+        // would give two different pages.
         uint64_t op_alias()
         {
             struct arch_aspace* const space = arch_aspace_create();
@@ -129,7 +128,7 @@ namespace kickos
                 arch_aspace_release(space, VA_A);
                 arch_aspace_release(space, VA_B);
                 // One of the two leaves goes before destroy walks the tree: both name the
-                // same frame, and destroy frees what a space MAPS.
+                // same frame, and destroy frees what a space maps.
                 (void)arch_aspace_unmap(space, VA_B, 1);
             }
             arch_aspace_destroy(space);
@@ -197,8 +196,7 @@ namespace kickos
             return bits;
         }
 
-        // Every frame a whole cycle took must come back, tables included. A build with no
-        // destroy walk passes every other arm of this step while leaking each space.
+        // Every frame a whole cycle took must come back, tables included.
         uint64_t op_balance()
         {
             size_t const before = frame_pool_free();
@@ -220,11 +218,11 @@ namespace kickos
                 (void)arch_aspace_map(space, VA_B, frame, 1, ARCH_MAP_R,
                                       ARCH_MAP_NORMAL);
                 (void)arch_aspace_unmap(space, VA_B, 1);
-                // The leaf still mapped at VA_A is the space's to reclaim, which is what
-                // makes destroy rather than unmap the owner of a frame's life.
+                // The leaf still mapped at VA_A is the space's to reclaim: destroy, not
+                // unmap, owns a frame's life.
                 arch_aspace_destroy(space);
             }
-            // EVERY op, not just this cycle: no scenario in this file may hand the pool a
+            // Every op, not just this cycle: no scenario in this file may hand the pool a
             // frame it does not own, and the allocator absorbs both a double free and a
             // stranger's address, so this counter is the only place either surfaces.
             if (frame_pool_refused() != 0)
@@ -241,7 +239,7 @@ namespace kickos
 
         // A range that crosses two level-3 table boundaries, which is what a process image
         // is and what the index arithmetic gets wrong if a table's last slot is miscounted.
-        // The output addresses are DEVICE space, so no leaf here names a pool frame and the
+        // The output addresses are device space, so no leaf here names a pool frame and the
         // destroy below cannot reclaim one it does not own.
         uint64_t op_span()
         {
@@ -258,7 +256,7 @@ namespace kickos
             if (arch_aspace_map(space, SPAN_VA, SPAN_PA, SPAN_PAGES, ARCH_MAP_R,
                                 ARCH_MAP_DEVICE) == ARCH_ASPACE_OK)
             {
-                // ONE PAGE HELD AT A TIME BESIDE THE REFERENCE, so this walk stays inside
+                // One page held at a time beside the reference, so this walk stays inside
                 // ARCH_ASPACE_ACQUIRE_MIN: a backend with a finite window pool would
                 // otherwise run out here for a reason that is this loop's and not the seam's.
                 unsigned char* const first =
@@ -289,16 +287,16 @@ namespace kickos
         }
 
         // --- The page split, witnessed where no caller can build it ------------------
-        // A validated range contiguous in VIRTUAL memory need not be contiguous in
-        // PHYSICAL memory, and no userspace arm can construct one here: a reservation's
-        // virtual address IS its output address, so virtual adjacency and physical
+        // A validated range contiguous in virtual memory need not be contiguous in
+        // physical memory, and no userspace arm can construct one here: a reservation's
+        // virtual address is its output address, so virtual adjacency and physical
         // adjacency are the same question from a caller (section 3.4). The scenario is
-        // therefore built with the map editor: three CONSECUTIVE frames, the OUTER two
+        // therefore built with the map editor: three consecutive frames, the outer two
         // mapped at two adjacent virtual pages and the middle one left unmapped.
         //
-        // THE MIDDLE FRAME IS THE INSTRUMENT. It is where a copy written as one memcpy
-        // over a translated base spills, so reading it back is what separates a helper
-        // that splits from one that merely appears to work on the first page.
+        // The middle frame is the instrument: it is where a copy written as one memcpy
+        // over a translated base spills, so reading it back separates a helper that
+        // splits from one that merely appears to work on the first page.
         uint64_t op_split_access()
         {
             constexpr size_t HALF = 8; // bytes each side of the page boundary
@@ -313,7 +311,7 @@ namespace kickos
             if (sa != nullptr and sb != nullptr and ra != 0 and rb != 0)
             {
                 arch_phys_addr_t const step = static_cast<arch_phys_addr_t>(g);
-                // The SAME two virtual pages in both spaces, which is what makes the copy
+                // The same two virtual pages in both spaces, which is what makes the copy
                 // below a pair of equal numbers naming different memory.
                 bool const built =
                     arch_aspace_map(sa, VA_A, ra, 1, rw, ARCH_MAP_NORMAL) == ARCH_ASPACE_OK and
@@ -389,8 +387,8 @@ namespace kickos
                     {
                         bits |= KOS_ASPACE_SPLIT_FROM_USER;
                     }
-                    // ONE address, two spaces, and the range straddles the boundary in both.
-                    // The destination's numbers equal the source's, which is what a
+                    // One address, two spaces, and the range straddles the boundary in
+                    // both. The destination's numbers equal the source's, which a
                     // per-process image makes ordinary.
                     ep_copy(sa, cross, sb, cross, 2 * HALF);
                     bool crossed = true;
@@ -444,7 +442,7 @@ namespace kickos
         }
 
         // The fourth transition, taken by the CPU rather than by a walk of our own: with the
-        // space ACTIVE, an ordinary load of a page just unmapped must fault. Nothing here
+        // space active, an ordinary load of a page just unmapped must fault. Nothing here
         // returns on a working backend.
         uint64_t op_touch_unmapped()
         {
@@ -469,13 +467,13 @@ namespace kickos
             }
             *word_at(seed) = PATTERN_B;
 
-            // ANNOUNCED BEFORE THE SWITCH, because this space maps no console: the gate
+            // Announced before the switch, because this space maps no console: the gate
             // compares this address against the FAR the dump reports, so the arm asserts
-            // WHICH page faulted rather than only that something did.
+            // which page faulted rather than only that something did.
             kprintf("[aspace] unmapped 0x%lx, expecting a translation fault\n",
                     static_cast<unsigned long>(VA_A));
 
-            // Masked throughout: the console and the interrupt controller are LOW addresses
+            // Masked throughout: the console and the interrupt controller are low addresses
             // on this chip and this space maps neither, so any ISR taken here would run
             // against a space that cannot reach them.
             IrqLock lock;
@@ -487,11 +485,10 @@ namespace kickos
             uint32_t const seen = *word_at(reinterpret_cast<void*>(VA_A));
             (void)arch_aspace_unmap(space, VA_A, 1);
             uint32_t const after = *word_at(reinterpret_cast<void*>(VA_A));
-            // Reached only where the load above did NOT fault, which is the failure this arm
-            // exists to catch: a backend whose unmap left the translation standing answers a
-            // value here instead of a dump.
+            // Reached only where the load above did not fault: a backend whose unmap left
+            // the translation standing answers a value here instead of a dump.
             //
-            // BACK TO THE CALLER'S OWN SPACE, not to the boot one: the caller returns to app
+            // Back to the caller's own space, not to the boot one: the caller returns to app
             // text its own root maps, and the boot map is not that root.
             aspace_activate_for(sched::current());
             arch_aspace_destroy(space);
@@ -514,30 +511,25 @@ namespace kickos
         }
 
         // --- The forced failure, swept one allocation at a time ---------------------
-        // NOTHING ELSE IN THE TREE INJECTS ONE, so claim_slot's and domain_for's unwind arms
-        // are written and unreached: an exhausted pool is not a state an arm can produce on a
-        // board sized for its own image. The instrument is frame_pool_fail_in, and the sweep
-        // walks the refused attempt from the first allocation a create makes to past its last.
+        // The instrument is frame_pool_fail_in, and the sweep walks the refused attempt from
+        // the first allocation a create makes to past its last.
         //
-        // MEASURED IMMEDIATELY AFTER EACH REFUSAL, which is the whole point: a refusal that
-        // left the slot holding a half-built space balances anyway once the NEXT claim_slot
-        // releases it, so a balance read at the end of the sweep cannot see it.
+        // Measured immediately after each refusal: a refusal that left the slot holding a
+        // half-built space balances anyway once the next claim_slot releases it, so a
+        // balance read at the end of the sweep cannot see it.
         //
         // The refusal counter carries the other half. A leaf left standing over a frame the
         // unwind already returned is not a frame delta; it is a second free when destroy
         // walks the tree, and the pool refuses that rather than swallowing it.
-        // `donor_base` at 0 sweeps the NO-GRANT create, which is claim_slot alone. Anything
-        // else names a range the CALLING task reserved and sweeps the GRANT-CARRYING create
-        // instead, which adds the successful tail rather than a sixth injection point: the
-        // donor block sits under a level-3 table the image already built, so the handoff's
-        // map allocates nothing and every refusal still lands in claim_slot ahead of it.
-        // Reaching aspace_handoff's own unwind wants an injector into VirtualRanges::reserve.
-        // The size is taken from the caller's own list rather than from the caller, so a
-        // number nobody reserved names no sweep.
+        //
+        // `donor_base` at 0 sweeps the no-grant create, which is claim_slot alone. Anything
+        // else names a range the calling task reserved and sweeps the grant-carrying create
+        // instead. The size is taken from the caller's own list rather than from the caller,
+        // so a number nobody reserved names no sweep.
         uint64_t op_forced_unwind(uintptr_t donor_base)
         {
             IrqLock lock;
-            Domain const* donor = nullptr;
+            Domain* donor = nullptr;
             void* mem_base = nullptr;
             size_t mem_size = 0;
             if (donor_base != 0)
@@ -617,16 +609,16 @@ namespace kickos
             return bits | (static_cast<uint64_t>(depth) << KOS_ASPACE_UNWIND_DEPTH_SHIFT);
         }
 
-        // A domain carries an address space where a backend translates, so a domain that is
-        // resolved and dropped must hand the root and its tables back. TWO ways it does not,
-        // and they MASK EACH OTHER under one measurement because both free the same table:
-        // a release that only decrements, and a FREE SLOT reused while its predecessor's
-        // space still stands, which is the shape task_for leaves when a spawn fails after
-        // the domain resolved. So each is measured over a sequence the other cannot repair.
+        // A domain that is resolved and dropped must hand the root and its tables back. Two
+        // ways it does not, and they mask each other under one measurement because both free
+        // the same table: a release that only decrements, and a free slot reused while its
+        // predecessor's space still stands, which is the shape task_for leaves when a spawn
+        // fails after the domain resolved. So each is measured over a sequence the other
+        // cannot repair.
         uint64_t op_domain_balance()
         {
             IrqLock lock;
-            // Resolves with NO reference, all landing on one free slot, so every resolve
+            // Resolves with no reference, all landing on one free slot, so every resolve
             // after the first must return what the last one left.
             size_t const before_reuse = frame_pool_free();
             Domain* last = nullptr;
@@ -642,7 +634,7 @@ namespace kickos
             }
             domain_release(last);
             size_t const lost_reuse = frames_lost(before_reuse);
-            // The release itself, weighed from AFTER the resolve: measured over a resolve
+            // The release itself, weighed from after the resolve: measured over a resolve
             // and a release together, the reuse cleanup above would hand back exactly the
             // space a missing release destroy kept, and the pair would read as balanced
             // while every dead process held its tables until its slot was next claimed.
@@ -667,8 +659,7 @@ namespace kickos
         }
     }
 
-    // The model word crosses the ABI unchanged, so the two vocabularies must agree bit for
-    // bit; nothing else in this file translates an arch answer into an ABI one.
+    // The model word crosses the ABI unchanged, so the two vocabularies must agree bit for bit.
     static_assert(KOS_ASPACE_MODEL_GRANULE == ARCH_ASPACE_MODEL_GRANULE, "model bit drift");
     static_assert(KOS_ASPACE_MODEL_ASID == ARCH_ASPACE_MODEL_ASID, "model bit drift");
     static_assert(KOS_ASPACE_MODEL_PA == ARCH_ASPACE_MODEL_PA, "model bit drift");
@@ -749,9 +740,8 @@ namespace kickos
             }
             case KOS_ASPACE_OP_FRAME_AT:
             {
-                // Two tasks comparing this for one address is what witnesses that per-process
-                // static data is a COPY (section 3.4). aspace.h states what the number is and
-                // why it is not the frame's own address.
+                // Two tasks comparing this for one address is what witnesses that
+                // per-process static data is a copy (section 3.4).
                 Thread const* const c = sched::current();
                 if (c == nullptr)
                 {
@@ -761,8 +751,8 @@ namespace kickos
             }
             case KOS_ASPACE_OP_MODEL:
             {
-                // Passed straight through: the two vocabularies are one word and the asserts
-                // above are what keep them so.
+                // Passed straight through: the asserts above are what keep the two
+                // vocabularies one word.
                 return arch_aspace_model();
             }
             case KOS_ASPACE_OP_MEMTYPE_AT:
@@ -784,10 +774,39 @@ namespace kickos
                 }
                 return static_cast<uint64_t>(e->memtype) + 1u;
             }
+            case KOS_ASPACE_OP_ACQUIRE_BALANCE:
+            {
+                return aspace_acquire_balance();
+            }
+            case KOS_ASPACE_OP_REENT_SEATING:
+            {
+                // Two halves, and the arm needs both: bit 0 says the posture is reached at
+                // all, bit 1 says the app half was written in it. A guard that stops guarding
+                // lights bit 1; a posture that stopped happening drops bit 0 and would leave
+                // bit 1 vacuously clear.
+                uint64_t out = 0;
+                if (aspace_unseated_switch_ins() != 0)
+                {
+                    out |= 1u;
+                }
+                if (reent_unseated_writes() != 0)
+                {
+                    out |= 2u;
+                }
+                return out;
+            }
+            case KOS_ASPACE_OP_DATA_HOME_FORGET:
+            {
+                aspace_data_home_forget();
+                return 0;
+            }
+            case KOS_ASPACE_OP_MAP_TLBI:
+            {
+                return arch_aspace_tlbi_counts();
+            }
             case KOS_ASPACE_OP_SPACE_ID:
             {
-                // The one op that answers about the CALLER rather than running a scenario:
-                // two tasks comparing this is what witnesses that a domain is an address
+                // Two tasks comparing this is what witnesses that a domain is an address
                 // space of its own (docs/design-m6-mmu.md F2).
                 Thread const* const c = sched::current();
                 if (c == nullptr)

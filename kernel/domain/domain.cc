@@ -4,7 +4,7 @@
 #include <kickos/domain.h>
 
 #include <kickos/aspace.h> // aspace_image_seed / aspace_release
-#include <kickos/grant.h> // grant_region_admissible (Rule 7 chokepoint)
+#include <kickos/grant.h> // grant_region_admissible
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/debug.h>  // KICKOS_DEBUG_ASSERT
@@ -22,7 +22,6 @@ namespace kickos
         // returned by free_slot().
         enum { KDOM_KERNEL_INDEX = 0, KDOM_DEFAULT_USER_INDEX = 1 };
 
-        // A slot is free iff it is not immortal and holds no live thread.
         Domain* free_slot()
         {
             Kernel& k = kernel();
@@ -37,44 +36,61 @@ namespace kickos
             return nullptr;
         }
 
-        // A fresh unprivileged domain, with the address space it needs where a backend
-        // translates. TRANSACTIONAL: on either refusal the slot is left reinitialised, so
-        // it is free again and no half-built domain survives. *err is written on refusal.
-        Domain* claim_slot(int* err)
-        {
-            Domain* d = free_slot();
-            if (d == nullptr)
-            {
-                *err = KOS_ENOMEM; // pool exhausted: retry later
-                return nullptr;
-            }
 #if KICKOS_HAVE_ASPACE
-            // A FREE SLOT CAN STILL HOLD A SPACE. task_for resolves a domain before the
-            // spawn commits and takes no reference, so a spawn that fails after that point
-            // leaves the slot at refcount 0 with its root and tables still allocated, and
-            // the reinitialisation below would drop the only handle to them.
+        // The only caller of aspace_release in this file, so no site can unmap the borrowed
+        // entry without also surrendering the reference that entry rests on. The edge is
+        // returned rather than released: releasing it here would recurse down a chain of
+        // borrowers (domain_release).
+        Domain* drop_space(Domain* d)
+        {
+            Domain* const donor = d->borrowed_from;
+            d->borrowed_from = nullptr;
             if (d->space != nullptr)
             {
                 aspace_release(d->space, &d->ranges);
                 d->space = nullptr;
             }
+            return donor;
+        }
+#endif
+
+        // A fresh unprivileged domain, with the address space it needs where a backend
+        // translates. On either refusal the slot is left reinitialised, so it is free again
+        // and no half-built domain survives. *err is written on refusal.
+        Domain* claim_slot(int* err)
+        {
+            Domain* d = free_slot();
+            if (d == nullptr)
+            {
+                *err = KOS_ENOMEM;
+                return nullptr;
+            }
+#if KICKOS_HAVE_ASPACE
+            // A free slot can still hold a space: task_for resolves a domain before the
+            // spawn commits and takes no reference, so a spawn that fails after that point
+            // leaves the slot at refcount 0 with its root and tables still allocated, and
+            // the reinitialisation below would drop the only handle to them. The edge goes
+            // with it: reinitialising over the pointer would pin the donor forever.
+            Domain* const stale_donor = drop_space(d);
 #endif
             *d = Domain{};
             d->privileged = false;
 #if KICKOS_HAVE_ASPACE
+            // After the reinitialisation, so a cascade that frees further slots cannot find
+            // this one half written. It never reaches this slot: an edge points at a domain
+            // that was already live when the edge was made.
+            domain_release(stale_donor);
             d->space = arch_aspace_create();
             if (d->space == nullptr)
             {
-                *err = KOS_ENOMEM; // no frame for a root: freeing frames and retrying can work
+                *err = KOS_ENOMEM;
                 return nullptr;
             }
             // A space with no image is a space no unprivileged thread can run in: its first
-            // instruction fetch would fault. So the seed is part of claiming the slot, and
-            // its failure leaves the slot free rather than half built.
+            // instruction fetch would fault.
             if (not aspace_image_seed(d->space, &d->ranges))
             {
-                aspace_release(d->space, &d->ranges);
-                d->space = nullptr;
+                (void)drop_space(d); // a space with no handoff yet: the edge is null
                 *err = KOS_ENOMEM;
                 return nullptr;
             }
@@ -113,9 +129,8 @@ namespace kickos
         udom->region_count = 0;
     }
 
-    // Only domain_init and domain_for below may touch regions[] directly. Every reader
-    // outside this file MUST come through these accessors, so the representation stays
-    // changeable.
+    // Only domain_init and domain_for below may touch regions[] directly; every reader
+    // outside this file comes through these accessors.
     size_t domain_region_count(Domain const* d)
     {
         if (d == nullptr)
@@ -127,6 +142,9 @@ namespace kickos
 
     arch_mpu_region const* domain_region_at(Domain const* d, size_t i)
     {
+        // Trips on a caller that walked past domain_region_count, which on a translating
+        // backend is one descriptor rather than the MPU's full set.
+        KICKOS_DEBUG_ASSERT(i < KICKOS_DOMAIN_REGIONS);
         return &d->regions[i];
     }
 
@@ -205,7 +223,7 @@ namespace kickos
 #endif
 
     Domain* domain_for(uint32_t caller, void* mem_base, size_t mem_size, uint32_t mem_attr,
-                       Domain const* donor, int* err)
+                       Domain* donor, int* err)
     {
         *err = 0;
         (void)donor;
@@ -217,8 +235,7 @@ namespace kickos
         {
 #if KICKOS_HAVE_ASPACE
             // The template is instantiated, never joined: two no-grant tasks sharing one
-            // root would be two kill groups in one address space, and that is the COMMON
-            // case rather than an edge (docs/design-m6-mmu.md F2).
+            // root would be two kill groups in one address space (docs/design-m6-mmu.md F2).
             return claim_slot(err);
 #else
             return domain_default_user();
@@ -228,10 +245,10 @@ namespace kickos
         // Access is the grant's own; only the memory-type bits come from the caller.
         uint32_t const attr = ARCH_MPU_R | ARCH_MPU_W | (mem_attr & ARCH_MPU_NOCACHE);
 #if KICKOS_HAVE_ASPACE
-        // NOT the arena predicate here. What a reservation names on this backend is frames
+        // Not the arena predicate here: what a reservation names on this backend is frames
         // of the frame pool's own carve, which the bump arena does not contain, so the arena
         // arm would refuse every correct grant. The admission that replaces it is the handoff
-        // below: the range must be one the DONOR reserved, which no MMIO block and no
+        // below: the range must be one the donor reserved, which no MMIO block and no
         // kernel address can be.
         if (not grant_nocache_admissible(attr))
         {
@@ -240,7 +257,7 @@ namespace kickos
         }
 #else
         size_t const rsz = arch_ram_region_size(mem_size);
-        // Rule 7 admits the PROSPECTIVE COMMITTED geometry, and must run before a slot is
+        // Rule 7 admits the prospective committed geometry, and must run before a slot is
         // allocated: a refusal must leave no half-built domain.
         if (not grant_region_admissible(base, rsz, attr,
                                         (caller & DOM_CALLER_MEM_AUTH) != 0))
@@ -255,10 +272,8 @@ namespace kickos
             return nullptr;
         }
 #if KICKOS_HAVE_ASPACE
-        // F10's handoff, and the ONE place both of its consumers meet: a task create and a
-        // grant-carrying spawn each open a space the donor does not hold, and each arrives
-        // here. A refusal leaves no half-built domain, the release below freeing the space
-        // and leaving the slot free.
+        // F10's handoff. A refusal leaves no half-built domain, the release below freeing
+        // the space and leaving the slot free.
         enum arch_map_memtype mtype = ARCH_MAP_NORMAL;
         if ((mem_attr & ARCH_MPU_NOCACHE) != 0)
         {
@@ -272,8 +287,19 @@ namespace kickos
             *err = -hrc;
             return nullptr;
         }
-        // NO REGION RECORD BESIDE THE MAPPING. The range list carries the handoff with the
-        // EXACT extent where a region would carry the rounded one, and it is what the entry
+        // The lifetime edge, and the only place one is made. The borrower now maps the
+        // donor's frames; without this the donor's last task can exit, destroy its space and
+        // return every one of those frames to the pool under a live mapping. Taken only on
+        // success, so aspace_handoff's own unwind arms have nothing to surrender.
+        //
+        // `d` came from claim_slot, so its edge is null and it is not the donor: a handoff
+        // only ever creates the borrower and cannot add a range to a domain that already
+        // exists, which is why two tasks cannot hand each other a range and pin both.
+        KICKOS_DEBUG_ASSERT(d->borrowed_from == nullptr and d != donor);
+        d->borrowed_from = donor;
+        domain_ref(donor);
+        // No region record beside the mapping: the range list carries the handoff with the
+        // exact extent where a region would carry the rounded one, and it is what the entry
         // path answers from on this backend (section 3.3).
 #else
         d->regions[0].base = base;
@@ -284,18 +310,18 @@ namespace kickos
         return d;
     }
 
-    // A mortal domain's refcount counts the live TASKS holding it, plus one per explicit
+    // A mortal domain's refcount counts the live tasks holding it, plus one per explicit
     // task's creator hold: a task takes one reference when its first thread joins (task_ref)
-    // and drops it when its last leaves (task_release, from sched::exit_current), and
-    // task_create takes one more that task_drop_hold returns. Both are bounded by the task
-    // pool, so two per slot is the ceiling.
+    // and drops it when its last leaves (task_release), and task_create takes one more that
+    // task_drop_hold returns. Both are bounded by the task pool, so two per slot is the
+    // ceiling.
     static_assert(2ull * KICKOS_MAX_TASKS <= UINT16_MAX,
                   "Domain::refcount is uint16_t and counts live tasks plus creator holds: "
                   "twice the task pool must fit it");
 
     void domain_ref(Domain* d)
     {
-        // An immortal domain's refcount is deliberately NOT tracked: an unbounded,
+        // An immortal domain's refcount is deliberately not tracked: an unbounded,
         // transient set of tasks references it and the counter would wrap.
         if (d != nullptr and not d->immortal)
         {
@@ -307,34 +333,37 @@ namespace kickos
 
     void domain_release(Domain* d)
     {
-        // A mortal domain returns to the pool when its last task drops it. Immortal ones
-        // never free and never count.
-        if (d == nullptr or d->immortal)
+        // Iterative, not recursive: freeing a borrower surrenders its donor's reference,
+        // which can free the donor in turn, and a borrower of a borrower makes that a chain
+        // as long as the domain pool with a page-table tree walk at every link.
+        while (d != nullptr and not d->immortal)
         {
-            return;
-        }
-        if (d->refcount > 0)
-        {
-            d->refcount--;
-        }
+            if (d->refcount > 0)
+            {
+                d->refcount--;
+            }
+            if (d->refcount != 0)
+            {
+                return;
+            }
 #if KICKOS_HAVE_ASPACE
-        // The slot alone is not the resource here: reusing it without this would strand the
-        // root, its tables and every frame the space still held.
-        if (d->refcount == 0 and d->space != nullptr)
-        {
-            aspace_release(d->space, &d->ranges);
-            d->space = nullptr;
-        }
+            // Reusing the slot without this would strand the root, its tables and every
+            // frame the space still held. drop_space hands back the donor whose reference
+            // the next turn of the loop drops.
+            d = drop_space(d);
+#else
+            return;
 #endif
+        }
     }
 }
 
 // Reads the linker-defined app code (RX) and static data/.bss (RW-NX) sections into the
-// regions every UNPRIVILEGED thread needs under MPU enforcement. The symbols are WEAK: a
+// regions every unprivileged thread needs under MPU enforcement. The symbols are weak: a
 // chip whose linker script does not carve them leaves both start and end at 0, so
-// `end > start` is false and no region is emitted. That is also why there is NO
+// `end > start` is false and no region is emitted. That is also why there is no
 // `start != 0` guard: on a flash-at-0 chip (K64F, __kickos_code_start == 0) that sentinel
-// would read a VALID base as absent, drop the code region, and fault the thread on its
+// would read a valid base as absent, drop the code region, and fault the thread on its
 // first instruction fetch.
 extern "C"
 {

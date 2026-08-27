@@ -80,7 +80,15 @@ namespace kickos
     void reent_prime(void* state);
 
     // Make `state` the one libc resolves from. Runs on EVERY switch, so it is kept a leaf.
+    // A SELFTEST build is the exception and knowingly so: the counter below costs it a call.
     void reent_seat(void* state);
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // Times either of the two above wrote the app half for a thread whose memory view was not
+    // installed. Must be 0: the switch path is what refuses to call them in that posture, and
+    // this counts from the other side of that guard (kickos/aspace.h, aspace_seated_for).
+    size_t reent_unseated_writes(void);
+#endif
 }
 
 #endif

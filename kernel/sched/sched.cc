@@ -60,12 +60,20 @@ namespace kickos
             // AFTER mpu.apply, not before: both this and the prime it may do first write
             // memory the INCOMING thread owns, so they belong on the far side of the target's
             // memory view being installed.
-            if (next->reent_fresh)
+            //
+            // AND ONLY WHERE THAT VIEW IS THE INCOMING THREAD'S. Both addresses are the app's
+            // and live in the half a translating backend switches per process, so for a
+            // thread whose task holds no space they name whichever process was installed last
+            // (kickos/aspace.h, aspace_seated_for).
+            if (aspace_seated_for(next))
             {
-                next->reent_fresh = false;
-                reent_prime(next->reent);
+                if (next->reent_fresh)
+                {
+                    next->reent_fresh = false;
+                    reent_prime(next->reent);
+                }
+                reent_seat(next->reent);
             }
-            reent_seat(next->reent);
 #endif
             // Must arm for the INCOMING thread before the jump: nothing else will program
             // its policy deadline (RR slice).
@@ -227,12 +235,15 @@ namespace kickos
             // switch_book is not on this path: nothing else seats or primes the FIRST
             // thread's state, and without this it would run on libc's process-wide one until
             // its first switch away and back.
-            if (first->reent_fresh)
+            if (aspace_seated_for(first))
             {
-                first->reent_fresh = false;
-                reent_prime(first->reent);
+                if (first->reent_fresh)
+                {
+                    first->reent_fresh = false;
+                    reent_prime(first->reent);
+                }
+                reent_seat(first->reent);
             }
-            reent_seat(first->reent);
 #endif
             ktime_rearm();
             arch_start(&kernel().boot, &first->ctx);

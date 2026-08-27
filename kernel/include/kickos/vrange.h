@@ -2,25 +2,25 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The virtual ranges one address space names: what the syscall entry validates a user
-// pointer against (docs/design-m6-mmu.md section 3.3). VALIDATION DATA, never enforcement:
-// the page tables are what a wrong access faults on, and walking them on every syscall
-// argument would put a multi-level traversal on the entry path to buy an answer the kernel
-// already holds.
+// pointer against (docs/design-m6-mmu.md section 3.3). Validation data, never enforcement:
+// the page tables are what a wrong access faults on.
 //
 // Reserved and granted are two different claims, per F10: allocation reserves a page-aligned
-// range and maps nothing, and the self-grant maps it. Only a GRANTED range admits a pointer,
+// range and maps nothing, and the self-grant maps it. Only a granted range admits a pointer,
 // so a caller cannot pass the kernel a buffer it has reserved but never made reachable.
 //
-// IT IS ALSO THE SPACE'S MAP RECORD, which is what teardown reads: a space frees what it MAPS
+// It is also the space's map record, which is what teardown reads: a space frees what it maps
 // and the borrower unmaps first (F10), so an entry carries whether these frames are the
-// space's own or another space's, and destroy cannot be told apart from a leak without it.
+// space's own or another space's.
 //
 // The granule is a parameter and no figure appears here (F7).
 
 #ifndef KICKOS_VRANGE_H
 #define KICKOS_VRANGE_H
 
+#include <kickos/arch/arch.h> // ARCH_MAP_*, which the width proofs below are over
 #include <kickos/config/system.h>
+#include <kickos/extent.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -37,57 +37,73 @@ namespace kickos
     enum : uint8_t
     {
         // The frames under this range belong to another space. Teardown unmaps them and
-        // frees none: the process image's pages came from the linked image and a handed-over
-        // block is the donor's, and handing either to the frame pool frees an address it
-        // never owned.
+        // frees none: handing them to the frame pool would free an address it never owned.
         VR_BORROWED = 1u << 0,
         // The process image seeded into every space, rather than a range the app reserved.
-        // A caller may name its own reservations and not these: an app global is not a
-        // block anybody allocated, so it is not a stack a spawn may be handed either.
+        // A caller may name its own reservations and not these.
         VR_IMAGE = 1u << 1
     };
+
+    // The most pages one range may name, which reserve() refuses above. This ceiling is what
+    // makes the width of VirtualRange::pages a bound.
+    constexpr size_t VR_MAX_PAGES = 0xFFFFFFFFu;
 
     struct VirtualRange
     {
         uintptr_t base = 0;
-        size_t pages = 0;
-        // The ARCH_MAP_* word the mapping carries. The same vocabulary as the map editor's,
-        // so no translation sits between what was granted and what was installed.
-        uint32_t rights = 0;
-        // enum arch_map_memtype, narrowed. Two live mappings of one block must agree on it,
-        // and the already-mapped short-circuit cannot answer without it.
+        uint32_t pages = 0;
+        // The ARCH_MAP_* word the mapping carries, in the map editor's own vocabulary: no
+        // translation sits between what was granted and what was installed.
+        uint8_t rights = 0;
+        // enum arch_map_memtype, narrowed. Two live mappings of one block must agree on it.
         uint8_t memtype = 0;
         uint8_t flags = 0; // VR_*
         VirtualState state = VirtualState::Free;
     };
 
+    // Each of the three narrow fields holds the widest value its setter can be handed, so a
+    // value the list would otherwise refuse cannot be stored as a smaller accepted one.
+    // Narrowing a field or raising a ceiling past the other trips the matching line here.
+    static_assert(VR_MAX_PAGES == static_cast<size_t>(static_cast<uint32_t>(VR_MAX_PAGES)),
+                  "the reservation ceiling must round-trip through VirtualRange::pages");
+    static_assert(static_cast<uint32_t>(ARCH_MAP_R | ARCH_MAP_W | ARCH_MAP_X)
+                      == static_cast<uint32_t>(
+                          static_cast<uint8_t>(ARCH_MAP_R | ARCH_MAP_W | ARCH_MAP_X)),
+                  "every ARCH_MAP_* right must round-trip through VirtualRange::rights");
+    static_assert(static_cast<unsigned>(ARCH_MAP_DEVICE)
+                      == static_cast<unsigned>(static_cast<uint8_t>(ARCH_MAP_DEVICE)),
+                  "every arch_map_memtype must round-trip through VirtualRange::memtype");
+
     class VirtualRanges
     {
     public:
         // `granule` must be a power of two; anything else leaves the list refusing every
-        // call, since a list keyed on a granule it cannot check would admit a partial page.
+        // call.
         bool init(size_t granule);
 
-        // A page-aligned range no live entry overlaps. Reserving maps nothing.
+        // A page-aligned range no live entry overlaps, of at most VR_MAX_PAGES pages.
+        // Reserving maps nothing.
         bool reserve(uintptr_t base, size_t pages, uint8_t flags = 0);
 
-        // Turn a reservation into a granted range. EXACT: the pair must name a reservation
-        // this space made, which is what stops one task naming a range another reserved.
+        // Turn a reservation into a granted range. Exact: the pair must name a reservation
+        // this space made. A rights word carrying a bit the entry cannot hold is refused,
+        // never truncated.
         bool grant(uintptr_t base, size_t pages, uint32_t rights, uint8_t memtype = 0);
 
         // Drop the entry starting at `base`, whatever its state.
         bool release(uintptr_t base);
 
-        // The entry-path question: does [addr, addr + len) lie inside ONE granted range that
+        // The entry-path question: does [addr, addr + len) lie inside one granted range that
         // carries every right in `rights`? A range spanning two entries is refused even when
-        // both are granted, matching what the region check answers today.
+        // both are granted.
         bool covers(uintptr_t addr, size_t len, uint32_t rights) const;
 
+        // Whether [base, base + pages * granule) meets any live entry. No precondition on the
+        // extent: an extent whose byte count wraps answers true, so a caller that has not
+        // checked its own arithmetic is refused rather than admitted on a wrapped end.
         bool overlaps(uintptr_t base, size_t pages) const;
 
-        // The ONE live entry [addr, addr + len) lies inside, or null. The identity question
-        // the self-grant asks: a caller may only map a range it reserved, and an address
-        // another space reserved is in no entry of this list.
+        // The one live entry [addr, addr + len) lies inside, or null.
         VirtualRange const* find(uintptr_t addr, size_t len) const;
 
         // Live entries, and the slot count they are spread over. `at` walks slots, not live

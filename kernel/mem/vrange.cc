@@ -7,18 +7,6 @@
 
 namespace kickos
 {
-    namespace
-    {
-        bool is_pow2(size_t v)
-        {
-            if (v == 0)
-            {
-                return false;
-            }
-            return (v & (v - 1u)) == 0;
-        }
-    }
-
     bool VirtualRanges::init(size_t granule)
     {
         for (size_t i = 0; i < KICKOS_ASPACE_RANGES; i++)
@@ -40,7 +28,11 @@ namespace kickos
         {
             return false;
         }
-        uintptr_t const end = base + static_cast<uintptr_t>(pages) * granule_;
+        uintptr_t end = 0;
+        if (not extent_end(base, pages, granule_, &end))
+        {
+            return true; // a window that wraps overlaps everything this list could name
+        }
         for (size_t i = 0; i < KICKOS_ASPACE_RANGES; i++)
         {
             if (ranges_[i].state == VirtualState::Free)
@@ -63,8 +55,12 @@ namespace kickos
         {
             return false;
         }
-        uintptr_t const bytes = static_cast<uintptr_t>(pages) * granule_;
-        if (bytes / granule_ != pages or base + bytes < base)
+        if (pages > VR_MAX_PAGES)
+        {
+            return false; // the entry cannot hold the count, and truncating it would admit it
+        }
+        uintptr_t end = 0;
+        if (not extent_end(base, pages, granule_, &end))
         {
             return false;
         }
@@ -77,7 +73,7 @@ namespace kickos
             if (ranges_[i].state == VirtualState::Free)
             {
                 ranges_[i].base = base;
-                ranges_[i].pages = pages;
+                ranges_[i].pages = static_cast<uint32_t>(pages);
                 ranges_[i].rights = 0;
                 ranges_[i].memtype = 0;
                 ranges_[i].flags = flags;
@@ -94,6 +90,10 @@ namespace kickos
         {
             return false;
         }
+        if (rights != static_cast<uint32_t>(static_cast<uint8_t>(rights)))
+        {
+            return false; // a right the entry cannot hold, refused rather than dropped
+        }
         for (size_t i = 0; i < KICKOS_ASPACE_RANGES; i++)
         {
             if (ranges_[i].state == VirtualState::Free or ranges_[i].base != base)
@@ -104,7 +104,7 @@ namespace kickos
             {
                 return false;
             }
-            ranges_[i].rights = rights;
+            ranges_[i].rights = static_cast<uint8_t>(rights);
             ranges_[i].memtype = memtype;
             ranges_[i].state = VirtualState::Granted;
             return true;

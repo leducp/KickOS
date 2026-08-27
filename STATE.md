@@ -31,6 +31,29 @@ finding is the one already at section 5's opening note:** every one of the five 
 believed, and what was missing was the arm -- so an obligation that reads as satisfied because the
 CODE exists is the class to sweep for, and reading the document again is not what finds it.
 
+**AN EXTERNAL AUDIT OF THE BRANCH (2026-08-26) RAISED TEN FINDINGS AND ALL TEN ARE DISCHARGED**,
+recorded in `TODO.md` under `## External audit of the M6.2 branch, 2026-08-26`, whose checkbox set is
+now empty. Two of them are worth carrying forward as reasoning rather than as closed tickets:
+
+- **The HIGH was real and the counter could never have caught it.** A donor's teardown freed frames a
+  borrower still mapped. T4's rule covered borrower-dies-first ONLY, and the refused-free counter is
+  STRUCTURALLY BLIND to the case: every frame is freed exactly once, so nothing is refused and the
+  counter reads clean while a borrower reads another task's memory. A counter that counts refusals
+  cannot witness a lifetime bug that never double-frees. The fix takes `domain_ref` on the donor
+  where the handoff succeeds and surrenders it in one `drop_space()`.
+- **THE AUDIT'S PRESCRIBED FIX FOR THE DATA TEMPLATE WAS WRONG AS STATED**, and running it is what
+  showed that. A frozen post-constructor snapshot breaks `irq_driver`: root writes `g_mmio` AFTER its
+  constructors, so a child seeded from the frozen image gets a null pointer and faults. Root stays
+  the LIVE template while root lives; the snapshot is taken at root's release. An external reviewer's
+  direction is evidence about the defect, not about the remedy.
+
+**THE FIRST WORD-WISE FRAME SCAN WAS A REGRESSION ON THE PATH THAT NEVER SCANS**, and the shape is
+the lesson: `release` parks the hint on the frame it freed, so the common case tests one bit, and
+routing it through the two-pass word loop cost 2.1x to 2.4x. A hint test ahead of the loop restores
+parity while the scan-heavy case keeps its win. Both paths exit through one `take_one`, so a single
+place still turns an index into an address. Allocation ORDER is unchanged and that was measured, not
+argued: old and new return the same offset from base in every shape, size and optimisation level.
+
 **THE CONTRACT NOW MATCHES THE TREE, AND FOR MOST OF THIS MILESTONE IT DID NOT.** An audit
 (`docs: the contract stops asserting what the tree stopped doing`) corrected ten present-tense claims
 the M6 contract made that were FALSE against the code, each with a freeze, a step obligation or a
@@ -148,8 +171,8 @@ The whole point of this file. A green fleet pass says none of the following.
   target space that cannot take the range at the donor's address. It is untestable rather than
   untested here -- this backend's reservation namespace is globally unique, an address being a
   frame-pool output address, so no correct caller can collide.
-- **The data-cache clean and invalidate seam has no caller and no witness.** T9 landed
-  `arch_dcache_clean`/`arch_dcache_invalidate` with an armv8a backend; QEMU models no data cache, so
+- **The data-cache flush and invalidate seam has no caller and no witness.** T9 landed
+  `arch_dcache_flush`/`arch_dcache_invalidate` with an armv8a backend; QEMU models no data cache, so
   an arm exercising it would pass with the loop bounds wrong. The member is compiled and never
   extracted, so no image carries it and no gate can see it. Section 7 owns the consumers.
 - **`appdata_no_kernel` does not run on the one board that splits its image.** It is registered under

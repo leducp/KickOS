@@ -425,6 +425,11 @@ void* kos_ram_alloc(size_t size);
 // PROGRAMS that type, asking for it spends a descriptor even on a block the caller can
 // already reach cacheably, a privileged caller's whole-arena background-map reach included.
 //
+// THE SAME MEMORY TYPE IS COMPARED IN BOTH DIRECTIONS. Where the mapping carries the type, a
+// request naming NO type over a block mapped non-cacheable is as much a change as the reverse
+// and is committed as one: that direction is the way back from a DMA buffer to ordinary memory,
+// and answering it on reachability alone would report a cacheability that was never restored.
+//
 // Returns 0 on success (including when the range is ALREADY reachable with the same memory
 // type, which costs no descriptor and no mapping), or:
 //   -KOS_EPERM   no AUTH_MEMORY, the range is inadmissible (outside the arena, or

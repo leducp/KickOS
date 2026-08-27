@@ -923,13 +923,21 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
             }
-            // Already reachable costs no descriptor. EXCEPT where the chip PROGRAMS the
-            // memory type: privileged reach comes from the CACHEABLE background map, so a
-            // block initialised through it keeps dirty lines a bus master then reads.
-            bool already = user_range_ok(base, size, ARCH_MPU_R | ARCH_MPU_W);
-            if ((attr & ARCH_MPU_NOCACHE) != 0 and grant_memtype_programmed())
+            // Already reachable costs no descriptor. EXCEPT where the mapping CARRIES the
+            // memory type, and then the question is asked of the TYPE and not of the rights,
+            // in BOTH directions: a request that names no type over a block mapped
+            // non-cacheable is the way back from a DMA buffer to ordinary memory, and answering
+            // it on rights alone tells the caller cacheability was restored while the mapping
+            // stays exactly as it was. Privileged reach comes from the CACHEABLE background map
+            // on a region chip, which is the other half of the same asymmetry.
+            bool already = false;
+            if (grant_memtype_programmed())
             {
                 already = user_range_typed_ok(base, size, attr);
+            }
+            else
+            {
+                already = user_range_ok(base, size, ARCH_MPU_R | ARCH_MPU_W);
             }
             if (already)
             {
@@ -984,7 +992,13 @@ uint64_t syscall_body(uintptr_t nr,
             // would fault the thread on memory it was told it had. NOT -KOS_EMFILE: that
             // code names the capability table, and the knob here is
             // KICKOS_MPU_MAX_REGIONS.
-            if (not c->mpu.add_enforced(base, rsz, attr))
+            //
+            // RETYPING, and not a second descriptor: a block this thread already names with
+            // another memory type reaches here only where the descriptor CARRIES the type, and
+            // two of them over one block would leave the range checks and the hardware reading
+            // different ones. The whole of it sits inside MpuSet deliberately, a `prior` region
+            // held across the call here being caller stack the SVC red zone is measured on.
+            if (not c->mpu.add_enforced_retyping(base, rsz, attr))
             {
                 return static_cast<uint64_t>(-KOS_ENOMEM);
             }

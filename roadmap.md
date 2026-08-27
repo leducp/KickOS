@@ -484,7 +484,7 @@ the timer PPI with the table keyed `(line, kind)` rather than a flat NVIC index,
 the tickless one-shot, `arch_ipi_send`/`arch_ipi_wait` as empty macros, a per-CPU struct reached
 through `TPIDR_EL1` (**freed at M6.2's T6a: seating the kernel stack pointer before the initial
 frame is built made `SP_EL1` trustworthy on entry, so the EL0 entry spends no scratch register and
-the collision with this line is gone**), and an `arch_dcache_clean`/`invalidate` seam for DMA. **The aspace family names
+the collision with this line is gone**), and an `arch_dcache_flush`/`invalidate` seam for DMA. **The aspace family names
 concepts and not mechanisms**, which is the seam's standing doctrine: no architecture's registers and
 no architecture's maintenance instruction appear in it. `docs/design-m6-mmu.md` carries the frozen
 family -- create, destroy, map, unmap, activate, a

@@ -15,7 +15,7 @@
 
 // Return-encoding contract (see errno.h). A syscall that can fail returns its error as
 // -KOS_Exxx (negative); success is a non-negative byte-count / count, so the two are
-// collision-free. EXCEPTIONS, all OUT of the scheme: ram_alloc returns a pointer, 0/NULL on
+// collision-free. Exceptions, all outside the scheme: ram_alloc returns a pointer, 0/NULL on
 // ANY failure, and cpu_clock_hz / cpu_clock_set / periph_clock_hz return a u32 Hz with a
 // 0 == cannot/unknown sentinel.
 
@@ -45,9 +45,9 @@ typedef uint32_t kos_thread_t;
 // unrelated to either pool above. The bias is what makes the all-zero word unmintable.
 typedef uint32_t kos_task_t;
 
-// "No task", and the spawn default: the child is a thread of the SPAWNER's task, sharing its
-// memory domain, as pthread_create makes a thread of the calling process. A spawn that brings
-// its own mem_base, or that changes privilege, gets an implicit task holding itself instead.
+// "No task", and the spawn default: the child is a thread of the spawner's task, sharing its
+// memory domain. A spawn that brings its own mem_base, or that changes privilege, gets an
+// implicit task holding itself instead.
 #define KOS_TASK_NONE 0u
 
 // The exit code a thread killed by a CPU fault reports: what a joiner reads back, and the
@@ -251,10 +251,7 @@ enum kos_aspace_op
                                  //   all, and nothing else may be read out of it
     KOS_ASPACE_OP_SPLIT_ACCESS = 13, // () -> the KOS_ASPACE_SPLIT_* bits that held for a
                                  //   virtually contiguous range whose two pages are backed by
-                                 //   NON-ADJACENT frames. No caller can build such a range: a
-                                 //   reservation's virtual address is its output address, so
-                                 //   virtual adjacency and physical adjacency are one question
-                                 //   from userspace
+                                 //   NON-ADJACENT frames, which no caller can itself build
     KOS_ASPACE_OP_FORCED_UNWIND = 14, // (0, or a range this task reserved) -> the
                                  //   KOS_ASPACE_UNWIND_* bits that held, with the number of
                                  //   injection points the sweep reached above bit
@@ -264,19 +261,30 @@ enum kos_aspace_op
                                  //   path is the no-grant create; with a reservation named it is
                                  //   the grant-carrying one, whose handoff unwinds separately
     KOS_ASPACE_OP_SPACES_HELD = 15, // () -> how many domain slots hold an address space at all.
-                                 //   The ROOT count beside the frame count: churn that ends
-                                 //   with a different answer stranded a root, which a frame
-                                 //   delta only implies
-    KOS_ASPACE_OP_MODEL = 16,    // () -> what the IMPLEMENTATION reports about its own
-                                 //   translation, as the KOS_ASPACE_MODEL_* bits and the
-                                 //   three widths beside them. The port's granule, identifier
-                                 //   width and physical range come from a manual; this is the
-                                 //   machine's own answer, so the two can be compared
-    KOS_ASPACE_OP_MEMTYPE_AT = 17 // (a virtual address) -> 1 + the memory TYPE the CALLING
+                                 //   Churn that ends with a different answer stranded a root,
+                                 //   which a frame delta only implies
+    KOS_ASPACE_OP_MODEL = 16,    // () -> what the implementation reports about its own
+                                 //   translation, as the KOS_ASPACE_MODEL_* bits and the three
+                                 //   widths beside them, which the port's own recorded figures
+                                 //   are compared against
+    KOS_ASPACE_OP_MEMTYPE_AT = 17, // (a virtual address) -> 1 + the memory TYPE the CALLING
                                  //   task's mapping of it carries (enum arch_map_memtype),
                                  //   or 0 when the page is not mapped. The flag belongs to
                                  //   the block, so two mappings of one block answering
                                  //   differently is the disagreement kos_mem_flags warns of
+    KOS_ASPACE_OP_ACQUIRE_BALANCE = 18, // () -> outstanding page acquires in the high half of
+                                 //   the word and releases that paired with none in the low
+                                 //   half. Both are 0 between calls
+    KOS_ASPACE_OP_REENT_SEATING = 19, // () -> bit 0 when a thread whose task holds no space
+                                 //   has been switched in, bit 1 when libc's reentrant state
+                                 //   was written for such a thread. 1 is the only right answer
+    KOS_ASPACE_OP_DATA_HOME_FORGET = 20, // () -> 0, having dropped the space that holds the
+                                 //   image's own data pages, as its release would
+    KOS_ASPACE_OP_MAP_TLBI = 21  // () -> page-invalidation sequences the map editor has
+                                 //   ISSUED in the high half of the word and ELIDED in the
+                                 //   low half, both since boot. A space installed on no core
+                                 //   caches nothing, so seeding one lands wholly in the low
+                                 //   half; a widening of the running space lands in the high
 };
 
 // KOS_ASPACE_OP_SPLIT_ACCESS: one bit per property of an access split at a page boundary.
@@ -628,11 +636,11 @@ struct kos_thread_params
     // widens, like a cap_grant mask. This 8-bit field bounds the authority word to 8 bits.
     uint8_t authority;
     // The task the child JOINS, from kos_task_create, or KOS_TASK_NONE to make the child a
-    // thread of the SPAWNER's task (KOS_TASK_NONE above). Only the task's creator may seat a
+    // thread of the spawner's task (KOS_TASK_NONE above). Only the task's creator may seat a
     // member. A member shares the task's data region, so it may bring NO mem_base of its own
     // (-KOS_EINVAL) and may not be privileged (-KOS_EINVAL); mmio_base is per-thread and is
-    // still its own. A NAMED task is the only way to put a thread in a group of its own, which
-    // is what an arm witnessing fault containment needs: a fault ends the whole task.
+    // still its own. A named task is the only way to put a thread in a group of its own, and
+    // a fault ends the whole task.
     kos_task_t task;
 };
 

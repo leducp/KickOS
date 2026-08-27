@@ -294,6 +294,14 @@ the region seam is a flat, NON-TRANSLATING protection-region set and stays one, 
 port gets its own parallel family. M6 implements that note rather than revisiting it. An MPU
 backend keeps its region calls; a translating backend implements the aspace family and no MPU.
 
+**An MPU board MAY be built unenforced; a translating board may NOT.** An MPU is a gate over a
+memory system that runs without it, so disabling it is a posture with a cost behind it, which is what
+the `-flat` presets are. An MMU IS the memory system: the descriptors that translate carry AP, UXN
+and PXN, so translation without enforcement is not a configuration that exists to be chosen, and F1's
+high-half kernel does not resolve with translation off. So `KICKOS_MEMORY_ENFORCED`, derived as
+`KICKOS_HAVE_MPU OR KICKOS_HAVE_ASPACE`, is not an invitation to a third posture: a chip that
+translates has nothing to test, and per-chip Rule 7 tables key on the mechanism they have.
+
 **And WHICH family a target has is a CHIP fact, not an arch fact.** An earlier draft wrote this as
 "the A53 backend implements the translation family", which quietly makes memory protection a property
 of the instruction set. It is not, and the tree already knows better: `mpu.cmake` lives under
@@ -696,11 +704,35 @@ the refusal freeze unchanged; only the count of callers does.
 **WHO FREES THE FRAMES, decided at T4 because destroy forced the question.** An address space frees
 what it MAPS, and this handoff deliberately maps one block into two spaces, so the second space to be
 destroyed would free frames the first no longer owns. The rule is that the BORROWER unmaps before it
-dies, leaving exactly one space holding the block; there is no refcount, because a refcount here would
-duplicate the ownership M6.5 is going to express properly and would have to be unpicked again. T4
-makes a violation loud rather than absorbed: the frame pool counts refused frees and an arm requires
+dies, leaving exactly one space holding the block; there is no FRAME-LEVEL refcount, because one here
+would duplicate the ownership M6.5 is going to express properly and would have to be unpicked again.
+T4 makes a violation loud rather than absorbed: the frame pool counts refused frees and an arm requires
 that count to be zero, so a double free fails a test instead of being swallowed by the allocator's own
 guard. T5 and T6 honour the rule or T8b replaces it with something better.
+
+**THAT RULE AS WRITTEN COVERS ONE ORDER OF DEATH ONLY, and the missing half was a real hole. Completed
+at T10, after M6.2's stage result, on an external audit's finding.** "The borrower unmaps before it
+dies" says what happens when the BORROWER goes first and says nothing about the DONOR going first,
+which is the order that frees frames under a live mapping: the donor's last task release runs
+`aspace_release`, whose destroy walk hands every mapped leaf back to the pool while the borrower still
+maps them, and reallocation then turns a live mapping into another process's data or page-table
+memory. **The executable check is structurally incapable of seeing it:** a donor that dies first frees
+each of those frames EXACTLY ONCE, so `frame_pool_refused()` stays at zero throughout. The rule is
+completed rather than replaced, and the completion adds a holder to a counter that already exists:
+
+  - **A SUCCESSFUL HANDOFF TAKES A REFERENCE ON THE DONOR'S DOMAIN**, dropped where the borrower's
+    BORROWED entry is unmapped. `Domain` is already "the memory a set of threads may touch, refcounted
+    by the live tasks holding it, freed at the last release", so the donor's space cannot be destroyed
+    while a borrower maps its frames, and T4's refusal of a FRAME-level refcount stands untouched: the
+    unit is still the domain, which is what M6.5 generalises.
+  - **The edge is acyclic by construction**, so the cycle two tasks handing each other a range would
+    make is not expressible. It is written in exactly ONE place, `domain_for`, onto a domain
+    `claim_slot` has just built, so it always points from a younger domain at one that was already
+    live; and the reference it holds is what stops that donor's slot being recycled underneath it. A
+    handoff CREATES the borrower and cannot add a range to a domain that already exists.
+  - **Its witness is `task_handoff_donor_exits`,** and the arm it sits beside is why the hole survived
+    review: `task_handoff_readback` kills both borrowers while root, the donor, runs on, which is
+    exactly the order that hides this.
 
 **Same virtual address, and not merely the same frames, and the reason is the block's CONTENTS.**
 Nothing in the tree guarantees that what root writes into a shared block is position-independent, so
@@ -814,6 +846,14 @@ was refused at admission while the map editor reported the type honoured. It ask
 answers, applied at the one call site that had it backwards. The already-reachable short-circuit
 moved with it: a page table always CARRIES the type, so a block reachable cacheably is not already
 reachable as a caller asking for another type meant.
+
+**AND THE CONVERSE, which M6.2's audit found unstated and unimplemented.** The typed question was
+asked only when the REQUEST carried a memory type, so a request naming none passed on rights alone
+and returned success over a block still mapped non-cacheable. That is the way BACK from a DMA
+buffer, and it is the transition the type exists for. The check now compares the existing exact
+type against the requested one in both directions before taking the short circuit, on both
+families: where a REGION descriptor carries the type the descriptor is REPLACED rather than
+stacked, one block never carrying two of them. Witnessed by `self_grant_retype`.
 
 ---
 
@@ -1135,6 +1175,17 @@ was going to have, without a second mechanism for either -- `kickos_init_args` i
 app-side `.bss` before any space exists and is therefore in the template, and every ctor's output is
 in it too, because the copy is taken from what root has, not from what the linker laid down.
 
+**AND THE TEMPLATE OUTLIVES ROOT, which M6.2's audit found it did not.** Releasing root's space
+cleared the record of which space held the image's own pages, so the next space seeded mapped those
+pages itself and became a second template: every process created after it copied a LIVE process's
+mutable globals rather than root's. Two properties now hold together. While root lives the source is
+root, unchanged, so a global root writes before a spawn is one the child reads out of its own copy
+-- the app's own drivers depend on exactly that. On root's way out, `aspace_release` freezes those
+pages into a snapshot of frames taken off the pool when root was seeded, with root's mappings still
+standing, and every later process copies the snapshot. A seed reaching a lost home with no snapshot
+behind it is REFUSED. No process other than root is ever the template. Witnessed by
+`process_data_template`, which stages the loss of the home and reads a later process's copy back.
+
 *A space now knows which of its mappings it OWNS.* The range list carries two flags per entry,
 BORROWED and IMAGE (`kernel/include/kickos/vrange.h`), and `aspace_release` walks it: a borrowed
 range is unmapped and no frame of it is freed, a reservation that was never mapped has its frames
@@ -1181,6 +1232,16 @@ an uncommitted task slot is still free and idle's own resolve would otherwise ha
 kernel domain. Idle keeps an arena block: it is privileged, and the kernel's half is mapped in every
 space by construction.
 
+*Which means a privileged thread holds NO SPACE, and the switch path must know it.* The kernel's half
+is reachable from any root, but the APP's half is not: it is the half that changes per process, and
+for a thread with no space of its own the installed root is still the last process's. libc's
+reentrant state lives there -- the per-slot array and the word libc resolves from are both app
+objects -- so the switch path asks `aspace_seated_for` before it primes or seats either, and writes
+neither when the answer is no. Idle is the only such thread today and needs no prime, which is the
+whole reason this was survivable; a spawned privileged thread is a pool thread, so it WOULD prime,
+and priming writes hundreds of bytes into whichever process was last installed. Recorded at
+`root-unprivileged-idle-alone-privileged` and witnessed by `reent_seating`.
+
 *A caller-supplied stack re-keyed at T6.2 and is no longer arena-confined.* Where a backend
 translates, the block must be a range the space the CHILD runs in already maps and that is not the
 process image, which is exactly what F10's allocator hands out; the arena predicate does not run
@@ -1209,6 +1270,15 @@ mid-syscall, which widens the running thread's own set and makes it effective wi
 
 **Only the first two are ACTIVATIONS.** The third is a MAP of the space already active, never a root
 switch, and conflating the two would have had the self-grant reloading a root it never left.
+
+**WHAT SKIPS THE ROOT WRITE IS A CACHE, AND THE CACHE IS PER CORE.** An activation whose space is
+already the installed one must not repeat the write: with no translation tag the backend drops the
+whole low half on every root change. The cell that records it is one per core (`KICKOS_NUM_CORES`,
+indexed by `arch_cpu_id`, which folds to a literal at one core), because a root a second core has
+never written is a root that core would then skip installing. Destroying a space clears the cell on
+EVERY core and rewrites only the running core's own root, a second core being switched off a dying
+space by its own scheduler. At one core this is byte-equivalent to the single cell it replaces; it
+is stated here because it is the property M7 would otherwise have to discover.
 **The clause that used to close this sentence -- "activate has two callers, map has three" --
 corresponded to nothing countable and is DELETED rather than corrected.** Three was the number of
 region-set install sites in the paragraph above, of which exactly one is a map; nobody counted map's
@@ -1788,11 +1858,17 @@ distinct names, which compiler-emitted names cannot have.
     `kickos_app_build_stamp`, `_kickos_heap_start`, the MPU-window symbols a flat chip leaves
     undefined), the app side through newlib's `__libc_fini_array` and `__call_exitprocs` reaching
     `__fini_array_start` and `__libc_fini`. It cannot be split and it cannot be placed. The answer is
-    `-mcmodel=large` on the three archives holding kernel text (`kickos_apply_split_image`): it emits
-    no GOT reference at all, which leaves the one `.got` entirely to the app, AND it materialises
-    every external address as a 64-bit literal, which retires all four kernel-to-app data crossings
-    with no source change. Measured cost on the `selftest` link: kernel text 45,561 to 53,000 bytes,
-    in a 1 MiB region. `-mno-direct-extern-access` does not exist on this GCC.
+    `-mcmodel=large` (`kickos_split_image_tu`): it emits no GOT reference at all, which leaves the
+    one `.got` entirely to the app, AND it materialises every external address as a 64-bit literal,
+    which retires all four kernel-to-app data crossings with no source change. Measured cost on the
+    `selftest` link: kernel text 45,561 to 53,000 bytes, in a 1 MiB region.
+    `-mno-direct-extern-access` does not exist on this GCC.
+    *It is scoped to the six TUs that name the app's half*, not to the three archives, the flag
+    costing kernel text on a fixed budget and on the scheduler and syscall paths' I-cache: applied
+    whole-target it cost 4,076 bytes of archive text over a fully small build, of which naming the
+    six TUs recovers 2,724. The list is derived from two sweeps over the objects of a fully small
+    tree, a page-relative one against app-half names and a `_GOT` one, and both are needed: the
+    reach class fails the link loudly, a GOT user is silent.
     *An FDE reaches the code it describes with a 32-bit PC-relative field*, so `.eh_frame` and
     `.gcc_except_table` have to sit in the same half as that code. Only the toolchain archives emit
     either here and those are app-side, so both moved down whole and one table still covers everything
@@ -2292,7 +2368,7 @@ them expand to nothing and the third has no caller.
     express a rendezvous. Its comment records what it is NOT: on a broadcast architecture the
     maintenance inside `map` and `unmap` does not route through it, because routing it there would
     invent the deadlock A64 cannot have.
-  - **The data-cache clean and invalidate seam,** `arch_dcache_clean` and `arch_dcache_invalidate`,
+  - **The data-cache flush and invalidate seam,** `arch_dcache_flush` and `arch_dcache_invalidate`,
     with the armv8a backend in `arch/arm64/armv8a/cache_armv8a.cc`. Concepts: no line size crosses
     the seam, the backend reading `CTR_EL0` rather than trusting the A53's 64 bytes, because a
     smaller line anywhere in the hierarchy would leave lines untouched at 64. The invalidate uses
@@ -2311,6 +2387,143 @@ result, not this step's.
 **Stage result:** an enforcing unicore A53 running processes, the whole existing fleet green, and both
 sweeps clean -- `tools/sweep_image_gates.sh` and `tools/sweep_host_gates.sh`, because the image half
 alone has hidden a failure before.
+
+**T10. The two findings an external audit stopped the merge for, after that stage result.** Both are
+recorded here rather than in a changelog because each corrects something this document ASSERTS: the
+first completes T4's ownership rule (F10, above), the second retires an arm that was asking an MPU
+question of a translating backend.
+
+*T10a. A borrower kept mappings after the donor's frames were freed, and the fix is a lifetime edge
+rather than a mechanism.* F10 now carries the rule and the acyclicity argument; what belongs here is
+where the reference is taken and dropped, and what the arm measures.
+  - **Taken** in `domain_for` (`kernel/domain/domain.cc`), on the line after `aspace_handoff` returns
+    0, and only there. Taking it on success is what leaves `aspace_handoff`'s own three unwind arms
+    with nothing to surrender: none of them can be reached with the edge already written.
+  - **Dropped** by `drop_space`, the file-local helper that is now the ONLY caller of `aspace_release`
+    in that file. The unmap of the borrowed entry and the surrender of the reference it rests on are
+    therefore one operation that no site can half-perform. Its three callers are `domain_release` at
+    refcount zero, `claim_slot`'s recycle of a slot that still holds a space, and `claim_slot`'s
+    seed-failure unwind.
+  - **The recycle arm is not decoration.** A domain abandoned at refcount 0 -- `task_for` and
+    `task_create` both resolve one before they take a task slot -- pins its donor until the pool
+    happens to reuse the slot. Both of those failure arms now release the domain outright, and the
+    recycle arm is the backstop.
+  - **`domain_release` is iterative.** A borrower of a borrower makes the release a chain as long as
+    the domain pool, with `arch_aspace_destroy` walking a page-table tree at every link, so the loop
+    spends one kernel frame for the whole chain instead of one per link.
+  - **The arm is `task_handoff_donor_exits`,** and it stages the order the suite had never staged: the
+    donor is a task of its OWN reserving a block of its own, because a block ROOT reserved is BORROWED
+    in the donor's space too and its teardown would free none of it. Root joins the donor's thread AND
+    drops its own creator hold -- `kos_task_create` takes a domain reference for the creator, so the
+    join alone is not the donor's last reference and without dropping it the ordering is unreachable.
+    A churn task then takes every one-granule block the pool will hand out and stamps each.
+  - **What the mutation says.** Deleting the two lines that take the edge, and nothing else: `spaces
+    held 3 -> 2`, so the donor's space was destroyed under a live mapping; the churn task's FIRST
+    block landed on the donor's own frame; and the borrower read the churn task's word rather than the
+    donor's. With the edge in place the churn window brackets the donor's frame (608..709 against 609)
+    without containing it, which is what makes the token check non-vacuous rather than lucky.
+
+*T10b. `region_mode` was STATE-DEPENDENT rather than failing, which is worse.* The arm inferred the
+MPU region-encoding mode from the SUBTRACTION OF TWO `kos_ram_alloc` results, and under
+`KICKOS_HAVE_ASPACE` the allocator is a first-fit frame bitmap: earlier frees make consecutive
+allocations non-monotonic, so the difference reports pool state and not shaping. It was reproduced red
+by the auditor and green here, both correctly.
+  - **ALLOCATION ORDER IS NOT PUBLIC API on a translating backend**, and that sentence is now in the
+    source at both sites that used to assume otherwise. The arm is not registered under
+    `KICKOS_HAVE_ASPACE` rather than tuned until one ordering passes; there is no region encoding to
+    name there, and what it used to assert about the map editor is asked of `aspace_model` and
+    `aspace_seam` instead.
+  - **`discover_granule` was the same class** and is the one that mattered, being memoised, so a
+    single bad first pair would have poisoned every later consumer for the whole run. Under
+    `KICKOS_HAVE_ASPACE` it now ASKS, the probe ABI already carrying the op
+    (`KOS_ASPACE_OP_GRANULE`, `user/include/kickos/sys/abi.h`), so nothing was added for this. The
+    power-of-two test on the answer is what turns an unavailable probe into a skip rather than into a
+    garbage granule.
+  - **`sgnp_worker` is the third and is left registered**, with the assumption named. Its "consecutive
+    3-granule blocks step through the granule residues" is a bump-arena argument, and where it does
+    not hold the arm goes NON-DISCRIMINATING rather than wrong: it falls back to the first block and
+    still self-grants a 3-granule one, which is the size question it exists to ask.
+  - Every other multi-allocation site in the suite compares frame identities, return codes or frame
+    COUNTS, none of which is order-dependent.
+
+**T11. The four performance findings of the same audit, and the DRY one.** Each corrects a cost this
+document records rather than a behaviour it asserts, so each carries its measurement. Every figure
+below is the `qemu-arm64` `selftest` link, and the two text figures are `.text.init` plus `.text` of
+that ELF and the text totals of the three archives holding kernel text.
+
+*T11a. Seeding a space installed on no core costs no TLB maintenance, and that is a DECISION resting
+on a property section 5 already records.* Nothing tags a translation, so `write_ttbr0` sweeps the
+whole local TLB on every root change; a space whose root this core has never installed therefore
+holds neither a cached entry nor a cached negative translation, and a per-page invalidate during its
+seed drops nothing. `invalidate_page_if` takes that answer from `installed_here`, which reads
+TTBR0_EL1 and compares it against the space's own root, and `arch_aspace_map` and `arch_aspace_unmap`
+each ask once per call rather than once per page.
+  - **Measured inside the `IrqLock` of ONE `kos_task_create`:** 62 page-invalidation sequences before
+    (248 synchronising instructions, four per page across the image's text and data extents), 0
+    after. What remains masked is the image data copy, 32 pages of it, unchanged.
+  - **The RUNNING space still pays**, which is the half that must not be optimised: a self-grant
+    widens the installed root and every page of it is invalidated.
+  - **AT ONE CORE `installed` IS THE WHOLE QUESTION**, and the elision is compiled out above one: a
+    sibling core's TTBR0 is not readable here, so the multi-core form needs the active-core set T9
+    decided and did not build.
+  - **Witnessed by `map_tlbi_elided`,** which reads `KOS_ASPACE_OP_MAP_TLBI` either side of a task
+    create and either side of a self-grant. Two mutations fail it: gating the elision off reports 62
+    issued and 0 elided, and eliding unconditionally leaves the self-grant reporting 0 issued. The
+    positive control is not decoration, that second mutation being otherwise INVISIBLE to the whole
+    suite: QEMU does not model a stale entry, which is the same result T8b's negative control already
+    recorded for a fresh map's invalidate.
+  - **NOT DONE, and the reason is the SOURCE rather than the destination.** The audit's direction
+    holds for everything a seed WRITES: the tables, the frames and the range list of a space nothing
+    can reach need no global mask, and the frame pool serialises its own operations. It does not hold
+    for what the seed READS. The template is root's live static data, and the mask is what makes the
+    32 pages ONE point-in-time snapshot of it: with interrupts on, a user IRQ handler or a sibling
+    thread of root's task can write an app global between two of those pages, and the child then
+    starts on an image no writer ever saw, a pointer copied without its target. Nothing in the suite
+    would show it. So the copy is masked deliberately from here on, and removing the mask needs a
+    scheme that makes the source immutable for the duration (a read-only template with a fault
+    handler behind it) rather than a lock change.
+  - **And a second blocker sits under that one,** which is why the narrower change is not available
+    either: the copy runs inside `spawn_masked`'s function-scope lock, whose closing comment states
+    why a spawn is one transaction. A spawner slain in an unmasked gap is redirected to the exit stub
+    and never returns, so a domain slot claimed and an image seeded in that gap have nothing left
+    running to finish or free them. That would need an abandonment record on the creating thread and
+    a reclaim of it in the kill path.
+
+*T11b. `-mcmodel=large` is scoped to the six TUs that name the app's half*, not to the three
+archives. The full reasoning and the derivation are at T5b above; the figures are 4,076
+bytes of archive text for the whole-target flag, of which naming the six recovers 2,724, and 2,264
+bytes of the ELF's kernel-half text. The kernel calls no app text either way: 1,864 kernel-half
+branches swept, 0 into `.apptext`, with the same range test over `.apptext` itself firing 3,224 times
+as the positive control.
+  - **The reach class is loud and the GOT class is silent**, and that asymmetry is why the scoping
+    ships with a gate. `kernel/mem/aspace.cc` and `kernel/domain/domain.cc` hold only weak externs; compiled small
+    they emit `R_AARCH64_ADR_GOT_PAGE` and the link SUCCEEDS, because the symbols resolve. Nothing
+    fails until something else forces the one `.got` to be placed. `kernel_got`
+    (`tests/static/check_kernel_got.sh`) reads the three archives and refuses any `_GOT` record, with
+    the relocation count as its positive control; dropping `kernel/mem/aspace.cc` from the list turns it red
+    and names the four symbols, while the link and the runtime suite stay green.
+
+*T11c. The frame bitmap is scanned a word at a time*, keeping the bitmap and first-fit. Recorded with
+its figures and its host arms at `kernel/mem/frame.cc`.
+
+*T11d. Per-domain range bookkeeping is narrowed, and the widths are PROVEN.* `VirtualRange` was 24
+bytes and is 16: `pages` is `uint32_t` and `rights` `uint8_t`. Neither width is assumed. Three
+`static_assert`s in `kernel/include/kickos/vrange.h` say the widest value each setter can be handed round-trips through its
+field, and the setters refuse rather than truncate: `reserve` refuses above `VR_MAX_PAGES` and `grant`
+refuses a rights word carrying a bit the entry cannot hold. `Domain::regions` is one descriptor rather
+than `KICKOS_MPU_MAX_REGIONS` where a backend translates, the kernel singleton's whole-arena
+descriptor being the only one any domain there records, and `region_count` is a byte.
+  - **Measured on the kernel instance:** 35,752 bytes to 27,112, of which 5,120 is the range lists
+    (20 slots x 256), 3,360 the region arrays and 160 the region counts. Per-domain range bookkeeping
+    falls from 43.4 percent of the instance to 38.4.
+
+*T11e. The checked extent arithmetic is shared and the range walks are NOT.* `include/kickos/extent.h`
+carries `is_pow2` and `extent_end`, reached by both layers without either including the other's
+headers, and `frame_pool_free_run` replaces the two identical frame-run free loops. Left duplicated
+deliberately: `VirtualRanges::find`, `covers` and `overlaps` are three traversals of one array with
+three different admission rules, and the map editor's leaf walks differ in break-before-make and
+attribute handling. Unifying either set takes a flag, and a flag over a security-sensitive traversal
+is easier to misuse than the duplication.
 
 ### M6.3 -- the RV64 Sv39 backend, and the aspace-seam verdict
 

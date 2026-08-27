@@ -7,6 +7,11 @@
 
 #include <kickos/kruntime.h>
 
+#if defined(KICKOS_ENABLE_SELFTEST)
+#include <kickos/aspace.h>
+#include <kickos/sched.h>
+#endif
+
 namespace kickos
 {
     namespace
@@ -15,7 +20,29 @@ namespace kickos
         // direct read. Everything below answers out of this, so the linker split has only
         // to change what fills it.
         KickosReentSeam s_seam = {};
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+        // Writes to the app half made for a thread whose memory view is not installed. The
+        // check sits HERE and the guard sits in the switch path, so a guard that stops
+        // guarding is counted rather than silently correct.
+        size_t s_unseated_writes = 0;
+
+        void note_write(void)
+        {
+            if (not aspace_seated_for(sched::current()))
+            {
+                s_unseated_writes++;
+            }
+        }
+#endif
     }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    size_t reent_unseated_writes(void)
+    {
+        return s_unseated_writes;
+    }
+#endif
 
     void reent_seam_read(void)
     {
@@ -44,6 +71,9 @@ namespace kickos
         // reent_state_for_slot hands it out only for a TCB outside the pool, which is idle,
         // and idle holds no capability and runs arch_idle_wait alone. Seating it on a thread
         // that prints would make every later prime inherit that thread's leftovers.
+#if defined(KICKOS_ENABLE_SELFTEST)
+        note_write();
+#endif
         kmemcpy(state, s_seam.shared, s_seam.stride);
     }
 
@@ -57,6 +87,9 @@ namespace kickos
         // unaligned pointer-width copy is a call again.
         //
         // IT IS STILL A COPY AND NOT A STORE, for the two reasons reent.h gives.
+#if defined(KICKOS_ENABLE_SELFTEST)
+        note_write();
+#endif
         void** const word =
             static_cast<void**>(__builtin_assume_aligned(s_seam.seat, sizeof(void*)));
         __builtin_memcpy(word, &state, sizeof(state));

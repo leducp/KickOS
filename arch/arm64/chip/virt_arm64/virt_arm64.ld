@@ -13,8 +13,8 @@
  * reachable from the app's own data.
  *
  * The reverse reach is what the kernel side pays for: the halves are 2^40 apart and adrp
- * spans 4 GiB, so the archives holding kernel text are built -mcmodel=large
- * (kickos_apply_split_image, cmake/kickos.cmake). That also leaves the ONE .got a static
+ * spans 4 GiB, so the kernel-side TUs that name the app's half are built -mcmodel=large
+ * (kickos_split_image_tu, cmake/kickos.cmake). That also leaves the ONE .got a static
  * link has entirely to the app, which matters because a GOT slot is itself reached by adrp
  * and a GOT with users in both halves could not be placed at all.
  *
