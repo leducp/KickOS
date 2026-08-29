@@ -11,7 +11,11 @@ if(NOT TARGET rootfault)
   return() # diagnostics off -> app not built; skip its tests
 endif()
 
-if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU)
+# KICKOS_MEMORY_ENFORCED and not KICKOS_HAVE_MPU: the arm is about CONFINEMENT and not about
+# which mechanism enforces it, and a translating board resolves HAVE_MPU 0 on purpose. The
+# script itself is already arch-neutral, reading the fault address off whichever field the
+# reporter prints (docs/design-m6-mmu.md R2.2).
+if(KICKOS_BUILD_TESTS AND KICKOS_MEMORY_ENFORCED)
   # Through the same script as the QEMU boards: a PASS/FAIL_REGULAR_EXPRESSION pair
   # cannot require the child's control marker AND pin the fault address to the region
   # root announced.
@@ -26,6 +30,9 @@ if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU)
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_rootfault.sh" ARGS ${KICKOS_FAULT_OUTCOME})
   elseif(KICKOS_BOARD STREQUAL "qemu-riscv")
     kickos_add_qemu_test(NAME qemu_riscv_rootfault TARGET rootfault BOARD qemu-riscv
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_rootfault.sh" ARGS ${KICKOS_FAULT_OUTCOME})
+  elseif(KICKOS_BOARD STREQUAL "qemu-riscv64")
+    kickos_add_qemu_test(NAME qemu_riscv64_rootfault TARGET rootfault BOARD qemu-riscv64
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_rootfault.sh" ARGS ${KICKOS_FAULT_OUTCOME})
   endif()
 endif()

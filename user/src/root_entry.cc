@@ -24,10 +24,26 @@ extern "C"
     // privileged.
     extern void (*__kickos_app_init_array_start[])();
     extern void (*__kickos_app_init_array_end[])();
+
+#if KICKOS_HAVE_ASPACE
+    // DWARF EH unwind tables, and the registrar libgcc supplies for them. BOTH are app-side
+    // where the image is split, and so is the code they describe: the kernel's own reset path
+    // runs before any space exists, so at that point nothing maps this half at all. Weak: null
+    // in a freestanding image, and on a target whose unwinder finds the tables another way.
+    extern unsigned char __eh_frame_start[];
+    void __register_frame(void*) __attribute__((weak));
+#endif
 }
 
 extern "C" void kickos_root_entry(void*)
 {
+#if KICKOS_HAVE_ASPACE
+    // Before the ctors below, one of which may throw.
+    if (__register_frame != nullptr)
+    {
+        __register_frame(__eh_frame_start);
+    }
+#endif
     // App/library ctors, with the kernel live and in a thread, before main.
     // No null guard: the bounds are strong, so an empty window is start == end and this
     // loop simply does not run.

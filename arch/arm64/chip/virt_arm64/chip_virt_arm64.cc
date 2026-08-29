@@ -40,8 +40,6 @@ extern "C"
     // drops crtbegin, so its frame_dummy never registers .eh_frame and a full-C++ app must
     // register it by hand at boot. WEAK ref: a freestanding image references no _Unwind_*,
     // so the ref stays null and the call is skipped.
-    extern uint32_t __eh_frame_start;
-    void __register_frame(void*) __attribute__((weak));
 
     // Nominal core clock (Hz).
     uint32_t SystemCoreClock = 0;
@@ -381,6 +379,9 @@ void arch_shutdown(int status)
 // The shared panic/fault dead-end (kernel.h).
 void kfault_terminate(void)
 {
+    // The FIFO and the shift register outlive arch_shutdown, so the dump truncates on a part
+    // without this; the panic writes are already synchronous, so only the device is left.
+    arch_console_flush_sync();
     arch_shutdown(132);
 }
 
@@ -424,10 +425,6 @@ void Reset_Handler(void)
     for (uint32_t* b = &__kickos_appbss_start; b < &__kickos_appbss_end; b++)
     {
         *b = 0;
-    }
-    if (__register_frame != nullptr) // weak: null in a freestanding image (see decl)
-    {
-        __register_frame(&__eh_frame_start); // DWARF EH: register before ctors/throws
     }
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {

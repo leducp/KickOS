@@ -105,6 +105,14 @@ if(KICKOS_ARCH STREQUAL "armv8a")
   # held arm runs only where a board mints a window.
   list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
 endif()
+if(KICKOS_ARCH STREQUAL "rv64imac")
+  # Same gap, reached by a different route: this arch selects translation rather than region
+  # descriptors, so arch_mpu_region_encodable refuses every shape and thread_create declines
+  # the window with -KOS_EINVAL at every base the arm tries. The rv32 PMP port encodes a NAPOT
+  # window whether or not enforcement is on, which is why its flat variant reports no partial.
+  # R2's aspace family is what earns the held arm here.
+  list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
+endif()
 # cap_chunk_span needs a table WIDER than the chunk granule (KICKOS_CAP_CHUNK_TARGET) to reach a
 # segmented index; below that it runs the flat-decode half and reports PARTIAL. The summed width
 # is not readable here, cmake/cap_table.cmake resolving it after this directory is added, but the
@@ -336,6 +344,14 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
     "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
 endif()
 
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64")
+  kickos_add_qemu_test(NAME qemu_riscv64_selftest TARGET selftest BOARD qemu-riscv64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
+  set_property(TEST qemu_riscv64_selftest APPEND PROPERTY ENVIRONMENT
+    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
+    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
+endif()
+
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
   kickos_add_qemu_test(NAME qemu_arm64_selftest TARGET selftest BOARD qemu-arm64
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
@@ -425,10 +441,22 @@ if(KICKOS_BUILD_TESTS AND TARGET selftest)
   set_tests_properties(class_backend PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 
-# RISC-V-under-PMP small-data guard: the gp window sits inside the app grant, so the KickOS libs
-# (built -msmall-data-limit=0) must emit ZERO .sdata/.sbss. A stray kernel global there is
-# reachable and writable by an unprivileged thread (docs/design-riscv-gp-split.md, Option 4).
-if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "rv32imac")
+# RISC-V small-data guard: the KickOS libs (built -msmall-data-limit=0) must emit ZERO
+# .sdata/.sbss, so gp anchors the app's window and nothing of the kernel's.
+#
+# TWO BACKENDS, ONE ARCHIVE-LEVEL CHECK, DIFFERENT HAZARDS. Under PMP the gp window sits inside
+# the app grant, so a stray kernel global there is readable and writable by an unprivileged
+# thread (docs/design-riscv-gp-split.md, Option 4). Under translation the anchor is three
+# gigabytes from anything the kernel owns, and what a stray global would do is put a kernel
+# datum where a thread's gp decides the address.
+#
+# NECESSARY AND NOT SUFFICIENT on the translating board, which is why riscv_kernel_gp is
+# registered beside it: gp addressing is MADE BY THE LINKER, so an archive with no .sdata at
+# all can still end up with gp-relative kernel accesses in the linked image
+# (docs/design-m6-mmu.md R1.6).
+if(KICKOS_BUILD_TESTS
+   AND ((KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "rv32imac")
+        OR (KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")))
   add_test(
     NAME    riscv_no_smalldata
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_riscv_no_smalldata.sh"
@@ -438,6 +466,63 @@ if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "rv32imac")
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
             "$<TARGET_FILE:kickos_lib>")
   set_tests_properties(riscv_no_smalldata PROPERTIES TIMEOUT 60 LABELS host)
+endif()
+
+# And the LINKED image, which is the only place gp addressing exists. The archives above cannot
+# answer it: the linker MAKES a gp-relative access out of an ordinary upper/lower pair whose
+# target lands inside gp +/- 0x800, so a kernel reference to an app-half symbol links silently
+# through the app's own anchor instead of failing as an auipc truncation
+# (docs/design-m6-mmu.md R2.2). Three images, so a reference the optimiser only emits in one of
+# them is still in the corpus.
+if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
+  add_test(
+    NAME    riscv_kernel_gp
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_riscv_kernel_gp.sh"
+            "${CMAKE_OBJDUMP}" ".text"
+            "$<TARGET_FILE:selftest>"
+            "$<TARGET_FILE:hello>"
+            "$<TARGET_FILE:cxxtest>")
+  set_tests_properties(riscv_kernel_gp PROPERTIES TIMEOUT 120 LABELS host)
+endif()
+
+# And the SAME hazard in its other, larger form: gp is one way a kernel reference to an app-half
+# symbol resolves, and which references take it is decided by where the linker happened to put
+# the anchor. The app window is at 0x40000000, inside medlow's absolute reach, so the linker
+# relaxes such a reference to lui+addi and the link succeeds whether or not gp is involved; the
+# resulting kernel access lands in whichever process is on the core. Measured: one injected
+# store to `kickos_init_args` is a gp store in `cxxtest` and an ordinary lui+addi store in
+# `selftest` and `hello`, so the gate above sees one image of three
+# (docs/design-m6-mmu.md R2.2). This one reads the kernel archives' relocations, which name the
+# symbol an instruction operand resolves to whatever the linker did to the encoding.
+if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
+  add_test(
+    NAME    riscv_kernel_apphalf
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_riscv_kernel_apphalf.sh"
+            "${CMAKE_READELF}"
+            "${PROJECT_SOURCE_DIR}/tests/static/riscv_apphalf_allowlist.txt"
+            "$<TARGET_FILE:selftest>"
+            "$<TARGET_FILE:hello>"
+            "$<TARGET_FILE:cxxtest>"
+            "--"
+            "$<TARGET_FILE:kickos_kernel>"
+            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
+  set_tests_properties(riscv_kernel_apphalf PROPERTIES TIMEOUT 120 LABELS host)
+endif()
+
+# And the kernel window's own leaves, out of the same three images. The write-execute boundary is
+# a set of link-time page-table entries, so the image is where it can be read; the boundary they
+# are held against is the image's own section table, so a layout that moved a fetched or a stored
+# section across it fails here rather than at the first access (docs/design-m6-mmu.md R2.3).
+if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
+  add_test(
+    NAME    riscv_kernel_wx
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/riscv_kernel_wx.py"
+            "${CMAKE_READELF}"
+            "$<TARGET_FILE:selftest>"
+            "$<TARGET_FILE:hello>"
+            "$<TARGET_FILE:cxxtest>")
+  set_tests_properties(riscv_kernel_wx PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 
 # App-window leak guard for the inverted .appdata scheme: the enforcing linker scripts name the

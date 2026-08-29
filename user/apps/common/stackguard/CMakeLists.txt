@@ -25,3 +25,11 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_stack_guard.sh"
     ARGS "THREAD FAULT" 139)
 endif()
+
+# The same arm on RV64, through this architecture's own script: the write bit lives in the
+# CAUSE here rather than beside a level field, so there is no constant to substitute.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64")
+  kickos_add_qemu_test(NAME qemu_riscv64_stack_guard TARGET stackguard BOARD qemu-riscv64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_stack_guard_rv64.sh"
+    ARGS "THREAD FAULT" 139)
+endif()

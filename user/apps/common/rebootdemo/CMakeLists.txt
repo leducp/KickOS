@@ -32,4 +32,7 @@ elseif(KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
 elseif(KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_reboot_declined TARGET rebootdemo BOARD qemu-riscv
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_reboot.sh" TIMEOUT 40)
+elseif(KICKOS_BOARD STREQUAL "qemu-riscv64")
+  kickos_add_qemu_test(NAME qemu_riscv64_reboot_declined TARGET rebootdemo BOARD qemu-riscv64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_reboot.sh" TIMEOUT 40)
 endif()

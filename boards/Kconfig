@@ -78,6 +78,10 @@ config BOARD_QEMU_RISCV
 	bool "qemu-riscv (virt)"
 	select CHIP_VIRT_RV32
 
+config BOARD_QEMU_RISCV64
+	bool "qemu-riscv64 (virt, RV64)"
+	select CHIP_VIRT_RV64
+
 config BOARD_RX72M
 	bool "rx72m (Renesas RX72M)"
 	select CHIP_RX72M
@@ -115,6 +119,7 @@ config KICKOS_BOARD
 	default "qemu-m33" if BOARD_QEMU_M33
 	default "qemu-m7" if BOARD_QEMU_M7
 	default "qemu-riscv" if BOARD_QEMU_RISCV
+	default "qemu-riscv64" if BOARD_QEMU_RISCV64
 	default "rx72m" if BOARD_RX72M
 	default "sim" if BOARD_SIM
 	default "teensy41" if BOARD_TEENSY41

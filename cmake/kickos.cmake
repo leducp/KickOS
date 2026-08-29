@@ -118,13 +118,28 @@ function(kickos_apply_freestanding target)
   target_compile_options(${target} PRIVATE
     ${KICKOS_WARN_FLAGS} ${KICKOS_FREESTANDING_FLAGS}
     "$<$<COMPILE_LANGUAGE:CXX>:${KICKOS_FREESTANDING_CXX_FLAGS}>")
-  # RISC-V PMP enforcement: the KickOS-owned libs must emit NO gp-relative small-data, so
-  # the single gp window holds only app + C++-runtime small-data and can sit inside the
-  # granted .appdata region. -msmall-data-limit=0 routes every KickOS global to ordinary
-  # .data/.bss. NOT applied to the app: its -fexceptions TUs need gp-relative small-data or
-  # __cxa_throw hangs in the FDE walk (docs/design-cxx-under-mpu.md).
-  # check_riscv_no_smalldata.sh asserts the built archives carry zero .sdata/.sbss.
-  if(KICKOS_ARCH STREQUAL "rv32imac" AND KICKOS_HAVE_MPU)
+  # RISC-V: the KickOS-owned libs must emit NO gp-relative small-data, so the single gp
+  # window holds only app + C++-runtime small-data. -msmall-data-limit=0 routes every KickOS
+  # global to ordinary .data/.bss. NOT applied to the app: its -fexceptions TUs need
+  # gp-relative small-data or __cxa_throw hangs in the FDE walk
+  # (docs/design-cxx-under-mpu.md).
+  #
+  # TWO BACKENDS, ONE FLAG, DIFFERENT HAZARDS. Under PMP the window has to fit inside the
+  # granted .appdata region. Under translation the anchor is in the APP's half, three
+  # gigabytes from anything the kernel owns.
+  #
+  # THE FLAG IS NECESSARY AND NOT SUFFICIENT, and what does NOT follow from it is the whole
+  # point. It keeps kernel DATA out of .sdata/.sbss; it does NOT stop a kernel access
+  # RESOLVING through gp, because the linker MAKES gp addressing out of any upper/lower pair
+  # whose target lands within gp +/- 0x800. gp is a register an unprivileged thread writes,
+  # so arch/riscv/rv64imac/switch.S re-anchors it twice per trap, at .Ltrap_regs and at
+  # .Lrestore, and that re-anchor is what keeps a thread's value from reaching anything.
+  # check_riscv_no_smalldata.sh asserts the built archives carry zero .sdata/.sbss, which is
+  # an ARCHIVE-level check: gp addressing does not exist before link time, so
+  # check_riscv_kernel_gp.sh runs over the LINKED image and check_riscv_kernel_apphalf.sh
+  # over the kernel archives' relocations (docs/design-m6-mmu.md R2.2).
+  if((KICKOS_ARCH STREQUAL "rv32imac" AND KICKOS_HAVE_MPU)
+     OR (KICKOS_ARCH STREQUAL "rv64imac" AND KICKOS_HAVE_ASPACE))
     target_compile_options(${target} PRIVATE -msmall-data-limit=0)
   endif()
 endfunction()
@@ -155,6 +170,15 @@ function(kickos_privatise_runtime target)
     COMMAND "${CMAKE_OBJCOPY}" "--redefine-syms=${_syms}" "$<TARGET_FILE:${target}>"
     COMMENT "kickos: privatising the runtime references in ${target}"
     VERBATIM)
+  # A per-arch map beside the fleet-wide one, for a compiler-runtime call this ISA emits and
+  # the others do not. Optional: an arch with no such file adds nothing.
+  set(_arch_syms "${PROJECT_SOURCE_DIR}/cmake/kernel_runtime_${KICKOS_ARCH}.syms")
+  if(EXISTS "${_arch_syms}")
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND "${CMAKE_OBJCOPY}" "--redefine-syms=${_arch_syms}" "$<TARGET_FILE:${target}>"
+      COMMENT "kickos: privatising the ${KICKOS_ARCH} runtime references in ${target}"
+      VERBATIM)
+  endif()
 endfunction()
 
 # kickos_split_image_tu(<target> <source>...)
@@ -188,8 +212,21 @@ endfunction()
 #     readelf -rW <archive> | grep _GOT                          (any hit is a blocker)
 #   readelf TRUNCATES the type column, so ADR_GOT_PAGE prints as R_AARCH64_ADR_GOT and a
 #   pattern anchored on a trailing underscore matches nothing.
+#
+#   INERT WHERE KICKOS_SPLIT_IMAGE_CODE_MODEL IS EMPTY, which is the property the reach
+#   above actually needs: a flag that materialises a symbol's whole address in the
+#   referencing section. It is a per-arch spelling and not every arch has one (RISC-V offers
+#   medlow, a sign-extended 32-bit ABSOLUTE range, and medany, a signed 32-bit PC-relative
+#   DISPLACEMENT; neither materialises a whole 64-bit address), so the list is skipped there
+#   rather than compiled with a flag the compiler would refuse.
+#
+#   AN ARCH WITH NO SUCH FLAG CAN STILL CARRY A SPLIT IMAGE, and rv64imac does: a kernel
+#   reference to an app-half symbol becomes a relocated 64-bit WORD in kernel data instead of
+#   an address materialised in code (docs/design-m6-mmu.md R2.2). That is stricter than the
+#   large code model rather than weaker, since it also covers the CALL a long-branch veneer
+#   would otherwise absorb, and there are no RISC-V veneers to absorb one.
 function(kickos_split_image_tu target)
-  if(NOT KICKOS_ARCH STREQUAL "armv8a")
+  if(NOT KICKOS_SPLIT_IMAGE_CODE_MODEL)
     return()
   endif()
   get_target_property(_srcs ${target} SOURCES)
@@ -204,7 +241,8 @@ function(kickos_split_image_tu target)
       message(FATAL_ERROR "kickos_split_image_tu(${target}): ${_tu} is not a source of "
                           "that target, so -mcmodel=large would reach nothing.")
     endif()
-    set_property(SOURCE "${_tu}" APPEND PROPERTY COMPILE_OPTIONS -mcmodel=large)
+    set_property(SOURCE "${_tu}" APPEND PROPERTY COMPILE_OPTIONS
+                 ${KICKOS_SPLIT_IMAGE_CODE_MODEL})
   endforeach()
 endfunction()
 
@@ -478,6 +516,8 @@ endfunction()
 #     microbit   -> microbit    (armv6m Cortex-M0)
 #     qemu-riscv -> virt, plus QEMU=qemu-system-riscv32 QEMU_EXTRA=-bios none
 #                   (RV32IMAC bare-metal in M-mode, no OpenSBI).
+#     qemu-riscv64 -> virt, plus QEMU=qemu-system-riscv64 QEMU_EXTRA=-bios none
+#                   (RV64IMAC bare metal, no OpenSBI).
 #     qemu-arm64 -> virt, plus QEMU=qemu-system-aarch64 QEMU_EXTRA=-cpu cortex-a53 -nic none
 #                   (AArch64 bare metal at EL1).
 #   QEMU_MACHINE is always passed, never left to the scripts' mps2-an386 fallback:
@@ -496,6 +536,12 @@ function(kickos_add_qemu_test)
   set(_env "")
   if(QT_BOARD STREQUAL "qemu-riscv")
     set(_env QEMU=qemu-system-riscv32 "QEMU_EXTRA=-bios none")
+    set(_machine virt)
+  elseif(QT_BOARD STREQUAL "qemu-riscv64")
+    # No -cpu: qemu-system-riscv64 -M virt defaults to the `rv64` generic core, which
+    # implements every extension this image names. The aarch64 line's -cpu exists because
+    # its machine default REFUSES an A64 image, which has no counterpart here.
+    set(_env QEMU=qemu-system-riscv64 "QEMU_EXTRA=-bios none")
     set(_machine virt)
   elseif(QT_BOARD STREQUAL "qemu-arm64")
     # -cpu is MANDATORY and not a default worth relying on: qemu-system-aarch64 -M virt

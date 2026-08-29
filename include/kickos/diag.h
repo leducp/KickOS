@@ -58,6 +58,7 @@
     X(kParkNoKind,      "unreachable: park abort on a thread with no wait edge",     "P16")       \
     X(kKstackOverflow,  "kernel stack canary broken on this thread's slot",          "P17")       \
     X(kBootFramePool,   "kmain: the frame carve is too small to describe",           "P18")       \
+    X(kAspaceRelease,   "arch_aspace_release: no acquire of this page answered",     "P19")       \
     X(kBannerRule,      "  ==============================================\n",        "\n")
 
 namespace kickos
@@ -120,6 +121,13 @@ namespace kickos
 // RISC-V trap dump.
 #define KDIAG_F_RV_CAUSE  KICKOS_DIAG_PICK("  mcause=0x%x mepc=0x%x\n", "V1 %x %x\n")
 #define KDIAG_F_RV_STATUS KICKOS_DIAG_PICK("  mtval=0x%x mstatus=0x%x\n", "V2 %x mstatus=0x%x\n")
+
+// RISC-V supervisor trap dump (rv64imac). %lx and not %x: at XLEN 64 a CSR does not fit an
+// int, and %x would print half of one.
+#define KDIAG_F_RV64_CAUSE  KICKOS_DIAG_PICK("  scause=0x%lx sepc=0x%lx\n", "W1 %lx %lx\n")
+#define KDIAG_F_RV64_STATUS KICKOS_DIAG_PICK("  stval=0x%lx sstatus=0x%lx\n", "W2 %lx %lx\n")
+#define KDIAG_F_RV64_FRAME  KICKOS_DIAG_PICK("  SP=0x%lx RA=0x%lx\n", "W3 %lx %lx\n")
+#define KDIAG_F_RV64_FROM   KICKOS_DIAG_PICK("  taken from %s-mode\n", "W4 %s\n")
 
 // AArch64 EL1 exception dump. The conversions are %lx and not %x: this is the first arch
 // in the tree where a register does not fit an int, and %x would print half of one.

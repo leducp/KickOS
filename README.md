@@ -102,7 +102,9 @@ cmake --preset picopi && cmake --build --preset picopi
 ```
 
 Emulator run gates: `ctest --preset qemu` (Cortex-M4), `qemu-m7`, `qemu-m3`, `qemu-m33`,
-`microbit` (Cortex-M0), `qemu-riscv` (RV32IMAC). Flashing a real board is per board:
+`microbit` (Cortex-M0), `qemu-riscv` (RV32IMAC), `qemu-arm64` (Cortex-A53). Two more run
+locally and are in no CI job, `qemu-riscv64` and `qemu-riscv64-sv48` (RV64IMAC, one preset per
+paging mode); see *What CI gates* below. Flashing a real board is per board:
 [`docs/flashing.md`](docs/flashing.md) for the tool backends,
 [`docs/reference/boards.md`](docs/reference/boards.md) for the wiring.
 
@@ -154,7 +156,8 @@ flash tools run on. `cmake` prints the exact recipe if it cannot import it. A pa
 ### Cross toolchains
 
 A cross build finds its compiler through a per-family hint -- `KICKOS_ARM_TOOLCHAIN_BIN`,
-`KICKOS_RISCV_TOOLCHAIN_BIN`, `KICKOS_RX_TOOLCHAIN_BIN`, `KICKOS_XTENSA_BIN` -- seeded from the
+`KICKOS_AARCH64_TOOLCHAIN_BIN`, `KICKOS_RISCV_TOOLCHAIN_BIN`, `KICKOS_RX_TOOLCHAIN_BIN`,
+`KICKOS_XTENSA_BIN` -- seeded from the
 environment, overridable with `-D`, and falling back to `PATH` when left empty. The ARM and
 RISC-V toolchain files then verify what they resolved: a compiler without newlib and
 `libstdc++` for the board's own multilib is refused at configure time, naming what is missing,
@@ -162,7 +165,7 @@ rather than failing dozens of build steps later on a missing standard header.
 
 ## What CI gates
 
-The five instruction sets are not covered equally, and the asymmetry is structural. The header
+The seven instruction sets are not covered equally, and the asymmetry is structural. The header
 of [`.github/workflows/ci.yml`](.github/workflows/ci.yml) states each job's reasoning.
 
 | Target | Gate | Confinement exercised |
@@ -171,6 +174,8 @@ of [`.github/workflows/ci.yml`](.github/workflows/ci.yml) states each job's reas
 | armv7m / armv8-m | four QEMU MPS2 run gates (an386, an500, an385, an505), each in both postures | PMSAv7 and PMSAv8, at runtime |
 | armv6m | QEMU run gate (`microbit`, an nRF51822 provisioned at 32 KiB and not a BBC micro:bit v1) | none: the nRF51 has no unit |
 | rv32imac | QEMU `virt` run gate, both postures | PMP, at runtime |
+| armv8a | QEMU `virt` run gate (`qemu-arm64`), the only witness this ISA has | VMSAv8 page tables, at runtime |
+| rv64imac | **none**: no CI job exists, so both paging postures are local `ctest` only | Sv39 and Sv48 page tables, at runtime, locally |
 | Xtensa LX6 | build gate: no upstream QEMU ESP32 machine model | none: the LX6 has no per-task unit |
 | Renesas RX | none | -- |
 | the remaining ARM boards | build sweep, plus the one gate that needs neither silicon nor an emulator | link surface only |

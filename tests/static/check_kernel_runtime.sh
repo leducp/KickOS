@@ -36,6 +36,13 @@
 # the ordinary names. A REGION backend serves both privilege levels from one text mapping, so
 # there kickos/kruntime.h aliases the app's names and there is nothing here to assert.
 #
+# THE TWO BIT-COUNT HELPERS ARE HERE FOR THE SAME REASON AND WITH A SHARPER FAILURE. rv64imac
+# names no bit-manipulation extension, so __builtin_clzll and __builtin_ctzll lower to libgcc
+# calls; libgcc is app-side, and a kernel-side definition under the ORDINARY name is the one the
+# whole link sees, so an app-side libgcc member needing it (soft-float calls __clzdi2) then
+# makes a call the halves cannot carry. The kernel links its own under private names
+# (cmake/kernel_runtime_rv64imac.syms), and a hit here means that rewrite did not reach.
+#
 # NOT COVERED: an intrinsic name no toolchain here emits yet. The list is closed on purpose
 # so a hit names one symbol; a compiler that starts emitting `__aeabi_memclr` or `memchr`
 # passes this gate until the name is added here and to the rewrite map.
@@ -63,7 +70,7 @@ scratch_dir
 # Every name lib/libc/string.cc and lib/libc/fmt.cc define, plus the two _chk wrappers and
 # the two BSD spellings a libc may lower a call to. The kernel's own names are the same
 # words with the k prefix, so a hit is always one substitution away from correct.
-BANNED='memcpy memset memmove memcmp bcmp bzero strlen strnlen __memcpy_chk __memset_chk kvsnprintf ksnprintf'
+BANNED='memcpy memset memmove memcmp bcmp bzero strlen strnlen __memcpy_chk __memset_chk kvsnprintf ksnprintf __clzdi2 __ctzdi2'
 
 : > "$TMP/hits"
 for A in "$@"; do

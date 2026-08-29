@@ -28,3 +28,12 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_aspace_fault.sh"
     ARGS "ARMV8A EXCEPTION" 132)
 endif()
+
+# The same arm on RV64, through this architecture's own script: the banner is this arch's
+# (`=== RISC-V S-TRAP`), the reported address is `stval=` rather than `FAR=`, and `scause`
+# names no translation level.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64")
+  kickos_add_qemu_test(NAME qemu_riscv64_aspace_fault TARGET aspacefault BOARD qemu-riscv64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_aspace_fault_rv64.sh"
+    ARGS "RISC-V S-TRAP" 132)
+endif()

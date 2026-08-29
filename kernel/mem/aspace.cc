@@ -16,12 +16,22 @@
 
 extern "C"
 {
-    // The app's own low window (the chip linker script's image split). Weak: a chip that
-    // carves no such window leaves all four at zero and seeds nothing.
+    // The app's own window (the chip linker script's image split). Weak: a chip that carves no
+    // such window leaves all four at zero and seeds nothing.
     extern unsigned char __kickos_app_rom_start[] __attribute__((weak));
     extern unsigned char __kickos_app_rom_end[] __attribute__((weak));
     extern unsigned char __kickos_app_sram_start[] __attribute__((weak));
     extern unsigned char __kickos_app_sram_end[] __attribute__((weak));
+
+    // Added to an app VIRTUAL address to name the frame the loader put those bytes in. Zero,
+    // and absent, on a chip whose app window is linked where it loads.
+    extern unsigned char __kickos_app_load_delta[] __attribute__((weak));
+
+    // The kernel address that corresponds to physical address 0 for the image's own DRAM,
+    // which is the map of all physical RAM F1 puts in the kernel's half. Read here as well as
+    // in frame_pool.cc because this file needs it BEFORE any space exists, where
+    // frame_pool_ptr's own guard has nothing to answer about.
+    extern unsigned char __kickos_frame_pool_delta[];
 }
 
 namespace kickos
@@ -56,9 +66,9 @@ namespace kickos
         bool g_data_template_filled = false;
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-        // Outstanding acquires, and releases that paired with none. arch_aspace_release is a
-        // no-op on the backend that translates today, so nothing else here can tell a
-        // mispaired release from a correct one.
+        // Outstanding acquires, and releases that paired with none. Where release is a no-op
+        // this counter is the only thing that can tell a mispaired release from a correct one;
+        // a backend holding a real window refuses one instead.
         size_t g_acq_live = 0;
         size_t g_acq_unpaired = 0;
 
@@ -95,6 +105,31 @@ namespace kickos
             arch_aspace_release(space, va);
         }
 
+        // LINK-TIME WORDS AND NOT THE SYMBOLS THEMSELVES. Where the image is split, kernel text
+        // materialising an app-half address needs the large code model on one backend and links
+        // SILENTLY on the other, medlow's absolute reach covering the app's base, so a gate and
+        // not the link refuses it (tests/static/check_riscv_kernel_apphalf.sh); an address
+        // constant in the initialiser is one relocated word on both. The delta is an ABSOLUTE
+        // symbol whose VALUE is the whole offset, out of PC-relative reach the same way.
+        // VOLATILE is what keeps each a word: without it the value propagates back into every
+        // reader and the reference is PC-relative again.
+        unsigned char* const volatile g_app_rom_lo = __kickos_app_rom_start;
+        unsigned char* const volatile g_app_rom_hi = __kickos_app_rom_end;
+        unsigned char* const volatile g_app_sram_lo = __kickos_app_sram_start;
+        unsigned char* const volatile g_app_sram_hi = __kickos_app_sram_end;
+        unsigned char* const volatile g_app_load_delta = __kickos_app_load_delta;
+        unsigned char* const volatile g_pool_delta = __kickos_frame_pool_delta;
+
+        // The frame behind an app virtual address, which is the LOADER's placement and not
+        // this space's mapping: it is what the first seed maps and what every later copy
+        // reads its template through.
+        arch_phys_addr_t app_pa(uintptr_t va)
+        {
+            return static_cast<arch_phys_addr_t>(va)
+                   + static_cast<arch_phys_addr_t>(
+                       reinterpret_cast<uintptr_t>(g_app_load_delta));
+        }
+
         uintptr_t page_down(uintptr_t a, size_t g)
         {
             return a & ~static_cast<uintptr_t>(g - 1u);
@@ -125,12 +160,34 @@ namespace kickos
 
         Extent image_text(size_t g)
         {
-            return extent_of(__kickos_app_rom_start, __kickos_app_rom_end, g);
+            return extent_of(g_app_rom_lo, g_app_rom_hi, g);
         }
 
         Extent image_data(size_t g)
         {
-            return extent_of(__kickos_app_sram_start, __kickos_app_sram_end, g);
+            return extent_of(g_app_sram_lo, g_app_sram_hi, g);
+        }
+
+        // Whether `p` is a byte of the app IMAGE, which is what the two deltas below are valid
+        // for: added to anything else they answer an address no root maps, and the banner and
+        // the handoff both WRITE through the answer.
+        //
+        // TWO EXTENTS AND NOT ONE. The chip carves the app's read-only window and its writable
+        // one separately (the chip linker script's __kickos_app_rom_* / __kickos_app_sram_*),
+        // the second covering .appdata, .appbss and the app heap; the gap between them is the
+        // tail of the rom region and is nobody's storage. A window a chip does not carve leaves
+        // its pair equal, which admits nothing.
+        bool in_app_image(uintptr_t p)
+        {
+            uintptr_t const rom_lo = reinterpret_cast<uintptr_t>(g_app_rom_lo);
+            uintptr_t const rom_hi = reinterpret_cast<uintptr_t>(g_app_rom_hi);
+            if (p >= rom_lo and p < rom_hi)
+            {
+                return true;
+            }
+            uintptr_t const sram_lo = reinterpret_cast<uintptr_t>(g_app_sram_lo);
+            uintptr_t const sram_hi = reinterpret_cast<uintptr_t>(g_app_sram_hi);
+            return p >= sram_lo and p < sram_hi;
         }
 
         // The entry is claimed before anything is mapped, and every seeding path below keeps
@@ -275,15 +332,15 @@ namespace kickos
         Extent const text = image_text(g);
         if (text.pages != 0)
         {
-            // Output address == link address: the app's window is linked where it loads, so
-            // one physical page carries that text in every space. Borrowed, because these
-            // pages came from the image and not from the frame pool: aspace_release takes
-            // them out of the tree and frees none of them.
+            // The frames the LOADER put the app's text in, so one physical page carries that
+            // text in every space. Borrowed, because these pages came from the image and not
+            // from the frame pool: aspace_release takes them out of the tree and frees none
+            // of them.
             if (not claim(ranges, text, VR_IMAGE | VR_BORROWED))
             {
                 return false;
             }
-            if (arch_aspace_map(space, text.base, static_cast<arch_phys_addr_t>(text.base),
+            if (arch_aspace_map(space, text.base, app_pa(text.base),
                                 text.pages, ARCH_MAP_R | ARCH_MAP_X,
                                 ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
             {
@@ -325,9 +382,8 @@ namespace kickos
             (void)ranges->release(data.base);
             return false;
         }
-        if (arch_aspace_map(space, data.base, static_cast<arch_phys_addr_t>(data.base),
-                            data.pages, ARCH_MAP_R | ARCH_MAP_W,
-                            ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
+        if (arch_aspace_map(space, data.base, app_pa(data.base), data.pages,
+                            ARCH_MAP_R | ARCH_MAP_W, ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
         {
             frame_pool_free_run(tmpl, data.pages, g);
             (void)ranges->release(data.base);
@@ -339,6 +395,24 @@ namespace kickos
         return true;
     }
 
+    void* aspace_image_alias(void const* app_ptr)
+    {
+        if (g_app_rom_hi <= g_app_rom_lo)
+        {
+            return nullptr; // this chip carves no app window
+        }
+        uintptr_t const va = reinterpret_cast<uintptr_t>(app_ptr);
+        // The DOMAIN of the two additions, and not a convenience: a kernel-half pointer handed
+        // to them comes back as a kernel address inside no window at all, which a caller cannot
+        // tell from a real alias. Only ONE byte is tested, the signature carrying no length.
+        if (not in_app_image(va))
+        {
+            return nullptr;
+        }
+        uintptr_t const pa = static_cast<uintptr_t>(app_pa(va));
+        return reinterpret_cast<void*>(pa + reinterpret_cast<uintptr_t>(g_pool_delta));
+    }
+
     uintptr_t aspace_frame_token(struct arch_aspace* space, uintptr_t va)
     {
         size_t const g = arch_aspace_granule();
@@ -347,27 +421,24 @@ namespace kickos
         {
             return 0;
         }
-        uintptr_t const page = va & ~static_cast<uintptr_t>(g - 1u);
-        // Released only where one was taken: an acquire that answered null took no hold, and
-        // a release paired with it releases somebody else's. A backend whose release is a
-        // no-op hides that from every arm.
-        void const* const ref = acquire_page(space, text.base);
-        if (ref == nullptr)
+        // The frames themselves, not two acquire pointers: an acquired pointer is a stable
+        // name for a frame only where acquire is an addition, and a backend windowing a few
+        // slots answers the same address for every frame, so unequal frames would compare
+        // EQUAL here and every cross-task arm would pass (docs/design-m6-mmu.md F8).
+        arch_phys_addr_t const ref = arch_aspace_frame_at(space, text.base);
+        if (ref == 0)
         {
             return 0;
         }
-        void const* const at = acquire_page(space, page);
-        if (at == nullptr)
+        arch_phys_addr_t const at = arch_aspace_frame_at(space, va);
+        if (at == 0)
         {
-            release_page(space, text.base);
             return 0;
         }
-        release_page(space, text.base);
-        release_page(space, page);
         // Frames apart, biased so the reference itself answers 1 and 0 stays "not mapped".
         // Unsigned wrap on a page below the reference is deliberate: the value is compared,
         // never ordered.
-        return ((reinterpret_cast<uintptr_t>(at) - reinterpret_cast<uintptr_t>(ref)) / g) + 1u;
+        return static_cast<uintptr_t>((at - ref) / g) + 1u;
     }
 
     uintptr_t aspace_reserve(VirtualRanges* ranges, size_t bytes)

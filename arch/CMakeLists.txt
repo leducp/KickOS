@@ -200,8 +200,9 @@ elseif(KICKOS_ARCH STREQUAL "lx6")
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xtensa/lx6/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "armv8a")
-  # ARMv8-A in AArch64 state (QEMU virt, Cortex-A53). The fleet's only TRANSLATING backend,
-  # so aspace_armv8a.cc has no region-descriptor counterpart in any other branch here.
+  # ARMv8-A in AArch64 state (QEMU virt, Cortex-A53). The only board that SELECTS a
+  # translating backend, so aspace_armv8a.cc has no region-descriptor counterpart in any other
+  # branch here; the rv64imac branch below ships the second map editor, unselected.
   add_library(kickos_arch_armv8a STATIC
     arm64/armv8a/arch_armv8a.cc
     arm64/armv8a/aspace_armv8a.cc
@@ -243,6 +244,32 @@ elseif(KICKOS_ARCH STREQUAL "rv32imac")
   install(TARGETS kickos_arch_rv32imac EXPORT KickOSTargets
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/riscv/rv32imac/include" PARENT_SCOPE)
+elseif(KICKOS_ARCH STREQUAL "rv64imac")
+  # RISC-V RV64IMAC (QEMU virt), the fleet's second TRANSLATING backend. This port runs in
+  # SUPERVISOR mode, so a single direct-mode stvec demuxes on scause (switch.S) and no code is
+  # shared with the machine-mode rv32imac backend.
+  # The interrupt controller in arch_rv64imac.cc is a software bitmask, this board driving no
+  # external source. aspace_rv64imac.cc is the map editor. libgcc_rv64imac.cc holds the
+  # two compiler-runtime helpers kernel text calls, which the split image cannot take from the
+  # multilib in the app's half. The chip layer (arch/riscv/chip/virt_rv64) supplies
+  # arch_init/console/shutdown + the linker script.
+  add_library(kickos_arch_rv64imac STATIC
+    riscv/rv64imac/arch_rv64imac.cc
+    riscv/rv64imac/aspace_rv64imac.cc
+    riscv/rv64imac/libgcc_rv64imac.cc
+    riscv/rv64imac/switch.S
+    riscv/rv64imac/trap.S
+    common/arch_ram_common.cc
+    common/startup_ranges.cc
+    ${KICKOS_SEAM_DEFAULTS_COMMON})
+  kickos_apply_freestanding(kickos_arch_rv64imac)
+  target_include_directories(kickos_arch_rv64imac PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/riscv/rv64imac/include>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+  install(TARGETS kickos_arch_rv64imac EXPORT KickOSTargets
+          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+  set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/riscv/rv64imac/include" PARENT_SCOPE)
 else()
   message(FATAL_ERROR "KickOS: arch backend '${KICKOS_ARCH}' not available")
 endif()
@@ -258,9 +285,10 @@ target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE
 if(KICKOS_HAVE_ASPACE)
   kickos_privatise_runtime(kickos_arch_${KICKOS_ARCH})
   # arch_context_init builds a thread's first frame with kickos_user_thread_return as its
-  # return address, which is app text.
+  # return address, which is app text. Inert on an arch with no split-image code model
+  # (cmake/kickos.cmake).
   kickos_split_image_tu(kickos_arch_${KICKOS_ARCH}
-    arm64/armv8a/arch_armv8a.cc)
+    "${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/arch_${KICKOS_ARCH}.cc")
 endif()
 
 # Structural gate on __aeabi_read_tp: C code never runs with SP at an exclusive stack top, so
@@ -405,7 +433,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     # registrar through a weak __register_frame. Absolute because the chip sources are
     # globbed absolute above.
     kickos_split_image_tu(kickos_chip_${KICKOS_CHIP}
-      "${CMAKE_CURRENT_SOURCE_DIR}/arm64/chip/virt_arm64/chip_virt_arm64.cc")
+      "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/chip_${KICKOS_CHIP}.cc")
   endif()
   # M7 D-cache: forward the option to the imxrt chip TU so arch_init calls
   # kickos_armv7m_dcache_enable(). Safe while the M7 is single-core with no DMA; an M4 DMA
@@ -589,13 +617,17 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # against it. Unset on the sim, which has no KICKOS_CHIP and never enters this block.
   set_property(GLOBAL PROPERTY KICKOS_MPU_MIN_REGION_CFG "${_mpu_min_region_cfg}")
   set_property(GLOBAL PROPERTY KICKOS_MPU_REGION_POW2_CFG "${_mpu_region_pow2_cfg}")
+  # -MD/DEPFILE and not a longer DEPENDS list: a chip script may include headers of its own
+  # beside the two common ones, and cpp is what knows which.
   add_custom_command(
     OUTPUT "${_ld_gen}"
     COMMAND ${CMAKE_C_COMPILER} -E -P -x c ${_ld_defs}
             "-I${CMAKE_CURRENT_SOURCE_DIR}/common"
+            -MD -MF "${_ld_gen}.d" -MT "${_ld_gen}"
             "${_ld}" -o "${_ld_gen}"
     DEPENDS "${_ld}" "${CMAKE_CURRENT_SOURCE_DIR}/common/boot_arena.ld.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/common/sections.ld.h"
+    DEPFILE "${_ld_gen}.d"
     COMMENT "linker: preprocess ${KICKOS_CHIP}.ld (KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})"
     VERBATIM)
   add_custom_target(kickos_ldscript_${KICKOS_CHIP} ALL DEPENDS "${_ld_gen}")

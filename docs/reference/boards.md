@@ -103,6 +103,8 @@ code wins, then this file.
 | `microbit` | nRF51822 / M0, 32 KiB | -- | semihosting | `ctest --preset microbit` | [x] CI (armv6m run gate; the fleet's only measured expected-skip list -- see *microbit* below) |
 | `qemu-riscv` | QEMU virt / RV32IMAC | -- | semihosting | `ctest --preset qemu-riscv` | [x] CI (first RISC-V) |
 | `qemu-arm64` | QEMU virt / Cortex-A53 (AArch64) | -- | PL011 UART at `0x09000000` | `ctest --preset qemu-arm64` | [x] CI (first 64-bit ISA, and **emulator only** -- there is no A-profile silicon on this bench; see *Per-board caveats* below) |
+| `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and not in CI**: 49 arms, witnessed 2026-08-28 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none`. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
+| `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and not in CI**: 49 arms, witnessed 2026-08-28, same QEMU. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32-D0WD / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
 | `rx72m` | RX72M / RXv3 @240 MHz | P80 (LED6, active-low) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **Fourth board with an UNPRIVILEGED root, and the only one on the RX MPU** (2026-07-28) -- see *Unprivileged root* below. Re-witnessed 2026-07-30 at a clean `270b6fa`, closing the owed stage-4 `rxdrv` mux-write arm and the M4.5.5 granular-shaping debt in one visit -- see *M4.5.6* below. **No CI gate** -- see *CI coverage* below |
@@ -211,14 +213,26 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   default `virtio-net-pci` makes QEMU abort on the missing `efi-virtio.rom` option ROM, which is a
   separate distro package. The board is `arch/arm64` / arch `armv8a` / chip `virt_arm64`, its
   console is the machine's PL011 rather than semihosting (semihosting carries only the exit call),
-  and the memory model is FLAT: one 64 MiB DRAM region at `0x40000000`, no region MPU, and a fixed
-  1:1 map that `arch/arm64/chip/virt_arm64/startup.S` installs before any C runs, so threads
-  execute at EL0 with the MMU on. It is also the fleet's only TRANSLATING board: it ships the
-  `arch_aspace_*` map editor and carries a linker-carved frame pool the kernel's `FrameAllocator`
-  describes, which is what `arch/arm64/chip/virt_arm64/aspace.cmake` declares. Its ctest gates are
+  and the memory model is TRANSLATED and not flat: `arch/arm64/chip/virt_arm64/startup.S` installs
+  a 1:1 boot map before any C runs, and that map is the BOOT map only. The kernel is linked in the
+  HIGH half (`virt_arm64.ld` bases its kernel regions on `KICKOS_ARM64_VA_BASE` plus the DRAM base),
+  each task's domain carries a page-table root of its own, and `arch_aspace_activate` installs it
+  before the task's first instruction, so threads execute at EL0 under a per-space map rather than
+  under the boot identity. There is no region MPU, and enforcement is the page tables:
+  `KICKOS_MEMORY_ENFORCED` is derived ON here from `KICKOS_HAVE_ASPACE`, so an unprivileged thread
+  cannot reach the kernel's half at all. It is one of the fleet's TWO TRANSLATING boards, the other being
+  `qemu-riscv64`, and the two `aspace.cmake` files under `arch/` are the whole set. Both ship the
+  `arch_aspace_*` map editor and carry a linker-carved frame pool the kernel's `FrameAllocator`
+  describes, which is what `arch/arm64/chip/virt_arm64/aspace.cmake` declares here. What separates
+  this one: its granule and level count are FIXED at build time where `qemu-riscv64` selects Sv39 or
+  Sv48 by config variant, it has TWO root registers (`TTBR0_EL1` and `TTBR1_EL1`) where Sv39/Sv48
+  have `satp` alone, its app window is IDENTITY-linked where the RISC-V one links at `0x40000000`
+  and loads at `0x80200000`, and it is the only one of the two with a CI gate. Its ctest gates are TEN
+  and this list used to name six, the four it omitted being exactly the enforcement witnesses:
   `qemu_arm64_hello`, `qemu_arm64_selftest`, `qemu_arm64_fault_dump`, `qemu_arm64_aspace_fault`,
-  `qemu_arm64_tlsprobe` and `qemu_arm64_fp_switch`, plus the `host`-labelled gates every build tree
-  registers.
+  `qemu_arm64_stack_guard`, `qemu_arm64_kernel_half`, `qemu_arm64_faultsurvive`,
+  `qemu_arm64_tlsprobe`, `qemu_arm64_errnoprobe` and `qemu_arm64_fp_switch`, plus the
+  `host`-labelled gates every build tree registers, for 34 in total (re-derived 2026-08-28).
 - **`qemu-arm64`'s selftest declares exactly one PARTIAL and zero skips.** The partial is
   `periph_reg_write_unheld`: `virt_arm64` names no MMIO window a driver could be granted -- its
   map keeps the device gigabyte EL1-only, and its `arch_mpu_region_encodable` answers false
@@ -227,6 +241,37 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   `chip_virt_arm64.cc`): the timebase and the translation controls are system registers, so no
   grant can name either. `EXPECT_SKIPS` is empty on this board, so any skip at all
   is a failure rather than a posture.
+- **`qemu-riscv64` AND `qemu-riscv64-sv48` ARE EMULATED ONLY, and nothing on this bench can change
+  that.** There is no rv64 silicon here, so every rv64 claim in this file is emulator-grade: both
+  postures are witnessed by `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` under TCG and by
+  nothing else (2026-08-28, 49 of 49 each, selftest 132 arms with 0 skipped and 1 declared partial).
+  **The whole `differs-on-hardware` class is therefore SPEC-ARGUED and not measured**: `ASIDLEN` is
+  WARL and may be 0 on a real part where this emulator answers 16, `MXSTATUS.MAEE` on a T-Head C906
+  makes the page attributes come from extended entry bits that ratified Sv39 does not define, and a
+  hart whose firmware provides SBI will already have taken `medeleg` decisions this port's boot path
+  assumes it owns. None of those can be run here. They are also not idle worries: the C906 in the
+  Allwinner D1 is a buyable unicore Sv39 part, which is what makes this the litmus the seam wanted.
+  Four properties separate these two postures from the rest of the fleet, and each costs coverage
+  somewhere:
+  - **They are the only boards where the paging MODE is a config variant.** One source tree, no edit
+    between them, `KICKOS_CONFIG_VARIANT=sv48` selecting one more table level. That is the whole
+    reason both are listed: a level-count bug is invisible in one posture and fatal in the other, so
+    a green run on `base` alone proves less here than a green run does anywhere else.
+  - **The app's half is NOT identity-linked, and no address on this machine would make it so.** It
+    links at `0x40000000` and loads at `0x80200000`, one uniform delta published as
+    `__kickos_app_load_delta`, because the prebuilt libc and libgcc multilibs are `medlow` and every
+    byte of this machine's DRAM is at or above `0x80000000`. `qemu-arm64` identity-links its app
+    window, so anything that quietly assumes VMA equals LMA passes there and fails here.
+  - **The kernel window describes a full gigabyte of which the machine answers 128 MiB.** No
+    unprivileged thread can reach any of it (`U` is clear on every leaf), but the kernel can write
+    RAM outside its own 64 MiB share through the window, and 448 of the 512 leaves are over addresses
+    no RAM answers at all. `../design-m6-mmu.md` R2.3 carries the arithmetic and what would bound it.
+  - **`sstatus.SUM` is never set, so a kernel dereference of an app-half pointer FAULTS.** Every
+    kernel touch of process memory goes through the `kaccess` seam instead. That is stricter than
+    `qemu-arm64`, and it means a kernel-side bug that would silently corrupt the running process on
+    another board is a loud fault here. It also costs: the reent seating path is a few hundred
+    instructions rather than two, accepted deliberately (`../design-m6-mmu.md`, R6).
+
 - **`pizero2350`** -- Cortex-M33, but it reuses the **armv7m** arch backend verbatim (armv8-M is
   a superset for the switch/NVIC/SVC/PendSV path); only the MPU differs, and PMSAv8 has its own
   backend (`base+limit` RBAR/RLAR + MAIR, compile-gated so the v7-M/v6-M fleet is byte-identical).
@@ -540,7 +585,8 @@ the board".
 | rv32imac | `qemu-riscv`, `esp32c6-wroom` | `qemu-riscv` run gate; C6 + bench build-only | **runtime** (PMP, the `qemu-riscv-mpu` job) |
 | armv7m | `qemu`, `qemu-m33`, `qemu-m7`, `qemu-m3`, and the board sweep | four MPS2 run gates (an386/an505/an500/an385) + build sweep | **runtime** (PMSAv7 on M4/M7/M3, **PMSAv8** on the M33) |
 | armv6m | `microbit`, `picopi` | `microbit` run gate + `picopi` build | **build only** |
-| armv8a | `qemu-arm64` | `qemu-arm64` run gate -- the only witness this ISA has | -- (no region MPU on this port) |
+| armv8a | `qemu-arm64` | `qemu-arm64` run gate -- the only witness this ISA has | -- (no region MPU; enforcement is VMSAv8 page tables and it is LIVE in that gate) |
+| rv64imac | `qemu-riscv64`, `qemu-riscv64-sv48` | **none** | -- (no region MPU; enforcement is Sv39/Sv48 page tables, live in both LOCAL postures and in no CI job) |
 | Xtensa LX6 | `esp32-wroom` | build only, plain and `-st` | -- (no per-domain unit) |
 | RXv3 | `rx72m` | **none** | -- |
 
@@ -563,6 +609,15 @@ the board".
   **chip-specific** trapping: SYSMPU (K64F), the M7 anti-speculation wrap (i.MX RT1062) and
   PMSAv6 (M0+) have no QEMU model, and stay silicon-proven (see the matrix above and
   `../m2-readiness.md`).
+- **`rv64imac` has no CI gate, and the reason is not the toolchain.** Nothing needs fetching that is
+  not already fetched: the `riscv-toolchain` composite action supplies the compiler both RISC-V ports
+  use, and the SAME `riscv32-none-elf` multilib builds RV64 with `-march=rv64imac_zicsr -mabi=lp64`
+  (`../../cmake/toolchain-riscv-none-elf.cmake`). The emulator is the same package the `qemu-riscv`
+  job already installs. So a job would be two postures of an existing toolchain against an existing
+  emulator, and its absence is **a decision nobody has taken** rather than a gap in the environment.
+  Until somebody takes it, a change to the arch seam is *not* covered for `rv64imac` by a green CI
+  run: run `ctest --preset qemu-riscv64` and `--preset qemu-riscv64-sv48` locally, BOTH, because the
+  two differ in table depth and a level-count bug shows in only one.
 - **Renesas RX has no CI gate at all.** RX72M needs `-misa=v3` and `-mdfpu`
   (`boards/rx72m/board.cmake`), and both exist only in the registration-gated Renesas GNURX
   build -- upstream `rx-elf` GCC rejects them. That toolchain cannot be fetched anonymously on a

@@ -13,6 +13,7 @@
 #include <stdint.h>
 
 #include <kickos/arch/arch.h> // ARCH_MPU_NOCACHE
+#include <kickos/aspace.h>    // the kaccess byte-access seam
 #include <kickos/cap.h>       // KCAP_INVALID (the minting out-parameter's failure value)
 #include <kickos/sys/abi.h>   // kos_thread_params (thread_create_call parameter), kos_mem_flags
 
@@ -98,17 +99,10 @@ namespace kickos
     }
 #endif
 
-    // The kernel<->user byte-access seam: split at granule boundaries, each page reached
-    // through the acquire seam of the space that owns it.
-    void kaccess_from_user(void* kdst, struct arch_aspace* sspace, uintptr_t usrc, size_t n);
-    void kaccess_to_user(struct arch_aspace* dspace, uintptr_t udst, void const* ksrc,
-                         size_t n);
-
-    // The user<->user endpoint-payload peer of the kaccess seam (both ends user
-    // memory, and one of them a PARKED peer's); bounded (<= KOS_EP_MSG_MAX), done under
-    // IrqLock at the copy site.
-    void ep_copy(struct arch_aspace* dspace, uintptr_t dst, struct arch_aspace* sspace,
-                 uintptr_t src, size_t n);
+    // The kernel<->user byte-access seam and its user<->user peer are declared in
+    // kickos/aspace.h: the switch path uses them too, so this layer is not their owner.
+    // ep_copy's payloads here are bounded (<= KOS_EP_MSG_MAX) and copied under IrqLock at
+    // the copy site.
 
     // Deliver a receiver's kos_recv_info (badge + reply_cap) into its parked
     // out-ptr, or nothing when out == 0. KCAP_INVALID marks a plain send. `ospace` is the

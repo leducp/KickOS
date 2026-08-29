@@ -440,6 +440,7 @@ if(KICKOS_HAVE_PRIV_RING
       OR KICKOS_ARCH STREQUAL "rv32imac"
       OR KICKOS_ARCH STREQUAL "rxv3"
       OR KICKOS_ARCH STREQUAL "armv8a"
+      OR KICKOS_ARCH STREQUAL "rv64imac"
       OR (KICKOS_ARCH STREQUAL "sim" AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")))
   set(KICKOS_FAULT_ISOLATION 1)
   set(KICKOS_FAULT_OUTCOME thread-kill)
@@ -542,6 +543,24 @@ if(KICKOS_CHIP_TRANSLATES AND KICKOS_HAVE_MPU)
     "selects region descriptors or translation, never both.")
 endif()
 add_compile_definitions(KICKOS_HAVE_ASPACE=${KICKOS_HAVE_ASPACE})
+
+# The compiler flag that lets a TU in one half of a split image name a symbol in the other,
+# by materialising the whole address in the referencing section instead of as a
+# page-relative displacement. Read ONLY by kickos_split_image_tu (cmake/kickos.cmake),
+# whose call sites all sit under KICKOS_HAVE_ASPACE, and EMPTY is what makes that function
+# inert: the arch has no such FLAG, which is not the same as being unable to carry a split
+# image. RISC-V is that case, medlow being a sign-extended 32-bit ABSOLUTE range and medany
+# a signed 32-bit PC-relative DISPLACEMENT, neither materialising a whole 64-bit address.
+# rv64imac carries its split image by a different mechanism instead, a kernel reference to
+# an app-half symbol becoming a relocated 64-bit WORD in kernel data
+# (docs/design-m6-mmu.md R2.2).
+#
+# Set here rather than in the arch's own dispatch branch because kernel/CMakeLists.txt calls
+# the same function and cannot see a variable set in arch/'s directory scope.
+set(KICKOS_SPLIT_IMAGE_CODE_MODEL "")
+if(KICKOS_ARCH STREQUAL "armv8a")
+  set(KICKOS_SPLIT_IMAGE_CODE_MODEL -mcmodel=large)
+endif()
 
 # The two facts above name a MECHANISM; this one names whether memory protection is LIVE,
 # and admission policy keys on it. A translating board carries no region descriptors, so it
@@ -785,6 +804,13 @@ if(KICKOS_BUILD_TESTS)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_include_guards.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(include_guards PROPERTIES TIMEOUT 120 LABELS host)
+
+  # Runs under whatever /bin/sh is here, and its own self-test plants one violation per listed
+  # name: a shell that mangles a gate's data table leaves the gate's exit code alone.
+  _add_test(NAME shell_special_names
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_shell_special_names.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(shell_special_names PROPERTIES TIMEOUT 120 LABELS host)
 
   # Takes the GENERATED board config, not ${KICKOS_NUM_CORES}: the gate must read the knob
   # spelling C reads.

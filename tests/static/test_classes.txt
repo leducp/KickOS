@@ -46,8 +46,12 @@ host   src    tests/static/check_arm_read_tp.sh
 host   src    tests/static/check_no_privileged_tls.sh
 host   src    tests/static/rx_tls_fit.py
 host   src    tests/static/check_riscv_no_smalldata.sh
+host   src    tests/static/check_riscv_kernel_gp.sh
+host   src    tests/static/check_riscv_kernel_apphalf.sh
+host   src    tests/static/riscv_kernel_wx.py
 host   src    tests/static/check_seam_defaults.sh
 host   src    tests/static/check_service_lists.sh
+host   src    tests/static/check_shell_special_names.sh
 host   src    tests/static/check_spdx.sh
 host   src    tests/static/check_test_labels.sh
 # Cross-builds a tree of its own and reads the .ci files that build emits, never running
@@ -93,13 +97,16 @@ host   build  tests/unit/wildstack/wild_stack
 # --- gates that run an image -------------------------------------------------
 image  src    tests/integration/check_app_arms.sh
 image  src    tests/integration/check_aspace_fault.sh
+image  src    tests/integration/check_aspace_fault_rv64.sh
 image  src    tests/integration/check_stack_guard.sh
+image  src    tests/integration/check_stack_guard_rv64.sh
 image  src    tests/integration/check_fault_dump.sh
 image  src    tests/integration/check_faultsurvive.sh
 image  src    tests/integration/check_pspguard.sh
 image  src    tests/integration/check_trapnest.sh
 image  src    tests/integration/check_hello.py
 image  src    tests/integration/check_kernel_half.sh
+image  src    tests/integration/check_kernel_half_rv64.sh
 image  src    tests/integration/check_libc_exit.sh
 image  src    tests/integration/check_mpu_fault.sh
 image  src    tests/integration/check_oot_export.sh

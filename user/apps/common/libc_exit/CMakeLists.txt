@@ -30,3 +30,8 @@ if(KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_libc_exit TARGET libc_exit BOARD qemu-riscv
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_libc_exit.sh")
 endif()
+
+if(KICKOS_BOARD STREQUAL "qemu-riscv64")
+  kickos_add_qemu_test(NAME qemu_riscv64_libc_exit TARGET libc_exit BOARD qemu-riscv64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_libc_exit.sh")
+endif()

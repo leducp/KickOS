@@ -95,6 +95,47 @@ config KICKOS_HAVE_MPU
 	default 1 if MEMORY_MODEL_MPU
 	default 0
 
+# --- Paging mode ------------------------------------------------------------
+# A translating arch whose ISA offers more than one mode selects it HERE, and the level count
+# is DERIVED from the selection rather than stated beside it
+# (arch/riscv/rv64imac/include/kickos/arch/rv64_paging.h). Prompted, and that is the point:
+# without a selector "switching the mode changes no kernel code" is a claim about editing one
+# chip file, and no two postures can be built out of one tree
+# (docs/design-m6-mmu.md R3).
+#
+# Per arch, because satp.MODE is an arch encoding, and offered only where a run witnesses it.
+# A part that implements one mode only takes the default: satp.MODE is WARL, so a hart handed
+# a mode it does not implement keeps the field it had, and the prologue reads it back and
+# refuses by name rather than translating at a depth nobody chose.
+
+choice
+	prompt "RV64 paging mode"
+	depends on ARCH_RV64IMAC
+	default RV64_PAGING_SV39
+
+config RV64_PAGING_SV39
+	bool "Sv39: three levels, 39-bit virtual addresses"
+
+config RV64_PAGING_SV48
+	bool "Sv48: four levels, 48-bit virtual addresses"
+	help
+	  One translation level more than Sv39, which costs one table page in the boot
+	  image and one more non-leaf entry for the pre-translation prologue to fill: a
+	  non-leaf entry holds the next table's frame number, and a shift of a
+	  relocatable symbol is not a relocation any object format carries.
+
+endchoice
+
+config KICKOS_RV64_SATP_MODE
+	int
+	depends on ARCH_RV64IMAC
+	default 8 if RV64_PAGING_SV39
+	default 9 if RV64_PAGING_SV48
+	help
+	  satp.MODE at XLEN 64: the field the prologue writes, and the ONE value the
+	  level count is derived from. Unprompted, the choice above being what a board
+	  states.
+
 # The arch fact ARCH_TLS_FROM_SP, in the form CMake and C read. Both need it: CMake refuses
 # a non-power-of-two stack knob only where the mask is real, and tls_stack_admissible refuses
 # a block that is not one stride only there.
@@ -283,6 +324,9 @@ config KICKOS_KERNEL_STACKS
 config KICKOS_KERNEL_STACK_SIZE
 	int
 	default 1184 if ARCH_RV32IMAC
+	# PROVISIONAL on this arch, taken from armv8a as the nearest 64-bit figure. Nobody has
+	# run the instrument here.
+	default 4096 if ARCH_RV64IMAC
 	# PROVISIONAL, not measured yet, and deliberately above every 32-bit figure: this
 	# arch's uniform exception frame is 800 bytes (31 GPRs, ELR, SPSR, SP_EL0, FPCR, FPSR
 	# and all THIRTY-TWO vector registers, which an asynchronous entry has to keep),
@@ -395,6 +439,9 @@ config KICKOS_MIN_STACK_SIZE
 	# console bracket it does not compile. rv_trap_stack.h.
 	default 1088 if ARCH_RV32IMAC && KICKOS_BENCH
 	default 1024 if ARCH_RV32IMAC
+	# PROVISIONAL on this arch, taken from armv8a as the nearest 64-bit figure. Nobody has
+	# run the instrument here.
+	default 2048 if ARCH_RV64IMAC
 	default 896 if ARCH_LX6
 	default 1024
 	help

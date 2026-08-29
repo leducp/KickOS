@@ -111,9 +111,12 @@ namespace kickos
             {
                 void* const a = arch_aspace_acquire(space, VA_A);
                 void* const b = arch_aspace_acquire(space, VA_B);
-                // The pool reaches the frame by its own route, so agreement here is two
-                // independent answers rather than one restated.
-                bool const same_frame = a == own and b == own;
+                // The seam NAMES the frame behind each page, so this compares frames and not
+                // pointers: a windowed backend hands two unequal slot addresses back for one
+                // frame, and requiring them to equal the pool's own pointer would refuse a
+                // correct backend (docs/design-m6-mmu.md F8).
+                bool const same_frame = arch_aspace_frame_at(space, VA_A) == frame
+                                        and arch_aspace_frame_at(space, VA_B) == frame;
                 bool const translated = VA_A != VA_B and
                                         reinterpret_cast<uintptr_t>(a) != VA_A and
                                         static_cast<uintptr_t>(frame) != VA_A;
@@ -237,46 +240,84 @@ namespace kickos
             return before - after;
         }
 
-        // A range that crosses two level-3 table boundaries, which is what a process image
+        // A range that crosses two last-level table boundaries, which is what a process image
         // is and what the index arithmetic gets wrong if a table's last slot is miscounted.
         // The output addresses are device space, so no leaf here names a pool frame and the
         // destroy below cannot reclaim one it does not own.
+        //
+        // NO TABLE GEOMETRY IS NAMED, and none can be: nothing above the seam is told how many
+        // entries a last-level table holds, and the answer differs by paging mode
+        // (docs/design-m6-mmu.md R3). What is bounded instead is the WIDEST table any backend
+        // the seam is held against can have: an entry is at least four bytes on all of them, so
+        // one table covers at most granule/4 pages. A run one page longer than that, entered one
+        // page below a boundary of that span, therefore crosses two boundaries and starts on a
+        // last slot whatever the real geometry is.
         uint64_t op_span()
         {
-            constexpr uintptr_t SPAN_VA = 0x201FF000;   // the last slot of its level-3 table
             constexpr arch_phys_addr_t SPAN_PA = 0x08000000;
-            constexpr size_t SPAN_PAGES = 600;          // one, then a whole table, then 87
+            constexpr uintptr_t SPAN_NEAR = 0x20000000; // a low-half range a fresh space maps nowhere
             struct arch_aspace* const space = arch_aspace_create();
             if (space == nullptr)
             {
                 return 0;
             }
             size_t const g = arch_aspace_granule();
+            size_t const per_table = g / 4;
+            uintptr_t const table_span = static_cast<uintptr_t>(per_table) * g;
+            uintptr_t const span_va = (SPAN_NEAR & ~(table_span - 1)) + table_span - g;
+            size_t const span_pages = per_table + 88; // one, then a whole table, then 87
             uint64_t ok = 0;
-            if (arch_aspace_map(space, SPAN_VA, SPAN_PA, SPAN_PAGES, ARCH_MAP_R,
+            if (arch_aspace_map(space, span_va, SPAN_PA, span_pages, ARCH_MAP_R,
                                 ARCH_MAP_DEVICE) == ARCH_ASPACE_OK)
             {
-                // One page held at a time beside the reference, so this walk stays inside
-                // ARCH_ASPACE_ACQUIRE_MIN: a backend with a finite window pool would
-                // otherwise run out here for a reason that is this loop's and not the seam's.
+                // CONTIGUITY IS ASKED OF THE FRAMES AND ACCESS OF THE POINTERS, which is
+                // the split the seam's frame query exists for: page i is required to name
+                // SPAN_PA + i * granule, which is what a miscounted last slot breaks, while
+                // the acquire beside it is required only to answer and to keep its offset
+                // inside the granule. Requiring page i to ANSWER `first + i * granule` would
+                // require an offset map and refuse a windowed backend.
+                //
+                // Two held at a time, so this walk stays inside ARCH_ASPACE_ACQUIRE_MIN: a
+                // backend with a finite window pool would otherwise run out here for a
+                // reason that is this loop's and not the seam's.
+                constexpr uintptr_t IN_PAGE = 0x40;
                 unsigned char* const first =
-                    static_cast<unsigned char*>(arch_aspace_acquire(space, SPAN_VA));
-                bool contiguous = first != nullptr;
-                for (size_t i = 1; i < SPAN_PAGES and contiguous; i++)
+                    static_cast<unsigned char*>(arch_aspace_acquire(space, span_va));
+                uintptr_t const mask = static_cast<uintptr_t>(g - 1u);
+                bool contiguous =
+                    first != nullptr and arch_aspace_frame_at(space, span_va) == SPAN_PA;
+                for (size_t i = 1; i < span_pages and contiguous; i++)
                 {
-                    unsigned char* const at = static_cast<unsigned char*>(
-                        arch_aspace_acquire(space, SPAN_VA + i * g));
-                    contiguous = at == first + i * g;
-                    arch_aspace_release(space, SPAN_VA + i * g);
+                    uintptr_t const at_va = span_va + i * g + IN_PAGE;
+                    unsigned char* const at =
+                        static_cast<unsigned char*>(arch_aspace_acquire(space, at_va));
+                    contiguous = at != nullptr
+                                 and arch_aspace_frame_at(space, at_va)
+                                         == SPAN_PA + static_cast<arch_phys_addr_t>(i * g);
+                    if (contiguous)
+                    {
+                        uintptr_t const p = reinterpret_cast<uintptr_t>(at);
+                        contiguous = (p & mask) == IN_PAGE;
+                    }
+                    // Only where the acquire ANSWERED: a null answer took no hold, and a
+                    // windowed backend refuses a release that pairs with none.
+                    if (at != nullptr)
+                    {
+                        arch_aspace_release(space, at_va);
+                    }
                 }
-                arch_aspace_release(space, SPAN_VA);
+                arch_aspace_release(space, span_va);
                 bool const bounded =
-                    arch_aspace_acquire(space, SPAN_VA + SPAN_PAGES * g) == nullptr and
-                    arch_aspace_acquire(space, SPAN_VA - g) == nullptr;
+                    arch_aspace_frame_at(space, span_va + span_pages * g) == 0 and
+                    arch_aspace_frame_at(space, span_va - g) == 0 and
+                    arch_aspace_acquire(space, span_va + span_pages * g) == nullptr and
+                    arch_aspace_acquire(space, span_va - g) == nullptr;
                 bool const removed =
-                    arch_aspace_unmap(space, SPAN_VA, SPAN_PAGES) == ARCH_ASPACE_OK and
-                    arch_aspace_acquire(space, SPAN_VA) == nullptr and
-                    arch_aspace_acquire(space, SPAN_VA + (SPAN_PAGES - 1) * g) == nullptr;
+                    arch_aspace_unmap(space, span_va, span_pages) == ARCH_ASPACE_OK and
+                    arch_aspace_frame_at(space, span_va) == 0 and
+                    arch_aspace_frame_at(space, span_va + (span_pages - 1) * g) == 0 and
+                    arch_aspace_acquire(space, span_va) == nullptr and
+                    arch_aspace_acquire(space, span_va + (span_pages - 1) * g) == nullptr;
                 if (contiguous and bounded and removed)
                 {
                     ok = 1;

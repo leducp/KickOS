@@ -4,8 +4,11 @@
 # Every job mirrors a `--preset` invocation. Every gate here is host or QEMU; a port's
 # hardware status has one home, docs/reference/boards.md.
 #
-# ISA coverage: sim (host), armv7m + armv6m + armv8m (QEMU run), rv32imac (QEMU run,
-# plain and under PMP), Xtensa LX6 (build-only).
+# ISA coverage: sim (host), armv7m + armv6m + armv8m (QEMU run), armv8a (QEMU run, the
+# qemu-arm64 job), rv32imac (QEMU run, plain and under PMP), Xtensa LX6 (build-only).
+# NOT COVERED HERE: rv64imac has no job at all, so qemu-riscv64 and qemu-riscv64-sv48 run
+# locally only; the riscv-toolchain action already supplies their compiler, so the gap is a
+# decision nobody has taken (docs/reference/boards.md, "CI coverage").
 #
 # MPU enforcement runs at RUNTIME on all three ISA families: sim (host mprotect),
 # rv32imac (PMP, qemu-riscv-mpu), ARM on both PMSA revisions (the four mps2 run gates

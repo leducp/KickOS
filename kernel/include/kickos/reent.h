@@ -20,7 +20,8 @@
 //     may fold its reader against a definition an aliased store never touched.
 // kmemcpy answers both. Its bytes carry no effective type, so no alias set is asserted,
 // and the address reaching it out of an exported descriptor is an escape the folding has
-// to respect. Turning one of these into an assignment reintroduces both.
+// to respect. Turning one of these into an assignment reintroduces both. Still true where the
+// write goes through the kaccess seam: the innermost copy there is the same kmemcpy.
 //
 // HOW THE KERNEL LEARNS THE DESCRIPTOR IS THE PART THE LINKER SPLIT REPLACES. Today app
 // data sits in the kernel's half, so the kernel names kickos_reent_seam directly and the
@@ -32,6 +33,10 @@
 #define KICKOS_REENT_H
 
 #include <stddef.h>
+
+// Global scope deliberately, matching kickos/arch/arch.h: an elaborated `struct arch_aspace*`
+// first seen inside namespace kickos would declare a second, unrelated type.
+struct arch_aspace;
 
 #if !KICKOS_ARCH_SIM
 
@@ -77,11 +82,15 @@ namespace kickos
     // IrqLock, and once processes have spaces of their own it would land in the spawner's
     // frame at an identical virtual address. Both are answered by doing it after the
     // target's memory view is installed.
-    void reent_prime(void* state);
+    //
+    // `space` IS THE INCOMING THREAD'S OWN, and both of these reach it through the kaccess
+    // seam rather than through the running translation, so the frame written is that space's
+    // whether or not it is the one installed. Null on a board with no translating backend,
+    // where both write directly.
+    void reent_prime(struct arch_aspace* space, void* state);
 
-    // Make `state` the one libc resolves from. Runs on EVERY switch, so it is kept a leaf.
-    // A SELFTEST build is the exception and knowingly so: the counter below costs it a call.
-    void reent_seat(void* state);
+    // Make `state` the one libc resolves from. Runs on EVERY switch.
+    void reent_seat(struct arch_aspace* space, void* state);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Times either of the two above wrote the app half for a thread whose memory view was not

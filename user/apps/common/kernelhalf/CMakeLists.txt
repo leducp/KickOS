@@ -25,3 +25,13 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_kernel_half.sh"
     ARGS "THREAD FAULT" 139)
 endif()
+
+# The same arm on RV64, through a script of this architecture's own and not the one above with
+# a substituted constant: `scause` carries no fault-status field, so a permission fault and a
+# translation fault are the same number and the assertion that separates them cannot be ported
+# (tests/integration/check_kernel_half_rv64.sh says what stands in for it).
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64")
+  kickos_add_qemu_test(NAME qemu_riscv64_kernel_half TARGET kernelhalf BOARD qemu-riscv64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_kernel_half_rv64.sh"
+    ARGS "THREAD FAULT" 139)
+endif()

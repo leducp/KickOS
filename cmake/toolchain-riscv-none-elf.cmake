@@ -7,8 +7,10 @@
 # out of the box). Sibling of toolchain-rx-elf.cmake: bare-metal freestanding, no
 # host libc, no default startfiles. The board/chip layer supplies the linker
 # script + startup at the application-link step; here we pin the cross compiler
-# and the RV32IMAC ISA/ABI baseline so the right multilib is selected uniformly
-# for compile AND link.
+# and the per-board ISA/ABI baseline so the right multilib is selected uniformly
+# for compile AND link. The riscv32-none-elf triple also ships the RV64 multilib, so
+# the rv64 boards resolve out of this same toolchain: it is the MULTILIB that names the
+# XLEN here, never the triple.
 #
 # This file introduces the family value "riscv" (arm|rx|xtensa|riscv). The
 # per-board arch/chip/CPU facts live in a board descriptor
@@ -23,7 +25,7 @@
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR riscv)
 
-set(KICKOS_BOARD "qemu-riscv" CACHE STRING "Target board: qemu-riscv | esp32c6-wroom")
+set(KICKOS_BOARD "qemu-riscv" CACHE STRING "Target board: qemu-riscv | qemu-riscv64 | esp32c6-wroom")
 
 # Board descriptor: sets KICKOS_ARCH / KICKOS_ARCH_FAMILY / KICKOS_CHIP and the
 # per-board CPU flags (KICKOS_MCPU). In-tree it lives under boards/<board>/; an

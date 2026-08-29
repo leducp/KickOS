@@ -195,6 +195,9 @@ void arch_shutdown(int status)
 // until the harness times out.
 void kfault_terminate(void)
 {
+    // Resolves to the no-op fallback, which is honest here: SYS_WRITEC hands every byte to the
+    // host inside the call, so nothing is in flight. Kept so a real console backend inherits it.
+    arch_console_flush_sync();
     arch_shutdown(132);
 }
 

@@ -430,16 +430,20 @@ dir; the build wires the multi-stage boot2 image automatically (keyed on
 `${KICKOS_CHIP}`). A chip on a non-ARM ISA additionally needs a new arch backend +
 toolchain file -- see `arch/xtensa/` (ESP32) or `arch/rx/` (RX72M) for worked examples.
 
-Status -- five arch backends (**armv7m** Cortex-M3/M4/M4F/M7/M33, **armv6m** Cortex-M0/M0+,
-**rxv3** Renesas RX72M, **lx6** Xtensa/ESP32, **rv32imac** RISC-V) across the chips below.
-"MPU" is whether the chip ships an enforcement backend (`arch/<family>/chip/<chip>/mpu.cmake`);
-where it does, cross-domain trapping is silicon-proven unless the row says otherwise:
+Status: seven arch backends (**armv7m** Cortex-M3/M4/M4F/M7/M33, **armv6m** Cortex-M0/M0+,
+**armv8a** Cortex-A53, **rxv3** Renesas RX72M, **lx6** Xtensa/ESP32, **rv32imac** RISC-V,
+**rv64imac** RISC-V) across the chips below, plus the host `sim`.
+"MPU" is whether the chip ships an enforcement backend: `arch/<family>/chip/<chip>/mpu.cmake` on a
+region chip, `aspace.cmake` on a translating one. Where it does, cross-domain trapping is
+silicon-proven unless the row says otherwise:
 
 | Chip | Board | Core | MPU | Validation |
 |------|-------|------|-----|------------|
 | `mps2` | qemu / qemu-m33 / qemu-m7 / qemu-m3 | M4F / M33 / M7 / M3 | PMSAv7 + PMSAv8 | QEMU (four runnable CI gates, **plus runtime enforcement gates** on both PMSA revisions) |
 | `nrf51` | microbit | M0 | -- | QEMU (runnable CI gate) |
 | `virt` | qemu-riscv | RV32IMAC | PMP | QEMU (runnable CI gate, **plus a runtime enforcement gate**) |
+| `virt_rv64` | qemu-riscv64 / qemu-riscv64-sv48 | RV64IMAC | **Sv39 + Sv48 MMU** | QEMU, **NOT IN CI**: `.github/workflows/ci.yml` carries no rv64 job, so both postures are LOCAL `ctest` only (`--preset qemu-riscv64` and `--preset qemu-riscv64-sv48`), 49 arms each, **plus runtime translation-enforcement gates**: an aspace fault, a stack guard, a kernel-half denial and a surviving fault. The gap is a decision nobody has taken, not a toolchain gap (`../reference/boards.md`, *CI coverage*) |
+| `virt_arm64` | qemu-arm64 | Cortex-A53 | **VMSAv8 MMU** | QEMU (runnable CI gate, the `qemu-arm64` job, 34 ctest arms, **plus runtime translation-enforcement gates**) |
 | `xmc4800` | xmc4800-relax | M4F | PMSAv7 | **hardware** (LED + USIC VCOM console over the buffered ring; enforcement + the canonical per-thread peripheral-isolation proof) |
 | `stm32f411` | f411disco / blackpill | M4F | PMSAv7 | **hardware** (LED + UART + ping-pong; enforcement selftest + `mpu_fault` MemManage denial + an unprivileged root, all on `f411disco` 2026-07-29). Witnessed on one of the two boards; `blackpill` shares this backend and was not re-run |
 | `stm32f302` | f302nucleo | M4 | -- | **hardware** (LED PB13 + console; the full suite at the `f302nucleo-st` provisioning -- 63 ok / 0 not ok / 5 skipped on 16 KiB SRAM, measured at `124b68c`). Not an enforcement target: the F302R8 line has no MPU, so `arch_mpu_min_region()` returns 0 (`arch/arm/chip/stm32f302/chip_stm32f302.cc:321`) |
@@ -689,8 +693,10 @@ windows, does real work and can RUN OUT.
 **`ARCH_ASPACE_ACQUIRE_MIN` (`arch/include/kickos/arch/arch.h`) is how many are holdable at once
 per core, and a windowed backend sizes its pool for that figure and `static_assert`s against it.**
 The figure counts OUTSTANDING CALLS and not distinct pages: two acquires of one page are two holds
-unless the backend counts references. `arch/arm64/armv8a/aspace_armv8a.cc` carries the assert in
-the shape a windowed port fills in, its own capacity being unbounded.
+unless the backend counts references. `arch/riscv/rv64imac/aspace_rv64imac.cc` is the worked
+windowed backend: `ACQUIRE_CAPACITY`, a per-core slot table, and the `static_assert` against this
+figure. `arch/arm64/armv8a/aspace_armv8a.cc` carries the assert in the shape an UNBOUNDED port
+fills in, its acquire being an addition and its release a no-op.
 
 **It is measured from the tree rather than chosen.** The deepest holder is the page-split access
 scenario behind `KOS_ASPACE_OP_SPLIT_ACCESS` (`kernel/syscall/syscall_aspace.cc`): four pages held
@@ -699,6 +705,22 @@ alone holds two, which is the floor a caller doing nothing else meets. **A calle
 the other half:** a walk over many pages releases each before taking the next, as
 `KOS_ASPACE_OP_SPAN` does, or it puts the whole tree over the figure for a reason that is the
 walk's and not the seam's.
+
+### Naming the frame behind a page (`arch_aspace_frame_at`)
+
+`arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)` answers the
+granule-aligned PHYSICAL address the page holding `va` is mapped onto, and 0 where that page is not
+mapped. It spends no acquire hold and reads no frame's contents; `va` need not be granule-aligned
+and the byte offset inside the granule is not carried, an answer being a frame and not a pointer to
+a byte.
+
+**It exists because naming a frame by ARITHMETIC on acquire pointers is only correct where acquire
+is an addition, and it fails silently where it is not.** Subtracting two acquired pointers and
+dividing by the granule is a stable identity on an offset-map backend; on one windowing a handful
+of slots the same small number comes back for every frame in the system, so code comparing frame
+identity reports "the same frame" for frames that differ and SUCCEEDS. That is the shape to reach
+for whenever a caller wants to know WHICH frame rather than to read one
+(`../design-m6-mmu.md` F8).
 
 ### Privileged register write (`arch_periph_reg_write`)
 

@@ -22,5 +22,5 @@ if [ "$POLL_OK" -ne 1 ]; then
 fi
 assert_no_panic "hello panicked while ping-ponging"
 
-echo "PASS: QEMU armv7m hello ping-ponged"
+echo "PASS: QEMU hello ping-ponged"
 exit 0

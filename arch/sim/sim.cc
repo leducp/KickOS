@@ -869,6 +869,9 @@ void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 // and the blink terminal fallback (kernel.h) would spin forever.
 void kfault_terminate(void)
 {
+    // Resolves to the no-op fallback, which is honest here: the sync writer returns only once
+    // the host has taken every byte. Kept so the panic exit reads like kickos_terminate.
+    arch_console_flush_sync();
     arch_shutdown(132);
 }
 

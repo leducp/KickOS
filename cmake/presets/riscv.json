@@ -34,6 +34,31 @@
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" }
     },
     {
+      "name": "riscv64-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-riscv-none-elf.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "MinSizeRel",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "KICKOS_CONFIG_VARIANT": "base"
+      }
+    },
+    {
+      "name": "qemu-riscv64",
+      "displayName": "QEMU virt (RISC-V RV64IMAC) [second translating backend]",
+      "inherits": "riscv64-base",
+      "binaryDir": "${sourceDir}/build/qemu-riscv64",
+      "cacheVariables": { "KICKOS_BOARD": "qemu-riscv64" }
+    },
+    {
+      "name": "qemu-riscv64-sv48",
+      "displayName": "QEMU virt (RISC-V RV64IMAC) with four translation levels",
+      "inherits": "qemu-riscv64",
+      "binaryDir": "${sourceDir}/build/qemu-riscv64-sv48",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "sv48" }
+    },
+    {
       "name": "esp32c6-wroom",
       "displayName": "ESP32-C6-WROOM-1 (RISC-V RV32IMAC)",
       "inherits": "riscv-base",
@@ -66,6 +91,8 @@
     { "name": "qemu-riscv",    "configurePreset": "qemu-riscv" },
     { "name": "qemu-riscv-flat", "configurePreset": "qemu-riscv-flat" },
     { "name": "qemu-riscv-bench", "configurePreset": "qemu-riscv-bench" },
+    { "name": "qemu-riscv64", "configurePreset": "qemu-riscv64" },
+    { "name": "qemu-riscv64-sv48", "configurePreset": "qemu-riscv64-sv48" },
     { "name": "esp32c6-wroom", "configurePreset": "esp32c6-wroom" },
     { "name": "esp32c6-wroom-st", "configurePreset": "esp32c6-wroom-st" },
     { "name": "esp32c6-wroom-flat", "configurePreset": "esp32c6-wroom-flat" },
@@ -73,6 +100,8 @@
   ],
   "testPresets": [
     { "name": "qemu-riscv", "configurePreset": "qemu-riscv", "output": { "outputOnFailure": true } },
-    { "name": "qemu-riscv-flat", "configurePreset": "qemu-riscv-flat", "output": { "outputOnFailure": true } }
+    { "name": "qemu-riscv-flat", "configurePreset": "qemu-riscv-flat", "output": { "outputOnFailure": true } },
+    { "name": "qemu-riscv64", "configurePreset": "qemu-riscv64", "output": { "outputOnFailure": true } },
+    { "name": "qemu-riscv64-sv48", "configurePreset": "qemu-riscv64-sv48", "output": { "outputOnFailure": true } }
   ]
 }

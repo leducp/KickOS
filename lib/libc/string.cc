@@ -26,9 +26,29 @@ namespace
     // library assembly. Operands whose misalignment differs can never both be
     // aligned, so they stay on the byte path.
     //
-    // Below two words the head alignment can consume every byte, so the word path is
-    // entered only where at least one whole word is guaranteed to move.
-    constexpr size_t WORD_MIN = 2u * WORD_BYTES;
+    // The word path is entered only where at least one whole word is guaranteed to move,
+    // which is the bytes the byte prologue consumes plus one word. The prologue's length
+    // is fixed by the destination alignment alone, so it is known before the branch.
+
+    // The prologue walks the pointer UP to the next boundary.
+    constexpr size_t word_min_up(uintptr_t p)
+    {
+        return static_cast<size_t>((0u - p) & WORD_MASK) + WORD_BYTES;
+    }
+
+    // The mirror walks the pointer DOWN to the boundary below it, so it consumes the low
+    // bits themselves and not their complement.
+    constexpr size_t word_min_down(uintptr_t p)
+    {
+        return static_cast<size_t>(p & WORD_MASK) + WORD_BYTES;
+    }
+
+    // memset's threshold, and DELIBERATELY looser than word_min_up above. Its word path
+    // has to build the fill word first, and that costs more than the single word it would
+    // then store: measured 2026-08-28 at -Os, one aligned word costs 2 more instructions
+    // than the byte loop on rv64imac and 12 more on rv32imac. Two words is where it pays.
+    // Tightening this to word_min_up is safe and slower.
+    constexpr size_t MEMSET_WORD_MIN = 2u * WORD_BYTES;
 
     // always_inline is load-bearing, not a hint: out of line, memcpy has to build a
     // frame to keep dst alive across the call, which is eight instructions on the
@@ -42,7 +62,7 @@ namespace
     {
         uintptr_t const du = reinterpret_cast<uintptr_t>(d);
         uintptr_t const su = reinterpret_cast<uintptr_t>(s);
-        if (n >= WORD_MIN and ((du ^ su) & WORD_MASK) == 0u)
+        if (n >= word_min_up(du) and ((du ^ su) & WORD_MASK) == 0u)
         {
             while ((reinterpret_cast<uintptr_t>(d) & WORD_MASK) != 0u)
             {
@@ -73,7 +93,7 @@ namespace
         s += n;
         uintptr_t const du = reinterpret_cast<uintptr_t>(d);
         uintptr_t const su = reinterpret_cast<uintptr_t>(s);
-        if (n >= WORD_MIN and ((du ^ su) & WORD_MASK) == 0u)
+        if (n >= word_min_down(du) and ((du ^ su) & WORD_MASK) == 0u)
         {
             while ((reinterpret_cast<uintptr_t>(d) & WORD_MASK) != 0u)
             {
@@ -111,7 +131,7 @@ void* memset(void* dst, int c, size_t n)
 {
     unsigned char* d = static_cast<unsigned char*>(dst);
     unsigned char const b = static_cast<unsigned char>(c);
-    if (n >= WORD_MIN)
+    if (n >= MEMSET_WORD_MIN)
     {
         while ((reinterpret_cast<uintptr_t>(d) & WORD_MASK) != 0u)
         {

@@ -446,7 +446,8 @@ user stacks.** microbit is already at the arena cliff (`_ebss` IS `__kickos_ram_
 `bluepill-c8-st`/`f302nucleo-st` sit near 3 percent flash slack while trusted entry adds text.
 
 ### M6 -- the MMU: a unicore A53 on QEMU `virt`
-The memory model today is **one physical address space + per-thread MPU regions**. A real **MMU
+The memory model this milestone STARTED from is **one physical address space + per-thread MPU
+regions**, which is still what every region board does. A real **MMU
 (VMSA / page tables)** adds virtual address spaces: foundational, not a port. The **Domain seam** is
 shaped to absorb it (a domain becomes a page-table root instead of an MPU region set).
 

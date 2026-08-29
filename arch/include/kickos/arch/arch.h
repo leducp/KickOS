@@ -122,6 +122,12 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 // pends PendSV and the register swap happens on exception return; on the sim it
 // happens now, or on interrupt-exit when called from ISR context. The scheduler
 // must not assume the switch has completed when this returns.
+//
+// MUST be called either with interrupts masked or from ISR context. Publishing the incoming
+// context and saving the outgoing one are two steps in every backend, so an interrupt between
+// them is delivered against a half-applied switch and saves the wrong frame as the incoming
+// thread's saved context. The ISR arm is the other posture and not an exception: a backend
+// serves it by BOOKING the switch for the interrupt leg's own exit.
 void arch_switch(struct arch_context* from, struct arch_context* to);
 
 // Enter the first thread from the boot context. `boot` is an optional save slot
@@ -542,8 +548,9 @@ enum
     ARCH_MAP_X = 1u << 2
 };
 
-// A physical address, wider than uintptr_t because Sv39 pairs a 39-bit virtual range with
-// a 56-bit physical one and Sv32 pairs 32 with 34.
+// A physical address, sized independently of uintptr_t because the physical width does not
+// track the virtual one in either direction: Sv32 pairs 32 virtual bits with 34 physical, so
+// a pointer cannot hold one, and Sv57 pairs 57 with 56, so neither width bounds the other.
 typedef uint64_t arch_phys_addr_t;
 
 // A memory type, never the bits a backend encodes it to.
@@ -601,8 +608,15 @@ void arch_aspace_destroy(struct arch_aspace* space);
 //
 // COHERENCE-COMPLETE: when either returns the change is visible to this core, whatever
 // maintenance that took having happened inside. A64 requires break-before-make when
-// replacing a live entry, so the invalidate belongs between the two writes. A map into a
-// slot that was empty needs one too, architectures caching negative translations.
+// replacing a live entry, so the invalidate belongs between the two writes.
+//
+// A map into a slot that was empty needs one too, and the REASON is not what it looks like.
+// Measured against all three manuals: only RISC-V permits caching an entry whose valid bit is
+// clear (Privileged 12.2.1). A64 never caches a faulting entry (DDI 0487 M.b D8.17 RXCLRD) and
+// x86_64 states invalid-to-valid needs no invalidation (SDM Vol 3 section 5.10.4.3). What keeps
+// the obligation on all three is the CONDITION those exemptions carry: they hold only where
+// every earlier clearing of that same slot was invalidated, which is a property of the slot's
+// history and not of this call. A backend cannot know it, so it invalidates.
 //
 // At more than one core the initiator waits: A64's broadcast barrier blocks until every
 // other PE has drained, while RV64 and x86_64 wait on far-side code. An unmap whose frames
@@ -610,6 +624,23 @@ void arch_aspace_destroy(struct arch_aspace* space);
 // REVOKES may not, and the far-side handler takes no kernel lock. docs/design-m6-mmu.md T9.
 //
 // A map may target the space this core is RUNNING on: the self-grant widens it mid-syscall.
+//
+// A FAILED MAP LEAVES ITS RANGE UNMAPPED rather than as it was. The rollback clears every leaf
+// from `va` up to the first page that has none, whichever call installed it, and cannot restore
+// a mapping an earlier page of the same call replaced: total-or-fail means total or unmapped.
+//
+// WHAT KEEPS THAT FROM DESTROYING A MAPPING THE CALL DID NOT MAKE is the failure mode and not a
+// survey of call sites. The only thing that fails part-way is allocating a fresh intermediate
+// table, and a range ALREADY WHOLLY MAPPED by granule leaves has every table on it already, so a
+// re-map over live leaves allocates nothing and cannot fail at all. That is the case the
+// self-grant reaches when a granted range's memory type changes, which is a re-map over live
+// leaves in the running space. Every other caller maps a fresh reservation, where the leaves
+// cleared are its own.
+//
+// SO THE DESTRUCTIVE SHAPE NEEDS A CALLER THAT MAPS OVER A PARTIALLY MAPPED RANGE, and none
+// does. The first one added is what makes this rollback owe a narrower form: stop at the first
+// page whose leaf it did not create, or refuse a map that meets a live leaf outside the pages
+// this call has installed.
 enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
                                         arch_phys_addr_t pa, size_t pages,
                                         uint32_t rights, enum arch_map_memtype type);
@@ -642,6 +673,13 @@ void arch_aspace_activate(struct arch_aspace* space);
 // page is not mapped in `space`. A range contiguous in virtual memory is not contiguous in
 // physical memory, so a caller splits at granule boundaries and acquires each page.
 //
+// THE SAME HALF MAP, UNMAP AND arch_aspace_frame_at TAKE, and null above it. A walk reads the
+// index bits of the address alone, so an address above the half either aliases onto a low-half
+// page or indexes into the kernel's own window, whose entries every space shares; either would
+// hand a caller a pointer to memory no space may name. A RELEASE above the half is refused and
+// is not a defect: an address no space may map held no slot, so there is nothing to surrender
+// and a backend must not report a mispairing for it.
+//
 // A release pairs with an acquire that ANSWERED, and a null answer took no hold: releasing
 // beside one surrenders somebody else's, since the count is of calls. A backend whose release
 // is a no-op is exactly where a caller gets that wrong and no arm can see it, so a caller
@@ -649,6 +687,46 @@ void arch_aspace_activate(struct arch_aspace* space);
 #define ARCH_ASPACE_ACQUIRE_MIN 6u
 void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va);
 void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
+
+// NAME the frame backing one page of `space`: the granule-aligned physical address the page
+// holding `va` is mapped onto, and 0 when that page is not mapped. `va` need not be
+// granule-aligned and the byte offset inside the granule is not carried, an answer being a
+// frame and not a pointer to a byte.
+//
+// THE SAME HALF MAP AND UNMAP TAKE, and 0 for anything above it. A walk reads the index bits
+// of the address alone, so without the test an address above the half either ALIASES onto a
+// low-half page and is answered with THAT page's frame, or indexes into the kernel's own
+// window, whose entries and tables every space shares. Both answer about an address no space
+// may map, and the second discloses the kernel's map. `va` is aligned down BEFORE the
+// question, this member admitting an unaligned one where map does not, and each backend states
+// the boundary once so its two guards cannot drift apart.
+//
+// 0 MEANS NOT MAPPED, and that is exact here rather than a convention with a hole in it. It is
+// also what a page mapped onto physical frame 0 would answer, and a backend does accept
+// pa == 0. What closes it is that no low-half page in this tree is ever mapped there: the frame
+// pool is carved inside the image's DRAM share, so its lowest output address is far above 0 and
+// 0 is its allocation failure besides; the image route names the app window's load address; and
+// the one boot leaf whose output IS frame 0 is a device mapping in the KERNEL half, which the
+// guard above refuses. A caller or backend that maps a low-half page onto frame 0 breaks this,
+// and kernel/mem/aspace.cc's aspace_frame_token and the arms in kernel/syscall/syscall_aspace.cc
+// read 0 as not mapped.
+//
+// A LEAF ABOVE THE LEAF LEVEL IS NOT RESOLVED and answers 0, which is wrong for a page that is
+// mapped. NEITHER backend here can create one in the low half: both install granule leaves
+// only, the RV64 editor refusing a map that meets a larger leaf and the A64 editor writing a
+// table descriptor at every level above the leaf, so no arm could reach the code that resolved
+// it. This member therefore OWES a level-aware walk to the first backend that installs a
+// low-half block or superpage: resolve the leaf at whatever level it stands and answer its
+// output plus the granule-aligned offset of `va` inside that leaf's span.
+//
+// Spends no acquire hold, so comparing the frames behind many pages does not run a finite
+// window pool out, and reads no frame's contents.
+//
+// A caller naming a frame by subtracting two acquire pointers gets a stable identity only
+// where acquire is an addition; on a backend windowing a handful of slots the same small
+// number comes back for every frame and the comparison SUCCEEDS wrongly
+// (docs/design-m6-mmu.md F8).
+arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va);
 
 // SELFTEST ONLY, and shaped like arch_mpu_probe_addr: what the implementation reports
 // about the translation it provides, so the port's figures are checked against the machine
@@ -822,7 +900,7 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result);
 // caller need not hold IrqLock; the test-scaffolding syscalls (irq_inject,
 // irq_unmask) call them bare.
 //
-// SINGLE-DOORBELL CONTRACT (software backends: sim, rv32imac, xtensa, rxv3-soft):
+// SINGLE-DOORBELL CONTRACT (software backends: sim, rv32imac, rv64imac, xtensa, rxv3-soft):
 // a coalesced redelivery is carried through ONE shared cell + ONE physical doorbell
 // and the per-line pending bit is cleared as it is rung. So AT MOST ONE unmask with
 // a pending redelivery may occur per IrqLock/interrupts-masked region; a second

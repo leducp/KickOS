@@ -114,10 +114,11 @@ to all 20.
       nowhere for it to come FROM. `rx72m` silicon is the only check for the RX MPU. Already
       recorded in `STATE.md`; filed here so it survives the next STATE.md rewrite. Cited without
       a line number ON PURPOSE: it has already moved once, which is the whole reason for the copy.
-- [ ] **Decide whether `kickos_app_build_stamp` should be reproducible.** It folds `__DATE__` and
-      `__TIME__` in an app TU (`user/include/kickos/app.h:53-54`), so its CODE size varies between
-      two builds of an identical tree (measured at 0x8c, 0x90 and 0x94) and every later address
-      shifts with it. It exists to answer "did the APP change or was the image relinked", which a
+- [ ] **Decide whether the per-app build stamp should be reproducible.** It folds `__DATE__` and
+      `__TIME__` in an app TU (`user/include/kickos/app.h`), so its CODE size varied between two
+      builds of an identical tree (measured at 0x8c, 0x90 and 0x94) and every later address shifted
+      with it. R2.2 turned the app's half into DATA (`kickos_app_build_raw`) and moved the
+      reformatting into `kmain`, which removes the code-size variation but not the timestamp. It exists to answer "did the APP change or was the image relinked", which a
       content hash would answer without perturbing code size. While it stands, **"byte-identical
       image" is not a claim this tree can make** -- and `docs/reference/boards.md:2199` makes it,
       correct in intent ("Tree identity is the test, not hash identity") but wrong in wording.
@@ -2070,7 +2071,7 @@ true split:
 - **12 C++ vague-linkage COMDAT symbols** -- `kickos::List::push_back`, `SlotPool<T,N>::resolve`,
   `kickos::Kernel::Kernel()`, `kickos::emit`, ... They report `W` in `nm` but are LANGUAGE-MANDATED,
   not a seam mechanism, and are not removable. This is the whole of the counting error.
-- **`kickos_app_build_stamp`** -- hand-rolled C vague linkage, not a seam: `user/include/kickos/app.h`
+- **`kickos_app_build_raw`** -- hand-rolled C vague linkage, not a seam: `user/include/kickos/app.h`
   defines it inline and the build force-includes that header into every app TU, so a lone TU cannot
   replace it.
 - **7 weak UNDEFINED references** -- `__kickos_code_start/_end`, `__kickos_appdata_start/_end`,
@@ -7021,22 +7022,20 @@ follows is what survived that.
       give the selftest a microbit-specific arena reservation the way `uart_service` got one, or
       accept that this board's skip set grows once per milestone. Worth deciding deliberately rather
       than one arm at a time, because the next `.bss` byte from ANY change takes the next arm.
-- [ ] **`docs/reference/invariants.md` carries the invariant ID `object-access-via-per-task-cap`, and
-      the capability table is per-THREAD.** 5.4 of the task-layer spike rules the table stays per
-      thread, and the prose around `handle-not-pointer-across-boundary` says "per-task capabilities"
-      too. The comments in `cap.h` and friends were reworded when 9.3 landed; renaming an invariant ID
-      is a cross-document change that was deliberately left out of that commit. **9.4 made it worse**:
-      `task` now HAS a referent, so that entry's prose "every SPAWNED task gets"
-      `KICKOS_CAP_CHILD_WIDTH` now reads as a claim about a group and is wrong -- the width is per
-      thread.
-- [ ] **`task_release` frees the task slot BEFORE `cap_teardown`, so `c->task` dangles for the rest of
-      `exit_current`.** Exactly as `c->domain` already did, and for the same deliberate reason: the
-      release must precede the sweep so a supervisor woken by the EPIPE can respawn into the window.
-      Nothing reads it, and the comment at the site says so. A peer's `task_for` can recycle that
-      freed slot while `c->task` still names it, and the M4.8.2 wake preemption now lets that
-      overlap the sweep rather than follow it; a future second `task_release(c->task)` would then
-      decrement a LIVE task to zero. It becomes a real hazard the first time anything downstream of
-      the sweep wants the task.
+- [x] **`docs/reference/invariants.md` carried the invariant ID `object-access-via-per-task-cap` while
+      the capability table is per-THREAD. FIXED, AND THIS ENTRY OUTLIVED THE FIX.** The ID is
+      `object-access-via-per-thread-cap` now, the spelling `object-access-via-per-task-cap` appears
+      nowhere in the file, `handle-not-pointer-across-boundary` cites the new ID, and the prose reads
+      "every SPAWNED thread gets `KICKOS_CAP_CHILD_WIDTH`" with "the width is per thread, not one
+      number per image" beside it. That is every clause this entry asked for.
+      Closed 2026-08-28 at the M6.3 documentation audit.
+- [x] **`task_release` freed the task slot BEFORE `cap_teardown`, so `c->task` dangled for the rest
+      of `exit_current`. FIXED, AND THIS ENTRY OUTLIVED THE FIX.** The release still precedes the
+      sweep, for the reason this entry gives, but the NAME is retired with the reference:
+      `kernel/sched/sched.cc` clears `c->task` immediately after `task_release(c->task)`, so the
+      window in which a peer's `task_for` could recycle that slot while `c->task` still named it no
+      longer exists, and a second `task_release` would take a null rather than a live task.
+      Closed 2026-08-28 at the M6.3 documentation audit.
 - [ ] **M6/SMP: the claim-then-commit shape in `domain_for` and `task_for` is safe only because
       `IrqLock` is enough on one core.** Both hand out a pool slot at refcount 0 and are committed by
       a later `domain_ref`/`task_ref`, and what makes the window atomic is that `thread_create_call`
@@ -7069,12 +7068,14 @@ follows is what survived that.
         is latent only because no ctest runner points this gate at a SYSMPU board; the class needs its
         own corroboration, keyed on the MPU backend rather than on the arch.
       Both are `case` arms, no new mechanism, and blocked on nothing.
-- [ ] **`docs/design-c6-driver.md:34` cites "open question 3" and that document has no
-      open-questions section at all.** A dangling citation, and the same phrase in
-      `check_sim_pubpanic.sh` pointed at `design-m4.7.9-fault-isolation.md`, which also had no such
-      numbered question (fixed there in M4.8.3 by pointing at the real 9.5). Whatever the C6 timer
-      path's kernel-side blocker is, it is now recorded nowhere. Find it in the C6 spikes or delete
-      the parenthesis; a citation to nothing is worse than no citation, because it reads as evidence.
+- [x] **`docs/design-c6-driver.md` was reported as citing an "open question 3" it does not carry.
+      NOT A DEFECT, AND THIS ENTRY IS A STALE DUPLICATE OF ONE ALREADY SETTLED ABOVE.** That document
+      DOES carry a numbered `## Open questions / risks` section, and its item 3 is the timer-IRQ
+      follow-on the citation points at, so the citation resolves and the parenthesis stays. The same
+      false finding was investigated and closed in the doc-audit section of this file; this entry was
+      filed against the same premise and never re-checked. The `check_sim_pubpanic.sh` half of it was
+      a separate and real defect, fixed at M4.8.3 by pointing at the numbered question that exists.
+      Closed 2026-08-28 at the M6.3 documentation audit.
 
 ## Found landing task-layer steps 9.4 and 9.5 (2026-08-12)
 
@@ -7117,3 +7118,132 @@ follows is what survived that.
       then dies -- all under a host or emulated clock. The interesting case is a driver cancelled while
       its IRQ line is armed on real hardware, where the wake races the device. Wants an enforcing board
       with an IRQ UART service list, which is what makes it a fleet-pass item and not a gate.
+
+## Found during M6.3 and M6.4, deferred with the reason, then fixed at the pre-audit step (2026-08-28)
+
+- [x] **DONE: the word-copy bound is exact, and an aligned 8-byte `kmemcpy` costs 32 instructions
+      instead of 56.** `lib/libc/string.cc` no longer gates the copy word path on a conservative
+      `2 * WORD_BYTES`. The byte prologue's length is fixed by the destination alignment and is
+      therefore known before the branch, so `copy_ascending` enters on `n >= ((-du) & WORD_MASK) +
+      WORD_BYTES` and `copy_descending`, whose prologue walks the END of the range DOWN rather than
+      the start UP, on `n >= (du & WORD_MASK) + WORD_BYTES`. Measured on rv64imac at `-Os` by
+      executed-instruction count under qemu: aligned `kmemcpy` of 8 bytes 56 to 32, aligned
+      descending `kmemmove` of 8 bytes 61 to 42, every other shape +2 for the wider guard, and the
+      emitted opcode stream is identical after the guard.
+      **`memset` deliberately KEEPS the conservative `2 * WORD_BYTES`**, now named `MEMSET_WORD_MIN`
+      and documented as a profitability threshold rather than a safety one. Its word path has to
+      build the fill word first, and measurement says one aligned word costs 2 more instructions
+      than the byte loop on rv64imac and 12 more on rv32imac. Two words is where it starts paying.
+      **The obvious "just lower the constant" was measured and rejected.** `n >= WORD_BYTES` is
+      safe, and is 2 cheaper than the exact bound wherever the exact bound agrees with it, but it
+      admits copies that cannot move a whole word: at a shared misalignment of 1 to 7 with `n` of 8
+      it pays the prologue, moves nothing, and costs 70 instructions against the 56 the byte loop
+      costs today. The exact bound never regresses any shape by more than the 2 instructions of its
+      own guard.
+      The unit sweep in `tests/unit/kstring/kstring_words.cc` is what gates it, and mutation says it
+      is load-bearing: dropping any of the three thresholds below the prologue length kills the run
+      with SIGSEGV inside that primitive's own sweeping test. It is also blind to one thing worth
+      knowing, that handing `copy_descending` the ascending bound stays green, because that error is
+      merely wasteful and never unsafe. Only the instruction count catches it.
+
+- [ ] **OWED MOVE: the three byte-seam DEFINITIONS are in the syscall layer while their declarations
+      are in the memory layer.** `kaccess_from_user`, `kaccess_to_user` and `ep_copy` are declared in
+      `kernel/include/kickos/aspace.h` (lines 46-52), which is where R6 moved them from
+      `kernel/syscall/syscall_internal.h`, but they are still defined in
+      `kernel/syscall/syscall_mem.cc` (lines 387-408) over a file-local `access_copy` (line 307).
+      They arguably belong in `kernel/mem/aspace.cc` beside the rest of the address-space code, and
+      the move did not happen only because another agent owned that file during the pass. No
+      behaviour depends on it; it is a layering tidy-up with one caller-visible consequence, that a
+      reader following the header lands in the syscall directory.
+
+- [ ] **RESIDUAL: `KICKOS_RV64_SSTATUS_SUM` is still defined and is now used by nothing.**
+      `arch/riscv/rv64imac/include/kickos/arch/rv64_frame.h` line 95 defines it; R6 removed both
+      writes and the assembler `.equ`, and a tree-wide grep finds no other reference. A dead constant
+      naming a bit the port has decided never to set is the kind of thing a later edit picks up and
+      uses, so it should either go or carry a one-line comment saying the port never sets it and why.
+      Left alone here because the file was not this pass's to edit.
+
+- [x] **`kfault_terminate` bypassed the console flush on every board whose panic ends in a
+      shutdown, so a panic on silicon with a transmit FIFO could truncate the dump.** `kpanic`
+      reaches `kfault_terminate`, and `virt_rv64`, `virt_rv32`, `virt_arm64`, `mps2`, `nrf51` and
+      `sim` all defined it as a bare `arch_shutdown(status)`. SIX chips, not the five this entry
+      first named: `sim` was missed, and it is the one every host-side gate runs on. Only
+      `kickos_terminate` and a clock retune called `arch_console_flush_sync`. Found at M6.3's R1.4,
+      which gave the RISC-V chip a real flush body after measuring that the fallback ASSERTS the
+      console cannot outrun shutdown, which is false of any 16550 with a FIFO; `virt_arm64` has had
+      the body since S4 and the panic path did not use it either.
+      **FIXED at the M6.3 pre-audit step: one `arch_console_flush_sync()` per chip ahead of the
+      shutdown, which is what the ordered exit has done since S6.** The per-board answer is what
+      made this safe rather than a one-line edit. Only TWO of the six can truncate anything:
+      `virt_rv64` (NS16550A, TEMT poll) and `virt_arm64` (PL011, BUSY poll) carry real bodies. The
+      other four take the lone-TU fallback, and there the fallback's assertion is TRUE by
+      TRANSPORT rather than by luck: `virt_rv32`, `mps2` and `nrf51` publish through semihosting
+      `SYS_WRITEC`, which the host consumes inside the trap, and `sim`'s sync writer loops on
+      `write(1, ...)` until the host has taken every byte. There was never a runtime assert to
+      fire either way: the fallback body is EMPTY in the linked image, `bx lr` on both ARM boards
+      and `ret` on `virt_rv32` and `sim`, supplied by `arch_console_flush_sync_default.cc.obj` in
+      every case. The RING needed nothing: `kpanic_enter` sets `g_console_panicking`, which routes
+      every panic-time write through `arch_console_write_sync`, so only the DEVICE was ever left
+      loaded. **Still unwitnessable on QEMU**, whose UART hands each byte to its chardev on the
+      register write and reports the shift register idle with it, so the fix rests on the 16550
+      TEMT and PL011 BUSY semantics and not on a bench capture. What IS witnessed, by mutation on
+      `qemu-riscv64` with the same instrument compiled into all three arms: the flush is REACHED on
+      the panic path (both markers, exit 132), deleting the one call makes it unreached (neither
+      marker) with the banner and the status unchanged, which is exactly how the defect stayed
+      invisible, and with the device mutated never to report idle the loop still terminates on
+      `UART_POLL_BOUND`, so the new call cannot turn a fault into a harness timeout.
+      Two OTHER terminal `arch_shutdown` sites were swept and deliberately left: the
+      `arch_shutdown(0)` after `kmain` in every `Reset_Handler`, and `sim.cc`'s `arch_shutdown(2)`
+      after `kickos_isr_fault`. Both run only when a noreturn path returned, so a drain there would
+      state a reachability the code denies.
+- [x] **`check_dash_punct.sh`'s separator exemption could be forged from inside prose.** Its
+      command position anchors on `^`, `;`, `&`, `|`, `(` or `$(`, so a comment such as
+      `# see: rm -rf; ls --color -- and then the prose` was exempted: the `;` creates a command
+      position and `rm` is on the whitelist. Found while widening the option run to admit long
+      options at M6.3, whose adversarial pass proved the widening opened no new class, this being
+      the pre-existing one it leaked identically for short options. Nothing in the corpus, 886
+      files at this tree, ever hit it.
+      **FIXED at the M6.3 pre-audit step, and NOT the way this entry proposed.** Narrowing the
+      ANCHOR was measured and rejected. The candidate narrowing required the operand after the
+      `--` to start with a quote, a `$`, or the end of the line, and it fails twice over. It
+      breaks two legitimate corpus lines, `check_service_lists.sh:71` and `:153`, which spell
+      `git ls-files -- CMakeLists.txt '*/CMakeLists.txt'`: a real terminator with a bare-word
+      pathspec, and quoting a literal to satisfy a gate is the rewrite-of-working-shell the gate's
+      own header names as the wrong fix. An operand-shape survey of all 34 real terminators in the
+      corpus is why: 19 sit behind a double quote, 13 behind a single quote, 2 behind a bare
+      letter, and NONE behind a `$` or an end of line. And it kills only that one forge:
+      `# see: rm -rf; ls --color -- "and then" the prose` survives it by two characters.
+      **What landed instead is a POSITION test. SEP reads shell and a comment is not shell, so the
+      separator erase now reaches only as far as the line's first comment opener.** `SEP_ERE` and
+      its three mutation variants are textually UNCHANGED, so the counts keyed on them did not
+      move. The scanner gained a fifth ERE, `HASH_ERE='(^|[[:blank:]])#'`, so a `#` inside a word
+      or a literal is not an opener, and the erase is applied to the prefix ahead of the first
+      opener with the suffix appended back. The position comparison is valid because `erase` pads
+      its match to equal length, which is what keeps a column in `work` the same column as in the
+      original line. Zero corpus churn, measured two ways: the gate still PASSes over 886 files
+      with 0 findings, and a sweep of all 34 SEP occurrences found 0 carrying a `#` earlier on the
+      line than the anchor, which still holds under the strictest possible `HASH_ERE='#'`.
+      **The rig, before then after.** Positive controls 7 then 8, the forge being the eighth.
+      Negative controls each scanned alone 13 then 14, the fourteenth a comment opening AFTER a
+      real separator, which is the POSITIONAL guard: a sloppier "the line contains a `#`, refuse"
+      implementation makes that line report and the loop fails loudly. Mutation arm `separator` 8
+      then 9, the added line being a near miss to that clause. `banner`, `backtick`, `sep-prefix`,
+      `sep-new-words` and `sep-long-option` all unmoved at 1, 1, 3, 5 and 1, each because control
+      14 carries no hyphen run, no backticks, no `VAR=` or array prefix, an old word, and a short
+      option. One arm ADDED, `sep-comment`, expected 7: with `HASH` disabled the forge is exempted
+      again and the positive file drops 8 to 7, and the one line silenced is the forge, which is
+      what makes `HASH` a near miss rather than slack. `dash -n` clean, and the diff read by eye
+      for the bashism class `dash -n` does not catch. The gate also PASSes under mawk, nawk and
+      gawk, so the new `length`/`substr`/`match` use is not gawk-specific.
+- [x] **`tests/static/aspace_seam_baseline.txt`'s own header called the EMPTY diff the M6.3
+      deliverable, which R5 falsified. FIXED, AND THIS ENTRY WAS FILED IN ERROR.** The header now
+      reads "THE DIFF IS THE DELIVERABLE AND IT IS NOT EMPTY", names R2.1 as where the owed member
+      was measured and R2.2 as where it landed, and tells a reader meeting the exit-2 refusal not to
+      move the ref to quiet it. That is the whole of the fix this entry asked for.
+      **It went in at `9b4bd49e`, the same commit that filed this entry**, so the entry was open and
+      answered from the moment it was written: the entry's own reasoning that the pre-audit step had
+      to hold the file byte-identical does not apply to a COMMENT, which the differ does not read
+      (comments and blank lines are ignored, and the verdict is taken over the bare ref alone).
+      The project's rule is that a review finding is FIXED or raised as a decision, never filed and
+      merged; this one was both, which is the inversion, and the correction is to close it here and
+      say so rather than to delete it. Closed 2026-08-28 at the M6.3 documentation audit.

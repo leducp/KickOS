@@ -66,6 +66,15 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
     ARGS "${_fault_marker}" ${_fault_status})
 endif()
 
+# qemu-riscv64 (rv64imac): the same .word 0 the rv32 arm uses, arriving as scause 2 through
+# the supervisor entry. Root reaches it unprivileged, so the isolation arm above picks the
+# marker and the status; nothing here needs the rv64 panic banner text.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64")
+  kickos_add_qemu_test(NAME qemu_riscv64_fault_dump TARGET fault BOARD qemu-riscv64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh"
+    ARGS "${_fault_marker}" ${_fault_status})
+endif()
+
 # qemu-arm64: .inst 0x00000000 -> EC 0x00 through the EL0 synchronous entry, which root
 # reaches unprivileged, so the isolation arm above picks the marker and the status.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")

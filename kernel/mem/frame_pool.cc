@@ -31,9 +31,18 @@ namespace kickos
         FrameAllocator g_frames;
         size_t g_refused = 0;
 
+        // A LINK-TIME WORD rather than a reference to the symbol itself: the delta is an
+        // ABSOLUTE symbol whose value is the whole offset, and a high-half kernel puts that
+        // value out of reach of a PC-relative materialisation (rv64 medany spans a signed
+        // 32-bit displacement; the arm64 pair clears it by one gigabyte). The initialiser is an
+        // address constant, so this is one relocated word and no constructor. VOLATILE is what
+        // keeps it a word: without it the value propagates back into each caller and the
+        // reference is PC-relative again.
+        unsigned char* const volatile g_pool_delta = __kickos_frame_pool_delta;
+
         uintptr_t pool_delta()
         {
-            return reinterpret_cast<uintptr_t>(__kickos_frame_pool_delta);
+            return reinterpret_cast<uintptr_t>(g_pool_delta);
         }
 
 #if defined(KICKOS_ENABLE_SELFTEST)

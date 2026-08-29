@@ -17,10 +17,11 @@ say.
 ## Where we are
 
 **M6.2 is CLOSED, every T-step landed, and `qemu-arm64` is the fleet's first ISOLATING translating
-board.** M6.3 is next: the RV64 Sv39 backend and the aspace-seam VERDICT. The verdict is the one
-piece of M6 evidence that cannot be gathered early -- F8's empty-diff claim is about a FAMILY, so a
-one-backend seam is UNPROVEN rather than proven, and R2 (a target that cannot direct-map its own
-physical space) is what settles it. "Unproven" is the better thing to say in a review.
+board.** M6.3 is CLOSED at R5 and the aspace-seam VERDICT IS TAKEN, and it is NOT an empty diff: one
+member added, `arch_aspace_frame_at`, thirty five records identical. The verdict was the one piece of
+M6 evidence that could not be gathered early, F8's empty-diff claim being about a FAMILY, and what
+settled it is the property R2 was picked for. Re-take it with
+`sh tests/static/check_aspace_sigdiff.sh`, whose exit 2 IS the result; do not move the baseline.
 
 **A CLOSING ASSIGNMENT SWEEP over `docs/design-m6-mmu.md` found 8 obligations of 41 not discharged,
 and five of them were closeable by running them.** S2's model confirmation, F10's cross-task refusal
@@ -110,8 +111,57 @@ The whole point of this file. A green fleet pass says none of the following.
   no data cache, so what the flags-match leg asserts is that both mappings carry the same memory
   type, not that either is actually uncached. The type reaching the descriptor at all is unwitnessed
   on this bench, and the first bus master is where that stops being true.
-- **There is no riscv64 and no x86_64 board.** RV64 Sv39 and x86_64 are spikes. A doc saying M6
-  "ships THREE backends" is a plan, not a tree.
+- **There is no x86_64 board in this tree.** x86_64 is a sibling branch, not a merge. A doc saying M6
+  "ships THREE backends" is a plan until both halves land in one tree; measured separately, the aspace
+  differ reads 36 against 35 here and 35 against 35 there, and the union is what a merge produces.
+- **`qemu-riscv64` HAS NO SILICON, so every rv64 claim is emulator-grade.** `docs/reference/boards.md`
+  names no RV64 part and no `tools/flash*.sh` names this arch, so the backend has only ever run under
+  emulation and there is no path to a run. **And F8's named silicon witness does not boot this image
+  at all**: `-cpu thead-c906` on the shipped `hello` produces NO output, one `zfa` privilege-spec
+  warning and a timeout kill, with the default core printing the banner as the control. So the c906
+  figures in the M6.3 record are a standalone probe's and never the suite's.
+- **THE MAP EDITOR'S MAINTENANCE IS WITNESSED IN ONE PLACE OF SIX**, each measured as an isolated
+  single-site mutation. WITNESSED: `unmap`'s per-page invalidate, whose deletion turns
+  `qemu_riscv64_aspace_fault` red on "the unmapped page did not fault". HELD BY A COUNTER AND NOT BY
+  AN ACCESS: the fresh-map per-leaf invalidate, caught only by `map_tlbi_elided`'s floor. NOT
+  WITNESSED AT ALL: break-before-make, destroy's sweep ahead of `free_subtree`, and
+  `arch_aspace_activate`'s whole-hart fence. And the fresh NON-LEAF fence's ISSUED path never executes
+  in this suite, proved by multiplying that bump by 100 and seeing every figure stand still, so only
+  its ELIDED leg runs (2 of the seed's 47).
+- **A ROOT WRITE APPEARS TO FLUSH THE WHOLE TLB ON THIS EMULATOR, WHICH IS WHY ACTIVATE'S FENCE IS
+  DEAD-EFFECT.** Deleting it leaves all 132 arms green on a suite that switches between live per-space
+  low halves, and a stale low-half translation WOULD be consulted there, so the green run is only
+  consistent with the emulator dropping translations on the `satp` write itself. That is an inference
+  about QEMU and not a measurement of it: what the bench cannot separate is that explanation from "at
+  one core a root that was never installed has no cached translation to drop". Either way only silicon
+  witnesses the fence's necessity. The fresh non-leaf fence rests on the specification for a second
+  reason, QEMU modelling no caching of invalid PTEs where RISC-V Privileged 12.2.1 permits it.
+- **THE IDENTIFIER'S WIDTH-ZERO CASE IS A CODE PROPERTY HERE AND NEVER A MACHINE ONE.** Every core
+  model on this bench reports a contiguous 16-bit field, the suite's own model line reading `16 ASID
+  bits` on both postures, and NO emulator property narrows it: `asid-bits=off`, `asid_bits=off` and
+  `asidlen=off` are each refused as `Property 'rv64-riscv-cpu.<name>' not found` while `sv48=off` on
+  the same command line is accepted, which is the positive control that makes the absence worth
+  stating. What stands in for a zero-width hart is a mutation of the port's own probe. A NON-CONTIGUOUS
+  field has no machine here either, so the width-against-popcount distinction is held by graded
+  controls alone.
+- **`aspace_frame_token`'s CONVERSION to the seam member is unwitnessed while the member's ANSWER is
+  witnessed.** Reverting that caller to the two-acquire-pointer arithmetic is green, because every
+  frame it is asked about sits inside the kernel window where `arch_aspace_acquire` is an addition and
+  the subtraction is accidentally right. The defect is latent, not absent, and no arm in this tree puts
+  a frame outside that span. What IS witnessed is the member: seven arms go red when it answers one
+  constant frame and eight when it answers zero.
+- **THE KERNEL'S WRITE-EXECUTE SPLIT IS ENFORCED BY HARDWARE AND NO SHIPPED ARM SAYS SO.** What holds
+  the runtime half is a pair of privileged probes with a negative control on the parent commit, not a
+  ctest entry, because a privileged fault is a panic here rather than a contained kill. The static arm
+  `riscv_kernel_wx` reads the linked image's own leaves and is the only shipped witness.
+- **THE gp GATE'S HAZARD HAS NO RUNTIME ARM.** Nothing in the tree sets a hostile global pointer, so
+  `riscv_kernel_gp` and `riscv_kernel_apphalf` are held by their own positive controls (a cross-half
+  word reverted to a direct reference, an allowlist entry removed) and never by a thread exploiting
+  one. And `virt_rv64.ld`'s comment claims its displacement assert "turns a missed cross-half
+  reference into a link error", which R2.2's audit falsified for both the gp-relaxed and the
+  medlow-absolute encodings; the comment is still there.
+- **Sv57 IS ONE CHOICE ENTRY AWAY AND IS NOT OFFERED**, the emulated core accepting it, because a mode
+  the board does not run is a claim with no arm behind it. Two postures ship, Sv39 and Sv48.
 - **Neither RX nor LX6 has an emulator, and only RX has no CI gate either.** `ci.yml` runs a
   dedicated `xtensa` job that builds `esp32-wroom` and `-st` and runs `ctest -L host`; `rx72m`
   appears in no job at all, so `rx72m` silicon is the only check that arch ever gets.

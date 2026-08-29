@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The kernel-text instructions that materialise an APP-HALF address and are allowed to
+# (tests/static/check_riscv_kernel_apphalf.sh, docs/design-m6-mmu.md R2.2).
+#
+# ONE SYMBOL PER LINE, NEVER A PATTERN. A pattern would be widened by the next person who
+# trips the gate; a name has to be argued for. Every line carries the reason the reference is
+# harmless, and the reason is always one of two things: the value is a PC that is jumped to
+# and never dereferenced, or it is a bound that is compared or printed and never dereferenced.
+# A reference that DEREFERENCES an app-half address does not belong here whatever it is for:
+# it reaches whichever process is on the core, not the one the kernel meant.
+#
+# EVERY LINE MUST MATCH. An entry no kernel-text instruction reaches any more is stale and
+# fails the gate, so this file cannot drift into a list of things that used to be true.
+
+kickos_root_entry           # a PC: kmain hands it to thread_create as the root thread's entry, never dereferenced
+kickos_user_thread_return   # a PC: arch_context_init seats it as the return address of an unprivileged frame, never dereferenced
+_kickos_heap_start          # a bound: kmain prints the newlib heap's size, never dereferenced
+_kickos_heap_limit          # a bound: the other end of the same printed subtraction, never dereferenced

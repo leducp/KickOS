@@ -39,5 +39,9 @@ if(KICKOS_BUILD_TESTS)
     kickos_add_qemu_test(NAME qemu_riscv_rootauth TARGET rootauth BOARD qemu-riscv
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh"
       ARGS rootauth ${_arms} "${_absent}")
+  elseif(KICKOS_BOARD STREQUAL "qemu-riscv64")
+    kickos_add_qemu_test(NAME qemu_riscv64_rootauth TARGET rootauth BOARD qemu-riscv64
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh"
+      ARGS rootauth ${_arms} "${_absent}")
   endif()
 endif()

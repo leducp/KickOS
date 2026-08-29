@@ -38,3 +38,11 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS AND KICKO
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_mpu_fault TARGET mpu_fault BOARD ${KICKOS_BOARD}
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_mpu_fault.sh" ARGS ${KICKOS_FAULT_OUTCOME})
 endif()
+
+# NOT REGISTERED ON A TRANSLATING BOARD, and that is F9 rather than a coverage hole. This arm
+# writes a SIBLING domain's region from the same task, and the portable floor says a task's
+# grants are visible to its siblings: per-thread denial is a strengthening the MPU gets almost
+# free (the region set is reloaded on every switch-in anyway) and a translating backend maps
+# task-wide on purpose. Measured on qemu-riscv64: the cross-domain write completes and the app
+# prints its own "OK where the MPU is a no-op" line. Registering it there would assert a
+# guarantee this backend deliberately does not make (docs/design-m6-mmu.md F9, R2.2).

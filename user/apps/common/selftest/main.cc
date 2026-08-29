@@ -2481,8 +2481,10 @@ namespace
         tap::diag("aspace model: granules 0x%x, %u ASID bits, %u PA bits, verdict 0x%x",
                   grans, asid, pa, static_cast<unsigned>(m & KOS_ASPACE_MODEL_FIELD_MASK));
         // A machine whose report decodes to nothing would satisfy an equality against
-        // another zero, so the widths are read before the verdict is believed.
-        TAP_CHECK(asid != 0 and pa != 0 and grans != 0);
+        // another zero, so the widths are read before the verdict is believed. The identifier
+        // width is DIAGNOSED and not asserted: the architecture permits it to be hardwired to
+        // zero, and a port that tags no translation is a legal port (docs/design-m6-mmu.md F1).
+        TAP_CHECK(pa != 0 and grans != 0);
         TAP_CHECK((m & KOS_ASPACE_MODEL_ALL) == KOS_ASPACE_MODEL_ALL);
     }
 
@@ -2512,9 +2514,10 @@ namespace
 
     void t_aspace_span()
     {
-        // 600 pages from the last slot of one level-3 table, so the range crosses two table
-        // boundaries: the shape a process image has, and the one a miscounted last slot
-        // silently truncates.
+        // A run from the last slot of one LAST-LEVEL table, long enough to cross two table
+        // boundaries on any geometry the seam admits: the shape a process image has, and the
+        // one a miscounted last slot silently truncates. The kernel side derives the length
+        // from the granule, no level count being knowable above the seam.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_SPAN, 0) == 1);
     }
 
@@ -2559,7 +2562,7 @@ namespace
         //
         // IT DOES NOT REACH domain_for's OWN UNWIND ARM, and the depths printed below are
         // what says so: the handoff's map needs no new table on this board, the donor block
-        // sitting under a level-3 table the image already built, so frame injection has no
+        // sitting under a last-level table the image already built, so frame injection has no
         // point inside aspace_handoff and every refusal still lands in claim_slot ahead of it.
         void* const block = kos_ram_alloc(64);
         if (block == nullptr)
@@ -4332,8 +4335,9 @@ namespace
 
     // --- One release per acquire, and only where one was taken ---------------------------
     // arch.h counts OUTSTANDING acquire calls, so a release beside an acquire that answered
-    // null is a release of somebody else's hold. This backend's release is a no-op, which is
-    // exactly what leaves every other arm unable to see the difference.
+    // null is a release of somebody else's hold. WHERE arch_aspace_release is a no-op this
+    // counter is the only thing an arm can read a mispaired release off; a backend holding a
+    // real window refuses one itself.
     void t_aspace_acquire_balance()
     {
         // Page zero, which no space maps: the frame-token pair's second acquire answers null

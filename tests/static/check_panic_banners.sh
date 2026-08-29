@@ -45,6 +45,7 @@ REPORTERS='arch/arm/armv6m/arch_armv6m.cc
 arch/arm/armv7m/arch_armv7m.cc
 arch/arm64/armv8a/arch_armv8a.cc
 arch/riscv/rv32imac/arch_rv32imac.cc
+arch/riscv/rv64imac/arch_rv64imac.cc
 arch/rx/rxv3/arch_rxv3.cc
 arch/xtensa/lx6/arch_xtensa.cc
 arch/sim/sim.cc'

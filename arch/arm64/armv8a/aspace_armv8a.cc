@@ -325,8 +325,9 @@ namespace
                     invalidate_page_if(va, installed);
                 }
                 table[idx] = leaf | (static_cast<uint64_t>(pa) & DESC_OA_MASK);
-                // A fresh slot needs one too: an absence is cached like a presence, so the
-                // new leaf is invisible until the stale negative entry is dropped.
+                // A64 caches no faulting entry, so an invalid-to-valid change needs no
+                // invalidation at all (DDI 0487 M.b, D8.17, IWZCBG). This one covers the slot
+                // that was NOT in fact empty, which nothing above proves.
                 invalidate_page_if(va, installed);
                 va += GRANULE;
                 pa += GRANULE;
@@ -421,6 +422,16 @@ namespace
         return entry;
     }
 
+    // TTBR0's half only, and this is the SINGLE statement of that boundary every guard below
+    // asks: a second copy of it is a second truth. A high-half address is the kernel's window,
+    // reached through TTBR1, and nothing below this seam may edit or resolve it; the walk here
+    // reads the index bits of the address alone, so a high-half address ALIASES onto a low-half
+    // one and would otherwise be answered with that page's frame.
+    bool low_half_page(uintptr_t page)
+    {
+        return page < (static_cast<uintptr_t>(1) << va_bits());
+    }
+
     bool range_ok(uintptr_t va, size_t pages)
     {
         if ((va & (GRANULE - 1)) != 0)
@@ -432,9 +443,9 @@ namespace
         {
             return false; // 0 pages, a byte count past the pointer width, or a wrapped end
         }
-        // The low half only. A high-half address is the kernel's window, reached through
-        // TTBR1, and nothing below this seam may edit it.
-        return end <= (static_cast<uintptr_t>(1) << va_bits());
+        // end is exclusive, and extent_end refused a zero-page range, so end - 1 is the last
+        // byte the range covers and cannot underflow.
+        return low_half_page(end - 1);
     }
 }
 
@@ -660,12 +671,28 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
     {
         return nullptr;
     }
-    uint64_t const* const entry = leaf_entry(root_of(space), va & ~(GRANULE - 1));
+    uintptr_t const page = va & ~(GRANULE - 1);
+    // The half test arch_aspace_frame_at makes, for the same aliasing and for one more: a
+    // frame this walk reaches through TTBR1's own entries would be handed back as a POINTER
+    // the caller may write through.
+    if (not low_half_page(page))
+    {
+        return nullptr;
+    }
+    // Masked for the reason arch_aspace_frame_at is: the walk reads tables the map unwind can
+    // be handing back to the frame pool.
+    arch_irq_state_t const s = arch_irq_save();
+    uint64_t const* const entry = leaf_entry(root_of(space), page);
+    arch_phys_addr_t out = 0;
+    if (entry != nullptr)
+    {
+        out = static_cast<arch_phys_addr_t>(*entry & DESC_OA_MASK);
+    }
+    arch_irq_restore(s);
     if (entry == nullptr)
     {
         return nullptr;
     }
-    arch_phys_addr_t const out = static_cast<arch_phys_addr_t>(*entry & DESC_OA_MASK);
     return reinterpret_cast<void*>(static_cast<uintptr_t>(out) + va_base() +
                                    (va & (GRANULE - 1)));
 }
@@ -674,6 +701,35 @@ void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
 {
     (void)space;
     (void)va;
+}
+
+arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)
+{
+    if (space == nullptr)
+    {
+        return 0;
+    }
+    uintptr_t const page = va & ~(GRANULE - 1);
+    // MAP AND UNMAP'S OWN HALF TEST, and aligned down first because this member's `va` need
+    // not be granule-aligned where range_ok's is: see low_half_page for the aliasing this
+    // refuses.
+    if (not low_half_page(page))
+    {
+        return 0;
+    }
+    // Masked for the same reason the map unwind masks: it clears leaves and frees tables
+    // under one mask, and a walk interleaved with it would read a table already back in the
+    // pool. Neither caller supplies the mask and neither should: only the backend knows its
+    // walk reads pool-owned memory.
+    arch_irq_state_t const s = arch_irq_save();
+    uint64_t const* const entry = leaf_entry(root_of(space), page);
+    arch_phys_addr_t out = 0;
+    if (entry != nullptr)
+    {
+        out = static_cast<arch_phys_addr_t>(*entry & DESC_OA_MASK);
+    }
+    arch_irq_restore(s);
+    return out;
 }
 
 #if defined(KICKOS_ENABLE_SELFTEST)

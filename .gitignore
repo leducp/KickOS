@@ -40,3 +40,6 @@ compile_commands.json
 # Python bytecode from the telemetry checkers
 __pycache__/
 *.pyc
+
+# ctest writes these into the source dir when it runs from the repo root.
+/Testing/

@@ -41,6 +41,14 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_hello.sh")
 endif()
 
+# qemu-riscv64 (rv64imac): the same demo in U-mode on a QEMU `virt` RV64, end-to-end proof of
+# the reset/translation/ecall/Sstc-timer path. Both threads park on a deadline, so this is
+# the one gate that fails outright if the supervisor timer never fires.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64")
+  kickos_add_qemu_test(NAME qemu_riscv64_hello TARGET hello BOARD qemu-riscv64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_hello.sh")
+endif()
+
 # qemu-arm64 (armv8a): the same demo at EL0 on a Cortex-A53, end-to-end proof of the
 # reset/1:1-map/GIC/generic-timer/svc path.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")

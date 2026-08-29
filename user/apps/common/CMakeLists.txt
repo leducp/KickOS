@@ -121,6 +121,9 @@ add_subdirectory(clocksoak)
 # enforcing ports are all silicon). qemu-riscv likewise builds both: the full-C++
 # throw under PMP is the deterministic gate for the gp-in-appdata layout
 # (docs/design-riscv-gp-split.md), no silicon needed.
+# qemu-riscv64 builds it unconditionally, that board having one posture: it is the fleet's
+# only coverage of a 64-bit libstdc++ multilib and of a DWARF unwind whose tables
+# virt_rv64.ld homes inside the kernel's high window.
 if(KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "xmc4800-relax"
    OR KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS
@@ -129,7 +132,8 @@ if(KICKOS_BOARD STREQUAL "frdmk64f"
         OR KICKOS_BOARD STREQUAL "esp32c6-wroom"
         OR KICKOS_BOARD STREQUAL "qemu-riscv")
        AND KICKOS_HAVE_MPU)
-   OR (KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE_MPU))
+   OR (KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE_MPU)
+   OR KICKOS_BOARD STREQUAL "qemu-riscv64")
   add_subdirectory(cxxtest)
 endif()
 

@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# objcopy --redefine-syms input, RV64IMAC's own, applied to the archives holding kernel text
+# ON TOP OF cmake/kernel_runtime.syms (kickos_privatise_runtime in cmake/kickos.cmake).
+#
+# WHY THIS ARCH AND NOT THE FLEET. rv64imac names no bit-manipulation extension, so the
+# compiler lowers __builtin_clzll and __builtin_ctzll to libgcc calls
+# (kernel/sched/policy_fifo_rr.cc, kernel/mem/frame.cc). Where the image is split, libgcc is
+# linked into the APP's half and the two halves are out of each other's reach, so the kernel
+# cannot call those copies at all. It links its own (arch/riscv/rv64imac/libgcc_rv64imac.cc).
+#
+# UNDER PRIVATE NAMES AND NOT THE ORDINARY ONES, which was measured rather than reasoned: a
+# kernel-side definition of `__clzdi2` is the definition the whole link sees, so an APP-side
+# libgcc member that needs it (soft-float's __adddf3 and __floatunsidf both do) resolves to
+# the kernel's copy and the link fails on a call across the halves. No app in the tree pulled
+# soft float, so the ordinary names passed every build here and broke the first probe that
+# printed a double.
+#
+# Both spellings, as the fleet-wide map carries: objcopy ignores an entry matching no symbol.
+__clzdi2 kickos_rv64_clzdi2
+__ctzdi2 kickos_rv64_ctzdi2
+___clzdi2 _kickos_rv64_clzdi2
+___ctzdi2 _kickos_rv64_ctzdi2

@@ -82,14 +82,18 @@ devices (timers, serial ports, GPIO). It typically has:
   a handful of address ranges as readable/writable/executable or off-limits to
   unprivileged code. Protection without translation.
 
-KickOS targets the MCU end deliberately. There is one physical address space that
-the kernel and every thread share, and isolation is drawn by an MPU where one
-exists -- not by an MMU giving each thread a private virtual space. That is the
-root of the project's "MPU-first, MMU-later" stance: the near-term isolation
-story is built on the protection unit that MCUs actually have, and address
-translation is a later, additive concern. Chapter 7 (*Memory protection*) is the
-full treatment; what you need here is the shape -- **flat, shared, physical,
-protected-in-regions rather than translated.**
+KickOS targets the MCU end deliberately, and on such a part there is one physical
+address space that the kernel and every thread share, with isolation drawn by an
+MPU: protection without translation. That is what "MPU-first" names -- where the
+design starts, and the hardware most of the fleet actually has. It is not a limit
+on what the design can express. The Domain / address-space seam is ONE abstraction
+over two kinds of protection hardware, so on an application-class part with an MMU
+the same seam draws isolation in page tables instead and each task gets a private
+virtual space. Chapter 7 (*Memory protection*) is the full treatment; what you need
+here is that the SHAPE differs by part -- **flat, shared and physical where
+protection is drawn in regions; translated and per-space where it is drawn in page
+tables** -- and that nothing above the arch layer can tell which one it is running
+on.
 
 *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (kinds of systems)
 and ch.3 (memory management -- what an MMU does, which is exactly what an MCU

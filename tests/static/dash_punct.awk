@@ -3,7 +3,8 @@
 #
 # Reports every ` -- ` that check_dash_punct.sh reads as punctuation, one finding per line:
 #
-#   awk -v DASH=<ere> -v SEP=<ere> -v RUN=<ere> -v TICK=<ere> [-v HEREDOC=1] -f dash_punct.awk <file>
+#   awk -v DASH=<ere> -v SEP=<ere> -v RUN=<ere> -v TICK=<ere> -v HASH=<ere> \
+#       [-v HEREDOC=1] -f dash_punct.awk <file>
 #
 # Every ERE comes from the caller so the self-test and the corpus scan cannot drift apart.
 # A finding is printed as `<file>:<line>:<the original line>`.
@@ -39,7 +40,12 @@ BEGIN { inhere = 0; hereterm = ""; hereline = 0 }
     }
 
     work = erase($0, TICK)
-    work = erase(work, SEP)
+
+    # SEP reads shell, and a comment is not shell: prose spells a command position inside one
+    # and forges an option terminator there. Erased ahead of the first comment opener only.
+    cut = length(work) + 1
+    if (match($0, HASH) > 0) { cut = RSTART }
+    work = erase(substr(work, 1, cut - 1), SEP) substr(work, cut)
 
     # A section banner opens with a run of three or more dashes; the run that CLOSES it is
     # often only two. Dropped at end of line only, so prose earlier on a banner line still

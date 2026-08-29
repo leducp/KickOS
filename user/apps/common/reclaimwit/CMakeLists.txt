@@ -54,7 +54,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
     set_tests_properties(sim_reclaimwit_park sim_reclaimwit_drain PROPERTIES TIMEOUT 120)
   elseif(KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS
          OR KICKOS_BOARD STREQUAL "microbit"
-         OR KICKOS_BOARD STREQUAL "qemu-riscv")
+         OR KICKOS_BOARD STREQUAL "qemu-riscv"
+         OR KICKOS_BOARD STREQUAL "qemu-riscv64")
     # Board name as a CTest-name prefix, as the qemu gates spell it.
     string(REPLACE "-" "_" _rw_tag "${KICKOS_BOARD}")
     # The park arm is polled and killed, so its TIMEOUT must clear the poll bound

@@ -1,0 +1,760 @@
+// SPDX-License-Identifier: CECILL-C
+// Copyright (c) 2026 Philippe Leduc
+//
+// RISC-V RV64IMAC arch backend: the ISA-generic half of the arch.h seam. switch.S holds the
+// trap vector, the save frame and the entries; trap.S the supervisor-mode confirmation; the
+// chip layer (arch/riscv/chip/virt_rv64) supplies the hardware edges.
+//
+// THIS PORT RUNS IN SUPERVISOR MODE, so every CSR here is an s-prefixed one and nothing is
+// shared with the machine-mode rv32imac backend beside it.
+//
+// THE MAP EDITOR IS IN aspace_rv64imac.cc BESIDE THIS FILE, and satp is ITS to write: one root
+// serves both privilege levels since R2.2, so the root moves only when the space does.
+//
+// THE INTERRUPT CONTROLLER IS PURE SOFTWARE AND THERE IS NO PLIC. Nothing in this image takes
+// an external interrupt: the console is polled and the timebase is the LOCAL supervisor timer.
+// So mask/unmask/clear_pending are a bitmask, and one raise is carried to the ISR path through
+// sip.SSIP, which S-mode may write itself. The first real device is what earns a PLIC driver.
+
+#include <kickos/arch/arch.h>
+#include <kickos/arch/rv64_frame.h>
+#include <kickos/diag.h>
+#include <kickos/sys/atomic.h>
+
+#include <stddef.h>
+#include <stdint.h>
+
+namespace kickos
+{
+    void kprintf(char const* fmt, ...);
+}
+extern "C" void kpanic_enter(void);
+extern "C" void kfault_terminate(void) __attribute__((noreturn));
+
+// 0 keeps only the one-line fault marker.
+#ifndef KICKOS_PANIC_DUMP
+#define KICKOS_PANIC_DUMP 1
+#endif
+
+namespace
+{
+    // sstatus bits, from the header switch.S reads: SPP is ONE bit at 8, where the
+    // machine-mode MPP is two at 11.
+    constexpr uint64_t SSTATUS_SIE = KICKOS_RV64_SSTATUS_SIE;
+    constexpr uint64_t SSTATUS_SPIE = KICKOS_RV64_SSTATUS_SPIE;
+    constexpr uint64_t SSTATUS_SPP = KICKOS_RV64_SSTATUS_SPP;
+
+    // scause: the top bit at XLEN 64 splits interrupt from exception, and the rest is the
+    // code.
+    constexpr uint64_t SCAUSE_INTERRUPT = 1ull << 63;
+
+    // Interrupt causes, which are also the sie/sip bit positions for the same source.
+    constexpr uint64_t INT_SUPERVISOR_SOFTWARE = 1;
+    constexpr uint64_t INT_SUPERVISOR_TIMER = 5;
+    constexpr uint64_t SIE_SSIE = 1ull << INT_SUPERVISOR_SOFTWARE;
+    constexpr uint64_t SIE_STIE = 1ull << INT_SUPERVISOR_TIMER;
+    constexpr uint64_t SIP_SSIP = 1ull << INT_SUPERVISOR_SOFTWARE;
+
+    // The software controller's line count. Nothing here indexes hardware, so the width is
+    // the bitmask's and not a chip's interrupt-ID count.
+    constexpr int IRQ_LINES = 32;
+
+    char const* interrupt_name(uint64_t code)
+    {
+        if (code == 1)
+        {
+            return "unexpected supervisor software interrupt";
+        }
+        if (code == 5)
+        {
+            return "unexpected supervisor timer interrupt";
+        }
+        if (code == 9)
+        {
+            return "unexpected supervisor external interrupt";
+        }
+        if (code == 13)
+        {
+            return "unexpected counter-overflow interrupt";
+        }
+        return "unexpected interrupt";
+    }
+
+    char const* exception_name(uint64_t code)
+    {
+        if (code == 0)
+        {
+            return "instruction address misaligned";
+        }
+        if (code == 1)
+        {
+            return "instruction access fault";
+        }
+        if (code == 2)
+        {
+            return "illegal instruction";
+        }
+        if (code == 3)
+        {
+            return "breakpoint";
+        }
+        if (code == 4)
+        {
+            return "load address misaligned";
+        }
+        if (code == 5)
+        {
+            return "load access fault";
+        }
+        if (code == 6)
+        {
+            return "store address misaligned";
+        }
+        if (code == 7)
+        {
+            return "store access fault";
+        }
+        if (code == 8)
+        {
+            return "ecall from user mode";
+        }
+        if (code == 9)
+        {
+            return "ecall from supervisor mode";
+        }
+        if (code == 12)
+        {
+            return "instruction page fault";
+        }
+        if (code == 13)
+        {
+            return "load page fault";
+        }
+        if (code == 15)
+        {
+            return "store page fault";
+        }
+        return "unknown exception";
+    }
+
+    // An interrupt cause the dispatch does not handle. sie enables the timer and the software
+    // channel alone, so this is delivery of a source nothing enabled, and killing the running
+    // thread would report it as that thread's fault.
+    [[noreturn]] void rv64_unexpected_interrupt(uint64_t scause)
+    {
+        kpanic_enter();
+        uint64_t sepc = 0;
+        __asm volatile("csrr %0, sepc" : "=r"(sepc));
+        ::kickos::kprintf("\n=== RISC-V S-TRAP (%s) ===\n",
+                          interrupt_name(scause & ~SCAUSE_INTERRUPT));
+#if KICKOS_PANIC_DUMP
+        ::kickos::kprintf(KDIAG_F_RV64_CAUSE, scause, sepc);
+#else
+        (void)sepc;
+#endif
+        kfault_terminate();
+    }
+
+    // bit set = line masked. All lines start MASKED at reset (the arch.h reset contract).
+    uint32_t g_irq_masked = 0xFFFFFFFFu;
+
+    // bit set = a raise landed on this line while masked, latched one-deep and redelivered at
+    // unmask.
+    uint32_t g_irq_pending = 0;
+
+    // The line the one physical doorbell is currently carrying.
+    kickos::Atomic<int, kickos::Order::RELAXED> g_inject_line = -1;
+}
+
+// trap.S.
+extern "C" int kickos_rv64_privilege_probe(void);
+
+// switch.S.
+extern "C" void kickos_rv64_stvec(void);
+extern "C" void kickos_rv64_switch_now(struct arch_context* from, struct arch_context* to);
+extern "C" void kickos_rv64_start(struct arch_context* first);
+
+// An unprivileged thread returns through the user-side stub; the privileged one is a kernel
+// symbol U-mode cannot call.
+extern "C" void kickos_user_thread_return(void);
+
+extern "C"
+{
+    // The context PHYSICALLY on the CPU, which the U-mode entry in switch.S reads to find the
+    // interrupted thread's kernel block. NOT the scheduler's current: a booked switch
+    // publishes the incoming thread there before its registers exist anywhere.
+    struct arch_context* kickos_rv64_ctx_current = nullptr;
+
+    // Bumped by the interrupt leg of the entry alone (switch.S), so arch_in_isr() reads false
+    // throughout syscall_dispatch and every fault path.
+    uint32_t g_rv64_isr_depth = 0;
+
+    // A switch BOOKED from ISR context, performed by the interrupt leg's own exit. Null means
+    // no booking. The outgoing context is read from kickos_rv64_ctx_current at that exit
+    // rather than latched here, so an ISR that reschedules twice still saves the frame the
+    // interrupt actually built.
+    struct arch_context* kickos_rv64_switch_to = nullptr;
+
+    // Trusted per-hart trap stack. sscratch holds its top while a thread runs, so the entry
+    // swaps onto it before it touches the interrupted sp, and a U-mode thread's sp never
+    // selects where the prologue's own scratch lands. It also carries the frame of every
+    // S-mode trap whose frame is not a thread's saved context, and the kernel C below it.
+    alignas(KICKOS_RV64_SP_ALIGN)
+    uint8_t g_rv64_trap_stack[KICKOS_NUM_CORES][KICKOS_RV64_TRAP_STACK_SIZE];
+
+    static_assert(sizeof(kickos_rv64_ctx_current) == 8, "switch.S reads one doubleword");
+    static_assert(sizeof(kickos_rv64_switch_to) == 8, "switch.S reads one doubleword");
+    static_assert(sizeof(g_rv64_isr_depth) == 4, "switch.S bumps it with lw/sw");
+    static_assert(sizeof(g_rv64_trap_stack) == KICKOS_NUM_CORES * KICKOS_RV64_TRAP_STACK_SIZE,
+                  "the per-core array costs one stack per core and nothing else");
+}
+
+// rv64_frame.h holds the single definition of each offset switch.S spells as a literal
+// displacement; these assert the struct agrees with it, so a field inserted ahead of the
+// block top breaks the build rather than leaving the entry to read stack_hi as kernel_sp.
+static_assert(offsetof(struct arch_context, sp) == KICKOS_RV64_CTX_OFF_SP,
+              "switch.S expects ctx.sp at CTX_SP");
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_RV64_CTX_OFF_TRACE_TID,
+              "the frame header disagrees with the struct on trace_tid");
+#endif
+static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_RV64_CTX_OFF_STACK_LO,
+              "the frame header disagrees with the struct on stack_lo");
+static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_RV64_CTX_OFF_STACK_HI,
+              "the frame header disagrees with the struct on stack_hi");
+#if defined(KICKOS_TLS) && KICKOS_TLS
+static_assert(offsetof(struct arch_context, tls_base) == KICKOS_RV64_CTX_OFF_TLS_BASE,
+              "the frame header disagrees with the struct on tls_base");
+#endif
+static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_RV64_CTX_OFF_KERNEL_SP,
+              "the U-mode entry loads ctx.kernel_sp at CTX_KERNEL_SP");
+
+// With no block seated every U-mode trap takes the refusal path, so this arch cannot be
+// configured without the blocks. ARCH_KERNEL_STACKS_MANDATORY puts `range 1 1` on the knob;
+// this fires if that select is ever dropped.
+static_assert(KICKOS_KERNEL_STACKS != 0,
+              "rv64imac's trap entry builds every U-mode frame on ctx.kernel_sp");
+static_assert(KICKOS_RV64_FRAME % KICKOS_RV64_SP_ALIGN == 0,
+              "the frame size must preserve the psABI stack alignment");
+static_assert(KICKOS_KERNEL_STACK_SIZE % KICKOS_RV64_SP_ALIGN == 0,
+              "a kernel block's top must land on the alignment the prologue requires");
+static_assert(KICKOS_RV64_TRAP_STACK_SIZE % KICKOS_RV64_SP_ALIGN == 0,
+              "the trap-stack top must land on the alignment the prologue requires");
+// STRUCTURAL ONLY: a blocking syscall holds the ecall frame and the switch frame on the block
+// at once, and the lowest word of a block is its overflow canary
+// (kernel/thread/thread.cc). The DISPATCH depth below them is the half nothing has measured
+// on this arch, so no figure here stands in for it (rv64_frame.h).
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint64_t) >= 2 * KICKOS_RV64_FRAME,
+              "the kernel block cannot hold a blocking syscall's two frames plus its canary");
+
+extern "C"
+{
+
+// --- Context / switching ----------------------------------------------------
+// Builds the frame .Lrestore resumes (switch.S). Every resume being an sret, the entry needs
+// no trampoline: sepc carries it and a0 its argument.
+void arch_context_init(struct arch_context* ctx,
+                       void (*entry)(void* arg), void* arg,
+                       void* stack_base, size_t stack_size,
+                       int privileged)
+{
+    ctx->stack_lo = reinterpret_cast<uintptr_t>(stack_base);
+    uintptr_t const top = (ctx->stack_lo + stack_size)
+                          & ~static_cast<uintptr_t>(KICKOS_RV64_SP_ALIGN - 1);
+    ctx->stack_hi = top;
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    ctx->tls_base = 0;
+#endif
+    // ctx->kernel_sp IS READ, NOT WRITTEN, HERE: thread_create seats the block before this
+    // call and owns the zero that means none is seated.
+
+    // WHERE THIS FRAME SITS IS THE PRIVILEGE BOUNDARY. It carries sstatus and sepc, so
+    // whoever can write it chooses the privilege level and the PC of the one sret that starts
+    // the thread, and a thread's own stack is writable by its task. So an unprivileged thread's
+    // first frame goes on its own KERNEL block. A
+    // privileged thread resumes AT S-MODE ON THIS SP and would then run its whole life on a
+    // block sized for one dispatch, so its frame stays on the stack it was handed.
+    uintptr_t frame_top = top;
+    if (privileged == 0)
+    {
+        // Never zero here: this arch selects ARCH_KERNEL_STACKS_MANDATORY, every unprivileged
+        // thread holds a pool slot, and the one TCB outside the pool is the privileged idle.
+        // thread_create asserts it.
+        frame_top = ctx->kernel_sp;
+    }
+    uintptr_t const base = frame_top - KICKOS_RV64_FRAME;
+    uint64_t* const f = reinterpret_cast<uint64_t*>(base);
+    for (size_t i = 0; i < KICKOS_RV64_FRAME / sizeof(uint64_t); i++)
+    {
+        f[i] = 0;
+    }
+
+    // SPIE and not SIE: the sret sets SIE from it, and this is the system's FIRST enable,
+    // nothing earlier being able to perform it since arch_irq_restore clears only what its
+    // own paired save set. SIE stays 0 in the word because .Lrestore writes sstatus while it
+    // is still inside the epilogue.
+    uint64_t sstatus = SSTATUS_SPIE;
+    uintptr_t ret = reinterpret_cast<uintptr_t>(&kickos_thread_return);
+    if (privileged != 0)
+    {
+        sstatus |= SSTATUS_SPP;
+    }
+    else
+    {
+        ret = reinterpret_cast<uintptr_t>(&kickos_user_thread_return);
+    }
+
+    f[KICKOS_RV64_F_SEPC / 8] = reinterpret_cast<uint64_t>(entry);
+    f[KICKOS_RV64_F_SSTATUS / 8] = sstatus;
+    f[KICKOS_RV64_F_RA / 8] = ret;              // entry() returns here
+    f[KICKOS_RV64_F_A0 / 8] = reinterpret_cast<uint64_t>(arg);
+    // The sp .Lrestore leaves on: this thread's OWN stack, whole, no frame standing on it.
+    // Nothing else seats it in a fabricated frame.
+    f[KICKOS_RV64_F_SP / 8] = top;
+    ctx->sp = base;
+}
+
+void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
+                       void* stack_base, size_t stack_size)
+{
+    // kernel_sp SURVIVES THE REBUILD, put back explicitly rather than assumed untouched.
+    uintptr_t const kernel_sp = ctx->kernel_sp;
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    uintptr_t const tls_base = ctx->tls_base;
+#endif
+#if KICKOS_KERNEL_STACKS
+    // stack_lo and stack_hi are saved and put back: arch_context_init derives them from what
+    // it is handed, and handing it the block would leave the context describing kernel .bss
+    // as this thread's stack.
+    //
+    // The `if` covers a TCB outside the pool, which has no block. Idle is that TCB.
+    if (kernel_sp != 0)
+    {
+        uintptr_t const lo = ctx->stack_lo;
+        uintptr_t const hi = ctx->stack_hi;
+        void* const block = reinterpret_cast<void*>(kernel_sp - KICKOS_KERNEL_STACK_SIZE);
+        arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
+        ctx->stack_lo = lo;
+        ctx->stack_hi = hi;
+        ctx->kernel_sp = kernel_sp;
+#if defined(KICKOS_TLS) && KICKOS_TLS
+        ctx->tls_base = tls_base;
+#endif
+        return;
+    }
+#endif
+    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+    ctx->kernel_sp = kernel_sp;
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    ctx->tls_base = tls_base;
+#endif
+}
+
+// SYNCHRONOUS in thread context and DEFERRED from an ISR, which arch.h permits. The deferred
+// arm exists because a synchronous switch out of an ISR would leave the outgoing thread's
+// saved context pointing at the switch frame BELOW the interrupt frame, and a global ISR depth
+// would then be decremented by whichever thread ran next.
+//
+// The deferred arm rests on an invariant the entry maintains: every interrupt frame is a
+// resumable thread context standing on a stack that outlives the trap. A U-mode interrupt puts
+// it on the thread's own kernel block, an S-mode one on the interrupted thread's own stack, and
+// syscall dispatch runs with SIE masked so no interrupt can land on the trap stack or on a
+// block already carrying an ecall frame.
+//
+// THE THREAD-CONTEXT ARM REQUIRES THE CALLER TO HAVE INTERRUPTS MASKED, and the ISR arm is the
+// other posture rather than an exception to it. The publish below and the register save inside
+// kickos_rv64_switch_now are two steps, so an interrupt between them reaches .Lintr with
+// ctx_current already naming `to`, and the booked swap would store a pointer into `from`'s stack
+// as `to`'s saved context. Every backend in the fleet has that window, so the requirement is
+// arch.h's to state and not this file's to enforce.
+void arch_switch(struct arch_context* from, struct arch_context* to)
+{
+    if (g_rv64_isr_depth != 0)
+    {
+        // `from` is dropped: switch.S reads the outgoing context from
+        // kickos_rv64_ctx_current, which is the one the interrupt frame belongs to.
+        kickos_rv64_switch_to = to;
+        return;
+    }
+    kickos_rv64_ctx_current = to;
+    kickos_rv64_switch_now(from, to);
+}
+
+void arch_start(struct arch_context* boot, struct arch_context* first)
+{
+    (void)boot; // abandoned, as arch.h permits and the M-profile backend also does
+    kickos_rv64_ctx_current = first;
+    kickos_rv64_start(first);
+
+    while (true)
+    {
+        __asm volatile("wfi");
+    }
+}
+
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
+{
+    ctx->trace_tid = id;
+}
+#endif
+
+// --- Critical section -------------------------------------------------------
+arch_irq_state_t arch_irq_save(void)
+{
+    uint64_t old = 0;
+    __asm volatile("csrrci %0, sstatus, 2" : "=r"(old)::"memory");
+    return static_cast<arch_irq_state_t>(old & SSTATUS_SIE);
+}
+
+void arch_irq_restore(arch_irq_state_t state)
+{
+    // csrs only SETS bits, and state is 0 or SSTATUS_SIE, so this re-enables SIE exactly
+    // when the paired save disabled it. That is what makes it nesting-safe.
+    __asm volatile("csrs sstatus, %0" ::"r"(static_cast<uint64_t>(state)) : "memory");
+}
+
+// The interrupt leg of the entry alone bumps it, so it reads FALSE inside syscall dispatch as
+// arch.h requires: the kernel's blocking primitives depend on that.
+int arch_in_isr(void)
+{
+    return g_rv64_isr_depth != 0;
+}
+
+// --- Clocks -----------------------------------------------------------------
+uint32_t arch_cpu_clock_hz(void)
+{
+    return 0;
+}
+
+// --- Region descriptors: none on this arch ----------------------------------
+// This chip selects translation rather than region descriptors, so the region family is
+// present only to keep the seam total. arch_mpu_min_region returning 0 is what makes
+// arch_ram_region_size 16-byte granular, so arch_mpu_region_pow2 is never read; both bodies
+// are scraped textually by cmake/boot_arena.cmake and must stay a plain integer return.
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
+                    struct arch_mpu_encoded const* image)
+{
+    (void)regions;
+    (void)n;
+    (void)image;
+}
+
+void kickos_arch_mpu_commit(void) {}
+
+size_t arch_mpu_min_region(void)
+{
+    return 0;
+}
+
+int arch_mpu_region_pow2(void)
+{
+    return 0;
+}
+
+bool arch_mpu_region_encodable(uintptr_t base, size_t size)
+{
+    (void)base;
+    (void)size;
+    return false;
+}
+
+int arch_mpu_nocache_support(void)
+{
+    return ARCH_MPU_NOCACHE_REFUSED;
+}
+
+// Rule 7 (arch.h): RISC-V has no bit-band alias.
+int arch_bitband_present(void)
+{
+    return 0;
+}
+
+// --- Interrupt controller ---------------------------------------------------
+// No hardware line exists on this board, so mask/unmask/clear_pending are the bitmask above
+// and a raise reaches the ISR path through ONE physical doorbell, sip.SSIP, with
+// g_inject_line telling the dispatch which logical line it was. Each body is self-bracketed
+// as arch.h requires.
+//
+// SINGLE-DOORBELL: at most one unmask carrying a latched raise may occur per interrupts-masked
+// region, a second overwriting the first's identity. irq_claim/wait/ack unmask one line per
+// lock section, which is what holds it.
+void arch_irq_mask(int line)
+{
+    if (line < 0 or line >= IRQ_LINES)
+    {
+        return;
+    }
+    arch_irq_state_t s = arch_irq_save();
+    g_irq_masked |= (1u << line);
+    arch_irq_restore(s);
+}
+
+void arch_irq_unmask(int line)
+{
+    if (line < 0 or line >= IRQ_LINES)
+    {
+        return;
+    }
+    arch_irq_state_t s = arch_irq_save();
+    g_irq_masked &= ~(1u << line);
+    // A raise taken while the line was masked redelivers now through the doorbell. It sets
+    // sip.SSIP with SIE clear, so it fires at arch_irq_restore on the normal ISR path rather
+    // than as a direct notification from here.
+    if ((g_irq_pending & (1u << line)) != 0)
+    {
+        g_irq_pending &= ~(1u << line);
+        g_inject_line = line;
+        __asm volatile("csrs sip, %0" ::"r"(SIP_SSIP) : "memory");
+    }
+    arch_irq_restore(s);
+}
+
+void arch_irq_clear_pending(int line)
+{
+    if (line < 0 or line >= IRQ_LINES)
+    {
+        return;
+    }
+    arch_irq_state_t s = arch_irq_save();
+    g_irq_pending &= ~(1u << line);
+    arch_irq_restore(s);
+}
+
+void arch_irq_inject(int irq)
+{
+    if (irq < 0 or irq >= IRQ_LINES)
+    {
+        return;
+    }
+    // An ISR reaching arch_irq_mask/unmask touches the same words.
+    arch_irq_state_t s = arch_irq_save();
+    if ((g_irq_masked & (1u << irq)) != 0)
+    {
+        g_irq_pending |= (1u << irq);
+    }
+    else
+    {
+        g_inject_line = irq; // BEFORE the raise, so the dispatch sees it
+        __asm volatile("csrs sip, %0" ::"r"(SIP_SSIP) : "memory");
+    }
+    arch_irq_restore(s);
+}
+
+// The interrupt leg of the entry (switch.S .Lintr), ISR context with SIE clear. scause is
+// ARCHITECTURAL here, so the demux is the arch's and not a controller's; the chip is asked
+// nothing. `frame` is the entry's frame, kept for a cause that has no handler.
+//
+// The timer's STIP is not cleared here and must not be: Sstc drives it from `time >=
+// stimecmp`, so kickos_isr_timer's own re-arm or disarm is what lowers it, and a write to sip
+// would be a second writer of a read-only-in-sip bit.
+void kickos_rv64_isr_dispatch(void* frame)
+{
+    (void)frame;
+    uint64_t scause = 0;
+    __asm volatile("csrr %0, scause" : "=r"(scause));
+    uint64_t const code = scause & ~SCAUSE_INTERRUPT;
+    if (code == INT_SUPERVISOR_TIMER)
+    {
+        kickos_isr_timer();
+        return;
+    }
+    if (code == INT_SUPERVISOR_SOFTWARE)
+    {
+        // SSIP is software-owned, so the doorbell is rung down here before the handler runs.
+        __asm volatile("csrc sip, %0" ::"r"(SIP_SSIP) : "memory");
+        int const line = g_inject_line;
+        g_inject_line = -1;
+        if (line >= 0)
+        {
+            // kickos_isr_irq masks the line and wakes its driver (kernel/irq/irq.cc); the
+            // driver re-unmasks via irq_ack.
+            kickos_isr_irq(line);
+        }
+        return;
+    }
+    rv64_unexpected_interrupt(scause);
+}
+
+// --- Fault isolation --------------------------------------------------------
+// sstatus.SPP IS READ FROM THE REGISTER, so the privilege question is answered without
+// believing a word of the frame. It is not the thread's identity: .Lecall runs the syscall
+// dispatch in S-mode on the thread's kernel block, so a fault there is a kernel bug and SPP
+// says so.
+//
+// The frame is the one the U-mode entry built on that block, so that is what the second test
+// asks about. Every other frame in the image sits on the trap stack or on a privileged
+// thread's own stack, was produced by some other sp, and fails closed to the panic dump.
+bool arch_fault_is_user_thread(void* frame)
+{
+    uint64_t sstatus = 0;
+    __asm volatile("csrr %0, sstatus" : "=r"(sstatus));
+    if ((sstatus & SSTATUS_SPP) != 0)
+    {
+        return false;
+    }
+    return kickos_fault_frame_on_kernel_stack(frame, KICKOS_RV64_FRAME);
+}
+
+// THREE FIELDS OF THE FRAME, all of them consumed by .Lrestore: sepc and sstatus are the
+// return address and the level, and F_SP is the sp it leaves on. The third is what the
+// AArch64 sibling does not need, its exception return switching to a stack pointer register
+// of its own where this one reloads sp out of the frame; without it the stub would run
+// privileged on the sp the faulting thread chose.
+void arch_fault_redirect_to_exit(void* frame)
+{
+    uint64_t scause = 0;
+    uint64_t sepc = 0;
+    uint64_t stval = 0;
+    __asm volatile("csrr %0, scause" : "=r"(scause));
+    __asm volatile("csrr %0, sepc" : "=r"(sepc));
+    __asm volatile("csrr %0, stval" : "=r"(stval));
+    // stval is an address for the access, misaligned and page-fault causes; for an illegal
+    // instruction it holds the instruction bits instead.
+    int addr_valid = 0;
+    if (scause == 1 or scause == 4 or scause == 5 or scause == 6 or scause == 7
+        or scause == 12 or scause == 13 or scause == 15)
+    {
+        addr_valid = 1;
+    }
+    kickos_fault_record("scause", scause, static_cast<uintptr_t>(sepc),
+                        static_cast<uintptr_t>(stval), addr_valid);
+
+    uint64_t* const f = static_cast<uint64_t*>(frame);
+    f[KICKOS_RV64_F_SEPC / 8] = reinterpret_cast<uint64_t>(&kickos_thread_fault_exit);
+    f[KICKOS_RV64_F_SSTATUS / 8] = SSTATUS_SPP | SSTATUS_SPIE;
+    f[KICKOS_RV64_F_SP / 8] = kickos_fault_stack_top();
+}
+
+// --- Idle -------------------------------------------------------------------
+void arch_idle_wait(void)
+{
+    __asm volatile("wfi");
+}
+
+// --- Unhandled supervisor trap (switch.S .Lfault) ---------------------------
+// A TRUE return means .Lfault must sret off the frame instead of dumping: fault isolation
+// claimed the fault and arch_fault_redirect_to_exit above has already re-pointed the frame at
+// kickos_thread_fault_exit.
+//
+// Every CSR is read ONCE at the top, before anything below can take a trap of its own and
+// overwrite them. sstatus comes out of the FRAME rather than the live register, that being
+// the value the trap saved and the one .Lrestore will consume.
+bool kickos_rv64_fault_report(void* frame)
+{
+    uint64_t scause = 0;
+    uint64_t sepc = 0;
+    uint64_t stval = 0;
+    __asm volatile("csrr %0, scause" : "=r"(scause));
+    __asm volatile("csrr %0, sepc" : "=r"(sepc));
+    __asm volatile("csrr %0, stval" : "=r"(stval));
+    uint64_t const* const f = static_cast<uint64_t const*>(frame);
+    uint64_t const sstatus = f[KICKOS_RV64_F_SSTATUS / 8];
+
+    // Nothing may print above this: kpanic_enter's console reclaim is permanent and this
+    // fault is meant to be survivable.
+    if (kickos_fault_kill_thread(frame))
+    {
+        return true;
+    }
+
+    kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
+
+    // Only an EXCEPTION reaches here: switch.S sends every interrupt cause to .Lintr.
+    char const* const what = exception_name(scause & ~SCAUSE_INTERRUPT);
+    ::kickos::kprintf("\n=== RISC-V S-TRAP (%s) ===\n", what);
+#if KICKOS_PANIC_DUMP
+    char const* from = "user";
+    if ((sstatus & SSTATUS_SPP) != 0)
+    {
+        from = "supervisor";
+    }
+    ::kickos::kprintf(KDIAG_F_RV64_CAUSE, scause, sepc);
+    ::kickos::kprintf(KDIAG_F_RV64_STATUS, stval, sstatus);
+    ::kickos::kprintf(KDIAG_F_RV64_FRAME, f[KICKOS_RV64_F_SP / 8], f[KICKOS_RV64_F_RA / 8]);
+    ::kickos::kprintf(KDIAG_F_RV64_FROM, from);
+#else
+    (void)sepc;
+    (void)stval;
+    (void)sstatus;
+#endif
+    kfault_terminate();
+}
+
+// A U-mode trap from a thread whose ctx.kernel_sp is 0 (switch.S .Ltrap_nokstack). The arch
+// selects ARCH_KERNEL_STACKS_MANDATORY and thread_create asserts the block, so this is a
+// provisioning bug rather than a pointer the thread chose, and containment has no block to
+// rebuild the slain thread onto.
+[[noreturn]] void kickos_rv64_no_kernel_stack(void)
+{
+    kpanic_enter();
+    ::kickos::kprintf("\n=== RISC-V S-TRAP (no kernel block seated) ===\n");
+    kfault_terminate();
+}
+
+// --- One-time core bring-up, called by the chip's arch_init -----------------
+void kickos_rv64_init(void)
+{
+    // DIRECT mode (low 2 bits = 00): one entry point for every cause. Vectored mode
+    // dispatches interrupts only and sends every exception to the base anyway, so a
+    // 256-byte-aligned table of identical jumps would buy nothing here.
+    uintptr_t const tv = reinterpret_cast<uintptr_t>(&kickos_rv64_stvec);
+    __asm volatile("csrw stvec, %0" ::"r"(tv) : "memory");
+
+    // The entry swaps sp with sscratch, so sscratch must hold the trusted top before the
+    // first trap, and thus before the first sret to U-mode. Indexed by core and sized on the
+    // ROW rather than the array, so a second core takes its own and not the far end of
+    // everyone's.
+    uint8_t* const trap_stack = g_rv64_trap_stack[arch_cpu_id()];
+    uintptr_t const trap_sp =
+        reinterpret_cast<uintptr_t>(&trap_stack[KICKOS_RV64_TRAP_STACK_SIZE]);
+    __asm volatile("csrw sscratch, %0" ::"r"(trap_sp) : "memory");
+
+    // The row's low doubleword, read by switch.S's .Ltrap_reentry to tell a fault inside the
+    // reporter from a descent that ran off the row: a store past the bottom lands in ordinary
+    // .bss and takes no trap of its own, so nothing else would separate the two.
+    *reinterpret_cast<uint64_t*>(trap_stack) = KICKOS_RV64_TRAP_CANARY;
+
+    // ONE root, and the chip's startup already installed it, so it is read back rather than
+    // recomputed: a zero here means the boot table never took and every address below is a
+    // physical one the rest of the port does not expect.
+    uint64_t boot_satp = 0;
+    __asm volatile("csrr %0, satp" : "=r"(boot_satp));
+    if (boot_satp == 0)
+    {
+        kpanic_enter();
+        ::kickos::kprintf("\n=== RISC-V S-TRAP (no translation root) ===\n");
+        kfault_terminate();
+    }
+
+    // SUM IS NEVER SET, and that is a property this port holds rather than a default it
+    // inherits: S-mode cannot load or store a page carrying U at all. The kernel reaches
+    // memory a process owns ONLY through the kaccess seam (kickos/aspace.h), whose acquire
+    // hands back a kernel-half pointer to the frame the space's own tables name, so no kernel
+    // dereference ever needs the running translation's user permissions. A kernel bug that
+    // dereferences a low-half pointer FAULTS instead of succeeding against whichever process
+    // is installed.
+    //
+    // The bit still has a name in rv64_frame.h: sstatus is written whole from the frame at
+    // .Lrestore, so a step that needs a window has to mask it there and needs the constant.
+
+    // The drop startup.S performs is confirmed HERE and cannot be confirmed earlier: current
+    // privilege is not readable on RISC-V, so the probe's refused read needs a vector to land
+    // in. Every s-prefixed CSR this backend writes is meaningless in machine mode, so a hart
+    // that did not drop is refused rather than reported.
+    if (kickos_rv64_privilege_probe() == 0)
+    {
+        kpanic_enter();
+        ::kickos::kprintf("\n=== RISC-V S-TRAP (hart is not in supervisor mode) ===\n");
+        kfault_terminate();
+    }
+
+    // STIE (the tickless deadline) and SSIE (the injected-IRQ doorbell), AFTER the probe: its
+    // trap leg clears sstatus.SIE and never srets it back, so it has to run before any source
+    // can fire. SEIE stays clear, this board driving no external controller. sstatus.SIE is
+    // still 0 here and the first sret to a thread is what enables delivery.
+    uint64_t const sie = SIE_STIE | SIE_SSIE;
+    __asm volatile("csrw sie, %0" ::"r"(sie) : "memory");
+}
+
+}

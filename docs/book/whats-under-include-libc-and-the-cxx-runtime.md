@@ -105,8 +105,10 @@ already owns these symbols.
 
 ## Why "newlib" is the through-line of the whole fleet
 
-KickOS runs one uniform design across five ISAs on **pinned vendor toolchains that are
-all newlib**: Arm GNU Toolchain (ARM), RISCStar (RISC-V), GNURX (RX). That is not a
+KickOS runs one uniform design across every ISA in the fleet on **pinned vendor toolchains
+that are all newlib** -- Arm GNU Toolchain (ARM), RISCStar (RISC-V), GNURX (RX) and one per
+remaining family, each pinned in exactly one place ([`../reference/porting.md`](../reference/porting.md)).
+That is not a
 coincidence to shrug at -- it is what keeps the seam *singular*. Because every
 toolchain's libc is newlib, the bottom edge above is the **same set of symbols on every
 arch**: one `newlib_stubs.cc` serves the whole fleet, with no per-toolchain libc

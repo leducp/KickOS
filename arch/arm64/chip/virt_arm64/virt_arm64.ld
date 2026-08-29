@@ -141,23 +141,33 @@ SECTIONS
         . = ALIGN(8);
     } > KTEXT
 
-    /* Global ctors SPLIT: .init_array keeps ONLY the closed KickOS-owned set
-       (kernel/arch/chip/lib), run early by Reset_Handler; other (app/lib) ctors
-       land in .kickos_app_init_array and run from kickos_root_entry with the kernel live.
-       THIS array stays kernel-side, Reset_Handler walking it at EL1; the app's is APP-side
-       below, its walker being unprivileged. */
-    .init_array : AT(ADDR(.init_array) - KICKOS_ARM64_VA_BASE) ALIGN(8)
+    /* Global ctors SPLIT: .init_array keeps ONLY the three archives whose TEXT the kernel
+       selectors above also claim (kernel/arch/chip), run early by Reset_Handler; every other
+       ctor, libkickos_lib.a's included, lands in .kickos_app_init_array and runs from
+       kickos_root_entry with the kernel live. THIS array stays kernel-side, Reset_Handler
+       walking it at EL1; the app's is APP-side below, its walker being unprivileged.
+
+       THE SELECTOR LIST IS THE KERNEL TEXT LIST AND NOTHING ELSE. libkickos_lib.a used to
+       stand here while the .apptext catch-all took its text app-side: a ctor of that archive's
+       would then be walked at EL1 at boot as a privileged fetch of an EL0 page.
+
+       (READONLY) because the INPUT sections carry SHF_WRITE, and the leaf this lands in is
+       read-execute: nothing writes the array, and without the keyword the kernel's own code
+       segment is flagged writable as well as executable. */
+    .init_array (READONLY) : AT(ADDR(.init_array) - KICKOS_ARM64_VA_BASE) ALIGN(8)
     {
         __init_array_start = .;
         KEEP(*libkickos_kernel.a:*(SORT(.init_array.*) .init_array))
         KEEP(*libkickos_arch_armv8a.a:*(SORT(.init_array.*) .init_array))
         KEEP(*libkickos_chip_virt_arm64.a:*(SORT(.init_array.*) .init_array))
-        KEEP(*libkickos_lib.a:*(SORT(.init_array.*) .init_array))
         __init_array_end = .;
     } > KTEXT
 
-    /* .fini_array, app side, ASSERTed empty below; nothing walks it. */
-    .kickos_app_fini_array : AT(ADDR(.kickos_app_fini_array) - KICKOS_ARM64_VA_BASE) ALIGN(8)
+    /* .fini_array, app side, ASSERTed empty below; nothing walks it. (READONLY) for the reason
+       above: it lands in KTEXT, so without the keyword one SHF_WRITE input would flag the
+       kernel's own code segment writable as well as executable. */
+    .kickos_app_fini_array (READONLY) :
+        AT(ADDR(.kickos_app_fini_array) - KICKOS_ARM64_VA_BASE) ALIGN(8)
     {
         __kickos_app_fini_array_start = .;
         KEEP(*(SORT(.fini_array.*)))

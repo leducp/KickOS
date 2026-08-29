@@ -67,12 +67,13 @@ namespace kickos
             // (kickos/aspace.h, aspace_seated_for).
             if (aspace_seated_for(next))
             {
+                struct arch_aspace* const rspace = domain_space(task_domain(next->task));
                 if (next->reent_fresh)
                 {
                     next->reent_fresh = false;
-                    reent_prime(next->reent);
+                    reent_prime(rspace, next->reent);
                 }
-                reent_seat(next->reent);
+                reent_seat(rspace, next->reent);
             }
 #endif
             // Must arm for the INCOMING thread before the jump: nothing else will program
@@ -237,12 +238,13 @@ namespace kickos
             // its first switch away and back.
             if (aspace_seated_for(first))
             {
+                struct arch_aspace* const rspace = domain_space(task_domain(first->task));
                 if (first->reent_fresh)
                 {
                     first->reent_fresh = false;
-                    reent_prime(first->reent);
+                    reent_prime(rspace, first->reent);
                 }
-                reent_seat(first->reent);
+                reent_seat(rspace, first->reent);
             }
 #endif
             ktime_rearm();

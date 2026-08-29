@@ -30,6 +30,28 @@ namespace kickos
 {
     struct Thread;
 
+    // THE KERNEL<->USER BYTE-ACCESS SEAM, and the kernel's ONLY route to memory a process
+    // owns. Each splits at granule boundaries and reaches every page through the acquire seam
+    // of the space that owns it, so what is written through is the RUNNING process's own frame
+    // reached from the kernel's half. Neither the app virtual address (which needs the running
+    // translation to be readable at all) nor aspace_image_alias (which names the LOADER's
+    // frame, and so the FIRST space's copy of a per-process page) is a substitute.
+    //
+    // DECLARED HERE AND NOT IN THE SYSCALL LAYER'S PRIVATE HEADER because the syscall layer is
+    // a consumer and not the owner: the switch path reaches libc's reentrant state through the
+    // same two calls (kernel/thread/reent.cc). The definitions are still in
+    // kernel/syscall/syscall_mem.cc, from when that layer was the only caller.
+    //
+    // Both compile to a plain copy without a translating backend.
+    void kaccess_from_user(void* kdst, struct arch_aspace* sspace, uintptr_t usrc, size_t n);
+    void kaccess_to_user(struct arch_aspace* dspace, uintptr_t udst, void const* ksrc,
+                         size_t n);
+
+    // The peer with BOTH ends in user memory, one of them possibly a PARKED thread's in a space
+    // the running translation does not name. One space requires the two ranges be disjoint.
+    void ep_copy(struct arch_aspace* dspace, uintptr_t dst, struct arch_aspace* sspace,
+                 uintptr_t src, size_t n);
+
 #if KICKOS_HAVE_ASPACE
 
     // Map the process image into a freshly created space: app text read-execute at its link
@@ -84,6 +106,25 @@ namespace kickos
     int aspace_self_grant(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t base,
                           size_t size, uint32_t rights, enum arch_map_memtype type);
 
+    // The KERNEL's own alias of a byte in the app's window: where the LOADER put it, not
+    // where a process maps it. Answers BEFORE any space exists and needs no space at all, the
+    // kernel's fixed high range carrying a map of all physical RAM (section 1, F1).
+    //
+    // NULL FOR A POINTER OUTSIDE THE APP IMAGE, and the two windows the chip carves are that
+    // image: its read-only one and its writable one, the latter covering the app's static
+    // data, its zero-filled storage and its heap. The answer is two additions whose domain is
+    // exactly those windows, so a kernel-half pointer would come back as an address inside no
+    // window at all and a caller could not tell it from an alias. Null also where the chip
+    // carves no app window. Every caller falls back to the pointer it passed.
+    //
+    // ONE BYTE IS TESTED, this signature carrying no length: an object straddling the top of a
+    // window is admitted on its first byte.
+    //
+    // What needs it is the boot-time handoff into app-side storage: an image whose app window
+    // is not linked where it loads has no mapping of that window until the first space is
+    // seeded, and the writer runs before that.
+    void* aspace_image_alias(void const* app_ptr);
+
     // A small stable NAME for the frame backing `va` in `space`, or 0 where that page is not
     // mapped. Selftest scaffolding: two tasks comparing this for one address is what witnesses
     // that per-process static data is a COPY and that text is not (section 3.4).
@@ -126,9 +167,9 @@ namespace kickos
 
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Outstanding acquires in the high half of the word, releases that paired with no acquire
-    // in the low half. Both must be 0 outside a map-editing call: arch_aspace_release is a
-    // no-op on the backend that translates today, so an arm has nothing else to read a
-    // mispaired release off (arch.h, arch_aspace_acquire).
+    // in the low half. Both must be 0 outside a map-editing call: where arch_aspace_release is
+    // a no-op an arm has nothing else to read a mispaired release off, a backend holding a real
+    // window refusing one itself (arch.h, arch_aspace_acquire).
     uint64_t aspace_acquire_balance(void);
 
     // Switch-ins of a thread whose task holds no space, so an arm can state that the posture

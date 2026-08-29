@@ -17,6 +17,7 @@
 #include <kickos/time.h>
 #include <kickos/irq.h>
 #include <kickos/app.h>
+#include <kickos/aspace.h>
 #include <kickos/sys/init.h>
 #include <kickos/arch/arch.h>
 #include <kickos/config/system.h>
@@ -34,9 +35,9 @@ extern "C"
     // Local build time (with offset) + the commit (git describe --dirty --always).
     extern char const kickos_build_time[];
     extern char const kickos_build_commit[];
-    // Per-app source compile time. Weak REFERENCE: null when no app TU defines it.
-    // See app.h and tests/static/weak_allowlist.txt.
-    char const* kickos_app_build_stamp(void) __attribute__((weak));
+    // Per-app source compile time, in C's own spellings. Weak REFERENCE: null when no app TU
+    // defines it. See app.h and tests/static/weak_allowlist.txt.
+    extern char kickos_app_build_raw[] __attribute__((weak));
 
     // Userspace heap window bounds (chip .ld): [_kickos_heap_start, _kickos_heap_limit).
     // Weak: the sim (host heap) and a malloc-free image define neither -> both null ->
@@ -96,6 +97,91 @@ namespace kickos
             return p;
         }
 
+        // LINK-TIME WORDS, AND AT NAMESPACE SCOPE. Both name app-half storage, which on a
+        // split image kernel text cannot materialise: the loud form of that is an auipc
+        // truncation, and the quiet form is the linker relaxing the pair onto the register
+        // that anchors the APP's small data, which an unprivileged thread writes
+        // (tests/static/check_riscv_kernel_gp.sh). A local volatile does NOT do this: it stops
+        // the value being folded, not the address being materialised inline. VOLATILE is what
+        // keeps each a word rather than a value propagated back into its reader.
+        char const* const volatile g_app_build_raw = kickos_app_build_raw;
+        struct kos_init_args* const volatile g_init_args_home = &kickos_init_args;
+
+        // The app's raw compile time, reformatted to "yyyy-mm-dd HH:MM:SS[ zone]" so it ALIGNS
+        // with the CMake build stamp beside it. False when no app TU defined the symbol.
+        //
+        // THE SOURCE IS READ THROUGH A LINK-TIME WORD AND, WHERE THE IMAGE IS SPLIT, THROUGH
+        // THE KERNEL'S OWN ALIAS OF THOSE BYTES. The banner runs before any address space is
+        // activated, so on a backend whose app window is not linked where it loads there is no
+        // mapping of the app's half at all yet; and an address materialised in kernel code
+        // would be reached through whichever register the linker anchored the app's small data
+        // on, which an unprivileged thread writes.
+        bool app_build_stamp(char* out, size_t cap)
+        {
+            char const* raw = g_app_build_raw;
+            if (raw == nullptr)
+            {
+                return false;
+            }
+#if KICKOS_HAVE_ASPACE
+            char const* const alias = static_cast<char const*>(aspace_image_alias(raw));
+            if (alias != nullptr)
+            {
+                raw = alias;
+            }
+#endif
+            // "Mmm dd yyyy|HH:MM:SS" is 20 characters, and the optional zone follows a second
+            // separator; anything shorter is not this symbol.
+            size_t n = 0;
+            while (n < 31 and raw[n] != '\0')
+            {
+                n++;
+            }
+            if (n < 20 or raw[11] != '|' or cap < 20u)
+            {
+                return false;
+            }
+            static char const kMonths[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+            unsigned m = 1;
+            for (unsigned i = 0; i < 12; i++)
+            {
+                if (raw[0] == kMonths[i * 3] and raw[1] == kMonths[i * 3 + 1]
+                    and raw[2] == kMonths[i * 3 + 2])
+                {
+                    m = i + 1;
+                }
+            }
+            out[0] = raw[7]; out[1] = raw[8]; out[2] = raw[9]; out[3] = raw[10];
+            out[4] = '-';
+            out[5] = static_cast<char>('0' + m / 10u);
+            out[6] = static_cast<char>('0' + m % 10u);
+            out[7] = '-';
+            out[8] = raw[4]; // day tens, space-padded by C
+            if (out[8] == ' ')
+            {
+                out[8] = '0';
+            }
+            out[9] = raw[5];
+            out[10] = ' ';
+            for (unsigned i = 0; i < 8; i++)
+            {
+                out[11 + i] = raw[12 + i];
+            }
+            size_t o = 19;
+            if (n > 20 and raw[20] == '|')
+            {
+                out[o] = ' ';
+                o++;
+                for (size_t i = 21; i < n and o + 1u < cap; i++)
+                {
+                    out[o] = raw[i];
+                    o++;
+                }
+            }
+            out[o] = '\0';
+            return true;
+        }
+
         void kbanner()
         {
             char const* sched = "tickless";
@@ -116,9 +202,10 @@ namespace kickos
             kprintf(KDIAG_F_BANNER_MPU, mpu);
             kprintf(KDIAG_F_BANNER_SCHED, sched);
             kprintf(KDIAG_F_BANNER_BUILD, kickos_build_time);
-            if (kickos_app_build_stamp != nullptr)
+            char app_stamp[32];
+            if (app_build_stamp(app_stamp, sizeof(app_stamp)))
             {
-                kprintf(KDIAG_F_BANNER_APP, kickos_app_build_stamp());
+                kprintf(KDIAG_F_BANNER_APP, app_stamp);
             }
             kprintf(KDIAG_F_BANNER_COMMIT, kickos_build_commit);
             uintptr_t const heap_lo = reinterpret_cast<uintptr_t>(_kickos_heap_start);
@@ -156,13 +243,25 @@ namespace kickos
         // Publish the handoff into app-side storage before anything can read it. Not a
         // frame local: kickos_root_entry reads it as an unprivileged thread on an
         // enforcing board, and the boot stack this frame sits on is outside the arena.
-        kickos_init_args.argc = argc;
-        kickos_init_args.argv = argv;
+        //
+        // THROUGH THE KERNEL'S OWN ALIAS OF THOSE BYTES where a translating backend splits
+        // the image. Two reasons, and either is enough: the app's window may not be linked
+        // where it loads, so its virtual address names nothing until the first space is
+        // seeded; and a store to it by name would be reached through whatever register the
+        // linker chose to anchor the app's small data on, which an unprivileged thread
+        // writes. The word below is what keeps the address out of kernel code as well.
+        struct kos_init_args* args = g_init_args_home;
+#if KICKOS_HAVE_ASPACE
+        args = static_cast<struct kos_init_args*>(aspace_image_alias(g_init_args_home));
+        if (args == nullptr)
+        {
+            args = g_init_args_home;
+        }
+#endif
+        args->argc = argc;
+        args->argv = argv;
 
         kdiag_led_init(); // early: usable as a fault indicator from here on
-        // BEFORE ANY ADDRESS SPACE IS ACTIVATED. kickos_app_build_stamp is APP text, which
-        // a translating backend maps privileged-execute-never in a process root; the boot
-        // root reached here still grants the privileged fetch.
         kbanner();
         sched::init();
         domain_init(); // build the immortal kernel + default-user domains (arena ready)

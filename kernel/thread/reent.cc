@@ -6,9 +6,9 @@
 #if !KICKOS_ARCH_SIM
 
 #include <kickos/kruntime.h>
+#include <kickos/aspace.h>
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-#include <kickos/aspace.h>
 #include <kickos/sched.h>
 #endif
 
@@ -21,10 +21,22 @@ namespace kickos
         // to change what fills it.
         KickosReentSeam s_seam = {};
 
+        // A LINK-TIME WORD, at namespace scope: the descriptor is app-half storage, and kernel
+        // text materialising an app-half address on a split image links SILENTLY, so two gates
+        // and not the link refuse it (tests/static/check_riscv_kernel_apphalf.sh and
+        // check_riscv_kernel_gp.sh). A local volatile stops the VALUE being folded and not the
+        // address being materialised inline.
+        KickosReentSeam const* const volatile s_seam_home = &kickos_reent_seam;
+
 #if defined(KICKOS_ENABLE_SELFTEST)
         // Writes to the app half made for a thread whose memory view is not installed. The
         // check sits HERE and the guard sits in the switch path, so a guard that stops
         // guarding is counted rather than silently correct.
+        //
+        // WHAT IT WITNESSES IS WEAKER SINCE THE WRITES WENT THROUGH THE kaccess SEAM: the seam
+        // reaches the space it is HANDED, so such a write no longer lands in whichever process
+        // was installed last. It stays because the switch path's guard also covers the thread
+        // that has no space at all, where there is nothing to write into.
         size_t s_unseated_writes = 0;
 
         void note_write(void)
@@ -46,7 +58,20 @@ namespace kickos
 
     void reent_seam_read(void)
     {
-        s_seam = kickos_reent_seam;
+        // THROUGH A LINK-TIME WORD, AND THROUGH THE KERNEL'S OWN ALIAS OF THOSE BYTES where
+        // the image is split: the descriptor is app-side storage read before any address
+        // space exists, so its own virtual address names nothing yet on a backend whose app
+        // window is not linked where it loads.
+        KickosReentSeam const* src = s_seam_home;
+#if KICKOS_HAVE_ASPACE
+        KickosReentSeam const* const alias =
+            static_cast<KickosReentSeam const*>(aspace_image_alias(s_seam_home));
+        if (alias != nullptr)
+        {
+            src = alias;
+        }
+#endif
+        s_seam = *src;
     }
 
     void* reent_state_for_slot(int slot)
@@ -59,7 +84,7 @@ namespace kickos
                + static_cast<size_t>(slot) * s_seam.stride;
     }
 
-    void reent_prime(void* state)
+    void reent_prime(struct arch_aspace* space, void* state)
     {
         // THE PRISTINE IMAGE IS THE PROCESS-WIDE STATE ITSELF, which is why the seam needs
         // no template of its own. libc statically initialises it (_impure_data, a .data
@@ -74,25 +99,40 @@ namespace kickos
 #if defined(KICKOS_ENABLE_SELFTEST)
         note_write();
 #endif
+#if KICKOS_HAVE_ASPACE
+        // BOTH ENDS ARE APP-HALF IN ONE SPACE, which is ep_copy's shape and not
+        // kaccess_to_user's. Disjoint, as one space requires: the slot array and the
+        // process-wide state are different objects.
+        ep_copy(space, reinterpret_cast<uintptr_t>(state), space,
+                reinterpret_cast<uintptr_t>(s_seam.shared), s_seam.stride);
+#else
+        (void)space;
         kmemcpy(state, s_seam.shared, s_seam.stride);
+#endif
     }
 
-    void reent_seat(void* state)
+    void reent_seat(struct arch_aspace* space, void* state)
     {
+        // IT IS A COPY AND NOT A STORE, for the two reasons reent.h gives.
+#if defined(KICKOS_ENABLE_SELFTEST)
+        note_write();
+#endif
+#if KICKOS_HAVE_ASPACE
+        kaccess_to_user(space, reinterpret_cast<uintptr_t>(s_seam.seat), &state,
+                        sizeof(state));
+#else
         // __builtin_memcpy AND NOT kmemcpy, THE ONE PLACE IN THE KERNEL THAT SPELLS IT SO.
         // The build is -ffreestanding, so the ordinary name is never expanded and a
         // pointer-width copy would lower to a CALL on every switch; the builtin spelling is
         // expanded regardless and leaves this a leaf. The alignment hint is the other half:
         // the descriptor carries the word as void*, which discards what the app knew, and an
-        // unaligned pointer-width copy is a call again.
-        //
-        // IT IS STILL A COPY AND NOT A STORE, for the two reasons reent.h gives.
-#if defined(KICKOS_ENABLE_SELFTEST)
-        note_write();
-#endif
+        // unaligned pointer-width copy is a call again. The seam route above is a call by
+        // construction and this reason does not reach it.
+        (void)space;
         void** const word =
             static_cast<void**>(__builtin_assume_aligned(s_seam.seat, sizeof(void*)));
         __builtin_memcpy(word, &state, sizeof(state));
+#endif
     }
 }
 

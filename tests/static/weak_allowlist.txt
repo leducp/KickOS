@@ -26,8 +26,8 @@ ___malloc_unlock
 # header into EVERY app TU with -Dmain=..., so every app TU emits the definition. Weak is
 # what merges the duplicates; C has no COMDAT for functions. The kernel's matching weak
 # REFERENCE is what lets a link with no app TU at all resolve to null.
-kickos_app_build_stamp
-_kickos_app_build_stamp
+kickos_app_build_raw
+_kickos_app_build_raw
 
 # --- optional-symbol references (weak UNDEFINED, absence is legal) -----------
 # A weak reference cannot be replaced by a fallback TU: a definition would have to invent
@@ -58,6 +58,11 @@ __kickos_app_sram_start
 ___kickos_app_sram_start
 __kickos_app_sram_end
 ___kickos_app_sram_end
+# Added to an app VIRTUAL address to name the frame the loader put those bytes in, published
+# only by a chip whose app window is NOT linked where it loads. Absent is zero, which is the
+# identity the other chips already have (kernel/mem/aspace.cc).
+__kickos_app_load_delta
+___kickos_app_load_delta
 # libgcc's unwinder registration. Absent from a freestanding image, so the RISC-V chip
 # bring-up calls it only when the link supplied it.
 __register_frame
