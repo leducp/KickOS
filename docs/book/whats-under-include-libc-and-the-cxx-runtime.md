@@ -103,16 +103,32 @@ honest stubs for a system with no filesystem: enough for the library to be *cohe
 not enough to pretend files exist. The sim never compiles this file -- host glibc
 already owns these symbols.
 
-## Why "newlib" is the through-line of the whole fleet
+## Why "newlib" is the through-line of the cross-compiled fleet
 
-KickOS runs one uniform design across five ISAs on **pinned vendor toolchains that are
-all newlib**: Arm GNU Toolchain (ARM), RISCStar (RISC-V), GNURX (RX). That is not a
-coincidence to shrug at -- it is what keeps the seam *singular*. Because every
-toolchain's libc is newlib, the bottom edge above is the **same set of symbols on every
-arch**: one `newlib_stubs.cc` serves the whole fleet, with no per-toolchain libc
+A board that cross-compiles its userspace against a **pinned vendor toolchain** takes that
+toolchain's libc with it, and those toolchains are newlib ones: Arm GNU Toolchain (ARM),
+RISCStar (RISC-V), GNURX (RX), one per family, each pinned in exactly one place
+([`../reference/porting.md`](../reference/porting.md)). That is not a coincidence to shrug
+at: it is what keeps the seam *singular* across that set. Because every one of those
+toolchains' libc is newlib, the bottom edge above is the **same set of symbols on every one
+of those arches**, so a single `newlib_stubs.cc` serves them with no per-toolchain libc
 variant to maintain. And each toolchain ships *its own* newlib-built `libstdc++`, so the
 C++ runtime always rides the libc it was compiled against (the point of the NuttX
-section below). One seam, many chips -- the uniform-fleet thesis applied to the libc.
+section below). One seam, many chips: the uniform-fleet thesis applied to the libc.
+
+**The through-line is the toolchain's property and not the design's, so read the claim at
+that width.** Two postures sit outside it, and each is a different answer to the same
+question rather than an exception to be patched. The hosted **sim** links the host's own
+libc, which already owns every symbol in the table above, so the porting seam is not
+compiled there at all. And a board whose toolchain builds a freestanding image against **no
+C library** has no newlib to stub, no `struct _reent` to seat and no `_sbrk` to serve: the
+seam is an ABSENCE, and what such a posture must supply instead is only what KickOS's own
+userspace layer calls by a C-library name. Both are why the reentrancy machinery is
+selected by a knob of its own rather than read off the arch: two postures reach zero for
+opposite reasons, one because the libc owns its state and one because there is no libc.
+Which board sits where is the Reference's to state
+([`../reference/boards.md`](../reference/boards.md)); what the Book claims is only that the
+seam's shape follows the toolchain.
 
 ## The C++ runtime is three stacked libraries
 

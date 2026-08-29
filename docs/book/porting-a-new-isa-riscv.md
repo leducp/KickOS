@@ -4,8 +4,16 @@
 
 > *KickOS Book -- a per-ISA teaching chapter: how a small preemptive
 > kernel meets a processor it has never seen. RISC-V RV32IMAC (the
-> ESP32-C6, plus QEMU's `virt` machine) is the worked example, but the shape of
+> ESP32-C6, plus QEMU's `virt_rv32` machine) is the worked example, but the shape of
 > the argument is the same for any ISA.*
+
+**SCOPE, stated because RISC-V is not one port here.** This chapter is about **RV32IMAC in
+MACHINE MODE, with PMP as the protection unit**. The project also carries a 64-bit RISC-V
+port, and the two are kept separate rather than merged: machine mode against PMP is a
+different set of answers from supervisor mode against page tables, and they share the shape
+of the argument and almost nothing else. Everything below names the 32-bit port's CSRs
+(`mstatus`, `mtvec`, `mcause`, `mepc`) and its PMP entries; read it for the METHOD, and take
+the 64-bit port's own answers from the [Reference](../reference/porting.md).
 
 Most OS textbooks teach the *concepts* -- a context switch saves registers, a
 system call changes privilege, a timer drives preemption -- on a single idealized
@@ -20,9 +28,20 @@ where the new ISA genuinely differs.
 
 `arch.h` is deliberately ISA-neutral. It says "switch the running context from
 `from` to `to`" -- not "pend PendSV," not "write the CLINT msip register." The
-litmus test the project holds itself to: *a non-ARM port must fit this seam with
-no signature changes.* RISC-V is the fourth ISA family (after ARM, Renesas RX,
-Xtensa) to pass that test unchanged.
+litmus test the project holds itself to: *a new ISA must fit this seam with no
+signature changes.* RISC-V passed it unchanged, as the other non-ARM families did.
+
+What that test does and does not claim is worth separating, because reading it as "the seam
+never changes" is wrong. It claims that ARRIVING ON A NEW PROCESSOR costs no seam member:
+switching, masking, timing and trapping are concepts every CPU has, so a port implements
+them and adds nothing. It does not claim the seam is closed. The seam grows when a new
+CAPABILITY CLASS arrives that no existing member can express -- a different event from a new
+ISA, and a much rarer one. Address translation is the case in point: a paging backend has to
+be able to say which physical frame a virtual address resolves to, and no signature about
+regions, timers, switches or interrupts can answer that, so the question is a member of the
+seam in its own right. The distinction to hold onto is that a member is added for a
+CAPABILITY, never for a processor. [`../reference/porting.md`](../reference/porting.md) is
+the enumeration of what the seam holds and which backends answer each member.
 
 Why does this matter pedagogically? Because it isolates *what is fundamental*
 (the concept) from *what is incidental* (the mechanism). When you port, you are
@@ -240,6 +259,9 @@ architecture is a few days of careful assembly -- not a rewrite.
 
 ---
 
-*Source of truth: `arch/riscv/rv32imac/` (arch), `arch/riscv/chip/{virt,esp32c6}/`
-(chips), `docs/reference/porting.md` (the code-synced reference). This chapter explains the
+*Source of truth for this chapter's scope, the 32-bit machine-mode port:
+`arch/riscv/rv32imac/` (arch), `arch/riscv/chip/virt_rv32/` and `arch/riscv/chip/esp32c6/`
+(chips). The 64-bit supervisor-mode port is a separate port with its own answers,
+`arch/riscv/rv64imac/` and `arch/riscv/chip/virt_rv64/`, and is not taught here.
+`docs/reference/porting.md` is the code-synced reference for both. This chapter explains the
 *why*; the code and porting guide are the *what*.*

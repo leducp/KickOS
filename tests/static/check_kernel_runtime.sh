@@ -2,43 +2,44 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# THE KERNEL CALLS ITS OWN RUNTIME, NEVER THE APP'S (docs/design-m6-mmu.md, T5b.1).
-# memcpy, memset, strlen and the formatter are called from BOTH halves of the image, and a
-# global symbol has one value: kernel-side, and EL0's call is a high address it cannot
-# reach; app-side, and the kernel calls text that carries privileged-execute-never once EL0
-# can reach it. So the kernel links its own copies under the private names
-# kernel/include/kickos/kruntime.h declares, and no archive holding kernel text may name an
-# ordinary one.
+# The kernel calls its own runtime (docs/design-m6-mmu.md, T5b.1). memcpy, memset, strlen and
+# the formatter are called from BOTH halves of the image, and a global symbol has one value:
+# kernel-side, and EL0's call is a high address it cannot reach; app-side, and the kernel calls
+# text that carries privileged-execute-never once EL0 can reach it. So the kernel links its own
+# copies under the private names kernel/include/kickos/kruntime.h declares, and no archive
+# holding kernel text may name an ordinary one.
 #
-# WHAT MAKES THIS A GATE AND NOT A SOURCE RULE. Six of the thirteen kernel-side references
-# in the tree when this landed were explicit calls, renamed at their call sites. The rest
-# were emitted by the COMPILER with no call in the .cc at all, `ThreadAttr attr;` and
-# `*d = Domain{}` among them, and WHICH sites emit one is a property of the toolchain and
-# the optimiser rather than of the source: the same tree emitted one on aarch64, three on
-# rv32imac, four on armv7m, five on armv6m and none on rxv3. Those are rewritten after `ar`
-# by kickos_privatise_runtime() (cmake/kickos.cmake, map in cmake/kernel_runtime.syms), so
-# what this gate reads is the archive the linker will read, after the rewrite.
+# Most kernel-side references have no call in the .cc at all: the COMPILER emits them from
+# ordinary constructions such as `ThreadAttr attr;` and `*d = Domain{}`, and which sites emit
+# one differs per arch. Those are rewritten after `ar` by kickos_privatise_runtime()
+# (cmake/kickos.cmake, map in cmake/kernel_runtime.syms), so what this gate reads is the archive
+# the linker will read, after the rewrite.
 #
-# SO A RED RUN MEANS THE REWRITE DID NOT REACH THIS ARCHIVE, and the fix is a
+# A RED RUN MEANS THE REWRITE DID NOT REACH THIS ARCHIVE, and the fix is a
 # kickos_privatise_runtime() call for the target that built it, or the missing name in
 # cmake/kernel_runtime.syms. It is NOT a licence to de-type the construction that emitted
 # the reference: a struct's default member initialisers are its contract, and no compiler
-# flag suppresses the libcall (-fno-builtin, -fno-builtin-memset,
-# -fno-tree-loop-distribute-patterns and -O2 were all measured and all still emit it).
+# flag suppresses the libcall.
 #
-# The two formatter names are refused too and are deliberately NOT in the rewrite map: no
-# compiler emits them, so a kernel-side reference to one is an explicit call, and it belongs
-# corrected in the source rather than redirected behind the author's back.
+# The two formatter names are refused too and are deliberately out of the rewrite map: no
+# compiler emits them, so a kernel-side reference to one is an explicit call and belongs
+# corrected in the source.
 #
 # SCOPE: the archives that hold kernel text (kernel, arch, chip), on the boards where a
-# translating backend splits the image. kickos_lib is NOT scanned, being where the app's
-# copies are defined, and the system/ provider and driver archives are app-side, so both keep
-# the ordinary names. A REGION backend serves both privilege levels from one text mapping, so
-# there kickos/kruntime.h aliases the app's names and there is nothing here to assert.
+# translating backend splits the image. kickos_lib holds the app's copies and is not scanned,
+# and the system/ provider and driver archives are app-side, so both keep the ordinary names. A
+# REGION backend serves both privilege levels from one text mapping, where kickos/kruntime.h
+# aliases the app's names.
 #
-# NOT COVERED: an intrinsic name no toolchain here emits yet. The list is closed on purpose
-# so a hit names one symbol; a compiler that starts emitting `__aeabi_memclr` or `memchr`
-# passes this gate until the name is added here and to the rewrite map.
+# The two bit-count helpers are here for the same reason. rv64imac names no bit-manipulation
+# extension, so __builtin_clzll and __builtin_ctzll lower to libgcc calls; libgcc is app-side,
+# and a kernel-side definition under the ORDINARY name is the one the whole link sees, so an
+# app-side libgcc member needing it (soft-float calls __clzdi2) then makes a call the halves
+# cannot carry. The kernel links its own under private names
+# (cmake/kernel_runtime_rv64imac.syms).
+#
+# The list is closed on purpose, so a hit names one symbol: a compiler that starts emitting
+# `__aeabi_memclr` or `memchr` needs the name added here and to the rewrite map.
 #
 # usage: check_kernel_runtime.sh <nm> <archive>...
 
@@ -63,7 +64,7 @@ scratch_dir
 # Every name lib/libc/string.cc and lib/libc/fmt.cc define, plus the two _chk wrappers and
 # the two BSD spellings a libc may lower a call to. The kernel's own names are the same
 # words with the k prefix, so a hit is always one substitution away from correct.
-BANNED='memcpy memset memmove memcmp bcmp bzero strlen strnlen __memcpy_chk __memset_chk kvsnprintf ksnprintf'
+BANNED='memcpy memset memmove memcmp bcmp bzero strlen strnlen __memcpy_chk __memset_chk kvsnprintf ksnprintf __clzdi2 __ctzdi2'
 
 : > "$TMP/hits"
 for A in "$@"; do

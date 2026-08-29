@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Per-thread capability table: a typed, rights-bearing, refcounted handle NAMING a global
-// generational object (semaphore, PI mutex, IPC endpoint, IRQ binding). A CapEntry stores
-// (global-object-handle, type, rights) and cap_resolve is two-level: the per-thread cap-gen
-// guard here, then the object pool's own object-gen guard. Object liveness is a global
-// property (the pool plus its parallel refs[]); capability possession is per-thread.
+// Per-thread capability table: a typed, rights-bearing, refcounted handle naming a global
+// generational object. cap_resolve is two-level: the per-thread cap-gen guard here, then the
+// object pool's own object-gen guard. Object liveness is global; possession is per-thread.
 //
 // Locking: none internal. Every entry point's precondition is CALLER HOLDS IrqLock, and a
-// resolved object pointer must be used under the SAME continuous lock. That, with the
-// pin-by-own-cap refcount invariant, is why one holder's handle_close cannot free an
-// object another holder just resolved. Two exceptions, both flagged below:
-// cap_check_authority needs no lock, and cap_teardown's caller must NOT hold one.
+// resolved object pointer must be used under the SAME continuous lock. Two exceptions, both
+// flagged below: cap_check_authority needs no lock, and cap_teardown's caller must NOT hold one.
 
 #ifndef KICKOS_CAP_H
 #define KICKOS_CAP_H
@@ -37,11 +33,8 @@ static_assert(KICKOS_CAP_CHILD_WIDTH > KICKOS_CAP_FIRST_DYNAMIC,
               "no dynamic cap slots left in a spawned child: raise KICKOS_MAX_SPAWN_GRANTS, "
               "or shrink the reserved range");
 
-// Delegated cap i lands at child index i+1, so a child taking d of them keeps
-// KICKOS_CAP_CHILD_WIDTH - 1 - max(d, KICKOS_CAP_FIRST_DYNAMIC-1) own slots: delegates spend
-// the reserved plane rather than being handed it on top, and an app declares for the delegates
-// and not just for the creates. This assert is what keeps a full DEFAULTED grant list inside
-// the child width; thread_create_call bound-tests every destination against the run the child got.
+// Delegated cap i lands at child index i+1, so delegates spend the reserved plane. This assert
+// keeps a full defaulted grant list inside the child width.
 static_assert(KICKOS_MAX_SPAWN_GRANTS < KICKOS_CAP_CHILD_WIDTH,
               "a full grant list must fit the child table at indices 1..cap_count");
 
@@ -193,21 +186,12 @@ namespace kickos
     // thread-relative index, taken all-or-nothing at spawn and returned at slot reclaim. How
     // many chunks is PER THREAD: root takes KCAP_ROOT_CHUNKS, every child KCAP_CHILD_CHUNKS.
     //
-    // cap_install NEVER allocates: a client mints reply capabilities into a SERVER's table
-    // (syscall_ipc.cc), so an install that could take a chunk would drain the arena at the
-    // victim's expense, and no arch_ram_free exists to give it back. Spawn is the only
-    // refusal point.
-    //
-    // ONE fixed chunk size, free-listed through the dead chunk itself, no splitting and no
-    // coalescing: the list cannot fragment, so a refusal depends only on how many chunks
-    // are held, never on order or history.
+    // cap_install NEVER allocates: a client mints reply capabilities into a SERVER's table, so
+    // an install that could take a chunk would drain the arena at the victim's expense. Spawn is
+    // the only refusal point.
     //
     // Only attach (spawn) and detach (reclaim) touch the list; cap_install, cap_lookup and
     // cap_teardown work entirely inside the thread's own run.
-    //
-    // TWO CODE PATHS, selected below. At one chunk there is no directory index, no shift
-    // and no mask, and every run is exactly KICKOS_MAX_HANDLES wide with nothing rounded up
-    // and nothing to store: on the flat path a thread's capacity IS the ceiling.
 #if KICKOS_MAX_HANDLES <= KCAP_CHUNK_TARGET
 #define KCAP_RUN_CHUNKS 1
 #define KCAP_CHUNK_SLOTS KICKOS_MAX_HANDLES
@@ -285,12 +269,8 @@ namespace kickos
     }
 
     // Does this thread hold a run at all? A run is all-or-nothing, so chunk 0 answers for the
-    // whole directory.
-    //
-    // The runless set, in full and stated only here: idle, whose directory is created empty,
-    // and any thread-pool slot no live thread occupies, which is one never yet allocated as
-    // well as one reclaimed and not yet handed to its next occupant. An EXITED slot is NOT
-    // one of them: its run is returned at reclaim.
+    // whole directory. The runless set is idle, whose directory is created empty, and any
+    // thread-pool slot no live thread occupies; an EXITED slot's run is returned at reclaim.
     inline bool cap_run_held(CapRun const& run)
     {
         return run.chunk[0] != nullptr;
@@ -316,16 +296,13 @@ namespace kickos
             head = chunk;
         }
 
-        // Reserve `chunks` of a run: every chunk or none, and a short list is left exactly
-        // as it was with no chunk stranded in a half-built run. Does NOT zero the chunks:
-        // the link it just overwrote is still in entry 0, so the caller must clear them
-        // before the run is used as a table.
+        // Reserve `chunks` of a run: every chunk or none, and a short list is left exactly as
+        // it was. Does NOT zero the chunks: the link it just overwrote is still in entry 0, so
+        // the caller must clear them before the run is used as a table.
         //
-        // Directory entries at and above what was taken are CLEARED, so give() returns
-        // exactly what was taken and cap_slot can never reach a chunk this run does not
-        // hold. A REFUSAL took nothing, so it clears the whole directory: leave an entry
-        // standing there and cap_run_held answers true for a run holding nothing, and the
-        // give() that follows injects a foreign chunk into the free list.
+        // Directory entries at and above what was taken are CLEARED, and a REFUSAL clears the
+        // whole directory: an entry left standing makes cap_run_held answer true for a run
+        // holding nothing, and the give() that follows injects a foreign chunk into the list.
         [[nodiscard]] bool take(CapRun* run, uint32_t chunks)
         {
             uint32_t taken = 0;
@@ -374,21 +351,16 @@ namespace kickos
 
     // --- the run's free list -----------------------------------------------------------
     //
-    // A CIRCULAR, DOUBLY LINKED list of the run's free DYNAMIC slots, threaded through the
-    // `obj` word of the dead entries themselves: the low half is the next free slot, the high
-    // half the previous, each a slot index BIASED BY ONE so that 0 is the sentinel and a
-    // zeroed run carries no list. Thread::cap_free_head names the head.
+    // A CIRCULAR, DOUBLY LINKED list of the run's free DYNAMIC slots, threaded through the `obj`
+    // word of the dead entries themselves: the low half is the next free slot, the high half the
+    // previous, each a slot index BIASED BY ONE so 0 is the sentinel and a zeroed run carries no
+    // list. Thread::cap_free_head names the head.
     //
-    // Doubly linked because spawn delegation seats a CALLER-NAMED index
-    // (kos_thread_params::cap_dest), so an arbitrary slot has to leave the list. Circular
-    // because the head's predecessor IS the tail, which costs no second head field.
+    // The reserved index plane is never in the list, so no pop can hand a well-known index to an
+    // own create.
     //
-    // The reserved index plane is never in the list, so no pop can hand a well-known index
-    // to an own create.
-    //
-    // A release goes to the TAIL, never the head: the slot handed out next is always the one
-    // free the LONGEST, so with F free slots each slot's cap-gen advances once per F mints.
-    // Head insertion would concentrate the mints on one counter.
+    // A release goes to the TAIL: the slot handed out next is the one free the longest, so with F
+    // free slots each slot's cap-gen advances once per F mints.
     static constexpr uint16_t KCAP_FREE_NONE = 0;
     static_assert(KICKOS_MAX_HANDLES <= UINT16_MAX,
                   "a slot index biased by one must fit the uint16_t free-list link halves");
@@ -516,24 +488,18 @@ namespace kickos
         kcap_free_set_prev(h, self);
     }
 
-    // Reserve a run WIDE ENOUGH for `width` addressable slots and thread its free list:
-    // false leaves `run` empty, `*free_head` KCAP_FREE_NONE, `*out_width` 0 and the slab
-    // untouched, so an exhausted slab fails the spawn and strands nothing. On success
-    // `*out_width` is the capacity actually seated, which on the flat path is the ceiling
-    // whatever was asked. Caller holds IrqLock.
-    //
-    // The width travels with the head for the reason the head travels with the run: a
-    // capacity left naming a run this call did not build answers thread_cap_capacity nonzero
-    // for a table that does not exist, and cap_lookup would then index a null chunk pointer.
+    // Reserve a run WIDE ENOUGH for `width` addressable slots and thread its free list: false
+    // leaves `run` empty, `*free_head` KCAP_FREE_NONE, `*out_width` 0 and the slab untouched. On
+    // success `*out_width` is the capacity actually seated, which on the flat path is the ceiling
+    // whatever was asked. Caller holds IrqLock. The width travels with the head: a capacity left
+    // naming a run this call did not build has cap_lookup index a null chunk pointer.
     [[nodiscard]] bool cap_slab_attach(CapRun* run, uint32_t width, uint16_t* free_head,
                                        uint16_t* out_width);
 
     // Return a run to the slab and clear `*free_head` AND `*out_width`. Caller holds IrqLock.
-    // A run holding nothing is a no-op, so an unwind path may call it unconditionally.
-    //
-    // Both are PARAMETERS for the same reason attach takes them: a head left naming a slot
-    // in a chunk this call just gave away answers cap_run_peek_free for a table that no
-    // longer exists, and the next attach may already have handed that chunk to another task.
+    // A run holding nothing is a no-op, so an unwind path may call it unconditionally. A head
+    // left naming a slot in a chunk this call gave away answers cap_run_peek_free for a table
+    // that no longer exists.
     void cap_slab_detach(CapRun* run, uint16_t* free_head, uint16_t* out_width);
 
     // Carve the slab and thread the free list. Called once from kmain before any thread
@@ -541,11 +507,8 @@ namespace kickos
     void cap_slab_init();
 
     // Forget the published stdout target, so no cap_install_defaults seat and no note-site
-    // comparison can match a handle from a previous life. RESET, not unpublish: it drops the
-    // NAME and not the kernel's reference on that endpoint, so the only sound caller is one
-    // that is resetting the endpoint pool with it. Deliberately beside cap_slab_init rather
-    // than folded into it: this TU's OTHER un-resettable datum, g_cap.teardown_depth, was
-    // refused that widening (TODO), and the same reasoning applies to a function kmain calls.
+    // comparison can match a handle from a previous life. It drops the NAME and not the kernel's
+    // reference on that endpoint, so the only sound caller is one resetting the endpoint pool.
     void cap_console_reset();
 
     // The one resolve chokepoint: validate a per-thread cap handle and return the named
@@ -564,18 +527,14 @@ namespace kickos
     // and close). nullptr on bad index / empty / stale cap-gen.
     CapEntry* cap_lookup(Thread* c, uint32_t cap_handle);
 
-    // Install a cap naming `obj_handle` into the head free slot of c's table
-    // (cap_run_peek_free). 0 and the cap handle in *out_cap
-    // (cap-gen << KCAP_INDEX_BITS | index), or -KOS_EMFILE with *out_cap left KCAP_INVALID
-    // when the table is full.
+    // Install a cap naming `obj_handle` into the head free slot of c's table. 0 and the cap
+    // handle in *out_cap (cap-gen << KCAP_INDEX_BITS | index), or -KOS_EMFILE with *out_cap left
+    // KCAP_INVALID when the table is full.
     //
-    // ALLOCATES NOTHING, and must not start: a client drives this on a SERVER's table, so a
-    // full run has to refuse rather than reach for a chunk.
-    //
-    // Does NOT touch the object refcount: the caller owns that (sem_create sets refs=1
-    // at alloc). Indices 0 .. KICKOS_CAP_FIRST_DYNAMIC-1 are the reserved range
-    // (0 = kernel stdout, B3), which the free list never holds, so an own create never
-    // lands in it (own caps live in [FIRST_DYNAMIC .. MAX-1]).
+    // Allocates nothing, and must not start: a client drives this on a SERVER's table, so a full
+    // run has to refuse rather than reach for a chunk. Does not touch the object refcount, which
+    // the caller owns. Indices 0 .. KICKOS_CAP_FIRST_DYNAMIC-1 are the reserved range, which the
+    // free list never holds.
     [[nodiscard]] int cap_install(Thread* c, int obj_handle, CapType type, uint8_t rights,
                                   uint32_t* out_cap);
 
@@ -604,12 +563,10 @@ namespace kickos
     // scanning. Caller holds IrqLock.
     void cap_reply_released(Thread* c);
 
-    // The probe-before-mint predicate for the reply cap (B3: never pop a receiver a reply cap
-    // cannot be minted into). True iff c has a free dynamic slot AND is below
-    // KICKOS_CAP_REPLY_MAX live reply caps. Takes nothing: the kos_call fastpath runs it
-    // interrupt-masked on the RECEIVER's table, not its own. Caller holds IrqLock.
-    //
-    // Must not grow a cap_run_held test: a runless thread's head is already KCAP_FREE_NONE.
+    // The probe-before-mint predicate for the reply cap: never pop a receiver a reply cap cannot
+    // be minted into. True iff c has a free dynamic slot AND is below KICKOS_CAP_REPLY_MAX live
+    // reply caps. Caller holds IrqLock. Must not grow a cap_run_held test: a runless thread's
+    // head is already KCAP_FREE_NONE.
     bool cap_can_take_reply(Thread* c);
 
     // Type-agnostic close: bump the slot's cap-gen (stale the handle), empty the entry,
@@ -617,47 +574,29 @@ namespace kickos
     // or -KOS_EBADF if the handle does not resolve. Succeeds while other holders remain open.
     int handle_close(Thread* c, uint32_t cap_handle);
 
-    // Slots released per IrqLock hold in cap_teardown: the cap on the interrupt-masked
-    // window, not on the sweep's total work. Unrelated to the storage chunk of
-    // KCAP_CHUNK_SLOTS, which bounds an allocation. Every spawned child holds
-    // KICKOS_CAP_CHILD_WIDTH and root alone is wider, so that width is the binding one: at
-    // or above it every sweep takes exactly one chunk and the release-and-resume path
-    // becomes dead code no board exercises.
+    // Slots released per IrqLock hold in cap_teardown: the cap on the interrupt-masked window.
+    // At or above KICKOS_CAP_CHILD_WIDTH every sweep takes exactly one chunk and the
+    // release-and-resume path becomes dead code no board exercises.
     static constexpr int KCAP_TEARDOWN_CHUNK = 4;
     static_assert(KCAP_TEARDOWN_CHUNK < KICKOS_CAP_CHILD_WIDTH,
                   "teardown chunk must not span a spawned child's whole table, or no board "
                   "ever exercises the preemption point");
 
     // Exit teardown: close every non-EMPTY handle before the TCB slot is reclaimable, or the
-    // thread leaks its object references. A close that would drop refs to 0 with a waiter
-    // still parked LEAKS (floors refs at 1) rather than stranding; that branch is
-    // unreachable today, since every parked waiter pins its own cap.
+    // thread leaks its object references. A close that would drop refs to 0 with a waiter still
+    // parked floors refs at 1 rather than stranding.
     //
-    // PREEMPTIBLE, and the ONE entry point here whose caller must NOT hold IrqLock: it takes
-    // and releases its own, KCAP_TEARDOWN_CHUNK slots at a time. `c->dying` must already be
-    // set, and that is what keeps the sweep safe across the gaps: the slot is not reclaimable
-    // (only an EXITED one is), no peer can mint a cap into the table, and c stays on the
-    // ready structure, so a preempted sweep resumes and stays TOTAL.
+    // PREEMPTIBLE, and the ONE entry point here whose caller must NOT hold IrqLock: it takes and
+    // releases its own, KCAP_TEARDOWN_CHUNK slots at a time. `c->dying` must already be set,
+    // which is what keeps the sweep safe across the gaps: the slot is not reclaimable, no peer
+    // can mint a cap into the table, and c stays on the ready structure, so a preempted sweep
+    // resumes and stays TOTAL.
     //
     // EVERY CAP_IRQ ENTRY IS RELEASED BEFORE THE FIRST GAP, in the same masked window as the
-    // depth bump. An IRQ line is named by number and a peer's claim of a still-bound line is
-    // refused -KOS_EBUSY, so a line released inside the chunked loop would be observable as
-    // not-yet-released by the supervisor that loop's own EPIPE wake releases. Two things read
-    // that ordering: the console reclaim at the endpoint arm, and any peer respawning into the
-    // dead driver's line.
-    //
-    // That pass may not be chunked, so it may not scan either: Thread::cap_irq_live gates it,
-    // and a thread holding no line reads no entry under the mask. Every writer of a CAP_IRQ
-    // entry must move that count, or a line is held past the first gap.
-    //
-    // TWO things switch a dying thread out mid-sweep, and either is how two threads come to
-    // be in here at once (g_cap.teardown_depth, cap.cc): an RR slice expiring in
-    // sched::tick_rr, and sched::wake of a strictly higher-priority peer from the teardown
-    // arms in cap.cc and sync.cc. The first lands at a chunk BOUNDARY because the chunk loop
-    // below holds IrqLock and only releases it between chunks, which is what defers the
-    // delivery on every port. The second is thread context and so is not deferred at all: on
-    // a port whose arch_switch is immediate it lands MID-chunk with the slot it is closing
-    // still live. A FIFO dying thread is reachable only by the second.
+    // depth bump: a line released inside the chunked loop would be observable as not-yet-released
+    // by the supervisor that loop's own EPIPE wake releases. That pass may not be chunked, so it
+    // may not scan either: Thread::cap_irq_live gates it. Every writer of a CAP_IRQ entry must
+    // move that count, or a line is held past the first gap.
     void cap_teardown(Thread* c);
 
     // True while any thread is inside cap_teardown. NOT a statement about IRQ ownership: a
@@ -665,16 +604,12 @@ namespace kickos
     // exit_current retry it still gates is conservative rather than load-bearing.
     bool cap_teardown_active();
 
-    // Seat (or re-seat) thread t's reserved stdout slot (index 0) as a SEND-ONLY
-    // (CAP_SIGNAL) copy of console endpoint `target`. Written DIRECTLY (cap_install_at
-    // rejects index 0): this and cap_install_defaults are the only paths that SEAT the
-    // reserved slot, and neither bumps its cap-gen. handle_close is not one of them: a thread
-    // that closes handle 0 itself DOES bump that gen, and a re-seat afterwards no longer
-    // answers the KOS_CAP_STDOUT handle userspace names. Takes the new ref BEFORE dropping
-    // any prior one (cap_console_publish order) so re-seating the same endpoint never
-    // transiently frees it. Caller holds IrqLock.
-    // False = NOTHING is seated and any prior seat is left exactly as it was: either `t`
-    // holds no run (cap_run_held), or the endpoint's refcount is at its uint8_t ceiling.
+    // Seat (or re-seat) thread t's reserved stdout slot (index 0) as a SEND-ONLY (CAP_SIGNAL)
+    // copy of console endpoint `target`. This and cap_install_defaults are the only paths that
+    // seat the reserved slot, and neither bumps its cap-gen; a thread that closes handle 0 itself
+    // does bump it, and a re-seat afterwards no longer answers KOS_CAP_STDOUT. Takes the new ref
+    // BEFORE dropping any prior one, so re-seating the same endpoint never transiently frees it.
+    // Caller holds IrqLock. False = nothing seated and any prior seat left exactly as it was.
     bool cap_seat_stdout(Thread* t, int target);
 
     // The privileged default cap set for a freshly spawned child. Pre-publish it installs
@@ -682,14 +617,11 @@ namespace kickos
     // a send-only (CAP_SIGNAL) copy of the console endpoint at index 0. See D4.
     void cap_install_defaults(Thread* child);
 
-    // Move the kernel's stdout-target ref to `obj_handle` AND seat `publisher`'s own
-    // slot 0 on it (the console handover publish path, D3/S3). Caller holds IrqLock.
-    // Both refs are taken before either seat moves, and the new ones before the old are
-    // dropped, so a re-publish of the same endpoint never transiently frees it and a
-    // ceiling refusal leaves the whole prior arrangement intact. The kernel's own ref
-    // carries rights 0 (identity, no WAIT), the publisher's CAP_SIGNAL.
-    // False = the endpoint's refcount is at its uint8_t ceiling, or `publisher` holds no
-    // capability run; nothing changed either way.
+    // Move the kernel's stdout-target ref to `obj_handle` AND seat `publisher`'s own slot 0 on
+    // it. Caller holds IrqLock. Both refs are taken before either seat moves, and the new ones
+    // before the old are dropped, so a re-publish of the same endpoint never transiently frees it
+    // and a ceiling refusal leaves the prior arrangement intact. The kernel's own ref carries
+    // rights 0, the publisher's CAP_SIGNAL. False = nothing changed.
     bool cap_console_publish(Thread* publisher, int obj_handle);
 
     // The published console endpoint's global handle. False = nothing has been published, and
@@ -697,33 +629,28 @@ namespace kickos
     // by sign, because a live handle whose slot generation has reached 32768 is NEGATIVE.
     bool cap_console_target(int* out);
 
-    // Hand kernel-owned text to the published console endpoint, and ONLY to a receiver that
-    // is already parked: the caller is the thread-fault record path, which must not park, so
-    // there is deliberately no send_waiters arm, no deadline and no retry. Not endpoint_send:
-    // `buf` is KERNEL memory, which that path's user_readable_ok owes its callers a refusal
-    // on. Returns the bytes handed over, or 0 when nothing was published, nobody parked, or the
-    // endpoint has lost every receiver.
-    // `len` is NOT range-checked, and the bound is the RECEIVER's rather than the caller's:
-    // the copy is min(len, w->ipc.len) and endpoint_recv clamps that capacity to
-    // KOS_EP_MSG_MAX, so an oversize line truncates and can never overrun. That is why there
-    // is no -KOS_EINVAL arm here to match endpoint_send's; adding one would be a second truth
-    // about a ceiling the receiver already owns.
-    // Takes its own IrqLock, and may wake a strictly higher-priority receiver, so the caller
-    // must tolerate being switched out mid-record. It must also be in ordinary thread context
-    // with no IrqLock held, which the ONE caller gets structurally rather than by discipline:
-    // arch_fault_is_user_thread admits only an unprivileged frame with a stacked IPSR of 0, so
-    // a fault taken inside a kernel critical section, or in an ISR, escalates to the panic
-    // dump and never reaches the record path at all.
+    // Hand kernel-owned text to the published console endpoint, and ONLY to a receiver already
+    // parked: the caller is the thread-fault record path, which must not park, so there is no
+    // send_waiters arm, no deadline and no retry. Returns the bytes handed over, or 0.
+    //
+    // NEITHER REFUSAL MAY BE AN ASSERT: this runs inside the fault reporter, so a panic here
+    // re-enters kputs -> kconsole_write from inside the report it was writing. Neither may be an
+    // early return: the receiver is off recv_waiters before the first copy, so a refusal answers
+    // zero and still wakes it.
+    //
+    // `len` is NOT range-checked; the bound is the receiver's, the copy being min(len, w->ipc.len)
+    // over a capacity endpoint_recv clamps to KOS_EP_MSG_MAX.
+    //
+    // Takes its own IrqLock and may wake a strictly higher-priority receiver, so the caller must
+    // tolerate being switched out mid-record, in ordinary thread context with no IrqLock held.
     int32_t cap_console_deliver(char const* buf, size_t len);
 
-    // Bump one reference to the object named by a global handle (delegation and create).
-    // The handle MUST resolve: the caller validated it. Caller holds IrqLock. Unknown type
-    // traps in debug. `rights` is the cap's rights bits: the endpoint arm bumps recv_holders
-    // when they carry CAP_WAIT; the sem/mutex arms ignore it. CAP_REPLY is a no-op.
+    // Bump one reference to the object named by a global handle. The handle MUST resolve: the
+    // caller validated it. Caller holds IrqLock. `rights` is the cap's rights bits: the endpoint
+    // arm bumps recv_holders when they carry CAP_WAIT; the sem/mutex arms ignore it.
     //
-    // False = REFUSED: a counter this bump would move is at its uint8_t ceiling, so NEITHER
-    // counter moved (endpoint_refs and recv_holders advance together or not at all). True
-    // also covers "no counter to move" (poolless type, or a handle that no longer resolves).
+    // False = REFUSED: a counter this bump would move is at its uint8_t ceiling, so neither moved.
+    // True also covers "no counter to move".
     [[nodiscard]] bool obj_ref_inc(CapType type, int obj_handle, uint8_t rights);
 
     // The exact inverse of a SUCCESSFUL obj_ref_inc with the same arguments. For unwinding a
@@ -731,15 +658,10 @@ namespace kickos
     // no close protocol and frees nothing. Caller holds IrqLock.
     void obj_ref_undo(CapType type, int obj_handle, uint8_t rights);
 
-    // The single authority chokepoint: may thread `c` ask the kernel to do `need` (one or
-    // more AUTH_* bits)? True if it is privileged, or if its authority word carries EVERY
-    // requested bit. nullptr is false (no caller context).
-    // Gates are enumerable: grep cap_check_authority.
-    //
-    // Locking: the ONE cap.h entry point that does NOT require IrqLock. It reads `c`'s
-    // own TCB word, which is written only by that thread or by its parent BEFORE it first
-    // runs, so there is no concurrent writer on a single core. An SMP kernel must
-    // revisit this alongside the rest of the IrqLock-as-mutual-exclusion contract.
+    // The single authority chokepoint: may thread `c` ask the kernel to do `need` (one or more
+    // AUTH_* bits)? True if it is privileged, or if its authority word carries every requested
+    // bit. nullptr is false. The ONE cap.h entry point that does NOT require IrqLock: it reads
+    // `c`'s own TCB word, written only by that thread or by its parent before it first runs.
     bool cap_check_authority(Thread* c, uint8_t need);
 
     // Seat (or re-seat) thread t's authority word. Non-delegable: it is TCB state, not a

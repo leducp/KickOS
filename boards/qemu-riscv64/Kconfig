@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+if BOARD_QEMU_RISCV64
+
+config KICKOS_USER_HEAP_SIZE
+	int
+	default 65536
+
+endif

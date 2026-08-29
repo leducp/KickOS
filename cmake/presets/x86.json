@@ -1,0 +1,29 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "x86-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-x86_64-uefi.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "MinSizeRel",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "KICKOS_CONFIG_VARIANT": "base"
+      }
+    },
+    {
+      "name": "qemu-x86_64",
+      "displayName": "QEMU q35 (ICH9) / x86_64, UEFI handover",
+      "inherits": "x86-base",
+      "binaryDir": "${sourceDir}/build/qemu-x86_64",
+      "cacheVariables": { "KICKOS_BOARD": "qemu-x86_64" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "qemu-x86_64", "configurePreset": "qemu-x86_64" }
+  ],
+  "testPresets": [
+    { "name": "qemu-x86_64", "configurePreset": "qemu-x86_64", "output": { "outputOnFailure": true } }
+  ]
+}

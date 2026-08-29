@@ -62,6 +62,8 @@ void arch_init(void)
     kickos_armv6m_init();
 }
 
+// SYS_WRITEC hands each byte to the host inside the call, so nothing is ever in flight
+// here and arch_console_flush_sync is left to its no-op fallback.
 void arch_console_write(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
@@ -112,8 +114,7 @@ size_t arch_mpu_min_region(void)
 
 // Replaces the arch layer's WFI idle fallback: the clock is the semihosting SYS_CLOCK
 // (arch_clock_now above), and QEMU <= 10 stops it while the core halts in WFI, so
-// a sleep with every thread idle never wakes. Spin instead. This nrf51 backend is
-// a QEMU validation vehicle (see file banner), so the wasted cycles cost nothing.
+// a sleep with every thread idle never wakes. Spin instead.
 void arch_idle_wait(void)
 {
     __asm volatile("nop");
@@ -130,14 +131,6 @@ void arch_shutdown(int status)
     {
         __asm volatile("wfi");
     }
-}
-
-// micro:bit is also run under QEMU for CI, where a fault/panic must EXIT with a
-// status (not blink forever -> harness timeout). Replace the blink terminal fallback
-// to exit; this keeps the shared real/QEMU binary CI-clean.
-void kfault_terminate(void)
-{
-    arch_shutdown(132);
 }
 
 void Reset_Handler(void)

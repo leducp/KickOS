@@ -51,8 +51,7 @@ typedef uint32_t kos_task_t;
 #define KOS_TASK_NONE 0u
 
 // The exit code a thread killed by a CPU fault reports: what a joiner reads back, and the
-// process status when it was the last thread live. Distinct from kfault_terminate's 132, so
-// a capture tells a survived fault from a panic. A clean kos_exit(139) aliases it.
+// process status when it was the last thread live. A clean kos_exit(139) aliases it.
 #define KOS_EXIT_FAULT 139
 
 // The exit code a CANCELLED thread reports: the kernel ends it at a syscall boundary, so it
@@ -205,15 +204,10 @@ enum kos_syscall_nr
                                //   only thing that separates them. Reads 0 on a backend
                                //   whose calls all take the generic path.
     KOS_SYS_NEST_WITNESS = 58, // (which) -> one nested-trap counter (self-test only), or
-                               //   KOS_NEST_UNSET for a figure nothing recorded. A COUNTER
-                               //   READ and not a report: a kernel-side report puts the
-                               //   console's varargs route inside the SYSCALL red zone.
+                               //   KOS_NEST_UNSET for a figure nothing recorded.
     KOS_SYS_ASPACE_PROBE = 59  // (op, a1) -> per-op (see enum kos_aspace_op), or -KOS_EINVAL
                                //   for a bad op and -KOS_ENOSYS on a board that describes
-                               //   regions instead of translating (self-test only). The map
-                               //   editor is a KERNEL seam and never a syscall of its own, so
-                               //   each op runs a whole scenario in the kernel and answers a
-                               //   number rather than handing userspace a mapping primitive.
+                               //   regions instead of translating (self-test only).
 };
 
 // `op` selector for KOS_SYS_ASPACE_PROBE (self-test only). Values are a frozen contract:
@@ -280,16 +274,28 @@ enum kos_aspace_op
                                  //   was written for such a thread. 1 is the only right answer
     KOS_ASPACE_OP_DATA_HOME_FORGET = 20, // () -> 0, having dropped the space that holds the
                                  //   image's own data pages, as its release would
-    KOS_ASPACE_OP_MAP_TLBI = 21  // () -> page-invalidation sequences the map editor has
+    KOS_ASPACE_OP_MAP_TLBI = 21, // () -> page-invalidation sequences the map editor has
                                  //   ISSUED in the high half of the word and ELIDED in the
                                  //   low half, both since boot. A space installed on no core
                                  //   caches nothing, so seeding one lands wholly in the low
                                  //   half; a widening of the running space lands in the high
+    KOS_ASPACE_OP_MAP_HERE = 22, // () -> a virtual address the CALLING task's own space now
+                                 //   maps onto a fresh frame the kernel has seeded, or 0 when
+                                 //   the scenario could not be set up. The caller reads that
+                                 //   address ITSELF, through the running translation and at
+                                 //   the unprivileged level
+    KOS_ASPACE_OP_UNMAP_HERE = 23, // (the word the caller read back) -> 1 once the page
+                                 //   KOS_ASPACE_OP_MAP_HERE handed out is unmapped from the
+                                 //   calling task's space and its frame returned, 0 when the
+                                 //   word is not the one the kernel seeded, which means the
+                                 //   caller's read did not reach that frame. The caller's next
+                                 //   read of the address must fault
+    KOS_ASPACE_OP_ACQUIRE_DUP = 24 // () -> the KOS_ASPACE_DUP_* bits that held for two
+                                 //   simultaneous acquires of ONE page, or 0 where the
+                                 //   scenario could not be built
 };
 
 // KOS_ASPACE_OP_SPLIT_ACCESS: one bit per property of an access split at a page boundary.
-// NONADJACENT is what makes the rest mean anything, and NEIGHBOUR is where a single copy over
-// one translated base spills.
 #define KOS_ASPACE_SPLIT_NONADJACENT 0x01u /* the two virtually adjacent pages are not physically */
 #define KOS_ASPACE_SPLIT_TO_USER     0x02u /* a straddling kaccess_to_user reached both frames */
 #define KOS_ASPACE_SPLIT_FROM_USER   0x04u /* a straddling kaccess_from_user read both frames */
@@ -298,9 +304,16 @@ enum kos_aspace_op
 #define KOS_ASPACE_SPLIT_BALANCED    0x20u /* every frame the scenario took came back */
 #define KOS_ASPACE_SPLIT_ALL         0x3Fu
 
-// KOS_ASPACE_OP_MODEL: one bit per figure of the port's the machine bore out, with the
-// figures it reported beside them. The widths are in BITS and the granule field carries one
-// bit per granule the architecture defines, smallest first.
+// KOS_ASPACE_OP_ACQUIRE_DUP: one bit per property of two simultaneous holds of ONE page. A
+// release names (space, page) and nothing else.
+#define KOS_ASPACE_DUP_STABLE   0x01u /* two acquires of one page answered one pointer */
+#define KOS_ASPACE_DUP_DISTINCT 0x02u /* another page acquired after one release got another */
+#define KOS_ASPACE_DUP_REUSABLE 0x04u /* every hold surrendered, the page holdable again */
+#define KOS_ASPACE_DUP_ALL      0x07u
+
+// KOS_ASPACE_OP_MODEL: one bit per figure of the port's the machine bore out, with the figures
+// it reported beside them. The widths are in BITS; the granule field carries one bit per granule
+// the architecture defines, smallest first.
 #define KOS_ASPACE_MODEL_GRANULE     0x01u /* the granule this port programs is supported */
 #define KOS_ASPACE_MODEL_ASID        0x02u /* the identifier is as wide as the port's record */
 #define KOS_ASPACE_MODEL_PA          0x04u /* the physical range covers what the port programs */
@@ -324,7 +337,8 @@ enum kos_aspace_op
 #define KOS_ASPACE_REFUSE_UNKNOWN_RIGHT 0x10u /* a bit outside ARCH_MAP_R/W/X */
 #define KOS_ASPACE_REFUSE_PART_UNMAP    0x20u /* unmap of a range not wholly mapped */
 #define KOS_ASPACE_REFUSE_WRITE_EXEC    0x40u /* writable and executable at once */
-#define KOS_ASPACE_REFUSE_ALL           0x7Fu
+#define KOS_ASPACE_REFUSE_PHYS_EXTENT   0x80u /* a run reaching past the output-address width */
+#define KOS_ASPACE_REFUSE_ALL           0xFFu
 
 // KOS_ASPACE_OP_FORCED_UNWIND: one bit per property of the swept forced failure. The DEPTH
 // is what stops the whole word passing vacuously: with every bit set and a depth of 0 the
@@ -337,8 +351,6 @@ enum kos_aspace_op
 #define KOS_ASPACE_UNWIND_REUSABLE  0x20u /* a create after the sweep succeeded and balanced */
 #define KOS_ASPACE_UNWIND_ALL       0x3Fu
 #define KOS_ASPACE_UNWIND_DEPTH_SHIFT 8
-// A create allocates a root, a table for the image text, a run for the private data copy and
-// a table for it, so a sweep reaching fewer points than this did not walk the path.
 #define KOS_ASPACE_UNWIND_MIN_DEPTH 4
 
 // Selectors for KOS_SYS_NEST_WITNESS. NEST_ROOM is the bytes between the lowest nested frame
@@ -349,9 +361,8 @@ enum kos_aspace_op
 #define KOS_NEST_ROOM    2
 #define KOS_NEST_UNSET   0xFFFFFFFFu
 
-// The generic dispatch's answer for KOS_SYS_CALL_REG: retry through KOS_SYS_CALL. Outside
-// the result range by construction, a kos_call answering a byte count in [0, KOS_EP_MSG_MAX]
-// or a small negative errno, so it can never collide with a real answer.
+// The generic dispatch's answer for KOS_SYS_CALL_REG: retry through KOS_SYS_CALL. Outside the
+// result range by construction, so it can never collide with a real answer.
 #define KOS_CALL_REG_FALLBACK ((int32_t)0x80000000)
 
 // Flags for KOS_SYS_IRQ_CLAIM. The trigger type is fixed at claim time and never changes for
@@ -383,19 +394,17 @@ enum kos_grant_op
 // and KOS_SYS_TASK_CREATE. They select the memory TYPE the region is committed with; access
 // is always read-write and is not expressible here. An undefined bit is -KOS_EINVAL, never
 // masked off.
-//
 // The flag belongs to the BLOCK: pass it identically to EVERY call that maps it, or two live
-// mappings end up disagreeing about its type. **A grant carried by a SPAWN has no field for it
-// here**, so that mapping is always Normal and a block reaching a task that way cannot be given
+// mappings end up disagreeing about its type. A grant carried by a SPAWN has no field for it
+// here, so that mapping is always Normal and a block reaching a task that way cannot be given
 // another type at all.
 enum kos_mem_flags
 {
-    // Map the block Normal non-cacheable, for a block a bus master reads or writes. A chip
-    // whose region descriptors carry no memory type and whose data cache sits over the arena
-    // REFUSES it with -KOS_EPERM; a chip with no cache in that path accepts it; a chip that
-    // TRANSLATES answers from its page tables, its region descriptors saying nothing. Honouring
-    // is checked and not assumed: an accepted-but-unhonoured request is silent data corruption,
-    // the caller having no cache-maintenance call to repair it with.
+    // Map the block Normal non-cacheable, for a block a bus master reads or writes. A chip whose
+    // region descriptors carry no memory type and whose data cache sits over the arena REFUSES it
+    // with -KOS_EPERM; a chip with no cache in that path accepts it; a chip that TRANSLATES
+    // answers from its page tables. Honouring is checked: an accepted-but-unhonoured request is
+    // silent data corruption, the caller having no cache-maintenance call to repair it with.
     KOS_MEM_NOCACHE = 1u << 0
 };
 #define KOS_MEM_FLAGS_ALL (KOS_MEM_NOCACHE)
@@ -464,10 +473,10 @@ enum kos_pstate_e
     KOS_PSTATE_MID,     // a reduced locked-PLL / staged point (chip rounds to nearest)
     KOS_PSTATE_LOW      // deep power saving (crystal/RC direct or a low staged point)
 };
-// An enum's own width is implementation-defined before C23 (arm-none-eabi short-enums this
-// one to a single byte; GNURX does not), and a fixed underlying type is not ISO C11, so the
-// ABI type is the u32 and not the enum. A caller wanting -Wswitch exhaustiveness back
-// switches on `(enum kos_pstate_e)x`; the u32 alone carries no enumerator set.
+// The ABI type is the u32 and not the enum: an enum's own width is implementation-defined before
+// C23 (arm-none-eabi short-enums this one to a single byte; GNURX does not), and a fixed
+// underlying type is not ISO C11. A caller wanting -Wswitch exhaustiveness back switches on
+// `(enum kos_pstate_e)x`.
 typedef uint32_t kos_pstate_t;
 
 // Shared payload bound: send REJECTS a len above this; recv clamps its capacity to it.
@@ -489,9 +498,8 @@ _Static_assert((unsigned)KOS_EP_MSG_MAX < KOS_CALL_LEN_MASK,
                "KOS_EP_MSG_MAX must stay strictly below the packed field's saturation value");
 #endif
 
-// SATURATES at the field width instead of masking: a masked 512 would arrive as 0 and become
-// a silent zero-length call, while a saturated 511 still trips the kernel's
-// send_len > KOS_EP_MSG_MAX refusal.
+// Saturates at the field width: a masked 512 would arrive as 0 and become a silent zero-length
+// call, while a saturated 511 still trips the kernel's send_len > KOS_EP_MSG_MAX refusal.
 static inline uintptr_t kos_call_len_field(size_t len)
 {
     if (len > (size_t)KOS_CALL_LEN_MASK)

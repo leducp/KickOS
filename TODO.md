@@ -16,6 +16,21 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is
 `docs/archive/M1_state.md`; the board/console readiness matrix is `docs/m2-readiness.md`.
 
+## M6.5
+
+- [ ] **`tests/static/trap_redzone_indirect.txt` binds call sites by exact `file:line:column`.**
+      Every comment edit, every inserted line and every reflow in a bound file shifts the
+      bindings, so an unrelated change breaks the gate and the fix is a hand edit of a table.
+      Two files had to be reverted from a comment sweep for this alone. Bind on something the
+      edit does not move: the enclosing symbol plus the callee, or a marker in the source.
+      Re-derived by hand-driven tooling twice now. Two approaches that do NOT work, so the
+      next attempt does not spend them again: `#line` directives to restore numbering, which
+      never resync for active code after one lands inside an `#if`-disabled region; and a
+      per-instruction "only the immediate changed" check, since on Thumb the line number's
+      VALUE selects its encoding and so moves widths, branch offsets and instruction counts.
+      What does work is a padded control, every comment hunk restored to its original length
+      so each code line keeps its physical number.
+
 ## Retired from the M4.7.2 review backlog (triaged 2026-08-06)
 
 M4.7.2, .3, .5 and .6 closed most of the review backlog without the entries being updated. What
@@ -114,11 +129,15 @@ to all 20.
       nowhere for it to come FROM. `rx72m` silicon is the only check for the RX MPU. Already
       recorded in `STATE.md`; filed here so it survives the next STATE.md rewrite. Cited without
       a line number ON PURPOSE: it has already moved once, which is the whole reason for the copy.
-- [ ] **Decide whether `kickos_app_build_stamp` should be reproducible.** It folds `__DATE__` and
-      `__TIME__` in an app TU (`user/include/kickos/app.h:53-54`), so its CODE size varies between
-      two builds of an identical tree (measured at 0x8c, 0x90 and 0x94) and every later address
-      shifts with it. It exists to answer "did the APP change or was the image relinked", which a
-      content hash would answer without perturbing code size. While it stands, **"byte-identical
+- [ ] **Decide whether the per-app build stamp should be reproducible.** It folds `__DATE__` and
+      `__TIME__` in an app TU (`user/include/kickos/app.h`), so its CODE size varied between two
+      builds of an identical tree (measured at 0x8c, 0x90 and 0x94) and every later address shifted
+      with it. R2.2 turned the app's half into DATA (`kickos_app_build_raw`) and moved the
+      reformatting into `kmain`; the flash-fix pass turned that half into a `const`
+      `kickos_app_build_time` and deleted the reformat, so the app's half is now a `.rodata`
+      string and no code at all, and the code-size variation is gone. The timestamp is not. It
+      exists to answer "did the APP change or was the image relinked", which a content hash would
+      answer without perturbing code size. While it stands, **"byte-identical
       image" is not a claim this tree can make** -- and `docs/reference/boards.md:2199` makes it,
       correct in intent ("Tree identity is the test, not hash identity") but wrong in wording.
 - [ ] **The C surface is gated on the INSTALLED package only, not per board.**
@@ -2070,7 +2089,7 @@ true split:
 - **12 C++ vague-linkage COMDAT symbols** -- `kickos::List::push_back`, `SlotPool<T,N>::resolve`,
   `kickos::Kernel::Kernel()`, `kickos::emit`, ... They report `W` in `nm` but are LANGUAGE-MANDATED,
   not a seam mechanism, and are not removable. This is the whole of the counting error.
-- **`kickos_app_build_stamp`** -- hand-rolled C vague linkage, not a seam: `user/include/kickos/app.h`
+- **`kickos_app_build_time`** -- hand-rolled C vague linkage, not a seam: `user/include/kickos/app.h`
   defines it inline and the build force-includes that header into every app TU, so a lone TU cannot
   replace it.
 - **7 weak UNDEFINED references** -- `__kickos_code_start/_end`, `__kickos_appdata_start/_end`,
@@ -5278,8 +5297,9 @@ below where they were previously mislabeled.
   **RX HAS NO CI ARM, AND THE BLOCKER IS THE TOOLCHAIN'S DISTRIBUTION.** Every other backend
   has a job in `.github/workflows/ci.yml` (`qemu-arm`, `qemu-riscv`, `qemu-riscv-mpu`,
   `xtensa` as a build gate, `build-boards` for the ARM silicon boards); rx72m appears in
-  none, and `build-boards` is arm-toolchain only. The three RX presets DO run in the local
-  52-preset fleet sweep, so the gap is CI and not coverage. Adding the job is one composite
+  none, and `build-boards` is arm-toolchain only. The three RX presets DO run in the local fleet
+  sweep, which takes every visible configure preset (`tools/sweep_host_gates.sh`, 56 of them on
+  2026-08-29), so the gap is CI and not coverage. Adding the job is one composite
   action on the model of `.github/actions/xtensa-toolchain`, which fetches a pinned public
   release asset -- and that is what RX lacks: the installed compiler is Renesas GNURX
   14.2.0.202511 (`rx-elf-gcc (GCC_Build_e13a947a1) 14.2.0.202511-GNURX`), whose distribution
@@ -5764,6 +5784,16 @@ shared case only.
       `arch_idle_wait` alone, as the site says itself -- so nothing in the tree reaches the REFUSE
       side of the trusted-stack guard on RX. An RX prober needs its own SP-moving arm, and rx72m has
       no emulator, so the witness is a bench step whichever way the app is written.
+      **AND THE SP-MOVING ARM ALREADY EXISTS, so what is owed is a bench step and not an app.**
+      `user/apps/common/faultsurvive/CMakeLists.txt` builds `faultsurvive_kwrite` and
+      `faultsurvive_misalign` on rxv3 as well as rv32imac, and both enter `int #1` with a USP the
+      thread chose, which is the entry `.Lsys_bad_usp` guards. What is missing is a run: the
+      `add_test` calls for those two are guarded on `rv32imac`, and the board list the file
+      registers against holds no RX preset. The arms an RX image can be flashed with today land
+      elsewhere -- `faultsurvive_ovf` overflows the stack and the MPU denies the store, and
+      `faultsurvive_off` traps through `mvtipl`, a privileged instruction, so it takes the fault
+      path where `kickos_fault_frame_trusted` does the checking. So `kickos_rx_bad_usp` is compiled
+      into every RX image carrying fault isolation and reached by nothing that runs.
 - [ ] **`usbcdcwit` is built by no default configuration of any board.**
       `user/apps/common/usbcdcwit/CMakeLists.txt` returns unless `KICKOS_SERVICE_LIST` matches
       `_usbcdc$`, and no board defconfig or `Kconfig` sets such a list. The three that exist --
@@ -5772,6 +5802,457 @@ shared case only.
       `-DKICKOS_SERVICE_LIST=` on the configure line, so the app compiles in no preset, no local
       fleet sweep and no CI job, and a change that breaks it is invisible until somebody remembers
       the flag.
+
+## Two `-st` presets stopped linking at M6.3's R2.2, FIXED (2026-08-29)
+
+Root-caused at the MECHANISM and not at the two images, the scope ruling that set them aside having
+rested on a premise (a pre-existing `master` overflow) that measurement removed.
+`docs/reference/boards.md` carries the board-facing version under *The two `-st` presets and the
+per-app build stamp*.
+
+- [x] **What R2.2 cost the whole fleet, measured rather than inferred.** Isolated by reverting ONLY
+      the stamp mechanism in a tree at the branch HEAD (`user/include/kickos/app.h`,
+      `user/src/root_entry.cc` and the `kmain` half that reads them) and rebuilding, which removes
+      every confound the other 33 commits carry: **+104 B `.text` and +24 B `.data`, against
+      -32 B `.bss`, on EVERY ONE of the 33 apps of `bluepill-c8-st`**, so +128 B of flash and
+      roughly nothing of RAM per image on every board in the fleet. Not the 230-byte `.data` growth
+      the earlier record implies: `.data` moved by 24 bytes, and the flash was `.text`.
+      The named cost is `kickos_app_build_raw`, 27 B of WRITABLE `.data` charged to the image
+      twice (once as the flashed initialiser, once as the RAM the reset path copies it into), plus
+      `kickos::app_build_stamp` and its `kMonths` table inlined into `kickos::kmain`, which grew
+      708 -> 952 B. What it replaced was one weak `kickos_app_build_stamp()` in app text, 140 B
+      merged across the app's TUs with a 28 B `.bss` buffer and a 37 B month table.
+      **The whole app-stamp FEATURE costs 336 B of flash and 28 B of RAM per image at the branch
+      HEAD**, measured against a tree with the stamp removed outright.
+- [x] **The fix is the mechanism, and every board is lighter than it was at `master`.** The app's
+      half stays DATA, which is the property R2.2 was taken for and which
+      `tests/static/check_riscv_kernel_apphalf.sh` enforces; what goes is the runtime reformat.
+      `kickos_app_build_raw` becomes `const char kickos_app_build_time[]`, so it lands in
+      `.rodata` and is read where it was flashed, and the banner prints C's own
+      `"Mmm dd yyyy HH:MM:SS +zzzz"` spelling instead of converting it to `yyyy-mm-dd` at every
+      boot on every board. Recovered: **288 to 292 B of flash and 24 B of `.data` on every image
+      on every board**. Against `master` the same images are 64 to 72 B larger in `.text` and
+      32 B SMALLER in `.bss`, that residual being M6.3's `arch_aspace *` parameter threading
+      through `kaccess_from_user`, `kaccess_to_user`, `endpoint_send/recv/call/reply`,
+      `cap_out_deliver`, `console_write_user`, `user_panic` and `reent_seat`/`reent_prime`, which
+      a board with no translating backend pays for a pointer that is always null there.
+- [x] **Both presets link.** `selftest` part 1, the largest of the three images, ends at
+      **65,484 B of 65,536 on `bluepill-c8-st`, 52 free**, and **65,500 of 65,536 on
+      `f302nucleo-st`, 36 free**. `master` stood at 128 and 112 free, so the two boards have
+      always been within a few dozen bytes of the ceiling and neither figure is generous.
+      **TOOLCHAIN-DEPENDENT**: taken with `arm-gnu-toolchain-15.3.rel1`, where `ci.yml` pins
+      `15.2.rel1` and reads a few bytes higher on the same tree. A CI link is the only thing that
+      settles whether 36 bytes survives the pinned compiler.
+- [x] **The three-way `selftest` split was BADLY BALANCED and is now sized against the image.**
+      Part 1 was 65,484 B while `selftest_p2` was 48,496 and `selftest_p3` 48,308, so the two
+      smaller parts sat on about 16.7 KiB of free flash each while the first had 52 bytes. The
+      boundaries are the two `#undef TAP_ADD` lines in `user/apps/common/selftest/main.cc` and
+      nothing had ever sized them; the arm COUNTS do not predict the sizes.
+      **MEASURED BEFORE MOVED.** On `bluepill-c8-st` the base image with no arm registered at all
+      is 30,108 B, and the 102 arms of that posture cost 71,912 B between them: a per-arm sweep
+      (one relink per cut point) puts them between 52 B (`cap_reply_bound_slow`) and 4,140 B
+      (`bus_device_slots` + `uart_service`) and 5,236 B (the eleven `irq_*` arms, one `#if` block
+      and so one indivisible unit). The ideal third is 30,108 + 23,971.
+      **Region 1 now ends after `call_timeout_reply` and region 2 after `cap_reply_slot_reuse`**,
+      taking the counts from 49 / 22 / 31 to 37 / 26 / 39 in the `-st` posture:
+
+      | image | `bluepill-c8-st` | `f302nucleo-st` |
+      | --- | --- | --- |
+      | `selftest` | 54,976 B, 10,560 free | 54,992 B, 10,544 free |
+      | `selftest_p2` | 55,332 B, 10,204 free | 55,356 B, 10,180 free |
+      | `selftest_p3` | 52,012 B, 13,524 free | 52,020 B, 13,516 free |
+
+      The base twins are 54,796 / 49,768 / 46,280 and 54,832 / 49,800 / 46,324, so the thinnest
+      part on any of the four is 10,180 free bytes against the 36 and 52 it was.
+      **Coverage is unchanged and was proved rather than argued**: the union of the arm NAMES the
+      three `microbit` parts report is the same 102 before and after, with no name in two parts,
+      and the concatenation is byte-identical, so the arms also still run in the same ORDER.
+      `microbit`'s three gates keep their `EXPECT_SKIPS`/`EXPECT_PARTIALS` sets unchanged -- its
+      arena base moves with whichever statics a part elides, and part 3's rose 256 B without
+      changing an outcome. Moved with the boundaries: the `_tap_arms_p*` clauses and their
+      comments in `user/apps/common/selftest/CMakeLists.txt` (`call_reg_fastpath` into part 2,
+      `reboot_priv` and `periph_reg_write_mask` into part 3), the per-part records in
+      `docs/reference/boards.md`, and the two `selftest_p2`-is-the-fattest-image claims in
+      `docs/reference/porting.md`, which named the wrong part even before this: `selftest_p3` has
+      the highest `__kickos_ram_start` on all four split presets, and the `bluepill-c8-st` span is
+      3,040 B rather than 4,224.
+- [x] **Both presets contribute a trap-stack measurement again.** They are declared in
+      `tests/static/trap_redzone_roots.txt` and the gate failed on the same link inside its own
+      scratch tree for as long as the overflow stood. Re-measured after wiping
+      `/var/tmp/kickos-trap-redzone-*`.
+
+## Found taking the M6.3/M6.4 authoritative witness, 2026-08-29
+
+- [ ] **`tools/sweep_image_gates.sh` SKIPS `qemu-x86_64` BY NAME AND ASSERTS NOTHING ABOUT IT,
+      ON A BOX WHERE ITS TEN IMAGE GATES PASS.** `emulator_for()` in that script maps the MPS2
+      set and `microbit` to `qemu-system-arm`, `qemu-riscv` to `qemu-system-riscv32`,
+      `qemu-riscv64` to `qemu-system-riscv64` and `qemu-arm64` to `qemu-system-aarch64`, and has
+      no row for `qemu-x86_64`. An empty answer means "boots natively", which the script accepts
+      only for board `sim`, so the x86_64 board falls into the clause below it and is recorded
+      `SKIP ... board qemu-x86_64 has no emulator machine; 10 image gate(s) need silicon`. It is
+      not silicon-only: `qemu-system-x86_64` is on this box and a plain
+      `ctest --preset qemu-x86_64` runs those ten gates green.
+      **The tool predicted this failure and caught it in the shape it predicted.** Its header says
+      the emulator map is spelled out rather than assumed, and that "a drift between that map and
+      `cmake/kickos.cmake` surfaces as a skip this tool did not predict". It surfaced exactly so.
+      What it costs: the sweep's DONE sentinel can only be written by DECLARING
+      `SWEEP_EXPECT_SKIP=1`, so the declaration mechanism launders a runnable board into an
+      expected absence -- an instrument reporting clean over a corpus it never read, which is the
+      class this milestone met repeatedly.
+      **NOT FIXED HERE, deliberately, and it is a decision rather than a deferral.** Adding the row
+      is one line, but whether the sweep's serialised runner drives the OVMF path the way the
+      board's own ctest ladder does is unmeasured, and a wrong row produces a red sweep that is an
+      instrument fault rather than a finding. Editing a sweep script during the run that sweep is
+      the witness for would also invalidate it. Decide the row, then re-take the image sweep.
+
+## External audit of the boot-path guard, 2026-08-29 (fourth pass)
+
+Three HIGH findings, all against the machine-mode prologue in
+`arch/riscv/chip/virt_rv64/startup.S` that the third pass added. The guard replaced no check at
+all, so none of these is a regression; two of them say the guard can PASS on a machine the
+supervisor cannot run on, which is the one failure it exists to prevent. **ALL THREE HOLD AND ARE
+FIXED, and a fourth defect found while checking the first is fixed with them.** Held against the
+RISC-V Privileged specification rather than against the report, and one prescribed remedy is
+REFUSED as the weaker of the two options. `qemu-riscv64` and `qemu-riscv64-sv48` are 52 of 52 each
+after the pass, `console_reach` green on both, `check_aspace_sigdiff.sh` still exit 2 at 35 against
+36, and `trap_redzone` unmoved on the three presets that carry a zero-slack figure (`frdmk64f`
+EXITK 576, `rx72m` EXITK 620, `esp32c6-wroom` NESTED 768 and EXITK 720).
+
+- [x] **The effective-PMP probe assumed a translation regime it never established. HOLDS, FIXED.**
+      `mstatus.MPRV` with `MPP=S` makes the access TRANSLATED as well as protected as a supervisor
+      one (Privileged ISA 3.1.6.4), and RISC-V defines NO reset value for `satp`: section 3.4 lists
+      what reset establishes, `satp` is not in it, and everything unlisted is UNSPECIFIED. So the
+      probe ran under whatever regime the machine arrived in.
+      **MEASURED ON THIS HART**, with a temporary M-mode instrument printing over the `virt` UART:
+      `satp` reads `0x0000000000000000` out of reset here and `mstatus` reads
+      `0x0000000a00000000`, so on QEMU the probe was accidentally Bare all along. That is a
+      property of this emulator and not of the architecture.
+      **AND THE FAILURE IS A WRONG REFUSAL, NOT A WRONG PASS**, because PMP is checked on the
+      physical address a walk produces and no translation can mask a denial. Handed an inherited
+      `satp` of Sv39 over an unwritten table, the probe takes `mcause=0xd`, a load PAGE fault, and
+      the port refuses with `KickOS: PMP denies the supervisor accesses this port makes ...` on a
+      hart whose PMP is perfect: a boot brick with the wrong diagnosis.
+      Fixed by writing `satp` Bare and reading it back, clearing `mstatus.MPV` and reading it back,
+      and executing `sfence.vma zero, zero` before the probe. **THE FENCE IS THE PMP WRITE'S AND NOT
+      THE `satp` WRITE'S**: a hart with page-based virtual memory may cache PMP verdicts alongside a
+      translation, the identity mappings Bare and machine mode use included, so M-mode must issue
+      `SFENCE.VMA` with `rs1 = rs2 = x0` after writing the PMP CSRs (Privileged ISA 3.7.1), while
+      changing `satp.MODE` needs no fence of its own (Privileged ISA 12.1.11).
+      **WHETHER THE FENCE CHANGES THE PROBE'S RESULT HERE: IT DOES NOT.** Measured both ways by
+      revoking the grant immediately before the probe, with and without the fence: identical, load
+      access fault `mcause=0x5` in both. QEMU synchronises its own PMP writes, so the fence is in
+      the code because the architecture requires it and no run on this bench can tell whether it is
+      there. That is the same standing the fresh-map invalidate has.
+      Mutations, both directions. FIRES: an inherited Sv39 `satp` with the Bare write removed gives
+      the PMP message at `mcause=0xd`; the Bare readback aimed at a hart that will not take Bare
+      gives `KickOS: satp did not read back Bare ... satp=0x800000000008000f`. STILL BOOTS: the same
+      inherited `satp` WITH the Bare write present boots to the banner, and the unmutated tree is 52
+      of 52 on both postures.
+
+- [x] **`mstatus.MPV` was never cleared, so the drop could land in a GUEST. HOLDS, FIXED. NOT IN
+      THE REPORT.** Found while checking the finding above. With the hypervisor extension present,
+      `MPRV` is governed by `MPV` as well as `MPP` (Privileged ISA, Table 49): `MPV=1` with `MPP=S`
+      is a VS-level access under TWO stages of translation. The same field decides where the `mret`
+      at the end of the file lands, HS-mode or VS-mode, and in VS-mode `vsatp` governs rather than
+      the `satp` this file wrote. `MPV`'s reset value is UNSPECIFIED like `satp`'s.
+      **THE EXTENSION IS PRESENT ON THIS HART AND THE FIELD IS NOT WRITABLE**: `misa` reads
+      `0x80000000001411ad`, bit 7 set, and `mideleg` written 0x222 reads back 0x1666 with the
+      hypervisor bits forced on; but `csrs mstatus, 1 << 39` leaves `mstatus` at
+      `0x0000000a00000000`. So the hazard cannot be produced on this bench and the clear is unfired
+      here. It is in the code for the hart where the field is live.
+      Mutations, both directions. FIRES: the guard aimed at `mstatus.SXL`, a field this hart holds
+      read-only non-zero, gives `KickOS: mstatus.MPV did not clear ... mstatus=0x0000000a00000800`
+      over the polled UART. STILL BOOTS: forcing `MPV` before the clear, with and without the clear,
+      both boot, which is the measurement that shows the field is read-only zero here rather than
+      the clear being unnecessary.
+
+- [x] **The both-zero PMP case assumed every OTHER entry was OFF. HOLDS, FIXED.** Entry 0 reading
+      OFF matches nothing, and the LOWEST-NUMBERED matching entry decides (Privileged ISA 3.7.1.3),
+      so a higher entry the platform mandated at reset (section 3.4 permits exactly that) can permit
+      the single DRAM word the probe touches and deny the image, the tables, the UART and the rest
+      of DRAM. The probe then reports a grant that does not exist.
+      **THE MACHINE THE OLD GUARD PASSES IS A SILENT HANG, WHICH IS WHY THIS ONE MATTERS MOST.**
+      Modelled by forcing entry 0 OFF and configuring entry 8 as an 8-byte NAPOT grant over the
+      probe word: the decode accepts, the probe succeeds, the port drops to supervisor mode, and the
+      first instruction fetch takes an access fault with no console output, no finisher word and no
+      diagnosis. `qemu-system-riscv64` is killed by the timeout.
+      **THE RECOMMENDATION IS THE CENSUS AND NOT THE FOOTPRINT PROOF, AND THAT IS A DECISION.** The
+      report offered "characterise all implemented entries" or "prove the complete required code,
+      data, table and MMIO footprint" and called the second the strong answer. It is the WEAKER one.
+      PMP granularity is four bytes and an entry may name any NAPOT or TOR sub-range, so a footprint
+      proof degrades to a bigger SAMPLE: probing the image's ends, the tables and the device page
+      still leaves every gap between them unproven, and it costs MMIO accesses on a path with no
+      console. The census is a PROOF and costs eight CSR reads. On RV64 the eight even-numbered
+      `pmpcfg` CSRs hold the configurations for all 64 entries and the odd ones are illegal there
+      (Privileged ISA 3.7.1), so with every byte in them zero no entry matches any address, and the
+      one word's answer IS the whole space's answer by the priority rule. The zero-PMP hart the
+      third pass deliberately admitted stays admitted; what is refused is the narrow case the
+      finding names, entry 0 OFF with another entry configured.
+      **AND THE READ COSTS NOTHING ON THIS HART**: `pmpcfg2`, `pmpcfg4` and `pmpcfg14` all read
+      `0x0` rather than raising an illegal instruction, measured, so the census does not itself
+      depend on a 64-entry hart. On a hart that hid them the read would land in `.Lmtrap`, which is
+      a named refusal rather than a hang.
+      The decode's other leg is UNCHANGED and its comment corrected: where entry 0 stands and covers
+      the whole space it OUTRANKS every other entry, so the other seven bytes of `pmpcfg0` really
+      are irrelevant there. They were being ignored on the both-zero leg too, which is where they
+      are not.
+      Mutations, both directions. FIRES: that hostile hart with the census present gives
+      `KickOS: PMP entry 0 reads OFF while another entry is configured ... other pmpcfg=0x1b` over
+      the polled UART and the finisher FAIL word, `qemu-system-riscv64` exiting 132 rather than
+      being killed; with the census removed the same hart hangs silently. STILL BOOTS: every entry
+      reading zero with nothing else configured still reaches the probe and gives the third pass's
+      own `KickOS: PMP denies the supervisor accesses this port makes ... mcause=0x5`, so that leg
+      is unchanged, and the unmutated tree is 52 of 52 on both postures.
+
+- [x] **`MEDELEG_REQUIRED` omitted breakpoint cause 3 on an argument about the current image.
+      HOLDS, FIXED.** The exclusion read "3, which nothing in this image executes", which is a
+      discharge held by CALLER BEHAVIOUR, the class this milestone overturned three times out of
+      four. `EBREAK` is in the base ISA, so a valid unprivileged application may execute one at any
+      time; undelegated, it terminates in the machine handler with the whole system instead of
+      killing its thread.
+      **MEASURED BOTH WAYS ON THIS HART** with an `ebreak` in a `hello` thread. Bit 3 delegated:
+      `=== THREAD FAULT === thread 'ping' killed, system continues, PC=0x40000052 scause=0x3`, and
+      the other thread runs on. Bit 3 held read-only zero with the third pass's required set: the
+      guard PASSES, the board boots, and the same `ebreak` prints
+      `KickOS: machine-mode trap before the drop ... mcause=0x0000000000000003 mepc=0x40000052` and
+      dies there. `medeleg` reads back 0xb5ff on this hart, so bit 3 is delegated and the
+      requirement costs nothing here.
+      Bit 0 stays excluded on a reason that IS an ISA property rather than an image one: with the C
+      extension every branch target in this image is 2-byte aligned.
+      Mutations, both directions. FIRES: bit 3 forced read-only zero gives
+      `KickOS: medeleg dropped an exception this port depends on: bits 2, 3, 8, 12, 13 and 15 ...
+      medeleg=0xb5f7 required=0xb10c`. STILL BOOTS: unmutated, 52 of 52 on both postures.
+
+- [x] **Causes 4 and 6 are neither required nor excluded now: they are MEASURED. HOLDS, FIXED,
+      AND THE PROBE IS THE INTERESTING HALF.** Whether a hart raises a misaligned-access exception
+      at all is a PMA and therefore per REGION (Privileged ISA 3.6.2), so no register answers it and
+      neither blanket answer is right: requiring 4 and 6 refuses the commoner machine, excluding
+      them leaves an unprivileged misaligned access terminating in machine mode on the one that
+      raises. **The old text cited Privileged ISA 3.1.8 for the "should hold them read-only zero"
+      claim; 3.1.8 says nothing about misalignment and the citation is corrected to 3.6.2.**
+      The prologue performs a misaligned load and a misaligned store on the DRAM word the probe
+      above just proved, under a vector that RECORDS `1 << mcause` and RESUMES rather than refusing,
+      and holds `medeleg` against what it recorded. **It cannot brick a hart that resolves
+      misalignment in hardware**: such a hart never enters the vector, the accumulator stays zero and
+      the check is skipped entirely. The store puts back the four bytes already there, so a hart
+      that completes it changes nothing.
+      **THE VECTOR RESUMES AT A LABEL AND NOT AT `mepc + 4`**, because the C extension makes the
+      probe's own encoding a build-time question and `mepc + 4` the wrong answer for half of it.
+      **MEASURED ON THIS HART: NEITHER ACCESS TRAPS.** The accumulator reads `0x0`, so QEMU's `rv64`
+      core resolves misalignment in hardware and the whole check is invisible on this board. That is
+      the direction that had to be witnessed first.
+      **WHAT THE PROBE STILL DOES NOT REACH** is the per-region half of the PMA: it samples DRAM,
+      which is where an unprivileged thread's misaligned accesses land, and says nothing about a
+      hart that resolves misalignment there and raises on a device page.
+      Mutations, both directions. FIRES: aiming both probe accesses at an unbacked physical address
+      makes them raise causes 5 and 7, and with those two bits held read-only zero the boot gives
+      `KickOS: this hart raises an exception for a misaligned access and medeleg does not delegate
+      it ... medeleg=0xb55f required=0xa0`. STILL BOOTS: the same two raising accesses with the hart
+      delegating 5 and 7 boot to the banner, which is what witnesses that the vector RESUMED rather
+      than hanging; and the unmutated tree is 52 of 52 on both postures.
+
+## External audit of the RV64 backend, 2026-08-29
+
+Five findings against `arch/riscv/rv64imac/aspace_rv64imac.cc`, `arch/riscv/rv64imac/arch_rv64imac.cc`
+and `arch/riscv/chip/virt_rv64/startup.S`, held against the RISC-V Privileged specification rather
+than against the report. **THREE HOLD AND ARE FIXED. ONE HOLDS AS A PORTABILITY DEFECT WITH NO LIVE
+BUG ON THIS BENCH and is fixed anyway. ONE IS A DECISION ALREADY TAKEN and is NOT changed.**
+`qemu-riscv64` and `qemu-riscv64-sv48` were 50 of 50 each after the pass and the selftest 133 of
+133, one arm more than before; `qemu-arm64` was 40 of 40, the seam having taken nothing. **Those
+three ladder totals are DATED to this pass and every count in the items below with them**: the
+fleet-wide `whitespace` gate landed later the same day and lifted every board by one, and
+`console_reach` lifted the same three by one more -- and `qemu-x86_64`, which this sentence left
+out because it was not one of the three the pass measured -- so the registered totals read 52, 52
+and 42 now (`ctest -N`, 2026-08-29). **A full run reads 52, 52 and 42, all green.** This paragraph
+said `console_reach` was red on the panics still reachable from the console route, which was true
+at `517449e5` and stopped being true at `58b43d62` and `d4977780`, the two commits that closed all
+four doors; the sentence was not moved with them. The selftest figure DID move and is 134, the plan
+line reading `1..134` on all three.
+
+- [x] **Duplicate acquire holds were not release-order safe. HOLDS, FIXED.** Each acquire of one
+      (space, page) claimed a window slot of its own while a release names the pair and no
+      individual hold, so a release surrendered the FIRST match and could unmap a pointer another
+      caller still held. Fixed by keying a slot on (space, page) with a REFERENCE COUNT: repeated
+      acquires answer one stable pointer and the mapping stands until the last release, whatever
+      order the releases arrive in. `arch/include/kickos/arch/arch.h` already admits this shape,
+      counting a hold per call "unless the backend counts references", so nothing at the seam
+      moved.
+      **NO CALLER IN THIS TREE TAKES TWO SIMULTANEOUS WINDOW HOLDS OF ONE PAGE**, which is why the
+      defect was latent: `access_copy` releases its two ends in reverse order but its pages are
+      pool frames, which acquire answers by ADDING the kernel window's delta and never through a
+      slot, and `op_span` holds two DISTINCT pages. Only a device frame spends a slot here.
+      Witnessed by the new arm `aspace_acquire_dup` (`KOS_ASPACE_OP_ACQUIRE_DUP`), which takes two
+      holds of one device page, surrenders one, and requires the next page acquired to be answered
+      with a different address. With the slot-per-call pool restored the word reads 0x4 against
+      0x7: STABLE clear (the two acquires gave two pointers) and DISTINCT clear (the next page was
+      answered with the address the surviving hold still named).
+      **WHAT THE DEPTH FLOOR MEANS ON THIS BACKEND CHANGED, and that is stated rather than left to
+      be inferred.** The pool is still `ARCH_ASPACE_ACQUIRE_MIN` slots and the assert is unchanged,
+      but the six now counts DISTINCT pages per core rather than outstanding calls. The scenario the
+      six was measured off needs FOUR distinct pages, `ep_copy`'s two ends being the same two
+      (space, page) pairs two of the outer holds already name, so the floor is not tightened by the
+      change and is not loosened either.
+- [x] **Fabricated contexts wrote a reserved `sstatus.UXL`. HOLDS as a PORTABILITY defect, NO LIVE
+      BUG ON THIS HART, FIXED.** `.Lrestore` writes `sstatus` WHOLE from the frame and
+      `arch_context_init` built the word out of SPIE and SPP alone, so every fabricated frame wrote
+      UXL = 0. UXL is WARL at 33:32 with the `misa.MXL` encoding, where 1 is 32 and 2 is 64 and
+      nothing else is legal (Privileged ISA 12.1.1.1, Table 11), and a hart answering an illegal
+      write with the RV32 encoding takes every U-mode fetch and effective address modulo 2^32.
+      **MEASURED ON THIS HART BEFORE AND AFTER, and the measurement is the whole reason to call it
+      portability and not a live bug.** `qemu-system-riscv64 -M virt` on the default `rv64` core
+      reports UXL = 2 at reset, answers a written 0 with 2 and a written 3 with 2 -- and answers a
+      written **1 with 1**. So the field is genuinely writable here and the old code was safe only
+      by QEMU's choice of substitute for the reserved value.
+      Fixed by carrying the RV64 encoding in every fabricated frame, in `arch_context_init` and in
+      `arch_fault_redirect_to_exit` alike, and by seating and reading the field back in
+      `kickos_rv64_init` after the privilege probe, refusing by name where it does not stick.
+      Positive control: with the seat changed to the RV32 encoding the board prints
+      `=== RISC-V S-TRAP (sstatus.UXL is not RV64) ===` and dies, which is also the second witness
+      that this hart really does take UXL = 1.
+- [x] **`arch_aspace_map` validated only the FIRST physical page. HOLDS, FIXED.** The start address
+      was tested against the PPN field and `map_into` then incremented per page, so a range whose
+      LAST page reached past the field had its later leaves silently truncated onto low physical
+      memory while every write reported OK. Fixed with `phys_range_ok`, which checks the byte count,
+      the 64-bit end and the exclusive end's fit in the PPN width BEFORE any entry is written, so
+      the seam's "a failed map installs no partial mapping" still holds by not starting.
+      Measured with a temporary probe over a two-page map at `2^56 - 4096`. Unfixed: the map
+      returned OK, page 0 answered `2^56 - 4096` and page 1 answered PHYSICAL FRAME 0. Fixed: the
+      map returned `ARCH_ASPACE_EINVAL` and both pages answered not-mapped. Note the second half of
+      the unfixed answer: a low-half page mapped onto frame 0 also breaks
+      `arch_aspace_frame_at`'s "0 means not mapped", which `arch.h` states is exact here.
+- [x] **THE SAME HOLE WAS IN THE armv8a BACKEND. HOLDS, FIXED, AND THE ARM SHIPPED WITH IT.**
+      `arch/arm64/armv8a/aspace_armv8a.cc` tested `(pa & ~DESC_OA_MASK) != 0` on the start address
+      alone and `map_into` masks each leaf's output with `DESC_OA_MASK`. Fixed with `phys_range_ok`,
+      asked before the first table is edited, against the width `oa_bits()` derives: the narrowest of
+      `ID_AA64MMFR0_EL1.PARange`, `TCR_EL1.IPS` and the 48 bits the 4 KiB-granule descriptor's output
+      field can encode. **IPS is what the walker enforces** -- an output above the size that field
+      configures takes an Address Size Fault rather than translating -- and PARange bounds what may
+      legally be programmed there, so neither alone is the answer. A reserved encoding reads 0 and
+      refuses every range.
+      **THE UNFIXED MEASUREMENT DIFFERS FROM RV64'S AT THE IMPLEMENTED WIDTH AND MATCHES IT AT THE
+      FIELD.** Two pages at the top of the implemented physical space (`2^40 - 4096`, this core
+      reporting PARange = IPS = 40): the map returned OK, page 0 answered `0xfffffff000` and page 1
+      answered `0x10000000000` -- an output address the machine does not implement, NOT frame 0, so
+      `arch_aspace_frame_at`'s "0 means not mapped" survives that case here. Two pages at the
+      descriptor field's own top (`2^48 - 4096`): the map returned OK, page 0 answered
+      `0xfffffffff000` and page 1 answered **PHYSICAL FRAME 0**, which is the RV64 shape exactly and
+      breaks that rule. Both are refused now.
+      Witnessed by `KOS_ASPACE_REFUSE_PHYS_EXTENT`, a run of two pages based on the last page the
+      port's own `arch_aspace_model` says the machine can output, with both pages required absent
+      afterwards. Mutation, the whole-range check restored to a start-only one
+      (`phys_range_ok(pa, 1)`): `qemu-arm64`, `qemu-riscv64` and `qemu-riscv64-sv48` each read the
+      refusal word as `0x7f` against `KOS_ASPACE_REFUSE_ALL` = `0xff` and `aspace_refusals` goes red.
+      **THE x86_64 BACKEND'S OWN GUARD IS UNWITNESSED AND CANNOT BE ARMED HERE.** `CHIP_Q35` does not
+      `select HAS_ASPACE`, so `KICKOS_HAVE_ASPACE` is 0 on `qemu-x86_64`, the whole probe is compiled
+      out and no arm reaches `arch_aspace_map` on that board. Its `phys_range_ok` was left exactly as
+      the sibling pass wrote it; the same start-only mutation leaves all 36 tests green, which is the
+      measurement of the gap rather than of the code. The bit is a null there until the board earns
+      the select.
+- [ ] **NOCACHE and DEVICE are still accepted where no PTE attribute carries them. RAISED AGAIN,
+      NOT CHANGED, AND THIS IS A DECISION.** `docs/design-m6-mmu.md` R2.2 already argues the
+      position and the audit's prescribed remedy is wrong as stated. Refusing outright is wrong for
+      DEVICE: with Svpbmt absent the attribute is the physical address's PMA, which for an MMIO
+      address IS I/O, so a backend refusing DEVICE would refuse a type the platform does deliver.
+      Refusing NOCACHE alone has a live caller: `grant_nocache_admissible`
+      (`kernel/include/kickos/grant.h`) asks this member on every translating board, so every
+      `KOS_MEM_NOCACHE` self-grant and every `kos_task_create` carrying it would answer `-KOS_EPERM`
+      here, and `task_handoff_readback` -- which drives both consumers at `KOS_MEM_NOCACHE` with no
+      capability skip in front of it -- goes red. The honest answer differs by PHYSICAL ADDRESS and
+      the member takes none, which is the gap F8 records. Two things a decision would have to
+      settle: whether the answer moves to a per-CHIP seam beside `arch_mpu_nocache_support`, which
+      F8's own rule points at and which is a signature move in the milestone whose deliverable is
+      the signature diff; and whether the honesty claim in `memtype_known`'s comment, which reasons
+      about "this board", may live in an ARCH file every future rv64imac chip compiles.
+- [x] **Boot accepted any non-zero PMP configuration. HOLDS, FIXED.** The readback tested
+      `pmpcfg0 != 0` and never decoded the entry. Every PMP CSR field is WARL and may be read-only
+      zero (Privileged ISA 3.7.1), so a hart that narrows the A field or drops a permission leaves a
+      NON-ZERO `pmpcfg0` describing an entry that grants nothing. Fixed by decoding cfg byte 0 --
+      L clear, R and W and X set, A either NAPOT or TOR -- and by testing `pmpaddr0`'s READBACK for
+      a run of ones through the top implemented bit rather than comparing it to the value written,
+      the register holding bits 55:2 of which not all need exist. TOR is accepted beside NAPOT
+      because entry 0's TOR lower bound is zero (Privileged ISA 3.7.1.1), so both modes cover the
+      whole implemented space with that address, and a hart implementing only one of the two is a
+      hart this port still runs on. Both zero is still PMP unimplemented and still passes.
+      **THE REFUSAL IS OBSERVABLE AND IS NOT A HANG**: `.Lm_refuse` emits over the polled UART and
+      writes the finisher's FAIL word, so the gate goes red in half a second.
+      Mutation, writing `pmpcfg0 = 0x07` (RWX set, A = OFF), which this hart accepts verbatim:
+      with the OLD check the boot sails past the readback and dies at the `mret` with the generic
+      `machine-mode trap before the drop` message blaming an unimplemented CSR or a bad physical
+      address; with the decode it refuses at the readback naming `pmpcfg0=0x...07` and
+      `pmpaddr0=0x003fffffffffffff`. The TOR leg is exercised too: writing `pmpcfg0 = 0x0f` boots
+      clean, so that branch is live rather than dead.
+- [x] **The decoded grant still INFERRED absence from a zero readback. HOLDS, FIXED, AND THIS HART
+      DEMONSTRATES IT.** The decode above accepted `pmpcfg0` and `pmpaddr0` BOTH reading zero as
+      "PMP unimplemented, every access permitted". Every PMP field is WARL and a legal implemented
+      entry may read as zero, in which case A is OFF and, once one entry is implemented, every
+      S-mode access that matches no entry FAILS (Privileged ISA 3.7.1). One readback, two opposite
+      effects, and no amount of further decoding separates them.
+      **MEASURED ON THIS HART rather than argued**, `qemu-system-riscv64 11.0.3 -M virt` on the
+      default `rv64` core, with a temporary M-mode probe printing over the `virt` UART: writing the
+      real NAPOT grant reads back `pmpcfg0=0x1f pmpaddr0=0x003fffffffffffff` and a supervisor-checked
+      load AND store both succeed; writing zero to both CSRs reads back `pmpcfg0=0x0 pmpaddr0=0x0`,
+      the exact readback the old code accepted, and the same load and store BOTH FAULT. So QEMU
+      implements the specification's rule and the accepted case is the denied one here.
+      Fixed by measuring the EFFECT instead of decoding a description of it: `mstatus.MPRV` with
+      `MPP=S` makes a machine-mode load and store translated and protected as supervisor ones
+      (Privileged ISA, `mstatus.MPRV`), so the prologue reads and rewrites the DRAM word the probe
+      above just proved, under a `mtvec` of its own, and refuses by name if it faults. The decode
+      stays for the case it does answer, an entry that stands and grants too little, and its
+      both-zero leg now falls through to the probe rather than accepting.
+      **ONE ADDRESS STANDS FOR EVERY ADDRESS** on the two legs that reach the probe: the decode
+      accepts only an entry covering the whole space, and a hart on the both-zero readback has every
+      entry OFF or none at all. Reset leaves every `A` field OFF, so the denied case denies
+      instruction fetch too, which `MPRV` does not reach; `satp` is untouched there, so the probe's
+      supervisor access is Bare.
+      **THE SECOND HALF OF THE FINDING HOLDS AND IS NOT FIXABLE AS STATED.** A TOR entry 0's upper
+      bound is `pmpaddr0 << 2`, and `pmpaddr0` holds bits 55:2, so the widest TOR range entry 0 can
+      name is `[0, 2^56 - 4)` and the top four bytes of the physical space are outside ANY TOR grant.
+      Narrowing support to NAPOT would drop harts that implement only TOR; the comment claiming both
+      modes "cover the whole implemented space" is corrected instead, and no address this board uses
+      is in those four bytes. **This is a decision and not a fix.**
+      Mutations, both directions. FIRES: both CSRs written zero boots to
+      `KickOS: PMP denies the supervisor accesses this port makes: ... mcause=0x5 mepc=0x8000018e`
+      over the polled UART, the finisher FAIL word, and `qemu_riscv64_selftest` red in 0.06 s, so the
+      refusal is observable and is not a hang. STILL BOOTS: the unmutated NAPOT grant is 51 of 51,
+      and the TOR leg (`pmpcfg0 = 0x0f`) is 51 of 51 too, so that branch stays live code. The
+      `MPP` leg is live as well: seating `MPP=M` prints
+      `KickOS: mstatus.MPP did not take supervisor ... mstatus=0x...1800` and dies there.
+- [x] **The map editor's extent check stopped at the ARCHITECTURAL width. HOLDS, FIXED.** The
+      sibling fix above tests the range against the PPN field, which is 44 bits over a 4 KiB granule
+      in EVERY RV64 mode: a 56-bit output that is the ARCHITECTURE's figure and not the machine's. A
+      narrower implementation takes an ACCESS fault when the leaf is walked, which is later, on
+      another thread, and is not a refusal.
+      **MEASURED ON THIS HART**, in machine mode over physical addresses with the same temporary
+      probe: `2^32`, `2^35`, `2^40` and `2^55` each take a load access fault, while DRAM base plus
+      112 MiB and the high PCIe MMIO window at 16 GiB both read. Four samples and not a sweep, so
+      what they show is that a leaf above the board's map is BACKED BY NOTHING here rather than
+      exactly where the machine stops; every address the BOARD names is below 4 GiB.
+      **RISC-V PUBLISHES NO REGISTER FOR IT AND HAS NO WORKING REGISTER TO PROBE**, which is why
+      this figure comes from the CHIP and not from the arch: `KICKOS_RV64_PHYS_ADDR_BITS` in
+      `boot_layout.ld.h`, handed to `kickos_rv64_aspace_boot` beside the kernel window's range.
+      The arch's own 56-bit constant is DELETED from `rv64_paging.h` in the same change, so the
+      width is stated once; the PPN field's own bound stays as the round-trip test it already was,
+      which names no constant. `arch_aspace_model` reports the chip's figure, so the RV64 model line reads
+      `granules 0x1, 16 ASID bits, 32 PA bits, verdict 0x7` where every dated record before this
+      reads 56, and the seam arm bases its range on that report so it moved with it.
+      **CONSISTENT WITH THE SIBLINGS, DIFFERENT SOURCE.** All three take the narrowest of what the
+      machine implements, what the walker is programmed to output and what the descriptor encodes.
+      x86_64 reads MAXPHYADDR from CPUID; armv8a takes the narrowest of `ID_AA64MMFR0_EL1.PARange`,
+      `TCR_EL1.IPS` and the descriptor's output field. RISC-V has no register for the first, one
+      output width for every mode, and a field bound the round-trip already holds, so the board
+      supplies the only term the hardware will not.
+      **THE FIGURE IS A BOARD CLAIM AND IT IS NARROWER THAN THIS MACHINE. This is a decision.** 32
+      is the extent the board's map DESCRIBES; the machine also backs the 16 GiB PCIe window, which
+      this port names nowhere and cannot reach without a device tree it does not parse. Refusing
+      above the described extent is the safe direction, and the alternative figure is 35, which
+      QEMU derives from the RAM size and would move with it.
+      Mutations, both directions. FIRES: with the platform clause dropped and the model still
+      reporting 32, a two-page map at `2^32 - 4096` is ACCEPTED, the refusal word reads `0x7f`
+      against `KOS_ASPACE_REFUSE_ALL` = `0xff` and `aspace_refusals` goes red. Page 1's output is
+      `0x1_0000_0000`, which the 44-bit PPN field encodes faithfully, so it is an address the
+      machine does not implement rather than frame 0: the armv8a shape at the implemented width, not
+      the RV64 shape at the field. STILL PASSES: unmutated, `qemu-riscv64` and `qemu-riscv64-sv48`
+      are 51 of 51 each.
 
 ## External audit of the M6.2 branch, 2026-08-26
 
@@ -6000,6 +6481,62 @@ items and the DRY item are a separate pass and are untouched.
       in `sweep_host_gates.sh` selecting an alternative provider, which is why it survived this long.
       A dump that completes and then fails to terminate is a drain or an exit-path defect rather than
       a reporting one.
+
+## M6.4 x86_64: what the `qemu-x86_64` port owes
+
+Each item is a residual the port left standing on purpose, not a defect it hid. The board's own
+caveats and its validation status are in `docs/reference/boards.md`.
+
+- [ ] **The RAM arena is ONE contiguous conventional span, so a machine whose memory straddles
+      4 GiB loses the smaller side.** `pick_arena` (`arch/x86/x86_64/entry_x86_64.cc`) merges
+      adjacent conventional runs, does not assume the map is sorted, clamps a run straddling the
+      1 MiB floor, and then takes the largest single span. At `-m 8G` the largest span is the one
+      ABOVE 4 GiB, so 511,373 pages (24.5% of the conventional memory the map names) below the
+      boundary go unused. **A multi-run arena is kernel-side work**, not a fix inside this pick:
+      `arch_ram_alloc` and the frame pool are both written against one base and one size.
+- [ ] **The boot path's stack depth is unbounded and unguarded.** `kickos_x86_64_landed`
+      (`arch/x86/x86_64/landed_kernel_x86_64.cc`) moves the kernel onto a 128 KiB image-owned
+      static in `.bss`, which is what takes an overrun off firmware's stack and out of the type-7
+      Conventional run sitting directly below it. Nothing measures the depth and nothing guards the
+      low end. The size matches what UEFI 2.11 section 2.3.4 makes firmware supply, so the switch
+      cannot be a regression on that count, which is the whole of the argument standing behind it.
+- [ ] **The adopted translation root lives in `EfiBootServicesData`, memory UEFI says the OS may
+      reclaim.** This port never reclaims boot-services memory: `conventional_span` takes type 7
+      alone, so nothing it hands the allocator can overlap the root, and the regime `arch_init`
+      adopted stands for the life of the image. That is an UNSTATED PREMISE rather than an enforced
+      one. Nothing asserts it, and the first code that frees boot-services memory pulls the live
+      root out from under the map editor.
+- [ ] **`arch_cpu_clock_hz` is 32 bits wide in the seam, so a part above 4.295 GHz is reported
+      CLAMPED rather than exactly.** The measured timestamp-counter rate is 64 bits
+      (`apic_tsc_hz`), and `arch/x86/x86_64/arch_x86_64.cc` clamps to `0xffffffff` rather than
+      truncating, which is wrong in the direction a caller can reason about. **Widening it is a
+      seam change**: `arch_cpu_clock_hz` is declared in `arch/include/kickos/arch/arch.h` and every
+      backend and every caller moves with it, so it does not belong to this board.
+- [ ] **The i8254 reference timebase is MANDATORY on this board and its rate is HARDCODED.**
+      `calibrate` (`arch/x86/x86_64/apic_x86_64.cc`) measures both the local APIC timer and the
+      timestamp counter against it, because no CPUID leaf on this processor model reports either
+      rate, and there is no second source in the tree. A channel 0 that does not advance is refused
+      loudly, so the failure mode is not silence; a channel 0 driven by a different crystal is,
+      because `pit_hz` is the literal `1193182` in `arch/x86/chip/q35/chip_q35.cc` and every
+      nanosecond conversion is scaled by it.
+- [ ] **The xAPIC MMIO window is dereferenced without being mapped or checked, and it is the
+      default leg.** `apic_write` and `apic_read` take the MSR path only under `g_x2`; the
+      fall-through stores to and loads from `g_mmio + reg`, the address `IA32_APIC_BASE` named.
+      The file's own header says why that address is not safe to assume: F8 has it that the adopted
+      map covers exactly what the UEFI memory map DEFINES, and the local APIC window is not in it.
+      Nothing tests the mapping before the first access, and no gate reaches the leg on a processor
+      model that reports x2APIC.
+- [ ] **`swapgs` in the trap path keys on the FRAME's cs, so an NMI or a machine check taken in
+      either swap window runs on the USER gs base.** `arch/x86/x86_64/trap_x86_64.S` swaps on
+      `testb $3` against the pushed cs at entry and against the frame's cs at the resume, which is
+      right for an ordinary trap and for a frame some other entry built. It leaves two windows in
+      which the pushed cs no longer describes which base is live. **Harmless only because no
+      handler dereferences gs**, which is exactly what SMP per-CPU data in the trap path would
+      break, so this is a prerequisite of M7 on this arch rather than a standing nit.
+- [ ] **TSC invariance is never checked.** `CPUID.80000007H:EDX[8]` is not read anywhere, so
+      `clock_now` rests on a rate measured once at `apic_init` and assumed constant. On the
+      emulator it is; on a part whose counter varies with the core clock or stops in a deep state,
+      every deadline after the change is wrong by the drift and nothing reports it.
 
 ## M6.2 closing sweep: two debts the pass could not discharge (2026-08-26)
 
@@ -7021,22 +7558,20 @@ follows is what survived that.
       give the selftest a microbit-specific arena reservation the way `uart_service` got one, or
       accept that this board's skip set grows once per milestone. Worth deciding deliberately rather
       than one arm at a time, because the next `.bss` byte from ANY change takes the next arm.
-- [ ] **`docs/reference/invariants.md` carries the invariant ID `object-access-via-per-task-cap`, and
-      the capability table is per-THREAD.** 5.4 of the task-layer spike rules the table stays per
-      thread, and the prose around `handle-not-pointer-across-boundary` says "per-task capabilities"
-      too. The comments in `cap.h` and friends were reworded when 9.3 landed; renaming an invariant ID
-      is a cross-document change that was deliberately left out of that commit. **9.4 made it worse**:
-      `task` now HAS a referent, so that entry's prose "every SPAWNED task gets"
-      `KICKOS_CAP_CHILD_WIDTH` now reads as a claim about a group and is wrong -- the width is per
-      thread.
-- [ ] **`task_release` frees the task slot BEFORE `cap_teardown`, so `c->task` dangles for the rest of
-      `exit_current`.** Exactly as `c->domain` already did, and for the same deliberate reason: the
-      release must precede the sweep so a supervisor woken by the EPIPE can respawn into the window.
-      Nothing reads it, and the comment at the site says so. A peer's `task_for` can recycle that
-      freed slot while `c->task` still names it, and the M4.8.2 wake preemption now lets that
-      overlap the sweep rather than follow it; a future second `task_release(c->task)` would then
-      decrement a LIVE task to zero. It becomes a real hazard the first time anything downstream of
-      the sweep wants the task.
+- [x] **`docs/reference/invariants.md` carried the invariant ID `object-access-via-per-task-cap` while
+      the capability table is per-THREAD. FIXED, AND THIS ENTRY OUTLIVED THE FIX.** The ID is
+      `object-access-via-per-thread-cap` now, the spelling `object-access-via-per-task-cap` appears
+      nowhere in the file, `handle-not-pointer-across-boundary` cites the new ID, and the prose reads
+      "every SPAWNED thread gets `KICKOS_CAP_CHILD_WIDTH`" with "the width is per thread, not one
+      number per image" beside it. That is every clause this entry asked for.
+      Closed 2026-08-28 at the M6.3 documentation audit.
+- [x] **`task_release` freed the task slot BEFORE `cap_teardown`, so `c->task` dangled for the rest
+      of `exit_current`. FIXED, AND THIS ENTRY OUTLIVED THE FIX.** The release still precedes the
+      sweep, for the reason this entry gives, but the NAME is retired with the reference:
+      `kernel/sched/sched.cc` clears `c->task` immediately after `task_release(c->task)`, so the
+      window in which a peer's `task_for` could recycle that slot while `c->task` still named it no
+      longer exists, and a second `task_release` would take a null rather than a live task.
+      Closed 2026-08-28 at the M6.3 documentation audit.
 - [ ] **M6/SMP: the claim-then-commit shape in `domain_for` and `task_for` is safe only because
       `IrqLock` is enough on one core.** Both hand out a pool slot at refcount 0 and are committed by
       a later `domain_ref`/`task_ref`, and what makes the window atomic is that `thread_create_call`
@@ -7069,12 +7604,14 @@ follows is what survived that.
         is latent only because no ctest runner points this gate at a SYSMPU board; the class needs its
         own corroboration, keyed on the MPU backend rather than on the arch.
       Both are `case` arms, no new mechanism, and blocked on nothing.
-- [ ] **`docs/design-c6-driver.md:34` cites "open question 3" and that document has no
-      open-questions section at all.** A dangling citation, and the same phrase in
-      `check_sim_pubpanic.sh` pointed at `design-m4.7.9-fault-isolation.md`, which also had no such
-      numbered question (fixed there in M4.8.3 by pointing at the real 9.5). Whatever the C6 timer
-      path's kernel-side blocker is, it is now recorded nowhere. Find it in the C6 spikes or delete
-      the parenthesis; a citation to nothing is worse than no citation, because it reads as evidence.
+- [x] **`docs/design-c6-driver.md` was reported as citing an "open question 3" it does not carry.
+      NOT A DEFECT, AND THIS ENTRY IS A STALE DUPLICATE OF ONE ALREADY SETTLED ABOVE.** That document
+      DOES carry a numbered `## Open questions / risks` section, and its item 3 is the timer-IRQ
+      follow-on the citation points at, so the citation resolves and the parenthesis stays. The same
+      false finding was investigated and closed in the doc-audit section of this file; this entry was
+      filed against the same premise and never re-checked. The `check_sim_pubpanic.sh` half of it was
+      a separate and real defect, fixed at M4.8.3 by pointing at the numbered question that exists.
+      Closed 2026-08-28 at the M6.3 documentation audit.
 
 ## Found landing task-layer steps 9.4 and 9.5 (2026-08-12)
 
@@ -7117,3 +7654,132 @@ follows is what survived that.
       then dies -- all under a host or emulated clock. The interesting case is a driver cancelled while
       its IRQ line is armed on real hardware, where the wake races the device. Wants an enforcing board
       with an IRQ UART service list, which is what makes it a fleet-pass item and not a gate.
+
+## Found during M6.3 and M6.4, deferred with the reason, then fixed at the pre-audit step (2026-08-28)
+
+- [x] **DONE: the word-copy bound is exact, and an aligned 8-byte `kmemcpy` costs 32 instructions
+      instead of 56.** `lib/libc/string.cc` no longer gates the copy word path on a conservative
+      `2 * WORD_BYTES`. The byte prologue's length is fixed by the destination alignment and is
+      therefore known before the branch, so `copy_ascending` enters on `n >= ((-du) & WORD_MASK) +
+      WORD_BYTES` and `copy_descending`, whose prologue walks the END of the range DOWN rather than
+      the start UP, on `n >= (du & WORD_MASK) + WORD_BYTES`. Measured on rv64imac at `-Os` by
+      executed-instruction count under qemu: aligned `kmemcpy` of 8 bytes 56 to 32, aligned
+      descending `kmemmove` of 8 bytes 61 to 42, every other shape +2 for the wider guard, and the
+      emitted opcode stream is identical after the guard.
+      **`memset` deliberately KEEPS the conservative `2 * WORD_BYTES`**, now named `MEMSET_WORD_MIN`
+      and documented as a profitability threshold rather than a safety one. Its word path has to
+      build the fill word first, and measurement says one aligned word costs 2 more instructions
+      than the byte loop on rv64imac and 12 more on rv32imac. Two words is where it starts paying.
+      **The obvious "just lower the constant" was measured and rejected.** `n >= WORD_BYTES` is
+      safe, and is 2 cheaper than the exact bound wherever the exact bound agrees with it, but it
+      admits copies that cannot move a whole word: at a shared misalignment of 1 to 7 with `n` of 8
+      it pays the prologue, moves nothing, and costs 70 instructions against the 56 the byte loop
+      costs today. The exact bound never regresses any shape by more than the 2 instructions of its
+      own guard.
+      The unit sweep in `tests/unit/kstring/kstring_words.cc` is what gates it, and mutation says it
+      is load-bearing: dropping any of the three thresholds below the prologue length kills the run
+      with SIGSEGV inside that primitive's own sweeping test. It is also blind to one thing worth
+      knowing, that handing `copy_descending` the ascending bound stays green, because that error is
+      merely wasteful and never unsafe. Only the instruction count catches it.
+
+- [ ] **OWED MOVE: the three byte-seam DEFINITIONS are in the syscall layer while their declarations
+      are in the memory layer.** `kaccess_from_user`, `kaccess_to_user` and `ep_copy` are declared in
+      `kernel/include/kickos/aspace.h` (lines 46-52), which is where R6 moved them from
+      `kernel/syscall/syscall_internal.h`, but they are still defined in
+      `kernel/syscall/syscall_mem.cc` (lines 387-408) over a file-local `access_copy` (line 307).
+      They arguably belong in `kernel/mem/aspace.cc` beside the rest of the address-space code, and
+      the move did not happen only because another agent owned that file during the pass. No
+      behaviour depends on it; it is a layering tidy-up with one caller-visible consequence, that a
+      reader following the header lands in the syscall directory.
+
+- [ ] **RESIDUAL: `KICKOS_RV64_SSTATUS_SUM` is still defined and is now used by nothing.**
+      `arch/riscv/rv64imac/include/kickos/arch/rv64_frame.h` line 95 defines it; R6 removed both
+      writes and the assembler `.equ`, and a tree-wide grep finds no other reference. A dead constant
+      naming a bit the port has decided never to set is the kind of thing a later edit picks up and
+      uses, so it should either go or carry a one-line comment saying the port never sets it and why.
+      Left alone here because the file was not this pass's to edit.
+
+- [x] **`kfault_terminate` bypassed the console flush on every board whose panic ends in a
+      shutdown, so a panic on silicon with a transmit FIFO could truncate the dump.** `kpanic`
+      reaches `kfault_terminate`, and `virt_rv64`, `virt_rv32`, `virt_arm64`, `mps2`, `nrf51` and
+      `sim` all defined it as a bare `arch_shutdown(status)`. SIX chips, not the five this entry
+      first named: `sim` was missed, and it is the one every host-side gate runs on. Only
+      `kickos_terminate` and a clock retune called `arch_console_flush_sync`. Found at M6.3's R1.4,
+      which gave the RISC-V chip a real flush body after measuring that the fallback ASSERTS the
+      console cannot outrun shutdown, which is false of any 16550 with a FIFO; `virt_arm64` has had
+      the body since S4 and the panic path did not use it either.
+      **FIXED at the M6.3 pre-audit step: one `arch_console_flush_sync()` per chip ahead of the
+      shutdown, which is what the ordered exit has done since S6.** The per-board answer is what
+      made this safe rather than a one-line edit. Only TWO of the six can truncate anything:
+      `virt_rv64` (NS16550A, TEMT poll) and `virt_arm64` (PL011, BUSY poll) carry real bodies. The
+      other four take the lone-TU fallback, and there the fallback's assertion is TRUE by
+      TRANSPORT rather than by luck: `virt_rv32`, `mps2` and `nrf51` publish through semihosting
+      `SYS_WRITEC`, which the host consumes inside the trap, and `sim`'s sync writer loops on
+      `write(1, ...)` until the host has taken every byte. There was never a runtime assert to
+      fire either way: the fallback body is EMPTY in the linked image, `bx lr` on both ARM boards
+      and `ret` on `virt_rv32` and `sim`, supplied by `arch_console_flush_sync_default.cc.obj` in
+      every case. The RING needed nothing: `kpanic_enter` sets `g_console_panicking`, which routes
+      every panic-time write through `arch_console_write_sync`, so only the DEVICE was ever left
+      loaded. **Still unwitnessable on QEMU**, whose UART hands each byte to its chardev on the
+      register write and reports the shift register idle with it, so the fix rests on the 16550
+      TEMT and PL011 BUSY semantics and not on a bench capture. What IS witnessed, by mutation on
+      `qemu-riscv64` with the same instrument compiled into all three arms: the flush is REACHED on
+      the panic path (both markers, exit 132), deleting the one call makes it unreached (neither
+      marker) with the banner and the status unchanged, which is exactly how the defect stayed
+      invisible, and with the device mutated never to report idle the loop still terminates on
+      `UART_POLL_BOUND`, so the new call cannot turn a fault into a harness timeout.
+      Two OTHER terminal `arch_shutdown` sites were swept and deliberately left: the
+      `arch_shutdown(0)` after `kmain` in every `Reset_Handler`, and `sim.cc`'s `arch_shutdown(2)`
+      after `kickos_isr_fault`. Both run only when a noreturn path returned, so a drain there would
+      state a reachability the code denies.
+- [x] **`check_dash_punct.sh`'s separator exemption could be forged from inside prose.** Its
+      command position anchors on `^`, `;`, `&`, `|`, `(` or `$(`, so a comment such as
+      `# see: rm -rf; ls --color -- and then the prose` was exempted: the `;` creates a command
+      position and `rm` is on the whitelist. Found while widening the option run to admit long
+      options at M6.3, whose adversarial pass proved the widening opened no new class, this being
+      the pre-existing one it leaked identically for short options. Nothing in the corpus, 886
+      files at this tree, ever hit it.
+      **FIXED at the M6.3 pre-audit step, and NOT the way this entry proposed.** Narrowing the
+      ANCHOR was measured and rejected. The candidate narrowing required the operand after the
+      `--` to start with a quote, a `$`, or the end of the line, and it fails twice over. It
+      breaks two legitimate corpus lines, `check_service_lists.sh:71` and `:153`, which spell
+      `git ls-files -- CMakeLists.txt '*/CMakeLists.txt'`: a real terminator with a bare-word
+      pathspec, and quoting a literal to satisfy a gate is the rewrite-of-working-shell the gate's
+      own header names as the wrong fix. An operand-shape survey of all 34 real terminators in the
+      corpus is why: 19 sit behind a double quote, 13 behind a single quote, 2 behind a bare
+      letter, and NONE behind a `$` or an end of line. And it kills only that one forge:
+      `# see: rm -rf; ls --color -- "and then" the prose` survives it by two characters.
+      **What landed instead is a POSITION test. SEP reads shell and a comment is not shell, so the
+      separator erase now reaches only as far as the line's first comment opener.** `SEP_ERE` and
+      its three mutation variants are textually UNCHANGED, so the counts keyed on them did not
+      move. The scanner gained a fifth ERE, `HASH_ERE='(^|[[:blank:]])#'`, so a `#` inside a word
+      or a literal is not an opener, and the erase is applied to the prefix ahead of the first
+      opener with the suffix appended back. The position comparison is valid because `erase` pads
+      its match to equal length, which is what keeps a column in `work` the same column as in the
+      original line. Zero corpus churn, measured two ways: the gate still PASSes over 886 files
+      with 0 findings, and a sweep of all 34 SEP occurrences found 0 carrying a `#` earlier on the
+      line than the anchor, which still holds under the strictest possible `HASH_ERE='#'`.
+      **The rig, before then after.** Positive controls 7 then 8, the forge being the eighth.
+      Negative controls each scanned alone 13 then 14, the fourteenth a comment opening AFTER a
+      real separator, which is the POSITIONAL guard: a sloppier "the line contains a `#`, refuse"
+      implementation makes that line report and the loop fails loudly. Mutation arm `separator` 8
+      then 9, the added line being a near miss to that clause. `banner`, `backtick`, `sep-prefix`,
+      `sep-new-words` and `sep-long-option` all unmoved at 1, 1, 3, 5 and 1, each because control
+      14 carries no hyphen run, no backticks, no `VAR=` or array prefix, an old word, and a short
+      option. One arm ADDED, `sep-comment`, expected 7: with `HASH` disabled the forge is exempted
+      again and the positive file drops 8 to 7, and the one line silenced is the forge, which is
+      what makes `HASH` a near miss rather than slack. `dash -n` clean, and the diff read by eye
+      for the bashism class `dash -n` does not catch. The gate also PASSes under mawk, nawk and
+      gawk, so the new `length`/`substr`/`match` use is not gawk-specific.
+- [x] **The aspace differ's baseline file's own header called the EMPTY diff the M6.3
+      deliverable, which R5 falsified. FIXED, AND THIS ENTRY WAS FILED IN ERROR.** The header now
+      reads "THE DIFF IS THE DELIVERABLE AND IT IS NOT EMPTY", names R2.1 as where the owed member
+      was measured and R2.2 as where it landed, and tells a reader meeting the exit-2 refusal not to
+      move the ref to quiet it. That is the whole of the fix this entry asked for.
+      **It went in at `9b4bd49e`, the same commit that filed this entry**, so the entry was open and
+      answered from the moment it was written: the entry's own reasoning that the pre-audit step had
+      to hold the file byte-identical does not apply to a COMMENT, which the differ does not read
+      (comments and blank lines are ignored, and the verdict is taken over the bare ref alone).
+      The project's rule is that a review finding is FIXED or raised as a decision, never filed and
+      merged; this one was both, which is the inversion, and the correction is to close it here and
+      say so rather than to delete it. Closed 2026-08-28 at the M6.3 documentation audit.

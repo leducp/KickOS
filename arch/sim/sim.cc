@@ -2,10 +2,13 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/arch/arch.h>
+
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
 #include <kickos/console_tx.h>
 #include <kickos/instance_local.h>
 #include <kickos/sys/atomic.h>
+
+#include <fatal_status.ld.h>
 
 #include <new> // placement new (arch_context_init)
 
@@ -35,8 +38,6 @@
 static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_SIM,
               "KICKOS_TRACE_ARCH does not match ArchId::ARCH_SIM for sim");
 
-// Kernel entry points used by the sim's fault reporters (sim.cc does not pull in
-// kernel.h; kfault_terminate is defined below, in the extern "C" block).
 namespace kickos
 {
     void kprintf(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -86,9 +87,8 @@ namespace
     enum { SIM_OUT_LINE_MAX = 240 };
 #endif
 
-    // Instance-scoped sim backend state (invariant #7, the arch half): several sim
-    // backends (one per emulated MCU / KickCAT slave) co-reside in one host
-    // process, mirroring the kernel() seam but staying arch-side (invariant #1).
+    // Several sim backends (one per emulated MCU / KickCAT slave) co-reside in one
+    // host process, so this state is instance-scoped and never a plain global.
     struct SimInstance
     {
         // --- running-context tracking + deferred-switch state ---
@@ -113,33 +113,27 @@ namespace
         // privileged-write seam declines.
         unsigned char* pvreg = nullptr;
 
-        // The running thread's resting region set, remembered so the syscall raise
-        // can be lowered back to exactly it. We keep the caller's pointer (its TCB
-        // regions[], stable while it runs) rather than a fixed-size copy, so there is
-        // no cap and no truncation regardless of KICKOS_MPU_MAX_REGIONS.
+        // The running thread's resting region set, so the syscall raise lowers back
+        // to exactly it. This is the caller's own TCB regions[], valid only while
+        // that thread runs.
         struct arch_mpu_region const* applied = nullptr;
         size_t applied_n = 0;
 
         // --- emulated device IRQ hand-off (async-signal to ISR) ---
         Atomic<sig_atomic_t, Order::RELAXED> pending_irq = -1;
         // bit L set => line L masked (a raise latches, see irq_pending). All lines
-        // start MASKED at reset (the
-        // arch.h reset contract, matching the NVIC/RX silicon posture); a driver
-        // unmasks its line (arch_irq_unmask, or irq_claim) before use.
+        // start MASKED at reset (the arch.h reset contract); a driver unmasks its
+        // line (arch_irq_unmask, or irq_claim) before use.
         Atomic<sig_atomic_t, Order::RELAXED> irq_masked = static_cast<sig_atomic_t>(0xFFFFFFFFu);
         // bit L set => a raise landed on line L while it was masked (latched one-
         // deep, coalesced). Redelivered through the ISR path at unmask.
         Atomic<sig_atomic_t, Order::RELAXED> irq_pending = 0;
 
         // --- emulated buffered-console TX-empty interrupt source ---
-        // The console ring drains through a real SIGUSR1 delivery (isr_depth++ ->
-        // kickos_isr_irq(TX line) -> console_tx_isr), exactly like a hardware TX
-        // IRQ. tx_enabled is the peripheral-level enable (irq_enable/irq_disable);
-        // tx_asserted is the level line. tx_budget is a SYNTHETIC per-ISR-delivery
-        // slot budget (host stdout never blocks, so without it the ring would drain
-        // in one shot and never fill/wrap). It constrains slot_free ONLY inside the
-        // drain ISR, so the synchronous prime/flush/overflow paths still see an
-        // always-free channel and never stall.
+        // tx_enabled is the peripheral-level enable, tx_asserted the level line.
+        // tx_budget is a SYNTHETIC per-ISR-delivery slot budget: without it the ring would
+        // drain in one shot and never fill or wrap. It constrains slot_free ONLY inside the
+        // drain ISR, so the synchronous prime/flush/overflow paths never stall.
         Atomic<sig_atomic_t, Order::RELAXED> tx_enabled = 0;
         Atomic<sig_atomic_t, Order::RELAXED> tx_asserted = 0;
         Atomic<sig_atomic_t, Order::RELAXED> in_tx_isr = 0; // scopes the synthetic budget to the ISR
@@ -179,16 +173,14 @@ namespace
     }
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // Arm the switch hand-off just before a ucontext swap: `from_tid` is the tid
-    // of the context we are swapping AWAY from (the physically-outgoing side).
+    // `from_tid` is the context being swapped AWAY from (the physically-outgoing side).
     void trace_switch_arm(uint16_t from_tid)
     {
         sim().switch_from = from_tid;
         sim().switch_pending = 1;
     }
     // Consume the hand-off on the RESUMING side and emit {from -> current}. Called
-    // right after every swapcontext and at the trampoline (a new thread's first
-    // run). No-op if nothing armed (defensive; every swap arms exactly one).
+    // right after every swapcontext and at the trampoline (a new thread's first run).
     void trace_emit_switch_in()
     {
         if (sim().switch_pending == 0)
@@ -207,10 +199,8 @@ namespace
 #endif
 
     // --- Fake write-PV-only register block (arch_periph_reg_write's sim backend) ---
-    // A DEV grant needs a base the app names at spawn time, so it must be known to both
-    // sides at compile time. ONE fixed address would make the premise a bet on this
-    // process's address space, so the first candidate that maps is published as
-    // sim().pvreg and is the only base the seam and the encoder answer for.
+    // The first candidate that maps is published as sim().pvreg and is the only base the seam
+    // and the encoder answer for.
     // user/apps/common/selftest walks the SAME list in the SAME order. Keep them identical.
     constexpr uintptr_t SIM_PVREG_BASES[] = {
         0x40000000u,          // 1 GiB
@@ -220,8 +210,7 @@ namespace
         0x100000000000ull,    // 16 TiB
     };
     // 64 KiB: every host page size in practice (4/16/64 KiB) divides it, so the
-    // "mprotect can describe this exactly" precondition below is satisfied by
-    // construction rather than by the host happening to use 4 KiB pages.
+    // "mprotect can describe this exactly" precondition below holds by construction.
     constexpr size_t SIM_PVREG_WINDOW = 0x10000u;
     // Twice the window, so an allowlist entry can sit OUTSIDE the grantable window with
     // host pages still behind it: a store there must be refused by the kernel's
@@ -251,7 +240,6 @@ namespace
     static_assert(SIM_PRIV_WRITE_REGS[0].offset + sizeof(uint32_t) <= SIM_PVREG_SPAN
                       and SIM_PRIV_WRITE_REGS[1].offset + sizeof(uint32_t) <= SIM_PVREG_SPAN,
                   "a sim allowlist entry lies outside the mapped fake register block");
-    // The second entry must NOT be reachable from the only grantable window.
     static_assert(SIM_PRIV_WRITE_REGS[1].offset >= SIM_PVREG_WINDOW,
                   "the containment entry must sit beyond the grantable window");
     // A base the window does not divide would hand the app an unnaturally-aligned DEV
@@ -279,12 +267,10 @@ namespace
         // it must precede the arena transition below, whose arch_irq_restore is exact
         // and would otherwise re-block them for this thread's whole life.
         sigprocmask(SIG_UNBLOCK, &sim().irq_signals, nullptr);
-        // Enter user code under this thread's OWN resting MPU posture. arch_mpu_apply
-        // at the starting switch left the arena raised (and recorded this thread's set);
-        // lower to it now, on this thread's own stack, which the gap-based lower keeps
-        // mapped, so the thread is enforced from its first instruction and not only after
-        // its first syscall. Mask the emulated IRQ lines across the transition so no ISR
-        // reprograms the arena mid-way.
+        // Enter user code under this thread's OWN resting MPU posture: arch_mpu_apply at the
+        // starting switch left the arena raised, so lower to it here, on this thread's own
+        // stack, which the gap-based lower keeps mapped. Mask the emulated IRQ lines across the
+        // transition so no ISR reprograms the arena mid-way.
         {
             arch_irq_state_t s = arch_irq_save();
             arena_lower_to_applied();
@@ -312,12 +298,9 @@ namespace
         return prot;
     }
 
-    // Privileged posture: whole arena accessible (the background-region analog).
-    // Used while KERNEL code runs: on hardware the privileged switch/syscall path is
-    // exempt via the background region, so kernel code always reaches any RAM. The
-    // sim mirrors that: an unprivileged thread's own stack is an arena block, so kernel
-    // code (syscall dispatch, the scheduler) that runs ON that stack MUST keep it
-    // mapped, which raising the whole arena guarantees.
+    // Privileged posture: whole arena accessible (the background-region analog), used
+    // while KERNEL code runs. An unprivileged thread's own stack is an arena block, so
+    // kernel code running ON that stack MUST keep it mapped.
     void arena_raise_all()
     {
         if (sim().arena != nullptr)
@@ -341,15 +324,11 @@ namespace
         }
         return (base - astart) % pg == 0 and size % pg == 0;
     }
-    // Lower the arena from the raised (whole-RW) posture to the currently-running
-    // thread's resting region set, WITHOUT ever transiently unmapping a granted
-    // region. This is load-bearing: the caller runs on its OWN arena-resident stack,
-    // which is one of these regions, so a "PROT_NONE all; then re-grant" would unmap
-    // that stack for the window in between and fault on the very next push.
-    // Instead, since the arena is already whole-RW, PROT_NONE only the GAPS between
-    // granted regions (leaving the regions, hence the live stack, mapped throughout),
-    // then set each region to its exact attr (an RW->RO change never unmaps). Regions
-    // are validated and insertion-sorted by base so the gaps are computed correctly.
+    // Lower the arena from the raised (whole-RW) posture to the running thread's resting region
+    // set WITHOUT ever transiently unmapping a granted region: the caller runs on its own
+    // arena-resident stack, so a window with that stack unmapped faults on the next push. The
+    // arena being already whole-RW, PROT_NONE only the GAPS between granted regions, then set
+    // each region to its exact attr (an RW->RO change never unmaps).
     void arena_lower_to_applied()
     {
         if (sim().arena == nullptr)
@@ -365,8 +344,7 @@ namespace
             size_t size;
             uint32_t attr;
         };
-        // Local cap generously above KICKOS_MPU_MAX_REGIONS (8) without pulling a
-        // kernel config header across the arch seam; extra entries are clamped.
+        // Cap above KICKOS_MPU_MAX_REGIONS (8); extra entries are clamped.
         constexpr size_t CAP = 32;
         SortedRegion sorted[CAP];
         size_t m = 0;
@@ -389,8 +367,6 @@ namespace
             sorted[j].attr = sim().applied[i].attr;
             m++;
         }
-        // PROT_NONE each gap; the granted regions themselves are never touched here,
-        // so the live stack stays mapped across the whole transition.
         uintptr_t cursor = astart;
         for (size_t i = 0; i < m; i++)
         {
@@ -408,8 +384,6 @@ namespace
         {
             mprotect(reinterpret_cast<void*>(cursor), aend - cursor, PROT_NONE);
         }
-        // Now pin each region to its exact rights (RW stays RW; a future RO region
-        // narrows without unmapping).
         for (size_t i = 0; i < m; i++)
         {
             mprotect(reinterpret_cast<void*>(sorted[i].base), sorted[i].size,
@@ -430,8 +404,7 @@ namespace
         }
     }
 
-    // Run an ISR body with correct interrupt-depth bookkeeping and, on the way
-    // out at depth 0, perform any deferred context switch requested during it.
+    // isr_frame_leave performs, at depth 0, any context switch deferred during the ISR.
     void isr_frame_enter()
     {
         sim().isr_depth = sim().isr_depth + 1;
@@ -458,11 +431,9 @@ namespace
     enum
     {
         TX_LINE = 30,       // < KICKOS_MAX_IRQ / SIM_IRQ_LINES; not used by any test/bench
-        // Deliberately small: the sim's only reason to buffer is to exercise the
-        // ring paths, so the ring is sized so ordinary console traffic WRAPS it
-        // (usable 127 > the largest single burst these gates emit, so bursts still
-        // take the fast enqueue+prime path rather than always overflowing) while
-        // cumulative output crosses the index-mask boundary many times.
+        // Deliberately small, so ordinary console traffic WRAPS the ring and crosses
+        // the index-mask boundary many times. Usable 127 still exceeds the largest
+        // single burst, so a burst takes the fast enqueue+prime path.
         TX_RING_SIZE = 128,  // power of two (index masking); usable capacity 127
         TX_BUDGET = 8       // bytes drained per ISR delivery (synthetic slot budget)
     };
@@ -470,8 +441,8 @@ namespace
 
     int sim_tx_slot_free()
     {
-        // Sync paths (prime/flush/overflow) must never stall: host stdout is
-        // infinitely fast, so report free. The budget only bites in ISR context.
+        // Sync paths (prime/flush/overflow) must never stall; the budget bites only
+        // in ISR context.
         if (sim().in_tx_isr == 0)
         {
             return 1;
@@ -600,13 +571,10 @@ namespace
     console_tx_backend const g_sim_tx_backend = {
         sim_tx_slot_free, sim_tx_push, sim_tx_irq_enable, sim_tx_irq_disable};
 
-    // Run one TX-drain ISR delivery: refill the synthetic budget, dispatch the TX
-    // line through the real IRQ table (kickos_isr_irq -> console_tx_isr), then, if
-    // the peripheral IRQ is still enabled afterwards (ring not yet empty, budget
-    // ran out), re-assert the level line so the next SIGUSR1 continues the drain.
-    // console_tx_isr calls irq_disable when the ring empties, which clears
-    // tx_enabled and ends the chain. Bounded: every delivery drains >= TX_BUDGET
-    // bytes from a finite ring, so it always terminates.
+    // Re-asserts the level line while the peripheral IRQ is still enabled, so the next
+    // SIGUSR1 continues the drain. console_tx_isr calls irq_disable when the ring
+    // empties, which clears tx_enabled and ends the chain. Bounded: every delivery
+    // drains >= TX_BUDGET bytes from a finite ring.
     void console_tx_service()
     {
         sim().tx_budget = TX_BUDGET;
@@ -633,7 +601,6 @@ namespace
         SimContext* interrupted = sim().current;
         isr_frame_enter();
         // The emulated TX-empty line shares this signal (a shared interrupt vector).
-        // Consume the assertion; console_tx_service re-asserts if bytes remain.
         if (sim().tx_asserted != 0)
         {
             sim().tx_asserted = 0;
@@ -675,11 +642,10 @@ namespace
         {
             return; // sigreturn resumes at kickos_thread_fault_exit
         }
-        // Establish ISR context (parity with the ARM fault path, where IPSR is
-        // non-zero in the fault handler): kickos_isr_fault reports via kprintf, and
-        // the console routing guard MUST see arch_in_isr() to take the synchronous
-        // writer, else the fault line would be enqueued into the buffered ring and
-        // lost when this handler _exit()s without draining it.
+        // Establish ISR context: kickos_isr_fault reports via kprintf, and the console
+        // routing guard MUST see arch_in_isr() to take the synchronous writer, else the
+        // fault line is enqueued into the buffered ring and lost when this handler
+        // _exit()s without draining it.
         isr_frame_enter();
         // si_code and the faulting PC, which kickos_isr_fault's shared banner cannot
         // carry. Without them the banner is actively misleading: a resumed-garbage
@@ -697,8 +663,7 @@ namespace
 #endif
         ::kickos::kprintf("\n[sim] SIGSEGV si_code=%d si_addr=%p pc=%p\n", si->si_code,
                           reinterpret_cast<void*>(addr), reinterpret_cast<void*>(pc));
-        // We cannot distinguish read vs write portably here; report as write since
-        // the demo/wild-write path is a store. Reporting routes through the kernel.
+        // Read vs write is not distinguishable portably here; reported as a write.
         kickos_isr_fault(addr, 1);
         // kickos_isr_fault is expected to terminate or recover; if it returns we
         // cannot safely resume the faulting store, so halt.
@@ -706,13 +671,12 @@ namespace
     }
 
     // Illegal instruction (host: x86 `ud2` from __builtin_trap): the sim's CPU-fault
-    // reporter. kpanic_enter masks signals, forces the synchronous polled writer, and
+    // reporter. kpanic_enter masks signals, forces the synchronous polled writer and
     // flushes the ring, so the dump survives the ARMED console ring instead of being
-    // enqueued and lost. Then the shared dead-end exits 132.
+    // enqueued and lost.
     void on_sigill(int, siginfo_t* si, void* ucontext)
     {
-        // si_addr is the faulting PC here, not a data address; the PC comes out of the
-        // ucontext instead.
+        // si_addr is the faulting PC here, not a data address.
         sim_fault() = {0, si->si_code, false};
         if (kickos_fault_kill_thread(ucontext))
         {
@@ -721,7 +685,7 @@ namespace
         isr_frame_enter();
         kpanic_enter();
         ::kickos::kprintf("\n=== SIM FAULT (illegal instruction) at %p ===\n", si->si_addr);
-        kfault_terminate(); // -> arch_shutdown(132)
+        kfault_terminate(); // -> arch_shutdown(KICKOS_FATAL_STATUS)
     }
 
     // Ctrl+C / kill: halt the sim cleanly instead of dying by default action.
@@ -744,13 +708,9 @@ void arch_init(void)
 {
     sim().pagesize = sysconf(_SC_PAGESIZE);
 
-    // The user-RAM arena the MPU emulation governs. It now hosts the demand-allocated
-    // default thread stacks (one KICKOS_USER_STACK_SIZE block per convenient spawn,
-    // reclaimed via the free list) on top of domain-data allocs and the probe page, so
-    // it must fit the whole thread pool at once. The sim runs the fixed default
-    // provisioning (KICKOS_MAX_THREADS=16 * KICKOS_USER_STACK_SIZE=64 KiB == 1 MiB);
-    // 2 MiB leaves headroom for those small allocs and natural-alignment padding.
-    // Arch-pure: no kernel config header here, so the size cannot be derived.
+    // The user-RAM arena the MPU emulation governs. It must fit the whole thread pool at once
+    // on top of the domain-data allocs and the probe page. No kernel config header here, so the
+    // size cannot be derived.
     sim().arena_size = 2 * 1024 * 1024;
     sim().arena = static_cast<unsigned char*>(
         mmap(nullptr, sim().arena_size, PROT_READ | PROT_WRITE,
@@ -765,13 +725,11 @@ void arch_init(void)
     // Reserve one page no domain is ever granted: the isolation-probe address.
     sim().guard = static_cast<unsigned char*>(arch_ram_alloc(sim().pagesize));
 
-    // The fake write-PV-only register block, OUTSIDE the arena: it must not be
-    // reachable as a RAM grant, and arena_lower_to_applied must skip it. The store the
-    // seam performs runs privileged in the kernel's own frame, so the pages must exist
-    // before any allowlist entry is reachable. MAP_FIXED_NOREPLACE never evicts an
-    // existing mapping, so a candidate this process already uses is skipped rather than
-    // stolen. Kept if already mapped: a second arch_init must not drop the block that
-    // the published base and every live DEV grant still refer to.
+    // The fake write-PV-only register block, OUTSIDE the arena: it must not be reachable as a
+    // RAM grant, and arena_lower_to_applied must skip it. MAP_FIXED_NOREPLACE never evicts an
+    // existing mapping, so a candidate this process already uses is skipped. Kept if already
+    // mapped: a second arch_init must not drop the block the published base and every live DEV
+    // grant still refer to.
     if (sim().pvreg == nullptr)
     {
         for (uintptr_t cand : SIM_PVREG_BASES)
@@ -796,12 +754,10 @@ void arch_init(void)
     sigaddset(&sim().irq_signals, SIGALRM);
     sigaddset(&sim().irq_signals, SIGUSR1);
 
-    // Fault handler runs on its own stack (the faulting thread's stack may be
-    // exactly what tripped the guard). Fixed size: SIGSTKSZ is not a compile
-    // constant under glibc >= 2.34 with _GNU_SOURCE.
-    //
-    // Per HOST THREAD and not InstanceLocal: sigaltstack is a per-thread POSIX property,
-    // so one shared block is corrupted the moment two host threads fault at once.
+    // Fault handler runs on its own stack (the faulting thread's stack may be exactly what
+    // tripped the guard). Fixed size: SIGSTKSZ is not a compile constant under glibc >= 2.34
+    // with _GNU_SOURCE. Per HOST THREAD: sigaltstack is a per-thread POSIX property, so one
+    // shared block is corrupted the moment two host threads fault at once.
 #if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
     static __thread unsigned char altstack[64 * 1024];
 #else
@@ -831,7 +787,6 @@ void arch_init(void)
     fa.sa_sigaction = on_sigill;
     sigaction(SIGILL, &fa, nullptr);
 
-    // Graceful halt on Ctrl+C / kill.
     struct sigaction ta{};
     ta.sa_flags = SA_SIGINFO;
     ta.sa_sigaction = on_sigterm;
@@ -869,29 +824,28 @@ void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 // and the blink terminal fallback (kernel.h) would spin forever.
 void kfault_terminate(void)
 {
-    arch_shutdown(132);
+    // Resolves to the no-op fallback: the sync writer returns only once the host has
+    // taken every byte.
+    arch_console_flush_sync();
+    arch_shutdown(KICKOS_FATAL_STATUS);
 }
 
 void arch_shutdown(int status)
 {
-    // Mask IRQs/signals for the rest of this function: root_entry -> arch_shutdown
-    // holds no lock, so a timer ISR landing here could deferred-swap away from root
-    // mid-drain and strand whatever is still in the ring. Held to _exit and never
-    // restored; the process is dying. Under telemetry it additionally keeps a late
-    // ISR from emitting records AFTER the closing SESSION's records_attempted
-    // snapshot, which would break the decoder's decoded+lost==attempted check.
+    // Mask IRQs/signals for the rest of this function: root_entry -> arch_shutdown holds no
+    // lock, so a timer ISR landing here could deferred-swap away from root mid-drain and strand
+    // whatever is still in the ring. Held to _exit. Under telemetry it also keeps a late ISR
+    // from emitting records after the closing SESSION's records_attempted snapshot.
     (void)arch_irq_save();
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // The closing SESSION (far anchor + final count). Best-effort: on a dying path
-    // we still want whatever was captured. MUST precede the console drain below,
-    // because report_counters prints through the buffered ring.
+    // The closing SESSION (far anchor + final count). MUST precede the console drain
+    // below, because report_counters prints through the buffered ring.
     kickos_trace_final_session();
     kickos_trace_report_counters();
 #endif
-    // Drain the buffered console ring synchronously: IRQs/signals are masked here so
-    // the SIGUSR1-driven drain ISR can never run, and drain_sync pushes straight to
-    // stdout with no signal needed. Without this, anything still enqueued at
-    // shutdown is stranded by _exit. No-op while the ring is unarmed.
+    // Without this, anything still enqueued at shutdown is stranded by _exit. Safe
+    // here because IRQs/signals are masked, so the SIGUSR1-driven drain ISR can never
+    // run. No-op while the ring is unarmed.
     console_tx_flush_sync();
 #if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
     sim_line_flush(); // whatever the app left without a trailing newline
@@ -952,10 +906,9 @@ void arch_sim_instance_hosting(unsigned count)
 
 // Bring up the instance already selected on this host thread and run its kernel.
 //
-// getcontext is called HERE and not through the file's noinline wrapper: a resumed
-// context returns through the return address ON THE STACK, so the capturing frame must
-// still be intact, and a helper's is not. The arguments are parked in the instance so
-// nothing lives across the returns-twice call.
+// getcontext MUST be called here and not through the file's noinline wrapper: a resumed context
+// returns through the return address ON THE STACK, so the capturing frame must still be intact.
+// The arguments are parked in the instance so nothing lives across the returns-twice call.
 int arch_sim_instance_run(int argc, char** argv)
 {
     sim().entry_argc = argc;
@@ -980,18 +933,15 @@ int arch_sim_instance_run(int argc, char** argv)
 }
 #endif
 
-// Normal path: enqueue into the console ring; the SIGUSR1-driven drain ISR
-// (console_tx_isr) writes it out. Before the ring is armed (early boot) and in
-// ISR/panic/fault context, the routing guard in console.cc calls the sync writer
-// below instead. Falls back to the sync writer itself until the ring is armed.
+// Enqueue into the console ring; the SIGUSR1-driven drain ISR writes it out. Before the ring
+// is armed, and in ISR/panic/fault context, console.cc's routing guard takes the sync writer.
 void arch_console_write(char const* buf, size_t n)
 {
     console_tx_write(buf, n);
 }
 
 // The bounded synchronous stdout writer (panic / fault / pre-arm boot). The ring's
-// prime/flush/overflow paths ultimately land here too, one byte at a time, via
-// sim_tx_push.
+// prime/flush/overflow paths land here too, one byte at a time, via sim_tx_push.
 void arch_console_write_sync(char const* buf, size_t n)
 {
 #if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
@@ -1000,7 +950,7 @@ void arch_console_write_sync(char const* buf, size_t n)
         sim_line_put(buf[i]);
     }
     // Panic and fault reach here, and neither returns to a newline, so an unterminated
-    // tail would be lost. Emitting it early only costs a tag on the continuation.
+    // tail would otherwise be lost.
     sim_line_flush();
 #else
     size_t off = 0;
@@ -1027,8 +977,6 @@ void arch_console_write_sync(char const* buf, size_t n)
 #endif
 }
 
-// Arch seam (console_tx.h): hand the kernel the ring storage + the emulated TX
-// line so console_buffer_init binds console_tx_isr and arms the buffered path.
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = g_tx_ring.get();
@@ -1044,11 +992,9 @@ void arch_context_init(struct arch_context* ctx,
                        int privileged)
 {
     SimContext* c = sc(ctx);
-    // The sim runs threads on host ucontexts, which need a host-sized stack: an MCU-tuned
-    // small caller stack (KICKOS_MIN_STACK_SIZE is a few hundred bytes) would overflow the
-    // host. Substitute a host stack when the caller's is below the host floor; real HW uses
-    // the caller's buffer directly. The default spawn path hands over the >=64K pool stack,
-    // so this malloc fires only for genuinely small caller stacks. Never freed.
+    // Host ucontexts need a host-sized stack: an MCU-tuned caller stack
+    // (KICKOS_MIN_STACK_SIZE is a few hundred bytes) would overflow the host, so a host
+    // stack is substituted below that floor. Never freed.
     constexpr size_t SIM_HOST_MIN_STACK = 64 * 1024;
     if (stack_size < SIM_HOST_MIN_STACK)
     {
@@ -1061,17 +1007,14 @@ void arch_context_init(struct arch_context* ctx,
     // Start from an empty mask, not the creating thread's (which may be inside a
     // critical section), so a new thread's posture never depends on its spawner.
     sigemptyset(&c->uc.uc_sigmask);
-    // The IRQ signals are then blocked until the trampoline unblocks them, which is
-    // the first point at which this thread is running on its own stack.
+    // The IRQ signals stay blocked until the trampoline unblocks them, which is the first point
+    // at which this thread runs on its own stack.
     //
-    // glibc's swapcontext installs the TARGET's sigmask (rt_sigprocmask) 29 bytes of
-    // instructions before it loads the target's rsp, and arch_switch publishes
-    // sim().current before the swap. With an empty mask here, a SIGALRM delivered in
-    // that gap runs on the OUTGOING thread's stack while sim().current already names
-    // this one, so on_sigalrm samples the wrong `interrupted` and isr_frame_leave
-    // saves the outgoing frame into THIS context, destroying the makecontext entry.
-    // Resuming it later jumps to a zeroed frame (rip == 0), which the SIGSEGV handler
-    // then misreports as a write at 0x0.
+    // glibc's swapcontext installs the TARGET's sigmask before it loads the target's rsp, and
+    // arch_switch publishes sim().current before the swap. With an empty mask here, a SIGALRM
+    // in that gap runs on the OUTGOING thread's stack while sim().current already names this
+    // one, so isr_frame_leave saves the outgoing frame into THIS context and destroys the
+    // makecontext entry.
     sigaddset(&c->uc.uc_sigmask, SIGALRM);
     sigaddset(&c->uc.uc_sigmask, SIGUSR1);
     // getcontext() filled uc_stack with the CALLER's stack; retarget it here.
@@ -1080,9 +1023,8 @@ void arch_context_init(struct arch_context* ctx,
     c->uc.uc_link = nullptr;
     c->entry = entry;
     c->arg = arg;
-    // Privilege is modeled by the guard-page posture (per-task MPU regions +
-    // the mid-syscall `raised` state), not stored here; the ARM port will map
-    // `privileged` to CONTROL.nPRIV in the fabricated frame.
+    // Privilege is modeled by the guard-page posture (per-task MPU regions + the
+    // mid-syscall `raised` state), not stored here.
     (void)privileged;
 
     uintptr_t p = reinterpret_cast<uintptr_t>(c);
@@ -1091,7 +1033,6 @@ void arch_context_init(struct arch_context* ctx,
     makecontext(&c->uc, reinterpret_cast<void (*)()>(trampoline), 2, hi, lo);
 }
 
-// The seam, and the ONE backend where the shared body alone is wrong twice over.
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
@@ -1115,13 +1056,12 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     c->tid = tid;
 #endif
-    // (2) RAISE. Privilege here is not in the context at all: it is the guard-page posture,
-    // and arch_context_init discards its `privileged` argument. arch_switch programs the
-    // thread's RESTING grant on switch-in, so a stub resumed through the shared body alone
-    // would SIGSEGV on its first read of kernel state. The count is what makes
-    // guard_apply_current hold the arena up, including across the teardown's blocking
-    // points; never unwound, because the stub never returns. arena_raise_all() is NOT
-    // called here: this context is not the running one, and its switch-in will raise.
+    // (2) RAISE. Privilege here is the guard-page posture, arch_context_init discarding its
+    // `privileged` argument. arch_switch programs the thread's RESTING grant on switch-in, so a
+    // stub resumed through the shared body alone would SIGSEGV on its first read of kernel
+    // state. The count is what makes guard_apply_current hold the arena up across the teardown's
+    // blocking points; never unwound, the stub never returning. This context is not the running
+    // one, so its switch-in raises and arena_raise_all() is not called here.
     c->raised = c->raised + 1;
 }
 
@@ -1161,10 +1101,8 @@ void arch_start(struct arch_context* boot, struct arch_context* first)
 #endif
     swapcontext(&b->uc, &f->uc);
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // Symmetry with the other swap sites: consume on the resume side. `boot` does
-    // not resume in practice (the system ends via arch_shutdown), and any pending
-    // hand-off was already consumed by `first`'s trampoline, so this is a no-op; it
-    // keeps the invariant "every resume point consumes" uniform.
+    // Keeps the invariant "every resume point consumes" uniform; `boot` does not resume in
+    // practice.
     trace_emit_switch_in();
 #endif
 }
@@ -1219,16 +1157,14 @@ uint64_t arch_clock_now(void)
            static_cast<uint64_t>(ts.tv_nsec);
 }
 
-// Telemetry trace clock: microseconds as a u32 (wraps ~71 min). The sim has no
-// cycle counter, so scale the monotonic ns clock down; us resolution is enough
-// to time a host-emulated switch and keeps the SESSION-anchor math linear.
+// Telemetry trace clock: microseconds as a u32 (wraps ~71 min). The sim has no cycle
+// counter, so the monotonic ns clock is scaled down.
 uint32_t arch_trace_now(void)
 {
     return static_cast<uint32_t>(arch_clock_now() / 1000ull);
 }
 
-// The host has no silicon core clock; the sim reports throughput only, so there
-// is no meaningful cycle->ns rate to expose. 0 == unknown (the ABI contract).
+// No host core clock to report: 0 == unknown (the ABI contract).
 uint32_t arch_cpu_clock_hz(void)
 {
     return 0;
@@ -1258,16 +1194,13 @@ void arch_timer_disarm(void)
 }
 
 // --- MPU: mprotect over the user-RAM arena ---------------------------------
-// Called at switch-in (switch_to, arch_start) for the INCOMING thread, but while
-// still executing on the OUTGOING thread's stack (arch_switch has not swapped yet).
-// So this must NOT lower to the incoming resting posture here: that would PROT_NONE
-// the outgoing thread's stack (not in the incoming set) and fault the swap itself,
-// now that unprivileged stacks are arena-resident. Instead RECORD the incoming set
-// and RAISE the arena (whole-RW, the privileged-switch background): the outgoing
-// stack stays mapped through swapcontext, and the incoming thread's resting posture
-// is applied on ITS OWN stack at its return-to-user boundary (arena_lower_to_applied
-// from the syscall unwind, or the trampoline for a fresh thread). The regions pointer
-// is the caller's TCB regions[], stable while the thread runs.
+// Called at switch-in (switch_to, arch_start) for the INCOMING thread while still executing on
+// the OUTGOING thread's stack, arch_switch not having swapped yet. THIS MUST NOT LOWER TO THE
+// INCOMING RESTING POSTURE: that would PROT_NONE the outgoing thread's arena-resident stack and
+// fault the swap itself. It RECORDS the incoming set and RAISES the arena, and the incoming
+// thread's resting posture is applied on ITS OWN stack at its return-to-user boundary
+// (arena_lower_to_applied, or the trampoline for a fresh thread). The regions pointer is the
+// caller's TCB regions[], stable while the thread runs.
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
                     struct arch_mpu_encoded const* image)
 {
@@ -1282,8 +1215,7 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 }
 
 // mprotect takes the addresses themselves, so there is nothing to pre-encode: the image
-// records only which regions the arena can enforce, which is the answer arena_lower_to_applied
-// reaches independently on the thread's own stack.
+// records only which regions the arena can enforce.
 uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
                          struct arch_mpu_encoded* out)
 {
@@ -1303,23 +1235,19 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
     return seated;
 }
 
-// Empty: arch_mpu_apply above already programs mprotect as it records, and the host
-// switch is a synchronous longjmp. The symbol must still resolve, as the self-grant
-// path calls it.
+// Empty: arch_mpu_apply above already programs mprotect as it records. The symbol must still
+// resolve, the self-grant path calling it.
 void kickos_arch_mpu_commit(void) {}
 
 // --- Fault isolation --------------------------------------------------------
-// The host has no rings. arch_syscall raises the WHOLE arena for the duration of
-// dispatch and tracks it per-context in SimContext::raised, so kernel code cannot take
-// an arena SIGSEGV at all and `raised == 0` at fault time is the fact CONTROL.nPRIV
-// carries on ARM: user code, not kernel code the thread merely called. isr_depth covers
-// the other half of clause 3.2.
+// arch_syscall raises the WHOLE arena for the duration of dispatch and tracks it per-context in
+// SimContext::raised, so `raised == 0` at fault time carries what CONTROL.nPRIV carries on ARM:
+// user code, not kernel code the thread merely called. isr_depth covers the other half of
+// clause 3.2.
 //
-// Frame validity needs no stack-bounds test and could not use one: there is no
-// guest-memory exception frame to fabricate. The resume context is the ucontext the
-// HOST kernel wrote, on a dedicated sigaltstack, so it is complete by construction.
-// A sim thread's stack is a plain arena block with no guard page, so a guest stack
-// overflow is not detected on this backend at all.
+// The resume context is the ucontext the HOST kernel wrote, on a dedicated sigaltstack, so it is
+// complete by construction and no stack-bounds test applies. A sim thread's stack is a plain
+// arena block with no guard page, so a guest stack overflow is undetected on this backend.
 bool arch_fault_is_user_thread(void* frame)
 {
 #if defined(__x86_64__)
@@ -1361,11 +1289,10 @@ void arch_fault_redirect_to_exit(void* frame)
     }
     uc->uc_mcontext.gregs[REG_RIP] =
         static_cast<greg_t>(reinterpret_cast<uintptr_t>(&kickos_thread_fault_exit));
-    // The stub runs at the top of the dying thread's stack, not at the depth the fault
-    // reached. Guarded on the faulting RSP lying inside the Thread's recorded stack,
-    // because arch_context_init substitutes a host stack for a caller buffer below
-    // SIM_HOST_MIN_STACK and those fields then do not describe the stack in use.
-    // System V AMD64 wants rsp+8 16-byte aligned at the callee's first instruction, and
+    // The stub runs at the top of the dying thread's stack. Guarded on the faulting RSP lying
+    // inside the Thread's recorded stack, because arch_context_init substitutes a host stack for
+    // a caller buffer below SIM_HOST_MIN_STACK and those fields then do not describe the stack
+    // in use. System V AMD64 wants rsp+8 16-byte aligned at the callee's first instruction, and
     // this jump skips the call that would have pushed the return address, so the slot is
     // reserved here and filled with a return address that cannot be taken.
     uintptr_t const rsp = static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RSP]);
@@ -1386,15 +1313,9 @@ size_t arch_mpu_min_region(void)
     return static_cast<size_t>(sim().pagesize); // mprotect granularity
 }
 
-// mprotect governs only the mmap'd arena, so no real peripheral window is encodable
-// here: fail closed. A sim driver test drives an arena-backed fake device (a data
-// grant), never a real MMIO grant.
-//
-// The ONE admitted window is the sim's own fake register block, which is host pages
-// mprotect describes exactly. It is what gives arch_periph_reg_write a DEV holder on
-// the host; every other address, and every other shape of this one, still fails closed.
-// The base is the one PUBLISHED at init, not a literal: nothing here depends on which
-// candidate the host left free.
+// mprotect governs only the mmap'd arena, so the ONE admitted window is the sim's own fake
+// register block; everything else fails closed. The base is the one PUBLISHED at init, not a
+// literal.
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (sim().pvreg == nullptr or sim().pagesize <= 0)
@@ -1407,19 +1328,17 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     {
         return false;
     }
-    // A host page coarser than the window leaves it undescribable by mprotect. Every
-    // page size in practice divides SIM_PVREG_WINDOW, so this is a fail-closed floor
-    // rather than a live condition.
+    // A host page coarser than the window leaves it undescribable by mprotect. A fail-closed
+    // floor: every page size in practice divides SIM_PVREG_WINDOW.
     return SIM_PVREG_WINDOW % static_cast<size_t>(sim().pagesize) == 0;
 }
 
-// The sim console's device window (arch.h). Its WIRE is host fd 1 and its reclaim is a
-// no-op, but the host models exactly one device register block, so that block is the only
-// thing a sim console driver can ever be granted. Zero before arch_init has mapped a
-// candidate, which reads as "no window".
+// The sim console's device window (arch.h). The host models exactly one device register block,
+// so that block is the only thing a sim console driver can ever be granted. Zero before
+// arch_init has mapped a candidate, which reads as "no window".
 //
-// Same must-stay-in-this-TU rule as arch_periph_reg_write below: sim.cc is always
-// extracted and is the first member of kickos_arch_sim, so it resolves the symbol before
+// MUST STAY IN THIS TU, like arch_periph_reg_write below: sim.cc is always extracted and is the
+// first member of kickos_arch_sim, so it resolves the symbol before
 // common/arch_console_reclaim_window_default.cc could be pulled in, which is why that fallback is
 // dropped from this archive (arch/CMakeLists.txt).
 void arch_console_reclaim_window(uintptr_t* base, size_t* size)
@@ -1432,19 +1351,15 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
     }
 }
 
-// Privileged single-register write (arch.h). The caller's possession of the block at
-// `base` and its containment of `[base + offset, +4)` are already checked in the
-// syscall layer; this decides whether that exact register is on the allowlist above AND
-// whether the value stays inside the entry's mask. The value is never trimmed and never
-// read-modify-written: a silently dropped configuration bit is what a consumer's
-// read-back exists to catch.
+// Privileged single-register write (arch.h). The caller's possession of the block at `base` and
+// its containment of `[base + offset, +4)` are already checked in the syscall layer; this decides
+// whether that exact register is on the allowlist above and whether the value stays inside the
+// entry's mask. The value is never trimmed and never read-modify-written.
 //
-// This definition MUST stay in this TU. sim.cc is always extracted (it carries
-// arch_init and the context switch) and is the FIRST member of kickos_arch_sim, so it
-// resolves the symbol before common/arch_periph_reg_write_default.cc could be pulled in,
-// which is why that fallback is dropped from this archive (arch/CMakeLists.txt). Moving
-// it to a dedicated TU nothing else references is a loud link error, not a silent
-// decline.
+// THIS DEFINITION MUST STAY IN THIS TU. sim.cc is always extracted and is the FIRST member of
+// kickos_arch_sim, so it resolves the symbol before common/arch_periph_reg_write_default.cc
+// could be pulled in, which is why that fallback is dropped from this archive
+// (arch/CMakeLists.txt).
 int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
 {
     if (sim().pvreg == nullptr)
@@ -1482,9 +1397,8 @@ int arch_mpu_nocache_support(void)
     return ARCH_MPU_NOCACHE_ALREADY;
 }
 
-// Rule 7: the sim owns no MPU-governable peripheral (its "devices" are arena-backed
-// fakes reached via a data grant), so it reserves nothing and only the arena /
-// encodability rules apply.
+// Rule 7: the sim's "devices" are arena-backed fakes reached via a data grant, so it reserves
+// nothing and only the arena and encodability rules apply.
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     (void)out;
@@ -1530,25 +1444,21 @@ void* arch_ram_alloc(size_t size)
     return reinterpret_cast<void*>(aligned);
 }
 
-// arch_domain_static_regions lives in kernel/domain/domain.cc (arch-independent).
-// On the host/sim build the weak __kickos_code_*/__kickos_appdata_* linker symbols
-// are undefined -> null -> it returns 0: the app's code/.data/.bss are host-process
-// memory, not the mprotect'd arena, so the sim governs only the arena, never them.
+// arch_domain_static_regions lives in kernel/domain/domain.cc. On this build the weak
+// __kickos_code_*/__kickos_appdata_* linker symbols are undefined, so it returns 0: the app's
+// code and data are host-process memory and the sim governs only the arena.
 
 // GNU ld default-script symbols bounding the host executable image (ELF header .. end
 // of .bss). Array form + a uintptr_t decay dodges -Warray-compare.
 extern "C" unsigned char __executable_start[];
 extern "C" unsigned char _end[];
 
-// The confused-deputy floor's read hook (arch.h). A string literal / thread name the
-// app hands the kernel lives in the host binary's .text/.rodata/.data, NOT the
-// mprotect'd arena, so no per-domain region can name it (unlike hardware, where the
-// linker carves code/rodata as real MPU regions). Admit a range wholly inside the
-// image and NOT touching the arena; reject a wild pointer outside both. CAVEAT: the
-// image also holds the kernel's own code/.data (one binary), so this cannot separate
-// app rodata from kernel statics. The boundary it DOES
-// enforce (a cross-domain arena read) stays closed: an arena range is disjoint from
-// the image (separate anonymous mmap) and falls through to the region check.
+// The confused-deputy floor's read hook (arch.h). A string literal or thread name the app hands
+// the kernel lives in the host binary's image, not the mprotect'd arena, so no per-domain region
+// can name it: admit a range wholly inside the image and clear of the arena. The image also holds
+// the kernel's own code and data (one binary), so this cannot separate app rodata from kernel
+// statics; the cross-domain arena boundary stays closed, an arena range being disjoint from the
+// image.
 bool arch_user_text_readable(uintptr_t ptr, size_t len)
 {
     if (len == 0)
@@ -1572,16 +1482,13 @@ bool arch_user_text_readable(uintptr_t ptr, size_t len)
     return not hits_arena;
 }
 
-// The write twin (arch.h). Needed even with KICKOS_HAVE_MPU=1: sim app globals live in
-// the host image, not the arena, so arch_domain_static_regions models no static-data
-// region here. Admission is the same rule as the read hook above: wholly inside the
-// host image, clear of the arena.
+// The write twin (arch.h). Needed even with KICKOS_HAVE_MPU=1: sim app globals live in the host
+// image, not the arena, so arch_domain_static_regions models no static-data region here.
+// Admission is the read hook's rule: wholly inside the host image, clear of the arena.
 //
-// Two asymmetries vs hardware. An out-pointer into code/rodata is admitted (the two
-// image-bound symbols cannot separate .text/.rodata from .data/.bss); the host's r-x /
-// r-- page permissions backstop it. Kernel .data/.bss also sit inside the image on rw
-// pages, so an unprivileged out-pointer aimed at kernel state is admitted with NO
-// backstop; the sim enforces only the arena cross-domain boundary.
+// The image-bound symbols cannot separate .text/.rodata from .data/.bss, so an unprivileged
+// out-pointer aimed at kernel state is admitted with no backstop. The sim enforces only the
+// arena cross-domain boundary.
 bool arch_user_data_writable(uintptr_t ptr, size_t len)
 {
     return arch_user_text_readable(ptr, len);
@@ -1593,25 +1500,16 @@ uintptr_t arch_mpu_probe_addr(void)
 }
 
 // --- Syscall trap -----------------------------------------------------------
-// Named a trap for the seam's sake; it is a direct call, and the privilege raise below is
-// emulated rather than taken. So this backend ships no ipc_fastpath.cmake, for the same
-// reason arch/xtensa/lx6 does not: there is no exception entry, no trampoline and no
-// deferred switch back for a fastpath to skip, and a caller's continuation here is a host
-// return address on its own stack, not a saved register frame the reply could land in.
-// Thread::call_frame_parked is unimplementable on that shape rather than unwritten.
+// A direct call, with the privilege raise below emulated. This backend ships no
+// ipc_fastpath.cmake: a caller's continuation here is a host return address on its own stack,
+// not a saved register frame a reply could land in.
 uint64_t arch_syscall64(uintptr_t nr,
                         uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
 {
-    // Emulated privilege raise, tracked PER-CONTEXT via SimContext::raised so it
-    // survives a blocking switch: kernel dispatch may touch any user memory, so
-    // the whole arena is granted for the duration. If the dispatch blocks and we
-    // later resume this thread mid-syscall, guard_apply_current() re-raises (the
-    // switch-in's arch_mpu_apply would otherwise reinstate the caller's resting
-    // posture while it is still running kernel code). On the final unwind we drop
-    // back to exactly the caller's resting region set (sim().applied).
-    // Cache the calling context: a thread only ever runs as its own context, so
-    // the same SimContext is current at entry and (after any blocking round-trip)
-    // at exit, so the raise and the unwind are both done on `self`.
+    // Emulated privilege raise, tracked PER-CONTEXT via SimContext::raised so it survives a
+    // blocking switch. On a resume mid-syscall guard_apply_current() re-raises, the switch-in's
+    // arch_mpu_apply having reinstated the caller's resting posture while it is still running
+    // kernel code. The final unwind drops back to sim().applied.
     SimContext* self = nullptr;
     if (sim().arena != nullptr and sim().current != nullptr)
     {
@@ -1668,11 +1566,9 @@ void arch_irq_unmask(int line)
     }
     arch_irq_state_t s = arch_irq_save();
     sim().irq_masked = sim().irq_masked & static_cast<sig_atomic_t>(~(1u << line));
-    // Latch-and-coalesce: a raise taken while the line was masked redelivers now,
-    // through the ISR path (raise(SIGUSR1) -> on_sigusr1 -> kickos_isr_irq). The raise
-    // pends under this bracket (SIGUSR1 blocked) and lands at its release, i.e. the
-    // outer IrqLock release when the caller holds one, in ISR context and never as a
-    // direct post here.
+    // Latch-and-coalesce: a raise taken while the line was masked redelivers now through the
+    // ISR path. It pends under this bracket (SIGUSR1 blocked) and lands at its release, in ISR
+    // context.
     if (static_cast<unsigned>(sim().irq_pending) & (1u << line))
     {
         sim().irq_pending = sim().irq_pending & static_cast<sig_atomic_t>(~(1u << line));

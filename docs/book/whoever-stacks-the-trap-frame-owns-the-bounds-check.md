@@ -208,16 +208,18 @@ RAM question and RAM does not change between a board's enforcing and flat varian
 chapter's arithmetic for how deep the zone must be is in
 [*The frame is not the whole descent*](#the-frame-is-not-the-whole-descent) below.
 
-## Four ISAs, four exposures
+## The exposures, port by port
 
 This is the part that repays reading across the fleet, because the same kernel design
-meets four different amounts of help from the silicon.
+meets a different amount of help from the silicon on every port.
 
 | Port | Who stacks the entry frame | Who checks the pointer | What is left unchecked without a kernel guard |
 |---|---|---|---|
 | armv7m | hardware, through PSP, at the pre-exception privilege | the MPU, reported as `MSTKERR` | the kernel's own `{r4-r11, EXC_RETURN}` push below it, and the privileged descent below that |
 | armv6m | hardware, through PSP, at the pre-exception privilege | the MPU where the part has one, and nothing where it does not (no fault-status register to say which) | the kernel's `{r4-r11}` push, which carries no return descriptor, and the privileged descent below it |
 | rv32imac | software, in machine mode | nothing | the entire frame, and the privileged descent below it |
+| rv64imac | software, in supervisor mode | not applicable: the entry's FIRST instruction swaps `sp` with `sscratch`, so the interrupted pointer is never written through | the privileged descent below the frame, which lands on the thread's own kernel block |
+| armv8a | software, at EL1, through the banked `SP_EL1` | not applicable: the entry writes nothing through EL0's own SP, and EL0 cannot write `SP_EL1` | the privileged descent below the frame; and `SP_EL1` itself on the entry classes this port never takes, which is why those vector slots re-seat it from the kernel's own per-core record before reporting |
 | rxv3 | software, in supervisor mode | nothing | the entire frame, and a supervisor trampoline running on that same stack |
 | lx6, host sim | not applicable | not applicable | nothing: there is no privileged level to escalate *to* |
 

@@ -183,19 +183,21 @@ intended one.
 
 State it once, for every resource the hardware keys to "the current context":
 
-> Any hardware-enforced *current-context* resource -- the MPU region set today, and an
-> MMU page-table root, banked FPU/lazy-stacking state, or an address-space id tomorrow
+> Any hardware-enforced *current-context* resource -- an MPU region set, an MMU
+> page-table root, banked FPU/lazy-stacking state, an address-space id
 > -- must be switched in lockstep with the physical register-and-stack swap, at the true
 > switch point. Committing it at the scheduler's logical decision opens a window in
 > which the running code is governed by the next thread's context while it is still the
 > previous thread executing.
 
-The forward tie is direct. When an MMU arrives, the page-table root is exactly such
-a resource: swap it a few instructions too early and
-the outgoing thread runs against the incoming thread's address space, with faults or
-silent cross-space access of precisely the shape above. The rule established here for
-the MPU region set is the rule the page-table-root switch will inherit -- protection
-follows the CPU, not the scheduler's intent.
+The tie to translation is direct, and it is the same rule rather than an analogy. A
+page-table root is exactly such a resource: swap it a few instructions too early and the
+outgoing thread runs against the incoming thread's address space, with faults or silent
+cross-space access of precisely the shape above. So a root write belongs at the true
+switch point for the same reason a region commit does, and where a backend translates
+the resource being committed is the root rather than a descriptor list -- protection
+follows the CPU, not the scheduler's intent. [`../reference/porting.md`](../reference/porting.md)
+names the seam each backend writes its root from.
 
 ## Where to go next
 

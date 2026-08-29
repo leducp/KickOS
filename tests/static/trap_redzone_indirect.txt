@@ -1,89 +1,133 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Per-call-site resolution of every indirect call the trap-path measurement walks through.
+# Per-call-site resolution of every indirect call a static callgraph walk goes through. TWO
+# gates read it: tests/static/trap_redzone.py, which measures the trap-path stack descent, and
+# tests/static/console_reach.py, which asks whether the fault-record console route can reach a
+# panic.
 #
-# WHY PER SITE AND NOT PER POINTER. gcc's -fcallgraph-info emits one edge to the literal
-# node `__indirect_call` per site and nothing more, so the depth through it is whatever this
-# file says. Charging a site the maximum over the UNION of everything the pointer's type could
-# hold invents paths that do not exist: the SchedPolicy table below would then let
-# sched::reschedule reach policy_on_ready, which queues and can reschedule, and the tool would
-# report a cycle through the scheduler that the deferred rv32imac/rxv3 arch_switch cannot take.
+# gcc's -fcallgraph-info emits one edge to the literal node `__indirect_call` per site and
+# nothing more, so the depth through a site is whatever this file says.
 #
-# An indirect site reachable from a root and NOT declared here is a HARD FAILURE, because
-# an unbound site makes the whole figure a lower bound rather than a bound. A declaration
-# whose site or whose named callee is not in the graph is a hard failure too: a stale
-# binding rots exactly the way a stale margin does.
+# An indirect site reachable from a root and NOT declared here is a HARD FAILURE. A declaration
+# whose site or whose named callee is not in the graph is a hard failure too.
 #
-# WHICH MAKES THE LINE NUMBERS BELOW LOAD-BEARING IN THE SOURCE AND NOT ONLY HERE. Deleting a
+# THE LINE NUMBERS BELOW ARE LOAD-BEARING IN THE SOURCE, NOT ONLY HERE. Deleting a
 # comment, rewrapping one, or adding an #include above a bound site shifts it, and every
-# binding into that file goes stale at once. Six basenames are bound today: sched.cc, irq.cc,
-# console_tx.cc, syscall_ipc_fast.cc, chip_rp2040.cc, chip_rp2350.cc. Derive the set before
-# touching any of them rather than trusting that list:
+# binding into that file goes stale at once. Derive the bound basenames before touching any of
+# them:
 #   grep -oE '[A-Za-z0-9_.-]+[.]cc:[0-9]+:[0-9]+' <this file> | cut -d: -f1 | sort -u
 # Re-take the bindings in the same commit that moves the lines, mapping old line to new with
 # difflib over the two versions of the source; a column moves only under a reindent.
 #
-# FILE FORMAT, one record per line, '#' starts a comment, a trailing '\' continues:
+# File format, one record per line, '#' starts a comment, a trailing '\' continues:
 #   site <arch> <scope> <basename>:<line>:<col> <callee>...
 #   site <arch> <scope> <basename>:<line>:<col> NONE
 # <scope> is a configure-preset name, or '*' for every preset of the arch. A record out of
-# scope is not read at all, which is how one arch carries two boards with different
-# backends. NONE declares a site with no reachable callee AT ALL; the tool accepts it and
-# charges 0, and it is deliberately not the same thing as an omitted record.
+# scope is not read at all. NONE declares a site with no reachable callee AT ALL; the tool
+# accepts it and charges 0.
 #
 # A <callee> is either a bare global symbol, or `<basename>:<needle>` for a file-scoped one,
 # where <needle> must appear in the mangled tail and the match must be UNIQUE. The needle form
-# exists because the two toolchains spell internal linkage differently: riscv32-none-elf-gcc 16
-# emits _ZN6kickos12_GLOBAL__N_1L15policy_on_readyEPNS_6ThreadE where rx-elf-gcc 14.2 emits the
-# same name without the L. A '?' before a callee marks it OPTIONAL: compiled out under some
-# option, so absent from the graph is not a stale binding.
+# covers the two toolchains spelling internal linkage differently: one emits an L before the
+# name length, the other does not. A '?' before a callee marks it OPTIONAL: compiled out under
+# some option, so its absence is not a stale binding.
 
 # --- POINTER A: the SchedPolicy hook table, Kernel::policy ----------------------
 # Exactly one SchedPolicy exists in the tree, kickos::(anonymous)::g_fifo_rr in
-# kernel/sched/policy_fifo_rr.cc, and sched::set_policy has no callers, so the table's
-# contents are fixed at link time and each site is bound to its own slot.
-site rv32imac * sched.cc:47:42   policy_fifo_rr.cc:policy_on_switch_in
-site rv32imac * sched.cc:214:38  policy_fifo_rr.cc:policy_on_ready
-site rv32imac * sched.cc:172:57  policy_fifo_rr.cc:policy_pick_next
-site rv32imac * sched.cc:228:55  policy_fifo_rr.cc:policy_pick_next
-site rv32imac * sched.cc:231:42  policy_fifo_rr.cc:policy_on_switch_in
-site rv32imac * sched.cc:256:54  policy_fifo_rr.cc:policy_pick_next
-site rv32imac * sched.cc:278:38  policy_fifo_rr.cc:policy_on_yield
-site rv32imac * sched.cc:291:39  policy_fifo_rr.cc:policy_on_remove
-site rv32imac * sched.cc:323:38  policy_fifo_rr.cc:policy_on_ready
-site rv32imac * sched.cc:374:43  policy_fifo_rr.cc:policy_on_remove
-site rv32imac * sched.cc:376:42  policy_fifo_rr.cc:policy_on_ready
-site rv32imac * sched.cc:490:36  policy_fifo_rr.cc:policy_on_remove
-site rv32imac * sched.cc:557:53  policy_fifo_rr.cc:policy_next_timed_event
-site rv32imac * sched.cc:569:56  policy_fifo_rr.cc:policy_next_timed_event
-site rv32imac * sched.cc:573:45  policy_fifo_rr.cc:policy_on_slice_expire
-site rv32imac * syscall_ipc_fast.cc:169:50 policy_fifo_rr.cc:policy_pick_next
+# kernel/sched/policy_fifo_rr.cc, and sched::set_policy has no callers, so each site is bound to
+# its own slot.
+site rv32imac * sched.cc:56:42   policy_fifo_rr.cc:policy_on_switch_in
+site rv32imac * sched.cc:206:38  policy_fifo_rr.cc:policy_on_ready
+site rv32imac * sched.cc:164:57  policy_fifo_rr.cc:policy_pick_next
+site rv32imac * sched.cc:220:55  policy_fifo_rr.cc:policy_pick_next
+site rv32imac * sched.cc:223:42  policy_fifo_rr.cc:policy_on_switch_in
+site rv32imac * sched.cc:248:54  policy_fifo_rr.cc:policy_pick_next
+site rv32imac * sched.cc:270:38  policy_fifo_rr.cc:policy_on_yield
+site rv32imac * sched.cc:283:39  policy_fifo_rr.cc:policy_on_remove
+site rv32imac * sched.cc:315:38  policy_fifo_rr.cc:policy_on_ready
+site rv32imac * sched.cc:366:43  policy_fifo_rr.cc:policy_on_remove
+site rv32imac * sched.cc:368:42  policy_fifo_rr.cc:policy_on_ready
+site rv32imac * sched.cc:467:36  policy_fifo_rr.cc:policy_on_remove
+site rv32imac * sched.cc:533:53  policy_fifo_rr.cc:policy_next_timed_event
+site rv32imac * sched.cc:545:56  policy_fifo_rr.cc:policy_next_timed_event
+site rv32imac * sched.cc:549:45  policy_fifo_rr.cc:policy_on_slice_expire
+site rv32imac * syscall_ipc_fast.cc:156:50 policy_fifo_rr.cc:policy_pick_next
 
-site rxv3 * sched.cc:47:42   policy_fifo_rr.cc:policy_on_switch_in
-site rxv3 * sched.cc:214:38  policy_fifo_rr.cc:policy_on_ready
-site rxv3 * sched.cc:172:57  policy_fifo_rr.cc:policy_pick_next
-site rxv3 * sched.cc:228:55  policy_fifo_rr.cc:policy_pick_next
-site rxv3 * sched.cc:231:42  policy_fifo_rr.cc:policy_on_switch_in
-site rxv3 * sched.cc:256:54  policy_fifo_rr.cc:policy_pick_next
-site rxv3 * sched.cc:278:38  policy_fifo_rr.cc:policy_on_yield
-site rxv3 * sched.cc:291:39  policy_fifo_rr.cc:policy_on_remove
-site rxv3 * sched.cc:323:38  policy_fifo_rr.cc:policy_on_ready
-site rxv3 * sched.cc:374:43  policy_fifo_rr.cc:policy_on_remove
-site rxv3 * sched.cc:376:42  policy_fifo_rr.cc:policy_on_ready
-site rxv3 * sched.cc:490:36  policy_fifo_rr.cc:policy_on_remove
-site rxv3 * sched.cc:557:53  policy_fifo_rr.cc:policy_next_timed_event
-site rxv3 * sched.cc:569:56  policy_fifo_rr.cc:policy_next_timed_event
-site rxv3 * sched.cc:573:45  policy_fifo_rr.cc:policy_on_slice_expire
-site rxv3 * syscall_ipc_fast.cc:169:50 policy_fifo_rr.cc:policy_pick_next
+site rxv3 * sched.cc:56:42   policy_fifo_rr.cc:policy_on_switch_in
+site rxv3 * sched.cc:206:38  policy_fifo_rr.cc:policy_on_ready
+site rxv3 * sched.cc:164:57  policy_fifo_rr.cc:policy_pick_next
+site rxv3 * sched.cc:220:55  policy_fifo_rr.cc:policy_pick_next
+site rxv3 * sched.cc:223:42  policy_fifo_rr.cc:policy_on_switch_in
+site rxv3 * sched.cc:248:54  policy_fifo_rr.cc:policy_pick_next
+site rxv3 * sched.cc:270:38  policy_fifo_rr.cc:policy_on_yield
+site rxv3 * sched.cc:283:39  policy_fifo_rr.cc:policy_on_remove
+site rxv3 * sched.cc:315:38  policy_fifo_rr.cc:policy_on_ready
+site rxv3 * sched.cc:366:43  policy_fifo_rr.cc:policy_on_remove
+site rxv3 * sched.cc:368:42  policy_fifo_rr.cc:policy_on_ready
+site rxv3 * sched.cc:467:36  policy_fifo_rr.cc:policy_on_remove
+site rxv3 * sched.cc:533:53  policy_fifo_rr.cc:policy_next_timed_event
+site rxv3 * sched.cc:545:56  policy_fifo_rr.cc:policy_next_timed_event
+site rxv3 * sched.cc:549:45  policy_fifo_rr.cc:policy_on_slice_expire
+site rxv3 * syscall_ipc_fast.cc:156:50 policy_fifo_rr.cc:policy_pick_next
 
+# None of the three TRANSLATING arches compiles the IPC fastpath, so the syscall_ipc_fast.cc
+# site above has no twin here.
+
+site armv8a   * sched.cc:56:42   policy_fifo_rr.cc:policy_on_switch_in
+site armv8a   * sched.cc:164:57  policy_fifo_rr.cc:policy_pick_next
+site armv8a   * sched.cc:206:38  policy_fifo_rr.cc:policy_on_ready
+site armv8a   * sched.cc:220:55  policy_fifo_rr.cc:policy_pick_next
+site armv8a   * sched.cc:223:42  policy_fifo_rr.cc:policy_on_switch_in
+site armv8a   * sched.cc:248:54  policy_fifo_rr.cc:policy_pick_next
+site armv8a   * sched.cc:270:38  policy_fifo_rr.cc:policy_on_yield
+site armv8a   * sched.cc:283:39  policy_fifo_rr.cc:policy_on_remove
+site armv8a   * sched.cc:315:38  policy_fifo_rr.cc:policy_on_ready
+site armv8a   * sched.cc:366:43  policy_fifo_rr.cc:policy_on_remove
+site armv8a   * sched.cc:368:42  policy_fifo_rr.cc:policy_on_ready
+site armv8a   * sched.cc:467:36  policy_fifo_rr.cc:policy_on_remove
+site armv8a   * sched.cc:533:53  policy_fifo_rr.cc:policy_next_timed_event
+site armv8a   * sched.cc:545:56  policy_fifo_rr.cc:policy_next_timed_event
+site armv8a   * sched.cc:549:45  policy_fifo_rr.cc:policy_on_slice_expire
+
+site rv64imac * sched.cc:56:42   policy_fifo_rr.cc:policy_on_switch_in
+site rv64imac * sched.cc:164:57  policy_fifo_rr.cc:policy_pick_next
+site rv64imac * sched.cc:206:38  policy_fifo_rr.cc:policy_on_ready
+site rv64imac * sched.cc:220:55  policy_fifo_rr.cc:policy_pick_next
+site rv64imac * sched.cc:223:42  policy_fifo_rr.cc:policy_on_switch_in
+site rv64imac * sched.cc:248:54  policy_fifo_rr.cc:policy_pick_next
+site rv64imac * sched.cc:270:38  policy_fifo_rr.cc:policy_on_yield
+site rv64imac * sched.cc:283:39  policy_fifo_rr.cc:policy_on_remove
+site rv64imac * sched.cc:315:38  policy_fifo_rr.cc:policy_on_ready
+site rv64imac * sched.cc:366:43  policy_fifo_rr.cc:policy_on_remove
+site rv64imac * sched.cc:368:42  policy_fifo_rr.cc:policy_on_ready
+site rv64imac * sched.cc:467:36  policy_fifo_rr.cc:policy_on_remove
+site rv64imac * sched.cc:533:53  policy_fifo_rr.cc:policy_next_timed_event
+site rv64imac * sched.cc:545:56  policy_fifo_rr.cc:policy_next_timed_event
+site rv64imac * sched.cc:549:45  policy_fifo_rr.cc:policy_on_slice_expire
+
+site x86_64   * sched.cc:56:42   policy_fifo_rr.cc:policy_on_switch_in
+site x86_64   * sched.cc:164:57  policy_fifo_rr.cc:policy_pick_next
+site x86_64   * sched.cc:206:38  policy_fifo_rr.cc:policy_on_ready
+site x86_64   * sched.cc:220:55  policy_fifo_rr.cc:policy_pick_next
+site x86_64   * sched.cc:223:42  policy_fifo_rr.cc:policy_on_switch_in
+site x86_64   * sched.cc:248:54  policy_fifo_rr.cc:policy_pick_next
+site x86_64   * sched.cc:270:38  policy_fifo_rr.cc:policy_on_yield
+site x86_64   * sched.cc:283:39  policy_fifo_rr.cc:policy_on_remove
+site x86_64   * sched.cc:315:38  policy_fifo_rr.cc:policy_on_ready
+site x86_64   * sched.cc:366:43  policy_fifo_rr.cc:policy_on_remove
+site x86_64   * sched.cc:368:42  policy_fifo_rr.cc:policy_on_ready
+site x86_64   * sched.cc:467:36  policy_fifo_rr.cc:policy_on_remove
+site x86_64   * sched.cc:533:53  policy_fifo_rr.cc:policy_next_timed_event
+site x86_64   * sched.cc:545:56  policy_fifo_rr.cc:policy_next_timed_event
+site x86_64   * sched.cc:549:45  policy_fifo_rr.cc:policy_on_slice_expire
 # --- POINTER B: ConsoleTxRing::backend, console_tx_backend const* ---------------
 # Four slots (slot_free/push/irq_enable/irq_disable), set once in console_tx_init from the arch
 # seam arch_console_tx_backend(), of which exactly ONE definition links per image, so the tuple
 # is per board and the scope column carries that.
 #
-# qemu-riscv resolves the seam to the arch/common fallback, which returns nullptr;
-# console_tx_init then never arms the ring and no site can run. NONE, declared, not omitted.
+# qemu-riscv resolves the seam to the arch/common fallback, which returns nullptr, so
+# console_tx_init never arms the ring and no site can run.
 site rv32imac qemu-riscv console_tx.cc:69:37  NONE
 site rv32imac qemu-riscv console_tx.cc:91:28  NONE
 site rv32imac qemu-riscv console_tx.cc:141:30 NONE
@@ -123,17 +167,71 @@ site rxv3 rx72m-st console_tx.cc:294:31 chip_rx72m.cc:rx_tx_irq_disable
 site rxv3 rx72m-st console_tx.cc:310:27 chip_rx72m.cc:rx_tx_irq_disable
 site rxv3 rx72m-st console_tx.cc:356:27 chip_rx72m.cc:rx_tx_irq_disable
 
+# qemu-arm64, qemu-riscv64, qemu-riscv64-sv48 and qemu-x86_64 all resolve the seam to the
+# arch/common fallback, which returns nullptr, so no site can run. A real-hardware board on any
+# of these arches carries a backend of its own and needs its own preset scope here.
+
+site armv8a   qemu-arm64        console_tx.cc:69:37   NONE
+site armv8a   qemu-arm64        console_tx.cc:91:28   NONE
+site armv8a   qemu-arm64        console_tx.cc:141:30  NONE
+site armv8a   qemu-arm64        console_tx.cc:155:63  NONE
+site armv8a   qemu-arm64        console_tx.cc:157:28  NONE
+site armv8a   qemu-arm64        console_tx.cc:259:35  NONE
+site armv8a   qemu-arm64        console_tx.cc:267:32  NONE
+site armv8a   qemu-arm64        console_tx.cc:284:49  NONE
+site armv8a   qemu-arm64        console_tx.cc:286:24  NONE
+site armv8a   qemu-arm64        console_tx.cc:294:31  NONE
+site armv8a   qemu-arm64        console_tx.cc:310:27  NONE
+site armv8a   qemu-arm64        console_tx.cc:356:27  NONE
+
+site rv64imac qemu-riscv64      console_tx.cc:69:37   NONE
+site rv64imac qemu-riscv64      console_tx.cc:91:28   NONE
+site rv64imac qemu-riscv64      console_tx.cc:141:30  NONE
+site rv64imac qemu-riscv64      console_tx.cc:155:63  NONE
+site rv64imac qemu-riscv64      console_tx.cc:157:28  NONE
+site rv64imac qemu-riscv64      console_tx.cc:259:35  NONE
+site rv64imac qemu-riscv64      console_tx.cc:267:32  NONE
+site rv64imac qemu-riscv64      console_tx.cc:284:49  NONE
+site rv64imac qemu-riscv64      console_tx.cc:286:24  NONE
+site rv64imac qemu-riscv64      console_tx.cc:294:31  NONE
+site rv64imac qemu-riscv64      console_tx.cc:310:27  NONE
+site rv64imac qemu-riscv64      console_tx.cc:356:27  NONE
+
+site rv64imac qemu-riscv64-sv48 console_tx.cc:69:37   NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:91:28   NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:141:30  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:155:63  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:157:28  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:259:35  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:267:32  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:284:49  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:286:24  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:294:31  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:310:27  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:356:27  NONE
+
+site x86_64   qemu-x86_64       console_tx.cc:69:37   NONE
+site x86_64   qemu-x86_64       console_tx.cc:91:28   NONE
+site x86_64   qemu-x86_64       console_tx.cc:141:30  NONE
+site x86_64   qemu-x86_64       console_tx.cc:155:63  NONE
+site x86_64   qemu-x86_64       console_tx.cc:157:28  NONE
+site x86_64   qemu-x86_64       console_tx.cc:259:35  NONE
+site x86_64   qemu-x86_64       console_tx.cc:267:32  NONE
+site x86_64   qemu-x86_64       console_tx.cc:284:49  NONE
+site x86_64   qemu-x86_64       console_tx.cc:286:24  NONE
+site x86_64   qemu-x86_64       console_tx.cc:294:31  NONE
+site x86_64   qemu-x86_64       console_tx.cc:310:27  NONE
+site x86_64   qemu-x86_64       console_tx.cc:356:27  NONE
 # --- POINTER C: Kernel::irq_table[irq].handler, one site -----------------------
 # The table is TOTAL (irq_init seeds every slot with irq_default_handler) and the callee set is
 # CLOSED: user code cannot register a function pointer, and the kos_irq_attach syscall only ever
 # installs the fixed kernel thunk irq_sem_post. bench_irq_handler exists only in a KICKOS_BENCH
 # build.
 #
-# NO CYCLE IS DECLARED HERE, and that is a claim about these two architectures. irq_event_isr
-# and irq_sem_post reach kickos::sem_post -> sched::wake -> resched_after_wake -> reschedule ->
-# switch_to -> arch_switch, and on rv32imac and rxv3 arch_switch only PENDS the switch (msip /
-# ICU.SWINTR) and returns, so the chain does not re-enter the scheduler on this stack. An arch
-# whose arch_switch swaps inline would need this binding changed with it.
+# irq_event_isr and irq_sem_post reach kickos::sem_post -> sched::wake -> resched_after_wake ->
+# reschedule -> switch_to -> arch_switch, and on rv32imac and rxv3 arch_switch only PENDS the
+# switch (msip / ICU.SWINTR) and returns, so the chain does not re-enter the scheduler on this
+# stack. An arch whose arch_switch swaps inline needs this binding changed with it.
 site rv32imac * irq.cc:320:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                               syscall.cc:irq_sem_post \
                               console_tx.cc:console_tx_isr_trampoline \
@@ -144,41 +242,37 @@ site rxv3 * irq.cc:320:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                           ?bench.cc:bench_irq_handler
 
 # --- armv7m: the same two arch-wide pointers ------------------------------------
-site armv7m * sched.cc:47:42       policy_fifo_rr.cc:policy_on_switch_in
-site armv7m * sched.cc:214:38      policy_fifo_rr.cc:policy_on_ready
-site armv7m * sched.cc:172:57      policy_fifo_rr.cc:policy_pick_next
-site armv7m * sched.cc:228:55      policy_fifo_rr.cc:policy_pick_next
-site armv7m * sched.cc:231:42      policy_fifo_rr.cc:policy_on_switch_in
-site armv7m * sched.cc:256:54      policy_fifo_rr.cc:policy_pick_next
-site armv7m * sched.cc:278:38      policy_fifo_rr.cc:policy_on_yield
-site armv7m * sched.cc:291:39      policy_fifo_rr.cc:policy_on_remove
-site armv7m * sched.cc:323:38      policy_fifo_rr.cc:policy_on_ready
-site armv7m * sched.cc:374:43      policy_fifo_rr.cc:policy_on_remove
-site armv7m * sched.cc:376:42      policy_fifo_rr.cc:policy_on_ready
-site armv7m * sched.cc:490:36      policy_fifo_rr.cc:policy_on_remove
-site armv7m * sched.cc:557:53      policy_fifo_rr.cc:policy_next_timed_event
-site armv7m * sched.cc:569:56      policy_fifo_rr.cc:policy_next_timed_event
-site armv7m * sched.cc:573:45      policy_fifo_rr.cc:policy_on_slice_expire
-site armv7m * syscall_ipc_fast.cc:169:50 policy_fifo_rr.cc:policy_pick_next
+site armv7m * sched.cc:56:42       policy_fifo_rr.cc:policy_on_switch_in
+site armv7m * sched.cc:206:38      policy_fifo_rr.cc:policy_on_ready
+site armv7m * sched.cc:164:57      policy_fifo_rr.cc:policy_pick_next
+site armv7m * sched.cc:220:55      policy_fifo_rr.cc:policy_pick_next
+site armv7m * sched.cc:223:42      policy_fifo_rr.cc:policy_on_switch_in
+site armv7m * sched.cc:248:54      policy_fifo_rr.cc:policy_pick_next
+site armv7m * sched.cc:270:38      policy_fifo_rr.cc:policy_on_yield
+site armv7m * sched.cc:283:39      policy_fifo_rr.cc:policy_on_remove
+site armv7m * sched.cc:315:38      policy_fifo_rr.cc:policy_on_ready
+site armv7m * sched.cc:366:43      policy_fifo_rr.cc:policy_on_remove
+site armv7m * sched.cc:368:42      policy_fifo_rr.cc:policy_on_ready
+site armv7m * sched.cc:467:36      policy_fifo_rr.cc:policy_on_remove
+site armv7m * sched.cc:533:53      policy_fifo_rr.cc:policy_next_timed_event
+site armv7m * sched.cc:545:56      policy_fifo_rr.cc:policy_next_timed_event
+site armv7m * sched.cc:549:45      policy_fifo_rr.cc:policy_on_slice_expire
+site armv7m * syscall_ipc_fast.cc:156:50 policy_fifo_rr.cc:policy_pick_next
 
-# NO CYCLE, and on this backend that is a claim about arch_switch too: armv7m pends
-# PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
-# re-enter the scheduler on this stack. An arch whose arch_switch swapped inline
-# would need this binding changed with it.
+# armv7m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
+# re-enter the scheduler on this stack.
 site armv7m * irq.cc:320:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                             syscall.cc:irq_sem_post \
                             console_tx.cc:console_tx_isr_trampoline \
                             ?bench.cc:bench_irq_handler
 
 # --- armv7m: ConsoleTxRing::backend, per board ----------------------------------
-# EVERY armv7m PRESET IS BOUND, the console backend being per BOARD: the four MPS2 boards
-# resolve arch_console_tx_backend to the arch/common fallback, which returns nullptr, so no site
-# can run. Cloning is what the per-preset scope is for: a '*' record would bind a board that HAS
-# a backend to nothing.
+# The console backend is per BOARD, so every armv7m preset is bound: a '*' record would bind a
+# board that HAS a backend to nothing. The four MPS2 boards resolve arch_console_tx_backend to
+# the arch/common fallback, which returns nullptr, so no site can run.
 #
 # All twelve sites are declared whatever the posture: a flat variant reaches four of them where
-# an enforcing one reaches nine, so binding only what one posture reaches would leave the other
-# refusing on the day it is run.
+# an enforcing one reaches nine.
 
 site armv7m qemu                console_tx.cc:69:37    NONE
 site armv7m qemu                console_tx.cc:91:28    NONE
@@ -623,37 +717,34 @@ site armv7m bluepill-c8-st      console_tx.cc:310:27   chip_stm32f103.cc:f1_tx_i
 site armv7m bluepill-c8-st      console_tx.cc:356:27   chip_stm32f103.cc:f1_tx_irq_disable
 
 # --- armv7m: the RP2350 bootrom entry, pizero2350 only --------------------------
-# arch_reboot reads two function pointers out of ROM and calls through them: the table lookup,
-# then the ROM reboot, which does not return on success. No call graph can follow either and the
-# datasheet gives no stack figure for the bootrom, so these charge 0; the residual is that a
+# arch_reboot reads two function pointers out of ROM and calls through them. No call graph can
+# follow either and the datasheet gives no stack figure for the bootrom, so these charge 0: a
 # reboot syscall descends an unknown depth of ROM code on the calling thread's stack.
 #
-# NOT CLONED to the other two pizero2350 presets: arch_reboot sits under
-# #if defined(KICKOS_ENABLE_SELFTEST) (chip_rp2350.cc), so these sites exist in the -st graph
-# alone and a record for a site the graph does not have is a stale binding.
+# arch_reboot sits under #if defined(KICKOS_ENABLE_SELFTEST) (chip_rp2350.cc), so these sites
+# exist in the -st graph alone.
 site armv7m pizero2350-st       chip_rp2350.cc:578:15 NONE
 site armv7m pizero2350-st       chip_rp2350.cc:588:15 NONE
 
 # --- armv6m: the same two arch-wide pointers ------------------------------------
-site armv6m * sched.cc:47:42       policy_fifo_rr.cc:policy_on_switch_in
-site armv6m * sched.cc:214:38      policy_fifo_rr.cc:policy_on_ready
-site armv6m * sched.cc:172:57      policy_fifo_rr.cc:policy_pick_next
-site armv6m * sched.cc:228:55      policy_fifo_rr.cc:policy_pick_next
-site armv6m * sched.cc:231:42      policy_fifo_rr.cc:policy_on_switch_in
-site armv6m * sched.cc:256:54      policy_fifo_rr.cc:policy_pick_next
-site armv6m * sched.cc:278:38      policy_fifo_rr.cc:policy_on_yield
-site armv6m * sched.cc:291:39      policy_fifo_rr.cc:policy_on_remove
-site armv6m * sched.cc:323:38      policy_fifo_rr.cc:policy_on_ready
-site armv6m * sched.cc:374:43      policy_fifo_rr.cc:policy_on_remove
-site armv6m * sched.cc:376:42      policy_fifo_rr.cc:policy_on_ready
-site armv6m * sched.cc:490:36      policy_fifo_rr.cc:policy_on_remove
-site armv6m * sched.cc:557:53      policy_fifo_rr.cc:policy_next_timed_event
-site armv6m * sched.cc:569:56      policy_fifo_rr.cc:policy_next_timed_event
-site armv6m * sched.cc:573:45      policy_fifo_rr.cc:policy_on_slice_expire
-site armv6m * syscall_ipc_fast.cc:169:50 policy_fifo_rr.cc:policy_pick_next
+site armv6m * sched.cc:56:42       policy_fifo_rr.cc:policy_on_switch_in
+site armv6m * sched.cc:206:38      policy_fifo_rr.cc:policy_on_ready
+site armv6m * sched.cc:164:57      policy_fifo_rr.cc:policy_pick_next
+site armv6m * sched.cc:220:55      policy_fifo_rr.cc:policy_pick_next
+site armv6m * sched.cc:223:42      policy_fifo_rr.cc:policy_on_switch_in
+site armv6m * sched.cc:248:54      policy_fifo_rr.cc:policy_pick_next
+site armv6m * sched.cc:270:38      policy_fifo_rr.cc:policy_on_yield
+site armv6m * sched.cc:283:39      policy_fifo_rr.cc:policy_on_remove
+site armv6m * sched.cc:315:38      policy_fifo_rr.cc:policy_on_ready
+site armv6m * sched.cc:366:43      policy_fifo_rr.cc:policy_on_remove
+site armv6m * sched.cc:368:42      policy_fifo_rr.cc:policy_on_ready
+site armv6m * sched.cc:467:36      policy_fifo_rr.cc:policy_on_remove
+site armv6m * sched.cc:533:53      policy_fifo_rr.cc:policy_next_timed_event
+site armv6m * sched.cc:545:56      policy_fifo_rr.cc:policy_next_timed_event
+site armv6m * sched.cc:549:45      policy_fifo_rr.cc:policy_on_slice_expire
+site armv6m * syscall_ipc_fast.cc:156:50 policy_fifo_rr.cc:policy_pick_next
 
-# NO CYCLE, and on this backend that is a claim about arch_switch too: armv6m pends
-# PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
+# armv6m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
 # re-enter the scheduler on this stack.
 site armv6m * irq.cc:320:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                             syscall.cc:irq_sem_post \
@@ -692,17 +783,15 @@ site armv6m picopi-st        console_tx.cc:310:27  chip_rp2040.cc:rp_tx_irq_disa
 site armv6m picopi-st        console_tx.cc:356:27  chip_rp2040.cc:rp_tx_irq_disable
 
 # --- armv6m: the RP2040 bootrom entry, picopi only ------------------------------
-# arch_reboot reads two function pointers out of ROM and calls through them: the table lookup,
-# then usb_boot, which does not return. No call graph can follow either and the datasheet gives
-# no stack figure for the bootrom, so these charge 0; the residual is that a reboot syscall
-# descends an unknown depth of ROM code on the calling thread's stack.
+# arch_reboot reads two function pointers out of ROM and calls through them. No call graph can
+# follow either and the datasheet gives no stack figure for the bootrom, so these charge 0: a
+# reboot syscall descends an unknown depth of ROM code on the calling thread's stack.
 site armv6m picopi-st        chip_rp2040.cc:523:45 NONE
 site armv6m picopi-st        chip_rp2040.cc:531:13 NONE
 
-# EVERY rv32imac PRESET IS BOUND, the console backend being per BOARD: qemu-riscv resolves
-# arch_console_tx_backend to the arch/common fallback whatever the variant, so all three of its
-# presets are NONE, and all four esp32c6-wroom presets bind the C6 slots. Cloning is what the
-# per-preset scope is for: a '*' record would bind a board that HAS a backend to nothing.
+# The console backend is per BOARD, so every rv32imac preset is bound: qemu-riscv resolves
+# arch_console_tx_backend to the arch/common fallback whatever the variant, and all four
+# esp32c6-wroom presets bind the C6 slots.
 
 site rv32imac qemu-riscv-flat    console_tx.cc:69:37    NONE
 site rv32imac qemu-riscv-flat    console_tx.cc:91:28    NONE
@@ -797,9 +886,8 @@ site rxv3 rx72m-flat         console_tx.cc:294:31   chip_rx72m.cc:rx_tx_irq_disa
 site rxv3 rx72m-flat         console_tx.cc:310:27   chip_rx72m.cc:rx_tx_irq_disable
 site rxv3 rx72m-flat         console_tx.cc:356:27   chip_rx72m.cc:rx_tx_irq_disable
 
-# The other two picopi presets. The two chip_rp2040 bootrom sites are NOT cloned: arch_reboot
-# sits under #if defined(KICKOS_ENABLE_SELFTEST) (chip_rp2040.cc), so those sites exist in the
-# -st graph alone, and a record for a site the graph does not have is a stale binding.
+# The other two picopi presets. arch_reboot sits under #if defined(KICKOS_ENABLE_SELFTEST)
+# (chip_rp2040.cc), so the two chip_rp2040 bootrom sites exist in the -st graph alone.
 
 site armv6m picopi             console_tx.cc:69:37    chip_rp2040.cc:rp_tx_slot_free
 site armv6m picopi             console_tx.cc:91:28    chip_rp2040.cc:rp_tx_push
@@ -829,14 +917,14 @@ site armv6m picopi-flat        console_tx.cc:356:27   chip_rp2040.cc:rp_tx_irq_d
 
 # xtensa. The same six SchedPolicy sites every arch binds; the table is one static instance
 # (policy_fifo_rr.cc) and the site's pointer can hold nothing else.
-site lx6 * sched.cc:47:42       policy_fifo_rr.cc:policy_on_switch_in
-site lx6 * sched.cc:374:43      policy_fifo_rr.cc:policy_on_remove
-site lx6 * sched.cc:376:42      policy_fifo_rr.cc:policy_on_ready
-site lx6 * sched.cc:557:53      policy_fifo_rr.cc:policy_next_timed_event
-site lx6 * sched.cc:569:56      policy_fifo_rr.cc:policy_next_timed_event
-site lx6 * sched.cc:573:45      policy_fifo_rr.cc:policy_on_slice_expire
-site lx6 * sched.cc:256:54      policy_fifo_rr.cc:policy_pick_next
-site lx6 * sched.cc:323:38      policy_fifo_rr.cc:policy_on_ready
+site lx6 * sched.cc:56:42       policy_fifo_rr.cc:policy_on_switch_in
+site lx6 * sched.cc:366:43      policy_fifo_rr.cc:policy_on_remove
+site lx6 * sched.cc:368:42      policy_fifo_rr.cc:policy_on_ready
+site lx6 * sched.cc:533:53      policy_fifo_rr.cc:policy_next_timed_event
+site lx6 * sched.cc:545:56      policy_fifo_rr.cc:policy_next_timed_event
+site lx6 * sched.cc:549:45      policy_fifo_rr.cc:policy_on_slice_expire
+site lx6 * sched.cc:248:54      policy_fifo_rr.cc:policy_pick_next
+site lx6 * sched.cc:315:38      policy_fifo_rr.cc:policy_on_ready
 site lx6 * irq.cc:320:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                             syscall.cc:irq_sem_post \
                             console_tx.cc:console_tx_isr_trampoline \

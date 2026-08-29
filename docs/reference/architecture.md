@@ -62,14 +62,21 @@ grants each client exactly the endpoint caps its manifest allows), with **badged
 authenticate callers. This fits the static-allocation, deterministic-RTOS ethos far better than a
 runtime name server.
 
-**MPU-first, but not MPU-only.** Isolation ships on the MPU (PMSA, no address translation), but
-the **Domain / address-space seam is kept backend-agnostic** so a **VMSA (page-table / MMU)**
-backend can slot in one day for application-class cores -- e.g. **Cortex-A72 / Raspberry Pi 4B**
-(GICv2, EL0/EL1, generic timer). This is *aspirational, not roadmapped*; its only claim on
-present design is a discipline we already hold -- keep MPU/PMSA specifics in the **arch/chip
-layer**, never leaked into the core or the syscall ABI (the same arch-neutrality the non-ARM
-**RX72M** target exists to prove). "MPU-first per-domain isolation" is the M0-M2 reality; "one
-address-space abstraction, MPU *or* MMU behind it" is the horizon.
+**MPU-first, but not MPU-only, and the MMU half is no longer aspirational.** Most of the fleet
+isolates on an MPU (PMSA, no address translation), and the **Domain / address-space seam is kept
+backend-agnostic** so that a **VMSA (page-table / MMU)** backend slots in behind the same
+abstraction. **Two such backends now ship**: `armv8a` on `virt_arm64` (VMSAv8, EL0/EL1, a fixed
+granule and level count) and `rv64imac` on `virt_rv64` (Sv39 or Sv48, selected per config variant).
+A chip declares which family it is by shipping `arch/<family>/chip/<chip>/mpu.cmake` for region
+descriptors or `aspace.cmake` for translation, never both, and the two are mutually exclusive at
+configure time. What has NOT been built is a translating backend on real application-class silicon:
+both translating boards are emulated, so the discipline the seam was designed for is proven under
+QEMU and not on a part. The design claim the seam makes is unchanged and now measured rather than
+promised -- keep MPU/PMSA and VMSA specifics in the **arch/chip layer**, never leaked into the core
+or the syscall ABI (the same arch-neutrality the non-ARM **RX72M** target exists to prove). "One
+address-space abstraction, MPU *or* MMU behind it" is the shape the tree has; see
+`../design-m6-mmu.md` for what each backend actually does and `boards.md` for what is witnessed
+where.
 
 ### Non-goals -- seL4 machinery deliberately NOT adopted
 
@@ -247,8 +254,12 @@ x86 sim. Most (RTEMS, microC/OS, RT-Thread core) are flat-memory. **ThreadX Modu
 **ChibiOS/SB** are the closest prior art and the references we lean on for the isolation model.
 
 Key borrowed ideas, attributed:
-- **NuttX** -- `FLAT`/`PROTECTED`/`KERNEL` build-mode taxonomy (KickOS is a **PROTECTED build**:
-  MPU + SVC, single physical space, no MMU); the `make export` dependency-inversion packaging;
+- **NuttX** -- `FLAT`/`PROTECTED`/`KERNEL` build-mode taxonomy (KickOS is a **PROTECTED build** on
+  every board: one kernel image, one privilege crossing, and no separately-loaded user binary. The
+  region boards are PROTECTED in NuttX's own sense, MPU plus a trap; the translating boards keep the
+  same build mode while drawing the boundary in page tables, which is not NuttX's `KERNEL` mode
+  because there is still no loader and no per-process image); the `make export`
+  dependency-inversion packaging;
   the toolchain-libc lesson (below).
 - **Argon** -- dual C/C++ API; static object allocation; the critical-section split
   (v7-m BASEPRI + `ldrex/strex`, v6-m PRIMASK).
@@ -295,13 +306,14 @@ threaded, C++ guard/lock hooks) routed to KickOS syscalls. (Honest caveat: that 
 ```
 KickOS/
   CMakeLists.txt
-  CMakePresets.json + cmake/presets/*.json   # per-arch/board presets (arm, host, riscv, rx, xtensa)
+  CMakePresets.json + cmake/presets/*.json   # per-arch/board presets (arm, arm64, host, riscv,
+                                    #   rx, x86, xtensa)
   Kconfig                          # top-level symbol tree: capability facts (HAS_MPU, ...),
                                     #   sourced boards/Kconfig + arch/Kconfig + per-board Kconfig
   tools/kconfig/genconfig.py       # resolves a board's defconfig into <build>/generated/:
                                     #   .config, include/kickos/board_config.h, kickos_config.cmake
   cmake/
-    toolchain-{arm-none-eabi,riscv-none-elf,rx-elf,xtensa-esp32-elf,host}.cmake
+    toolchain-{arm-none-eabi,aarch64-none-elf,riscv-none-elf,rx-elf,xtensa-esp32-elf,x86_64-uefi,host}.cmake
     toolchain-cxx-runtime-check.cmake  # refuses a resolved cross compiler that lacks
                                     #   newlib + libstdc++ for THIS board's multilib
     kickos.cmake                    # board -> arch/chip resolution + image (.bin/.uf2/.hex) helpers
@@ -320,9 +332,17 @@ KickOS/
       armv6m/                       # M0+: PRIMASK crit, ctx-switch asm
       armv7m/                       # M3/M4/M4F/M7/M33: BASEPRI crit, CLZ, ctx-switch asm, cache
       chip/{mps2,nrf51,mk64f,rp2040,rp2350,imxrt1062,stm32f411,stm32f103,stm32f302,sam3x8e,xmc4800}/
+    arm64/ armv8a/ chip/virt_arm64/  # AArch64 (EL0/EL1, VMSAv8 page tables, GICv2, PL011)
     rx/    rxv3/  chip/rx72m/        # Renesas RXv3 (SWINT switch, INT syscall)
     xtensa/ lx6/  chip/esp32/        # Xtensa LX6 (windowed ABI, no privilege split)
-    riscv/ rv32imac/ chip/{virt,esp32c6}/  # RV32IMAC (mtvec demux, CLINT/PLIC, PMP)
+    riscv/ rv32imac/ chip/{virt_rv32,esp32c6}/  # RV32IMAC (machine mode, mtvec demux,
+                                    #   CLINT/PLIC, PMP)
+           rv64imac/ chip/virt_rv64/ # RV64IMAC (supervisor mode, stvec, Sv39/Sv48 page tables)
+    x86/   x86_64/ chip/q35/         # x86_64 UEFI application (PE32+): the syscall entry is
+                                    #   SYSCALL/SYSRET, arch_init ADOPTS the translation regime
+                                    #   firmware already has live, and pe_image.ld places no
+                                    #   memory map (the linker's own default layout plus three
+                                    #   section wildcards)
   kernel/
     include/kickos/                 # public kernel + syscall-number headers
     sched/  thread/  task/  sync/  time/  irq/  syscall/  init/  ktrace/  bench/  domain/  grant/
@@ -565,7 +585,11 @@ the kernel is unreachable without preemption. `docs/design-task-layer.md` is the
 ## Memory domains (the isolation unit)
 
 The unit of memory isolation is a **memory domain** -- a lightweight "process" in the
-memory-boundary sense only (no MMU, no virtual memory, no `fork`/`exec`). Model borrowed from
+memory-boundary sense only: no `fork`, no `exec`, no loader and no per-process image. What backs the
+boundary depends on the part. Where the chip carries region descriptors the domain carries a region
+set and every domain lives in ONE physical address space; where the chip translates, the domain
+carries a page-table root and the boundary IS a virtual address space. Nothing above the arch layer
+distinguishes the two. Model borrowed from
 **Zephyr `k_mem_domain`** / **ARINC 653** spatial partitions (temporal partitioning is *not*
 implied); ThreadX Modules and ChibiOS/SB are the loadable-code cousins.
 

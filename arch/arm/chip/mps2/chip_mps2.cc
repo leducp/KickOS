@@ -2,12 +2,11 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // mps2-an386 (QEMU Cortex-M4F) chip backend: the hardware edges the armv7m arch
-// layer leaves to the chip, namely reset/C-runtime bring-up, arch_init (FPU + core
-// exception/clock setup), and the debug console. QEMU semihosting stands in for a
-// UART here (console + exit code), so this target needs no peripheral driver.
+// layer leaves to the chip. QEMU semihosting stands in for a UART here (console +
+// exit code), so this target needs no peripheral driver.
 //
-// The emulated CMSDK has no pin-function mux; arch_pinmux_set is intentionally
-// left to the declining ENOSYS fallback.
+// The emulated CMSDK has no pin-function mux, so arch_pinmux_set is left to the
+// declining ENOSYS fallback.
 
 #include <kickos/arch/arch.h>
 
@@ -85,7 +84,7 @@ void arch_init(void)
     // MUST precede kickos_armv7m_init and MUST NOT be dropped: this reference pulls
     // the PMSAv8 backend into the link. Without it the build still succeeds, but the
     // PMSAv7 commit fallback stands and writes RASR values into what is RLAR on v8-M.
-    kickos_arm_pmsav8_init(); // MAIR + MemManage; the first switch enables the MPU
+    kickos_arm_pmsav8_init();
 #endif
     kickos_armv7m_init();
 }
@@ -132,6 +131,8 @@ void arch_idle_wait(void)
     __asm volatile("nop");
 }
 
+// SYS_WRITEC hands each byte to the host inside the call, so nothing is ever in flight
+// here and arch_console_flush_sync is left to its no-op fallback.
 void arch_console_write(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
@@ -190,14 +191,6 @@ void arch_shutdown(int status)
     }
 }
 
-// A fault/panic on this QEMU target must EXIT with a status so a CTest run catches
-// it: there is no LED, and the blink terminal fallback (kernel.h) would just spin
-// until the harness times out.
-void kfault_terminate(void)
-{
-    arch_shutdown(132);
-}
-
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set: empty. Console and time base are semihosting calls, and the
 // only registers touched (SysTick/NVIC/SCB) live in the PPB, which the MPU does not
@@ -212,7 +205,6 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 
 void Reset_Handler(void)
 {
-    // init .data + (under enforcement) the pow2 app-data block; zero .bss + app-bss
     kickos_ranges_init();
     // Enable the FPU BEFORE running static constructors: with the hard-float ABI
     // the compiler may emit FP instructions in a global initializer, which would

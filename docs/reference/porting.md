@@ -430,16 +430,24 @@ dir; the build wires the multi-stage boot2 image automatically (keyed on
 `${KICKOS_CHIP}`). A chip on a non-ARM ISA additionally needs a new arch backend +
 toolchain file -- see `arch/xtensa/` (ESP32) or `arch/rx/` (RX72M) for worked examples.
 
-Status -- five arch backends (**armv7m** Cortex-M3/M4/M4F/M7/M33, **armv6m** Cortex-M0/M0+,
-**rxv3** Renesas RX72M, **lx6** Xtensa/ESP32, **rv32imac** RISC-V) across the chips below.
-"MPU" is whether the chip ships an enforcement backend (`arch/<family>/chip/<chip>/mpu.cmake`);
-where it does, cross-domain trapping is silicon-proven unless the row says otherwise:
+Status: eight arch backends (**armv7m** Cortex-M3/M4/M4F/M7/M33, **armv6m** Cortex-M0/M0+,
+**armv8a** Cortex-A53, **rxv3** Renesas RX72M, **lx6** Xtensa/ESP32, **rv32imac** RISC-V,
+**rv64imac** RISC-V, **x86_64** Intel/AMD 64-bit) across the chips below, plus the host `sim`.
+The count is the directory set under `arch/` that carries a backend: `arch/arm/armv6m`,
+`arch/arm/armv7m`, `arch/arm64/armv8a`, `arch/riscv/rv32imac`, `arch/riscv/rv64imac`,
+`arch/rx/rxv3`, `arch/xtensa/lx6` and `arch/x86/x86_64`.
+"MPU" is whether the chip ships an enforcement backend: `arch/<family>/chip/<chip>/mpu.cmake` on a
+region chip, `aspace.cmake` on a translating one. Where it does, cross-domain trapping is
+silicon-proven unless the row says otherwise:
 
 | Chip | Board | Core | MPU | Validation |
 |------|-------|------|-----|------------|
 | `mps2` | qemu / qemu-m33 / qemu-m7 / qemu-m3 | M4F / M33 / M7 / M3 | PMSAv7 + PMSAv8 | QEMU (four runnable CI gates, **plus runtime enforcement gates** on both PMSA revisions) |
 | `nrf51` | microbit | M0 | -- | QEMU (runnable CI gate) |
 | `virt` | qemu-riscv | RV32IMAC | PMP | QEMU (runnable CI gate, **plus a runtime enforcement gate**) |
+| `virt_rv64` | qemu-riscv64 / qemu-riscv64-sv48 | RV64IMAC | **Sv39 + Sv48 MMU** | QEMU, **NOT IN CI**: `.github/workflows/ci.yml` carries no rv64 job, so both postures are LOCAL `ctest` only (`--preset qemu-riscv64` and `--preset qemu-riscv64-sv48`), 52 arms each (re-derived 2026-08-29 by `ctest -N`), **plus runtime translation-enforcement gates**: an UNPRIVILEGED read of an unmapped page (`qemu_riscv64_aspace_ufault`, which replaced a kernel-side `aspace_fault` arm on 2026-08-29 that faulted before it reached the unmap), a stack guard, a kernel-half denial and a surviving fault. The gap is a decision nobody has taken, not a toolchain gap (`../reference/boards.md`, *CI coverage*) |
+| `virt_arm64` | qemu-arm64 | Cortex-A53 | **VMSAv8 MMU** | QEMU (runnable CI gate, the `qemu-arm64` job, 42 ctest arms re-derived 2026-08-29 by `ctest -N`, **plus runtime translation-enforcement gates**) |
+| `q35` | qemu-x86_64 | x86_64 | -- | QEMU, **NOT IN CI**: `.github/workflows/ci.yml` carries no x86_64 job, so the board is LOCAL `ctest` only (`--preset qemu-x86_64`), booted as a PE32+ UEFI application under OVMF. The chip selects no memory family, so the map is flat and there is no enforcement gate to run (`../reference/boards.md`, *CI coverage*) |
 | `xmc4800` | xmc4800-relax | M4F | PMSAv7 | **hardware** (LED + USIC VCOM console over the buffered ring; enforcement + the canonical per-thread peripheral-isolation proof) |
 | `stm32f411` | f411disco / blackpill | M4F | PMSAv7 | **hardware** (LED + UART + ping-pong; enforcement selftest + `mpu_fault` MemManage denial + an unprivileged root, all on `f411disco` 2026-07-29). Witnessed on one of the two boards; `blackpill` shares this backend and was not re-run |
 | `stm32f302` | f302nucleo | M4 | -- | **hardware** (LED PB13 + console; the full suite at the `f302nucleo-st` provisioning -- 63 ok / 0 not ok / 5 skipped on 16 KiB SRAM, measured at `124b68c`). Not an enforcement target: the F302R8 line has no MPU, so `arch_mpu_min_region()` returns 0 (`arch/arm/chip/stm32f302/chip_stm32f302.cc:321`) |
@@ -689,8 +697,10 @@ windows, does real work and can RUN OUT.
 **`ARCH_ASPACE_ACQUIRE_MIN` (`arch/include/kickos/arch/arch.h`) is how many are holdable at once
 per core, and a windowed backend sizes its pool for that figure and `static_assert`s against it.**
 The figure counts OUTSTANDING CALLS and not distinct pages: two acquires of one page are two holds
-unless the backend counts references. `arch/arm64/armv8a/aspace_armv8a.cc` carries the assert in
-the shape a windowed port fills in, its own capacity being unbounded.
+unless the backend counts references. `arch/riscv/rv64imac/aspace_rv64imac.cc` is the worked
+windowed backend: `ACQUIRE_CAPACITY`, a per-core slot table, and the `static_assert` against this
+figure. `arch/arm64/armv8a/aspace_armv8a.cc` carries the assert in the shape an UNBOUNDED port
+fills in, its acquire being an addition and its release a no-op.
 
 **It is measured from the tree rather than chosen.** The deepest holder is the page-split access
 scenario behind `KOS_ASPACE_OP_SPLIT_ACCESS` (`kernel/syscall/syscall_aspace.cc`): four pages held
@@ -699,6 +709,22 @@ alone holds two, which is the floor a caller doing nothing else meets. **A calle
 the other half:** a walk over many pages releases each before taking the next, as
 `KOS_ASPACE_OP_SPAN` does, or it puts the whole tree over the figure for a reason that is the
 walk's and not the seam's.
+
+### Naming the frame behind a page (`arch_aspace_frame_at`)
+
+`arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)` answers the
+granule-aligned PHYSICAL address the page holding `va` is mapped onto, and 0 where that page is not
+mapped. It spends no acquire hold and reads no frame's contents; `va` need not be granule-aligned
+and the byte offset inside the granule is not carried, an answer being a frame and not a pointer to
+a byte.
+
+**It exists because naming a frame by ARITHMETIC on acquire pointers is only correct where acquire
+is an addition, and it fails silently where it is not.** Subtracting two acquired pointers and
+dividing by the granule is a stable identity on an offset-map backend; on one windowing a handful
+of slots the same small number comes back for every frame in the system, so code comparing frame
+identity reports "the same frame" for frames that differ and SUCCEEDS. That is the shape to reach
+for whenever a caller wants to know WHICH frame rather than to read one
+(`../design-m6-mmu.md` F8).
 
 ### Privileged register write (`arch_periph_reg_write`)
 
@@ -1022,7 +1048,7 @@ added slot ALSO raises `__kickos_ram_start`: on `f302nucleo` the 1,280 B margin 
 measuring +416 B there. Only where a large root alignment absorbs the whole run-up do the two
 agree. On both `frdmk64f` variants every image has the same `__kickos_ram_start`, the
 SYSMPU putting app `.bss` in the fixed `.appdata` window, so "worst image" is a tie rather
-than a pick; on the four flat ARM boards it is always `selftest_p2`. **`bluepill-c8-st` used to hold this title
+than a pick; on the four flat ARM boards it is always `selftest_p3`. **`bluepill-c8-st` used to hold this title
 at exactly zero boot slack** (2,560 needed against 2,560 available); surrendering its 8 KiB
 heap carve in M4.9.3 took it to 8,192 B and moved the fleet's fragile edge to the 16 KiB part.
 
@@ -1161,7 +1187,7 @@ why the honest place to answer the question is the link.
 **Headroom is a LINK-TIME quantity, and whether it is also PER-IMAGE depends on the
 board.** Where `__kickos_ram_start` follows `.bss`, each app's static footprint moves the
 arena base and the FATTEST image is what caps `KICKOS_MAX_THREADS`: on `bluepill-c8-st`
-the images span 4,224 B of base, and the split `selftest_p2` is the binding one. Where an
+the images span 3,040 B of base, and the split `selftest_p3` is the binding one. Where an
 alignment window pins the base instead, every image on the board reports the SAME headroom
 -- that is `frdmk64f` at `KICKOS_HAVE_MPU=1`, where all images sit at `0x20012940`. Check
 which shape a board has before quoting a number, and never quote a board-wide figure for
@@ -1277,9 +1303,9 @@ Four readings, and they are the point of the section:
   at all: the arena bound, not the pool. Surrendering the 2K heap carve and halving
   `KICKOS_USER_STACK_SIZE` to 1,024 takes the arena to 5,664 and N to 3, and the same
   part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways,
-  measured at `124b68c`. That reading predates `9da898e`, which builds this board's suite as
-  TWO images, so the board emits no single `1..63` plan today; read the plan sizes off the
-  configure line (see `boards.md`, *Three boards run the selftest as TWO images*).
+  measured at `124b68c`. That reading predates `9da898e`, which split this board's suite; it is
+  THREE images today, so the board emits no single `1..63` plan; read the plan sizes off the
+  configure line (see `boards.md`, *Three boards run the selftest as THREE images*).
 - **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than `f302nucleo`
   and used to host *fewer* threads, missing `hello`'s second stack by 96 bytes, purely
   because its heap carve was 8K against f302's 2K. That 8K was the `CHIP_STM32F103`

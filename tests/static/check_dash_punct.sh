@@ -25,12 +25,17 @@
 #
 #   separator  a `--` that ends a command's options, `git ls-files -- '*.c'` and
 #              `grep -qF -- "$x"`, is erased before the match. Recognised structurally: a
-#              command word at a command position, then option words only, then `--`. A
+#              command word at a command position, then option words only, short `-r` or
+#              long `--name-only`, then `--`. An operand between the last option and the
+#              `--` is not tolerated, so the separator has to sit where the options end. A
 #              command position also tolerates leading `NAME=value` assignments
 #              (`CDPATH= cd -- "$dir"`) and one leading `"${NAME[@]}"` array invocation
 #              (`"${SSH[@]}" bash -s -- "$@"`, the array holding the real command). The
 #              command list is SEP below: a tool that takes `--` and is not on it reports,
-#              and the fix is one word in that list, never a rewrite of working shell.
+#              and the fix is one word in that list, never a rewrite of working shell. The
+#              exemption reaches only as far as the line's first comment opener, HASH below:
+#              a command position is punctuation a comment can spell, so prose forges a
+#              whitelisted command and an option run in front of its own sentence break.
 #
 #   quoted     a `--` inside a matched pair of backticks is the token being NAMED, not
 #              punctuation: a comment documenting `++ -- +=` is describing the decrement
@@ -44,16 +49,6 @@
 #              self-test corpus has to be free to plant the spellings the gate refuses.
 #              The scan REFUSES a file whose heredoc is never terminated: everything below
 #              it went unread, so its verdict is UNKNOWN and not clean.
-#
-# How far the rule above reaches:
-#   - the corpus is source, so *.md prose is a separate decision about its 4000-odd dashes,
-#     and a commit message is not in the tree for a static gate to read at all.
-#   - the erase is per occurrence, so a prose pair sitting inside the span an erase covers
-#     goes with it: a line carrying BOTH a real separator and prose, or a banner and prose
-#     after the banner's own trailing pair.
-#   - an em dash or an en dash spelled as such is check_ascii.sh's rule, which reads the byte.
-#   - every file is read as text and never parsed per language, an assembler `#` comment in
-#     a *.S file included.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -69,16 +64,19 @@ scratch_dir
 SCAN="$(dirname "$0")/dash_punct.awk"
 [ -r "$SCAN" ] || fail "tests/static/dash_punct.awk is unreadable; nothing below can scan a line"
 
-# The four EREs, defined once and handed to the scanner, so the self-test below and the
+# The five EREs, defined once and handed to the scanner, so the self-test below and the
 # corpus scan cannot disagree about what the rule is.
 DASH_ERE='(^|[^-])[[:blank:]]--([[:blank:]"'\''\\\\]|$)'
 RUN_ERE='---'
 TICK_ERE='`[^`]*`'
-SEP_ERE='(^|[;&|(]|[$][(])[[:blank:]]*("[$][{][A-Za-z_][A-Za-z0-9_]*[[]@[]][}]"[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname)([[:blank:]]+-[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
+SEP_ERE='(^|[;&|(]|[$][(])[[:blank:]]*("[$][{][A-Za-z_][A-Za-z0-9_]*[[]@[]][}]"[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname)([[:blank:]]+--?[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
+# A shell comment opener, so a `#` inside a word or a literal is not one. SEP is erased ahead
+# of the first match only.
+HASH_ERE='(^|[[:blank:]])#'
 
 scan() { # <file> <heredoc 0|1>
     LC_ALL=C awk -v DASH="$DASH_ERE" -v RUN="$RUN_ERE" -v SEP="$SEP_ERE" -v TICK="$TICK_ERE" \
-        -v HEREDOC="$2" -f "$SCAN" "$1"
+        -v HASH="$HASH_ERE" -v HEREDOC="$2" -f "$SCAN" "$1"
 }
 
 # --- self-test: prove every clause of the rule, one control per clause ---------
@@ -92,6 +90,8 @@ echo "FAIL: the arena is exhausted --" >&2
 # you kill -- the runaway process
 # the cd -- command changes directory
 frobnicate -- "-$PID"
+frobnicate -r --name-only -- "$ref"
+# see: rm -rf; ls --color -- and then the prose
 EOF
 cat > "$TMP/neg.sh" <<'EOF'
 prog --help
@@ -106,6 +106,8 @@ i--; --j
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 sh -- "$@"
+git ls-tree -r --name-only -- "$_ref" arch/include/kickos/arch/
+grep -qF -- "$expect" "$f"  # a comment that opens AFTER the separator, never before it
 EOF
 cat > "$TMP/here.sh" <<'EOF'
 cat > "$TMP/corpus" <<'INNER'
@@ -115,7 +117,7 @@ echo "and this one -- is real"
 EOF
 
 POS="$(scan "$TMP/pos.sh" 0 | wc -l | tr -d ' ')"
-[ "$POS" -eq 6 ] || fail "the scanner found $POS of 6 planted pairs; it would miss real ones"
+[ "$POS" -eq 8 ] || fail "the scanner found $POS of 8 planted pairs; it would miss real ones"
 
 if ! scan "$TMP/neg.sh" 0 > "$TMP/negout" 2> "$TMP/negerr"; then
     sed 's/^/      /' "$TMP/negerr" >&2
@@ -136,36 +138,50 @@ while IFS= read -r line; do
     n="$(scan "$TMP/one.sh" 0 | wc -l | tr -d ' ')"
     [ "$n" -eq 0 ] || fail "negative control $i reports: $line"
 done < "$TMP/neg.sh"
-[ "$i" -eq 12 ] || fail "$i negative control(s) ran, expected 12"
+[ "$i" -eq 14 ] || fail "$i negative control(s) ran, expected 14"
 
-# The mutation the negatives exist to survive: turn each exemption OFF and the control must
-# then report, which is what proves the control was ever a near miss.
-mutate() { # <what> <run-ere> <sep-ere> <tick-ere> <expect-count>
-    m="$(LC_ALL=C awk -v DASH="$DASH_ERE" -v RUN="$2" -v SEP="$3" -v TICK="$4" -v HEREDOC=0 \
-            -f "$SCAN" "$TMP/neg.sh" | wc -l | tr -d ' ')"
-    [ "$m" -eq "$5" ] || fail "with the $1 clause disabled the scanner reported $m line(s), expected $5;
-      the negative controls for it are not near misses and prove nothing"
+# The mutation the controls exist to survive: turn each exemption OFF and the count over the
+# control file must move, which is what proves the control was ever a near miss. Every arm
+# but the last reads neg.sh, where a disabled exemption makes silent lines report.
+mutate() { # <what> <file> <run-ere> <sep-ere> <tick-ere> <hash-ere> <expect-count>
+    m="$(LC_ALL=C awk -v DASH="$DASH_ERE" -v RUN="$3" -v SEP="$4" -v TICK="$5" -v HASH="$6" \
+            -v HEREDOC=0 -f "$SCAN" "$2" | wc -l | tr -d ' ')"
+    [ "$m" -eq "$7" ] || fail "with the $1 clause disabled the scanner reported $m line(s) of $2, expected $7;
+      the controls for it are not near misses and prove nothing"
 }
 # Disabled = an ERE that cannot match. The count is EXACT and differs per clause, so a
 # control kept quiet by the wrong clause shows up as the wrong number rather than as a pass.
 NEVER='KICKOS_THIS_ERE_MATCHES_NOTHING'
-mutate "separator" "$RUN_ERE" "$NEVER"   "$TICK_ERE" 7
-mutate "banner"    "$NEVER"   "$SEP_ERE" "$TICK_ERE" 1
-mutate "backtick"  "$RUN_ERE" "$SEP_ERE" "$NEVER"    1
+mutate "separator" "$TMP/neg.sh" "$RUN_ERE" "$NEVER"   "$TICK_ERE" "$HASH_ERE" 9
+mutate "banner"    "$TMP/neg.sh" "$NEVER"   "$SEP_ERE" "$TICK_ERE" "$HASH_ERE" 1
+mutate "backtick"  "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE" "$NEVER"    "$HASH_ERE" 1
 
-# SEP has two sub-clauses beyond the plain command word, each with its own near miss above,
-# so each gets its own disabled-variant proof: a control quiet because the WORD is
+# SEP has three sub-clauses beyond the plain command word, each with its own near miss
+# above, so each gets its own disabled-variant proof: a control quiet because the WORD is
 # recognised must not be confused with one quiet because the PREFIX in front of it is
-# tolerated. Self-test only; the corpus scan never sees these two.
-SEP_ERE_NOPREFIX='(^|[;&|(]|[$][(])[[:blank:]]*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname)([[:blank:]]+-[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
-SEP_ERE_OLDWORDS='(^|[;&|(]|[$][(])[[:blank:]]*("[$][{][A-Za-z_][A-Za-z0-9_]*[[]@[]][}]"[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr)([[:blank:]]+-[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
+# tolerated, nor with one quiet because a LONG option was tolerated in the option run.
+# Self-test only; the corpus scan never sees these three.
+SEP_ERE_NOPREFIX='(^|[;&|(]|[$][(])[[:blank:]]*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname)([[:blank:]]+--?[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
+SEP_ERE_OLDWORDS='(^|[;&|(]|[$][(])[[:blank:]]*("[$][{][A-Za-z_][A-Za-z0-9_]*[[]@[]][}]"[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr)([[:blank:]]+--?[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
+SEP_ERE_OLDATOM='(^|[;&|(]|[$][(])[[:blank:]]*("[$][{][A-Za-z_][A-Za-z0-9_]*[[]@[]][}]"[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname)([[:blank:]]+-[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
 # NOPREFIX keeps the new words but drops the VAR=/array tolerance: only the three lines that
 # actually need a prefix (CDPATH= cd, CDPATH= cd via $(dirname, and the ssh-array bash) must
 # newly report.
-mutate "sep-prefix"    "$RUN_ERE" "$SEP_ERE_NOPREFIX" "$TICK_ERE" 3
+mutate "sep-prefix"      "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE_NOPREFIX" "$TICK_ERE" "$HASH_ERE" 3
 # OLDWORDS keeps the prefix tolerance but drops kill/bash/sh/cd/dirname from the list: every
 # line that exists to prove one of those five words must newly report.
-mutate "sep-new-words" "$RUN_ERE" "$SEP_ERE_OLDWORDS" "$TICK_ERE" 5
+mutate "sep-new-words"   "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE_OLDWORDS" "$TICK_ERE" "$HASH_ERE" 5
+# OLDATOM keeps the words and the prefix tolerance but narrows the option run back to a
+# SINGLE leading dash: only the line whose option run holds a long option must newly
+# report, which is what proves the two-dash tolerance is a near miss and not slack.
+mutate "sep-long-option" "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE_OLDATOM" "$TICK_ERE" "$HASH_ERE" 1
+
+# The comment test runs the other way, so its arm reads POS.SH: the forge planted there is a
+# real command position spelled inside prose, and HASH is the only reason it reports. With
+# HASH disabled it is exempted again and pos.sh drops back to its seven other pairs, which is
+# what proves the test is a near miss and not slack. The last negative control is the mirror,
+# a comment opening AFTER a real separator, and it stays silent under either HASH.
+mutate "sep-comment"     "$TMP/pos.sh" "$RUN_ERE" "$SEP_ERE"          "$TICK_ERE" "$NEVER"    7
 
 # The heredoc body must be skipped and the line AFTER it must not be.
 H="$(scan "$TMP/here.sh" 1)"

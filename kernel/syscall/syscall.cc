@@ -83,8 +83,10 @@ namespace kickos
         {
             if (rc == 0)
             {
-                kaccess_to_user(user_space_of(sched::current()), out, &handle,
-                                sizeof(handle));
+                bool const ok = kaccess_to_user(user_space_of(sched::current()), out, &handle,
+                                                sizeof(handle));
+                KICKOS_ASSERT(ok);
+                (void)ok;
             }
             return static_cast<uint64_t>(rc);
         }
@@ -107,7 +109,9 @@ namespace kickos
                 {
                     n = sizeof(chunk);
                 }
-                kaccess_from_user(chunk, space, buf + done, n);
+                bool const ok = kaccess_from_user(chunk, space, buf + done, n);
+                KICKOS_ASSERT(ok);
+                (void)ok;
                 kconsole_write(chunk, n); // fan-out (chip + RTT), not the raw transport
                 done += n;
             }
@@ -136,7 +140,9 @@ namespace kickos
                     {
                         break;
                     }
-                    kaccess_from_user(&buf[i], space, msg + i, 1);
+                    bool const ok = kaccess_from_user(&buf[i], space, msg + i, 1);
+                    KICKOS_ASSERT(ok);
+                    (void)ok;
                     if (buf[i] == '\0')
                     {
                         break;
@@ -158,7 +164,9 @@ namespace kickos
                 if (i + 1 == sizeof(buf) and user_readable_ok(msg + i, 1))
                 {
                     char probe = '\0';
-                    kaccess_from_user(&probe, space, msg + i, 1);
+                    bool const ok = kaccess_from_user(&probe, space, msg + i, 1);
+                    KICKOS_ASSERT(ok);
+                    (void)ok;
                     if (probe != '\0')
                     {
                         buf[i - 3] = '.';
@@ -219,12 +227,10 @@ namespace
                           uintptr_t a2, uintptr_t a3);
 }
 
-// THE death point of a cancelled thread. A cancel breaks whatever park the target is in, so
-// it returns to userspace with -KOS_ECANCELED and gets ONE window to clean up over memory it
-// already holds; the next time it asks the kernel for anything, it ends here instead. The
-// only survivor is a thread that never enters the kernel again.
-//
-// Checked on ENTRY and never on exit: on exit it would pre-empt that cleanup window.
+// THE death point of a cancelled thread. A cancel breaks whatever park the target is in, so it
+// returns to userspace with -KOS_ECANCELED and gets ONE window to clean up over memory it already
+// holds; the next time it asks the kernel for anything, it ends here instead. Checked on ENTRY
+// and never on exit, which would pre-empt that window.
 extern "C" uint64_t syscall_dispatch(uintptr_t nr,
                                      uintptr_t a0, uintptr_t a1,
                                      uintptr_t a2, uintptr_t a3)
@@ -342,9 +348,8 @@ uint64_t syscall_body(uintptr_t nr,
         {
             // mutex_lock takes its OWN lock for the acquire/park and releases it before the
             // resume barrier and the wait_result read; a lock spanning the call would
-            // reintroduce the stale read on ARM. The resolve-to-call window needs none: the
-            // caller's own cap pins the mutex (mutex_refs >= 1) and no cross-thread
-            // close/kill path can free it. need == 0: possession is the authority.
+            // reintroduce the stale read on ARM. The resolve-to-call window needs none, the
+            // caller's own cap pinning the mutex. need == 0: possession is the authority.
             Mutex* m;
             int err = 0;
             {
@@ -478,14 +483,10 @@ uint64_t syscall_body(uintptr_t nr,
                 console_handover_begin();
             }
             // Drains, with the lock RELEASED, every chip writer counted before the refusal
-            // above. Root spawns the driver only after this returns, so those writers are off
-            // the device before the driver touches it. Converges because HANDING_OFF admits
-            // no new ones.
-            //
-            // A bare busy-spin here LIVELOCKS under strict priority: a writer preempted mid
-            // arch_console_write_sync (a polled loop run WITHOUT IrqLock) can only finish
-            // once rescheduled, and it may be LOWER priority than this publisher. Hence the
-            // drop to the minimum real priority plus a yield each pass.
+            // above. Converges because HANDING_OFF admits no new ones. A bare busy-spin here
+            // LIVELOCKS under strict priority: a writer preempted mid arch_console_write_sync
+            // can only finish once rescheduled and may be LOWER priority than this publisher,
+            // hence the drop to the minimum real priority plus a yield each pass.
             Thread* pub = sched::current();
             uint8_t const saved_prio = pub->prio;
             sched::set_prio(pub, KICKOS_PRIO_MIN);
@@ -505,12 +506,9 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_CPU_CLOCK_SET:
         {
-            // AUTH_PSTATE: it mutates SystemCoreClock, retimes every thread's SysTick
-            // basis and moves the shared console baud. The coherence sequence (mask /
-            // disarm / flush / retune / re-arm) lives in cpu_clock_set.
-            // OUT of the -KOS_E* scheme: it returns a u32 Hz whose 0 sentinel already means
-            // cannot/unsupported/not-permitted, so the unprivileged path returns 0 too and
-            // the console-owned refusal surfaces as "unchanged Hz".
+            // AUTH_PSTATE: it mutates SystemCoreClock, retimes every thread's SysTick basis and
+            // moves the shared console baud. Out of the -KOS_E* scheme: it returns a u32 Hz whose
+            // 0 sentinel already means cannot/unsupported/not-permitted.
             Thread* c = sched::current();
             if (not cap_check_authority(c, AUTH_PSTATE))
             {
@@ -587,11 +585,9 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_EXIT:
         {
             Thread* c = sched::current();
-            // Root's exit ends the SYSTEM, through the same terminal path a returning main
-            // takes. Root's slot must not reach EXITED on THIS path: the pool, the domain table
-            // and the boot arena are all sized for root holding it for the whole run, and the
-            // reclaim sweep would strip the spawner_tag off every child root ever spawned.
-            // The fault-kill path (kernel/init/fault.cc) retires root instead.
+            // Root's exit ends the SYSTEM. Root's slot must not reach EXITED on THIS path: the
+            // pool, the domain table and the boot arena are sized for root holding it for the
+            // whole run, and the reclaim sweep would strip the spawner_tag off every child.
             if (kernel().threads.is_root(c))
             {
                 if (not cap_check_authority(c, AUTH_SYSTEM))
@@ -679,9 +675,8 @@ uint64_t syscall_body(uintptr_t nr,
         {
             // Test scaffolding for the Rule 7 grant predicates. Pure reads, so not
             // privilege-gated. op selects the predicate and posture; the kernel supplies the
-            // attr, so userspace needs no ARCH_MPU_* enum. Its arms are region-backend
-            // shaped (DEV encodability, a descriptor budget), which is why this stays on
-            // the descriptor fact and not on KICKOS_MEMORY_ENFORCED.
+            // attr, so userspace needs no ARCH_MPU_* enum. Keyed on the descriptor fact, its
+            // arms being region-backend shaped.
             uintptr_t const op = a0;
             uintptr_t const base = a1;
             size_t const size = static_cast<size_t>(a2);
@@ -878,12 +873,9 @@ uint64_t syscall_body(uintptr_t nr,
             }
 #if KICKOS_HAVE_ASPACE
             // F10: a page-aligned range RESERVED in the calling task's own space, mapped
-            // nowhere. The number is a virtual address in that space, and the frames under
-            // it are what makes it a globally unique name the handoff can carry.
-            //
-            // A PRIVILEGED CALLER GETS NULL, holding the kernel domain, which carries no
-            // space: there is no address space for a reservation of its own to live in, and
-            // such a thread executes out of the kernel's half.
+            // nowhere. The number is a virtual address in that space, and the frames under it
+            // are what makes it a globally unique name the handoff can carry. A privileged
+            // caller gets null, holding the kernel domain, which carries no space.
             return aspace_reserve(domain_ranges_mut(task_domain(c->task)),
                                   static_cast<size_t>(a0));
 #else
@@ -893,13 +885,10 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_MEM_SELF_GRANT:
         {
-            // KOS_SYS_RAM_ALLOC reserves arena memory and grants nothing; this is the
-            // grant half.
-            //
-            // Added to the CALLER's own region set, not to its domain. AUTHORITY is
-            // thread-local by contract; how wide the resulting reach is belongs to the
-            // backend, and a translating one maps into the task's space (F9, F10). So no
-            // caller may infer sibling denial from this.
+            // The grant half of KOS_SYS_RAM_ALLOC, added to the CALLER's own region set.
+            // AUTHORITY is thread-local by contract; how wide the resulting reach is belongs to
+            // the backend, and a translating one maps into the task's space, so no caller may
+            // infer sibling denial from this (F9, F10).
             IrqLock lock;
             Thread* const c = sched::current();
             if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
@@ -923,13 +912,10 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
             }
-            // Already reachable costs no descriptor. EXCEPT where the mapping CARRIES the
-            // memory type, and then the question is asked of the TYPE and not of the rights,
-            // in BOTH directions: a request that names no type over a block mapped
-            // non-cacheable is the way back from a DMA buffer to ordinary memory, and answering
-            // it on rights alone tells the caller cacheability was restored while the mapping
-            // stays exactly as it was. Privileged reach comes from the CACHEABLE background map
-            // on a region chip, which is the other half of the same asymmetry.
+            // Already reachable costs no descriptor. Where the mapping CARRIES the memory type
+            // the question is asked of the TYPE in both directions: a request naming no type
+            // over a block mapped non-cacheable is the way back from a DMA buffer to ordinary
+            // memory. Privileged reach comes from the CACHEABLE background map on a region chip.
             bool already = false;
             if (grant_memtype_programmed())
             {
@@ -944,12 +930,9 @@ uint64_t syscall_body(uintptr_t nr,
                 return 0;
             }
 #if KICKOS_HAVE_ASPACE
-            // THE MAP HALF OF F10, and the admission with it: the range must be one this
-            // task RESERVED, which is what narrows the old "any reserved-clear in-arena
-            // range" and what refuses an address another task reserved. The arena and
-            // natural-alignment arms below do not run here: a reservation names frame-pool
-            // frames, which the bump arena does not contain, and a page-granular range
-            // cannot trip an alignment rule no descriptor imposes.
+            // The map half of F10: the range must be one this task RESERVED, which is what
+            // refuses an address another task reserved. The arena and natural-alignment arms
+            // below do not run here, a reservation naming frame-pool frames.
             enum arch_map_memtype mtype = ARCH_MAP_NORMAL;
             if ((attr & ARCH_MPU_NOCACHE) != 0)
             {
@@ -958,12 +941,10 @@ uint64_t syscall_body(uintptr_t nr,
             int const grc = aspace_self_grant(domain_space(task_domain(c->task)),
                                               domain_ranges_mut(task_domain(c->task)), base,
                                               size, ARCH_MAP_R | ARCH_MAP_W, mtype);
-            // NO REGION RECORD BESIDE IT. The range list already carries this mapping, and it
-            // carries the EXACT extent where a region would carry the rounded one; a second
-            // entry could only be the wider of two answers to one question. It is also what
-            // moves the -KOS_ENOMEM budget onto KICKOS_ASPACE_RANGES, the reservation being
-            // what runs out (F10), and what makes the grant reach every sibling: the array is
-            // per-THREAD while the mapping is task-wide (F9).
+            // The range list already carries this mapping, at the EXACT extent, so there is no
+            // region record beside it. That is what moves the -KOS_ENOMEM budget onto
+            // KICKOS_ASPACE_RANGES (F10) and what makes the grant reach every sibling, the array
+            // being per-THREAD while the mapping is task-wide (F9).
             return static_cast<uint64_t>(grc);
 #else
             // Rule 7 admission on the geometry that will actually be committed: a window
@@ -987,17 +968,15 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
             }
-            // Full budget, or a region this backend seats no descriptor for, is a
-            // returned error; either truncating the set or carrying the grant unenforced
-            // would fault the thread on memory it was told it had. NOT -KOS_EMFILE: that
-            // code names the capability table, and the knob here is
-            // KICKOS_MPU_MAX_REGIONS.
+            // Full budget, or a region this backend seats no descriptor for, is a returned
+            // error: truncating the set or carrying the grant unenforced would fault the thread
+            // on memory it was told it had. The knob here is KICKOS_MPU_MAX_REGIONS, so the code
+            // is not -KOS_EMFILE.
             //
-            // RETYPING, and not a second descriptor: a block this thread already names with
-            // another memory type reaches here only where the descriptor CARRIES the type, and
-            // two of them over one block would leave the range checks and the hardware reading
-            // different ones. The whole of it sits inside MpuSet deliberately, a `prior` region
-            // held across the call here being caller stack the SVC red zone is measured on.
+            // A block this thread already names with another memory type is RETYPED in place;
+            // two descriptors over one block would leave the range checks and the hardware
+            // reading different ones. It sits inside MpuSet because a `prior` region held across
+            // the call here is caller stack the SVC red zone is measured on.
             if (not c->mpu.add_enforced_retyping(base, rsz, attr))
             {
                 return static_cast<uint64_t>(-KOS_ENOMEM);
@@ -1104,10 +1083,8 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_BENCH:
         {
             // The ONLY route to the bench helpers from an app: each reads kernel .data or a
-            // peripheral, so an app calling them directly runs them at ITS privilege and
-            // faults (root is unprivileged on every board). Ungated, like KOS_SYS_IRQ_INJECT.
-            //
-            // Both prints run HERE, in thread context and holding no IrqLock.
+            // peripheral, so an app calling them directly runs them at ITS privilege and faults.
+            // Both prints run here, in thread context and holding no IrqLock.
             switch (a0)
             {
                 case KOS_BENCH_OP_RESET:

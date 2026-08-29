@@ -1,25 +1,20 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# KickOS build helpers: per-component flag posture, the optional application helper
-# kickos_add_application(), and the image emitter kickos_emit_image().
+# KickOS build helpers: per-component flag posture, kickos_add_application() and the image
+# emitter kickos_emit_image().
 #
-# The application owns the final link (architecture.md, invariant #8): KickOS ships static
-# libraries, headers and startup. The link recipe lives on the exported `kickos` /
-# `kickos_cxx` usage targets, NOT in these helpers, so what is left here is in-tree-only
-# policy or an explicit opt-in.
+# The application owns the final link (architecture.md, invariant #8): the link recipe lives
+# on the exported `kickos` / `kickos_cxx` usage targets, never in these helpers.
 
 # ---------------------------------------------------------------------------
 # Board -> {arch, chip} resolution.
 #
-# The single source of truth for a board's arch and chip is one descriptor,
-# boards/<board>/board.cmake, also included pre-project by the ARM toolchain file, which
-# then takes the -mcpu baseline from arch/<family>/chip/<chip>/cpu.cmake unless the
-# descriptor overrides it. The sim has no chip (KICKOS_CHIP == "").
+# A board's arch and chip come from one descriptor, boards/<board>/board.cmake, also included
+# pre-project by the cross toolchain file. The sim has no chip (KICKOS_CHIP == "").
 #
 # KICKOS_BOARDS_DIR is captured at include time: a called function sees the caller's list
-# dir, not this file's. An installed package has no boards/ tree, so the fallback below
-# applies there.
+# dir, not this file's. An installed package has no boards/ tree, hence the fallback below.
 # ---------------------------------------------------------------------------
 get_filename_component(KICKOS_BOARDS_DIR "${CMAKE_CURRENT_LIST_DIR}/../boards" ABSOLUTE)
 
@@ -34,9 +29,8 @@ else()
   set(KICKOS_IN_TREE FALSE)
 endif()
 
-# The descriptor also carries KICKOS_ARCH_FAMILY (arm|rx|sim|...): the source-tree family
-# that routes arch/<family>/... and the family-specific cross toolchain. A board that omits
-# it falls back to a derivation from the arch (armv6m/armv7m -> arm, sim -> sim).
+# KICKOS_ARCH_FAMILY (arm|rx|sim|...) routes arch/<family>/... and the cross toolchain; a
+# board that omits it falls back to a derivation from the arch.
 function(kickos_derive_arch_family arch out_family)
   if(arch MATCHES "^armv")
     set(${out_family} "arm" PARENT_SCOPE)
@@ -55,11 +49,9 @@ function(kickos_load_board_descriptor board out_arch out_chip out_family)
     set(${out_chip} "${KICKOS_CHIP}" PARENT_SCOPE)
   elseif(NOT KICKOS_IN_TREE
          AND DEFINED KICKOS_ARCH AND board STREQUAL "${KICKOS_BOARD}")
-    # Installed package: no boards/ tree at all, so fall back to the arch/chip this package
-    # recorded (KickOSConfig) for the single board it was built for. Gated on the boards/
-    # tree being ABSENT so an in-tree unknown board still errors: in-tree the host toolchain
-    # also defines KICKOS_ARCH, which alone would let a typo'd board slip through as the
-    # recorded arch.
+    # Installed package: no boards/ tree, so fall back to the arch/chip this package recorded
+    # for the single board it was built for. Gated on the boards/ tree being ABSENT so an
+    # in-tree typo'd board still errors: in-tree the host toolchain also defines KICKOS_ARCH.
     set(${out_arch} "${KICKOS_ARCH}" PARENT_SCOPE)
     set(${out_chip} "${KICKOS_CHIP}" PARENT_SCOPE)
   else()
@@ -78,7 +70,6 @@ endfunction()
 # Flag posture.
 #   Kernel / lib / userspace  -> freestanding C++ (no exceptions/rtti).
 #   arch/sim                  -> hosted (bridges to host libc), still no exc/rtti.
-# Applied per-target so a hosted arch TU and a freestanding kernel TU coexist in one binary.
 #
 # Warning flags never leave this project: they are applied PRIVATE to targets we own, and
 # the exported `kickos`/`kickos_cxx` usage targets carry none of them.
@@ -104,10 +95,9 @@ set(KICKOS_FREESTANDING_CXX_FLAGS
   -fno-exceptions -fno-rtti
   -fno-threadsafe-statics -fno-use-cxa-atexit)
 
-# Applied PRIVATE, so the C++20 level does not ride out through KickOSTargets.cmake as
-# INTERFACE_COMPILE_FEATURES and compile a consumer's C++17 codebase as C++20. The rule
-# that buys: no INSTALLED header may use a C++20 construct, a consumer compiling those in
-# their own dialect. tests/static/check_public_headers.sh keeps it true.
+# Applied PRIVATE, so the C++20 level does not ride out through KickOSTargets.cmake and
+# compile a consumer's C++17 codebase as C++20. No INSTALLED header may use a C++20
+# construct; tests/static/check_public_headers.sh keeps that true.
 set(KICKOS_CXX_STANDARD cxx_std_20)
 set(KICKOS_CXX_INTERFACE_STANDARD cxx_std_17)
 
@@ -118,13 +108,19 @@ function(kickos_apply_freestanding target)
   target_compile_options(${target} PRIVATE
     ${KICKOS_WARN_FLAGS} ${KICKOS_FREESTANDING_FLAGS}
     "$<$<COMPILE_LANGUAGE:CXX>:${KICKOS_FREESTANDING_CXX_FLAGS}>")
-  # RISC-V PMP enforcement: the KickOS-owned libs must emit NO gp-relative small-data, so
-  # the single gp window holds only app + C++-runtime small-data and can sit inside the
-  # granted .appdata region. -msmall-data-limit=0 routes every KickOS global to ordinary
-  # .data/.bss. NOT applied to the app: its -fexceptions TUs need gp-relative small-data or
-  # __cxa_throw hangs in the FDE walk (docs/design-cxx-under-mpu.md).
-  # check_riscv_no_smalldata.sh asserts the built archives carry zero .sdata/.sbss.
-  if(KICKOS_ARCH STREQUAL "rv32imac" AND KICKOS_HAVE_MPU)
+  # RISC-V: the KickOS-owned libs must emit NO gp-relative small-data, so the single gp
+  # window holds only app and C++-runtime small-data. The app keeps its own: a -fexceptions
+  # TU built -msmall-data-limit=0 hangs __cxa_throw in the FDE walk
+  # (docs/design-cxx-under-mpu.md).
+  #
+  # The flag keeps kernel DATA out of .sdata/.sbss; a kernel access can still RESOLVE through
+  # gp, the linker making gp addressing out of any upper/lower pair landing within
+  # gp +/- 0x800. gp is a register an unprivileged thread writes, so
+  # arch/riscv/rv64imac/switch.S re-anchors it twice per trap, at .Ltrap_regs and .Lrestore.
+  # check_riscv_no_smalldata.sh reads the archives; gp addressing exists only after link, so
+  # check_riscv_kernel_gp.sh reads the linked image (docs/design-m6-mmu.md R2.2).
+  if((KICKOS_ARCH STREQUAL "rv32imac" AND KICKOS_HAVE_MPU)
+     OR (KICKOS_ARCH STREQUAL "rv64imac" AND KICKOS_HAVE_ASPACE))
     target_compile_options(${target} PRIVATE -msmall-data-limit=0)
   endif()
 endfunction()
@@ -134,17 +130,8 @@ endfunction()
 #   (cmake/kernel_runtime.syms). Kernel text may not call the app's copies, whose pages carry
 #   privileged-execute-never once EL0 can reach them (docs/design-m6-mmu.md, T5b).
 #
-#   An EXPLICIT call is renamed at its call site instead and needs nothing from this; what
-#   needs it is the reference with no call in the .cc at all, which `ThreadAttr attr;` emits
-#   and no compiler flag suppresses.
-#
-#   In place, after `ar`, so the archive the linker reads is the rewritten one. An entry
-#   matching no symbol is a no-op, so a second run over an already-rewritten archive changes
-#   nothing.
-#
 #   The syms file is NOT a dependency of this command, so adding a name to it re-archives
-#   nothing: tests/static/check_kernel_runtime.sh is what turns that into a failure, and it
-#   is also what catches an archive this was never called for.
+#   nothing: tests/static/check_kernel_runtime.sh is what turns that into a failure.
 function(kickos_privatise_runtime target)
   if(NOT CMAKE_OBJCOPY)
     message(FATAL_ERROR "kickos_privatise_runtime(${target}): no CMAKE_OBJCOPY. The kernel "
@@ -155,41 +142,35 @@ function(kickos_privatise_runtime target)
     COMMAND "${CMAKE_OBJCOPY}" "--redefine-syms=${_syms}" "$<TARGET_FILE:${target}>"
     COMMENT "kickos: privatising the runtime references in ${target}"
     VERBATIM)
+  # A per-arch map beside the fleet-wide one; an arch with no such file adds nothing.
+  set(_arch_syms "${PROJECT_SOURCE_DIR}/cmake/kernel_runtime_${KICKOS_ARCH}.syms")
+  if(EXISTS "${_arch_syms}")
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND "${CMAKE_OBJCOPY}" "--redefine-syms=${_arch_syms}" "$<TARGET_FILE:${target}>"
+      COMMENT "kickos: privatising the ${KICKOS_ARCH} runtime references in ${target}"
+      VERBATIM)
+  endif()
 endfunction()
 
 # kickos_split_image_tu(<target> <source>...)
 #   Builds the NAMED TUs of an archive holding KERNEL text under the large code model, where
-#   a translating backend splits the image in two. Two distinct things force it, and a TU is
-#   listed at the call site with which one applies to it.
+#   a translating backend splits the image in two. Inert where KICKOS_SPLIT_IMAGE_CODE_MODEL
+#   is empty.
 #
-#   REACH. The kernel's half and the app's are 2^40 apart on AArch64 and adrp spans 4 GiB,
-#   so a kernel reference to an app symbol truncates at link time
-#   (R_AARCH64_ADR_PREL_PG_HI21). The large code model materialises the address as a 64-bit
-#   literal in the referencing section, which reaches either half.
+#   Two things put a TU on a call site's list. REACH: the two halves are 2^40 apart on
+#   AArch64 and adrp spans 4 GiB, so a kernel reference to an app symbol truncates at link
+#   time (R_AARCH64_ADR_PREL_PG_HI21). GOT: a static link has ONE .got, virt_arm64.ld puts it
+#   in the app's window, and a kernel-side GOT user is a blocker whether or not the link
+#   happens to succeed. A CALL needs neither, ld inserting a long-branch veneer.
 #
-#   GOT, and this is the load-bearing one. A static link has ONE .got and a GOT slot is
-#   reached by adrp like anything else, so a GOT with users in both halves cannot be placed
-#   at all; virt_arm64.ld puts it in the app's window. Under the small model a WEAK EXTERN
-#   is what produces a kernel-side GOT reference (R_AARCH64_ADR_GOT_PAGE); under the large
-#   model none does, leaving the .got to newlib's __libc_fini_array and __call_exitprocs.
-#   A GOT user is a blocker whether or not the link happens to succeed today.
-#
-#   A CALL needs neither: ld inserts a long-branch veneer for an out-of-range
-#   R_AARCH64_CALL26 in either direction.
-#
-#   Per TU and not per target: the flag costs kernel text on a fixed budget and I-cache on
-#   the scheduler and syscall paths.
-#
-#   The list is a MEASUREMENT over the built objects of a fully-small tree and not a reading
-#   of the source: whether a reference survives inlining into some other TU is a property of
-#   the optimiser. BOTH sweeps are needed, the reach class failing the link loudly while a
-#   GOT user is silent:
+#   The list is a MEASUREMENT over the built objects of a fully-small tree, both sweeps being
+#   needed because the reach class fails the link loudly while a GOT user is silent:
 #     readelf -rW <archive> | grep R_AARCH64_ADR_PREL_PG_HI21   (against an app-half name)
 #     readelf -rW <archive> | grep _GOT                          (any hit is a blocker)
 #   readelf TRUNCATES the type column, so ADR_GOT_PAGE prints as R_AARCH64_ADR_GOT and a
 #   pattern anchored on a trailing underscore matches nothing.
 function(kickos_split_image_tu target)
-  if(NOT KICKOS_ARCH STREQUAL "armv8a")
+  if(NOT KICKOS_SPLIT_IMAGE_CODE_MODEL)
     return()
   endif()
   get_target_property(_srcs ${target} SOURCES)
@@ -204,7 +185,8 @@ function(kickos_split_image_tu target)
       message(FATAL_ERROR "kickos_split_image_tu(${target}): ${_tu} is not a source of "
                           "that target, so -mcmodel=large would reach nothing.")
     endif()
-    set_property(SOURCE "${_tu}" APPEND PROPERTY COMPILE_OPTIONS -mcmodel=large)
+    set_property(SOURCE "${_tu}" APPEND PROPERTY COMPILE_OPTIONS
+                 ${KICKOS_SPLIT_IMAGE_CODE_MODEL})
   endforeach()
 endfunction()
 
@@ -217,23 +199,25 @@ function(kickos_apply_hosted target)
   target_compile_definitions(${target} PRIVATE _GNU_SOURCE)
 endfunction()
 
-# The per-chip -mcpu/-mfpu/-mfloat-abi baseline is set globally by the ARM toolchain file
-# (CMAKE_<LANG>_FLAGS_INIT) so it applies uniformly to every compile and link (correct
-# multilib). Freestanding TUs on ARM therefore need no extra CPU flags here.
+# The per-chip -mcpu/-mfpu/-mfloat-abi baseline comes from the toolchain file's
+# CMAKE_<LANG>_FLAGS_INIT, so no CPU flag belongs here.
 
 # ---------------------------------------------------------------------------
 # kickos_emit_image(<target>)
 #   MCU only: turn a linked ELF into flashable .bin and .hex, and print size.
 #   No-op on the sim (a runnable host ELF is the deliverable there).
 #
-#   PUBLIC, a POST_BUILD action not being able to ride a usage requirement: one opt-in line
-#   after target_link_libraries(app PRIVATE kickos). The esp32 family needs esptool elf2image
-#   with per-chip flags (below), and getting them wrong flashes cleanly then reset-loops.
+#   PUBLIC: a POST_BUILD action cannot ride a usage requirement, so it is one opt-in line
+#   after target_link_libraries(app PRIVATE kickos).
 # ---------------------------------------------------------------------------
 function(kickos_emit_image target)
-  # KICKOS_ARCH is the single source of truth for "is this the sim", recorded in the
-  # installed package too, so this also holds for an out-of-tree consumer.
   if(KICKOS_ARCH STREQUAL "sim")
+    return()
+  endif()
+  # x86_64: the deliverable IS the image. cmake/x86_64_boot.cmake writes the PE32+ UEFI
+  # application from the app's objects, so there is no ELF here to turn into one, and the
+  # target is an OBJECT library that $<TARGET_FILE:> may not name at all.
+  if(KICKOS_ARCH STREQUAL "x86_64")
     return()
   endif()
   add_custom_command(TARGET ${target} POST_BUILD
@@ -247,20 +231,17 @@ function(kickos_emit_image target)
       VERBATIM)
   endif()
 
-  # Espressif chips (Xtensa esp32, RISC-V esp32c6): the raw objcopy .bin is NOT bootable,
-  # the ROM loader needing the Espressif image format (magic 0xE9, segment table, checksum)
-  # that esptool elf2image builds from the ELF. A missing esptool (the esp-idf env is not
-  # active) skips with a message rather than failing the build. --chip is the KickOS chip
-  # name, esptool accepting esp32 / esp32c6 verbatim. Prefer `esptool`, esptool.py being
-  # deprecated in v5.
+  # Espressif chips (Xtensa esp32, RISC-V esp32c6): the raw objcopy .bin is NOT bootable, the
+  # ROM loader needing the Espressif image format that esptool elf2image builds from the ELF.
+  # A missing esptool skips with a message rather than failing the build. Prefer `esptool`,
+  # esptool.py being deprecated in v5.
   if(KICKOS_CHIP STREQUAL "esp32" OR KICKOS_CHIP STREQUAL "esp32c6")
     find_program(KICKOS_ESPTOOL NAMES esptool esptool.py)
     # Our app IS the image at the ROM bootloader offset (0x1000 on esp32), so the
     # first-stage ROM loads it using the header's flash mode BEFORE any code reconfigures
     # the SPI pins. esptool's elf2image default is QIO, which the esp32 ROM reads unreliably
     # from that position: it loads segment 0, then reads a garbage segment-1 header
-    # (`load:0xffffffff,len:-1`) and RTC-WDT reset-loops. Force DIO for esp32. Witnessed on
-    # ESP32-D0WD-V3 silicon.
+    # (`load:0xffffffff,len:-1`) and RTC-WDT reset-loops. Force DIO for esp32.
     set(_kos_img_mode "")
     if(KICKOS_CHIP STREQUAL "esp32")
       set(_kos_img_mode --flash_mode dio)
@@ -269,8 +250,7 @@ function(kickos_emit_image target)
       # the RISC-V ROM loader needs --ram-only-header (which implies --dont-append-digest)
       # to boot it. A plain elf2image image is loaded but never entered
       # (`ets_loader.c 67`). DIO for the same reason as esp32: the ROM mis-reads a QIO
-      # header from the boot position and "Checksum failure" reset-loops. Witnessed on
-      # ESP32-C6-WROOM silicon.
+      # header from the boot position and "Checksum failure" reset-loops.
       set(_kos_img_mode --ram-only-header --dont-append-digest --flash_mode dio)
     endif()
     if(KICKOS_ESPTOOL)
@@ -301,31 +281,24 @@ endfunction()
 #   CAPABILITIES is this app's PEAK of concurrently held capabilities, one of the four
 #   terms root's table width is summed from (cmake/cap_table.cmake). Omitted, the app
 #   gets KICKOS_CAP_APP_PEAK_DEFAULT.
-#   CAPABILITIES_OPTIONAL is further peak whose holders reclaim and self-skip when they
-#   cannot allocate, so it is granted only where supply covers it and never makes a board
-#   fail to configure.
+#   CAPABILITIES_OPTIONAL is further peak granted only where supply covers it: its holders
+#   reclaim and self-skip when they cannot allocate.
 #   CAPABILITIES_INBOUND_REPLY is how many CAP_REPLY capabilities one of this app's tasks
-#   holds at once as the SERVER side of kos_call: a client mints into the server's table
-#   (kernel/syscall/syscall_ipc.cc), so without it the sum does not bound when the server's
-#   own creates start failing. It is the peak of CONCURRENTLY parked callers, not a count of
-#   calls. Omitted, the app gets KICKOS_CAP_REPLY_DEFAULT (0).
-#   All three size ROOT's table. Every spawned child is seated at KICKOS_CAP_CHILD_WIDTH,
-#   which no declaration here reaches.
-#   Out of tree any of these three is recorded, WARNED about and not acted on: the width is
-#   fixed by the installed package the app links.
+#   holds at once as the SERVER side of kos_call, a client minting into the server's table
+#   (kernel/syscall/syscall_ipc.cc). It is the peak of CONCURRENTLY parked callers. Omitted,
+#   the app gets KICKOS_CAP_REPLY_DEFAULT (0).
+#   All three size ROOT's table; every spawned child is seated at KICKOS_CAP_CHILD_WIDTH.
+#   Out of tree all three are recorded, warned about and not acted on: the width is fixed by
+#   the installed package the app links.
 #
-#   SPI_BACKEND names the CMake target providing this executable's implementation of the SPI
-#   class <kickos/driver/spi.h>: a per-chip local engine (kickos_spi_xmcssc,
-#   kickos_spi_k64dspi) or the chip-agnostic kickos_spi_proxy. Target-name-valued and
-#   fail-loud, like KICKOS_SERVICE_LIST and KICKOS_INIT_PROVIDER. It is PER CONSUMER TARGET
-#   and not per build directory, two executables in one tree being free to differ. Exactly
-#   ONE backend per executable: they define the same four symbols, which is also why a
-#   service driver in the same image keeps its engine copy under private symbols.
+#   SPI_BACKEND names the target providing this executable's implementation of the SPI class
+#   <kickos/driver/spi.h>: a per-chip engine (kickos_spi_xmcssc, kickos_spi_k64dspi) or the
+#   chip-agnostic kickos_spi_proxy. Per consumer TARGET, so two executables in one tree may
+#   differ. Exactly ONE backend per executable: they define the same four symbols.
 #
 #   FULL_CXX (opt-in, docs/design-kickcat-k64f.md "Libc strategy"): compile this app's C++
-#   TUs with -fexceptions/-frtti (NOT the freestanding clamp) and link the toolchain's
-#   libstdc++/libsupc++ over newlib, so exceptions + STL + RTTI work. Off by default. No
-#   effect on the sim, already hosted against host libstdc++.
+#   TUs with -fexceptions/-frtti and link the toolchain's libstdc++/libsupc++ over newlib.
+#   Off by default; no effect on the sim, already hosted against host libstdc++.
 # ---------------------------------------------------------------------------
 function(kickos_add_application name)
   cmake_parse_arguments(APP "FULL_CXX"
@@ -365,7 +338,17 @@ function(kickos_add_application name)
       "kickos_arch_${_arch} (it was built for a different board)")
   endif()
 
-  add_executable(${name} ${APP_SOURCES})
+  # The app target is an OBJECT library on x86_64 and an executable everywhere else: what
+  # firmware loads there is a PE32+ UEFI application, and CMake cannot drive `ld -m i386pep`
+  # as a linker for a target, so the link is a custom command over these objects
+  # (kickos_x86_64_link_image, cmake/x86_64_boot.cmake). An OBJECT library, so the
+  # target_compile_definitions and friends a call site applies still bind. The image path is
+  # recorded on the target as KICKOS_IMAGE_FILE.
+  if(KICKOS_ARCH STREQUAL "x86_64")
+    add_library(${name} OBJECT ${APP_SOURCES})
+  else()
+    add_executable(${name} ${APP_SOURCES})
+  endif()
   # Only an EXPLICIT declaration is recorded, so the sum's diagnostics can name the app that
   # set the width rather than the default.
   if(DEFINED APP_CAPABILITIES OR DEFINED APP_CAPABILITIES_OPTIONAL
@@ -394,10 +377,6 @@ function(kickos_add_application name)
       C_STANDARD_REQUIRED ON
       C_EXTENSIONS OFF)
   endif()
-  # The app is NOT built -msmall-data-limit=0 under RISC-V PMP: the gp window is anchored
-  # inside the .appdata grant (chip .ld), and the flag on a -fexceptions TU hangs
-  # __cxa_throw in the FDE walk (docs/design-cxx-under-mpu.md).
-  #
   # The backend goes ahead of the posture leaf, so its archive precedes the rescan group on
   # the link line and a group member that ever referenced a class symbol resolves against
   # this executable's own choice rather than pulling a second one.
@@ -410,9 +389,23 @@ function(kickos_add_application name)
     target_link_libraries(${name} PRIVATE ${APP_SPI_BACKEND})
   endif()
   if(APP_FULL_CXX)
+    if(KICKOS_ARCH STREQUAL "x86_64")
+      message(FATAL_ERROR "kickos_add_application(${name}): FULL_CXX on x86_64. This "
+        "toolchain links no C library and no libstdc++ (cmake/toolchain-x86_64-uefi.cmake), "
+        "so there is no exceptions/STL/RTTI runtime to link over.")
+    endif()
     target_link_libraries(${name} PRIVATE kickos_cxx)
   else()
     target_link_libraries(${name} PRIVATE kickos)
+  endif()
+  # On x86_64 this carries the compile posture only; the link itself is below.
+  if(KICKOS_ARCH STREQUAL "x86_64")
+    if(NOT COMMAND kickos_x86_64_link_image)
+      message(FATAL_ERROR "kickos_add_application(${name}): x86_64 needs "
+        "kickos_x86_64_link_image, which cmake/x86_64_boot.cmake defines. Include that "
+        "fragment before add_subdirectory(user/apps).")
+    endif()
+    kickos_x86_64_link_image(${name})
   endif()
   kickos_emit_image(${name})
 endfunction()
@@ -420,11 +413,9 @@ endfunction()
 # ---------------------------------------------------------------------------
 # kickos_add_diagnostic_app(<name> SOURCES <src...> BOARD <board>)
 #   A DIAGNOSTIC (test/bring-up) app, built ONLY when KICKOS_ENABLE_SELFTEST is on: it
-#   depends on the test-only syscall surface (kos_irq_inject, kos_guard_addr, ...) kept OUT
-#   of the production ABI, and/or deliberately faults. Callers should
-#   `if(NOT TARGET <name>) return() endif()` before registering its tests so a
-#   non-diagnostic build skips them cleanly. It returns SILENTLY, so a caller that wants the
-#   operator told states the requirement itself.
+#   depends on the test-only syscall surface kept out of the production ABI, and/or
+#   deliberately faults. It returns SILENTLY, so a caller that wants the operator told
+#   states the requirement itself.
 # ---------------------------------------------------------------------------
 function(kickos_add_diagnostic_app name)
   if(NOT KICKOS_ENABLE_SELFTEST)
@@ -435,16 +426,12 @@ endfunction()
 
 # ---------------------------------------------------------------------------
 # kickos_add_driver(<name> [SOURCES <src...>] [CLASS <leaf>] [REGDIR <dir>])
-#   The one shape of an unprivileged chip/device driver library (kickos_k64dspi,
-#   kickos_xmcssc, ...): a freestanding STATIC lib that links kickos_user, sees
-#   system/include (sys.h/abi.h pull errno.h from kickos_system, which kickos_user carries
-#   only PRIVATE), optionally sees a chip register dir (REGDIR, e.g. arch/arm/chip/xmc4800
-#   for regs/usic.h, definitions only and no code or kernel headers), optionally links a
-#   chip class leaf (CLASS, shared register logic coming from the freestanding
-#   kickos_class_<chip> leaf and not a local copy), and is EXPORTED so an out-of-tree
-#   consumer links it on top of the OS. Its .data/.bss land in .appdata, the lib being
-#   outside the closed kernel set that the chip .ld catch-all excludes, so they are
-#   user-reachable. The target is kickos_<name>; SOURCES defaults to <name>.cc.
+#   The one shape of an unprivileged chip/device driver library: a freestanding STATIC lib
+#   that links kickos_user, sees system/include, optionally sees a chip register dir (REGDIR,
+#   definitions only), optionally links a chip class leaf (CLASS), and is EXPORTED so an
+#   out-of-tree consumer links it on top of the OS. Its .data/.bss land in .appdata, the lib
+#   being outside the closed kernel set the chip .ld catch-all excludes. The target is
+#   kickos_<name>; SOURCES defaults to <name>.cc.
 function(kickos_add_driver name)
   cmake_parse_arguments(DRV "" "CLASS;REGDIR" "SOURCES" ${ARGN})
   if(NOT DRV_SOURCES)
@@ -478,14 +465,20 @@ endfunction()
 #     microbit   -> microbit    (armv6m Cortex-M0)
 #     qemu-riscv -> virt, plus QEMU=qemu-system-riscv32 QEMU_EXTRA=-bios none
 #                   (RV32IMAC bare-metal in M-mode, no OpenSBI).
+#     qemu-riscv64 -> virt, plus QEMU=qemu-system-riscv64 QEMU_EXTRA=-bios none
+#                   (RV64IMAC bare metal, no OpenSBI).
 #     qemu-arm64 -> virt, plus QEMU=qemu-system-aarch64 QEMU_EXTRA=-cpu cortex-a53 -nic none
 #                   (AArch64 bare metal at EL1).
-#   QEMU_MACHINE is always passed, never left to the scripts' mps2-an386 fallback:
-#   most boards would silently run on the wrong core, and check_fault_dump.sh reads
-#   an UNSET QEMU_MACHINE as "this is the sim, run natively".
-#   MACHINE overrides the board default, for a script that needs a specific image.
-#   ARGS are extra script arguments after the ELF (e.g. the expected fault-dump banner, or a
-#   decoder path). TIMEOUT defaults to 60s.
+#     qemu-x86_64 -> q35, plus QEMU=qemu-system-x86_64 and KICKOS_BOOT=uefi-pe, which is
+#                   what makes gate.sh build an EFI system partition and boot OVMF instead
+#                   of passing -kernel (the image is a PE32+ application, which -kernel
+#                   cannot start at all).
+#   QEMU_MACHINE is always passed: check_fault_dump.sh reads an UNSET QEMU_MACHINE as "this
+#   is the sim, run natively", and most boards would otherwise take the mps2-an386 fallback.
+#   MACHINE overrides the board default. ARGS are extra script arguments after the ELF.
+#   TIMEOUT defaults to 60s.
+#   TARGET names an app target; the image is $<TARGET_FILE:> unless that target records a
+#   KICKOS_IMAGE_FILE, which the x86_64 OBJECT-library app does.
 #   Keep the per-test `if(KICKOS_BUILD_TESTS AND ...)` guard AT THE CALL SITE: the HAVE_MPU
 #   and arch conditions vary per test.
 function(kickos_add_qemu_test)
@@ -497,20 +490,21 @@ function(kickos_add_qemu_test)
   if(QT_BOARD STREQUAL "qemu-riscv")
     set(_env QEMU=qemu-system-riscv32 "QEMU_EXTRA=-bios none")
     set(_machine virt)
+  elseif(QT_BOARD STREQUAL "qemu-riscv64")
+    # No -cpu: qemu-system-riscv64 -M virt defaults to the `rv64` generic core.
+    set(_env QEMU=qemu-system-riscv64 "QEMU_EXTRA=-bios none")
+    set(_machine virt)
   elseif(QT_BOARD STREQUAL "qemu-arm64")
-    # -cpu is MANDATORY and not a default worth relying on: qemu-system-aarch64 -M virt
-    # comes up as a cortex-a15 and REFUSES an A64 image outright. `-bios none` is the
-    # RISC-V line's need and errors here, there being no firmware to suppress.
-    # -nic none drops the virt machine's default virtio-net-pci, whose option ROM ships in a
-    # separate distro package QEMU aborts without.
+    # -cpu is required: qemu-system-aarch64 -M virt comes up as a cortex-a15 and REFUSES an
+    # A64 image. `-bios none` errors here, there being no firmware to suppress. -nic none
+    # drops the default virtio-net-pci, whose option ROM ships in a separate distro package
+    # QEMU aborts without.
     set(_env QEMU=qemu-system-aarch64 "QEMU_EXTRA=-cpu cortex-a53 -nic none")
     set(_machine virt)
   elseif(QT_BOARD STREQUAL "microbit")
-    # 32 KiB and not the 16 the machine defaults to. QEMU's nRF51 SoC exposes the size as a
-    # QOM property and nothing else does: -m is ignored by a fixed-SoC machine, and an image
-    # linked for 32 KiB without this locks up on its first push, before any vector table is
-    # live, as "can't escalate 3 to HardFault". arch/arm/chip/nrf51/nrf51.ld carries why the
-    # board takes the larger part.
+    # 32 KiB: QEMU's nRF51 SoC exposes the size as a QOM property and -m is ignored by a
+    # fixed-SoC machine, so an image linked for 32 KiB without this locks up on its first
+    # push, before any vector table is live, as "can't escalate 3 to HardFault".
     set(_env QEMU_EXTRA=-global\ nrf51-soc.sram-size=32768)
     set(_machine microbit)
   elseif(QT_BOARD STREQUAL "qemu")
@@ -521,6 +515,12 @@ function(kickos_add_qemu_test)
     set(_machine mps2-an500)
   elseif(QT_BOARD STREQUAL "qemu-m3")
     set(_machine mps2-an385)
+  elseif(QT_BOARD STREQUAL "qemu-x86_64")
+    # tests/lib/gate.sh builds the firmware, the writable variable store and the EFI system
+    # partition per run: the shipped OVMF variable store is root-owned, and an ESP has to be
+    # made from the image under test or a stale BOOTX64.EFI boots and prints the same banner.
+    set(_env QEMU=qemu-system-x86_64 KICKOS_BOOT=uefi-pe)
+    set(_machine q35)
   else()
     message(FATAL_ERROR "kickos_add_qemu_test(${QT_NAME}): unknown BOARD '${QT_BOARD}'")
   endif()
@@ -528,9 +528,17 @@ function(kickos_add_qemu_test)
     set(_machine "${QT_MACHINE}")
   endif()
   list(APPEND _env QEMU_MACHINE=${_machine})
+  # An app target that writes its image outside CMake's target model records the path; every
+  # other one is named by $<TARGET_FILE:>.
+  get_target_property(_qt_image "${QT_TARGET}" KICKOS_IMAGE_FILE)
+  if(_qt_image)
+    set(_qt_file "${_qt_image}")
+  else()
+    set(_qt_file "$<TARGET_FILE:${QT_TARGET}>")
+  endif()
   add_test(NAME "${QT_NAME}"
     COMMAND "${CMAKE_COMMAND}" -E env ${_env}
-            "${QT_SCRIPT}" "$<TARGET_FILE:${QT_TARGET}>" ${QT_ARGS})
+            "${QT_SCRIPT}" "${_qt_file}" ${QT_ARGS})
   if(NOT QT_TIMEOUT)
     set(QT_TIMEOUT 60)
   endif()
@@ -543,10 +551,8 @@ endfunction()
 #   One host unit-test executable on GoogleTest, with PER-CASE ctest entries.
 #
 #   gtest_discover_tests writes its add_test calls at BUILD time, so the root CMakeLists
-#   wrapper that appends the build fixture never sees them: both the `host` label and
-#   FIXTURES_REQUIRED have to be passed through PROPERTIES here. On a tree that was
-#   configured and never built, the generated include registers a failing <target>_NOT_BUILT
-#   entry instead of silently shrinking the suite.
+#   wrapper that appends the build fixture never sees them: the `host` label and
+#   FIXTURES_REQUIRED have to be passed through PROPERTIES here.
 function(kickos_add_unit_test)
   cmake_parse_arguments(UT "" "NAME" "SOURCES;INCLUDES;DEFINITIONS;LIBRARIES" ${ARGN})
   if(NOT UT_NAME OR NOT UT_SOURCES)
@@ -577,22 +583,17 @@ endfunction()
 # kickos_add_board_provider(<name> SOURCE <cc> [LINK <libs...>] [RETAINED_CAPS <n>]
 #                           [INBOUND_REPLY_CAPS <r>])
 #   A board-descriptor provider library (pinmap or service-list): a freestanding STATIC lib
-#   defining one board-descriptor symbol (kickos_board_pinmap or kickos_board_services),
-#   seeing only system/include, exported to KickOSTargets. LINK carries a service list's
-#   board driver targets, which back-reference kickos_user and so join the rescan link
-#   group; a pure pinmap provider passes none. The target is kickos_<name>.
+#   defining one board-descriptor symbol, seeing only system/include, exported to
+#   KickOSTargets. LINK carries a service list's board driver targets, which back-reference
+#   kickos_user and so join the rescan link group. The target is kickos_<name>.
 #
-#   RETAINED_CAPS is how many capabilities a SERVICE LIST leaves in root's table for the
-#   life of the image, one of the four terms root's table width is summed from
-#   (cmake/cap_table.cmake). It is RETENTION, not the bring-up peak: a list whose bring-up
-#   transiently holds more than its retention plus the app's peak must declare the
-#   transient. A pinmap provider holds none and passes nothing.
+#   RETAINED_CAPS is how many capabilities a SERVICE LIST leaves in root's table for the life
+#   of the image (cmake/cap_table.cmake). It is RETENTION: a list whose bring-up transiently
+#   holds more than its retention plus the app's peak must declare the transient.
 #
 #   INBOUND_REPLY_CAPS is how many CAP_REPLY capabilities one of the list's SERVICES holds at
-#   once as the server side of kos_call: a client mints into the server's table
-#   (kernel/syscall/syscall_ipc.cc), so a list whose protocol admits several parked callers
-#   must say how many. The widest declaration in the tree wins (the app may declare it too),
-#   so this is not added to the app's number.
+#   once as the server side of kos_call. The widest declaration in the tree wins, so it is
+#   not added to the app's number.
 # Every member of the rescan archive group has to be NAMED. The closure walks the edges the
 # LINK and CLASS declarations put there; PRIVATE deps count, which is what reaches a driver's
 # class leaf: PRIVATE is excluded from INTERFACE_LINK_LIBRARIES but still sits in the target's
@@ -649,8 +650,7 @@ function(kickos_add_board_provider name)
     set(BP_INBOUND_REPLY_CAPS "${KICKOS_CAP_REPLY_DEFAULT}")
   endif()
   # Refused HERE, where the declarer is named: the resolve reads these properties
-  # numerically and would otherwise take a negative as a real term and narrow the summed
-  # width.
+  # numerically and would take a negative as a term that narrows the summed width.
   foreach(_n "${BP_RETAINED_CAPS}" "${BP_INBOUND_REPLY_CAPS}")
     if(NOT "${_n}" MATCHES "^[0-9]+$")
       message(FATAL_ERROR "kickos_add_board_provider(${name}): '${_n}' is not a non-negative "
@@ -689,12 +689,9 @@ endfunction()
 # ---------------------------------------------------------------------------
 # kickos_enforcing_mpu_boards(<out>)
 #   The boards whose chip enforces memory protection, derived at configure time from the
-#   SOLE source of truth, the arch/*/chip/*/mpu.cmake opt-in files
-#   (KICKOS_CHIP_ENFORCES_MPU), reverse-mapped to board names via the board descriptors,
-#   plus the sim, which enforces at the arch level via host mprotect and ships no chip
-#   mpu.cmake. Feeds the "enforcement-capable boards" hint in the KICKOS_HAVE_MPU rejection.
-#   Reads each descriptor in this function's scope so the KICKOS_CHIP/ARCH it sets never
-#   leak into the caller's build.
+#   arch/*/chip/*/mpu.cmake opt-ins (KICKOS_CHIP_ENFORCES_MPU) reverse-mapped through the
+#   board descriptors, plus the sim. Reads each descriptor in this function's scope so the
+#   KICKOS_CHIP/ARCH it sets never leak into the caller's build.
 function(kickos_enforcing_mpu_boards out)
   file(GLOB _mpus "${CMAKE_CURRENT_SOURCE_DIR}/arch/*/chip/*/mpu.cmake")
   set(_chips "")

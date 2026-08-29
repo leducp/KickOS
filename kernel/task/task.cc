@@ -59,14 +59,10 @@ namespace kickos
     }
 
     // task_for must never be the refusal a caller sees first: thread_create_call resolves the
-    // task BEFORE it claims a thread slot, so a pool one slot short would turn a
-    // thread-pool exhaustion into a task-pool exhaustion one spawn earlier. Both answer
-    // -KOS_ENOMEM, but only this bound keeps the two coincident. The +1 is idle, which
-    // holds a TCB outside the pool (thread.h) and so a task outside KICKOS_THREAD_SLOTS.
-    //
-    // An EXPLICIT task holding no thread is a slot this floor does not budget, so an app that
-    // creates tasks and never populates them can make a spawn refuse one earlier. That is the
-    // app's own doing and it is a clean -KOS_ENOMEM either way.
+    // task BEFORE it claims a thread slot, so a pool one slot short would turn a thread-pool
+    // exhaustion into a task-pool exhaustion one spawn earlier. The +1 is idle, which holds a TCB
+    // outside the pool and so a task outside KICKOS_THREAD_SLOTS. An EXPLICIT task holding no
+    // thread is a slot this floor does not budget.
     static_assert(KICKOS_MAX_TASKS >= KICKOS_THREAD_SLOTS + 1,
                   "the task pool must cover every TCB that can be live at once, or "
                   "task_for refuses a spawn the thread pool would still have seated");
@@ -113,9 +109,7 @@ namespace kickos
     Task* task_for(uint32_t caller, void* mem_base, size_t mem_size, Domain* donor,
                    int* err)
     {
-        // FIRST: admission must run before a task slot is spent, or a refused grant leaves
-        // debris behind. (This named a dedup scan in domain_for; T5 deleted that scan and
-        // the ordering requirement outlived it.)
+        // Admission must run before a task slot is spent, or a refused grant leaves debris.
         // 0 memory type: the spawn ABI has no field to ask for another.
         Domain* const d = domain_for(caller, mem_base, mem_size, 0u, donor, err);
         if (d == nullptr)
@@ -125,10 +119,9 @@ namespace kickos
         Task* const t = free_slot();
         if (t == nullptr)
         {
-            // The domain is at refcount 0 and nothing will ever hold it, so release it here
-            // rather than leaving the pool to recycle the slot: a domain built by a handoff
-            // holds a reference on its DONOR, and an abandoned slot pins that donor's space
-            // and every frame in it until the slot happens to be reused.
+            // The domain is at refcount 0 and nothing will ever hold it: a domain built by a
+            // handoff holds a reference on its DONOR, and an abandoned slot pins that donor's
+            // space and every frame in it until the slot happens to be reused.
             domain_release(d);
             *err = KOS_ENOMEM; // pool exhausted: retry later
             return nullptr;
@@ -225,10 +218,9 @@ namespace kickos
     void task_orphan_created_by(uint16_t tag)
     {
         Kernel& k = kernel();
-        // At zero no slot carries a creator tag, so the scan below could only find nothing.
-        // It runs interrupt-masked at EVERY thread exit, and on rx72m under an IRQ-driven
-        // UART that was enough to move an RR slice boundary, so the early return is
-        // load-bearing and not a micro-optimisation.
+        // At zero no slot carries a creator tag. The scan below runs interrupt-masked at EVERY
+        // thread exit, and on rx72m under an IRQ-driven UART that was enough to move an RR slice
+        // boundary, so this early return is load-bearing.
         if (k.task_holds == 0 or tag == ThreadPool::KILL_TAG_NONE)
         {
             return;
@@ -265,6 +257,21 @@ namespace kickos
         // the members' own, taken by the first task_ref, keeps the domain alive.
         domain_release(t->domain);
     }
+
+#if KICKOS_HAVE_ASPACE
+    void task_discard(Task* t)
+    {
+        // THE TASK'S OWN STATE IS THE PREDICATE, and no caller carries a second one: a task
+        // with a member or a creator hold is somebody's, and free_task below would release
+        // a domain reference that is not this call's to spend.
+        if (t == nullptr or t->refcount != 0
+            or t->creator_tag != ThreadPool::KILL_TAG_NONE)
+        {
+            return;
+        }
+        free_task(t);
+    }
+#endif
 
     void task_ref(Task* t)
     {

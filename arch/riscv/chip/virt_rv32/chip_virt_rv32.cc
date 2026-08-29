@@ -10,7 +10,7 @@
 // left to the declining ENOSYS fallback.
 
 #include <kickos/arch/arch.h>
-#include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
+#include <kickos/arch/clk_q32.h>
 
 #include <stdint.h>
 
@@ -66,7 +66,7 @@ namespace
     constexpr uintptr_t CLINT_MTIMECMP = CLINT_BASE + 0x4000; // 64-bit
     constexpr uintptr_t CLINT_MTIME = CLINT_BASE + 0xBFF8;     // 64-bit
     constexpr uint64_t MTIME_HZ = 10000000ull;                 // `virt` mtime = 10 MHz
-    constexpr uint64_t NS_PER_TICK = kickos::KICKOS_NS_PER_SEC / MTIME_HZ; // 100 ns
+    constexpr uint64_t NS_PER_TICK = kickos::KICKOS_NS_PER_SEC / MTIME_HZ;
 
     // RISC-V semihosting. The magic sequence slli x0,x0,0x1f / ebreak / srai x0,x0,7 must
     // NOT be compressed. .balign 16 (not 4): QEMU's magic-sequence check reads the words
@@ -104,7 +104,7 @@ void arch_init(void)
     // mtimecmp = max: mtip stays low until arch_timer_arm programs a deadline.
     r32p(CLINT_MTIMECMP)[0] = 0xFFFFFFFFu;
     r32p(CLINT_MTIMECMP)[1] = 0xFFFFFFFFu;
-    kickos_rv32_init(); // mtvec + mie(MSIE|MTIE|SSIE) + mcounteren + PMP + reset state
+    kickos_rv32_init();
     // No chip external interrupt controller is wired on virt (the console is
     // semihosting), so arch_irq_* stay on the arch-provided SSIP software channel.
 }
@@ -144,7 +144,9 @@ void arch_timer_disarm(void)
     cmp[1] = 0xFFFFFFFFu;
 }
 
-// --- Debug console + exit via semihosting (the mps2 model) ------------------
+// --- Debug console + exit via semihosting -----------------------------------
+// SYS_WRITEC hands each byte to the host inside the call, so nothing is ever in flight
+// here and arch_console_flush_sync is left to its no-op fallback.
 void arch_console_write(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
@@ -169,10 +171,7 @@ void arch_shutdown(int status)
 }
 
 #if KICKOS_HAVE_MPU
-// Rule 7 reserved set (QEMU virt memory map + RISC-V Privileged ISA). The CLINT owns
-// the machine timer: mtimecmp @+0x4000 is the tickless deadline source and mtime @
-// +0xBFF8 the monotonic clock, both inside the standard 64 KB CLINT window at
-// 0x02000000. That is the whole timebase + IPI controller in one block.
+// Rule 7 reserved set (QEMU virt memory map + RISC-V Privileged ISA).
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {
@@ -192,13 +191,6 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 #endif
 
 // --- C-runtime bring-up (called by _start in startup.S) ---------------------
-// A fault/panic on this QEMU target must EXIT with a status so a CTest run
-// catches it (no LED; the fallback blink terminal would spin to a harness timeout).
-void kfault_terminate(void)
-{
-    arch_shutdown(132);
-}
-
 void Reset_Handler(void)
 {
     // QEMU places each segment at its PhysAddr, so the LMA really holds the image bytes.

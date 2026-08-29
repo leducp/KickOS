@@ -272,8 +272,8 @@ deletes. `kconfiglib` is ISC, one pure-Python file, build-time only, and never i
 
 **This revisits a decision that had no home in this repo.** A pre-M4 spike settled on "a
 consolidated per-board descriptor, NOT devicetree/Kconfig", judged as overkill below roughly 30 to 40
-boards; the tree is at 20. That verdict was recorded only in a developer's local notes, which is why
-this entry exists at all.
+boards; the tree is at 23 (2026-08-29, `ls boards/`). That verdict was recorded only in a
+developer's local notes, which is why this entry exists at all.
 
 **It also bundled two questions and judged both on board count.** Board count is the right criterion
 for devicetree, which is hardware description. It is close to irrelevant for Kconfig, which is knob
@@ -360,7 +360,8 @@ there surfaces on the bench rather than in a pull request.
   window, a shared-memory pointer or real bookkeeping. Nothing to apply it to.
 
 **What it costs, and how it is measured.** Images move: header and inlining differences are
-expected, so this milestone measures the delta with the 50-preset instrument and states it,
+expected, so this milestone measures the delta with the fleet image-gate sweep, which takes every
+visible configure preset, and states it,
 rather than claiming equivalence. `char8_t` is a real breaking change for any `u8""`
 literal, and rewritten comparisons can shift overload resolution where a class defines
 `operator==`/`!=` by hand; both are greppable before the flag is flipped.
@@ -446,7 +447,8 @@ user stacks.** microbit is already at the arena cliff (`_ebss` IS `__kickos_ram_
 `bluepill-c8-st`/`f302nucleo-st` sit near 3 percent flash slack while trusted entry adds text.
 
 ### M6 -- the MMU: a unicore A53 on QEMU `virt`
-The memory model today is **one physical address space + per-thread MPU regions**. A real **MMU
+The memory model this milestone STARTED from is **one physical address space + per-thread MPU
+regions**, which is still what every region board does. A real **MMU
 (VMSA / page tables)** adds virtual address spaces: foundational, not a port. The **Domain seam** is
 shaped to absorb it (a domain becomes a page-table root instead of an MPU region set).
 

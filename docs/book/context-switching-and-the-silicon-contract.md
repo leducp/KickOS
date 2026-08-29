@@ -101,7 +101,7 @@ that differ:
   is responsible. (Contracts: the `fp-*` family in the invariants.)
 - **Privilege.** A single unprivileged/privileged bit and how a syscall crosses it.
 
-KickOS holds *one* semantic model across all five ISAs and lets only these
+KickOS holds *one* semantic model across every ISA in the fleet and lets only these
 silicon-mandated details differ. When two arches diverge on anything that is *not*
 on this list, that is a bug, not a port quirk -- the uniform-fleet thesis.
 

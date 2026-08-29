@@ -1,20 +1,22 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The ROOT-confinement gate, in its own binary (it ends the process on the deliberate
-# cross-domain fault when root is confined). Diagnostic app: built only under
-# KICKOS_ENABLE_SELFTEST. Board-agnostic (pure syscall plus kos_ram_alloc).
+if(NOT KICKOS_HAVE_LIBC)
+  return()
+endif()
+
 kickos_add_diagnostic_app(rootfault
   SOURCES main.cc
   BOARD   ${KICKOS_BOARD})
 if(NOT TARGET rootfault)
-  return() # diagnostics off -> app not built; skip its tests
+  return()
 endif()
 
-if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU)
-  # Through the same script as the QEMU boards: a PASS/FAIL_REGULAR_EXPRESSION pair
-  # cannot require the child's control marker AND pin the fault address to the region
-  # root announced.
+# KICKOS_MEMORY_ENFORCED, the arm being about CONFINEMENT and not about which mechanism
+# enforces it. The script reads the fault address off whichever field the reporter prints.
+if(KICKOS_BUILD_TESTS AND KICKOS_MEMORY_ENFORCED)
+  # Through the same script as the QEMU boards: a PASS/FAIL_REGULAR_EXPRESSION pair cannot
+  # require the child's control marker AND pin the fault address to the region root announced.
   if(KICKOS_ARCH STREQUAL "sim")
     add_test(NAME rootfault
       COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_rootfault.sh" "$<TARGET_FILE:rootfault>"
@@ -26,6 +28,9 @@ if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU)
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_rootfault.sh" ARGS ${KICKOS_FAULT_OUTCOME})
   elseif(KICKOS_BOARD STREQUAL "qemu-riscv")
     kickos_add_qemu_test(NAME qemu_riscv_rootfault TARGET rootfault BOARD qemu-riscv
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_rootfault.sh" ARGS ${KICKOS_FAULT_OUTCOME})
+  elseif(KICKOS_BOARD STREQUAL "qemu-riscv64")
+    kickos_add_qemu_test(NAME qemu_riscv64_rootfault TARGET rootfault BOARD qemu-riscv64
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_rootfault.sh" ARGS ${KICKOS_FAULT_OUTCOME})
   endif()
 endif()

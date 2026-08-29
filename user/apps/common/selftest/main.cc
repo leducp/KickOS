@@ -231,12 +231,9 @@ namespace
     }
 
     // --- SVC argument/return roundtrip -----------------------------------------
-    // Proves the count comes from the len WE passed, not from a kernel-side walk of the
-    // buffer.
-    //
-    // NOT a delivery check: kos_kconsole_write returns `len` even when console_emit discards
-    // every byte (kernel/init/console.cc, USER_OWNED). Delivery is asserted in cap_index0's
-    // post-publish arm and the harness's route probe.
+    // The count comes from the len this passed, and kos_kconsole_write returns `len` even
+    // when console_emit discards every byte (kernel/init/console.cc, USER_OWNED). Delivery
+    // is asserted in cap_index0's post-publish arm and the harness's route probe.
     void t_svc()
     {
         char const* s = "# [svc] kconsole_write arg/return roundtrip (not a delivery check)\n";
@@ -1101,14 +1098,11 @@ namespace
 
     // --- Chained/nested boost across two mutexes (H5) ---------------------------
     // A(20) waits on M1 owned by B(10); B waits on M2 owned by C(5). The boost must
-    // PROPAGATE two hops, raising C to A's priority. D is ready while C spins, so 'e'
-    // before 'd' can only hold if the boost travelled B -> C.
-    //
-    // Two semaphores, not one: a post is popped by the HIGHEST-priority waiter, so a token
-    // B needs cannot be posted anywhere A and D are also waiting.
-    //
-    // A is released by C, not by B: a release from B would reach A while B still merely HOLDS
-    // M1, and the arm would then witness two single-hop walks a one-hop kernel reproduces.
+    // PROPAGATE two hops, raising C to A's priority. D is ready while C spins, so 'e' before
+    // 'd' can only hold if the boost travelled B -> C. Two semaphores are needed, a post
+    // being popped by the HIGHEST-priority waiter; and A must be released by C, since a
+    // release from B would reach A while B still merely holds M1 and the arm would witness
+    // two single-hop walks a one-hop kernel reproduces.
     kos_cap_t g_ch_up = KOS_CAP_NONE; // C <-> B: M2 is held, then M1 is held and B is about to block
     kos_cap_t g_ch_on = KOS_CAP_NONE; // C -> A -> D: B is blocked on M2, then the chain has formed
     void ch_c(void*) // caps: done@1, lock@2, M2@3, gate@4, up@5, on@6
@@ -1928,14 +1922,12 @@ namespace
     }
 
     // --- Caller-owned stack outside the arena ------------------------------------
-    // A KOS_STACK_DEFINE stack lands in app .bss, which is outside the user-RAM arena, and
-    // an unprivileged child's stack is an arena-confined grant: -KOS_EPERM, and no other
-    // code, a block failing geometry or the TLS seat answering -KOS_EINVAL. Sized AND
-    // aligned to the TLS stride so the seat would admit it and only the arena bound can
-    // refuse it.
-    // Translating backends only. An enforcing MPU board refuses the same block, but a
-    // stride-aligned static does not fit every .appdata window (esp32c6 carves 4K) and
-    // stackbase_arena witnesses the bound there.
+    // A KOS_STACK_DEFINE stack lands in app .bss, outside the user-RAM arena, and an
+    // unprivileged child's stack is an arena-confined grant: -KOS_EPERM, and no other code.
+    // Sized AND aligned to the TLS stride so the seat would admit it and only the arena
+    // bound can refuse it. Translating backends only: a stride-aligned static does not fit
+    // every .appdata window (esp32c6 carves 4K), and stackbase_arena witnesses the bound on
+    // an enforcing MPU board.
 #if KICKOS_HAVE_ASPACE
 #if defined(KICKOS_TLS) && KICKOS_TLS
     alignas(KICKOS_TLS_STRIDE) unsigned char g_cstk_outside[KICKOS_TLS_STRIDE];
@@ -1952,13 +1944,10 @@ namespace
 #endif
 
     // --- A self-granted range shared by three threads of ONE task --------------------
-    // The two workers are plain spawns, so they are threads of ROOT'S task and share the four
-    // globals below with it. Each ASKS for the range itself, which is the portable floor: a
-    // grant guarantees access to its HOLDER and says nothing about a peer, so a sibling that
-    // never asked may be denied on a descriptor board (F9). Where a backend translates the
-    // ask costs nothing, the mapping being task-wide and F10's already-mapped short-circuit
-    // answering it; sibling VISIBILITY, which only that backend promises, is
-    // task_siblings_share.
+    // The two workers are plain spawns, so they are threads of ROOT'S task and share the
+    // four globals below with it. Each ASKS for the range itself, which is the portable
+    // floor: a grant guarantees access to its HOLDER and says nothing about a peer (F9).
+    // Sibling visibility, which only a translating backend promises, is task_siblings_share.
     volatile int* g_dshared = nullptr;
     kos_cap_t g_dwrote = KOS_CAP_NONE; // writer -> reader handoff (through the handed-over range)
     kos_cap_t g_dread = KOS_CAP_NONE;  // reader -> main handoff
@@ -2225,18 +2214,12 @@ namespace
     }
 
     // --- One holder per device window (-KOS_EBUSY) --------------------------------
-    // A DEV window overlapping one a LIVE domain already holds is refused. Matched on
-    // RANGES, so this covers all three shapes in one case: exact duplicate and partial
-    // overlap refuse, adjacent-but-disjoint admits.
-    //
-    // The holder must stay ALIVE for the whole matrix, and that cannot rest on it not being
-    // scheduled: a reschedule between two spawns lets it exit and free the window, turning
-    // every refusal below into an admission. It parks on a semaphore instead.
-    //
-    // The window is DISCOVERED, not hardcoded: reserved blocks and bit-band aliases differ
-    // per chip. The sim admits exactly one DEV window, its fake register block at
-    // SIM_PVREG_WINDOW (64 KiB), so a WIN-sized search finds nothing there and the case
-    // reports PARTIAL. On any other enforcing board an empty search must FAIL.
+    // A DEV window overlapping one a LIVE domain already holds is refused, matched on
+    // RANGES: exact duplicate and partial overlap refuse, adjacent-but-disjoint admits. The
+    // holder MUST stay alive for the whole matrix and parks on a semaphore, a reschedule
+    // between two spawns otherwise letting it exit and turning every refusal into an
+    // admission. The window is DISCOVERED; the sim admits exactly one, so a WIN-sized search
+    // there reports PARTIAL while on any other enforcing board it must FAIL.
     constexpr int CH_DEVHOLD = 2; // the holder gate, delegated SECOND (done@1, hold@2)
     void devexcl_hold(void*) // caps: done@1, hold@2
     {
@@ -2375,14 +2358,10 @@ namespace
 #endif // KICKOS_HAVE_MPU
 
     // --- Confused-deputy readable-buffer floor ---------------------------------
-    // syscall_dispatch runs privileged and bypasses the MPU, so a user pointer it READS (the
-    // kconsole_write buffer, a thread name) must lie in memory the UNPRIVILEGED caller could
-    // itself reach. A rodata string literal MUST be accepted; a pointer into no granted
-    // region (the un-owned guard page) MUST be rejected, never read. All checks run from a
-    // spawned UNPRIVILEGED worker, whose granted set is the narrow one the floor is about.
-    // The positive half proves only that the floor ACCEPTED the pointer, not that bytes
-    // reached a console. It is non-vacuous only when PAIRED with the guard-page negative
-    // below.
+    // A user pointer syscall_dispatch READS must lie in memory the unprivileged caller could
+    // itself reach. A rodata string literal MUST be accepted and a pointer into no granted
+    // region MUST be rejected, never read; both run from a spawned unprivileged worker. The
+    // positive half is non-vacuous only when PAIRED with the guard-page negative below.
     char const CD_LIT[] = "# [confdep] unpriv rodata buffer accepted by the readable floor\n";
     long g_cd_lit_rc = -99;    // worker: kconsole_write(rodata literal) -> expect len (accepted, not delivered)
     int g_cd_goodspawn = -99;  // worker: spawn rc of a child NAMED from .rodata
@@ -2481,8 +2460,10 @@ namespace
         tap::diag("aspace model: granules 0x%x, %u ASID bits, %u PA bits, verdict 0x%x",
                   grans, asid, pa, static_cast<unsigned>(m & KOS_ASPACE_MODEL_FIELD_MASK));
         // A machine whose report decodes to nothing would satisfy an equality against
-        // another zero, so the widths are read before the verdict is believed.
-        TAP_CHECK(asid != 0 and pa != 0 and grans != 0);
+        // another zero, so the widths are read before the verdict is believed. The identifier
+        // width is DIAGNOSED and not asserted: the architecture permits it to be hardwired to
+        // zero, and a port that tags no translation is a legal port (docs/design-m6-mmu.md F1).
+        TAP_CHECK(pa != 0 and grans != 0);
         TAP_CHECK((m & KOS_ASPACE_MODEL_ALL) == KOS_ASPACE_MODEL_ALL);
     }
 
@@ -2504,18 +2485,31 @@ namespace
     void t_aspace_refusals()
     {
         // Every refusal, as one word: a kernel-half address, a sub-granule base, an empty
-        // range, permissions this architecture cannot express, an unknown right, and an
-        // unmap of a range not wholly mapped.
+        // range, permissions this architecture cannot express, an unknown right, an unmap of
+        // a range not wholly mapped, and a run whose last page is past the output-address
+        // width the port reports.
         uintptr_t const bits = kos_aspace_probe(KOS_ASPACE_OP_REFUSALS, 0);
+        tap::diag("map editor refusal word 0x%x", static_cast<unsigned>(bits));
         TAP_CHECK(bits == KOS_ASPACE_REFUSE_ALL);
     }
 
     void t_aspace_span()
     {
-        // 600 pages from the last slot of one level-3 table, so the range crosses two table
-        // boundaries: the shape a process image has, and the one a miscounted last slot
-        // silently truncates.
+        // A run from the last slot of one LAST-LEVEL table, long enough to cross two table
+        // boundaries on any geometry the seam admits: the shape a process image has, and the
+        // one a miscounted last slot silently truncates. The kernel side derives the length
+        // from the granule, no level count being knowable above the seam.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_SPAN, 0) == 1);
+    }
+
+    void t_aspace_acquire_dup()
+    {
+        // Two holds of ONE page at once, then a release naming the pair and no individual
+        // hold. The two pointers must be one, and the page acquired after that release must
+        // not be answered with the address the surviving hold still names.
+        uintptr_t const bits = kos_aspace_probe(KOS_ASPACE_OP_ACQUIRE_DUP, 0);
+        tap::diag("acquire duplicate-hold word 0x%x", static_cast<unsigned>(bits));
+        TAP_CHECK(bits == KOS_ASPACE_DUP_ALL);
     }
 
     void t_aspace_balance()
@@ -2533,14 +2527,11 @@ namespace
     }
 
     // --- T8b: THE FORCED FAILURE ------------------------------------------------------
-    // Every balance arm above weighs a create that SUCCEEDED. The unwind arms under
-    // claim_slot and domain_for are reached only by a create that fails partway, and nothing
-    // else in the tree can produce one: the pool is sized for the image, so an arm cannot
-    // exhaust it. The kernel refuses one chosen allocation and walks that choice through the
-    // whole create, so each arm runs once and alone.
-    //
-    // THE DEPTH IS READ AND NOT ONLY THE BITS: every property holds vacuously over a sweep
-    // that injected nothing, which is what a create path that allocated nothing would give.
+    // The unwind arms under claim_slot and domain_for are reached only by a create that
+    // fails partway, and nothing else in the tree can produce one. The kernel refuses one
+    // chosen allocation and walks that choice through the whole create, so each arm runs
+    // once and alone. The DEPTH is read and not only the bits: every property holds
+    // vacuously over a sweep that injected nothing.
     void t_aspace_forced_unwind()
     {
         uintptr_t const r = kos_aspace_probe(KOS_ASPACE_OP_FORCED_UNWIND, 0);
@@ -2552,15 +2543,12 @@ namespace
                   static_cast<unsigned>(depth));
         TAP_CHECK(depth >= KOS_ASPACE_UNWIND_MIN_DEPTH);
         TAP_CHECK(bits == KOS_ASPACE_UNWIND_ALL);
-        // THE SAME SWEEP OVER THE GRANT-CARRYING CREATE, which needs a donor range. What it
-        // adds is the successful tail: the space that survives the sweep holds a BORROWED
-        // mapping of root's block, so its release has to unmap and free nothing, and the
-        // REUSABLE bit is what says the pool came back whole after it.
-        //
-        // IT DOES NOT REACH domain_for's OWN UNWIND ARM, and the depths printed below are
-        // what says so: the handoff's map needs no new table on this board, the donor block
-        // sitting under a level-3 table the image already built, so frame injection has no
-        // point inside aspace_handoff and every refusal still lands in claim_slot ahead of it.
+        // The same sweep over the grant-carrying create, which needs a donor range, and it
+        // adds the successful tail: the space that survives holds a BORROWED mapping of
+        // root's block, so its release unmaps and frees nothing and the REUSABLE bit says
+        // the pool came back whole. It does not reach domain_for's own unwind arm, and the
+        // depths printed below are what say so: the donor block sits under a last-level
+        // table the image already built, so every refusal lands in claim_slot ahead of it.
         void* const block = kos_ram_alloc(64);
         if (block == nullptr)
         {
@@ -2664,17 +2652,12 @@ namespace
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
-    // --- A THREAD'S STACK IS FRAMES, WITH A GUARD PAGE, AND THEY COME BACK -----------
-    // The whole of what an arena block cannot be (docs/design-m6-mmu.md section 3.4). Two
-    // things no other arm can say. A LIVE worker holds frames: an arena stack costs the pool
-    // nothing, so the drop is what separates the two allocators. And a DEAD one has given
-    // every one of them back, guard page included, which is the release path no balance arm
-    // above reaches because none of them spawns a thread.
-    //
-    // A WARM-UP CYCLE FIRST, and it is not padding: the intermediate tables a stack's
-    // virtual range needs are allocated on the first map into that range and are
-    // deliberately never pruned, so a first cycle spends frames a second one does not. Only
-    // the second can balance, and a warm-up-free version of this arm reads as a leak.
+    // --- A thread's stack is frames, with a guard page, and they come back ----------
+    // A LIVE worker holds frames, an arena stack costing the pool nothing, and a DEAD one
+    // has given every one of them back, guard page included (docs/design-m6-mmu.md section
+    // 3.4). A WARM-UP CYCLE FIRST is required: the intermediate tables a stack's virtual
+    // range needs are allocated on the first map into that range and are never pruned, so a
+    // first cycle spends frames a second one does not and only the second can balance.
     kos_cap_t g_sfgate = KOS_CAP_NONE;
     void sframe_worker(void*) // caps: done@1, gate@2
     {
@@ -2721,10 +2704,8 @@ namespace
     // --- Two tasks, two address spaces (docs/design-m6-mmu.md F2) -----------------
     // BOTH workers are spawned before either runs, so the two domains coexist and a slot
     // freed by an early exit cannot be handed to the second and answer with the first's
-    // name.
-    // EACH WORKER IS ITS OWN PROCESS, so it cannot answer through an app global: its static
-    // data is a copy of root's (section 3.4). `arg` points at the slot it writes, inside
-    // memory root and the worker both map, and root reads it back at the address root named.
+    // name. Each worker is its own process, so it cannot answer through an app global:
+    // `arg` points at the slot it writes, inside memory root and the worker both map.
     void space_id_worker(void* arg)
     {
         uint32_t const id = static_cast<uint32_t>(kos_aspace_probe(KOS_ASPACE_OP_SPACE_ID, 0));
@@ -2869,18 +2850,13 @@ namespace
         TAP_CHECK(ida != idb);
     }
 
-    // --- THE PROCESS WITNESS (docs/design-m6-mmu.md F2, section 3.4) -----------------
+    // --- The process witness (docs/design-m6-mmu.md F2, section 3.4) -----------------
     // Two tasks whose TEXT and DATA sit at the same virtual addresses, backed by DIFFERENT
-    // frames for the data and by ONE frame for the text, each reading and writing its own.
-    //
-    // THE FRAMES ARE COMPARED AND NOT JUST THE BEHAVIOUR. Two members that merely run prove
-    // nothing an identity map would not; two members answering different frame numbers for
-    // one address are two copies of that page, and answering the same one for a text address
-    // is the sharing that makes the copy the deliberate half.
-    //
-    // Each member is handed a block of its own, which is how it answers at all: its static
-    // data IS the thing under test, so a report through an app global would be measuring the
-    // instrument.
+    // frames for the data and by ONE frame for the text. The FRAMES are compared and not
+    // just the behaviour: two members answering different frame numbers for one address are
+    // two copies of that page, and the same one for a text address is the sharing. Each
+    // member is handed a block of its own, a report through an app global being a
+    // measurement of the instrument.
     enum
     {
         PW_ADDR = 0,     // the member's own &g_pw_word
@@ -3061,14 +3037,10 @@ namespace
 
     // --- The handoff readback, both consumers (F10) ---------------------------------
     // Root reserves, self-grants, WRITES, and hands the block over; the receiver reads back
-    // what root wrote AT THE SAME ADDRESS. It is what the two-handoff witness F2 keeps
-    // became: the pair below shares no app global, one receiver arriving through a task
-    // create and the other through a grant-carrying spawn.
-    //
-    // NOT A STAND-IN FOR THE DRIVER BRING-UP FLOW, which F10 makes the gate for this ABI and
-    // says in terms no selftest arm substitutes for. That flow runs the same four steps, but
-    // it does not run on a board that declares no service list, and this arm does not make it
-    // run.
+    // what root wrote AT THE SAME ADDRESS. The pair below shares no app global, one receiver
+    // arriving through a task create and the other through a grant-carrying spawn. F10 makes
+    // the driver bring-up flow the gate for this ABI in terms no selftest arm substitutes
+    // for, and that flow does not run on a board declaring no service list.
     enum
     {
         HO_SEEN = 0,
@@ -3146,19 +3118,12 @@ namespace
         TAP_CHECK(out[HO_SEEN] == HO_SENTINEL + 1u);
         TAP_CHECK(out[HO_ADDR] == reinterpret_cast<uintptr_t>(blk));
         // --- THE FLAGS-MATCH RULE, on a block of its own --------------------------------
-        // The memory type belongs to the BLOCK (kos_mem_flags): every call that maps it must
-        // be passed the same one, or its two live mappings disagree about the type. A block
-        // handed over with flags 0 everywhere never asks that question, so this leg carries a
-        // non-zero type end to end and both sides report what their mapping recorded.
-        //
-        // A BLOCK OF ITS OWN, and not the pair above, because a mismatched alias is exactly
-        // what the rule forbids: the spawn consumer below cannot be given a type at all, so
-        // reusing one block would have built the disagreement rather than the agreement.
-        //
-        // THE CREATE CONSUMER ONLY, and the reason is the ABI. A grant-carrying spawn has no
-        // memory-type field, so task_for passes 0 and that consumer maps Normal whatever the
-        // donor holds; no caller can obey the rule through it. It is recorded at F10 rather
-        // than worked around here.
+        // The memory type belongs to the BLOCK (kos_mem_flags): every call that maps it MUST
+        // be passed the same one, or its two live mappings disagree about the type. This leg
+        // carries a non-zero type end to end on a block of its own, since a mismatched alias
+        // is what the rule forbids and reusing the pair above would build the disagreement.
+        // The create consumer only: a grant-carrying spawn has no memory-type field, so
+        // task_for passes 0 and no caller can obey the rule through it (recorded at F10).
         void* const typed = kos_ram_alloc(HO_BLK);
         if (typed == nullptr)
         {
@@ -3199,23 +3164,90 @@ namespace
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
+    // --- The handoff maps the reservation that was NAMED, never a superset (F10) --------
+    // A create is handed the SECOND page of a two-page reservation. The reservation is the
+    // unit the handoff maps, so a base that is not a reservation's own base is refused: the
+    // entry an interior address lands in also covers the page BELOW it, and mapping that
+    // entry would put a page of the donor the create never named into the borrower's space.
+    enum
+    {
+        SL_GRAN = 0, // the granule, so the borrower can name the page below its own
+        SL_ECHO = 1  // where the borrower reports what it read there
+    };
+    constexpr uint64_t SL_TOKEN = 0x5A17ED10u;
+    constexpr uint32_t SL_JOIN_US = 200000;
+
+    // Reached only where the refusal did not hold: reads the page below the one handed over
+    // and echoes it into the page that was.
+    void sl_reader(void* arg)
+    {
+        volatile uint64_t* const mine = static_cast<volatile uint64_t*>(arg);
+        uintptr_t const below =
+            reinterpret_cast<uintptr_t>(arg) - static_cast<uintptr_t>(mine[SL_GRAN]);
+        mine[SL_ECHO] = *reinterpret_cast<volatile uint64_t const*>(below);
+    }
+
+    void t_task_handoff_slice()
+    {
+        uint64_t const g = kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0);
+        if (g == 0 or g > 0x10000u)
+        {
+            tap::skip("no granule to carve a two-page reservation from");
+            return;
+        }
+        uint32_t const two = static_cast<uint32_t>(2u * g);
+        void* const blk = kos_ram_alloc(two);
+        if (blk == nullptr)
+        {
+            tap::skip("arena cannot spare a two-page reservation");
+            return;
+        }
+        TAP_CHECK(kos_mem_self_grant(blk, two, 0) == 0);
+        volatile uint64_t* const lower = static_cast<volatile uint64_t*>(blk);
+        lower[0] = SL_TOKEN;
+        void* const upper = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(blk) + g);
+        volatile uint64_t* const out = static_cast<volatile uint64_t*>(upper);
+        out[SL_GRAN] = g;
+        out[SL_ECHO] = 0;
+        kos_task_t t = KOS_TASK_NONE;
+        int const rc = kos_task_create(upper, static_cast<uint32_t>(g), 0, &t);
+        if (rc == 0)
+        {
+            auto const rd = kos::thread::create(sl_reader, upper, "hsl", 10, KOS_POLICY_FIFO,
+                                                0, false, nullptr, 0, nullptr, 0, nullptr, 0,
+                                                nullptr, 0, 0, nullptr, t);
+            if (rd.valid())
+            {
+                (void)rd.join(SL_JOIN_US);
+            }
+            (void)kos_task_kill(t);
+            tap::diag("interior handoff admitted; the borrower read 0x%x below its page",
+                      static_cast<unsigned>(out[SL_ECHO]));
+        }
+        TAP_CHECK(rc == -KOS_EPERM);
+        // The same block named at its OWN base is what the handoff does take, so the refusal
+        // above is the interior base and not the block, the pool or the task slot.
+        kos_task_t whole = KOS_TASK_NONE;
+        if (kos_task_create(blk, two, 0, &whole) != 0)
+        {
+            tap::skip("task pool too small for the whole-reservation control");
+            return;
+        }
+        TAP_CHECK(kos_task_kill(whole) == 0);
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
+    }
+
     // --- T4's ownership rule the other way round: THE DONOR DIES FIRST ---------------
-    // T4 says the borrower unmaps before it dies, and every arm above stages exactly that:
-    // task_handoff_readback kills both borrowers while root, the donor, runs on. The reverse
-    // order is what frees frames under a live mapping, and NO FRAME-POOL COUNTER CAN SEE IT:
-    // a donor that dies first frees each of its frames exactly once, so frame_pool_refused
-    // stays zero while the borrower reads memory the pool has since handed to somebody else.
-    // The lifetime edge domain_for takes on the donor (kernel/domain/domain.cc) is what this
-    // arm holds to account.
+    // A donor that dies first frees each of its frames exactly once, so frame_pool_refused
+    // stays zero while the borrower reads memory the pool has since handed to somebody else:
+    // NO FRAME-POOL COUNTER CAN SEE IT. The lifetime edge domain_for takes on the donor
+    // (kernel/domain/domain.cc) is what this arm holds to account.
     //
-    // THE DONOR IS A TASK OF ITS OWN, because root cannot exit. It reserves a block of its
-    // OWN and hands that one over: a block ROOT reserved is BORROWED in the donor's space
-    // too, so the donor's teardown would free none of it and there would be nothing to catch.
-    // Root joins the donor's thread, so the donor is gone before anything below runs.
-    //
-    // A CHURN TASK THEN TAKES WHAT THE POOL WILL HAND OUT and stamps every frame of it, so a
-    // block released under the borrower's feet reads back as somebody else's bytes rather
-    // than as the donor's.
+    // The donor is a task of its OWN and reserves a block of its own: root cannot exit, and
+    // a block root reserved is borrowed in the donor's space, so the donor's teardown would
+    // free none of it. Root joins the donor's thread, so the donor is gone before anything
+    // below runs, and a churn task then takes what the pool will hand out and stamps every
+    // frame of it.
     enum
     {
         DX_STATUS = 0, // 1 once the donor seated a borrower into its own block
@@ -3466,13 +3498,10 @@ namespace
 
     // --- F10's CROSS-TASK self-grant refusal ------------------------------------------
     // A reservation names frames of the RESERVING task's own space, so an address another
-    // task reserved is meaningless here rather than merely unreachable, and the self-grant
-    // must refuse it BY NAME. The worker is a task of its own and answers down an ENDPOINT:
-    // it shares no byte with root, which is the situation under test.
-    //
-    // TWO CODES, and the second is what makes the first about the ADDRESS. The same worker,
-    // through the same call, self-granting a range IT reserved must succeed; without that
-    // control, a -KOS_EPERM from a missing authority or an unbuilt path reads as the refusal.
+    // task reserved is meaningless here and the self-grant must refuse it BY NAME. The
+    // worker is a task of its own and answers down an ENDPOINT, sharing no byte with root.
+    // Two codes: the same worker self-granting a range IT reserved must succeed, or a
+    // -KOS_EPERM from a missing authority reads as the refusal.
     enum
     {
         XG_OWN = 0,     // the worker's own reservation: granted
@@ -3541,10 +3570,8 @@ namespace
     // --- F10's teardown release --------------------------------------------------------
     // A reservation that was never self-granted has NO LEAF pointing at its frames, so the
     // destroy walk cannot see them and aspace_release is the only path that hands them back.
-    // Only a process that DIES holding one can show it: every other reservation in this suite
-    // is root's, and root outlives the run.
-    //
-    // A WARM-UP CYCLE FIRST, for the reason t_stack_is_frames states.
+    // Only a process that DIES holding one can show it. A warm-up cycle first, for the
+    // reason t_stack_is_frames states.
     enum
     {
         RT_ADDR = 0, // the reservation the member took and never mapped
@@ -3618,24 +3645,329 @@ namespace
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
+    // --- A reallocated frame carries nothing of the previous task ---------------------
+    // A frame the pool takes back keeps every byte written in it, so a frame handed to a
+    // task must be cleared before that task can reach it. The first process fills its own
+    // reservation with a token and dies; the second takes the SAME frames and reads them
+    // before it writes anything. A warm-up cycle first, for the reason t_reservation_teardown
+    // states, and it also leaves the two measured cycles starting from one pool state.
+    enum
+    {
+        FS_FRAME = 0, // the frame the reservation's first page sits in
+        FS_HITS = 1,  // token words found BEFORE this process wrote any
+        FS_WORDS = 2
+    };
+    constexpr uintptr_t FS_PAGES = 2;
+    constexpr uint64_t FS_TOKEN = 0x5CB0BE5CB0BE5CB0ull;
+    void fs_member(void*) // caps: E(SIGNAL)@1
+    {
+        uint64_t rep[FS_WORDS] = {0, 0};
+        uintptr_t const g = kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0);
+        size_t const bytes = static_cast<size_t>(FS_PAGES * g);
+        void* const blk = kos_ram_alloc(bytes);
+        if (blk != nullptr and kos_mem_self_grant(blk, bytes, 0) == 0)
+        {
+            rep[FS_FRAME] =
+                kos_aspace_probe(KOS_ASPACE_OP_FRAME_AT, reinterpret_cast<uintptr_t>(blk));
+            volatile uint64_t* const w = static_cast<volatile uint64_t*>(blk);
+            size_t const words = bytes / sizeof(uint64_t);
+            // READ BEFORE WRITE: what the previous holder of these frames left behind.
+            for (size_t i = 0; i < words; i++)
+            {
+                if (w[i] == FS_TOKEN)
+                {
+                    rep[FS_HITS]++;
+                }
+            }
+            for (size_t i = 0; i < words; i++)
+            {
+                w[i] = FS_TOKEN;
+            }
+        }
+        (void)kos_send(1, rep, sizeof(rep));
+    }
+    bool fs_cycle(kos_cap_t ep, uint64_t* rep)
+    {
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            return false;
+        }
+        kos_cap_grant caps[] = {{ep, KOS_CAP_SIGNAL}};
+        auto m = kos::thread::create_caps(fs_member, nullptr, "fscrb", 10, caps, 1,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                          KOS_AUTH_MEMORY, nullptr, t);
+        if (not m.valid())
+        {
+            (void)kos_task_kill(t);
+            return false;
+        }
+        // The member parks in its send until this receive arrives, and the frames go back
+        // only once the group is reaped below.
+        bool const heard = kos_recv(ep, rep, sizeof(uint64_t) * FS_WORDS, nullptr)
+                           == static_cast<int32_t>(sizeof(uint64_t) * FS_WORDS);
+        bool const joined = m.join(CHURN_JOIN_US) == 0;
+        bool const reaped = kos_task_kill(t) == 0;
+        return heard and joined and reaped;
+    }
+    void t_frame_scrub_cross_task()
+    {
+        kos_cap_t ep = KOS_CAP_NONE;
+        if (kos_endpoint_create(&ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        uint64_t warm[FS_WORDS] = {0, 0};
+        uint64_t first[FS_WORDS] = {0, 0};
+        uint64_t second[FS_WORDS] = {0, 0};
+        bool const ran = fs_cycle(ep, warm) and fs_cycle(ep, first) and fs_cycle(ep, second);
+        (void)kos_handle_close(ep);
+        if (not ran)
+        {
+            tap::skip("task or thread pool too small to churn a process");
+            return;
+        }
+        tap::diag("frame scrub: frames %u then %u, token words read %u then %u",
+                  static_cast<unsigned>(first[FS_FRAME]),
+                  static_cast<unsigned>(second[FS_FRAME]),
+                  static_cast<unsigned>(first[FS_HITS]),
+                  static_cast<unsigned>(second[FS_HITS]));
+        TAP_CHECK(first[FS_FRAME] != 0);
+        // NOT VACUOUS: the second process really did land on the first one's frames, so a
+        // token that survived the free would be there to read.
+        TAP_CHECK(second[FS_FRAME] == first[FS_FRAME]);
+        TAP_CHECK(second[FS_HITS] == 0);
+    }
+
+    // --- A late spawn refusal gives back the task it built ----------------------------
+    // task_for resolves the child's task, its domain and its address space BEFORE the thread
+    // slot is claimed, and a grant-carrying spawn takes a reference on the DONOR's domain on
+    // the way. Nothing holds any of it until thread_create commits task_ref, so a refusal
+    // between the two has to hand it all back. The spawner is a member of a task of its own:
+    // its reservation comes out of ITS space, spending none of root's, and the donor whose
+    // reference is at stake is then a domain that dies inside the arm.
+    constexpr int LR_PARK_CAP = 24;
+    enum
+    {
+        LR_RC = 0,      // what the refused spawn answered, negated
+        LR_PARKED = 1,  // workers seated before the pool refused
+        LR_SPACES0 = 2, // spaces held and frames free, read either side of the refusal
+        LR_SPACES1 = 3,
+        LR_FRAMES0 = 4,
+        LR_FRAMES1 = 5,
+        LR_WORDS = 6
+    };
+    void lr_parked(void*) // caps: gate@1
+    {
+        kos_sem_wait(1);
+    }
+    void lr_member(void*) // caps: E(SIGNAL)@1
+    {
+        uint64_t rep[LR_WORDS] = {0, 0, 0, 0, 0, 0};
+        uintptr_t const g = kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0);
+        uint32_t const bytes = static_cast<uint32_t>(2u * g);
+        void* const blk = kos_ram_alloc(bytes);
+        kos_cap_t gate = KOS_CAP_NONE;
+        if (blk != nullptr and kos_mem_self_grant(blk, bytes, 0) == 0
+            and kos_sem_create(0, &gate) == 0)
+        {
+            kos_thread_t held[LR_PARK_CAP];
+            kos_cap_grant gcaps[] = {{gate, CH_FULL}};
+            int n = 0;
+            // PLAIN spawns, which are threads of this member's own task: each spends a
+            // thread slot and no task, no domain and no space, so what runs out here is the
+            // thread pool alone.
+            while (n < LR_PARK_CAP)
+            {
+                auto h = kos::thread::create_caps(lr_parked, nullptr, "lrprk", 10, gcaps, 1);
+                if (not h.valid())
+                {
+                    break;
+                }
+                held[n] = h.id();
+                n++;
+            }
+            rep[LR_PARKED] = static_cast<uint64_t>(n);
+            rep[LR_SPACES0] = kos_aspace_probe(KOS_ASPACE_OP_SPACES_HELD, 0);
+            rep[LR_FRAMES0] = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+            int const rc = kos::thread::create(lr_parked, nullptr, "lrbad", 10,
+                                               KOS_POLICY_FIFO, 0, false, blk, bytes).error();
+            rep[LR_RC] = static_cast<uint64_t>(static_cast<uint32_t>(-rc));
+            rep[LR_SPACES1] = kos_aspace_probe(KOS_ASPACE_OP_SPACES_HELD, 0);
+            rep[LR_FRAMES1] = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+            for (int i = 0; i < n; i++)
+            {
+                (void)kos_sem_post(gate);
+            }
+            for (int i = 0; i < n; i++)
+            {
+                (void)kos_thread_join(held[i], KOS_TIMEOUT_NONE);
+            }
+            (void)kos_handle_close(gate);
+        }
+        (void)kos_send(1, rep, sizeof(rep));
+    }
+    bool lr_cycle(kos_cap_t ep, uint64_t* rep)
+    {
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            return false;
+        }
+        kos_cap_grant caps[] = {{ep, KOS_CAP_SIGNAL}};
+        auto m = kos::thread::create_caps(lr_member, nullptr, "lrful", 10, caps, 1,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                          KOS_AUTH_MEMORY, nullptr, t);
+        if (not m.valid())
+        {
+            (void)kos_task_kill(t);
+            return false;
+        }
+        bool const heard = kos_recv(ep, rep, sizeof(uint64_t) * LR_WORDS, nullptr)
+                           == static_cast<int32_t>(sizeof(uint64_t) * LR_WORDS);
+        bool const joined = m.join(CHURN_JOIN_US) == 0;
+        bool const reaped = kos_task_kill(t) == 0;
+        return heard and joined and reaped;
+    }
+    void t_spawn_refusal_frees_task()
+    {
+        kos_cap_t ep = KOS_CAP_NONE;
+        if (kos_endpoint_create(&ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        uint64_t rep[LR_WORDS] = {0, 0, 0, 0, 0, 0};
+        bool const ran = lr_cycle(ep, rep);
+        (void)kos_handle_close(ep);
+        if (not ran)
+        {
+            tap::skip("task or thread pool too small to fill from a member");
+            return;
+        }
+        tap::diag("thread-pool refusal: %u parked, rc %u, spaces %u->%u, frames %u->%u",
+                  static_cast<unsigned>(rep[LR_PARKED]), static_cast<unsigned>(rep[LR_RC]),
+                  static_cast<unsigned>(rep[LR_SPACES0]),
+                  static_cast<unsigned>(rep[LR_SPACES1]),
+                  static_cast<unsigned>(rep[LR_FRAMES0]),
+                  static_cast<unsigned>(rep[LR_FRAMES1]));
+        if (rep[LR_PARKED] == 0 or rep[LR_PARKED] == LR_PARK_CAP)
+        {
+            // At the cap the pool outran this arm, so the refusal it measures never happened
+            // and the two equalities below would hold vacuously.
+            tap::skip("thread pool not exhausted by this arm");
+            return;
+        }
+        TAP_CHECK(rep[LR_RC] == KOS_ENOMEM);
+        TAP_CHECK(rep[LR_SPACES1] == rep[LR_SPACES0]);
+        TAP_CHECK(rep[LR_FRAMES1] == rep[LR_FRAMES0]);
+    }
+
+    // --- ...and the donor's reference comes back with it --------------------------------
+    // Releasing the borrower's space and surrendering the edge are one step in the code and
+    // two claims, and only the donor's own death separates them. So the donor here is the
+    // member's OWN task, and it dies inside the arm.
+    //
+    // The reading is a DIFFERENCE ACROSS THE REAP and never against a baseline: a refusal
+    // that keeps the reference is undone by the next domain allocation, which reclaims the
+    // slot, drops the stale space and surrenders the edge. Nothing between the member's own
+    // reading and root's allocates a domain. The refusal is the destination bound on a
+    // delegated capability, the last check before the spawn takes a reference.
+    enum
+    {
+        LD_RC = 0,     // the refused spawn's own answer, negated
+        LD_SPACES = 1, // spaces held, read inside the member AFTER the refusal
+        LD_FRAMES = 2,
+        LD_WORDS = 3
+    };
+    void ld_never(void*)
+    {
+        kos_exit(0);
+    }
+    void ld_member(void*) // caps: E(SIGNAL)@1, done@2
+    {
+        uint64_t rep[LD_WORDS] = {0, 0, 0};
+        uintptr_t const g = kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0);
+        uint32_t const bytes = static_cast<uint32_t>(2u * g);
+        void* const blk = kos_ram_alloc(bytes);
+        int rc = 0;
+        if (blk != nullptr and kos_mem_self_grant(blk, bytes, 0) == 0)
+        {
+            kos_cap_grant caps[] = {{CH_LOCK, CH_FULL}};
+            uint16_t const dest = 0x0FFFu; // past any child capability run
+            rc = kos::thread::create_caps(ld_never, nullptr, "ldbad", 10, caps, 1,
+                                          KOS_POLICY_FIFO, 0, false, blk, bytes, 0,
+                                          &dest).error();
+        }
+        rep[LD_RC] = static_cast<uint64_t>(static_cast<uint32_t>(-rc));
+        rep[LD_SPACES] = kos_aspace_probe(KOS_ASPACE_OP_SPACES_HELD, 0);
+        rep[LD_FRAMES] = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+        (void)kos_send(1, rep, sizeof(rep));
+    }
+    void t_spawn_refusal_frees_donor()
+    {
+        kos_cap_t ep = KOS_CAP_NONE;
+        if (kos_endpoint_create(&ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        uint64_t rep[LD_WORDS] = {0, 0, 0};
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            (void)kos_handle_close(ep);
+            tap::skip("task pool too small");
+            return;
+        }
+        kos_cap_grant caps[] = {{ep, KOS_CAP_SIGNAL}, {g_done, CH_FULL}};
+        auto m = kos::thread::create_caps(ld_member, nullptr, "lddon", 10, caps, 2,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                          KOS_AUTH_MEMORY, nullptr, t);
+        if (not m.valid())
+        {
+            (void)kos_task_kill(t);
+            (void)kos_handle_close(ep);
+            tap::skip("thread pool too small");
+            return;
+        }
+        bool const heard = kos_recv(ep, rep, sizeof(uint64_t) * LD_WORDS, nullptr)
+                           == static_cast<int32_t>(sizeof(uint64_t) * LD_WORDS);
+        bool const joined = m.join(CHURN_JOIN_US) == 0;
+        // The member's group dies here, and its domain with it unless something still
+        // holds a reference on it.
+        bool const reaped = kos_task_kill(t) == 0;
+        uint64_t const spaces_end = kos_aspace_probe(KOS_ASPACE_OP_SPACES_HELD, 0);
+        uint64_t const frames_end = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+        (void)kos_handle_close(ep);
+        tap::diag("late refusal in a donor: rc %u, spaces %u->%u, frames %u->%u",
+                  static_cast<unsigned>(rep[LD_RC]),
+                  static_cast<unsigned>(rep[LD_SPACES]),
+                  static_cast<unsigned>(spaces_end),
+                  static_cast<unsigned>(rep[LD_FRAMES]),
+                  static_cast<unsigned>(frames_end));
+        TAP_CHECK(heard and joined and reaped);
+        // The refusal really was the late one, and not an early argument check.
+        TAP_CHECK(rep[LD_RC] == KOS_EINVAL);
+        // EXACTLY ONE space fewer: the donor's, which the reap can only release if the
+        // refused handoff gave its reference back.
+        TAP_CHECK(spaces_end + 1u == rep[LD_SPACES]);
+        TAP_CHECK(frames_end > rep[LD_FRAMES]);
+    }
+
     // --- A sibling scribbling a PARKED member's frame (docs/design-m6-mmu.md F9, T6) ----
     // Thread stacks are TASK-WIDE mappings here, so a member can write a not-yet-run
-    // member's stack. What must not be reachable there is the privileged return state: the
-    // saved processor state and the return address that the one exception return starting
-    // the victim consumes. The sibling fills the whole top-of-stack frame window with the
-    // AArch64 EL1h state word, so whichever slot holds the saved state reads "resume
-    // privileged" and whichever holds the return address reads a value the sibling picked.
-    // FILLING THE WINDOW rather than two known offsets is what keeps the arm from going
-    // vacuous when the frame layout moves.
+    // member's stack; what must not be reachable there is the privileged return state. The
+    // sibling fills the whole top-of-stack frame window with the AArch64 EL1h state word, so
+    // whichever slot holds the saved state reads "resume privileged" and whichever holds the
+    // return address reads a value the sibling picked. FILLING THE WINDOW is what keeps the
+    // arm from going vacuous when the frame layout moves.
     //
-    // The victim proves both halves. Reaching its own body says the return address was its
-    // entry; kos_shutdown answering -KOS_EPERM says it runs unprivileged. Were it privileged
-    // that call would SUCCEED and end the run, which the TAP gate reads as a truncated
-    // stream, so the arm cannot pass by escalating quietly.
-    //
-    // THE SIBLING MUST NOT EXIT WHILE THE VICTIM IS PARKED: it writes the victim's saved
-    // frame, so both have to be live at once. It parks on a semaphore nothing posts, and the
-    // victim's own exit collects it.
+    // The victim proves both halves: reaching its own body says the return address was its
+    // entry, and kos_shutdown answering -KOS_EPERM says it runs unprivileged. The sibling
+    // MUST NOT exit while the victim is parked, both having to be live at once, so it parks
+    // on a semaphore nothing posts and the victim's own exit collects it.
     constexpr uint64_t HOSTILE_EL1H = 0x205u; // M[3:0] = EL1h, plus the debug mask
     constexpr uint32_t HOSTILE_WINDOW = 1024; // spans the whole armv8a exception frame
     constexpr uint32_t HOSTILE_JOIN_US = 60000;
@@ -3737,12 +4069,10 @@ namespace
     // --- T7: THE OWNER-CARRYING, PAGE-SPLIT ACCESS SEAM (section 3.3) ----------------
 
     // A validated range contiguous in VIRTUAL memory whose two pages are backed by
-    // NON-ADJACENT frames. NO CALLER CAN BUILD ONE HERE: a reservation's virtual address is
-    // its output address, so virtual and physical adjacency are one question from userspace,
-    // and the granted-range list refuses a range spanning two entries anyway. The scenario
-    // is built with the map editor behind the probe; NEIGHBOUR is the sharp bit, reading the
-    // frame that physically follows the low page, which is where a copy written as one
-    // memcpy over a translated base spills.
+    // NON-ADJACENT frames. No caller can build one here, a reservation's virtual address
+    // being its output address, so the scenario is built with the map editor behind the
+    // probe. NEIGHBOUR is the sharp bit, reading the frame that physically follows the low
+    // page, which is where a copy written as one memcpy over a translated base spills.
     void t_split_access()
     {
         uint64_t const bits = kos_aspace_probe(KOS_ASPACE_OP_SPLIT_ACCESS, 0);
@@ -3753,12 +4083,10 @@ namespace
 
     // Two PROCESSES exchanging a message whose buffer AND whose receive-info out-pointer are
     // app static data, so both hold ONE virtual address in both spaces while naming
-    // different frames, which is what makes an owner unrecoverable from an address.
-    //
-    // THE SENDER'S OWN RECEIVE-INFO IS THE INSTRUMENT. The kernel stores the info into the
-    // RECEIVER's out-pointer while the SENDER is the running thread, so a site resolving
-    // that pointer against the running space writes the sender's copy instead, and the guard
-    // below is what reads that back.
+    // different frames. THE SENDER'S OWN RECEIVE-INFO IS THE INSTRUMENT: the kernel stores
+    // the info into the RECEIVER's out-pointer while the SENDER is the running thread, so a
+    // site resolving that pointer against the running space writes the sender's copy, and
+    // the guard below is what reads that back.
     enum
     {
         PI_ADDR = 0,      // the member's own &g_pi_msg[0]
@@ -4139,18 +4467,11 @@ namespace
 #endif
 
     // F6's hostile witness: an AUTHORIZED unprivileged caller self-granting a KERNEL address
-    // must be REFUSED BY NAME, not merely fail to fault later. Root holds AUTH_MEMORY, so the
-    // authority clause is not what answers, and every other clause on this path admits the
-    // request: the size is neither 0 nor wrapping, NORMAL is honourable, and the range is not
-    // already reachable. What refuses it is that the task reserved no such range.
-    //
-    // THE ADDRESS COMES FROM THE KERNEL. App text cannot name a kernel-half symbol under this
-    // board's code model, and an address the app computed would assert the layout rather than
-    // a word the kernel really owns.
-    //
-    // NOT WORDED AGAINST "the high half": the arena is itself high-half here, so a high
-    // address inside it is admitted BY DESIGN and one outside it is refused for being
-    // out-of-arena, which says nothing about the kernel.
+    // must be REFUSED BY NAME. Root holds AUTH_MEMORY and every other clause on this path
+    // admits the request, so what refuses it is that the task reserved no such range. The
+    // address comes FROM THE KERNEL, app text being unable to name a kernel-half symbol
+    // under this board's code model. The clause cannot be worded against the high half: the
+    // arena is itself high-half here, so a high address inside it is admitted by design.
     void t_grant_kernel_word_refused()
     {
         void* const kword = kos_guard_addr();
@@ -4180,10 +4501,9 @@ namespace
     // --- The already-mapped short circuit, asked of the TYPE and in BOTH directions ------
     // A mapping carries its memory type here, so a re-grant naming a different one has to
     // reprogram the leaf. Answering on rights alone tells a caller that a DMA buffer is
-    // ordinary memory again while the mapping stays exactly as it was.
-    //
-    // NOCACHE OVER NORMAL ALONE REPRODUCES THE DEFECT RATHER THAN CATCHING IT: that is the
-    // one direction the typed question was ever asked in.
+    // ordinary memory again while the mapping stays exactly as it was. NOCACHE over Normal
+    // alone reproduces the defect: that is the one direction the typed question was ever
+    // asked in.
     void t_self_grant_retype()
     {
         constexpr uint32_t RT_BLK = 256;
@@ -4314,13 +4634,11 @@ namespace
 
     // --- libc's reentrant state and the half it lives in ---------------------------------
     // The slot array and the word libc resolves from are both the APP's, in the half a
-    // translating backend switches per process. A thread whose task holds no space leaves that
-    // half naming whichever process was installed last, so the switch path may write neither
-    // for one: every privileged spawn resolves to the kernel domain, which carries no space,
-    // and idle is in that posture on every idle window.
-    //
-    // BIT 0 IS THE POSITIVE CONTROL. It is counted where the guard is not, so an arm reading
-    // bit 1 alone would pass on a kernel that had stopped reaching the posture at all.
+    // translating backend switches per process. A thread whose task holds no space leaves
+    // that half naming whichever process was installed last, so the switch path may write
+    // neither for one. BIT 0 IS THE POSITIVE CONTROL: it is counted where the guard is not,
+    // so an arm reading bit 1 alone would pass on a kernel that had stopped reaching the
+    // posture at all.
     void t_reent_seating()
     {
         kos_sleep_ns(2000000ull); // an idle window inside this arm, not only in an earlier one
@@ -4332,8 +4650,9 @@ namespace
 
     // --- One release per acquire, and only where one was taken ---------------------------
     // arch.h counts OUTSTANDING acquire calls, so a release beside an acquire that answered
-    // null is a release of somebody else's hold. This backend's release is a no-op, which is
-    // exactly what leaves every other arm unable to see the difference.
+    // null is a release of somebody else's hold. WHERE arch_aspace_release is a no-op this
+    // counter is the only thing an arm can read a mispaired release off; a backend holding a
+    // real window refuses one itself.
     void t_aspace_acquire_balance()
     {
         // Page zero, which no space maps: the frame-token pair's second acquire answers null
@@ -4356,6 +4675,11 @@ namespace
     {
         constexpr uint32_t TLBI_BLK = 256;
         uint64_t const before = kos_aspace_probe(KOS_ASPACE_OP_MAP_TLBI, 0);
+        // THE LOW BYTE IS NOT A COUNT OF ANYTHING THAT SHOULD HAPPEN: it is window releases
+        // that named no hold, absolute since boot, and the backend stopped panicking on the
+        // first one so this is the only thing left that refuses it. Read before the skip
+        // below, so every posture that reaches this arm asks the question.
+        TAP_CHECK((before & 0xFFu) == 0);
         kos_task_t t = KOS_TASK_NONE;
         if (kos_task_create(nullptr, 0, 0, &t) != 0)
         {
@@ -4365,7 +4689,9 @@ namespace
         uint64_t const after = kos_aspace_probe(KOS_ASPACE_OP_MAP_TLBI, 0);
         (void)kos_task_kill(t);
         uint32_t const issued = static_cast<uint32_t>((after >> 32) - (before >> 32));
-        uint32_t const elided = static_cast<uint32_t>(after - before);
+        uint32_t const elided = static_cast<uint32_t>(((after >> 8) & 0xFFFFFFu)
+                                                      - ((before >> 8) & 0xFFFFFFu));
+        TAP_CHECK((after & 0xFFu) == 0);
         tap::diag("image seed: %u sequences issued, %u elided", issued, elided);
         TAP_CHECK(issued == 0);
         // A seed reporting a handful mapped almost none of the image.
@@ -4729,12 +5055,9 @@ namespace
     // The caller parks on send_waiters first (main sleeps instead of recv'ing), and main's
     // info-bearing recv then MIGRATES it onto main's reply_waiters. That migration is a
     // park-to-park move and not an unpark, so the deadline armed once at the call must
-    // survive it: were the cancel back in wq_pop_highest, this caller would park forever and
-    // the arm would HANG rather than fail. Main never replies.
-    //
-    // The slow path is the whole point, and no assertion below enforces it: staged on the
-    // fast path the deadline is armed straight onto the reply park, nothing migrates, and
-    // every rc, duration and cap assertion below still passes. `r.entered` separates them.
+    // survive it; were the cancel back in wq_pop_highest this caller would park forever and
+    // the arm would HANG. No assertion below enforces the slow path: staged on the fast path
+    // every rc, duration and cap assertion still passes, and `r.entered` separates them.
     void ep_call_reply_worker(void*) // caps: done@1, E(SIGNAL)@2
     {
         char buf[8] = {0};
@@ -4845,19 +5168,15 @@ namespace
     // --- Reply on an abandoned cap once its sequence has come round again ---------------
     // This arm reaches PAST the call_state test that reply_stale_caller stops at. The caller
     // times out, leaving a live one-shot cap in a server's table, then runs further calls
-    // until its call_seq low byte comes back to the one packed in that cap: the abandoned cap
-    // then resolves through index, generation, BLOCKED, CALL_REPLY_WAIT and sequence.
-    //
+    // until its call_seq low byte comes back to the one packed in that cap: the abandoned
+    // cap then resolves through index, generation, BLOCKED, CALL_REPLY_WAIT and sequence.
     // What stops it is that the caller is parked on the SECOND server's reply_waiters, so
-    // the abandoned holder's unlink finds nothing of its own. Without that the reply copies
-    // bytes into a buffer belonging to a transaction it has no part in.
+    // the abandoned holder's unlink finds nothing of its own.
     //
-    // A SECOND server, not a second call to the same one: the holder of the abandoned cap is
-    // already at KICKOS_CAP_REPLY_MAX and can mint no other.
-    //
-    // Main learns that the second server has taken the aliasing call by RENDEZVOUS on a
-    // second endpoint. That endpoint is not a convenience: on one endpoint main's recv could
-    // pop a loop call instead of the token, mint a reply cap for it and strand the caller.
+    // A SECOND server is required, the holder of the abandoned cap being already at
+    // KICKOS_CAP_REPLY_MAX. Main learns that the second server has taken the aliasing call
+    // by RENDEZVOUS on a second endpoint: on one endpoint main's recv could pop a loop call
+    // instead of the token, mint a reply cap for it and strand the caller.
     char const SR_GOOD[] = "OK!!";
     char const SR_BAD[] = "BAD!";
     // The abandoned call left call_seq at A and the timeout unwind rolled it to A+1, so the
@@ -5003,14 +5322,11 @@ namespace
 
     // --- Timed call: the expiry unwind REVERTS the D2 boost ------------------------------
     // The only arm that can tell whether endpoint_wait_timeout still calls set_prio on the
-    // WAIT_EP_SEND branch: a lost boost changes no return code anywhere else.
-    //
-    // Staging, in units of mtx_time_unit(): the server takes main's plain send first, which
-    // seats it as the endpoint's conventional server. It then busy-spins for the rest of the
-    // arm, so it is never in recv and the caller must park on send_waiters. The caller (high)
-    // wakes mid-spin and calls with a deadline; the spoiler (medium) wakes after that and is
-    // held off only by the boost. 'u' before 'm' is the boost holding; 'm' before 'z' is the
-    // unwind dropping it. Without the revert the server stays pinned and 'z' comes first.
+    // WAIT_EP_SEND branch: a lost boost changes no return code anywhere else. Staging, in
+    // units of mtx_time_unit(): the server takes main's plain send first, seating it as the
+    // endpoint's conventional server, then busy-spins so the caller must park on
+    // send_waiters. The caller (high) wakes mid-spin and calls with a deadline, the spoiler
+    // (medium) after that, held off only by the boost. 'u' before 'm' is the boost holding.
     void ctr_server(void*) // caps: done@1, lock@2, E(WAIT)@3
     {
         char buf[16];
@@ -5074,17 +5390,13 @@ namespace
     // --- Call/reply: info-less receiver bounces a call, D2 boost is REVERTED ------
     // A high caller's slow-path kos_call boosts the low server it targets (D2). An INFO-LESS
     // recv cannot host the call, so recv rejects the caller (-KOS_ENOSYS) and MUST revert
-    // that boost: 'u' before 'm' while boosted, 'm' before 'z' after the revert. Without the
-    // revert the server stays pinned above the spoiler and 'z' precedes 'm'.
+    // that boost: 'u' before 'm' while boosted, 'm' before 'z' after the revert.
     //
-    // Staged by one semaphore, not by sleeps: the server posts once its recv has seated it,
-    // the caller re-posts for the spoiler just before calling.
-    //
-    // BOTH plain sends come from the filler and both are staged: the first is the only sender
-    // recv#1 can see, the second is released only once the caller's call has bounced. recv#2
-    // therefore finds the caller ALONE, rejects it and PARKS, which is the wake-inside-the-scan
-    // path. Root must send nothing, or which recv ate which depends on whether a tick lands
-    // inside root's spawn run.
+    // Staged by one semaphore: the server posts once its recv has seated it, the caller
+    // re-posts for the spoiler just before calling. BOTH plain sends come from the filler
+    // and both are staged, so recv#2 finds the caller ALONE, rejects it and PARKS, which is
+    // the wake-inside-the-scan path. Root must send nothing, or which recv ate which depends
+    // on whether a tick lands inside root's spawn run.
     Atomic<int32_t, Order::RELAXED> g_ci_rc{-99};
     kos_cap_t g_ci_bounced = KOS_CAP_NONE; // caller -> filler: the call has bounced
     void ci_server(void*) // caps: done@1, lock@2, E(WAIT)@3, stage@4
@@ -5334,17 +5646,11 @@ namespace
 
 #if defined(KICKOS_ENABLE_SELFTEST) // kos_ipc_fast_taken is a selftest-only syscall
     // --- Call/reply: the trap-handler register fastpath ------------------------------
-    // The fastpath and the buffer form answer a caller IDENTICALLY, so no return value can
-    // tell them apart and kos_ipc_fast_taken is the only witness that the arm under test
-    // ran at all. Every assertion below pairs a content check with a counter delta.
-    //
-    // The peers run at EQUAL priority: the fastpath refuses when the caller outranks the
-    // server, so a caller above its server would measure the refusal and pass with the
-    // fastpath never once taken.
-    //
-    // The reply travels back through the CALLER'S SAVED TRAP FRAME rather than its buffer,
-    // so a wrong frame offset surfaces as wrong bytes and not as a fault. That is why the
-    // server transforms the request instead of echoing it: a reply that is byte-identical
+    // The fastpath and the buffer form answer a caller IDENTICALLY, so kos_ipc_fast_taken is
+    // the only witness that the arm under test ran at all, and every assertion below pairs a
+    // content check with a counter delta. The peers MUST run at equal priority: the fastpath
+    // refuses when the caller outranks the server. The reply travels back through the
+    // CALLER'S SAVED TRAP FRAME, so the server transforms the request: a reply byte-identical
     // to the request cannot distinguish a correct copy from a buffer the kernel left alone.
     constexpr unsigned char FP_XOR = 0xA5;
     constexpr size_t FP_MAX = 20; // KOS_CALL_REG_BYTES
@@ -5516,16 +5822,12 @@ namespace
 #endif // KICKOS_ENABLE_SELFTEST (register-fastpath witness)
 
     // --- Call/reply: root calls like any other thread --------------------------------
-    // The orchestrator IS root, and root holds an ordinary thread-pool slot, so a reply
-    // capability can name it. Both dispatch sites run against one spawned echo server: (A)
-    // the server parked in recv before root calls, (B) root parked in SEND_WAIT first. The
-    // server must exist BEFORE the call either way, or the call is -KOS_EPIPE.
-    //
-    // The server runs at KICKOS_PRIO_MIN, one BELOW root, and both halves rest on that:
-    // above root it can park in recv between the spawn and the call, making half (B) a
-    // second fastpath run that says so nowhere, and every donation site is `>`-guarded, so
-    // only a server root outranks makes root DONATE. The price is the drain sleep in each
-    // half, since the server is still READY with only its exit left when root resumes.
+    // Root holds an ordinary thread-pool slot, so a reply capability can name it. Both
+    // dispatch sites run against one spawned echo server: (A) the server parked in recv
+    // before root calls, (B) root parked in SEND_WAIT first. The server MUST exist before
+    // the call either way, or the call is -KOS_EPIPE, and it runs at KICKOS_PRIO_MIN, one
+    // below root: above root it could park in recv between the spawn and the call, and every
+    // donation site is `>`-guarded, so only a server root outranks makes root DONATE.
     void t_call_from_root()
     {
         kos_cap_grant scaps[] = {{g_done, CH_FULL}, {0, EP_WAIT_ONLY}};
@@ -5846,12 +6148,13 @@ namespace
     }
 
     // --- Call/reply (D3): a donation must survive an UNRELATED recompute ----------
-    // These cover the boost being KEPT: the server runs an unrelated mutex_unlock inside the
-    // transaction, which funnels through thread_effective_prio, and the funnel must re-derive
-    // the live donation instead of dropping the server back to base. Two donor kinds, each
-    // holding the boost ALONE, over three arms (the hold kind is reached from both mints):
+    // The server runs an unrelated mutex_unlock inside the transaction, which funnels
+    // through thread_effective_prio, and the funnel MUST re-derive the live donation. Two
+    // donor kinds, each holding the boost alone, over three arms:
+    //
     //   hold:    a live reply cap (the caller is parked in REPLY_WAIT)
     //   pending: a caller parked in SEND_WAIT on an endpoint this thread serves
+    //
     // If the recompute deflates the server to 8, the already-awake spoiler (12) preempts it
     // and 'm' precedes 'r'.
     Atomic<int32_t, Order::RELAXED> g_dh_rc{-99};
@@ -6083,10 +6386,8 @@ namespace
     // A controller has a single live profile register set, so kickos::spi::serve_one keeps
     // one device HANDLE per kos_bus_req.device. The backend here is spi_mock.cc, which fills
     // the buffer with the word size of the handle it was given, so a transfer on slot 0 must
-    // read back slot 0's word size even after slot 1 was opened.
-    //
-    // MAIN must be the server: a spawned server plus a spawned client is two workers, which a
-    // 2-slot pool cannot host, so the client is the one thread spawned.
+    // read back slot 0's word size even after slot 1 was opened. MAIN must be the server: a
+    // spawned server plus a spawned client is two workers, which a 2-slot pool cannot host.
 
     // What the client observed, in call order.
     Atomic<int, Order::RELAXED> g_slot_cfg0{-99};
@@ -6218,16 +6519,11 @@ namespace
 #if defined(KICKOS_ENABLE_SELFTEST)
     // --- UART service: the wire ABI over the shared rings -----
     // serve_one touches only the shared block, never a register, so the whole request/reply
-    // surface is testable with NO device at all. MAIN is the server, so the client is the
-    // one thread spawned.
-    //
-    // The TX doorbell is structurally NOT coverable here: serve_one rings kos_irq_notify on
-    // child cap index 2, which in root's own table is the authority slot, so a root-as-server
-    // shape cannot host a line cap there.
-    //
-    // Keep this at ZERO statics: the client reports back over the SAME endpoint as a final
-    // plain send. A 1 KiB static would come out of the tiny boards' user arena and turn a
-    // later mem_self_grant probe into a skip.
+    // surface is testable with no device at all. MAIN is the server, so the client is the one
+    // thread spawned. The TX doorbell is structurally NOT coverable here: serve_one rings
+    // kos_irq_notify on child cap index 2, which in root's own table is the authority slot.
+    // Keep this at ZERO statics: a 1 KiB static would come out of the tiny boards' user arena
+    // and turn a later mem_self_grant probe into a skip.
     struct UartResults
     {
         int wr;        // bytes the ring accepted
@@ -7115,14 +7411,12 @@ namespace
 #endif // KICKOS_ENABLE_SELFTEST (reboot refusal)
 
     // --- a syscall buffer that lives in an app GLOBAL, from an unprivileged thread ----
-    // On a backend that does not model app static data as an MPU region (every no-MPU
-    // chip, and the host sim, whose globals sit outside the mprotect'd arena) the raw
-    // writable set collapses to the stack alone; user_writable_ok's static-data
-    // fallback is what admits a global buffer.
-    //
-    // recv validates its buffer BEFORE resolving the cap, so a deliberately invalid
-    // cap separates the two answers with no rendezvous and no sender: EBADF means the
-    // buffer was admitted, EFAULT means it was not.
+    // On a backend that does not model app static data as an MPU region (every no-MPU chip,
+    // and the host sim, whose globals sit outside the mprotect'd arena) the raw writable set
+    // collapses to the stack alone; user_writable_ok's static-data fallback is what admits a
+    // global buffer. recv validates its buffer BEFORE resolving the cap, so a deliberately
+    // invalid cap separates the two answers: EBADF means the buffer was admitted, EFAULT
+    // means it was not.
     char g_wrbuf[16];
     int32_t g_wrbuf_rc = -99;
     void wrbuf_worker(void*) // caps: done@1
@@ -7140,20 +7434,13 @@ namespace
         TAP_CHECK(g_wrbuf_rc == -KOS_EBADF); // not -KOS_EFAULT: the global was writable
     }
 
-    // --- the READ twin, and it aims at app RODATA rather than app .data ---------------
-    // Between them the two arms cover BOTH extents of the app's own window: the writable
-    // one above and the read-execute one here. On a translating backend neither is a region
-    // any grant path recorded, so the only thing that admits either is the granted-range
-    // list the address space was seeded with (docs/design-m6-mmu.md section 3.3). Remove
-    // that seeding and both go red.
-    //
-    // send validates its buffer before resolving the cap, exactly as recv does, so the
-    // deliberately invalid cap separates the two answers the same way.
-    //
-    // RUN FROM ROOT AND NOT FROM A WORKER, which is what makes this arm's own answer the
-    // thing that fails. Root is unprivileged, so the same admission applies; a worker is a
-    // sibling in root's task holding root's space, so it would add nothing here while making
-    // a refusal present as a failed spawn.
+    // --- the READ twin, aimed at app RODATA ------------------------------------------
+    // Between them the two arms cover BOTH extents of the app's own window: the writable one
+    // above and the read-execute one here. On a translating backend neither is a region any
+    // grant path recorded, so what admits either is the granted-range list the address space
+    // was seeded with (docs/design-m6-mmu.md section 3.3). send validates its buffer before
+    // resolving the cap, as recv does. RUN FROM ROOT: a worker is a sibling in root's task
+    // holding root's space, so a refusal would present as a failed spawn.
     char const g_rdbuf[16] = "readable-global";
     void t_readable_global()
     {
@@ -7161,13 +7448,11 @@ namespace
     }
 
     // --- The authority capability: the non-privileged arm of the authority gates ------
-    // Each authority gate is `privileged OR holds this AUTH_* bit`; root is unprivileged
-    // and seated with CAP_AUTH_ALL, so the rest of the suite only exercises the
-    // every-bit-held arm.
-    //
-    // The child is UNPRIVILEGED and holds AUTH_PINMUX and nothing else, so exactly one gate
-    // must accept it and the rest must refuse. Acceptance reads as "not -KOS_EPERM": a gate
-    // that lets the call through returns its OWN answer instead (-KOS_ENOSYS on a
+    // Each authority gate is `privileged OR holds this AUTH_* bit`; root is unprivileged and
+    // seated with CAP_AUTH_ALL, so the rest of the suite only exercises the every-bit-held
+    // arm. The child is UNPRIVILEGED and holds AUTH_PINMUX and nothing else, so exactly one
+    // gate must accept it and the rest must refuse. Acceptance reads as "not -KOS_EPERM": a
+    // gate that lets the call through returns its own answer (-KOS_ENOSYS on a
     // declining-fallback target like the sim, -KOS_EINVAL where a chip owns the block).
     void auth_noop(void*) {}
     Atomic<int32_t, Order::RELAXED> g_auth_pinmux{-99};    // AUTH_PINMUX held    -> anything but -KOS_EPERM
@@ -7281,19 +7566,12 @@ namespace
     }
 
     // --- Peripheral enable: possession is the whole gate ------------------------
-    // kos_periph_enable is authorised by holding a live ARCH_MPU_DEV region whose base
-    // is EXACTLY the argument. No authority bit gates it. The possession check runs
-    // before the chip backend, so both arms below stop in kernel code on every target
-    // and never reach silicon.
-    //
-    // Runs in an UNPRIVILEGED child in every posture: a privileged caller bypasses
-    // possession, so from root the gate is unreachable.
-    //
-    // Arm 1 holds no DEV region at all. Arm 2 holds an R|W region whose base matches
-    // the argument exactly and must STILL be refused, which is what pins the
-    // ARCH_MPU_DEV attribute filter rather than the base match alone.
-    //
-    // Refusals only; the complementary PASS arm belongs to an enforcing board.
+    // kos_periph_enable is authorised by holding a live ARCH_MPU_DEV region whose base is
+    // EXACTLY the argument, and no authority bit gates it. The possession check runs before
+    // the chip backend, so both arms stop in kernel code and never reach silicon, and both
+    // run in an UNPRIVILEGED child, a privileged caller bypassing possession. Arm 1 holds no
+    // DEV region; arm 2 holds an R|W region whose base matches exactly and must STILL be
+    // refused, which pins the ARCH_MPU_DEV attribute filter.
     constexpr uintptr_t PE_BASE = 0x40000000u; // peripheral space, never a code/data/stack base
     Atomic<int32_t, Order::RELAXED> g_pe_unheld{1}; // sentinel: the contract returns 0 or a negative code
     Atomic<int32_t, Order::RELAXED> g_pe_ram{1};
@@ -7335,17 +7613,12 @@ namespace
     }
 
     // --- Privileged register write: the same possession gate, plus the refusal ------
-    // Arm 2 finds its DEV window by TRYING the spawn, not by kos_grant_probe, which
-    // needs KICKOS_ENABLE_SELFTEST and would drop the arm on a production-ABI build. A
-    // board that mints no window reports PARTIAL.
-    // Arm 3 runs from the UNHELD worker: alignment and wrap are checked before
-    // possession, so only an unheld caller separates -KOS_EINVAL from the -KOS_EPERM a
-    // dropped check would give.
-    // Arm 4 reuses arm 2's window; a second DEV grant would cost another arena block and
-    // t_dev_window_exclusive would refuse it.
-    // PRW_OFFSET must be 4-ALIGNED or arm 2 stops short of the chip layer. The BASE is
-    // what keeps it unnameable: the discovery loop steps 0x1000 and the only allowlist in
-    // the tree is XMC4800's at 0x40030200, so no candidate base matches an entry.
+    // Arm 2 finds its DEV window by TRYING the spawn: kos_grant_probe needs
+    // KICKOS_ENABLE_SELFTEST and would drop the arm on a production-ABI build; a board that
+    // mints no window reports PARTIAL. Arm 3 runs from the UNHELD worker, alignment and wrap
+    // being checked before possession. Arm 4 reuses arm 2's window. PRW_OFFSET MUST be
+    // 4-aligned or arm 2 stops short of the chip layer, and the BASE keeps it unnameable:
+    // the discovery loop steps 0x1000 and the tree's only allowlist is XMC4800's.
     constexpr uintptr_t PRW_OFFSET = 0x4u;
     // Pow2 >= the 32 B PMSA minimum; the discovery step is a multiple of it, so every
     // candidate base stays WIN-aligned (PMSA masks an unaligned base down).
@@ -7471,22 +7744,18 @@ namespace
 
     // --- The allowlist and its VALUE MASK, reached on the host ---------------------
 #if KICKOS_ARCH_SIM
-    // xmc4800 is the only chip with a real backend, so on every other target the seam
-    // answers -KOS_ENOSYS and NO ctest anywhere reaches the allowlist match or the mask
-    // compare. arch/sim/sim.cc models a write-PV-only register block over real host pages so
-    // this arm reaches both, through the same dispatch arm and the same caller_holds_mmio_reg.
-    //
-    // What the sim CANNOT model is the bus classification itself: nothing here stops the
-    // worker storing to its own window directly, so the test seeds and reads the
-    // register that way. Under test is the KERNEL's narrowing of the seam, and the
-    // read-back is the only evidence of what the seam did or did not store.
+    // xmc4800 is the only chip with a real backend, so on every other target the seam answers
+    // -KOS_ENOSYS and no ctest reaches the allowlist match or the mask compare.
+    // arch/sim/sim.cc models a write-PV-only register block over real host pages so this arm
+    // reaches both. What the sim cannot model is the bus classification itself: the worker
+    // stores to its own window directly, so the read-back is the only evidence of what the
+    // seam did or did not store.
     //
     // The sim maps the block at the FIRST of these candidates the host leaves free and
-    // publishes that base; one fixed address would make this arm's premise a bet on the
-    // process address space. This list and its ORDER must equal arch/sim/sim.cc's
-    // SIM_PVREG_BASES, and PVS_WIN / PVS_REG / PVS_BEYOND must equal its
-    // SIM_PVREG_WINDOW and its first two allowlist entries. A drift shows up as every
-    // candidate being refused, never as a pass.
+    // publishes that base. This list and its ORDER MUST equal arch/sim/sim.cc's
+    // SIM_PVREG_BASES, and PVS_WIN / PVS_REG / PVS_BEYOND MUST equal its SIM_PVREG_WINDOW
+    // and its first two allowlist entries. A drift shows up as every candidate being
+    // refused, never as a pass.
     constexpr uintptr_t PVS_BASES[] = {
         0x40000000u, 0x100000000ull, 0x400000000ull, 0x10000000000ull, 0x100000000000ull,
     };
@@ -7602,12 +7871,10 @@ namespace
 #endif // KICKOS_ARCH_SIM
 
     // --- No privilege minting after boot ---------------------------------------
-    // syscall_thread.cc refuses a privileged child to an unprivileged caller. That refusal
-    // is the whole of "only idle is privileged once boot is over".
-    //
-    // Called from ROOT, which is unprivileged, so the refusal costs no thread slot and
-    // no arena block (the 16 KiB boards have neither to spare). A posture in which root
-    // were privileged turns this red rather than vacuous: the spawn would succeed.
+    // syscall_thread.cc refuses a privileged child to an unprivileged caller. Called from
+    // ROOT, which is unprivileged, so the refusal costs no thread slot and no arena block
+    // (the 16 KiB boards have neither to spare). A posture in which root were privileged
+    // turns this red rather than vacuous: the spawn would succeed.
     void escalate_noop(void*) {}
     void t_privileged_spawn_refused()
     {
@@ -7692,16 +7959,12 @@ namespace
     }
 
     // --- Join: a handle whose slot changed hands --------------------------------
-    // thread_resolve has two ways to answer nullptr, and the refusals in t_thread_join
-    // reach only the first: KOS_THREAD_NONE and 0x7fffffff both mask to an index no pool
-    // ever seats, so they leave through the range check and the generation compare below
-    // it is never executed.
-    //
-    // The reach is bought by RECLAIM. The pool hands out the LOWEST exited slot, and the
-    // first target took that slot when it was spawned, so every slot below it was live and
-    // still is: the second spawn therefore lands on the first target's slot and bumps its
-    // generation. The first handle then carries an index the pool does seat and a
-    // generation nothing holds, which is the second branch and nothing else.
+    // thread_resolve has two ways to answer nullptr and the refusals in t_thread_join reach
+    // only the first, KOS_THREAD_NONE and 0x7fffffff both masking to an index no pool ever
+    // seats. The reach is bought by RECLAIM: the pool hands out the LOWEST exited slot, and
+    // the first target took that slot when it was spawned, so the second spawn lands on it
+    // and bumps its generation. The first handle then carries an index the pool does seat
+    // and a generation nothing holds, which is the second branch and nothing else.
     void t_join_stale_gen()
     {
         auto first = kos::thread::create(join_probe, nullptr, "jgn1", 10);
@@ -7767,13 +8030,12 @@ namespace
         TAP_CHECK(kos_task_kill(task ^ 0xFFFF0000u) == -KOS_EBADF);
         // An out-of-range index, whatever generation rides it.
         TAP_CHECK(kos_task_kill(0x0000FFFFu) == -KOS_EBADF);
-        // AN IMPLICIT TASK IS UNNAMEABLE: idle's task is created first (kmain makes idle
-        // before root) and root's second, so slots 0 and 1 hold them and the biased codec
-        // names those two handles 1 and 2 at generation 0. Neither slot is ever freed. IDLE's
-        // carries the KERNEL domain, the whole arena at R|W, so a handle that resolved would
-        // hand an unprivileged thread the arena. Root's is reachable to root's own spawns by
-        // construction and to nothing else: a plain spawn joins the CALLER's task, never a
-        // named one.
+        // An implicit task is unnameable: idle's task is created first and root's second, so
+        // slots 0 and 1 hold them and the biased codec names those two handles 1 and 2 at
+        // generation 0. Neither slot is ever freed. Idle's carries the KERNEL domain, the
+        // whole arena at R|W, so a handle that resolved would hand an unprivileged thread
+        // the arena. Root's is reachable to root's own spawns by construction and to nothing
+        // else: a plain spawn joins the CALLER's task, never a named one.
         TAP_CHECK(kos_task_kill(1u) == -KOS_EBADF);
         TAP_CHECK(kos_task_kill(2u) == -KOS_EBADF);
         struct kos_thread_params ip = {};
@@ -7800,12 +8062,10 @@ namespace
     }
 
     // The CREATOR GATE, both halves, and it takes a second thread to witness at all: only the
-    // thread that made a group may seat a member into it or end it. Possession of the handle is
-    // deliberately not enough, because the codec is guessable and a resolvable handle would
-    // be an authority anyone could forge.
-    //
-    // The stranger reports over an ENDPOINT rather than a shared global, and root receives with
-    // a DEADLINE: a stranger that never answers must fail this arm rather than hang it.
+    // thread that made a group may seat a member into it or end it. Possession of the handle
+    // is deliberately not enough, the codec being guessable. The stranger reports over an
+    // ENDPOINT and root receives with a DEADLINE: a stranger that never answers must fail
+    // this arm rather than hang it.
     void task_stranger(void* arg) // caps: E@1
     {
         kos_task_t const t = static_cast<kos_task_t>(reinterpret_cast<uintptr_t>(arg));
@@ -7932,12 +8192,9 @@ namespace
 
     // --- Slay: the cleanup window a kill leaves and a slay denies ---------------
     // THE arm for docs/design-kill-and-slay.md, and the only one in the tree that witnesses
-    // the death point on real silicon: everything the host seam can see is the seam's
-    // ARGUMENTS, never a resumed context.
-    //
-    // The window is a PLAIN MEMORY WRITE and it has to be: the cooperative death point is
-    // the next syscall ENTRY, so any syscall placed here would BE that point and a killed
-    // thread would look exactly like a slain one.
+    // the death point on real silicon. The window is a PLAIN MEMORY WRITE and it has to be:
+    // the cooperative death point is the next syscall ENTRY, so any syscall placed here
+    // would BE that point and a killed thread would look exactly like a slain one.
     Atomic<int, Order::RELAXED> g_slay_window{0};
 
     // caps: done@1, park@2. Announces itself, then parks on a semaphore NOTHING ever posts,
@@ -8182,12 +8439,11 @@ namespace
             return;
         }
         // CONDEMNED, not gone: the redirect is armed and irrevocable, and the sweep has not
-        // run because the victim has not been given the CPU to run it on.
-        // The window runs from the hog's first run, not from this call, and the caller can
-        // lose all of it between the two: under an interrupt-driven console the caller blocks
-        // there, the hog spends its window, and the victim dies at once because nothing
-        // outranks it. slay returning 0 then is correct, so asserting the timeout without
-        // this check measures nothing. The hog has exited, so join it and stage a fresh one.
+        // run because the victim has not been given the CPU to run it on. The window runs
+        // from the hog's first run and the caller can lose all of it between the two: under
+        // an interrupt-driven console the caller blocks there, the hog spends its window and
+        // the victim dies at once. slay returning 0 is then correct, so asserting the timeout
+        // without this check measures nothing.
         for (int attempt = 0; attempt < 2 and not hog_window_open(); attempt++)
         {
             (void)hog.join(JOIN_GENEROUS_US);
@@ -8222,17 +8478,12 @@ namespace
     }
 
     // --- Self-grant, and the region budget that bounds it ----------------------
-    // Exercises the REFUSAL at the region-budget ceiling: the call must fail LOUDLY
-    // (-KOS_ENOMEM), not truncate the region set.
-    //
-    // Runs in an unprivileged CHILD, not in root: a privileged caller's self-grants are
-    // answered "already reachable" without spending a descriptor, so the ceiling would
-    // be unreachable.
-    //
-    // Each descriptor is bought with kos_ram_alloc(1), the SMALLEST region this
-    // backend can describe (the allocator rounds up to arch_ram_region_size). The
-    // blocks are not reclaimed (arch_ram_alloc is a bump allocator with no free), so
-    // the bound below is also what keeps the leak small.
+    // Exercises the REFUSAL at the region-budget ceiling: the call MUST fail loudly
+    // (-KOS_ENOMEM) and never truncate the region set. Runs in an unprivileged CHILD: a
+    // privileged caller's self-grants are answered "already reachable" without spending a
+    // descriptor, so the ceiling would be unreachable. Each descriptor is bought with
+    // kos_ram_alloc(1), the smallest region this backend can describe; the blocks are not
+    // reclaimed, so the bound below is also what keeps the leak small.
     constexpr int SG_MAX = 12; // > KICKOS_MPU_MAX_REGIONS, so the loop must end refused
     // THE CEILING IS A DIFFERENT ONE WHERE A BACKEND TRANSLATES. No descriptor is seated
     // there, so the self-grant spends no region budget; what runs out is the RESERVATION
@@ -8319,24 +8570,18 @@ namespace
     }
 
     // --- Self-grant of a non-power-of-two region ------------------------------
-    // Wherever arch_ram_region_size is granular rather than pow2 (a min-region-0 backend
-    // like nRF51/LX6, and every base+limit MPU), three granules round to three granules, so
-    // rsz - 1 is not an alignment mask and a block kos_ram_alloc handed out must still
-    // self-grant. The sizes must be granule-derived: a constant only discriminates at one
-    // granule. Consecutive 3-granule blocks step through the granule residues of 4 granules,
-    // so within three blocks one base is not 4-granule aligned, exactly the base an ungated
-    // pow2 mask check refuses.
+    // Wherever arch_ram_region_size is granular (a min-region-0 backend like nRF51/LX6, and
+    // every base+limit MPU), three granules round to three granules, so rsz - 1 is not an
+    // alignment mask and a block kos_ram_alloc handed out must still self-grant. The sizes
+    // MUST be granule-derived, a constant discriminating at one granule only. Consecutive
+    // 3-granule blocks step through the granule residues of 4 granules, so one base within
+    // three is not 4-granule aligned, which an ungated pow2 mask check refuses.
     //
-    // Registered BEFORE domain_share, not with mem_self_grant: on microbit the
-    // pool cannot host a worker by the time the budget test runs, and this probe
-    // is only discriminating on exactly such a no-MPU board.
-    //
-    // THE RESIDUE WALK IS A BUMP-ARENA ARGUMENT. Where the allocator is a first-fit frame
-    // bitmap, consecutive blocks do not step through residues and the loop can pick an
-    // already-4-granule-aligned base, which makes the arm NON-DISCRIMINATING rather than
-    // wrong: the fallback is the first block, and a self-grant of a 3-granule block is still
-    // what runs. It is left registered there because the size, not the base, is what
-    // mem_self_grant is being asked about.
+    // Registered BEFORE domain_share: on microbit the pool cannot host a worker by the time
+    // the budget test runs. The residue walk is a BUMP-ARENA argument; where the allocator
+    // is a first-fit frame bitmap the loop can pick an already-aligned base, which makes the
+    // arm non-discriminating rather than wrong, and it stays registered there because the
+    // size is what mem_self_grant is being asked about.
     Atomic<int32_t, Order::RELAXED> g_sgnp_rc{-1};
     Atomic<int, Order::RELAXED> g_sgnp_ran{0};
     void sgnp_worker(void*)
@@ -8374,15 +8619,12 @@ namespace
         kos_sem_post(CH_DONE);
     }
     // --- Which region-encoding mode is live on this board ----------------------
-    // The bump allocator's step for a 3-granule request IS the mode: a base+limit
-    // backend reserves 3 granules, a pow2 backend rounds to 4.
-    //
-    // A BUMP ARENA ONLY. Under translation there is no region encoding to name, and the
-    // subtraction below is not a stride either: kos_ram_alloc reserves frames out of a
-    // first-fit bitmap, so an earlier free makes two consecutive results non-monotonic and
-    // `step` reports pool state rather than shaping. Allocation order is not public API on
-    // that backend, so the arm is not registered there; the map editor answers this instead
-    // (aspace_model, aspace_seam).
+    // The bump allocator's step for a 3-granule request IS the mode: a base+limit backend
+    // reserves 3 granules, a pow2 backend rounds to 4. A BUMP ARENA ONLY: under translation
+    // kos_ram_alloc reserves frames out of a first-fit bitmap, so an earlier free makes two
+    // consecutive results non-monotonic and `step` reports pool state. Allocation order is
+    // not public API there, so the arm is not registered; aspace_model and aspace_seam
+    // answer this instead.
 #if not KICKOS_HAVE_ASPACE
     void t_region_mode()
     {
@@ -8478,7 +8720,7 @@ int main(int, char**)
 
 // Region 1: everything down to the #undef below. Moving an arm across that boundary,
 // adding one or deleting one has to move the matching per-part floor in this app's
-// CMakeLists, which asserts the two floors still sum to the whole suite.
+// CMakeLists, which asserts the three floors still sum to the whole suite.
 #if KICKOS_SELFTEST_PART == 0 || KICKOS_SELFTEST_PART == 1
 #define TAP_ADD(name, fn) tap::add(name, fn)
 #else
@@ -8524,6 +8766,13 @@ int main(int, char**)
     TAP_ADD("call_timeout_pending", t_call_timeout_pending);   // timed call expires on send_waiters
     TAP_ADD("call_timeout_revert", t_call_timeout_revert);     // ... and that unwind reverts the D2 boost
     TAP_ADD("call_timeout_reply", t_call_timeout_reply);       // ... and in CALL_REPLY_WAIT, via the SLOW path
+#undef TAP_ADD
+// Region 2.
+#if KICKOS_SELFTEST_PART == 0 || KICKOS_SELFTEST_PART == 2
+#define TAP_ADD(name, fn) tap::add(name, fn)
+#else
+#define TAP_ADD(name, fn) TAP_ELIDE(fn)
+#endif
     TAP_ADD("reply_stale_caller", t_reply_stale_caller);       // reply to a timed-out caller: -KOS_ESRCH
     TAP_ADD("reply_abandoned_cap", t_reply_abandoned_cap);     // ... and while that caller is in a SECOND call
     TAP_ADD("call_infoless_revert", t_call_infoless_revert); // info-less bounce reverts the D2 boost
@@ -8538,13 +8787,6 @@ int main(int, char**)
     TAP_ADD("call_server_death", t_call_server_death);       // die mid-xact -> caller EPIPE (teardown arm)
     TAP_ADD("call_prepop_death", t_call_prepop_death);       // die pre-pop -> caller EPIPE (recv_holders 0)
     TAP_ADD("call_donation", t_call_donation);               // D1 donation keeps the spoiler off the xact
-#undef TAP_ADD
-// Region 2.
-#if KICKOS_SELFTEST_PART == 0 || KICKOS_SELFTEST_PART == 2
-#define TAP_ADD(name, fn) tap::add(name, fn)
-#else
-#define TAP_ADD(name, fn) TAP_ELIDE(fn)
-#endif
     TAP_ADD("call_donation_hold", t_call_donation_hold);     // D3: a reply donor survives an unrelated recompute
     TAP_ADD("call_donation_slow", t_call_donation_slow);     // D3: same, via the recv-side mint
     TAP_ADD("call_donation_pending", t_call_donation_pending); // D3: a SEND_WAIT donor does too
@@ -8565,6 +8807,13 @@ int main(int, char**)
     TAP_ADD("cap_reply_bound_slow", t_cap_reply_bound_slow); // the same, via the recv-side scan
     TAP_ADD("cap_reply_release_close", t_cap_reply_release_close); // close consumes a reply cap
     TAP_ADD("cap_reply_slot_reuse", t_cap_reply_slot_reuse);       // a dead server's slot is clean
+#undef TAP_ADD
+// Region 3.
+#if KICKOS_SELFTEST_PART == 0 || KICKOS_SELFTEST_PART == 3
+#define TAP_ADD(name, fn) tap::add(name, fn)
+#else
+#define TAP_ADD(name, fn) TAP_ELIDE(fn)
+#endif
     TAP_ADD("console_publish_priv", t_console_publish); // D3 privileged-only + bad-cap reject
     TAP_ADD("shutdown_priv", t_shutdown_denied);        // KOS_SYS_SHUTDOWN privileged-only
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -8577,13 +8826,6 @@ int main(int, char**)
     TAP_ADD("periph_reg_write_unheld", t_periph_reg_write_unheld); // same gate + the offset bound + the chip refusal
 #if KICKOS_ARCH_SIM
     TAP_ADD("periph_reg_write_mask", t_periph_reg_write_mask); // allowlist match + the per-entry value mask
-#endif
-#undef TAP_ADD
-// Region 3.
-#if KICKOS_SELFTEST_PART == 0 || KICKOS_SELFTEST_PART == 3
-#define TAP_ADD(name, fn) tap::add(name, fn)
-#else
-#define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
     TAP_ADD("privileged_spawn_refused", t_privileged_spawn_refused); // no privilege minting after boot
     TAP_ADD("thread_join", t_thread_join);   // parked join, unreclaimed exit, the refusals
@@ -8637,6 +8879,7 @@ int main(int, char**)
     TAP_ADD("aspace_translate", t_aspace_translate); // two virtual pages, one frame: not an identity map
     TAP_ADD("aspace_refusals", t_aspace_refusals);   // the map editor's refusal set, as one word
     TAP_ADD("aspace_span", t_aspace_span);           // a range crossing two table boundaries
+    TAP_ADD("aspace_acquire_dup", t_aspace_acquire_dup); // two holds of one page, released in the wrong order
     TAP_ADD("aspace_balance", t_aspace_balance);     // destroy returns every frame a space took
     TAP_ADD("aspace_domain_balance", t_aspace_domain_balance); // a dropped domain returns its space
     TAP_ADD("aspace_forced_unwind", t_aspace_forced_unwind); // T8b: a refused allocation, swept through the create
@@ -8648,8 +8891,12 @@ int main(int, char**)
     TAP_ADD("task_siblings_share", t_task_siblings_share);   // two members of one group, one image
     TAP_ADD("task_handoff_readback", t_task_handoff_readback); // F10's handoff, both consumers
     TAP_ADD("task_handoff_donor_exits", t_task_handoff_donor_exits); // the donor dies first
+    TAP_ADD("task_handoff_slice", t_task_handoff_slice); // an interior base, refused
     TAP_ADD("self_grant_cross_task", t_self_grant_cross_task); // F10: another task's reservation, refused
     TAP_ADD("reservation_teardown", t_reservation_teardown);   // F10: a never-mapped reservation, released at death
+    TAP_ADD("frame_scrub_cross_task", t_frame_scrub_cross_task); // a reused frame carries no previous task's bytes
+    TAP_ADD("spawn_refusal_frees_task", t_spawn_refusal_frees_task); // a thread-pool refusal returns the task task_for built
+    TAP_ADD("spawn_refusal_frees_donor", t_spawn_refusal_frees_donor); // and the reference the refused handoff took
     TAP_ADD("parked_frame_hostile", t_parked_frame_hostile); // a sibling scribbles a parked member's frame
     TAP_ADD("split_access", t_split_access);       // a virtual range over two non-adjacent frames
     TAP_ADD("process_ipc_same_addr", t_process_ipc_same_addr); // one address, two processes, message + info

@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
-//
-// kickos/ustack.h carries the contract.
 
 #include <kickos/ustack.h>
 
@@ -15,9 +13,8 @@ namespace kickos
 {
     namespace
     {
-        // The stack's frames plus the guard's. The guard is charged to the pool, so the page
-        // below a stack belongs to that stack and no later allocation can map it (F7 budgets
-        // one granule per thread).
+        // The stack's frames plus the guard's: the page below a stack belongs to that stack,
+        // so no later allocation can map it.
         size_t run_pages(size_t stack_pages)
         {
             return stack_pages + 1u;
@@ -37,7 +34,8 @@ namespace kickos
             return out; // the round-up below would wrap
         }
         size_t const pages = (want + g - 1u) / g;
-        arch_phys_addr_t const run = frame_pool_alloc_run(run_pages(pages));
+        // Cleared frames: nothing writes a fresh stack before the thread runs on it.
+        arch_phys_addr_t const run = frame_pool_alloc_user_run(run_pages(pages));
         if (run == 0)
         {
             return out;
@@ -76,8 +74,7 @@ namespace kickos
         if (rc != ARCH_ASPACE_OK)
         {
             // The unmap is total-or-fail, so a refusal left every entry standing: the space
-            // still maps these frames and destroy is what frees them (F10). Freeing them
-            // here as well would be a double release.
+            // still maps these frames and destroy is what frees them.
             return;
         }
         frame_pool_free_run(static_cast<arch_phys_addr_t>(base), pages, g);

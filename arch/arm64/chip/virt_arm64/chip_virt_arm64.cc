@@ -6,8 +6,11 @@
 // machine defaulting to a core that refuses an A64 image.
 
 #include <kickos/arch/arch.h>
+
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
 #include <kickos/chip_limits.h>  // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
+
+#include <fatal_status.ld.h>
 
 #include <stdint.h>
 
@@ -35,13 +38,6 @@ extern "C"
     extern uint32_t __kickos_appbss_start, __kickos_appbss_end;
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
-
-    // DWARF EH frame table (virt_arm64.ld) + the libgcc registrar. The -nostartfiles link
-    // drops crtbegin, so its frame_dummy never registers .eh_frame and a full-C++ app must
-    // register it by hand at boot. WEAK ref: a freestanding image references no _Unwind_*,
-    // so the ref stays null and the call is skipped.
-    extern uint32_t __eh_frame_start;
-    void __register_frame(void*) __attribute__((weak));
 
     // Nominal core clock (Hz).
     uint32_t SystemCoreClock = 0;
@@ -203,14 +199,12 @@ void arch_init(void)
     *r32p(GICC_CTLR) = 1;
     *r32p(GICD_CTLR) = 1;
 
-    // This port's mie.MTIE: the timer is in no dispatch table, so no driver unmasks it.
     // Banked, so no target is owed.
     *r8p(GICD_IPRIORITYR + PPI_EL1_PHYS_TIMER) = 0;
     *r32p(GICD_ISENABLER + (PPI_EL1_PHYS_TIMER / 32) * 4) =
         1u << (PPI_EL1_PHYS_TIMER % 32);
 
-    // PSTATE.I stays SET: interrupts first reach the core through the initial thread's SPSR,
-    // where RISC-V puts mstatus.MPIE.
+    // PSTATE.I stays SET: interrupts first reach the core through the initial thread's SPSR.
 }
 
 // A pure read, as the seam requires: the counter is 64-bit and monotonic in hardware, so
@@ -378,12 +372,6 @@ void arch_shutdown(int status)
     }
 }
 
-// The shared panic/fault dead-end (kernel.h).
-void kfault_terminate(void)
-{
-    arch_shutdown(132);
-}
-
 // startup.S branches here when the handover was not at EL1. Runs before .data and .bss, so
 // it touches neither, and inside the boot span, so it reaches neither arch_console_write nor
 // kfault_terminate: both are kernel text and only a walk names those.
@@ -398,7 +386,7 @@ KICKOS_BOOT_TEXT void kickos_arm64_bad_el(unsigned long el)
     // an unaligned one whatever SCTLR_EL1.A says, and the compiler stores this pair wide.
     uint64_t block[2] __attribute__((aligned(16)));
     block[0] = ADP_Stopped_ApplicationExit;
-    block[1] = 132;
+    block[1] = KICKOS_FATAL_STATUS;
     semihost(SYS_EXIT, block);
 
     // Reached only when nothing is listening for semihosting calls.
@@ -424,10 +412,6 @@ void Reset_Handler(void)
     for (uint32_t* b = &__kickos_appbss_start; b < &__kickos_appbss_end; b++)
     {
         *b = 0;
-    }
-    if (__register_frame != nullptr) // weak: null in a freestanding image (see decl)
-    {
-        __register_frame(&__eh_frame_start); // DWARF EH: register before ctors/throws
     }
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {

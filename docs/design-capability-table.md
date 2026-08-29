@@ -742,10 +742,11 @@ coupling already satisfied is checked here, not re-done.
   when the variable goes: its first clause becomes silently **always true**, and the expectation it
   guarded is then asserted on boards that no longer register the arm at all. Deleting a knob
   therefore means re-deriving every expectation keyed on it, never merely leaving the predicate.
-- **The TAP arm counts.** `_tap_arms`, `_tap_arms_p1` and `_tap_arms_p2`
+- **The TAP arm counts.** `_tap_arms` and `_tap_arms_p1` .. `_tap_arms_p3`
   (`user/apps/common/selftest/CMakeLists.txt`) are hand-maintained and reconciled against
-  each other with a `FATAL_ERROR` at configure time. Deleting an arm without decrementing all three
-  fails the configure, which is the correct behaviour and must simply be done.
+  each other with a `FATAL_ERROR` at configure time. Deleting an arm without decrementing both the
+  whole-suite count and its part fails the configure, which is the correct behaviour and must
+  simply be done.
 - **The positional capacity parameter** on `spawn` and `spawn_caps` (`user/include/kickos/kos.h`),
   and every call site that passes it or the per-grant destination argument beyond it: a positional
   argument list shifts silently when a middle parameter is removed.

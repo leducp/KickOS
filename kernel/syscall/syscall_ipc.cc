@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Synchronous IPC: endpoint create plus the send/recv/call/reply rendezvous. send, recv
-// and call MUST be entered with no caller-held IrqLock: each releases its own before the
-// resume barrier, and a spanning caller lock keeps BASEPRI raised across
+// send, recv and call MUST be entered with no caller-held IrqLock: each releases its own
+// before the resume barrier, and a spanning caller lock keeps BASEPRI raised across
 // wq_confirm_resume and livelocks ARM.
 
 #include <kickos/bench.h>
@@ -26,8 +25,7 @@ namespace kickos
 {
     namespace
     {
-        // The badge every message carries; there is no per-endpoint badge scheme.
-        // Distinct from ipc.badge_out == 0, which means the receiver asked for no badge.
+        // Distinct from ipc.badge_out == 0, which means the receiver asked for no info.
         constexpr uint32_t KOS_BADGE_NONE = 0;
 
         void park_deadline_arm(Thread* t, uint32_t timeout_us)
@@ -39,11 +37,8 @@ namespace kickos
         }
     }
 
-    // --- Endpoint capability (IPC rendezvous; mirrors sem_create) ---------------
-    // A thread names an endpoint by a per-thread CAP_ENDPOINT capability; the creator cap
-    // carries WAIT|SIGNAL|TRANSFER, send needs CAP_SIGNAL and recv needs CAP_WAIT. Two
-    // counters track it, endpoint_refs (all caps) and recv_holders (WAIT-bearing caps); a
-    // rollback must unwind BOTH.
+    // Two counters track an endpoint, endpoint_refs (all caps) and recv_holders (WAIT-bearing
+    // caps); a rollback must unwind BOTH.
     int endpoint_create(uint32_t* out_cap)
     {
         IrqLock lock;
@@ -79,14 +74,10 @@ namespace kickos
         return 0;
     }
 
-    // Synchronous send: rendezvous with a parked receiver (deliver now) or park. Entered
-    // with no caller-held IrqLock, per the file header.
     // Returns bytes transferred (>= 0), or -KOS_E* (EINVAL oversize, EFAULT bad buffer,
-    // EBADF/EPERM bad cap or missing SIGNAL, EPIPE dead endpoint / last receiver left,
+    // EBADF/EPERM bad cap or missing SIGNAL, EPIPE dead endpoint or last receiver left,
     // ETIMEDOUT `timeout_us` elapsed, ECANCELED cancelled while parked; in the last three
-    // cases nothing was sent).
-    // `timeout_us` is relative microseconds and bounds the PARK only; KOS_TIMEOUT_NONE
-    // parks forever.
+    // cases nothing was sent). `timeout_us` bounds the PARK only.
     int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us)
     {
         if (len > KOS_EP_MSG_MAX)
@@ -124,9 +115,11 @@ namespace kickos
                 {
                     n = w->ipc.len; // datagram truncation, not an error
                 }
-                ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n);
-                write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE,
-                                KCAP_INVALID);
+                bool const ok = ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n);
+                KICKOS_ASSERT(ok);
+                (void)ok;
+                (void)write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE,
+                                      KCAP_INVALID);
                 w->wait_result = static_cast<intptr_t>(n);
                 sched::wake(w);
                 return static_cast<int>(n); // did not block: no resume barrier
@@ -145,11 +138,9 @@ namespace kickos
         return static_cast<int32_t>(c->wait_result);
     }
 
-    // See cap.h. endpoint_send's parked-receiver arm and NOTHING else: it never parks, a
-    // fault record having to reach neither a driver that is mid-write nor one already gone.
-    // Resolves through the KERNEL's own identity ref on the published endpoint
-    // (cap_console_publish), not through any cap table, which a thread spawned before the
-    // publish never had seated. `buf` is kernel memory, so there is no user_readable_ok.
+    // It never parks: a fault record must reach neither a driver mid-write nor one already
+    // gone. Resolved through the kernel's own identity ref on the published endpoint
+    // (cap_console_publish), and `buf` is kernel memory, so there is no user_readable_ok.
     int32_t cap_console_deliver(char const* buf, size_t len)
     {
         IrqLock lock;
@@ -173,22 +164,26 @@ namespace kickos
         {
             n = w->ipc.len; // datagram truncation, as for any sender
         }
-        kaccess_to_user(ipc_buf_space(w), w->ipc.buf, buf, n);
-        write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, KCAP_INVALID);
+        if (not kaccess_to_user(ipc_buf_space(w), w->ipc.buf, buf, n))
+        {
+            n = 0; // the receiver keeps a partial line and is told nothing arrived
+        }
+        // Refused the same way and never by an early return: the waiter is already off
+        // recv_waiters, so returning here would leave it parked with nothing left to wake it.
+        if (not write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, KCAP_INVALID))
+        {
+            n = 0;
+        }
         w->wait_result = static_cast<intptr_t>(n);
         sched::wake(w);
         return static_cast<int32_t>(n);
     }
 
-    // Synchronous recv: take from a parked sender (copy now) or park. Entered with no
-    // caller-held IrqLock, per the file header.
-    // Returns bytes received (>= 0), or -KOS_E* (EFAULT bad buffer/out-ptr, EINVAL
+    // Returns bytes received (>= 0), or -KOS_E* (EFAULT bad buffer or out-ptr, EINVAL
     // misaligned badge, EBADF/EPERM bad cap or missing WAIT, ETIMEDOUT the deadline elapsed
-    // with no sender, ECANCELED cancelled while parked). n == 0 is a VALID zero-length
-    // signal, not an error.
-    // Under `timed`, `badge_out` names a kos_recv_timed_opts and not a bare kos_recv_info:
-    // the deadline is read out of it here and everything downstream sees only the nested
-    // kos_recv_info.
+    // with no sender, ECANCELED cancelled while parked). n == 0 is a valid zero-length signal.
+    // Under `timed`, `badge_out` names a kos_recv_timed_opts; the deadline is read out of it
+    // here and everything downstream sees only the nested kos_recv_info.
     int32_t endpoint_recv(uint32_t cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out,
                           bool timed)
     {
@@ -196,8 +191,7 @@ namespace kickos
         {
             cap_len = KOS_EP_MSG_MAX; // capacity clamp is harmless
         }
-        // Resolved before the validation below, which the opts read needs it for: the
-        // caller OWNS every pointer this function is handed.
+        // Resolved before the validation below, which the opts read needs it for.
         Thread* c = sched::current();
         if (c == nullptr)
         {
@@ -207,7 +201,7 @@ namespace kickos
         {
             return -KOS_EFAULT;
         }
-        // REWRITES badge_out to the kos_recv_info nested in the opts struct. Each arm below
+        // Rewrites badge_out to the kos_recv_info nested in the opts struct. Each arm below
         // validates the out-ptr on the address the kernel actually stores to.
         uint32_t timeout_us = KOS_TIMEOUT_NONE;
         if (timed)
@@ -229,16 +223,18 @@ namespace kickos
             }
             // Copied ONCE, before anything can park: the struct stays user-writable, so a
             // re-read after the park would see whatever the caller has since put there.
-            kaccess_from_user(&timeout_us, user_space_of(c),
-                              badge_out + offsetof(kos_recv_timed_opts, timeout_us),
-                              sizeof(timeout_us));
+            bool const ok = kaccess_from_user(&timeout_us, user_space_of(c),
+                                              badge_out
+                                                  + offsetof(kos_recv_timed_opts, timeout_us),
+                                              sizeof(timeout_us));
+            KICKOS_ASSERT(ok);
+            (void)ok;
             badge_out = badge_out + offsetof(kos_recv_timed_opts, info);
         }
         else // binds to the `if` below, past the comment block
-        // The out-ptr delivers a kos_recv_info (8 bytes, 4-aligned), not a bare badge u32.
-        // badge_out == 0 means an info-less recv, which cannot host a call. NOT reached on
-        // the timed path: the rewritten badge_out was already proved writable and 4-aligned
-        // inside the opts struct.
+        // The out-ptr delivers a kos_recv_info (8 bytes, 4-aligned); badge_out == 0 is an
+        // info-less recv, which cannot host a call. Not reached on the timed path, whose
+        // rewritten badge_out was already proved writable and 4-aligned in the opts struct.
         if (badge_out != 0
             and ((badge_out & (alignof(uint32_t) - 1)) != 0
                  or not user_writable_ok(badge_out, sizeof(kos_recv_info))))
@@ -264,8 +260,8 @@ namespace kickos
             }
             endpoint_server_set(e, c); // the conventional receiver (D2 boost target)
             // A reschedule inside the scan moves current() onto the woken caller, and the
-            // wq_block below re-reads it: it would park that caller instead of us. Every wake
-            // here defers its reschedule to the highest-priority thread woken.
+            // wq_block below re-reads it, so it would park that caller. Every wake here
+            // defers its reschedule to the highest-priority thread woken.
             Thread* woke_top = nullptr;
             KICKOS_BENCH_SPAN(PH_RECV_RESOLVE, bm_rresolve);
             KICKOS_BENCH_MARK(bm_rscan);
@@ -322,12 +318,15 @@ namespace kickos
                     {
                         n = cap_len; // truncate the request into our capacity
                     }
-                    ep_copy(user_space_of(c), buf, ipc_buf_space(s), s->ipc.buf, n);
+                    bool const ok = ep_copy(user_space_of(c), buf, ipc_buf_space(s),
+                                            s->ipc.buf, n);
+                    KICKOS_ASSERT(ok);
+                    (void)ok;
                     uint32_t rcap = KCAP_INVALID;
                     // Not inside the assert: a compiled-out condition would drop the mint.
                     int const minted = cap_install_reply(c, s, &rcap);
                     KICKOS_ASSERT(minted == 0);
-                    write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, rcap);
+                    (void)write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, rcap);
                     s->ipc.len = s->call_rx_cap;
                     s->ipc.badge_out = 0;
                     s->call_state = CALL_REPLY_WAIT;
@@ -349,8 +348,10 @@ namespace kickos
                 {
                     n = cap_len; // truncate into the receiver's capacity
                 }
-                ep_copy(user_space_of(c), buf, ipc_buf_space(s), s->ipc.buf, n);
-                write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, KCAP_INVALID);
+                bool const ok = ep_copy(user_space_of(c), buf, ipc_buf_space(s), s->ipc.buf, n);
+                KICKOS_ASSERT(ok);
+                (void)ok;
+                (void)write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, KCAP_INVALID);
                 s->wait_result = static_cast<intptr_t>(n);
                 if (sched::wake_no_resched(s) and (woke_top == nullptr or s->prio > woke_top->prio))
                 {
@@ -377,17 +378,12 @@ namespace kickos
         return static_cast<int32_t>(c->wait_result);
     }
 
-    // Synchronous call: deliver a request to the endpoint's server, park until it replies.
-    // In-place buffer (request out, reply back). Entered with no caller-held IrqLock, per
-    // the file header.
-    // Returns reply bytes (>= 0), or -KOS_E* (EINVAL oversize, EFAULT bad buffer,
-    // EBADF/EPERM bad cap or no SIGNAL, EPIPE dead endpoint or server died, EMFILE the
-    // SERVER's table is full or it is at its inbound reply bound, ENOSYS server took an
-    // info-less recv, ETIMEDOUT `timeout_us` elapsed, ECANCELED cancelled while parked on
-    // either half of the call).
-    // `timeout_us` bounds the WHOLE call, not one park: ONE deadline covers the wait on
-    // send_waiters AND the wait for the reply. KOS_TIMEOUT_NONE parks forever on either
-    // path.
+    // One in-place buffer: request out, reply back. Returns reply bytes (>= 0), or -KOS_E*
+    // (EINVAL oversize, EFAULT bad buffer, EBADF/EPERM bad cap or no SIGNAL, EPIPE dead
+    // endpoint or server died, EMFILE the SERVER's table is full or at its inbound reply
+    // bound, ENOSYS server took an info-less recv, ETIMEDOUT `timeout_us` elapsed, ECANCELED
+    // cancelled while parked on either half). `timeout_us` bounds the WHOLE call: ONE deadline
+    // covers the wait on send_waiters AND the wait for the reply.
     int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
                           uint32_t timeout_us)
     {
@@ -471,7 +467,9 @@ namespace kickos
                     n = w->ipc.len; // receiver-side request truncation
                 }
                 KICKOS_BENCH_MARK(bm_copy);
-                ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n);
+                bool const ok = ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n);
+                KICKOS_ASSERT(ok);
+                (void)ok;
                 KICKOS_BENCH_SPAN(PH_CALL_COPY, bm_copy);
                 c->call_seq++; // new epoch BEFORE packing (the reply cap rides this seq)
                 uint32_t rcap = KCAP_INVALID;
@@ -482,7 +480,7 @@ namespace kickos
                 KICKOS_BENCH_SPAN(PH_CALL_MINT_CAP, bm_mint_cap);
                 KICKOS_ASSERT(minted == 0);
                 KICKOS_BENCH_MARK(bm_mint_info);
-                write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, rcap);
+                (void)write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, rcap);
                 KICKOS_BENCH_SPAN(PH_CALL_MINT_INFO, bm_mint_info);
                 KICKOS_BENCH_SPAN(PH_CALL_MINT, bm_mint);
                 w->wait_result = static_cast<intptr_t>(n);
@@ -512,7 +510,7 @@ namespace kickos
                 KICKOS_BENCH_SPAN(PH_CALL_WAKE, bm_wake);
                 // Both close INSIDE the lock: the brace below is where it releases and a
                 // pended switch fires, so a span reaching past it would time the whole round
-                // trip. Fastpath-only, too: a span shared with the slowpath arm would report
+                // trip. And fastpath-only: a span shared with the slowpath arm would report
                 // that arm's shorter body as this one's minimum.
                 KICKOS_BENCH_SPAN(PH_CALL_LOCKED, bm_locked);
                 KICKOS_BENCH_SPAN(PH_CALL_TOTAL, bm_total);
@@ -555,9 +553,8 @@ namespace kickos
         return static_cast<int32_t>(c->wait_result);
     }
 
-    // Copies the reply into the parked caller's buffer and wakes it. One-shot: the cap is
-    // consumed on EVERY exit. Returns 0, or -KOS_E* (EBADF bad or non-reply cap, EFAULT bad
-    // reply buffer, ESRCH the caller is gone or aborted).
+    // One-shot: the cap is consumed on EVERY exit. Returns 0, or -KOS_E* (EBADF bad or
+    // non-reply cap, EFAULT bad reply buffer, ESRCH the caller is gone or aborted).
     int endpoint_reply(uint32_t reply_cap, uintptr_t buf, size_t len)
     {
         KICKOS_BENCH_MARK(bm_total);
@@ -615,13 +612,14 @@ namespace kickos
             n = caller->call_rx_cap; // reply truncation into the caller's capacity
         }
         KICKOS_BENCH_MARK(bm_copy);
-        ep_copy(ipc_buf_space(caller), caller->ipc.buf, user_space_of(c), buf, n);
+        bool const ok = ep_copy(ipc_buf_space(caller), caller->ipc.buf, user_space_of(c), buf, n);
+        KICKOS_ASSERT(ok);
+        (void)ok;
         KICKOS_BENCH_SPAN(PH_REPLY_COPY, bm_copy);
         caller->wait_result = static_cast<intptr_t>(n);
         caller->call_state = CALL_NONE;
         KICKOS_BENCH_MARK(bm_funnel);
-        // D3: revert our donation through the single funnel; the cap is gone and the caller
-        // left REPLY_WAIT, so neither counts anymore.
+        // D3: revert our donation through the single funnel.
         sched::set_prio(c, thread_effective_prio(c));
         KICKOS_BENCH_SPAN(PH_REPLY_FUNNEL, bm_funnel);
         KICKOS_BENCH_MARK(bm_wake);

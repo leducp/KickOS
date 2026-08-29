@@ -7,18 +7,15 @@
 //
 // Lifecycle, chosen by whether the entry RETURNS:
 //   * Single-shot (the default init). It walks the board's service list
-//     (kickos_service_list_run), then runs the app's kickos_app_main. A nonzero bring-up
-//     result short-circuits: the entry returns it WITHOUT running the app, so the app
-//     never runs against a dark console. RETURNING from kickos_init_entry tears the
-//     system down (root_entry flushes the console, then arch_shutdown(status)).
-//   * An init that brings services up must PERSIST: it parks (a sleep loop or a wait on a
-//     semaphore nobody posts) and NEVER returns. Returning would exit, taking down every
-//     service it spawned.
+//     (kickos_service_list_run), then runs the app's kickos_app_main; a nonzero bring-up result
+//     is returned WITHOUT running the app. RETURNING from kickos_init_entry tears the system
+//     down (root_entry flushes the console, then arch_shutdown(status)).
+//   * An init that brings services up must PERSIST: it parks and NEVER returns. Returning would
+//     exit, taking down every service it spawned.
 //
-// The app main / init body runs in an UNPRIVILEGED root holding a full authority word. An
-// app must not assume ambient privilege: the privileged acts are gated on authority bits
-// (kos_console_publish on AUTH_CONSOLE, and so on), and what root holds when main is
-// entered is what kickos_app_authority() below declares.
+// The app main / init body runs in an UNPRIVILEGED root holding a full authority word. An app
+// must not assume ambient privilege: the privileged acts are gated on authority bits, and what
+// root holds when main is entered is what kickos_app_authority() below declares.
 //
 // App and libstdc++ global constructors run in the kernel root thread BEFORE
 // kickos_init_entry is entered, so a constructor cannot depend on anything init
@@ -37,25 +34,28 @@ extern "C"
 // The symbol the kernel boot path calls after kernel init.
 int kickos_init_entry(int argc, char** argv);
 
-// The root thread's own entry, which kmain hands to thread_create. It walks the app's ctor
-// window and then calls kickos_init_entry above.
+// The root thread's own entry, which kmain hands to thread_create. It walks the app's ctor window
+// and then calls kickos_init_entry above.
 //
-// MUST stay defined app-side (libkickos_user.a), for the reason kickos_init_args below
-// gives and one more: root is UNPRIVILEGED from its first instruction, so on a translating
-// board this text is fetched at EL0. Kernel-half text is unreachable there at any address.
-void kickos_root_entry(void* arg);
+// MUST stay defined app-side (libkickos_user.a): root is UNPRIVILEGED from its first
+// instruction, so on a translating board this text is fetched at EL0, where kernel-half text is
+// unreachable at any address.
+//
+// Hidden visibility is required: kmain takes this function's address, and x86_64 reaches the
+// address of a default-visibility external function GOT-indirect while `ld -m i386pep` builds no
+// global offset table (tools/check-x86_64-no-got.sh).
+void kickos_root_entry(void* arg) __attribute__((visibility("hidden")));
 
-// The kernel -> init argument handoff. kmain fills it; the root thread reads it
-// immediately before calling kickos_init_entry above.
+// The kernel -> init argument handoff. kmain fills it; the root thread reads it immediately before
+// calling kickos_init_entry above.
 //
-// MUST stay defined app-side (libkickos_user.a), so the enforcement linker scripts route
-// it into the .appdata/.appbss grant that every unprivileged thread holds
-// (arch_domain_static_regions). Kernel-side storage, or a kmain stack local sitting
-// outside the arena, faults an unprivileged root before its first statement on every
-// enforcing board.
+// MUST stay defined app-side (libkickos_user.a), so the enforcement linker scripts route it into
+// the .appdata/.appbss grant every unprivileged thread holds (arch_domain_static_regions).
+// Kernel-side storage, or a kmain stack local outside the arena, faults an unprivileged root
+// before its first statement on every enforcing board.
 //
-// argv is null (argc 0) on MCU. On the hosted sim it points into the host process's own
-// argv, which no grant covers and which the sim does not enforce.
+// argv is null (argc 0) on MCU. On the hosted sim it points into the host process's own argv,
+// which no grant covers.
 struct kos_init_args
 {
     int argc;
@@ -99,9 +99,9 @@ int kickos_pinmux_run(void);
 // same holds for a main that calls exit() or abort(), root's kos_exit being a shutdown too
 // (<kickos/sys.h>). A never-returning app may declare 0.
 //
-// Not weak, and must not become weak: the attribute would propagate to the app's own
-// definition (GCC carries it from declaration to definition in one TU) and leave link
-// order deciding the winner. An app's definition wins instead by keeping
+// Not weak, and must not become weak: the attribute would propagate to the app's own definition
+// (GCC carries it from declaration to definition in one TU) and leave link order deciding the
+// winner. An app's definition wins instead by keeping
 // system/init/common/app_authority_default.cc from being extracted at all.
 uint8_t kickos_app_authority(void);
 
@@ -110,7 +110,7 @@ uint8_t kickos_app_authority(void);
 #endif
 
 // A bare definition in a C++ app TU would mangle and be silently ignored, leaving the
-// app on the fallback mask; the macro supplies the C linkage.
+// app on the fallback mask.
 #ifdef __cplusplus
 #define KICKOS_APP_AUTHORITY(mask)                 \
     extern "C" uint8_t kickos_app_authority(void); \

@@ -13,10 +13,12 @@ does not narrate how we got here.)
 
 **What KickOS is.** A minimal, seL4-principled microkernel RTOS: a small trusted kernel
 (scheduler, IPC/sync, tickless time, interrupt plumbing, memory protection) with everything
-else in userspace. One uniform design across five ISAs -- armv7m, armv6m, RXv3, RV32IMAC,
-Xtensa LX6 -- so the *same* semantics hold on every target and divergence is a bug, not a
-port quirk. Capability-based authority over MPU-enforced isolation, with MMU-alongside-MPU
-as the design horizon.
+else in userspace. One uniform design across every ISA family the project targets, so the
+*same* semantics hold on every target and divergence is a bug, not a port quirk; the
+[Reference](../reference/porting.md) enumerates the arch backends and chips, because that set
+changes and this page should not. Capability-based authority over hardware-enforced isolation,
+with ONE address-space abstraction over two kinds of protection hardware: a region MPU where
+the part draws protection in ranges, page tables where it draws it in translation.
 
 **seL4's paradigm, without its burden.** KickOS takes seL4's *design principles* -- a kernel
 small by nature; capability-based authority; drivers/FS/net as unprivileged userspace servers
@@ -37,7 +39,8 @@ further-reading reference: Andrew S. Tanenbaum, *Modern Operating Systems* / *Op
 Systems: Design and Implementation*** -- cite the relevant Tanenbaum chapter where a concept
 is introduced, so a learner who wants the full theory has the canonical pointer. Concept
 chapters teach the idea *and* show how KickOS realises it (and where it deliberately differs,
-e.g. tickless + no MMU + capability endgame).
+e.g. tickless + one address-space abstraction over both region and page-table hardware +
+capability endgame).
 
 ## Chapters
 

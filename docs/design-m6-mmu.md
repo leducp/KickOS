@@ -302,6 +302,20 @@ high-half kernel does not resolve with translation off. So `KICKOS_MEMORY_ENFORC
 `KICKOS_HAVE_MPU OR KICKOS_HAVE_ASPACE`, is not an invitation to a third posture: a chip that
 translates has nothing to test, and per-chip Rule 7 tables key on the mechanism they have.
 
+**THE SAME ASYMMETRY DECIDES PORTING ORDER, AND THAT IS WHERE IT KEEPS BEING MISSED.** An MPU port
+is brought up flat and gated afterwards, which is a real sequence because the memory system runs
+underneath the gate. A translating port has NO flat stage to be brought up in, and all three M6
+backends refused one for three unrelated reasons: A64 cannot RUN compiled C with translation off,
+Device-nGnRnE mandating natural alignment while the compiler stages struct copies through unaligned
+pair loads (S2b); RV64 cannot LINK a full image, the prebuilt C library being medlow and reaching
+only the top 2 GiB while RAM sits at the bottom of the space (R1.4b); and x86_64 never gets the
+choice, firmware handing over with paging already enabled (F8). Three different layers, one
+conclusion.
+So "prove the ISA half flat, then add paging" is an MPU INSTINCT and it does not transfer. It is not
+wrong incidentally, on this part or that toolchain; it is wrong because there is no memory system
+under an MMU to fall back to. A step plan for a translating backend puts the boot table before
+anything that has to link or run, and where a plan says otherwise the plan is what moves.
+
 **And WHICH family a target has is a CHIP fact, not an arch fact.** An earlier draft wrote this as
 "the A53 backend implements the translation family", which quietly makes memory protection a property
 of the instruction set. It is not, and the tree already knows better: `mpu.cmake` lives under
@@ -334,10 +348,17 @@ So this freeze has a second half: **the two meanings are split before any MMU bo
 **THAT SPLIT LANDED.** Enforcement-live is `KICKOS_MEMORY_ENFORCED`, DERIVED in the top-level
 `CMakeLists.txt` from `KICKOS_HAVE_MPU` or `KICKOS_HAVE_ASPACE` rather than declared per board, so no
 board can state it and disagree with its own backend. Rule 7 and reserved-block admission are keyed on
-it, and T5 made the self-grant a refusal by name rather than a silent widening. **Its unfinished half
-is the pair of static-data hooks, and section 3.3 carries it**: those are still keyed on
-`KICKOS_HAVE_MPU`, so on this board they take the non-enforcing arm and admit app globals out of a
-linker whitelist. **T8 SUPPLIED THE HOSTILE WITNESS** (`grant_kernel_word_refused`): an authorized unprivileged
+it, and T5 made the self-grant a refusal by name rather than a silent widening. **THE SPLIT IS
+COMPLETE, and the pair of static-data hooks section 3.3 carries was its last half.**
+`arch_user_text_readable` and `arch_user_data_writable` (`arch/common/arch_ram_common.cc`) are keyed on
+`KICKOS_MEMORY_ENFORCED`, as is `arch_mpu_probe_addr` beside them, and that file names
+`KICKOS_HAVE_MPU` nowhere at all. What the old keying did on this board was take the non-enforcing arm
+and admit app globals out of a linker whitelist; the re-key did not widen that whitelist, it replaced
+the oracle, and the reasoning is 3.3's. A whitelist answers about an ADDRESS, and an address cannot
+express a per-space reservation: a range reserved in task A is not valid in task B. Two oracles for
+one question is a second truth, so the real authority is made TOTAL instead -- the per-`Domain` list
+`aspace_image_seed` (`kernel/mem/aspace.cc`) seeds from the extents it reserves and grants, consulted
+by `user_range_ok` BESIDE the region-set walk rather than in place of it. **T8 SUPPLIED THE HOSTILE WITNESS** (`grant_kernel_word_refused`): an authorized unprivileged
 caller self-granting a kernel address is refused `-KOS_EPERM`, with a positive control on a range
 the same task did reserve so the refusal is about the ADDRESS and not about the call. What refuses
 it on this board is NOT arena confinement -- `grant_region_admissible` is not even reached, the
@@ -530,10 +551,19 @@ firsts in one bite leaves the switch path undebuggable; three at once is the sam
 bigger blast radius. Each backend lands and works before the next is started.
 
 **The x86_64 backend earned its place before a line of it existed.** Writing this document against
-A64 alone produced three claims it falsifies, and each is corrected where it was made:
+A64 alone produced three claims it falsifies, and the landed port produced a fourth that only a real
+firmware's regime could have shown. Each is corrected where it was made:
 
   - **F1's "the kernel half is untouched by a switch"** holds on A64's two-register split and fails
     on a single root register, where the kernel's mappings must be replicated per table.
+    *And the single root is also where the two backends chosen for unlikeness disagree about ROOT
+    COUNT PER PRIVILEGE LEVEL,* which no A64-shaped reading predicts. RISC-V forbids a supervisor
+    instruction fetch from a page marked for unprivileged access whatever SUM holds, so one flat link
+    cannot give kernel text and app text different user bits under one root and M6.3 ships a root per
+    privilege level. x86 forbids that fetch only under supervisor-mode execution prevention, which
+    M6.4's port REFUSES rather than assumes, so ONE root serves both levels there and the grant is an
+    in-place edit with no root written. The seam absorbed both, which is the result; a design that had
+    banked "one root per address space" as the portable shape would have been wrong on one of the two.
   - **Section 2's "the hardware answers trusted entry"** holds where an exception selects a different
     stack pointer, and fails on x86_64 in the sharpest possible way. Its fast syscall
     entry loads the code and stack SELECTORS and the target instruction pointer, saves the return
@@ -544,10 +574,42 @@ A64 alone produced three claims it falsifies, and each is corrected where it was
     architecture rather than by an implementation slip. The entry's first instructions must reach a
     kernel stack before they touch memory, and the flag mask must be programmed to clear the
     interrupt flag, or interrupts are live on a user-controlled stack.
+    *That last sentence leaves out two things, both measured on the landed port.* The flag mask
+    covers neither the non-maskable interrupt nor the machine check, so the window it closes is
+    narrower than the word "interrupts" suggests; what covers those two is an interrupt-stack-table
+    slot each, which builds their frame off the entry's own stack pointer instead of on it. And
+    SYSRET loads NO stack pointer either, so the property holds on the way out as well and a return
+    through it has to seat one by hand; a port whose return path is an interrupt return off a frame
+    never finds that out.
   - **F1's address-space-identifier note** reasons from 16 bits always being there. The second
     backend's identifiers are narrower and feature-gated, so the CONCLUSION survives -- thousands of
     identifiers against a domain pool of tens -- while the premise does not. Do not let the width
     into the design.
+  - **F1's "the kernel lives at a fixed high range"**, which is the half of F1 the first bullet does
+    not touch, and the claim only an ADOPTED regime falsifies. The kernel's mappings there ARE the
+    firmware's low identity map and the image is one flat link inside it, so the kernel lives LOW.
+    The port's own range does sit high, in a top-level slot claimed before the first create, and the
+    adopted part cannot be moved there without rebuilding the regime this backend was chosen to
+    adopt. What follows above the seam is the sharper half: the kernel's convention that a virtual
+    address it picks IS the physical address does not survive that regime, a reservation named by its
+    own physical address landing inside the slots every space shares. It costs no signature, the fix
+    being a bias into the per-space window.
+
+    **AND A SHARPER ONE IN THE SAME PLACE, MEASURED: turning the axis on would make every page table
+    this port allocates writable from ring 3.** `ring3_init` grants the unprivileged bit over two
+    ranges, the image and the whole conventional-memory arena, and the frame pool the axis needs is
+    inside one or the other whichever way it is carved: an in-image reservation is inside the image
+    range, and a carve out of conventional memory is inside the arena range. Ring-3 writes were
+    measured landing in both. So every table `map_into` and `aspace_create` allocated would be a
+    table an unprivileged thread could edit, while `KICKOS_MEMORY_ENFORCED` read 1. This is not the
+    naming problem above and a bias does not fix it: what fixes it is separating the halves in the
+    LINK, which is what X5's own record says retires the over-grant. **Do not select the memory axis
+    on this board before that separation lands.** X5 argued the select out for a related reason, that
+    the flat over-grant makes "enforced" a false statement; this is the sharper form of it, because
+    the axis would not merely overstate the protection, it would hand the translation tables
+    themselves to the level they are meant to contain.
+
+    These two are the things most likely to surprise whoever turns the memory axis on for this board.
 
 **And the two boot paths differ in a way that stresses the SEAM and not merely the port.** On QEMU
 `virt` the A53 arrives with translation OFF, so KickOS builds the first table from nothing and there
@@ -560,6 +622,17 @@ at the same address on both sides of it. Note the identity map's scope is exactl
 DEFINES; mappings of anything else are explicitly undefined, so "it was mapped before the switch" is
 a claim about the map and not about the machine. That case does not exist on an A64-first port, and it
 is the strongest reason to take this backend through UEFI rather than the cheaper boot path.
+*And adopting that regime does not hand you an unprivileged level,* which this paragraph reads as
+though it did. Measured on the firmware the port boots under: every entry from the root down to the
+leaf covering the loaded image carries the user bit CLEAR, and the permission is ANDed along the walk,
+so ring 3 could not reach one byte including its own first instruction. The same tables are mapped
+read-only with write protection on, so the first entry a grant tries to edit takes a write fault at
+ring 0 on the root itself. Both are that firmware's choices rather than the architecture's, which is
+the same caution this paragraph already gives about the map's scope, applied to its permissions.
+*The handover state itself is now MEASURED rather than cited:* the entry reads the flags, the paging
+bit, the long-mode bit and the root register before it executes its own first instruction, and
+`tools/run-qemu-x86_64.sh` asserts the four the specification mandates. Interrupts are enabled, paging
+is on, long mode is active and a root is live, as this paragraph says.
 
 **Where F7 transfers unchanged, and that is evidence rather than luck.** x86_64 pages in
 4 KiB units with 2 MiB and 1 GiB large mappings above them (Intel SDM Vol 3 chapter 5), so the
@@ -580,6 +653,147 @@ machine-mode control bit an S-mode kernel neither owns nor can observe. So a bac
 hardware where it answers, and the board where it does not** -- which is the shape
 `arch_mpu_nocache_support` already has, being a per-CHIP answer rather than a probe.
 
+**THE RULE HAS THREE SHAPES AND NOT TWO, and the third is this architecture's own.** "Nowhere to
+read" is true of memory TYPE and false of the two figures M6.3 actually needed. RISC-V makes several
+fields WARL, Write Any values Reads Legal values, so the hardware answers by REFUSING: write a value
+and read back what stuck. Measured at R3 and R4's pre-audit, all on the emulated core -- the
+exception-delegation register accepts 0xb7ff of a written 0xffff, discarding the non-delegatable
+causes on its own (**and the port no longer writes 0xffff**: it writes `0xffff & ~(1 << 9)`, leaving
+ECALL-from-S undelegated, and reads the value back into a named refusal. The 0xb7ff is still the
+hart's behaviour and now has a second witness in that readback, but the WRITTEN value this port ships
+is not the one measured here); the translation-control register accepts four paging modes and leaves itself
+untouched for the twelve it does not implement, which is a documented consequence rather than an
+accident; and the identifier width answers 16 to ones written across the field. None of that is an
+identity register and none of it is a board fact.
+So: ask an identity register where one exists, PROBE THE WORKING REGISTER where the architecture
+makes it WARL, and ask the board only where neither answers. Leaving it at "nowhere to read" sends
+the next porter to a board file for a figure the hart will tell them.
+*The catch that travels with it:* WARL probing is DESTRUCTIVE, discovering a field by writing it. The
+identifier probe was measured safe under live translation only because it preserves the root, moves
+the identifier field alone, and fences on both sides. A probe that clobbers the translation root to
+learn about the translation root unmaps the code doing the probing.
+*AND AN EXTERNAL RE-REVIEW ON 2026-08-29 PUT A FOURTH SHAPE BESIDE THEM, WHICH IS THE ONE THE OTHER
+THREE CANNOT REACH: what the machine DOES, rather than what it stored.* A WARL readback answers about
+the value that stuck, and two different machines can store the same value and behave differently.
+The boot grant is the case. Every PMP field is WARL and permitted to read as zero, so a `pmpcfg0` and
+`pmpaddr0` that both read zero are a hart with no PMP entry, which permits every access, AND a hart
+whose entries all read OFF, which denies every supervisor access (Privileged ISA 3.7.1); one readback,
+two opposite effects, and no further reading separates them. What separates them is an ACCESS:
+`mstatus.MPRV` with `MPP=S` makes a machine-mode load or store checked as a supervisor one, so the
+prologue measures the permission it is about to depend on instead of decoding a description of it.
+Measured on `qemu-system-riscv64 11.0.3 -M virt`: with both CSRs written zero the readback is
+`pmpcfg0=0x0 pmpaddr0=0x0` and that probe takes a load access fault, so on this machine the reading
+the port used to accept as "no PMP" is the DENIED case. The catch above travels here too, in a
+different form: the probe faults where the grant is absent, so it needs a vector of its own and a
+refusal, not a return.
+*AND A FOURTH REVIEW ON 2026-08-29 ADDED NO FIFTH SHAPE EITHER. It found the two things a
+MEASUREMENT OF AN EFFECT owes that a readback does not, and this port owed both.* An effect is
+measured under a REGIME, and it stands for exactly the EXTENT the measurement covers.
+*The regime.* `MPRV` with `MPP=S` makes the access TRANSLATED as well as protected as a supervisor
+one (Privileged ISA 3.1.6.4, and Table 49 of the hypervisor chapter, where `MPV` decides between a
+one-stage HS access and a two-stage VS one). RISC-V DEFINES NO RESET VALUE FOR `satp`: section 3.4
+lists what reset establishes, `satp` is not in it, and everything unlisted is UNSPECIFIED. So a
+probe that leaves `satp` alone is not a Bare probe, it is a probe under whatever regime the machine
+arrived in. Measured by handing the prologue an inherited `satp` of Sv39 over an unwritten table:
+the probe takes `mcause=0xd`, a load PAGE fault, and the port refuses with the PMP message on a hart
+whose PMP is perfect. The prologue writes `satp` Bare and reads it back, and clears `MPV` and reads
+it back, before it measures anything, so the regime under the probe is the one this file
+established. On THIS hart the two are already what the probe wanted, `satp` reading `0x0` out of
+reset and `MPV` refusing to set at all, so both writes are unfired here and neither is dead code
+anywhere else.
+*And the fence is the PMP write's, not the `satp` write's.* A hart with page-based virtual memory
+may cache PMP verdicts alongside a translation, "including possibly caching the identity mappings
+from effective address to physical address used in Bare translation modes and M-mode", so M-mode
+must execute `SFENCE.VMA` with `rs1 = rs2 = x0` AFTER writing the PMP CSRs (Privileged ISA 3.7.1);
+changing `satp.MODE` needs no fence of its own (Privileged ISA 12.1.11). On this hart the probe's
+answer is the SAME with the fence and without it, taken both ways over a revoked grant, so QEMU
+synchronises its own PMP writes and the fence is in the code because the architecture requires it,
+not because a run here can tell whether it is there.
+*The extent.* One address stands for every address only where NO entry can match a sub-range. Entry
+0 reading OFF matches nothing, and the LOWEST-NUMBERED matching entry decides (Privileged ISA
+3.7.1.3), so a higher entry the platform mandated at reset (section 3.4 permits exactly that) can
+permit the one word the probe touches and deny the image, the tables and the console. Measured by
+configuring entry 8 as an 8-byte NAPOT grant over the probe word with entry 0 forced OFF: the decode
+as it stood ACCEPTS, the port boots, and the first supervisor instruction fetch dies with no console
+and no finisher word, which is the failure the guard exists to prevent arriving as a silent hang.
+What fixes it is a CENSUS and not a bigger sample. The eight even-numbered `pmpcfg` CSRs hold all 64
+entries on RV64 (Privileged ISA 3.7.1), and if every byte in them reads zero then no entry matches
+any address, so the one word's answer IS the whole space's answer. **Proving the footprint instead
+is the WEAKER answer and not the stronger one**: PMP granularity is four bytes and an entry may name
+any NAPOT or TOR sub-range, so any finite set of probed words is still a sample, where the census is
+a proof and costs eight CSR reads.
+*The extent has a second dimension, and it is the ACCESS TYPE.* `MPRV` covers loads and stores, on
+the definition the regime paragraph above cites, so the probe measures those two and instruction
+fetch stays out of its reach. On the denial this hart produces that costs nothing: reset leaves
+every `A` field off, no entry matches any address, and an implemented PMP then fails every S-mode
+access alike, fetch included (Privileged ISA 3.7.1), so one load stands for the fetch at the same
+address. Where the two come apart is a hart whose standing entries MATCH and grant read and write
+while withholding execute, and there the answer arrives as the first supervisor fetch dying before
+the console exists -- the silent hang the census clause above describes.
+*The same review found the physical extent, and that one lands on the THIRD shape rather than a new
+one.* A PTE's PPN field is 44 bits over a 4 KiB granule in every RV64 mode, which is the
+ARCHITECTURE's 56-bit output and not the machine's; RISC-V publishes no identity register reporting
+the implemented width, and there is no working register to probe either, because a leaf naming an
+output the machine does not implement is not refused when it is written, it ACCESS-FAULTS when it is
+walked. So the extent is asked of the BOARD, which is where `arch_mpu_nocache_support` already asks,
+and the map editor keeps no width of its own beside the chip's.
+
+*A THIRD REVIEW ON 2026-08-29 DID NOT ADD A FIFTH SHAPE. It corrected the THIRD one, which had been
+stated as an equality and is not.* "Write a value and read back what stuck" reads as a compare
+against the value written, and on two of this port's own registers that compare is WRONG IN BOTH
+DIRECTIONS. A hart may hold a delegation bit read-only ONE for a lower-level interrupt (Privileged
+ISA 3.1.8), and this one does: `mideleg` written 0x222 reads back **0x1666**, the hypervisor
+extension forcing bits 2, 6, 10 and 12 on, so an exact compare refuses a conforming hart at boot.
+And the value written is not the question anyway. What a readback is held against is the set the
+PORT DEPENDS ON, derived from the trap entry, the timer path and the doorbell rather than from the
+write: `medeleg` bits 2, 3, 8, 12, 13 and 15, and `mideleg` bits 1 and 5. Every other bit is asked
+for and not required, and naming one in a refusal would turn a portability guard into a false
+refusal on a hart that is fine.
+**BUT "THE SET THE PORT DEPENDS ON" IS A PROPERTY OF THE ISA AND NEVER OF THE IMAGE, AND THE FOURTH
+REVIEW CAUGHT THIS SECTION GETTING THAT WRONG ON BIT 3.** The bit was excluded because nothing in
+the current image executes `EBREAK`, which is a discharge held by CALLER BEHAVIOUR: `EBREAK` is in
+the base ISA, so a valid unprivileged application may execute one at any time, and undelegated it
+terminates in the machine handler with the whole system rather than killing its thread. Measured
+both ways on this hart: with bit 3 delegated a `hello` thread executing `ebreak` prints
+`=== THREAD FAULT === thread 'ping' killed, system continues, PC=0x40000052 scause=0x3` and the
+system runs on; with bit 3 held read-only zero and the old required set, the guard PASSES, the board
+boots, and the same `ebreak` prints the machine-mode trap message with `mcause=0x3` and dies there.
+Bit 0 stays out for a reason that IS an ISA property: with the C extension every branch target in
+this image is 2-byte aligned and no instruction can name a misaligned one.
+*Bits 4 and 6 are the sharp case and they are neither required nor excluded now, they are MEASURED.*
+Whether a hart raises them at all is a PMA and therefore per region (Privileged ISA 3.6.2), so no
+register answers it and neither blanket answer is right: requiring them refuses the commoner machine
+and excluding them leaves an unprivileged misaligned access terminating in machine mode on the one
+that does raise them. The prologue performs a misaligned load and a misaligned store on the DRAM
+word it has just proved, under a vector that RECORDS the cause and RESUMES rather than refusing, and
+adds `1 << mcause` for each one that traps to the set the readback is held against. A hart that
+resolves misalignment in hardware never enters that vector and boots exactly as before; a hart that
+raises an access fault rather than a misaligned one is held to THAT cause instead. Measured on this
+hart: neither access traps, so nothing is added, which is what makes the whole check invisible on
+`qemu-riscv64`. What the probe still does not reach is the per-region half of the PMA: it samples
+DRAM, which is where an unprivileged thread's misaligned accesses land, and says nothing about a
+hart that resolves misalignment there and raises on a device page.
+*The delegation failure is also SILENT where the others are loud,* which is why it went unguarded.
+Undelegated, `sip` and `sie` hold the matching bits read-only zero (Privileged ISA 12.1.3): the
+kernel's `csrs sip, SSIP` stores nothing and its `csrw sie` writes zeros, so the doorbell never
+rings and the deadline never fires. Measured with `mideleg` forced to zero, the board prints its
+banner and hangs. A CSR that traps announces itself; a CSR that silently narrows does not, so the
+readback is the only instrument there is.
+*And `mtvec` is a WARL register the third shape had not been pointed at.* It must be implemented but
+MAY HOLD A READ-ONLY VALUE, and the values a writable one accepts vary by implementation
+(Privileged ISA 3.1.7). Measured here: a write of `.Lmtrap + 2`, a reserved MODE, is DISCARDED whole
+and the register keeps what it had, so a vector that did not take is a live vector written for a
+different trap. `stvec` is deliberately not read back and the difference is the specification's: its
+BASE holds any 4-byte-aligned address, where `mtvec`'s carries no such guarantee.
+*The one thing the review got wrong is worth keeping, because it is the intuition anyone re-deriving
+this will have.* It read the MPRV probe as able to recurse: a fault under `MPRV` reaching a handler
+that never clears it, whose own console stores are then checked as supervisor accesses. That cannot
+happen. A trap sets `MPP` to the mode that trapped, so a fault from machine mode leaves `MPP=M`, and
+`MPRV` is defined as "as though the current privilege mode were set to MPP" (Privileged ISA 3.1.6.1,
+3.1.6.4): it is inert. Measured on the coerced-vector case, the generic handler prints. The clear
+stays, in ONE place on the shared fatal path rather than at each entry, so the console is reachable
+without resting on that reading.
+
 **The x86_64 spike returned the verdict this section exists to collect, and it is an empty diff.**
 Nineteen calls held against a booting image, nine on the entry path and ten on the aspace family,
 with NO signature change on any of them, including the two the roadmap picked this architecture to
@@ -599,6 +813,71 @@ for the first hashed-table backend. And the identifier freeze gets hardware conf
 argument: the machine this was measured on exposes the identifier-invalidation instruction and NOT
 the identifier feature itself, so an address-space tag is not merely narrower on this architecture,
 it may be absent on a current part.
+*X5 CORRECTED THAT MEASUREMENT AND THE CONCLUSION SURVIVES IT.* Re-measured by MACHINE rather than
+by probe, one image under five emulated processor models including the widest one the emulator
+offers, and NEITHER feature is reported on any of them: the identifier is absent and so is the
+instruction that invalidates by it. So the sentence above overstated what was there by one feature,
+and the freeze is on firmer ground than it claimed rather than weaker, a backend that has neither
+being the case an identifier allocator would have had nowhere to run at all.
+
+**AND THE RV64 VERDICT IS NOT AN EMPTY DIFF. The seam owes a member, and the litmus is what found
+it.** Measured at R2.1 by building the backend rather than by reading the header: THREE call sites
+above the seam require `acquire` to have the properties of an OFFSET MAP rather than of a window.
+The sharpest is not the one that fails, it is the one that lies. `aspace_frame_token` NAMES a frame
+by dividing an acquired pointer's distance from a reference by the granule, which is a stable
+identity when acquire is an addition and, on a six-slot pool, answers the same small number for every
+frame in the system. Fourteen cross-task identity arms would have read "same frame" for different
+frames and reported success. The other two fail loudly by comparison: one requires the answer to
+equal the frame pool's own pointer for a physical address, the other required consecutive answers to
+be consecutive.
+What the seam needs is a query that answers a PHYSICAL ADDRESS for a mapped virtual one, zero for an
+unmapped one, and spends no window:
+
+    arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va);
+
+*Established by construction and not by argument:* forcing acquire to window every frame, rather than
+using the kernel window's offset where it applies, turns the translation arm red and panics the
+image. So the three callers are not merely inconvenienced, they are wrong, and the reason they are
+wrong is invisible on any backend where acquire is an addition.
+**This is the sentence above, arriving as a measurement.** This freeze already said that acquire
+written as an addition above the seam "would have passed on both 64-bit architectures and then forced
+a transient-window rewrite in kernel code on Sv39". It did not force a rewrite; it forced a MEMBER,
+which is the cheaper of the two and the reason the seam is held against a litmus at all.
+*A second, smaller gap, and it is a shape rather than a signature:* `arch_aspace_memtype_support`
+has no "the hardware is already in this state" answer, where the region seam's nocache query has
+exactly that. It is this port's own answer: Sv39 carries no memory-type field, and Svpbmt is absent,
+measured by the machine reading its own enable bit back as zero. So this backend honours all three
+types because it ENCODES none of them, which is a different claim from honouring them, and the seam
+cannot currently tell those apart.
+
+**THE DIFF LANDS BEFORE R5 AND R5 ONLY COLLECTS IT.** R2.2's arms are among the three callers, so the
+member has to exist for that step to have a witness. The verdict step reports the diff; it does not
+originate it. **And the baseline does NOT move:** `tests/static/check_aspace_sigdiff.sh` measures
+against a frozen commit precisely so this shows up, so its DIFF exit is the verdict rather than a
+regression to be tidied away. Updating the baseline to make it quiet would delete the milestone's
+result.
+
+**THE THIRD BACKEND FITTED THE FAMILY UNCHANGED, which is what this freeze was hoping for.** X5 put
+the family on a single root over an adopted regime with no signature change of its own: the diff
+against the frozen baseline is still the ONE member RISC-V forced, and the seam took nothing from
+x86_64. So the family now stands on three architectures that agree on almost nothing else, which is
+the property this freeze asked for rather than the guess it warned about.
+*And it closed the frame query's case from the far side.* Acquire is an addition there too, the
+adopted regime identity-mapping the run the frame pool is carved from, so the
+subtract-two-acquire-pointers shortcut WORKS on x86_64 and on A64 and fails silently only on Sv39.
+Two backends of three make the antipattern look correct, which is a stronger argument for the member
+than the one backend that broke.
+*Three seam comments turned out to be right for the wrong reason, and all three are now measured
+rather than asserted.* The fresh-map invalidate was justified by "architectures caching negative
+translations": only RISC-V permits that (Privileged 12.2.1), A64 never caches a faulting entry (DDI
+0487 M.b D8.17 RXCLRD) and x86_64 says invalid-to-valid needs no invalidation (SDM Vol 3 section
+5.10.4.3). The obligation survives on all three by the CONDITION those exemptions carry, that every
+earlier clearing of the same slot was invalidated, which is a property of the slot's history and not
+of the call. Break-before-make is likewise unconditional on A64 and conditional on x86_64, where the
+architecture demands the sequence only when a write changes the page SIZE. And F8's own identifier
+note was wrong: re-measured across five CPU models, x86_64 reports NEITHER the identifier feature nor
+its invalidation instruction, where this freeze had recorded the instruction as present. Each
+conclusion survives; each reason was a guess that happened to hold.
 
 A freeze that survives two unrelated architectures is a property of the problem; one that holds on a
 single architecture is an untested guess.
@@ -805,6 +1084,17 @@ test at all: allocate then self-grant then use; a CROSS-TASK refusal, one task s
 address another task reserved, which is meaningless-by-construction now and must be refused rather
 than merely failing; and reservation released at process teardown, which is T8b's counter check
 seen from the ABI side.
+
+**AND THE ABI OWES A CLEARED FRAME, which this contract did not say until a fourth external review
+found it missing from the code as well as from here.** A frame the pool hands out for a
+reservation or a user stack carries no earlier task's bytes: `frame_pool_alloc_user_run` clears
+every frame of the run through the pool's own kernel alias before answering, and a frame it cannot
+reach returns the whole run rather than a partly cleared one. Two callers keep the uncleared
+primitive on purpose, `data_copy` and `data_template_fill` overwriting every granule they take.
+The region fleet has no pool and the bump arena never frees, but the THREAD-STACK FREE LIST does
+re-hand a dead thread's block under a new thread's region, so the clear belongs at that pop too.
+The witness is a reused frame and not a fresh one: the arm asserts the second process landed on the
+FIRST one's frame before asking whether it reads zero, and unscrubbed it reads back the whole block.
 
 **THE GATE DOES NOT RUN ON THE TRANSLATING BOARD, and that is the largest single gap M6.2 closes
 with.** `drv::bring_up` runs where a board declares a SERVICE LIST; `qemu-arm64` declares none, so
@@ -1066,7 +1356,10 @@ granted, so nothing enters it that no reservation named. `user_range_ok`
 (`kernel/syscall/syscall_mem.cc`) consults it BESIDE the region-set walk rather than in place of it:
 the region array is what every grant path records and the only oracle a descriptor board has, so the
 walk stays live on both, and the list answers for what no region array on this backend describes.
-`arch_mpu_probe_addr` stays keyed on `KICKOS_HAVE_MPU`, that one being a question about descriptors.
+`arch_mpu_probe_addr` (`arch/common/arch_ram_common.cc`) reads as a question about descriptors, and
+went with them anyway: on the keying it used to carry it answered 0 on exactly the board carrying the
+strongest denial, so it is keyed on `KICKOS_MEMORY_ENFORCED` too and the file names `KICKOS_HAVE_MPU`
+nowhere. R3's denial arm takes its address from it.
 
 **What the two arms now witness, measured rather than argued.** `writable_global` (an out-pointer in
 an app global) and `readable_global` (a read buffer in app rodata) are both RED with the seeding
@@ -1237,9 +1530,17 @@ is reachable from any root, but the APP's half is not: it is the half that chang
 for a thread with no space of its own the installed root is still the last process's. libc's
 reentrant state lives there -- the per-slot array and the word libc resolves from are both app
 objects -- so the switch path asks `aspace_seated_for` before it primes or seats either, and writes
-neither when the answer is no. Idle is the only such thread today and needs no prime, which is the
-whole reason this was survivable; a spawned privileged thread is a pool thread, so it WOULD prime,
-and priming writes hundreds of bytes into whichever process was last installed. Recorded at
+neither when the answer is no. Idle is the only such thread and needs no prime.
+
+**ON THIS BACKEND THE SPAWNED-PRIVILEGED-THREAD SCENARIO IS NOT REACHABLE AT ALL, and that is a
+hardware fact and not a policy one.** A spawned thread's body is app text, and the app's half is one
+level-2 slot of a per-space table whose every leaf carries `PTE_U`
+(`arch/riscv/rv64imac/aspace_rv64imac.cc`); the RISC-V Privileged ISA forbids S-mode FETCHING from a
+`U=1` page irrespective of `sstatus.SUM`. Such a thread therefore faults on its first instruction and
+never reaches a prime. `privilege-escalation-gated` closes it a second time, the privileged population
+being unable to grow after boot. So `aspace_seated_for` is not what saves THIS board; it is what
+covers the general case on a backend where a privileged thread CAN execute app-half code, and it is
+asked unconditionally so that no backend has to re-derive which case it is. Recorded at
 `root-unprivileged-idle-alone-privileged` and witnessed by `reent_seating`.
 
 *A caller-supplied stack re-keyed at T6.2 and is no longer arena-confined.* Where a backend
@@ -2183,9 +2484,12 @@ rather than as a pass, so the entry comes out in the same change.
 *What T8 LANDED, scored that way.* The arm count went 120 to 122, the two arms being
 `grant_kernel_word_refused` and `fault_kills_task`; `periph_reg_write_unheld` is STILL the only
 declared partial, because nothing here mints an MMIO window, so that entry does not come out yet.
-Skips stay empty. The ctest total for the board went 31 to 32, the extra one being
+Skips stay empty. The ctest total for the board went 32 to 33, the extra one being
 `qemu_arm64_faultsurvive`: the fleet's own survive arm became available the moment the arch joined
-`KICKOS_FAULT_ISOLATION`, and registering it was a one-line board-list edit.
+`KICKOS_FAULT_ISOLATION`, and registering it was a one-line board-list edit. (Both figures were
+recorded one low. Re-derived at this pass: the board reports 35, which is this line's 33 plus the
+two fleet-wide `host` gates registered since T8, `shell_special_names` at M6.3 and `entry_sigdiff`
+at X8. No board-specific arm was added in between, so the dated 33 still reads against 35.)
 
 **No arm moved from partial to full, so enforcement is not what this stage bought** -- the split
 already held at T5, and T8 only witnessed it. What it bought instead shows up as a CHANGE OF
@@ -2278,11 +2582,13 @@ seed-failure arm clears BALANCED and REUSABLE (`bits 27 of 63`). Deleting `arch_
 Leaving `d->space` set in `domain_release` clears NO_DOUBLE (`bits 55 of 63`), the stale space being
 released a second time by the next claim, and takes four other arms with it.
 
-*Ordered invalidation was ESTABLISHED BY NEGATIVE CONTROL, not asserted, and the result splits.* Two
-of the four orderings have a witness on this bench and two do not, and which is which was measured
-by removing each one and running the board.
-  - `arch_aspace_unmap`'s per-page invalidate IS witnessed: without it `aspacefault` fails, the
-    running translation still answering for a page the editor removed.
+*Ordered invalidation was ESTABLISHED BY NEGATIVE CONTROL, not asserted, and the result is worse
+than it first read.* NONE of the four orderings has a behavioural witness on this bench, and which
+is which was measured by removing each one and running the board.
+  - `arch_aspace_unmap`'s per-page invalidate is NOT witnessed, and the arm that appeared to
+    witness it was answering a different question. The arm this branch replaced it with reddens
+    when unmap is a no-op, and stays GREEN when `invalidate_page_if` alone is removed and the leaf
+    is still cleared. What has a witness is the CLEARING of the leaf, not the invalidation.
   - A FRESH map's invalidate is NOT, which `../STATE.md` already recorded and this confirms: the
     whole runtime suite stays green without it. It is in the code because the architecture caches
     negative translations.
@@ -2530,40 +2836,2249 @@ is easier to misuse than the duplication.
 Per F8 this is the LITMUS, so a step here is judged by what it proves about the seam and not by how
 much of a platform it lights up. QEMU first; the silicon witness is a single-core RV64 Sv39 part.
 
-**R1. The ISA half, reusing what exists.** The RISC-V trap vocabulary and CSR shapes are already in
-the tree, but this port runs in S-mode against a page-table root where the existing backend runs in
-M-mode against PMP, so the privilege model is new work rather than reuse.
+**R1. The ISA half, where "reusing what exists" means the DESIGN and not the code.** The RISC-V trap
+vocabulary and CSR shapes are in the tree and none of them are SHARED: `arch/riscv/` holds one arch
+beside a family-level chip directory, and `arch/arm/` is the only family carrying a common layer. So
+what transfers is the trap SHAPE, one vector and save-everything and a demux on cause with the
+trusted stack pointer swapped through a scratch CSR, and the divergence under it is total. This port
+runs in S-mode against a page-table root where the existing one runs in M-mode against PMP, so every
+machine CSR renames; `mstatus.MPP` is two bits at 11 where `sstatus.SPP` is one bit at 8; the machine
+interrupt causes give way to the supervisor ones; the PMP CSRs are not writable from S-mode at all;
+and at XLEN 64 every `lw` and `sw` and the whole frame geometry move.
+*Decided at R1.1 rather than discovered later:* `rv64imac` is a standalone sibling arch. Hoisting a
+shared RISC-V layer is a refactor of a WORKING port and belongs to whichever milestone wants it, not
+to a step whose job is a second backend.
 *Expected:* boot to a console byte and a running switch under `qemu-system-riscv64`, with the memory
 model still flat. Do not carry over an assumption from the M-mode backend without re-deriving it.
 
+**R1's toolchain clause was arm64's, and it does not transfer.** S1 needed a toolchain file with an
+environment variable of its own because `aarch64-none-elf` is a separate tree; the rv64 multilib
+ships inside the RISC-V toolchain this project already wires. So R1.1 adds no toolchain file, no
+environment variable, no preset family file and no CI toolchain action, and the chip's `cpu.cmake`
+names the MULTILIB. Naming the TRIPLE instead is what makes this read as new work: the tree whose
+triple says 32 is the one that builds rv64 C++.
+
+**R1 IS SIX STEPS AND WAS WRITTEN AS ONE**, which is section 5's opening note appearing inside its
+own step text: "reusing what exists" was an observation, and one paragraph later it read as a reason
+the step would be small. M6.1 spent S1 through S9 on this ground. The split follows the S-series so a
+finding can name one step, and it ANTICIPATES M6.1's recorded blocker rather than meeting it again:
+`user/src/syscall_stubs.cc` reaching `arch_syscall` gates the link for this whole stage, so R1.2
+through R1.4 take their witnesses from an ad-hoc link and R1.5 is the first step whose image is the
+real one.
+
+  - **R1.1 Arch, chip, board, preset, and the split-image flag that named an arch.** Two sites
+    hard-coded `armv8a` inside guards that read `KICKOS_HAVE_ASPACE`, so a second translating arch
+    could not exist at all; the code model is now a per-arch flag and both call sites derive their
+    translation unit from the arch and the chip. The arch stanza selects NOTHING: a select enrols the
+    backend in the gates that build their corpus from it, so each one lands with the step that earns
+    it, which is the rule armv8a's stanza has kept since S7.
+    *Expected:* the preset configures and both libraries compile, with `arch_syscall` and `_start`
+    the only undefined symbols, those being the two files the step does not ship.
+  - **R1.2 Boot to one byte, and the machine hands the kernel the WRONG PRIVILEGE MODE.** Reset
+    entry, initial stack, zeroed BSS, one byte out. S2's clause about determining which level the
+    machine hands us transfers, and a standalone probe answered it ahead of the step: the hart
+    arrives in M-MODE, so the port drops itself by delegating the exceptions and interrupts, setting
+    the previous-privilege field to supervisor and returning. **A PMP GRANT IS OWED BEFORE THE DROP,
+    by a port with no region backend at all:** once any PMP entry is implemented, every S-mode and
+    U-mode access fails unless an entry permits it, so an unprogrammed PMP denies a supervisor kernel
+    all of memory. One M-mode-only write, and the only piece of the region vocabulary this
+    translating port keeps.
+    *Expected:* a known string under `qemu-system-riscv64` from an image with no kernel in it.
+    That string is scaffolding and R1.4 retires it, the kernel banner being what the rest of
+    the system uses; a reader looking for it in the tree will not find it.
+    Semihosting answers from BOTH privilege modes, a trap handler's own writes included, so this
+    step needs no UART. **The arm must be falsifiable about the DROP and not merely about the
+    print:** the probe confirms supervisor mode by an `mstatus` read trapping to `stvec`, and with
+    the returning instruction replaced by a jump that read succeeds instead.
+    **The confirming instrument cannot be this step's own code, and that follows from the ISA
+    rather than from the plan.** Current privilege is not readable on RISC-V; it is observable
+    only through what is denied, so the `mstatus` read has to land somewhere, and the landing pad
+    is R1.3's `stvec`. The drop arm therefore lives in the ad-hoc harness beside the stub kernel
+    entry, and R1.3 is where it becomes repo code. The print alone is blind to the drop: with the
+    `mret` replaced by a jump, the boot string, the `.bss` check and the `.data` check all come out
+    unchanged. **What the PMP clause looks like when it is defeated:** the drop's first instruction
+    fetch takes an instruction access fault (`scause` 1) into an `stvec` of zero, so the image
+    spins silently, which is the same silence R1.3 warns a missing vector produces.
+  - **R1.3 The trap vectors and the fault report.** The vector, the supervisor cause demux, and the
+    reporter behind the existing banner contract.
+    *Expected:* a deliberate fault prints a decoded report. S3's false pass applies unchanged: with
+    no vector installed the image dies silently, so silence is the symptom.
+    *Landed at R1.3,* `arch/riscv/rv64imac/trap.S` plus the reporter and `kickos_rv64_init` in
+    `arch/riscv/rv64imac/arch_rv64imac.cc`. Four things a reader would otherwise re-derive:
+    **The mode is DIRECT and the rv32 port's vectored choice does not transfer,** that one being a
+    core constraint of the ESP32-C6 rather than an arch fact. Vectored mode dispatches only
+    INTERRUPTS and sends every exception to the base anyway, so a table of identical jumps buys
+    nothing; and it actively costs, because an interrupt of code `i` enters at `BASE + 4*i`, past
+    the two `mv`s with which `kickos_rv64_stvec` captures the interrupted `sp` and `ra`. The
+    mutation that turns the mode bit on still prints the right cause and a WRONG frame line whose
+    `SP` reads plausible, so a banner-only check does not see it.
+    **The banner is its own, `=== RISC-V S-TRAP`, and not the rv32 port's `=== RISC-V TRAP`.** One
+    banner name per ARCH is the shape the rest of the fleet keeps, the dump lines differ
+    (`scause`/`sepc`/`stval`/`sstatus` against the machine four), and two RISC-V boards on one
+    ctest ladder would otherwise be indistinguishable on the wire. `tests/lib/panic.ere` gains the
+    alternative and `check_panic_banners.sh` gains the file in its reporter list, without which a
+    later deletion of the banner reads as a clean tree.
+    **The drop confirmation is a BOOT-TIME check and not a selftest arm**, `kickos_rv64_init`
+    refusing a hart the probe finds in machine mode. A selftest arm cannot be witnessed until R1.5
+    links a real image, and every s-prefixed CSR this backend writes is meaningless in machine
+    mode, so the check is a precondition of the backend rather than a test of it.
+    `kickos_rv64_privilege_probe` SAVES AND RESTORES the caller's `stvec` rather than reinstalling
+    the vector by name: the first cut did the latter, which made the install in `kickos_rv64_init`
+    redundant and left a defeated install passing every arm.
+    **The causes with no witness at this step, and which one gets them:** 12, 13 and 15 need a
+    non-empty `satp`, so R2; 8 needs U-mode, so R1.5; 0 needs a hand-built misaligned fetch; 4 and
+    6 have none on this emulator at all, QEMU completing misaligned accesses rather than trapping
+    them. Codes 1, 2, 3, 5, 7, 9 and the interrupt half are each witnessed against a
+    wrong-but-plausible decode, so what those three page-fault strings are still exposed to is a
+    typo and not a mis-indexed ladder.
+    *CODE 9 STOPPED BEING WITNESSABLE HERE, and the entry above is now a claim about a NAME TABLE.*
+    R6 undelegates `medeleg` bit 9, so an ECALL-from-S no longer reaches the S-mode reporter at all;
+    it goes to the machine-mode handler `mtvec` names. The string `"ecall from supervisor mode"` is
+    still in `arch/riscv/rv64imac/arch_rv64imac.cc`'s decode and is still worth keeping, a cause
+    table being cheaper to keep total than to prune, but nothing on this board can drive the
+    reporter to print it. Counted among the witnessed causes it inflates the figure by one.
+
+  **THE LINK BLOCKER FOR THIS STAGE IS TWO SYMBOLS AND ONE RELOCATION, NOT ONE SYMBOL.** R1's
+  preamble names `arch_syscall` alone; measured at R1.3, a full `kickos_build` also stops on
+  `R_RISCV_HI20` against `__clz_tab` in the libgcc multilib, pulled in by `__clzdi2` from
+  `kernel/sched/policy_fifo_rr.cc` and `__ctzdi2` from `kernel/mem/frame.cc`. Those libgcc objects
+  are built medlow and cannot reach a `.rodata` at 0x8000_0000, which is orthogonal to the syscall
+  trap and so does not go away at R1.5. Whoever takes R1.5 owes it a decision: build the two
+  helpers in-tree, or reach the multilib through an indirection, which is the same shape as the
+  code-model residual R2 already carries.
+  *A third option exists and it belongs to R2 rather than to R1.5, so the stopgap needs removing
+  rather than keeping.* Measured directly against the linker: medlow on RV64 reaches EXACTLY the
+  top 2 GiB and nothing else, `lui` materialising bits 31:12 sign-extended at XLEN 64. A `.rodata`
+  the medlow objects reference LINKS at 0xFFFFFFFF_80000000, and is REFUSED with `R_RISCV_HI20` at
+  both 0x8000_0000, which is where this port links while it is flat, and 0xFFFFFFC0_00000000, which
+  is the bottom of Sv39's high half and the address a reader picks first.
+  **So F1's "fixed high range" has one placement on this architecture that costs nothing and
+  several that cost a libgcc workaround,** and the naive one is among the expensive ones. R1.5
+  cannot use it, being flat with VMA equal to LMA over RAM at 0x8000_0000, so R1.5 still owes the
+  stopgap above; R2 choosing the top 2 GiB is what retires it, and whoever lands the in-tree
+  helpers says in one line that they are a stopgap so they are not left standing.
+  **NO STOPGAP WAS EVER OWED, AND THE PLACEMENT IS R1.4b's RATHER THAN R2's.** R1.4b ran before R1.5
+  and had to, the toolchain making the high link unskippable, so the decision this bullet hands R1.5
+  never came due and no in-tree helper was written. That step also corrects the SCALE recorded here:
+  the same relocation class covers the whole C library and not two libgcc helpers, which is why the
+  placement is the fix; and R2 inherits the placement rather than choosing it.
+  - **R1.4 The console seam and the banner.** The console write behind the seam.
+    *Expected:* the kernel's own banner, through the seam rather than through the step's own
+    probe, which is S4's expected result unchanged and needed no per-board work again: the
+    version, board, arch, build stamp and heap figure all came up right on the first ad-hoc
+    link of the real image.
+    **SO THE BANNER HALF IS PURE DELETION, and that is the result rather than a shortfall.**
+    What R1.4 changes is that R1.2's boot mark goes: a direct `arch_console_write` from
+    `Reset_Handler` placed to prove one byte could leave, and a second writer nothing reads
+    once the banner is on the wire. Retiring it is also what makes the arm honest, since a
+    check on "a known string reached the console" passes on the boot mark alone with the
+    banner call deleted, and that arm is what the step would otherwise be resting on.
+    **The seam half is two chip-side corrections and S4 predicted the second.** The polled
+    writer was UNBOUNDED, and `arch_console_write_sync` aliases it through the lone-TU
+    fallback, so a wedged UART hung the panic path instead of costing it a tail; it now
+    carries the same spin bound the PL011 writer does. And `arch_console_flush_sync` was
+    taking its fallback, which ASSERTS the console cannot outrun `arch_shutdown` - false of
+    an NS16550A, whose 16-byte TX FIFO and shift register outlive the core while the writer
+    polls THRE rather than TEMT. S4 said a fallback whose comment describes a property of the
+    chip has to be checked against the chip; the next backend needed exactly that, so the
+    lesson generalises as stated.
+    *What has no witness on this emulator is the same thing S4 could not witness:* QEMU's
+    NS16550A hands each byte to its chardev on the register write and reports TEMT set with
+    it, so no truncation can be produced. What IS witnessed is that both loops run, read that
+    register and terminate, by pointing the register window at zeroed RAM so neither THRE nor
+    TEMT ever asserts: bounded, the image still reaches its exit status; unbounded, it hangs.
+    *And a residual the whole fleet shares, found here rather than owned here:* `kpanic` ends
+    in `kfault_terminate`, which every chip defines as a bare `arch_shutdown`, so the flush
+    is reached only from `kickos_terminate` and a clock retune and a panic can still truncate
+    on a board with a real FIFO. Fixing that edits every backend and does not belong in a
+    port.
+  - **R1.4b The kernel into the top 2 GiB, and it is NOT OPTIONAL.** This step was missing from
+    the split and the TOOLCHAIN supplied it, which is S2b's shape in a different mechanism: there
+    translation-off made compiled C unrunnable, here it makes a full image UNLINKABLE. The prebuilt
+    libc and libgcc multilibs are medlow, and medlow on RV64 reaches only the top 2 GiB, so their
+    own references to their own data do not fit a HI20 against RAM at 0x8000_0000. Measured: a
+    program pulling `printf` and `malloc` takes ten truncations at 0x8000_0000, against
+    `_impure_ptr`, `__malloc_av_`, `__sglue`, `__sread` and `__clz_tab` among others, and LINKS
+    unchanged at 0xFFFFFFFF_80000000. **So the earlier reading, that R1.5 owed a stopgap for two
+    libgcc helpers, was wrong in scale rather than in kind:** the same relocation class covers the
+    whole C library, and nothing short of reimplementing it is a stopgap. The placement is the fix.
+    A static boot table maps the kernel's high addresses onto physical RAM and turns Sv39 on, and it
+    is a link-time constant nothing edits: no allocator, no `arch_aspace_*`, nothing per-process,
+    exactly as S2b's identity table was. So this step does NOT need the aspace family, and
+    `HAS_ASPACE` still lands at R2 with the map editor.
+    *The table itself did not survive: R2.3 replaced it* with a chain counted as three non-leaves,
+    plus one more per level added above them, so the sentence above describes what R1.4b built and
+    not what the image carries. R3 swept the same claim out of `startup.S` and left this copy
+    standing.
+    *Expected:* the banner from an image linked high and running translated, and the full
+    `kickos_build` link reaching its remaining undefined symbol rather than a relocation. The false
+    pass to watch for is the one S2b names: a hand-written probe that only ever touches addresses
+    the boot table happens to cover prints happily through a table that is wrong elsewhere.
+    *TAKEN, and the shape is smaller than the A64 analogue in a way worth recording.* 33
+    truncations across the fleet's 24 app links became 0, the remaining failures being
+    `arch_syscall` AND `arch_syscall64` -- two symbols and not one. The table is ONE 4 KiB root
+    page holding TWO level-2 leaves of 1 GiB each (Sv39 numbers the root's own level 2): the low gigabyte identity-mapped for the MMIO
+    the chip names by absolute address, and 0xFFFFFFFF_80000000 onto DRAM for the kernel window
+    and the map of physical RAM together. *That identity leaf is R1.4b's and R2.2 ended it,* moving
+    the devices to the kernel's own alias; R3's comment sweep corrected the source copy of the same
+    sentence in `chip_virt_rv64.cc` and did not reach this one. No second table page and no identity
+    alias of RAM,
+    because **the regime and the privilege change together**: `satp` is written in MACHINE mode,
+    where it governs no access, and takes effect on the `mret` whose `mepc` is already the high
+    virtual address. So F8's "mapped at the same address on both sides of the switch" is
+    discharged by there being no instruction on both sides at all, and the low alias `.text.init`
+    ran at is genuinely absent from the running kernel -- which is what turns a dropped
+    VMA-to-LMA offset into a LINK failure (medany is PC-relative, so a low absolute symbol is
+    2^40 out of an `auipc`'s reach) rather than a silent success. What it costs is one constraint
+    to state rather than discover: everything between `_start` and the landing pad is
+    PC-relative, so `gp` is seated PAST the switch and nothing before it may make a gp-relative
+    access.
+    *And this answers a question R2 was carrying:* F1's fixed high range has ONE placement on this
+    architecture that costs nothing, and the bottom of Sv39's high half, 0xFFFFFFC0_00000000, is not
+    it. R2 inherits the placement rather than choosing it.
+
+  - **R1.5 The switch, the syscall entry, and the first real image.** Context init, switch, start,
+    idle, U-mode for unprivileged threads and the trap back. This is the step that supplies
+    `arch_syscall`, so it is where `kickos_build` first has every symbol it needs.
+    *Expected:* `hello` runs. The two kernel-stack selects and the frame geometry land here, the
+    entry having to load the block from `sscratch` before it stores anything.
+    *A Kconfig trap this step walks into, found while a second translating arch was wired and
+    verified against the ladder itself:* `KICKOS_KERNEL_STACKS` reads `default 1 if
+    ARCH_HAS_KERNEL_STACKS && HAS_MPU`, so a chip that TRANSLATES gets no such default and the knob
+    resolves 0 even though the arch selected the capability. `ARCH_ARMV8A` never met it because it
+    also selects `ARCH_KERNEL_STACKS_MANDATORY`, whose `range 1 1` and `default 1` sit above that
+    line. So this step selects the pair the way armv8a does, MANDATORY included, which is correct
+    here on its own merits: the trap entry loads the block from `sscratch` before it stores
+    anything and no red-zone path is written beside it.
+    **What stays latent is the ladder,** whose `HAS_MPU` term is a stale proxy for protection being
+    live: a translating arch that is NOT mandatory would resolve 0 and fail in the backend as a
+    compile error rather than as a configure refusal. Nothing in the tree is that arch, so the term
+    is not being widened here; it is recorded so the next one does not debug it.
+    *TAKEN. `hello` runs, and the LATENT LADDER IS NOT LATENT: it was measured.* Dropping
+    `ARCH_KERNEL_STACKS_MANDATORY` and keeping `ARCH_HAS_KERNEL_STACKS` configures CLEANLY,
+    resolves the knob to 0, and fails as `static assertion failed: rv64imac's trap entry builds
+    every U-mode frame on ctx.kernel_sp` plus an undeclared
+    `kickos_fault_frame_on_kernel_stack`. The prediction was exact.
+    *The frame is 256 bytes*, 28 GPRs (gp and tp excluded and rewritten from the kernel's own
+    knowledge on every resume; **that parenthesis was false of `tp` when it was written and is true
+    now**, R6's pass forcing `tp` to zero beside `gp` at both anchors, so the code caught up to the
+    sentence rather than the sentence being wrong about the design) plus `sepc`, `sstatus` and the sp slot the restore epilogue leaves
+    on, with 8 bytes spare that the prologue stashes `t0` in before it knows which stack the frame
+    goes on. Its constants live in `arch/riscv/rv64imac/include/kickos/arch/rv64_frame.h` and NOT in
+    an `<arch>_trap_stack.h`: `check_trap_redzone_decls.sh` discovers arches by that suffix and
+    holds each one to a full `trap_redzone_roots.txt` record, and nothing here has been measured
+    under `-fcallgraph-info`. **So this arch now OWES that file an `arch` record, a `preset` record
+    and a class set**, and the trap-stack size and the two Kconfig stack figures stay marked
+    PROVISIONAL until it has one. Declaring an arch there is its own step, which `armv8a` is still
+    waiting for too.
+
+    **THE U-MODE HALF IS A DIFFERENT SHAPE FROM THE ONE THIS STANZA ANTICIPATED, because the ISA
+    forbids the one it named.** "Irrespective of SUM, the supervisor may not execute code on pages
+    with U=1" (RISC-V Privileged ISA, the U bit). R1.4b's kernel window is ONE level-2 leaf carrying
+    kernel text and app text together, so marking that leaf U-accessible does not merely over-grant:
+    it takes the kernel's own instruction fetch away. Both directions were measured on the built
+    image, one clause changed each time. `U` added to that leaf: the image dies BEFORE the banner,
+    the fetch fault reaching an `stvec` nothing has written yet, which is R1.2's silence exactly.
+    `U` left clear and an unprivileged thread started anyway: root takes an INSTRUCTION PAGE FAULT
+    (`scause` 12) at its own first PC, with the banner already on the wire. So the naive grant is not
+    a broad-but-working stopgap to be narrowed later; it is a non-starter, and a level-1 table is the
+    FLOOR here rather than the narrowing.
+
+    **AND A SINGLE ROOT CANNOT BE SAVED BY A FINER TABLE EITHER, which is the finding under the
+    finding.** At 2 MiB the U bit follows the ADDRESS, so separating what S-mode fetches from what
+    U-mode fetches means separating kernel-executed text from app-executed text in the LINK. The two
+    sets INTERSECT: measured on this tree, the three kernel-side archives reference `memcpy`,
+    `memset`, `strlen` and `kvsnprintf` into `libkickos_lib.a` and `__clzdi2`, `__ctzdi2` and
+    `__register_frame` into libgcc, and the app and the C library reference the same names. A static
+    link gives a global symbol ONE address, so the shared set has to be DUPLICATED under private
+    names, which is `kickos_privatise_runtime` plus in-tree helpers, which is T5b. A single-root
+    split at this step would therefore have been R2.
+
+    **THE SHAPE THAT RAN AT THIS STEP WAS TWO ROOTS, ONE PER PRIVILEGE LEVEL, AND R2.2 RETIRED ALL
+    OF IT.** Everything in this paragraph is R2.1's record of what R2.1 shipped, kept because the
+    measurements under it are what justified the later collapse; read it in the past tense. What no
+    longer exists: the root pair itself, the trap entry's kernel-root write, the restore epilogue's
+    user-root write on `SPP` = 0, the `sfence.vma` at each privilege transition, and the forced
+    `sstatus.SUM` (R2.2 collapsed the pair, and R6 went further and never sets `SUM` at all, every
+    kernel touch of process memory going through the `kaccess` seam instead). The kernel root leaves the whole
+    window `U`-clear, so S-mode fetches anything; the user root points its level-2 entry at one
+    level-1 table whose leaves carry `U` above a PRIVILEGED SPAN of one 2 MiB leaf, and the level is
+    what selects the root: the trap entry writes the kernel root before it fetches anything outside
+    that span, and the restore epilogue writes the user root only when the frame it is popping says
+    `SPP` is 0. `virt_rv64.ld` puts `.text.init`, a new `.text.privtrap` and `.mmu_boot` in that span
+    and starts every other section at its top, so the page tables themselves are out of an
+    unprivileged thread's reach. `sstatus.SUM` WAS forced on by the restore epilogue rather than
+    carried per frame, because the prologue stores through the trap stack while the user root was
+    still live. **NOTHING SETS THAT BIT ON THIS PORT ANY MORE**, R6 having removed the write
+    outright, so the present-tense reading of this sentence is false and a kernel touch of process
+    memory goes through the `kaccess` seam's acquire pair (`arch_aspace_acquire` /
+    `arch_aspace_release`, one granule at a time) and never through the translation the core is
+    running. Three placements were load-bearing at THIS step and each was measured by deleting it:
+    the user-root write (root cannot fetch at all), the span placement of `.text.privtrap` (the
+    first U-mode trap cannot be fetched by S-mode, so the image goes silent after the banner), and
+    the `SUM` force (same silence, one trap earlier).
+    *What it costs, stated rather than hidden:* three 4 KiB tables instead of one, a 2 MiB span of
+    which a few kilobytes are used, and an `sfence.vma zero, zero` on each privilege transition
+    because both roots use ASID 0. Distinct ASIDs retire both fences and need no other change; what
+    they needed first was a MEASUREMENT of `ASIDLEN`, which is WARL and may be 0, an unmeasured ASID
+    being a silently shared TLB entry rather than a slow one. **R4 TOOK THAT MEASUREMENT**, by a
+    standalone M-mode probe writing ones across `satp.ASID` and printing what stuck: `rv64`,
+    `thead-c906`, `rva22s64`, `veyron-v1`, `sifive-u54` and `max` all answer `0xffff` on QEMU 11.0.3,
+    sixteen bits and contiguous. So the figure is no longer owed on this bench; what R4 records as
+    still unwitnessed is a zero-width MACHINE, which no model here provides, and the port allocates
+    no identifier at all (R4).
+
+    **WHAT THE OVER-GRANT EXPOSES, and it is a real R2 obligation and not a source comment.** Above
+    the privileged span the user root marks every 2 MiB leaf of the image `U` with R, W and X, so an
+    unprivileged thread can read, write and execute: all `.rodata`, the whole of `.data` and `.bss`
+    (the scheduler's state, the capability table, the TCB array), THE PER-THREAD KERNEL STACK BLOCKS
+    and the trusted trap stack, the frame pool, the heap and every other thread's stack. What it can
+    NOT do is the part worth keeping, and the FIRST HALF OF IT WAS WRITTEN TOO WIDE AND IS CORRECTED
+    HERE: what an unprivileged thread cannot execute is the PRIVILEGED SPAN, the 2 MiB leaf holding
+    the reset path and the trap entry, and NOT "kernel text". `virt_rv64.ld` puts `.text.init` and
+    `.text.privtrap` in that span, five text symbols, and sends every other text symbol to
+    `.apptext` through `*(.text .text.*)`, which the user root marks `U` with R, W and X: 307
+    symbols, the scheduler, `syscall_dispatch`, `arch_switch` and the fault reporter among them.
+    Measured by running it: an unprivileged victim thread CALLED kernel `arch_mpu_min_region` at
+    `0x80200552` and it returned 0 with no fault, and a U-mode read of `arch_switch`'s text answered
+    `0x23`. The same harness faults in both directions, so it is not reporting one blindly: a U-mode
+    read of `kickos_rv64_stvec` INSIDE the span takes `scause` 0xd, and so does the UART LSR read.
+    The second half stands and is witnessed the same way: an unprivileged thread cannot reach ANY
+    device register, the MMIO identity leaf existing in the kernel root alone, and a thread reading
+    the UART's LSR takes a load page fault at `0x10000005`.
+    *The posture does not change and the correction is still worth making.* The enumeration above
+    already concedes `.data`, `.bss` and the kernel stack blocks are U-writable, which defeats
+    isolation on its own, so nothing rested on the execute claim. What may never stand is a claim
+    that something IS protected when it is not, and R2.2 keys on this enumeration.
+    *So the kernel-stack transfer this step ships is a ROBUSTNESS mechanism here and not yet an
+    isolation one*, which is the same thing `KICKOS_KERNEL_STACKS`'s own help text says of a chip
+    with no MPU, and it says so for exactly this reason.
+    *The cost to narrow it is known and it is R2's, because R2 re-decides the same boundary.* Every
+    further boundary is another 2 MiB leaf plus an archive selector: kernel `.rodata`/`.data`/`.bss`
+    below it and the app's above, which also needs `Reset_Handler`'s single copy range and single
+    zero range split in two, as `virt_arm64.ld` already does. Three more boundaries is at most 6 MiB
+    of pad on a 64 MiB DRAM share, and the level-1 table itself is already paid for here.
+    **A W^X SPLIT ON KERNEL TEXT IS NO LONGER BLOCKED**, that level-1 table being what R1.4b said it
+    was waiting for; it is not taken here because the span this step needs is a PRIVILEGE boundary
+    and the write-execute one falls elsewhere.
+
+    *FAULT CONTAINMENT LANDED HERE and was not in the step's list, because the step made the old
+    answer false.* `arch_fault_is_user_thread` read "no trap entry builds a resumable frame here", and
+    this one does. The redirect rewrites THREE fields of that frame and not the AArch64 sibling's
+    two: `sepc`, `sstatus`, and `F_SP`, because the exception return reloads `sp` out of the frame
+    where `eret` switches to a stack pointer register of its own. The third is witnessed by
+    `faultsurvive_off`, whose worker parks its sp OUTSIDE its own stack: with the `F_SP` write
+    deleted the death stub runs privileged on that buffer, the console output comes out corrupted
+    mid-word and root dies after it.
+
+    *THE INTERRUPTED U-MODE STACK POINTER IS STORED, CARRIED AND RESTORED, AND EVERY DEREFERENCE OF
+    IT HAPPENS AT U-MODE, which is what makes it safe to accept whatever the thread parked there.*
+    The prologue's first instruction swaps `sp` with `sscratch`, so the whole trap runs on the
+    trusted trap stack and the thread's own value reaches memory as a store into the frame's `F_SP`
+    slot (`arch/riscv/rv64imac/switch.S`). `.Lrestore` loads it back into `sp` in the instruction
+    before `sret`, so the first access through it is the thread's, under its own translation, and
+    F5's rule ends the task that chose it. `arch/riscv/rv32imac/switch.S` and
+    `arch/rx/rxv3/switch.S` build their trap frames ON the interrupted stack, so their prologues
+    test it before the first store.
+  - **R1.6 Interrupt controller, timer, clock, and the preset witness.** The controller behind the
+    existing mask/unmask/clear triad, the tickless one-shot, and the board joining the ctest ladder.
+    *Expected:* the selftest passes and the preset is registered. **The timer needs no M-mode
+    resident shim here and that is a CHIP fact rather than an arch one:** the emulated core carries
+    Sstc, so supervisor code arms its own comparator directly, while the part F8 names as the silicon
+    witness has no Sstc and supplies its own path from the chip layer where the timer already lives.
+
+    *TAKEN. hello's ping-pong alternates, the board carries 38 of 38 on its own ladder, and the
+    step corrected R1.5 on a hole neither of us saw.* No PLIC: the console is polled and the
+    timebase is the LOCAL supervisor timer, so no external source exists in the image and a
+    controller driver would have had no arm. What `arch_irq_*` means here is a software bitmask
+    whose one raise rides `sip.SSIP`, which supervisor code may set itself, and the selftest's
+    eleven irq arms go red when the doorbell is deleted.
+    *The masking question R1.5 handed over is ONE decision and not two, which is the finding.*
+    Dispatch stays masked, as arm64 does and rv32 does not, and that is what keeps every interrupt
+    frame a resumable thread context on a stack outliving the trap. Because interrupts now exist,
+    an interrupt taken in supervisor thread context produces a frame that may BECOME a thread's
+    saved context, so the entry's supervisor leg had to widen to keep it on the interrupted stack
+    pointer rather than the shared trap stack. Masked dispatch is what makes that widening
+    sufficient; unmask it and it stops being. The cost of unmasking would land on the kernel BLOCK
+    and not the trap stack, three frames plus a dispatch depth against a `static_assert` that
+    checks two, on figures nothing has measured under a callgraph pass.
+    **AND R1.5 LEFT A HOLE THE STEP HAD TO CLOSE, found by reading the LINKED image rather than the
+    archives.** Twelve kernel globals resolve gp-relative in the linked kernel, 22 accesses, and
+    among them are STORES to the current-context pointer and to both translation roots. The global
+    pointer is writable by an unprivileged thread and R1.5 re-anchored it only on the way out, after
+    the dispatch, so a thread could choose where the kernel wrote the incoming context pointer and
+    which root was installed. The entry now re-anchors before it calls, two instructions per trap.
+    *The method matters more than the fix:* an object-level relocation sweep reports NO gp-relative
+    references in any archive, and that is a false clean bill, because gp addressing is created by
+    LINKER RELAXATION out of ordinary upper/lower pairs. It does not exist until link time, so only
+    the linked image can be asked. The arm is unwitnessed, nothing in the tree setting a hostile
+    global pointer, and R1.5's own over-grant means it buys an attacker nothing until R2 narrows it.
+    *One partial, declared rather than noted:* `periph_reg_write_unheld`. A translating arch refuses
+    every region shape, so the device window is declined at every base the arm tries. The control
+    that says the predicate is the ARCH and not the enforcement posture is `qemu-riscv-flat`, which
+    also has no region enforcement and reports zero partials, its PMP port encoding a window
+    regardless. An undeclared partial FAILS the stream gate, so this is a declaration and not a
+    comment.
+    *Four gates are held back specifically because this board does not isolate memory* and each is
+    earned by R2: the region-fault arm, the root-fault arm, the translation-fault arm and the
+    kernel-half arm. The last is the ironic one, this kernel being in the high half already, but the
+    gate's mechanism is the aspace one.
+    *R2.2 SETTLED THAT LIST DIFFERENTLY IN BOTH DIRECTIONS.* Three of the four are registered there,
+    the root-fault, translation-fault and kernel-half arms, and so is a stack-guard arm
+    (`qemu_riscv64_stack_guard`) this list does not name. The region-fault arm (`mpu_fault`) is NOT
+    registered and is not owed: a task-wide mapping cannot refuse a sibling domain's region, so
+    registering it would assert a strengthening this backend deliberately does not make, which is
+    F9's floor rather than a gap. Three more wait on other steps: the thread-pointer probe,
+    the floating-point switch this ISA has no extension for, and the nesting arm that is rv32-only
+    by construction.
+
 **R2. The aspace family on a single root, with PA WIDER THAN VA.** Build, activate, map, unmap, and
 the page-window pair of section 3.3.
-*Expected:* the acquire/release window is exercised on a target that CANNOT direct-map its whole
-physical address space, which is the arm that fails if any helper still assumes a fixed offset. This
-is the single most valuable expected result in the milestone, because it is the one A64 and x86_64
-cannot produce between them.
+
+**R2 IS THREE STEPS, SPLIT BEFORE IT RUNS RATHER THAN DURING.** R1 was written as one step and became
+six, twice discovering the split by running into it, and this stanza has since accumulated ELEVEN
+obligations from the steps beneath it. The split follows the dependencies, which are real: the map
+editor can be written and witnessed while the image is still one linked whole, and everything that
+narrows a permission waits on the app leaving the kernel's half, because that is the boundary the
+permissions key on.
+
+  - **R2.1 The frame allocator, the family, and the window pool.** `HAS_ASPACE` and the translate
+    opt-in come back, the frame allocator lands over the carved pool, and create, destroy, map, unmap
+    and activate get bodies over the layout R1.4b built. The acquire pair is a REAL transient window
+    and not an addition, which is the litmus arm: this is the first backend in the fleet that can
+    fail `ARCH_ASPACE_ACQUIRE_MIN`, a figure A64 asserts against an unbounded capacity. Name whether
+    the table frames are reached another way or the walk itself runs through the pool, which this
+    stanza already owes. The reporting member records a width a HUMAN wrote, 16 for this class of
+    part, per R4's pre-audit; no identifier is allocated, generated or scoped, at this step or any.
+    *Expected:* the aspace arms of the selftest pass on this board. The privilege-paired root pair
+    survives this step untouched.
+
+    **RESULT. TAKEN: the map editor, and it passes every arm the seam has for it.** Sv39 over the
+    layout R1.4b built, written generically over a root level of 2 and a leaf level of 0 so R3 is a
+    two-constant edit; create copies the boot user root's level-2 entries and destroy skips any root
+    entry that still equals the template, so the kernel half's tables stay shared; activate writes
+    the root the unprivileged level runs under and the switch path installs it, which is why activate
+    owes no fence of its own. **TWO CLAUSES OF THAT SENTENCE WERE OVERTAKEN, one below in this
+    stanza and one at R2.2.** The generic walk held, but three constants beside it were Sv39 by
+    value, so R3 was a five-constant edit rather than a two-constant one; its stanza has them. And
+    activate DOES own a fence: the unwitnessed-and-why paragraph below rests on
+    `arch_aspace_activate`'s own full fence, and once R2.2 deleted the switch path's root write that
+    fence is the only invalidate a root change gets, one of the ten `sfence` instructions R4 counts.
+    Nine arms green on the forced-on tree: `aspace_seam`, `aspace_model`
+    (`granules 0x1, 16 ASID bits, 56 PA bits, verdict 0x7`), `aspace_map_cycle`, `aspace_translate`,
+    `aspace_refusals` (all seven), `aspace_span`, `aspace_balance`, `aspace_domain_balance`,
+    `split_access` (63 of 63), plus `aspace_acquire_balance`, `self_grant_retype`,
+    `grant_kernel_word_refused` and `reent_seating`.
+
+    **THE TABLE WALK IS ANSWERED AND IT IS THE FIRST OF THE TWO OPTIONS.** Table frames are reached
+    another way: the frame pool is carved inside the image's DRAM share, which the kernel root's one
+    level-2 leaf already maps, so a table is read at its output address plus
+    `KICKOS_RV64_KERNEL_WINDOW_SIZE`'s delta and the walk spends no window slot. The window is for
+    frames OUTSIDE that leaf's span, and the leaf's span is where the delta is DEFINED rather than
+    merely convenient: `startup.S` maps exactly one gigabyte there and the constant is asserted
+    against the leaf.
+
+    **THE WINDOW POOL, ITS SIZE, ITS ASSERT AND ITS FLOOR, MEASURED.** Six slots per core, sized
+    `ARCH_ASPACE_ACQUIRE_MIN` and asserted against it and against the 512-entry level-0 table the
+    chip supplies. `KICKOS_RV64_WINDOW_VA` is `0xFFFFFFFFC0000000`, a level-2 slot of the kernel root
+    that nothing else fills, with the two non-leaf entries under it filled by `_start` and the leaves
+    written by the editor. At the floor and past it, over a 600-page device mapping where every
+    acquire spends a slot: 6 of 8 answered, the seventh and eighth null, the first slot at the window
+    base; after releasing all six, an acquire answers the base again. So the refusal is a null answer
+    a caller already checks, distinguishable from corruption because no slot is disturbed and the
+    pool recycles. Cutting the capacity to five fails the `static_assert` by name at compile time:
+    this is the first backend in the fleet that can fail that constant.
+
+    **AND THE LITMUS PRODUCED ITS FINDING, WHICH IS THAT THE WINDOW CANNOT BE THE WHOLE ANSWER.**
+    Three places above the seam require `arch_aspace_acquire` to hand back a pointer with an OFFSET
+    MAP's properties, and none of them can be satisfied by a transient window:
+      - `op_alias` (`KOS_ASPACE_OP_ALIAS`) requires the answer to equal `frame_pool_ptr(frame)`
+        exactly, so that the pool's own route and the seam's agree. A window slot never equals it.
+      - `aspace_frame_token` (`kernel/mem/aspace.cc`) names a frame by subtracting two acquire
+        pointers and dividing by the granule. With six slots that arithmetic answers the same small
+        number for every frame, so the fourteen arms that compare frame identity across tasks would
+        read "same frame" for frames that differ.
+      - `op_span` required page `i` to answer `first + i * granule` across 600 pages.
+    The first two are why acquire adds the kernel window's delta for a frame inside that window and
+    windows only what falls outside: the offset is not a shortcut, it is what those arms mean. The
+    third IS fixable above the seam and was fixed here, to per-page checks that survive both kinds of
+    backend: every page answers, the answer keeps its offset within the granule, and it is a
+    different granule from the one held beside it. **What the seam owes, and it is not taken here
+    because arch.h is frozen for this step:** a query that names the frame backing a page,
+    `arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)`, answering 0 for
+    an unmapped page. With it, `aspace_frame_token` stops doing pointer arithmetic and `op_alias`
+    compares frames rather than pointers, and a backend with no offset map at all becomes expressible.
+    Measured rather than argued: forcing acquire to window EVERY frame turns `aspace_translate` red
+    and panics the image. The signature diff for R5 is otherwise EMPTY, 35 baseline records against
+    35 candidate.
+
+    **A SECOND SEAM FINDING, and the region family already solved it.** `arch_aspace_memtype_support`
+    returns a bool where `arch_mpu_nocache_support` returns three states, and the third,
+    `ARCH_MPU_NOCACHE_ALREADY`, is exactly this port's answer: an Sv39 entry carries permissions and
+    no memory type, Svpbmt is absent (`menvcfg.PBMTE` reads back 0 on `-cpu rv64`, measured), and no
+    data cache on this board reaches a frame an outside observer would miss. So all three types are
+    honoured because none is encoded, which is what the rv32 PMP port says of its own arena. A part
+    where the attribute is NOT free by construction cannot express the difference through this query
+    and would have to answer false and lose the grant.
+
+    **NOT TAKEN, AND THIS IS THE STEP-PLAN FINDING: `HAS_ASPACE` IS NOT SELECTED, BECAUSE THE SELECT
+    DEPENDS ON R2.2 AND NOT THE OTHER WAY ROUND.** The split assumed the map editor could be
+    witnessed while the image was still one linked whole. The editor can; the SELECT cannot. Selecting
+    `HAS_ASPACE` derives `KICKOS_MEMORY_ENFORCED`, and under enforcement
+    `arch_user_text_readable` and `arch_user_data_writable` return false unconditionally, leaving one
+    oracle: the granted-range list `aspace_image_seed` builds from `__kickos_app_rom_start` and
+    `__kickos_app_sram_start`. `virt_rv64.ld` defines neither, and cannot at this step: one flat link
+    puts app text and app data inside the kernel's fixed high range, where a per-space mapping would
+    have to edit the level-2 entries every space shares. Measured with the select forced on: 60 of
+    132 arms fail and the first failure is arm 1, `kos_kconsole_write` refusing its own buffer.
+    Retrofitting the window over the flat image was tried and does not work either: the two extents
+    round to overlapping pages, `.data` needs a granule-aligned boundary, and once both are fixed the
+    per-process data copy is still refused, so `process_private_data`'s three distinct frames remain
+    unreachable. **So R2.2 carves the app window and flips one Kconfig line, and R2.1's editor is
+    written and measured under a forced-on tree rather than gated on the board.** The three aspace
+    arms that need the seed are named: `aspace_forced_unwind` and `aspace_churn` (a create allocates
+    one frame with nothing seeded, against a floor of `KOS_ASPACE_UNWIND_MIN_DEPTH` = 4) and
+    `map_tlbi_elided` (the seed maps nothing, so 0 elided against a floor of 32).
+
+    **TWO MECHANISM FINDINGS THAT FAIL THE LINK RATHER THAN AN ARM.** `__kickos_frame_pool_delta` is
+    an ABSOLUTE linker symbol whose VALUE is the whole offset, and `frame_pool.cc` reached it
+    PC-relatively: on a high-half kernel that is a `R_RISCV_PCREL_HI20` truncation, by 2 MiB on this
+    port, and the arm64 pair clears the same boundary by one gigabyte. It is now one relocated word,
+    `volatile` so the value does not propagate back into each caller and become PC-relative again.
+    Second, a mapping refusal on this backend can come from either of two guards: the low-half bound
+    or the shared-table check that a level-1 leaf is not a table, and for `arch_ram_base()` the second
+    one answers, so deleting the first leaves `KOS_ASPACE_REFUSE_HIGH_HALF` green.
+
+    **A FRESH NON-LEAF ENTRY GOT NO FENCE THE ISA ACCEPTS, and the comment that said otherwise was
+    carried across from `aspace_armv8a.cc`.** Raised by an audit of this branch (2026-08-28),
+    silicon-only, and confirmed against the specification rather than argued. `map_into` covered a
+    newly-valid NON-LEAF entry with the per-leaf `sfence.vma va, zero` issued below it. RISC-V
+    Privileged Architecture, version 20260120, section 12.2.1, on exactly that form: "If rs1!=x0
+    and rs2=x0, the fence orders only reads and writes made to leaf page table entries
+    corresponding to the virtual address in rs1, for all address spaces." The same section: "This
+    specification permits the caching of PTEs whose V (Valid) bit is clear." So on a hart whose
+    page-walk cache holds invalid non-leaf entries, and the C906 that F8 names as this port's
+    silicon witness is such a part, a self-grant that allocates a fresh level-1 or level-0 table
+    leaves the new pages invisible, the app's first access to its own granted range faults, and F5
+    kills the thread. **The remedy is the section's own and there is no narrower one:** "If software
+    modifies a non-leaf PTE, it should execute SFENCE.VMA with rs1=x0", with rs2 at x0 too because
+    nothing here tags a translation. `invalidate_nonleaf` issues it, gated on `installed` the way
+    the per-page one is, so a space installed nowhere still pays nothing.
+    *The cost, stated:* a whole-hart flush, once per FRESH TABLE and never once per page, so a newly
+    touched 2 MiB span costs one and a newly touched 1 GiB span one more. No operand names the
+    non-leaf entries for a single address, so the `installed` gate and the once-per-table placement
+    are the whole of the narrowing available.
+    *UNWITNESSABLE HERE, AND THE ARMS SAY SO RATHER THAN THE PROSE.* Four isolated single-site
+    mutations over a rebuilt TU, each with the build log naming `aspace_rv64imac`, against a
+    baseline of 22 image gates: deleting the `invalidate_all()` inside `invalidate_nonleaf` is 22 of
+    22 green with every figure unchanged; multiplying its ISSUED bump by 100 leaves the figures
+    unchanged too, which is the sharper result, because it proves the issued path never executes in
+    this suite at all; multiplying its ELIDED bump by 100 moves the seed from 47 to 245, so exactly
+    2 of the 47 are non-leaf and the elided path IS reached; and the equivalent-edit control
+    reproduces the baseline exactly. QEMU models no negative translation caching, so nothing here
+    can distinguish the fence from its absence and the fix rests on section 12.2.1.
+    *A64's twin comment was checked and is CORRECT, so it is left alone.* Arm ARM DDI 0487 M.b,
+    D8.17 RRVJDB defines a TLB entry for maintenance purposes as "any structure that holds a
+    translation table entry, including intermediate TLB caching structures", and D8.17.5 IDMCXY
+    makes the `L` suffix the thing that RESTRICTS an invalidate to the final lookup level, so the
+    unsuffixed `TLBI VAAE1IS` this backend issues does reach the intermediate entries. **The two
+    backends differ because the architectures do, and A64's is the stronger of the two:** D8.17
+    IWZCBG says of an invalid-to-valid change that "TLB invalidation is not required because an
+    entry that generates one of the listed faults is never cached in a TLB". One clause of the A64
+    LEAF comment was wrong in the other direction and is corrected in place: it claimed A64 caches
+    an absence like a presence, which RXCLRD denies. The invalidate stays, because what it covers
+    is the slot that was not in fact empty, which nothing above it proves.
+
+    **`map`'s ROLLBACK CANNOT RESTORE A MAPPING IT BROKE, and the seam contract now says so.** Same
+    audit, LOW, and the shape is inherited from M6.2 rather than introduced here: a map over a range
+    partly already mapped that fails at a later page leaves the earlier pages UNMAPPED rather than
+    as they were, so "total or fail" reads as "total or unmapped". Falsified as reachable today,
+    which is why it is one clause in `arch.h` and no code: every live caller either maps a fresh
+    reservation or re-maps a range already wholly mapped, where the inner call can no longer fail.
+    The sentence is in the contract so a caller that stops satisfying that precondition finds the
+    limit written down instead of discovering it. **What that first caller then owes is a narrower
+    rollback**, and it has two expressible forms: stop the unwind at the first page whose leaf this
+    call did not create, or refuse at admission a map that meets a live leaf outside the pages the
+    call has already installed. Neither is built, nothing needing it yet.
+
+    **UNWITNESSED, AND WHY. THE STATED REASON DIED AT R2.2 AND ONE OF THE FOUR LABELS WAS WRONG,
+    both corrected by an audit of this branch (2026-08-28).** What this stanza used to give as the
+    reason is that every privilege transition writes `satp` and issues `sfence.vma zero, zero`, so
+    no translation survives into kernel context and no invalidate the editor issues can be observed
+    to matter. **R2.2 deleted both instructions:** `switch.S` writes no root and fences at no
+    privilege transition. The conclusion survives, by an argument that is not a patch of that one.
+    `installed_here` asks `satp` about the single running root, so an edit to the RUNNING space
+    issues its invalidates FOR REAL, and a space installed nowhere is covered by
+    `arch_aspace_activate`'s own full fence at the moment it becomes the running one. Measured off
+    `map_tlbi_elided`'s own diagnostics: the image seed issues 0 and elides 47, a running-space
+    widening issues 1. Under the OLD regime `installed_here` was always false from kernel context,
+    so EVERY editor invalidate was elided and the elision itself was unwitnessable; both of those
+    sentences were true when they were written and are false now, which is why the paragraph is
+    rewritten rather than amended.
+
+    **AND `THE INVALIDATE AN UNMAP OWES` IS NOT WITNESSED EITHER, which is the label that
+    mattered and which this branch had to take back.** The arm the row rested on was deleted here
+    for reaching a permission refusal rather than the revoked mapping; re-measured against its
+    replacement, each of the four is an isolated single-site mutation over a rebuilt TU:
+      - break-before-make removed: 0 failures. Unwitnessed, as claimed.
+      - the fresh-map invalidate deleted: caught ONLY by `map_tlbi_elided`'s counter floor, never
+        behaviourally. Held by a figure and not by an access, which is weaker than an arm and
+        stronger than review. It is the ONE site of six that anything holds.
+      - the invalidate an unmap owes deleted: `qemu_riscv64_aspace_ufault` stays GREEN, and so does
+        every other arm on both paging modes. The arm reddens for a no-op unmap, so what it holds
+        is the leaf being cleared. UNWITNESSED.
+      - destroy's sweep moved after the frees: 0 failures. Unwitnessed, as claimed.
+    A wrong "unwitnessed" label is what gets a future refactor of that line waved through, so the
+    correction belongs in the record and not in a note beside it.
+
+    What mutation DID catch: destroy walking into the
+    shared kernel half (the image dies mid-suite), the write-execute refusal (`aspace_refusals` red),
+    windowing every frame (`aspace_translate` red plus a panic), a capacity below the floor (the
+    `static_assert`), and a create that copies no kernel half (the image hangs after the banner). The
+    rig carries an equivalent-edit control that reproduces the baseline exactly. The identifier
+    width-zero case stays unwitnessable on this bench, as R4 predicted: the hart reports 16 and the
+    port records 16.
+
+    **NOTHING WAS ADDED TO THE RESTORE EPILOGUE'S WINDOW.** `switch.S` is untouched, the epilogue is
+    the same length, and the editor introduces no faultable access into it: `arch_aspace_activate`
+    writes `g_rv64_satp_user` from ordinary kernel C under `arch_irq_save`, and the epilogue already
+    loaded that word. The one new property is that the word is now written at run time rather than
+    once at init, and it is safe for the reason the window is: `SIE` is 0 across the epilogue and the
+    write is masked, so no torn read exists.
+    *AND R2.2 DELETED BOTH HALVES OF THE MECHANISM THIS PARAGRAPH IS ABOUT:* `g_rv64_satp_user` and
+    the epilogue's load of it are gone, `arch_aspace_activate` writing `satp` and fencing directly.
+    So the measurement above is R2.1's image; after R2.2 there is no epilogue window to keep safe
+    rather than a safe one.
+  - **R2.2 The app leaves the kernel's half, and the root pair dies with it.** T5b's analogue, and on
+    this architecture it is the CODE MODEL rather than a second linker split: there is no
+    `-mcmodel=large` here, medany reaching a signed 32-bit displacement against roughly 256 GiB, so a
+    kernel reference to app text goes through an indirection the linker fills. The shared runtime has
+    to be duplicated under private names, R1.5 having measured the two text sets intersecting on
+    memcpy, memset, strlen, the kernel's own formatter and three libgcc helpers. Archive selectors
+    put the kernel's read-only data and its two writable sections below the boundary and the app's
+    above, which splits the reset path's single copy range and single zero range in two. Decide which
+    half owns the global pointer, its window reaching 2 KiB either side of one anchor. Then the two
+    roots collapse to one and the translation write at each privilege transition becomes the write at
+    each space activation, which is what this family needs anyway.
+    *Expected:* the four gates R1.6 held back for want of isolation, and the three the fault arms
+    need in a NEW shape rather than with substituted constants, this architecture's fault cause
+    carrying no level field where the A64 syndrome does.
+
+    **RESULT. TAKEN, and the board carries 46 of 46 with `KICKOS_MEMORY_ENFORCED` live.** The seam
+    member lands, the app leaves the kernel's half, the root pair is gone, and the differ reports
+    exactly one record: `FUNC arch_aspace_frame_at arch_phys_addr_t (struct arch_aspace *,
+    uintptr_t)`, added, with all 35 other records identical. `qemu-arm64` is 33 of 33 with the same
+    member fitted, so the diff is a MEMBER and not a divergence.
+
+    **THE APP'S HALF IS LOW, ITS LMA IS HIGH, AND NO PLACEMENT MAKES THEM ONE.** This is the finding
+    the step did not have: `aspace_image_seed` mapped `text.base` onto `text.base`, an identity that
+    is a property of A64's link and not of the family. The prebuilt libc and libgcc multilibs are
+    medlow, which reaches `[0, 0x7FFFFFFF]` and `[0xFFFFFFFF80000000, 0xFFFFFFFFFFFFFFFF]` and
+    nothing between, while every byte of this machine's DRAM is at or above `0x80000000`. So an
+    identity-linked app window does not exist on this board at any address: the app links at
+    `0x40000000` and loads at `0x80200000`, one uniform delta for both its regions, published as
+    `__kickos_app_load_delta` and added by the seed. Two symbols of `kernel/mem/aspace.cc` move with
+    it and nothing above the arch seam does.
+    *And the placement is one whole level-2 slot, index 1, which is the load-bearing part.* A space
+    is built by copying the boot root's own entries, so any slot that root FILLS is shared by
+    every space and a per-space mapping inside it would edit a table another space is walking. At
+    the mode this step ran under the boot root IS the level-2 table and it fills three slots, all
+    three in the high half, so the whole low half is per-space; a deeper mode shares fewer root
+    slots and not more (R3).
+
+    **THE DEVICES MOVED OUT OF THE LOW HALF AND THAT WAS FORCED, not tidied.** The chip named the
+    UART, the CLINT and the test finisher by identity, which put a 1 GiB device leaf in level-2 slot
+    0 of every space, and a per-space mapping anywhere in the first gigabyte was then refused for a
+    reason no caller could see: 13 of 132 arms red, `op_span`'s `0x201FF000` among them. They are
+    named at `KICKOS_RV64_VA_BASE + physical` now, the SAME delta the kernel window uses, so one rule
+    turns any physical address below 4 GiB into the kernel address that reaches it.
+    `arch_reserved_blocks` keeps the PHYSICAL values, which is what a grant names on a translating
+    backend and what identity had made indistinguishable.
+
+    **THE SHARED RUNTIME NEEDED NO NEW MECHANISM AND ONE NEW MAP.** `kickos_privatise_runtime` and
+    `kernel/klib` are both already gated on `KICKOS_HAVE_ASPACE`, so selecting it gave the kernel its
+    own `kmemcpy`, `kmemset`, `kstrlen` and `kfmt_vsnprintf` and rewrote every compiler-emitted
+    reference; the whole of `libkickos_lib.a` went app-side with the toolchain archives. What did NOT
+    transfer is the two bit-count helpers: rv64imac names no bit-manipulation extension, so
+    `__builtin_clzll` and `__builtin_ctzll` lower to libgcc calls, and libgcc is app-side.
+    **The first cut defined them in-tree under the ORDINARY names and that is wrong in a way no build
+    in the tree could show.** A kernel-side `__clzdi2` is the definition the whole link sees, so an
+    APP-side libgcc member that needs it makes a call the halves cannot carry. No shipped app pulled
+    soft float, so every image linked; the first probe that printed a `double` failed to link on
+    `__adddf3` and `__floatunsidf` calling `__clzdi2`. They carry private names now, through
+    `cmake/kernel_runtime_rv64imac.syms`, a per-arch map beside the fleet-wide one, and
+    `check_kernel_runtime.sh` refuses both ordinary spellings so the rewrite cannot silently stop
+    reaching.
+
+    **THE APP OWNS THE GLOBAL POINTER, AND THAT DECISION HAS A GATE UNDER IT.** The app's
+    `-fexceptions` translation units need gp-relative small data, and gp anchors one point, so the
+    anchor is in the app's window and the KickOS-owned archives are built `-msmall-data-limit=0`
+    here as they are under PMP. **The hazard that creates is the one R1.6 found, arriving from the
+    other side.** gp addressing is MADE BY THE LINKER: a kernel reference to an app-half symbol that
+    lands within `gp +/- 0x800` is RELAXED onto the app's anchor and links silently, where the same
+    reference out of range is an auipc truncation and fails loudly. Measured, not reasoned:
+    `kmain`'s store to `kickos_init_args` came out as `sd a1,-2000(gp)`, a kernel store through a
+    register an unprivileged thread writes. Every cross-half reference is a relocated 64-bit word
+    now, and **a local `volatile` pointer does not do it**: that stops the value being folded and not
+    the address being materialised inline, which is why the words are at namespace scope, as
+    `frame_pool.cc`'s delta already was. `tests/static/check_riscv_kernel_gp.sh` reads the LINKED
+    image, the only place gp addressing exists, and refuses every instruction naming gp bar the
+    anchor loads: 42,990 instructions of kernel text across three images, nine anchor loads, no
+    other hit.
+
+    **AND THAT GATE COVERS A SUBSET DECIDED BY WHERE THE LINKER PUT THE ANCHOR, which an audit of
+    this branch (2026-08-28) established and which the step did not see.** The reasoning above says
+    the halves are out of each other's reach, and the linker script asserts it, but the ASSERT and
+    the reasoning are both about `medany`'s DISPLACEMENT. `0x40000000` is inside `medlow`'s
+    ABSOLUTE reach, so a kernel reference to an app-half symbol is not truncated: the linker
+    RELAXES it to `lui`+`addi` and the link succeeds. **Measured over the same three images with one
+    store to `kickos_init_args` injected inside a syscall:** in `cxxtest` the symbol landed 1800
+    bytes from that image's anchor and came out as `sw a5,-1800(gp)`, which the gp gate refuses; in
+    `selftest` and `hello` it landed outside the anchor's 2 KiB reach and came out as an ordinary
+    `lui`+`addi` store, which the gp gate PASSES. So the gate saw one image of three, and which one
+    is an address-layout accident rather than a property of the reference. The full image boots and
+    runs: at the time of that audit `sstatus.SUM` was set for the life of kernel context and the
+    running space mapped the app's half `U`, so both the read and the write SUCCEEDED, and the suite
+    was 132 of 132 with a kernel store landing in whichever process was on the core. **R6 REMOVED
+    THE `SUM` WRITE AND NOTHING SETS THE BIT NOW**, so on this tree such a store FAULTS instead of
+    landing: the kernel reaches process memory only through the `kaccess` seam's acquire pair,
+    which names the frame the target SPACE's own tables hold and reads it from the kernel's half,
+    never through the translation the core is running. The audit's finding about the gate's corpus
+    is unaffected, and the injected store is still the way to reproduce it.
+
+    **THE GATE THAT CLOSES IT IS `tests/static/check_riscv_kernel_apphalf.sh`, and its corpus is the
+    kernel archives' RELOCATIONS rather than the image's disassembly.** That is the opposite of the
+    gp gate's answer and the reason is that a value scan cannot work here: `grant_hits_reserved` and
+    `grant_region_admissible` materialise the Cortex-M bit-band constants `0x40000000` and
+    `0x40100000` in generic kernel code, and those are the same numbers as `__kickos_app_rom_start`
+    and `__kickos_app_sram_start` on this board. Separating them from a real reference would need a
+    pattern allowlist, which is the one thing this gate must not have. A relocation instead names
+    the SYMBOL an instruction operand resolves to, and relaxation rewrites the encoding without
+    changing that name, so the archives are exact. Which symbols are app-half comes from the IMAGE,
+    the only place that fact exists: every GLOBAL or WEAK symbol in
+    `[__kickos_app_rom_start, __kickos_app_sram_end]`, closed at the top because a one-past-the-end
+    materialisation reaches app bytes by subtraction and `_kickos_heap_limit` is exactly that
+    address. Binding is load-bearing and a LOCAL symbol would be a false positive: `kfmt.cc`'s
+    anonymous-namespace `Sink::put` and `emit_uint` carry one mangled name at BOTH an app-half and
+    a kernel-half address in every image here. Corpus on this board: 311 app-half GLOBAL/WEAK
+    symbols, 4,614 instruction and 3 data relocations in kernel `.rela.text`, 4 symbols reached.
+    *The allowlist is four names and each is individually load-bearing, measured by removing it:*
+    `kickos_root_entry` and `kickos_user_thread_return` are PCs that are jumped to and never
+    dereferenced; `_kickos_heap_start` and `_kickos_heap_limit` are the two ends of one printed
+    subtraction. Removing any one turns the gate red naming that symbol and the kernel function it
+    came from, and an entry no instruction reaches any more fails as STALE, so the list cannot drift
+    into a record of what used to be true.
+    *What it does not catch, stated:* a literal address written in kernel source, which carries no
+    relocation. The class the finding is about is a reference to a SYMBOL, and a literal
+    `0x40000000` in kernel code is indistinguishable from the bit-band constant that is already
+    there. A relocated 64-bit word is out of scope by design, that being the sanctioned mechanism;
+    the gp anchor word in `.text.privtrap` is the live instance and the data words are counted and
+    NAMED in the corpus line so a new one is a figure that moved rather than an invisible pass.
+
+    **WHAT ELSE THE KERNEL REACHED INTO THE APP'S HALF FOR, and none of it was in the step's list.**
+    Three boot-time reads and writes, all before any space exists, so the app's virtual addresses
+    name nothing yet: `kickos_init_args`, the `kickos_reent_seam` descriptor, and the per-app build
+    stamp. The first two go through `aspace_image_alias`, the kernel's own alias of those bytes,
+    which needs no space and is portable because F1 puts a map of all physical RAM in the kernel's
+    half. The third could not be fixed that way because it was a CALL: `kickos_app_build_stamp` was a
+    function in app text, and kernel text may neither fetch it before a space exists nor call it
+    afterwards. It is `kickos_app_build_raw`, a weak DATA array of `__DATE__`, `__TIME__` and the
+    zone, and `kmain` does the reformatting. The banner line is unchanged on every board.
+    *A64 reached the same call and survives it for a reason that is its boot table's,* which the T5b
+    record already states: the boot identity root leaves the app's code block privileged-executable.
+    That is a property of an identity-mapped app window, not of translating backends, and this port
+    has none.
+    *The unwind-table registration moved for the same reason and in the same direction.*
+    `__register_frame` is libgcc's and app-side, and the table it walks describes app text, so
+    `Reset_Handler` cannot reach either. It is `kickos_root_entry`'s now, under
+    `KICKOS_HAVE_ASPACE`, ahead of the app ctors that might throw. Both translating chips drop it
+    from their reset path; on A64 the symbol is absent from every image measured, so that call was
+    dead there already and `cxxtest` is unchanged on both boards.
+
+    **THE ROOT PAIR IS GONE AND SO IS THE EPILOGUE HAZARD.** `arch_aspace_activate` writes `satp` and
+    fences, which is the only place the root moves after boot; `switch.S` writes no root and issues
+    no `sfence.vma` at any privilege transition, and `g_rv64_satp_kernel` and `g_rv64_satp_user` are
+    deleted. **The window the hazard lived in does not exist any more rather than being shortened:**
+    the restore epilogue's root write and its fence are the instructions that are gone, so there is
+    no interval in which supervisor mode runs with a root the entry would have refused, and the
+    entry's supervisor leg no longer asserts anything about which root is live. `installed_here` asks
+    `satp` itself, one fewer shadow of the hardware to keep in step. No identifier is allocated,
+    generated or scoped, at this step or any (R4).
+    *What the single root COST at THIS step was one line and it is not obvious:* `sstatus.SUM`. Under
+    the pair the kernel ran on a root where the image was U-clear, so a kernel read of app memory
+    needed nothing; with one root every app page carries `U`, and S-mode may not touch such a page
+    without SUM. The epilogue already forced it into every resumed frame; what had no owner was the
+    window BEFORE the first resume, where the boot path copies out of the app's half and there is no
+    frame to carry it, and R2.2 gave that window to `kickos_rv64_init`. **THAT LINE IS GONE AND THE
+    COST WAS PAID DIFFERENTLY IN THE END:** R6 removed every write of the bit, and the kernel reaches
+    process memory through the `kaccess` seam's acquire pair instead, so no reader of this paragraph
+    may restore a `SUM` write on its authority. A kernel dereference of a low-half pointer FAULTS on
+    this port, which is the hole R6 closed.
+    *AND THE SECOND THING IT COST IS A CAPABILITY, recorded here because nothing else records it.*
+    "One root serves both privilege levels" is true only while no S-mode thread executes app-half
+    text, and what makes that hold is a hardware refusal rather than a choice: every per-space leaf
+    carries `PTE_U` (`arch/riscv/rv64imac/aspace_rv64imac.cc`) and S-mode may not FETCH from a `U=1`
+    page irrespective of `sstatus.SUM`. **The PAIR could do exactly what the single root cannot**,
+    name one virtual address with a different execute permission per privilege level, so under it an
+    S-mode thread could have fetched app-half text. That capability is gone.
+    *It costs nothing today*, there being no such thread: `arch_syscall` and `arch_syscall64` are in
+    `.apptrap`, which `virt_rv64.ld` folds into `.apptext`, so the ecall stub is app-half text that
+    only an unprivileged thread can fetch, ECALL-from-S has no caller and cannot acquire one, and
+    `arch/riscv/chip/virt_rv64/startup.S` undelegates `medeleg` bit 9 on that evidence rather than
+    routing a demux nothing calls.
+    *What a future step that WANTS a privileged thread running app-half code would pay* is one of two
+    prices, and neither is cheap. A second root restores the epilogue's root write and its
+    `sfence.vma` at every privilege transition, and with them the window this step deleted, in which
+    supervisor mode runs with a root the entry would have refused. Otherwise the ecall stub and every
+    other app-half instruction such a thread executes move kernel-side, back under the archive
+    selector and out of the app's reach, which also puts them back inside the half the app may not
+    read.
+
+    **THE OVER-GRANT IS NARROWED, MEASURED IN BOTH DIRECTIONS OVER R1.5'S OWN ENUMERATION.** Thirteen
+    single-access images, each built in a copy of the tree with one address and one access mode baked
+    in, run as an unprivileged thread. REFUSED, each with the thread-kill record naming that exact
+    address: kernel `.data` (store, cause 15), kernel `.bss`, the trusted trap stack, the frame pool,
+    the Sv39 tables themselves, the boot/trap stack top, a READ of `arch_switch`'s text (cause 13), a
+    CALL of `arch_mpu_min_region` (cause 12, the instruction fetch), the UART's LSR at the kernel's
+    alias, and the UART's LSR at the identity address it used to have. GRANTED, and still working:
+    the app's own data read-modified-written, and a read of the app's own text. R1.5's list is
+    discharged item for item, and the granted half is not an argument: 132 selftest arms and hello's
+    ping-pong run on the same image.
+    *What is NOT refused, and it is F9 rather than a hole:* a sibling thread of the same task reaches
+    another thread's stack and another domain's region, because a translating backend maps task-wide.
+    The cross-TASK case is refused and `qemu_riscv64_rootfault` witnesses it.
+
+    **THE GATES, AND ONE OF THE FOUR DOES NOT APPLY.** Registered: the translation-fault arm
+    (`qemu_riscv64_aspace_ufault`, and see the correction below: it was
+    `qemu_riscv64_aspace_fault` until a review found that arm could not reach the unmap here), the
+    kernel-half arm (`qemu_riscv64_kernel_half`), the stack-guard
+    arm (`qemu_riscv64_stack_guard`) and the root-fault arm (`qemu_riscv64_rootfault`), whose guard
+    moved from `KICKOS_HAVE_MPU` to `KICKOS_MEMORY_ENFORCED` because the arm is about confinement and
+    not about which mechanism enforces it. NOT registered: the region-fault arm (`mpu_fault`), and
+    the reason is F9's floor rather than a gap. It writes a SIBLING domain's region from the same
+    task, which per-thread effective regions refuse and a task-wide mapping does not; measured on
+    this board, the write completes and the app prints its own "OK where the MPU is a no-op" line.
+    Registering it would assert a strengthening this backend deliberately does not make.
+    **CORRECTION, 2026-08-29: THE TRANSLATION-FAULT ARM NEVER REACHED THE UNMAP ON THIS BOARD, AND
+    R6's OWN FIX IS WHAT DID IT.** `aspacefault`'s read is the KERNEL's, inside `op_touch_unmapped`,
+    and `leaf_attrs` sets `PTE_U` on every leaf a space maps. With `sstatus.SUM` never set, a
+    supervisor load of such a page faults whether the leaf stands or not, so the FIRST read faulted
+    one instruction before `arch_aspace_unmap` ran (measured: `scause=0xd sepc=0xffffffff80004218
+    stval=0x10000000 sstatus=0x200000100`, bit 18 clear, `sepc` naming the `lw` four bytes before
+    the `jal`). The gate asserted `scause=0xd` and `stval=`<the announced page>, which a PERMISSION
+    refusal satisfies identically, so its own header sentence, that a fault raised anywhere else by
+    anything else cannot stand in, was false. A backend whose `arch_aspace_unmap` did nothing passed
+    it unchanged, and T4's fourth transition was UNWITNESSED here.
+    *No syndrome field separates the two on this architecture,* which is why the fix is not a
+    stronger assertion: `scause` is 13 for an absent leaf, for a leaf without R, and for a leaf with
+    `U` clear read from S-mode, and `stval` carries the address alone. Reading `sepc` against the two
+    load sites tells WHICH load faulted, but under `SUM` = 0 the first one always faults, so the arm
+    can never reach the second. A kernel-half ALIAS of the frame is readable and is never the page
+    the unmap removes. The one level that can tell a revoked mapping from a refused access is the
+    UNPRIVILEGED one, where a mapped page READS BACK.
+    *So the arm moved there.* `KOS_ASPACE_OP_MAP_HERE` maps a seeded frame into the CALLING task's
+    own space and hands back the address, the process reads it (the gate's control marker),
+    `KOS_ASPACE_OP_UNMAP_HERE` takes the word the process read as proof both routes reached one
+    frame and then announces and unmaps, and the process reads again. That read faults, contained
+    rather than fatal, and `check_aspace_ufault_rv64.sh` asserts the control marker, the thread-kill
+    record's `ADDR=` against the announced page, `scause=0xd` and exit 139.
+    *PROVEN BY THE MUTATION THE OLD ARM COULD NOT SEE.* With `arch_aspace_unmap` returning
+    `ARCH_ASPACE_OK` before clearing anything, in a copy of the tree: `qemu_riscv64_aspace_ufault`
+    FAILS on `the image reported a failure instead of faulting`, while the retired gate run by hand
+    over the same mutated image still PASSES with `0x10000000 faulted (load page fault) and the
+    system stopped with 132`. That pair is the finding and its fix in one measurement.
+    *The kernel-side arm stays registered on `qemu-arm64` and is sound there,* EL1 being permitted to
+    read an EL0 page with no PAN set, so its read reaches the unmap and its syndrome pins a level-3
+    translation fault. The retired RV64 script is DELETED rather than left unregistered: a gate that
+    runs nowhere is re-registered by the next reader who finds it.
+
+    **THE THREE FAULT GATES ARE THIS ARCHITECTURE'S OWN AND PARAMETERISING THEM WOULD HAVE BEEN
+    DISHONEST.** Two of the three differences are cosmetic: the banner, and `stval=`/`scause=` where
+    A64 prints `FAR=`/`ESR=`. The third is not. `check_kernel_half.sh`'s decisive assertion is that
+    the syndrome names a PERMISSION fault and not a translation fault, because the kernel's half is
+    mapped at that same address for the privileged side of the same core, so a translation fault
+    would mean the kernel's own window was lost rather than the unprivileged level's revoked.
+    **`scause` cannot express that at all:** 13 is a load page fault whether the leaf is absent,
+    present without R, or present with `U` clear, and there is no fault-status field and no level
+    beside it. Substituting a constant would have looked like a port and would have dropped the one
+    thing the arm is for. What stands in for it is written into the new script: the kernel's window is
+    demonstrably alive because the record is printed by kernel text and the system continues, and the
+    fault is contained rather than fatal. What is NOT claimed is that the leaf exists and refuses.
+    *Two arms of `faultsurvive` stay unregistered and the measurement is worth keeping.* Their guard
+    reads `NOT KICKOS_HAVE_MPU`, and the comment above it says they need a hardware stack guard. The
+    guard is not the requirement: they turn on the fault handler being handed an UNTRUSTWORTHY frame,
+    and that needs a backend that builds the frame on the FAULTING stack. This one never does, a
+    U-mode entry building every frame on `ctx.kernel_sp`, so both arms fail here by reporting a clean
+    redirect where they expect an escalation. The proxy excludes the right boards for the wrong
+    stated reason.
+
+    **THE MUTATION MATRIX, ten arms over a wiped build directory each, with an equivalent-edit
+    control that reproduced the baseline exactly (46 of 46) and a build-log check naming the mutated
+    translation unit on every run.** CAUGHT: the seam member answering 0 for every page (8 selftest
+    arms, `aspace_translate`, `aspace_span`, `process_private_data`, `task_handoff_readback`,
+    `task_handoff_donor_exits`, `process_ipc_same_addr`, `process_call_reply`,
+    `process_data_template`); the member answering ONE CONSTANT frame for every mapped page, which is
+    the defect F8 named, 7 of those same arms; `sstatus.SUM` unset at init (21 image tests, and R6
+    removed that write, so this one arm cannot be re-taken on the tree);
+    `arch_aspace_activate` writing no root (21); `aspace_image_alias` dropping the load delta (21);
+    the cross-half word in `kmain` reverted to a direct reference (`riscv_kernel_gp` ALONE, which is
+    the gate's positive control and it is the only witness there is); the new kernel-half gate's
+    asserted cause changed from 13 to 15 (`qemu_riscv64_kernel_half` alone, so that assertion is
+    load-bearing rather than vacuous); and `U` added to the kernel window's leaf (21 image tests,
+    though that one is not a clean over-grant mutation and the distinction is worth keeping: the ISA
+    forbids S-mode FETCHING a `U` page, so the kernel cannot execute its own text, and the trap entry
+    is in that same leaf, so there is not even a fault dump. `hello` produces NO output at all and
+    times out. The kernel-half arm does go red, but as one of 21 collateral timeouts rather than as a
+    gate catching a privilege leak, which is a weaker signal. It is R1.5's finding arriving again.
+    **NOT CAUGHT, both deliberate and one worth stating carefully.** Deleting `activate`'s
+    `sfence.vma` is green, for the reason below. And reverting `aspace_frame_token` to the acquire
+    arithmetic the member replaced is ALSO green, which is not a blind spot: the defect is LATENT on
+    this board rather than undetected. Every frame that function is ever asked about lives in the
+    frame pool or the app image, both carved inside the kernel window's span, so
+    `arch_aspace_acquire` takes its OFFSET route for all of them and the subtraction is arithmetically
+    right here. It stops being right the moment a frame it is asked about falls outside that span,
+    which is what R2.1's "the same small number for every frame" describes and which no arm in this
+    tree arranges. So that caller's conversion is held by review; what IS witnessed is the member's
+    answer itself, by the seven arms the constant-frame mutation turns red.
+
+    **THE MEMBER LANDED ON A64 WITHOUT THE MASK ITS RV64 TWIN CARRIES, and the mask belongs in the
+    BACKEND.** An audit of this branch (2026-08-28) raised it as a hypothesis and it is a real one:
+    `arch_aspace_frame_at` walks the tables, the map unwind clears leaves and frees tables under one
+    mask, and a walk interleaved with it reads a table the pool has already handed out as data. The
+    rv64 twin masks and says why; the A64 one did not. Neither call site supplies the mask,
+    `KOS_ASPACE_OP_FRAME_AT` and `aspace_frame_token` both taking no `IrqLock`, and neither should:
+    **only the backend knows its walk reads pool-owned memory.** A region backend has no tables to
+    read and would be paying for nothing, and a rule that lives half in the backends and half in the
+    callers is how a caller added later gets it wrong on one board only. The contract says nothing
+    about a caller-held mask and now does not have to.
+    *`arch_aspace_acquire` had the same unmasked walk on A64 and is fixed with it,* found by the same
+    argument rather than by the audit: on this backend acquire is an addition over `leaf_entry`, so
+    it reads the same tables the unwind frees. Its rv64 twin masks.
+    *NOT MUTATION-TESTABLE, and the reason is what it is.* The defect is an interleaving, so the
+    witness would be a preemption landing between two specific levels of one walk; at one core with
+    a deterministic emulator nothing arranges it. Measured anyway, as the negative control: with the
+    mask taken back off, `qemu-arm64` is 11 of 11 image gates green over a wiped build directory
+    whose log names `aspace_armv8a`, exactly as it is with the mask on. It is held by the shape of
+    the two data structures and by parity with the twin that already carried it.
+
+    **UNWITNESSED, AND WHY.** The `sfence.vma` inside `arch_aspace_activate` has no arm: at one core
+    a root that was never installed has no cached translation to drop, and the mutation that deletes
+    it is green. It is held by the architecture's rule rather than by measurement, and a second core
+    is what would turn it into an arm. The rv32 backend is untouched and PROVEN so: 24 of 27 objects
+    byte-identical against the parent commit under `-ffile-prefix-map`, the other three differing
+    only in `DW_AT_decl_line`, shifted by exactly the 14 lines `arch.h` grew. **The same-tree control
+    is the part worth recording:** the first run reported 27 of 27 objects differing on IDENTICAL
+    input, because the build directory is embedded as `DW_AT_comp_dir`, so a byte comparison of
+    objects is unusable without a prefix map and would have read as a regression in this port.
+
+    **NOT TAKEN, AND ARGUED RATHER THAN DEFERRED: the memtype answer F8 records beside the member.**
+    `arch_aspace_memtype_support` returning three states where it returns two would be a SECOND
+    signature move in the same verdict, and the case for it is weaker than the case for the member in
+    the one way that matters: nothing would read the third state. `ARCH_MPU_NOCACHE_ALREADY` exists
+    because a caller behaves differently under it, admitting a grant it would otherwise refuse; the
+    aspace family's only callers are grant admission and `KOS_ASPACE_OP_MEMTYPE`, and both treat
+    "honoured" identically however it is honoured. It would also be unwitnessable on this bench,
+    since no arm here can tell ALREADY from true, so it would land as a member the code has and no
+    run exercises, which is exactly the class section 5's opening note warns about. And it would
+    dilute the verdict: a reader of the diff could no longer tell which move the litmus forced. It
+    stays a recorded finding, and the backend that makes it urgent is one where the attribute is not
+    free by construction.
+    *An external audit re-raised it on 2026-08-29 and the position is unchanged, with one half of
+    the case sharpened.* Refusing the types outright, which that report asked for, is wrong for
+    DEVICE: with Svpbmt absent the attribute IS the physical address's PMA, and for an MMIO address
+    that is already I/O, so a refusal would deny a type the platform delivers. Refusing NOCACHE
+    alone has a live caller, `grant_nocache_admissible` asking this member on every translating
+    board. So the honest answer differs by PHYSICAL ADDRESS where the member takes none, which is
+    the gap this record already names, and the change that would close it is a per-chip seam rather
+    than a third state. Detail at `TODO.md`.
+  - **R2.3 The kernel's own mapping stops being writable and executable at once.** Named by R1.4b
+    as what a level-1 table would unblock, and deliberately not taken at R1.5, whose boundary was
+    a privilege one.
+    *This bullet's premise was wrong twice and running the step is what showed it.* R1.4b built no
+    level-1 table at all, its record being one root page holding two level-2 leaves; R1.5 built
+    one, under the USER root of the privilege-paired pair; and R2.2 DELETED that pair and its
+    table with it. So the mechanism this step was recorded as inheriting did not exist when the
+    step ran, and R2.3 builds a level-1 table of its own under the kernel window's slot. The cost
+    is one table page and one non-leaf entry, which is what R1.4b priced, so the plan's arithmetic
+    survives its attribution.
+    *Expected:* kernel text maps read-execute and kernel data read-write, with an arm that fails if
+    either is widened.
+
+    **RESULT. TAKEN, and the board carries 47 of 47 with the selftest at 132 of 132**, 0 skipped
+    and the one declared partial (`periph_reg_write_unheld`) unchanged. The 47th is the new arm.
+    `check_aspace_sigdiff.sh` is untouched by this step and still reports DIFF with exit 2 over
+    one added record, 36 candidate against 35 baseline: nothing here reaches the seam.
+
+    **ONE MORE LEVEL AND NO FINER GRANULE, AND THE BOUNDARY WAS ALREADY DRAWN.** The kernel
+    window's level-2 slot holds a level-1 table now (`kickos_rv64_kernel_l1`), 2 MiB per leaf,
+    and the write-execute boundary is the KTEXT region boundary `virt_rv64.ld` has drawn since
+    R2.2: leaf 0 covers that region read-execute and every leaf above it is read-write, U clear
+    throughout. `KICKOS_RV64_KTEXT_SIZE` is 2 MiB exactly, so the split is ONE leaf against 511
+    and no level-0 table is needed anywhere. **The table is written over the region size
+    rather than over that 1**, and both guards on it are measured: `startup.S` refuses a size
+    that is not a whole number of 2 MiB leaves, by name at assembly time, and `virt_rv64.ld`
+    refuses kernel `.data` linked below the boundary, by name at link time when `.data` is moved
+    into KTEXT. At 4 MiB the same source gives 2 read-execute leaves against 510 and the board is
+    still 47 of 47, so the multi-leaf path is exercised and not merely written. The app's load
+    window needs no ASSERT of its own: the delta ASSERT R2.2 added already pins it to exactly
+    `KICKOS_RV64_DRAM_BASE + KICKOS_RV64_KTEXT_SIZE`.
+    *What the level costs is one non-leaf entry `_start` has to fill*, for R1.4b's own reason:
+    a non-leaf entry holds the next table's frame number and a shift of a relocatable symbol is
+    not a relocation any object format carries. So the image carries a zero in that root slot and
+    the arm below reaches the table by SYMBOL rather than by walking the root.
+    *The whole gigabyte stays described, as the single leaf did*, so a frame anywhere in
+    `KICKOS_RV64_KERNEL_WINDOW_SIZE` is still reached by adding the delta and
+    `arch_aspace_acquire`'s offset route is unchanged. Narrowing the map to
+    `KICKOS_RV64_DRAM_SIZE` would move `in_kernel_window`'s bound and reroute that decision, so
+    it is a different one from this step's and is not taken here.
+
+    **THE BOOT PATH INSTALLS THE FINAL PERMISSIONS DIRECTLY AND NARROWS NOTHING.** The three
+    writes `Reset_Handler` makes are all on the writable side already: the `.data` copy is the
+    self-copy R2.2 left it as, the `.bss` zero is in the RAM region, and the `.appbss` zero goes
+    through the kernel's alias of the app's load window, which is leaf 1. Nothing it writes and
+    nothing it fetches crosses the boundary, so there is no window in which the kernel runs
+    under wider permissions than it ends with.
+
+    **WHAT THE KERNEL WRITES INSIDE WHAT BECOMES READ-EXECUTE IS A PAGE TABLE, and it is the
+    finding.** `arch_aspace_acquire` and `arch_aspace_release` write the transient window's
+    LEVEL-0 table on every slot they take and drop, and that table sat in `.mmu_boot` beside the
+    root. It is `.mmu_leaves` now, its own section homed in the writable half, loaded rather than
+    NOLOAD because `_start` fills the level-1 entry naming it before anything zeroes `.bss`. Its
+    three siblings stay read-execute and are correct there: the root, the kernel window's own
+    level-1 table and the transient window's level-1 table are never written after boot, and
+    `_start`'s three non-leaf fills happen untranslated in machine mode, where PMP and not a leaf
+    governs the store. Measured both ways: left in `.mmu_boot` the image fails the new arm by name
+    AND dies at run time, a store page fault on the first acquire with the selftest stopped after
+    arm 1.
+    *Nothing is read out of what becomes read-write-no-execute*, and R2.2 is why: the app's build
+    stamp is already a weak data array rather than a call, the cross-half references are already
+    relocated words, and the `.init_array` walk is a read. What did need correcting is two output
+    sections that carried SHF_WRITE from their INPUT sections while sitting in the read-execute
+    leaf, `.init_array` and `.kickos_app_fini_array`. Both are `(READONLY)` now, as
+    `.kickos_app_init_array` twenty lines away already was. Both are empty on every image the
+    fleet builds today, so this changes no byte of any current image; without it the first
+    kernel-side global constructor would put a writable section under an executable leaf and the
+    arm would refuse an image that is not actually wrong.
+
+    **THE ARM READS THE LINKED IMAGE, AND THE BOUNDARY IT HOLDS THE TABLE AGAINST IS THE IMAGE'S
+    OWN.** `tests/static/riscv_kernel_wx.py`, registered as `riscv_kernel_wx` over the same three
+    images `riscv_kernel_gp` reads. It decodes the 512 leaves out of the ELF and refuses a leaf
+    that is writable and executable at once, one that grants the unprivileged level, one that is
+    invalid, out of order or no longer a leaf, and one that sets a bit above the output address.
+    Then it cross-checks: every section the image marks executable inside the window needs X
+    under it, every section it marks writable needs W, and the segment that LOADS inside the
+    window while linking outside it (the app's half) needs W over the kernel's alias of it. A TLS
+    section is exempt from the W demand, being the template each block is copied FROM and never
+    written through that address. Floors on all three counts, so a corpus that read nothing fails
+    instead of passing clean.
+    **MUTATED FOUR WAYS OVER A WIPED BUILD DIRECTORY, each in a copy of the tree, with a
+    build-log check naming `startup.S` on every run and an equivalent-edit control that reproduced
+    47 of 47 exactly.** Kernel text made writable: 46 of 47, `riscv_kernel_wx` the ONLY red arm,
+    naming leaf 0. Kernel data made executable: 46 of 47, the only red arm, naming leaf 1. The
+    transient window's leaf table moved back into the read-execute leaf: 45 of 47, the arm plus
+    the selftest. Reverted to R1.4b's 1 GiB read-write-execute leaf: 46 of 47, the arm refusing
+    the image because the symbol is absent rather than skipping it.
+
+    **THE HARDWARE ENFORCES IT AND NO STATIC ARM CAN SAY SO, so two privileged probes were built
+    and run.** A kernel store into kernel text takes `scause` 15 with `stval` the exact address
+    and the dump reading `taken from supervisor-mode`; a kernel fetch out of kernel `.data` takes
+    `scause` 12 at that address. **The negative control is the half that matters:** the same two
+    probes on the parent commit, where the window is one read-write-execute leaf, both COMPLETE
+    and hello's ping-pong runs on afterwards. So the probes measure this step and not the port.
+    They are measurements and not arms: a privileged fault is a panic here rather than a contained
+    kill, so shipping them would mean a diagnostic image whose expected outcome is the panic dump,
+    which is a gate of a different shape.
+
+    **UNWITNESSED, AND WHY.** No shipped RUNTIME arm, for the reason just given, so what holds the
+    hardware side is the probe pair above and not a ctest entry.
+
+    **THE 480 LEAVES ABOVE THE IMAGE'S SHARE ARE NOT ALL OVER DEAD PHYSICAL SPACE, and the sentence
+    here said they were. Re-derived 2026-08-28 and it splits in two.** The window is
+    `KICKOS_RV64_KERNEL_WINDOW_SIZE` = 0x40000000, so 512 leaves of 2 MiB; the image's DRAM share is
+    `KICKOS_RV64_DRAM_SIZE` = 0x04000000, so 32 of them; 480 sit above it and every one is read-write,
+    `KICKOS_RV64_KTEXT_SIZE` = 0x00200000 making exactly ONE read-execute leaf at the bottom. The
+    machine is where the two halves part: the harness passes no `-m`, and `qemu-system-riscv64 -M
+    virt` reports 128 MiB in its own device tree, which is 64 leaves. So leaves 32 to 63, physical
+    `0x84000000` to `0x87FFFFFF`, **32 leaves, are read-write over REAL RAM the machine answers and
+    the image does not own**, and leaves 64 to 511, physical `0x88000000` to `0xBFFFFFFF`, 448
+    leaves, are over addresses no RAM answers. 32 plus 448 is the 480.
+    *What it means, and it is documentary rather than an exposure:* `U` is clear on every leaf of this
+    table, so no unprivileged thread reaches any of them; what the kernel gains is the ability to
+    write RAM outside its own share by adding the window's delta to a physical address it should not
+    have. Nothing does, and nothing reports it if something starts. **What would bound it** is either
+    a window sized to the share instead of to a round gigabyte, or a leaf count derived from
+    `KICKOS_RV64_DRAM_SIZE` with the remainder left invalid; both cost the offset route's uniformity,
+    which is why the whole gigabyte is described today, and neither is taken here.
+    *And this step draws no boundary INSIDE the read-execute leaf:* the boot table pages and the TLS
+    template share it with kernel text, so read-only data is not separated from executable text,
+    which would need a level-0 table and buys nothing the write-execute split does not. **The table
+    page count is MODE-DEPENDENT and was written as a constant.** `.mmu_boot` holds one page per
+    level the mode adds over Sv39 plus the high level-2 table, the kernel window's level-1 table and
+    the transient window's level-1 table: measured off the built images by symbol address, THREE
+    pages at Sv39 (`kickos_rv64_root` and `kickos_rv64_high_l2` resolving to one address there) and
+    FOUR at Sv48. The one table page the kernel writes after boot, `kickos_rv64_window_l0`, is in
+    `.mmu_leaves` and lands outside the read-execute leaf in both postures.
+    *The rv32 port is untouched and PROVEN so:* 27 of 27 objects of `kickos_arch_rv32imac` and
+    `kickos_chip_virt_rv32` byte-identical against the parent commit under `-ffile-prefix-map` of
+    both the source and the build directory, with the same-tree control run FIRST and reporting
+    0 of 27 differing. **The 27 re-derives and the byte-identity does not, stated so.** The
+    denominator is a build away and holds: 25 objects in `kickos_arch_rv32imac` and 2 in
+    `kickos_chip_virt_rv32`. The comparison itself is against a commit, so re-taking it needs a
+    second checkout, which this audit did not make; what it checked instead is the premise, that no
+    file under `arch/riscv/rv32imac/` or `arch/riscv/chip/virt_rv32/` has changed since, and none
+    has.
+*Expected:* the acquire/release window is exercised on a backend that does not direct-map physical
+memory, which is the arm that fails if any helper still assumes a fixed offset. This is the single
+most valuable expected result in the milestone, because it is the one A64 and x86_64 cannot produce
+between them.
+
+**THE WINDOW IS A CHOICE ON THIS TARGET AND THIS STEP USED TO CALL IT A CONSTRAINT.** Sv39 pairs a
+39-bit virtual range with a 56-bit physical one, so "cannot direct-map its whole physical address
+space" is true of the ARCHITECTURE and was carried across the sentence as though it bound the board.
+It does not: the emulated machine reports 128 MiB of RAM with every MMIO block BELOW it, so the whole
+board fits an offset map inside a 256 GiB high half with three orders of magnitude to spare, and the
+same holds for any part whose RAM is smaller than that half. What genuinely has no offset to add is
+physical space above the map, not the frame pool.
+So the windowed acquire is DECIDED here rather than forced, and the reasons are worth stating because
+a reader who takes it for a constraint will not understand why a later backend may skip it:
+`ARCH_ASPACE_ACQUIRE_MIN` is asserted by A64 against a capacity that is unbounded, so nothing in the
+fleet can fail it and a windowed backend is the only thing that turns that constant and its assert
+from a shape into a gate; and an offset map would make the second backend agree with the first
+exactly where agreement proves nothing, which is the SIMILARITY trap F8 exists to avoid.
+*What the decision then owes,* because it is the part that does not follow from itself: with no
+offset map the backend cannot read the tables it is walking, so this step NAMES whether the table
+frames are reached another way or the walk itself runs through the window pool. Leaving it to the
+implementer is how a transient-window rewrite ends up in kernel code.
+
+**AND R2 HAS NO ANALOGUE OF T3 OR T5b, WHICH F1 REQUIRES IT TO DO.** This step names build, activate,
+map, unmap and the window pair, and none of those move the kernel to a fixed high range or take the
+app out of it -- work that cost M6.2 two steps, one of which the contract did not have until somebody
+tried to run the step after it. F1 binds every backend, so R2 either carries that move or it is
+another missing step, and saying which belongs here rather than to whoever hits it.
+**HALF OF IT IS DISCHARGED AT R1.4b AND NOT HERE, because the toolchain made it unskippable:** the
+kernel is at its fixed high range with translation on from that step, which is T3's analogue. What
+R2 still owes is T5b's -- taking the APP out of that half -- and on this architecture that is the
+code-model problem the paragraph above names rather than a second linker split.
+
+*And R2 owes the kernel leaf's PERMISSIONS, which R1.4b deliberately did not lay down.* That step's
+two leaves are 1 GiB blocks, so the kernel window is one RWX mapping: splitting text from data wants
+a level-1 table and a 2 MiB pad, and R2's app-out-of-the-half work re-decides exactly that boundary,
+so laying it now means laying it twice. What makes the deferral safe rather than merely cheap is that
+`U` is clear on both leaves and that image has no unprivileged mode at all, so nothing which should
+not reach the mapping can. **Neither of those two facts survives R2**: the step that gives the app a
+half gives it a privilege level too. So a write-execute split on the kernel's own mapping is R2's
+obligation and not a later tidy-up, and it is recorded here because a permission left broad while
+nothing can exploit it is exactly the kind that stays broad once something can.
+*AND R1.5 CHANGED WHAT THAT OBLIGATION IS, in the direction that makes it urgent rather than tidy.*
+The two facts the deferral rested on are already gone: R1.5 has an unprivileged mode, and its user
+root marks every 2 MiB leaf of the image above a one-leaf privileged span `U` with R, W and X. So an
+unprivileged thread on the R1.5 image can read and write the kernel's `.data` and `.bss`, the
+per-thread kernel stack blocks, the trusted trap stack, the frame pool and every other thread's
+stack; what it cannot do is execute the PRIVILEGED SPAN or reach any device register, those being
+the two things the split it does have actually buys. Not "kernel text": five text symbols sit in
+that span and 307 sit above it under `U`, and a U-mode call of a kernel function above it succeeds
+(the R1.5 stanza carries the measurement). R1.5 also PAID for the level-1 table, so the mechanism
+R1.4b was deferring exists. What R2 owes is therefore no longer "a level-1 table and a 2 MiB pad"
+but the ARCHIVE SELECTORS that put kernel `.rodata`, `.data` and `.bss` below the boundary and the
+app's above it, plus the split copy and zero ranges that costs `Reset_Handler` (`virt_arm64.ld`
+already carries the shape). Three more boundaries at 2 MiB each is at most 6 MiB of a 64 MiB DRAM
+share. **A W^X split on kernel text is unblocked and NOT taken at R1.5**: the boundary that step
+needed is a privilege one and the write-execute boundary falls elsewhere, so it stays R2's.
+**DISCHARGED, ACROSS R2.2 AND R2.3, AND ONE CLAUSE ABOVE WAS ALREADY STALE WHEN R2.3 RAN.** R2.2
+took the archive selectors and the split copy and zero ranges; R2.3 took the boundary itself, one
+2 MiB level-1 leaf read-execute against 511 read-write. **The over-grant enumerated above is closed
+and not merely re-scoped:** R2.2 re-ran R1.5's list as thirteen single-access images, and kernel
+`.data`, kernel `.bss`, the trusted trap stack, the frame pool, the tables themselves, kernel text
+read and kernel text called, and the UART at both its identity address and the kernel's alias are
+each REFUSED with a thread-kill record naming the address; what is granted is the app's own data and
+its own text. That stanza carries the figures. What did not hold is "R1.5 also PAID for
+the level-1 table, so the mechanism R1.4b was deferring exists": the table R1.5 paid for hung under
+the USER root of the privilege-paired pair, and R2.2 deleted the pair. R2.3 therefore paid for a
+level-1 table a second time, under the kernel window's own level-2 slot. The lesson is the general
+one at section 5's opening note in its other direction: a mechanism recorded as available can be
+retired by a LATER step without the record noticing, so a step inheriting one re-derives it from the
+built image rather than from the paragraph that promised it.
+*And the privilege-paired root pair is R2's to DELETE and not to keep.* It exists because one flat
+link cannot give kernel text and app text different `U` bits in one root; the step that gives the app
+its own half and its own root retires the pair, and the `satp` write at each privilege transition
+becomes the `satp` write at each space activation, which is what R2 needs anyway.
+*A mechanism that does NOT transfer, found at R1.1:* `kickos_split_image_tu` hands one translation
+unit a code model that materialises a whole address in the referencing section, because
+`arch_context_init` names app text. RISC-V has no such code model: medlow reaches a sign-extended
+32-bit ABSOLUTE range and medany a signed 32-bit PC-relative DISPLACEMENT, and neither materialises
+a whole 64-bit address, so no flag spans the roughly 256 GiB between a high-half kernel and low app
+text and the reference has to go through an indirection the linker fills instead. R1.1 leaves the
+flag EMPTY on this arch, which is correct while the model is flat and
+becomes this step's problem the moment it is not. Record it in the verdict: it lands as a MECHANISM
+rather than as a signature, which is the shape F8 says a good seam produces, and a verdict reporting
+only the signature diff would not see it.
+*And its SIBLING, measured at R1.2 and the same shape:* this port emits gp-relative small data,
+24 symbols of it across the kernel and arch archives, because `-msmall-data-limit=0` is applied
+only where the arch is rv32imac AND a region backend is present. `check_riscv_no_smalldata.sh`
+registers under the same condition, so it does not run here, and that is CORRECT rather than a
+coverage hole: the hazard it names is a gp window sitting inside a PMP `.appdata` grant, and this
+port carves no such window. **What makes it this step's problem is the split, not the flag.** gp
+anchors one point and reaches 2 KiB either side of it, so a kernel in the high half and app data in
+the low one cannot share an anchor, and any small-data reference across that boundary is the code
+model's problem again in a second spelling. So this step either drops the small-data window or
+states which half owns gp; joining the rv32 gate is not the answer, its premise being a grant this
+port does not make.
 
 **R3. Level count and paging mode as backend facts.** The mode is selectable on one part, so the
 level count is not a constant.
 *Expected:* the granule query of F7 answers, nothing above the seam names a level count, and switching
 the configured mode changes no kernel code.
 
+**PRE-AUDITED AHEAD OF THE STEP, and both halves of the expected result came back qualified.**
+*Nothing above the seam names a level count, and that is now established rather than trusted:* seven
+patterns over a 629-file corpus, plus the 1085-line seam header separately, with every hit
+adjudicated. The seam is clean. Six real hits sit above it and only THREE are executable: a span
+address and a page count in the aspace syscall's own test scaffolding encode 512 entries in the
+last-level table, which survives Sv39, Sv48 and Sv57 unchanged and breaks on Sv32; the rest are
+comments carrying ARM's level NUMBERING, where the leaf is level 3 and on this architecture it is
+level 0. R3 owns those.
+*And "switching the mode changes no kernel code" is TRUE, measured, and VACUOUS.* Measured: the tree
+builds 71 objects, a control that touches the chip's startup and rebuilds changes none of their
+hashes, and applying Sv48 changes exactly one, which is that startup's own object. Vacuous: THERE IS
+NO CONFIGURED MODE. It is a preprocessor constant inside one chip file, named by no Kconfig symbol,
+no CMake variable and no board knob anywhere in the corpus. So R3 either creates the selector, which
+is what makes the claim testable, or restates the expected result as what was actually measured: the
+mode is one chip-file constant and no kernel object depends on it.
+*What the mode change costs, enumerated by doing it:* the mode constant, an index macro per added
+level, one more table page per level, and the root's entries STOP BEING LINK-TIME CONSTANTS. A
+non-leaf descriptor shifts a frame number into place and a relocation carries no shift, so those
+entries must be written by the pre-translation prologue. The kernel's link address needs no rework in
+any mode, all three booting at the same virtual base, so R2 inherits the placement free as R1.4b
+promised. The emulated core accepts Sv39, Sv48 and Sv57 with no property asked for; the part F8 names
+as the silicon witness accepts Sv39 alone.
+
+**RESULT. TAKEN, and BOTH postures are 48 of 48 with the selftest at 132 of 132**, 0 skipped and the
+one declared partial (`periph_reg_write_unheld`) unchanged, out of ONE tree with no source edit
+between them: `boards/qemu-riscv64/configs/{base,sv48}/defconfig` and a preset each.
+`check_aspace_sigdiff.sh` is untouched by this step and still reports DIFF with exit 2 over one added
+record, 36 candidate against 35 baseline, `arch.h` unmodified. `qemu-arm64` 33 of 33, `qemu` 58 of 58,
+`qemu-riscv` 49 of 49 and `sim` 48 of 48, which the span arm below is why they were re-run.
+
+**THE SELECTOR IS A KCONFIG CHOICE, AND THE ARGUMENT FOR IT IS THE PRE-AUDIT'S OWN.** A constant is
+what the tree already had, and the pre-audit's finding is not that the constant sat in the wrong file
+but that no configuration names it, so the expected result cannot be tested without editing the tree.
+`RV64_PAGING_SV39` and `RV64_PAGING_SV48` under `ARCH_RV64IMAC`, resolving one unprompted int,
+`KICKOS_RV64_SATP_MODE`. Three things fell out rather than being built: `genconfig.py` already routes
+EVERY numeric `KICKOS_*` symbol into `board_config.h` by rule, that header already says in its own
+generated preamble "Pure integer macros only: also included from startup.S", and
+`include_directories` already puts the generated directory on every target's path. So the mode
+reaches C, the assembler and CMake with no new plumbing at all. It is NOT in
+`boot_layout.ld.h`: that file is the chip's and is read by the linker script through a `cpp` run with
+no arch include directory, while the level count is an ARCH fact, and the mode is not needed by the
+script in any mode.
+
+**THE LEVEL COUNT IS DERIVED FROM THE MODE'S OWN FIELD ENCODING, in one header both sides read.**
+`arch/riscv/rv64imac/include/kickos/arch/rv64_paging.h`: satp.MODE is numbered so that each
+successive value adds one 9-bit level, 8 for Sv39 and 9 for Sv48 and 10 for Sv57, so
+`KICKOS_RV64_PAGE_LEVELS` is `MODE - 5` and `KICKOS_RV64_LEVEL_ROOT`, `KICKOS_RV64_VA_BITS` and the
+`VPN` macro follow from it. No depth is stated anywhere, and a mode outside the range the board is
+measured on is an `#error` rather than a computed depth. The header refuses to default the mode too:
+without the symbol it errors instead of assuming Sv39, so a build that lost the generated header
+fails rather than quietly translating at three levels.
+
+**AND THE MODE THE BACKEND WRITES IS DERIVED FROM THE DEPTH IT WALKS, which is what turns one
+`static_assert` into an oracle.** `SATP_MODE` is `LEVEL_ROOT + 6`, and
+`static_assert(SATP_MODE == KICKOS_RV64_SATP_MODE)` holds the depth every walk runs at against the
+mode the chip's prologue programs by its own route. It is not a tautology: `LEVEL_ROOT` is the value
+`index_at`, `map_into`, `leaf_entry` and both sweeps use, and it is exactly the place a level count
+gets stated by hand.
+
+**THE WALK WAS ALREADY GENERIC AND R2.1's CLAIM HELD, and three constants beside it were not.**
+`index_at`, `span_at`, `map_into`, `free_subtree`, `prune_empty` and `leaf_entry` are all written over
+`LEVEL_ROOT` and `LEVEL_LEAF` and needed no edit. What was Sv39 BY VALUE, which the "two-constant
+edit" claim did not cover: `LOW_HALF_END` at `1 << 38`, `SATP_MODE_SV39` at 8, and `PA_BITS_SV39` at
+56. The first is now `1 << (VA_BITS - 1)`, the second derived as above, and the third the one figure
+that is genuinely mode-independent on this ladder and is named that way.
+
+**WHAT Sv48 ACTUALLY COST, STAMPED AGAINST THE PRE-AUDIT'S ESTIMATE, which was right in three of
+four items and missed the one that moved the guards.**
+  - *The mode constant:* it is the Kconfig choice, one line in a defconfig.
+  - *"An index macro per added level":* NOT NEEDED, and this is the item the estimate got wrong in the
+    cheap direction. Every kernel-half address takes the SAME slot at every level above 2, the
+    kernel base having every bit above 32 set, so one slot number serves the whole chain and the
+    prologue fills it with a LOOP that walks from the root down and stops at the level-2 table's own
+    symbol. Zero iterations at Sv39, where that symbol IS the root, so both modes run the same
+    instructions and no `#if` selects between them.
+  - *One more table page per level:* exact. `.mmu_boot` goes from 0x3000 to 0x4000 bytes and the
+    image's text grows 4072 bytes.
+  - *The root's entries stop being link-time constants:* exact, and the image says so. At Sv39 the
+    root page carries ONE valid entry, the device gigapage at slot 508, the other two being the
+    non-leaf entries `_start` fills. At Sv48 the root page carries NO valid entry at all.
+  - *What the estimate did not have, and it is what the assembler guards had to be rewritten over:*
+    the root's slot NUMBERS change with the mode. At Sv39 the kernel half occupies three level-2
+    slots of the root, 508 and 510 and 511, and the app owns root slot 1. At Sv48 all three are slots
+    of a level-2 table, the ROOT holds one entry at slot 511, and the app owns root slot 0. So the
+    shared half shrinks from three root slots to one and the guard that refused an app base colliding
+    with the kernel half had to be rewritten from level-2 indices to ROOT-level indices, which is the
+    only spelling correct in both.
+  - *And the pre-audit's "the kernel's link address needs no rework in any mode" is now CHECKED rather
+    than believed:* a high address is canonical only above the mode's own virtual width, so the mode
+    re-decides it. `startup.S` refuses a kernel base or a window base that is not canonical in the
+    configured mode, by name at assembly time.
+
+**SWITCHING THE MODE CHANGES NO KERNEL OBJECT, AND THE SAME-TREE CONTROL IS THE HALF WORTH KEEPING.**
+One source path and one build path with the content swapped between runs, so nothing is compared
+across a differing `DW_AT_comp_dir` and no prefix map is needed. 118 objects. **The control, the same
+tree rebuilt, reports 32 of them DIFFERING on identical input**, and every one of the 32 carries a
+build timestamp: the generated build stamp and every app `main.cc`, which compile `__DATE__` and
+`__TIME__`. So a byte comparison of app objects is unusable without pinning the clock, which is the
+`DW_AT_comp_dir` trap of R2.2 arriving in a second mechanism. Against that floor, base versus sv48
+differs in 34, and the two beyond the floor are exactly
+`aspace_rv64imac.cc.obj` and `startup.S.obj`, one per side of the chip to arch seam. The expected
+result therefore reads: two objects, both of them the ones that own a depth, and no kernel object at
+all. It is no longer vacuous, there being a configured mode to switch.
+
+**THE MODE IS LIVE AND NOT NOMINAL, and the register is what says so.** Read out of the hardware with
+the debugger stopped at the landing pad, which is the first instruction that runs translated: satp is
+`0x800000000008000b` on the base posture and `0x900000000008000b` on the sv48 one. Same root frame,
+different MODE field. The SHIPPED arm that reads it is `aspace_model`, whose granule and
+physical-range verdict bits are gated on the mode standing in satp matching the one the backend
+compiled for, so a mode that did not take clears them.
+
+**THE EMULATOR'S REFUSAL IS NAMED RATHER THAN A HANG, AND THE PROLOGUE IS WHAT NAMES IT.** satp.MODE
+is WARL, so a hart that does not implement the configured mode keeps the field it had and translation
+is simply not on; the `mret` then jumps to a virtual address with no `stvec` written, which is R1.2's
+silence exactly. The prologue reads the field back and, on a mismatch, writes a line to the console
+and the fatal status to the finisher, both at their PHYSICAL addresses in machine mode. Measured:
+`-cpu rv64,sv48=off` on the sv48 image prints "KickOS: satp.MODE did not stick: this hart does not
+implement the configured paging mode" and QEMU exits 132. **Both controls run:** the base image on the
+SAME `-cpu` boots and runs normally, that flag gating Sv48 and Sv57 and not Sv39, and the sv48 image
+on the default core is 48 of 48. The one thing this buys the fleet beyond the emulator is the part F8
+names as the silicon witness, which accepts Sv39 alone: a board on it that asked for Sv48 now gets a
+sentence instead of a dead machine.
+
+**THE THREE EXECUTABLE LEAKS ARE GONE AND NOTHING ABOVE THE SEAM STATES A TABLE'S WIDTH.** `op_span`
+encoded 512 entries per last-level table in two constants, a span address one page below a 2 MiB
+boundary and a count of `1 + 512 + 87`. Nothing above the seam is told a table's width and no query
+answers it, so the fix is a BOUND rather than the figure: an entry is at least four bytes on every
+backend this seam is held against, so one table covers at most `granule / 4` pages, and a run one
+page longer than that entered one page below a boundary of that span crosses two boundaries and
+starts on a last slot whatever the real geometry is. At a 4 KiB granule that is 1112 pages from
+`0x203FF000` rather than 600 from `0x201FF000`. The arm is unchanged in what it asserts and the change
+is fleet-wide, which is why `qemu-arm64` was re-run. The two comments carrying ARM's numbering, one
+at `op_span` and two in the portable selftest, name the LAST-LEVEL table now and no level number at
+all.
+
+**THE STALE COMMENTS THE CHANGE FALSIFIED, AND TWO THAT WERE ALREADY FALSE.** `startup.S`'s
+"A LINK-TIME CONSTANT NOTHING EDITS" was already gone, R2.3 having replaced it with a three-non-leaf
+count, which is now the three plus one per added level; `virt_rv64.ld`'s "the Sv39 root" names the
+boot page tables and the chain instead. Two were false BEFORE this step and are corrected with them,
+both R2.2 leftovers in `chip_virt_rv64.cc`: the MMIO addresses were said to be identity mapped, which
+R2.2 stopped being true when it moved the devices to the kernel's own alias, and the file still
+described a USER root that R2.2 deleted. The chip's UART, finisher and fatal status are now named once
+in `boot_layout.ld.h` and read by both the prologue and the C, the prologue's refusal path being a
+second consumer of addresses that had only one.
+
+**THE MUTATION MATRIX, eleven arms, each a SINGLE-SITE edit in its own copy of the tree over a WIPED
+build directory whose log was checked to name the mutated translation unit.** The copy CARRIES `.git`,
+and the equivalent-edit control is what said so: the first rig excluded it and the control itself came
+back 14 of 48 red, every one a host gate whose corpus is `git ls-files`, which is a figure about the
+rsync and not about any mutation. With `.git` carried the control is 48 of 48 exactly.
+  - *The backend states three levels while the configured mode has four:* BUILD REFUSED,
+    `static assertion failed: the depth this backend walks is not the depth the configured paging
+    mode has`. This is the arm the derived level count exists for.
+  - *The same edit on the BASE posture, where 2 is the right value:* 48 of 48. So the red above is
+    the disagreement and not the act of editing that line.
+  - *The chip reserves no chain pages while the mode names one:* BUILD REFUSED at assembly time,
+    "the boot tables reserve a different number of pages above level 2 than the configured paging
+    mode names". The guard reads the DISTANCE between the root's symbol and the level-2 table's, so
+    the loop that fills the chain cannot disagree with the layout it walks.
+  - *The kernel base made non-canonical in the configured mode:* BUILD REFUSED at assembly, by name.
+  - *The chain's slot above level 2 forced to 0:* BUILD REFUSED at assembly, by name, the guard being
+    the one that holds the devices, the kernel window and the transient window to one slot.
+  - *`index_at` flattened so every level indexes at the granule:* 21 of 21 image tests red, 27 of 48.
+    The generic walk is EXERCISED at four levels and not merely written.
+  - *`arch_aspace_model`'s mode comparison shifted by one:* `qemu_riscv64_selftest` ALONE red. The
+    register readback is load-bearing and no other arm covers it.
+  - *The prologue's readback guard deleted:* 48 of 48, and that is the correct answer on a hart that
+    implements the mode. What it guards is a hart that does not, and the witness for that is the
+    `-cpu rv64,sv48=off` run and its two controls above.
+  - *The span bound narrowed to `granule / 8`, the figure an eight-byte entry gives:* 48 of 48. NOT
+    witnessed, and the reason is what it is: on a backend whose entries are eight bytes the wider run
+    merely crosses MORE table boundaries, so both values pass here. `granule / 4` is what a
+    four-byte-entry translating backend needs and this fleet has none, so the bound is held by the
+    argument and not by a run.
+  - *The span's base moved off the last slot onto the boundary itself:* 48 of 48. The arm catches a
+    backend that miscounts a last slot, and on a correct backend every shape passes, so the SHAPE is
+    held by review; what IS witnessed is the backend, by R2.1's and R2.2's own mutations of it.
+
+**UNWITNESSED, AND WHY.** Sv57 is one entry in the choice and one arithmetic step in the header away,
+the emulated core accepts it, and it is NOT offered: a mode the board does not run is a claim with no
+arm behind it, and the header refuses it by name rather than computing a depth for it. The two guards
+that fire only on a mode change are witnessed by mutation and not by a posture, there being no mode in
+range that makes the kernel base non-canonical. And the transient window's own two tables are
+untouched by the mode: they hang under a level-2 slot, so a deeper mode adds nothing above them that
+`arch_aspace_acquire` can see.
+
 **R4. No address-space identifier, legitimately.** The architecture permits the identifier length to
 be hardwired to zero.
 *Expected:* the port works with no identifier at all, which is F1's claim that identifiers stay below
 the seam, tested rather than asserted.
 
+**PRE-AUDITED, and F1's claim holds in the seam and in the kernel and FAILED in the test suite.**
+The seam header names no identifier parameter, no allocation and no flush; the kernel's own
+install cache names the CONCEPT correctly and already assumes no tag, per core, which is right for a
+width of zero. The leak was one line of the PORTABLE selftest, which asserted that the reported
+identifier width was NON-ZERO before believing the verdict word. Its intent was a vacuity guard
+against a report that decodes to nothing, and the guard survives on the physical range and the
+granule set; requiring the identifier to exist is what F1 forbids. **Fixed ahead of R2 rather than
+left for R4, because the step that selects the translating backend inherits that arm and its suite
+would have gone red for a reason belonging to a later step.**
+*And the width-zero arm is NOT WITNESSABLE on this bench, which is a result rather than a gap.*
+Measured by writing ones across the field: the emulated core reports 16 bits, and so does the model
+of the part F8 names as the silicon witness. No emulator property narrows it, and a paging mode of
+Bare does not gate the field either. So R4 may not report a pass on the width-zero case here. What it
+CAN prove, and what the claim actually rests on, is that the port never allocates, generates or
+scopes anything on an identifier, so a hart reporting zero would change nothing below activate. That
+is a code property provable by inspection, and it needs no zero-width machine.
+*One trap for whoever implements the reporting member:* the verdict bit means the machine's width
+matches the port's RECORD. Recording zero on the grounds that this port tags nothing makes the
+comparison false against a 16-bit hart; discovering the record at run time makes it tautological. The
+only non-vacuous shape is a constant a human wrote for the class of part, compared against the
+measurement, which is exactly what the A64 backend does.
+
+**RESULT. TAKEN, and the width-zero case is WITNESSED AS A CODE PROPERTY while staying unwitnessed
+as a MACHINE one.** Both postures carry 48 of 48 with the selftest at 132 of 132, 0 skipped and the
+one declared partial (`periph_reg_write_unheld`) unchanged, out of one tree with no source edit
+between them; the model line reads `granules 0x1, 16 ASID bits, 56 PA bits, verdict 0x7` on both.
+`qemu-arm64` is 33 of 33, `qemu` 58 of 58, `qemu-riscv` 49 of 49 and `sim` 48 of 48.
+`check_aspace_sigdiff.sh` is untouched by this step and still reports DIFF with exit 2 over one added
+record, 36 candidate against 35 baseline, `arch.h` unmodified.
+
+**THE THREE THINGS THE PRE-AUDIT SAID HAD LANDED WERE RE-READ AND ALL THREE HOLD.** The portable
+arm asserts `pa != 0 and grans != 0` and DIAGNOSES the identifier width beside them, so the vacuity
+guard rests on the physical range and the granule set; `arch_aspace_model` compares a recorded 16
+against the WARL measurement, the shape A64's `ASID_BITS_RECORDED` already had; and the port's
+identifier state is zero, read off the OBJECT rather than the source: `aspace_rv64imac.cc.obj` has
+nine static objects, 152 bytes, and they are the six chip-handover words, the 96-byte slot array of
+(space, page) pairs and the two selftest counters. `switch.S` names `satp` and `sfence.vma` in
+comments only.
+
+**THE CODE PROPERTY THE CLAIM RESTS ON, ESTABLISHED POSITIVELY OVER A NAMED CORPUS.**
+**RE-DERIVED 2026-08-28, AND THE FIRST THING THAT PASS FIXED WAS THE METHOD.** Six of the original
+nine figures did not reproduce, and the reason was not drift in the tree: the stanza stated no CASE
+DISCIPLINE and no COUNTING UNIT, so `identifier` case-insensitively matched
+`SPDX-License-Identifier` in all 932 files and `satp` counted lines where the breakdown counted
+occurrences. Both are stated per figure now, with the command, and every breakdown below SUMS to its
+total. A grep that found nothing is worth nothing without the count beside it, and a count whose
+breakdown does not sum is worth less than no count.
+
+*THE COUNTING UNIT is the OCCURRENCE and not the line*, `grep -o <pattern> <files> | wc -l` for hits
+and `grep -l` for files, everything under `LC_ALL=C`. The two corpora:
+
+```sh
+# MAIN, 932 files
+git ls-files | grep -E '\.(cc|c|h|S|ld|py|cmake|awk|sh)$|(^|/)CMakeLists\.txt$|(^|/)Kconfig|defconfig$'
+# SUB, 75 files and 32,959 lines: every MAIN file naming aspace, plus every tracked
+# file of arch/riscv/rv64imac/ and arch/riscv/chip/virt_rv64/
+```
+
+Six patterns run over MAIN and two over SUB, the SUB ones because their vocabulary is ordinary
+English. **One of the original nine is DELETED rather than patched**, and the reason is under it.
+  - *`sfence`, case-INSENSITIVE, 10 hits in 3 files, is the decisive one.* `aspace_rv64imac.cc` 8,
+    `switch.S` 1, `startup.S` 1. Nine are instructions and one is a comment, and EVERY instruction
+    names `zero` as rs2. There is no identifier-scoped invalidate in the port to lose, which is what
+    makes a zero-width hart cost nothing in maintenance rather than cost a wider sweep.
+  - *`satp`, case-INSENSITIVE, 87 hits in 9 files, reduces to THREE writes.* `aspace_rv64imac.cc` 49,
+    `startup.S` 17, `rv64_paging.h` 8, `arch_rv64imac.cc` 5, `Kconfig` 4, then one each in the `sv48`
+    defconfig, `switch.S`, `virt_rv64.ld` and `chip_virt_rv64.cc`. Sums to 87. The three WRITES:
+    `startup.S` writes `PPN | MODE`, activate writes `satp_of()` which is `PPN | MODE`, and the probe
+    writes ones and restores. So `satp.ASID` is 0 in every root the port installs and the only
+    non-zero identifier the hardware ever sees is the probe's, under a mask with a fence each side.
+    (The original 64 was a LINE count over the same 9 files.)
+  - *`asid`, case-INSENSITIVE, 47 hits in 7 files.* `aspace_rv64imac.cc` 24, `aspace_armv8a.cc` 10,
+    the selftest's `main.cc` 4, `syscall_aspace.cc` 4, `abi.h` 2, `arch.h` 2, `sys.h` 1. Sums to 47.
+    Adjudicated: the rv64 backend's own field position, record, probe and report; A64's; the model
+    bit's name and shift with the static_asserts holding the two spellings in step; the selftest's
+    decode and diagnostic; and the English word "aside" in `user/include/kickos/sys.h`. None is a
+    parameter and none is state.
+  - *`identifier`, case-SENSITIVE lowercase, 63 hits in 25 files, AND THE CASE MATTERS HERE MORE THAN
+    ANYWHERE.* Case-insensitively this is 1,008 hits in all 932 files, because every SPDX header
+    carries `SPDX-License-Identifier`; the figure is only meaningful lowercase. 49 are the C sense of
+    the word in gate scripts, awk and CMake (a declared identifier, an identifier prefix); 7 are the
+    two translating backends' own prose; 5 the seam header, the ABI header and the selftest; 2 the
+    remainder, `newlib_sbrk.cc` and `rx72m.ld`. Sums to 63.
+  - *`space_id`, case-INSENSITIVE, 18 hits in 6 files, is the one that could have been a leak and is
+    not.* The selftest's `main.cc` 12, `syscall_aspace.cc` 2, then one each in `abi.h`, `domain.h`,
+    `aspace.h` and `domain.cc`. Sums to 18. `domain_space_id` is the domain SLOT INDEX biased by one,
+    so a task can be told apart from another without a kernel address crossing the syscall boundary.
+    It is never written to a register, never reaches the seam, and it exists on a backend with no
+    identifier at all.
+  - *`TCR_EL1|TTBR|VMID|PCID|nG|INVPCID`, case-SENSITIVE and it MUST be, 48 hits in 10 files. THE OLD
+    CLAIM THAT EVERY ONE IS INSIDE `arch/arm64/` IS FALSE, AND 5 OF THE 48 ARE NOT.* Inside
+    `arch/arm64/`, 43: `startup.S` 17, `aspace_armv8a.cc` 15, `virt_arm64.ld` 6,
+    `chip_virt_arm64.cc` 3, `switch.S` 1, `arch_armv8a.cc` 1. Outside it, 5, and all five are the
+    two-letter `nG` matching something else: `MAIR_DEVICE_nGnRE`, an ARM memory-ATTRIBUTE encoding,
+    in `regs_v8m.h` twice and `arch_arm_pmsav8.cc` once, and the input-line label `DXnA..DXnG` of the
+    XMC USIC in two `usic.h` copies. 43 plus 5 sums to 48. Case-insensitively the pattern is 14,149
+    hits in 753 files, `ng` being ordinary English, which is why the flag is part of the figure. The
+    claim that survives is the one that was wanted: no other architecture's identifier REGISTER
+    spelling appears above the seam, and the five exceptions name no address space.
+  - *The generator vocabulary, `generation|rollover|generator|generate`, case-INSENSITIVE over SUB,
+    67 hits in 15 files.* 41 are the build system's and the tooling's "generate"/"generator"/
+    "GENERATED" (`CMakeLists.txt` 26, `Kconfig` 4, and 11 more across the two other `CMakeLists.txt`,
+    `kickos.cmake`, `kicktrace.py`, `genconfig.py`, `check_public_headers.sh` and the selftest's own
+    `CMakeLists.txt`); 25 are the capability, thread and task HANDLE generation counters, a software
+    reuse guard over pool slots that names no hardware (`main.cc` 15, `abi.h` 5,
+    `syscall_thread.cc` 2, `kmain.cc` 2, `sys.h` 1); 1 is the rv64 backend's own comment. Sums to 67.
+    There is no identifier generator and no rollover.
+  - *`flush`, case-INSENSITIVE over SUB, 27 hits in 14 files, and ONE of them IS a translation flush,
+    which the old text denied.* `aspace_seam.awk` 5 (its own `flush`/`flush_def` functions),
+    `main.cc` 3, `syscall.cc` 3, `arch.h` 3 (two console, one dcache seam member), `kicktrace.py` 2,
+    `chip_virt_rv64.cc` 2, `arch/CMakeLists.txt` 2, and one each in `sys.h`, `user/apps/common/
+    CMakeLists.txt`, `grant.h` ("flush against", meaning abutting), `aspace_rv64imac.cc`,
+    `arch_rv64imac.cc`, `arch_armv8a.cc` and `Kconfig`. Sums to 27. The one real translation flush is
+    `aspace_rv64imac.cc`'s comment on the whole-hart fence, and it names no identifier, which is the
+    point the original sentence was reaching for and overstated.
+  - *`tag` IS DELETED AND NOT PATCHED, and the deletion is the finding.* As a substring over SUB it
+    is 163 hits in 24 files, of which the majority are `stage`, `staged`, `staging`, `stages`,
+    `stage_wait` and `stage_release`. It cannot be made to sum to anything meaningful without a
+    word-boundary rule that would be chosen to produce the answer, so the figure is gone. **What it
+    was evidence FOR survives without it and is stated directly:** `arch.h` mentions a translation
+    tag three times and all three are PERMISSIONS for a backend that has one, not obligations, and
+    the two kernel sites reason explicitly FROM there being no tag, which is the install cache
+    skipping a root write per core. That is a claim about four named sites and is checked by reading
+    them, not by a count.
+  - *And nothing above the seam reads the width at all,* which is the sharpest form of F1's claim:
+    `ARCH_ASPACE_MODEL_ASID` and its shift have exactly two producers, one per translating backend,
+    and one consumer, the selftest's `tap::diag` line.
+
+**THE CONCLUSION SURVIVES THE RE-DERIVATION, and it is the only thing the figures were for:** the
+port allocates no address-space identifier, generates none, and scopes nothing on one. The three
+figures that carry it are `satp` reducing to three writes that all set ASID 0, `asid` and `space_id`
+finding no parameter and no state, and the register-spelling sweep finding no foreign identifier
+above the seam. The two figures that were deleted or corrected carried none of it.
+
+**THE WIDTH WAS A POPCOUNT AND IS A WIDTH NOW, AND THE FALSE PASS IT ALLOWED IS MEASURED.** satp.ASID
+is WARL, so the legal values need not be a contiguous low run and the readback's population count is
+not the field's width. `measure_asid_field` reports the highest bit that stuck plus one, and reports
+CONTIGUITY beside the figure rather than folding it in; the verdict bit is gated on both, because a
+span that matches the record through bits the hart does not all implement is not the field the record
+names. **Graded controls, each a single-site edit of the written mask in its own copy of the tree over
+a WIPED build directory whose log names `aspace_rv64imac.cc.obj`:** 16 bits is 48 of 48 with verdict
+0x7; 8 bits reports `8 ASID bits, verdict 0x5` with `aspace_model` the ONLY red arm; 1 bit reports 1.
+So the figure follows the field and is not a constant being printed.
+*The pair that shows the fix earning its keep is a hart implementing the HIGH eight bits of the field
+against a class record of 8:* span 16, population count 8, non-contiguous. With the popcount the
+suite is 48 of 48 and the verdict is 0x7, a machine reporting a width its field does not have and
+MATCHING the record on it. With the width and the contiguity check the same machine reports
+`16 ASID bits, verdict 0x5` and `aspace_model` goes red naming it. On a 16-bit record no
+non-contiguous pattern can false-pass at all, every 16-bit value of population count 16 being
+contiguous, so the defect needed a narrower record to expose and the equivalent-edit control
+reproduces the baseline exactly.
+
+**THE PORT WORKS WITH NO IDENTIFIER, AND THAT IS NOW AN ARM RATHER THAN AN ARGUMENT.** The mask
+written by the probe set to zero is a hart on which no identifier bit sticks, which is the
+architecture's hardwired-to-zero case seen from the port's side. Two arms, each a single-site edit
+over a wiped build directory:
+  - *The field zero, the record still 16:* 47 of 48, `qemu_riscv64_selftest` the only red test and
+    `aspace_model` the only red arm of 132. Every aspace, process, handoff, span, balance and fault
+    arm is green. So a hart reporting zero changes NOTHING below activate, and the single consequence
+    is that the machine stops matching the record.
+  - *The field zero and the record 0, which is the class of part such a hart belongs to:* 48 of 48,
+    132 of 132, `granules 0x1, 0 ASID bits, 56 PA bits, verdict 0x7`. R4's expected result, taken.
+*What that does NOT witness, and the distinction is the whole of R4's honesty:* a zero-width MACHINE.
+Re-measured this step rather than carried from the pre-audit, by a standalone 40-instruction M-mode
+probe that writes ones across satp.ASID and prints what stuck over the `virt` UART, so the figure
+comes from the hardware model and not from any KickOS code: `rv64`, `thead-c906`, `rva22s64`,
+`veyron-v1`, `sifive-u54` and `max` all answer `0xffff` on QEMU 11.0.3. Sixteen bits and CONTIGUOUS on
+every model this bench has, the c906 being the model of the part F8 names as the silicon witness.
+**And the absence of a narrowing property is asserted with a positive control**, which is the only way
+an absence is worth stating: `-cpu rv64,asid-bits=off`, `asid_bits=off` and `asidlen=off` are each
+refused as `Property 'rv64-riscv-cpu.<name>' not found`, while `-cpu rv64,sv48=off` on the same
+command line is ACCEPTED and the probe still answers `0xffff`, which re-confirms that a paging mode
+of Bare does not gate the field either. The shipped image does not boot on `-cpu thead-c906` at all
+(no output, one `zfa` privilege-spec warning, killed at the timeout), so the c906 figure is the
+probe's and not the suite's.
+*The contiguity leg is therefore held by the graded controls and not by a machine:* every core model
+here implements a contiguous 16-bit field, so nothing on this bench distinguishes the width from the
+population count except a mutation.
+*One trap for a later port, stated because the record is a per-CLASS constant:* a board on a hart with
+no identifier sets `ASID_BITS_RECORDED` to 0 for that class of part. Leaving it at 16 is not a
+malfunction, it is the model arm reporting a divergence between the machine and the record, which is
+exactly what that arm exists to do.
+
+**FOLDED FIX 1: A MISPAIRED RELEASE REFUSES INSTEAD OF SURRENDERING A LIVE HOLD.** `window_drop`
+keyed on (space, page) and returned silently when nothing matched, so a release beside a live hold of
+the same page took THAT hold and a release beside no hold at all was invisible. It reports whether it
+matched now, and `arch_aspace_release` refuses through `kickos::kpanic` on the one case that can only
+be a caller defect. **The refusal cannot be "no slot matched", and that is the part the fix turns
+on:** a hold the OFFSET route took spends no slot, so nothing to drop is the correct answer for every
+frame inside the kernel window, which is every frame the pool hands out. So the release asks the same
+question the acquire asked, `in_kernel_window` over the leaf's own output address, and refuses only
+where the frame is outside the window and a slot is therefore the only route there was.
+**Mutation-tested four ways, each in a copy of the tree over a wiped build directory whose log names
+the mutated translation unit:**
+  - *An extra release of an out-of-window page injected into `op_span`, with the refusal live:* 47 of
+    48, `KERNEL PANIC: arch_aspace_release: no acquire of this page answered`, the image stopping
+    after arm 105 which is the arm before the injected one. WITNESSED.
+  - *The same injection with the refusal taken back out:* 48 of 48. That is the latent trap measured,
+    and it is why the fix is not a tidy-up: nothing in the suite can see a mispaired release today.
+  - *The refusal made unconditional, dropping the route question:* 27 of 48, all 21 image tests red
+    and the image dead before arm 1. So the route question is what keeps the legitimate callers
+    alive, and those callers are exercised on every green run: `op_alias` and `split_access` release
+    unconditionally over pool frames, and `access_copy` checks each acquire before releasing anything.
+  - *The equivalent-edit control:* 48 of 48 exactly.
+*One caller was made contract-clean with it, in the same file the refusal now judges.* `op_span`
+released inside its loop whether or not the acquire had ANSWERED, over a device frame that is always
+windowed, so a pool exhaustion there would have met the new refusal rather than a red arm. It holds
+two slots at a time against a floor of six and cannot exhaust, so this changes no run; it is one
+`if (at != nullptr)` and it stops the arm depending on that.
+*And two comments that were already false are corrected with it:* `kernel/mem/aspace.cc` and
+`kernel/include/kickos/aspace.h` both said `arch_aspace_release` is a no-op "on the backend that
+translates today", which stopped being true when this port grew a real window pool.
+
+**FOLDED FIX 2: `arch_aspace_frame_at` CARRIES acquire's CHIP-HANDOVER GUARD.** One line, and the
+guard is substantive rather than symmetric: `leaf_entry` reaches every table through the kernel
+window's delta, which is 0 until `kickos_rv64_aspace_boot` runs, so a walk before the handover would
+read a table at its OUTPUT address. Unreachable today, no space existing before the handover and
+`arch_aspace_create` refusing while the boot root is null, which is why it is a guard and not a bug.
+*A64's twin was checked and needs nothing:* that backend takes its base from a non-weak LINKER symbol
+rather than from a runtime handover, so its `acquire` and `frame_at` are already symmetric and there
+is no asymmetry there to close. `qemu-arm64` is re-run anyway and is 33 of 33.
+
+**FOLDED FIX 3: THE KERNEL WINDOW'S BOUND IS A DECISION AND IS RECORDED AS ONE, IN THE CODE.**
+`in_kernel_window` covers the DRAM gigabyte the boot tables describe and NOT every address the same
+delta reaches: R2.2 put the devices at `KICKOS_RV64_VA_BASE + physical`, the very delta the kernel
+window uses, so an MMIO frame could be answered by an addition too and is windowed instead. The
+routing is UNCHANGED and the reason is the litmus: every frame the pool hands out lies inside the
+DRAM span, so the device frames are the only thing that exercises the window pool at all, and
+widening the bound would leave the fleet's one backend that can fail `ARCH_ASPACE_ACQUIRE_MIN` with
+no live caller. The comment is at the bound rather than in this document, because that is where a
+reader would otherwise "fix" it.
+
+**UNWITNESSED, AND WHY.** A zero-width machine, for the reason above: no core model on this bench and
+no emulator property produces one, so the arms that stand in for it are mutations of the port's own
+probe. A non-contiguous field, for the same reason. The refusal's SURRENDER, as distinct from its
+refusal: what an arm shows is that a mispaired release is refused and that removing the refusal is
+green, while the surrender itself (two holds of one page, one extra release taking the second) is the
+R2.1 audit's measurement and the shape of `window_drop`'s key, not a run. And the chip-handover guard
+on `frame_at`, which no caller can reach.
+*The rv32 port is untouched and PROVEN so:* 26 of 27 objects of `kickos_arch_rv32imac` and
+`kickos_chip_virt_rv32` byte-identical against the parent commit under `-ffile-prefix-map` of both the
+source and the build directory, with the same-tree control run FIRST and reporting 0 of 27 differing.
+The one object that differs is `arch_rv32imac.cc.obj`, identical in size and in every section, whose
+only divergence is two `DW_AT_decl_line` values shifted by exactly the ONE line `include/kickos/diag.h`
+grew: no instruction, no relocation and no symbol moved. `arch/riscv/chip/virt_rv32/` is byte-identical
+outright.
+
+**THE GATES, WITH THEIR CORPUS COUNTS, ALL GREEN, MEASURED AT THIS STEP AND NOT RE-TAKEN SINCE.** `riscv_kernel_wx` 3 images at 512 leaves each, 1
+read-execute leaf against 511 read-write; `riscv_kernel_gp` 3 images, 43,380 instructions of kernel
+text, 9 anchor loads and no other gp reference; `riscv_kernel_apphalf` 312 app-half GLOBAL/WEAK
+symbols, 4,650 instruction and 3 data relocations, 4 symbols reached; `kernel_runtime` 3 archives,
+568 undefined references, none to the app runtime; `kernel_got` 3 archives, 105,469 relocation
+records, no GOT reference; `test_labels` 48 tests as 26 host, 21 image and 1 build fixture;
+`kconfig_gen` 7 refusals, 4 accepted overrides, 55 defconfigs resolved; `trap_redzone_decls` 5
+trap-stack headers, 26 class records over 25 depth figures, 50 of 55 presets in scope.
+*Two of those figures MOVED and the deltas are accounted for at the parent commit rather than
+assumed:* the same three gates on a pristine build of `577744d8` report 43,281 gp-scanned
+instructions against 43,380, 4,638 apphalf relocations against 4,650, and 105,345 GOT-scanned records
+against 105,469, all three the added kernel code; the app-half SYMBOL count is 312 on both sides and
+the symbols reached is 4 on both, so nothing new crosses the halves. The new diagnostic string
+`kickos::diag::kAspaceRelease` lands at `0xffffffff8000ac20`, in the kernel's half, which is what the
+apphalf gate passing means here.
+
 **R5. The verdict.**
 *Expected:* an EMPTY signature diff on the aspace family. A non-empty diff is the finding F8 predicts,
 and it lands in the seam with A64 updated to match.
 
+**IT IS NOT EMPTY, and F8 carries the measurement.** One member is owed, a query answering a physical
+address for a mapped virtual one, because three callers above the seam require `acquire` to behave
+like an offset map and one of them reports SUCCESS while naming every frame identically on a windowed
+backend. The member lands at R2.2, whose own arms are among those three callers, so this step
+COLLECTS the verdict rather than producing it.
+*What this step therefore does:* run `tests/static/check_aspace_sigdiff.sh` against the frozen
+baseline, record its output as the verdict, and update A64 to the changed family. The instrument's
+DIFF exit IS the result. **Do not move the baseline to quiet it**, which would delete the finding the
+milestone exists to produce.
+*And two things the verdict must say that a signature diff cannot show*, both recorded at R2's
+stanza: the split-image code model has no spelling on this architecture, so a kernel reference to app
+text goes through a linker-filled indirection rather than a compiler flag; and the entry-and-exit
+sequence pays no identity alias of RAM, because the regime and the privilege change together. Those
+land as MECHANISM rather than as signatures, which F8 says is the shape a good seam produces, and a
+verdict reporting only the diff would miss both.
+
+**RESULT. TAKEN, AND THE VERDICT IS THE INSTRUMENT'S OUTPUT RATHER THAN A SENTENCE ABOUT IT.**
+`tests/static/check_aspace_sigdiff.sh`, run from the repository root with no arguments, exits 2 and
+prints this. The rule paragraphs it also prints are elided here and nothing else is:
+
+    == address-space seam signature diff ==
+       baseline  f0360d3ae88a4958358ecd8a2769119bff455265 (3 seam header(s))
+       candidate working tree (3 seam header(s))
+       members   35 baseline signature record(s), 36 candidate
+                 FUNC 12/13, ENUMERATOR 10/10, MACRO 9/9, TYPEDEF 1/1, TAG 3/3
+                 group calls     14/15 (floor 12)
+                 group codes     13/13 (floor 11)
+                 group memtag    1/1 (floor 1)
+                 group mapbits   6/6 (floor 5)
+                 group physaddr  1/1 (floor 1)
+       family    identifiers matching arch_aspace / ARCH_ASPACE / arch_map / ARCH_MAP /
+                 arch_phys_addr, wherever they stand in the seam headers
+
+    DIFF: the signature records moved. Per F8 this diff IS the finding.
+          < baseline, > candidate
+          15a16
+          > FUNC	arch_aspace_frame_at	arch_phys_addr_t (struct arch_aspace *, uintptr_t)	-
+
+That is the whole of it. One record added, thirty five identical, and the exit code IS the verdict:
+0 for no difference, 2 for a difference, 1 for a comparison that could not be made, which is UNKNOWN
+and not clean. `tests/static/aspace_seam_records.txt` is untouched by this step, as it was by R2.3,
+R3 and R4. *And this stanza's "update A64 to the changed family" clause was discharged at R2.2 and
+not here:* the member landed on both backends in that step, and its A64 body gained the walk mask its
+rv64 twin carries after an audit of this branch, so what R5 had left to do was the collection.
+
+**BOTH MILESTONES' VERDICTS COME OUT OF ONE INSTRUMENT AGAINST ONE BASELINE, AND THE UNION IS
+MEASURED RATHER THAN PREDICTED.** When this stanza was first written the two halves stood on two
+branches and the union was called "not yet measurable"; the halves are one linear stack now, so the
+sentence is replaced by the figure. Run from the tree that carries BOTH, the same script against the
+same `f0360d3a` exits 2 with 36 candidate records against 35 baseline and one added record,
+`FUNC arch_aspace_frame_at`. That is exactly M6.3's own verdict, unchanged by the x86_64 half, so the
+x86_64 port took NOTHING from this family: X5's claim arriving from the aspace instrument rather than
+from the step that made it, and now from a tree that can no longer be accused of measuring one half.
+It also settles F8's "the diff against the frozen baseline is still the ONE member RISC-V forced",
+which is a statement about the UNION: measured over the union it holds. M6.4's own subject is the
+entry and boot family, and its instrument reports PASS with 54 records against 54; that one is X6's
+and is read here only to keep the two verdicts from being reported twice from two places.
+
+**WHAT THE VERDICT SAYS THAT A SIGNATURE DIFF CANNOT SHOW.** Eight things. The first two are the
+ones this stanza named before the step ran and both were re-read against the tree R2.2 and R2.3 left;
+the next four are the later steps' and each is judged rather than transcribed; the last two came out
+of the ten-angle review of the two closed milestones and are the sharpest of the set, both being
+CONTRACT movements the instrument reported as no movement at all.
+
+  - **THE SPLIT-IMAGE CODE MODEL HAS NO SPELLING ON THIS ARCHITECTURE, and the mechanism that
+    replaces it is STRICTER than the flag rather than weaker.** `KICKOS_SPLIT_IMAGE_CODE_MODEL` is
+    set only for `armv8a`, so `kickos_split_image_tu` is inert here by construction and not by
+    omission: medlow reaches a sign-extended 32-bit ABSOLUTE range and medany a signed 32-bit
+    PC-relative DISPLACEMENT, and neither materialises a whole 64-bit address in the referencing
+    section. What carries a cross-half reference instead is a
+    relocated 64-bit word at namespace scope, which also covers the CALL a long-branch veneer
+    absorbs on A64 and which RISC-V has no veneers for. A signature diff sees none of this: the seam
+    declares no code model and no linker mechanism, and the two backends satisfy the same
+    declarations by different means.
+  - **THE ENTRY AND EXIT SEQUENCE PAYS NO IDENTITY ALIAS OF RAM, and R2.3 did not change that.**
+    `satp` is written in MACHINE mode, where it governs no access, and takes effect on the `mret`
+    whose `mepc` already holds the landing pad's virtual address, so no instruction has to be valid
+    on both sides of the switch and F8's "mapped at the same address on both sides" is discharged by
+    there being no such instruction. R2.3 added a level-1 table under the kernel window and one more
+    non-leaf entry for `_start` to fill, and R3 added a fill LOOP above level 2, all of it still
+    inside that one machine-mode prologue. The low alias `.text.init` runs at is absent from the
+    running kernel, which is what turns a dropped VMA-to-LMA offset into a link failure rather than a
+    silent success.
+  - **THE FRAME QUERY'S ANSWER IS WITNESSED AND ITS CALLER'S CONVERSION IS NOT, and that asymmetry is
+    the sharpest thing this verdict has to say.** Seven selftest arms go red when the member answers
+    one constant frame for every mapped page, which is exactly the defect F8 named, and eight when it
+    answers zero. Reverting `aspace_frame_token` to the two-acquire-pointer arithmetic the member
+    replaced is GREEN. That is not a gap in the mutation matrix, it is the defect being LATENT on
+    this board: every frame that function is ever asked about lives in the frame pool or the app
+    image, both carved inside the kernel window's one gigabyte, so `arch_aspace_acquire` takes its
+    OFFSET route for all of them and the subtraction is arithmetically right here. The seam member
+    exists because the arithmetic stops being right for a frame outside that span, and no arm in this
+    tree arranges one. So the family gained a member on evidence a diff carries and its callers were
+    converted on evidence only a reading carries.
+  - **THE DEATH-PATH FRAME REWRITE COSTS TWO FIELDS ON A64, THREE HERE AND FIVE ON X86_64, THROUGH
+    ONE SEAM CALL.** `arch_fault_redirect_to_exit` writes `ELR` and `SPSR` on A64, because `eret`
+    switches to a stack pointer register of its own; `sepc`, `sstatus` and `F_SP` here, because the
+    restore epilogue reloads `sp` out of the frame; and `rip`, `cs`, `ss`, `rflags` and `rsp` on
+    x86_64, because an interrupt return reloads all five and the instruction refuses a return whose
+    stack selector does not carry the privilege the code selector names. One signature, three field
+    counts, and the third field here has a witness of its own: with the `F_SP` write deleted,
+    `faultsurvive_off`'s worker runs its death stub privileged on a buffer outside its own stack and
+    the console comes out corrupted mid-word.
+  - **THE GP HAZARD EXISTS IN BOTH DIRECTIONS AND A DISPLACEMENT CHECK CATCHES NEITHER.** R1.6 found
+    it from the kernel's side, twelve kernel globals resolving through `gp` in the linked image with
+    stores to the current-context pointer among them, and closed it by re-anchoring `gp` at the trap
+    entry. R2.2 found it from the app's side, `kmain`'s store to `kickos_init_args` relaxed onto the
+    app's anchor as `sd a1,-2000(gp)`. `virt_rv64.ld` asserts the halves are out of each other's
+    reach, and that assert is about MEDANY's signed 32-bit displacement: gp relaxation happens inside
+    2 KiB of ONE anchor, which is the opposite end of the range, and medlow's absolute reach covers
+    the app's base outright so the same reference links as an ordinary `lui`+`addi` with no
+    truncation anywhere. That linker script's comment said the assert is "what turns a missed
+    cross-half reference into a link error", which R2.2's audit falsified; it was this step's one
+    reported defect and the pre-audit step below corrected it in place. What actually holds the two
+    directions is two gates over two different corpora, `check_riscv_kernel_gp.sh` over the LINKED
+    image because gp addressing does not exist before link time, and
+    `check_riscv_kernel_apphalf.sh` over the kernel archives' RELOCATIONS because a value scan
+    cannot separate an app-half address from the Cortex-M bit-band constant that equals it.
+  - **MEDLOW REACHES EXACTLY THE TOP TWO GIBIBYTES AND THE BOTTOM TWO, AND THAT DECIDED F1's
+    PLACEMENT ON THIS ARCHITECTURE.** Re-measured at this step against the linker rather than carried
+    from R1.4b, with one HI20 reference per link: `0x00000000`, `0x7FFFF000` and
+    `0xFFFFFFFF80000000` and `0xFFFFFFFFFFFFF000` link, while `0x80000000`, `0xFFFFF000`,
+    `0xFFFFFFC000000000` and `0xFFFFFFFF7FFFF000` are all refused as `relocation truncated to fit:
+    R_RISCV_HI20`. The prebuilt libc and libgcc multilibs are medlow, so the whole C library's
+    references to its own data decide where a high-half kernel may live, and the address a reader
+    picks first, the bottom of Sv39's high half, is among the refused ones. F1 says the kernel lives
+    at a fixed high range; this architecture leaves exactly one such range that costs nothing, and
+    R2 inherited it from R1.4b rather than choosing it. No signature carries a code model's reach.
+  - **THE ADDED MEMBER'S CONTRACT MOVED AFTER THE MEMBER LANDED, AND THE DIFF THAT REPORTED THE
+    MEMBER CANNOT REPORT THAT.** `arch_aspace_frame_at` was written against "the same half map and
+    unmap take", which reads as a universal because both backends that had it then keep their kernel
+    in a high half. It is not universal. x86_64 ADOPTS a live regime whose kernel lives LOW, in the
+    top-level slots the firmware already has present, so a high-half boundary would name the wrong
+    side outright. The contract the three backends actually share is weaker and more precise: AN
+    ADDRESS THE SPACE MAY LEGITIMATELY NAME, which each spells in the test its own map and unmap
+    already ask, `low_half_page` on rv64 and A64 and `range_ok` on x86_64, and which the seam now
+    states in those words. Without the guard the walk reads the index bits of the address alone, so
+    an address outside the range either ALIASES onto one the space may map and is answered with THAT
+    page's frame, or indexes into the kernel entries every space shares, which discloses the kernel's
+    map. A backend's own diagnostic probes still need the unguarded walk, and they take it from a
+    backend-PRIVATE helper rather than from the seam member, which is what keeps the member's answer
+    one thing. The signature is byte-identical across the whole movement.
+  - **AND ITS `0 MEANS NOT MAPPED` IS EXACT ONLY BECAUSE OF WHERE THE FRAMES COME FROM.** 0 is also
+    what a page mapped onto physical frame 0 would answer, and a backend does accept `pa == 0`, so
+    the answer is unambiguous by a property of this tree rather than by the encoding. No low-half
+    page is ever mapped there: the frame pool is carved inside the image's DRAM share, so its
+    lowest output address is far above 0 and 0 is its allocation failure besides; the image route
+    names the app window's load address; and the one boot leaf whose output IS frame 0 is a device
+    mapping in the KERNEL half, which the member's own range guard refuses. What the seam keeps is
+    the RULE that follows, that no low-half page may be mapped onto frame 0, because a caller or a
+    backend that breaks it makes `aspace_frame_token` and the arms in
+    `kernel/syscall/syscall_aspace.cc` read a live mapping as absent.
+  - **THE SEAM STATED ITS CENTRAL GUARANTEE TWICE, CONTRADICTORILY, SIXTY LINES APART, AND A
+    SIGNATURE DIFF SEES NEITHER STATEMENT.** The result enum's banner promised that a failed map
+    leaks no frame; `arch_aspace_map`'s own paragraph says a failed map leaves its range UNMAPPED
+    rather than as it was. Only the second was ever true, and the mechanism is in the backends:
+    `prune_empty` frees TABLES and returns at the leaf level without freeing anything, so a leaf that
+    was already mapped and gets cleared by a rollback loses the name of its frame permanently. The
+    banner carries the map member's reading now. Two paragraphs of a seam header can disagree for as
+    long as nobody reads them together, and no extractor in this tree extracts prose.
+
+**THE DIFFER GAINS X6's PER-GROUP FLOORS, BECAUSE THE HOLE X6 DESCRIBES IS PRESENT HERE AND WAS
+MEASURED.** X6's argument is that a total floor passes an extraction that loses one group on BOTH
+sides, that being a clean empty diff. This instrument floored per KIND, and a kind is a declaration
+FORM while a group is a family alternative, so the two partitions cross-cut and neither subsumes the
+other. Measured over the five alternatives of the extractor's PREFIX, each dropped in its own
+hard-linked copy of the tree, run first against the pre-floors script and then against the floored
+one:
+
+  - *`arch_map` dropped:* PRE-FLOORS SILENT. Exit 2, the same one-record diff, the same finding text,
+    with the counts reading 34 baseline against 35 candidate and `TAG 2/2`. It costs exactly one TAG
+    record of three, which clears `MIN_TAG` of 1 and every other per-kind floor and the total floor
+    of 24. FLOORED: exit 1, `group memtag: 0 record(s), floor 1`.
+  - *`arch_aspace` dropped:* caught either way. Pre-floors on `FUNC: 0 record(s), floor 8` and
+    `total: 21`, floored on those plus `group calls: 0, floor 12`.
+  - *`arch_phys_addr` dropped:* caught either way, pre-floors on the TYPEDEF floor, floored also
+    naming `group physaddr: 0, floor 1`.
+  - *`ARCH_MAP` dropped:* caught either way. Floored reads `group mapbits: 3 record(s), floor 5`, and
+    the 3 that survive are worth knowing: the memory-type enumerators are admitted through their
+    TAG's name and not their own, so only the three anonymous rights bits go.
+  - *`ARCH_ASPACE` dropped:* caught either way, floored naming `group codes: 4, floor 11`.
+  - *The PREFIX matching nothing at all:* exit 1 with every group at zero beside the total floor.
+  - *A group line deleted from the table, so six records classify into no group:* exit 1, the
+    classification refusal, which is what binds the table to the PREFIX rather than leaving it to
+    drift.
+  - *Two group regexes claiming one record:* exit 1, the same refusal from the other side.
+  - *The equivalent-edit control, a comment appended to the extractor:* exit 2 with 36 against 35
+    exactly, so the rig is not reporting a copy as a kill.
+
+So four of the five alternatives were already covered and one was not, and the one that was not is
+the smallest group in the family. The fix is X6's shape rather than a raised `MIN_TAG`, because
+raising a kind floor closes today's instance and not the class: a member added under a NEW alternative
+that lands in an already-populated kind would be silent again, and the classification check is what
+makes that impossible. Groups of ONE carry a floor of 1, so a legitimate removal of
+`arch_phys_addr_t` or of the memory-type enum tag does trip the floor and force it to be re-decided,
+which is the right cost on a family this small.
+
+**HOW A READER WHO WAS NOT HERE RE-TAKES THIS.** From the repository root, on a checkout that has its
+`.git` (the instrument reads BOTH sides through `git`, so an exported tarball cannot answer):
+
+    sh tests/static/check_aspace_sigdiff.sh
+
+No arguments, no build, no toolchain and no environment file: it needs `git` and `awk` and nothing
+else.
+
+**IT IS DELIBERATELY NOT A CTEST TEST, AND THE ABSENCE IS THE DECISION AND NOT AN OVERSIGHT.** The
+rule is about which verdict the instrument EXPECTS, not about what kind of instrument it is. This
+one's expected verdict is DIFF, exit 2, one added record: registering it would put a test on the
+ladder whose passing state is a non-zero exit, so either the ladder goes red while reporting the
+milestone's own result, or the registration inverts the exit code and the ladder then goes GREEN on
+the exit 0 that means the member has gone, which is the failure this instrument exists to catch.
+A signature differ whose expected verdict is PASS has the opposite shape and belongs on the ladder,
+and a sibling milestone registered its own differ for exactly that reason: its seam gained no member,
+so exit 0 is both its expected verdict and ctest's success. The two calls are the same rule applied
+to two expected verdicts. Do not register this one to make the set look uniform. The baseline is the
+frozen records themselves, checked in as `tests/static/aspace_seam_records.txt`: the seam as T2 left
+it, held as text, so the verdict rests on no commit that has to stay reachable. An optional argument
+takes a candidate ref in place of the working tree, so the verdict can be re-taken at any commit;
+`KOS_SIGDIFF_KEEP=<dir>` copies both record sets out, and `KOS_SIGDIFF_REGEN=1` rewrites the
+baseline from the candidate and takes no verdict at all. THE RESULT IS THE EXIT CODE AND THE DIFF
+BODY: exit 2 with one added `FUNC arch_aspace_frame_at` record is this milestone's verdict, exit 0
+would mean the member had gone, and exit 1 means the comparison failed and the verdict is UNKNOWN.
+Do not move the baseline to make it quiet.
+
+**THE HEADER SENTENCE R4 DISPUTED IS REWRITTEN, AND R4 WAS RIGHT.** `arch_phys_addr_t` was justified
+as "wider than uintptr_t because Sv39 pairs a 39-bit virtual range with a 56-bit physical one and
+Sv32 pairs 32 with 34", and that reasoning does not hold in every mode: at XLEN 64 `uintptr_t` is
+already 64 bits and 56 physical bits are NARROWER, and Sv57 pairs 57 virtual bits with 56 physical
+and inverts the inequality outright. Only the Sv32 clause ever carried the claim. The sentence now
+names the PROPERTY, that the physical width does not track the virtual one in either direction, with
+Sv32 as the case where a pointer cannot hold a physical address and Sv57 as the case where neither
+width bounds the other. It is a comment and it moves no record: 36 candidate against 35 baseline,
+unchanged.
+
+**THE FLEET, A DATED RECORD RE-TAKEN 2026-08-29 ON THE FINAL M6.4 TREE `aea89358`.** A count is a
+figure `ctest` answers, so read this as what that run said and re-derive rather than quote. Both
+RV64 postures are **52 of 52** with the selftest at **134 of 134**, 0 skipped and the one declared
+partial (`periph_reg_write_unheld`) unchanged, out of one tree with no source edit between them, and
+both report `granules 0x1, 16 ASID bits, 32 PA bits, verdict 0x7`. `qemu-arm64` is **42 of 42** with
+the same 134-arm selftest, `qemu` **61 of 61**, `qemu-m33` **60 of 60**, `qemu-riscv` **52 of 52**,
+`microbit` **46 of 46**, `qemu-x86_64` **38 of 38** with its selftest at **102 of 102**, and `sim`
+**51 of 51** on the ladder every board shares, **366 of 366** once GTest is provisioned through
+`CMAKE_PREFIX_PATH` and the host unit suite registers alongside it. Take a `sim` figure without that
+prefix as the ladder alone.
+*THE FOUR TRANSLATING BOARDS GAINED ONE ARM EACH, `console_reach`, AND ALL FOUR ARE GREEN.*
+Registered totals re-derived 2026-08-29 by `ctest -N`: `qemu-arm64` 42, both RV64 postures 52,
+`qemu-x86_64` 38. The gate walks the `-fcallgraph-info` graph from the fault-record console route
+and fails on a reachable `kpanic`. **It was RED on three of the four for part of the same day** and
+this paragraph said so: at `517449e5` the reachable panics were `reent_seat`/`reent_prime`,
+`ep_copy` and, on RV64 only, `arch_aspace_release`. `58b43d62` closed the first three and
+`d4977780` the fourth, and the sentence recording the red was not moved with them. Re-measured on
+`aea89358` over wiped scratch trees, each board reports `no panic terminal is reachable from the
+console route`, and the reading is not an absence over an empty corpus: the empty-directory floor
+clause fires first, the walk reads 116 `.ci` files and 931 nodes on `qemu-arm64`, 115 and 973 on
+each RV64 posture and 119 and 907 on `qemu-x86_64` against a declared floor of 90 and 700, both
+witness symbols are reached, `kpanic` is present with 34 call sites in every corpus, and the
+planted-edge control still produces a path.
+*THE RV64 MODEL LINE READS 32 WHERE EVERY DATED MEASUREMENT ABOVE READS 56, and the counts did not
+move with it.* The 56 was the PPN field's width, which is the architecture's figure for every RV64
+mode; the 2026-08-29 re-review's second finding is that the field is not the machine, so the figure
+is now the physical extent the CHIP publishes and the map editor refuses against the same bound. The
+board's own map is entirely below 4 GiB. Read a `56 PA bits` in a dated step record above as what
+that step measured, not as what a re-run answers.
+*WHY EACH BOARD MOVED, stated here once rather than by rewriting twenty dated measurements.* THREE
+changes are FLEET-WIDE and lift every board by one each: `tests/static/check_shell_special_names.sh`,
+`tests/static/check_entry_sigdiff.sh` and, on 2026-08-29, `tests/static/check_whitespace.sh`, each
+registered unconditionally under the `host` label. TWO more are BOARD-LOCAL and landed the same day:
+five `qemu_arm64_panicgate` arms, which take `qemu-arm64` from 35 to 40 before the fleet-wide one,
+and two x86_64 static gates, which take `qemu-x86_64` from 34 to 36 before it. The RV64 total moved
+only by that fleet-wide gate and its COMPOSITION moved without it:
+`qemu_riscv64_aspace_fault` was retired on 2026-08-29 and `qemu_riscv64_aspace_ufault` registered in
+its place, so a 50 stamped before that date names a different set of fifty.
+A per-step figure elsewhere in this document reads lower and is NOT stale: a step's RESULT is a dated
+measurement, and the mutation controls in particular are COMPARATIVE, so rewriting one side of a
+"48 of 48 exactly" control against a 48 baseline would break the comparison it exists to make. Read
+any earlier fleet figure as the count at that step, and this paragraph as the count now.
+
+**THE GATES, WITH THEIR CORPUS COUNTS, ALL GREEN, staged before they ran so nothing is invisible to a
+corpus built from `git ls-files`.** The ladder figures are a LIVE claim and move with the tree: on
+2026-08-29 they are 31 of 31 on the `host` label of `qemu-riscv64` and 52 of 52 on the full ladder,
+both having gained `whitespace` and then `console_reach`, which is green since `58b43d62` and
+`d4977780`.
+**The CORPUS COUNTS that follow are a DATED RECORD RE-TAKEN 2026-08-29 on the staged M6.4 tree
+`aea89358`**, over the `qemu-riscv64` tree except where a figure is per-tree and said to be. The
+figures they replace were taken on 2026-08-28 on the RISC-V branch, before the x86_64 stack was
+rebased onto it, so every corpus that counts tracked files reads higher here by what that stack
+adds; nothing below is a gate that weakened. A corpus is a figure a command answers, so re-derive
+rather than quote: these gates print their own counts and `ctest -L host -V` is where they come
+from.
+`doc_names` 96 doc files against 1228 tree identifiers and 1546 tracked paths;
+`extern_c_linkage` 122 of 554 tracked C/C++ files pairing a block with a namespace; `ascii` 1118
+tracked files, every byte of each; `spdx` 1125 tracked files of which 1115 can carry a header;
+`whitespace` 1124 of 1125 tracked files, every line of each;
+`include_guards` 258 tracked headers and 588 C/C++ files; `shell_special_names` 105 tracked shell
+scripts; `cpu_id_fold` 588 files plus the seam
+header; `forever_loop` 588 files and 121 `while (true)`; `dash_punct` 949 tracked source files;
+`panic_banners` 38 banners from 10 files, 3 resolved from a name slot; `death_stack_seating` 7 arches,
+7 of them defining `arch_ctx_redirect`; `trap_redzone_decls` 5
+trap-stack headers, 5 declared arches, 26 class records over 25 depth figures, 50 of 56 presets in
+scope and 50 registered, plus 3 translating presets against 4 registered in
+`console_reach_roots.txt`; `atomic_rmw` 588 files and 33 plain atomic accesses over 1 harvested atomic
+identifier; `service_lists` 15 providers in the tree and 15 declared (3 default, 12 select) over 56
+presets; `kconfig_gen` 7 refusals, 4 accepted overrides, 56 defconfigs resolved;
+`kconfig_forwarding` 24 of 106 declared symbols; `test_labels` 52 tests as 30 host, 21 image and 1
+build fixture over 115 declared programs on that tree, and 366 as 339 host, 26 image and 1 fixture
+on a provisioned `sim`; `c_headers` 28 C-facing headers of 256 tracked, 24 guarding
+a block and 4 reached by include; `no_privileged_tls` 4 privileged
+archives and 1 archive member over 75 enumerated; `kernel_runtime` 3 archives and 570 undefined
+references; `kernel_got` 3 archives and
+107,659 relocation records; `seam_defaults` 16 fallback members over 16 seams, 13 resolved from a
+fallback; `class_backend` 99 class symbols declared, 65 defined and 4 on the link line;
+`riscv_no_smalldata` 4 archives; `riscv_kernel_gp` 3 images, 46,860 instructions of kernel text and 9
+paired anchor loads; `riscv_kernel_apphalf` 309 app-half GLOBAL/WEAK symbols, 4,968 instruction and 3 data
+relocations; `riscv_kernel_wx` 3 images at 4 boot tables and 512 entries per
+table. Three of those are per-tree and differ where the ISA does: `kernel_got` reads 36,871
+records on `qemu-arm64`, `kernel_runtime` 572 undefined references there, and `no_privileged_tls`
+0 archive members over 63 enumerated on `qemu-x86_64`.
+*THE THREE FIGURES THAT MOVED AT R4 HAVE ALL MOVED AGAIN, and that is the opposite of what this
+sentence used to say.* R5 recorded them as standing still, which was the check that its header edit
+was only a comment. R6's pass is not only comments: the gp scan is 44,820 instructions against R5's
+43,380, the apphalf relocations 4,751 against 4,650, and the GOT-scanned records 106,109 against
+105,469, while the app-half symbol count FELL from 312 to 311. The three that grew grew because R6
+added real kernel text (the machine-mode diagnostic, four CSR readback refusals, the trap-stack
+canary and the DRAM probe); the one that fell fell because a symbol left the app's half. All four are
+figures that moved, none is a gate that weakened, and each is refused by its own gate at the new
+value. **Those four are a COMPARATIVE record at R6 and are deliberately not rewritten**: both sides
+of a comparison have to be the same measurement. All four have moved again on the M6.4 tip, where
+the corpus paragraph above reads 46,860, 4,968, 107,659 and 309.
+
+*The rv32 port is untouched and PROVEN so, and the proof cost a control and a near-miss.* 23 of 25
+objects of `kickos_arch_rv32imac` and 1 of 2 of `kickos_chip_virt_rv32` are byte-identical against
+`dabfaf62` under `-ffile-prefix-map` of both the source and the build directory with a pinned
+`SOURCE_DATE_EPOCH`, and the same-tree control was run FIRST and reported 0 of 25, 0 of 2 and 0 of
+121 differing. The three that differ have identical file sizes, identical section tables, identical
+symbol tables and identical relocations, and the ONLY section that differs in any of them is
+`.debug_info`: the whole-file differing byte counts of 1, 8 and 3 equal that section's differing byte
+counts exactly. Every hunk of the DWARF diff is a `DW_AT_decl_line` shifted by exactly +1, on DIEs
+whose `DW_AT_decl_file` resolves to `arch.h`, which is the one line the comment grew. No
+`DW_AT_low_pc`, no `DW_AT_location` and no type attribute moved.
+*The near-miss is worth the line it costs:* the first comparison invoked a
+`riscv32-none-elf-readelf` that is not on `PATH`, `.session/env.sh` exporting
+`KICKOS_RISCV_TOOLCHAIN_BIN` without adding it, and the resulting EMPTY dumps compared equal and
+reported all three objects identical. An absence-of-difference verdict taken from a tool that
+produced no output is the same false pass this step's own floors exist to rule out, one level down.
+The figures above are from the re-run, with the dump line counts printed beside them.
+
+**WHAT M6.3 HAS NOT WITNESSED IS IN `STATE.md`**, in the register that file keeps for exactly this,
+rather than duplicated here. Two items of it were re-measured at this step rather than carried:
+`-cpu thead-c906` still produces NO output from the shipped `hello` image, one `zfa` privilege-spec
+warning and a timeout kill, with the default core printing the banner as the control; and no emulator
+property narrows the identifier field, `asid-bits=off`, `asid_bits=off` and `asidlen=off` each refused
+as `Property 'rv64-riscv-cpu.<name>' not found` while `sv48=off` on the same command line is accepted.
+
 **Stage result:** the aspace seam proven against a target chosen for unlikeness rather than
-convenience, and the T-step arms reused unmodified.
+convenience, and the portable T-step arms carried over with two edits and no parameterisation: R3
+widened `op_span`'s bound and corrected its comments and the portable selftest's. The three fault
+gates are this architecture's own scripts, written at R2.2 rather than reused, for the reason that
+stanza gives.
+
+**R6. The pre-audit pass: three claims a mechanism could not support, and one fleet defect.** No new
+design, no new backend behaviour bar one call per chip. The step exists because three separate steps
+of this milestone each found a comment or a record asserting something its own mechanism cannot
+deliver, and a fourth instance is a class rather than a coincidence.
+
+  - **THE PANIC DEAD-END NOW DRAINS THE DEVICE, AND THE PER-BOARD ANSWER IS WHY THAT IS SAFE.**
+    `kpanic` reaches `kfault_terminate`, and SIX chips defined it as a bare `arch_shutdown`:
+    `virt_rv64`, `virt_arm64`, `virt_rv32`, `mps2`, `nrf51` and `sim`, the last of which the
+    deferral record had missed. Only `kickos_terminate` and a clock retune called
+    `arch_console_flush_sync`, so `arch_shutdown` could stop the core with the transmit FIFO and the
+    shift register still loaded. Each of the six gained the call. **The hazard that made this need
+    care is documentary and not a runtime assert:** the lone-TU fallback ASSERTS in its comment that
+    the chip's console cannot outrun a shutdown, and R1.4 measured that false for any 16550 with a
+    FIFO. Measured per board rather than assumed: only `virt_rv64` (NS16550A, TEMT) and `virt_arm64`
+    (PL011, BUSY) carry real bodies, and the fallback's assertion is TRUE for the other four by
+    TRANSPORT, `virt_rv32`, `mps2` and `nrf51` publishing through semihosting `SYS_WRITEC` which the
+    host consumes inside the trap, and `sim`'s sync writer looping on `write(1, ...)` until the host
+    has taken every byte. In the linked image the fallback is one instruction, `bx lr` on both ARM
+    boards and `ret` on `virt_rv32` and `sim`, out of
+    `arch_console_flush_sync_default.cc.obj`, so nothing can fire and nothing can hang. The RING
+    needed no call: `kpanic_enter` sets `g_console_panicking`, which routes every panic-time write
+    through `arch_console_write_sync`, leaving only the device.
+    *Witnessed by mutation on `qemu-riscv64`, the same instrument compiled into all three arms:* the
+    flush is REACHED on the panic path after the banner and before the exit; deleting the one call
+    makes it unreached with the banner and the 132 status unchanged, which is exactly how the defect
+    stayed invisible; and with the device mutated never to report idle the loop still terminates on
+    `UART_POLL_BOUND`, so the new call cannot turn a fault into a harness timeout. **Truncation
+    itself stays unwitnessable here**, QEMU handing each byte to its chardev on the register write
+    and reporting the shift register idle with it, so the fix rests on the TEMT and BUSY semantics
+    and not on a bench capture. The `arch_shutdown` after `kmain` in every `Reset_Handler`, and
+    `sim.cc`'s after `kickos_isr_fault`, were swept and left: both run only when a noreturn path
+    returned, so a drain there would state a reachability the code denies.
+  - **THE LINKER SCRIPT'S ASSERT NOW SAYS WHAT IT DOES, AND THE SWEEP FOUND THE CLAIM IN FOUR MORE
+    PLACES.** R5 reported the comment at `virt_rv64.ld`'s cross-half `ASSERT`, and it is corrected:
+    the assert keeps the halves out of each other's medany reach, which is F1's placement invariant
+    and no more, and it does NOT turn a missed crossing into a link error, the app window at
+    `0x40000000` being inside medlow's absolute reach. The same false mechanism was standing in the
+    file's own HEADER 320 lines above, in `chip_virt_rv64.cc`'s link-time-words comment, in
+    `kernel/mem/aspace.cc`'s and in `kernel/thread/reent.cc`'s, the last citing the very gate whose
+    header says the opposite. `kernel/init/kmain.cc` had already been corrected in this milestone
+    and was the model. *What made all five decidable in one reading:*
+    `tests/static/riscv_apphalf_allowlist.txt` names FOUR kernel-text instructions that do
+    materialise an app-half address and must keep doing so, and its own rule is that every line
+    must match, so the image links today with four such references.
+  - **AND A SECOND FALSE MECHANISM IN THE SAME FAMILY: `-msmall-data-limit=0` IS NOT WHAT KEEPS A
+    KERNEL ACCESS OFF gp.** Three sites said it was, `virt_rv64.ld`'s header, `startup.S`'s gp
+    seating and `switch.S`'s trap re-anchor. The flag governs where the REFERENCING archive's own
+    data lands; gp addressing is MADE BY THE LINKER out of any upper/lower pair whose TARGET falls
+    within `gp +/- 0x800`, which is precisely a kernel reference to an app-half symbol, and R2.2
+    measured one as `sd a1,-2000(gp)` on this board with the flag already applied. What holds it is
+    the trap entry's re-anchor plus `check_riscv_kernel_gp.sh` over the linked image, and all three
+    sites now say so.
+  - **THE GATE'S OWN FORGEABLE EXEMPTION IS CLOSED BY POSITION RATHER THAN BY NARROWING THE ANCHOR,
+    which the measurement chose.** `check_dash_punct.sh` exempted a `--` that ends a command's
+    options, recognising a command position on `^`, `;`, `&`, `|`, `(` or `$(`; prose inside a
+    comment can spell one, so `# see: rm -rf; ls --color -- and then the prose` was exempt. Requiring
+    the operand after the `--` to look like an operand was tried and rejected on evidence: it breaks
+    two real corpus lines whose pathspec operand is a bare word, an operand-shape survey of all 34
+    real terminators puts 2 behind a bare letter and none behind a `$` or an end of line, and the
+    forge survives it by quoting two words. SEP reads shell and a comment is not shell, so the erase
+    now reaches only as far as the line's first comment opener. Zero corpus churn over 886 files,
+    and the rig moved as a narrowing should: positives 7 to 8, negatives 13 to 14, the `separator`
+    arm 8 to 9, one arm added at 7, and the five arms keyed on `SEP_ERE` itself unmoved because
+    `SEP_ERE` did not change. `TODO.md` carries the numbers.
+  - **THE ONE FINDING THIS PASS FILED RATHER THAN FIXED WAS ALREADY FIXED BY THE SAME COMMIT, and
+    that is the inversion recorded rather than repeated.** The aspace differ's baseline file's
+    header called the EMPTY diff this milestone's deliverable, which R5 falsified in capitals. The
+    reason given for deferring it was that the pass had to hold that file byte-identical so the
+    differ's verdict was taken against an unmoved baseline; that reason does not reach a COMMENT,
+    the instrument ignoring comments and blank lines and taking its verdict over the bare ref alone.
+    The header was corrected in the same commit and now says the diff IS the result. The rule the
+    deferral broke is that a finding is fixed or raised as a decision and never both, and the
+    `TODO.md` entry it opened is closed on that basis.
+
+  - **WHAT R6's SECOND PASS LANDED IN CODE, and the document is brought up to it here rather than
+    leaving five stanzas describing the old behaviour.**
+    *The boot path names its own refusals.* `mtvec` goes in FIRST in `_start`, before any other
+    machine-CSR write, with a machine-mode diagnostic (`.Lmtrap`) and a shared emit-and-finish tail
+    behind it, so a CSR that does not exist on some future hart lands in a named refusal instead of
+    an undelegated fault reaching a vector nothing wrote. Every machine CSR this port writes is then
+    READ BACK, each with its own message: these are WARL, so a write that did not stick is silent
+    and the readback is the only witness. A DRAM readback probe runs in machine mode before the
+    drop, and a provisional `stvec` goes in inside `kickos_rv64_boot_high`, which closes the window
+    in which a supervisor fault had no vector at all.
+    **THE READBACKS ARE NOT THE WHOLE GUARD AND THE LIST HERE USED TO SAY THEY WERE.** Three of this
+    prologue's checks are MEASUREMENTS rather than readbacks, each because no register answers the
+    question: the PMP grant's effective permission under `mstatus.MPRV`, the census of the other 63
+    PMP entries that makes one probed word stand for the space, and the misaligned load and store
+    that decide whether `medeleg` bits 4 and 6 are required on this hart at all. F8's fourth shape
+    carries what each is for and what each still does not reach.
+    *`medeleg` bit 9 is UNDELEGATED and the demux arms are DELETED*, not merely unreached: both
+    `KICKOS_RV64_CAUSE_ECALL_S` arms and the macro itself are gone from
+    `arch/riscv/rv64imac/switch.S` and `rv64_frame.h`. The evidence is in R2.2 above and the cost is
+    recorded there as a lost capability. Deleting the arms rather than keeping them is the right call
+    on this port and would be the WRONG call on a port that grows a privileged thread running
+    app-half text, which is why the price of that step is written down.
+    *A fault taken while already on the trap stack is TERMINAL and says which kind it is.*
+    `.Ltrap_reentry` reaches `kickos_rv64_supervisor_refuse`, and a canary at the row's base
+    separates a trap-stack OVERFLOW from a plain fault inside the reporter. Before this, the second
+    frame went on a row that was already unusable and the diagnostic was lost with it.
+    *`tp` is forced to zero at both points `gp` is re-anchored*, which is what makes the frame
+    sentence in section 3.1 true; see the note there.
+    *`sstatus.SUM` IS NEVER SET, and that is the honest close of finding 6.* R2.1 forced it on in the
+    restore epilogue and R2.2 moved the force to `kickos_rv64_init` for the boot window; R6 removes it
+    outright. What made that possible is that the two raw kernel dereferences of app-half storage,
+    `reent_prime` and `reent_seat`, now take the target `struct arch_aspace*` explicitly and go
+    through the `kaccess` seam (`kernel/thread/reent.cc`, `kernel/include/kickos/aspace.h`), which
+    reaches the frame the SPACE's own tables name from the kernel's half. So there is no residual
+    window: S-mode may not load or store a `U` page at all on this port, and a kernel dereference of a
+    low-half pointer FAULTS rather than silently landing in whichever process is installed.
+    **"NEVER SET" IS ESTABLISHED BY ENUMERATION AND NOT BY SEARCHING FOR THE WRITE THAT IS GONE**,
+    which is the only form of that claim worth making. Three instructions in the whole backend write
+    `sstatus`, and each is safe for its own reason: `.Lrestore`'s `csrw sstatus, t0`
+    (`arch/riscv/rv64imac/switch.S`) writes the frame's own word, and nothing anywhere puts bit 18
+    into a frame; `arch_irq_save`'s `csrrci %0, sstatus, 2` only CLEARS bit 1; and
+    `arch_irq_restore`'s `csrs sstatus, %0` only SETS, with its argument masked to `SSTATUS_SIE` by
+    the paired save (`arch/riscv/rv64imac/arch_rv64imac.cc`), so bit 18 is unreachable through it.
+    A `csrs` whose operand were not masked would be the one way back in, which is why the mask is
+    part of this record and not just a nesting-safety comment.
+
+    **WHAT THE SEAM ROUTE COSTS, AND THE RULING THAT ACCEPTED IT.** The reent seating path went from
+    about 2 instructions to a static count on the taken path of **367 at Sv39 and 427 at Sv48**, with
+    **zero `sfence.vma`**: the kernel window covers all 64 MiB of DRAM, so the window-slot route is
+    dead code here and the seam pays one page-table WALK rather than a fence. *Those two figures were
+    391 and 451 in this record, and the reason given for not re-taking them was false:* the claim was
+    that at `-Os` the whole seam inlines, so no symbol in either image carries the path. Nothing on
+    this path is inlined. It is NINE discrete out-of-line symbols joined by `jal`, which is what the
+    build makes it: the callers and the callees sit in different translation units
+    (`kernel/thread/reent.cc` calls `kaccess_to_user`, defined in `kernel/syscall/syscall_mem.cc`,
+    which reaches `arch_aspace_acquire` in the backend) and no build in this tree turns on
+    link-time optimisation, so a cross-unit inline is not available to the compiler at any `-Os`.
+    *Both numbers are sound and one measurement shows it:* the old 391 and 451 reproduce EXACTLY
+    under the pre-optimisation `kmemcpy`, so the 24-instruction gap between the pairs is that
+    primitive's word-path win and not a disagreement between two counting methods.
+    *THE CHEAPER ALTERNATIVE WAS OFFERED AND DECLINED, and the decision is recorded here so a later
+    reader meets a ruling rather than what looks like an oversight.* The alternative was bracketing
+    `sstatus.SUM` around the one copy, roughly 4 instructions instead of 366, at the price of two new
+    `arch.h` seam members. **The ruling was correctness first and optimisation later, on the grounds
+    that a buggy kernel is unreliable by essence; the seam route stays and the cost is accepted.**
+    What the declined alternative would have kept open is the thing worth naming: inside the bracket,
+    a kernel dereference of a WILD app-half pointer still succeeds against whichever process is
+    running, so the bracket buys back exactly the class of bug the removal of `SUM` closes, on a
+    window a future edit widens for free. A re-opening of this needs to beat that, not the
+    instruction count.
+    **The route that was NOT taken is worth recording because it is silently green.** Sending those
+    two through `aspace_image_alias` passes every arm and is wrong: the alias names the LOADER's
+    frame, while `aspace_image_seed` gives only the FIRST space the image's own pages and every later
+    space a `data_copy` into fresh frames. Measured, three frames behind one app virtual address
+    (`# process: data frames 257/592/617, text frame 1`). An alias-based prime would write the first
+    space's copy for every process and the suite would stay green.
+    *The map editor gained a same-half VA guard* on `arch_aspace_frame_at` and on
+    `arch_aspace_acquire`/`arch_aspace_release` on both backends; arm64's `release` deliberately got
+    none, its body being empty, which is a difference to keep rather than to smooth. `PTE_G` is set on
+    the transient window's runtime leaves, `aspace_image_alias` gained the domain check recorded in
+    F6 above, and `libkickos_lib.a` is dropped from the kernel `.init_array` in BOTH linker scripts.
+
+  - **AND ONE OF THOSE WAS A REAL W^X HOLE ON THE OTHER BACKEND, CLOSED BY A LINKER KEYWORD, which is
+    the finding of this pass rather than a tidy-up.** `arch/arm64/chip/virt_arm64/virt_arm64.ld`'s
+    kernel `.init_array` lacked `(READONLY)` where `virt_rv64.ld`'s twin carried it. The input
+    sections carry `SHF_WRITE`, so without the keyword the output section does too, and with a real
+    kernel-side constructor present the kernel's own LOAD segment came out **RWE** where rv64's twin
+    reads **R E**. So the W^X property R2.3 defends on the RISC-V side was OPEN on the arm64 side, and
+    open through a keyword rather than through a table. It is fixed, `.kickos_app_fini_array` got the
+    same keyword beside it, and the fix is witnessed: no LOAD segment of the arm64 selftest image is
+    both writable and executable (three read `R E`, two read `RW`), against the rv64 control which is
+    the same shape.
+    *THE RECOMMENDATION, and it is the transferable part.* A W^X gate reading SEGMENT FLAGS would have
+    caught this; `riscv_kernel_wx` reads page-table LEAVES and structurally cannot, because the leaves
+    were right the whole time and the hole was one level up in the image the loader consumes. The two
+    are not substitutes: leaves answer what the MMU enforces, segment flags answer what the image
+    ASKS FOR, and a mismatch between them is exactly this class. Such a gate must be scoped to boards
+    that CLAIM W^X: a flat board legitimately has no split to assert, so a fleet-wide version would
+    either need an exemption list or would be asserting a property most of the fleet does not have.
+
+**Stage result:** three claims corrected where their mechanism could not support them, the same class
+swept across the 82 files the milestone touched, the fleet's panic path draining its device on
+every board that shuts down, and a second pass that named the boot path's refusals, retired
+`sstatus.SUM` outright and closed a W^X hole the arm64 linker script had left open.
 
 ### M6.4 -- the x86_64 backend, and the entry-path verdict
 
 Per F8. The purpose is falsification, so a step here is judged by what it proves about the seam and
 not by how much of a PC it lights up.
+
+**RING 3 HERE CAN READ AND WRITE KERNEL MEMORY, AND THAT IS WHERE THIS MILESTONE ENDS RATHER THAN A
+DEFECT IN IT.** An external audit of the branch raised it as its top Critical. The ruling is that
+M6.4 is the x86_64 PORT and that isolation is the milestone after it, on the same sequencing armv8a
+already ran: M6.1 brought the backend up and M6.2 made it isolate. M6.3's R1.5 records the identical
+posture on RISC-V, and `arch/x86/x86_64/ring3_x86_64.cc`'s own header states the exposure in these
+words, so nothing here is being disclosed late.
+- **GRANTED.** One flat link, so the leaves carrying an unprivileged thread's own text also carry
+  kernel text, the scheduler's state, the capability table, the per-thread kernel stacks and the
+  arch layer's statics, and the conventional-memory grant covers every thread's stack rather than
+  the caller's. Read and write, over all of it.
+- **NOT REACHABLE, AND IT IS ONE CLAUSE RATHER THAN THREE.** The port grants the user bit over
+  exactly two ranges and leaves every other entry as firmware left it. x86 ANDs the permission down
+  the whole walk (Intel SDM Vol 3 chapter 5), so an entry ungranted at any level is ungranted at its
+  leaf, and that keeps DEVICE REGISTERS out of an unprivileged thread's reach: MEASURED, over a walk
+  of the whole live hierarchy, zero reachable leaves in the local APIC band and zero in the low
+  legacy range, with the same figures under `-bios` and under `-cpu max`. It also cannot execute a
+  privileged instruction, touch a port or raise its own level, and it cannot write
+  `IA32_KERNEL_GS_BASE`, which is where the entry takes its pointer from. X4's two denial arms and
+  the swap invariant are what hold the last of those.
+- **REACHABLE AND WRITABLE, AND THIS RECORD SAID OTHERWISE UNTIL IT WAS MEASURED.** Two of the three
+  clauses above used to read THE TRANSLATION TABLES THEMSELVES and THE PER-CORE POINTER THE SYSCALL
+  ENTRY LOADS. Both are false on the running hierarchy:
+  - `g_kwin_table[2]`, the port's own kernel-window level-3 table, installed by `aspace_init` and
+    reachable and writable at CPL3;
+  - `g_cpu`, the per-core block `IA32_GS_BASE` names, with `kernel_sp` at offset 0. A ring-3 read
+    returned the live kernel-block top.
+  Both are `.bss` statics of the one flat link, so they sit at their identity addresses inside the
+  2 MiB image leaf the grant opens, and the unit this hardware grants is a leaf. **It is NOT the
+  firmware-sibling mechanism an external reviewer proposed**: pre-grant the user bit is set NOWHERE
+  in the hierarchy, leaf or non-leaf, so no dormant entry is uncovered by opening an ancestor. That
+  hazard is UNFIRED on this firmware and UNESTABLISHED in general; both halves of that sentence are
+  the record.
+- **THE EXPOSURE DID NOT GET WORSE, TWO BOUNDS THAT MADE IT DESCRIBABLE WERE WRONG.** Once kernel
+  RAM is writable, writing a translation table or `kernel_sp` grants nothing an attacker did not
+  already have: the scheduler's state and the capability table are writable in the same leaf. The
+  ruling on the finding was to leave the grant alone, correct the record and make the instrument
+  able to see what it was blind to.
+- **WHY THE OLD ARM READ CLEAN, and this is the transferable part.** Its corpus was the tables the
+  grant WALKED, three of them against every table in the live tree, and it ran inside `ring3_init`, BEFORE
+  `aspace_init` installs the table it would have found. Two blindnesses, either of them sufficient.
+  The whole-hierarchy census in `arch/x86/x86_64/probe4_x86_64.cc` runs after `aspace_init` and
+  asserts the device clause while PINNING the two exposed pages by role, so a third reachable table
+  or an anchor that is not the per-core block reddens an arm and is named on its own line.
+- **WHY ONE FLAT LINK DECIDES IT.** At the granularity of the adopted regime the user bit follows
+  the ADDRESS, so what ring 0 may touch and what ring 3 may touch can only be separated by
+  separating them in the LINK. An in-place edit of the map firmware left has nothing finer to spend.
+- **THE NARROWING.** Separate the halves in the link, which is a private half plus its own root.
+  That is word for word the work R1.5 names on the sibling backend, and it is a milestone of its own
+  because the shared-symbol duplication (T5b's `kickos_privatise_runtime` problem) comes with it.
 
 **X1. Boot to one byte.** Firmware hands over in long mode with paging already on and INTERRUPTS
 ENABLED (F8 cites the section), so the entry disables them before anything else. Take the memory map,
@@ -2579,18 +5094,276 @@ to become the milestone, the documented fallback is a multiboot hand-off with no
 it forfeits the adopt-an-active-regime case that X5 exists for, so record that choice deliberately
 rather than drifting into it.
 
+*Landed at X1.* `arch/x86/x86_64/entry_x86_64.cc` for the firmware ABI entry, with
+`arch/x86/x86_64/include/kickos/arch/uefi.h` and its `portio.h` neighbour for the tables it
+reads and the port accessors it needs; `arch/x86/chip/q35` and `boards/qemu-x86_64` for the chip and the board, selecting no
+capability this step had earned; `cmake/toolchain-x86_64-uefi.cmake`,
+`cmake/x86_64_boot.cmake` and `cmake/presets/x86.json` for host objects linked to a PE32+
+application through `i386pep`; and `tools/esp-x86_64.sh` plus `tools/run-qemu-x86_64.sh` for
+the boot partition built without root and the witness over it. `ninja x1-run` is the arm. The
+boot contract and the image format are fixed here, and the multiboot fallback was not taken.
+
+**THE SECOND FIRMWARE IS A SUBSTITUTION, and it is ONE implementation in TWO PACKAGINGS rather
+than two implementations.** This step asked for a second firmware IMPLEMENTATION, running under
+hardware virtualisation. What the witness actually takes is `KICKOS_X1_FIRMWARE=pflash`, the
+split `OVMF_CODE_4M.fd` plus a writable copy of `OVMF_VARS_4M.fd`, and
+`KICKOS_X1_FIRMWARE=bios`, the combined `/usr/share/ovmf/OVMF.fd` through `-bios`. Both files
+ship in the same Debian `ovmf-generic` package, and the image reads the same
+`firmware=Debian distribution of EDK II` at the same `revision=0x0000000000020046` under each,
+so what the two arms separate is the LOAD path and the variable store, not two readings of the
+handover contract. The virtualisation half is unavailable rather than skipped: `/dev/kvm` on
+this bench belongs to a group the invoking user is not in, so every run in this milestone is
+TCG. So the claim this step earns is the narrower one: the handover state is MEASURED against
+UEFI 2.11 section 2.3.4 rather than fitted, and it is measured under one implementation. A
+genuinely second implementation is what would close the ask, and none is on this box.
+
 **X2. Descriptor tables and the fault report.** The segment descriptors x86 needs even without
 segmentation, the interrupt table, and a task-state segment carrying the kernel stack.
 *Expected:* a deliberate fault reports and halts with its vector and error code. Note that an absent
 or malformed interrupt table triple-faults, which presents as the EMULATOR RESETTING rather than as a
 fault report -- so an early fault that reboots the machine is this, not a bad handler.
+*Landed at X2,* `arch/x86/x86_64/desc_x86_64.cc` for the tables,
+`arch/x86/x86_64/trap_x86_64.S` for the entry and `arch/x86/x86_64/fault_x86_64.cc` for the report,
+with `arch/x86/x86_64/include/kickos/arch/desc.h` and `arch/x86/x86_64/include/kickos/arch/trap.h`
+beside them. Seven things a reader would otherwise re-derive.
+**FIRMWARE'S GDT AND IDT ARE REPLACED, AND ONLY PAGING IS ADOPTED.** Both tables sit in memory the
+UEFI memory map calls boot-services data, which is free for reuse the instant `ExitBootServices`
+returns, and its gates name handlers that stop existing at the same moment; neither carries a
+task-state-segment slot this port could claim either. So the adopt-an-active-regime case F8 picked
+this backend for is about PAGING alone, and `CR3` is the one piece of handover state X2 leaves
+untouched. The install runs AFTER `ExitBootServices` for the converse reason: replacing the tables
+while boot services are live takes the ground out from under the firmware's own calls, that call
+included.
+**The banner is its own, `=== X86_64 EXCEPTION`,** on R1.3's rule of one banner name per ARCH: the
+dump lines differ from every other backend's and two boards on one ctest ladder would otherwise be
+indistinguishable on the wire. `tests/lib/panic.ere` gains the alternative inside its EXCEPTION group
+and `check_panic_banners.sh` gains `arch/x86/x86_64/fault_x86_64.cc` in its reporter list, without
+which a later deletion of the banner reads as a clean tree.
+**The report cannot use a pointer table, and that is an image-format constraint rather than a style
+choice.** The PE32+ image is position independent and carries an EMPTY base-relocation directory, so
+an array of `char const*` vector names would be resolved to link-time addresses and be wrong the
+moment firmware loads the image anywhere else. Every name is a `return` of a literal, which the
+compiler reaches PC-relative. The same constraint shapes the vector table: the 256 stubs are reached
+through a table of OFFSETS from a base symbol, computed in the assembler as same-section differences,
+and never through pointers or an assumed pitch.
+**ALL 256 GATES ARE FILLED and they are interrupt gates, not trap gates.** A vector with no entry
+escalates to a double fault, so a spurious or unplanned vector must still report; and an interrupt
+gate clears the interrupt flag on entry where a trap gate would leave it as the interrupted code had
+it. THREE gates name an interrupt-stack-table slot, not one: double fault, the non-maskable interrupt
+and the machine check (`arch/x86/x86_64/desc_x86_64.cc`). The double fault's slot is the obvious one,
+a double fault arriving BECAUSE the interrupted stack could not take a frame, so it is the one vector
+that cannot report on it. The other two are not decoration and they are not symmetry: they are the
+ENTIRE argument that closes the three-instruction window in the fast syscall entry. `IA32_FMASK`
+holds off maskable interrupts, and neither of those two is maskable, so on those two vectors the only
+thing that keeps a frame off the caller's stack pointer is a stack the descriptor names. The report
+says which stack it ran on, and on the double-fault arm the stack selector is nulled, which is what
+distinguishes a real stack switch from a reused stack.
+**THE STEP'S CONTRACT WAS RIGHT ABOUT THE RESET AND UNDERSTATED THE CASE THAT PRODUCES IT.** Measured
+both ways: an interrupt table loaded with a zero limit triple-faults as the text says, and so does
+NOT LOADING ONE AT ALL. After `ExitBootServices` the firmware's still-loaded table is no longer
+serviceable, so a defeated `lidt` presents exactly as a malformed one rather than as a firmware dump.
+And under `-no-reboot`, which every witness here passes, the reset presents as the EMULATOR EXITING
+before the report rather than as a second boot; the reset loop is only visible with that flag off.
+Defeating `lgdt` is a third spelling of the same silence, `ltr` then faulting against a firmware
+descriptor with no table yet loaded to report it.
+**ONE IMAGE PER FAULT CLASS, because the report ends the image.** Ten of them, `none` plus nine
+faults: `arch/x86/x86_64/probe_x86_64.cc` is compiled once per class and only the class differs
+between the images; `tools/run-qemu-x86_64-x2.sh`
+takes the class and the image and holds the report against it. Each arm prints the instruction pointer
+it EXPECTS, taken from a label in the assembly rather than from the frame, so a frame read at the
+wrong offset reports a plausible address that does not match. The `none` class keeps X1's expected
+result reachable from a tree that has X2 in it.
+**A DECODE WITNESSED AT ONE VALUE IS NOT WITNESSED.** The first page-fault arm reads an error code
+of zero, so every bit of the decode prints 0 and a ladder shifted one position along passes it. The
+store and instruction-fetch arms exist for exactly that: three distinct error codes make the write
+and fetch bits falsifiable, and the selector arm loads a selector past the end of the table so its
+index leg has a non-zero value to get wrong. What still has NO producible witness here: the present,
+user, reserved, protection-key and shadow-stack bits, all of which stay zero; the table leg of the
+selector decode, since a complete 256-gate table at ring 0 refuses nothing and this port installs no
+local table, so `idt` and `ldt` become producible only at X4; and the vectors real silicon raises,
+18, 20 and 21 among them, which this emulator does not.
+**TWO OF THOSE PREDICTIONS DID NOT COME TRUE, and F8's re-read below carries the correction**
+rather than this paragraph being quietly rewritten: `idt` and `ldt` did NOT become producible at
+X4, and the `user` bit did not either, ring 3 taking no page faults under a flat over-grant.
+**THE ARCH DOES NOT GROW A STANZA IN `arch/CMakeLists.txt` HERE, and X1's note that it would was one
+step early.** That file builds a static library for the kernel ladder to link, and the seam bodies
+that ladder needs, the console above all, land at X3. X2's sources join X1's object libraries and its
+images are still linked by the custom command, so X3 is the step where the arch moves.
 
 **X3. Console, timer, interrupts, switch, idle.** A polled COM1, the local APIC timer as the tickless
 one-shot, the monotonic clock, the switch, and the halt instruction for idle.
-*Expected:* the S5 and S6 arms pass on this arch with no change to the arms. The polled console is a
-deliberate scope cut: it keeps the IO-APIC and the legacy interrupt controller out of the milestone
-entirely and leaves the APIC timer as the only interrupt source. Mask the legacy controller anyway --
-an unmasked one delivers spurious vectors into an interrupt table that has just started working.
+*Expected:* the S5 and S6 PROPERTIES hold on this arch, witnessed at the arch seam. The polled
+console is a deliberate scope cut: it keeps the IO-APIC and the legacy interrupt controller out of the
+milestone entirely and leaves the APIC timer as the only interrupt source. Mask the legacy controller
+anyway -- an unmasked one delivers spurious vectors into an interrupt table that has just started
+working.
+
+*Landed at X3.* `arch/x86/x86_64/arch_x86_64.cc` for the ISA-generic half of the seam,
+`arch/x86/x86_64/apic_x86_64.cc` for the timer, the clock and the doorbell,
+`arch/x86/x86_64/switch.S` for the frame and the entries, and
+`arch/x86/chip/q35/chip_q35.cc` for the platform's own edges, with
+`arch/x86/chip/q35/com1_q35.cc` split out of the old chip TU so the kernel-free images still print.
+`arch/x86/x86_64/probe3_x86_64.cc` and `tools/run-qemu-x86_64-x3.sh` are the witness. Twelve things a
+reader would otherwise re-derive.
+
+**THIS STEP'S EXPECTED RESULT WAS WRONG, and the correction is the same shape the plan already
+carries twice.** "The S5 and S6 arms pass with no change to the arms" names TAP arms of
+`user/apps/common/selftest`: `rr_interleave` for the interleave, `sleep_order` and the timeout arms
+for the deadline, `irq_spurious` and `irq_mask_coalesce` for the mask-versus-unmask split. Every one
+of them is an unprivileged app reaching the kernel through `arch_syscall`, which is X4's, and the
+harness they report through is itself a syscall. So they cannot pass here, and the S2-through-S5 note
+above says exactly why: **a step in this position takes its witness from an ad-hoc link that supplies
+what the step is not about, and X4 is the first step whose image is the real one.** M6.3 recorded the
+same thing for R1.2 through R1.4. What X3 owes is therefore the PROPERTIES, not the arms: a deadline
+honoured and not honoured early, a clock that never goes backwards across an arm and a disarm, the
+timer firing and the line being unmasked tested SEPARATELY, and two threads round-robin in a
+deterministic order. Twenty one arms, each printing its own name and outcome so a missing arm and
+a failing arm are different failures. (Re-measured at X6, which said twenty; the twenty first is
+the doorbell pair the 2026-08-29 entry-path audit added.)
+
+**THE ARCH GROWS ITS STANZA AND THE EARLY RETURN GOES, BUT NOT AS A DELETION.** X2 predicted the
+`return()` in the top-level `CMakeLists.txt` would simply go once the console seam existed. Two
+independent things hold the APPLICATION layer back rather than one, and only the first was on X2's
+list: `arch_syscall` gates every app link, and the image firmware loads is a PE32+ application, which
+no `-T` through the compiler driver can write. So the LIBRARY ladder configures and builds (the
+kernel, the arch and the chip archives all link against this seam), `KICKOS_BUILD_APPS` is off for
+this arch, and `cmake/x86_64_boot.cmake` keeps linking the images over `ld -m i386pep`, now beside the
+ladder instead of in place of it. The X3 image links the two ARCHIVES rather than their objects, so a
+fallback TU and the chip's own definition of the same seam resolve by member order exactly as the
+application link would resolve them.
+
+**TWO SHARED FILES NEEDED AN ENTRY, and both edits are inert for every existing arch by construction.**
+`arch/CMakeLists.txt`'s chip block reads the chip linker script as TEXT with no existence guard, so
+the configure died on a missing path before it reached anything else: the read is now guarded, and
+every other chip ships a script. And `user/CMakeLists.txt` had two postures, the sim and the cross
+toolchains; this target is a THIRD, building with the host compiler against no C library at all, so
+it takes neither the newlib porting layer nor `sim_exit.cc`.
+
+**THE TIMER'S FREQUENCY IS MEASURED, and F8's "ask the hardware" rule has nowhere to ask.** There is
+no identity register for the local APIC timer's input clock, and the CPUID leaves that report the core
+crystal clock (0x15, 0x16) are absent on this emulator's processor model, so the figure comes from a
+window against the platform's i8254. Two consequences worth stating. The timestamp counter's rate is
+unknown for the same reason and is measured in the SAME window, so the two figures are consistent with
+each other whatever the reference's own error is. And the reference returns the ticks it ACTUALLY
+observed rather than the ticks it was asked for, which is what lets a dead counter be refused instead
+of producing a plausible frequency: a spin bound with no such report would have turned a wedged i8254
+into a wrong deadline. Measured under QEMU 11.0.3 TCG: the APIC timer at about 1.0 GHz and the
+timestamp counter at about 2.0 GHz, against the i8254's 1193182 Hz. THE DIGITS BELOW THE FIRST ARE
+PER RUN and do not reproduce: both figures come out of one calibration window against a host-paced
+emulated reference, so quoting them to five places would be quoting noise. What is stable is the
+ratio of about two between the two counters and the reference's own exact rate.
+
+**X2APIC IS NOT AVAILABLE ON THIS MODEL, so the port reaches the register block through memory after
+all.** The backend prefers x2APIC where CPUID reports it, and not for speed: in that mode the whole
+block is MSRs, so the step touches no memory the firmware's identity map has to cover, which is
+exactly the claim F8 warns is about the MAP and not about the machine. The emulator's default CPU does
+not report it, so the xAPIC window `IA32_APIC_BASE` names is what the DEFAULT witness exercises, and
+that window IS reachable through the map OVMF built. **That is a fact about this firmware and this
+machine, and X5 may not inherit it as a fact about the architecture.** BOTH LEGS ARE EXERCISED,
+though, which corrects this paragraph's own earlier claim that the x2APIC path was present and
+unwitnessed: under `-cpu max` and under `-cpu Skylake-Server` the processor reports x2APIC, the
+backend takes the MSR path, and the arms pass. What stays true is that the DEFAULT model takes the
+memory path, so the leg an ordinary run exercises is the one whose reachability depends on the
+firmware's map.
+
+**THE INITIAL COUNT IS RELATIVE WHERE A64'S COMPARE IS ABSOLUTE, and that changes what the arm owes.**
+`ktime_rearm` calls `arch_timer_arm` on every context switch with the same value, and the sibling
+backend's comment says the write is idempotent because the register names an INSTANT. Here it starts a
+countdown, so a repeated arm would push the deadline later on every switch. Two things answer it: the
+delta is recomputed from the clock at every arm, and the arm dedups on the requested deadline, which
+is the quantity `ktime_rearm`'s own comment says the backends dedup on. TSC-deadline mode would give
+the absolute compare and is not used: it is gated on its own CPUID bit and would still need the
+calibration above for the nanosecond conversion.
+
+**HLT IS NOT WFI, and this is the one place the idle seam does not transfer.** An ARM WFI wakes on a
+pending interrupt whatever `PSTATE.I` holds, so every sibling backend can spell `arch_idle_wait` as
+one instruction and be called with interrupts masked. A HLT under a mask parks the processor until
+reset. The emulator hides nothing: it idles with the core halted and the image never returns, which
+presents as a hang and not as a fault. So the body reads the flag and, where it is clear, sets it for
+the halt and puts it back, `sti` leaving a one-instruction shadow in which no interrupt is taken. The
+kernel's own idle thread runs with interrupts live and would not have exposed this; the arm that does
+is the one that enters under `arch_irq_save`.
+
+**THE LEGACY CONTROLLER IS REMAPPED AND THEN FULLY MASKED, AND NEITHER IS THE OUTERMOST GUARD.**
+Firmware leaves the master i8259 based at vector 8, which is the DOUBLE FAULT vector, so a legacy line
+that asserted once would arrive as a double fault on the interrupt-stack-table stack and be reported
+as one: the mask is what stops the assertion and the remap is what stops the lie. Defeating either was
+UNWITNESSABLE, and finding out why is the useful part. The i8259 reaches an APIC-era core only through
+the local APIC's LINT0 entry in ExtINT delivery mode, and `apic_init` masks every local-vector source
+the version register reports, LINT0 among them. So the guard that actually holds is one level up from
+the one this step's text names. Opening LINT0 as unmasked ExtINT is what makes the other two
+witnessable, and then they separate cleanly: with the remap intact a legacy line reports as vector 32,
+and with the remap defeated as well it reports as vector 8, a double fault that never happened. Both
+measured. The step's own text called an unmasked controller a source of "spurious vectors", which
+understates the vector-8 case by one word, and it credits the wrong register with the protection.
+
+**THE INTERRUPT CONTROLLER IS SOFTWARE, with a self-directed local-APIC interrupt as its one physical
+doorbell.** X3's scope cut leaves no I/O APIC, so a logical line has no hardware pending state: the
+mask and the one-deep latch are two bitmaps and the doorbell carries the identity, which is the shape
+`arch/include/kickos/arch/arch.h` already names the SINGLE-DOORBELL CONTRACT for the software
+backends. Nothing about it is x86-specific except which instruction rings the bell.
+
+**THE TWO CONSOLE DEFECTS M6.3'S R1.4 FOUND WERE BOTH PRESENT ON COM1, and one of them is
+unwitnessable here.** The polled writer was UNBOUNDED, and `arch_console_write_sync` aliases onto it
+through the lone-TU fallback, so the panic, fault, assert and pre-arm paths would have hung on a
+wedged UART; it is bounded now. And `arch_console_flush_sync`'s fallback ASSERTS the console cannot
+outrun `arch_shutdown`, which is false of a 16550 whose 16-byte transmit FIFO the bring-up enables and
+doubly so of a writer that polls the holding register rather than the transmitter: the real body polls
+transmitter-empty. QEMU's model hands each byte to its chardev on the register write and reports both
+bits set with it, so a truncation cannot be produced and the body is kept anyway, exactly as the two
+sibling chips keep theirs.
+
+**AN ADDRESS TAKEN UNDER `-fpie` IS SILENTLY WRONG IN THIS IMAGE FORMAT, and X2's note on the empty
+base-relocation directory did not go far enough.** Taking the address of a function DECLARED in
+another translation unit emits `R_X86_64_REX_GOTPCRELX`, a load through a global offset table. GNU ld
+relaxes that form to a `lea` when the symbol turns out to be local to the link; `ld -m i386pep` builds
+no such table and performs no such relaxation, so the LOAD survives with its displacement resolved
+against the function itself. The thread-exit trampoline's address came back as the trampoline's own
+first eight bytes, which is a non-canonical value and a general-protection fault the moment the
+thread returned through it. Three things about the diagnosis are worth keeping. `-fvisibility=hidden`
+does NOT fix it, measured both ways: it covers what a translation unit defines and leaves an undefined
+external reference on the GOT form, so each such declaration carries the attribute instead. The
+relocation's name is TRUNCATED by readelf to `R_X86_64_REX_GOTP`, so a grep for the full spelling
+reports zero on a file that carries it. And `tools/check-x86_64-no-got.sh` refuses the relocation
+before every link in this arch, because the link itself is clean and the failure arrives much later.
+
+**A 64-BIT TARGET THAT DOES NOT TRANSLATE IS A NEW COMBINATION, and the TCB budget had never seen
+one.** `kernel/include/kickos/thread.h` prices `cap_width` and `cap_reply_live` at four bytes wherever
+the capability table has more than one chunk. The CHUNK COUNT HERE IS TWO, not one: configure prints
+`cap table: 2 chunks of 8 = 16 slot(s) reserved per run`, so this board is on the many-chunk side and
+the sentence that put it on the other side was wrong about which case it is. What the measurement
+actually says survives that correction and is the part worth keeping: at 64 bits the members before
+that pair end four bytes short of the TCB's eight-byte alignment, so the pair lands in tail padding
+that exists whether or not the pair does. It is FREE either way, and a one-chunk build measures the
+same as a many-chunk one. The budget now says so, and the companion assert that the last member closes the
+struct is stated against the struct's ALIGNMENT rather than exactly, which still refuses a hole a
+reordered member opened. Both edits leave every 32-bit target and every passing 64-bit board
+unchanged, which is what the fleet run checks. This is the mirror of that budget's own warning about
+measuring on the host.
+
+**A `DEPENDS` ON AN OBJECT LIBRARY IS ORDER-ONLY, and that turned a stale image into a passing
+witness.** Each image here is an `add_custom_command` over `$<TARGET_OBJECTS:>`, and naming the
+OBJECT library targets in `DEPENDS` does not make its object FILES inputs of the link: an edited
+source rebuilt its object and the link was not retaken, so the image on disk was one revision behind
+its own sources and the witness read as green. `DEPENDS` now lists the objects. Worth knowing because
+the failure is invisible from the run: the serial log is a real log of a real boot, just of a
+different program. A `$<TARGET_FILE:>` on a static library does not have the problem, which is why
+the archives the X3 image links were never affected and only the probe was.
+
+**WHAT REMAINED BEFORE THIS BOARD JOINED THE CTEST LADDER, measured rather than surveyed.
+X4b DISCHARGED EVERY ITEM ON THIS LIST and the board is on the ladder: read the list as X3's
+inventory of the debt, not as a debt that stands.** X2's list had four items and two were done at
+this step: the top-level `return()` was gone, and a `BOARD` branch in `kickos_add_qemu_test` plus a
+way past `$<TARGET_FILE:>` were still owed. Three more were not on it.
+`arch_syscall`, `arch_syscall64` and their two kernel-half twins are X4's and gate the app link
+outright. `tests/lib/gate.sh` boots every image as `-kernel <elf> -semihosting`, which cannot start a
+PE32+ application at all: this board needs OVMF pflash and a FAT system partition, so either that
+library grows a branch or the x86 scripts stay standalone as they are. And `tests/static/test_classes.txt`
+plus `check_test_labels.sh` classify every registered test by the program ctest resolved for it, so
+each x86 script owed a line there. The three witnesses stayed `ninja` targets until X4b, which took
+all of it: `tests/lib/gate.sh` carries the `KICKOS_BOOT=uefi-pe` branch that boots the image off an
+OVMF pflash pair and a FAT system partition, `cmake/presets/x86.json` registers the `qemu-x86_64`
+test preset, and the five witnesses are `ninja` targets BESIDE the ladder rather than instead of it.
 
 **X4. Ring 3 and the syscall entry.** The fast syscall pair, with the kernel stack loaded EXPLICITLY
 because F8 shows the instruction loads none, the flag mask programmed so the interrupt flag is clear
@@ -2598,6 +5371,275 @@ on entry, and the per-core pointer through the segment base x86 uses for exactly
 *Expected:* S7's arm passes, and the kernel stack is demonstrably loaded BY the entry rather than
 inherited from the caller. This is the step where M5.2.1's claim is re-earned by hand on a second
 arch, which is itself worth knowing.
+
+*Landed at X4.* `arch/x86/x86_64/ring3_x86_64.cc` for what makes an unprivileged level reachable
+and for the fast pair's registers, `arch/x86/x86_64/switch.S` for the entry and the two syscall
+leaves, `arch/x86/x86_64/pe_image.ld` for the section layout every image on this board now
+needs, and `arch/x86/x86_64/include/kickos/arch/ring3.h` for the numbers switch.S and the C++
+side both read. `arch/x86/x86_64/nokernel_x86_64.cc` carries the declining kernel half the X1,
+X2 and X3 images link, and `arch/x86/x86_64/probe4_x86_64.cc` plus `.S` and
+`tools/run-qemu-x86_64-x4.sh` are the witness: **94 arms**, each printing its own name and outcome.
+(A LIVE figure, re-derived by running it on 2026-08-29. This record said 72, X6 re-measured it at
+74, X8's table-exposure arm took it to 75, and the CPL3 reachability census took it to 94: fifteen
+new arms, three asserting the device clause, three the walker's floor and its two controls, and
+nine pinning the measured exposure.)
+Fourteen things a reader would otherwise re-derive.
+
+**ADOPTING A LIVE TRANSLATION REGIME DOES NOT GIVE YOU RING 3, and both this stanza and F8 read
+as though it did.** Measured on the firmware this port boots under: every entry from the root to
+the leaf covering the loaded image, its data and the conventional memory the map names carries
+the user bit CLEAR. The permission is ANDed down the walk (Intel SDM Vol 3 chapter 5), so ring 3
+could not reach a single byte, its own first instruction included. And the tables are mapped
+READ-ONLY with `CR0.WP` set, so the first entry the grant tried to edit took a WRITE page fault
+at ring 0 on the root itself, which presents as a page fault inside `arch_init` and reads like a
+wild pointer. Both are this firmware's choices rather than the architecture's, and X5 may not
+inherit either as a fact about the machine. The grant lifts `CR0.WP` for the edits and puts it
+back, with interrupts still masked and nothing else running; it is the only writer of a
+translation table in the image.
+
+**ONE ROOT SERVES BOTH LEVELS HERE WHERE M6.3's R1.5 NEEDED TWO, and the asymmetry is an ISA rule
+rather than a design difference.** RISC-V forbids a supervisor instruction fetch from a page
+marked for unprivileged access irrespective of SUM, so one flat link cannot give kernel text and
+app text different `U` bits in one root and that backend ships a root per privilege level. x86
+forbids it only under supervisor-mode execution prevention, which this port REFUSES rather than
+assumes: with it on, a flat image's own kernel text would be inside the granted leaves and ring 0
+could not fetch it. Supervisor-mode access prevention is refused for the mirror reason, nothing
+here issuing the instructions that lift it per access. Both are clear on this processor and both
+are read and reported rather than assumed. So the grant is an in-place edit of the adopted regime
+and no root is written. Measured: 212 leaves granted, none already carrying the bit, and NONE of
+the tables walked to perform the grant lies inside a granted range. **That last figure answers a
+narrower question than it reads as**, its corpus being the three tables the grant walks and its
+moment being the end of `ring3_init`; the whole-hierarchy census taken after `aspace_init` finds
+one of the tables in the live tree reachable and writable at CPL3, the kernel window's own
+level-3 table. The M6.4 stanza carries it.
+
+**THREE INSTRUCTIONS RUN ON THE CALLER'S STACK POINTER, none of them dereferences it, and none
+can fault or be interrupted.** `swapgs`, a store of `rsp` through the gs base into the per-core
+block, and a load of the kernel stack from the same block. The swap takes no operand; the two
+moves address a fixed kernel object rather than anything the caller chose, so no store lands on
+caller-chosen memory and no load can fault on one. **That block IS reachable and writable from ring
+3 on this posture**, measured, so the argument here is about the caller's stack pointer and not
+about the block's contents; what covers the contents is that kernel RAM is writable anyway.
+Interrupts are already masked when the first of the three
+executes, `IA32_FMASK` naming the interrupt flag and SYSCALL clearing every flag the mask names.
+The two classes the flag does not hold off, the non-maskable interrupt and the machine check, have
+interrupt-stack-table slots of their own, so even those build their frame off this stack pointer
+rather than on it. **F8's note understates the hazard by one class:** it says the mask must clear
+the interrupt flag "or interrupts are live on a user-controlled stack", which is true and leaves
+out that the flag covers neither of those two vectors at all.
+
+**SYSCALL RECORDS NO PRIVILEGE LEVEL ANYWHERE, so the branch belongs in the leaf and not in the
+entry.** It saves the return address in `rcx` and the flags in `r11` and keeps no note of where
+it came from, so the entry cannot ask. Both siblings get the answer from hardware, RISC-V from
+`sstatus.SPP` inside its own entry and AArch64 from which vector slot was taken, and AArch64 in
+fact does not service an EL1 `svc` at all. Here `arch_syscall` reads its own `cs`, which is
+readable at either level and cannot be forged, and a privileged caller takes a PLAIN CALL to
+`syscall_dispatch`: it is already in privileged thread context on its own continuation, which is
+exactly what arch.h's syscall contract asks for and what the sim backend's `arch_syscall` has
+always been. That branch is also what lets the entry's `swapgs` be unconditional.
+
+**THE SELECTOR LAYOUT IS THE FAST PAIR'S AND NOT A PLAUSIBLE ARRANGEMENT.** SYSCALL loads CS from
+`IA32_STAR[47:32]` and SS from that field PLUS 8; SYSRET loads SS from `IA32_STAR[63:48]` plus 8
+and CS from the same field plus 16, forcing both privilege fields to 3 (AMD APM Vol 2 section
+6.1.1; Intel SDM Vol 2). So the kernel data descriptor must sit one entry above the kernel code
+descriptor and the user data descriptor one entry BELOW the user code descriptor. Three
+`static_assert`s state it. Two consequences X2 had hard-coded: the task-state segment descriptor
+moved from selector 0x18 to 0x28 and the table limit from 0x27 to 0x37, so
+`tools/run-qemu-x86_64-x2.sh` names both new figures.
+
+**SYSRET LOADS NO STACK POINTER EITHER, and F8's note on SYSCALL does not say so.** One probe arm
+enters ring 3 through `SYSRETQ` with the ring 3 stack pointer seated by hand, and the stub it
+lands on reports its own `cs` and `ss` back through the trap. That arm exists because the port's
+own return path is an `iretq` off the frame, so nothing else in the image would execute a SYSRET
+and half the layout above would be a manual claim with no witness.
+
+**THE INCOMING BLOCK IS PUBLISHED TO TWO PLACES WHERE THE SIBLINGS NEED ONE.** An interrupt gate
+entered from ring 3 takes its stack from the task-state segment's `rsp0`; the fast entry takes
+its own from the per-core block. AArch64 writes `SP_EL1` and RISC-V writes `sscratch`, and one
+write serves every entry class there. Both are written together on every switch, and a blockless
+context publishes ZERO rather than the last thread's value, so a ring 3 entry that should not be
+possible faults at once instead of building a frame on another thread's block.
+
+**THE WRITABLE-REGISTER CLASS R1.5's GLOBAL POINTER BELONGS TO EXISTS HERE, and what closes it is
+an MSR rather than a re-anchor.** The analogue is the `fs` and `gs` segment BASES, which is what
+the kernel resolves the per-core block against. Ring 3 can change the live base at will: loading
+a selector into `%gs` is unprivileged and sets the base from the descriptor, and with
+`CR4.FSGSBASE` on it could write the base directly. What makes that harmless is `swapgs` plus
+`WRMSR` being ring 0 only: the value the entry ends up with comes from `IA32_KERNEL_GS_BASE`,
+which ring 3 cannot write, and the invariant the epilogue maintains is that the MSR holds the
+per-core pointer exactly while ring 3 is executing. That is why the trap entry owes a CONDITIONAL
+swap on the interrupted `cs` and the shared resume epilogue owes one on the FRAME's `cs`: the
+epilogue's is on the frame and not on where the frame came from, because a switch resumes a frame
+some other entry built, and what matters is the level the `iretq` delivers control to. Without the
+epilogue's swap the next thread to reach ring 3 leaves a stale user base in the MSR and its first
+syscall loads a stack pointer from it. **`CR4.FSGSBASE` is clear on this processor and would not
+open the hole if it were set,** which is stated because the opposite reading is the natural one.
+**And `r11` is NOT a second instance of the class:** it is an OUTPUT of SYSCALL, so a thread
+cannot hand chosen flags in, and the frame masking in switch.S is defence in depth behind the
+hardware rather than a closed hole. Measured: deleting the masking changes no arm.
+
+**FAULT ATTRIBUTION READS MEMORY WHERE BOTH SIBLINGS READ A REGISTER, and that decides the order
+of the two tests.** RISC-V reads `sstatus.SPP` and AArch64 the exception level out of `SPSR`, both
+of which arch.h calls always-valid because they come from a register; x86's only record of the
+interrupted level is the `cs` the hardware PUSHED. So `kickos_fault_frame_on_kernel_stack` comes
+first and is what makes that word believable, the frame of a ring 3 fault being placed by the
+hardware at the top of the running thread's own block from `rsp0`. **The second test is not
+redundant with the first**, and one arm exists to prove it: a fault taken by the DISPATCH, at
+ring 0, lands on that same block, so the block test alone would credit it to the thread, and its
+pushed `cs` names the kernel selector. Both directions are in one image, the ring 0 control being
+stepped past rather than ending the run.
+
+**THE REDIRECT REWRITES FIVE FIELDS, where RISC-V rewrites three and AArch64 two.** An `iretq`
+reloads the code selector, the stack selector, the flags and the stack pointer along with the
+instruction pointer, so each is a decision. The stack selector is not optional: `iretq` refuses a
+return whose stack selector does not carry the privilege the code selector names.
+
+**THE TWO USER-POINTER ORACLES READ THE IMAGE'S OWN SECTION TABLE, and an extent pair was never
+going to work here.** X3 left both failing closed and named the loaded-image extents as what they
+owed. The extents alone are not enough for two reasons measured on the built image. The board is
+compiled `-ffunction-sections -fdata-sections`, so the writable set is forty-odd separate
+sections interleaved with read-only ones and no pair of bounds separates them. And the debug
+sections carry the discardable attribute, which a loader is free not to map at all, so the image's
+own extent is not a claim that every byte in it is present. So the read oracle admits a range that
+lies wholly inside ONE mapped, non-discardable section and the write oracle additionally requires
+that section's write attribute, both walked from the base the image was LOADED at through
+`__ImageBase`, which is PC-relative and therefore right wherever firmware put the image. The arena
+is deliberately not admitted: a thread's own stack is a region the kernel composes, so the region
+walk above these two answers it, and admitting the conventional-memory range here would hand every
+caller every other thread's stack.
+
+**A LINKER SCRIPT ARRIVED WITH THIS STEP AND IT IS NOT OPTIONAL.** X3's note that this chip ships
+no script was right about the CHIP and wrong about the IMAGE. `ld -m i386pep` has an internal
+script that collects `*(.text.*)` and names no wildcard for `.data.*`, `.rodata` or `.bss.*`, so
+every such input became a PE section of its own, page-aligned. X2's and X3's images survive that
+at 63 sections; the X4 image does not. Past about seventy sections `SizeOfHeaders` passes 0x1000
+while the first section's virtual address stays there, and EDK II's loader refuses a section whose
+virtual address lies inside the headers: it presents as `failed to load ... : Unsupported` with
+NOTHING at all on the serial line, which reads like a bad image rather than like a layout.
+`--strip-debug` does not fix it, the count coming from the data sections. `arch/x86/x86_64/pe_image.ld`
+is `ld -m i386pep --verbose` verbatim plus three wildcards, and it takes the X4 image from 63
+sections to 14 and `SizeOfHeaders` from 0x1200 to 0x600. Every image on the board now links
+through it, so X1, X2 and X3 were re-witnessed.
+
+**KICKOS_BUILD_APPS IS STILL OFF, AND THE REASON IS NO LONGER THE SEAM.** X3 listed five things
+between this board and the ctest ladder. `arch_syscall` and `arch_syscall64` exist and are
+witnessed, and the PE section layout above is settled, so a FULL KERNEL image was held against the
+remaining list rather than surveyed: linked by hand over the eight archives the root
+`CMakeLists.txt` already groups, it boots, prints the banner, runs `sched::start`, reaches
+`kickos_app_main` and returns through `kos_shutdown`, with a 20 ms `kos_sleep_ns` measuring 21.1 ms
+so the idle thread and the tickless one-shot are both live. Four things it needs that this step does
+not supply. `kickos_reent_seam` is named by `kernel/thread/reent.cc` under `!KICKOS_ARCH_SIM` and
+`user/CMakeLists.txt` compiles no newlib layer on this arch, so a no-libc THIRD posture is a real
+gap in that seam rather than a missing file. `__kickos_app_init_array_start` and its end are stated
+by every chip script and by nothing here, so the app-constructor window has to come from the PE
+script. `libkickos_kernel.a` carries EIGHT global-offset-table relocations where every other
+archive carries none, one of them fatal (`kickos_root_entry`, whose address came back as its own
+first eight bytes) and seven of them WEAK declarations that hidden visibility does not fix, since
+a PC-relative form cannot encode "absolute zero"; `tools/check-x86_64-no-got.sh` never saw them
+because it is handed the image objects and never the archives. And a full image carries a NON-EMPTY
+base-relocation directory, from a static function-pointer table in the scheduler policy, so the
+toolchain file's claim that `-fpie` leaves that directory empty holds for the kernel-free images
+only. A `BOARD` branch in `kickos_add_qemu_test`, a way past `$<TARGET_FILE:>` and
+`tests/lib/gate.sh`'s `-kernel <elf> -semihosting` assumption are all still owed, and
+`tests/static/test_classes.txt` owes a line per x86 script. The five witnesses stay `ninja` targets.
+
+**X4b. THE LADDER, and every item on that list is discharged.** `KICKOS_BUILD_APPS` is on, the board
+runs its own `ctest`, and the five `ninja` witnesses are unchanged beside it. Each of the eight took
+a different answer and three of them are worth carrying:
+
+- *The reent seam's third posture is an ABSENCE, not a descriptor.* `KICKOS_LIBC_REENT` replaces
+  `!KICKOS_ARCH_SIM` at every reent site, and it is 0 on the sim because that libc owns its own
+  state and 0 here because there is no libc: two different reasons for the same 0, which is why it
+  is a knob and not a second reading of `KICKOS_ARCH_SIM`. A descriptor of zero slots was the
+  tempting alternative and it is wrong: `reent_seat` writes THROUGH the seat word, so an empty
+  descriptor is a null store rather than a no-op. The one C-library name KickOS's own userspace
+  layer calls is `exit()` (`user/src/uart_service.cc`), and `user/src/nolibc_exit.cc` defines it
+  onto the same `KOS_SYS_EXIT` dispatch the other two postures reach.
+- *The seven weak references are fixed at COMPILE time and the linker script is the other half.*
+  Hidden visibility does not help a WEAK undefined symbol, measured both ways: gcc reaches it
+  GOT-indirect at any visibility. So `KICKOS_LINK_OPTIONAL` (`kernel/include/kickos/klink.h`) drops
+  the `weak` on a target whose linker resolves no weak undefined, and `pe_image.ld` STATES all six
+  windows as empty, exactly as the sim states an empty ctor window. `kickos_root_entry` is the
+  eighth and needed only hidden visibility, its reference already being strong.
+  `tools/check-x86_64-no-got.sh` now takes archives as well as objects and reports the member name
+  for each hit, which needed `LC_ALL=C`: a localised binutils prints `Fichier:` and the member-name
+  parse goes silent while the untranslated type column keeps matching.
+  `tests/static/check_x86_64_no_got_selftest.sh` is its positive control, over a purpose-built
+  object, an archive whose FIRST member is dirty, an archive whose SECOND is, a file readelf cannot
+  read and an archive with no members.
+- *The exit status crosses a SEVEN-BIT device, and that is what keeps one arm off the ladder.*
+  `isa-debug-exit` reports `(status << 1) | 1`, so `tests/lib/gate.sh` recovers the image's own
+  status and every gate keeps comparing the number the app passed to `kos_exit`. A status of 128 or
+  more does not survive the shift through an 8-bit exit code: measured, `fault` prints its
+  `=== THREAD FAULT ===` dump correctly and exits 11 where the arm asserts `KOS_EXIT_FAULT` = 139.
+  So `fault_dump` is NOT registered here, and the fix is a full-byte exit path rather than a
+  per-arch expectation. `faultsurvive` asserts 0 and is registered.
+  **CLOSED at X7 below**, which is where that full-byte path landed and where `fault_dump`
+  joined, taking the board to ten image arms.
+
+*What is registered,* and the rule is that a gate keyed on something this build does not provide
+would report a protection it does not have: `hello` (the headline arm: firmware handover through to
+two ring 3 threads exchanging semaphores), `selftest` at 102 TAP arms, `sched_exit` (at X4b the only
+arm asserting the exit status; `fault_dump` joined it at X7 and asserts 139), `panicgate1` through
+`5`, `faultsurvive`, and the two host gates
+`seam_defaults` and `class_backend`, which work unchanged because `nm` reads a PE32+ image and their
+`readelf` use is on the ELF archives; the `-Map` rides the `ld` line. `periph_reg_write_unheld`
+reports PARTIAL for the same reason it does on `qemu-arm64`: q35 mints no free MMIO window.
+*What is not, and why,* by class: no `HAS_ASPACE` on this board, so `aspacefault`, `stackguard` and
+`kernelhalf` do not build and `rootfault`/`mpu_fault` have no confinement to be refused by, all four
+X5's; no C library, so `libc_exit`, `errnoprobe`, `rootauth`, `rebootdemo`, `reclaimwit` and
+`gpioblink` cannot link; no `ARCH_HAS_TLS`, so `tlsprobe` is absent by design; and `stress` has no
+emulator gate script on any board.
+
+**WHERE THREAD-LOCAL STORAGE LANDS ON THIS ARCH, so the step that turns `ARCH_HAS_TLS` on does not
+have to re-derive it.** x86_64 reaches thread-local storage through `FS`, and the syscall entry
+anchors on `GS`, so that step has a base register of its own to spend. The block address belongs in
+`struct arch_context` (`arch/x86/x86_64/include/kickos/arch/context.h`) beside `kernel_sp`, and the
+switch writes it to `IA32_FS_BASE` at the point it already publishes that one. The trap frame holds
+the registers the entry pushes and the restore pops.
+
+**A FULL IMAGE'S BASE-RELOCATION DIRECTORY IS NON-EMPTY AND THAT IS CORRECT.** The toolchain file
+used to claim `-fpie` leaves it empty; it now says what `-fpie` does do, which is keep every
+reference from CODE PC-relative. A pointer stored in DATA is an absolute address and no code model
+changes that: every full image carries 24 bytes of `.reloc`, seven `DIR64` entries, one per member
+of the scheduler policy's static dispatch table. Firmware applies them wherever it loads the image.
+The delta is zero in an ordinary run, OVMF loading at `0x400000`, the images' own `ImageBase`, and
+X4's `image=` line says so. That is the DEFAULT and not a limit: relinking at a different base makes
+firmware relocate by the difference and the image still runs (see the not-witnessed list below, where
+this item was overstated as unwitnessed until the five-base sweep).
+
+**THIS STEP'S EXPECTED RESULT WAS WRONG IN THE SAME WAY X3's WAS.** "S7's arm passes" names a TAP
+arm of `user/apps/common/selftest`, and the application layer is held back by a second,
+independent thing this step does not own: the image is a PE32+ application and no `add_executable`
+through the compiler driver can write one. So X4 takes its witness from an ad-hoc link too, and it
+is the first step whose SEAM is the real one rather than the first whose IMAGE is.
+
+**WHAT THE OVER-GRANT COSTS, stated rather than hidden, and it is R1.5's posture for R1.5's
+reason.** The image is one flat link, so the leaves carrying an unprivileged thread's own text also
+carry kernel text, the scheduler's state, the capability table, the per-thread kernel stacks and
+the arch layer's own statics; and the conventional-memory grant covers every thread's stack rather
+than the caller's. An unprivileged thread here can read and write kernel memory. What it cannot do
+is reach a device register, execute a privileged instruction, touch a port, raise its own privilege
+level or write the MSR the entry takes its pointer from, and the last of those is what the two
+denial arms and the swap invariant are about. **What this paragraph used to add and cannot: a
+translation table IS reachable and writable, and so is the per-core block the entry loads through.**
+The kernel window's level-3 table and `g_cpu` are `.bss` statics of the flat link, so both sit
+inside the 2 MiB image leaf the grant opens; the M6.4 stanza above carries the measurement and the
+two blindnesses that let the old arm read clean. Neither adds a power: kernel RAM is writable
+either way. The narrowing is the same work R1.5 records: separate the halves in the LINK, which is
+a private half and its own root, and X5 re-decides that boundary anyway.
+
+**WHAT HAS NO WITNESS HERE, separated by why.** NOT PRODUCIBLE ON THIS EMULATOR: the non-maskable
+interrupt and the machine-check interrupt-stack-table slots, since QEMU raises neither, so the one
+window the flag mask cannot close is closed by argument; the supervisor-mode execution and access
+prevention refusals, both bits being clear on every processor model this machine offers; and
+`CR4.FSGSBASE` being set. NOT PRODUCIBLE BY CONSTRUCTION: the frame flag masking, measured
+uncaught, because the hazard its shape suggests does not exist on this entry. NOT IMPLEMENTED YET:
+`arch_mpu_probe_addr` still answers 0, and the reason is the knob rather than the hardware, every
+leaf the grant did not touch now refusing ring 3 while the chip selects neither region descriptors
+nor an address space, so `KICKOS_MEMORY_ENFORCED` reads 0 and the self-test that consumes it is
+not registered; X5 selects the capability. X3 listed the x2APIC register path here as still owed; it
+is not, both legs having been exercised by naming a processor model that reports the feature.
 
 **X5. The aspace family on a single root.** The kernel half replicated into every table, the root
 switch performed from code mapped identically on both sides of it, and the invalidate primitives.
@@ -2609,11 +5651,928 @@ mapping on a single-root architecture is a different implementation of the same 
 equal-virtual-address copy, since the owner-carrying helpers are where an A64-only author would most
 plausibly have leaned on two table registers without noticing.
 
+*Landed at X5.* `arch/x86/x86_64/aspace_x86_64.cc` for the map editor,
+`arch/x86/x86_64/include/kickos/arch/aspace.h` for the boot handover and the port's own kernel
+range, and one call in `arch/x86/chip/q35/chip_q35.cc`'s `arch_init` after `ring3_init`.
+`arch/x86/x86_64/probe5_x86_64.cc` plus `.S` and `tools/run-qemu-x86_64-x5.sh` are the witness:
+**163 arms**, each printing its own name and outcome, a LIVE figure re-derived by running it on
+2026-08-29. Sixteen things a reader would otherwise re-derive. **The figure was 141 until the
+external audit below added ten, and 151 until the attribute-table redesign below traded two arms
+for fourteen**, which is what every measurement recorded above it and at X6 and X8 was taken at, so
+a 141 or a 151 elsewhere in this document is a dated record and not a disagreement.
+
+**THE ATTRIBUTE-TABLE WITNESS WAS ITSELF UNSAFE, AND WHAT REPLACED IT PROVES LESS ABOUT ONE LEG.**
+A re-review raised it and the manual confirms it. `memtype_follows_a_reprogrammed_attribute_table`
+wrote `IA32_PAT` with a permuted layout, reloaded `CR3` and put it back, to show the backend's
+memory-type selection searching the LIVE table rather than reproducing the power-up one. Intel SDM
+Vol 3 section 14.12.4 makes the writer responsible for the translation caches AND, in its step 2,
+for the PROCESSOR caches wherever a live mapping's type moves in a way self-snooping cannot cover,
+naming a line going from write-back to uncacheable for memory-mapped I/O as the case. The witness
+did step 1 and never step 2, and its step 1 was itself conditional on `CR4.PGE` and `CR4.PCIDE`
+being clear, which it assumed rather than read. This port ADOPTS the firmware's regime, so the
+mappings at risk are the ones it never composed: the low identity map and the local-APIC window.
+*Measured on this bench before the change, and the measurement is why the ruling is not "safe":*
+`CR4` reads `0x68`, so `PGE` and `PCIDE` are both clear and the `CR3` reload was the right branch
+here; a walk of every present leaf under the installed root found **527865 leaves and all of them at
+attribute-table index 0**, so the permutation of fields 1 through 3 retyped nothing live. That is a
+fact about OVMF on q35 today and not about the architecture, and the arm ships.
+*The redesign.* The decode is now a pure function of the table,
+`kickos::x86_64::aspace_memtype_bits(pat, type, out)`, and the map path is its only caller that
+supplies the live one. The witness drives it over SIX synthetic tables it never installs: the
+power-up layout, one placing all three types in fields 4 through 6 so every answer needs the PAT
+bit, one with write-back in two fields for the first-match rule, and three each missing one of the
+three types so the refusal has a subject.
+*What is UNWITNESSED on purpose, and it is a loss.* Nothing now proves the decode is fed the LIVE
+register rather than a constant. The two arms that tie it to the map path,
+`attribute_table_in_use_is_the_live_msr` and `leaf_bits_match_the_decode_on_the_live_table`, are
+the strongest safe form and they are VACUOUS on this firmware, which leaves `IA32_PAT` at the
+power-up value the report line prints (`0x0007040600070406`); a backend handed that constant
+composes the same leaf. Only a machine whose live table differs separates the two, and making one
+differ here is the write section 14.12.4 forbids. **The removed arm DID catch that**, verified by
+mutation: feeding the constant turns the old arm red and leaves all 163 new ones green. So the
+trade is a decode witnessed over tables no firmware here provides, against a feed no longer
+witnessed at all, and it is taken because the alternative retypes live mappings.
+
+**THE FAMILY FITTED UNCHANGED, which is the third data point F8 asked for.** Every signature is
+arch.h's as it stands, `arch_aspace_frame_at` included: this backend IMPLEMENTS that member and
+adds nothing beside it, so the diff this step contributes is empty and the milestone's headline
+stays one added record.
+*Two sentences that stood here were false against the tree and are corrected rather than deleted,
+the conclusion above surviving both.* The member is M6.3's R2.2 addition and R2.2 is an ANCESTOR of
+this branch (`git log --oneline` shows one linear stack, `480767f1 R2.2` below this tip), so
+"this branch's base predates that commit" was wrong; and the member is declared in the SEAM header
+`arch/include/kickos/arch/arch.h`, with no declaration of it anywhere under `arch/x86/`, so
+"declared in the backend's own header" was wrong too. What follows from the corrected pair is the
+opposite reading of the instrument: `sh tests/static/check_aspace_sigdiff.sh` run from THIS tree
+reports DIFF and exits 2, 36 candidate records against 35 baseline, the one added record being
+`FUNC arch_aspace_frame_at`. That exit 2 IS the result and the baseline does not move. This tree
+holds both halves, so the figure it prints is the UNION's and it is M6.3's verdict arriving
+unchanged, not a contribution from this backend.
+
+**THIS STEP'S EXPECTED RESULT WAS WRONG IN THE SAME WAY X3's AND X4's WERE, and by now that is a
+pattern rather than three accidents.** "T4's four transitions and T6's process witness both pass"
+names TAP arms of `user/apps/common/selftest`, and TWO independent things hold that layer back
+here, neither of them the seam: the chip selects no memory family, so every kernel source compiled
+under the address-space axis is absent from the link; and the image is a PE32+ application, which
+no `add_executable` through the compiler driver can write. What X5 owes is therefore the
+PROPERTIES at the seam, and the two arms the stanza singles out are among them: the handoff
+readback is `frame_at` agreeing across two spaces at one address, and the equal-virtual-address
+copy is one virtual address answering two different frames under two roots.
+
+**THE CHIP STILL SELECTS NEITHER FAMILY, AND THAT IS A DECISION RATHER THAN AN OMISSION.** X4's
+note that "X5 selects the capability" was written before the cost was measured. Selecting
+`HAS_ASPACE` on this chip turns on `KICKOS_MEMORY_ENFORCED`, and with it `kernel/grant`, a changed
+`KICKOS_MAX_DOMAINS`, the `klib` translation units and the runtime privatisation that rewrites
+their names, and it REGISTERS `kernel_runtime` and `kernel_got` as ctest cases on a board whose
+kernel archive X4 already recorded as carrying eight global-offset-table relocations. It also
+needs `__kickos_frame_pool_start`, `_end` and `_delta`, which `kernel/mem/frame_pool.cc` takes as
+strong LINK symbols and which this board has no KickOS linker script to carve; the honest answer
+there is a page-aligned reservation inside the image with a delta of zero, identity being what
+makes that truthful, and it is a few lines rather than a hazard. None of that is witnessable while
+the application ladder is off, and declaring memory enforced while the flat over-grant of X4
+stands would be the same false statement `arch/Kconfig` gives as the reason RV64's own select was
+deferred. So `arch_mpu_probe_addr` also stays at 0 and its comment keeps the knob as the reason.
+
+*Two of those five costs are gone, recorded here because a later step would otherwise argue from a
+premise that stopped holding.* The eight global-offset-table relocations are FIXED and the guard
+reads the archives at every link (X4b above), so `kernel_got` would register against a clean
+subject rather than eight known hits. And the application ladder is ON, at TEN image arms
+including a 102-arm self-test, so "none of that is witnessable" no longer holds either. The
+frame-pool carve is cheaper than it reads too: `arch/x86/x86_64/pe_image.ld` already states six
+linker windows, so `__kickos_frame_pool_start`, `_end` and `_delta` are more of the same. WHAT
+STILL STANDS IS THE ONE THAT MATTERS: declaring memory enforced while X4's flat over-grant stands
+is the false statement, and the app leaving the kernel's half is what retires it.
+
+*And the editor being in every link is now paid for once.* `arch_init` adopts the live regime, so
+`aspace_x86_64.cc` reaches the linker in every image carrying the chip archive, while
+`kernel/mem/frame_pool.cc` is compiled only under `KICKOS_HAVE_ASPACE`. The kernel-free images
+declined `kickos_frame_alloc` and `kickos_frame_free` themselves; an image with the KERNEL and no
+pool takes them from `arch/x86/x86_64/nopool_x86_64.cc`, on the application-image link line in one
+place so a new app cannot forget it. Both bodies REFUSE on the wire and end through
+`kfault_terminate` rather than answering 0: 0 is what arch.h calls exhaustion, so a build with no
+pool at all would read to every caller as a full one that happened to be empty.
+
+**THE FIRMWARE'S OWN TOP-LEVEL CHILD TABLE IS FULL, and that single measurement decided the shape
+of the port's kernel range.** The first design hung a kernel window one level below the boot
+root's first present entry, on the reasoning that a table below a COPIED entry is shared by every
+space while a top-level entry added later reaches nobody. It refused at boot: the table under that
+entry holds 512 present entries, every one of them a 1 GiB leaf identity mapping the low range, so
+there is no free entry anywhere inside the adopted kernel half to hang anything from. What is left
+is a slot of the root itself, and taking one is sound for exactly one reason: it happens in
+`aspace_init`, before the first create, so every space that will ever exist copies it. The figure
+is printed with the witness (`first_child_entries=512`) because it is the premise, and a firmware
+that left room would make a different design correct.
+
+**SO THE KERNEL HALF IS TWO THINGS HERE, AND F1's "FIXED HIGH RANGE" IS THE SECOND CLAIM THIS
+BACKEND FALSIFIES.** F8 already records that F1's "the kernel half is untouched by a switch" fails
+on a single root register. On an ADOPTED identity regime F1's other half fails too: the kernel's
+mappings are the firmware's low identity map, and the image is one flat link inside it, so the
+kernel lives LOW and not high. This port's own range does sit high, in the top-level slot
+`aspace_init` claims, which is where F1 wants it; the adopted part cannot be moved there without
+rebuilding the regime the milestone chose this backend to adopt. Measured: three top-level slots
+present after the install, two the firmware's and one this port's, and the range a space may map
+is the low-half slots the boot root left ABSENT, which is a measurement rather than a constant.
+
+**ACQUIRE IS AN ADDITION AND THE DELTA IS ZERO, and the reason is not A64's.** A64's addition comes
+from a high-half map of all physical RAM that the port itself built; RV64 has no offset to add at
+all, its physical space being wider than its virtual, and ships a six-slot transient window. Here
+the adopted regime identity maps the conventional run the frame pool is carved from, so a frame's
+bytes are at its own address and no window is needed or built. F8 warns in as many words that this
+is a claim about the MAP and not about the machine, so the body does not assume it: acquire walks
+the BOOT space for the frame's own address and answers only where that walk comes back with the
+frame, and `aspace_init` refuses at boot if the regime does not map this image's own tables at
+their own addresses. The check is unwitnessable on this firmware, deleting it changing no arm,
+which is stated rather than hidden.
+*And the consequence for `frame_at` is worth keeping.* With a delta of zero, naming a frame by
+subtracting two acquire pointers WORKS on this backend and on A64, and fails silently on Sv39,
+where a handful of window slots hand back the same small number for every frame. Two of three
+backends make the shortcut look right. That is the argument for the member M6.3 added rather than
+against it.
+
+**THE LEVEL COUNT IS A RUNTIME FIGURE HERE where it is a constant on both siblings**, and F7's
+"ask the hardware" is a live rule rather than a slogan: 4-level paging translates 48 linear bits
+and 5-level 57, the mode is a control-register bit, and every walk is written over that figure and
+the leaf's level. The witness reads the bit itself and holds the backend's answer to it rather
+than taking the backend's word. What the figure does NOT vary is the granule: one granule and
+three mapping sizes, exactly as F7 reads it, so the model word reports a granule set of one
+whichever depth is running.
+**AND THE WALK OWES A LARGE-LEAF LEG THAT NEITHER SIBLING NEEDS.** The boot space is built out of
+2 MiB and 1 GiB leaves, so a walk that refused one, as both siblings' leaf lookups do, would
+answer "not mapped" for most of the kernel half and `frame_at` on any adopted address would return
+0. The read-only walk therefore resolves a large leaf and adds the offset inside it; the editable
+lookup still refuses one, this editor having no business taking one apart. Deleting the leg does
+not merely redden an arm: `aspace_init`'s own identity check goes through the same walk, so the
+image refuses at boot before any arm prints.
+
+**THE INVALIDATION RULES ARE THE SEAM'S BUT NOT A64's, and all three differences are in the
+manual.** Writing the root register IS the sweep: with no tag enabled it drops every translation
+for identifier 0 except the GLOBAL ones and every paging-structure-cache entry for it (Intel SDM
+Vol 3 section 5.10.4.1), so activate needs no maintenance call beside it, and nothing this file
+writes sets the global bit, which is what keeps the range sweep honest. `invlpg` invalidates every
+paging-structure-cache entry for the current identifier whatever address it corresponds to, so a
+table entry this editor installs owes no invalidate of its own, a conclusion A64 reaches by a
+different route. And break-before-make is CONDITIONAL here where A64's is unconditional: the
+architecture demands the clear-invalidate-write sequence only when a write changes the page SIZE
+(section 5.10.4.2), which this editor never does. It is done anyway, and what it buys is stated:
+without it an access between the two writes may take the old frame with the new permissions,
+invalidation otherwise being free to be delayed (section 5.10.4.4).
+**AND THE ONE THE SEAM'S OWN COMMENT GETS WRONG FOR THIS ARCHITECTURE IS THE FRESH MAP.** arch.h
+says a map into a slot that was empty needs an invalidate too, "architectures caching negative
+translations". x86_64 does not: no TLB or paging-structure-cache entry is ever created from an
+entry whose present bit is clear, so clearing to present needs no invalidation at all (section
+5.10.4.3). It is issued anyway, and NOT out of caution: that section's own footnote makes the
+exemption conditional on every EARLIER clearing of the same slot having been invalidated, which is
+a property of the slot's whole history rather than of the call in front of you. The seam's comment
+is right about the obligation and wrong about the reason on one of its three backends.
+
+**THE KERNEL'S "VIRTUAL ADDRESS IS THE PHYSICAL ADDRESS" CONVENTION DOES NOT SURVIVE AN ADOPTED
+IDENTITY REGIME, and this is X5's finding above the seam.** Every virtual address the kernel picks
+today is a physical one: `ustack_alloc` maps a run at its own output address, `aspace_reserve`
+returns the run itself, and the handoff maps it into a second space at the same address, which is
+what makes a reservation a globally unique name. That works on both siblings because their kernels
+live in a high half and low physical DRAM is therefore a legal per-space address. Here the low
+identity map IS the kernel half, so a reservation named by its own physical address lands inside
+the shared top-level slots and a space cannot be given it without editing tables every other space
+shares. The fix is above the seam and costs no signature: bias a reservation into the per-space
+window the way `pool_delta` already biases the other direction. It is recorded here rather than
+done, the kernel side of the axis being off on this board, and it is the single thing most likely
+to surprise whoever turns it on.
+
+**WHAT THE A64 BACKEND NEEDS AND THIS ONE DOES NOT.** `kickos_armv8a_ttbr0_to_boot` exists because
+every device that chip's fault reporter touches is a low address, so a fault under a user space
+would print nothing. There is no analogue here and it is not an oversight: this console is PORT
+I/O, which translation does not reach at all, and the local APIC window is inside the copied
+top-level entries, so a reporter runs unchanged whichever root is installed.
+
+**DESTROY'S BORROWER RULE BIT THE WITNESS BEFORE IT BIT A CALLER, which is the useful way round.**
+arch.h says a space must not still map a frame it does not own when destroy runs, and the first
+version of the witness destroyed two spaces that still mapped the four frames its arms plant their
+values in. Destroy reclaimed them, the allocator then handed one back as a root table and the copy
+of the boot root overwrote a planted value: FIVE unrelated-looking arms went red in three
+different groups, and the cause was one contract. The witness now unmaps what it lent before
+either space dies, and carries a separate arm for what destroy DOES reclaim, without which the
+pair above would read as "destroy frees nothing".
+
+**THE MUTATION MATRIX, and it separates three outcomes rather than two.** A mutation can be killed
+by an arm going red or by the image not finishing at all, and only the third case is a survivor;
+reporting the first two as one hides which arm holds the property. Every verdict is taken in a
+WIPED build directory over an rsynced copy of the tree, and the rig refuses when the build log
+does not name the mutated translation unit, a skipped build reading exactly like a harmless
+mutation. Two controls first: the pristine tree passes 141 arms, and a comment-only edit to the
+same file also passes 141, so the rig is not reporting a rebuild as a kill.
+KILLED BY A NAMED ARM: the root write (`activate_a_wrote_the_root`, and 66 of 141 arms reached
+before the image faulted reading an address only the new root maps); create copying ONE LEVEL
+DEEPER (`kernel_edit_seen_from_a`); create copying nothing (`kernel_half_in_a`); the
+break-before-make clear and its invalidate (`replacing_a_live_page_issues_two`, one red arm out of
+141); the fresh-map invalidate (`fresh_map_issues_one`); the not-installed elision
+(`map_into_a_space_this_core_is_not_on_elides`); the map unwind
+(`partway_refusal_left_no_partial_mapping`); the write-and-execute refusal
+(`refuse_write_and_execute`, 11 red).
+KILLED BY THE IMAGE NOT FINISHING: destroy's keep guard, which walks into the shared kernel half
+and hands the pool the firmware's own tables; the large-leaf leg of the walk, which the boot-time
+identity check catches before a single arm prints; the kernel range's sign extension, which makes
+a high-half slot index a non-canonical address; and the execute-disable enable turned into an
+unconditional DISABLE, which makes that bit reserved in every leaf this editor writes.
+SURVIVED, AND EACH FOR A STATED REASON: acquire's identity check, every frame on this firmware
+being identity mapped so the check can only ever agree; activate's interrupt mask, one core and
+nothing else running; destroy's invalidate moved AFTER the frees, the emulator not reusing a freed
+table's contents inside the window; and the execute-disable enable as written, which is DEAD CODE
+on this firmware because firmware sets the bit itself, so the conditional never runs. That last
+one is why the mutation had to be turned into an unconditional clear to say anything at all.
+
+**WHAT HAS NO WITNESS HERE, separated by why.** NOT PRODUCIBLE ON THIS MACHINE: the address-space
+identifier and the instruction that invalidates by it, neither reported on any of five processor
+models the emulator offers, which is F8's own measurement corrected above and which X6 re-took across
+TEN models with the same answer; 5-level paging, which X6 corrects: the emulator DOES offer models
+whose parts support it and they still report four levels, the mode being a control-register bit this
+port adopts rather than sets and the firmware leaving it clear, so the runtime level count is
+exercised at one of its two values for a reason no model can change; a physical frame
+outside what the memory map identity maps, so acquire's refusal leg is unreached; and a second
+core, which is what the elision is compiled out above. NOT PRODUCIBLE BY CONSTRUCTION:
+`ARCH_ASPACE_ECAPACITY`, all three M6 backends being radix, and the witness counts every result
+class and reports the capacity count as 0 rather than assuming it; and the per-SLOT leg of the
+range test, which needs a firmware leaving a present top-level slot between two absent ones, this
+one leaving its two present slots at the bottom. NOT IMPLEMENTED: the kernel side of the axis, per
+the decision above.
+
+**AN EXTERNAL AUDIT OF THIS BACKEND (2026-08-29) RAISED THREE FINDINGS AND ALL THREE HELD.** Their
+reach is latent rather than live: `arch/Kconfig` selects no memory family on this chip, so nothing
+above the seam calls this editor and the defects bite the day the board selects `HAS_ASPACE`. They
+are fixed in the code that already exists rather than carried as a port obligation, and the ten
+arms that hold them take the witness from 141 to 151.
+
+- **THE SHARED-SLOT TEST READ HARDWARE-UPDATED BITS, which is the critical one.** `free_subtree`
+  and `prune_empty` recognised a slot as the kernel half's by comparing the copy's WHOLE
+  descriptor against the boot root's. The processor sets the accessed flag in every
+  paging-structure entry a translation walks and the dirty flag in every entry that maps a page
+  (Intel SDM Vol 3 section 5.8), and a space's copy is walked independently of the boot root, so
+  the two descriptors of one shared slot drift apart on their own. Destroying that space then
+  walked into tables every other space still points at. Measured on this firmware: the boot root
+  leaves slot 1 present with the accessed flag CLEAR, so the divergence needs one ordinary
+  translation to appear.
+  *The fix makes the authority TOTAL rather than adding a record beside it*, which is this
+  project's rule against a second truth: a top-level slot the boot root HAS is the kernel half,
+  full stop, because `range_ok` offers a space only the slots the boot root left absent, so no
+  space can own a table under one. Presence is the whole test and no mutable bit enters it.
+  Comparing the physical target instead, which the audit offered as the alternative, would have
+  been a narrower version of the same mistake: it still reads the copied descriptor, and it frees
+  the shared table on any mismatch where presence leaks it instead.
+  *The witness is two arms and the kill is physical.* `a_shared_slot_diverged_by_an_accessed_bit`
+  SEARCHES for a present top-level slot the boot root has not been walked through and sets the
+  flag in the copy, so a firmware leaving none reddens that arm rather than making the next one
+  vacuous; `the_diverged_slot_kept_its_table` reads the slot and its child table back after the
+  destroy. Restoring the whole-descriptor comparison kills the image at the destroy with a
+  page fault at `CR2=0x1fa04000`, inside the firmware's own paging structures, write=1 present=1
+  -- the firmware write-protects them, which is the only reason this backend's teardown announced
+  itself here instead of corrupting quietly. The port's OWN window tables are ordinary writable
+  `.bss` and would have gone silently.
+
+- **THE PHYSICAL RANGE WAS CHECKED AT ITS START AND AGAINST A CONSTANT.** `arch_aspace_map` tested
+  the first output address against the entry's 52-bit address field and nothing else, and
+  `aspace_kernel_map` tested only granule alignment. Bits 51:MAXPHYADDR are reserved in EVERY
+  paging-structure entry (SDM Vol 3 section 5.1.4 and Table 6-8), so a leaf above the width the
+  part reports faults with the reserved-bit code instead of translating; and a run walking off the
+  top of the 52-bit field comes back masked, which reports success for an alias onto a low frame.
+  MAXPHYADDR is CPUID 0x80000008 EAX bits 7:0, capped at 52, and 36 where the leaf is absent.
+  *The whole extent is validated UP FRONT*, before the first table is edited, which is what the
+  seam's total-or-fail promise costs on this path; `arch_aspace_model` reads the same helper, so
+  the figure it reports and the figure the map path enforces cannot drift.
+  *RV64 answers the same finding differently and the two do not contradict.* Sv39's physical space
+  is WIDER than its virtual, so its endpoint check is arithmetic the seam's own extent helper
+  already does; here the ceiling is a runtime CPUID answer and the reserved-bit fault is the
+  consequence, which is why this backend reads a register and that one does not.
+
+- **THE MEMORY TYPES ASSUMED THE FIRMWARE'S ATTRIBUTE TABLE.** `memtype_bits` wrote down the
+  PWT/PCD combinations that name write-back, UC- and UC under the POWER-UP layout of `IA32_PAT`
+  (SDM Vol 3 Table 14-12) without reading it. Any field of that table may hold any of the seven
+  types (Table 14-10), so a conforming firmware that programmed a layout of its own would have a
+  device page composed here come out cacheable. The MTRRs cannot do that: Table 14-7 gives UC and
+  UC- as uncacheable under every MTRR type, so the attribute table is the whole hazard.
+  *The fix READS the table and refuses what it cannot find, and deliberately does not write one.*
+  Establishing a layout of this port's own is the wrong move for a backend that ADOPTS a live
+  regime: every mapping the firmware installed was composed against the fields it programmed,
+  the local APIC window inside the copied top-level entries among them, so a new layout retypes
+  what this port inherited and section 14.12.4 puts the cache and TLB consequences on whoever
+  writes it. So the three index bits are searched out of the running table -- all eight fields,
+  bit 7 being the index's high bit in a granule leaf (section 14.12.3) -- and a type no field
+  encodes is refused through `arch_aspace_memtype_support`, which arch.h says exists for exactly
+  that. On the power-up layout the bits are byte-identical to the ones that were written down, so
+  nothing about this firmware changes.
+  *The witness used to PERMUTE THE LIVE TABLE and no longer does, because the same reasoning that
+  forbids the port a layout of its own forbids the witness one.*
+  `memtype_follows_a_reprogrammed_attribute_table` wrote a permuted layout, reloaded `CR3` and put
+  it back; section 14.12.4 wants the processor caches flushed as well wherever a live mapping's
+  type moves, and that half was never done. The decode is a pure function of the table now,
+  `aspace_memtype_bits(pat, type, out)`, and the witness drives it over synthetic tables it never
+  installs. Restoring the hardcoded combinations turns eight of those arms red. What went with the
+  old arm is the FEED: nothing proves the running table reaches the decode. The X5 record above
+  states that gap and why it cannot be closed from here.
+
+**THE HYGIENE PAIR IN `pe_image.ld` IS FIXED AND NO TRACKED GATE COVERS EITHER.** A space before a
+tab and a blank line at end of file, both reported by `git diff --check` and by nothing in
+`tests/static/`; `check_ascii.sh` reads character sets and not layout, and the repository sets no
+`core.whitespace` and installs no hook. So the class is caught by a reviewer running one command
+and by no instrument the tree owns.
+
 **X6. The verdict.**
 *Expected:* an EMPTY signature diff on the aspace family across the whole port. This is the
 sub-milestone's actual deliverable and the only auditable form of "the implementation is not coupled
 to one architecture". A non-empty diff is not a failure and must not be written up as one -- it is the
 finding F8 predicted, and it lands in the seam.
+
+**THIS STEP'S EXPECTED RESULT NAMES THE WRONG FAMILY, which is the fourth time in this
+sub-milestone and by now a property of how the stanza was written rather than four accidents.** F8
+gives each backend one half of the seam to falsify: RV64 takes the ASPACE family and x86_64 takes
+the ENTRY AND BOOT paths, "a different seam from the one above". The aspace verdict is therefore
+M6.3's, it is already taken, and it is not empty: exactly one added member, `arch_aspace_frame_at`,
+forced by a windowed backend, which X5 measured fitting x86_64 with no signature change of its own.
+Running the aspace differ here and calling its answer this backend's verdict would report on a family
+this port contributed nothing to. So X6's subject is the entry and boot paths, and the expected
+result above is corrected to that.
+
+*Landed at X6.* `tests/static/check_entry_sigdiff.sh` with
+`tests/static/entry_seam_family.awk` beside it for the instrument, and one measurement landed in
+`arch/x86/x86_64/entry_x86_64.cc` with its assertion in `tools/run-qemu-x86_64.sh`.
+*The "nothing else moved" evidence this record first cited was false and is replaced by what is
+true.* `git diff 7ee94a94 -- arch/include/ arch/riscv/ arch/arm64/ arch/arm/` was never empty at
+this commit: measured, it is 20 files changed with 3295 insertions and 304 deletions, which is
+M6.3's whole ISA half sitting under this branch. What holds still is the ENTRY family and not the
+directories: the differ reports 54 records against 54 with no parameter rename either, and every
+record that DID move belongs to the aspace family, which is M6.3's verdict and is measured by the
+other instrument.
+
+**THE ENTRY AND BOOT PATH DIFF IS EMPTY, AND THE FORM IT IS EMPTY IN IS THE FAMILY'S AND NOT THE
+FILE'S.** Fifty four signature records against fifty four, at the frozen baseline `f0360d3a` the
+aspace verdict uses, and no parameter RENAME either, so the instrument's own non-signature channel is
+silent as well. *This record also claimed a stronger form, that `arch/include/kickos/arch/` is
+BYTE-IDENTICAL between that baseline and this branch, and that was false when it was written:*
+`arch/include/kickos/arch/arch.h` stands at 83 insertions and 5 deletions against `f0360d3a`, all of
+it M6.3's aspace work under this branch. So the header WAS opened, by the other half of the stack,
+and the entry half's claim is the one the extractor makes: of the 54 entry-family records not one
+moved. A hundred and fifteen arms across the X3 and X4 witnesses exercise that family on a booting
+image, the two properties the roadmap picked this architecture for among them. (Re-derived
+2026-08-29 on `aea89358`: X3 prints 21 and X4 prints 94. This line has now been wrong twice the
+same way, reading ninety five when X4 was 74 and ninety six when X4 was 75, each time because a
+later step moved X4's count and the sum was not re-added. It is 21 plus whatever X4 prints; run
+`ninja x3-run x4-run` rather than quoting it.)
+
+**AN INSTRUMENT IS WORTH BUILDING HERE, AND THE DATE THE ARGUMENT TURNS ON HAD ALREADY PASSED.**
+The argument as written was that a byte comparison of the seam headers gives today's verdict on its
+own, so an extractor adds nothing to THIS reading, and that what settles it the other way is the byte
+comparison stopping working on a known date: M6.3's R2.2 adds `arch_aspace_frame_at` to the same
+header, so once that work stands under this branch `arch/include/` is no longer identical to the
+baseline and a byte diff can no longer certify that the ENTRY half took nothing. The conclusion is
+right and the tense was wrong. R2.2 was ALREADY an ancestor when this stanza was written, and
+`arch.h` already stood 83 insertions from the baseline, so the byte comparison was not going to
+stop working, it had stopped: this verdict could never have been taken by eye and the extractor is
+the only thing that takes it. From here the entry verdict either has an extractor restricted to its
+own family or it collapses to the eye, which is exactly what R5's instrument exists to avoid, on a
+subject half again the size of R5's, 54 records against 35. The second reason is F8's own
+doctrine: the litmus is a future port held against the seam, and the entry path is the half
+every port implements first, so this is the differ the next backend runs.
+*What it reuses, and that is the design.* `tests/static/aspace_seam.awk` VERBATIM. awk runs BEGIN
+blocks in the order its `-f` programs are named, so a second program carrying nothing but the family
+PREFIX replaces the family and leaves every extraction rule alone. The rules that decide what a
+signature IS are therefore R5's own, byte for byte, and the two verdicts cannot come to disagree
+about it; a copy of the extractor with one line changed is how they would have drifted. The baseline
+is R5's file, READ and never written, for the same reason: one commit, one record.
+*And the rule R5 states applies here unchanged:* the instrument's exit IS the verdict, 0 for no
+difference and 2 for a difference, and 1 for a comparison it could not make, which is UNKNOWN and
+not clean. A difference is the finding F8 predicts and lands in the seam with the other backends
+updated. Do NOT move the baseline to quiet one, which would delete the result this step exists to
+produce.
+*And it floors per GROUP as well as per kind,* which R5's does not need. This family has ten groups
+and a total floor of forty five would pass an extraction that lost the six console edges whole,
+because losing them on BOTH sides is a clean empty diff. Each group carries its own floor, and a
+member the family admits and the group table does not classify is a REFUSAL rather than an unfloored
+record.
+
+**THE INSTRUMENT'S MUTATION MATRIX, fifteen arms, every one in an rsynced copy so the tree never
+holds a mutation.** Two controls first: the pristine copy PASSES, and a comment rewrite plus a
+whitespace change inside a declaration also PASSES, so the rig is not reporting a copy or a reflow as
+a kill. Then a changed return type, a changed parameter type, a member added and a member removed all
+exit DIFF and name the member; a parameter renamed exits PASS and prints the NOTE, which is the rule
+this instrument inherits rather than a hole. The five that matter are the ones a differ fails
+silently: a family PREFIX matching nothing refuses on the floors instead of reporting fifty four
+records against zero as no difference; ONE group lost from the family on both sides refuses on that
+group's floor, which no total floor catches; a member the family admits and no group claims refuses;
+a corpus built from a path with no seam header refuses on the anchor; and a seam header the extractor
+cannot walk refuses as UNKNOWN rather than clean. The family file DELETED refuses too, which is the
+one that would otherwise have been a false PASS with real numbers in it: the extractor would fall
+back to its own aspace prefix and this script would print M6.3's verdict under this name.
+
+**WHAT WAS RE-TAKEN AND WHAT IS CARRIED FORWARD, because a verdict that trusts five step reports is
+not a verdict.** RE-TAKEN, on this tree and this build: the three instructions that run on the
+caller's stack pointer, read out of `switch.S` and still `swapgs`, a store of `rsp` through the gs
+base, and a load of the kernel stack from the same block, with the parked value going on to the FRAME
+and the per-core slot holding it only across those three; the flag mask, still naming the interrupt
+flag with a `static_assert` refusing a mask that does not, and the enable of the fast pair still
+written LAST so no SYSCALL can be taken before the mask and the target exist; the root replacement
+performed from code the writing space maps at the same address, read out of `arch_aspace_activate`;
+and the whole ladder, thirty one of thirty one and the five witnesses, on QEMU 11.0.3 TCG (a DATED
+X6 figure; the board reads 38 now).
+*And one claim had NO witness at all in the tree, which is now fixed rather than reported.* F8's
+handover contract was a citation: the port's first instruction clears the interrupt flag, so nothing
+afterwards can read what the flag WAS, and `if_after_cli=0` measures the port and not the firmware.
+The entry now reads the flags, `CR0`, `CR3` and `EFER` BEFORE that instruction and prints the six
+figures, and `tools/run-qemu-x86_64.sh` asserts the four the specification mandates. Measured under
+both firmware legs: interrupts ENABLED, paging ON, long mode ACTIVE, a root LIVE. Mutation tested by
+moving the read to after the `cli`, which turns the first figure to 0 and fails the arm, with the
+paired control of deleting the assertion, which passes it: the assertion and nothing else holds the
+property. The two remaining figures, write protection and execute disable, are printed and matched
+LOOSELY on purpose, being this firmware's choices rather than the architecture's, and they are what
+X4's table edit and X5's dead execute-disable enable both rest on.
+*CARRIED FORWARD, and named so a later reader does not think otherwise:* every figure that needs an
+instruction this emulator does not raise, which is the non-maskable interrupt and the machine check;
+the descriptor-ordering rule's PROVENANCE, since arms report the two selector-base fields and reach
+ring 3 through SYSRET so the resulting layout is witnessed, while a layout FITTED to make those arms
+pass would look identical and only the manual separates the two; and the timer and timestamp
+frequencies, measured once at X3 against the i8254.
+
+**FIVE CORRECTIONS X1 THROUGH X5 MADE TO F8 WERE RECORDED IN A STEP RECORD AND NOT IN F8, and a
+freeze that carries its corrections only in the steps that found them is a freeze the next reader
+misreads.** F8 now carries all five. The flag mask covers neither the non-maskable interrupt nor the
+machine check, so its own sentence understated the window by two vector classes. SYSRET loads no
+stack pointer either, so the property is not a property of entry. Adopting a live regime does not
+hand you ring 3, every entry down to the leaf covering the loaded image having the user bit clear and
+the tables being write protected against their own kernel. One root serves BOTH privilege levels
+here where M6.3 needed two, because the supervisor fetch RISC-V forbids outright is forbidden on x86
+only under a feature this port refuses, which is a root-count-per-privilege-level disagreement no
+A64-shaped reading predicts. And F1's "fixed high range" fails on an adopted identity regime because
+the kernel lives LOW, with the sharper half above the seam: the kernel's convention that a virtual
+address it picks IS the physical address does not survive that regime.
+*The sixth was already there,* the identifier and its invalidation instruction both being absent, and
+X6 re-took it by machine and widened it: TEN emulated processor models rather than five, `max`
+included and both of the emulator's 5-level-capable server models included, all reporting neither
+feature and all running 141 of 141 arms green. The reason is the emulator's TCG feature set rather
+than the model list, which is worth knowing because a KVM run would probably report the identifier
+and this bench has no access to one.
+
+**WHAT THIS VERDICT SAYS THAT A SIGNATURE DIFF CANNOT SHOW.** Five things, all of them mechanism, and
+F8 says mechanism is the shape a good seam produces. The fifth came out of the ten-angle review of
+the closed milestones and is about this verdict's own PASS.
+  - **A three-instruction window on the caller's stack pointer, and what covers it.** Privileged
+    execution begins on a stack pointer ring 3 chose. None of the three instructions that run before
+    the kernel stack is loaded dereferences it: the swap takes no operand and the two moves address
+    a fixed kernel object rather than anything the caller chose. That block is itself reachable and
+    writable from ring 3 on this posture, so the argument covers the caller's stack pointer and not
+    the block's contents. Interrupts are already masked when the first of
+    them executes. The two classes the flag does not hold off have interrupt-stack-table slots of
+    their own, so even those build their frame on a stack of their own rather than on the caller's
+    pointer. That argument, not a signature, is what makes the window safe, and no diff carries it.
+  - **A descriptor ORDERING dictated by two instructions.** SYSCALL takes the stack selector from the
+    code selector field plus 8; SYSRET takes the stack selector from its own field plus 8 and the
+    code selector from that field plus 16. So the kernel data descriptor must sit one entry ABOVE the
+    kernel code descriptor and the user data descriptor one entry BELOW the user code descriptor.
+    Nothing above the seam names a descriptor table, so this constrains a backend's private layout
+    and never a signature, and it moved two hard-coded figures in an earlier step's witness when it
+    was discovered.
+  - **Five frame fields rewritten by a killed thread's redirect, against three on RV64 and two on
+    A64.** An interrupt return reloads the code selector, the stack selector, the flags and the stack
+    pointer along with the instruction pointer, so each is a decision rather than a copy, and the
+    stack selector is not optional: the instruction refuses a return whose stack selector does not
+    carry the privilege the code selector names. One seam call, three backends, two three and five
+    fields.
+  - **A reservation-naming convention that does not survive an adopted regime.** Every virtual
+    address the kernel picks today is a physical one, which is what makes a reservation a globally
+    unique name, and it works on both siblings because their kernels live in a high half. Here the
+    low identity map IS the kernel half, so a reservation named by its own physical address lands in
+    the slots every space shares. The fix is above the seam and costs no signature, a bias into the
+    per-space window. X5 recorded it as the thing most likely to surprise whoever turns the memory
+    axis on, and it is the one item on this list that is a debt rather than a description.
+  - **A MEMBER OF THIS VERY FAMILY GAINED A MANDATORY CALLER PRECONDITION, AND THE DIFFER REPORTED
+    PASS, CORRECTLY.** `arch_switch` says at R6 that it MUST be called either with interrupts masked
+    or from ISR context: publishing the incoming context and saving the outgoing one are two steps in
+    every backend, so an interrupt between them is delivered against a half-applied switch and saves
+    the wrong frame as the incoming thread's saved context. That obligation went from unstated to
+    mandatory over the same stack this verdict measures, and it changes what every caller must
+    already hold. Fifty four records against fifty four is exactly right by the instrument's own rule,
+    which reports types, counts, order and values: a precondition is none of those. So "the entry seam
+    did not move" is a statement about SIGNATURES, and the reading it licenses is that no caller has
+    to be re-typed, not that no caller has to be re-audited. A new backend implementing this family
+    reads the contract and not the record count.
+
+**WHAT M6.4 HAS NOT WITNESSED, verified rather than transcribed.** Every item below was re-measured
+at X6 unless it says otherwise.
+  - **NO RUN ON REAL HARDWARE, and no path to one.** `docs/reference/boards.md` names no x86 part and
+    no flash tool in `tools/` names this arch, so the backend has only ever run under emulation. This
+    is the one item on the list with no cheap remedy.
+  - **ONE FIRMWARE IMPLEMENTATION, not two.** X1's text asks for a second firmware, a hypervisor's
+    own EFI under hardware virtualisation, on the reasoning that two implementations prove the
+    contract was read. What exists is one EDK II build in two PACKAGINGS, the split code-plus-variable
+    pflash pair and the combined image through `-bios`, both from the same distribution package. Both
+    legs were re-run at X6 and both report the same six handover figures. The bench has no reachable
+    `/dev/kvm`, and acceleration would not supply the missing half anyway: the requirement is a
+    different IMPLEMENTATION, and OVMF under KVM is still OVMF. This substitution had been written
+    down nowhere until X1's landed record went in with the same commit as this list.
+  - **THE NON-MASKABLE INTERRUPT AND MACHINE-CHECK STACKS ARE NEVER ENTERED**, this emulator raising
+    neither, so the one window the flag mask cannot close is closed by argument. Their gates and
+    interrupt-stack-table slots are installed and unexercised.
+  - **SUPERVISOR-MODE EXECUTION AND ACCESS PREVENTION ARE REFUSED, and both bits are clear on TEN
+    processor models**, `max` included, where earlier steps' arms ran on the default model only.
+    Re-measured at X8 by booting the X4 image under each of the ten: 75 of 75 arms green on all ten,
+    and the arm that reads the two bits reports them clear on all ten. The ten are named at X8, which
+    is also where the knob that selects a model is; naming them is what makes the sweep repeatable.
+  - **FIVE-LEVEL PAGING IS NEVER ENTERED, and the reason is the FIRMWARE and not the model.** X5
+    recorded it as "no model enabling it", which the ten-model sweep corrects: the emulator does offer
+    two models whose parts support it, and both still report four levels, because the mode is a
+    control-register bit this port ADOPTS rather than sets and OVMF leaves it clear. So the runtime
+    level count is exercised at one of its two values for a reason no CPU model can change.
+  - **NO SECOND CORE**, which is what the not-installed elision in the map editor is compiled out
+    above.
+  - **`ARCH_ASPACE_ECAPACITY` IS UNPRODUCIBLE**, all three M6 backends being radix, and the witness
+    counts every result class and reports that one as 0 rather than assuming it. Re-read at X6: 15
+    OK, 2 ENOMEM, 0 ECAPACITY, 16 EINVAL.
+  - **THE BASE-RELOCATION DELTA IS ALWAYS ZERO IN AN ORDINARY RUN, AND LOAD-BASE INDEPENDENCE IS NOW
+    WITNESSED ANYWAY.** Firmware loads at `0x400000`, which is the image's own `ImageBase`, so the
+    seven `DIR64` entries a full image carries are normally applied with no displacement, and the
+    witness `image=` line says so. That is a fact about the DEFAULT link, not a limit: relinking the
+    full kernel at `0xff000000` made OVMF relocate it by a delta of `-0xE146D000`, and it booted and
+    ran, with X5's full arm set green at five different link bases. So the item on this list is the
+    delta being zero by DEFAULT, and no longer the independence being unproven.
+  - **THE SELECTOR DECODE REACHES ONE OF ITS THREE TABLE LEGS, and X2's prediction that the other two
+    become producible at X4 did not come true.** Only `tbl=gdt` is ever printed. A complete 256-gate
+    table refuses nothing on delivery, so the interrupt-table leg has no producible fault, and this
+    port installs no local descriptor table at all, so that leg cannot happen by construction rather
+    than by scope. X4 landing ring 3 changed neither.
+  - **AND THE PAGE-FAULT DECODE STILL EXERCISES TWO BITS OF SEVEN**, write and instruction fetch,
+    with present, user, reserved, protection-key and shadow-stack all zero across every arm on the
+    tree. The `user` bit staying zero is the one that changed meaning: ring 3 exists now, and it does
+    not take page faults, because X4's flat over-grant leaves it nothing to fault ON. Its denial arms
+    are general-protection faults instead. So that bit becomes producible when the app leaves the
+    kernel's half, which is the same work that retires the over-grant.
+
+**TWO ARM COUNTS IN THIS PLAN HAD DRIFTED, and they are re-measured on the final tree:** X3's witness
+prints 20 arms where its record says nineteen, and X4's prints 74 where its record says 72. Both
+records are corrected. The witnesses assert per ARM NAME rather than on a count, which is why neither
+drift broke anything, and is also why neither was noticed.
+
+**X7. THE FULL-BYTE EXIT PATH, and the arm the lossy channel was keeping off the ladder.** Added
+after X6 rather than planned, because X4b's own record named the fix and declined to take it. There
+was never anything wrong with `fault` on this board: the image prints
+`=== THREAD FAULT === thread 'root' killed` exactly once and it always did. What failed was the
+STATUS. `isa-debug-exit` reports `(status << 1) | 1` into an 8-bit process exit code, so only 0
+through 127 round-trip, and `KOS_EXIT_FAULT` = 139 arrived as 11. Restating 11 in the app's
+`CMakeLists.txt` was the tempting fix and it is the wrong one: it turns a contract into a
+description of one backend's exit device.
+
+*What landed.* `arch/x86/chip/q35/chip_q35.cc` prints the image's own status on the console as one
+line, and `tests/lib/gate.sh`'s `boot_status` reads it. **The whole mechanism is gated on
+`KICKOS_BOOT=uefi-pe`, and the gate is load-bearing rather than tidy.** As first written the line
+EXTRACTION was ungated and only the device recovery and the cross-check were on the posture, so on
+arm64, armv7m, riscv and sim any line matching the pattern in ordinary output replaced the real exit
+status with nothing checking it. Below the gate those boards take the raw status untouched, which is
+the behaviour they had before any of this existed. On the gated posture the two channels must AGREE:
+the printed value is used only where the device corroborated it, and a printed line with no device
+report is refused rather than believed. That matters here specifically because the console is polled
+and an unprivileged thread on this board can write kernel memory (X4's over-grant), so a printed line
+is a claim an application could make about itself, while the device's code comes from the emulator.
+
+- **THE LINE IS EMITTED IN `arch_shutdown` AND NOT IN `kickos_terminate`, and that is the whole
+  point of the choice.** `kickos_terminate` is the chokepoint for every ORDERED terminal path, which
+  is not the same set as every terminal path: `kfault_terminate` on this chip calls `arch_shutdown`
+  directly and never passes through it, and so do the kernel-free X3, X4 and X5 probe images.
+  `arch_shutdown` is the last instruction stream on the board either way, and it already drains the
+  UART, so the line is emitted where nothing can leave without it. The cost of the choice is that
+  the emission is per chip rather than fleet-wide, which is exactly why the READER is not: a board
+  that prints no line keeps the behaviour it had, and any future backend with a lossy exit channel
+  buys the fix by printing the same line.
+- **THE TWO CHANNELS ARE CROSS-CHECKED rather than one replacing the other.** Making the printed
+  line simply win would have silently retired what `sched_exit`'s own comment says it is for: it is
+  the arm that asserts the status CROSSES the exit device. `boot_status` requires the device's
+  recovered value to equal the printed status modulo 128 and fails the gate on a disagreement, and it
+  refuses a printed line the device did not corroborate at all rather than trusting it. The timeout code is never overridden either: an image killed for making no
+  progress must read as killed, and a status line printed before the kill is precisely what would
+  hide that.
+- **THE LINE IS DELIBERATELY NOT BANNER-SHAPED.** `tests/static/check_panic_banners.sh` reads every
+  `\n=== x ===` string literal in the tree as a fault reporter's dump marker and requires
+  `tests/lib/panic.ere` to match it. Spelling an ordinary exit that way is a real failure, measured:
+  the gate refused the first wording, and adding the banner to the ERE would have made every
+  `assert_no_panic` on this board fail on a clean exit. `KICKOS-EXIT status <n>` carries no `===`.
+- **THE ARM IS NON-VACUOUS, held against four mutations in a throwaway copy of the tree, each with
+  the build log checked for the mutated translation unit and each reverted before the next.** The
+  status line deleted: the gate falls back to the device and reddens with `expected exit 139, got
+  11`. The status line emitting `status + 1`: the cross-check fires, `printed status 140 but the exit
+  device reported 11`. The thread-fault dump deleted: `fault-dump marker 'THREAD FAULT' missing`.
+  And the killed thread carrying 7 instead of `KOS_EXIT_FAULT`: `expected exit 139, got 7`, which is
+  the one that matters most, because both channels AGREED on 7 and the arm still caught it. Two
+  controls stayed green, an unmutated run and a comment-only edit to the same function.
+- **NO OTHER GATE WAS EXCLUDED FOR THIS REASON, checked by going through the list rather than
+  assuming.** FOUR arms in the tree assert a status of 128 or more: `fault_dump`, `kernelhalf` and
+  `stackguard` at 139, and `aspacefault` at 132. None of the other three is a lossy-channel
+  exclusion: all three of `kernelhalf`, `aspacefault` and `stackguard` need `HAS_ASPACE` and do not
+  build on this board at all, and `aspacefault`'s registration is additionally keyed on the
+  `ARMV8A EXCEPTION` banner. The other side of the check is the images that DO build here and carry
+  no ctest arm, and each is a real absence: `specfault` is a silicon one-shot against a wrapped
+  external aperture no emulator models, `stress` has a sim-only gate because the sim is the target
+  with no virtual clock, and `hello_c` is gated on no board in the fleet. What the fix does buy is
+  forward: when `HAS_ASPACE` reaches this board, `kernelhalf` and a page-fault `aspacefault` can be
+  registered without a per-arch status.
+
+**X8. THE ADVERSARIAL REVIEW, and the ten things a green suite could not show.** Run deliberately
+before the external audit, against `c7ab8e75` with 32 of 32 ctest green and all five `ninja`
+witnesses passing throughout. That count is DATED by the commit it names and is not the board's
+today, which the fleet paragraph in the ladder section carries. That is the point of the step rather than a caveat on it: none of the
+ten was visible from the suite, and two of them were live wedges.
+
+*The two that made it urgent, and both are re-measured below.*
+
+- **`EFER.NXE` WAS WRITTEN WITH NO CAPABILITY CHECK, and the board died on any part without the
+  bit.** The only `CPUID 0x80000001` read in the tree tested bit 11, SYSCALL, and nothing tested bit
+  20. Measured under `-cpu qemu64,nx=off`: X1 through X4 stayed green and X5 ran 43 of its 141 arms
+  and took a vector-14 fault with `rsvd=1` and `CR2` equal to the port's own kernel-window base,
+  bit 63 being RESERVED while `EFER.NXE` is clear. **THE DECISION IS TO REFUSE AT BOOT, not to omit
+  the bit,** and the reason is what the seam would otherwise return. Every leaf of the port's kernel
+  window carries `PTE_XD`, and `leaf_attrs` expresses "readable, not executable" with that bit and
+  with nothing else this architecture offers, so on a part without it a caller asking for a
+  non-executable page would be handed an executable one together with a success code. That is the
+  silent widening the isolation rule forbids, and omitting the bit would have bought a boot at the
+  cost of making `arch_aspace_map` lie on exactly the parts an attacker would choose. Refusing also
+  covers the WRMSR, which the SDM makes a general-protection fault on a part reporting no bit 20, so
+  there was no quiet option in either direction. `aspace_init` reads the bit and refuses by name.
+- **AND THE ARM THAT SHOULD HAVE CAUGHT IT MATCHED TOO LOOSELY.** X1's handover line was asserted as
+  `wp=[01] nx=[01]`, and the looseness is right for both of those: they are the FIRMWARE's choices
+  and a firmware leaving either clear conforms. The capability is not the firmware's, so the entry
+  now prints `nxcap=` from CPUID and the runner pins it to 1. Measured: under `nx=off` the X1 arm
+  fails on that field with `nxcap=0` in the log, so the ladder stops at its first step instead of at
+  its fifth.
+- **THE SHUTDOWN FALLBACK WAS A NO-OP ON THIS PLATFORM, so every fault path wedged without
+  `isa-debug-exit`.** `pm1a_soft_off` wrote sleep type 5, which is the value real firmware most often
+  publishes for S5. QEMU's ICH9 power-management block decodes 0 as soft power off and sends 5 to its
+  default branch, where nothing happens, so control reached `while (true) hlt` with interrupts
+  masked. Measured before the fix: X3 without the device printed its status line and then hung to
+  rc=124 at the timeout. The comment claiming soft-off "stops the machine" was false and had never
+  been run. **Sleep type 0 now, and the comment says which figures are hardcoded and what real ACPI
+  would require:** the S5 type comes from the DSDT's `\_S5` object and the register address from the
+  FADT, and nothing in `arch/x86/` reads either, so both are this emulated chip's rather than the
+  platform's. The residual halt loop is now reachable only on a machine with neither channel, and it
+  is documented as a wedge, which is the honest report for a machine that cannot stop itself.
+
+*The other eight.*
+
+- **X6's OWN INSTRUMENT LOST ITS DISTINGUISHING FEATURE UNDER bash AND STILL EXITED PASS.** The group
+  table in `check_entry_sigdiff.sh` was held in a variable named `GROUPS`, which is a bash SPECIAL
+  holding the caller's group ids: an assignment to it does not take, so under bash the table expanded
+  to the single number `1000`, every per-group floor went empty, two integer comparisons errored into
+  `/dev/null`'s neighbour and the script printed one bogus `group 1000 54/54 (floor )` line and
+  exited 0. The floors are the ONLY thing that instrument adds over the aspace differ, so bash
+  silently downgraded it to a rerun of M6.3's verdict. Fixed by renaming the table, parsing it ONCE
+  into a validated file through a here-document rather than a pipeline (so a refusal is not confined
+  to a subshell), and checking the parsed row count against a declared figure so a shell that mangles
+  the text fails loudly. Verified under both shells with identical output, and mutation-tested: a copy
+  with the variable renamed back to `GROUPS` passes under dash and fails under bash with
+  `group table row "1000" is not <name> <name-regex> <floor>`.
+- **AND IT IS NOW REGISTERED, unlike its aspace sibling, because the two expect opposite outcomes.**
+  R5 deliberately left `check_aspace_sigdiff.sh` off the ladder: its job is to REPORT a diff for a
+  milestone that was changing the seam, so its exit 2 would have failed the ladder that reads the
+  report. This one asserts the entry seam did NOT move under a second backend, so PASS is its
+  expected verdict and a diff is a regression that must not land quietly. It reads the tree through
+  git, opens no build directory, and takes about a second, so it registers as a `host` gate on every
+  board. What retires it is a milestone that deliberately changes the entry seam, which has to move
+  the baseline ref anyway.
+- **THE TEN FAULT-CLASS IMAGES COULD SHIP STALE, which is the milestone's own documented hazard
+  recurring in the one place it was not applied.** `cmake/x86_64_boot.cmake`'s per-class `DEPENDS`
+  omitted `kickos_x86_64_nokernel`, which is on both that command's no-GOT line and its `ld` line,
+  and a `DEPENDS` on an object library alone is order-only. Fixed with `$<TARGET_OBJECTS:>` as the
+  other commands already do. **Every other custom command in that file was then checked rather than
+  only the reported one:** the X3, X4 and X5 links and the application link each already list every
+  object on their own command lines, and the ESP command depends on the image it packages, so the
+  per-class one was the only omission.
+- **`KICKOS-EXIT` OVERRODE THE EXIT STATUS ON EVERY BOARD IN THE FLEET.** X7 gated the device
+  recovery and the cross-check on `KICKOS_BOOT=uefi-pe` and left the line EXTRACTION ungated, then
+  let the printed value win unconditionally, so on arm64, armv7m, riscv and sim any line matching
+  `^KICKOS-EXIT status <n>$` in ordinary output replaced the real status with nothing checking it.
+  Fixed by gating the whole mechanism on the posture, and by requiring corroboration on that posture:
+  a printed line the device did not confirm is refused rather than believed. Witnessed by driving
+  `boot_status` directly under both shells: with a forged line injected into the output, a
+  `kernel`-posture run and a posture-unset run both still report the raw status 139, while on
+  `uefi-pe` a forged 0 against a device reporting 139 is refused and a printed line with no device
+  report is refused. That closes the forge as well as the accident, because on this board the console
+  is polled and X4's over-grant lets an unprivileged thread write kernel memory.
+- **THE RAM SEAM TOOK ONE CONVENTIONAL RUN AND DISCARDED THE REST, and one of its three defects made
+  an empty arena pass every arm.** The pick was the largest single descriptor at or above the legacy
+  floor, unaligned, unbounded and skip-on-straddle. Three fixes, each cheap: the page count is
+  bounded before it is multiplied, so a descriptor near the top of the range cannot wrap into a small
+  run at a huge address; adjacent runs are MERGED, without assuming the map is sorted, which UEFI
+  does not promise; and a run straddling the floor is CLAMPED to it rather than discarded. The base
+  is then rounded up to the map editor's large-leaf size, `arch_ram_alloc` aligning a region to its
+  own size. Measured with a two-arm control at `-m 512`, the floor raised to `0x2000000` so the
+  straddle case is the one under test: the old skip falls to an arena of 8616 pages at an unaligned
+  `0x1bb8c000`, the clamp gives 105324 pages at `0x2000000`. At the real floor the arena is 107372
+  pages at `0x1800000`, against the old code's 107500 at the unaligned `0x1780000`, the 128-page
+  difference being exactly the alignment round-up. **AND AN EMPTY ARENA NOW FAILS.** The entry prints
+  the arena and its page count and the X1 runner pins the count non-zero; the entry refuses a map
+  naming no usable run; and `arch_init` refuses a published size of zero, which is what turns X3's
+  arms from reporting `ok=1` against nothing into a named refusal.
+  *DELIBERATELY LEFT: the arena is still ONE span.* At `-m 8G` the largest span is the one above
+  4 GiB, so 511,373 pages of the 2,084,237 the map names go unused, 24.5% of conventional memory,
+  and all of it below 4 GiB; at `-m 32G` the same 511,373 pages are lost out of 8,375,693, 6.1%. A
+  multi-run arena is kernel-side work and is recorded in `TODO.md` rather than taken here.
+- **ENABLING THE MEMORY AXIS WOULD MAKE EVERY PAGE TABLE RING-3 WRITABLE.** Recorded with F1's
+  reservation-naming item above, where whoever turns the axis on will meet it, and NOT fixed here:
+  the fix is the link-time separation of the halves that X5's own record already names. The axis is
+  not selected.
+- **THE GRANT IS LEAF-GRANULAR AND THE EXPOSURE CHECK WAS BYTE-GRANULAR.** `g_tables_exposed`
+  compared a table's address against the range the CALLER asked for, and the unit this hardware can
+  grant is a leaf: ring 3 was measured reading `0x460000`, past the image's requested end of
+  `0x455000`, inside the same 2 MiB leaf. So the instrument's zero was true by where this firmware
+  put its tables rather than because the check asked the right question, and on a firmware using
+  1 GiB leaves the over-cover would be up to 1 GiB per end. **The check now asks the hardware.** The
+  grant walk RECORDS the distinct tables it goes through, by physical address, and a census after
+  every grant walks the live regime for each one and applies the processor's own rule, the user bit
+  ANDing down from the root. A table exposed by a large leaf whose own walk never touched it is
+  therefore counted. Overflow of the record is refused rather than dropped, an incomplete census
+  being one that under-reports. And the DENOMINATOR is reported and asserted: `tables_walked` joins
+  `tables_exposed` on the witness line and a new arm requires it non-zero, so a census over an empty
+  record cannot read as a clean one. Measured: `tables_exposed=0 tables_walked=3`, which is what
+  takes X4 from 74 arms to 75. What a zero establishes is now stated exactly in `ring3.h`: none of
+  the tables THIS PORT's grant walked is reachable from ring 3 at the end of `ring3_init`. It does
+  not establish that no table anywhere in the regime is reachable.
+- **AND THE THING IT DOES NOT ESTABLISH IS FALSE, MEASURED.** Two blindnesses, either of them
+  sufficient on its own: the corpus is the THREE tables the grant walked, against every one in the
+  live tree, and the census runs inside `ring3_init`, BEFORE `aspace_init` installs the kernel
+  window. **THE HIERARCHY'S OWN SIZE IS POSTURE-DEPENDENT AND THE EXPOSURE IS NOT**: 1035 tables on
+  the default processor model against 13 under `-cpu max`, where the firmware uses 1 GiB leaves, and
+  every reachability figure below is identical across the two.
+  The table `aspace_init` installs, `g_kwin_table[2]`, is reachable and WRITABLE at CPL3, and so is
+  `g_cpu`, the per-core block `IA32_GS_BASE` names, with `kernel_sp` at offset 0; a ring-3 read
+  returned the live kernel-block top. Both are `.bss` statics of the one flat link, so they lie
+  inside the 2 MiB image leaf the grant opens. **The device clause HOLDS and is now measured rather
+  than argued**: zero reachable leaves in the APIC band, zero in low legacy, zero outside the image
+  and the arena, identical under `-bios` and under `-cpu max`. **NOT the firmware-sibling mechanism**
+  an external reviewer proposed: pre-grant the user bit is set NOWHERE in the hierarchy, so that
+  hazard is UNFIRED here and UNESTABLISHED in general. And the exposure did not GROW -- once kernel
+  RAM is writable, writing a table or `kernel_sp` grants nothing the scheduler state and the
+  capability table in the same leaf did not already grant. What was wrong is two bounds that made
+  the exposure describable. The instrument is `arch/x86/x86_64/probe4_x86_64.cc`'s whole-hierarchy
+  census, which runs after `aspace_init`, asserts the device clause and PINS the two exposed pages
+  by role.
+- **THE KERNEL RAN FOREVER ON THE FIRMWARE'S STACK, and it now runs on its own.** Live RSP was inside
+  `EfiBootServicesData`, exactly the 128 KiB UEFI 2.11 sets as the minimum, with type-7 Conventional
+  memory directly below it. `landed_kernel_x86_64.cc` now switches to a 128 KiB `alignas(16)` array
+  in the image's own `.bss`, which the PE loader placed in memory the image owns outright, and it
+  switches AFTER the constructors, which still need the firmware stack, with `call` rather than an
+  indirect jump so the callee sees the alignment the psABI gives an ordinary call and so the target
+  is a direct relative branch: taking the address of the entry function instead would be a
+  global-offset-table load on this `-fpie` build and `check-x86_64-no-got.sh` refuses one. The size
+  matches what firmware supplied, so the switch cannot be a regression on depth.
+  *DELIBERATELY LEFT:* nothing measures the boot path's depth or guards the low end, and the adopted
+  translation root is itself `BootServicesData`, memory UEFI says an OS may reclaim. This port never
+  reclaims boot-services memory, which makes the root safe by a premise rather than by enforcement.
+  Both are in `TODO.md`.
+- **ELEVEN FALSE DOC CLAIMS, plus drift in five sibling documents.** Corrected in place above, each
+  against a measurement: three gates name an interrupt-stack-table slot rather than one, and the two
+  beyond the double fault are the whole argument that closes the syscall entry's caller-stack window;
+  X1's landed record exists; `SizeOfHeaders` is `0x600`; ten image arms; `fault_dump` asserts a status
+  beside `sched_exit`; four arms assert 128 or more, `stackguard` being the fourth; five `ninja`
+  witnesses; this board's capability table has TWO chunks, configure printing
+  `2 chunks of 8`, which corrects which SIDE of the TCB measurement it is on without changing the
+  measurement; and the APIC and timestamp-counter figures are a per-run calibration whose digits
+  below the first do not reproduce. `ctest --preset qemu-x86_64` was documented and `x86.json` had no
+  `testPresets` at all, so the documented command errored; the preset is added and the command ran
+  33 of 33 at this step, a DATED record: more gates have been registered since and the board
+  reads 38 now, per the fleet paragraph in the ladder section above. Status text is out of
+  `x86.json`'s `displayName` and out of the board's `defconfig`, both of which `boards.md` forbids
+  by its own rule.
+
+*THREE RECORDS WERE STALE IN THE PORT'S FAVOUR, and an understated record is still a false one.*
+
+- **LOAD-BASE INDEPENDENCE IS WITNESSED.** Relinking the full kernel at `0xff000000` made OVMF
+  relocate it by a delta of `-0xE146D000`, and it booted and ran; X5's arms passed at five different
+  link bases. The not-witnessed list said the independence was unproven; what is actually unexercised
+  is a NON-ZERO delta in an ORDINARY run, the default link base being the one firmware honours.
+- **BOTH LOCAL-APIC LEGS ARE EXERCISED.** `-cpu max` and `-cpu Skylake-Server` report x2APIC, the
+  backend takes the MSR path and the arms pass, so "the x2APIC path is present and unwitnessed" was
+  wrong. The default model takes the memory path, which is why the map-dependence caution stands.
+- **THE USER HALF IS DERIVED, not a figure this port picked.** `aspace_user_lo` comes out of which
+  low top-level slots the boot root leaves free, and the ten-model sweep gives it two distinct
+  values: `0x8000000000` (512 GiB) on Nehalem, Haswell, both Skylake models, Cascadelake-Server,
+  Icelake-Server and SapphireRapids, and `0x10000000000` (1 TiB) on qemu64, EPYC-Milan and `max`.
+  Green at both.
+
+*THE MODEL SWEEP IS NOW REPEATABLE, which it was not.* `KICKOS_X86_64_CPU` selects a `-cpu` model in
+all five witness runners and passes nothing when unset, so the sweeps above are taken through the
+supported path rather than by hand. The ten models are `qemu64`, `Nehalem`, `Haswell`,
+`Skylake-Client`, `Skylake-Server`, `Cascadelake-Server`, `Icelake-Server`, `SapphireRapids`,
+`EPYC-Milan` and `max`. X4 reports 75 of 75 on every one and X5 reports 141 of 141 on every one.
+(A DATED X8 record, and BOTH of its figures have since moved, so the ten-model sweep stands only
+as evidence that the models agree with one another. X5 went to 151 arms when the audit at that
+step added ten and to 163 when the attribute-table redesign recorded above traded two arms for
+fourteen; X4 went to 94 when the CPL3 reachability census landed. Re-derived 2026-08-29 on
+`aea89358` with no `-cpu` model selected: X4 94 of 94, X5 163 of 163. The sweep has not been
+re-taken across the ten models at either figure.)
+
+*TWO HYPOTHESES WERE FIXED BLIND because they are cheap and unmeasurable here.* The measured timer
+and timestamp-counter frequencies were `uint32_t`, so any part above 4.295 GHz wrapped and a 4.5 GHz
+processor would have reported a clock about 22 times fast; TCG ignores `tsc-frequency`, so nothing on
+this bench can produce one. Both fields are 64 bits now, and the two places that must narrow,
+`arch_cpu_clock_hz` and `SystemCoreClock`, CLAMP rather than truncate: a rate low by whatever the part
+exceeds the width is wrong in a direction a caller can reason about, where a wrapped one is not. The
+seam's own 32-bit width is the residual and is in `TODO.md`. And the firmware vendor string's loop
+tested `vendor[n] != 0` before `n < 64`, so it read element 64 before deciding it was out of range;
+the bound goes first.
+
+*THE REST ARE RECORDED RATHER THAN FIXED, because fixing on speculation is how a port acquires code
+no measurement asked for.*
+
+- **The translation-tag arm is MODEL-DEPENDENT, and this bench cannot produce the model.**
+  `arch_aspace_model` sets `ARCH_ASPACE_MODEL_ASID` when the part reports NO identifier, and probe5
+  asserts the bit, so on a part reporting one the arm goes red. The review predicted that for any
+  Haswell-or-later outside TCG. Measured across the ten models: every one of them, `max` and
+  SapphireRapids included, reports `tag_bits=0`, so the prediction is UNPRODUCIBLE here and the
+  hazard is the arm's SHAPE rather than a failure anyone can currently see. A KVM run would settle
+  it, and this bench has no reachable `/dev/kvm`.
+- **The i8254 is mandatory on this board and its rate is hardcoded**, being the only reference the
+  APIC timer can be measured against.
+- **The xAPIC register window is dereferenced without being mapped or checked by this port**, and it
+  is the DEFAULT leg. It is reachable through the map OVMF built, which is the map-dependence caution
+  X3 already states, applied to a window rather than to a frame.
+- **`swapgs` in the trap path keys on the interrupted frame's code selector**, so a non-maskable
+  interrupt or machine check taken in either window runs on the USER `gs` base. Harmless only because
+  no handler dereferences `gs`, which is an invariant stated nowhere and exactly what SMP per-CPU data
+  in the trap path would break.
+- **TSC invariance is never checked.**
+
+**AN EXTERNAL AUDIT OF THE ENTRY, SWITCH AND INTERRUPT PATHS (2026-08-29) RAISED SIX FINDINGS,
+FOUR HELD, ONE DID NOT, AND ONE WAS A CONTRACT DEFECT RATHER THAN A BACKEND ONE.** Each was checked
+against the manual before it was fixed, which is what separated them.
+
+- **The interrupt entry called C with a caller-chosen direction flag, and it HELD.** Delivery
+  through a gate clears TF, NT and RF, and an interrupt gate also clears IF; the direction flag is
+  on neither vendor's list (Intel SDM Vol 3 section 7.12.1.3, AMD APM Vol 2 section 8.9.2), so it
+  arrives holding what the interrupted code left in it, and the instruction that sets it is
+  unprivileged. `trap_x86_64.S` clears it ahead of the first call. The SYSCALL leg was already
+  covered and that was verified rather than assumed: bit 10 is in the `IA32_FMASK` value
+  `ring3_x86_64.cc` programs, and SYSCALL clears every flag the mask names. **WHAT MAKES THIS MORE
+  THAN A CONVENTION HERE:** the built kernel archive carries ten `rep stos`, the compiler's own
+  lowering of a zero fill. None of the ten is on the interrupt entry's call graph today, so the
+  hazard is LATENT rather than live, and it is latent by a property of this month's code generation.
+  `tests/static/check_x86_64_entry_cld.sh` reads the assembled object rather than the source text
+  and goes red on the instruction's deletion; no runtime arm in this tree witnesses the hazard,
+  nothing on this board setting the flag from ring 3.
+- **A hostile user stack pointer turning the syscall return into a kernel fault DOES NOT HOLD**, and
+  the manual is what says so. The only frame field a ring 3 caller supplies through SYSCALL is the
+  stack pointer, and IRETQ performs NO canonicality check on the popped RSP: the 64-bit
+  outer-privilege return does `RSP := tempRSP` with no test, and the instruction's own 64-bit
+  exception list names a non-canonical address only for the return instruction pointer and for
+  popping off the OLD stack (Intel SDM Vol 2A, IRET/IRETD/IRETQ). So a malformed value is loaded and
+  faults on the user's first stack access at ring 3, where the kill rule contains it. Every field
+  IRETQ DOES check is kernel stamped: the return instruction pointer comes from `rcx`, which SYSCALL
+  writes, or from a hardware-pushed interrupt frame; the two selectors are immediates in `switch.S`;
+  the flags are masked, the I/O privilege level among them. Nothing was added. **THE RESIDUAL IS
+  X4's OVER-GRANT AND NOT THE ENTRY:** while a ring 3 thread can write kernel memory it can write a
+  parked frame directly, and a canonicality test on the way out would be a guard in front of an open
+  door.
+- **Enabled vector and x87 state neither saved nor trapped, and it HELD, measured rather than
+  argued.** The X1 line reports what this firmware hands over: `em=0 ts=0 mp=1 osfxsr=1
+  osxmmexcpt=1 osxsave=0`, which is SSE fully enabled at both privilege levels with nothing in the
+  port saving an XMM register. TRAPPING was chosen over eager save, on the isolation principle's
+  refuse-rather-than-mask tiebreaker and because the port supports none of the state.
+  `entry_x86_64.cc` sets `CR0.EM`, `CR0.TS` and `CR0.MP` and clears `CR4.OSFXSR`, `CR4.OSXMMEXCPT`
+  and `CR4.OSXSAVE` as soon as ExitBootServices returns, which is the FIRST CR4 write anywhere under
+  `arch/x86`. **FIVE CLASSES AND FIVE DIFFERENT BITS, which is why it is not one bit:** `CR0.EM`
+  raises #NM on x87 and #UD on MMX and legacy SSE, and reaches NO VEX-encoded instruction and no
+  member of the XSAVE family (Intel SDM Vol 2A Table 2-21 lists `CR0.EM` under the legacy-SSE row
+  alone), so `CR4.OSXSAVE` clear is what takes those; `CR0.TS` is a second net across all of them;
+  `CR0.MP` with it takes WAIT and FWAIT. The two remaining CR4 bits are cleared because this
+  operating system manages neither that state nor the SIMD floating-point exception.
+  `tools/run-qemu-x86_64.sh` pins the installed line and matches the found one loosely, the second
+  being the firmware's choice and the first not.
+- **Unowned interrupts contained as user faults with no end-of-interrupt, and it HELD.**
+  `arch_fault_is_user_thread` read the pushed code selector for every vector, so an external
+  delivery at ring 3 was attributed to whichever thread it interrupted. It now refuses a vector at
+  or above 32, the processor's own boundary between the exceptions an instruction raises and an
+  external delivery (Intel SDM Vol 3 Table 6-1), and `kickos_x86_64_isr` writes the end-of-interrupt
+  register for such a vector before returning it to the report (section 13.8.5). Measured both ways
+  by pointing the doorbell at an unowned vector: before, the self-test dies on `=== THREAD FAULT ===
+  thread 'irqI' killed`; after, the fault report and a halt. **AND `apic_eoi` IS TOTAL NOW**, because
+  `desc_init` loads the interrupt table ahead of `apic_init`: with no register block resolved the
+  write would have landed at offset `0xb0` of the low identity map.
+- **Different pending lines collapsing into one doorbell payload: TRUE OF THE CODE, and the finding
+  named it as this backend's defect when it is the SEAM's.** `arch.h`'s single-doorbell contract
+  states exactly that coalescing and the caller obligation that makes it sound, and the xtensa
+  backend carries the same one-cell shape. What was actually wrong is that the contract named the
+  backends it applied to as a HAND-MAINTAINED LIST, and x86_64 was not on it, so this port took the
+  weaker reading of an obligation it was silently under. The backend now carries a pending BITMAP
+  its doorbell handler drains, which is strictly stronger than the floor and changes nothing a
+  portable caller may assume; the contract text now states the floor, names which backend carries
+  which form, and says that a backend absent from both lists is promised more than it may deliver.
+  **KEYING THE CONTRACT ON A DECLARED PROPERTY rather than on a list is the real fix and was NOT
+  taken**: it needs every backend to declare the form it implements, which is six ports and outside
+  this pass. `irq_two_lines_one_region` in the X3 witness is the arm; reverted to one shared cell it
+  reports `delivered=1 seen=8 want=136`, line 7 lost.
+- **The firmware interrupt table staying live after ExitBootServices, and it HELD.** The
+  constructors and the stack transition run before `desc_init`, and `cli` masks neither the
+  non-maskable interrupt nor the machine check, so anything raised in that window vectored through
+  handlers and storage whose lifetime ended with the call. `entry_x86_64.cc` builds and loads a
+  32-gate table of its own the instant ExitBootServices returns, every gate naming one body in the
+  same translation unit that reports and halts; `desc_init` replaces it. THIRTY TWO because those
+  are the vectors the processor itself raises and a delivery above them takes a general-protection
+  fault against the limit, which gate 13 reports. The gate selector is the live `cs`, the descriptor
+  this code is already executing under. Witnessed as a measurement rather than as an arm, the
+  emulator raising neither of the two classes the finding is about: a `ud2` planted in the window
+  reports `FAIL trap before the descriptor tables were installed`, and the same `ud2` with the
+  `lidt` alone defeated produces NOTHING on the wire.
 
 **Stage result:** three MMU backends behind one seam, and a boot path that has been read rather than
 fitted to one firmware.
