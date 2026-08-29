@@ -3,70 +3,63 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Configures every visible configure preset and runs `ctest -LE host` on each preset that
-# registers one, ONE PRESET AT A TIME. The other half of tools/sweep_host_gates.sh, whose
-# header says of this set: "This tool never runs that half, so a green sweep says nothing
-# about it."
+# registers one, ONE PRESET AT A TIME. The other half of tools/sweep_host_gates.sh.
 #
-# An OPERATOR TOOL and deliberately not a gate, for the reasons the sibling gives: it
-# configures the whole fleet, needs the cross toolchain families on the box, and a ctest
-# entry doing that would invoke ctest from inside ctest on every board.
+# An OPERATOR TOOL and deliberately not a gate, for the reason the sibling gives: a ctest
+# entry doing this would invoke ctest from inside ctest on every board.
 #
-# WHAT SERIALISATION IS ENFORCED, AND WHY. `-LE host` is the set that boots a KickOS image,
-# natively on the sim or under an emulator, so it reads a clock with no silicon behind it and
-# a loaded box shifts the result. That makes a batched run an invalid instrument rather than
-# a finding, which is why the sibling refuses this half outright. Enforced here:
+# SERIALISATION IS ENFORCED. `-LE host` boots a KickOS image, so it reads a clock with no
+# silicon behind it and a loaded box shifts the result. Enforced here:
 #   - one preset at a time, in this single process, never a fan-out.
-#   - `ctest -j1`, explicit rather than relying on the default, so no test in a suite runs
-#     beside another test of that suite.
+#   - `ctest -j1`, explicit rather than relying on the default.
 #   - a PID lock, so a second copy of this tool cannot run beside the first. It covers only
-#     copies sharing SWEEP_OUT, and nothing here can see an unrelated build on the box.
-# Build parallelism is kept: the build is not the measurement. Only the ctest step is timed
-# by the tests themselves.
+#     copies sharing SWEEP_OUT.
+# Build parallelism is kept: only the ctest step is timed by the tests themselves.
 #
-# THE CENSUS, AND WHY IT IS TAKEN TWICE. Which tests a preset registers is decided at
-# CONFIGURE time, so `ctest -N -LE host` on a configured tree already reports a count and a
-# preset with no image gate can be answered without building it. That is what makes the
-# whole visible preset set affordable. But an UNBUILT tree does not report the same set as a
-# built one: gtest_discover_tests writes its add_test calls at BUILD time, and until then
-# CMake's GoogleTest module stands in one `<target>_NOT_BUILT` entry per target which does
-# NOT inherit the `LABELS host` the real cases carry, so on an unbuilt sim tree one lands in
-# `-LE host` for every GoogleTest target in the build. So:
-#   - the pre-build census discounts the build fixture and any `*_NOT_BUILT` placeholder, and
-#     decides only whether there is anything here to build.
-#   - the count REPORTED is re-taken after the build, where no placeholder exists and the set
-#     is the one ctest will run. A disagreement between the two is printed, so a placeholder
-#     spelled some other way surfaces instead of inflating a count.
-# A placeholder that survives the build is a GoogleTest target that did not build, and is
-# reported as a failure rather than counted.
+# THE CENSUS IS TAKEN TWICE. Which tests a preset registers is decided at CONFIGURE time, so
+# `ctest -N -LE host` on a configured tree answers a preset with no image gate without
+# building it. But gtest_discover_tests writes its add_test calls at BUILD time, and until
+# then CMake's GoogleTest module stands in one `<target>_NOT_BUILT` entry per target which
+# does NOT carry `LABELS host`, so an unbuilt sim tree lands one in `-LE host` per target.
+#   - the pre-build census discounts the build fixture and any `*_NOT_BUILT` placeholder.
+#   - the count REPORTED is re-taken after the build. A disagreement between the two is
+#     printed, so a placeholder spelled some other way surfaces instead of inflating a count.
+# A placeholder that survives the build is a GoogleTest target that did not build.
 #
-# EMPTY IS NOT PASS. `ctest` exits 0 when its filter selects nothing, so a preset with no
-# image gate would otherwise read exactly like a preset whose image gates all passed. Worse
-# than plain zero: `kickos_build` is deliberately unlabelled so the build fixture joins BOTH
-# partitions, so `-LE host` on a silicon preset selects ONE test, and that one is a build.
-# A preset whose selection is empty once the fixture is discounted is reported EMPTY.
+# EMPTY IS NOT PASS. `ctest` exits 0 when its filter selects nothing, and `kickos_build` is
+# deliberately unlabelled so the build fixture joins BOTH partitions: `-LE host` on a silicon
+# preset selects ONE test, and that one is a build. A selection empty once the fixture is
+# discounted is reported EMPTY.
 #
-# COUNTS, NOT PERCENTAGES. Every line carries the number of gates registered, run, failed
-# and skipped. A suite that registers a fraction of its arms still passes 100% of what it
-# registered, so a percentage cannot express the failure this tool exists to catch. The run's
-# numbers are read from the junit ctest writes, not from its "N% tests passed" line, because
-# only the junit carries skipped and disabled as their own counts.
+# Every preset in the selection reaches one of three ends and is counted in it: it ran every
+# test its post-build census selected, it registered no image gate, or it was not run at all.
+# The last two refuse unless SWEEP_EXPECT_EMPTY and SWEEP_EXPECT_SKIP declare how many of
+# each this selection holds, and the declared figures have to match EXACTLY.
 #
-# THE EMULATOR IS NAMED, NOT ASSUMED. A missing qemu-system is SKIP_RETURN_CODE 77 at the
-# test, so ctest reports Skipped and exits 0: an emulator-less box greens this sweep while
-# booting nothing. Presets whose board needs an emulator are therefore checked against the
-# binary BEFORE the build and skipped BY NAME with the reason. The board set comes from the
-# one list that declares it (KICKOS_QEMU_MPS2_BOARDS in user/apps/common/CMakeLists.txt);
-# `microbit` and `qemu-riscv` are spelled at their call sites with no list to read, so they
-# are named below. Any skip the run reports anyway is counted and shown, so a drift between
-# that map and cmake/kickos.cmake surfaces as a skip this tool did not predict.
+# A SHORT RUN IS A REFUSAL. `ctest` running a different number of tests from the number the
+# post-build census selected means the suite changed shape between the two. The classifier
+# answers seven planted counts at startup before any verdict rests on it.
 #
-# THE GTEST PREFIX IS INERT ON THIS HALF, AND ACCEPTED ANYWAY. On the sibling the prefix is
-# load-bearing, because without it the sim silently registers a fraction of its HOST tests.
-# Every GoogleTest case carries `LABELS host`, so `-LE host` excludes all of them and no image
-# gate depends on KICKOS_BUILD_UNIT_TESTS. The refusal of a prefix that is not on disk is kept
-# so both tools take the same environment and produce comparable trees, but a run with
-# SWEEP_GTEST_PREFIX=- measures the same image set as a run with it. What the prefix does
-# change here is the placeholder count above, which is why that is discounted by name.
+# The sentinel is written only when every clause above holds, it carries the figures it
+# asserts, and nothing else writes it. Its absence and a non-zero exit are the same verdict.
+#
+# THE RECORDED STATUS BELONGS TO A TREE. A previous run's PASS is reused only when the source
+# tree is the one it was recorded against and the recorded line still names its own gate
+# count; a directory named for a branch is not a tree.
+#
+# Every line carries the number of gates registered, run, failed and skipped: a suite that
+# registers a fraction of its arms still passes 100% of what it registered. The run's numbers
+# come from the junit ctest writes, only that carrying skipped and disabled as their own.
+#
+# THE EMULATOR IS NAMED. A missing qemu-system is SKIP_RETURN_CODE 77 at the test, so ctest
+# reports Skipped and exits 0: an emulator-less box would green this sweep while booting
+# nothing. Presets whose board needs an emulator are checked against the binary BEFORE the
+# build and skipped BY NAME. The board set comes from KICKOS_QEMU_MPS2_BOARDS in
+# user/apps/common/CMakeLists.txt; `microbit` and `qemu-riscv` are named below. Any skip the
+# run reports anyway is counted and shown.
+#
+# The GTest prefix is inert on this half, every GoogleTest case carrying `LABELS host`. The
+# refusal of a prefix that is not on disk is kept so both tools take the same environment.
 #
 # Usage:
 #   source .session/env.sh        # or whatever puts your cross toolchains in the env
@@ -79,26 +72,9 @@
 #   SWEEP_GTEST_PREFIX    CMAKE_PREFIX_PATH for GTest        (default /var/tmp/kickos-conan)
 #                         `-` disables it; inert on this half, see above.
 #   SWEEP_FORCE=1         redo presets a previous run already passed
+#   SWEEP_EXPECT_EMPTY=<n>  presets in this selection with no image gate   (default 0)
+#   SWEEP_EXPECT_SKIP=<n>   presets in this selection that cannot be run   (default 0)
 #
-# THEREFORE NOT CAUGHT:
-#   - a board with no silicon here and no emulator machine is configured, not run. Its image
-#     gates are not registered at all, so this reports EMPTY for it and asserts nothing about
-#     the board. Only the bench does.
-#   - the emulator is not the chip. A gate green under qemu says the image boots on qemu.
-#   - a preset builds and its image gates pass with the KICKOS_SERVICE_LIST the preset
-#     defaults to. Nothing here selects an alternative provider.
-#   - a load-dependent gate that passes when run alone still passes here. Serialising removes
-#     the instrument's own noise; it does not prove a gate is load-independent, and a gate
-#     that fails only under load is invisible to both halves of the sweep.
-#   - a flaky gate is not distinguished from a broken one. Nothing is re-run.
-#   - the source tree is read afresh by every preset, so a tree edited mid-run gives verdicts
-#     that belong to DIFFERENT tree states, and nothing here snapshots or checks that. Docs
-#     are the exception rather than the rule on this half: no image gate reads them, while
-#     `oot_export` and the published-console gates configure a child tree and so do read the
-#     CMake, Kconfig and linker files live.
-#   - the lock sees only other copies of this tool under the same SWEEP_OUT. Any other heavy
-#     job on the box perturbs these suites and nothing here can detect it.
-#   - `ctest` reruns the build fixture inside the suite, so every line counts one build
 #     alongside the gates. It is shown separately and never folded into the gate count.
 
 set -u
@@ -108,6 +84,8 @@ OUT="${SWEEP_OUT:-/var/tmp/kickos-imagesweep}"
 JOBS="${SWEEP_JOBS:-8}"
 GPREFIX="${SWEEP_GTEST_PREFIX:-/var/tmp/kickos-conan}"
 FORCE="${SWEEP_FORCE:-0}"
+EXPECT_EMPTY="${SWEEP_EXPECT_EMPTY:-0}"
+EXPECT_SKIP="${SWEEP_EXPECT_SKIP:-0}"
 
 SUMMARY="$OUT/summary.txt"
 SENTINEL="$OUT/DONE"
@@ -119,6 +97,47 @@ FIXTURE=kickos_build
 MPS2_SRC="$ROOT/user/apps/common/CMakeLists.txt"
 
 die() { echo "FAIL: $*" >&2; exit 1; }
+
+# verdict <selected> <ran> <failed> <skipped> <ctest rc>
+# The one word a preset's run earns, from the census count and the junit attributes. SHORT
+# covers a run of zero as well as a run cut short.
+verdict() {
+    if [ "$2" -ne "$1" ]; then
+        echo SHORT
+    elif [ "$3" -gt 0 ]; then
+        echo FAILED
+    elif [ "$4" -gt 0 ]; then
+        echo PARTIAL
+    elif [ "$5" -ne 0 ]; then
+        echo RCFAIL
+    else
+        echo PASS
+    fi
+}
+
+# One planted count per clause, each a minimal pair against the one above it, so a clause
+# that is silent for the wrong reason answers the wrong word rather than passing.
+control() { # <expected word> <selected> <ran> <failed> <skipped> <ctest rc>
+    _want="$1"
+    shift
+    _got="$(verdict "$@")"
+    [ "$_got" = "$_want" ] || die "the run classifier answers $_got where it must answer
+      $_want, for $*. It cannot be trusted to refuse a short run, so nothing below it can
+      report an absence."
+}
+control PASS    3 3 0 0 0
+control SHORT   3 2 0 0 0
+control SHORT   3 0 0 0 0
+control SHORT   3 4 0 0 0
+control FAILED  3 3 1 0 0
+control PARTIAL 3 3 0 1 0
+control RCFAIL  3 3 0 0 1
+
+for _n in "$EXPECT_EMPTY" "$EXPECT_SKIP"; do
+    case "$_n" in
+        ""|*[!0-9]*) die "SWEEP_EXPECT_EMPTY and SWEEP_EXPECT_SKIP take a count, not '$_n'" ;;
+    esac
+done
 
 command -v cmake >/dev/null 2>&1 || die "cmake not found"
 command -v ctest >/dev/null 2>&1 || die "ctest not found"
@@ -143,9 +162,8 @@ fi
 
 mkdir -p "$OUT/logs" "$OUT/status" "$OUT/census" "$OUT/junit" || die "cannot create $OUT"
 
-# FIRST, before anything can be read as evidence. A sentinel a re-run does not clear reads as
-# "done" the instant the re-run starts, and a stale one here has already cost a whole sweep in
-# this project.
+# FIRST, before anything can be read as evidence: a sentinel a re-run does not clear reads as
+# "done" the instant the re-run starts.
 rm -f "$SENTINEL"
 
 if [ -f "$LOCK" ]; then
@@ -159,6 +177,22 @@ echo "$$" > "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 trap 'rm -f "$LOCK"; exit 130' INT
 trap 'rm -f "$LOCK"; exit 143' TERM
+
+# What the recorded status is evidence ABOUT. Without git the identity is unique to this
+# run, so nothing is ever reused and the sweep is whole rather than partly reprinted.
+TREE_ID="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)"
+if [ -n "$TREE_ID" ]; then
+    TREE_ID="$TREE_ID $(git -C "$ROOT" status --porcelain 2>/dev/null | cksum)"
+else
+    TREE_ID="no git under $ROOT, run $$ at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+fi
+STAMP="$OUT/tree.stamp"
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" != "$TREE_ID" ]; then
+    echo "note: $OUT holds status recorded against another tree; discarding it" >&2
+    rm -rf "$OUT/status" || die "cannot clear $OUT/status"
+    mkdir -p "$OUT/status" || die "cannot create $OUT/status"
+fi
+printf '%s\n' "$TREE_ID" > "$STAMP"
 
 PREFIX_ARG=""
 if [ "$GPREFIX" != "-" ]; then
@@ -255,9 +289,14 @@ else
     LIST="$(cut -f1 "$PRESETS_TSV" | tr '\n' ' ')"
 fi
 
+N_LIST=0
 for p in $LIST; do
     cut -f1 "$PRESETS_TSV" | grep -qxF "$p" || die "'$p' is not a visible configure preset"
+    N_LIST=$((N_LIST + 1))
 done
+# Handed nothing, this tool would sweep nothing and report nothing wrong.
+[ "$N_LIST" -gt 0 ] || die "the selection is empty, so there is no corpus to sweep. A run
+      over zero presets has no image gate to fail and would report clean over nothing."
 
 N_TOTAL=0
 N_PASS=0
@@ -288,13 +327,18 @@ for p in $LIST; do
     JUNIT="$OUT/junit/$p.xml"
     BOARD="$(awk -F"\t" -v k="$p" '$1 == k { print $2 }' "$PRESETS_TSV")"
 
-    if [ "$FORCE" != 1 ] && [ -f "$ST" ] && grep -q '^PASS' "$ST"; then
-        N_REUSED=$((N_REUSED + 1))
-        N_PASS=$((N_PASS + 1))
-        # Reprinted from the recorded status, never re-asserted: a reused line has to stay
-        # distinguishable from one this run measured.
-        printf 'REUSED  %s\n' "$(cat "$ST")" >> "$SUMMARY"
-        continue
+    if [ "$FORCE" != 1 ] && [ -f "$ST" ]; then
+        # A recorded line that no longer names its own gate count is not readable evidence.
+        RGATES="$(sed -n 's/^PASS  *[^ ][^ ]*  *\([0-9][0-9]*\) image gate(s).*/\1/p' "$ST" \
+            | tail -n1)"
+        if [ -n "$RGATES" ]; then
+            N_REUSED=$((N_REUSED + 1))
+            N_PASS=$((N_PASS + 1))
+            N_GATES=$((N_GATES + RGATES))
+            # Reprinted from the recorded status, never re-asserted.
+            printf 'REUSED  %s\n' "$(cat "$ST")" >> "$SUMMARY"
+            continue
+        fi
     fi
 
     echo "=== $p ($BOARD) ===" >&2
@@ -371,7 +415,6 @@ for p in $LIST; do
         cat "$ST" >> "$SUMMARY"
         continue
     fi
-    N_GATES=$((N_GATES + N_IMAGE))
 
     NOTE=""
     if [ "$N_IMAGE" -ne "$PRE_IMAGE" ]; then
@@ -412,30 +455,39 @@ for p in $LIST; do
     if [ "$C_FIXTURE" = 1 ]; then
         FIX=" + 1 build fixture"
     fi
-    if [ "$RAN" -ne "$N_SEL" ]; then
-        # The suite changed shape between the census and the run.
-        NOTE="$NOTE; census selected $N_SEL, ctest ran $RAN"
+    if [ "$RAN" -gt "$C_FIXTURE" ]; then
+        N_GATES=$((N_GATES + RAN - C_FIXTURE))
     fi
 
-    if [ "$FAILED" -gt 0 ]; then
-        printf 'FAIL    %-22s %s image gate(s)%s: %s run, %s failed, %s skipped%s, see logs/%s.log\n' \
-            "$p" "$N_IMAGE" "$FIX" "$RAN" "$FAILED" "$SKIPPED" "$NOTE" "$p" > "$ST"
-        N_FAIL=$((N_FAIL + 1))
-    elif [ "$SKIPPED" -gt 0 ]; then
-        # Not a pass. A skip here is a gate that booted nothing, and the emulator check above
-        # already cleared the one reason this tool can predict.
-        printf 'PARTIAL %-22s %s image gate(s)%s: %s run, 0 failed, %s SKIPPED%s, see logs/%s.log\n' \
-            "$p" "$N_IMAGE" "$FIX" "$RAN" "$SKIPPED" "$NOTE" "$p" > "$ST"
-        N_PARTIAL=$((N_PARTIAL + 1))
-    elif [ "$RC" -ne 0 ]; then
-        printf 'FAIL    %-22s ctest exited %s with 0 junit failures over %s image gate(s)%s\n' \
-            "$p" "$RC" "$N_IMAGE" "$FIX" > "$ST"
-        N_FAIL=$((N_FAIL + 1))
-    else
-        printf 'PASS    %-22s %s image gate(s)%s: %s run, 0 failed, 0 skipped%s\n' \
-            "$p" "$N_IMAGE" "$FIX" "$RAN" "$NOTE" > "$ST"
-        N_PASS=$((N_PASS + 1))
-    fi
+    case "$(verdict "$N_SEL" "$RAN" "$FAILED" "$SKIPPED" "$RC")" in
+        SHORT)
+            printf 'FAIL    %-22s the census selected %s test(s) and ctest ran %s over %s image gate(s)%s; the suite changed shape between the two, see logs/%s.log\n' \
+                "$p" "$N_SEL" "$RAN" "$N_IMAGE" "$FIX" "$p" > "$ST"
+            N_FAIL=$((N_FAIL + 1))
+            ;;
+        FAILED)
+            printf 'FAIL    %-22s %s image gate(s)%s: %s run, %s failed, %s skipped%s, see logs/%s.log\n' \
+                "$p" "$N_IMAGE" "$FIX" "$RAN" "$FAILED" "$SKIPPED" "$NOTE" "$p" > "$ST"
+            N_FAIL=$((N_FAIL + 1))
+            ;;
+        PARTIAL)
+            # A skip here is a gate that booted nothing, and the emulator check above
+            # already cleared the one reason this tool can predict.
+            printf 'PARTIAL %-22s %s image gate(s)%s: %s run, 0 failed, %s SKIPPED%s, see logs/%s.log\n' \
+                "$p" "$N_IMAGE" "$FIX" "$RAN" "$SKIPPED" "$NOTE" "$p" > "$ST"
+            N_PARTIAL=$((N_PARTIAL + 1))
+            ;;
+        RCFAIL)
+            printf 'FAIL    %-22s ctest exited %s with 0 junit failures over %s image gate(s)%s\n' \
+                "$p" "$RC" "$N_IMAGE" "$FIX" > "$ST"
+            N_FAIL=$((N_FAIL + 1))
+            ;;
+        *)
+            printf 'PASS    %-22s %s image gate(s)%s: %s run, 0 failed, 0 skipped%s\n' \
+                "$p" "$N_IMAGE" "$FIX" "$RAN" "$NOTE" > "$ST"
+            N_PASS=$((N_PASS + 1))
+            ;;
+    esac
     cat "$ST" >> "$SUMMARY"
 done
 
@@ -448,9 +500,46 @@ done
     echo "finished $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 } >> "$SUMMARY"
 
-if [ "$N_FAIL" -eq 0 ] && [ "$N_PARTIAL" -eq 0 ]; then
-    : > "$SENTINEL"
+# Every clause below is something this run has to have DONE.
+WHY=""
+refuse() { WHY="$WHY
+      $*"; }
+
+N_SEEN=$((N_PASS + N_PARTIAL + N_FAIL + N_EMPTY + N_SKIP))
+[ "$N_TOTAL" -eq "$N_LIST" ] \
+    || refuse "$N_TOTAL of the $N_LIST selected preset(s) were reached"
+[ "$N_SEEN" -eq "$N_TOTAL" ] \
+    || refuse "$N_SEEN of $N_TOTAL preset(s) reached a verdict; the rest left no record"
+[ "$N_FAIL" -eq 0 ] \
+    || refuse "$N_FAIL preset(s) failed"
+[ "$N_PARTIAL" -eq 0 ] \
+    || refuse "$N_PARTIAL preset(s) skipped a gate at run time"
+[ "$N_EMPTY" -eq "$EXPECT_EMPTY" ] \
+    || refuse "$N_EMPTY preset(s) registered no image gate against SWEEP_EXPECT_EMPTY=$EXPECT_EMPTY"
+[ "$N_SKIP" -eq "$EXPECT_SKIP" ] \
+    || refuse "$N_SKIP preset(s) were not run at all against SWEEP_EXPECT_SKIP=$EXPECT_SKIP"
+[ "$N_PASS" -gt 0 ] \
+    || refuse "no preset ran the image gates its census selected"
+[ "$N_GATES" -gt 0 ] \
+    || refuse "zero image gates ran"
+
+if [ -z "$WHY" ]; then
+    # The only writer of this file, and it carries the figures it asserts.
+    {
+        echo "tree     $TREE_ID"
+        echo "selected $N_LIST preset(s)"
+        echo "ran      $N_PASS preset(s) ran every test their census selected ($N_REUSED reused)"
+        echo "gates    $N_GATES image gate(s), 0 failed, 0 skipped"
+        echo "declared $N_EMPTY with no image gate, $N_SKIP not runnable here"
+        echo "finished $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    } > "$SENTINEL"
+    tail -n 4 "$SUMMARY"
+    exit 0
 fi
 
-tail -n 4 "$SUMMARY"
-[ "$N_FAIL" -eq 0 ] && [ "$N_PARTIAL" -eq 0 ]
+{
+    echo "REFUSED: this sweep is not a witness for the selection it was handed:$WHY"
+    echo "      no DONE sentinel written under $OUT"
+} >> "$SUMMARY"
+tail -n 8 "$SUMMARY" >&2
+exit 1

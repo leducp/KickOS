@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
-//
-// The one FrameAllocator and the two callbacks a translating backend reaches it through.
-// kickos/frame_pool.h carries the contract.
 
 #include <kickos/frame_pool.h>
 
@@ -10,15 +7,14 @@
 
 #include <kickos/frame.h>
 #include <kickos/irqlock.h>
+#include <kickos/kruntime.h>
 #include <kickos/arch/arch.h>
 
 #include <stdint.h>
 
 extern "C"
 {
-    // The chip<->kernel contract of a translating board. Not weak: a chip that selects
-    // HAS_ASPACE and carves no pool must fail the link, an absent carve being a pool of
-    // zero frames that reads to every caller as ordinary exhaustion.
+    // Defined by the chip linker script; a HAS_ASPACE chip that carves no pool fails the link.
     extern unsigned char __kickos_frame_pool_start[];
     extern unsigned char __kickos_frame_pool_end[];
     extern unsigned char __kickos_frame_pool_delta[];
@@ -31,13 +27,7 @@ namespace kickos
         FrameAllocator g_frames;
         size_t g_refused = 0;
 
-        // A LINK-TIME WORD rather than a reference to the symbol itself: the delta is an
-        // ABSOLUTE symbol whose value is the whole offset, and a high-half kernel puts that
-        // value out of reach of a PC-relative materialisation (rv64 medany spans a signed
-        // 32-bit displacement; the arm64 pair clears it by one gigabyte). The initialiser is an
-        // address constant, so this is one relocated word and no constructor. VOLATILE is what
-        // keeps it a word: without it the value propagates back into each caller and the
-        // reference is PC-relative again.
+        // volatile keeps this a relocated word; a plain constant folds back into each caller.
         unsigned char* const volatile g_pool_delta = __kickos_frame_pool_delta;
 
         uintptr_t pool_delta()
@@ -46,12 +36,9 @@ namespace kickos
         }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-        // Attempts left before the armed refusal; 0 is disarmed. Every caller holds the
-        // IrqLock, so this needs no ordering of its own.
+        // Every caller holds the IrqLock, so this needs no ordering of its own.
         size_t g_fail_in = 0;
 
-        // Called ahead of the allocator at both entry points, so a refused attempt takes
-        // nothing. One-shot: the arming is spent by the attempt it refuses.
         bool fail_this_attempt()
         {
             if (g_fail_in == 0)
@@ -66,7 +53,6 @@ namespace kickos
 
     bool frame_pool_init()
     {
-        // No lock: this runs at boot, before the first caller that could race it exists.
         uintptr_t const base = reinterpret_cast<uintptr_t>(__kickos_frame_pool_start);
         uintptr_t const top = reinterpret_cast<uintptr_t>(__kickos_frame_pool_end);
         if (top <= base)
@@ -84,7 +70,6 @@ namespace kickos
 
     size_t frame_pool_total()
     {
-        // No lock: the carve's frame count is written by init and never again.
         return g_frames.frames_total();
     }
 
@@ -125,8 +110,28 @@ namespace kickos
         return static_cast<arch_phys_addr_t>(p - pool_delta());
     }
 
-    // No lock across the run: each frame is freed under kickos_frame_free's own. A run
-    // is unbounded, and masking interrupts for its length is what that would cost.
+    arch_phys_addr_t frame_pool_alloc_user_run(size_t pages)
+    {
+        arch_phys_addr_t const run = frame_pool_alloc_run(pages);
+        if (run == 0)
+        {
+            return 0;
+        }
+        size_t const g = arch_aspace_granule();
+        // The frames are already this caller's, so the loop needs no lock of its own.
+        for (size_t i = 0; i < pages; i++)
+        {
+            void* const p = frame_pool_ptr(run + static_cast<arch_phys_addr_t>(i * g));
+            if (p == nullptr)
+            {
+                frame_pool_free_run(run, pages, g);
+                return 0;
+            }
+            kmemset(p, 0, g);
+        }
+        return run;
+    }
+
     void frame_pool_free_run(arch_phys_addr_t run, size_t pages, size_t granule)
     {
         for (size_t i = 0; i < pages; i++)
@@ -137,8 +142,6 @@ namespace kickos
 
     void* frame_pool_ptr(arch_phys_addr_t frame)
     {
-        // The question is asked of the allocator's live bitmap, so a reader outside the lock
-        // reads a word another core is editing.
         IrqLock lock;
         uintptr_t const p = static_cast<uintptr_t>(frame) + pool_delta();
         if (not g_frames.is_allocated(p))
@@ -172,9 +175,6 @@ arch_phys_addr_t kickos_frame_alloc(void)
 void kickos_frame_free(arch_phys_addr_t frame)
 {
     kickos::IrqLock lock;
-    // Counted rather than refused in silence: release() already protects the allocator from
-    // a double free, and that protection is what would otherwise hide a space destroyed
-    // while it still mapped a frame it does not own.
     if (not kickos::g_frames.release(static_cast<uintptr_t>(frame) + kickos::pool_delta()))
     {
         kickos::g_refused++;

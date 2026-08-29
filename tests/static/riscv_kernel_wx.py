@@ -7,36 +7,35 @@
 # 2 MiB each: the leaves covering the KTEXT region are read-execute and every leaf above them
 # is read-write. This reads the LINKED image and refuses a table that widens either side.
 #
-# THE PAGING MODE DOES NOT REACH THIS GATE and that is a property of the layout rather than
-# luck: a mode with more levels adds tables ABOVE level 2 and leaves the level-2 table and
-# everything under it alone (docs/design-m6-mmu.md R3), so the symbol below names the same
-# table at every mode. A level shift that DID move the boundary refuses by name below, the
-# entries there no longer being 2 MiB leaves.
+# The paging mode does not reach this gate: a mode with more levels adds tables ABOVE level 2
+# and leaves the level-2 table and everything under it alone (docs/design-m6-mmu.md R3), so the
+# symbol below names the same table at every mode. A level shift that DID move the boundary
+# refuses by name below, the entries there no longer being 2 MiB leaves.
 #
-# WHY THE IMAGE AND NOT THE SOURCE. The leaves are link-time constants assembled into
-# .mmu_boot, so what the hardware walks is a byte range of the ELF, and the boundary they are
-# checked against is the image's own section table rather than a constant restated here. A
-# source-level check would pass an image whose sections had moved across the boundary the
-# assembler still describes.
-#
-# WHAT IT CANNOT SEE: whether the hardware enforces the leaves. A machine that ignored the W
-# and X bits would pass this gate; the runtime witnesses for that are the privileged probes
-# R2.3 records, which panic on a store into kernel text and on a fetch out of kernel data.
+# The subject is the IMAGE. The leaves are link-time constants assembled into .mmu_boot, so
+# what the hardware walks is a byte range of the ELF, and the boundary they are checked against
+# is the image's own section table.
 #
 # EVERY VALID ENTRY OF EVERY NAMED BOOT TABLE IS CLASSIFIED and EVERY LEAF IS CHECKED. A
 # non-leaf entry is skipped, and only because it holds the next table's frame number, which no
 # object format can relocate: _start fills each of them at boot and the image carries zeros
-# there. That reason covers a non-leaf and nothing else. It does NOT cover the device gigapage
-# in kickos_rv64_high_l2, which is a LEAF, and which an earlier corpus of this gate named
-# nowhere: one PTE_U token there hands an unprivileged store the test finisher, and the machine
-# then exits 0 on command. Every leaf below is held to the same three rules the kernel window's
-# leaves are held to: U clear, never writable and executable at once, never write-only.
+# there. That reason covers a non-leaf and nothing else, the device gigapage in
+# kickos_rv64_high_l2 being a LEAF: one PTE_U token there hands an unprivileged store the test
+# finisher, and the machine then exits 0 on command. Every leaf is held to the same three rules
+# as the kernel window's: U clear, never writable and executable at once, never write-only.
 #
 # Each table is reached by SYMBOL and a missing one is a failure and not a skip: collapsing any
 # of them back to the single 1 GiB leaf this ladder replaced deletes the symbol rather than
 # widening an entry. A table that is all zero in the image has no valid entry, which is correct
 # for the ones _start fills and is reported rather than floored. What IS a corpus defect is
 # finding NO leaf outside the kernel window, the device gigapage being one, so that is floored.
+#
+# THE CORPUS IS THE SECTION. The symbols above say where to start reading; the byte extent of
+# .mmu_boot and .mmu_leaves, out of the image's own section table, says how much there is to
+# read. Every named table accounts for one table's worth of bytes of the section it sits in, and
+# a byte of either section that no name accounts for is refused: one page appended inside
+# `.section .mmu_boot` under a new symbol is a page the hardware can walk that no symbol here
+# reaches. The refusal names the section, the unaccounted extent and the offending slot.
 #
 # usage: riscv_kernel_wx.py <readelf> <image>...
 
@@ -71,6 +70,11 @@ ROOT_SYM = "kickos_rv64_root"
 HIGH_L2_SYM = "kickos_rv64_high_l2"
 WINDOW_L1_SYM = "kickos_rv64_window_l1"
 PAGE = 4096
+TABLE_BYTES = PTES * 8
+
+# The two sections the boot tables are assembled into (startup.S, virt_rv64.ld). Their byte
+# extents are the corpus every named table is accounted against.
+BOOT_SECTIONS = (".mmu_boot", ".mmu_leaves")
 
 SHF_WRITE = 0x1
 SHF_ALLOC = 0x2
@@ -177,7 +181,7 @@ def read_table(elf, secs, addr, name):
             continue
         if not sec["addr"] <= addr < sec["addr"] + sec["size"]:
             continue
-        need = PTES * 8
+        need = TABLE_BYTES
         if addr + need > sec["addr"] + sec["size"]:
             raise Refused("%s: %s runs past the end of %s" % (elf, name, sec["name"]))
         with open(elf, "rb") as fh:
@@ -221,6 +225,99 @@ def boot_tables(readelf, elf):
     out.append((WINDOW_L1_SYM, addr[WINDOW_L1_SYM]))
     out.append((LEAVES_SYM, addr[LEAVES_SYM]))
     return out
+
+
+def boot_sections(elf, secs):
+    # The two sections by name, out of the image's own section table. A section this gate cannot
+    # find is refused rather than treated as empty, an empty extent accounting for itself.
+    out = []
+    for want in BOOT_SECTIONS:
+        found = []
+        for sec in secs:
+            if sec["name"] == want:
+                found.append(sec)
+        if len(found) != 1:
+            raise Refused("%s: %d section(s) named %s in the image's section table, so the byte "
+                          "range the hardware walks cannot be read from it" % (elf, len(found),
+                                                                               want))
+        sec = found[0]
+        if sec["size"] == 0 or sec["addr"] == 0:
+            raise Refused("%s: %s is %d byte(s) at 0x%x, which holds no boot table"
+                          % (elf, want, sec["size"], sec["addr"]))
+        if sec["size"] % TABLE_BYTES != 0:
+            raise Refused("%s: %s is 0x%x byte(s), which is not a whole number of tables"
+                          % (elf, want, sec["size"]))
+        out.append(sec)
+    return out
+
+
+def refuse_gap(elf, sec, lo, hi):
+    # The unaccounted bytes, read out of the image and held to the three leaf rules, so that the
+    # refusal names the slot and not only the page.
+    with open(elf, "rb") as fh:
+        fh.seek(sec["off"] + (lo - sec["addr"]))
+        raw = fh.read(hi - lo)
+    slot = ""
+    for i in range(len(raw) // 8):
+        pte = int.from_bytes(raw[i * 8:i * 8 + 8], "little")
+        if not pte & PTE_V or pte & RESERVED_MASK:
+            continue
+        if not pte & (PTE_R | PTE_W | PTE_X):
+            continue
+        why = None
+        if not pte & PTE_R:
+            why = "is write-only, which the architecture reserves"
+        elif pte & PTE_U:
+            why = "GRANTS THE UNPRIVILEGED LEVEL"
+        elif pte & PTE_W and pte & PTE_X:
+            why = "is WRITABLE AND EXECUTABLE at once"
+        if why is None:
+            continue
+        slot = ("; slot %d of it, at 0x%x (0x%016x), %s" % (i, lo + i * 8, pte, why))
+        break
+    raise Refused("%s: 0x%x byte(s) of %s at 0x%x (section offset 0x%x, file offset 0x%x) are "
+                  "accounted for by no boot table symbol this gate names, so the hardware walks "
+                  "a table no rule above has read%s"
+                  % (elf, hi - lo, sec["name"], lo, lo - sec["addr"],
+                     sec["off"] + (lo - sec["addr"]), slot))
+
+
+def account(elf, secs, tables):
+    # Every named table against the extent of the section it sits in: the tables are walked in
+    # address order and every byte between the section's start and its end has to be one a name
+    # covers. A table in neither section, an overlap, an overrun and a remainder each refuse.
+    boot = boot_sections(elf, secs)
+    placed = {}
+    for name, at in tables:
+        home = None
+        for sec in boot:
+            if sec["addr"] <= at < sec["addr"] + sec["size"]:
+                home = sec
+                break
+        if home is None:
+            raise Refused("%s: %s at 0x%x is in none of %s, so the sections accounted for below "
+                          "do not hold every boot table this gate names"
+                          % (elf, name, at, " ".join(BOOT_SECTIONS)))
+        placed.setdefault(home["name"], []).append((at, name))
+    spans = []
+    for sec in boot:
+        owned = sorted(placed.get(sec["name"], []))
+        end = sec["addr"] + sec["size"]
+        cursor = sec["addr"]
+        for at, name in owned:
+            if at < cursor:
+                raise Refused("%s: %s at 0x%x overlaps the boot table before it in %s"
+                              % (elf, name, at, sec["name"]))
+            if at > cursor:
+                refuse_gap(elf, sec, cursor, at)
+            cursor = at + TABLE_BYTES
+        if cursor > end:
+            raise Refused("%s: the boot tables named in %s run 0x%x byte(s) past its end at 0x%x"
+                          % (elf, sec["name"], cursor - end, end))
+        if cursor < end:
+            refuse_gap(elf, sec, cursor, end)
+        spans.append((sec["name"], sec["addr"], sec["size"], len(owned)))
+    return spans
 
 
 def classify(elf, name, entries):
@@ -267,13 +364,19 @@ def check(readelf, elf, report):
 
     # EVERY BOOT TABLE FIRST, so a widened entry in any of them reddens whatever else the
     # kernel window's own checks below would have said.
+    named = boot_tables(readelf, elf)
     tables = []
     outside = 0
-    for name, at in boot_tables(readelf, elf):
+    for name, at in named:
         counts = classify(elf, name, read_table(elf, secs, at, name))
         tables.append((name, counts[0], counts[1], counts[2]))
         if name != TABLE_SYM:
             outside += counts[0]
+
+    # AND THE SECTIONS THOSE NAMES HAVE TO ACCOUNT FOR, so a table appended beside them is
+    # refused rather than left unread.
+    spans = account(elf, secs, named)
+
     if outside == 0:
         raise Refused("%s: not one leaf outside %s in any boot table. The device gigapage is "
                       "one, so the corpus is wrong, not clean: the tables this gate names no "
@@ -398,7 +501,7 @@ def check(readelf, elf, report):
         raise Refused("%s: %s is written by the map editor and %s[%d] over it is read-only"
                       % (elf, LEAVES_SYM, TABLE_SYM, slot))
 
-    report.append((elf, win_va, rx, rw, execs, writes, aliases, tables, outside))
+    report.append((elf, win_va, rx, rw, execs, writes, aliases, tables, outside, spans))
 
 
 def main(argv):
@@ -418,7 +521,7 @@ def main(argv):
         return 1
     total = 0
     widths = set()
-    for elf, win_va, rx, rw, execs, writes, aliases, tables, outside in report:
+    for elf, win_va, rx, rw, execs, writes, aliases, tables, outside, spans in report:
         print("%s: window 0x%x, %d read-execute leaf/leaves, %d read-write, %d executable and "
               "%d writable section(s) checked, %d alias segment(s)"
               % (elf, win_va, rx, rw, execs, writes, aliases))
@@ -429,6 +532,9 @@ def main(argv):
             print("  %s: %d leaf/leaves, %d non-leaf, %d invalid%s"
                   % (name, leaves, nonleaf, invalid, note))
         print("  %d leaf/leaves outside %s" % (outside, TABLE_SYM))
+        for sec_name, sec_addr, sec_size, count in spans:
+            print("  %s: 0x%x byte(s) at 0x%x, %d table(s) named, no unaccounted byte"
+                  % (sec_name, sec_size, sec_addr, count))
         widths.add(len(tables))
         total += 1
     # The table count is printed per DISTINCT value, so two images built at different modes in

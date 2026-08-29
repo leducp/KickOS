@@ -2,28 +2,23 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // RISC-V RV64IMAC translating backend: the arch_aspace_* family of the arch.h seam over the
-// configured paging mode's tables (RISC-V Privileged ISA, "Sv39 Page Table Entry"; the entry
-// format is the same in every mode on this ladder).
+// configured paging mode's tables.
 //
-// ONE ROOT REGISTER, so a space carries the kernel's fixed high range as a copy of the boot
-// root's own entries and every space shares the tables below them. ONE ROOT ALTOGETHER
-// since R2.2: the app links into a root slot of its own, so the U bit follows the half and
-// no privilege transition changes satp. Activate writes it here, which is the only place it
-// moves after boot.
+// ONE ROOT REGISTER. A space carries the kernel's fixed high range as a copy of the boot root's
+// own entries and every space shares the tables below them; activate writes satp, which is the
+// only place it moves after boot.
 //
-// LEVELS RUN THE OTHER WAY FROM A64's NUMBERING: the leaf is level 0 and the root is the
-// deepest level. Every walk below is written over those two, and both are DERIVED from the
-// configured paging mode in <kickos/arch/rv64_paging.h>, which the chip's prologue derives its
-// own chain from. So a mode change is a Kconfig line rather than an edit here, and a depth
-// stated on one side of the chip<->arch seam only is refused at the handover below
-// (docs/design-m6-mmu.md R3).
+// The leaf is level 0 and the root is the deepest level. Both are DERIVED from the configured
+// paging mode in <kickos/arch/rv64_paging.h>, which the chip's prologue derives its own chain
+// from; the handover below refuses a depth stated on one side of the seam only.
 //
 // TWO ROUTES TO A FRAME'S BYTES, and which one applies is the physical address:
 //   - inside the kernel window the boot tables build, the frame is reached by adding the
-//     window's fixed delta. Every table frame is here, the frame pool being carved inside the
-//     image's DRAM share, so no walk spends a window slot.
-//   - outside it, the frame is reached through a TRANSIENT WINDOW of ARCH_ASPACE_ACQUIRE_MIN
-//     slots per core, mapped and unmapped by the acquire/release pair.
+//     window's fixed delta. Every table frame is here.
+//   - outside it, through a TRANSIENT WINDOW of ARCH_ASPACE_ACQUIRE_MIN slots per core. A slot
+//     is keyed on (space, page) and REFERENCE COUNTED, so repeated acquires of one page answer
+//     one stable pointer and the mapping stands until the last release. Capacity is
+//     ARCH_ASPACE_ACQUIRE_MIN DISTINCT pages per core, not that many calls.
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/rv64_paging.h>
@@ -46,8 +41,7 @@ extern "C"
 
 namespace
 {
-    // satp programs 4 KiB, the only granule these modes define; a 2 MiB or 1 GiB leaf is a
-    // larger mapping and not a second granule (docs/design-m6-mmu.md F7).
+    // satp programs 4 KiB, the only granule these modes define.
     constexpr unsigned GRANULE_SHIFT = KICKOS_RV64_GRANULE_SHIFT;
     constexpr size_t GRANULE = static_cast<size_t>(1) << GRANULE_SHIFT;
     constexpr size_t PTES = GRANULE / sizeof(uint64_t);
@@ -69,18 +63,13 @@ namespace
     constexpr unsigned SATP_ASID_SHIFT = 44;
     constexpr uint64_t SATP_ASID_MASK = 0xFFFFull << SATP_ASID_SHIFT;
     constexpr uint64_t SATP_PPN_MASK = (1ull << SATP_ASID_SHIFT) - 1u;
-    // THE MODE THIS FILE WRITES IS DERIVED FROM THE DEPTH IT WALKS, and not from the Kconfig
-    // symbol a second time: satp.MODE is numbered so each value adds one level, so the mode is
-    // LEVEL_ROOT + 6 and the two cannot disagree. The chip's prologue programmed satp from the
-    // same symbol by its own route, which is what makes the comparison at the handover an
-    // oracle rather than a tautology (docs/design-m6-mmu.md R3).
+    // Derived from the depth this file walks: satp.MODE is numbered so each value adds one
+    // level, so the mode is LEVEL_ROOT + 6 and the two cannot disagree.
     constexpr uint64_t SATP_MODE = static_cast<uint64_t>(LEVEL_ROOT) + 6u;
     constexpr uint64_t SATP_MODE_MASK = 0xFull;
-    // AND THE DEPTH IS HELD TO THE CONFIGURED MODE HERE. Not a tautology: LEVEL_ROOT is the
-    // depth every walk below actually runs at, and the chip's prologue builds its tables and
-    // programs satp from the mode on the right of this comparison. A level count stated here
-    // rather than derived is refused by name at compile time instead of walking a tree one
-    // level shallower than the hardware does.
+    // LEVEL_ROOT is the depth every walk below runs at, and the chip's prologue builds its
+    // tables from the mode on the right. A level count stated here instead of derived is
+    // refused at compile time.
     static_assert(SATP_MODE == KICKOS_RV64_SATP_MODE,
                   "the depth this backend walks is not the depth the configured paging mode has");
 
@@ -98,19 +87,11 @@ namespace
     // PPN sits at 53:10 and carries the output address shifted right by the granule.
     constexpr uint64_t PTE_PPN_MASK = 0x003FFFFFFFFFFC00ull;
 
-    // The identifier width a human wrote for this class of part, compared against the WARL
-    // measurement below. Nothing here allocates, generates or scopes anything on an
-    // identifier: satp.ASID stays 0 in every root this file installs
-    // (docs/design-m6-mmu.md R4).
+    // The identifier width recorded for this class of part, compared against the WARL
+    // measurement below. satp.ASID stays 0 in every root this file installs.
     constexpr unsigned ASID_BITS_RECORDED = 16;
 
-    // The physical address space the mode publishes. The architecture names no register
-    // reporting the range, so the figure stands on the MODE the machine accepted and that mode
-    // is read back rather than restated.
-    constexpr unsigned PA_BITS = KICKOS_RV64_PA_BITS;
-
-    // The window's slots per core. Sized for the seam's floor and asserted against the level-0
-    // table the chip hands over, which holds PTES of them.
+    // The window's slots per core, one per DISTINCT (space, page) held.
     constexpr size_t ACQUIRE_CAPACITY = ARCH_ASPACE_ACQUIRE_MIN;
     static_assert(ACQUIRE_CAPACITY * KICKOS_NUM_CORES <= PTES,
                   "the transient window outgrows the one level-0 table the chip provides");
@@ -126,22 +107,35 @@ namespace
     uintptr_t g_window_delta = 0;
     arch_phys_addr_t g_window_pa_lo = 0;
     arch_phys_addr_t g_window_pa_hi = 0;
+    // The physical extent the PLATFORM implements, in bits; the chip is the only layer that
+    // can answer. Zero refuses every range.
+    unsigned g_phys_bits = 0;
 
     struct WindowSlot
     {
         struct arch_aspace* space;
         uintptr_t page;
+        uint32_t holds; // 0 marks the slot free; space is null then too
     };
     WindowSlot g_slots[KICKOS_NUM_CORES][ACQUIRE_CAPACITY];
 
+    // A hold count that reached this is refused rather than wrapped: a wrap would drop the
+    // mapping under every caller still holding the pointer.
+    constexpr uint32_t HOLDS_MAX = 0xFFFFFFFFu;
+
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // Invalidation sequences the map editor issued, and the ones a not-installed space
-    // skipped. Both shapes are counted, the per-page one and the whole-hart fence a fresh
-    // non-leaf entry owes, so the figure answers "did the editor do its maintenance" rather
-    // than only "did it do the per-page half". Every writer holds the caller's IrqLock.
+    // Invalidation sequences the map editor issued, and the ones a not-installed space skipped:
+    // the per-page shape and the whole-hart fence a fresh non-leaf entry owes. Every writer
+    // holds the caller's IrqLock.
     uint32_t g_tlbi_issued = 0;
     uint32_t g_tlbi_elided = 0;
 #endif
+
+    // Releases that named no window hold and whose frame lies outside the kernel window: the
+    // mispairing arch_aspace_release describes below. Kept in every build; only the reporting
+    // through arch_aspace_tlbi_counts is self-test-only. Saturates. Written under the caller's
+    // masked window above.
+    uint8_t g_release_mispaired = 0;
 
     uint64_t read_satp()
     {
@@ -160,9 +154,8 @@ namespace
         return (static_cast<uint64_t>(pa >> GRANULE_SHIFT) << 10) & PTE_PPN_MASK;
     }
 
-    // A table frame is reached by the kernel window's delta and never through the transient
-    // window: the frame pool is carved inside the image's DRAM share, so every frame this file
-    // allocates for a table falls in the range the boot tables already map.
+    // A table frame is reached by the kernel window's delta: the frame pool is carved inside
+    // the image's DRAM share, so every table frame falls in the range the boot tables map.
     uint64_t* table_at(arch_phys_addr_t pa)
     {
         return reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(pa) + g_window_delta);
@@ -173,12 +166,9 @@ namespace
         return static_cast<arch_phys_addr_t>(reinterpret_cast<uintptr_t>(p) - g_window_delta);
     }
 
-    // The bound is the DRAM gigabyte the boot tables describe and NOT every address that
-    // delta reaches: the device gigapage is mapped at the SAME delta, so an MMIO frame could
-    // be answered by an addition too and is windowed instead. Deliberate, because every frame
-    // the pool hands out is inside this bound, so the device frames are the only thing that
-    // exercises the window pool at all and widening it would leave the fleet's only backend
-    // that can fail ARCH_ASPACE_ACQUIRE_MIN with no live caller (docs/design-m6-mmu.md R4).
+    // The bound is the DRAM gigabyte the boot tables describe, not every address that delta
+    // reaches. The device gigapage is mapped at the same delta and is windowed anyway, which is
+    // what keeps the window pool exercised at all.
     bool in_kernel_window(arch_phys_addr_t pa)
     {
         return pa >= g_window_pa_lo and pa < g_window_pa_hi;
@@ -226,17 +216,11 @@ namespace
         __asm volatile("sfence.vma zero, zero" ::: "memory");
     }
 
-    // A NON-LEAF entry that has just become valid, which the per-leaf fence below it does NOT
-    // cover. Privileged ISA 12.2.1: with rs1 != x0 and rs2 == x0 the fence "orders only reads
-    // and writes made to leaf page table entries corresponding to the virtual address in rs1",
-    // and the same section permits "the caching of PTEs whose V (Valid) bit is clear". So a
-    // hart with a page-walk cache that cached the absence of this table keeps answering absent
-    // for every page under it. The section's own remedy is the only one the ISA offers:
-    // "If software modifies a non-leaf PTE, it should execute SFENCE.VMA with rs1=x0", and rs2
-    // is x0 too because no translation here is tagged.
-    //
-    // The cost is a whole-hart flush, at most once per fresh table rather than once per page,
-    // and there is no narrower form: no operand names the non-leaf entries for one address.
+    // A NON-LEAF entry that has just become valid. The per-leaf fence orders leaf entries only,
+    // and a hart may cache PTEs whose V bit is clear, so a page-walk cache holding the absence
+    // of this table keeps answering absent for every page under it. Privileged ISA 12.2.1 gives
+    // one remedy: SFENCE.VMA with rs1 = x0, and rs2 = x0 because no translation here is tagged.
+    // There is no narrower form.
     void invalidate_nonleaf(bool installed)
     {
 #if KICKOS_NUM_CORES == 1
@@ -257,13 +241,8 @@ namespace
     }
 
     // Whether `space` is the root this core is RUNNING on. A space installed nowhere has no
-    // cached translation and no cached absence: activate fences the whole space when it
-    // installs a root, so nothing survives from a root this core is not on.
-    //
-    // The question is asked of satp itself now that there is one root, which is one fewer
-    // shadow of the hardware to keep in step.
-    //
-    // At one core that is the whole question. A second core holds a root this one cannot read,
+    // cached translation and no cached absence, activate fencing the whole space when it
+    // installs a root. Asked of satp itself. A second core holds a root this one cannot read,
     // so the elision is compiled out above one core (docs/design-m6-mmu.md T9).
     bool installed_here(struct arch_aspace* space)
     {
@@ -306,19 +285,15 @@ namespace
         return true;
     }
 
-    // An entry carries permissions and NO memory type: the attribute is the physical
-    // address's, fixed by the platform, and Svpbmt is absent on this part (menvcfg.PBMTE reads
-    // back 0). Nothing here can downgrade a type because nothing here encodes one, and this
-    // board reaches no frame through a data cache an observer outside the coherency would miss,
-    // which is the state ARCH_MPU_NOCACHE_ALREADY names on the region seam beside it.
+    // An entry carries permissions and no memory type: the attribute is the physical address's,
+    // fixed by the platform, and Svpbmt is absent on this part (menvcfg.PBMTE reads back 0).
     bool memtype_known(enum arch_map_memtype type)
     {
         return type == ARCH_MAP_NORMAL or type == ARCH_MAP_NOCACHE or type == ARCH_MAP_DEVICE;
     }
 
     // A leaf for the unprivileged level. W without R is reserved by the architecture, so a
-    // request with no read names permissions the entry format cannot express and is refused
-    // rather than widened.
+    // request with no read is refused.
     bool leaf_attrs(uint32_t rights, enum arch_map_memtype type, uint64_t* out)
     {
         uint32_t const known = ARCH_MAP_R | ARCH_MAP_W | ARCH_MAP_X;
@@ -326,9 +301,8 @@ namespace
         {
             return false;
         }
-        // Writable and executable at once is expressible here and refused anyway: a page
-        // granted both is one an unprivileged thread can turn into code, and the descriptor is
-        // the only thing there is to take it back with.
+        // Writable and executable at once is expressible here and refused: a page granted both
+        // is one an unprivileged thread can turn into code.
         if ((rights & ARCH_MAP_W) != 0 and (rights & ARCH_MAP_X) != 0)
         {
             return false;
@@ -359,8 +333,7 @@ namespace
 
     // Frees every table under `table` and every leaf output it names. `keep` is the boot root's
     // entry array at LEVEL_ROOT and null below it: an entry a create copied from the boot root
-    // names the kernel half, whose tables every space shares, so walking into one would free
-    // the tables the next space still points at.
+    // names tables every space shares, so walking into one would free the next space's.
     void free_subtree(uint64_t* table, int level, uint64_t const* keep)
     {
         for (size_t i = 0; i < PTES; i++)
@@ -386,7 +359,6 @@ namespace
         }
     }
 
-    // Recursion is bounded by the level count.
     enum arch_aspace_result map_into(uint64_t* table, int level, uintptr_t va, size_t pages,
                                      arch_phys_addr_t pa, uint64_t leaf, bool installed)
     {
@@ -403,8 +375,7 @@ namespace
                     invalidate_page_if(va, installed);
                 }
                 table[idx] = leaf | pa_ppn(pa);
-                // A fresh slot needs one too: an absence may be cached like a presence, so the
-                // new leaf is invisible until the stale negative entry is dropped.
+                // A fresh slot needs one too: an absence may be cached like a presence.
                 invalidate_page_if(va, installed);
                 va += GRANULE;
                 pa += GRANULE;
@@ -424,9 +395,7 @@ namespace
                 desc = pa_ppn(frame) | PTE_V;
                 __asm volatile("fence w, w" ::: "memory");
                 table[idx] = desc;
-                // The per-leaf fence below does NOT reach this entry: it names leaves only.
-                // A page in the new table's span that this call does not map stays unmapped,
-                // and a cached absence for it is still the right answer.
+                // The per-leaf fence below names leaves only, so it does not reach this entry.
                 invalidate_nonleaf(installed);
             }
             else if (not is_table(desc))
@@ -510,9 +479,8 @@ namespace
         return entry;
     }
 
-    // The low half only. Above it is the kernel's window, whose entries every space shares,
-    // and this is the SINGLE statement of that boundary every guard below asks: a second copy
-    // of it is a second truth.
+    // The low half only; above it is the kernel's window, whose entries every space shares.
+    // The single statement of that boundary every guard below asks.
     bool low_half_page(uintptr_t page)
     {
         return page < LOW_HALF_END;
@@ -534,6 +502,50 @@ namespace
         return low_half_page(end - 1);
     }
 
+    // The whole output extent [pa, pa + pages * GRANULE), tested BEFORE any entry is written,
+    // against BOTH bounds a leaf has: pa_ppn masks to the PPN field, so a range whose LAST page
+    // reaches past it wraps onto low physical memory while every write reports OK, and a range
+    // the machine does not implement access-faults on the walk. The first page passing says
+    // nothing about the rest.
+    bool phys_range_ok(arch_phys_addr_t pa, size_t pages)
+    {
+        if ((pa & static_cast<arch_phys_addr_t>(GRANULE - 1)) != 0)
+        {
+            return false;
+        }
+        if (pages == 0)
+        {
+            return false;
+        }
+        uint64_t const bytes = static_cast<uint64_t>(pages) * static_cast<uint64_t>(GRANULE);
+        if (bytes / GRANULE != pages)
+        {
+            return false;
+        }
+        uint64_t const end = static_cast<uint64_t>(pa) + bytes;
+        if (end < static_cast<uint64_t>(pa))
+        {
+            return false;
+        }
+        // end is exclusive and pages is not zero, so end - 1 is the last byte the range covers.
+        arch_phys_addr_t const last = static_cast<arch_phys_addr_t>(end - 1u);
+        if (pa_ppn(last) != (static_cast<uint64_t>(last >> GRANULE_SHIFT) << 10))
+        {
+            return false;
+        }
+        if (g_phys_bits == 0)
+        {
+            return false;
+        }
+        // A platform naming the whole pointer width bounds nothing, and the shift below would
+        // be undefined at 64.
+        if (g_phys_bits >= 64)
+        {
+            return true;
+        }
+        return end <= (static_cast<uint64_t>(1) << g_phys_bits);
+    }
+
     uintptr_t slot_va(size_t core, size_t slot)
     {
         return g_window_va + ((core * ACQUIRE_CAPACITY) + slot) * GRANULE;
@@ -545,45 +557,72 @@ namespace
     }
 
     // A frame outside the kernel window, mapped into a slot of this core's own. Null when every
-    // slot is held, which is the refusal a caller past ARCH_ASPACE_ACQUIRE_MIN gets.
+    // slot holds a different page.
+    //
+    // A page this core already holds answers the SAME slot with its count raised, so the pointer
+    // is stable across a second acquire and the mapping outlives a release taken in any order.
+    // A release names (space, page) and nothing else.
     void* window_take(struct arch_aspace* space, uintptr_t page, arch_phys_addr_t pa)
     {
         size_t const core = static_cast<size_t>(arch_cpu_id());
         for (size_t i = 0; i < ACQUIRE_CAPACITY; i++)
         {
-            if (g_slots[core][i].space != nullptr)
+            if (g_slots[core][i].holds == 0)
             {
                 continue;
             }
-            // Kernel data: no U and no X, so a slot is unreachable from an unprivileged thread
-            // whichever root is live and nothing can be executed out of it. PTE_G because the
-            // slot IS a mapping every space shares: create copies the boot root's entry for
-            // this half, so every space walks these same tables. The non-leaf entries above
-            // this one carry no G, so nothing here inherits it (Privileged ISA 12.3.1), and
-            // every leaf startup.S assembles in this half sets it.
+            if (g_slots[core][i].space != space or g_slots[core][i].page != page)
+            {
+                continue;
+            }
+            if (g_slots[core][i].holds == HOLDS_MAX)
+            {
+                return nullptr;
+            }
+            g_slots[core][i].holds++;
+            return reinterpret_cast<void*>(slot_va(core, i));
+        }
+        for (size_t i = 0; i < ACQUIRE_CAPACITY; i++)
+        {
+            if (g_slots[core][i].holds != 0)
+            {
+                continue;
+            }
+            // Kernel data: no U and no X. PTE_G because the slot IS a mapping every space
+            // shares, and G is not inherited from the non-leaf entries above (Privileged ISA
+            // 12.3.1), which carry none.
             *slot_entry(core, i) =
                 pa_ppn(pa) | PTE_V | PTE_G | PTE_R | PTE_W | PTE_A | PTE_D;
             __asm volatile("fence w, w" ::: "memory");
             __asm volatile("sfence.vma %0, zero" ::"r"(slot_va(core, i)) : "memory");
             g_slots[core][i].space = space;
             g_slots[core][i].page = page;
+            g_slots[core][i].holds = 1;
             return reinterpret_cast<void*>(slot_va(core, i));
         }
         return nullptr;
     }
 
-    // Surrenders one hold of (space, page), and says whether one matched. The key is the pair
-    // and not the individual hold, so a release beside a live hold of the same page takes THAT
-    // hold; what separates a mispaired release from a hold the offset route took is the route,
-    // which arch_aspace_release asks below.
+    // Surrenders one hold of (space, page), and says whether one matched. The slot is unmapped
+    // on the LAST hold only, so every other holder's pointer stays live whatever order the
+    // releases arrive in.
     bool window_drop(struct arch_aspace* space, uintptr_t page)
     {
         size_t const core = static_cast<size_t>(arch_cpu_id());
         for (size_t i = 0; i < ACQUIRE_CAPACITY; i++)
         {
+            if (g_slots[core][i].holds == 0)
+            {
+                continue;
+            }
             if (g_slots[core][i].space != space or g_slots[core][i].page != page)
             {
                 continue;
+            }
+            g_slots[core][i].holds--;
+            if (g_slots[core][i].holds != 0)
+            {
+                return true;
             }
             *slot_entry(core, i) = 0;
             __asm volatile("fence w, w" ::: "memory");
@@ -602,15 +641,11 @@ namespace
     };
 
     // The identifier field the hart implements, by writing ones across it. Safe under live
-    // translation because it preserves MODE and PPN, moves satp.ASID alone, and fences on both
-    // sides (docs/design-m6-mmu.md R4).
+    // translation: it preserves MODE and PPN, moves satp.ASID alone, and fences on both sides.
     //
-    // WARL means the legal values need not be a contiguous low run, so the readback's
-    // POPCOUNT is not a width: a hart implementing a non-contiguous subset would report fewer
-    // bits than the field it has. The width is the highest bit that stuck plus one, and
-    // whether the bits below it stuck is reported BESIDE the figure rather than folded into
-    // it, so such a hart reports its real span and clears the verdict bit instead of matching
-    // the record with a narrower number.
+    // WARL legal values need not be a contiguous low run, so the readback's POPCOUNT is not a
+    // width. The width is the highest bit that stuck plus one, and whether the bits below it
+    // stuck is reported BESIDE the figure rather than folded into it.
     AsidField measure_asid_field()
     {
         arch_irq_state_t const s = arch_irq_save();
@@ -643,15 +678,17 @@ size_t arch_aspace_granule(void)
 
 uint64_t arch_aspace_model(void)
 {
-    // The mode the machine ACCEPTED, read back rather than restated: satp.MODE is WARL, so a
-    // mode this hart does not implement would not be standing here.
+    // satp.MODE is WARL, so the mode read back here is one this hart implements.
     unsigned const mode = static_cast<unsigned>((read_satp() >> SATP_MODE_SHIFT) & SATP_MODE_MASK);
     uint64_t granules = 0;
     unsigned pa_bits = 0;
     if (mode == SATP_MODE)
     {
         granules = 1; // the architecture defines one page size for this mode
-        pa_bits = PA_BITS;
+        // The PLATFORM's extent: every RV64 mode encodes 56 bits of output in the PPN field,
+        // and an output the machine does not implement access-faults on the walk. The same
+        // bound phys_range_ok refuses against.
+        pa_bits = g_phys_bits;
     }
     AsidField const asid = measure_asid_field();
     uint64_t out = 0;
@@ -659,8 +696,7 @@ uint64_t arch_aspace_model(void)
     {
         out |= ARCH_ASPACE_MODEL_GRANULE;
     }
-    // A span matching the record through bits the hart does not all implement is not the
-    // field the record names, so contiguity gates the verdict bit and not the reported width.
+    // Contiguity gates the verdict bit and not the reported width.
     if (asid.contiguous and asid.bits == ASID_BITS_RECORDED)
     {
         out |= ARCH_ASPACE_MODEL_ASID;
@@ -696,8 +732,7 @@ struct arch_aspace* arch_aspace_create(void)
     }
     uint64_t* const table = table_at(root);
     // The boot root's own entries, so the kernel's fixed high range is present and every space
-    // shares the tables below them: a later kernel-half edit stays in step, and copying one
-    // level deeper would make that half per-space state every edit had to walk.
+    // shares the tables below them; a later kernel-half edit stays in step.
     for (size_t i = 0; i < PTES; i++)
     {
         table[i] = g_boot_root[i];
@@ -714,8 +749,7 @@ void arch_aspace_destroy(struct arch_aspace* space)
     }
     uint64_t* const table = root_of(space);
     // FIRST, not last: a walk caches the address of an intermediate table, so a table freed
-    // while such an entry stands would be read as descriptors after the pool hands it out as
-    // data.
+    // while such an entry stands would be read as descriptors after the pool reissues it.
     invalidate_all();
     free_subtree(table, LEVEL_ROOT, g_boot_root);
     kickos_frame_free(phys_of(table));
@@ -729,10 +763,9 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     {
         return ARCH_ASPACE_EINVAL;
     }
-    if ((pa & static_cast<arch_phys_addr_t>(GRANULE - 1)) != 0
-        or pa_ppn(pa) != ((static_cast<uint64_t>(pa >> GRANULE_SHIFT) << 10)))
+    if (not phys_range_ok(pa, pages))
     {
-        return ARCH_ASPACE_EINVAL; // misaligned, or an output past the PPN field
+        return ARCH_ASPACE_EINVAL; // misaligned, or an extent reaching past the PPN field
     }
     uint64_t leaf = 0;
     if (not leaf_attrs(rights, type, &leaf))
@@ -749,8 +782,8 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
         // a table about to go back to the pool.
         arch_irq_state_t const s = arch_irq_save();
         // Leaves first and tables second: an entry left valid over a freed table would be a
-        // walk into the pool. Installation runs in address order, so the first page with no
-        // leaf ends the rollback.
+        // walk into the pool. Installation runs in address order, so the first page with no leaf
+        // ends the rollback.
         for (size_t i = 0; i < pages; i++)
         {
             uint64_t* const entry =
@@ -802,14 +835,10 @@ void arch_aspace_activate(struct arch_aspace* space)
     {
         return;
     }
-    // THE RUNNING TRANSLATION, kernel half included. Every space carries the same root entries
-    // for the kernel window, the devices and the transient window, so the code making this
-    // write keeps its own mappings across it; what changes is the app's slot and every
-    // per-space range below it.
+    // Every space carries the same root entries for the kernel window, the devices and the
+    // transient window, so the code making this write keeps its own mappings across it.
     //
-    // No identifier is allocated here or anywhere (docs/design-m6-mmu.md R4), so the fence
-    // names every address space and drops the outgoing one's translations with the incoming
-    // one's absences.
+    // No identifier is allocated anywhere, so the fence names every address space.
     arch_irq_state_t const s = arch_irq_save();
     __asm volatile("csrw satp, %0" ::"r"(satp_of(root_of(space))) : "memory");
     __asm volatile("sfence.vma zero, zero" ::: "memory");
@@ -829,9 +858,8 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
         return nullptr;
     }
     uintptr_t const page = va & ~static_cast<uintptr_t>(GRANULE - 1);
-    // The half test arch_aspace_frame_at makes, for the same aliasing and for one more: a
-    // frame this walk reaches through the kernel's own entries would be handed back as a
-    // POINTER the caller may write through.
+    // The half test arch_aspace_frame_at makes: a frame this walk reached through the kernel's
+    // own entries would be handed back as a POINTER the caller may write through.
     if (not low_half_page(page))
     {
         return nullptr;
@@ -859,6 +887,14 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
     return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(slot) + off);
 }
 
+// A mispairing is COUNTED, not panicked over: this member is on the fault reporter's descent
+// (kaccess_to_user through access_copy), so a panic here would fire inside the record it is
+// writing. map_tlbi_elided reading g_release_mispaired through arch_aspace_tlbi_counts is what
+// refuses it, and a build with no self-test reports it nowhere.
+//
+// The test sees a second release of a page reached THROUGH a slot, whose frame is outside the
+// kernel window. A page acquired by the OFFSET route spends no slot, so a repeat there
+// surrenders nothing.
 void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
 {
     if (space == nullptr or g_window_leaves == nullptr)
@@ -866,9 +902,9 @@ void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
         return;
     }
     uintptr_t const page = va & ~static_cast<uintptr_t>(GRANULE - 1);
-    // REFUSED AND NOT A DEFECT. An address outside the half held no slot, acquire having
-    // refused it, so there is nothing to drop and nothing mispaired; falling through would
-    // walk the kernel's own entries and reach the panic below on a caller's bad address.
+    // An address outside the half held no slot, acquire having refused it. Falling through
+    // would walk the kernel's own entries and count a caller's bad address as the defect
+    // below.
     if (not low_half_page(page))
     {
         return;
@@ -877,36 +913,34 @@ void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
     bool defect = false;
     if (not window_drop(space, page))
     {
-        // No slot held this page, and the two reasons for that are not the same one. A hold
-        // the OFFSET route took spends no slot, so nothing to drop is the whole answer for it.
-        // A frame OUTSIDE the kernel window is only ever reached THROUGH a slot, so a release
-        // there pairs with no hold of its own and the next release of the same page would
-        // surrender a live one. The route is decided by the same question acquire asked.
+        // No slot held this page. A hold the OFFSET route took spends none, so nothing to drop
+        // is the whole answer. A frame OUTSIDE the kernel window is only ever reached THROUGH a
+        // slot, so a release there pairs with no hold and the next release of the same page
+        // would surrender a live one. The route is the same question acquire asked.
         uint64_t const* const entry = leaf_entry(root_of(space), page);
         defect = entry != nullptr and not in_kernel_window(pte_pa(*entry));
     }
     arch_irq_restore(s);
-    if (defect)
+    if (defect and g_release_mispaired != 0xFFu)
     {
-        kickos::kpanic(kickos::diag::kAspaceRelease);
+        g_release_mispaired++;
     }
 }
 
 arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)
 {
-    // acquire's guard, for its reason: the walk reaches every table through the kernel
-    // window's delta, which is 0 until the chip hands it over, so a call before the handover
-    // would read a table at its output address.
+    // acquire's guard: the walk reaches every table through the kernel window's delta, which is
+    // 0 until the chip hands it over, so a call before the handover would read a table at its
+    // output address.
     if (space == nullptr or g_window_leaves == nullptr)
     {
         return 0;
     }
     uintptr_t const page = va & ~static_cast<uintptr_t>(GRANULE - 1);
-    // MAP AND UNMAP'S OWN HALF TEST, and aligned down first because this member's `va` need
-    // not be granule-aligned where range_ok's is. The walk reads the index bits of `va` alone,
-    // so without this an address above the half ALIASES onto a low-half page and is answered
-    // with that page's frame; where the index bits reach the kernel window instead, the tables
-    // walked are the ones every space shares.
+    // Map and unmap's own half test, aligned down first because this member's `va` need not be
+    // granule-aligned where range_ok's is. The walk reads the index bits of `va` alone, so
+    // without this an address above the half ALIASES onto a low-half page and is answered with
+    // that page's frame.
     if (not low_half_page(page))
     {
         return 0;
@@ -930,7 +964,7 @@ arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)
 // address that reaches it. Called from arch_init before any space exists.
 void kickos_rv64_aspace_boot(uint64_t* user_root, uint64_t* window_leaves, uintptr_t window_va,
                              uintptr_t window_delta, arch_phys_addr_t pa_lo,
-                             arch_phys_addr_t pa_hi)
+                             arch_phys_addr_t pa_hi, unsigned phys_bits)
 {
     g_boot_root = user_root;
     g_window_leaves = window_leaves;
@@ -938,12 +972,14 @@ void kickos_rv64_aspace_boot(uint64_t* user_root, uint64_t* window_leaves, uintp
     g_window_delta = window_delta;
     g_window_pa_lo = pa_lo;
     g_window_pa_hi = pa_hi;
+    g_phys_bits = phys_bits;
     for (size_t c = 0; c < KICKOS_NUM_CORES; c++)
     {
         for (size_t i = 0; i < ACQUIRE_CAPACITY; i++)
         {
             g_slots[c][i].space = nullptr;
             g_slots[c][i].page = 0;
+            g_slots[c][i].holds = 0;
         }
     }
 }
@@ -951,7 +987,13 @@ void kickos_rv64_aspace_boot(uint64_t* user_root, uint64_t* window_leaves, uintp
 #if defined(KICKOS_ENABLE_SELFTEST)
 uint64_t arch_aspace_tlbi_counts(void)
 {
-    return (static_cast<uint64_t>(g_tlbi_issued) << 32) | static_cast<uint64_t>(g_tlbi_elided);
+    uint32_t elided = g_tlbi_elided;
+    if (elided > 0xFFFFFFu)
+    {
+        elided = 0xFFFFFFu; // saturates rather than bleeding into the issued half
+    }
+    return (static_cast<uint64_t>(g_tlbi_issued) << 32) | (static_cast<uint64_t>(elided) << 8)
+           | static_cast<uint64_t>(g_release_mispaired);
 }
 #endif
 

@@ -5,7 +5,7 @@
 # IMAGE. tests/static/check_test_labels.sh reads this and requires the `host` label on
 # exactly the image=no set, in both directions.
 #
-#   <host|image>  <src|build>  <path relative to that root>
+#   <host|image>  <src|build>  <path relative to that root>  [layer]
 #
 # host  = executes no KickOS image: source-tree checks, host programs linking KickOS sources
 #         or headers, static checks reading a built ELF, and builds that never run what they
@@ -14,13 +14,17 @@
 #         configures and builds itself. Must run standalone: the sim and qemu suites have no
 #         silicon clock and fail under the load of a back-to-back run.
 #
-# Neither the directory nor the argument list discriminates the two: check_oot_export.sh and
-# check_oot_export_mcu.sh are siblings with the same shape on opposite sides. A new test gets
-# a line here or the gate refuses it.
+# The path does not tell you the class: check_oot_export.sh and check_oot_export_mcu.sh are
+# siblings with the same shape on opposite sides. A new test gets a line here or the gate
+# refuses it.
 #
-# A `build` path is relative to the CMake binary directory. A dead `build` line is caught on
-# a sim tree with the host unit binaries built, which is the configuration that registers
-# them.
+# A `build` path is relative to the CMake binary directory. Every one of them is swept on a
+# sim tree, and a `build` line no test runs there is a dead declaration.
+#
+# The optional fourth field names the LAYER a `build` program needs; a tree configured
+# without it excuses the declaration by name. `unit` is the GoogleTest host unit layer, which
+# KICKOS_BUILD_UNIT_TESTS carries. A `src` line takes no layer: its file is pinned on every
+# board.
 
 # --- source-tree and host-program gates --------------------------------------
 host   src    tests/integration/check_oot_export_mcu.sh
@@ -33,6 +37,7 @@ host   src    tests/static/check_cpu_id_fold.sh
 host   src    tests/static/check_dash_punct.sh
 host   src    tests/static/check_death_stack_seating.sh
 host   src    tests/static/check_doc_names.sh
+host   src    tests/static/check_entry_sigdiff.sh
 host   src    tests/static/check_extern_c_linkage.sh
 host   src    tests/static/check_forever_loop.sh
 host   src    tests/static/check_include_guards.sh
@@ -50,54 +55,58 @@ host   src    tests/static/check_riscv_kernel_gp.sh
 host   src    tests/static/check_riscv_kernel_apphalf.sh
 host   src    tests/static/riscv_kernel_wx.py
 host   src    tests/static/check_seam_defaults.sh
+host   src    tests/static/check_x86_64_no_got_selftest.sh
+host   src    tests/static/check_x86_64_no_vector.sh
+host   src    tests/static/check_x86_64_entry_cld.sh
 host   src    tests/static/check_service_lists.sh
 host   src    tests/static/check_shell_special_names.sh
 host   src    tests/static/check_spdx.sh
 host   src    tests/static/check_test_labels.sh
-# Cross-builds a tree of its own and reads the .ci files that build emits, never running
-# the image, so it is `host`.
+host   src    tests/static/check_whitespace.sh
+# Cross-builds a tree of its own and never runs the image.
 host   src    tests/static/check_trap_redzone.sh
-# Reads the roots file, the trap-stack headers and the preset files, and cross-checks the
-# three against each other. Configures nothing, so it is `host` and needs no toolchain.
+# Reads the roots file, the trap-stack headers and the preset files and cross-checks them; configures nothing.
 host   src    tests/static/check_trap_redzone_decls.sh
+# Cross-builds a tree of its own on the translating presets and never runs the image.
+host   src    tests/static/check_console_reach.sh
 host   src    tests/unit/telemetry/check_golden.py
 host   src    tests/unit/telemetry/check_idmap.py
 
 # --- host unit-test binaries (GoogleTest, one ctest entry per case) ----------
-host   build  tests/unit/cancelkind/cancel_kind
-host   build  tests/unit/capprobe/cap_probe
-host   build  tests/unit/capreply/capreply_packing
-host   build  tests/unit/capsweep/cap_sweep
-host   build  tests/unit/captable/captable_deep
-host   build  tests/unit/captable/captable_deeptail
-host   build  tests/unit/captable/captable_flat
-host   build  tests/unit/captable/captable_segmented
-host   build  tests/unit/consoleown/console_ownership
-host   build  tests/unit/consoleown/console_publish_handoff
-host   build  tests/unit/consoletx/console_tx_masked_window
-host   build  tests/unit/drvbringup/drv_bringup
-host   build  tests/unit/drvbringup/init_flush
-host   build  tests/unit/faultband/fault_band
-host   build  tests/unit/grantnocache/grant_nocache
-host   build  tests/unit/kstring/kstring_words
-host   build  tests/unit/frame/frame_alloc
-host   build  tests/unit/vrange/vrange_list
-host   build  tests/unit/ktime/ktime_rearm
-host   build  tests/unit/parkresult/park_result
-host   build  tests/unit/schedwake/sched_wake
-host   build  tests/unit/slayhook/slay_hook
-host   build  tests/unit/slotpool/slotpool_policy
-host   build  tests/unit/taskdeath/task_death
-host   build  tests/unit/tlscarve/tls_carve_empty
-host   build  tests/unit/tlscarve/tls_carve_span
-host   build  tests/unit/tlscarve/tls_carve_seat
-host   build  tests/unit/uartclass/uart_class
-host   build  tests/unit/wildstack/wild_stack
+host   build  tests/unit/cancelkind/cancel_kind              unit
+host   build  tests/unit/capprobe/cap_probe                  unit
+host   build  tests/unit/capreply/capreply_packing           unit
+host   build  tests/unit/capsweep/cap_sweep                  unit
+host   build  tests/unit/captable/captable_deep              unit
+host   build  tests/unit/captable/captable_deeptail          unit
+host   build  tests/unit/captable/captable_flat              unit
+host   build  tests/unit/captable/captable_segmented         unit
+host   build  tests/unit/consoleown/console_ownership        unit
+host   build  tests/unit/consoleown/console_publish_handoff  unit
+host   build  tests/unit/consoletx/console_tx_masked_window  unit
+host   build  tests/unit/drvbringup/drv_bringup              unit
+host   build  tests/unit/drvbringup/init_flush               unit
+host   build  tests/unit/faultband/fault_band                unit
+host   build  tests/unit/grantnocache/grant_nocache          unit
+host   build  tests/unit/kstring/kstring_words               unit
+host   build  tests/unit/frame/frame_alloc                   unit
+host   build  tests/unit/vrange/vrange_list                  unit
+host   build  tests/unit/ktime/ktime_rearm                   unit
+host   build  tests/unit/parkresult/park_result              unit
+host   build  tests/unit/schedwake/sched_wake                unit
+host   build  tests/unit/slayhook/slay_hook                  unit
+host   build  tests/unit/slotpool/slotpool_policy            unit
+host   build  tests/unit/taskdeath/task_death                unit
+host   build  tests/unit/tlscarve/tls_carve_empty            unit
+host   build  tests/unit/tlscarve/tls_carve_span             unit
+host   build  tests/unit/tlscarve/tls_carve_seat             unit
+host   build  tests/unit/uartclass/uart_class                unit
+host   build  tests/unit/wildstack/wild_stack                unit
 
 # --- gates that run an image -------------------------------------------------
 image  src    tests/integration/check_app_arms.sh
 image  src    tests/integration/check_aspace_fault.sh
-image  src    tests/integration/check_aspace_fault_rv64.sh
+image  src    tests/integration/check_aspace_ufault_rv64.sh
 image  src    tests/integration/check_stack_guard.sh
 image  src    tests/integration/check_stack_guard_rv64.sh
 image  src    tests/integration/check_fault_dump.sh

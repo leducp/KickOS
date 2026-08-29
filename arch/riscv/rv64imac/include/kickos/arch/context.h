@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
-//
-// RISC-V RV64IMAC: register state lives in a flat save frame on the thread's own stack, so
-// a thread is described by one pointer, the base of that frame.
 
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
@@ -22,24 +19,16 @@ struct arch_context
     uint32_t trace_tid;
 #endif
 
-    // Read by arch_ctx_redirect and by the frame guards in kernel/init/fault.cc.
     uintptr_t stack_lo;
     uintptr_t stack_hi;
 
 #if defined(KICKOS_TLS) && KICKOS_TLS
-    // tp while this thread runs, TO BE SEATED from the context rather than masked out of the
-    // stack pointer, which is why this arch selects no ARCH_TLS_FROM_SP and a stack block owes
-    // the stride no alignment. Write-once per thread, so no switch would save it.
-    //
-    // NOTHING READS IT YET. No ARCH_HAS_TLS is selected here, so the entry forces tp to zero at
-    // the two points it re-anchors gp (switch.S .Ltrap_regs and .Lrestore) and reads this field
-    // nowhere. The step that selects TLS is the one that turns those two instructions into a
-    // load from this field.
+    // tp while this thread runs. Written once per thread, so no switch saves it.
     uintptr_t tls_base;
 #endif
 
-    // TOP of this thread's kernel stack, seated by thread_create BEFORE arch_context_init
-    // and preserved across arch_ctx_redirect. Zero for a TCB outside the pool.
+    // TOP of this thread's kernel stack, seated by thread_create BEFORE arch_context_init and
+    // preserved across arch_ctx_redirect. Zero for a TCB outside the pool.
     uintptr_t kernel_sp;
 };
 

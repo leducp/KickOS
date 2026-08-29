@@ -10,10 +10,6 @@
 # model of config/limits.h: an option whose availability and default depend on no
 # hardware fact is not configuration.
 
-# The arch can hold one kernel stack per thread slot resident from boot, and its
-# arch_context carries the kernel_sp a trusted entry loads. Declared here rather than
-# beside HAS_MPU because it is a fact about the ARCH and not about the silicon: the trap
-# entry that transfers to those stacks is written per arch, and a chip selects nothing.
 config ARCH_HAS_KERNEL_STACKS
 	bool
 	help
@@ -22,10 +18,6 @@ config ARCH_HAS_KERNEL_STACKS
 	  SUFFICIENT: whether a given board actually carves the blocks is
 	  KICKOS_KERNEL_STACKS, which asks this AND the chip's HAS_MPU.
 
-# STRONGER THAN THE ABOVE: the arch's entry has NO red-zone fallback. Declared here for the
-# same reason ARCH_HAS_KERNEL_STACKS is, and separate from it because the two say different
-# things: one says the transfer is POSSIBLE, this one says it is the ONLY thing the entry
-# compiles.
 config ARCH_KERNEL_STACKS_MANDATORY
 	bool
 	help
@@ -53,10 +45,6 @@ config ARCH_KERNEL_STACKS_MANDATORY
 	  A NEW ARCH THAT WRITES ONLY THE TRANSFER SELECTS THIS. One that writes both paths
 	  does not, and then the red zone is what its unconverted boards depend on.
 
-# The arch can hand a thread its own thread pointer with no syscall and no kernel read,
-# so an unprivileged thread_local access costs no privilege transition. Declared here for
-# the same reason ARCH_HAS_KERNEL_STACKS is: which register or call answers the question is
-# written per arch, and a chip selects nothing.
 config ARCH_HAS_TLS
 	bool
 	help
@@ -71,11 +59,6 @@ config ARCH_HAS_TLS
 	  segfaults. So the arch with the largest test suite cannot witness this
 	  feature at all, and that is stated here rather than left to be discovered.
 
-# HOW that thread pointer is DERIVED, which is a different fact and the one the stack
-# geometry pays for. Where the arch has no per-thread register at the unprivileged level it
-# masks SP down to KICKOS_TLS_STRIDE, so a stack block must BE one stride and sit on one, or
-# two threads mask to the same thread-local storage. Declared here beside ARCH_HAS_TLS
-# because which register or idiom answers is written per arch and a chip selects nothing.
 config ARCH_TLS_FROM_SP
 	bool
 	help
@@ -109,10 +92,8 @@ config ARCH_ARMV7M
 	select ARCH_TLS_FROM_SP
 	select ARCH_HAS_KERNEL_STACKS
 
-# A select here is a promise the gates hold this backend to, so each one landed with the
-# step that earned it: the kernel-stack pair at S7 with the EL0 split, ARCH_HAS_TLS at S8.
-# The pair is MANDATORY rather than optional because EL0 runs on SP_EL0 and a trap to EL1
-# selects SP_EL1, so this arch writes the transfer with no red-zone path beside it.
+# The kernel-stack pair is mandatory: a trap from EL0 selects SP_EL1, and the entry has no
+# red-zone path beside the transfer.
 config ARCH_ARMV8A
 	bool
 	select ARCH_HAS_TLS
@@ -133,14 +114,9 @@ config ARCH_RV32IMAC
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
 
-# The kernel-stack pair lands here with the trap prologue that earns it: the entry loads the
-# block from sscratch before it stores anything and no red-zone path is written beside it.
-# MANDATORY comes with it because KICKOS_KERNEL_STACKS reads `default 1 if
-# ARCH_HAS_KERNEL_STACKS && HAS_MPU`, so a chip that TRANSLATES gets no such default and the
-# knob would resolve 0, failing later as a backend compile error rather than as a configure
-# refusal; ARCH_ARMV8A selects the pair the same way. ARCH_HAS_TLS still waits for the step
-# that seats the thread pointer. ARCH_TLS_FROM_SP is not coming: this port would seat that
-# register from the context, as its arm64 sibling does.
+# The kernel-stack pair is mandatory: the entry loads the block from sscratch before it
+# stores anything. A translating chip matches no `default 1` on KICKOS_KERNEL_STACKS, so
+# without this the knob resolves 0 and the backend fails to compile.
 config ARCH_RV64IMAC
 	bool
 	select ARCH_HAS_KERNEL_STACKS
@@ -150,6 +126,13 @@ config ARCH_LX6
 	bool
 	select ARCH_HAS_TLS
 	select ARCH_TLS_FROM_SP
+
+# The kernel-stack pair is mandatory: SYSCALL loads NO stack pointer (AMD APM Vol 2 6.1.1),
+# so no hardware stack exists for a red-zone path to fall back on.
+config ARCH_X86_64
+	bool
+	select ARCH_HAS_KERNEL_STACKS
+	select ARCH_KERNEL_STACKS_MANDATORY
 
 config ARCH_SIM
 	bool
@@ -164,6 +147,7 @@ config KICKOS_ARCH
 	default "rv32imac" if ARCH_RV32IMAC
 	default "rv64imac" if ARCH_RV64IMAC
 	default "lx6" if ARCH_LX6
+	default "x86_64" if ARCH_X86_64
 	default "sim" if ARCH_SIM
 
 config KICKOS_ARCH_FAMILY
@@ -173,6 +157,7 @@ config KICKOS_ARCH_FAMILY
 	default "rx" if ARCH_RXV3
 	default "riscv" if ARCH_RV32IMAC || ARCH_RV64IMAC
 	default "xtensa" if ARCH_LX6
+	default "x86" if ARCH_X86_64
 	default "sim" if ARCH_SIM
 
 config CHIP_IMXRT1062
@@ -253,6 +238,13 @@ config CHIP_VIRT_RV64
 	select ARCH_RV64IMAC
 	select HAS_ASPACE
 
+# The QEMU `q35` machine (ICH9). HAS_ASPACE is absent deliberately: selecting it declares
+# memory ENFORCED, while this port's image is one flat link whose leaves carry kernel text
+# and every thread's stack alike.
+config CHIP_Q35
+	bool
+	select ARCH_X86_64
+
 config CHIP_RX72M
 	bool
 	select ARCH_RXV3
@@ -278,5 +270,6 @@ config KICKOS_CHIP
 	default "virt_rv32" if CHIP_VIRT_RV32
 	default "virt_arm64" if CHIP_VIRT_ARM64
 	default "virt_rv64" if CHIP_VIRT_RV64
+	default "q35" if CHIP_Q35
 	default "rx72m" if CHIP_RX72M
 	default ""

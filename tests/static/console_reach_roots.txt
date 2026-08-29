@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Declarations for tests/static/check_console_reach.sh: WHICH symbols the fault-record console
+# route starts at, WHAT it must still reach for the root set to mean anything, WHAT it must
+# never reach, and WHAT the graph is allowed not to know.
+#
+# The defect class: kvprintf_route hands a fault record to a published console driver through
+# cap_console_deliver, so any kpanic reachable from there closes a cycle -- kpanic prints, the
+# print re-enters kvprintf_route, the delivery runs again -- with no static bound, on the path
+# taken while the kernel is already reporting a fault.
+#
+# File format, one record per line, '#' starts a comment, a trailing '\' continues:
+#   preset  <arch> <configure-preset>
+#   floor   <arch> <configure-preset> files=<n> nodes=<n> reason: <text to end of line>
+#   root    <arch|*> [?]<symbol> reason: <text to end of line>
+#   witness <arch|*> <symbol> reason: <text to end of line>
+#   forbid  <arch|*> [?]<symbol> reason: <text to end of line>
+#   opaque  <arch|*> <symbol> reason: <text to end of line>
+#
+# '*' in the arch column means every arch this file registers.
+#
+# A '?' before a root or a forbid marks it OPTIONAL: the symbol is compiled out on some
+# postures, so its absence contributes nothing instead of failing as a stale declaration. Every
+# record without one is a hard failure when the graph does not have it, and every record
+# carries a reason.
+#
+# A <symbol> is a mangled global name, or `<basename>:<needle>` for a file-scoped one, where
+# <needle> must appear in the mangled tail and the match must be UNIQUE. Same resolver as
+# tests/static/trap_redzone.py, whose graph this clause reads.
+#
+# This clause looks for a call EDGE, and an edge only exists where the compiler kept the call:
+# on the region-model boards the whole cap_console_deliver family folds away. Every TRANSLATING
+# preset of the fleet is registered below, and that set is the claim -- a translating board
+# added without a record here is a board where the next assert can land.
+
+preset  armv8a   qemu-arm64
+preset  rv64imac qemu-riscv64
+preset  rv64imac qemu-riscv64-sv48
+preset  x86_64   qemu-x86_64
+
+# --- the corpus floor ----------------------------------------------------------
+# A partial or interrupted build, or one compiled without -fcallgraph-info, finds no edge into
+# a panic and reports exactly what a clean tree reports; these figures are what makes that case
+# RED. They are LOWER BOUNDS with room under the measurement: a board that legitimately sheds a
+# translation unit must not go red, and a board that sheds a hundred must.
+floor   armv8a   qemu-arm64        files=90 nodes=700 reason: measured 116 .ci files and 931 nodes on 2026-08-29
+floor   rv64imac qemu-riscv64      files=90 nodes=700 reason: measured 115 .ci files and 973 nodes on 2026-08-29
+floor   rv64imac qemu-riscv64-sv48 files=90 nodes=700 reason: measured 115 .ci files and 973 nodes on 2026-08-29
+floor   x86_64   qemu-x86_64       files=90 nodes=700 reason: measured 119 .ci files and 907 nodes on 2026-08-29
+
+# --- the route -----------------------------------------------------------------
+root    * _ZN6kickos13kprintf_faultEPKcz reason: the fault-record entry, the only caller that passes route=true, so the delivery half of kvprintf_route runs inside it
+root    * _ZN6kickos7kprintfEPKcz reason: the ordinary entry, the same body with route=false; gcc gives each caller its own copy of an inlined static, so both have to be roots or half the body goes unwalked
+root    * ?console.cc:kvprintf_route reason: the function this clause is named for. OPTIONAL because a board that inlines it has no node; where it IS a node the clause additionally requires it reachable from the two callers above, so a root set that stopped covering it is refused rather than believed
+
+# A root set that has drifted off the code it names still walks a graph and still finds no
+# panic. These two are what a route that still routes must reach.
+witness * _ZN6kickos19cap_console_deliverEPKcm reason: the hand-off to a published console driver, the far end of the cycle this clause exists to keep open-loop
+witness * _ZN6kickos14kconsole_writeEPKcm reason: the kernel chip write every routed record makes first, reached through the non-routing half of the same body
+
+# --- what it must never reach --------------------------------------------------
+forbid  * _ZN6kickos6kpanicEPKc reason: the panic terminal. It prints through kprintf, so an edge into it from this route is the cycle, and KICKOS_ASSERT and KICKOS_UNREACHABLE both expand to it where KICKOS_DIAG_TERSE is 0
+forbid  * ?_ZN6kickos9kpanic_atEPKcj reason: the terse assert terminal, the second door into the same tail. OPTIONAL because it is only defined under KICKOS_DIAG_TERSE, which is 0 on every preset registered above
+
+# --- what the graph does not know ----------------------------------------------
+# A reachable node with no "bytes (static)" has no out-edges here, so anything it calls is
+# invisible. Each one is a hole in the claim and has to be named.
+opaque  armv8a   kickos_armv8a_switch_now reason: the context-switch trampoline in arch/arm64/armv8a/switch.S. It restores a thread's callee-saved state and returns into that thread, calling nothing; the C it returns into is that thread's own continuation and not a descent of this route
+opaque  rv64imac __clzdi2 reason: a libgcc count-leading-zeros helper, reached from the format code on this multilib only. It is a frameless register-only leaf and calls nothing, so having no out-edge here costs the claim nothing
+opaque  rv64imac kickos_rv64_switch_now reason: the context-switch trampoline in arch/riscv/rv64imac/switch.S, same shape as the armv8a one
+opaque  x86_64   kickos_x86_64_switch_now reason: the context-switch trampoline in arch/x86/x86_64/switch.S, same shape as the armv8a one

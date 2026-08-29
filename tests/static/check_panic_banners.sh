@@ -18,9 +18,6 @@
 # from the argument NAME on the emit line and from every `<name> = "..."` assignment in the
 # same file. Every other conversion is substituted with a placeholder, the ERE keying on the
 # fixed prefix.
-#
-# Residual: nothing here parses C, so a banner assembled at runtime or spelled across two
-# source lines is invisible, as is a label held in a table or in another TU.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -47,6 +44,7 @@ arch/arm64/armv8a/arch_armv8a.cc
 arch/riscv/rv32imac/arch_rv32imac.cc
 arch/riscv/rv64imac/arch_rv64imac.cc
 arch/rx/rxv3/arch_rxv3.cc
+arch/x86/x86_64/fault_x86_64.cc
 arch/xtensa/lx6/arch_xtensa.cc
 arch/sim/sim.cc'
 

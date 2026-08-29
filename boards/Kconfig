@@ -2,9 +2,8 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # One stanza per board. Adding a board is this stanza plus a defconfig under
-# boards/<board>/configs/<variant>/. The defconfig is not optional: a board+variant
-# that has none is a FATAL_ERROR at configure, because every knob reaches C through
-# the generated header.
+# boards/<board>/configs/<variant>/. A board+variant with no defconfig is a FATAL_ERROR at
+# configure, every knob reaching C through the generated header.
 
 choice
 	prompt "Target board"
@@ -81,6 +80,9 @@ config BOARD_QEMU_RISCV
 config BOARD_QEMU_RISCV64
 	bool "qemu-riscv64 (virt, RV64)"
 	select CHIP_VIRT_RV64
+config BOARD_QEMU_X86_64
+	bool "qemu-x86_64 (q35, UEFI)"
+	select CHIP_Q35
 
 config BOARD_RX72M
 	bool "rx72m (Renesas RX72M)"
@@ -120,6 +122,7 @@ config KICKOS_BOARD
 	default "qemu-m7" if BOARD_QEMU_M7
 	default "qemu-riscv" if BOARD_QEMU_RISCV
 	default "qemu-riscv64" if BOARD_QEMU_RISCV64
+	default "qemu-x86_64" if BOARD_QEMU_X86_64
 	default "rx72m" if BOARD_RX72M
 	default "sim" if BOARD_SIM
 	default "teensy41" if BOARD_TEENSY41

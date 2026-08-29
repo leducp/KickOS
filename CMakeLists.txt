@@ -2,11 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 cmake_minimum_required(VERSION 3.24)
-# write_basic_package_version_file demands a numeric version; find_package(KickOS) matches
-# against it.
 project(KickOS VERSION 0.5.1 LANGUAGES C CXX ASM)
-# A point release spells 0.<milestone>.<submilestone>-<point>, which project() rejects, so
-# KICKOS_VERSION has to be set outright once there is one.
 set(KICKOS_VERSION "${PROJECT_VERSION}")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -24,8 +20,6 @@ add_compile_definitions(__KickOS__=1)
 kickos_board_names(_kickos_board_names)
 list(JOIN _kickos_board_names "|" _kickos_board_help)
 set(KICKOS_BOARD "sim" CACHE STRING "Target board: ${_kickos_board_help}")
-# The cross toolchain file already read the same board descriptor pre-project for the CPU
-# flags.
 kickos_load_board_descriptor("${KICKOS_BOARD}" KICKOS_ARCH KICKOS_CHIP KICKOS_ARCH_FAMILY)
 message(STATUS "KickOS: board=${KICKOS_BOARD} family=${KICKOS_ARCH_FAMILY} arch=${KICKOS_ARCH} chip=${KICKOS_CHIP}")
 
@@ -49,7 +43,6 @@ if(KICKOS_CHIP)
   include_directories("${KICKOS_CHIP_INCLUDE_DIR}")
 endif()
 
-# Present only on the boards whose chip backend reads it.
 set(KICKOS_BOARD_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/boards/${KICKOS_BOARD}/include")
 if(EXISTS "${KICKOS_BOARD_INCLUDE_DIR}")
   include_directories("${KICKOS_BOARD_INCLUDE_DIR}")
@@ -58,8 +51,7 @@ else()
 endif()
 
 # --- Configuration from Kconfig --------------------------------------------
-# KICKOS_CONFIG_VARIANT selects boards/<board>/configs/<variant>/defconfig; each variant
-# defconfig is a complete statement, not a delta on another.
+# Each variant defconfig is a complete statement, not a delta on another.
 set(KICKOS_CONFIG_VARIANT "base" CACHE STRING
     "Configuration variant under boards/<board>/configs/")
 set(KICKOS_DEFCONFIG
@@ -70,7 +62,7 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
   # defconfig that enables something outrank a command line asking to turn it off.
   set(_kcfg_req "")
   # A name not in this list never becomes a request; CMake merely reports it unused.
-  # KICKOS_MAX_HANDLES is the ANSWER of the sum in cmake/cap_table.cmake, not an input.
+  # KICKOS_MAX_HANDLES is computed by the sum in cmake/cap_table.cmake.
   foreach(_knob KICKOS_MAX_THREADS KICKOS_USER_STACK_SIZE KICKOS_IDLE_STACK_SIZE
                 KICKOS_ROOT_STACK_SIZE KICKOS_MAX_SEMAPHORES KICKOS_MAX_MUTEXES
                 KICKOS_MAX_ENDPOINTS KICKOS_CAP_TABLE_SUPPLY KICKOS_MAX_SPAWN_GRANTS
@@ -122,8 +114,6 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
   kickos_kconfig_agree("the arch family" "${_cmake_family}" "${KICKOS_ARCH_FAMILY}")
   kickos_kconfig_agree("the chip" "${_cmake_chip}" "${KICKOS_CHIP}")
 
-  # .config is written during configure, before the build system, so depending on it does
-  # not loop.
   set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" APPEND
                PROPERTY CMAKE_CONFIGURE_DEPENDS
                ${KICKOS_KCONFIG_SOURCES} "${PROJECT_BINARY_DIR}/generated/.config")
@@ -169,9 +159,24 @@ else()
     "defconfig under boards/${KICKOS_BOARD}/configs/, not a -D.")
 endif()
 
+# KICKOS_LIBC_REENT and KICKOS_LINKER_WEAK_UNDEF are published to C++ as 0/1 so every `#if`
+# site is -Wundef-clean; KICKOS_HAVE_LIBC gates which apps enter the build graph.
+# KICKOS_LINKER_WEAK_UNDEF: `ld -m i386pep` builds no global offset table and x86_64 reaches
+# a weak undefined symbol GOT-indirect, so there such a reference loads the symbol's own bytes.
+set(KICKOS_HAVE_LIBC 1)
+set(KICKOS_LIBC_REENT 1)
+set(KICKOS_LINKER_WEAK_UNDEF 1)
+if(KICKOS_ARCH STREQUAL "sim" OR KICKOS_ARCH STREQUAL "x86_64")
+  set(KICKOS_LIBC_REENT 0)
+endif()
+if(KICKOS_ARCH STREQUAL "x86_64")
+  set(KICKOS_HAVE_LIBC 0)
+  set(KICKOS_LINKER_WEAK_UNDEF 0)
+endif()
+add_compile_definitions(KICKOS_LIBC_REENT=${KICKOS_LIBC_REENT}
+                        KICKOS_LINKER_WEAK_UNDEF=${KICKOS_LINKER_WEAK_UNDEF})
+
 # --- Config knobs (architecture.md) ----------------------------------------
-# CMP0077 (NEW at this cmake_minimum_required) makes option() defer to the normal variables
-# the fragment already set.
 # Every knob below that becomes a compile definition is defined 0 or 1, never left
 # undefined, so each `#if` site is -Wundef-clean.
 option(CONFIG_SCHED_PERIODIC_TICK "Force a classic periodic scheduler tick" OFF)
@@ -182,9 +187,8 @@ option(KICKOS_BUILD_INTEGRATION_TESTS
 
 set(_kickos_gtest_found OFF)
 if(KICKOS_ARCH STREQUAL "sim")
-  # GTest is IMPORTED for one configuration (Release, from Conan and distro packages alike)
-  # and its interface properties are gated on $<CONFIG:Release>. Without this mapping a
-  # MinSizeRel sim build compiles with no include path and fails as a missing gtest/gtest.h.
+  # GTest is IMPORTED for Release only and its interface properties are gated on
+  # $<CONFIG:Release>; without this mapping a MinSizeRel sim build gets no include path.
   foreach(_cfg MINSIZEREL RELWITHDEBINFO DEBUG)
     if(NOT DEFINED CMAKE_MAP_IMPORTED_CONFIG_${_cfg})
       set(CMAKE_MAP_IMPORTED_CONFIG_${_cfg} ${_cfg} Release "")
@@ -222,11 +226,7 @@ if(_kickos_gtest_found AND NOT KICKOS_BUILD_UNIT_TESTS)
     "KickOS: GTest was found but KICKOS_BUILD_UNIT_TESTS is OFF in the cache. Re-run with "
     "-DKICKOS_BUILD_UNIT_TESTS=ON, or configure a fresh build directory.")
 endif()
-# Exposes the guard-probe syscall (kos_guard_addr) used by the MPU privilege self-test;
-# out of the production syscall ABI.
 option(KICKOS_ENABLE_SELFTEST     "Expose test-only self-test syscalls"      OFF)
-# PendSV brackets the switch body with DWT CYCCNT, which adds instructions to the switch
-# path.
 option(KICKOS_BENCH               "Cycle-accurate context-switch microbench"  OFF)
 if(KICKOS_BENCH)
   add_compile_definitions(KICKOS_BENCH=1)
@@ -240,9 +240,6 @@ if(KICKOS_ENABLE_SELFTEST)
 endif()
 
 # --- Terminating images hand the chip back to its bootloader ----------------
-# OFF: a terminating image halts, and reflashing an RP2040/RP2350 needs a physical BOOTSEL
-# press. ON: both terminal dead-ends in kernel/init/console.cc call arch_reboot first, so
-# the board returns to its bootloader at every termination, which also ends a soak run.
 option(KICKOS_SHUTDOWN_TO_BOOTLOADER
        "Terminating images reboot into the chip bootloader instead of halting" OFF)
 if(KICKOS_SHUTDOWN_TO_BOOTLOADER)
@@ -263,9 +260,7 @@ endif()
 # CMake's stock MinSizeRel flags drop -g.
 add_compile_options($<$<CONFIG:MinSizeRel>:-g>)
 
-# Internal-consistency guards (the intrusive-list membership checks in <kickos/list.h>).
-# It changes an inline in a shipped header, so it is carried to consumers for the same ODR
-# reason as KICKOS_HAVE_MPU.
+# Changes an inline in a shipped header (<kickos/list.h>), so it must reach consumers (ODR).
 option(KICKOS_DEBUG "Build the internal-consistency guards (list membership, ...)" OFF)
 if(KICKOS_DEBUG)
   add_compile_definitions(KICKOS_DEBUG=1)
@@ -303,29 +298,16 @@ endif()
 add_compile_definitions(KICKOS_CONSOLE_CHIP=${_con_chip} KICKOS_CONSOLE_RTT=${_con_rtt} KICKOS_CONSOLE_CRLF=${_con_crlf})
 message(STATUS "KickOS: console=${KICKOS_CONSOLE} (chip=${_con_chip} rtt=${_con_rtt} crlf=${_con_crlf})")
 
-# Several independent kernels in one address space (instance_local.h). Carried to consumers
-# for the same ODR reason as KICKOS_HAVE_MPU: it changes kernel() in a shipped header. The
-# COUNT rides in the generated board_config.h with the other provisioning knobs.
+# Changes kernel() in a shipped header, so it must reach consumers (ODR). The instance COUNT
+# rides in the generated board_config.h with the other provisioning knobs.
 if(KICKOS_MULTI_INSTANCE)
   add_compile_definitions(KICKOS_MULTI_INSTANCE=1)
 else()
   add_compile_definitions(KICKOS_MULTI_INSTANCE=0)
 endif()
 
-# The TLS stride. Where the arch derives the thread pointer by MASKING SP, having no register
-# that differs per thread at the unprivileged level (or masking anyway), one image has ONE
-# mask, so root and every pool stack must round to the SAME power of two and must BE that
-# power of two.
-#
-# THE TWO REFUSALS BELOW ARE KEYED ON KICKOS_TLS_FROM_SP AND NOT ON KICKOS_TLS, which is the
-# per-mechanism qualification docs/design-m6-mmu.md F7 asks for. An arch that SEATS the
-# register from the context computes the block base by subtraction, so it owes the stride
-# nothing and a stack there may be any number of pages at any page boundary. The stride
-# itself is still derived on every board: the link-time assert that the thread-local template
-# fits inside one reads it.
 include("${CMAKE_SOURCE_DIR}/cmake/boot_arena.cmake")
-# Defined either way, so a `#if KICKOS_TLS_FROM_SP` in a TU that forgot defined() reads false
-# rather than reading an undefined identifier as zero by luck.
+# Always defined, so every `#if KICKOS_TLS_FROM_SP` site is -Wundef-clean.
 if(NOT DEFINED KICKOS_TLS_FROM_SP)
   set(KICKOS_TLS_FROM_SP 0)
 endif()
@@ -344,10 +326,6 @@ if(KICKOS_TLS)
       "boards/${KICKOS_BOARD}/configs/<variant>/defconfig, or set KICKOS_TLS=n there and "
       "let a thread_local fail the link instead.")
   endif()
-  # AND THEY MUST BE THE STRIDE, not merely round to it: tls_stack_admissible requires a
-  # block of EXACTLY one stride wherever the mask is real, because two smaller blocks fit
-  # inside one stride and mask to the same base. A non-power-of-two there has every spawn
-  # refused at runtime, not here.
   foreach(_k KICKOS_USER_STACK_SIZE KICKOS_ROOT_STACK_SIZE)
     if(KICKOS_TLS_FROM_SP AND NOT ${${_k}} EQUAL _tls_stride)
       message(FATAL_ERROR
@@ -367,22 +345,16 @@ if(KICKOS_TLS)
   add_compile_definitions(KICKOS_TLS=1
                           KICKOS_TLS_STRIDE=${_tls_stride}
                           KICKOS_TLS_STRIDE_LOG2=${_tls_log2})
-  # Where the two knobs differ the stride derived above describes only the larger, so on a
-  # masking arch they are refused above and this can only be reached where the mask is not
-  # real. Stated so the stride's meaning per board is not left to be inferred.
   if(KICKOS_TLS_FROM_SP)
     message(STATUS "KickOS: the thread pointer is SP masked to the stride")
   endif()
   message(STATUS "KickOS: TLS stride ${_tls_stride} (1 << ${_tls_log2})")
 else()
-  # Defined either way so `#if KICKOS_TLS` in a TU that forgot defined() reads false rather
-  # than reading an undefined identifier as zero by luck. The knob reaches C HERE and not
-  # through the generated board_config.h, which is why genconfig lists it among the bool knobs.
+  # Always defined, so every `#if KICKOS_TLS` site is -Wundef-clean.
   add_compile_definitions(KICKOS_TLS=0)
 endif()
 
-# Positive identification only: a new arch must land in the 0 branch of every
-# `#if KICKOS_ARCH_SIM`.
+# Positive identification: a new arch lands in the 0 branch of every `#if KICKOS_ARCH_SIM`.
 if(KICKOS_ARCH STREQUAL "sim")
   set(_arch_sim 1)
 else()
@@ -390,14 +362,29 @@ else()
 endif()
 add_compile_definitions(KICKOS_ARCH_SIM=${_arch_sim})
 
+# --- Capability opt-in files (arch/<family>/chip/<chip>/*.cmake) --------------
+# A chip declares a capability by shipping a named file beside its sources: caps.cmake for
+# the trace clock, mpu.cmake for the enforcing region posture, aspace.cmake for a
+# translating backend, terminate.cmake for an exiting fault dead-end. An arch declares one
+# the same way, ipc_fastpath.cmake beside its switch.S. Each is include()d below, by the
+# block that reads it.
+#
+# The include lands in THIS scope, so a chip file states its capability with a plain set()
+# and no PARENT_SCOPE, and a variable it sets is inherited by arch/CMakeLists.txt through
+# add_subdirectory(arch) as well.
+#
+# A capability is an explicit opt-in, never inferred from an arch, a chip name or a linker
+# script. Where Kconfig declares the same fact, the floor beside the include REFUSES a chip
+# that selects it and ships no file, so the two declarations cannot silently disagree.
+#
+# A chip file itself carries only what is true of THAT chip: which capability it opts into,
+# and what the chip ships that makes the claim true.
+
 # --- Telemetry backend selection (docs/reference/telemetry.md) -----------------
-# `rtt` requires both a trace clock (arch_trace_now, KICKOS_HAVE_TRACE_CLOCK) and the RTT
-# transport (KICKOS_CONSOLE in {rtt,both}); either missing is a hard configuration error.
 # KICKOS_TRACE_ARCH MUST match the ArchId enum in include/kickos/trace/record.h, which the
 # decoder tools/kicktrace.py follows; a static_assert there pins ARCH_RISCV == 5.
-# The chip's caps.cmake is included FIRST so a chip value wins over the arch ladders below,
-# which guard their set with NOT DEFINED. A board or preset that pre-defines
-# KICKOS_HAVE_TRACE_CLOCK wins over both and must still agree with the Kconfig declaration.
+# The chip's caps.cmake is included first so a chip value wins over the arch ladders below,
+# which guard their set with NOT DEFINED.
 if(KICKOS_CHIP)
   set(_caps_optin "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/caps.cmake")
   if(EXISTS "${_caps_optin}")
@@ -407,12 +394,6 @@ endif()
 # KICKOS_FAULT_ISOLATION is never overridable: a backend that defines
 # arch_fault_is_user_thread / arch_fault_redirect_to_exit and is not listed here links BOTH
 # its definition and the fallback into one archive, resolved by member order.
-# A core with no privilege ring cannot tell a thread's own fault from a kernel bug in code it
-# called, and must keep panicking.
-# Per BOARD, not per arch: the ARMv6-M Unprivileged/Privileged Extension is OPTIONAL and
-# separate from the MPU extension, Cortex-M0 omits it and Cortex-M0+ implements it, and both
-# are KICKOS_ARCH=armv6m with no predefined macro between them (microbit's msr CONTROL is
-# discarded; docs/reference/boards.md).
 if(KICKOS_ARCH STREQUAL "armv6m")
   if(KICKOS_BOARD STREQUAL "microbit")
     set(KICKOS_HAVE_PRIV_RING 0) # nRF51822, Cortex-M0
@@ -441,15 +422,11 @@ if(KICKOS_HAVE_PRIV_RING
       OR KICKOS_ARCH STREQUAL "rxv3"
       OR KICKOS_ARCH STREQUAL "armv8a"
       OR KICKOS_ARCH STREQUAL "rv64imac"
+      OR KICKOS_ARCH STREQUAL "x86_64"
       OR (KICKOS_ARCH STREQUAL "sim" AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")))
   set(KICKOS_FAULT_ISOLATION 1)
   set(KICKOS_FAULT_OUTCOME thread-kill)
 endif()
-# Published to C++ as well, not left a CMake-only fact: an in-tree witness has to be able to
-# ask whether a deliberate fault is survivable here, and gating such an arm on a proxy
-# (KICKOS_HAVE_ASPACE, KICKOS_MEMORY_ENFORCED) would register it on a board whose backend
-# builds no resumable frame. NOT on the exported kickos_core interface: it gates test
-# scaffolding, not a consumer API.
 add_compile_definitions(KICKOS_FAULT_ISOLATION=${KICKOS_FAULT_ISOLATION})
 if(NOT DEFINED KICKOS_TRACE_ARCH)
   set(KICKOS_TRACE_ARCH 0)
@@ -487,8 +464,7 @@ if(NOT KICKOS_HAVE_TRACE_CLOCK EQUAL KICKOS_TRACE_CLOCK_DECLARED)
 endif()
 
 # A chip declares an enforcing MPU by shipping arch/<family>/chip/<chip>/mpu.cmake, which
-# also picks the PMSAv8 backend source; the sim enforces via host mprotect, with no chip and
-# no linker script.
+# also picks the PMSAv8 backend source; the sim enforces via host mprotect.
 set(KICKOS_CHIP_ENFORCES_MPU OFF)
 if(KICKOS_ARCH STREQUAL "sim")
   set(KICKOS_CHIP_ENFORCES_MPU ON)
@@ -515,9 +491,8 @@ endif()
 
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
-# The other half of the same axis: a chip declares a TRANSLATING backend by shipping
-# arch/<family>/chip/<chip>/aspace.cmake. No chip ships both files, the two families being
-# exclusive (docs/design-m6-mmu.md F6).
+# A chip declares a translating backend by shipping arch/<family>/chip/<chip>/aspace.cmake.
+# No chip ships both that and mpu.cmake (docs/design-m6-mmu.md F6).
 set(KICKOS_CHIP_TRANSLATES OFF)
 if(KICKOS_CHIP)
   set(_aspace_optin
@@ -544,41 +519,37 @@ if(KICKOS_CHIP_TRANSLATES AND KICKOS_HAVE_MPU)
 endif()
 add_compile_definitions(KICKOS_HAVE_ASPACE=${KICKOS_HAVE_ASPACE})
 
-# The compiler flag that lets a TU in one half of a split image name a symbol in the other,
-# by materialising the whole address in the referencing section instead of as a
-# page-relative displacement. Read ONLY by kickos_split_image_tu (cmake/kickos.cmake),
-# whose call sites all sit under KICKOS_HAVE_ASPACE, and EMPTY is what makes that function
-# inert: the arch has no such FLAG, which is not the same as being unable to carry a split
-# image. RISC-V is that case, medlow being a sign-extended 32-bit ABSOLUTE range and medany
-# a signed 32-bit PC-relative DISPLACEMENT, neither materialising a whole 64-bit address.
-# rv64imac carries its split image by a different mechanism instead, a kernel reference to
-# an app-half symbol becoming a relocated 64-bit WORD in kernel data
-# (docs/design-m6-mmu.md R2.2).
-#
-# Set here rather than in the arch's own dispatch branch because kernel/CMakeLists.txt calls
-# the same function and cannot see a variable set in arch/'s directory scope.
+# The third opt-in of the set, and the one with no Kconfig half to disagree with: a chip
+# ships terminate.cmake when its arch_shutdown reaches a debug or emulator channel that
+# turns the status into a process exit. arch/CMakeLists.txt then links the exiting
+# kfault_terminate in place of the LED fallback.
+set(KICKOS_CHIP_EXITS_ON_FAULT OFF)
+if(KICKOS_CHIP)
+  set(_terminate_optin
+      "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/terminate.cmake")
+  if(EXISTS "${_terminate_optin}")
+    include("${_terminate_optin}")
+  endif()
+endif()
+
+# Read only by kickos_split_image_tu (cmake/kickos.cmake); empty leaves that function inert.
+# Set here because kernel/CMakeLists.txt calls the same function and cannot see arch/'s scope.
 set(KICKOS_SPLIT_IMAGE_CODE_MODEL "")
 if(KICKOS_ARCH STREQUAL "armv8a")
   set(KICKOS_SPLIT_IMAGE_CODE_MODEL -mcmodel=large)
 endif()
 
-# The two facts above name a MECHANISM; this one names whether memory protection is LIVE,
-# and admission policy keys on it. A translating board carries no region descriptors, so it
-# resolves KICKOS_HAVE_MPU 0 while needing Rule 7, the reserved-block refusal and arena
-# confinement every bit as much as an MPU board (docs/design-m6-mmu.md F6). DERIVED here
-# rather than declared beside them, so no board can state it and disagree with its backend.
+# Whether memory protection is LIVE, which admission policy keys on. Derived, so no board can
+# state it and disagree with its backend.
 set(KICKOS_MEMORY_ENFORCED 0)
 if(KICKOS_HAVE_MPU OR KICKOS_HAVE_ASPACE)
   set(KICKOS_MEMORY_ENFORCED 1)
 endif()
 add_compile_definitions(KICKOS_MEMORY_ENFORCED=${KICKOS_MEMORY_ENFORCED})
 
-# Which MPU design the v6-M/v7-M arch is built for. A chip's mpu.cmake above names its
-# backend by setting KICKOS_ARM_MPU_BACKEND; PMSAv7 is the fallback for the core v6-M/v7-M
-# fleet. The selector is TOTAL: a build with no MPU resolves to NONE rather than falling
-# through to a backend it does not program, so every comparison below and in
-# arch/arm/{armv6m,armv7m}/include/kickos/arch/mpu_encoded.h and arch/arm/common/ needs no
-# KICKOS_HAVE_MPU conjunction to mean what it says.
+# Which MPU design the v6-M/v7-M arch is built for. A chip's mpu.cmake names its backend in
+# KICKOS_ARM_MPU_BACKEND; PMSAv7 is the fallback. The selector is total: a build with no MPU
+# resolves to NONE, so no comparison against it needs a KICKOS_HAVE_MPU conjunction.
 if(NOT KICKOS_HAVE_MPU)
   set(_kickos_arm_mpu 0)
 elseif(KICKOS_ARM_MPU_BACKEND STREQUAL "SYSMPU")
@@ -601,16 +572,8 @@ add_compile_definitions(
 
 # --- Trap-handler IPC fastpath (KICKOS_ARCH_HAS_IPC_FASTPATH) ---------------
 # Set by an arch backend that completes the register-carrying kos_call inside the syscall
-# trap, redirecting the exception return into the target thread instead of into the
-# privileged-thread trampoline. It gates three things that must not drift apart: the stub's
-# register arm, arch_syscall_reg with its result-store seam, and the kernel's shared leaf.
-#
-# A backend declares it by shipping ipc_fastpath.cmake beside its switch.S, included here in
-# this scope, so a plain set is what it reads. The value must be what that backend's trap
-# implements, so the opt-in file is the only thing that sets it.
-#
-# The 0 arm names exactly two arches, sim and xtensa/lx6, each stating why at its own backend
-# (arch/sim/sim.cc, arch/xtensa/lx6/arch_xtensa.cc).
+# trap. It gates three things that must not drift apart: the stub's register arm,
+# arch_syscall_reg with its result-store seam, and the kernel's shared leaf.
 set(KICKOS_ARCH_HAS_IPC_FASTPATH 0)
 set(_ipc_fastpath_optin
   "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/ipc_fastpath.cmake")
@@ -625,10 +588,8 @@ endif()
 add_compile_definitions(KICKOS_ARCH_HAS_IPC_FASTPATH=${KICKOS_ARCH_HAS_IPC_FASTPATH})
 
 # --- Per-arch caller-provided-stack floor (KICKOS_MIN_STACK_SIZE) -----------
-# The floor must cover the arch's deepest dispatch, the thread-exit teardown, which runs on
-# the CALLING thread's stack: a caller-provided stack below it passes the spawn check in
-# syscall_thread.cc and then silently overflows on exit. An ARCH property, promptless in
-# Kconfig; the measured figures and the red-zone relation are in the declaration there.
+# The floor must cover the thread-exit teardown, which runs on the CALLING thread's stack.
+# An arch property; the measured figures are in the Kconfig declaration.
 if(NOT DEFINED KICKOS_MIN_STACK_SIZE)
   message(FATAL_ERROR
     "KickOS: no KICKOS_MIN_STACK_SIZE. The generated kickos_config.cmake carries it, "
@@ -638,21 +599,16 @@ endif()
 add_compile_definitions(KICKOS_MIN_STACK_SIZE=${KICKOS_MIN_STACK_SIZE})
 message(STATUS "KickOS: caller-stack floor KICKOS_MIN_STACK_SIZE=${KICKOS_MIN_STACK_SIZE} (arch=${KICKOS_ARCH})")
 
-# KICKOS_SERVICE_LIST names the CMake target that DEFINES kickos_board_services;
+# KICKOS_SERVICE_LIST names the target that DEFINES kickos_board_services;
 # KICKOS_SERVICE_LIST_LIBS is that target plus every driver and class leaf its start()s
-# reference. They all back-reference kickos_user, so they must join the rescan link group
-# below or the link fails on a strongly-connected-component cycle naming the driver lib.
-# The closure is computed further down, once add_subdirectory(system) has created those
-# targets; a custom provider may pre-set KICKOS_SERVICE_LIST_LIBS here with its own deps.
+# reference. They back-reference kickos_user, so they must join the rescan link group below.
 message(STATUS "KickOS: service list = ${KICKOS_SERVICE_LIST}")
 
 # The USB device clock tree (PLL_USB, clk_usb, the USB block reset) is brought up in chip
-# init, only for an image that carries a USB driver. Never cached: caching it would keep the
-# clock tree on in a build directory whose service list was later switched back.
+# init. Never cached: a cached value keeps the clock tree on after the service list changes.
 if(NOT DEFINED KICKOS_USB_CONSOLE)
   set(KICKOS_USB_CONSOLE OFF)
-  # Unanchored: any list with a "_usbcdc" stem needs the same clock tree. An anchored match
-  # would leave PLL_USB off on a suffixed variant and the device would never enumerate.
+  # Unanchored: any list with a "_usbcdc" stem needs the same clock tree.
   if(KICKOS_SERVICE_LIST MATCHES "_usbcdc")
     set(KICKOS_USB_CONSOLE ON)
   endif()
@@ -662,17 +618,14 @@ if(KICKOS_USB_CONSOLE)
   message(STATUS "KickOS: USB device clock tree = on (chip init brings up PLL_USB)")
 endif()
 
-# KICKOS_BOARD_PINMAP names the CMake target that DEFINES kickos_board_pinmap; it
-# back-references kickos_user and is read by kickos_default_init, so it must join the rescan
-# link group below. Each provider is a pure data lib with no further deps, so the closure is
-# just the selected target; a custom provider may pre-set KICKOS_BOARD_PINMAP_LIBS.
+# KICKOS_BOARD_PINMAP names the target that DEFINES kickos_board_pinmap; it back-references
+# kickos_user, so it must join the rescan link group below.
 if(NOT DEFINED KICKOS_BOARD_PINMAP_LIBS)
   set(KICKOS_BOARD_PINMAP_LIBS "${KICKOS_BOARD_PINMAP}")
 endif()
 message(STATUS "KickOS: board pin-map = ${KICKOS_BOARD_PINMAP} (libs: ${KICKOS_BOARD_PINMAP_LIBS})")
 
-# RX MPU wedge-localizer trace (arch/rx/rxv3/arch_rxv3.cc): a raw polled SCI6 marker,
-# forwarded to the compiler only when set on the command line.
+# RX MPU wedge-localizer trace (arch/rx/rxv3/arch_rxv3.cc), command line only.
 if(DEFINED KICKOS_RX_MPU_TRACE)
   add_compile_definitions(KICKOS_RX_MPU_TRACE=${KICKOS_RX_MPU_TRACE})
 endif()
@@ -705,9 +658,8 @@ if(DEFINED KICKOS_RTT_PUBLISH_BARRIER_DEF)
   add_compile_definitions("KICKOS_RTT_PUBLISH_BARRIER()=${KICKOS_RTT_PUBLISH_BARRIER_DEF}")
 endif()
 
-# Passed as a BARE token (-DKICKOS_APP_TZ=+0200), not a quoted string: embedded escaped
-# quotes double up on a reconfigure of an existing build dir, so app.h stringizes the token
-# in C. `date` failing leaves the define out, and app.h stays offset-free.
+# Passed as a bare token (-DKICKOS_APP_TZ=+0200): escaped quotes double up on a reconfigure of
+# an existing build dir, so app.h stringizes the token in C.
 execute_process(COMMAND date +%z OUTPUT_VARIABLE _apptz OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 if(NOT _apptz STREQUAL "")
   add_compile_definitions(KICKOS_APP_TZ=${_apptz})
@@ -723,9 +675,8 @@ if(KICKOS_BUILD_TESTS)
     include(GoogleTest)
   endif()
 
-  # The panic/fault marker set, read from the one file this and tests/lib/gate.sh both read
-  # (same ERE dialect). It must not contain a `;`: FAIL_REGULAR_EXPRESSION is a CMake list
-  # of regexes.
+  # Read from the one file tests/lib/gate.sh also reads (same ERE dialect). It must not
+  # contain a `;`: FAIL_REGULAR_EXPRESSION is a CMake list of regexes.
   file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/tests/lib/panic.ere" KICKOS_PANIC_REGEX LIMIT_COUNT 1)
   if(KICKOS_PANIC_REGEX STREQUAL "")
     message(FATAL_ERROR "tests/lib/panic.ere is empty; the sim panic gates would register "
@@ -739,7 +690,7 @@ if(KICKOS_BUILD_TESTS)
 
   # A macro, not a function, so set_property runs in the caller's directory scope, the only
   # scope where the test it just added exists. kickos_build is registered above this wrapper
-  # and so never requires itself. Every test here uses the add_test(NAME <n> COMMAND ...) form.
+  # and so never requires itself.
   macro(add_test)
     _add_test(${ARGV})
     if("${ARGV0}" STREQUAL "NAME")
@@ -772,10 +723,9 @@ if(KICKOS_BUILD_TESTS)
     endforeach()
   endfunction()
 
-  # Which side each test program falls on is DECLARED in tests/static/test_classes.txt and
-  # gated by test_labels below.
+  # Which side each test program falls on is declared in tests/static/test_classes.txt.
   # Fixtures are resolved AFTER label filtering, so `kickos_build` carries no label and
-  # appears in BOTH partitions.
+  # appears in both partitions.
 
   # Registered with _add_test, so it does not require the build fixture: the gate reads the
   # source tree through `git ls-files` and never opens the build directory. WORKING_DIRECTORY
@@ -805,15 +755,24 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(include_guards PROPERTIES TIMEOUT 120 LABELS host)
 
-  # Runs under whatever /bin/sh is here, and its own self-test plants one violation per listed
-  # name: a shell that mangles a gate's data table leaves the gate's exit code alone.
+  _add_test(NAME whitespace
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_whitespace.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(whitespace PROPERTIES TIMEOUT 120 LABELS host)
+
   _add_test(NAME shell_special_names
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_shell_special_names.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(shell_special_names PROPERTIES TIMEOUT 120 LABELS host)
 
-  # Takes the GENERATED board config, not ${KICKOS_NUM_CORES}: the gate must read the knob
-  # spelling C reads.
+  # A milestone that deliberately changes the entry seam moves the baseline ref in
+  # tests/static/entry_seam_records.txt, and this entry fails until it does.
+  _add_test(NAME entry_sigdiff
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_entry_sigdiff.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(entry_sigdiff PROPERTIES TIMEOUT 120 LABELS host)
+
+  # Takes the generated board config: the gate must read the knob spelling C reads.
   _add_test(NAME cpu_id_fold
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_cpu_id_fold.sh"
                     "${PROJECT_BINARY_DIR}/generated/include/kickos/board_config.h"
@@ -830,35 +789,20 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(dash_punct PROPERTIES TIMEOUT 120 LABELS host)
 
-  # A banner tests/lib/panic.ere misses turns every assert_no_panic into a pass on a board
-  # that died.
   _add_test(NAME panic_banners
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_panic_banners.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(panic_banners PROPERTIES TIMEOUT 120 LABELS host)
 
-  # The death path's seating on the per-thread kernel block. Registered on every preset: it
-  # derives which arches owe the arm from arch/Kconfig and reads source, so a board whose own
-  # KICKOS_KERNEL_STACKS is 0 still gates the four backends that carry it.
   _add_test(NAME death_stack_seating
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_death_stack_seating.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(death_stack_seating PROPERTIES TIMEOUT 120 LABELS host)
 
   # --- The trap red-zone gate --------------------------------------------------
-  # It configures and cross-builds a scratch tree of its own, so it is keyed on the PRESET
-  # (board plus variant) and not on this build directory. A pair it does not declare is
-  # refused by the gate itself, so an unlisted variant registers nothing rather than
-  # measuring the wrong configuration.
-  #
-  # trap_redzone_roots.txt declares which (board, variant) pairs are measurable, and states
-  # the rule for it. This block DERIVES the preset name and asks that file whether it is
-  # declared, so a new preset registers by being declared once rather than in two places.
-  #
-  # THE NAMING RULE IS THE PRESETS' OWN: the base variant is the board name and every other
-  # variant is <board>-<variant>, which holds for all 52 pairs in cmake/presets/*.json. A
-  # preset that broke the rule would fail to configure under its derived name rather than
-  # register the wrong tree, the gate taking the name as an argument.
+  # The preset name is derived here: the base variant is the board name, every other variant
+  # is <board>-<variant>. trap_redzone_roots.txt declares which pairs are measurable, and an
+  # undeclared one registers nothing.
   set(_fs_redzone_roots "${PROJECT_SOURCE_DIR}/tests/static/trap_redzone_roots.txt")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_fs_redzone_roots}")
   if(KICKOS_CONFIG_VARIANT STREQUAL "base")
@@ -867,31 +811,48 @@ if(KICKOS_BUILD_TESTS)
     set(_fs_redzone_candidate "${KICKOS_BOARD}-${KICKOS_CONFIG_VARIANT}")
   endif()
   set(_fs_redzone_preset "")
-  # REGEX rather than a substring test: "preset armv7m qemu" must not match qemu-flat, and the
-  # trailing anchor is what stops it.
+  # The trailing anchor is required: `preset armv7m qemu` must not match qemu-flat.
   file(STRINGS "${_fs_redzone_roots}" _fs_redzone_decls
        REGEX "^preset[ \t]+${KICKOS_ARCH}[ \t]+${_fs_redzone_candidate}[ \t]*$")
   if(NOT _fs_redzone_decls STREQUAL "")
     set(_fs_redzone_preset "${_fs_redzone_candidate}")
   endif()
   if(NOT _fs_redzone_preset STREQUAL "")
-    # _add_test, not the wrapper: the gate builds a tree of its own, so the kickos_build
-    # fixture would only build one it never opens.
     _add_test(NAME trap_redzone
               COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_trap_redzone.sh"
                       "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}"
                       "${_fs_redzone_preset}" "${KICKOS_ARCH}")
-    # The timeout covers a cold cross build of the scratch tree.
     set_tests_properties(trap_redzone PROPERTIES TIMEOUT 1800 LABELS host)
   endif()
 
-  # Outside the _fs_redzone_preset guard on purpose: it checks that the declaration set
-  # covers the fleet, which is exactly the question a board whose preset is UNDECLARED cannot
-  # ask by registering trap_redzone. It configures nothing and needs no cross toolchain.
+  # Outside the _fs_redzone_preset guard: it asks whether the declaration set covers the
+  # fleet, which a board with no declared preset cannot ask by registering trap_redzone.
   _add_test(NAME trap_redzone_decls
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_trap_redzone_decls.sh"
                     "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(trap_redzone_decls PROPERTIES TIMEOUT 120 LABELS host)
+
+  # --- The console-route reachability gate -------------------------------------
+  # Registered on the TRANSLATING presets, where cap_console_deliver's error paths survive the
+  # optimiser. console_reach_roots.txt declares which; one missing from it registers nothing.
+  set(_fs_reach_decl "${PROJECT_SOURCE_DIR}/tests/static/console_reach_roots.txt")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_fs_reach_decl}")
+  if(KICKOS_CONFIG_VARIANT STREQUAL "base")
+    set(_fs_reach_candidate "${KICKOS_BOARD}")
+  else()
+    set(_fs_reach_candidate "${KICKOS_BOARD}-${KICKOS_CONFIG_VARIANT}")
+  endif()
+  # The trailing anchor is required: `preset rv64imac qemu-riscv64` must not match
+  # qemu-riscv64-sv48.
+  file(STRINGS "${_fs_reach_decl}" _fs_reach_decls
+       REGEX "^preset[ \t]+${KICKOS_ARCH}[ \t]+${_fs_reach_candidate}[ \t]*$")
+  if(NOT _fs_reach_decls STREQUAL "")
+    _add_test(NAME console_reach
+              COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_console_reach.sh"
+                      "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}"
+                      "${_fs_reach_candidate}" "${KICKOS_ARCH}")
+    set_tests_properties(console_reach PROPERTIES TIMEOUT 1800 LABELS host)
+  endif()
 
   _add_test(NAME atomic_rmw
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_atomic_rmw.sh"
@@ -903,8 +864,6 @@ if(KICKOS_BUILD_TESTS)
                     "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(service_lists PROPERTIES TIMEOUT 120 LABELS host)
 
-  # Unconditional: kickos_kconfig_generate above already FATALs on a box without the
-  # interpreter, so this cannot be reached without one.
   kickos_find_kconfig(_kconfig_py _kconfig_found)
   _add_test(NAME kconfig_gen
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_gen.sh"
@@ -918,23 +877,30 @@ if(KICKOS_BUILD_TESTS)
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(kconfig_forwarding PROPERTIES TIMEOUT 120 LABELS host)
 
-  # Unlike the gates above this one DOES require the build fixture: it classifies each test
-  # by the program ctest resolved for it, and ctest emits no command at all for a program
-  # that is not on disk yet.
+  # This one DOES require the build fixture: it classifies each test by the program ctest
+  # resolved for it, and ctest emits no command for a program that is not on disk yet.
   set(_kickos_declined no)
   if(NOT KICKOS_BUILD_INTEGRATION_TESTS)
     set(_kickos_declined yes)
   endif()
-  # <complete> asserts this tree registers EVERY build-rooted program test_classes.txt names.
+  # <complete> asserts this tree registers every build-rooted program test_classes.txt names,
+  # bar the ones <excused> accounts for; only the sim tree builds the whole set. <excused>
+  # names the layers this tree lacks, comma separated because a CMake list separator would
+  # split the argument.
   set(_kickos_complete no)
-  if(KICKOS_ARCH STREQUAL "sim" AND KICKOS_BUILD_UNIT_TESTS)
+  set(_kickos_excused_layers "")
+  if(KICKOS_ARCH STREQUAL "sim")
     set(_kickos_complete yes)
+    if(NOT KICKOS_BUILD_UNIT_TESTS)
+      list(APPEND _kickos_excused_layers "unit")
+    endif()
   endif()
+  list(JOIN _kickos_excused_layers "," _kickos_excused)
   _add_test(NAME test_labels
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_test_labels.sh"
                     "${CMAKE_CTEST_COMMAND}" "${CMAKE_COMMAND}"
                     "${PROJECT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
-                    "${_kickos_declined}" "${_kickos_complete}")
+                    "${_kickos_declined}" "${_kickos_complete}" "${_kickos_excused}")
   set_tests_properties(test_labels PROPERTIES TIMEOUT 60 LABELS host
                        FIXTURES_REQUIRED kickos_build)
 endif()
@@ -951,78 +917,61 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
   add_subdirectory(tests/unit/telemetry)
 endif()
 
-# Host-only: which slot an object lands in is visible only inside the kernel, so a host
-# program is what observes it.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/slotpool/CMakeLists.txt")
   add_subdirectory(tests/unit/slotpool)
 endif()
 
-# Host-only; the reason is in tests/unit/kstring/CMakeLists.txt.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/kstring/CMakeLists.txt")
   add_subdirectory(tests/unit/kstring)
 endif()
 
-# Host-only; the reason is in tests/unit/frame/CMakeLists.txt.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/frame/CMakeLists.txt")
   add_subdirectory(tests/unit/frame)
 endif()
 
-# Host-only; the reason is in tests/unit/vrange/CMakeLists.txt.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/vrange/CMakeLists.txt")
   add_subdirectory(tests/unit/vrange)
 endif()
 
-# Host-only; the reason is in tests/unit/ktime/CMakeLists.txt.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/ktime/CMakeLists.txt")
   add_subdirectory(tests/unit/ktime)
 endif()
 
-# Host-only; the reason is in tests/unit/tlscarve/CMakeLists.txt.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tlscarve/CMakeLists.txt")
   add_subdirectory(tests/unit/tlscarve)
 endif()
 
-# Host-only: the chunk directory mapping and the free-slot list length are kernel-internal,
-# so a host program is what observes them. The per-geometry split is in
-# tests/unit/captable/CMakeLists.txt.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/captable/CMakeLists.txt")
   add_subdirectory(tests/unit/captable)
 endif()
 
-# Host-only; the reason is in tests/unit/uartclass/CMakeLists.txt.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/uartclass/CMakeLists.txt")
   add_subdirectory(tests/unit/uartclass)
 endif()
 
-# Host-only; the reason is in tests/unit/capreply/CMakeLists.txt.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/capreply/CMakeLists.txt")
   add_subdirectory(tests/unit/capreply)
 endif()
 
-# Host-only: ARCH_MPU_NOCACHE_REFUSED is reachable only from a host build, so this gate is
-# where the refusal is exercised.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/grantnocache/CMakeLists.txt")
   add_subdirectory(tests/unit/grantnocache)
 endif()
 
-# Host-only: every arm needs a syscall that FAILS on demand, and the readiness poll needs
-# its full sleep budget to cost nothing, both of which the host seam provides.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/drvbringup/CMakeLists.txt")
   add_subdirectory(tests/unit/drvbringup)
 endif()
 
-# Host-only; the reason is in tests/unit/consoleown/CMakeLists.txt.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/consoleown/CMakeLists.txt")
   add_subdirectory(tests/unit/consoleown)
@@ -1062,9 +1011,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   endif()
 endif()
 
-# Host-only; the reason is in tests/unit/consoletx/CMakeLists.txt. Not a K-seam consumer:
-# it compiles kernel/init/console_tx.cc with its own arch seam, and the K-seam's would be a
-# second definition of arch_irq_save.
+# Outside the K-seam block above: it compiles kernel/init/console_tx.cc with its own arch
+# seam, and the K-seam's would be a second definition of arch_irq_save.
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/consoletx/CMakeLists.txt")
   add_subdirectory(tests/unit/consoletx)
@@ -1077,18 +1025,16 @@ set(KICKOS_INIT_PROVIDER "kickos_default_init" CACHE STRING
 if(TARGET kickos_kernel)
   # Consumers link a leaf (kickos / kickos_cxx), never kickos_core directly.
   add_library(kickos_core INTERFACE)
-  # Group order below: the kernel references kickos_init_entry across the rescan boundary, so
-  # KICKOS_INIT_PROVIDER sits right after kickos_kernel; KICKOS_SERVICE_LIST_LIBS follows it
-  # because the list TU's drivers back-reference kickos_user and a class leaf. The whole
-  # closure must be in-group to rescan-resolve.
-  # The closure is derived HERE and not at the knob: the walk reads the providers' and
-  # drivers' own link edges, which exist only after add_subdirectory(system) above.
+  # Group order: the kernel references kickos_init_entry across the rescan boundary, so
+  # KICKOS_INIT_PROVIDER sits right after kickos_kernel, and KICKOS_SERVICE_LIST_LIBS follows
+  # it. The whole closure must be in-group to rescan-resolve, and it is derived here because
+  # the walk reads link edges that exist only after add_subdirectory(system) above.
   if(NOT DEFINED KICKOS_SERVICE_LIST_LIBS)
     kickos_service_libs_closure("${KICKOS_SERVICE_LIST}" KICKOS_SERVICE_LIST_LIBS)
     message(STATUS "KickOS: service-list closure = ${KICKOS_SERVICE_LIST_LIBS}")
   endif()
   # CMake forbids one target's closure from carrying a library in two groups, so the group is
-  # built per posture leaf below, where they differ in which toolchain runtime joins them.
+  # built per posture leaf below.
   if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
     set(_kickos_group "kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_SERVICE_LIST_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib")
   else()
@@ -1100,15 +1046,9 @@ if(TARGET kickos_kernel)
   # The app writes `int main`, renamed to the kernel-called symbol; app.h is force-included
   # below so the renamed C++ main gets C linkage (unmangled).
   target_compile_definitions(kickos_core INTERFACE main=kickos_app_main)
-  # ODR: an out-of-tree TU including a kernel-internal header must see the same posture as
-  # the prebuilt libs. KICKOS_TELEMETRY gates fields in struct Kernel (instance.h) and
-  # arch_context (context.h), KICKOS_ARCH_SIM gates one in struct Thread (thread.h),
-  # KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h) and, with KICKOS_HAVE_ASPACE and the
-  # KICKOS_MEMORY_ENFORCED derived from the pair, the grant seam (grant.h) and the domain
-  # backend field (domain.h),
-  # KICKOS_ARM_MPU (plus the four name constants it is compared against) picks the
-  # arch_mpu_encoded layout, and without KICKOS_ARCH_SIM a sim package (which ships no
-  # chip_limits.h) hits config/board.h's #error.
+  # ODR: an out-of-tree TU including a kernel-internal header must see the same posture as the
+  # prebuilt libs, so every knob that gates a field or an inline in a shipped header is
+  # repeated here.
   set(_kos_iface_sim 0)
   if(KICKOS_ARCH STREQUAL "sim")
     set(_kos_iface_sim 1)
@@ -1125,6 +1065,8 @@ if(TARGET kickos_kernel)
     KICKOS_ARM_MPU_SYSMPU=3
     KICKOS_ARM_MPU=${_kickos_arm_mpu}
     KICKOS_ARCH_SIM=${_kos_iface_sim}
+    KICKOS_LIBC_REENT=${KICKOS_LIBC_REENT}
+    KICKOS_LINKER_WEAK_UNDEF=${KICKOS_LINKER_WEAK_UNDEF}
     KICKOS_MULTI_INSTANCE=$<BOOL:${KICKOS_MULTI_INSTANCE}>
     KICKOS_DEBUG=$<BOOL:${KICKOS_DEBUG}>)
   target_compile_options(kickos_core INTERFACE -include kickos/app.h)
@@ -1142,13 +1084,11 @@ if(TARGET kickos_kernel)
       -nostartfiles
       -Wl,--gc-sections
       -Wl,--no-warn-rwx-segments
-      # Every input section must be named by a rule in the chip script. An unnamed one is a
-      # link failure printing the section, not a warning: an ALLOC orphan lands at an address
-      # nobody chose. arch/common/sections.ld.h carries the shared vocabulary.
+      # Every input section must be named by a rule in the chip script; an unnamed ALLOC
+      # orphan lands at an address nobody chose. arch/common/sections.ld.h has the vocabulary.
       -Wl,--orphan-handling=error
       # ARM's vector table (g_isr_vector) is a data object nothing references. RX pulls its
-      # vector tables via ENTRY(_start) + KEEP(), and forcing a symbol it does not define
-      # would leave a dangling undefined.
+      # vector tables via ENTRY(_start) + KEEP() and defines no such symbol to force.
       "$<$<STREQUAL:${KICKOS_ARCH_FAMILY},arm>:-Wl,-u,g_isr_vector>"
       # Force our libc syscall stubs in (libc's raise->_exit). The RX psABI prefixes
       # C identifiers with a leading underscore, so C `_exit` is asm `__exit`; forcing
@@ -1199,17 +1139,14 @@ if(TARGET kickos_kernel)
     # libstdc++/libsupc++ (EH, RTTI, new/delete) over newlib.
     target_compile_options(kickos_cxx INTERFACE
       "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
-    # A second rescan group, one layer out: the driver-appended libstdc++'s operator
-    # new must be able to reach down to `_sbrk`, so the chain needs a group holding
-    # all three providers. Listed after kickos_core so the core group resolves first.
+      # A second rescan group, one layer out: the driver-appended libstdc++'s operator new
+      # must reach down to `_sbrk`. Listed after kickos_core so the core group resolves first.
     target_link_libraries(kickos_cxx INTERFACE
       "$<LINK_GROUP:RESCAN,stdc++,supc++,c,kickos_user>")
 
     # A strong __gnu_cxx::__verbose_terminate_handler keeps the linker from extracting
-    # libstdc++'s vterminate.o (~65K of demangle + float dtoa). It must be a real object on
-    # the link line, not an archive member, to win over the driver-appended libstdc++.
-    # INTERFACE flags on kickos_cxx do not reach this object lib's own compile, hence the
-    # direct flags below; this TU needs -fexceptions -frtti to compile at all.
+    # libstdc++'s vterminate.o. It must be a real object on the link line to win over the
+    # driver-appended libstdc++, and this TU needs -fexceptions -frtti to compile at all.
     add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc)
     target_compile_features(kickos_cxx_rt PRIVATE cxx_std_20)
     target_compile_options(kickos_cxx_rt PRIVATE ${KICKOS_WARN_FLAGS} -fexceptions -frtti)
@@ -1227,6 +1164,12 @@ if(TARGET kickos_kernel)
     install(TARGETS kickos_cxx_rt EXPORT KickOSTargets
       OBJECTS DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
   endif()
+endif()
+
+# Before the apps: it links the OBJECTS of the arch and chip targets add_subdirectory(arch)
+# created, and defines the kickos_x86_64_link_image that kickos_add_application calls.
+if(KICKOS_ARCH STREQUAL "x86_64")
+  include(cmake/x86_64_boot.cmake)
 endif()
 
 # Apps need a chip target (or the sim); a board whose chip is named but not yet brought up
@@ -1307,8 +1250,8 @@ set(KICKOS_CMAKE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/KickOS")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/licenses/${PROJECT_NAME}")
 
-# The arch backend's include dir is the path the arch subdir reports (arch/sim/include vs
-# arch/arm/armv7m/include), not an arch/${KICKOS_ARCH}/include guess.
+# The arch backend's include dir is the path the arch subdir reports (arch/sim/include,
+# arch/arm/armv7m/include), never an arch/${KICKOS_ARCH}/include guess.
 install(DIRECTORY
           "${CMAKE_CURRENT_SOURCE_DIR}/include/"
           "${CMAKE_CURRENT_SOURCE_DIR}/arch/include/"
@@ -1352,10 +1295,8 @@ configure_package_config_file(
   "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfig.cmake"
   INSTALL_DESTINATION "${KICKOS_CMAKE_DIR}")
 
-# EXACT, not SameMajorVersion: at 0.x CMake treats the whole 0 series as one compatibility
-# bucket, so a request for an older 0.x configures green against this one. The ABI moves at
-# SUBMILESTONE granularity before the freeze, so no two versions are interchangeable and a
-# consumer must pin the one it built against; relax at the freeze.
+# ExactVersion: at 0.x CMake treats the whole 0 series as one compatibility bucket, so a
+# request for an older 0.x would configure green against this one. Relax at the ABI freeze.
 write_basic_package_version_file(
   "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfigVersion.cmake"
   VERSION "${PROJECT_VERSION}"
@@ -1390,9 +1331,8 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
                   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-cxx-runtime-check.cmake"
             DESTINATION "${KICKOS_CMAKE_DIR}")
   endif()
-  # The CPU baseline is BAKED IN: a package has no arch/ tree for the toolchain file to read
-  # a cpu.cmake out of. Only the knobs the descriptor LEAVES to the chip are appended, so the
-  # shipped file never states one twice.
+# The CPU baseline is baked in: a package has no arch/ tree for the toolchain file to read a
+# cpu.cmake out of. Only the knobs the descriptor leaves to the chip are appended.
   set(_kos_baked "${PROJECT_BINARY_DIR}/generated/board.cmake")
   file(READ "${CMAKE_CURRENT_SOURCE_DIR}/boards/${KICKOS_BOARD}/board.cmake" _kos_desc)
   set(_kos_bake "")

@@ -13,47 +13,30 @@
 #           Compared against KICKOS_KERNEL_STACK_SIZE minus the canary word.
 #   trap    a static per-hart stack the arch owns, which no fit clause here applies to.
 #
-# HOW IT MEASURES. It configures a SCRATCH tree of its own with -fcallgraph-info=su,da, which
-# makes gcc drop a .ci file next to every object carrying that translation unit's frame sizes,
-# alloca counts and call edges; trap_redzone.py merges them and takes the longest weighted path
-# from the declared roots. The scratch tree stays separate from the caller's build dir: those
-# flags change every object.
+# HOW IT MEASURES. tests/lib/scratch_ci.sh configures a SCRATCH tree of its own with
+# -fcallgraph-info=su,da, which makes gcc drop a .ci file next to every object carrying that
+# translation unit's frame sizes, alloca counts and call edges; trap_redzone.py merges them and
+# takes the longest weighted path from the declared roots. The scratch tree stays separate from
+# the caller's build dir: those flags change every object.
 #
 # The enforced numbers come out of the arch header and WHICH macros to read comes from
 # trap_redzone_roots.txt. A macro that cannot be read is a hard failure and never a default: a
 # gate that defaults its own reference compares a measurement against nothing.
 #
-# HOW trap_redzone.py REFUSES TO ANSWER, each refusal its own named failure: a class measures
-# deeper than its red zone reserves; an indirect site reachable from a root is unbound in
-# trap_redzone_indirect.txt (gcc emits one anonymous __indirect_call edge per site and nothing
-# more, so an unbound site turns the figure into a lower bound); a binding names a site or a
-# callee the graph does not have; a reachable frame allocates an alloca/VLA; a reachable cycle,
-# or a reachable node with no frame size that is not in the unsized-allowance list; a reachable
-# symbol still has two rival definitions after the unextracted seam fallbacks are dropped; a
-# class has no root at all, `root <arch> <CLASS> NONE reason: ...` being how a class that runs
-# no C on the guarded stack says so. Two more the script itself refuses on: a spawn floor under
-# a thread-stack class's red zone, and a kernel block under a kernel-stack class's requirement.
-# And one before any of that: a scratch tree whose cache lacks the callgraph flag or any token
-# of KICKOS_MCPU_FLAGS is reconfigured rather than measured, a wrong-ISA measurement being the
-# one failure mode this gate cannot see in its own output.
-#
-# SCOPE. Know these before trusting a green run:
-#   - ONE BOARD PER RUN, and the console backend is per board.
-#   - COMPILED IS NOT LINKED. The compiler writes a .ci for every TU, including the seam
-#     fallbacks an extraction kept out of the image; trap_redzone.py drops those by the rule
-#     arch/CMakeLists.txt states, keyed on the _default.cc naming.
-#   - THE ROOT SET IS A DECLARATION. A call switch.S makes is in the number only when the roots
-#     file names it, so the roots are what a reader keeps honest against the assembly.
-#   - THE COMPILER'S OWN FRAME NUMBERS ARE TAKEN ON TRUST, per translation unit, so they hold
-#     for this configuration and this optimization level (MinSizeRel, as the presets build).
-#   - INLINING IS ALREADY IN THEM, and a callee gcc inlined has no node and no edge, which is
-#     why the winning chain printed below can be shorter than the source reads.
+# SCOPE. ONE BOARD PER RUN, and the console backend is per board. THE ROOT SET IS A
+# DECLARATION: a call switch.S makes is in the number only when the roots file names it, so the
+# roots are what a reader keeps honest against the assembly. The compiler's own frame numbers
+# are taken on trust, per translation unit, for this configuration and this optimization level
+# (MinSizeRel, as the presets build), and INLINING IS ALREADY IN THEM, so the winning chain
+# printed below can be shorter than the source reads.
 
 set -u
 # Every path arrives as an argument and is re-split unquoted below; a glob character in a
 # build path must not expand against the cwd.
 set -f
 . "$(dirname "$0")/../lib/gate.sh"
+KOS_CI_TAG=trap_redzone
+. "$(dirname "$0")/../lib/scratch_ci.sh"
 
 # The macro scrape and the awk record parses are structural, never keyed on a translated
 # heading.
@@ -129,99 +112,9 @@ require_nonempty "$TMP/classes" "$ROOTS declares no class for arch $ARCH"
 # --- configure and build the scratch tree ------------------------------------
 # Named per preset so two boards do not fight over one tree, and reused so a re-run is
 # cheap. Under /var/tmp because these trees are large and must outlive a /tmp wipe.
+# tests/lib/scratch_ci.sh owns the configure, the reuse checks and the one retry.
 BUILD="${KICKOS_TRAP_REDZONE_DIR:-/var/tmp/kickos-trap-redzone-$PRESET}"
-CGFLAGS="-fcallgraph-info=su,da"
-
-# THE ENVIRONMENT, NOT -DCMAKE_C_FLAGS. Every cross toolchain file here puts this board's ISA
-# baseline in CMAKE_<LANG>_FLAGS_INIT, and a -D on the command line REPLACES the cache value
-# that comes from it; CFLAGS/CXXFLAGS are combined with it instead.
-# `cmake --fresh` drops the cache and CMakeFiles and NOTHING ELSE: the generated Kconfig state
-# under $BUILD/generated survives it, and genconfig.py then refuses a configure whose
-# .defconfig stamp names another checkout. Removing that state is what makes --fresh fresh.
-fresh_configure() {
-    rm -rf "$BUILD/generated"
-    configure_scratch --fresh
-}
-
-configure_scratch() { # <extra cmake arg>...
-    CFLAGS="$CGFLAGS" CXXFLAGS="$CGFLAGS" \
-    "$CMAKE" -S "$SRC" -B "$BUILD" --preset "$PRESET" "$@" > "$TMP/cfg.log" 2>&1 \
-        || { sed -n '1,40p' "$TMP/cfg.log" >&2
-             fail "configure failed for preset $PRESET (cross toolchains come from the environment)"; }
-}
-
-# A REUSED TREE HAS TO BE THE RIGHT TREE. The cache is checked rather than trusted: the
-# callgraph flag must be there, and so must every token of this board's ISA baseline, which the
-# toolchain file exports as KICKOS_MCPU_FLAGS.
-scratch_flags_ok() {
-    _cxx="$(sed -n 's/^CMAKE_CXX_FLAGS:STRING=//p' "$BUILD/CMakeCache.txt" | head -n1)"
-    case " $_cxx " in
-        *" $CGFLAGS "*) ;;
-        *) echo "trap_redzone: scratch tree lacks $CGFLAGS" >&2; return 1 ;;
-    esac
-    # A CMake list in the cache, so semicolon-separated; the flags reach the compiler one
-    # per argument, and this loop compares them one at a time.
-    # PRESENT-BUT-EMPTY IS LEGAL AND ABSENT IS NOT: the xtensa toolchain names no ISA flag,
-    # the windowed ABI being the compiler's default, so grep for the KEY and let the value be
-    # empty. Testing the value alone would read a toolchain that stopped seeding the cache as
-    # a board with nothing to check.
-    grep -q '^KICKOS_MCPU_FLAGS:INTERNAL=' "$BUILD/CMakeCache.txt" \
-        || { echo "trap_redzone: scratch tree has no KICKOS_MCPU_FLAGS" >&2; return 1; }
-    _mcpu="$(sed -n 's/^KICKOS_MCPU_FLAGS:INTERNAL=//p' "$BUILD/CMakeCache.txt" | head -n1 \
-             | tr ';' ' ')"
-    for _tok in $_mcpu; do
-        case " $_cxx " in
-            *" $_tok "*) ;;
-            *) echo "trap_redzone: scratch tree is missing the ISA flag $_tok" >&2
-               return 1 ;;
-        esac
-    done
-    return 0
-}
-
-# The scratch tree is named by PRESET alone, so two source trees on one box share it. A cache
-# still pointing at another checkout measures THAT checkout, so a source-dir mismatch is treated
-# exactly like a flag mismatch.
-scratch_source_ok() {
-    _sc_home="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$BUILD/CMakeCache.txt" 2>/dev/null)"
-    [ -n "$_sc_home" ] || return 1
-    [ "$_sc_home" = "$SRC" ]
-}
-
-if [ -f "$BUILD/CMakeCache.txt" ] && scratch_source_ok && scratch_flags_ok; then
-    echo "trap_redzone: reusing scratch tree $BUILD"
-else
-    if [ -f "$BUILD/CMakeCache.txt" ]; then
-        if ! scratch_source_ok; then
-            echo "trap_redzone: reconfiguring $BUILD from scratch; its cache names another"
-            echo "trap_redzone: source tree, so what it holds is another checkout's depths"
-        else
-            echo "trap_redzone: reconfiguring $BUILD from scratch; its flags are not the ones"
-            echo "trap_redzone: this measurement needs, so what it holds is another ISA's depths"
-        fi
-        fresh_configure
-    else
-        # A directory with generated Kconfig state and NO cache is the same refusal one
-        # branch up: the cache is what --fresh drops, and it is the generated state that makes
-        # genconfig refuse.
-        echo "trap_redzone: configuring scratch tree $BUILD"
-        rm -rf "$BUILD/generated"
-        configure_scratch
-    fi
-    scratch_flags_ok || fail "the scratch tree still lacks the flags this gate needs after a
-    fresh configure of preset $PRESET; the toolchain file may no longer seed
-    CMAKE_<LANG>_FLAGS_INIT, in which case CFLAGS/CXXFLAGS no longer reach the compiler"
-fi
-# An aborted earlier run leaves a cache that passes both checks above beside generated rules
-# that do not load, so the build gets exactly one --fresh retry before it counts as a failure.
-if ! "$CMAKE" --build "$BUILD" > "$TMP/build.log" 2>&1; then
-    echo "trap_redzone: the scratch build failed; reconfiguring $BUILD from scratch and retrying once"
-    fresh_configure
-    "$CMAKE" --build "$BUILD" > "$TMP/build.log" 2>&1 \
-        || { sed -n '$!d;1,60p' "$TMP/build.log" >&2
-             grep -E 'error|Error' "$TMP/build.log" | sed -n '1,20p' >&2
-             fail "build failed in $BUILD, twice, the second time after a fresh configure"; }
-fi
+scratch_ci_build "$SRC" "$CMAKE" "$PRESET" "$BUILD"
 
 # The generated cmake fragment, not the configure log: the log only exists on the run that
 # configured, and this gate deliberately reuses a tree.
@@ -242,8 +135,7 @@ FLOOR="$(sed -n 's/^[[:space:]]*set(KICKOS_MIN_STACK_SIZE[[:space:]]\{1,\}\([0-9
 #
 # THE FLAGS ARE THE IMAGE'S, from compile_commands.json of the tree just built, restricted to a
 # translation unit of the arch directory the header belongs to (its `include/` parent). That TU
-# static_asserts against these very macros, so the posture is theirs by construction rather
-# than by a list of knobs this script would keep.
+# static_asserts against these very macros, so the posture is theirs by construction.
 #
 # ONLY -D, -I, -isystem, -include and -std are carried over: preprocessing needs no more, and
 # -fcallgraph-info would have the resolution drop a .ci file of its own. -Wundef -Werror is
@@ -391,12 +283,11 @@ while IFS="$TAB" read -r cls frame_macro depth_macro onstack kstacks; do
     zone=$((frame + depth))
     echo "trap_redzone: class $cls  $frame_macro=$frame  $depth_macro=$depth  zone=$zone ($onstack stack)"
     ENFORCED_ARGS="$ENFORCED_ARGS --enforced $cls=$frame,$depth"
-    # A kstacks= class belongs to ONE of the two entry designs an arch can compile (armv7m
+# A kstacks= class belongs to ONE of the two entry designs an arch can compile (armv7m
     # compiles two) while the call graph sees one merged tree. Where KICKOS_KERNEL_STACKS
-    # disagrees the image does not contain the path, so the DEPTH is the same C landing on a
-    # different stack and enforcing it charges the board for a design it never links. Both
-    # halves go unenforced. PRINTED, never silent: a run that skipped every registered preset
-    # of an arch would leave the figure unenforced, which one preset per run cannot see.
+    # disagrees the image does not contain the path, so both halves go unenforced. PRINTED,
+    # never silent: a run that skipped every registered preset of an arch would leave the
+    # figure unenforced, which one preset per run cannot see.
     if [ "$kstacks" != any ] && [ "$kstacks" -ne "$KSTACKS" ]; then
         echo "trap_redzone: class $cls not enforced here (KICKOS_KERNEL_STACKS=$KSTACKS,
     this class is the kstacks=$kstacks design): MEASURED AND NOT ENFORCED, it describes an
@@ -414,11 +305,9 @@ while IFS="$TAB" read -r cls frame_macro depth_macro onstack kstacks; do
     # says nothing about it either. What it has to fit is that block minus the canary word,
     # and that is a clause of its own: raising the spawn floor would do nothing here, and the
     # array is per thread SLOT, so a byte costs KICKOS_THREAD_SLOTS.
-    # A CLASS THE BOARD DOES NOT COMPILE IS MEASURED AND NOT ENFORCED, both halves, as the
-    # kstacks= skip above drops both: at KICKOS_KERNEL_STACKS 0 there is no block to fit AND
-    # the depth is the same C landing on a stack this image never puts it on. armv6m, rv32imac
-    # and rxv3 rule that out in C with static_assert(KICKOS_KERNEL_STACKS != 0); armv7m carries
-    # no such assert and must not, one of its chips resolving 0 on purpose.
+    # A CLASS THE BOARD DOES NOT COMPILE IS MEASURED AND NOT ENFORCED, both halves. armv6m,
+    # rv32imac and rxv3 rule that out in C with static_assert(KICKOS_KERNEL_STACKS != 0);
+    # armv7m carries no such assert and must not, one of its chips resolving 0 on purpose.
     if [ "$onstack" = kernel ] && [ "$KSTACKS" -eq 0 ]; then
         echo "trap_redzone: class $cls not enforced here (KICKOS_KERNEL_STACKS=0):
     MEASURED AND NOT ENFORCED, it describes an entry design this image does not compile"
@@ -438,9 +327,8 @@ while IFS="$TAB" read -r cls frame_macro depth_macro onstack kstacks; do
         fi
         continue
     fi
-    # Own clause, and NOT the same failure as an over-deep measurement: here the measurement
-    # and the entry agree and the SPAWN FLOOR is what is wrong. Both halves of the consequence
-    # are named, a thread-stack class whose sp the entry never bounds not being refusable.
+    # Own clause: here the measurement and the entry agree and the SPAWN FLOOR is what is
+    # wrong. Both halves of the consequence are named.
     if [ "$zone" -gt "$FLOOR" ]; then
         bad "SPAWN FLOOR BELOW A THREAD-STACK REQUIREMENT: $ARCH needs $zone bytes of the
     interrupted thread's own stack for a $cls trap ($frame_macro=$frame + $depth_macro=$depth)

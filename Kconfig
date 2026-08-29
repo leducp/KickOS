@@ -7,9 +7,8 @@
 mainmenu "KickOS configuration"
 
 # --- Capability facts -------------------------------------------------------
-# Never prompted: a chip or an arch selects them. A fact earns a declaration here
-# only when some option's availability or default depends on it, so this list is
-# short on purpose and grows when an option needs it, not when silicon has it.
+# Never prompted: a chip or an arch selects them. A fact is declared here only when
+# some option's availability or default depends on it.
 
 config HAS_MPU
 	bool
@@ -96,17 +95,11 @@ config KICKOS_HAVE_MPU
 	default 0
 
 # --- Paging mode ------------------------------------------------------------
-# A translating arch whose ISA offers more than one mode selects it HERE, and the level count
-# is DERIVED from the selection rather than stated beside it
-# (arch/riscv/rv64imac/include/kickos/arch/rv64_paging.h). Prompted, and that is the point:
-# without a selector "switching the mode changes no kernel code" is a claim about editing one
-# chip file, and no two postures can be built out of one tree
-# (docs/design-m6-mmu.md R3).
+# The level count is DERIVED from the selection
+# (arch/riscv/rv64imac/include/kickos/arch/rv64_paging.h).
 #
-# Per arch, because satp.MODE is an arch encoding, and offered only where a run witnesses it.
-# A part that implements one mode only takes the default: satp.MODE is WARL, so a hart handed
-# a mode it does not implement keeps the field it had, and the prologue reads it back and
-# refuses by name rather than translating at a depth nobody chose.
+# satp.MODE is WARL, so a hart handed a mode it does not implement keeps the field it had;
+# the prologue reads it back and refuses by name.
 
 choice
 	prompt "RV64 paging mode"
@@ -136,22 +129,14 @@ config KICKOS_RV64_SATP_MODE
 	  level count is derived from. Unprompted, the choice above being what a board
 	  states.
 
-# The arch fact ARCH_TLS_FROM_SP, in the form CMake and C read. Both need it: CMake refuses
-# a non-power-of-two stack knob only where the mask is real, and tls_stack_admissible refuses
-# a block that is not one stride only there.
+# The arch fact ARCH_TLS_FROM_SP, in the form CMake and C read.
 config KICKOS_TLS_FROM_SP
 	int
 	default 1 if ARCH_TLS_FROM_SP
 	default 0
 
 # --- Userspace services and pin mux -----------------------------------------
-# Both name a CMake target: the one defining kickos_board_services, and the one
-# defining kickos_board_pinmap. A board states its own default in
-# boards/<board>/Kconfig; the default here is the no-op every other board takes.
-#
-# Prompted, unlike the chip constants, because WHICH provider an image runs is a real
-# choice and the tree proves it: four sim gates build the same board against different
-# providers to exercise publish, panic-flush and driver death.
+# A board states its own default in boards/<board>/Kconfig.
 
 config KICKOS_SERVICE_LIST
 	string "CMake target defining kickos_board_services"
@@ -268,8 +253,8 @@ config KICKOS_USER_HEAP_SIZE
 	range 0 1048576
 	default 0 if CHIP_NRF51
 	default 2048 if CHIP_STM32F302
-	# 20 KiB of SRAM, so this cannot carry the 8192 its 128 KiB F411 sibling does:
-	# at 8192 the heaviest stm32f103 image had zero arena past the two boot stacks.
+	# 20 KiB of SRAM: at 8192 the heaviest stm32f103 image has no arena past the two
+	# boot stacks.
 	default 2048 if CHIP_STM32F103
 	default 8192 if CHIP_STM32F411
 	default 16384
@@ -324,15 +309,14 @@ config KICKOS_KERNEL_STACKS
 config KICKOS_KERNEL_STACK_SIZE
 	int
 	default 1184 if ARCH_RV32IMAC
-	# PROVISIONAL on this arch, taken from armv8a as the nearest 64-bit figure. Nobody has
-	# run the instrument here.
+	# PROVISIONAL: taken from armv8a, not measured on this arch.
 	default 4096 if ARCH_RV64IMAC
-	# PROVISIONAL, not measured yet, and deliberately above every 32-bit figure: this
-	# arch's uniform exception frame is 800 bytes (31 GPRs, ELR, SPSR, SP_EL0, FPCR, FPSR
-	# and all THIRTY-TWO vector registers, which an asynchronous entry has to keep),
-	# and a blocking syscall holds two of them on the block at once, the trap's and the
-	# switch's, before the dispatch's own C frames. Two frames alone are 1600.
+	# PROVISIONAL: not measured, and above every 32-bit figure because the uniform
+	# exception frame is 800 bytes and a blocking syscall holds two of them at once.
 	default 4096 if ARCH_ARMV8A
+	# PROVISIONAL: taken from armv8a, not measured on this arch. The backend asserts a
+	# structural floor of 368.
+	default 4096 if ARCH_X86_64
 	default 1104 if ARCH_RXV3
 	default 1472 if ARCH_ARMV7M && TELEMETRY_RTT
 	default 1008 if ARCH_ARMV7M
@@ -423,24 +407,19 @@ config KICKOS_MIN_STACK_SIZE
 	int
 	default 896 if ARCH_ARMV6M
 	# A model ceiling and not an observed overrun: at this depth the chain runs inside
-	# the IrqLock exit_current holds, so the frame term cannot be spent. The leg is kept
-	# because frame plus depth is the gate's model everywhere. armv7m_trap_stack.h.
+	# the IrqLock exit_current holds, so the frame term cannot be spent.
+	# armv7m_trap_stack.h.
 	default 1088 if ARCH_ARMV7M && TELEMETRY_RTT
 	default 960 if ARCH_ARMV7M
 	default 1024 if ARCH_RXV3
-	# PROVISIONAL on this arch, and flagged rather than left to read as measured: every
-	# other figure in this ladder is what its arch's deepest exit dispatch measures, and
-	# nobody has run that instrument here. It is raised off the generic 1024 because the
-	# uniform exception frame is 800 bytes against armv7m's ~100, so a preemption inside
-	# the exit descent, which the help text below calls the ordinary case, costs eight
-	# times what it does on the arches this ladder was built from.
+	# PROVISIONAL: not measured on this arch. Raised off the generic 1024 for an
+	# 800-byte uniform exception frame against armv7m's ~100.
 	default 2048 if ARCH_ARMV8A
 	# Under KICKOS_BENCH alone, or every non-bench rv32imac board reserves for a
 	# console bracket it does not compile. rv_trap_stack.h.
 	default 1088 if ARCH_RV32IMAC && KICKOS_BENCH
 	default 1024 if ARCH_RV32IMAC
-	# PROVISIONAL on this arch, taken from armv8a as the nearest 64-bit figure. Nobody has
-	# run the instrument here.
+	# PROVISIONAL: taken from armv8a, not measured on this arch.
 	default 2048 if ARCH_RV64IMAC
 	default 896 if ARCH_LX6
 	default 1024
@@ -518,9 +497,8 @@ config CONSOLE_BOTH
 
 endchoice
 
-# The RTT console transport is a plain RAM ring (lib/rtt.cc reads no clock); telemetry is
-# the arm that needs arch_trace_now, and says so. Whether RTT can DELIVER depends on an
-# attached debug probe, which is a fact about the rig rather than the part.
+# The RTT console transport is a plain RAM ring and reads no clock (lib/rtt.cc), so it
+# does not depend on HAS_TRACE_CLOCK; telemetry, which needs arch_trace_now, does.
 
 config KICKOS_CONSOLE
 	string

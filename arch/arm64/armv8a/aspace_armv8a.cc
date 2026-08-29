@@ -49,13 +49,15 @@ namespace
     constexpr uint64_t DESC_UXN = 1ull << 54;
     // Output address bits [47:12]; the A53 outputs 40 bits, so the top eight are always 0.
     constexpr uint64_t DESC_OA_MASK = 0x0000FFFFFFFFF000ull;
+    // The widest output a descriptor of this format can carry, whatever the machine implements.
+    constexpr unsigned DESC_OA_BITS = 48;
 
     // MAIR_EL1 attribute slots, in the order startup.S programs them.
     constexpr uint64_t ATTR_NORMAL = 0;
     constexpr uint64_t ATTR_DEVICE = 1;
     constexpr uint64_t ATTR_NOCACHE = 2;
 
-    // T0SZ is startup.S's, read back rather than restated here.
+    // T0SZ is read back from TCR_EL1; startup.S is what programmed it.
     unsigned va_bits()
     {
         uint64_t tcr = 0;
@@ -79,6 +81,29 @@ namespace
             return 0;
         }
         return BITS[field];
+    }
+
+    // The output width a leaf may carry: the narrowest of what the machine implements (PARange),
+    // what this regime outputs (TCR_EL1.IPS, startup.S) and what the descriptor format encodes.
+    // An output above the IPS size takes an Address Size Fault, and one above the field is
+    // truncated by map_into's mask. Zero where either encoding is reserved.
+    unsigned oa_bits()
+    {
+        uint64_t mmfr0 = 0;
+        __asm volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(mmfr0));
+        uint64_t tcr = 0;
+        __asm volatile("mrs %0, tcr_el1" : "=r"(tcr));
+        unsigned bits = pa_bits_of(static_cast<unsigned>(mmfr0 & 0xFu));
+        unsigned const ips = pa_bits_of(static_cast<unsigned>((tcr >> 32) & 0x7u));
+        if (ips < bits)
+        {
+            bits = ips;
+        }
+        if (bits > DESC_OA_BITS)
+        {
+            bits = DESC_OA_BITS;
+        }
+        return bits;
     }
 
     // TCR_EL1.AS is left at 0, an 8-bit identifier, nothing here tagging a translation; 16
@@ -148,13 +173,10 @@ namespace
         return (ttbr & DESC_OA_MASK) == static_cast<uint64_t>(phys_of(root_of(space)));
     }
 
-    // Drop the entry for `va` only where the walker can hold one. Nothing tags a
-    // translation, so write_ttbr0 drops the whole low half on every root change: an entry
-    // for a space this core does not have installed cannot survive the switch that installed
-    // the current one, and an absence cached for it cannot either.
-    //
-    // At one core `installed` is the whole question. A second core holds a TTBR0 this one
-    // cannot read, so the elision is compiled out above one core (docs/design-m6-mmu.md T9).
+    // Drop the entry for `va` only where the walker can hold one. Nothing tags a translation, so
+    // write_ttbr0 drops the whole low half on every root change, and no entry for a space this
+    // core does not have installed can survive that. A second core holds a TTBR0 this one cannot
+    // read, so the elision is compiled out above one core (docs/design-m6-mmu.md T9).
     void invalidate_page_if(uintptr_t va, bool installed)
     {
 #if KICKOS_NUM_CORES == 1
@@ -246,8 +268,7 @@ namespace
     }
 
     // A leaf for the unprivileged level. AP has no read-disable and no execute-only form
-    // (Table D8-63), so a request without ARCH_MAP_R names permissions this architecture
-    // cannot express and is refused rather than widened.
+    // (Table D8-63), so a request without ARCH_MAP_R is refused.
     bool leaf_attrs(uint32_t rights, enum arch_map_memtype type, uint64_t* out)
     {
         uint32_t const known = ARCH_MAP_R | ARCH_MAP_W | ARCH_MAP_X;
@@ -255,9 +276,8 @@ namespace
         {
             return false;
         }
-        // Writable and executable at EL0 is expressible here and refused anyway: a page
-        // granted both is one an unprivileged thread can turn into code, and the descriptor
-        // is the only thing there is to take it back with.
+        // Writable and executable at EL0 is expressible here and refused: a page granted both
+        // is one an unprivileged thread can turn into code.
         if ((rights & ARCH_MAP_W) != 0 and (rights & ARCH_MAP_X) != 0)
         {
             return false;
@@ -326,8 +346,8 @@ namespace
                 }
                 table[idx] = leaf | (static_cast<uint64_t>(pa) & DESC_OA_MASK);
                 // A64 caches no faulting entry, so an invalid-to-valid change needs no
-                // invalidation at all (DDI 0487 M.b, D8.17, IWZCBG). This one covers the slot
-                // that was NOT in fact empty, which nothing above proves.
+                // invalidation (DDI 0487 M.b, D8.17, IWZCBG). This one covers the slot that was
+                // not in fact empty, which nothing above proves.
                 invalidate_page_if(va, installed);
                 va += GRANULE;
                 pa += GRANULE;
@@ -347,11 +367,9 @@ namespace
                 desc = static_cast<uint64_t>(frame) | DESC_VALID | DESC_BIT1;
                 __asm volatile("dsb ishst" ::: "memory");
                 table[idx] = desc;
-                // No invalidate for the table entry itself: an invalidate by address drops
-                // the cached intermediate entries for that address too, so the per-leaf one
-                // below covers every page this call makes reachable. A page in the new
-                // table's span that this call does NOT map stays unmapped, and a cached
-                // absence for it is still the right answer.
+                // No invalidate for the table entry itself: an invalidate by address drops the
+                // cached intermediate entries for that address too, so the per-leaf one below
+                // covers every page this call makes reachable.
             }
 
             uintptr_t const span = span_at(level);
@@ -376,9 +394,8 @@ namespace
         return ARCH_ASPACE_OK;
     }
 
-    // Returns true when `table` is empty once its empty children are gone. Every table a
-    // failed map allocated is empty by then, the leaf rollback having run first; a table an
-    // earlier unmap left empty goes back to the pool with them, removing no mapping.
+    // Returns true when `table` is empty once its empty children are gone. Every table a failed
+    // map allocated is empty by then, the leaf rollback having run first.
     bool prune_empty(uint64_t* table, int level)
     {
         if (level == LEVEL_LEAF)
@@ -422,14 +439,35 @@ namespace
         return entry;
     }
 
-    // TTBR0's half only, and this is the SINGLE statement of that boundary every guard below
-    // asks: a second copy of it is a second truth. A high-half address is the kernel's window,
-    // reached through TTBR1, and nothing below this seam may edit or resolve it; the walk here
-    // reads the index bits of the address alone, so a high-half address ALIASES onto a low-half
-    // one and would otherwise be answered with that page's frame.
+    // TTBR0's half only, and the single statement of that boundary every guard below asks. The
+    // walk reads the index bits of the address alone, so a high-half address ALIASES onto a
+    // low-half one and would otherwise be answered with that page's frame.
     bool low_half_page(uintptr_t page)
     {
         return page < (static_cast<uintptr_t>(1) << va_bits());
+    }
+
+    // The whole output extent, alignment included, asked before the first table is edited:
+    // map_into increments pa per page and masks each leaf with DESC_OA_MASK, so a run validated
+    // by its start alone runs off the implemented output width and comes back aliased onto a low
+    // frame.
+    bool phys_range_ok(arch_phys_addr_t pa, size_t pages)
+    {
+        if ((pa & ~DESC_OA_MASK) != 0)
+        {
+            return false;
+        }
+        unsigned const bits = oa_bits();
+        if (bits == 0)
+        {
+            return false;
+        }
+        uintptr_t end = 0;
+        if (not kickos::extent_end(static_cast<uintptr_t>(pa), pages, GRANULE, &end))
+        {
+            return false; // 0 pages, a byte count past the pointer width, or a wrapped end
+        }
+        return static_cast<uint64_t>(end) <= (static_cast<uint64_t>(1) << bits);
     }
 
     bool range_ok(uintptr_t va, size_t pages)
@@ -465,10 +503,8 @@ uint64_t arch_aspace_model(void)
     __asm volatile("mrs %0, tcr_el1" : "=r"(tcr));
     // TGran4 at 31:28, TGran64 at 27:24, TGran16 at 23:20, ASIDBits at 7:4, PARange at 3:0.
     //
-    // TGran16 states the sense of its answer the opposite way round from the other two:
-    // 0b0000 means NOT supported there, while for TGran4 and TGran64 it means supported and
-    // 0b1111 means not. Reading "zero means supported" across all three gets 16 KiB exactly
-    // backwards.
+    // TGran16 states the sense of its answer the opposite way round from the other two: 0b0000
+    // means NOT supported there, where for TGran4 and TGran64 it means supported.
     unsigned const tg4 = static_cast<unsigned>((mmfr0 >> 28) & 0xFu);
     unsigned const tg64 = static_cast<unsigned>((mmfr0 >> 24) & 0xFu);
     unsigned const tg16 = static_cast<unsigned>((mmfr0 >> 20) & 0xFu);
@@ -491,8 +527,8 @@ uint64_t arch_aspace_model(void)
         asid_bits = 16;
     }
     unsigned const pa_bits = pa_bits_of(static_cast<unsigned>(mmfr0 & 0xFu));
-    // The figure startup.S programmed, read back rather than restated: a range the machine
-    // does not have is a translation control this port cannot legally write.
+    // Read back from TCR_EL1.IPS, which startup.S programmed: this port may only write a
+    // range the machine has.
     unsigned const ips_bits = pa_bits_of(static_cast<unsigned>((tcr >> 32) & 0x7u));
     uint64_t out = 0;
     if ((granules & 1u) != 0 and GRANULE == 4096u)
@@ -529,10 +565,8 @@ struct arch_aspace* arch_aspace_create(void)
     uint64_t* const table = table_at(root);
     zero_table(table);
     __asm volatile("dsb ishst" ::: "memory");
-    // No kernel half is copied in: this architecture selects the table from the top bits of
-    // the address, so the kernel window is TTBR1's and no space carries a copy of it.
-    //
-    // The handle is the root table's address; the space owns nothing else.
+    // No kernel half is copied in: this architecture selects the table from the top bits of the
+    // address, so the kernel window is TTBR1's. The handle is the root table's address.
     return reinterpret_cast<struct arch_aspace*>(table);
 }
 
@@ -544,8 +578,7 @@ void arch_aspace_destroy(struct arch_aspace* space)
     }
     uint64_t* const table = root_of(space);
     // FIRST, not last: a walk caches the address of an intermediate table, so a table freed
-    // while such an entry stands would be read as descriptors after the pool hands it out
-    // as data.
+    // while such an entry stands would be read as descriptors after the pool reissues it.
     invalidate_all();
     free_subtree(table, LEVEL_ROOT);
     kickos_frame_free(phys_of(table));
@@ -559,11 +592,9 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     {
         return ARCH_ASPACE_EINVAL;
     }
-    // The mask covers the granule bits and everything above the output field, so this is
-    // the alignment test too.
-    if ((pa & ~DESC_OA_MASK) != 0)
+    if (not phys_range_ok(pa, pages))
     {
-        return ARCH_ASPACE_EINVAL;
+        return ARCH_ASPACE_EINVAL; // misaligned, or an extent past the implemented output width
     }
     uint64_t leaf = 0;
     if (not leaf_attrs(rights, type, &leaf))
@@ -632,10 +663,10 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
 void arch_aspace_activate(struct arch_aspace* space)
 {
     uint64_t const ttbr = static_cast<uint64_t>(phys_of(root_of(space)));
-    // No translation tag, so every space is cached under the same identifier and the whole
-    // low half has to be dropped on every switch. Masked because the drop cannot be atomic
-    // with the base change: between the two, a low-half access would resolve against the
-    // outgoing space.
+    // No translation tag, so every space is cached under the same identifier and the whole low
+    // half has to be dropped on every switch. Masked because the drop cannot be atomic with the
+    // base change: between the two, a low-half access would resolve against the outgoing
+    // space.
     arch_irq_state_t const s = arch_irq_save();
     capture_boot();
     write_ttbr0(ttbr);
@@ -672,9 +703,8 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
         return nullptr;
     }
     uintptr_t const page = va & ~(GRANULE - 1);
-    // The half test arch_aspace_frame_at makes, for the same aliasing and for one more: a
-    // frame this walk reaches through TTBR1's own entries would be handed back as a POINTER
-    // the caller may write through.
+    // The half test arch_aspace_frame_at makes: a frame this walk reached through TTBR1's own
+    // entries would be handed back as a POINTER the caller may write through.
     if (not low_half_page(page))
     {
         return nullptr;
@@ -717,10 +747,8 @@ arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)
     {
         return 0;
     }
-    // Masked for the same reason the map unwind masks: it clears leaves and frees tables
-    // under one mask, and a walk interleaved with it would read a table already back in the
-    // pool. Neither caller supplies the mask and neither should: only the backend knows its
-    // walk reads pool-owned memory.
+    // Masked for the same reason the map unwind masks: it clears leaves and frees tables under
+    // one mask, and a walk interleaved with it would read a table already back in the pool.
     arch_irq_state_t const s = arch_irq_save();
     uint64_t const* const entry = leaf_entry(root_of(space), page);
     arch_phys_addr_t out = 0;
@@ -735,7 +763,14 @@ arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)
 #if defined(KICKOS_ENABLE_SELFTEST)
 uint64_t arch_aspace_tlbi_counts(void)
 {
-    return (static_cast<uint64_t>(g_tlbi_issued) << 32) | static_cast<uint64_t>(g_tlbi_elided);
+    uint32_t elided = g_tlbi_elided;
+    if (elided > 0xFFFFFFu)
+    {
+        elided = 0xFFFFFFu; // saturates rather than bleeding into the issued half
+    }
+    // The low byte is the window-release mispairing count, which this backend cannot produce:
+    // acquire here is an addition and spends no slot, so release holds nothing to mispair.
+    return (static_cast<uint64_t>(g_tlbi_issued) << 32) | (static_cast<uint64_t>(elided) << 8);
 }
 #endif
 

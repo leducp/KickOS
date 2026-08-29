@@ -45,11 +45,13 @@ extern "C"
     // startup.S: the transient window's level-0 table, whose leaves the map editor writes.
     extern uint64_t kickos_rv64_window_l0[];
 
-    // arch/riscv/rv64imac/aspace_rv64imac.cc: the boot root, the window and the kernel
-    // window's output range, handed over before the first space exists.
+    // arch/riscv/rv64imac/aspace_rv64imac.cc: the boot root, the window, the kernel window's
+    // output range and the physical extent this platform implements, handed over before the
+    // first space exists.
     void kickos_rv64_aspace_boot(uint64_t* boot_root, uint64_t* window_leaves,
                                  uintptr_t window_va, uintptr_t window_delta,
-                                 arch_phys_addr_t pa_lo, arch_phys_addr_t pa_hi);
+                                 arch_phys_addr_t pa_lo, arch_phys_addr_t pa_hi,
+                                 unsigned phys_bits);
 
     // Linker-script symbols (virt_rv64.ld).
     extern uintptr_t _sidata, _sdata, _edata, _sbss, _ebss;
@@ -135,7 +137,8 @@ void arch_init(void)
     kickos_rv64_aspace_boot(kickos_rv64_root, kickos_rv64_window_l0,
                             KICKOS_RV64_WINDOW_VA, KICKOS_RV64_VA_BASE,
                             KICKOS_RV64_DRAM_BASE,
-                            KICKOS_RV64_DRAM_BASE + KICKOS_RV64_KERNEL_WINDOW_SIZE);
+                            KICKOS_RV64_DRAM_BASE + KICKOS_RV64_KERNEL_WINDOW_SIZE,
+                            KICKOS_RV64_PHYS_ADDR_BITS);
 }
 
 // --- Tickless clock: the time CSR (10 MHz) -> ns ----------------------------
@@ -238,16 +241,6 @@ void arch_shutdown(int status)
     {
         __asm volatile("wfi");
     }
-}
-
-// The shared panic/fault dead-end (kernel.h). A fault on this QEMU target must EXIT with a
-// status so a CTest run catches it.
-void kfault_terminate(void)
-{
-    // The FIFO and the shift register outlive arch_shutdown, so the dump truncates on a part
-    // without this; the panic writes are already synchronous, so only the device is left.
-    arch_console_flush_sync();
-    arch_shutdown(KICKOS_RV64_FATAL_STATUS);
 }
 
 // --- C-runtime bring-up -----------------------------------------------------

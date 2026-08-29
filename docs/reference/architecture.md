@@ -306,13 +306,14 @@ threaded, C++ guard/lock hooks) routed to KickOS syscalls. (Honest caveat: that 
 ```
 KickOS/
   CMakeLists.txt
-  CMakePresets.json + cmake/presets/*.json   # per-arch/board presets (arm, host, riscv, rx, xtensa)
+  CMakePresets.json + cmake/presets/*.json   # per-arch/board presets (arm, arm64, host, riscv,
+                                    #   rx, x86, xtensa)
   Kconfig                          # top-level symbol tree: capability facts (HAS_MPU, ...),
                                     #   sourced boards/Kconfig + arch/Kconfig + per-board Kconfig
   tools/kconfig/genconfig.py       # resolves a board's defconfig into <build>/generated/:
                                     #   .config, include/kickos/board_config.h, kickos_config.cmake
   cmake/
-    toolchain-{arm-none-eabi,riscv-none-elf,rx-elf,xtensa-esp32-elf,host}.cmake
+    toolchain-{arm-none-eabi,aarch64-none-elf,riscv-none-elf,rx-elf,xtensa-esp32-elf,x86_64-uefi,host}.cmake
     toolchain-cxx-runtime-check.cmake  # refuses a resolved cross compiler that lacks
                                     #   newlib + libstdc++ for THIS board's multilib
     kickos.cmake                    # board -> arch/chip resolution + image (.bin/.uf2/.hex) helpers
@@ -337,6 +338,11 @@ KickOS/
     riscv/ rv32imac/ chip/{virt_rv32,esp32c6}/  # RV32IMAC (machine mode, mtvec demux,
                                     #   CLINT/PLIC, PMP)
            rv64imac/ chip/virt_rv64/ # RV64IMAC (supervisor mode, stvec, Sv39/Sv48 page tables)
+    x86/   x86_64/ chip/q35/         # x86_64 UEFI application (PE32+): the syscall entry is
+                                    #   SYSCALL/SYSRET, arch_init ADOPTS the translation regime
+                                    #   firmware already has live, and pe_image.ld places no
+                                    #   memory map (the linker's own default layout plus three
+                                    #   section wildcards)
   kernel/
     include/kickos/                 # public kernel + syscall-number headers
     sched/  thread/  task/  sync/  time/  irq/  syscall/  init/  ktrace/  bench/  domain/  grant/

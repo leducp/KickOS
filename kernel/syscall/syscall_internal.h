@@ -3,8 +3,6 @@
 //
 // Cross-TU seam for the syscall implementation. Declares ONLY what crosses a TU boundary;
 // TU-private helpers belong in their own TU's anonymous namespace and must not appear here.
-// NOT a public kernel header; the userspace-facing contract is <kickos/arch/arch.h> and the
-// object naming layer is <kickos/cap.h>.
 
 #ifndef KICKOS_KERNEL_SYSCALL_SYSCALL_INTERNAL_H
 #define KICKOS_KERNEL_SYSCALL_SYSCALL_INTERNAL_H
@@ -29,10 +27,8 @@ namespace kickos
     // access. Privileged callers and len==0 pass.
     bool user_range_ok(uintptr_t ptr, size_t len, uint32_t need);
 
-    // The same scan WITHOUT the privileged and len==0 short-circuits: does a region the
-    // caller already carries describe this range with exactly `need`, MEMORY TYPE included?
-    // Privileged reach comes from the background map, which carries the chip's DEFAULT
-    // memory type.
+    // The same scan without the privileged and len==0 short-circuits: does a region the caller
+    // already carries describe this range with exactly `need`, MEMORY TYPE included?
     bool user_range_typed_ok(uintptr_t ptr, size_t len, uint32_t need);
 
     // A user READ buffer (name / console text): granted-region OR the app's
@@ -60,10 +56,9 @@ namespace kickos
     }
 
     // --- MMIO possession (syscall_mem.cc) --------------------------------------
-    // The current thread's own DEV window has base exactly `base`. The whole
-    // authorisation for arch_periph_enable; no authority bit gates it. Exact base, not
-    // containment, so a sub-block window cannot reach a whole-block table entry. The
-    // answer comes from the thread's possession record and never from what it can reach.
+    // The current thread's own DEV window has base exactly `base`. The whole authorisation for
+    // arch_periph_enable; no authority bit gates it. Exact base, so a sub-block window cannot
+    // reach a whole-block table entry, and the answer comes from the possession record.
     bool caller_holds_mmio_block(uintptr_t base);
 
     // The write seam's stronger twin: the region matched by the exact base must also
@@ -100,15 +95,21 @@ namespace kickos
 #endif
 
     // The kernel<->user byte-access seam and its user<->user peer are declared in
-    // kickos/aspace.h: the switch path uses them too, so this layer is not their owner.
-    // ep_copy's payloads here are bounded (<= KOS_EP_MSG_MAX) and copied under IrqLock at
-    // the copy site.
+    // kickos/aspace.h. ep_copy's payloads here are bounded (<= KOS_EP_MSG_MAX) and copied
+    // under IrqLock at the copy site.
 
     // Deliver a receiver's kos_recv_info (badge + reply_cap) into its parked
     // out-ptr, or nothing when out == 0. KCAP_INVALID marks a plain send. `ospace` is the
     // owner of `out`, which is the RECEIVER at four of the six callers.
-    void write_recv_info(struct arch_aspace* ospace, uintptr_t out, uint32_t badge,
-                         uint32_t reply_cap);
+    // Answers whether the info landed, and THE REFUSAL IS NOT AN ASSERT: cap_console_deliver
+    // is one of the six and is the fault reporter's route to a published console, so a panic
+    // inside this call re-enters kputs -> kconsole_write from inside the record it was
+    // writing. The five syscall-path callers discard the answer rather than assert it: the
+    // assert would sit across a translation unit boundary, where the plain-copy backend cannot
+    // be folded away, and so would put kpanic on the syscall descent every region board's trap
+    // red zone is measured against.
+    [[nodiscard]] bool write_recv_info(struct arch_aspace* ospace, uintptr_t out, uint32_t badge,
+                                       uint32_t reply_cap);
 
     // How many calls the trap-handler IPC fastpath COMPLETED; a refusal does not count.
     // The two paths answer a caller identically, so this is the only thing that separates

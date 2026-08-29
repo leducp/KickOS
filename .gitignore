@@ -28,13 +28,13 @@ CMakeUserPresets.json
 *.map
 compile_commands.json
 
-# session-local scratch (capture logs, tooling) -- survives /tmp wipes, never committed
+# session-local scratch (capture logs, tooling)
 .session/
 
-# local operational context (paths, rig, gotchas) -- personal, not for the public repo
+# local operational context (paths, rig, gotchas)
 /CONTEXT.local.md
 
-# agent worktrees and assistant state -- machine-local, holds full stale checkouts
+# agent worktrees and assistant state
 **/.claude/
 
 # Python bytecode from the telemetry checkers

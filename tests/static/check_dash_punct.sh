@@ -49,16 +49,6 @@
 #              self-test corpus has to be free to plant the spellings the gate refuses.
 #              The scan REFUSES a file whose heredoc is never terminated: everything below
 #              it went unread, so its verdict is UNKNOWN and not clean.
-#
-# How far the rule above reaches:
-#   - the corpus is source, so *.md prose is a separate decision about its 4000-odd dashes,
-#     and a commit message is not in the tree for a static gate to read at all.
-#   - the erase is per occurrence, so a prose pair sitting inside the span an erase covers
-#     goes with it: a line carrying BOTH a real separator and prose, or a banner and prose
-#     after the banner's own trailing pair.
-#   - an em dash or an en dash spelled as such is check_ascii.sh's rule, which reads the byte.
-#   - every file is read as text and never parsed per language, an assembler `#` comment in
-#     a *.S file included.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"

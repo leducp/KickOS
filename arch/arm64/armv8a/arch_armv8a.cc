@@ -19,8 +19,6 @@ namespace kickos
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
-// Acknowledge one interrupt, route it, complete it. A GIC's register layout is
-// architectural and its addresses are not, so ownership follows the addresses.
 extern "C" void kickos_armv8a_gic_dispatch(void);
 
 // aspace_armv8a.cc. Called on the TERMINAL path only: it discards the running space, so the
@@ -32,14 +30,11 @@ extern "C" void kickos_armv8a_switch_now(struct arch_context* from, struct arch_
 extern "C" void kickos_armv8a_start(struct arch_context* first);
 extern "C" void kickos_armv8a_thread_exit(void);
 
-// kickos_armv8a_ctx_current names the context PHYSICALLY on the CPU, which is not
-// arch_switch's `from`: one ISR can reschedule several times (one timer expiry waking two
-// sleepers is enough), and every call after the first names a thread the scheduler has
-// merely published, whose registers are still nowhere. Saving the interrupted frame through
-// such a `from` writes it over a context that never ran and loses the one that did. The
-// M-profile and RISC-V backends ignore `from` for the same reason; this cell is their
-// g_arch_current. The IRQ exit in switch.S saves through it and re-seats it to the incoming
-// context, so the request below is a target alone and the last one written wins.
+// kickos_armv8a_ctx_current names the context PHYSICALLY on the CPU, which is not arch_switch's
+// `from`: one ISR can reschedule several times, and every call after the first names a thread
+// the scheduler has merely published, whose registers are still nowhere. The IRQ exit in
+// switch.S saves through this cell and re-seats it to the incoming context, so the request below
+// is a target alone and the last one written wins.
 extern "C"
 {
     struct arch_context* kickos_armv8a_ctx_current = nullptr;
@@ -62,18 +57,16 @@ static_assert(ARMV8A_F_FPCR + 8 == ARMV8A_F_FPSR, "FPCR abuts FPSR");
 static_assert(ARMV8A_F_SP_EL0 + 8 == ARMV8A_F_FPCR, "SP_EL0 abuts FPCR");
 static_assert(ARMV8A_F_FP % 16 == 0, "the vector bank needs 16-byte alignment for stp q");
 
-// The knob ARCH_KERNEL_STACKS_MANDATORY forces, asserted rather than assumed.
 static_assert(KICKOS_KERNEL_STACKS != 0,
               "armv8a selects ARCH_KERNEL_STACKS_MANDATORY, so the blocks must exist");
 
-// The incoming thread's kernel block top, published because a vector slot cannot reach the
-// TCB. Read by the REPORTING slots alone (vectors.S): those cover exception classes this port
-// never enters, so SP_EL1 carries no promise there. The syscall and IRQ entries trust SP_EL1
-// and read this cell not at all.
+// The incoming thread's kernel block top, published because a vector slot cannot reach the TCB.
+// Read by the REPORTING slots alone (vectors.S), which cover exception classes this port never
+// enters, so SP_EL1 carries no promise there.
 //
-// PER CORE, so the cell a slot reads is the one the core that took the exception wrote. At
-// one core the accessor folds to the array's first element (percpu.h), which is what keeps
-// the displacement vectors.S spells a link-time constant.
+// PER CORE, so the cell a slot reads is the one the core that took the exception wrote. At one
+// core the accessor folds to the array's first element (percpu.h), which keeps the displacement
+// vectors.S spells a link-time constant.
 extern "C"
 {
     struct armv8a_percpu kickos_armv8a_percpu[KICKOS_NUM_CORES] = {};
@@ -111,6 +104,12 @@ namespace
     // The IRQ entry is the only writer and runs with interrupts masked by the exception
     // itself, so no atomic is owed.
     uint32_t g_isr_depth = 0;
+
+    // How deep the reporter below is. A reporting slot keeps the SP_EL1 it arrives on and
+    // branches straight to C, so a fault inside the report re-enters at slot 4 with nothing but
+    // this count to tell it from the first arrival. Written under the mask the exception applies,
+    // so no atomic is owed; nothing clears it, the reporter never returning.
+    unsigned long g_report_depth = 0;
 
     // SPSR for a thread: debug masked, interrupts and SError live. EL1h means "EL1 with its
     // own SP"; EL0t is 0, EL0 having only SP_EL0 to run on.
@@ -181,21 +180,20 @@ void arch_context_init(struct arch_context* ctx,
     // ctx->kernel_sp IS READ, NOT WRITTEN, HERE: thread_create seats the block before this
     // call and owns the zero that means none is seated.
 #if defined(KICKOS_TLS) && KICKOS_TLS
-    // A subtraction rather than a mask, so stack_lo owes no alignment past the ABI's 16.
+    // stack_lo owes no alignment past the ABI's 16.
     ctx->tls_base = ctx->stack_lo - ::kickos::tls_block_size();
 #endif
 
-    // WHERE THIS FRAME SITS IS THE PRIVILEGE BOUNDARY. It carries SPSR and ELR, so whoever
-    // can write it chooses the exception level and the PC of the one eret that starts the
-    // thread. An EL0 thread's stack is a TASK-WIDE mapping (docs/design-m6-mmu.md F9), so a
-    // sibling can write both fields: the frame goes on this thread's own KERNEL block, which
-    // EL0 cannot reach at any address. A privileged thread resumes AT EL1 ON THIS SP and
-    // would then run its whole life on a block sized for one dispatch, so its frame stays on
-    // the stack it was handed.
+    // WHERE THIS FRAME SITS IS THE PRIVILEGE BOUNDARY: it carries SPSR and ELR, so whoever can
+    // write it chooses the exception level and the PC of the eret that starts the thread. An EL0
+    // thread's stack is a TASK-WIDE mapping (docs/design-m6-mmu.md F9), so a sibling can write
+    // both fields; the frame goes on this thread's own KERNEL block. A privileged thread resumes
+    // at EL1 on this sp and would then run its whole life on a block sized for one dispatch, so
+    // its frame stays on the stack it was handed.
     //
-    // The eret pops the frame, leaving SP_EL1 at the block top, so the first trap an EL0
-    // thread takes already arrives on its own block: that is what lets ENTER_FROM_EL0 trust
-    // SP_EL1 and spend no scratch register (switch.S).
+    // The eret pops the frame, leaving SP_EL1 at the block top, so the first trap an EL0 thread
+    // takes already arrives on its own block: that is what lets ENTER_FROM_EL0 trust SP_EL1 and
+    // spend no scratch register (switch.S).
     uintptr_t const user_top = (ctx->stack_hi) & ~static_cast<uintptr_t>(15);
     uintptr_t frame_top = user_top;
     if (privileged == 0)
@@ -214,8 +212,7 @@ void arch_context_init(struct arch_context* ctx,
     f[0] = reinterpret_cast<uint64_t>(arg);                         // x0
     f[ARMV8A_F_ELR / 8] = reinterpret_cast<uint64_t>(entry);
     // Interrupts LIVE in both arms, and this is the system's FIRST enable: nothing earlier
-    // can perform it, arch_irq_restore clearing only what its own paired save set. RISC-V
-    // seats mstatus.MPIE here for the same reason.
+    // can perform it, arch_irq_restore clearing only what its own paired save set.
     if (privileged != 0)
     {
         f[ARMV8A_F_X30 / 8] = reinterpret_cast<uint64_t>(&kickos_armv8a_thread_exit);
@@ -235,19 +232,17 @@ void arch_context_init(struct arch_context* ctx,
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
-    // kernel_sp SURVIVES THE REBUILD, put back explicitly rather than assumed untouched.
-    // The stub is privileged, so the rebuild below places its frame from the block it is
-    // HANDED and not from this field.
+    // kernel_sp SURVIVES THE REBUILD, put back explicitly. The stub is privileged, so the
+    // rebuild below places its frame from the block it is HANDED.
     uintptr_t const kernel_sp = ctx->kernel_sp;
 #if defined(KICKOS_TLS) && KICKOS_TLS
     uintptr_t const tls_base = ctx->tls_base;
 #endif
 #if KICKOS_KERNEL_STACKS
-    // stack_lo and stack_hi are saved and put back: arch_context_init derives them from what
-    // it is handed, and handing it the block would leave the context describing kernel .bss
-    // as this thread's stack. check_death_stack_seating.sh holds this shape.
-    //
-    // The `if` covers a TCB outside the pool, which has no block. Idle is that TCB.
+    // stack_lo and stack_hi are saved and put back: arch_context_init derives them from what it
+    // is handed, and handing it the block would leave the context describing kernel .bss as this
+    // thread's stack. check_death_stack_seating.sh holds this shape. The `if` covers a TCB
+    // outside the pool, which has no block.
     if (kernel_sp != 0)
     {
         uintptr_t const lo = ctx->stack_lo;
@@ -320,9 +315,9 @@ void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 #endif
 
 // --- Critical section -------------------------------------------------------
-// NESTING-SAFE: the state is the one bit this touches and the restore clears only what its
-// own save set. A wholesale `msr daif, saved` would write back D, A and F too, clobbering any
-// change made between the two.
+// NESTING-SAFE: the state is the one bit this touches and the restore clears only what its own
+// save set. A wholesale `msr daif, saved` would write back D, A and F too, clobbering any change
+// made between the two.
 arch_irq_state_t arch_irq_save(void)
 {
     uint64_t daif = 0;
@@ -395,20 +390,17 @@ int arch_bitband_present(void)
 
 // --- Interrupt controller ---------------------------------------------------
 // The mask/unmask/clear/inject quartet belongs to the CHIP here: the NVIC sits at a
-// core-fixed address, a GIC wherever the SoC put it, so ownership follows the addresses. A
-// second arm64 chip hoists the layout up here and leaves the bases down there.
+// core-fixed address, a GIC wherever the SoC put it, so ownership follows the addresses.
 
 // --- Fault isolation --------------------------------------------------------
-// SPSR_EL1 IS READ FROM THE REGISTER, so the privilege question is answered without believing
-// a word of the frame. M[3:0] == 0 is EL0t, the only mode an unprivileged thread runs in here;
-// a syscall dispatch runs privileged on the same block and reads EL1h.
+// SPSR_EL1 IS READ FROM THE REGISTER, so the privilege question is answered without believing a
+// word of the frame. M[3:0] == 0 is EL0t, the only mode an unprivileged thread runs in here.
 //
-// The frame test is EXACT and not a bounds test, because it carries two claims at once. The
-// redirect WRITES through the frame, and RESTORE_FRAME_AND_ERET pops it, so where the frame
-// ends is where the stub's SP_EL1 lands and arch.h owes the stub the block TOP. Both hold only
-// for a frame ENTER_FROM_EL0 pushed: SP_EL1 sits at the block top whenever EL0 is running
-// (switch.S), so an EL0 entry frame is always exactly one frame below it. A frame anywhere
-// else was not built by that entry, and this fails closed to the panic dump.
+// THE FRAME TEST IS EXACT, carrying two claims at once: the redirect writes through the frame and
+// RESTORE_FRAME_AND_ERET pops it, so where the frame ends is where the stub's SP_EL1 lands, and
+// arch.h owes the stub the block TOP. Both hold only for a frame ENTER_FROM_EL0 pushed, SP_EL1
+// sitting at the block top whenever EL0 is running. Anything else fails closed to the panic
+// dump.
 bool arch_fault_is_user_thread(void* frame)
 {
     uint64_t spsr = 0;
@@ -425,13 +417,12 @@ bool arch_fault_is_user_thread(void* frame)
     return reinterpret_cast<uintptr_t>(frame) == top - ARMV8A_FRAME_SIZE;
 }
 
-// ELR and SPSR are the two fields the eret consumes, so rewriting them IS the redirect: the
-// pop seats the stub's SP at the block top by itself, which the test above established.
+// ELR and SPSR are the two fields the eret consumes, so rewriting them IS the redirect; the pop
+// seats the stub's SP at the block top by itself.
 //
-// TTBR0 IS LEFT ON THE FAULTING SPACE. The stub prints the dead thread's name, and a thread
-// name is a string literal in APP text, which only that space maps; every other address the
-// descent touches (kernel data, the console, the GIC) is reached through the kernel's half.
-// The dying space is put back by the release path, not here (kernel/mem/aspace.cc).
+// TTBR0 IS LEFT ON THE FAULTING SPACE: the stub prints the dead thread's name, a string literal
+// in APP text that only that space maps. The release path puts the dying space back
+// (kernel/mem/aspace.cc).
 void arch_fault_redirect_to_exit(void* frame)
 {
     uint64_t esr = 0;
@@ -454,14 +445,26 @@ void arch_fault_redirect_to_exit(void* frame)
 }
 
 // --- Exceptions -------------------------------------------------------------
-// Every reporting slot lands here with its index and the interrupted x30 (vectors.S).
-// Nothing resumes from here: a reporting slot reaches C by a plain branch and builds no frame
-// to return through. The EL0 synchronous entry does build one, so a fault it cannot contain
-// arrives here as slot 8 after kickos_fault_kill_thread has declined it.
+// Every reporting slot lands here with its index and the interrupted x30 (vectors.S). Nothing
+// resumes from here: a reporting slot reaches C by a plain branch and builds no frame to return
+// through. A fault the EL0 synchronous entry cannot contain arrives as slot 8.
 void kickos_armv8a_exception(unsigned long slot, unsigned long lr)
 {
+    // FIRST, ahead of the space swap and the console: both can fault, and a fault in either
+    // arrives back here. The second arrival still emits; the third emits nothing.
+    g_report_depth++;
+    if (g_report_depth >= 3)
+    {
+        kfault_terminate();
+    }
+    if (g_report_depth == 2)
+    {
+        kpanic_enter(); // idempotent: the first arrival may have faulted short of it
+        ::kickos::kprintf("\n=== ARMV8A EXCEPTION (taken inside the reporter) ===\n");
+        kfault_terminate();
+    }
     kickos_armv8a_ttbr0_to_boot(); // before the console is touched
-    kpanic_enter(); // mask IRQs + force the sync console + flush queued bytes, in order
+    kpanic_enter();
     if (slot == SLOT_SP_EL1_SYNC or slot == SLOT_EL0_SYNC)
     {
         ::kickos::kprintf("\n=== ARMV8A EXCEPTION ===\n");

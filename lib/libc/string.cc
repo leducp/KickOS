@@ -36,23 +36,18 @@ namespace
         return static_cast<size_t>((0u - p) & WORD_MASK) + WORD_BYTES;
     }
 
-    // The mirror walks the pointer DOWN to the boundary below it, so it consumes the low
-    // bits themselves and not their complement.
+    // The mirror walks the pointer DOWN to the boundary below it.
     constexpr size_t word_min_down(uintptr_t p)
     {
         return static_cast<size_t>(p & WORD_MASK) + WORD_BYTES;
     }
 
-    // memset's threshold, and DELIBERATELY looser than word_min_up above. Its word path
-    // has to build the fill word first, and that costs more than the single word it would
-    // then store: measured 2026-08-28 at -Os, one aligned word costs 2 more instructions
-    // than the byte loop on rv64imac and 12 more on rv32imac. Two words is where it pays.
-    // Tightening this to word_min_up is safe and slower.
+    // memset's threshold. Its word path builds the fill word first, which costs more than the
+    // single word it would then store.
     constexpr size_t MEMSET_WORD_MIN = 2u * WORD_BYTES;
 
-    // always_inline is load-bearing, not a hint: out of line, memcpy has to build a
-    // frame to keep dst alive across the call, which is eight instructions on the
-    // system's hottest primitive. The cost is one duplicate body inside memmove.
+    // always_inline is load-bearing: out of line, memcpy has to build a frame to keep dst alive
+    // across the call.
     //
     // Correct for overlapping ranges when d < s: each word is read before the store
     // that could reach it, and the store never touches an address at or above the

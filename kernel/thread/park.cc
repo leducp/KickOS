@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Breaking a park from OUTSIDE the parked thread: a deadline that expired, or a
-// cancellation. Both hand the sleeper a result it did not wait for and neither grants it
-// whatever it was parked on, so both need the same per-WaitKind unwind: which list to
-// unlink and which priority donation to revert. That is why they live together.
-//
-// The park unwind is TOTAL over WaitKind. A cancel that reached only the kinds a thread
-// happens to park on would not be a kill (docs/design-task-layer.md open question 1).
+// The park unwind MUST stay total over WaitKind: a cancel that reached only the kinds a
+// thread happens to park on is not a kill (docs/design-task-layer.md open question 1).
 
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
@@ -22,10 +17,8 @@
 
 namespace kickos
 {
-    // Unwind `t` out of whichever endpoint park it sits under, with `t` already off the timer
-    // delta list if it was on one and its wait edge still intact: that edge is the only thing
-    // naming the list `t` is on. This function exists so its callers decide only THAT the park
-    // must end; every endpoint internal below belongs to this layer.
+    // Precondition: `t` is already off the timer delta list and its wait edge is intact; that
+    // edge is the only thing naming the list `t` is on.
     void endpoint_wait_abort(Thread* t, intptr_t result)
     {
         switch (t->wait_kind)
@@ -33,9 +26,8 @@ namespace kickos
             case WAIT_EP_SEND:
             case WAIT_EP_RECV:
             {
-                // Only a CALL_SEND_WAIT thread donates: it is a caller no receiver has
-                // taken yet, and it D2-boosted the endpoint's conventional server. A plain
-                // sender and a receiver are CALL_NONE.
+                // Only a CALL_SEND_WAIT thread donates: a caller no receiver has taken yet,
+                // which D2-boosted the endpoint's conventional server.
                 bool const donor =
                     (t->wait_kind == WAIT_EP_SEND and t->call_state == CALL_SEND_WAIT);
                 Endpoint* const e = t->wait_endpoint(); // before the edge is cleared
@@ -43,7 +35,6 @@ namespace kickos
                 t->wait_queue->unlink(&t->link);
                 t->clear_wait_edge();
                 t->call_state = CALL_NONE;
-                // An endpoint with no conventional receiver yet has nobody to have boosted.
                 if (donor and e->server != nullptr)
                 {
                     // Both the unlink and the CALL_NONE above MUST precede this: the funnel
@@ -60,8 +51,7 @@ namespace kickos
                 Thread* const server = t->wait_server();
                 KICKOS_ASSERT(server != nullptr); // reply_donor_park never seats a null
                 bool const unlinked = reply_donor_unpark(server, t);
-                // Unlike the userspace-reachable stale-cap route into reply/close, the edge
-                // here NAMES the list this thread is on, so a miss is a kernel bug.
+                // The edge names the list this thread is on, so a miss is a kernel bug.
                 KICKOS_ASSERT(unlinked);
                 t->call_state = CALL_NONE;
                 // The abandoned reply cap must die with the call it named: cap_reply_caller
@@ -70,10 +60,9 @@ namespace kickos
                 t->call_seq++;
                 // D3, after the unlink and the CALL_NONE for the same reason as above.
                 sched::set_prio(server, thread_effective_prio(server));
-                // The server KEEPS the reply capability. Reclaiming an entry from another
-                // thread's table would reach across a containment boundary; the residue is
-                // bounded by KICKOS_CAP_REPLY_MAX against Thread::cap_reply_live, and the
-                // server's eventual reply consumes it and answers -KOS_ESRCH.
+                // The server keeps the reply capability: reclaiming it would reach into
+                // another thread's table. Its eventual reply consumes it and answers
+                // -KOS_ESRCH.
                 break;
             }
             default:
@@ -98,11 +87,9 @@ namespace kickos
             }
             case WAIT_MUTEX:
             {
-                // Ownership is NOT transferred: this thread stops waiting for the mutex, it
-                // does not acquire it. Unlink first, so the funnel no longer counts this
-                // waiter when the owner's inherited priority is recomputed. Only the
-                // IMMEDIATE owner is recomputed, as mutex_unlock does: a boost further up a
-                // chain is reverted when that link is itself released.
+                // Unlink first, so the funnel no longer counts this waiter when the owner's
+                // inherited priority is recomputed. Only the immediate owner: a boost further
+                // up a chain is reverted when that link is itself released.
                 Mutex* const m = t->wait_mutex();
                 KICKOS_ASSERT(m != nullptr); // WAIT_MUTEX never parks without one
                 t->wait_queue->unlink(&t->link);
@@ -116,9 +103,8 @@ namespace kickos
             case WAIT_SEM:
             case WAIT_IRQ:
             {
-                // Both are parked on a real wait queue and the edge names it. No token is
-                // consumed and no count moves: the semaphore is left exactly as it was, so a
-                // later poster still hands its token to a genuine waiter.
+                // The count is untouched, so a later poster still hands its token to a
+                // genuine waiter.
                 t->wait_queue->unlink(&t->link);
                 t->clear_wait_edge();
                 break;
@@ -142,25 +128,31 @@ namespace kickos
         sched::wake(t);
     }
 
-    void thread_cancel_kind(Thread* t, uint8_t kind)
+    bool thread_cancel_escalate(Thread* t, uint8_t kind)
     {
         if (t == nullptr or t->state == ThreadState::EXITED
             or t->state == ThreadState::INACTIVE or t->dying)
         {
-            return;
+            return false;
         }
-        // ESCALATION ONLY, and it reads as a comparison because the enum's values are
-        // ordered NONE < KILL < SLAY. A kill arriving after a slay must not hand back the
-        // cleanup window the slay took away, and a kind at or below the recorded one has
-        // nothing to add, so the park below is not broken a second time either.
+        // Escalation only, ordered NONE < KILL < SLAY: a kill arriving after a slay must not
+        // hand back the cleanup window the slay took away.
         if (kind <= t->cancel_kind)
+        {
+            return false;
+        }
+        // Set before anything else: a thread that is READY right now must find it at its own
+        // death point, and switch_to reads it when the scheduler next lists this thread.
+        t->cancel_kind = kind;
+        return true;
+    }
+
+    void thread_cancel_kind(Thread* t, uint8_t kind)
+    {
+        if (not thread_cancel_escalate(t, kind))
         {
             return;
         }
-        // Set before anything else: the thread's own death point reads it, and a thread that
-        // is READY right now must find it there rather than be woken for it. A CANCEL_SLAY
-        // written here is what switch_to reads when the scheduler next lists this thread.
-        t->cancel_kind = kind;
         if (t == sched::current())
         {
             return; // it is inside the kernel already and will see this on its way out
@@ -169,12 +161,9 @@ namespace kickos
         {
             return;
         }
-        // Reaching the death point needs it RUNNABLE, so the park ends here. The result is
-        // what a primitive with an error channel reports; one without (sem_wait, sleep)
-        // simply returns, and the death point is what stops it going round again. A SLAIN
-        // thread never reads it, its resume being claimed before it returns to userspace,
-        // but the unwind the abort performs is the OTHER side of each park's bookkeeping and
-        // must still run, so this is not a branch to skip.
+        // Reaching the death point needs it runnable, so the park ends here. A slain thread
+        // never reads the result, but the unwind is the other side of each park's bookkeeping
+        // and must still run.
         thread_abort_park(t, -KOS_ECANCELED);
     }
 
@@ -190,10 +179,8 @@ namespace kickos
             return;
         }
         Kernel& k = kernel();
-        // Bounded by the pool cursor, the same scan exit_current already makes to find its
-        // joiners. A task holding one thread matches only itself, and thread_cancel_kind
-        // refuses a dying one, which is what makes the implicit grouping cost a comparison
-        // and nothing else.
+        // thread_cancel_kind refuses a dying thread, so a task holding one thread matches
+        // only itself.
         for (int s = 0; s < k.threads.next; s++)
         {
             Thread* const p = &k.threads.slots[s];

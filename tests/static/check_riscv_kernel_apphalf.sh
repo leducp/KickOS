@@ -2,46 +2,39 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# NO KERNEL-TEXT INSTRUCTION NAMES AN APP-HALF SYMBOL, bar a named allowlist
+# No kernel-text instruction names an APP-HALF symbol, bar a named allowlist
 # (docs/design-m6-mmu.md R2.2). The app's window is one level-2 slot of a PER-SPACE table, so
 # an app-half address does not name one process: it names whichever process the core is on. A
 # kernel store meant for process A therefore lands in process B, and nothing reports it.
 #
-# WHY THE LINK DOES NOT ALREADY REFUSE THIS, which is the finding this gate exists for. The
-# linker script asserts the two halves are out of each other's medany reach, and that turns a
-# PC-relative crossing into an auipc truncation. It says NOTHING about the absolute form: the
-# app window is at 0x40000000, which is inside medlow's `lui`-reachable range, so the linker
-# RELAXES a kernel reference to an app-half symbol into `lui`+`addi` and the link succeeds.
-# Measured: a direct read and a direct write of `kickos_init_args` added inside a syscall both
-# SUCCEED at run time, because sstatus.SUM is set for the life of kernel context and the
-# running space maps the app's half U. No link error, no fault, no arm.
+# The link does not already refuse this. The linker script's assert covers only the medany
+# range; the app window is at 0x40000000, inside medlow's `lui`-reachable range, so the linker
+# RELAXES a kernel reference to an app-half symbol into `lui`+`addi` and the link succeeds. At
+# run time the read or write succeeds too: sstatus.SUM is set for the life of kernel context
+# and the running space maps the app's half U.
 #
-# THE CORPUS IS THE KERNEL-SIDE ARCHIVES' RELOCATIONS, NOT THE LINKED IMAGE'S DISASSEMBLY, and
-# that is the opposite of the gp gate's answer for a reason worth stating. A relocation names
-# the SYMBOL an instruction operand resolves to, and relaxation rewrites the encoding without
-# ever changing that name, so the archives are exact here. A value scan over the image is not:
-# `grant_hits_reserved` and `grant_region_admissible` materialise the Cortex-M bit-band
-# constants 0x40000000 and 0x40100000 in generic kernel code, which are NUMERICALLY IDENTICAL
-# to __kickos_app_rom_start and __kickos_app_sram_start on this board. Separating those from a
-# real reference needs a pattern allowlist, which is the one thing this gate must not have.
+# The corpus is the kernel-side archives' RELOCATIONS. A relocation names the SYMBOL an
+# instruction operand resolves to, and relaxation rewrites the encoding without changing that
+# name. A value scan over the image is not exact: `grant_hits_reserved` and
+# `grant_region_admissible` materialise the Cortex-M bit-band constants 0x40000000 and
+# 0x40100000 in generic kernel code, numerically identical to __kickos_app_rom_start and
+# __kickos_app_sram_start on this board, and separating those needs a pattern allowlist, which
+# is the one thing this gate must not have.
 #
-# WHICH SYMBOLS ARE APP-HALF is a link-time fact and comes from the IMAGE, whose symbol table
-# is the only place it exists: every GLOBAL or WEAK symbol whose value falls in
-# [__kickos_app_rom_start, __kickos_app_sram_end]. Closed at the top on purpose: the
-# one-past-the-end address reaches app bytes by subtraction, and `_kickos_heap_limit` is
-# exactly that address.
+# Which symbols are app-half comes from the IMAGE symbol table: every GLOBAL or WEAK symbol
+# whose value falls in [__kickos_app_rom_start, __kickos_app_sram_end]. Closed at the top on
+# purpose: the one-past-the-end address reaches app bytes by subtraction, and
+# `_kickos_heap_limit` is exactly that address.
 #
-# GLOBAL AND WEAK ONLY, AND A LOCAL ONE WOULD BE A FALSE POSITIVE. An anonymous-namespace
-# symbol carries the same mangled name in a kernel TU and an app TU: `Sink::put` and
-# `emit_uint` of kfmt.cc exist at BOTH an app-half and a kernel-half address in every image
-# here. A local symbol resolves inside its own object and can never cross, so binding is the
-# discriminator.
+# GLOBAL and WEAK only: an anonymous-namespace symbol carries the same mangled name in a kernel
+# TU and an app TU (`Sink::put` and `emit_uint` of kfmt.cc exist at both an app-half and a
+# kernel-half address in every image here), and a local symbol resolves inside its own object
+# and can never cross, so binding is the discriminator.
 #
-# INSTRUCTION OPERANDS ONLY. A relocated 64-bit word in kernel data is the SANCTIONED way to
+# Instruction operands only. A relocated 64-bit word in kernel data is the SANCTIONED way to
 # reach across, and one lives in a kernel text section: the gp anchor word `.text.privtrap`
-# loads gp from. Data relocations are counted and named in the corpus line rather than
-# refused, so a new one is a number that changed and not an invisible pass. The
-# classification is by the DATA type list below, so a relocation type nobody has seen yet
+# loads gp from. Data relocations are counted and named in the corpus line rather than refused.
+# The classification is by the DATA type list below, so a relocation type nobody has seen yet
 # counts as an instruction and over-refuses, which is the safe direction.
 #
 # usage: check_riscv_kernel_apphalf.sh <readelf> <allowlist> <image>... `--` <archive>...

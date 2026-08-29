@@ -40,9 +40,9 @@ to 8,192 anyway, so the board provisions **8 x 8,192** rather than 12 x 7,584. R
 - `KICKOS_DIAG_TERSE=1`, because 64 KiB of flash cannot carry the long diagnostic column.
 
 `bluepill-c8` (STM32F103C8, 64 KiB / 20 KiB) is the same tier with the extra 4 KiB spent on
-stacks: 2 x 2,048 + root 2,048 + idle 512 is 6,656 bytes of arena, and part 1 (`selftest`) is the
-binding image of the three -- each link prints its own `size` line, so the slack is read there
-rather than quoted here.
+stacks: 2 x 2,048 + root 2,048 + idle 512 is 6,656 bytes of arena, and `selftest_p2` is the
+binding image of the three by about 350 bytes -- each link prints its own `size` line, so the slack
+is read there rather than quoted here.
 
 At 64 KiB of flash the self-test does not fit as one image and is built as `selftest` +
 `selftest_p2` + `selftest_p3` -- see *Three boards run the selftest as THREE images* below.
@@ -103,17 +103,18 @@ code wins, then this file.
 | `microbit` | nRF51822 / M0, 32 KiB | -- | semihosting | `ctest --preset microbit` | [x] CI (armv6m run gate; the fleet's only measured expected-skip list -- see *microbit* below) |
 | `qemu-riscv` | QEMU virt / RV32IMAC | -- | semihosting | `ctest --preset qemu-riscv` | [x] CI (first RISC-V) |
 | `qemu-arm64` | QEMU virt / Cortex-A53 (AArch64) | -- | PL011 UART at `0x09000000` | `ctest --preset qemu-arm64` | [x] CI (first 64-bit ISA, and **emulator only** -- there is no A-profile silicon on this bench; see *Per-board caveats* below) |
-| `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and not in CI**: 49 arms, witnessed 2026-08-28 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none`. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
-| `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and not in CI**: 49 arms, witnessed 2026-08-28, same QEMU. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
+| `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and not in CI**: 52 arms registered (re-derived 2026-08-29 by `ctest -N`), witnessed 2026-08-29 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` at 52 of 52. This row read 50 under a 2026-08-28 stamp and BOTH halves of that were wrong: the fleet-wide `whitespace` gate took the total to 51 and `console_reach` to 52, and the SET had already changed on 2026-08-29, `qemu_riscv64_aspace_fault` being retired that day and `qemu_riscv64_aspace_ufault` registered in its place. **It then read 51 of 52 with `console_reach` red for part of the same day**, which was true at `517449e5` and stopped being true at `58b43d62` and `d4977780`, the two commits that closed the four panic doors that gate names. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
+| `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and not in CI**: 52 arms registered (re-derived 2026-08-29 by `ctest -N`), witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
+| `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and not in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip selects no memory family, so the map is flat. See *Per-board caveats* below |
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32-D0WD / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
 | `rx72m` | RX72M / RXv3 @240 MHz | P80 (LED6, active-low) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **Fourth board with an UNPRIVILEGED root, and the only one on the RX MPU** (2026-07-28) -- see *Unprivileged root* below. Re-witnessed 2026-07-30 at a clean `270b6fa`, closing the owed stage-4 `rxdrv` mux-write arm and the M4.5.5 granular-shaping debt in one visit -- see *M4.5.6* below. **No CI gate** -- see *CI coverage* below |
 | `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + `HARD FAULT` dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed. **First board with an UNPRIVILEGED root** (2026-07-27) -- see *Unprivileged root* below |
 | `f411disco` | STM32F411 / M4F | PD12 (LD4 grn) | USART2, PA2/PA3, 115200 (ext adapter) | onboard ST-Link (`st-flash`) | [x] full selftest + all apps + fault dump + bench + LED; **PMSAv7 enforcement silicon-witnessed 2026-07-29** -- enforcement selftest 62/62 + `mpu_fault` cross-domain MemManage denial, closing the `stm32f411` MPU HW debt for the chip. **Fifth board with an UNPRIVILEGED root, and the second on PMSAv7** (2026-07-29) -- see *Unprivileged root* below |
 | `blackpill` | STM32F411 / M4F | PC13 (active-low) | USART2, PA2/PA3, 115200 (ext adapter) | USB-DFU / SWD | [x] full selftest + bench (2nd F411; 25 MHz HSE); MPU backend is the shared `stm32f411` one, silicon-witnessed on `f411disco` 2026-07-29 (not re-run on this board) |
-| `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 -> ST-Link VCP | onboard ST-Link (`st-flash`) | [x] `hello` + `stress` on silicon 2026-07-29 (`stress` at the tip `9ba4e4b`) -- the fleet's first captures on optimised code; re-run on silicon 2026-07-30 (`selftest` before and after a provisioning right-size, `ringpriv`, `ringppb`, `fault`). The BENCHMARK figures still date to 2026-07-14 and no bench run was taken at either later tip. **The suite needs the `-st` provisioning here:** `63 ok / 0 not ok / 5 skipped` at it after the 2026-07-30 right-size (`62 / 1 / 9` before it), and `17 / 42 / 10` at the application profile, every failure a resource refusal. The older "selftest minus the 4 KiB-alloc test" record dates to 2026-07-14 and predates M4.5.2's static growth. Full captures: *`f302nucleo` on silicon* and *M4.5.6* below. **Not an enforcement target -- the F302R8 (`x8` line) has no MPU** (the F302xB/xC line does). **A bench board** (onboard ST-Link, own VCOM, no external adapter), and the fleet's only physically-present **no-MPU ARM** board -- the sole possible silicon witness for the privilege-ring arm, and it TOOK that witness 2026-07-30 (`ringpriv`, `PASS (5 arms)`); see *Unprivileged root* below. **No AUTOMATED gate of any kind** -- no CTest and no QEMU run gate, though the ring property is machine-checked elsewhere; see *CI coverage* below. **The fault reporter's silence here was the FLASH COMMAND, not the firmware, and is CLOSED** (`st-flash --connect-under-reset --reset write` armed `DEMCR.VC_HARDERR` and halted the core at the handler; `tools/flash-stlink.sh` no longer pairs the two) -- see *M4.5.6* below |
+| `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 -> ST-Link VCP | onboard ST-Link (`st-flash`) | [x] `hello` + `stress` on silicon 2026-07-29 (`stress` at the tip `9ba4e4b`) -- the fleet's first captures on optimised code; re-run on silicon 2026-07-30 (`selftest` before and after a provisioning right-size, `ringpriv`, `ringppb`, `fault`). The BENCHMARK figures still date to 2026-07-14 and no bench run was taken at either later tip. **The suite needs the `-st` provisioning here:** `63 ok / 0 not ok / 5 skipped` at it after the 2026-07-30 right-size (`62 / 1 / 9` before it), and `17 / 42 / 10` at the application profile, every failure a resource refusal. The older "selftest minus the 4 KiB-alloc test" record dates to 2026-07-14 and predates M4.5.2's static growth. Full captures: *`f302nucleo` on silicon* and *M4.5.6* below. **Not an enforcement target -- the F302R8 (`x8` line) has no MPU** (the F302xB/xC line does). **A bench board** (onboard ST-Link, own VCOM, no external adapter), and the fleet's only physically-present **no-MPU ARM** board -- the sole possible silicon witness for the privilege-ring arm, and it TOOK that witness 2026-07-30 (`ringpriv`, `PASS (5 arms)`); see *Unprivileged root* below. **No AUTOMATED gate of any kind** -- no CTest and no QEMU run gate, though the ring property is machine-checked elsewhere; see *CI coverage* below. **The fault reporter's silence here was the FLASH COMMAND, not the firmware, and is CLOSED** (`st-flash --connect-under-reset --reset write` armed `DEMCR.VC_HARDERR` and halted the core at the handler; `tools/flash-stlink.sh` no longer pairs the two) -- see *M4.5.6* below. **BROKE AT M6.3's `480767f1` AND IS FIXED**: `selftest`'s `.data` overflowed region `FLASH` by 248 bytes at the M6.4 tip, which took the `-st` provisioning every capture above was taken at out of the build and made `trap_redzone` on that preset a build error rather than a depth. The cause was the per-app build stamp and not this board, and the split has since been rebalanced by image size, so the thinnest of the three parts here now links with **10,180 free bytes of 65,536**. See *The two `-st` presets and the per-app build stamp* below |
 | `picopi` | RP2040 / M0+ | GP25 | UART0, GP0/GP1, 115200 | `picotool` (BOOTSEL) | [x] LED + UART0 + full selftest with `sched_exit` (2026-07-09, 125 MHz PLL); PMSAv6 cross-domain denial silicon-proven 2026-07-19 (M0+ has no MemManage -- it escalates to HardFault) -- the fleet's only armv6m enforcement proof; U-mode `cxxtest` still awaits a bench re-flash |
-| `bluepill-c8` | STM32F103C8 / M3 (64 K/20 K genuine) | PC13 (active-low) | USART1, PA9/PA10, 115200 | external ST-Link (SWD) | (!) build-only, and **no unit exists** -- there is no genuine F103C8 on the bench, so nothing here can be silicon-witnessed at all (64 K/20 K linker; links the full app set incl selftest + stress) |
+| `bluepill-c8` | STM32F103C8 / M3 (64 K/20 K genuine) | PC13 (active-low) | USART1, PA9/PA10, 115200 | external ST-Link (SWD) | (!) build-only, and **no unit exists** -- there is no genuine F103C8 on the bench, so nothing here can be silicon-witnessed at all (64 K/20 K linker). **BROKE AT M6.3's `480767f1` AND IS FIXED**: `selftest`'s `.data` overflowed region `FLASH` by 224 bytes at the M6.4 tip, so the `-st` provisioning built no image and `trap_redzone` on it failed on that build error rather than on a depth. The cause was the per-app build stamp and not this board, and the split has since been rebalanced by image size, so the thinnest of the three parts here now links with **10,204 free bytes of 65,536**. See *The two `-st` presets and the per-app build stamp* below |
 | `frdmk64f` | MK64FN1M0 / M4F | PTB22 (RGB red, active-low) | UART0, PTB16/PTB17, 115200 -> OpenSDA VCOM | J-Link (OpenSDA) | [x] HW 2026-07-15 (full selftest over the buffered console ring, 120 MHz); SYSMPU enforcement + `mpu_fault` trap silicon-proven at M2. **Sixth board to witness an UNPRIVILEGED root, the only one on SYSMPU, and the only one witnessed on its FULL service list** (2026-07-29; re-taken 2026-07-30) -- see *Unprivileged root* below |
 | `teensy41` | i.MX RT1062 / M7 @396 MHz | pin 13 (GPIO2.IO03) | LPUART6 ("Serial1", pins 0/1), 115200 | `teensy_loader_cli` (HalfKay, `.hex`) | [x] full selftest + soak under PMSAv7 enforcement, after the M7 anti-speculation fix (ERR011573; `../design-teensy-mpu-hang.md`) |
 | `pizero2350` | RP2350 / M33 @150 MHz (armv7m backend) | -- (none on the Pi-Zero header) | UART1, GP4/GP5, 115200 | `picotool` (BOOTSEL) | [x] full selftest under PMSAv8 enforcement + `mpu_fault` cross-domain MemManage denial + bench/soak. **Third board with an UNPRIVILEGED root, and the first on PMSAv8** (2026-07-28) -- see *Unprivileged root* below. Also the first silicon witness for `kos_reboot` (BOOTSEL handover) and for `KICKOS_SHUTDOWN_TO_BOOTLOADER` on both terminal dead-ends -- see *Terminal dead-ends and BOOTSEL handover* below |
@@ -223,17 +224,29 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   cannot reach the kernel's half at all. It is one of the fleet's TWO TRANSLATING boards, the other being
   `qemu-riscv64`, and the two `aspace.cmake` files under `arch/` are the whole set. Both ship the
   `arch_aspace_*` map editor and carry a linker-carved frame pool the kernel's `FrameAllocator`
-  describes, which is what `arch/arm64/chip/virt_arm64/aspace.cmake` declares here. What separates
-  this one: its granule and level count are FIXED at build time where `qemu-riscv64` selects Sv39 or
-  Sv48 by config variant, it has TWO root registers (`TTBR0_EL1` and `TTBR1_EL1`) where Sv39/Sv48
-  have `satp` alone, its app window is IDENTITY-linked where the RISC-V one links at `0x40000000`
-  and loads at `0x80200000`, and it is the only one of the two with a CI gate. Its ctest gates are TEN
-  and this list used to name six, the four it omitted being exactly the enforcement witnesses:
+  describes, which is what `arch/arm64/chip/virt_arm64/aspace.cmake` declares here. Both also BUILD
+  their first table: translation arrives OFF and each writes the table before enabling it, where
+  `qemu-x86_64` runs with translation already live and ADOPTS the regime UEFI firmware left it,
+  selecting no memory family, shipping no map editor and declaring no frame pool, which is what
+  keeps the set at two. What separates this one: its granule and level count are FIXED at build time
+  where `qemu-riscv64` selects Sv39 or Sv48 by config variant, it has TWO root registers
+  (`TTBR0_EL1` and `TTBR1_EL1`) where Sv39/Sv48 have `satp` alone and x86_64 has `cr3` alone, its
+  app window is IDENTITY-linked where the RISC-V one links at `0x40000000`
+  and loads at `0x80200000`, and it is the only one of the two with a CI gate. Its image gates are
+  FIFTEEN and this list has understated them twice, at six and then at ten:
   `qemu_arm64_hello`, `qemu_arm64_selftest`, `qemu_arm64_fault_dump`, `qemu_arm64_aspace_fault`,
   `qemu_arm64_stack_guard`, `qemu_arm64_kernel_half`, `qemu_arm64_faultsurvive`,
-  `qemu_arm64_tlsprobe`, `qemu_arm64_errnoprobe` and `qemu_arm64_fp_switch`, plus the
-  `host`-labelled gates every build tree registers, for 34 in total (re-derived 2026-08-28).
-- **`qemu-arm64`'s selftest declares exactly one PARTIAL and zero skips.** The partial is
+  `qemu_arm64_tlsprobe`, `qemu_arm64_errnoprobe`, `qemu_arm64_fp_switch` and, since 2026-08-29,
+  `qemu_arm64_panicgate1` through `qemu_arm64_panicgate5`; plus the `host`-labelled gates every
+  build tree registers, for **42 in total** (re-derived 2026-08-29 by `ctest -N` on the
+  `qemu-arm64` tree). The total read 35 until those five landed; the forty first is the fleet-wide
+  `whitespace` gate and the forty second is `console_reach`, which is registered on the
+  translating presets only. A full run reads 42 of 42 on this tree. **It read 41 of 42 with
+  `console_reach` red for part of 2026-08-29**, which was true at `517449e5` and stopped being
+  true at `58b43d62` and `d4977780`, the two commits that closed the four panic doors that gate
+  names.
+- **`qemu-arm64`'s selftest declares exactly one PARTIAL and zero skips**, over 134 arms
+  (re-derived 2026-08-29, the plan line reading `1..134`). The partial is
   `periph_reg_write_unheld`: `virt_arm64` names no MMIO window a driver could be granted -- its
   map keeps the device gigabyte EL1-only, and its `arch_mpu_region_encodable` answers false
   because protection here is a page table rather than a descriptor list -- so that arm's
@@ -244,7 +257,8 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
 - **`qemu-riscv64` AND `qemu-riscv64-sv48` ARE EMULATED ONLY, and nothing on this bench can change
   that.** There is no rv64 silicon here, so every rv64 claim in this file is emulator-grade: both
   postures are witnessed by `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` under TCG and by
-  nothing else (2026-08-28, 49 of 49 each, selftest 132 arms with 0 skipped and 1 declared partial).
+  nothing else (2026-08-29, 52 arms registered each and 52 of 52 passing; selftest 134 arms,
+  plan line `1..134`, with 0 skipped and 1 declared partial).
   **The whole `differs-on-hardware` class is therefore SPEC-ARGUED and not measured**: `ASIDLEN` is
   WARL and may be 0 on a real part where this emulator answers 16, `MXSTATUS.MAEE` on a T-Head C906
   makes the page attributes come from extended entry bits that ratified Sv39 does not define, and a
@@ -272,6 +286,42 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
     another board is a loud fault here. It also costs: the reent seating path is a few hundred
     instructions rather than two, accepted deliberately (`../design-m6-mmu.md`, R6).
 
+- **`qemu-x86_64` is EMULATED ONLY, and nothing on this bench can change that either.** There is
+  no x86 silicon here, so every x86_64 claim in this file is emulator-grade: the port is witnessed
+  by `qemu-system-x86_64 -M q35` under **TCG** with OVMF (EDK II) firmware and by nothing else, and
+  `/dev/kvm` on this box belongs to a group the invoking user is not in, so the
+  hardware-virtualisation path is closed as well. It is also, with `rx72m` and both `rv64imac`
+  postures, one of the boards with **no CI gate of any kind** (see *CI coverage* below). Four properties separate it from the rest of the fleet, and each
+  one costs coverage somewhere:
+  - **The image is not an ELF.** The toolchain links host `gcc` objects into a PE32+ UEFI
+    application through `ld -m i386pep` (`../../cmake/toolchain-x86_64-uefi.cmake`), firmware loads
+    it from an EFI system partition, and `tests/lib/gate.sh` carries a `KICKOS_BOOT=uefi-pe` posture
+    because `-kernel` cannot start such an image at all. `$<TARGET_FILE:>` names no image here; an
+    app target records its path instead.
+  - **It links no C library and no libstdc++.** An app that reports through `printf`, or that wants
+    exceptions, RTTI or the STL, does not build for this board, which is why several fleet gates are
+    absent rather than failing.
+  - **Its exit status crosses a seven-bit device.** `isa-debug-exit` reports `(status << 1) | 1`
+    into an 8-bit process exit code, so only 0 through 127 round-trip and 139 arrives as 11.
+    `arch_shutdown` therefore prints the full byte on the console as `KICKOS-EXIT status <n>`, and
+    `gate.sh`'s `boot_status` recovers it under a contract that trusts neither channel alone. The
+    whole printed-line mechanism is gated on `KICKOS_BOOT=uefi-pe`, so it applies to no other board:
+    every other emulator reports the image's status directly, and below that gate the raw status is
+    taken untouched. The printed value is used ONLY where the exit device corroborated it, the
+    recovered value having to equal the printed status modulo 128. A printed line with NO device
+    report is REFUSED rather than believed, which also catches a run configured without the device.
+    And the timeout code 124 is never overridden, so an image killed for making no progress reads as
+    killed whatever it printed before the kill. Without the line no arm asserting a status of 128 or
+    more could run here.
+  - **The chip selects no memory family, so the map is flat.** An unprivileged thread on this board
+    can read and write kernel memory. What it cannot do is reach a device register, execute a
+    privileged instruction, touch a port, raise its own privilege level or write the MSR the syscall
+    entry takes its pointer from; the device clause is measured, zero reachable leaves in the local
+    APIC band and zero in low legacy over a walk of the whole live hierarchy. **A live translation
+    table and the per-core block ARE reachable and writable**: the kernel window's level-3 table and
+    `g_cpu` are `.bss` statics of the flat link, so both sit inside the leaf the grant opens.
+    Neither adds a power kernel-RAM write access does not already give. Narrowing that is R1.5's
+    work; the cost is stated in `../design-m6-mmu.md` M6.4 rather than hidden.
 - **`pizero2350`** -- Cortex-M33, but it reuses the **armv7m** arch backend verbatim (armv8-M is
   a superset for the switch/NVIC/SVC/PendSV path); only the MPU differs, and PMSAv8 has its own
   backend (`base+limit` RBAR/RLAR + MAIR, compile-gated so the v7-M/v6-M fleet is byte-identical).
@@ -589,6 +639,7 @@ the board".
 | rv64imac | `qemu-riscv64`, `qemu-riscv64-sv48` | **none** | -- (no region MPU; enforcement is Sv39/Sv48 page tables, live in both LOCAL postures and in no CI job) |
 | Xtensa LX6 | `esp32-wroom` | build only, plain and `-st` | -- (no per-domain unit) |
 | RXv3 | `rx72m` | **none** | -- |
+| x86_64 | `qemu-x86_64` | **none** | -- (no memory family selected; the map is flat) |
 
 - **ARM enforcement is now a run gate too, on both PMSA revisions.** It was build-only for a
   long time, and the reason was real: every enforcing ARM port was a silicon part, and the one
@@ -618,6 +669,13 @@ the board".
   Until somebody takes it, a change to the arch seam is *not* covered for `rv64imac` by a green CI
   run: run `ctest --preset qemu-riscv64` and `--preset qemu-riscv64-sv48` locally, BOTH, because the
   two differ in table depth and a level-count bug shows in only one.
+- **`qemu-x86_64` has no CI gate either, and the reason is not the toolchain.** Unlike RX, nothing
+  needs fetching: the compiler and linker are the host's own (`gcc` plus `ld -m i386pep`), so a
+  hosted runner already has them. What the RUN gates need is OVMF and `mtools`, and without either
+  they exit 77, which CTest reports as SKIP, so an unprovisioned runner would green-light the board
+  rather than fail it. That is a provisioning decision nobody has taken yet. Locally the board runs
+  its own full `ctest`, image arms included.
+
 - **Renesas RX has no CI gate at all.** RX72M needs `-misa=v3` and `-mdfpu`
   (`boards/rx72m/board.cmake`), and both exist only in the registration-gated Renesas GNURX
   build -- upstream `rx-elf` GCC rejects them. That toolchain cannot be fetched anonymously on a
@@ -790,6 +848,91 @@ re-deriving `_tap_arms`.
   lines. Adding or moving an arm means updating the whole-suite floor AND the matching per-part
   clause in `user/apps/common/selftest/CMakeLists.txt` -- getting it wrong is a configure error on
   every board in the fleet, not a quietly smaller suite.
+
+### The two `-st` presets and the per-app build stamp
+
+**`bluepill-c8-st` and `f302nucleo-st` STOPPED LINKING at M6.3's R2.2 and link again.** `selftest`
+section `.data` would not fit in region `FLASH`:
+
+| tree | `bluepill-c8-st` | `f302nucleo-st` |
+| --- | --- | --- |
+| `master` `f0360d3a` | links, 128 B free | links, 112 B free |
+| `9b6e325a`, the commit before M6.3's R2.2 | links | links |
+| **`480767f1`, R2.2** | overflows by 24 B | overflows by 44 B |
+| `188deaa9`, the M6.3 tip | overflows by 80 B | overflows by 100 B |
+| `517449e5`, the M6.4 tip | overflows by 224 B | overflows by 248 B |
+| the same tip, fixed | links, **52 B free** | links, **36 B free** |
+| the same tip, split rebalanced by size | links, **10,204 B free** | links, **10,180 B free** |
+
+Bracketed against a GREEN point and not assumed from an older tip: `master` links both, so the
+first RED commit is `480767f1` (*R2.2: the app takes its own half, and the seam grows a frame
+query*), the step that rewrote `user/include/kickos/app.h` and `user/src/root_entry.cc` and the
+`kmain` half that reads them, all of which every app on every board links, RISC-V step or not.
+
+**WHAT IT COST THE WHOLE FLEET, and it is not what the overflow figures suggest.** Isolated by
+reverting only that mechanism in a tree at the M6.4 tip, so none of the other 33 commits is in the
+measurement: **+104 B `.text` and +24 B `.data`, against -32 B `.bss`, on every one of the 33 apps**
+of `bluepill-c8-st`. So +128 B of flash per image on every board and roughly no RAM, rather than the
+230-byte `.data` growth the overflow figures read as. What R2.2 replaced was one weak
+`kickos_app_build_stamp()` in app text, 140 B merged across the app's TUs with a 28 B `.bss` buffer
+and a 37 B month table; what it put there was `kickos_app_build_raw`, 27 B of WRITABLE `.data`
+charged to the image twice, plus a reformatter inlined into `kickos::kmain`, which grew from 708 to
+952 B. The app-stamp FEATURE as a whole cost **336 B of flash and 28 B of RAM per image** at that
+tip, measured against a tree with the stamp removed outright.
+
+**THE FIX IS THE MECHANISM.** The app's half stays DATA, which is the property R2.2 was taken for
+and which `tests/static/check_riscv_kernel_apphalf.sh` enforces: where a translating backend splits
+the image the kernel may not CALL app text, the banner running before any space is activated. What
+goes is the runtime reformat. `kickos_app_build_raw` becomes `const char kickos_app_build_time[]`,
+so it lands in `.rodata` and is read where it was flashed instead of being charged to flash and to
+RAM both, and the banner prints C's own `"Mmm dd yyyy HH:MM:SS +zzzz"` spelling rather than
+converting it to `yyyy-mm-dd` at every boot on every board. That recovers **288 to 292 B of flash
+and 24 B of `.data` on every image on every board**, and leaves those images 64 to 72 B larger in
+`.text` and 32 B SMALLER in `.bss` than at `master`.
+
+**The residual over `master` is M6.3's `arch_aspace *` parameter threading**, through
+`kaccess_from_user`, `kaccess_to_user`, `endpoint_send`/`recv`/`call`/`reply`, `cap_out_deliver`,
+`console_write_user`, `user_panic` and `reent_seat`/`reent_prime`. A board with no translating
+backend pays it for a pointer that is always null there. That is a fleet-wide cost of about 176 B
+per image and it is not addressed here.
+
+**36 AND 52 FREE BYTES WAS NOT ROOM, AND THE CAUSE WAS THE SPLIT RATHER THAN THE FLEET. THE SPLIT
+IS NOW BALANCED BY SIZE.** The two `#undef TAP_ADD` lines in
+`user/apps/common/selftest/main.cc` had never been sized against the image: part 1 was 65,484 B
+where `selftest_p2` was 48,496 and `selftest_p3` 48,308, so the two later parts sat on about
+16.7 KiB of free flash each while the first had 52 bytes. Arm counts do not predict image size,
+which is why the drift was invisible -- measured per arm on `bluepill-c8-st`, the base image with
+no arm registered at all is 30,108 B and the 102 arms of that posture cost 71,912 B between them,
+running from 52 B (`cap_reply_bound_slow`) to 4,140 B (`bus_device_slots` + `uart_service`) and
+5,236 B (the eleven `irq_*` arms, one `#if` block and so one indivisible unit).
+
+The boundaries now fall after `call_timeout_reply` and after `cap_reply_slot_reuse`, chosen against
+that measurement:
+
+| image | `bluepill-c8-st` | `f302nucleo-st` |
+| --- | --- | --- |
+| `selftest` (part 1) | 54,976 B, **10,560 free** | 54,992 B, **10,544 free** |
+| `selftest_p2` | 55,332 B, **10,204 free** | 55,356 B, **10,180 free** |
+| `selftest_p3` | 52,012 B, **13,524 free** | 52,020 B, **13,516 free** |
+
+The arm counts move with the boundaries -- 37 / 26 / 39 in this posture, from 49 / 22 / 31 -- and
+the coverage does not: the same arms run in the same order, each exactly once across the three
+parts. Witnessed on `microbit`, whose three QEMU gates report the same 102 names in the same
+sequence before and after, with the same skip and partial sets. Part 2 is the binding image now.
+
+**THE BYTE COUNTS ARE TOOLCHAIN-DEPENDENT.** These are `arm-gnu-toolchain-15.3.rel1`; `ci.yml`
+pins `15.2.rel1`, which reads a few bytes higher on the same trees. Compare the SIGN, not the
+figure, across two boxes. The 36- and 52-byte rows were figures a CI link had yet to confirm; the
+rebalanced rows carry kilobytes and no longer turn on the compiler.
+
+**What it cost beyond the two images while it stood.** `trap_redzone` is registered on both presets
+(`tests/static/trap_redzone_roots.txt` declares all four armv7m presets of these two chips), and on
+these two it failed inside its own scratch tree at that same link, so **neither preset contributed a
+trap-stack measurement between `480767f1` and this fix**. The failure read
+`FAIL: build failed in /var/tmp/kickos-trap-redzone-<preset>, twice, the second time after a fresh
+configure`, which is a build error wearing a depth gate's name. The `base` twins were unaffected
+throughout and both still measure: `bluepill-c8` and `f302nucleo` each report `SVC 444 <= 448,
+EXIT 576 <= 576, RET 296 <= 312`.
 
 **Witnessed on `f302nucleo` as a TWO-image split, and never on `bluepill-c8`.** Both `f302nucleo`
 images booted at `9a00e73` (`1..44` and `1..30`, zero `not ok`) and all three restored arms ran
@@ -2078,10 +2221,13 @@ actual mask column. A green host gate says the seam's LOGIC is right, never that
 
 **`panicgate` is FIVE cases, and it is a real gate.** One source, five images, because a run observes
 exactly one panic; each image carries `KICKOS_PANICGATE_CASE=<n>` and is registered as a CTest on
-every one of the FOURTEEN ctest presets (`sim`, `sim-telem`, `qemu`, `qemu-telem`, `qemu-m3`, `qemu-m7`,
-`qemu-m33`, `microbit`, `qemu-riscv`, and the five `-flat` variant presets `qemu-flat`,
-`qemu-m33-flat`, `qemu-m7-flat`, `qemu-m3-flat`, `qemu-riscv-flat` -- registration keys off
-`KICKOS_BOARD`, not the configuration variant), with two spellings of each verdict -- a CTest regex
+every one of the NINETEEN presets whose board registers it (`sim`, `sim-telem`, `qemu`, `qemu-telem`,
+`qemu-flat`, `qemu-m3`, `qemu-m3-flat`, `qemu-m7`, `qemu-m7-flat`, `qemu-m33`, `qemu-m33-flat`,
+`microbit`, `qemu-riscv`, `qemu-riscv-flat`, `qemu-riscv-bench`, `qemu-riscv64`, `qemu-riscv64-sv48`,
+`qemu-arm64`, `qemu-x86_64` -- registration keys off `KICKOS_BOARD`, not the configuration variant).
+**This read FOURTEEN and named nine boards until 2026-08-29**, omitting `qemu-riscv-bench` and the
+whole 64-bit half; re-derived by configuring each preset and counting `panicgate` in `ctest -N`.
+Two spellings of each verdict -- a CTest regex
 on the sim and an `-F` literal for the QEMU script. Case 4 additionally asserts an ABSENT literal (`CUTME`), so
 a truncation that dropped nothing would fail rather than pass. Keep it distinct from the
 `conreclaim` note above, which correctly says no CTest gate exists or can for THAT capture: what

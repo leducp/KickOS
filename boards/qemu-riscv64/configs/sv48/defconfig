@@ -3,10 +3,7 @@
 
 CONFIG_BOARD_QEMU_RISCV64=y
 
-# The base posture with one clause changed, so what the two report is attributable to that
-# clause: four translation levels instead of three (docs/design-m6-mmu.md R3). The emulated
-# core implements the mode; the prologue reads satp.MODE back and refuses by name on a hart
-# that does not.
+# The base posture with one clause changed (docs/design-m6-mmu.md R3).
 CONFIG_RV64_PAGING_SV48=y
 
 CONFIG_KICKOS_USER_STACK_SIZE=12288

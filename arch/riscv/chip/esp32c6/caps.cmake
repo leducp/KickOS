@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Trace-clock / trace-arch capability declaration (mirrors the mpu.cmake opt-in). The
-# top CMakeLists includes this in its own scope, so a plain set (no PARENT_SCOPE) is
-# what it reads. KICKOS_HAVE_TRACE_CLOCK is guarded with NOT DEFINED so a board/preset
-# that pre-defined it on the command line still wins.
+# Trace-clock / trace-arch capability declaration.
 #
 # The rv32imac arch_trace_now is `rdcycle`, and the ESP32-C6 HP core implements Zicntr
 # nowhere in its CSR set, mcounteren included (C6 TRM v1.2 section 1.5.1). Reading one is an

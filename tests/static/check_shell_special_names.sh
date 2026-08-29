@@ -2,13 +2,12 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# NO TRACKED SHELL SCRIPT WRITES AN IDENTIFIER A SHELL ALREADY OWNS. `/bin/sh` is dash on the
+# No tracked shell script writes an identifier a shell already owns. `/bin/sh` is dash on the
 # CI images and bash on plenty of developer boxes, and a name bash maintains itself does not
-# hold what a script puts in it. `GROUPS="<a data table>"` is the case this gate was written
-# for: under bash the assignment does not take, the table expands to the caller's group ids,
-# every per-row floor derived from it goes empty, and the script prints its headline figures
-# and exits with the SAME code it exits with under dash. `dash -n` passes it, `sh -n` passes
-# it, and only a run under BOTH shells shows it. It has happened twice in this tree.
+# hold what a script puts in it. `GROUPS="<a data table>"` is the shape: under bash the
+# assignment does not take, the table expands to the caller's group ids, every per-row floor
+# derived from it goes empty, and the script still exits with the code it exits with under
+# dash. `dash -n` passes it, `sh -n` passes it, and only a run under BOTH shells shows it.
 #
 # Run from the repo root, no arguments, no build directory:
 #   tests/static/check_shell_special_names.sh
@@ -18,17 +17,21 @@
 #              counted. A sourced fragment with no shebang is in the corpus when it is named
 #              *.sh, which is how tests/lib/gate.sh is covered.
 #
+#   floor      CORPUS_FLOOR, at about half what the tree tracks, on the corpus AND on the
+#              number of files the scan actually read: a `git ls-files` that matched almost
+#              nothing, a walk that stopped early and a corpus narrowed by an edit here would
+#              all read as clean. A tracked file MISSING from the worktree is refused rather
+#              than skipped, a silent skip being how a corpus shrinks without a count moving.
+#
 #   the names  NAMES below. Two kinds, and the fix is the same for both, so one list: the ones
 #              bash refuses to let a script write (GROUPS, BASH_*, EUID, UID, PPID, SHELLOPTS,
 #              BASHOPTS, FUNCNAME, DIRSTACK, PIPESTATUS, SRANDOM, EPOCHSECONDS,
 #              EPOCHREALTIME), and the ones it lets a script write and then overwrites on its
 #              own (RANDOM, SECONDS, LINENO, HISTCMD, PWD, OLDPWD). A deliberate reseed of
-#              RANDOM or SECONDS is the one legitimate write in that second kind; nothing in
-#              this tree does it, and adding an exemption is the cost if that changes.
+#              RANDOM or SECONDS wants an exemption; nothing in this tree does it.
 #
-#   NOT here   IFS, OPTARG, OPTIND and REPLY. Those are ordinary shell variables, writing
-#              them is the normal idiom (`while IFS= read -r`, `getopts`), and listing them
-#              would make this gate cry wolf on 78 correct lines.
+#   NOT here   IFS, OPTARG, OPTIND and REPLY. Those are ordinary shell variables and writing
+#              them is the normal idiom (`while IFS= read -r`, `getopts`).
 #
 #   the forms  a write, never a read: `NAME=`, `NAME+=`, the same behind export / local /
 #              readonly / declare / typeset, `for NAME in`, and `read [-opts] [names] NAME`.
@@ -39,9 +42,8 @@
 #              assignment sitting after a `#` inside a string on the same line, and it is
 #              what lets this gate's own header name GROUPS without reporting itself.
 #
-# The self-test below plants one violation per NAME per form rather than a single specimen: a
-# name in the list that no ERE reaches would otherwise be listed and unenforced, which reads
-# exactly like a clean corpus.
+# The self-test below plants one violation per NAME per form: a name in the list that no ERE
+# reaches would otherwise be listed and unenforced, which reads exactly like a clean corpus.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -52,6 +54,11 @@ set -u
 command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
 
 scratch_dir
+
+# Sized at about HALF what the corpus holds, so an ordinary deletion still passes while an
+# empty walk, a run outside a checkout and a corpus narrowed by an edit here all refuse. The
+# corpus count is printed on every run and is not pinned here.
+CORPUS_FLOOR=48
 
 # One name per line. BASH_ and COMP_ are prefixes, matched below as such.
 NAMES="GROUPS
@@ -156,7 +163,9 @@ require_nonempty "$TMP/tracked" "git ls-files matched nothing; the scan would pa
 
 : > "$TMP/corpus"
 while IFS= read -r f; do
-    [ -f "$f" ] || continue
+    [ -f "$f" ] || fail "tracked file is missing from the worktree: $f. A skipped file leaves
+      the corpus one shorter with nothing saying so."
+    [ -r "$f" ] || fail "tracked file is unreadable, so its verdict is UNKNOWN, not clean: $f"
     case "$f" in
         *.sh)
             printf '%s\n' "$f" >> "$TMP/corpus"
@@ -169,6 +178,10 @@ while IFS= read -r f; do
 done < "$TMP/tracked"
 require_nonempty "$TMP/corpus" "no tracked shell script matched; the scan would pass vacuously"
 N="$(wc -l < "$TMP/corpus" | tr -d ' ')"
+[ "$N" -ge "$CORPUS_FLOOR" ] \
+    || fail "$N shell script(s) in the corpus, beneath the floor of $CORPUS_FLOOR: this is not
+      the tree, so a clean result below would be a corpus that shrank and not a tree that is
+      clean."
 
 # The gate that closed this class is itself in the corpus, so its presence is asserted: a
 # rename would otherwise leave the scan reading one file fewer and still passing.
@@ -177,11 +190,21 @@ grep -Fxq "tests/static/check_aspace_sigdiff.sh" "$TMP/corpus" \
       from the wrong path and every finding below would be missing rather than absent"
 
 : > "$TMP/findings"
+N_READ=0
 while IFS= read -r f; do
     scan "$f" >> "$TMP/findings"
+    N_READ=$((N_READ + 1))
 done < "$TMP/corpus"
 
-echo "== checked $N tracked shell script(s) for a write to a shell-owned identifier =="
+# The corpus is what the walk BUILT; this is what the scan READ. A loop that ended early leaves
+# the two apart, and only the first of them reaches the headline.
+[ "$N_READ" -eq "$N" ] \
+    || fail "the scan read $N_READ of $N script(s) in the corpus, so it stopped early and the
+      rest are unreported rather than clean"
+[ "$N_READ" -ge "$CORPUS_FLOOR" ] \
+    || fail "$N_READ script(s) read, beneath the floor of $CORPUS_FLOOR"
+
+echo "== checked $N_READ tracked shell script(s) for a write to a shell-owned identifier =="
 
 if [ -s "$TMP/findings" ]; then
     sed 's/^/      /' "$TMP/findings" >&2
@@ -193,4 +216,4 @@ if [ -s "$TMP/findings" ]; then
     exit 1
 fi
 
-echo "PASS: no tracked shell script writes a shell-owned identifier across $N script(s)"
+echo "PASS: no tracked shell script writes a shell-owned identifier across $N_READ script(s)"

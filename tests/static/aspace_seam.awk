@@ -178,10 +178,24 @@ function tail_ident(s,    n, p, i, t) {
     }
     return ""
 }
+# True when tokens 1..upto can stand on their own as a complete type: a base type keyword,
+# or an identifier that is neither a qualifier nor a struct, union or enum keyword.
+# `struct arch_aspace` and `const arch_aspace_flags` leave `struct` and `const` behind,
+# neither of which names a type, so the trailing token there is the TYPE and not a name.
+function names_a_type(tk, upto,    i, t) {
+    for (i = 1; i <= upto; i++) {
+        t = tk[i]
+        if (t ~ BASEKW) { return 1 }
+        if (t ~ /^[A-Za-z_][A-Za-z0-9_:]*$/ && t !~ NONTYPEKW) { return 1 }
+    }
+    return 0
+}
 # One parameter with its name dropped. The name is the trailing token when the parameter
-# has two or more tokens and that token is neither a type keyword, nor `_t`-suffixed, nor
-# pointer or array punctuation. Nothing is dropped when the remainder would be empty, so
-# a type token can never be eaten and read as unchanged.
+# has two or more tokens, that token is neither a type keyword, nor `_t`-suffixed, nor
+# pointer or array punctuation, and what precedes it already names a type. Without that
+# last test an UNNAMED parameter whose type ends in a plain identifier loses the
+# identifier: two unlike types collapse to the same record and a real type change reads
+# as no change at all.
 function strip_pname(p,    n, tk, i, last, out) {
     p = canon(p)
     if (p == "") { return "" }
@@ -191,12 +205,12 @@ function strip_pname(p,    n, tk, i, last, out) {
     if (last ~ TYPEKW) { return p }
     if (last ~ /_t$/) { return p }
     if (last ~ /[][*()]/) { return p }
+    if (!names_a_type(tk, n - 1)) { return p }
     out = ""
     for (i = 1; i < n; i++) {
         if (out != "") { out = out " " }
         out = out tk[i]
     }
-    if (trim(out) == "") { return p }
     return trim(out)
 }
 function params_notypes(plist,    n, p, i, out, one) {
@@ -343,6 +357,8 @@ function flush_def(pre,    s, nm) {
 BEGIN {
     PREFIX = "^(arch_aspace|ARCH_ASPACE|arch_map|ARCH_MAP|arch_phys_addr)"
     TYPEKW = "^(void|char|short|int|long|float|double|signed|unsigned|bool|_Bool|const|volatile|restrict|struct|enum|union|__restrict)$"
+    BASEKW = "^(void|char|short|int|long|float|double|signed|unsigned|bool|_Bool)$"
+    NONTYPEKW = "^(const|volatile|restrict|__restrict|struct|enum|union)$"
     depth = 0
     xdepth = 0
     capture = 0

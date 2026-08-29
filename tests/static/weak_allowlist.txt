@@ -1,37 +1,31 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Every symbol KickOS is allowed to leave WEAK, and why. tests/static/check_seam_defaults.sh
-# (leg 4) fails the build on any other weak symbol, in any archive or in the image.
-# KickOS resolves optional arch/chip seams by archive-member extraction instead
-# (arch/CMakeLists.txt), so no entry below may be a backend seam.
+# Every symbol KickOS is allowed to leave WEAK. tests/static/check_seam_defaults.sh (leg 4)
+# fails the build on any other weak symbol, in any archive or in the image. No entry below may
+# be a backend seam: those are resolved by archive-member extraction (arch/CMakeLists.txt).
 #
 # One symbol per line; the RX psABI prefixes C identifiers with an underscore, so a
 # KickOS-owned entry is listed in both spellings.
 
-# --- libc interop: weak SO THAT A LIBC PROVIDING THEM WINS --------------------
-# The C++ ABI's per-DSO handle. A libc that defines it must own the one the atexit
-# registrations use, or a destructor is keyed to a handle nobody knows.
+# --- libc interop: weak so a libc providing them wins -------------------------
+# The C++ ABI's per-DSO handle.
 __dso_handle
 ___dso_handle
-# newlib's malloc re-entrancy hooks. KickOS supplies no-ops (its heap is used from one
-# thread); a thread-safe libc that ships real ones must replace them, not collide.
+# newlib's malloc re-entrancy hooks; KickOS supplies no-ops.
 __malloc_lock
 ___malloc_lock
 __malloc_unlock
 ___malloc_unlock
 
-# --- hand-rolled vague linkage, not a seam -----------------------------------
-# kickos/app.h defines the per-app build stamp inline, and the build force-includes that
-# header into EVERY app TU with -Dmain=..., so every app TU emits the definition. Weak is
-# what merges the duplicates; C has no COMDAT for functions. The kernel's matching weak
-# REFERENCE is what lets a link with no app TU at all resolve to null.
-kickos_app_build_raw
-_kickos_app_build_raw
+# --- hand-rolled vague linkage -----------------------------------------------
+# kickos/app.h defines the per-app build stamp inline and the build force-includes that header
+# into every app TU, so weak is what merges the duplicates; C has no COMDAT. The kernel's
+# matching weak REFERENCE is what lets a link with no app TU at all resolve to null.
+kickos_app_build_time
+_kickos_app_build_time
 
-# --- optional-symbol references (weak UNDEFINED, absence is legal) -----------
-# A weak reference cannot be replaced by a fallback TU: a definition would have to invent
-# an address for a symbol whose whole point is that it may not exist.
+# --- optional-symbol references (weak undefined, absence is legal) ------------
 # Provided by the chip linker script; the host/sim link has no linker script, and
 # kernel/domain/domain.cc + kernel/init/kmain.cc null-check every one of them.
 __kickos_code_start
@@ -47,9 +41,7 @@ __kickos_heap_start
 _kickos_heap_limit
 __kickos_heap_limit
 # The app's own low window, carved only where a translating backend splits the image
-# (docs/design-m6-mmu.md, T5b.1). arch/common/arch_ram_common.cc consults it as a SECOND
-# admitted extent beside the chip's rom/sram pair; range_within refuses a zero pair, so a
-# chip that carves no such window admits nothing extra.
+# (docs/design-m6-mmu.md, T5b.1).
 __kickos_app_rom_start
 ___kickos_app_rom_start
 __kickos_app_rom_end
@@ -58,19 +50,17 @@ __kickos_app_sram_start
 ___kickos_app_sram_start
 __kickos_app_sram_end
 ___kickos_app_sram_end
-# Added to an app VIRTUAL address to name the frame the loader put those bytes in, published
-# only by a chip whose app window is NOT linked where it loads. Absent is zero, which is the
-# identity the other chips already have (kernel/mem/aspace.cc).
+# Added to an app VIRTUAL address to name the frame the loader put those bytes in; absent is
+# zero (kernel/mem/aspace.cc).
 __kickos_app_load_delta
 ___kickos_app_load_delta
-# libgcc's unwinder registration. Absent from a freestanding image, so the RISC-V chip
-# bring-up calls it only when the link supplied it.
+# libgcc's unwinder registration, called by the RISC-V chip bring-up only when the link
+# supplied it.
 __register_frame
 ___register_frame
 
-# --- toolchain-owned, present only in the final image ------------------------
-# Emitted by libgcc / newlib / libstdc++ or by the host glibc CRT. Not ours to change; the
-# per-archive leg of the gate is what covers KickOS code.
+# --- toolchain-owned, present only in the final image -------------------------
+# Emitted by libgcc / newlib / libstdc++ or by the host glibc CRT.
 __aeabi_idiv0
 __aeabi_ldiv0
 __aeabi_unwind_cpp_pr0

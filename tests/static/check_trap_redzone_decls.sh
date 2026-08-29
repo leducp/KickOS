@@ -2,17 +2,19 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# CI gate on the COMPLETENESS of tests/static/trap_redzone_roots.txt: every arch that has a
-# trap-stack header is declared, every class that header prices is declared, and every
-# configure preset of a declared arch is registered.
+# CI gate on the COMPLETENESS of the two static-callgraph declaration files. For
+# tests/static/trap_redzone_roots.txt: every arch that has a trap-stack header is declared,
+# every class that header prices is declared, and every configure preset of a declared arch is
+# registered. For tests/static/console_reach_roots.txt: every preset whose chip TRANSLATES is
+# registered, no record names a preset that is not there, and every registered preset carries
+# the corpus floor its clause refuses without.
 #
-# Separate from check_trap_redzone.sh because that gate measures ONE preset per run and takes
-# its class set from whatever the file declares for that preset's arch, so a DELETION is
-# invisible to it: drop a class and the run measures one fewer and passes, drop a `preset`
-# record and CMakeLists.txt registers no trap_redzone test for that board at all.
+# Each of those two gates measures ONE preset per run and takes its set from whatever the file
+# declares for that preset, so a DELETION is invisible to it: drop a class and the run measures
+# one fewer and passes, drop a `preset` record and CMakeLists.txt registers no test for that
+# board at all. This one is registered on EVERY board.
 #
-# It reads the tree through `git ls-files` plus the preset files and configures nothing, so
-# it needs no cross toolchain and registers on every board including sim.
+# It reads the tree through `git ls-files` plus the preset files and configures nothing.
 #
 # The invariant behind clause 2: a header's DEPTH macros ARE its class list, so a depth
 # figure no class record names is either a deleted class or a figure nothing enforces.
@@ -161,16 +163,67 @@ while IFS="$TAB" read -r a p; do
     fi
 done < "$TMP/presetmap"
 
+# --- clause 4: every translating preset declares a console_reach record --------
+# check_console_reach.sh is registered only on the presets tests/static/console_reach_roots.txt
+# names, so a board added without a record there registers NOTHING and no run says so. The set
+# is derived from arch/Kconfig: a chip that selects HAS_ASPACE translates, and a translating
+# board is where the cap_console_deliver error paths survive the optimiser.
+#
+# A preset that is DECLARED without selecting HAS_ASPACE is not reported. qemu-x86_64 is the
+# live case: q35 declines the select on purpose, its image being one flat link, and the clause
+# still runs there because the console route is the same kernel C.
+REACH="tests/static/console_reach_roots.txt"
+[ -f "$REACH" ] || fail "no declaration file at $SRC/$REACH"
+
+awk '
+    /^config[[:space:]]+CHIP_/ { chip = tolower(substr($2, 6)); next }
+    /^config[[:space:]]/ { chip = ""; next }
+    chip != "" && $1 == "select" && $2 == "HAS_ASPACE" { print chip }
+' arch/Kconfig | sort -u > "$TMP/aspacechips"
+require_nonempty "$TMP/aspacechips" "no chip in arch/Kconfig selects HAS_ASPACE, so this clause would pass over an empty set"
+
+awk '{ sub(/#.*/, "") } $1 == "preset" { printf "%s\t%s\n", $2, $3 }' "$REACH" > "$TMP/reachmap"
+require_nonempty "$TMP/reachmap" "$REACH declares no preset record"
+awk '{ sub(/#.*/, "") } $1 == "floor" { printf "%s\t%s\n", $2, $3 }' "$REACH" > "$TMP/reachfloor"
+N_REACH_DECLARED="$(wc -l < "$TMP/reachmap" | tr -d ' ')"
+
+N_TRANSLATING=0
+while IFS="$TAB" read -r p b pa; do
+    [ "$b" != "@none" ] || continue
+    [ -f "boards/$b/board.cmake" ] || continue
+    chip="$(sed -n 's/^[[:space:]]*set([[:space:]]*KICKOS_CHIP[[:space:]]\{1,\}"\([^"]*\)".*/\1/p' \
+            "boards/$b/board.cmake" | head -1)"
+    [ -n "$chip" ] || continue
+    grep -qxF "$chip" "$TMP/aspacechips" || continue
+    N_TRANSLATING=$((N_TRANSLATING + 1))
+    if ! awk -F"$TAB" -v A="$pa" -v P="$p" '$1 == A && $2 == P { found = 1 } END { exit !found }' "$TMP/reachmap"; then
+        report "configure preset $p (board $b, chip $chip) selects HAS_ASPACE and $REACH has no 'preset $pa $p' record; its board registers no console_reach test at all"
+    fi
+done < "$TMP/presetarch"
+
+# The other direction, and the floor beside it: a record naming no visible preset is dead, and
+# a preset declared with no floor record leaves that board's clause with no corpus floor.
+while IFS="$TAB" read -r a p; do
+    if ! awk -F"$TAB" -v A="$a" -v P="$p" '$1 == P && $3 == A { found = 1 } END { exit !found }' "$TMP/presetarch"; then
+        report "preset record '$a $p' in $REACH names no visible configure preset of arch $a; the record is dead"
+    fi
+    if ! awk -F"$TAB" -v A="$a" -v P="$p" '$1 == A && $2 == P { found = 1 } END { exit !found }' "$TMP/reachfloor"; then
+        report "$REACH declares preset $a $p and no floor record for it; that board's clause would report an absence over a corpus it never sized"
+    fi
+done < "$TMP/reachmap"
+
 echo "== $N_HEADERS trap-stack header(s), $N_ARCHES declared arch(es), $N_CLASSES class record(s) over $N_DEPTHS depth figure(s), $N_INSCOPE of $N_PRESETS visible preset(s) in scope, $N_DECLARED registered =="
+echo "== $N_TRANSLATING translating preset(s), $N_REACH_DECLARED registered in $REACH =="
 
 if [ -s "$TMP/findings.txt" ]; then
     cat "$TMP/findings.txt" >&2
     echo "" >&2
-    echo "FAIL: $(wc -l < "$TMP/findings.txt" | tr -d ' ') finding(s) against $ROOTS." >&2
+    echo "FAIL: $(wc -l < "$TMP/findings.txt" | tr -d ' ') finding(s) against $ROOTS and $REACH." >&2
     echo "      Declare the arch, the class or the preset, or drop a record whose subject is gone." >&2
     echo "      A class nothing declares is a red zone nothing measures, and a preset nothing" >&2
-    echo "      registers is a board whose trap geometry is never checked." >&2
+    echo "      registers is a board whose trap geometry, or whose console route, is never checked." >&2
     exit 1
 fi
 
-echo "PASS: every trap-stack arch, class and preset of a gated arch is declared"
+echo "PASS: every trap-stack arch, class and preset of a gated arch is declared, and every"
+echo "      translating preset is registered with a corpus floor"

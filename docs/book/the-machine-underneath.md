@@ -90,10 +90,21 @@ on what the design can express. The Domain / address-space seam is ONE abstracti
 over two kinds of protection hardware, so on an application-class part with an MMU
 the same seam draws isolation in page tables instead and each task gets a private
 virtual space. Chapter 7 (*Memory protection*) is the full treatment; what you need
-here is that the SHAPE differs by part -- **flat, shared and physical where
+here is that the SHAPE differs by part: **flat, shared and physical where
 protection is drawn in regions; translated and per-space where it is drawn in page
-tables** -- and that nothing above the arch layer can tell which one it is running
-on.
+tables**.
+
+What that one seam buys is worth stating precisely, because the tempting stronger claim
+is false. No code above the arch layer names an ISA, a register or a descriptor format:
+the operations are the same and the same call sites serve both kinds of part. But the
+kernel above the seam does know WHICH KIND of protection hardware is underneath it, and
+that is deliberate rather than a leak. Whole subsystems exist only where translation
+does, and they are compiled in or out on the capability the port declares: the frame
+pool, the address-space syscalls and the per-task space in the domain layer are absent
+from a region build, while on a translating backend the region set's enforcing path is
+not compiled at all, there being no descriptor for it to seat.
+A property that costs nothing where it does not apply can be written once above the
+seam; a subsystem that would have no meaning there is not.
 
 *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (kinds of systems)
 and ch.3 (memory management -- what an MMU does, which is exactly what an MCU

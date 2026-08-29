@@ -1,58 +1,16 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * RV64IMAC supervisor context switch, trap entry and syscall trap. kickos_rv64_init installs
- * stvec in DIRECT mode, so every cause arrives at kickos_rv64_stvec, and the entry saves the
- * FULL interrupted context (every GPR bar gp/tp, plus sepc and sstatus) before it demuxes on
- * scause. ONE frame format for every path, so a thread that trapped and a thread that
- * switched of its own accord resume through the same instructions.
- *   .Lecall     the syscall trap, from U-MODE ONLY. medeleg leaves ECALL-from-S undelegated
- *               (arch/riscv/chip/virt_rv64/startup.S), so cause 9 never arrives here at all.
- *               syscall_dispatch runs on the frame's own stack in privileged THREAD context,
- *               as arch.h requires.
- *   .Lintr      every interrupt cause, in ISR context, with a switch booked from the ISR
- *               performed by this leg's own exit rather than inside the handler.
- *   .Lfault     every remaining exception.
- *   arch_start  enters the first thread through the shared restore epilogue.
+ * RV64IMAC supervisor context switch, trap entry and syscall trap. stvec is DIRECT, so every
+ * cause arrives at kickos_rv64_stvec and one frame format serves every path.
  *
- * SYSCALL DISPATCH RUNS WITH SIE MASKED, which the trap left clear and nothing here sets. That
- * is load-bearing rather than incidental: it is what keeps every interrupt frame a resumable
- * thread context standing on a stack that outlives the trap, which is what .Lintr's deferred
- * switch consumes. Unmasking it would put a third frame on a kernel block already carrying an
- * ecall frame and a dispatch nothing has measured.
+ * SIE stays masked through the syscall dispatch and nothing here sets it: that is what keeps
+ * every interrupt frame a resumable thread context on a stack that outlives the trap.
  *
- * SSCRATCH INVARIANT: outside the prologue, sscratch holds the trap-stack TOP. That is what
- * makes the entry's first instruction a swap onto a trusted sp, and it holds through the
- * U-mode accept path (which writes it back rather than swapping) and through .Ltrap_nested.
+ * SSCRATCH INVARIANT: outside the prologue, sscratch holds the trap-stack TOP.
  *
- * NO ROOT IS WRITTEN HERE. The image splits kernel text from app text into level-2 slots of
- * their own (arch/riscv/chip/virt_rv64/virt_rv64.ld), so one root serves both privilege levels
- * and satp changes only when the SPACE does, inside arch_aspace_activate. What that retires is
- * a root write and an sfence.vma on EVERY privilege transition, and with them the window in
- * which this epilogue ran privileged with a root the entry below would have refused.
- *
- * SSTATUS.SUM IS NEVER SET, so S-mode may not load or store a page carrying U and a kernel
- * dereference of a low-half pointer FAULTS. Nothing needs it: every kernel touch of memory a
- * process owns goes through the kaccess seam (kickos/aspace.h), which reaches the frame the
- * space's own tables name from the kernel's half. This epilogue writes sstatus WHOLE from the
- * frame, so a resumed U-mode thread gets whatever the frame carries and nothing is forced.
- *
- * gp AND tp ARE BOTH RE-ANCHORED, at .Ltrap_regs for the kernel C the entry calls and at
- * .Lrestore for the resume. Both are U-mode writable and neither is saved in the frame, so
- * without this a value a thread chose would outlive it. tp's canonical value is zero while no
- * ARCH_HAS_TLS is selected; a step that seats a thread pointer must re-seat it FROM THE CONTEXT
- * at these same two points, under #if KICKOS_TLS.
- *
- * A FAULT WHILE ALREADY ON THE TRAP STACK IS TERMINAL, and .Ltrap_from_s is where that is
- * decided. The prologue's first instruction puts sp back at the trap-stack top, so a fault
- * inside the dispatch or the reporter would rebuild the same frame forever with nothing on the
- * wire; comparing the interrupted sp against the row instead reaches the finisher with a line
- * naming which of the two it was.
- *
- * NOTHING HERE VALIDATES THE INTERRUPTED U-MODE SP, and that is sound rather than skipped: a
- * U-mode entry builds its frame on ctx.kernel_sp, so the sp the thread chose is only
- * remembered in F_SP and handed back by sret. A wild value costs the thread its own next
- * stack access and reaches no kernel memory.
+ * sstatus.SUM stays clear, so a kernel dereference of a low-half pointer faults; the kernel
+ * reaches memory a process owns through the kaccess seam (kickos/aspace.h).
  */
 
 #include <kickos/arch/rv64_frame.h>
@@ -106,9 +64,8 @@
     .equ CTX_SP,          KICKOS_RV64_CTX_OFF_SP
     .equ CTX_KERNEL_SP,   KICKOS_RV64_CTX_OFF_KERNEL_SP
 
-/* Its own section so a W^X split of the kernel's half (R2.3) has a boundary to draw between
- * the entry and the rest; virt_rv64.ld places it with kernel text and nothing else depends on
- * where it lands.
+/* Its own section so a W^X split of the kernel's half has a boundary here; virt_rv64.ld places
+ * it with kernel text.
  */
     .section .text.privtrap, "ax"
 
@@ -122,11 +79,9 @@ kickos_rv64_stvec:
     csrr    t0, sstatus
     andi    t1, t0, SSTATUS_SPP
     bnez    t1, .Ltrap_from_s
-    /* Interrupted U-mode. No root goes in: the running space already maps the kernel's half,
-       every space carrying the same level-2 entries.
-       THE INVARIANT IS RESTORED BEFORE ANY FRAME IS BUILT. A fault on the stores below would
-       re-enter this entry, whose first instruction swaps sp with sscratch, and would land the
-       nested handler on the U-mode sp. */
+    /* The sscratch invariant is restored before any frame is built: a fault on the stores below
+       would re-enter this entry, whose first instruction swaps sp with sscratch, and would land
+       the nested handler on the U-mode sp. */
     csrr    t1, sscratch            /* t1 = the interrupted user sp */
     csrw    sscratch, sp            /* sscratch = trap top: invariant restored */
     .option push
@@ -136,9 +91,8 @@ kickos_rv64_stvec:
     ld      t0, 0(t0)
     ld      t0, CTX_KERNEL_SP(t0)
     beqz    t0, .Ltrap_nokstack
-    /* Accepted: the frame and the dispatch below it go on the thread's own kernel block. sp
-       is still the trap top here, t1 carries the sp to hand back, and the originals of t0/t1
-       are at -8(sp)/-16(sp). */
+    /* sp is still the trap top, t1 carries the sp to hand back, and the originals of t0/t1 are
+       at -8(sp)/-16(sp). */
     addi    t0, t0, -FRAME
     sd      ra, F_RA(t0)            /* ra's original into the frame; ra is now scratch */
     sd      t1, F_SP(t0)            /* the sp .Lrestore srets on */
@@ -148,33 +102,25 @@ kickos_rv64_stvec:
     mv      t0, ra
     j       .Ltrap_regs             /* .Ltrap_regs stores no ra: F_RA is written above */
 
-/* A U-mode thread with no kernel block seated. The arch selects
- * ARCH_KERNEL_STACKS_MANDATORY and thread_create asserts the block, so this is a
- * provisioning bug and not a pointer the thread chose. sp is the trap top, so the report
- * spends the trusted stack.
+/* A U-mode thread with no kernel block seated: a provisioning bug, this arch selecting
+ * ARCH_KERNEL_STACKS_MANDATORY. sp is the trap top, so the report spends the trusted stack.
  */
 .Ltrap_nokstack:
     ld      t1, -16(sp)
     ld      t0, -8(sp)
     call    kickos_rv64_no_kernel_stack
 
-/* Interrupted S-mode, so the sp is the kernel's. It still needs a DECISION: a trap whose frame
- * IS a thread's saved context must stay on the sp it interrupted, which is a privileged
- * thread's own stack or the kernel block a dispatch was already descending. One cause is that:
- * any INTERRUPT, whose frame .Lintr may hand to a booked switch. Every other S-mode trap pops
- * its frame and srets, so it takes the trusted trap stack. The root is already the kernel one
- * at this level.
+/* Interrupted S-mode. An INTERRUPT stays on the sp it interrupted, its frame being one .Lintr
+ * may hand to a booked switch; every other S-mode trap pops its frame and srets and takes the
+ * trusted trap stack.
  *
- * THE INTERRUPTED sp IS TESTED AGAINST THE TRAP STACK FIRST, and this is the one path on which
- * the answer can be yes: nothing legitimate traps while running on that row. sstatus.SIE is 0
- * from the moment any trap is taken and neither the entry, the dispatch nor the reporter sets
- * it, so no interrupt lands there; ECALL-from-S is undelegated; and the privilege probe in
- * trap.S installs an stvec of its own and runs on the boot stack, never reaching here. So a
- * yes means the reporter or the dispatch itself faulted, or the row overflowed under it.
+ * The interrupted sp is tested against the trap stack first, and a yes means the reporter or
+ * the dispatch itself faulted. A no is not yet an unrelated stack: a descent past the row's
+ * bottom leaves an sp comparison cannot separate from a kernel stack lower in .bss, so the
+ * EXCEPTION leg reads the row's canary before it accepts the sp.
  */
 .Ltrap_from_s:
-    /* t0 holds sstatus and t1 the SPP test, and the originals of both are at -8(sp)/-16(sp),
-       so both are scratch here and nothing is destroyed before it is saved. */
+    /* t0 holds sstatus and t1 the SPP test; the originals of both are at -8(sp)/-16(sp). */
     csrr    t0, sscratch            /* t0 = the interrupted sp */
     sub     t0, sp, t0              /* trap top - interrupted sp */
     li      t1, KICKOS_RV64_TRAP_STACK_SIZE
@@ -183,15 +129,21 @@ kickos_rv64_stvec:
     j       .Ltrap_reentry
 1:  csrr    t0, scause
     bltz    t0, .Ltrap_from_s_ctx   /* scause[63] = 1 is an interrupt */
+    /* Read the canary: gone means the row was descended through. t0 and t1 are scratch, their
+       originals still at -8(sp)/-16(sp), and the reload below is what .Ltrap_nested's F_SP store
+       depends on. */
+    li      t0, KICKOS_RV64_TRAP_STACK_SIZE
+    sub     t0, sp, t0
+    ld      t0, 0(t0)
+    li      t1, KICKOS_RV64_TRAP_CANARY
+    bne     t0, t1, .Ltrap_reentry
     ld      t1, -16(sp)
     ld      t0, -8(sp)
     j       .Ltrap_nested
 
-/* TERMINAL, and it must EMIT before it stops: the frame this entry was about to build would be
- * the second one on a row that is already unusable. sp is still the trap-stack top, so the
- * row's low word is one subtraction away and the canary there tells an overflow from a plain
- * fault inside the reporter. Nothing below touches a stack, and a0 is clobbered because no
- * resume follows.
+/* TERMINAL, and it must EMIT before it stops. Reached from BOTH legs of .Ltrap_from_s with sp
+ * still the trap-stack top, so the row's canary is one subtraction away and picks the line.
+ * Nothing below touches a stack, and a0 is clobbered because no resume follows.
  */
 .Ltrap_reentry:
     li      t0, KICKOS_RV64_TRAP_STACK_SIZE
@@ -206,17 +158,14 @@ kickos_rv64_stvec:
 .Lreentry_msg:
     .asciz  "\r\nKickOS: a supervisor trap was taken while already on the trap stack: the fault reporter or the dispatch under it faulted\r\n"
 .Loverflow_msg:
-    .asciz  "\r\nKickOS: a supervisor trap was taken while already on the trap stack, and the row's canary is gone: the trap stack overflowed\r\n"
+    .asciz  "\r\nKickOS: a supervisor trap was taken and the trap row's canary is gone: the trap stack overflowed\r\n"
 .Ltrap_from_s_ctx:
     ld      t1, -16(sp)
     ld      t0, -8(sp)
     csrrw   sp, sscratch, sp        /* sp = interrupted sp; sscratch = trap top */
     j       .Ltrap_build
 
-/* This frame is resumed on the stack it sits on, so F_SP is its own base plus FRAME, where
- * .Ltrap_nested's names a different stack. ra is free scratch from the moment its own slot
- * is written.
- */
+/* This frame is resumed on the stack it sits on, so F_SP is its own base plus FRAME. */
 .Ltrap_build:
     addi    sp, sp, -FRAME
     sd      ra, F_RA(sp)
@@ -224,10 +173,9 @@ kickos_rv64_stvec:
     sd      ra, F_SP(sp)
     j       .Ltrap_regs
 
-/* The frame goes on the trusted trap stack and the interrupted sp is only remembered.
- * F_SP here IS the -16(sp) slot the prologue stashed t1 in, this frame starting one FRAME
- * below the trap-stack top. Sound only because .Ltrap_from_s has already reloaded that word
- * into t1; do not move the reload after this store.
+/* The frame goes on the trusted trap stack and the interrupted sp is only remembered. F_SP here
+ * IS the -16(sp) slot the prologue stashed t1 in; sound only because .Ltrap_from_s has already
+ * reloaded that word into t1, so do not move the reload after this store.
  */
 .Ltrap_nested:
     addi    sp, sp, -FRAME
@@ -269,12 +217,8 @@ kickos_rv64_stvec:
     csrr    t0, sstatus             /* SIE is 0 here: the trap cleared it */
     sd      t0, F_SSTATUS(sp)
 
-    /* gp IS U-MODE WRITABLE, so the canonical value goes in before any call and not only on
-       the way out. -msmall-data-limit=0 on the KickOS-owned archives keeps kernel DATA out of
-       small-data, but the linker still MAKES gp addressing out of any pair reaching within
-       gp +/- 0x800, so this re-anchor and not that flag is what keeps the C below from being
-       handed a gp a thread chose. Out of a word because a PC-relative materialisation of an
-       app-half symbol does not reach. */
+    /* gp is U-mode writable, so the canonical value goes in before any call. Out of a word
+       because a PC-relative materialisation of an app-half symbol does not reach. */
     .option push
     .option norelax
     ld      gp, .Lgp_anchor
@@ -287,10 +231,8 @@ kickos_rv64_stvec:
     beq     t0, t1, .Lecall
     j       .Lfault
 
-/* The psABI put nr and a0..a3 in a0..a4 at the caller and the frame holds them. The result
- * comes back in a0 alone at this width, so the arch_syscall64 pair collapses; it goes into
- * the frame because .Lrestore reloads a0 from there and a result left only in the register
- * would be discarded by sret. ecall has no compressed form, so the user return is sepc + 4.
+/* The psABI put nr and a0..a3 in a0..a4 and the frame holds them. The result goes into the
+ * frame because .Lrestore reloads a0 from there. ecall has no compressed form, so sepc + 4.
  */
 .Lecall:
     ld      a0, F_A0(sp)
@@ -305,15 +247,9 @@ kickos_rv64_stvec:
     sd      t0, F_SEPC(sp)
     j       .Lrestore
 
-/* Every interrupt cause. The depth bracket is what makes arch_in_isr honest, and it is why a
- * switch decided inside the handler is BOOKED rather than performed: performing it there would
- * save the outgoing thread's context pointing at a switch frame BELOW this one, and the global
- * depth would be decremented by whichever thread ran next.
- *
- * THE BOOKED SWAP IS THREE MEMORY ACCESSES AND NO FRAME WORK, because this frame already IS the
- * outgoing thread's saved context: .Ltrap_from_s_ctx and the U-mode accept path both put an
- * interrupt frame on a stack that outlives the trap. The outgoing context is read from
- * kickos_rv64_ctx_current rather than from anything the handler passed, so an ISR that
+/* Every interrupt cause. The depth bracket is what makes arch_in_isr honest, and a switch
+ * decided inside the handler is BOOKED: this frame already IS the outgoing thread's saved
+ * context, and the outgoing context is read from kickos_rv64_ctx_current, so an ISR that
  * rescheduled twice still saves THIS frame.
  */
 .Lintr:
@@ -350,10 +286,8 @@ kickos_rv64_stvec:
     ld      sp, CTX_SP(t1)
     j       .Lrestore
 
-/* A NON-ZERO return means fault isolation claimed this fault and the reporter has already
- * rewritten the frame's sepc, sstatus and F_SP, so the resume lands in
- * kickos_thread_fault_exit at the top of the dying thread's kernel block. On zero the
- * reporter never returns and the spin is a backstop.
+/* A non-zero return means fault isolation claimed this fault and the reporter has rewritten the
+ * frame's sepc, sstatus and F_SP. On zero the reporter never returns and the spin is a backstop.
  */
 .Lfault:
     mv      a0, sp
@@ -366,15 +300,8 @@ kickos_rv64_stvec:
  * the final sret would then jump back into this epilogue with the frame half popped.
  */
 .Lrestore:
-    /* Force gp to its canonical link-time value, the second of the two anchors: this one
-       covers the RESUME, and the one in .Ltrap_regs covers the kernel C the entry calls.
-       __global_pointer$ anchors the app's own small-data window, so a U-mode thread can write
-       gp arbitrarily and the next thread's gp-relative loads would resolve at addresses it
-       chose. Every resume funnels here, so gp is self-healing per switch.
-       tp IS THE SAME CLASS and is forced beside it: U-mode writable, absent from the frame, and
-       safe today only because no code in this port reads it. Zero is the canonical value while
-       no ARCH_HAS_TLS is selected; a thread pointer seated per thread is re-seated FROM THE
-       CONTEXT here, under #if KICKOS_TLS. */
+    /* gp and tp are both U-mode writable and absent from the frame, so every resume forces them
+       back to their canonical values. */
     .option push
     .option norelax
     ld      gp, .Lgp_anchor
@@ -418,15 +345,10 @@ kickos_rv64_stvec:
     sret
 
 /* void kickos_rv64_switch_now(struct arch_context* from, struct arch_context* to)
- * Thread context, so there is no trap frame to inherit and this one is synthesised: sepc is
- * the return address and sstatus the state to resume with, SPIE carrying the caller's SIE so
- * the sret puts back exactly the interrupt state the switch was decided under.
  *
- * THE CALLER MUST HAVE INTERRUPTS MASKED, and an enabled caller is not merely unusual here: the
- * store of `from` below is what makes this frame the outgoing thread's saved context, and
- * arch_switch has already published `to` as kickos_rv64_ctx_current. An interrupt in that
- * window reaches .Lintr with ctx_current naming `to`, and the booked swap would store a pointer
- * into `from`'s stack as `to`'s saved context.
+ * THE CALLER MUST HAVE INTERRUPTS MASKED. arch_switch has already published `to` as
+ * kickos_rv64_ctx_current, so an interrupt before the store of `from` below reaches .Lintr and
+ * books a swap that records a pointer into `from`'s stack as `to`'s saved context.
  */
     .global kickos_rv64_switch_now
 kickos_rv64_switch_now:
@@ -472,34 +394,25 @@ kickos_rv64_switch_now:
     li      t2, SSTATUS_SPP         /* SPP = supervisor: the sret stays at this level */
     or      t0, t0, t2
     sd      t0,  F_SSTATUS(sp)
-    /* `from` is the context PHYSICALLY on the CPU here, this path running in thread context
-       with interrupts masked by the caller. */
     sd      sp, CTX_SP(a0)
     ld      sp, CTX_SP(a1)
     j       .Lrestore
 
-/* void kickos_rv64_start(struct arch_context* first)
- * The boot context is abandoned, as arch.h permits: the system ends through arch_shutdown
- * and never by unwinding to boot.
- */
+/* void kickos_rv64_start(struct arch_context* first) */
     .global kickos_rv64_start
 kickos_rv64_start:
     ld      sp, CTX_SP(a0)
     j       .Lrestore
 
-/* The app's small-data anchor as a link-time word. Kernel text cannot materialise an app-half
- * address PC-relatively, the two halves being out of medany's reach of each other by
- * construction (virt_rv64.ld).
- */
+/* A link-time word: kernel text cannot reach __global_pointer$ PC-relatively. */
     .balign 8
 .Lgp_anchor:
     .quad   __global_pointer$
 
-/* arch_syscall(nr, a0, a1, a2, a3): args already in a0-a4 per the psABI. arch_syscall64 is
- * the SAME trap, a 64-bit result returning in a0 alone at this width.
+/* arch_syscall(nr, a0, a1, a2, a3): args already in a0-a4 per the psABI.
  *
- * .apptrap and not .text: virt_rv64.ld selects the kernel half by ARCHIVE, and an unprivileged
- * thread FETCHES this leaf, so it has to be linked into the app's half instead.
+ * .apptrap because an unprivileged thread FETCHES this leaf and virt_rv64.ld selects the kernel
+ * half by archive.
  */
     .section .apptrap, "ax"
     .global arch_syscall

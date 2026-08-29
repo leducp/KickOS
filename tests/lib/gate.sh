@@ -10,10 +10,9 @@
 # benign output.
 #
 # It lives in tests/lib/panic.ere, ONE line, and has two consumers: this file and the root
-# CMakeLists, which registers it as a ctest FAIL_REGULAR_EXPRESSION. Every caller lives one
-# level below tests/ and sources this file as ../lib/gate.sh, so the data file sits beside
-# it. Read once, and REFUSE an empty result: an empty ERE matches nothing, so every panic
-# gate in the suite would silently stop failing.
+# CMakeLists, which registers it as a ctest FAIL_REGULAR_EXPRESSION. Read once, and REFUSE an
+# empty result: an empty ERE matches nothing, so every panic gate in the suite would silently
+# stop failing.
 KOS_PANIC_RE="$(cat "$(dirname "$0")/../lib/panic.ere")"
 if [ -z "$KOS_PANIC_RE" ]; then
     echo "FAIL: tests/lib/panic.ere is empty or unreadable; every panic gate would pass" >&2
@@ -67,6 +66,110 @@ tool_out() { # <outfile> <landmark-ere, empty for success-only> <tool> <arg>...
     fi
 }
 
+# HOW AN IMAGE IS HANDED TO THE EMULATOR, per board, into KOS_BOOT_ARGS as a word list the
+# two runners below leave unquoted. The default is `-semihosting -kernel <elf>`.
+#
+# KICKOS_BOOT=uefi-pe is x86_64, and -kernel cannot start that image at all: firmware loads a
+# PE32+ UEFI application, so the image goes into an EFI system partition and boots off the
+# removable-media fallback path. Three things are per run. The ESP is rebuilt from the image
+# UNDER TEST, because a stale BOOTX64.EFI left in a reused volume boots instead and prints the
+# same banner. The variable store is copied, because the shipped one is root-owned and
+# read-only and firmware writes to it. And -no-reboot is not cosmetic: an absent or malformed
+# interrupt table triple-faults, which RESETS the machine, so without it the run loops instead
+# of ending.
+#
+# The scratch lives beside the image and not under /tmp: it is tens of megabytes, and the
+# gates that use it also call scratch_dir(), whose EXIT trap would replace any trap set here.
+KOS_OVMF_CODE="${KICKOS_OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
+KOS_OVMF_VARS="${KICKOS_OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
+
+boot_args() { # <image>
+    if [ "${KICKOS_BOOT:-kernel}" != "uefi-pe" ]; then
+        KOS_BOOT_ARGS="-semihosting -kernel $1"
+        return
+    fi
+    for _t in dd mformat mmd mcopy mdir; do
+        if ! command -v "$_t" >/dev/null 2>&1; then
+            echo "SKIP: $_t not found (Debian: mtools, coreutils)"
+            exit 77
+        fi
+    done
+    if [ ! -f "$KOS_OVMF_CODE" ] || [ ! -f "$KOS_OVMF_VARS" ]; then
+        echo "SKIP: no UEFI firmware at $KOS_OVMF_CODE / $KOS_OVMF_VARS (Debian: ovmf)"
+        exit 77
+    fi
+    KOS_BOOT_DIR="$1.boot"
+    rm -rf "$KOS_BOOT_DIR"
+    mkdir -p "$KOS_BOOT_DIR" || fail "cannot create $KOS_BOOT_DIR"
+    "$(dirname "$0")/../../tools/esp-x86_64.sh" "$1" "$KOS_BOOT_DIR/esp.img" >/dev/null \
+        || fail "could not build the EFI system partition for $1"
+    cp "$KOS_OVMF_VARS" "$KOS_BOOT_DIR/vars.fd" || fail "cannot copy $KOS_OVMF_VARS"
+    chmod u+w "$KOS_BOOT_DIR/vars.fd" || fail "cannot make $KOS_BOOT_DIR/vars.fd writable"
+    KOS_BOOT_ARGS="-m 512 -net none -no-reboot \
+-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+-drive format=raw,file=$KOS_BOOT_DIR/esp.img \
+-drive if=pflash,format=raw,unit=0,readonly=on,file=$KOS_OVMF_CODE \
+-drive if=pflash,format=raw,unit=1,file=$KOS_BOOT_DIR/vars.fd"
+}
+
+# The status line an image prints for itself, as a sed BRE with the number in \1. Restated from
+# arch/x86/chip/q35/chip_q35.cc on purpose: a parse derived from the emitter would assert
+# nothing about it. Anchored, because an unanchored match would also take a line quoting it.
+# Deliberately not banner-shaped: tests/static/check_panic_banners.sh reads a `=== x ===`
+# literal as a fault reporter's marker and would demand panic.ere match an ordinary exit.
+KOS_EXIT_LINE_RE='KICKOS-EXIT status \([0-9][0-9]*\)'
+
+# KOS_STATUS: the image's OWN exit status, out of whatever the machine reports.
+#
+# THE WHOLE MECHANISM IS GATED ON KICKOS_BOOT=uefi-pe. Only the x86_64 posture has a status
+# channel too narrow to carry a byte: isa-debug-exit reports (status << 1) | 1 into an 8-bit
+# process exit code, so only 0 through 127 round-trip and 139 arrives as 11. Every other board's
+# emulator reports the image's status directly, and below this gate they take the raw status
+# untouched.
+#
+# THE TWO CHANNELS CROSS-CHECK, and neither is trusted alone. On the gated posture the console is
+# polled and the image runs an unprivileged thread that can write kernel memory, so a printed
+# line is a claim an application could make about itself; the device write is privileged and its
+# code comes from the emulator. So the printed value is used only where the device corroborated
+# it: the recovery must equal the printed status modulo 128. A printed line with NO device report
+# is refused rather than believed, which also catches a run configured without the device.
+#
+# The timeout code is never overridden: an image killed for making no progress must read as
+# killed, and a status line it printed before the kill is exactly what would hide that.
+#
+# NEITHER CHANNEL MOVES THE RAW STATUS ALONE, and the console must speak first: arch_shutdown
+# prints the line before it writes the device, so a device report with no line on the wire is
+# not this image exiting. An emptiness test does not catch that: run_image folds QEMU's own
+# stderr into this argument, so only a SILENT failure ever had an empty one.
+#
+# Sets a variable rather than printing: a caller's `$(boot_status ...)` would confine fail()
+# to a subshell, so a disagreement would be reported and then discarded.
+boot_status() { # <raw status> <output>
+    KOS_STATUS="$1"
+    if [ "$1" -eq 124 ]; then
+        return
+    fi
+    if [ "${KICKOS_BOOT:-kernel}" != "uefi-pe" ]; then
+        return
+    fi
+    _printed="$(printf '%s\n' "$2" | sed -n "s/^$KOS_EXIT_LINE_RE\$/\1/p" | tail -n1)"
+    if [ -z "$_printed" ]; then
+        return
+    fi
+    # The device encodes (status << 1) | 1, so every report it makes is odd.
+    if [ $(($1 % 2)) -ne 1 ]; then
+        fail "the image printed status $_printed and the exit device reported nothing (raw $1):
+  the printed line is not corroborated, so it is not used"
+    fi
+    _recovered="$((($1 - 1) / 2))"
+    if [ "$_recovered" -ne "$((_printed % 128))" ]; then
+        fail "the image printed status $_printed, whose low seven bits are $((_printed % 128)),
+  but the exit device reported $_recovered (raw $1): one of the two is broken
+  (arch_shutdown's status line, or this recovery)"
+    fi
+    KOS_STATUS="$_printed"
+}
+
 # QEMU_BIN: the emulator this board needs. Exit 77 -> CTest SKIP (not PASS), so a
 # QEMU-less box cannot green-light a boot gate. Not a command substitution: the exit
 # has to leave the SCRIPT, not a subshell.
@@ -94,15 +197,18 @@ need_qemu_machine() {
 run_image() {
     if [ -n "${QEMU_MACHINE:-}" ]; then
         need_qemu
-        # QEMU_EXTRA is a word list (e.g. `-bios none`), so it must split.
+        boot_args "$1"
+        # QEMU_EXTRA and KOS_BOOT_ARGS are word lists (e.g. `-bios none`), so they must split.
         # shellcheck disable=SC2086
         OUT="$(timeout "${QEMU_TIMEOUT:-20}" "$QEMU_BIN" -M "$QEMU_MACHINE" ${QEMU_EXTRA:-} \
-                 -nographic -semihosting -kernel "$1" 2>&1)"
+                 -nographic ${KOS_BOOT_ARGS} 2>&1)"
     else
         OUT="$(timeout "${SIM_TIMEOUT:-20}" "$1" 2>&1)"
     fi
     RC=$?
     OUT="$(printf '%s\n' "$OUT" | tr -d '\r')"
+    boot_status "$RC" "$OUT"
+    RC="$KOS_STATUS"
     printf '%s\n' "$OUT"
 }
 
@@ -116,10 +222,11 @@ poll_image() { # <elf> <ere>...
     _log="$(mktemp)" || fail "mktemp failed"
     if [ -n "${QEMU_MACHINE:-}" ]; then
         need_qemu
-        # QEMU_EXTRA is a word list (e.g. `-bios none`), so it must split.
+        boot_args "$_elf"
+        # QEMU_EXTRA and KOS_BOOT_ARGS are word lists (e.g. `-bios none`), so they must split.
         # shellcheck disable=SC2086
         "$QEMU_BIN" -M "$QEMU_MACHINE" ${QEMU_EXTRA:-} \
-            -nographic -semihosting -kernel "$_elf" >"$_log" 2>&1 &
+            -nographic ${KOS_BOOT_ARGS} >"$_log" 2>&1 &
     else
         "$_elf" >"$_log" 2>&1 &
     fi
@@ -180,4 +287,148 @@ reported_fault_addr() {
 # the wording, and four gates pin it through here.
 thread_fault_re() { # <thread-name>
     printf "=== THREAD FAULT === thread '%s' killed" "$1"
+}
+
+# WHAT THE RV64 FAULT GATES SHARE. Each caller keeps its own markers, its own scause constant,
+# its own address and the prose every refusal here prints.
+#
+# The image is expected to fault, so an `ERROR:` line is the image failing to arrange the fault
+# rather than the fault under test. OUT and RC carry the run, as after run_image.
+run_faulting_image() { # <image>
+    need_qemu_machine
+    run_image "$1"
+    if has "ERROR:"; then
+        printf '%s\n' "$OUT" | grep 'ERROR:'
+        fail "the image reported a failure instead of faulting"
+    fi
+}
+
+# WHAT THE THREE HELPERS BELOW REFUSE BEFORE THEY ASSERT ANYTHING. `[ "" -ne 139 ]` is an ERROR
+# in test(1) and not a false condition, and `grep -F -e ""` matches every line, so an empty
+# marker and an empty count each turn a refusal into a pass.
+require_number() { # <value> <what>
+    case "$1" in
+        ''|*[!0-9]*) fail "$2 must be a decimal number, got [$1]" ;;
+    esac
+}
+
+require_literal() { # <value> <what>
+    if [ -z "$1" ]; then
+        fail "$2 is empty, so every line of the run would match it"
+    fi
+}
+
+# KOS_COUNT: occurrences of a LITERAL in OUT. grep exits 1 for no match and above 1 for a
+# failure of its own, which prints no count at all; taking that for a zero is what lets a
+# broken invocation read as an absence the caller then judges.
+count_literal() { # <literal>
+    _cl_n="$(printf '%s\n' "$OUT" | grep -c -F -e "$1")"
+    _cl_rc=$?
+    if [ "$_cl_rc" -gt 1 ]; then
+        fail "exit $_cl_rc from grep -F -e '$1': the count is UNKNOWN and not zero"
+    fi
+    require_number "$_cl_n" "the count of '$1'"
+    KOS_COUNT="$_cl_n"
+}
+
+# KOS_FIELD_N: occurrences of a record `<name>=<value>` in <text>, the value WHOLE. A
+# substring count reads `scause=0xdead` as a hit for `scause=0xd` and `ADDR=0x80201000` as a hit
+# for `ADDR=0x8020100`. The value ends at the first character that could not continue it, or at
+# end of line.
+#
+# A name or value carrying anything but an identifier character REFUSES rather than being
+# escaped.
+field_count() { # <text> <name> <value>
+    require_literal "$2" "the field name"
+    require_literal "$3" "the field value"
+    case "$2$3" in
+        *[!0-9A-Za-z_]*)
+            fail "the field record '$2=$3' holds a character this matcher does not model, so
+      its count is UNKNOWN and not zero" ;;
+    esac
+    _fc_n="$(printf '%s\n' "$1" | grep -c -E "(^|[^0-9A-Za-z_])$2=$3([^0-9A-Za-z_]|\$)")"
+    _fc_rc=$?
+    if [ "$_fc_rc" -gt 1 ]; then
+        fail "exit $_fc_rc from grep while counting '$2=$3': the count is UNKNOWN and not zero"
+    fi
+    require_number "$_fc_n" "the count of '$2=$3'"
+    KOS_FIELD_N="$_fc_n"
+}
+
+# The same count over OUT.
+count_field() { # <name> <value>
+    field_count "$OUT" "$1" "$2"
+    KOS_COUNT="$KOS_FIELD_N"
+}
+
+# The matcher, before it is asked to report an absence. Both directions, because only one of
+# them is the defect: a planted record must count ONCE for its own value and NOT AT ALL for a
+# value it merely begins with. A prefix matcher passes the first control and fails the second.
+field_matcher_control() {
+    _fmc="  PC=0x80001234 scause=0xdead
+  ADDR=0x80201000"
+    field_count "$_fmc" ADDR 0x80201000
+    [ "$KOS_FIELD_N" -eq 1 ] \
+        || fail "the field matcher counted $KOS_FIELD_N hit(s) for the address a planted
+      record names, so it cannot find the record the assertions below rest on"
+    field_count "$_fmc" ADDR 0x8020100
+    [ "$KOS_FIELD_N" -eq 0 ] \
+        || fail "the field matcher counts a planted ADDR=0x80201000 as a hit for
+      ADDR=0x8020100, so a fault at a longer address passes as the address asserted"
+    field_count "$_fmc" scause 0xdead
+    [ "$KOS_FIELD_N" -eq 1 ] \
+        || fail "the field matcher counted $KOS_FIELD_N hit(s) for the cause a planted record
+      names"
+    field_count "$_fmc" scause 0xd
+    [ "$KOS_FIELD_N" -eq 0 ] \
+        || fail "the field matcher counts a planted scause=0xdead as a hit for scause=0xd, so
+      a fault with a longer cause code passes as the cause asserted"
+    field_count "$_fmc" ADDR 0x80201001
+    [ "$KOS_FIELD_N" -eq 0 ] \
+        || fail "the field matcher reports an address the planted record does not carry"
+}
+
+# Exactly ONE occurrence of a gate's fault-dump marker. The absence prose is the caller's,
+# because what a missing dump means is the whole of what that gate asserts; a second occurrence
+# is a repeated fault and says the same thing everywhere.
+#
+# Never a control marker: a control's absence and its repetition are two different findings.
+# check_aspace_ufault_rv64.sh asserts its control on its own lines.
+require_single_marker() { # <marker> <absence-prose>
+    require_literal "$1" "the fault-dump marker"
+    count_literal "$1"
+    if [ "$KOS_COUNT" -eq 0 ]; then
+        fail "fault-dump marker '$1' missing: $2"
+    fi
+    if [ "$KOS_COUNT" -ne 1 ]; then
+        fail "fault-dump marker '$1' appeared $KOS_COUNT times"
+    fi
+}
+
+# The three assertions an RV64 fault record carries: the address the caller computed, the cause
+# the caller spells out as a scause constant, and the image's exit status. Every refusal prints
+# the record's own lines first. Each field is matched WHOLE, through field_count above, whose
+# control runs here before any of the three is judged.
+#
+# scause is the whole of what this architecture publishes about the access: no fault-status
+# field and no level field sits beside it (RISC-V Privileged ISA, Supervisor Cause Register).
+require_rv64_fault_at() { # <addr-hex> <addr-prose> <scause-hex> <cause-prose> <expect-status>
+    require_literal "$1" "the faulting address"
+    require_literal "$3" "the scause constant"
+    require_number "$5" "the expected exit status"
+    require_number "$RC" "the status the run reported"
+    field_matcher_control
+    count_field ADDR "0x$1"
+    if [ "$KOS_COUNT" -eq 0 ]; then
+        printf '%s\n' "$OUT" | grep -E 'ADDR=|scause='
+        fail "the record faults somewhere other than 0x$1, $2"
+    fi
+    count_field scause "$3"
+    if [ "$KOS_COUNT" -eq 0 ]; then
+        printf '%s\n' "$OUT" | grep -E 'scause='
+        fail "the cause is not $4"
+    fi
+    if [ "$RC" -ne "$5" ]; then
+        fail "expected exit $5, got $RC"
+    fi
 }

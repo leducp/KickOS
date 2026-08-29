@@ -1,20 +1,12 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The kos_panic wire gate: one source, five images, because a run observes one panic.
-# Diagnostic app (KICKOS_ENABLE_SELFTEST only). Board-agnostic: pure syscall, no MMIO,
-# no arena spend.
-#
-# Every posture, MPU or not: case 3 turns on the kernel refusing to dereference an address
-# the caller cannot reach, which the non-enforcing arm of arch_user_text_readable answers on
-# every board's default posture.
-
-# Two spellings of each verdict: the CTest regex (sim) and the literal the QEMU script
-# greps with -F.
+# Two spellings of each verdict: the CTest regex (sim) and the literal the QEMU script greps
+# with -F. Keep them in step.
 set(_pg_re_1 "KERNEL PANIC: \\[panicgate\\] message on the wire")
 set(_pg_txt_1 "KERNEL PANIC: [panicgate] message on the wire")
-# Cases 2 and 3 are the only ones whose text the KERNEL supplies, so they are the only
-# ones KICKOS_DIAG_TERSE rewrites: kUserPanicNoMsg is P08 in diag.h.
+# Cases 2 and 3 are the only ones whose text the KERNEL supplies, so the only ones
+# KICKOS_DIAG_TERSE rewrites: kUserPanicNoMsg is P08 in diag.h.
 if(KICKOS_DIAG_TERSE)
   set(_pg_re_2 "KERNEL PANIC: P08")
   set(_pg_txt_2 "KERNEL PANIC: P08")
@@ -40,7 +32,7 @@ foreach(_case 1 2 3 4 5)
     SOURCES main.cc
     BOARD   ${KICKOS_BOARD})
   if(NOT TARGET panicgate${_case})
-    return() # diagnostics off -> not built; skip the tests
+    return()
   endif()
   target_compile_definitions(panicgate${_case} PRIVATE KICKOS_PANICGATE_CASE=${_case})
 
@@ -73,6 +65,16 @@ foreach(_case 1 2 3 4 5)
   elseif(KICKOS_BOARD STREQUAL "qemu-riscv64")
     kickos_add_qemu_test(NAME qemu_riscv64_panicgate${_case}
       TARGET panicgate${_case} BOARD qemu-riscv64
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_panicgate.sh"
+      ARGS "${_pg_txt_${_case}}" "${_pg_absent_${_case}}")
+  elseif(KICKOS_BOARD STREQUAL "qemu-arm64")
+    kickos_add_qemu_test(NAME qemu_arm64_panicgate${_case}
+      TARGET panicgate${_case} BOARD qemu-arm64
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_panicgate.sh"
+      ARGS "${_pg_txt_${_case}}" "${_pg_absent_${_case}}")
+  elseif(KICKOS_BOARD STREQUAL "qemu-x86_64")
+    kickos_add_qemu_test(NAME qemu_x86_64_panicgate${_case}
+      TARGET panicgate${_case} BOARD qemu-x86_64
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_panicgate.sh"
       ARGS "${_pg_txt_${_case}}" "${_pg_absent_${_case}}")
   endif()

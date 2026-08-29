@@ -3,12 +3,13 @@
 
 #include <kickos/reent.h>
 
-#if !KICKOS_ARCH_SIM
+#if KICKOS_LIBC_REENT
 
 #include <kickos/kruntime.h>
 #include <kickos/aspace.h>
+#include <kickos/kernel.h>
 
-#if defined(KICKOS_ENABLE_SELFTEST)
+#if defined(KICKOS_ENABLE_SELFTEST) or KICKOS_HAVE_ASPACE
 #include <kickos/sched.h>
 #endif
 
@@ -16,27 +17,15 @@ namespace kickos
 {
     namespace
     {
-        // THE KERNEL'S OWN COPY, and the reason the descriptor is a seam rather than a
-        // direct read. Everything below answers out of this, so the linker split has only
-        // to change what fills it.
         KickosReentSeam s_seam = {};
 
-        // A LINK-TIME WORD, at namespace scope: the descriptor is app-half storage, and kernel
-        // text materialising an app-half address on a split image links SILENTLY, so two gates
-        // and not the link refuse it (tests/static/check_riscv_kernel_apphalf.sh and
-        // check_riscv_kernel_gp.sh). A local volatile stops the VALUE being folded and not the
-        // address being materialised inline.
+        // At namespace scope and volatile: a local volatile would stop the value folding but not
+        // the address being materialised inline, which two gates refuse
+        // (tests/static/check_riscv_kernel_apphalf.sh, check_riscv_kernel_gp.sh).
         KickosReentSeam const* const volatile s_seam_home = &kickos_reent_seam;
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-        // Writes to the app half made for a thread whose memory view is not installed. The
-        // check sits HERE and the guard sits in the switch path, so a guard that stops
-        // guarding is counted rather than silently correct.
-        //
-        // WHAT IT WITNESSES IS WEAKER SINCE THE WRITES WENT THROUGH THE kaccess SEAM: the seam
-        // reaches the space it is HANDED, so such a write no longer lands in whichever process
-        // was installed last. It stays because the switch path's guard also covers the thread
-        // that has no space at all, where there is nothing to write into.
+        // Writes to the app half made for a thread whose memory view is not installed.
         size_t s_unseated_writes = 0;
 
         void note_write(void)
@@ -58,10 +47,8 @@ namespace kickos
 
     void reent_seam_read(void)
     {
-        // THROUGH A LINK-TIME WORD, AND THROUGH THE KERNEL'S OWN ALIAS OF THOSE BYTES where
-        // the image is split: the descriptor is app-side storage read before any address
-        // space exists, so its own virtual address names nothing yet on a backend whose app
-        // window is not linked where it loads.
+        // Through the kernel's own alias where the image is split: the descriptor is app-side
+        // storage read before any address space exists.
         KickosReentSeam const* src = s_seam_home;
 #if KICKOS_HAVE_ASPACE
         KickosReentSeam const* const alias =
@@ -86,25 +73,21 @@ namespace kickos
 
     void reent_prime(struct arch_aspace* space, void* state)
     {
-        // THE PRISTINE IMAGE IS THE PROCESS-WIDE STATE ITSELF, which is why the seam needs
-        // no template of its own. libc statically initialises it (_impure_data, a .data
-        // object whose only relocations point at the shared __sf), so it holds exactly the
-        // post-boot contents a slot must be brought to, with no pointer into itself that a
-        // byte copy would carry to the wrong owner.
-        //
-        // WHAT KEEPS IT PRISTINE is that no thread which uses libc is ever seated on it:
-        // reent_state_for_slot hands it out only for a TCB outside the pool, which is idle,
-        // and idle holds no capability and runs arch_idle_wait alone. Seating it on a thread
-        // that prints would make every later prime inherit that thread's leftovers.
+        // s_seam.shared MUST stay pristine: reent_state_for_slot hands it out only for a TCB
+        // outside the pool, and seating it on a thread that prints would make every later
+        // prime inherit that thread's leftovers.
 #if defined(KICKOS_ENABLE_SELFTEST)
         note_write();
 #endif
 #if KICKOS_HAVE_ASPACE
-        // BOTH ENDS ARE APP-HALF IN ONE SPACE, which is ep_copy's shape and not
-        // kaccess_to_user's. Disjoint, as one space requires: the slot array and the
-        // process-wide state are different objects.
-        ep_copy(space, reinterpret_cast<uintptr_t>(state), space,
-                reinterpret_cast<uintptr_t>(s_seam.shared), s_seam.stride);
+        // Both ends are app-half in one space, which is ep_copy's shape. They must be
+        // disjoint, as one space requires: the slot array and the process-wide state are
+        // different objects.
+        if (not ep_copy(space, reinterpret_cast<uintptr_t>(state), space,
+                        reinterpret_cast<uintptr_t>(s_seam.shared), s_seam.stride))
+        {
+            thread_cancel_escalate(sched::current(), CANCEL_SLAY);
+        }
 #else
         (void)space;
         kmemcpy(state, s_seam.shared, s_seam.stride);
@@ -113,21 +96,21 @@ namespace kickos
 
     void reent_seat(struct arch_aspace* space, void* state)
     {
-        // IT IS A COPY AND NOT A STORE, for the two reasons reent.h gives.
 #if defined(KICKOS_ENABLE_SELFTEST)
         note_write();
 #endif
 #if KICKOS_HAVE_ASPACE
-        kaccess_to_user(space, reinterpret_cast<uintptr_t>(s_seam.seat), &state,
-                        sizeof(state));
+        // A silent refusal here leaves the seat word naming the outgoing thread's block, so
+        // two processes resolve one errno and one stdio state through it.
+        if (not kaccess_to_user(space, reinterpret_cast<uintptr_t>(s_seam.seat), &state,
+                                sizeof(state)))
+        {
+            thread_cancel_escalate(sched::current(), CANCEL_SLAY);
+        }
 #else
-        // __builtin_memcpy AND NOT kmemcpy, THE ONE PLACE IN THE KERNEL THAT SPELLS IT SO.
-        // The build is -ffreestanding, so the ordinary name is never expanded and a
-        // pointer-width copy would lower to a CALL on every switch; the builtin spelling is
-        // expanded regardless and leaves this a leaf. The alignment hint is the other half:
-        // the descriptor carries the word as void*, which discards what the app knew, and an
-        // unaligned pointer-width copy is a call again. The seam route above is a call by
-        // construction and this reason does not reach it.
+        // -ffreestanding, so the ordinary memcpy name is never expanded and a pointer-width
+        // copy would lower to a call on every switch. The descriptor carries the word as
+        // void*, hence the alignment hint.
         (void)space;
         void** const word =
             static_cast<void**>(__builtin_assume_aligned(s_seam.seat, sizeof(void*)));

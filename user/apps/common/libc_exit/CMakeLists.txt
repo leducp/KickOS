@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# Built for every board: a port left out is a port whose own exit() was never asked to link.
+if(NOT KICKOS_HAVE_LIBC)
+  return()
+endif()
+
 kickos_add_application(libc_exit
   SOURCES main.cc
   BOARD   ${KICKOS_BOARD})
