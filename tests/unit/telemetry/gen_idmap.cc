@@ -46,6 +46,8 @@ int main()
         KOS_SYS_TASK_KILL, KOS_SYS_THREAD_SLAY, KOS_SYS_TASK_SLAY, KOS_SYS_BENCH,
         KOS_SYS_CALL_REG, KOS_SYS_IPC_FAST_TAKEN, KOS_SYS_NEST_WITNESS,
         KOS_SYS_ASPACE_PROBE,
+    KOS_SYS_FRAME_MAP,
+    KOS_SYS_FRAME_UNMAP,
     };
     for (kos_syscall_nr s : calls)
     {

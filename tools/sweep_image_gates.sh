@@ -230,6 +230,12 @@ emulator_for() {
     if [ "$1" = qemu-arm64 ]; then
         echo qemu-system-aarch64
     fi
+    # Without this row the board falls to the no-emulator branch below and is reported as
+    # needing SILICON, which files it beside the boards that really do and hides every image
+    # gate it declares.
+    if [ "$1" = qemu-x86_64 ]; then
+        echo qemu-system-x86_64
+    fi
 }
 
 # census <preset> <tree> <tag>

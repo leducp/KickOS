@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The CAPABILITY ABI as it stood at 83fe2ed9, the merge of M6.4 and the commit M6.5 starts
+# from. tests/static/check_cap_sigdiff.sh compares the working tree against this file and
+# tests/static/cap_seam_family.awk declares what a member is; the driver and the record
+# format are documented in tests/lib/signature_diff.sh.
+#
+# REGENERATING THIS FILE DELETES THE FINDING THE GATE EXISTS TO PRODUCE. M6.5's expected
+# result is that frame and page-table objects enter the capability layer with NO new
+# addressing concept in it, and this file is the only thing that claim is measured against.
+# KOS_SIGDIFF_REGEN=1 rewrites it and takes no verdict; use it only in the commit that
+# deliberately moves a member, never to quiet a red gate.
+#
+# Four TAB-separated fields per record: <kind> <name> <detail> <preprocessor guard>.
+ENUMERATOR	KOS_AUTH_CONSOLE	= 32	-
+ENUMERATOR	KOS_AUTH_IRQ	= 8	-
+ENUMERATOR	KOS_AUTH_MEMORY	= 1	-
+ENUMERATOR	KOS_AUTH_PINMUX	= 2	-
+ENUMERATOR	KOS_AUTH_PSTATE	= 4	-
+ENUMERATOR	KOS_AUTH_SYSTEM	= 16	-
+ENUMERATOR	KOS_CAP_CLOCK	= 1	-
+ENUMERATOR	KOS_CAP_FIRST_DYNAMIC	= expr:KICKOS_CAP_FIRST_DYNAMIC	-
+ENUMERATOR	KOS_CAP_SIGNAL	= 2	-
+ENUMERATOR	KOS_CAP_STDOUT	= 0	-
+ENUMERATOR	KOS_CAP_TRANSFER	= 4	-
+ENUMERATOR	KOS_CAP_WAIT	= 1	-
+ENUMERATOR	KOS_SYS_CAP_NARROW	= 40	-
+ENUMERATOR	KOS_SYS_FRAME_MAP	= 60	-
+ENUMERATOR	KOS_SYS_FRAME_UNMAP	= 61	-
+ENUMERATOR	KOS_SYS_HANDLE_CLOSE	= 17	-
+MACRO	KOS_CAP_AUTHORITY	= 2147483647	-
+MACRO	KOS_CAP_NONE	= 4294967295	-
+MACRO	KOS_SPAWN_DELEGATED_CAP0	= 1	-
+TAG	kos_cap_authority	enum complete	-
+TAG	kos_cap_grant	struct complete kos_cap_t source_cap; uint8_t rights_mask;	-
+TAG	kos_cap_index	enum complete	-
+TAG	kos_cap_rights	enum complete	-
+TYPEDEF	kos_cap_t	uint32_t	-

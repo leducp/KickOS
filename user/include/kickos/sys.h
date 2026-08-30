@@ -457,4 +457,13 @@ int32_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1);
 }
 #endif
 
+
+// C2: map the frame RUN a capability names into the address space another names, at the
+// address the caller chooses. Needs KOS_AUTH_MEMORY. `flags` is KOS_MEM_*; 0 is Normal
+// memory. Returns 0 or a negative KOS_E*.
+int kos_frame_map(kos_cap_t frame, kos_cap_t space, uintptr_t va, uint32_t flags);
+
+// The inverse, and only for a range that arrived through kos_frame_map.
+int kos_frame_unmap(kos_cap_t frame, kos_cap_t space, uintptr_t va);
+
 #endif

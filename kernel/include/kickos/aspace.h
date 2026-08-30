@@ -73,6 +73,20 @@ namespace kickos
     // offset between frames: comparable across spaces, and nothing else may be read out of it.
     uintptr_t aspace_frame_token(struct arch_aspace* space, uintptr_t va);
 
+    // C2's map: put a frame RUN a capability names into `space` at the address the holder
+    // chose. The range is recorded BORROWED, because the frames belong to the capability and
+    // come back when its last holder drops it, so this space must free nothing at teardown.
+    // -KOS_ENOMEM when the space cannot take the range there, -KOS_EINVAL on a bad shape.
+    int aspace_cap_map(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
+                       int run_obj, arch_phys_addr_t base, uint32_t pages, uint32_t rights,
+                       enum arch_map_memtype type);
+
+    // C2's unmap: take that range back out, and surrender the mapping's reference. -KOS_EPERM
+    // unless the range at `va` was placed by aspace_cap_map AND names `run_obj`. Matching a
+    // page count instead accepts the image and every F10 handoff, which carry VR_BORROWED too.
+    int aspace_cap_unmap(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
+                         int run_obj, arch_phys_addr_t base);
+
     // F10's handoff: map the donor's reservation into `space` at the same virtual address and
     // record it borrowed, so the target unmaps and frees nothing. -KOS_EPERM when the donor
     // holds no such range, -KOS_ENOMEM when the target cannot take it there. `base` must be a

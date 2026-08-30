@@ -205,9 +205,20 @@ enum kos_syscall_nr
                                //   whose calls all take the generic path.
     KOS_SYS_NEST_WITNESS = 58, // (which) -> one nested-trap counter (self-test only), or
                                //   KOS_NEST_UNSET for a figure nothing recorded.
-    KOS_SYS_ASPACE_PROBE = 59  // (op, a1) -> per-op (see enum kos_aspace_op), or -KOS_EINVAL
+    KOS_SYS_ASPACE_PROBE = 59, // (op, a1) -> per-op (see enum kos_aspace_op), or -KOS_EINVAL
                                //   for a bad op and -KOS_ENOSYS on a board that describes
                                //   regions instead of translating (self-test only).
+    KOS_SYS_FRAME_MAP = 60,    // (frame cap, address-space cap, virtual address, KOS_MEM_*)
+                               //   -> 0, or -KOS_EPERM without AUTH_MEMORY or on a cap that
+                               //   does not resolve, -KOS_EINVAL on a misaligned address,
+                               //   -KOS_ENOMEM when the space cannot take the range there.
+                               //   The ADDRESS is an argument and never a field: no struct
+                               //   here carries one, which is what keeps it out of the
+                               //   capability ABI's own records (C1).
+    KOS_SYS_FRAME_UNMAP = 61   // (frame cap, address-space cap, virtual address) -> 0, or
+                               //   -KOS_EPERM for a range this space did not take through
+                               //   KOS_SYS_FRAME_MAP, which is what stops one holder
+                               //   revoking another's mapping.
 };
 
 // `op` selector for KOS_SYS_ASPACE_PROBE (self-test only). Values are a frozen contract:
@@ -290,12 +301,49 @@ enum kos_aspace_op
                                  //   word is not the one the kernel seeded, which means the
                                  //   caller's read did not reach that frame. The caller's next
                                  //   read of the address must fault
-    KOS_ASPACE_OP_ACQUIRE_DUP = 24 // () -> the KOS_ASPACE_DUP_* bits that held for two
+    KOS_ASPACE_OP_ACQUIRE_DUP = 24, // () -> the KOS_ASPACE_DUP_* bits that held for two
                                  //   simultaneous acquires of ONE page, or 0 where the
                                  //   scenario could not be built
+    KOS_ASPACE_OP_CAP_OBJECTS = 25, // () -> the KOS_ASPACE_CAPOBJ_* bits that held for the
+                                 //   two object kinds M6.5 adds to the capability layer, a
+                                 //   frame RUN and an address space: minted into the caller's
+                                 //   own table, resolved back through the chokepoint, and
+                                 //   closed. Every bit answers about a HANDLE and none of
+                                 //   them is an address, which is C1's own claim
+    KOS_ASPACE_OP_CAP_SEED = 26, // () -> a frame capability in the low 32 bits and an
+                                 //   address-space capability naming the CALLER's own space
+                                 //   in the high 32, both minted into the caller's table, or
+                                 //   0 when either could not be. C2's scaffolding: there is no
+                                 //   user-facing mint yet, and the arm drives the REAL
+                                 //   kos_frame_map and kos_frame_unmap syscalls on these
+    KOS_ASPACE_OP_CAP_SEED_VA = 27, // () -> a page-aligned virtual address the seeded run may
+                                 //   be mapped at, which nothing in the caller's space names
+    KOS_ASPACE_OP_CAP_SELF_SPACE = 28, // () -> an address-space capability naming the CALLER's
+                                 //   OWN space, minted into its table, or 0. A child task
+                                 //   needs one for its own space and holds no other way to
+                                 //   name it
+    KOS_ASPACE_OP_CAP_RUN_REFS = 29 // () -> how many holders the last seeded frame RUN has,
+                                 //   capabilities and MAPPINGS alike. A mapping is a holder:
+                                 //   without that the last capability's drop frees frames a
+                                 //   live leaf still points at
 };
 
 // KOS_ASPACE_OP_SPLIT_ACCESS: one bit per property of an access split at a page boundary.
+/* KOS_ASPACE_OP_CAP_OBJECTS: one bit per property of the two kinds C1 adds. The frames a run
+   holds are the only thing here a number could leak, and none of these bits is one: every bit
+   answers yes or no about a HANDLE, which is what C1 claims the capability layer deals in. */
+#define KOS_ASPACE_CAPOBJ_FRAME_MINT    0x01u /* a frame-run capability installed in this table */
+#define KOS_ASPACE_CAPOBJ_FRAME_RESOLVE 0x02u /* it resolved back to the run that was minted */
+#define KOS_ASPACE_CAPOBJ_ASPACE_MINT   0x04u /* an address-space capability installed */
+#define KOS_ASPACE_CAPOBJ_ASPACE_HOLD   0x08u /* minting it took a hold on the domain */
+#define KOS_ASPACE_CAPOBJ_ASPACE_STALE  0x10u /* a handle whose slot was reclaimed does NOT resolve */
+#define KOS_ASPACE_CAPOBJ_CLOSE_FRAMES  0x20u /* closing the frame cap returned its frames */
+#define KOS_ASPACE_CAPOBJ_CLOSE_HOLD    0x40u /* closing the space cap surrendered the hold */
+#define KOS_ASPACE_CAPOBJ_BALANCED      0x80u /* the pool and the hold count are back where they began */
+#define KOS_ASPACE_CAPOBJ_NO_REFUSED   0x100u /* the pool refused no free during the probe. A frame
+                                                 handed back twice leaves the free COUNT balanced
+                                                 and is visible only here */
+
 #define KOS_ASPACE_SPLIT_NONADJACENT 0x01u /* the two virtually adjacent pages are not physically */
 #define KOS_ASPACE_SPLIT_TO_USER     0x02u /* a straddling kaccess_to_user reached both frames */
 #define KOS_ASPACE_SPLIT_FROM_USER   0x04u /* a straddling kaccess_from_user read both frames */

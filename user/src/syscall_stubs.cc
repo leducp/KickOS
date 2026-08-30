@@ -489,3 +489,14 @@ int32_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1)
 }
 #endif
 }
+
+int kos_frame_map(kos_cap_t frame, kos_cap_t space, uintptr_t va, uint32_t flags)
+{
+    return (int)arch_syscall(KOS_SYS_FRAME_MAP, (uintptr_t)frame, (uintptr_t)space, va,
+                             (uintptr_t)flags);
+}
+
+int kos_frame_unmap(kos_cap_t frame, kos_cap_t space, uintptr_t va)
+{
+    return (int)arch_syscall(KOS_SYS_FRAME_UNMAP, (uintptr_t)frame, (uintptr_t)space, va, 0);
+}

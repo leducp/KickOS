@@ -97,10 +97,16 @@ namespace kickos
         CAP_ENDPOINT, // synchronous IPC endpoint object pool
         CAP_REPLY,    // one-shot L4-style reply cap; obj NAMES the parked caller by
                       // generational thread handle (no object pool, no refcount)
-        CAP_IRQ       // a tier-1 interrupt-line binding; `obj` names a slot in the
+        CAP_IRQ,      // a tier-1 interrupt-line binding; `obj` names a slot in the
                       // binding pool
+        CAP_FRAME,    // a RUN of physical frames; `obj` names a frame-run pool slot, and the
+                      // run's physical base is a field of that object, never a number here
+        CAP_ASPACE,   // an address space; `obj` names a DOMAIN slot by generational handle
+        CAP_KIND_MAX  // never stored: STAYS LAST, and the assert below reads it
     };
-    static_assert(static_cast<uint8_t>(CapType::CAP_IRQ) < (1u << KCAP_TYPE_BITS),
+    // Keyed on the sentinel and never on the last kind by name: an assert naming CAP_IRQ
+    // passes over every kind added after it.
+    static_assert(static_cast<uint8_t>(CapType::CAP_KIND_MAX) <= (1u << KCAP_TYPE_BITS),
                   "a CapType no longer fits the entry's type field: the call sequence packed "
                   "beside it would be overwritten");
 
@@ -112,7 +118,10 @@ namespace kickos
         CAP_SIGNAL = 1 << 1,  // sem_post; endpoint send
         CAP_TRANSFER = 1 << 2 // may be delegated into a child table (section 6)
     };
-    static_assert((CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER) < (1u << KCAP_RIGHTS_BITS),
+    // The only place the full set is written. A bitmask has no sentinel, so a right left out
+    // of this mask is one the assert below cannot see.
+    static constexpr uint8_t CAP_RIGHTS_ALL = CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER;
+    static_assert(CAP_RIGHTS_ALL < (1u << KCAP_RIGHTS_BITS),
                   "a rights bit no longer fits the entry's rights field: the call sequence "
                   "packed beside it would be overwritten");
 
