@@ -28,7 +28,34 @@ you introduced: exit 0 would mean the member had gone and exit 1 means the compa
 which is UNKNOWN. Do NOT regenerate `tests/static/aspace_seam_records.txt` to make it quiet, which
 deletes the finding M6.3 exists to produce.
 
-**THIS BRANCH IS M6.4, THE x86_64 PORT, AND IT SITS ON TOP OF M6.3 RATHER THAN BESIDE IT.** The two
+**THIS BRANCH IS M6.5, FRAME-LEVEL CAPABILITIES, AND ITS THREE STEPS ARE LANDED.** C0 froze the
+capability ABI before the first object kind, C1 added a frame RUN and an ADDRESS SPACE, C2 made map
+and unmap capability operations, C3 shared one run into two spaces at two addresses. The milestone's
+claim is a NEGATIVE result like M6.3's and M6.4's, and it is measured: `check_cap_sigdiff.sh` is
+PASS at 24 records, the only two members that ever entered being plain enumerators (60 and 61). An
+address never became a FIELD, only ever an argument, which is what let C1's claim survive C2.
+
+**FOUR THINGS ABOUT M6.5 A GREEN RUN DOES NOT SAY.** The two kinds are POSTURE-GATED, so the
+thirteen region boards compile the enum values and nothing can construct one; `qemu-x86_64` runs
+none of these arms at all, `CHIP_Q35` selecting no memory family, so "designed against three
+backends" is a DESIGN claim and the milestone is run on two. The type field is now EXACTLY full,
+values 6 and 7 being the last two, and a third kind is a repartition that spends the reply sequence
+packed beside it. And the cap differ's corpus is the C-facing ABI only: `kernel/include/kickos/cap.h`
+is C++ and the extractor yields twelve records of ANY name over it, so `CapType`, `CapRights`,
+`CapEntry` and the resolve chokepoint are held by that header's static_asserts and by nothing else.
+
+**BOTH OF THOSE ASSERTS WERE BLIND UNTIL C0, AND THE SHAPE IS THE LESSON.** Each was keyed on the
+LAST MEMBER BY NAME, so `CAP_IRQ` and `CAP_TRANSFER` bounded themselves and nothing added past them:
+a kind at 8 and a fourth rights bit both compiled clean while an independent probe over the same
+tree failed on the same expression. This milestone's recurring class one level below where M6.2
+through M6.4 kept meeting it -- not an instrument whose corpus can go empty, but a guard whose
+SUBJECT does not grow with the thing it guards. `CAP_KIND_MAX` and `CAP_RIGHTS_ALL` are the fix, and
+a third kind now refuses.
+
+**THE M6.4 PARAGRAPHS BELOW STILL DESCRIBE THE x86_64 PORT AND ARE NOT SUPERSEDED**, that board
+being unchanged by this milestone.
+
+**THIS BRANCH WAS M6.4, THE x86_64 PORT, AND IT SITS ON TOP OF M6.3 RATHER THAN BESIDE IT.** The two
 reach an external auditor as the branch pair `M6.3` and `M6.4`, and M6.4 carries fixes for M6.3 as
 well as its own: one edit to `arch/include/kickos/arch/arch.h` moves what acquire and
 `arch_aspace_frame_at` promise on BOTH backends, so the ten-angle pass could not be split down the
@@ -175,6 +202,21 @@ The whole point of this file. A green fleet pass says none of the following.
   DIFFERS could tell them apart. A backend handed a constant instead of the register passes
   everything.
 
+- **NOTHING WITNESSES THE M6.5 KINDS OUTSIDE A TEST-ONLY MINT.** There is no user-facing way to
+  create a frame-run or address-space capability: both arrive through `KOS_ASPACE_OP_CAP_SEED` and
+  `KOS_ASPACE_OP_CAP_SELF_SPACE`, which are selftest scaffolding. So the OBJECTS, the map pair and
+  the sharing are exercised, and the question of who may mint one is not answered anywhere. A
+  milestone that gives them a real mint decides it.
+- **THE FRAME RUN'S REFCOUNT AND `Domain::borrowed_from` ARE TWO OWNERSHIPS, NOT ONE.** The step
+  plan predicted C3 would replace the donor edge and it does not: F10's handoff takes its frames
+  from the donor's RESERVATION, which its range list owns, so that path still needs the edge, while
+  C3's frames belong to the run object and its mapping space owns nothing. Anything reasoning about
+  frame lifetime has to ask which path put the mapping there.
+- **READING A SHARED PAGE DOES NOT TEST ITS LIFETIME, and the first version of `cap_share` got that
+  wrong.** A freed frame stays readable through a leaf nobody tore down, so an early free slipped
+  the read entirely. The POOL is the instrument: the arm asserts the run is still out at the moment
+  the borrower's task has died and the donor still maps it. Freeing at the first drop reddens
+  exactly that assertion and nothing else.
 - **arm64 is QEMU `virt` only.** No A-profile silicon on this bench, so every armv8a claim is
   emulator-grade. Its selftest declares one PARTIAL, `periph_reg_write_unheld`, which is a real
   coverage gap -- and a PARTIAL reports `ok`, so no count reconciliation can ever see it. Minting an

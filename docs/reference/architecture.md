@@ -997,8 +997,12 @@ that exist (semaphore, mutex, IRQ handle, memory grant), not over-fit to one. **
 `CapType` is live.** The SEMAPHORE, PI-MUTEX (`CAP_MUTEX`) and ENDPOINT/IPC (`CAP_ENDPOINT`) paths
 landed at M3, silicon-validated under enforcement; `CAP_IRQ` (a tier-1 interrupt-line binding,
 minted by `irq_claim` -- see *Drivers & interrupts* above) and `CAP_REPLY` (the one-shot reply cap,
-minted by `cap_install_reply`) are equally live. Each object pool was added additively via the
-recipe in Book ch.8.2. The contract below is code-synced to `kernel/include/kickos/cap.h`,
+minted by `cap_install_reply`) are equally live. `CAP_FRAME` (a RUN of physical frames) and
+`CAP_ASPACE` (an address space, named by a generational domain handle) landed at M6.5 C1 and are
+built only where the board translates; the two of them take the last values the type field holds,
+and `CAP_KIND_MAX` is what a third kind would fail against. Each object pool was added additively
+via the recipe in Book ch.8.2, and `CAP_ASPACE` adds none: a `Domain` is already refcounted, so its
+hold is `domain_ref` and its ceiling is refused at `obj_ref_inc`. The contract below is code-synced to `kernel/include/kickos/cap.h`,
 `kernel/syscall/cap.cc`, `kernel/syscall/syscall.cc`.
 
 - **Per-thread typed handle table, not global ids or fds.** A global object id every thread can name

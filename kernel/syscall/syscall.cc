@@ -883,6 +883,63 @@ uint64_t syscall_body(uintptr_t nr,
                 arch_ram_alloc(static_cast<size_t>(a0)));
 #endif
         }
+#if KICKOS_HAVE_ASPACE
+        case KOS_SYS_FRAME_MAP:
+        case KOS_SYS_FRAME_UNMAP:
+        {
+            // One lock spans resolve-to-use for BOTH capabilities and the edit they drive (F4).
+            IrqLock lock;
+            Thread* const c = sched::current();
+            if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
+            {
+                // The authority word and not a rights bit: the rights field is full, and
+                // widening it spends the reply sequence packed beside it.
+                return static_cast<uint64_t>(-KOS_EPERM);
+            }
+            int ferr = 0;
+            FrameRun* const run = static_cast<FrameRun*>(
+                cap_resolve_e(c, static_cast<uint32_t>(a0), CapType::CAP_FRAME, 0, &ferr));
+            if (run == nullptr)
+            {
+                return static_cast<uint64_t>(-(ferr == 0 ? KOS_EBADF : ferr));
+            }
+            CapEntry const* const fe = cap_lookup(c, static_cast<uint32_t>(a0));
+            if (fe == nullptr)
+            {
+                return static_cast<uint64_t>(-KOS_EBADF);
+            }
+            int const run_obj = fe->obj;
+            int aerr = 0;
+            Domain* const target = static_cast<Domain*>(
+                cap_resolve_e(c, static_cast<uint32_t>(a1), CapType::CAP_ASPACE, 0, &aerr));
+            if (target == nullptr)
+            {
+                return static_cast<uint64_t>(-(aerr == 0 ? KOS_EBADF : aerr));
+            }
+            struct arch_aspace* const sp = domain_space(target);
+            VirtualRanges* const vr = domain_ranges_mut(target);
+            if (sp == nullptr or vr == nullptr)
+            {
+                return static_cast<uint64_t>(-KOS_EINVAL);
+            }
+            if (nr == KOS_SYS_FRAME_UNMAP)
+            {
+                return static_cast<uint64_t>(aspace_cap_unmap(sp, vr, a2, run_obj, run->base));
+            }
+            enum arch_map_memtype type = ARCH_MAP_NORMAL;
+            if ((static_cast<uint32_t>(a3) & KOS_MEM_NOCACHE) != 0)
+            {
+                type = ARCH_MAP_NOCACHE;
+            }
+            if ((static_cast<uint32_t>(a3) & ~static_cast<uint32_t>(KOS_MEM_FLAGS_ALL)) != 0)
+            {
+                return static_cast<uint64_t>(-KOS_EINVAL);
+            }
+            return static_cast<uint64_t>(
+                aspace_cap_map(sp, vr, a2, run_obj, run->base, run->pages,
+                               ARCH_MAP_R | ARCH_MAP_W, type));
+        }
+#endif
         case KOS_SYS_MEM_SELF_GRANT:
         {
             // The grant half of KOS_SYS_RAM_ALLOC, added to the CALLER's own region set.

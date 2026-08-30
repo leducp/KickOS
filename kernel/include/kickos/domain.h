@@ -52,6 +52,9 @@ namespace kickos
         // thrown away with it.
         VirtualRanges ranges;
 #endif
+        // Bumped on every claim, so a capability naming (index, generation) cannot be answered
+        // by a later occupant. NOT reset by claim_slot's reinitialisation, which would defeat it.
+        uint16_t generation = 0;
         // Live tasks holding this domain, plus one per explicit task's creator hold;
         // 0 and not immortal => free slot.
         uint16_t refcount = 0;
@@ -71,6 +74,14 @@ namespace kickos
     // pointer: the selftest compares two of these across tasks and must learn nothing else.
     // Null-safe.
     unsigned domain_space_id(Domain const* d);
+
+    // The (index, generation) handle a CAP_ASPACE entry stores, and its inverse; SlotPool's
+    // codec. domain_resolve answers null for a slot whose generation has moved.
+    int domain_handle(Domain const* d);
+    Domain* domain_resolve(int handle);
+
+    // The live hold count, for the ONE site that refuses at the ceiling. Null-safe.
+    uint16_t domain_refcount(Domain const* d);
 
     // The address space this domain's task runs under, or null where the backend
     // translates nothing and on the two immortal singletons. Null-safe.

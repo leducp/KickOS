@@ -436,6 +436,84 @@ namespace kickos
         return 0;
     }
 
+    int aspace_cap_map(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
+                       int run_obj, arch_phys_addr_t base, uint32_t pages, uint32_t rights,
+                       enum arch_map_memtype type)
+    {
+        if (space == nullptr or ranges == nullptr or pages == 0)
+        {
+            return -KOS_EINVAL;
+        }
+        size_t const g = arch_aspace_granule();
+        if ((va % g) != 0 or (static_cast<uint64_t>(base) % g) != 0)
+        {
+            return -KOS_EINVAL;
+        }
+        if (va + static_cast<uintptr_t>(pages) * g < va)
+        {
+            return -KOS_EINVAL; // the range wraps
+        }
+        // A leaf is a holder: the frames come back at the last one, not the last capability.
+        if (not frame_run_ref(run_obj))
+        {
+            return -KOS_ENOMEM;
+        }
+        // VR_FRAMECAP and not VR_BORROWED alone: the image and every F10 handoff carry that
+        // bit too, and a revoke keyed on it accepts ranges this call never placed.
+        if (not ranges->reserve(va, pages, VR_BORROWED | VR_FRAMECAP))
+        {
+            frame_run_release(run_obj);
+            return -KOS_ENOMEM; // overlaps something this space already names, or the list is full
+        }
+        if (arch_aspace_map(space, va, base, pages, rights, type) != ARCH_ASPACE_OK)
+        {
+            ranges->release(va);
+            frame_run_release(run_obj);
+            return -KOS_ENOMEM;
+        }
+        // The type the PTE carries: the list is what a second mapping's agreement is tested
+        // against, and 0 would claim Normal over a non-cacheable leaf.
+        if (not ranges->grant(va, pages, rights, static_cast<uint8_t>(type)))
+        {
+            (void)arch_aspace_unmap(space, va, pages);
+            ranges->release(va);
+            frame_run_release(run_obj);
+            return -KOS_ENOMEM;
+        }
+        return 0;
+    }
+
+    int aspace_cap_unmap(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
+                         int run_obj, arch_phys_addr_t base)
+    {
+        if (space == nullptr or ranges == nullptr)
+        {
+            return -KOS_EINVAL;
+        }
+        VirtualRange const* const e = ranges->at_base(va);
+        // The range must be one aspace_cap_map placed AND must name this run. Matching a page
+        // count instead accepts the image and every F10 handoff, which carry VR_BORROWED too.
+        if (e == nullptr or e->base != va or (e->flags & VR_FRAMECAP) == 0)
+        {
+            return -KOS_EPERM;
+        }
+        // The identity is the first page's PHYSICAL address, which holds only while no two
+        // LIVE runs share a base. A mint that seated two run objects over one address at once
+        // would break this.
+        if (arch_aspace_frame_at(space, va) != base)
+        {
+            return -KOS_EPERM;
+        }
+        uint32_t const pages = e->pages;
+        if (arch_aspace_unmap(space, va, pages) != ARCH_ASPACE_OK)
+        {
+            return -KOS_ENOMEM;
+        }
+        ranges->release(va);
+        frame_run_release(run_obj);
+        return 0;
+    }
+
     int aspace_handoff(VirtualRanges const* donor, struct arch_aspace* space,
                        VirtualRanges* ranges, uintptr_t base, size_t size,
                        enum arch_map_memtype type)
@@ -521,8 +599,14 @@ namespace kickos
             }
             if ((e->flags & VR_BORROWED) != 0)
             {
+                arch_phys_addr_t const frame = arch_aspace_frame_at(space, e->base);
                 // Another space's frames: unmapped here, freed by their owner.
                 (void)arch_aspace_unmap(space, e->base, e->pages);
+                if ((e->flags & VR_FRAMECAP) != 0)
+                {
+                    // `frame` is read BEFORE the unmap above clears the leaf.
+                    frame_run_release_by_base(frame);
+                }
                 continue;
             }
             if (e->state == VirtualState::Reserved and (e->flags & VR_IMAGE) == 0)

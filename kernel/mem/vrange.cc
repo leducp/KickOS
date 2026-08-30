@@ -125,6 +125,18 @@ namespace kickos
         return false;
     }
 
+    VirtualRange const* VirtualRanges::at_base(uintptr_t base) const
+    {
+        for (size_t i = 0; i < KICKOS_ASPACE_RANGES; i++)
+        {
+            if (ranges_[i].state != VirtualState::Free and ranges_[i].base == base)
+            {
+                return &ranges_[i];
+            }
+        }
+        return nullptr;
+    }
+
     VirtualRange const* VirtualRanges::find(uintptr_t addr, size_t len) const
     {
         if (granule_ == 0 or len == 0)

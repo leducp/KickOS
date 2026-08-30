@@ -35,6 +35,15 @@ KOS_SD_PREFIX_FILE="aspace_seam.awk"
 
 # The seam header the family lives in today. Its absence on either side means the corpus
 # was built from the wrong path, which would otherwise read as a clean empty diff.
+# The pathspecs the family is read from. Declared here rather than inside the driver so a
+# caller cannot inherit a corpus it never named; KOS_SD_CORPUS_ROWS is what the driver checks
+# the parse against, and KOS_SD_MIN_FILES floors what the walk actually read.
+KOS_SD_CORPUS_ROWS=1
+KOS_SD_CORPUS="
+arch/include/kickos/arch
+"
+KOS_SD_MIN_FILES=3
+
 KOS_SD_ANCHOR="arch/include/kickos/arch/arch.h"
 
 # Per-kind minimum record counts. Set below today's figures so a legitimate removal of a

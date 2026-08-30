@@ -194,6 +194,16 @@ config KICKOS_MAX_ENDPOINTS
 	range 0 32
 	default 4
 
+config KICKOS_MAX_FRAME_RUNS
+	int "Frame-run capability objects"
+	range 0 32
+	default 8
+	help
+	  How many frame RUNS may be named by a capability at once. A run, not a
+	  frame: the pool holds thousands of frames and a thread's capability table
+	  holds single digits, so the unit a capability names is the run the frame
+	  pool allocates. Only a translating board builds this pool.
+
 config KICKOS_MAX_IRQ_HANDLES
 	int "Tier-1 IRQ-as-event handles"
 	range 0 32

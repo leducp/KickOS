@@ -104,6 +104,45 @@ namespace kickos
             }
         }
 
+#if KICKOS_HAVE_ASPACE
+        // Slot index of the frame run a global handle names, via the live object as above.
+        int frame_run_index_of(int obj_handle)
+        {
+            FrameRun* f = kernel().frame_runs.resolve(obj_handle);
+            if (f == nullptr)
+            {
+                return -1;
+            }
+            return static_cast<int>(f - kernel().frame_runs.at(0));
+        }
+
+        // At refs -> 0 the FRAMES go back and then the slot does. Freeing the slot first would
+        // lose the base and page count the release needs.
+        void frame_run_ref_drop(int obj_handle, bool teardown)
+        {
+            (void)teardown;
+            int const idx = frame_run_index_of(obj_handle);
+            if (idx < 0)
+            {
+                return; // already gone: cannot happen under correct refcounting
+            }
+            uint8_t& r = kernel().frame_run_refs[idx];
+            if (r > 0)
+            {
+                r--;
+            }
+            if (r == 0)
+            {
+                FrameRun* f = kernel().frame_runs.resolve(obj_handle);
+                if (f != nullptr and f->pages > 0)
+                {
+                    frame_pool_free_run(f->base, f->pages, arch_aspace_granule());
+                }
+                kernel().frame_runs.free(obj_handle);
+            }
+        }
+#endif
+
         // Slot index of the mutex a global handle names (via the live object, as with
         // sems). -1 if it does not resolve.
         int mutex_index_of(int obj_handle)
@@ -223,6 +262,18 @@ namespace kickos
                 irq_ref_drop(e.obj, teardown);
                 return;
             }
+#if KICKOS_HAVE_ASPACE
+            case CapType::CAP_FRAME:
+            {
+                frame_run_ref_drop(e.obj, teardown);
+                return;
+            }
+            case CapType::CAP_ASPACE:
+            {
+                domain_release(domain_resolve(e.obj)); // null-safe; frees at the last hold
+                return;
+            }
+#endif
             default:
             {
                 KICKOS_ASSERT(false);
@@ -326,6 +377,13 @@ namespace kickos
                 }
                 return 0; // endpoints NEVER refuse a close (unlike mutex R2)
             }
+#if KICKOS_HAVE_ASPACE
+            case CapType::CAP_FRAME:
+            case CapType::CAP_ASPACE:
+            {
+                return 0; // neither parks a waiter, so a close strands nothing
+            }
+#endif
             case CapType::CAP_IRQ:
             {
                 // Deliberately EMPTY, and it must STAY empty: the endpoint arm's EPIPE-wake
@@ -437,6 +495,22 @@ namespace kickos
                 *refs = &kernel().irq_refs[static_cast<int>(b - kernel().irq_bindings.at(0))];
                 return true;
             }
+#if KICKOS_HAVE_ASPACE
+            case CapType::CAP_FRAME:
+            {
+                int const idx = frame_run_index_of(obj_handle);
+                if (idx < 0)
+                {
+                    return false;
+                }
+                *refs = &kernel().frame_run_refs[idx];
+                return true;
+            }
+            case CapType::CAP_ASPACE:
+            {
+                return false; // the domain's own refcount is this kind's; obj_ref_inc takes it
+            }
+#endif
             case CapType::CAP_REPLY:
             {
                 return false; // names a thread by generational handle: no pool refcount
@@ -452,8 +526,92 @@ namespace kickos
 
     // Bump one reference to the object a global handle names. Handle MUST resolve.
     // Caller holds IrqLock.
+#if KICKOS_HAVE_ASPACE
+    bool frame_run_ref(int obj_handle)
+    {
+        int const idx = frame_run_index_of(obj_handle);
+        if (idx < 0)
+        {
+            return false;
+        }
+        uint8_t& r = kernel().frame_run_refs[idx];
+        if (r == UINT8_MAX)
+        {
+            return false;
+        }
+        r++;
+        return true;
+    }
+
+    void frame_run_release_by_base(arch_phys_addr_t base)
+    {
+        if (base == 0)
+        {
+            return;
+        }
+        for (int i = 0; i < static_cast<int>(kernel().frame_runs.capacity()); i++)
+        {
+            FrameRun* f = kernel().frame_runs.at(i);
+            if (f != nullptr and f->pages > 0 and f->base == base
+                and kernel().frame_run_refs[i] > 0)
+            {
+                frame_run_ref_drop(kernel().frame_runs.handle_for(i), true);
+                return;
+            }
+        }
+    }
+
+    uint8_t frame_run_refcount(int obj_handle)
+    {
+        int const idx = frame_run_index_of(obj_handle);
+        if (idx < 0)
+        {
+            return 0;
+        }
+        return kernel().frame_run_refs[idx];
+    }
+
+    void frame_run_release(int obj_handle)
+    {
+        frame_run_ref_drop(obj_handle, false);
+    }
+
+    int frame_run_create(arch_phys_addr_t base, uint32_t pages)
+    {
+        int const obj = kernel().frame_runs.alloc();
+        if (obj < 0)
+        {
+            return -1;
+        }
+        FrameRun* f = kernel().frame_runs.resolve(obj);
+        f->base = base;
+        f->pages = pages;
+        kernel().frame_run_refs[frame_run_index_of(obj)] = 1; // the creator's own
+
+        return obj;
+    }
+#endif
+
     bool obj_ref_inc(CapType type, int obj_handle, uint8_t rights)
     {
+#if KICKOS_HAVE_ASPACE
+        // Taken here rather than through ref_counters, whose false means "no counter" and
+        // would silently take none.
+        if (type == CapType::CAP_ASPACE)
+        {
+            Domain* d = domain_resolve(obj_handle);
+            if (d == nullptr)
+            {
+                return true; // stale handle: nothing to hold, and not a refusal
+            }
+            if (domain_refcount(d) == UINT16_MAX)
+            {
+                return false;
+            }
+            domain_ref(d);
+            return true;
+        }
+#endif
         uint8_t* refs = nullptr;
         uint8_t* holders = nullptr;
         if (not ref_counters(type, obj_handle, rights, &refs, &holders))
@@ -477,6 +635,13 @@ namespace kickos
 
     void obj_ref_undo(CapType type, int obj_handle, uint8_t rights)
     {
+#if KICKOS_HAVE_ASPACE
+        if (type == CapType::CAP_ASPACE)
+        {
+            domain_release(domain_resolve(obj_handle)); // null-safe
+            return;
+        }
+#endif
         uint8_t* refs = nullptr;
         uint8_t* holders = nullptr;
         if (not ref_counters(type, obj_handle, rights, &refs, &holders))
@@ -561,6 +726,16 @@ namespace kickos
         {
             p = kernel().irq_bindings.resolve(e->obj);
         }
+#if KICKOS_HAVE_ASPACE
+        else if (want == CapType::CAP_FRAME)
+        {
+            p = kernel().frame_runs.resolve(e->obj);
+        }
+        else if (want == CapType::CAP_ASPACE)
+        {
+            p = domain_resolve(e->obj);
+        }
+#endif
         if (p != nullptr)
         {
             *err = 0;

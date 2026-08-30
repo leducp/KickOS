@@ -240,6 +240,214 @@ namespace kickos
         }
 
         // Every frame a whole cycle took must come back, tables included.
+        // C1: the two kinds resolve through the same chokepoint every other kind does.
+        // Nothing here composes an address; only yes/no bits cross back.
+        uint64_t op_cap_objects()
+        {
+            IrqLock lock;
+            Thread* self = sched::current();
+            if (self == nullptr)
+            {
+                return 0;
+            }
+            uint64_t bits = 0;
+            size_t const free_before = frame_pool_free();
+            // A double free does not move the free count: the pool refuses and counts it.
+            size_t const refused_before = frame_pool_refused();
+            Domain* const mine = task_domain(self->task);
+            uint16_t const hold_before = domain_refcount(mine);
+
+            // A frame RUN, taken from the pool and named by a capability.
+            size_t const g = arch_aspace_granule();
+            arch_phys_addr_t const run = frame_pool_alloc_user_run(2);
+            uint32_t fcap = KCAP_INVALID;
+            int fobj = -1;
+            if (run != 0)
+            {
+                fobj = frame_run_create(run, 2);
+                if (fobj >= 0)
+                {
+                    if (cap_install(self, fobj, CapType::CAP_FRAME, CAP_TRANSFER, &fcap) == 0)
+                    {
+                        bits |= KOS_ASPACE_CAPOBJ_FRAME_MINT;
+                    }
+                    else
+                    {
+                        // Surrendering the run returns the frames AND the slot. Leave fobj
+                        // set: the tail's pool-free is for a run that never became an object,
+                        // and clearing it here frees the frames a second time.
+                        fcap = KCAP_INVALID;
+                        frame_run_release(fobj);
+                    }
+                }
+            }
+            if (fcap != KCAP_INVALID)
+            {
+                FrameRun* got = static_cast<FrameRun*>(
+                    cap_resolve(self, fcap, CapType::CAP_FRAME, 0));
+                if (got != nullptr and got->base == run and got->pages == 2)
+                {
+                    bits |= KOS_ASPACE_CAPOBJ_FRAME_RESOLVE;
+                }
+            }
+
+            // The address space this task already holds, named by a capability.
+            uint32_t acap = KCAP_INVALID;
+            if (mine != nullptr)
+            {
+                int const h = domain_handle(mine);
+                if (obj_ref_inc(CapType::CAP_ASPACE, h, 0))
+                {
+                    if (cap_install(self, h, CapType::CAP_ASPACE, CAP_TRANSFER, &acap) != 0)
+                    {
+                        acap = KCAP_INVALID;
+                        obj_ref_undo(CapType::CAP_ASPACE, h, 0);
+                    }
+                    else
+                    {
+                        bits |= KOS_ASPACE_CAPOBJ_ASPACE_MINT;
+                        if (domain_refcount(mine) == hold_before + 1u)
+                        {
+                            bits |= KOS_ASPACE_CAPOBJ_ASPACE_HOLD;
+                        }
+                        if (cap_resolve(self, acap, CapType::CAP_ASPACE, 0) == mine)
+                        {
+                            bits |= KOS_ASPACE_CAPOBJ_ASPACE_STALE; // provisional, cleared below
+                        }
+                    }
+                }
+            }
+            // The generation is what makes a reclaimed slot unreachable, so the stale bit is
+            // earned by a handle whose generation has MOVED, not by one that still resolves.
+            if ((bits & KOS_ASPACE_CAPOBJ_ASPACE_STALE) != 0 and mine != nullptr)
+            {
+                int const stale = domain_handle(mine) + (1 << 16); // one generation on
+                if (domain_resolve(stale) != nullptr)
+                {
+                    bits &= ~static_cast<uint64_t>(KOS_ASPACE_CAPOBJ_ASPACE_STALE);
+                }
+            }
+
+            if (fcap != KCAP_INVALID)
+            {
+                handle_close(self, fcap);
+                if (frame_pool_free() == free_before)
+                {
+                    bits |= KOS_ASPACE_CAPOBJ_CLOSE_FRAMES;
+                }
+            }
+            else if (run != 0 and fobj < 0)
+            {
+                // Only where no run object was seated: once one is, its release returns these.
+                frame_pool_free_run(run, 2, g);
+            }
+            if (acap != KCAP_INVALID)
+            {
+                handle_close(self, acap);
+                if (domain_refcount(mine) == hold_before)
+                {
+                    bits |= KOS_ASPACE_CAPOBJ_CLOSE_HOLD;
+                }
+            }
+            if (frame_pool_free() == free_before and domain_refcount(mine) == hold_before)
+            {
+                bits |= KOS_ASPACE_CAPOBJ_BALANCED;
+            }
+            if (frame_pool_refused() == refused_before)
+            {
+                bits |= KOS_ASPACE_CAPOBJ_NO_REFUSED;
+            }
+            return bits;
+        }
+
+        // The seeded run is in no range list, so its own physical base is a virtual address
+        // nothing in this space names.
+        arch_phys_addr_t g_seed_base = 0;
+        int g_seed_obj = -1;
+
+        uint64_t op_cap_seed()
+        {
+            IrqLock lock;
+            Thread* self = sched::current();
+            Domain* const mine = (self == nullptr) ? nullptr : task_domain(self->task);
+            if (self == nullptr or mine == nullptr)
+            {
+                return 0;
+            }
+            // Cleared: alloc_run hands out the previous owner's bytes and this run crosses
+            // into another task.
+            arch_phys_addr_t const run = frame_pool_alloc_user_run(1);
+            if (run == 0)
+            {
+                return 0;
+            }
+            int const fobj = frame_run_create(run, 1);
+            if (fobj < 0)
+            {
+                frame_pool_free_run(run, 1, arch_aspace_granule());
+                return 0;
+            }
+            uint32_t fcap = KCAP_INVALID;
+            if (cap_install(self, fobj, CapType::CAP_FRAME, CAP_TRANSFER, &fcap) != 0)
+            {
+                // The RUN OBJECT exists and holds the creator's reference: surrendering it is
+                // what returns the frames AND the slot. Freeing the frames alone strands it.
+                frame_run_release(fobj);
+                return 0;
+            }
+            int const h = domain_handle(mine);
+            uint32_t acap = KCAP_INVALID;
+            if (not obj_ref_inc(CapType::CAP_ASPACE, h, 0))
+            {
+                handle_close(self, fcap); // no hold was taken, so none is undone
+                return 0;
+            }
+            if (cap_install(self, h, CapType::CAP_ASPACE, CAP_TRANSFER, &acap) != 0)
+            {
+                obj_ref_undo(CapType::CAP_ASPACE, h, 0);
+                handle_close(self, fcap);
+                return 0;
+            }
+            g_seed_base = run;
+            g_seed_obj = fobj;
+            return (static_cast<uint64_t>(acap) << 32) | static_cast<uint64_t>(fcap);
+        }
+
+        uint64_t op_cap_self_space()
+        {
+            IrqLock lock;
+            Thread* self = sched::current();
+            Domain* const mine = (self == nullptr) ? nullptr : task_domain(self->task);
+            if (self == nullptr or mine == nullptr)
+            {
+                return 0;
+            }
+            int const h = domain_handle(mine);
+            uint32_t acap = KCAP_INVALID;
+            if (not obj_ref_inc(CapType::CAP_ASPACE, h, 0))
+            {
+                return 0;
+            }
+            if (cap_install(self, h, CapType::CAP_ASPACE, CAP_TRANSFER, &acap) != 0)
+            {
+                obj_ref_undo(CapType::CAP_ASPACE, h, 0);
+                return 0;
+            }
+            return static_cast<uint64_t>(acap);
+        }
+
+        uint64_t op_cap_seed_va()
+        {
+            IrqLock lock;
+            return static_cast<uint64_t>(g_seed_base);
+        }
+
+        uint64_t op_cap_run_refs()
+        {
+            IrqLock lock;
+            return static_cast<uint64_t>(frame_run_refcount(g_seed_obj));
+        }
+
         uint64_t op_balance()
         {
             size_t const before = frame_pool_free();
@@ -933,6 +1141,26 @@ namespace kickos
             case KOS_ASPACE_OP_DOMAIN_BALANCE:
             {
                 return op_domain_balance();
+            }
+            case KOS_ASPACE_OP_CAP_OBJECTS:
+            {
+                return op_cap_objects();
+            }
+            case KOS_ASPACE_OP_CAP_SEED:
+            {
+                return op_cap_seed();
+            }
+            case KOS_ASPACE_OP_CAP_SEED_VA:
+            {
+                return op_cap_seed_va();
+            }
+            case KOS_ASPACE_OP_CAP_SELF_SPACE:
+            {
+                return op_cap_self_space();
+            }
+            case KOS_ASPACE_OP_CAP_RUN_REFS:
+            {
+                return op_cap_run_refs();
             }
             case KOS_ASPACE_OP_FORCED_UNWIND:
             {

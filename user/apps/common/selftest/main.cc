@@ -413,24 +413,64 @@ namespace
 
 #endif // KICKOS_ENABLE_SELFTEST (IRQ-context post)
 
-    // --- Round-robin interleave ------------------------------------------------
-    // Burn per iteration, ~2 quanta. t_rr rescales it to the target's clock granule; a
-    // burn shorter than the slice never gets preempted and the interleave never happens.
-    uint64_t g_rr_burn_ns = 2000000ull;
-    void rr_worker(void* arg) // caps: done@1, lock@2, gate@3
+    // --- Round-robin preemption --------------------------------------------------
+    // The burner's own workload, in ns; t_rr rescales it to the target's clock granule.
+    uint64_t g_rr_burn_ns = 32000000ull;
+    // Bumped by the spinner, sampled by the burner ACROSS its burn. Volatile: the burner
+    // reads it twice with no intervening store of its own, and the spinner's whole body is
+    // the increment.
+    volatile uint64_t g_rr_spins = 0;
+    volatile int g_rr_stop = 0;
+    // What the burner saw the spinner do WHILE it burned, which is the arm's whole claim.
+    uint64_t g_rr_advanced = 0;
+
+    // A STACK sentinel per worker. The progress assertion cannot see a switch that resumes a
+    // thread on the WRONG STACK, both threads still running; the ordering assertion this arm
+    // used to carry could, which is how the PendSV pair race was caught (TODO.md 2026-08-10).
+    // Volatile and LOCAL so it lives on the stack, not in a callee-saved register.
+    constexpr uint32_t RR_BURNER_SENTINEL = 0xB0570001u;
+    constexpr uint32_t RR_SPINNER_SENTINEL = 0x5910572u;
+    volatile int g_rr_stack_swap = 0;
+
+    // THIS ARM MAY NOT ASSERT THE ORDER OF TWO LOGGED CHARACTERS. The 2026-08-17 rule makes
+    // one sound only where the consumer OUTRANKS the thread it rendezvous with; two
+    // round-robin peers are equal by definition, so no post here preempts anything. An order
+    // would rest instead on no slice exceeding two quanta, which nothing establishes: a slice
+    // is the quantum PLUS the interrupt's delivery latency.
+    void rr_burner(void*) // caps: done@1, lock@2, gate@3
     {
         // Arrival, posted BEFORE the turnstile: the gate proves both workers were spawned,
-        // not that both reached it. A worker still starting when the gate opens lets its
-        // peer burn a whole slice alone, and the interleave then measures spawn latency.
+        // not that both reached it.
         kos_sem_post(CH_DONE);
         stage_wait(3);
-        char c = arg_char(arg);
-        for (int i = 0; i < 3; i++)
+        volatile uint32_t me = RR_BURNER_SENTINEL;
+        uint64_t const before = g_rr_spins;
+        uint64_t const start = kos_clock_now();
+        while (kos_clock_now() - start < g_rr_burn_ns)
         {
-            log_put(c);
-            uint64_t start = kos_clock_now();
-            while (kos_clock_now() - start < g_rr_burn_ns)
+            if (me != RR_BURNER_SENTINEL)
             {
+                g_rr_stack_swap = 1;
+                break;
+            }
+        }
+        g_rr_advanced = g_rr_spins - before;
+        g_rr_stop = 1;
+        kos_sem_post(CH_DONE);
+    }
+
+    void rr_spinner(void*) // caps: done@1, lock@2, gate@3
+    {
+        kos_sem_post(CH_DONE);
+        stage_wait(3);
+        volatile uint32_t me = RR_SPINNER_SENTINEL;
+        while (g_rr_stop == 0)
+        {
+            g_rr_spins = g_rr_spins + 1;
+            if (me != RR_SPINNER_SENTINEL)
+            {
+                g_rr_stack_swap = 1;
+                break;
             }
         }
         kos_sem_post(CH_DONE);
@@ -451,17 +491,31 @@ namespace
         {
             quantum = granule * 4; // coarse clock: keep the slice well above a granule
         }
-        g_rr_burn_ns = quantum * 2;
+        // The burn must exceed the worst SLICE, the quantum plus the interrupt's delivery
+        // latency, by enough that the peer gets one inside it. ONE FIGURE WOULD BE CHARGED
+        // TWICE: on a coarse clock the quantum is already tens of milliseconds, the same
+        // latency is a fraction of one, and 32 would cost seconds for a narrower margin.
+        if (quantum >= 16000000ull)
+        {
+            g_rr_burn_ns = quantum * 4;
+        }
+        else
+        {
+            g_rr_burn_ns = quantum * 32;
+        }
+        g_rr_spins = 0;
+        g_rr_stop = 0;
+        g_rr_advanced = 0;
+        g_rr_stack_swap = 0;
 
-        log_reset();
         kos_sem_create(0, &g_gate);
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL},
                                 {g_gate, CH_FULL}};
         // Must stay UNPRIVILEGED: that is what exercises the region reload per slice.
-        auto a = kos::thread::create_caps(rr_worker, reinterpret_cast<void*>('A'), "rrA", 10,
+        auto a = kos::thread::create_caps(rr_burner, nullptr, "rrA", 10,
                                           caps, 3, KOS_POLICY_RR, static_cast<uint32_t>(quantum),
                                           /*privileged=*/false);
-        auto b = kos::thread::create_caps(rr_worker, reinterpret_cast<void*>('B'), "rrB", 10,
+        auto b = kos::thread::create_caps(rr_spinner, nullptr, "rrB", 10,
                                           caps, 3, KOS_POLICY_RR, static_cast<uint32_t>(quantum),
                                           /*privileged=*/false);
         TAP_CHECK(g_gate != KOS_CAP_NONE and a.valid() and b.valid()); // spawn failure would hang the join below
@@ -469,13 +523,15 @@ namespace
         stage_release();
         wait_n(2);
         kos_handle_close(g_gate);
-        // The diag separates "A ran to completion" from "they alternated but B started late",
-        // which the predicates below score the same.
-        g_log[g_logn] = 0;
-        tap::diag("rr order: %s", g_log);
-        TAP_CHECK(count('A') == 3 and count('B') == 3);
-        TAP_CHECK(nth('B', 1) < nth('A', 2));
-        TAP_CHECK(nth('B', 2) < nth('A', 3));
+        tap::diag("rr quantum %u ns, peer advanced %u during the burn",
+                  static_cast<unsigned>(quantum), static_cast<unsigned>(g_rr_advanced));
+        // Neither worker ever resumed holding the other's stack. FIRST, because a worker that
+        // sees this abandons its loop: the burner then never burns and the progress check
+        // below fails too, reporting a stack swap as "the peer never ran".
+        TAP_CHECK(g_rr_stack_swap == 0);
+        // The peer ran WHILE the burner burned. Sampled across the burn and not at the end,
+        // so a peer that ran only before the burner started does not satisfy it.
+        TAP_CHECK(g_rr_advanced > 0);
     }
 
     // --- Sleep ordering (tickless timer) ---------------------------------------
@@ -2426,6 +2482,266 @@ namespace
     // for a mapping; the probe answers a number. What every arm is really guarding against
     // is an identity map answering in the editor's place, which passes a careless version
     // of all of them (docs/design-m6-mmu.md section 3.2).
+    // C1: a frame RUN and an address space are objects of the capability layer, minted,
+    // resolved through the one chokepoint and closed. Every bit is a yes/no about a HANDLE;
+    // nothing here is an address, which is what the step claims.
+    void t_cap_objects()
+    {
+        uintptr_t const b = kos_aspace_probe(KOS_ASPACE_OP_CAP_OBJECTS, 0);
+        tap::diag("cap objects: bits 0x%x", static_cast<unsigned>(b));
+        TAP_CHECK((b & KOS_ASPACE_CAPOBJ_FRAME_MINT) != 0);
+        TAP_CHECK((b & KOS_ASPACE_CAPOBJ_FRAME_RESOLVE) != 0);
+        TAP_CHECK((b & KOS_ASPACE_CAPOBJ_ASPACE_MINT) != 0);
+        TAP_CHECK((b & KOS_ASPACE_CAPOBJ_ASPACE_HOLD) != 0);
+        // The generation is the whole reason a domain carries one: a handle whose slot has
+        // been reclaimed must not be answered by the next occupant.
+        TAP_CHECK((b & KOS_ASPACE_CAPOBJ_ASPACE_STALE) != 0);
+        TAP_CHECK((b & KOS_ASPACE_CAPOBJ_CLOSE_FRAMES) != 0);
+        TAP_CHECK((b & KOS_ASPACE_CAPOBJ_CLOSE_HOLD) != 0);
+        TAP_CHECK((b & KOS_ASPACE_CAPOBJ_BALANCED) != 0);
+        // A frame handed back twice leaves the free count balanced and only this bit clear.
+        TAP_CHECK((b & KOS_ASPACE_CAPOBJ_NO_REFUSED) != 0);
+    }
+
+    // C2: map and unmap ARE capability operations. Driven from userspace through the real
+    // syscalls, on capabilities the probe seeds because no user-facing mint exists yet.
+    void t_cap_map()
+    {
+        uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 0);
+        TAP_CHECK(seed != 0);
+        if (seed == 0)
+        {
+            return;
+        }
+        kos_cap_t const fcap = static_cast<kos_cap_t>(seed & 0xFFFFFFFFu);
+        kos_cap_t const acap = static_cast<kos_cap_t>(seed >> 32);
+        uintptr_t const va = static_cast<uintptr_t>(
+            kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, 0));
+        TAP_CHECK(va != 0);
+
+        // Permission comes from the AUTHORITY word, not a rights bit: the entry's rights
+        // field is full and widening it would spend the reply sequence packed beside it.
+        TAP_CHECK(kos_frame_map(fcap, acap, va, 0) == 0);
+        // Mapped: the page is readable and writable through the address the caller chose.
+        volatile uint32_t* p = reinterpret_cast<volatile uint32_t*>(va);
+        *p = 0xC2C2C2C2u;
+        TAP_CHECK(*p == 0xC2C2C2C2u);
+
+        // A second map of the same range must refuse rather than double-install.
+        TAP_CHECK(kos_frame_map(fcap, acap, va, 0) != 0);
+        // A misaligned address is refused.
+        TAP_CHECK(kos_frame_map(fcap, acap, va + 1u, 0) != 0);
+        // An unknown flag is refused rather than ignored.
+        TAP_CHECK(kos_frame_map(fcap, acap, va, 0xFFu) != 0);
+
+        // A revoke matches the RUN and not a shape: a second run of the same length must not
+        // revoke the first's mapping.
+        uint64_t const seed2 = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 0);
+        // Asserted, never skipped: a skip here leaves the identity check untested.
+        TAP_CHECK(seed2 != 0);
+        kos_cap_t const other = static_cast<kos_cap_t>(seed2 & 0xFFFFFFFFu);
+        TAP_CHECK(kos_frame_unmap(other, acap, va) != 0); // same length, different run
+        kos_handle_close(other);
+        kos_handle_close(static_cast<kos_cap_t>(seed2 >> 32));
+        // An address inside a range and not its base is refused. NOT an image-revoke witness:
+        // at_base() answers null for any non-base address, so the old predicate refused it too.
+        // The identity property is the other-run check above.
+        uintptr_t const g2 = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        uintptr_t const inside_text = reinterpret_cast<uintptr_t>(&t_cap_map) & ~(g2 - 1u);
+        TAP_CHECK(kos_frame_unmap(fcap, acap, inside_text) != 0);
+
+        TAP_CHECK(kos_frame_unmap(fcap, acap, va) == 0);
+        // Re-mapping is what says the unmap RELEASED the range. A second unmap refusing does
+        // not: the backend refuses an already-unmapped range either way.
+        TAP_CHECK(kos_frame_map(fcap, acap, va, 0) == 0);
+        TAP_CHECK(kos_frame_unmap(fcap, acap, va) == 0);
+        kos_handle_close(fcap);
+        kos_handle_close(acap);
+    }
+
+    // Its task has a space of its own and NO reservation: the frame reaches it as a delegated
+    // capability and nothing else.
+    constexpr int CH_SHARE_FRAME = 2; // delegated SECOND, after CH_DONE
+    constexpr uint32_t SHARE_A = 0xC3A11CE0u; // written by root, read by the child
+    constexpr uint32_t SHARE_B = 0xC3B00B1Eu; // written by the child, read by root
+    void share_child(void*)
+    {
+        uintptr_t const base = static_cast<uintptr_t>(
+            kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, 0));
+        uintptr_t const g = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        // A DIFFERENT address from root's, which is the whole point of C3: the holder chooses.
+        uintptr_t const va = base + g * 4u;
+        kos_cap_t const space =
+            static_cast<kos_cap_t>(kos_aspace_probe(KOS_ASPACE_OP_CAP_SELF_SPACE, 0));
+        if (space != KOS_CAP_NONE and kos_frame_map(CH_SHARE_FRAME, space, va, 0) == 0)
+        {
+            volatile uint32_t* p = reinterpret_cast<volatile uint32_t*>(va);
+            if (p[0] == SHARE_A)
+            {
+                p[1] = SHARE_B; // seen: answer through the same frame
+            }
+            // Reported through the FRAME and not a global: its task holds a space of its own.
+            p[2] = static_cast<uint32_t>(va & 0xFFFFFFFFu);
+            p[3] = static_cast<uint32_t>(static_cast<uint64_t>(va) >> 32);
+        }
+        kos_sem_post(CH_DONE);
+    }
+
+    // Maps the delegated run, then drops its own capability while the mapping stands: after
+    // this nothing but the leaf names the run.
+    void pin_child(void*)
+    {
+        uintptr_t const base = static_cast<uintptr_t>(
+            kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, 0));
+        uintptr_t const g = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        kos_cap_t const space =
+            static_cast<kos_cap_t>(kos_aspace_probe(KOS_ASPACE_OP_CAP_SELF_SPACE, 0));
+        if (space != KOS_CAP_NONE)
+        {
+            (void)kos_frame_map(CH_SHARE_FRAME, space, base + g * 8u, 0);
+        }
+        kos_handle_close(CH_SHARE_FRAME); // the mapping is now the run's only holder
+        kos_sem_post(CH_DONE);
+    }
+
+    // A MAPPING IS A HOLDER. Without that the last capability's drop frees frames a live leaf
+    // still points at, and reading the page does not say so.
+    void t_cap_map_pins_run()
+    {
+        uint64_t const free0 = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+        uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 0);
+        if (seed == 0)
+        {
+            tap::skip("no frame run to pin");
+            return;
+        }
+        kos_cap_t const fcap = static_cast<kos_cap_t>(seed & 0xFFFFFFFFu);
+        kos_cap_t const acap = static_cast<kos_cap_t>(seed >> 32);
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0) == free0 - 1u);
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            kos_handle_close(fcap);
+            kos_handle_close(acap);
+            tap::skip("task pool too small");
+            return;
+        }
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {fcap, KOS_CAP_TRANSFER}};
+        if (not kos::thread::create_caps(pin_child, nullptr, "pin", 10, caps, 2,
+                                         KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                         KOS_AUTH_MEMORY, nullptr, t)
+                    .valid())
+        {
+            (void)kos_task_kill(t);
+            kos_handle_close(fcap);
+            kos_handle_close(acap);
+            tap::skip("thread pool too small");
+            return;
+        }
+        wait_n(1);
+        // Refs now: root's capability, plus the child's MAPPING. The child dropped its own.
+        uint64_t const refs_after_child = kos_aspace_probe(KOS_ASPACE_OP_CAP_RUN_REFS, 0);
+        tap::diag("cap pin: refs after the child mapped and closed = %u",
+                  static_cast<unsigned>(refs_after_child));
+        TAP_CHECK(refs_after_child == 2u);
+        // Root drops its capability too: from here NO capability names the run.
+        kos_handle_close(fcap);
+        kos_handle_close(acap);
+        // No capability names the run: the MAPPING alone holds it. The pool count is not the
+        // instrument while the child lives, its task holding frames for its own space.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_CAP_RUN_REFS, 0) == 1u);
+        // The space dies, its teardown unmaps and surrenders that last reference, and only
+        // THEN do the frames come back, the child's own space frames with them.
+        (void)kos_task_kill(t);
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_CAP_RUN_REFS, 0) == 0u);
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0) == free0);
+    }
+
+    void t_cap_share()
+    {
+        uint64_t const free0 = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+        uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 0);
+        if (seed == 0)
+        {
+            tap::skip("no frame run to share");
+            return;
+        }
+        kos_cap_t const fcap = static_cast<kos_cap_t>(seed & 0xFFFFFFFFu);
+        kos_cap_t const acap = static_cast<kos_cap_t>(seed >> 32);
+        uintptr_t const va = static_cast<uintptr_t>(
+            kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, 0));
+        TAP_CHECK(kos_frame_map(fcap, acap, va, 0) == 0);
+        volatile uint32_t* const mine = reinterpret_cast<volatile uint32_t*>(va);
+        mine[0] = SHARE_A;
+        mine[1] = 0;
+        mine[2] = 0;
+        mine[3] = 0;
+
+        // A task of its OWN, carrying no grant: mem_base null skips F10's handoff entirely.
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            tap::skip("task pool too small");
+            return;
+        }
+        // TRANSFER and nothing else: neither kind uses a rights bit, so a full mask is not a
+        // subset of what the source holds and the delegation is refused.
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {fcap, KOS_CAP_TRANSFER}};
+        // Explicit: a spawn grants no authority by default, and without this the child's map
+        // is refused. That refusal is the negative control below.
+        if (not kos::thread::create_caps(share_child, nullptr, "shr", 10, caps, 2,
+                                         KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                         KOS_AUTH_MEMORY, nullptr, t)
+                    .valid())
+        {
+            (void)kos_task_kill(t);
+            tap::skip("thread pool too small");
+            return;
+        }
+        wait_n(1);
+        // One frame, two spaces, two DIFFERENT addresses, and the bytes cross both ways.
+        uintptr_t const theirs = static_cast<uintptr_t>(mine[2])
+                                 | (static_cast<uintptr_t>(mine[3]) << 32);
+        tap::diag("cap share: root 0x%x, peer 0x%x",
+                  static_cast<unsigned>(va), static_cast<unsigned>(theirs));
+        TAP_CHECK(theirs != 0);
+        TAP_CHECK(theirs != va);
+        TAP_CHECK(mine[1] == SHARE_B);
+
+        // The borrower dies while root still maps the run: the run belongs to the CAPABILITY,
+        // so the space that mapped it owned nothing to free.
+        (void)kos_task_kill(t);
+        // Reading the page does NOT test this: a freed frame stays readable through a leaf
+        // nobody tore down. The pool does. One capability is gone and one remains.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0) == free0 - 1u);
+        mine[0] = SHARE_A + 1u;
+        TAP_CHECK(mine[0] == SHARE_A + 1u);
+
+        // An identical child with NO authority cannot map the same delegated capability:
+        // possession of the frame is not permission to map it.
+        mine[2] = 0;
+        mine[3] = 0;
+        kos_task_t t2 = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t2) == 0)
+        {
+            if (kos::thread::create_caps(share_child, nullptr, "shrN", 10, caps, 2,
+                                         KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                         /*authority=*/0, nullptr, t2)
+                    .valid())
+            {
+                wait_n(1);
+                TAP_CHECK(mine[2] == 0); // it reached the map and was refused
+            }
+            (void)kos_task_kill(t2);
+        }
+
+        TAP_CHECK(kos_frame_unmap(fcap, acap, va) == 0);
+        kos_handle_close(fcap);
+        kos_handle_close(acap);
+        // The frames come back only once the LAST capability naming the run is gone.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0) == free0);
+    }
+
     void t_aspace_seam()
     {
         uintptr_t const g = kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0);
@@ -8873,6 +9189,10 @@ int main(int, char**)
 #endif
 #endif
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
+    TAP_ADD("cap_objects", t_cap_objects);           // C1: frame-run and address-space capabilities
+    TAP_ADD("cap_map", t_cap_map);                   // C2: map and unmap through the cap layer
+    TAP_ADD("cap_map_pins_run", t_cap_map_pins_run); // a mapping is a holder of the run
+    TAP_ADD("cap_share", t_cap_share);               // C3: one frame, two spaces, two addresses
     TAP_ADD("aspace_seam", t_aspace_seam);           // granule, the three memory types, the frame pool
     TAP_ADD("aspace_model", t_aspace_model);         // S2/F7: what the machine reports, against the manuals
     TAP_ADD("aspace_map_cycle", t_aspace_map_cycle); // map, write, read back, unmap, gone

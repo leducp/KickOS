@@ -18,6 +18,27 @@ per milestone) is `roadmap.md`; validated end-state + per-board detail is
 
 ## M6.5
 
+Steps C0 through C3 are landed. What is left here is carried-in work and what the steps deliberately
+did not answer.
+
+- [ ] **Neither new capability kind has a user-facing MINT.** A frame-run and an address-space
+      capability exist only through `KOS_ASPACE_OP_CAP_SEED` and `KOS_ASPACE_OP_CAP_SELF_SPACE`,
+      which are selftest scaffolding. C1 through C3 witness the objects, the map pair and the
+      sharing; WHO MAY MINT ONE is undecided, and that is the question a real mint has to answer
+      rather than a gap in the steps. It wants a ruling before an ABI freeze, not before the audit.
+- [ ] **A MINT MUST NOT LET TWO LIVE RUNS SHARE A PHYSICAL BASE.** `aspace_cap_unmap` matches a
+      mapping to its run by the first page's PHYSICAL address, read back with
+      `arch_aspace_frame_at`, because a field on `VirtualRange` costs eight bytes in every range
+      of every domain and was measured shrinking the arena past what `mem_self_grant` had to
+      spare. That is sound while the frame pool hands out unique live bases, which it does: a
+      run holds its frames until its last holder drops it. A user-facing mint that could seat
+      two run objects over one address at once breaks the identity, so this is a constraint on
+      the mint rather than an assumption the map editor may make.
+- [ ] **The type field is exactly full: a third kind is a repartition.** Values 6 and 7 are spent,
+      and `KCAP_TYPE_BITS` is welded to the reply call sequence packed beside it
+      (`KCAP_REPLY_SEQ_LO_BITS`), so widening costs that and breaks the frozen 8-byte `CapEntry`
+      and `tests/unit/capreply/capreply_packing.cc`. `CAP_KIND_MAX` refuses it at compile time now,
+      which is the point; the decision is what a fourth kind would be worth.
 - [ ] **`tests/static/trap_redzone_indirect.txt` binds call sites by exact `file:line:column`.**
       Every comment edit, every inserted line and every reflow in a bound file shifts the
       bindings, so an unrelated change breaks the gate and the fix is a hand edit of a table.
@@ -2865,8 +2886,9 @@ coalesced drain reproduces the intended order instead of inverting it.
         higher waiter's wake.
       - `cap_reply_bound_fast` / `_slow`: a second caller's call must land inside the window a
         first reply cap is live.
-      - `rr_interleave`: the per-iteration burn is `2 x quantum`; a burn shorter than the slice
-        never gets preempted and the interleave vanishes.
+      - `rr_interleave`: SUPERSEDED 2026-08-30, and by more than a repair. The per-iteration burn
+        was `2 x quantum` and the arm assumed no slice ever EXCEEDS two quanta, which nothing
+        establishes; it asserts progress rather than order now. See the section below.
       Preferred repair is the same as above, a handoff; where a span is genuinely the subject,
       the arm should at least detect its own vacuity instead of passing.
 
@@ -6839,6 +6861,98 @@ writes `SCB_SHCSR |= SHCSR_MEMFAULTENA` in code SHARED with armv6m. **SHCSR does
 ARMv6-M** and there is no MemManage exception there; the comment above it is a v7-M statement. RP2040
 reads it back as 0, so it is RAZ/WI and harmless today, but it is architecturally a reserved-SCS
 access on a v6-M core.
+
+## rr_interleave asserts PROGRESS now, and what that gives up is named here (2026-08-30)
+
+Opened by ONE CI failure on `qemu-arm64` at `83fe2ed`, `rr order: AABABB` against
+`nth('B', 1) < nth('A', 2)`. The arm had TWO independent defects and only one of them is the
+timing one that gets noticed.
+
+**Defect 1, UNCONDITIONAL and nothing to do with load: the assertions were ONE-SIDED.**
+`nth('B', k) < nth('A', k+1)` is vacuously true whenever B logs first, so `BBBAAA` -- the spinner
+running its entire workload before the burner logs once, which is total starvation and the exact
+regression the arm exists to catch -- evaluated `0 < 4` and `1 < 5` and PASSED. Every failing
+string in every measured batch starts with `A`; every `B`-first string passed, the maximally wrong
+ones included. So on any board, idle or loaded, the arm could only ever fail about half the time
+it should have.
+
+**Defect 2, load-dependent: the order rested on a slice bound nothing establishes.** A slice runs
+for the quantum PLUS the interrupt's delivery latency. MEASURED on `qemu-arm64`: idle, 200 slice
+samples all inside 0.61-1.36 ms against a 1.000 ms quantum and none above 1.4 ms; under 40 spinners
+on 24 cores, 60 of 199 samples above 1.4 ms with 31 pinned at exactly the 2.000 ms burn cap. A
+kernel probe in `tick_rr` saw 63 slice expiries arriving 0.4-10 ms late under load against zero
+above 400 us idle, with the peer on the ready list in 60 of 63. The guest clock advances smoothly
+through the burn, so the vCPU was executing and QEMU's timer callback was simply late off an
+oversubscribed host. The kernel is CORRECT: `policy_on_slice_expire` rotates and
+`policy_on_switch_in` hands the peer a full fresh quantum, so lateness does not compound.
+`AABABB` reproduced verbatim 14 times in 110 loaded runs, 0 in 80 idle.
+
+**The 2026-08-17 rule's remedy is STRUCTURALLY UNAVAILABLE here, which is the general lesson.**
+That rule makes an order assertion sound only when the ordering comes from a rendezvous the
+consumer OUTRANKS, so the consumer preempts at the post. Two round-robin peers are equal BY
+DEFINITION; equality is what RR means. No post between them preempts anything, and forcing the
+order would mean making one block on the other, which deletes the preemption the arm exists to
+test. So this arm may not assert order at all, and lengthening the burn does not help: a
+two-quantum slice breaks the alternation at any burn length.
+
+**What it asserts instead.** A burner runs `quantum * 32` of workload and never blocks; an
+equal-priority peer spins bumping a counter; the burner samples that counter ACROSS its own burn
+and the arm requires it to have advanced. Sampled across rather than at the end deliberately: a
+peer that ran only BEFORE the burner started does not satisfy it. Measured: idle 6/6 green with the
+counter advancing 4.3M to 6.7M against a threshold of one, and with slice arming mutated to never
+expire, 5/5 RED at `peer advanced 0` -- where the old arm caught that same class 0% of the time on
+an idle box. The margin now GROWS with the burn figure, where the old one broke at any length.
+
+**WHAT A PROGRESS ASSERTION GIVES UP, AND WHAT REPLACED IT IN THE SAME ARM.** The section below
+credits the ordering assertion with catching the PendSV pair race, and says a flake label on an arm
+whose failure had a root cause is worse than no label. That is right and it is not retracted. A
+progress assertion alone does NOT have that sensitivity: under a switch that resumes a thread on
+the wrong stack both threads still run, so the counter still advances and the arm stays green. That
+gap was briefly recorded here as a debt and is CLOSED instead, in the same arm and at no timing
+cost: each worker holds a volatile STACK sentinel and re-reads it on every iteration, so it rides
+the preemptions the arm already generates. Held in a volatile local rather than a plain one so it
+lives on the stack and not in a callee-saved register, which the switch preserves by a different
+path. It is deterministic, rests on no timing, and would have caught the PendSV race on every run
+rather than 4 of 6.
+
+**IT WAS NEVER arm64-SPECIFIC, AND THE SPLIT IS THE CLOCK GRANULE.** Measured across every
+emulated board that runs the arm, 20-25 runs idle and 25 loaded (40 spinners on 24 cores, one board
+at a time, loadavg and build-process count stamped per batch). Idle: 0 failures everywhere. Loaded:
+`qemu-riscv64-sv48` 11/25, `qemu-arm64` 10/25, `qemu-riscv64` 8/25, `qemu-x86_64` 9/50,
+`qemu-riscv` 5/25, `sim-telem` 1/25, `sim` 0/25. RISC-V is WORSE than the board CI happened to
+catch. The five boards at 0/25 are exactly the five whose `arch_clock_now` is the QEMU semihosting
+clock at 10 ms resolution (`arch/arm/chip/mps2/chip_mps2.cc:95`, `arch/arm/chip/nrf51/chip_nrf51.cc:79`):
+that trips `quantum = granule * 4`, giving a 40 ms quantum against a delivery lateness of 0.4-10 ms,
+a 4x margin where the 1 ms boards have a NEGATIVE one. They are not immune by design, they are 40x
+further from the cliff by accident of a coarse clock. `sim` is not deterministic and not immune
+either; it is merely better scheduled than a TCG vCPU thread. The 13 silicon-only boards compile the
+arm and were NOT measured, so no pass is claimed for them.
+
+**And the one-sided assertion is now measured rather than reasoned.** Across the loaded batches
+**47 non-alternating orders reported `ok`**, including a `BBBAAA` on `qemu-riscv64`: total
+starvation of the burner, reported as a pass.
+
+**The fixed arm under the SAME load: 15/15 on `qemu-arm64` and 15/15 on `qemu-riscv64-sv48`**, the
+two worst boards, against 10/25 and 11/25 for the old one.
+
+**THE BURN IS POSTURE-DEPENDENT, because one figure was charged twice.** The multiplier exists for
+the fine-clock hazard, where a 1 ms quantum meets a 10 ms lateness. On a coarse-clock board the
+quantum is already 40 ms, the same lateness is a fraction of one quantum, and a flat 32x cost 1.28 s
+against the 240 ms the old arm took. Four quanta there is a wider margin than 32 is on a fine board,
+and `qemu-m3`'s suite went 8.64 s to 7.52 s, cheaper than before the fix.
+
+**The three legs are separately controlled, and the assertion ORDER is part of the diagnostic.**
+Measured: forcing the burner's sentinel wrong reports `g_rr_stack_swap`, forcing the spinner's
+reports the same, and mutating slice arming never to expire reports `g_rr_advanced`. The stack
+check is asserted FIRST deliberately: a worker that sees a swapped sentinel abandons its loop, so
+the burner then never burns and the progress check fails too. Asserted the other way round, a stack
+swap was measured reporting as "the peer never ran", which is a real defect wearing another one's
+name.
+
+**And the 4/6 is EXPLAINED rather than contradicted by defect 1.** An ordering arm that passes
+every `B`-first run cannot fail more than about half the time whatever the underlying corruption
+does, so 4 of 6 is what a fully-present bug looks like through a half-blind instrument. The old
+section's mechanism argument stands; its counts were bounded by the assertion's own shape.
 
 ## rr_interleave's ARM marginality had a ROOT CAUSE: the PendSV pair race (2026-08-10)
 

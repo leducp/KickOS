@@ -6579,8 +6579,71 @@ fitted to one firmware.
 
 ### M6.5 -- frame-level capabilities
 
-Scoped by F3 and deliberately last, and now designed against three backends rather than one. These three are stated coarsely on purpose: the shape of C2
-depends on what T5 and T6 actually cost, and pinning it now would be a guess wearing a plan's clothes.
+Scoped by F3 and deliberately last, and now designed against three backends rather than one. C1
+through C3 were stated coarsely on purpose: the shape of C2 depends on what T5 and T6 actually cost,
+and pinning it before them would have been a guess wearing a plan's clothes. C0 is what replaced the
+guess with measurement, and the four findings under it are what the three steps below now reason
+from.
+
+**"AGAINST THREE BACKENDS" IS A DESIGN CLAIM AND NOT A WITNESS COUNT, and the evidence sentence has
+to say so.** `CHIP_Q35` selects no memory family (`arch/Kconfig`), so the x86_64 board builds none of
+the kernel-side aspace family and runs none of these arms; F8's own record forbids selecting the axis
+there before the link-time separation of the halves, every table the port allocates being ring-3
+writable until it lands. So M6.5 is HELD AGAINST three backends and RUN on two, which is the RX72M
+method F8 endorses rather than a shortfall against it. A step that reports "three backends" without
+that clause overstates by one.
+
+**C0. The baseline, before the first object kind. LANDED.** F8's verdict is a diff against a frozen
+API and 3.4b requires the API to exist before the falsifier starts; C1's expected result is a diff
+too, and it had nothing to diff against. `tests/static/check_cap_sigdiff.sh` declares the capability
+ABI family over `user/include/kickos/sys/abi.h` and `system/include/kickos/sys/cap_index.h`, and
+`tests/static/cap_seam_records.txt` freezes it. Unlike the aspace differ it is ON the ctest ladder,
+because its expected verdict is PASS for the whole milestone: where the aspace differ reports a diff
+for a seam that was moving, this one asserts the capability ABI did not gain an addressing concept.
+*Expected, and observed at C0:* PASS, 22 records.
+
+Four findings, each of which the steps below cite rather than rediscover.
+
+  - **The entry's type field is exactly full after this milestone.** `KCAP_TYPE_BITS` is 3 and
+    `CAP_IRQ` is 5, so a frame kind and a page-table kind take the last two values. A THIRD kind
+    needs a repartition, and the reply call sequence packed beside the type and the rights is what a
+    repartition spends.
+  - **Both budget guards were blind to exactly that growth, and are not now.** Each was keyed on the
+    last member by NAME, so `CAP_IRQ` and the three rights bits bounded themselves and nothing added
+    past them. Measured at C0: a kind at 8 and a fourth rights bit both compiled clean while an
+    independent probe over the same tree failed on the same expression. `CapType` carries a
+    `CAP_KIND_MAX` sentinel the assert reads, and the rights mask is `CAP_RIGHTS_ALL`. This is the
+    milestone's own recurring class one level below where M6.2 through M6.4 kept meeting it: not an
+    instrument whose corpus can go empty, but a guard whose SUBJECT does not grow with the thing it
+    guards.
+  - **A capability may not name one frame, and the numbers are not close.** The frame pool is 8 MiB
+    on both translating chips, so 2048 frames of the frozen granule, against a root capability table
+    of 10 slots, a spawned child's 7, and object pools of 16, 8, 4 and 8. Two to three orders of
+    magnitude on both axes. So the unit a frame capability names is a RUN, which is what the frame
+    pool already allocates and what a reservation already is; a per-frame object is not a pool-sizing
+    question that a bigger number answers.
+  - **The kernel-side cap layer is outside C0's instrument and says so in its own file.** The
+    extractor reads a C header and `kernel/include/kickos/cap.h` is C++, yielding twelve records of
+    any name, so a corpus built over it would have compared two near-empty sets and reported clean.
+    What holds that half is the static_assert set in the header, which is why the second finding
+    above was worth fixing rather than noting.
+
+**Two rulings C0 owed, taken here so C1 does not discover them.**
+
+*Map and unmap take their permission from the AUTHORITY WORD and not from a new right.* The rights
+field is full, and widening it spends the reply sequence, breaks the frozen 8-byte entry and the
+packing arm that pins it, to buy a per-capability right where the tree already answers this question
+another way: `KOS_SYS_MEM_SELF_GRANT` is gated on `AUTH_MEMORY` today. Possession of the object
+carries the object; the authority word carries the permission to map it. This also leaves the last
+two type values for a real third kind rather than spending one on a right.
+
+*A frame capability names its run by HANDLE, and the physical identity stays in the object below the
+resolve chokepoint.* Today a reservation's virtual address IS its physical run base (`aspace_reserve`,
+landed at T5), which is what lets the handoff reproduce a donor's address in a second space, and C3
+retires that identity by letting a holder choose the address. Keeping the number above the chokepoint
+would put an address in the cap layer, which is the one thing C1 exists to show does not happen. F10
+already demoted system-wide uniqueness from a freeze to a policy for a wide-address backend; the
+same-address rule demotes the same way, from a mechanism to what a caller may still ask for.
 
 **C1. Frame and page-table objects in the capability layer**, typed like every other object and named
 by handle.
@@ -6588,9 +6651,59 @@ by handle.
 anywhere in the cap layer, which is the address-space-agnostic property the spike's QW-5 asked be
 preserved and the one thing M6.5 could plausibly break.
 
+**THE SECOND KIND IS AN ADDRESS SPACE AND NOT A PAGE TABLE, and F3's own wording is what this
+corrects.** F3 says "page-table and frame capability types", which is the vocabulary of a kernel that
+holds page tables. This one does not: 3.4b freezes `map` as the owner of the entry encoding, F1 keeps
+the identifier below the seam, and the kernel's handle on a space is the opaque `struct arch_aspace`
+whose tables are allocated under the seam and never named above it. A capability called a page table
+would therefore name a mechanism the seam exists to hide, and it would do it inside the one layer C1
+is meant to prove stayed free of them. So the pair is a frame RUN and an ADDRESS SPACE, which are the
+two things the kernel actually holds. F3's phrase came from the lineage the spike was read against
+and was never a decision taken here; per section 5's opening rule it is an observation being removed
+rather than a decision being revised, and nothing downstream rests on it.
+
 **C2. Map and unmap as capability operations**, inside the single lock F4 keeps.
 *Expected:* a mapping installed and revoked through the cap layer with the resolve-to-use span no
 wider than it is today.
+*Landed at C2, and three things are worth the record.* The permission comes from the AUTHORITY word
+as C0 ruled, so no rights bit was spent and the last two type values stay available. ONE lock spans
+BOTH resolves and the edit they drive, so the F4 span is one lock wider than nothing and no window
+opens between resolving the frame and resolving the space. And the range the map records is
+BORROWED, which is not a new lifetime rule but the one F10 already has: the frames belong to the
+capability, so the space that maps them frees nothing at teardown and the last holder is what
+returns them.
+*The ADDRESS is an argument and never a field.* Both syscalls take it positionally, so no structure
+in the capability ABI carries one and the two members that entered C0's baseline are plain
+enumerators. That is what makes C1's claim survive a step that necessarily names addresses: the cap
+LAYER stays free of them while the OPERATION over it takes one.
+**AN EXTERNAL AUDIT (2026-08-30) RAISED TWO HIGH FINDINGS AGAINST THIS STEP AND BOTH HELD. They are
+ONE missing thing: a mapping did not record or pin the run it named.** The revoke matched a SHAPE,
+`VR_BORROWED` plus a page count, which the image (`VR_IMAGE | VR_BORROWED`) and every F10 handoff
+also satisfy, so a frame capability of the right length could revoke a mapping it never placed, its
+own image text included; and the map took no reference, so the last CAPABILITY's drop freed frames a
+live leaf still pointed at. C3's own lesson is why neither showed: a freed frame stays readable
+through a leaf nobody tore down, and the tests unmapped before closing.
+
+*The fix is identity, and it is asked of the HARDWARE rather than stored.* A `VR_FRAMECAP` flag says
+this range came from `aspace_cap_map`, and WHICH run is settled by comparing
+`arch_aspace_frame_at(space, va)` against the named run's base. A field on the range would have been
+the obvious answer and it costs eight bytes in every range of every domain: measured, a `run` field
+defaulted to -1 also made `VirtualRange` non-zero-initialised and moved the whole domain array out
+of `.bss` into `.data`, 32 KiB of image and boot-time copy, and even zero-defaulted its 5 KiB of
+`.bss` shrank the arena enough to break `mem_self_grant`, which sat on ONE range slot of margin.
+The final shape costs sixteen bytes.
+
+*And a MAPPING IS A HOLDER.* `aspace_cap_map` takes a reference on the run and `aspace_cap_unmap`
+surrenders it; a space that dies still mapping surrenders it in the teardown sweep, which reads the
+frame before the unmap clears it and releases by base. Witnessed by `cap_map_pins_run`: a child maps
+the delegated run, drops its own capability, root drops the last one, and the holder count reads ONE
+with no capability anywhere naming it.
+
+*One arm's limit, measured rather than assumed.* "A second unmap is refused" does NOT witness that
+the range came back: with the release deleted, the backend refuses an already-unmapped range on its
+own and that check still passed. What witnesses the release is RE-MAPPING the same address, which
+goes red exactly there. The weaker check was written first and kept only because the stronger one
+sits beside it.
 
 **C3. Sharing GENERALISED, not restored.** One frame mapped into two processes by an explicit grant,
 at addresses the holders choose -- where M6.2 had exactly one hard-wired case of this, the handoff
@@ -6598,6 +6711,42 @@ F10 contracts at handover time, whether that handover is an explicit task create
 spawn. T5 removed the dedup, never the sharing.
 *Expected:* two processes reading one frame through separate address spaces, with T8's denial arms
 still failing closed for everything not granted.
+*Landed at C3.* The frame reaches the second process as a DELEGATED CAPABILITY and nothing else: its
+task is created with a null block, so F10's handoff never runs, and the child names its own space
+through a capability of its own. The delegation mask is `CAP_TRANSFER` alone, neither new kind using
+a rights bit at all.
+*The authority ruling gained its negative control here, and it was found rather than designed.* A
+spawn grants NO authority by default, so the first attempt at this arm had the child refused at the
+map and reporting nothing; passing `KOS_AUTH_MEMORY` explicitly is what made it work. An identical
+child spawned without it now stands beside the positive case, so possession of the frame is
+witnessed NOT to be permission to map it, which is the gap C2 left open.
+
+**C3'S LIFETIME RULE IS THE FRAME RUN'S OWN REFCOUNT, AND IT DOES NOT REPLACE THE DONOR EDGE.**
+This paragraph said it did, before the step was built; that was a prediction and it was wrong, so it
+is corrected here rather than left for the next reader. T4 refused a frame-level refcount on the
+ground that one would duplicate the ownership M6.5 would express properly, and T10 completed the
+surviving rule with a reference on the DONOR's domain, carried by `Domain::borrowed_from`.
+
+What C3 actually adds is a SECOND ownership, and the two coexist because they own frames
+differently. Under F10's handoff the frames come out of the DONOR'S RESERVATION, which its range
+list owns, so the donor edge is what stops a donor's teardown freeing them under a borrower; that
+path is unchanged and still needs it. Under C3 the frames belong to the RUN OBJECT, refcounted by
+the capabilities naming it, and the space that maps them owns nothing: the range is recorded
+BORROWED and its teardown frees nothing. A donor dying first therefore takes no frames with it
+because it never held them.
+
+**And the cycle the old paragraph feared is not expressible on the new path, for a reason the edge
+never had.** `borrowed_from` is a domain-to-domain edge, which is why its acyclicity had to be
+argued from being written once. A capability reference points from a THREAD'S TABLE at an OBJECT,
+and objects name no domains, so there is no domain-to-domain edge to close a cycle with however many
+holders there are. The write-once argument is not weakened by N holders; it is simply not the thing
+carrying C3.
+
+*Witnessed at C3:* one run mapped into two spaces at two DIFFERENT addresses with the bytes crossing
+both ways, the borrower's task killed while the donor still maps it, and the pool asserted to still
+be one run short at that moment -- reading the page does NOT test this, a freed frame staying
+readable through a leaf nobody tore down. Measured: freeing the run at the first drop instead of the
+last turns exactly that assertion red.
 
 ## 6. What M7 inherits
 

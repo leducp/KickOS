@@ -18,6 +18,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/config.h>
 #include <kickos/domain.h>
+#include <kickos/frame_pool.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance_local.h>
 #include <kickos/irq.h>
@@ -99,6 +100,13 @@ namespace kickos
         // and no pinned index; a slot is free iff its refcount is 0 AND it has no creator.
         // All access via task_*().
         Task tasks[KICKOS_MAX_TASKS];
+#if KICKOS_HAVE_ASPACE
+        // Frame-RUN pool and its object-side refcount, same shape as the pools above. Only a
+        // translating board has a frame pool to name, so this is the one kind whose storage
+        // is posture-gated; CAP_ASPACE needs no pool of its own, a domain already being one.
+        SlotPool<FrameRun, KICKOS_MAX_FRAME_RUNS> frame_runs;
+        uint8_t frame_run_refs[KICKOS_MAX_FRAME_RUNS] = {};
+#endif
 
         // --- interrupt dispatch + IRQ-as-event bindings (irq.cc) ---
         IrqEntry irq_table[KICKOS_MAX_IRQ]; // line -> handler; ISR reads by index

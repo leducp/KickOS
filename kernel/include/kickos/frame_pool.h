@@ -16,6 +16,30 @@
 
 namespace kickos
 {
+    // A capability's unit over this pool: a RUN, the pool holding thousands of frames against
+    // a spawned thread's single-digit capability table. `base` stays below the resolve
+    // chokepoint, so no address reaches the capability ABI.
+    struct FrameRun
+    {
+        arch_phys_addr_t base = 0;
+        uint32_t pages = 0;
+    };
+
+    // Seat a frame RUN and take the creator's reference over frames the caller already holds.
+    // -1 when the pool is full. NOT in cap.h: the base is an arch_phys_addr_t and that header
+    // must not learn an address width.
+    [[nodiscard]] int frame_run_create(arch_phys_addr_t base, uint32_t pages);
+
+    // One reference on a frame RUN for a holder that is not a capability. A MAPPING is one:
+    // without it the last capability's drop frees frames a live leaf still points at. False at
+    // the ceiling or on a handle that does not resolve.
+    [[nodiscard]] bool frame_run_ref(int obj_handle);
+    void frame_run_release(int obj_handle);
+    // Holders, capabilities and mappings alike. 0 when the handle does not resolve.
+    uint8_t frame_run_refcount(int obj_handle);
+    // A teardown's release, where only the frame is known: the range stores no run handle.
+    void frame_run_release_by_base(arch_phys_addr_t base);
+
     // Describes the carve at the granule the arch reports. False on a carve too small for a
     // bitmap plus one usable frame. A second call strands every frame handed out since the first.
     bool frame_pool_init();

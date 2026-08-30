@@ -66,7 +66,8 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
   foreach(_knob KICKOS_MAX_THREADS KICKOS_USER_STACK_SIZE KICKOS_IDLE_STACK_SIZE
                 KICKOS_ROOT_STACK_SIZE KICKOS_MAX_SEMAPHORES KICKOS_MAX_MUTEXES
                 KICKOS_MAX_ENDPOINTS KICKOS_CAP_TABLE_SUPPLY KICKOS_MAX_SPAWN_GRANTS
-                KICKOS_MAX_IRQ_HANDLES KICKOS_RTT_CH1_SIZE KICKOS_USER_HEAP_SIZE
+                KICKOS_MAX_IRQ_HANDLES KICKOS_MAX_FRAME_RUNS KICKOS_RTT_CH1_SIZE
+                KICKOS_USER_HEAP_SIZE
                 KICKOS_MAX_INSTANCES KICKOS_PANIC_DUMP KICKOS_DIAG_TERSE)
     if(DEFINED ${_knob})
       list(APPEND _kcfg_req "CONFIG_${_knob}=${${_knob}}")
@@ -771,6 +772,14 @@ if(KICKOS_BUILD_TESTS)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_entry_sigdiff.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(entry_sigdiff PROPERTIES TIMEOUT 120 LABELS host)
+
+  # M6.5's expected verdict is PASS: frame and page-table objects enter the capability layer
+  # and the ABI gains no addressing concept. A member added on purpose moves
+  # tests/static/cap_seam_records.txt in the commit that adds it, never ahead of it.
+  _add_test(NAME cap_sigdiff
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_cap_sigdiff.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cap_sigdiff PROPERTIES TIMEOUT 120 LABELS host)
 
   # Takes the generated board config: the gate must read the knob spelling C reads.
   _add_test(NAME cpu_id_fold

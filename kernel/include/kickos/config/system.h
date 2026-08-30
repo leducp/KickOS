@@ -138,6 +138,11 @@
 #define KICKOS_MAX_IRQ_HANDLES 8
 #endif
 
+// Frame RUNS a capability may name at once. Built only where a frame pool exists.
+#ifndef KICKOS_MAX_FRAME_RUNS
+#define KICKOS_MAX_FRAME_RUNS 8
+#endif
+
 namespace kickos
 {
     // Ignored unless KICKOS_SCHED_PERIODIC_TICK is opted into; the tickless

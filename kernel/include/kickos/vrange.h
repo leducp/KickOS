@@ -41,7 +41,12 @@ namespace kickos
         VR_BORROWED = 1u << 0,
         // The process image seeded into every space, rather than a range the app reserved.
         // A caller may name its own reservations and not these.
-        VR_IMAGE = 1u << 1
+        VR_IMAGE = 1u << 1,
+        // Placed by aspace_cap_map, which holds one reference on the frame RUN it maps.
+        // VR_BORROWED alone does NOT identify such a range: the image and every F10 handoff
+        // carry it too. WHICH run is asked of arch_aspace_frame_at rather than stored here,
+        // a field costing eight bytes in every range of every domain.
+        VR_FRAMECAP = 1u << 2
     };
 
     // The most pages one range may name, which reserve() refuses above. This ceiling is what
@@ -85,10 +90,16 @@ namespace kickos
         // Reserving maps nothing.
         bool reserve(uintptr_t base, size_t pages, uint8_t flags = 0);
 
+        // The range whose base is EXACTLY `base`, or null. Distinct from find(), which is
+        // containment: a revoke must name a whole range and not a byte inside one.
+        VirtualRange const* at_base(uintptr_t base) const;
+
         // Turn a reservation into a granted range. Exact: the pair must name a reservation
         // this space made. A rights word carrying a bit the entry cannot hold is refused,
         // never truncated.
-        bool grant(uintptr_t base, size_t pages, uint32_t rights, uint8_t memtype = 0);
+        // No default memtype: 0 is Normal, and a caller omitting it over a non-cacheable leaf
+        // records an agreement that is not the one installed.
+        bool grant(uintptr_t base, size_t pages, uint32_t rights, uint8_t memtype);
 
         // Drop the entry starting at `base`, whatever its state.
         bool release(uintptr_t base);

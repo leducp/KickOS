@@ -26,8 +26,8 @@
 #   baseline   the records themselves, checked in, one file per family. A baseline that is
 #              absent, empty, or carries a line this driver cannot parse REFUSES. A file
 #              read as zero records differs from no candidate and would pass everything.
-#   corpus     the candidate's tracked seam headers, arch/include/kickos/arch/*.h, taken
-#              from the working tree or read out of a ref with `git show`
+#   corpus     the candidate's tracked seam headers, named by the caller's own pathspecs in
+#              KOS_SD_CORPUS, taken from the working tree or read out of a ref with `git show`
 #   comments   tests/lib/strip_comments.awk blanks `//`, `/* */` and every literal first,
 #              so a comment naming a member cannot enter the corpus
 #   members    by declared IDENTIFIER prefix, never by the section banner: a re-wrapped or
@@ -54,7 +54,10 @@
 #                        is already this caller's family
 #   KOS_SD_FAMILY_MSG    the refusal when KOS_SD_FAMILY is set and unreadable
 #   KOS_SD_RECORDS       the frozen records, as a path from the repo root
+#   KOS_SD_CORPUS        the pathspecs the seam headers are read from, one per row,
+#                        KOS_SD_CORPUS_ROWS their count
 #   KOS_SD_ANCHOR        the seam header whose absence means the wrong corpus
+#   KOS_SD_MIN_FILES     the floor on how many files each side's corpus reads
 #   KOS_SD_KINDS         the kinds carrying a floor, KOS_SD_MIN_<KIND> each floor
 #   KOS_SD_KIND_LABEL    what a kind is called in the floor refusal
 #   KOS_SD_MIN_TOTAL     the floor on the whole record set
@@ -212,6 +215,37 @@ KOS_TABLE_END
     if [ "$_rows" -ne "$KOS_GROUP_ROWS" ]; then
         fail "the group table parsed to $_rows row(s), not $KOS_GROUP_ROWS. This shell mangled
       it, so $KOS_SD_MANGLED_TAIL"
+    fi
+}
+
+# The corpus pathspecs, parsed ONCE into $TMP/corpus and checked against the count the caller
+# declares. Fed by a here-document for the reason sigdiff_group_table is: a refusal inside a
+# pipeline's subshell would print and be ignored. A pathspec that word-splits differently under
+# one shell would silently narrow the corpus, which is the GROUPS failure one file over:
+# there it emptied the floors, here it would empty the seam and compare two short sets clean.
+sigdiff_corpus_table() {
+    : > "$TMP/corpus"
+    while read -r _p _extra; do
+        if [ -z "$_p" ]; then
+            continue
+        fi
+        if [ -n "$_extra" ]; then
+            fail "corpus row \"$_p $_extra\" is not a single pathspec. A path holding a space
+      cannot be carried here"
+        fi
+        case "$_p" in
+            /* | *..*)
+                fail "corpus pathspec \"$_p\" is not relative to the repo root"
+                ;;
+        esac
+        printf '%s\n' "$_p" >> "$TMP/corpus"
+    done <<KOS_CORPUS_END
+$KOS_SD_CORPUS
+KOS_CORPUS_END
+    _rows="$(grep -c . "$TMP/corpus" || true)"
+    if [ "$_rows" -ne "$KOS_SD_CORPUS_ROWS" ]; then
+        fail "the corpus table parsed to $_rows pathspec(s), not $KOS_SD_CORPUS_ROWS. This shell
+      mangled it, so the seam below would be read from part of its own headers"
     fi
 }
 
@@ -373,11 +407,13 @@ sigdiff_extract_side() { # <tag> <ref-or-empty>
     : > "$TMP/$_tag.all"
     : > "$TMP/$_tag.refused"
     if [ -n "$_ref" ]; then
-        git ls-tree -r --name-only -- "$_ref" arch/include/kickos/arch/ \
+        # shellcheck disable=SC2046
+        git ls-tree -r --name-only -- "$_ref" $(cat "$TMP/corpus") \
             > "$TMP/$_tag.ls" || fail "git ls-tree failed for $_ref"
     else
         # `git ls-files`, not find: an untracked scratch header is neither read nor counted.
-        git ls-files -- 'arch/include/kickos/arch/*' > "$TMP/$_tag.ls" \
+        # shellcheck disable=SC2046
+        git ls-files -- $(cat "$TMP/corpus") > "$TMP/$_tag.ls" \
             || fail "git ls-files failed"
     fi
     while IFS= read -r f; do
@@ -419,6 +455,12 @@ sigdiff_extract_side() { # <tag> <ref-or-empty>
     grep -Fxq "$KOS_SD_ANCHOR" "$TMP/$_tag.files" \
         || fail "$_tag corpus does not contain $KOS_SD_ANCHOR; the corpus was built from
       the wrong path"
+    # The anchor proves ONE file was read. A family whose corpus spans several paths can lose
+    # every other one and still clear it, so the count carries a floor of its own.
+    if [ "$_n" -lt "$KOS_SD_MIN_FILES" ]; then
+        fail "$_tag corpus is $_n file(s), below the floor of $KOS_SD_MIN_FILES. The rest of
+      this family's seam was not read, and a diff over part of it is not a clean one"
+    fi
     eval "KOS_SD_FILES_$_tag=$_n"
 }
 
@@ -543,6 +585,7 @@ sigdiff_run() { # <candidate-ref>, optional
     sigdiff_preflight
     sigdiff_resolve_candidate "${1:-}"
     scratch_dir
+    sigdiff_corpus_table
     sigdiff_group_table
     sigdiff_control
     if [ -n "${KOS_SIGDIFF_REGEN:-}" ]; then
