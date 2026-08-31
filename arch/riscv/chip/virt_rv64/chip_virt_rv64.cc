@@ -7,18 +7,18 @@
 //
 // THE MMIO ADDRESSES BELOW ARE VIRTUAL, and they are the kernel's own alias of a physical
 // register rather than its identity: KICKOS_RV64_VA_BASE plus the physical address, the same
-// delta the kernel window uses (startup.S, docs/design-m6-mmu.md R2.2). Every leaf that names
-// them is U-clear, so an access below is reachable from supervisor mode only.
+// delta the kernel window uses (startup.S). Every leaf that names them is U-clear, so an
+// access below is reachable from supervisor mode only.
 //
 // THE TIMEBASE IS Sstc AND THAT IS A CHIP FACT, NOT AN ARCH ONE. This core carries the
 // extension, so supervisor code owns its own comparator: arch_timer_arm writes stimecmp
 // directly and no machine-mode shim stays resident. startup.S sets menvcfg.STCE and
 // mcounteren.TM in machine mode, without which both CSR accesses below trap.
 //
-// A PART WITHOUT Sstc SUPPLIES ITS OWN PATH FROM HERE, and the route is now clear rather than
-// contended: the C906 (docs/design-m6-mmu.md F8's silicon witness) reaches firmware by
-// ECALL-from-S, and startup.S leaves medeleg bit 9 UNDELEGATED, so that ecall goes to machine
-// mode where firmware wants it instead of into stvec. The trap entry spends no cause on it.
+// A PART WITHOUT Sstc SUPPLIES ITS OWN PATH FROM HERE: the C906 reaches firmware by
+// ECALL-from-S, and startup.S leaves medeleg bit 9 UNDELEGATED, so that ecall goes to
+// machine mode where firmware wants it instead of into stvec. The trap entry spends no
+// cause on it.
 //
 // Virtual board, no pads; arch_pinmux_set is left to the declining ENOSYS fallback.
 
@@ -82,8 +82,8 @@ namespace
     // EVERY DEVICE IS NAMED AT THE KERNEL'S OWN ALIAS OF ITS PHYSICAL ADDRESS, one uniform
     // delta with the kernel window beside it (startup.S maps physical 0 there). Identity would
     // put the device leaf in a level-2 slot of the LOW half, which every space copies from the
-    // boot root, and that would refuse a per-space mapping anywhere in the first gigabyte for
-    // a reason no caller could see. The physical values below are what a grant names.
+    // boot root, and that would refuse a per-space mapping anywhere in the first gigabyte.
+    // The physical values below are what a grant names.
     constexpr uintptr_t DEV_VA = KICKOS_RV64_VA_BASE;
 
     // QEMU `virt` NS16550A. Byte registers: THR at +0, LSR at +5 with bit 5 = holding
@@ -152,10 +152,9 @@ uint64_t arch_clock_now(void)
 }
 
 // --- One-shot next-event timer: stimecmp (absolute) -------------------------
-// Idempotent, so no armed-deadline dedup is owed: ktime_rearm calls this on every context
-// switch with the same value. Dividing rather than multiplying is what keeps a UINT64_MAX
-// deadline from overflowing. A deadline already past leaves the compare met, which asserts
-// STIP now.
+// Idempotent, so no armed-deadline dedup is owed. Dividing rather than multiplying is what
+// keeps a UINT64_MAX deadline from overflowing. A deadline already past leaves the compare
+// met, which asserts STIP now.
 void arch_timer_arm(uint64_t deadline_ns)
 {
     uint64_t const ticks = deadline_ns / NS_PER_TICK;

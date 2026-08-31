@@ -2,13 +2,13 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // An unprivileged thread's stack, once it stops being an arena block and becomes frames
-// mapped into its task's address space (docs/design-m6-mmu.md section 3.4). Three
-// properties the arena could not give it: no power-of-two size, no natural alignment, and
-// an UNMAPPED page below it, so an overrun faults instead of reaching a neighbour.
+// mapped into its task's address space. Three properties the arena could not give it: no
+// power-of-two size, no natural alignment, and an UNMAPPED page below it, so an overrun
+// faults instead of reaching a neighbour.
 //
-// THE MAPPING IS TASK-WIDE AND THAT IS F9's FLOOR, not a weakening chosen here: a sibling
-// in the same task reaches this stack. A thread-scoped grant guarantees access to its
-// holder and nothing about denial to a peer.
+// THE MAPPING IS TASK-WIDE, AND THAT IS THE PORTABLE FLOOR, not a weakening chosen here:
+// a sibling in the same task reaches this stack. A thread-scoped grant guarantees access
+// to its holder and nothing about denial to a peer.
 //
 // THE OUTPUT ADDRESS IS THE VIRTUAL ADDRESS, as it already is for the image. That is what
 // lets the kernel write a stack it does not have activated, a spawn seating the TLS block
@@ -51,8 +51,8 @@ namespace kickos
     // names no frame this pool handed out. Null is the answer for an arena block, which is
     // directly dereferenceable and needs no alias.
     //
-    // IT DOES NOT SAY WHO OWNS THE RUN. F10's allocator hands the app frames out of this same
-    // pool, so a caller-supplied stack answers here exactly as a kernel-allocated one does;
+    // IT DOES NOT SAY WHO OWNS THE RUN. The app's own allocator hands it frames out of this
+    // same pool, so a caller-supplied stack answers here exactly as a kernel-allocated one does;
     // Thread::kstack_owned is what says which, and the release paths read that.
     void* ustack_kptr(uintptr_t base);
 

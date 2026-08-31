@@ -8,12 +8,14 @@
  * cooperative switch does not need. Every resume is an `eret`, EL1 to EL1 included, so the
  * frame carries ELR and SPSR rather than a saved x30 to `ret` through.
  *
- * ALL THIRTY-TWO VECTOR REGISTERS, because three of the four users are ASYNCHRONOUS: an
- * interrupt entered code that called nothing, so anything the AAPCS lets a call clobber may
- * be live in it. No FP opt-in gates this: AArch64 GCC stages a wide struct copy through q
- * registers with no source-level FP in sight, so the callee-saved subset would corrupt any
- * thread interrupted mid-copy. FPCR and FPSR are thread state for the same reason.
+ * ALL THIRTY-TWO VECTOR REGISTERS, because an asynchronous entry interrupted code that
+ * called nothing, so anything the AAPCS lets a call clobber may be live in it. No FP
+ * opt-in gates this: AArch64 GCC stages a wide struct copy through q registers with no
+ * source-level FP in sight, so the callee-saved subset would corrupt any thread
+ * interrupted mid-copy. FPCR and FPSR are thread state for the same reason.
  */
+
+#include <kickos/board_config.h>
 
 #define FRAME_SIZE  800
 #define F_X30       240
@@ -26,6 +28,23 @@
 
 /* static_asserted against offsetof in arch_armv8a.cc. */
 #define CTX_SP      0
+
+/* Displacements into the per-CPU block, whose base is a link-time address at one core and
+   TPIDR_EL1 above one (percpu.h). static_asserted against offsetof in arch_armv8a.cc. */
+#define PERCPU_CTX_CURRENT  8
+#define PERCPU_SWITCH_TO    16
+
+/* One cell of this core's block, addressed. Above one core the base is TPIDR_EL1, seated on
+   each core before that core turns translation on (secondary.S, arch_armv8a.cc). */
+    .macro  PERCPU_CELL reg, disp
+#if KICKOS_NUM_CORES > 1
+    mrs     \reg, tpidr_el1
+    add     \reg, \reg, #\disp
+#else
+    adrp    \reg, kickos_armv8a_percpu + \disp
+    add     \reg, \reg, #:lo12:kickos_armv8a_percpu + \disp
+#endif
+    .endm
 
     .macro  SAVE_FRAME
     sub     sp, sp, #FRAME_SIZE
@@ -131,13 +150,11 @@ kickos_armv8a_irq_entry:
 
     /* The PendSV/msip model without the software interrupt: the interrupted thread's state
        is already in the frame below sp, so the swap is two stores and two loads. */
-    adrp    x0, kickos_armv8a_switch_to
-    add     x0, x0, :lo12:kickos_armv8a_switch_to
+    PERCPU_CELL x0, PERCPU_SWITCH_TO
     ldr     x1, [x0]
     cbz     x1, .Lirq_resume
     str     xzr, [x0]                       /* consume the request */
-    adrp    x2, kickos_armv8a_ctx_current
-    add     x2, x2, :lo12:kickos_armv8a_ctx_current
+    PERCPU_CELL x2, PERCPU_CTX_CURRENT
     ldr     x3, [x2]
     mov     x4, sp
     str     x4, [x3, #CTX_SP]               /* park the frame on the context that built it */
@@ -218,13 +235,11 @@ kickos_armv8a_el0_sync_entry:
 kickos_armv8a_el0_irq_entry:
     ENTER_FROM_EL0
     bl      kickos_armv8a_irq
-    adrp    x0, kickos_armv8a_switch_to
-    add     x0, x0, #:lo12:kickos_armv8a_switch_to
+    PERCPU_CELL x0, PERCPU_SWITCH_TO
     ldr     x1, [x0]
     cbz     x1, .Lel0_irq_resume
     str     xzr, [x0]
-    adrp    x2, kickos_armv8a_ctx_current
-    add     x2, x2, #:lo12:kickos_armv8a_ctx_current
+    PERCPU_CELL x2, PERCPU_CTX_CURRENT
     ldr     x3, [x2]
     mov     x4, sp
     str     x4, [x3, #CTX_SP]
@@ -238,12 +253,11 @@ kickos_armv8a_el0_irq_entry:
  * arch_syscall(nr, a0, a1, a2, a3). arch_syscall64 is the same entry, the seam's psABI pair
  * collapsing at this width.
  *
- * TWO COPIES, because this leaf is called from both halves of a split image
- * (docs/design-m6-mmu.md, T5b.1). The ordinary names are the APP's and link into the app's
- * low text, which an EL0 thread executes and which therefore carries
+ * TWO COPIES, one per half of a split image. The ordinary names are the APP's and link
+ * into the app's low text, which an EL0 thread executes and which therefore carries
  * privileged-execute-never; the kernel takes the private name, in its own half, mapped
- * through TTBR1 in every space by construction. Both references are explicit calls, so the
- * rename is a source fix and needs no objcopy pass.
+ * through TTBR1 in every space by construction. Both references are explicit calls, so
+ * the rename is a source fix and needs no objcopy pass.
  *
  * .apptrap and not .text.*: virt_arm64.ld selects the kernel half by ARCHIVE, and this
  * archive is kernel-side, so the app's copy needs a section name those selectors do not

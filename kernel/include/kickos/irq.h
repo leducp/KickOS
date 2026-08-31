@@ -8,7 +8,7 @@
 //     cap names the binding; the generic first-level ISR masks the line and posts
 //     it, the driver waits in thread context, services, and acks (unmask).
 //     Minting takes AUTH_IRQ; using a claimed line takes possession of the cap.
-//     See docs/design-m4.6-irq-driver.md section 2.
+//     Two threads may share one line with different rights; cap_teardown releases it.
 
 #ifndef KICKOS_IRQ_H
 #define KICKOS_IRQ_H
@@ -112,7 +112,7 @@ namespace kickos
     int irq_notify(Thread* c, uint32_t cap_handle);
 
     // Drop one reference to IRQ binding `obj_handle`; release the line and free the
-    // slot at refs -> 0. Called only by the cap layer's accounting.
+    // slot at refs -> 0.
     void irq_ref_drop(int obj_handle, bool teardown);
 }
 

@@ -36,8 +36,8 @@ struct console_tx_backend
 };
 
 // Arm the buffered path. `size` MUST be a power of two (index masking); usable
-// capacity is size-1. Called once from console_buffer_init after irq_init has
-// seeded the dispatch table. Until then, writes route to the synchronous path.
+// capacity is size-1. Call once, after irq_init has seeded the dispatch table.
+// Until then, writes route to the synchronous path.
 // `irq_line` is the line console_tx_deinit detaches.
 void console_tx_init(struct console_tx_backend const* be, char* storage, uint32_t size,
                      int irq_line);
@@ -66,13 +66,13 @@ void console_tx_isr(void);
 void console_tx_flush_sync(void);
 
 // Arch seam. The fallback TU returns null, which leaves the console on the synchronous
-// path (sim and polled-only chips). Called once by console_buffer_init.
+// path (sim and polled-only chips).
 struct console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size,
                                                          int* irq_line);
 
 // Relinquish the buffered TX path so a userspace driver can take the UART. Idempotent.
-// Runs under one IrqLock. Called by console_handover_begin, which holds the ownership state
-// at HANDING_OFF across it. See the console-handover design (D2).
+// Runs under one IrqLock, with the ownership state held at HANDING_OFF across it. See the
+// console-handover design (D2).
 void console_tx_deinit(void);
 
 // Console device-ownership seam (state in console.cc). Every kernel-owned device poke
@@ -112,13 +112,12 @@ void console_note_driver_death(void);
 // published, if the dead thread was not its last receiver, or while ANY live thread still
 // holds arch_console_reclaim_window().
 //
-// Called at the note (cap.cc). MUST run BEFORE the EPIPE wake of the parked senders, not
-// merely inside the same masked window: sched::wake admits a switch when the closer is
-// neither exited nor dying, and arch_switch swaps INLINE on the sim and on xtensa LX6, so a
-// woken peer would observe a dark console. Safe ahead of the wake because cap_teardown
-// releases every IRQ cap the dying thread held first, so no line it owned is still armed
-// into irq_event_isr. Only a thread DEATH can free the register window, so exit_current is
-// the one site that RETRIES a refusal.
+// MUST run BEFORE the EPIPE wake of the parked senders, not merely inside the same masked
+// window: sched::wake admits a switch when the closer is neither exited nor dying, and
+// arch_switch swaps INLINE on the sim and on xtensa LX6, so a woken peer would observe a
+// dark console. Safe ahead of the wake because cap_teardown releases every IRQ cap the
+// dying thread held first, so no line it owned is still armed into irq_event_isr. Only a
+// thread DEATH can free the register window, so a refusal is retried at the next death.
 void console_on_driver_death(void);
 
 #ifdef __cplusplus

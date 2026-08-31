@@ -285,10 +285,10 @@ namespace
         r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_SWD_WPROTECT) = 0;
     }
 
-    // One-time inject-doorbell wiring. Called from arch_init with MIE still 0, per the
-    // TRM's "configure the interrupt controller with interrupts globally disabled" rule;
-    // boot runs MIE=0 until arch_start mret's the first thread. The C6's mie bit N gates
-    // CPU int N, with bits 3/7 = the standard msip/mtip. FROM_CPU_0 is left de-asserted.
+    // One-time inject-doorbell wiring, entered with MIE still 0, per the TRM's
+    // "configure the interrupt controller with interrupts globally disabled" rule. The
+    // C6's mie bit N gates CPU int N, with bits 3/7 = the standard msip/mtip. FROM_CPU_0
+    // is left de-asserted.
     void inject_doorbell_init()
     {
         r32(reg::intmtx::FROM_CPU_0_MAP) = DOORBELL_CPU_INT;     // route the source -> CPU int
@@ -899,7 +899,7 @@ void arch_shutdown(int status)
     }
 }
 
-// --- C-runtime bring-up (the reset entry, called by _start in startup.S) ------
+// --- C-runtime bring-up (the reset entry) ----------------------------------
 void Reset_Handler(void)
 {
     c6_early_mark('A'); // reset entry reached (gp/sp/tp already set by _start)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// What a process is made of above the arch map editor (docs/design-m6-mmu.md section 3.4).
+// What a process is made of above the arch map editor.
 // A space frees what it maps; a borrower unmaps before it dies.
 
 #ifndef KICKOS_ASPACE_H
@@ -51,12 +51,12 @@ namespace kickos
     // destroy it. The one sanctioned way to end a space; arch_aspace_destroy alone strands both.
     void aspace_release(struct arch_aspace* space, VirtualRanges* ranges);
 
-    // F10's allocation: `bytes` rounded up to whole granules, reserved in this space and mapped
+    // Allocation: `bytes` rounded up to whole granules, reserved in this space and mapped
     // nowhere. 0 when the frame pool has no run that long or the list is full. The virtual
     // address is the frames' own, which is what makes a reservation a globally unique name.
     uintptr_t aspace_reserve(VirtualRanges* ranges, size_t bytes);
 
-    // F10's self-grant: map a range the caller reserved, at the address it reserved.
+    // The self-grant: map a range the caller reserved, at the address it reserved.
     // -KOS_EPERM for an address this space never reserved, a cross-task self-grant included;
     // 0 when the range is already mapped with these attributes.
     int aspace_self_grant(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t base,
@@ -73,21 +73,23 @@ namespace kickos
     // offset between frames: comparable across spaces, and nothing else may be read out of it.
     uintptr_t aspace_frame_token(struct arch_aspace* space, uintptr_t va);
 
-    // C2's map: put a frame RUN a capability names into `space` at the address the holder
-    // chose. The range is recorded BORROWED, because the frames belong to the capability and
-    // come back when its last holder drops it, so this space must free nothing at teardown.
-    // -KOS_ENOMEM when the space cannot take the range there, -KOS_EINVAL on a bad shape.
+    // The capability map: put a frame RUN a capability names into `space` at the address
+    // the holder chose. The range is recorded BORROWED, because the frames belong to the
+    // capability and come back when its last holder drops it, so this space must free
+    // nothing at teardown. -KOS_ENOMEM when the space cannot take the range there,
+    // -KOS_EINVAL on a bad shape.
     int aspace_cap_map(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
                        int run_obj, arch_phys_addr_t base, uint32_t pages, uint32_t rights,
                        enum arch_map_memtype type);
 
-    // C2's unmap: take that range back out, and surrender the mapping's reference. -KOS_EPERM
-    // unless the range at `va` was placed by aspace_cap_map AND names `run_obj`. Matching a
-    // page count instead accepts the image and every F10 handoff, which carry VR_BORROWED too.
+    // The capability unmap: take that range back out, and surrender the mapping's
+    // reference. -KOS_EPERM unless the range at `va` was placed by aspace_cap_map AND names
+    // `run_obj`. Matching a page count instead accepts the image and every handoff, which
+    // carry VR_BORROWED too.
     int aspace_cap_unmap(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
                          int run_obj, arch_phys_addr_t base);
 
-    // F10's handoff: map the donor's reservation into `space` at the same virtual address and
+    // The handoff: map the donor's reservation into `space` at the same virtual address and
     // record it borrowed, so the target unmaps and frees nothing. -KOS_EPERM when the donor
     // holds no such range, -KOS_ENOMEM when the target cannot take it there. `base` must be a
     // reservation's own base and `size` must round up to its page count.

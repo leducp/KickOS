@@ -4,7 +4,7 @@
 # Toolchain for the KickOS x86_64 target. The image firmware loads is a PE32+ UEFI
 # application, built here with the HOST gcc and the HOST binutils: the target ISA is the
 # host's, so only the object format differs, and GNU ld carries the PE+ emulation (i386pep)
-# that turns the ELF objects into that image. See docs/design-m6-mmu.md M6.4 X1.
+# that turns the ELF objects into that image.
 #
 # This file introduces the family value "x86" (arm|rx|xtensa|riscv|arm64|x86).
 

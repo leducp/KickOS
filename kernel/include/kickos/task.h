@@ -14,7 +14,7 @@
 // asked for ends one thread; a caller that wants the group calls task_cancel_group itself.
 //
 // A task owns a DEV window's LIFETIME and never its ACCESS: the window is a region of the asking
-// THREAD, and the group cancel is what returns it (docs/design-task-layer.md sections 5.2, 6).
+// THREAD, and the group cancel is what returns it.
 
 #ifndef KICKOS_TASK_H
 #define KICKOS_TASK_H
@@ -47,9 +47,9 @@ namespace kickos
         uint16_t gen = 0;
     };
 
-    // 8 bytes on 32-bit, which design-task-layer.md and porting.md's KICKOS_MAX_TASKS row
-    // both budget against. MEASURE ON A 32-BIT TARGET if this fires: a host build prices the
-    // tail differently, so a host measurement cannot settle it.
+    // 8 bytes on 32-bit, the figure the KICKOS_MAX_TASKS budget is priced against. MEASURE ON A
+    // 32-BIT TARGET if this fires: a host build prices the tail differently, so a host
+    // measurement cannot settle it.
     constexpr size_t task_scalar_bytes()
     {
         size_t const raw = sizeof(Domain*) + sizeof(Task::refcount) + sizeof(Task::creator_tag)
@@ -133,9 +133,8 @@ namespace kickos
 
     // Drop the hold of EVERY task a dying creator holds. Keyed on the tag, which is the whole
     // gate: kill_tag_for_index derives it from the pool slot, so a recycled slot would inherit
-    // creator authority over groups it never made. Called from exit_current, which is total over
-    // deaths. O(1) when Kernel::task_holds is zero; otherwise KICKOS_MAX_TASKS compares
-    // interrupt-masked on EVERY thread exit.
+    // creator authority over groups it never made. O(1) when Kernel::task_holds is zero;
+    // otherwise KICKOS_MAX_TASKS compares interrupt-masked on EVERY thread exit.
     void task_orphan_created_by(uint16_t tag);
 
     // Live members. Null-safe (0). The ONLY reader outside task.cc is the already-empty

@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The whitespace rules of docs/reference/style.md, over every tracked file: no trailing
-# whitespace, no CRLF, a final newline. Plus the two `git diff --check` classes that rule
-# does not name and an audit found in a linker script, a space immediately before a tab in
-# a line's indent and a blank line at end of file.
+# The whitespace rules, over every tracked file: no trailing whitespace, no CRLF, a final
+# newline. Plus the two `git diff --check` classes that rule does not name and an audit found
+# in a linker script, a space immediately before a tab in a line's indent and a blank line at
+# end of file.
 #
 # Run from the repo root, no arguments, no build directory:
 #   tests/static/check_whitespace.sh
@@ -255,7 +255,7 @@ if [ -s "$TMP/findings" ]; then
     sed 's/^.*: //' "$TMP/findings" | sort | uniq -c | sort -rn >&2
     echo "" >&2
     echo "FAIL: $(wc -l < "$TMP/findings" | tr -d ' ') whitespace finding(s)." >&2
-    echo "      docs/reference/style.md: no trailing whitespace, no CRLF, a final newline." >&2
+    echo "      No trailing whitespace, no CRLF, and a final newline on every tracked file." >&2
     echo "      A space before a tab renders at the reader's tab stop and not at yours, and" >&2
     echo "      a blank line before end of file is what \`git diff --check\` calls one." >&2
     echo "      A \$ in place of a line number is the end of the file rather than a line." >&2

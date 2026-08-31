@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The ASCII rule of docs/reference/style.md: no tracked file holds a byte above 0x7F.
+# The ASCII rule: no tracked file holds a byte above 0x7F.
 #
 # Run from the repo root, no arguments, no build directory:
 #   tests/static/check_ascii.sh
@@ -19,7 +19,7 @@
 # The rule is about the BYTE, so the verdict covers bytes above 0x7F and NUL, and nothing
 # else: an ASCII spelling that is merely WRONG passes (an HTML entity for a dash, `(c)`
 # where a real copyright sign was meant), and a control character below 0x20 is ASCII,
-# belonging to style.md's separate no-CRLF and no-trailing-whitespace rules.
+# belonging to the separate no-CRLF and no-trailing-whitespace rules.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -38,8 +38,8 @@ command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be buil
 #       verbatim. Restore it from cecill.info, never by hand-transliterating.
 #
 #   docs/archive/*_meas.md
-#       an archived RAW INSTRUMENT CAPTURE. Per docs/README.md a measurement is not
-#       regenerable, so rewriting a byte inside one falsifies it, NULs off the wire included.
+#       an archived RAW INSTRUMENT CAPTURE. A measurement is not regenerable, so rewriting a
+#       byte inside one falsifies it, NULs off the wire included.
 #       Scoped to the `_meas.md` captures, not to docs/archive/ wholesale: the directory
 #       also holds ordinary prose (docs/archive/M1_state.md), scanned like any other file.
 #

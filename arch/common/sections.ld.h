@@ -140,7 +140,7 @@
  * every thread the same object. The chip script gathers those control blocks between two
  * symbols for its own override to index; at KICKOS_TLS=0 that span must be empty.
  *
- * Invoked by the rxv3 chip script only, and arch/CMakeLists.txt requires it there.
+ * The rxv3 chip script must invoke it: arch/CMakeLists.txt requires it there.
  */
 #if defined(KICKOS_TLS) && KICKOS_TLS
 #define KICKOS_TLS_EMUTLS_ASSERT(start, end) /* the override answers the calls */

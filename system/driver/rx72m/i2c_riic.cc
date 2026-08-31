@@ -19,8 +19,8 @@
 // Register facts come from the RX72M Group User's Manual: Hardware (r01uh0804ej0120,
 // Rev.1.20) sec.43, via arch/rx/chip/rx72m/regs/riic.h. Four shape the whole file:
 //
-//   1. THE DEADLINE IS THE ONLY WATCHDOG. ICFER.TMOE is 0 at reset and stays there
-//      (docs/design-m5-i2c-seam.md section 3), and every hardware answer to a late driver is
+//   1. THE DEADLINE IS THE ONLY WATCHDOG. ICFER.TMOE is 0 at reset and stays there, and
+//      every hardware answer to a late driver is
 //      to hold SCL low, which stops the bus for every device on it. So every wait is bounded
 //      by the caller's deadline and every failure exit goes through bus_release.
 //   2. ICMR3.ACKBT ONLY TAKES A WRITE WHEN ICMR3.ACKWP WAS ALREADY 1 IN AN EARLIER STORE

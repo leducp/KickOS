@@ -134,12 +134,11 @@ namespace
     // CEILING: the kernel time base (ch0/ch1) and PIT_MCR share ONE AIPS peripheral
     // slot, so a userspace PIT driver that opens that slot to U-mode (k64drv clears
     // PACR55.SP) reaches ch0/ch1 and MCR; a rogue MCR=MDIS write freezes the kernel
-    // clock. See docs/reference/architecture.md.
+    // clock.
     void pit_clock_init()
     {
         // Boot-order constraint: arch_clock_now MUST NOT run before this. The PIT is
-        // clock-gated out of reset and an ungated AIPS read BusFaults; ktime/clock
-        // reads only start after arch_init calls this.
+        // clock-gated out of reset and an ungated AIPS read BusFaults.
         r32(reg::sim::SCGC6) |= reg::sim::SCGC6_PIT; // clock the PIT module
         // The gate opens some bus cycles after the SCGC6 store issues, and a PIT store
         // that beats it is dropped. Read SCGC6 back so the write commits first. Without
@@ -568,10 +567,9 @@ extern "C" uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_
 
 // SYSMPU commit: replaces the PMSAv7 kickos_arch_mpu_commit fallback (K64F has no ARM
 // core MPU). Programs the running thread's per-thread USER grants (RGD1..) from the
-// shared stash; supervisor + DMA stay covered by RGD0. Called from the armv7m PendSV
-// epilogue AFTER the physical swap. cpsid brackets the reprogram: PendSV is
-// lowest-priority, so a device IRQ could otherwise preempt a half-written (VLD-cleared)
-// descriptor set.
+// shared stash; supervisor + DMA stay covered by RGD0. Runs AFTER the physical swap.
+// cpsid brackets the reprogram: PendSV is lowest-priority, so a device IRQ could
+// otherwise preempt a half-written (VLD-cleared) descriptor set.
 extern "C" void kickos_arch_mpu_commit(void)
 {
     struct arch_mpu_encoded const* const img = kickos_arm_mpu_pending();
@@ -641,8 +639,7 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return (base & 31u) == 0 and (size & 31u) == 0;
 }
 
-// Outside KICKOS_HAVE_MPU on purpose: arch_ram_region_size calls this in a
-// no-enforcement build too.
+// Outside KICKOS_HAVE_MPU on purpose: a no-enforcement build needs this symbol too.
 int arch_mpu_region_pow2(void)
 {
     return 0;

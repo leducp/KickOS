@@ -100,8 +100,8 @@ namespace
             // The block is already out of reset and clk_usb already runs: both live in
             // RESETS and CLOCKS, which the kernel owns for life.
             //
-            // If chip init REFUSED (RULE U2, the crystal did not come up) the block is
-            // still in reset and the first DPRAM access below bus-errors in this thread.
+            // If chip init REFUSED (the crystal did not come up) the block is still in
+            // reset and the first DPRAM access below bus-errors in this thread.
             // Nothing here can tell: RESETS is not in the granted window and no syscall
             // reports the clock verdict, so that refusal arrives as a driver fault rather
             // than as a message.

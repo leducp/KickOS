@@ -28,8 +28,8 @@ namespace kickos
 
         // Console stdout target: the GLOBAL gen-encoded endpoint handle a userspace
         // console driver serves. The kernel holds ONE ref on it (moved on re-publish);
-        // cap_install_defaults seats a send-only copy at index 0 of every child. See
-        // docs/design-m3-console-handover-stageii.md (D3/D4/S3).
+        // cap_install_defaults seats a send-only copy at index 0 of every child. The kernel
+        // ref closes the publish-to-first-spawn zero-ref window.
         constinit InstanceLocal<int> g_stdout_target = {KCAP_STDOUT_NONE};
 
         int& stdout_target()
@@ -157,9 +157,9 @@ namespace kickos
 
         // Drop one reference to mutex `obj_handle`; free at refs -> 0. Same leak-don't-strand
         // guard as sem_ref_drop: refs -> 0 with a waiter still parked is unreachable via close,
-        // because a parked waiter is BLOCKED and cannot run handle_close. R4: refs -> 0 also
-        // implies owner == nullptr, since an owner's own cap pins a ref via the R2 close guard
-        // and R3 force-unlocked before this drop on the exit path.
+        // because a parked waiter is BLOCKED and cannot run handle_close. refs -> 0 also
+        // implies owner == nullptr: an owner's own cap pins a ref through the close-of-owned
+        // refusal, and the exit path force-unlocks before this drop.
         void mutex_ref_drop(int obj_handle, bool teardown)
         {
             int const idx = mutex_index_of(obj_handle);
@@ -181,7 +181,7 @@ namespace kickos
                     r = 1;                   // leak, never strand
                     return;
                 }
-                KICKOS_ASSERT(m == nullptr or m->owner == nullptr); // R4: never free a locked, reachable mutex
+                KICKOS_ASSERT(m == nullptr or m->owner == nullptr); // never free a locked, reachable mutex
                 kernel().mutexes.free(obj_handle);
             }
         }
@@ -301,9 +301,9 @@ namespace kickos
                 }
                 if (not teardown)
                 {
-                    return -KOS_EBUSY; // R2: refuse a voluntary close of a mutex you OWN (unlock first)
+                    return -KOS_EBUSY; // refuse a voluntary close of a mutex you OWN (unlock first)
                 }
-                // R3: the owner is exiting. Force-unlock BEFORE the ref drop so a
+                // The owner is exiting. Force-unlock BEFORE the ref drop so a
                 // waiter is never stranded; the woken lock() caller gets OWNER_DIED.
                 mutex_force_unlock(m, closer);
                 return 0;
@@ -375,7 +375,7 @@ namespace kickos
                         }
                     }
                 }
-                return 0; // endpoints NEVER refuse a close (unlike mutex R2)
+                return 0; // endpoints NEVER refuse a close, unlike a mutex its owner holds
             }
 #if KICKOS_HAVE_ASPACE
             case CapType::CAP_FRAME:
@@ -1178,7 +1178,7 @@ namespace kickos
     }
 
     // Move the kernel's stdout-target ref to `obj_handle` and seat the publisher's own slot 0
-    // on it (D3/S3). Caller holds IrqLock. Take BOTH new refs BEFORE dropping any old one, or
+    // on it (D3). Caller holds IrqLock. Take BOTH new refs BEFORE dropping any old one, or
     // re-publishing the SAME endpoint transiently frees it and a ceiling refusal is no longer
     // a clean no-op. The kernel's ref carries rights 0 (identity, no WAIT) so it never bumps
     // recv_holders. It goes through obj_ref_inc / endpoint_ref_drop and never raw

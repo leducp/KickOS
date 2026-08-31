@@ -113,7 +113,7 @@ struct kos_bus_cfg
     uint8_t cs_policy; // enum kos_bus_cs_policy
     // HW PCS/SELO line index, or the driver's GPIO pin slot. The two shipped SPI engines
     // (k64dspi, xmcssc) REFUSE a non-zero value with -KOS_ENOTSUP: each has exactly one CS
-    // line (bus-service.md). The selftest mock takes and ignores it.
+    // line. The selftest mock takes and ignores it.
     uint8_t cs_index;
     uint8_t rsv[2];
 };

@@ -2,18 +2,18 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The virtual ranges one address space names: what the syscall entry validates a user
-// pointer against (docs/design-m6-mmu.md section 3.3). Validation data, never enforcement:
-// the page tables are what a wrong access faults on.
+// pointer against. Validation data, never enforcement: the page tables are what a
+// wrong access faults on.
 //
-// Reserved and granted are two different claims, per F10: allocation reserves a page-aligned
+// Reserved and granted are two different claims: allocation reserves a page-aligned
 // range and maps nothing, and the self-grant maps it. Only a granted range admits a pointer,
 // so a caller cannot pass the kernel a buffer it has reserved but never made reachable.
 //
 // It is also the space's map record, which is what teardown reads: a space frees what it maps
-// and the borrower unmaps first (F10), so an entry carries whether these frames are the
+// and the borrower unmaps first, so an entry carries whether these frames are the
 // space's own or another space's.
 //
-// The granule is a parameter and no figure appears here (F7).
+// The granule is a parameter and no figure appears here.
 
 #ifndef KICKOS_VRANGE_H
 #define KICKOS_VRANGE_H
@@ -43,7 +43,7 @@ namespace kickos
         // A caller may name its own reservations and not these.
         VR_IMAGE = 1u << 1,
         // Placed by aspace_cap_map, which holds one reference on the frame RUN it maps.
-        // VR_BORROWED alone does NOT identify such a range: the image and every F10 handoff
+        // VR_BORROWED alone does NOT identify such a range: the image and every handoff
         // carry it too. WHICH run is asked of arch_aspace_frame_at rather than stored here,
         // a field costing eight bytes in every range of every domain.
         VR_FRAMECAP = 1u << 2

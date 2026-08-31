@@ -177,7 +177,7 @@ endif()
 add_compile_definitions(KICKOS_LIBC_REENT=${KICKOS_LIBC_REENT}
                         KICKOS_LINKER_WEAK_UNDEF=${KICKOS_LINKER_WEAK_UNDEF})
 
-# --- Config knobs (architecture.md) ----------------------------------------
+# --- Config knobs ----------------------------------------------------------
 # Every knob below that becomes a compile definition is defined 0 or 1, never left
 # undefined, so each `#if` site is -Wundef-clean.
 option(CONFIG_SCHED_PERIODIC_TICK "Force a classic periodic scheduler tick" OFF)
@@ -269,7 +269,7 @@ else()
   add_compile_definitions(KICKOS_DEBUG=0)
 endif()
 
-# --- Console backend selection (docs/reference/console.md) -----------------
+# --- Console backend selection ---------------------------------------------
 # `chip` = the board's native transport (UART / semihosting / USIC); `rtt` = SEGGER RTT,
 # which needs a debug probe.
 # NEVER cached: a cache entry written from .config would come back as a request on the next
@@ -381,7 +381,7 @@ add_compile_definitions(KICKOS_ARCH_SIM=${_arch_sim})
 # A chip file itself carries only what is true of THAT chip: which capability it opts into,
 # and what the chip ships that makes the claim true.
 
-# --- Telemetry backend selection (docs/reference/telemetry.md) -----------------
+# --- Telemetry backend selection -----------------------------------------------
 # KICKOS_TRACE_ARCH MUST match the ArchId enum in include/kickos/trace/record.h, which the
 # decoder tools/kicktrace.py follows; a static_assert there pins ARCH_RISCV == 5.
 # The chip's caps.cmake is included first so a chip value wins over the arch ladders below,
@@ -402,9 +402,12 @@ if(KICKOS_ARCH STREQUAL "armv6m")
     set(KICKOS_HAVE_PRIV_RING 1) # RP2040, Cortex-M0+
   else()
     message(FATAL_ERROR
-      "armv6m board '${KICKOS_BOARD}' is not classified. Cortex-M0 has no privilege ring "
-      "and Cortex-M0+ does; state which this core is (see the table in "
-      "docs/design-unprivileged-root.md section 2) rather than letting it be guessed.")
+      "armv6m board '${KICKOS_BOARD}' is not classified. ARMv6-M's Unprivileged/Privileged "
+      "Extension is optional and separate from the MPU extension: a Cortex-M0+ implements it, a "
+      "Cortex-M0 does not, and on an M0 the npriv fields of the fabricated frame are written and "
+      "then discarded by the hardware. One armv6m backend spans both cores, so the ring is a "
+      "per-board fact: add a branch above setting KICKOS_HAVE_PRIV_RING to 1 for a Cortex-M0+ "
+      "core or 0 for a Cortex-M0 one.")
   endif()
 elseif(KICKOS_ARCH STREQUAL "lx6")
   # PS.UM is 1 for kernel and thread alike and arch_context_init discards `privileged`.
@@ -493,7 +496,7 @@ endif()
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
 # A chip declares a translating backend by shipping arch/<family>/chip/<chip>/aspace.cmake.
-# No chip ships both that and mpu.cmake (docs/design-m6-mmu.md F6).
+# No chip ships both that and mpu.cmake.
 set(KICKOS_CHIP_TRANSLATES OFF)
 if(KICKOS_CHIP)
   set(_aspace_optin
@@ -515,8 +518,11 @@ endif()
 if(KICKOS_CHIP_TRANSLATES AND KICKOS_HAVE_MPU)
   message(FATAL_ERROR
     "Board '${KICKOS_BOARD}' resolved BOTH the enforcing region posture and a translating "
-    "backend. No backend implements both families (docs/design-m6-mmu.md F6): a chip "
-    "selects region descriptors or translation, never both.")
+    "backend. A chip opts into exactly one memory family: the flat non-translating region set "
+    "(arch_mpu_*, declared by mpu.cmake) or translation (arch_aspace_*, declared by "
+    "aspace.cmake). Under translation the descriptors that map already carry AP, UXN and PXN, "
+    "so no region set is left to gate and no backend implements both call families. Drop one "
+    "of the two opt-ins in arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/.")
 endif()
 add_compile_definitions(KICKOS_HAVE_ASPACE=${KICKOS_HAVE_ASPACE})
 
@@ -588,6 +594,40 @@ if(EXISTS "${_ipc_fastpath_optin}")
 endif()
 add_compile_definitions(KICKOS_ARCH_HAS_IPC_FASTPATH=${KICKOS_ARCH_HAS_IPC_FASTPATH})
 
+# --- Shared-kernel hardware predicate (KICKOS_ARCH_SMP_CAPABLE) -------------
+# An arch declares here that its parts meet every requirement of ONE kernel image running
+# across cores: coherent shared memory with no software maintenance, an inter-core exclusion
+# primitive, an inter-core interrupt, a per-core identity, symmetric cores, and per-line
+# interrupt targeting.
+#
+# THE PREDICATE IS THE MODEL'S, NOT THE COUNT'S. An AMP image drives every core it launches
+# and runs a kernel per core, so it raises the count while needing none of the six: a core
+# whose kernel is its own excludes nobody. Refusing on the count alone locks the parts the
+# predicate sends to AMP out of the count AMP needs.
+set(KICKOS_ARCH_SMP_CAPABLE 0)
+set(_smp_optin
+  "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/smp.cmake")
+if(KICKOS_ARCH_FAMILY STREQUAL KICKOS_ARCH)
+  # The sim's backend sits at arch/sim, with no family level.
+  set(_smp_optin "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH}/smp.cmake")
+endif()
+if(EXISTS "${_smp_optin}")
+  include("${_smp_optin}")
+endif()
+if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_MULTICORE_MODEL_SHARED AND NOT KICKOS_ARCH_SMP_CAPABLE)
+  message(FATAL_ERROR
+    "KickOS: KICKOS_NUM_CORES=${KICKOS_NUM_CORES} on arch '${KICKOS_ARCH}', which ships no "
+    "${_smp_optin} and so declares none of the properties a shared kernel requires: coherent "
+    "shared memory, an inter-core exclusion primitive, an inter-core interrupt, a per-core "
+    "identity, symmetric cores and per-line interrupt targeting. A part that fails the "
+    "predicate runs AMP, one kernel per core over disjoint memory, rather than one image "
+    "across cores. This refuses rather than warns because on a part with no cross-core "
+    "primitive, bracketing with the LOCAL interrupt mask is a correctness bug and not a slow "
+    "choice.")
+endif()
+# The generated header guards its own define with #ifndef, so this wins where both are seen.
+add_compile_definitions(KICKOS_NUM_CORES=${KICKOS_NUM_CORES})
+
 # --- Per-arch caller-provided-stack floor (KICKOS_MIN_STACK_SIZE) -----------
 # The floor must cover the thread-exit teardown, which runs on the CALLING thread's stack.
 # An arch property; the measured figures are in the Kconfig declaration.
@@ -652,9 +692,9 @@ add_compile_definitions(KICKOS_TELEMETRY=${_telem} KICKOS_TELEMETRY_RTT=${_telem
 set(KICKOS_TELEMETRY_ON ${_telem}) # consumed by component CMakeLists (asm/FP flags)
 message(STATUS "KickOS: telemetry=${KICKOS_TELEMETRY} (have_trace_clock=${KICKOS_HAVE_TRACE_CLOCK} arch_id=${KICKOS_TRACE_ARCH})")
 
-# RTT publish barrier override (docs/reference/telemetry.md G6): a weakly-ordered core
-# injects its real fence here; unset keeps the compiler-only barrier in rtt.h. Pass the FULL
-# call form, e.g. -DKICKOS_RTT_PUBLISH_BARRIER_DEF="__atomic_thread_fence(__ATOMIC_RELEASE)".
+# RTT publish barrier override: a weakly-ordered core injects its real fence here; unset
+# keeps the compiler-only barrier in rtt.h. Pass the FULL call form, e.g.
+# -DKICKOS_RTT_PUBLISH_BARRIER_DEF="__atomic_thread_fence(__ATOMIC_RELEASE)".
 if(DEFINED KICKOS_RTT_PUBLISH_BARRIER_DEF)
   add_compile_definitions("KICKOS_RTT_PUBLISH_BARRIER()=${KICKOS_RTT_PUBLISH_BARRIER_DEF}")
 endif()
@@ -781,12 +821,20 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(cap_sigdiff PROPERTIES TIMEOUT 120 LABELS host)
 
+  # The four SMP seam members left entry_sigdiff at M7.0 and are asserted by this entry alone.
+  _add_test(NAME smp_sigdiff
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_smp_sigdiff.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(smp_sigdiff PROPERTIES TIMEOUT 120 LABELS host)
+
   # Takes the generated board config: the gate must read the knob spelling C reads.
   _add_test(NAME cpu_id_fold
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_cpu_id_fold.sh"
                     "${PROJECT_BINARY_DIR}/generated/include/kickos/board_config.h"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(cpu_id_fold PROPERTIES TIMEOUT 120 LABELS host)
+  # 77 is the gate's SKIP: above one core the seam is a real function and the fold is not a
+  # property to check.
+  set_tests_properties(cpu_id_fold PROPERTIES TIMEOUT 120 LABELS host SKIP_RETURN_CODE 77)
 
   _add_test(NAME forever_loop
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_forever_loop.sh"
@@ -878,6 +926,15 @@ if(KICKOS_BUILD_TESTS)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_gen.sh"
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(kconfig_gen PROPERTIES TIMEOUT 120 LABELS host)
+
+  # The shared-kernel hardware predicate above, driven on a board whose arch declares no
+  # smp.cmake. Registered from every board because the predicate lives in this file: it
+  # configures two child trees of its own and builds neither, so it is a host check. The
+  # interpreter is passed through so the child resolves Kconfig with this one.
+  _add_test(NAME smp_predicate
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_smp_predicate.sh"
+                    "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_COMMAND}")
+  set_tests_properties(smp_predicate PROPERTIES TIMEOUT 300 LABELS host)
 
   # Reads the forwarding lists above out of this very file, so it is registered from every
   # board and never from a generated copy.

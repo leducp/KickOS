@@ -75,8 +75,8 @@ namespace usic
         reg32(base + off::INPR) = inpr;
     }
 
-    // RMW on CCR (which also holds MODE): only ever called by the console producer
-    // under IrqLock or by its drain ISR, never concurrently, so the RMW is safe.
+    // RMW on CCR (which also holds MODE): unsynchronised, so it must not be entered
+    // concurrently.
     void tx_irq_enable(uintptr_t base)
     {
         reg32(base + off::CCR) |= CCR_TBIEN;

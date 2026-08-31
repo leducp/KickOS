@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Entered by the arch from inside the syscall trap, BEFORE the exception return
-// (docs/design-m5-ipc-fastpath.md section 4.8). Two rules govern every line below.
+// Entered by the arch from inside the syscall trap, BEFORE the exception return. Two rules
+// govern every line below.
 //
 // It decides BEFORE it mutates: every test that can fail runs before the first write, so a
 // refusal leaves the trap able to continue into the generic dispatch with nothing committed.
@@ -65,7 +65,7 @@ namespace kickos
     {
         // Entered with interrupts masked by the trap itself, so there is no IrqLock here
         // and no lock release to order anything against.
-        Thread* c = kernel().current;
+        Thread* c = kernel().current[kickos_kernel_core()];
         if (c == nullptr)
         {
             return nullptr;
@@ -100,8 +100,8 @@ namespace kickos
         }
         if (c->prio > w->prio)
         {
-            // Priority donation would apply here and is not implemented
-            // (docs/design-m5-ipc-fastpath.md section 4.9).
+            // A caller outranking the receiver would need priority donation, so the fastpath
+            // refuses.
             return nullptr;
         }
         if (not cap_can_take_reply(w))

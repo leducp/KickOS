@@ -35,6 +35,5 @@ endif()
 
 # An OPERATOR on silicon is the reader: PASS is the
 # "KERNEL PANIC: [conreclaim] PASS: the dead channel came back" line and the queued marker
-# above it, both written while the channel was dead. Witnessed on the XMC4800-relax
-# (docs/reference/boards.md carries which boards a QEMU machine covers); main.cc records why
-# kos_panic is the only terminal path left to an app here.
+# above it, both written while the channel was dead. Witnessed on the XMC4800-relax;
+# main.cc records why kos_panic is the only terminal path left to an app here.

@@ -9,6 +9,9 @@
 
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
 #include <kickos/chip_limits.h>  // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
+#include <kickos/sys/atomic.h>
+
+#include "gicv2.h" // arch/arm64/common: the architected half of this machine's controller
 
 #include <fatal_status.ld.h>
 
@@ -43,6 +46,17 @@ extern "C"
     uint32_t SystemCoreClock = 0;
 
     void kfault_terminate(void) __attribute__((noreturn));
+
+#if KICKOS_NUM_CORES > 1
+    // The first instruction a released core executes, supplied by the armv8a backend. It has
+    // to be linked in the identity-mapped span (virt_arm64.ld's .text.init at ORIGIN(BOOT)):
+    // PSCI hands a core a PHYSICAL entry address and that core arrives with its MMU off.
+    void kickos_armv8a_secondary_entry(void);
+
+    // Set by a core once it is executing its own code, which is what separates ARRIVED from
+    // the SUCCESS PSCI returns for a core it merely started.
+    extern kickos::Atomic<uint8_t, kickos::Order::RELAXED> kickos_armv8a_core_online[];
+#endif
 }
 
 namespace
@@ -99,10 +113,7 @@ namespace
         "KickOS: qemu-arm64 CNTFRQ_EL0 does not divide a second exactly\n";
 
     // AArch64 semihosting: `hlt #0xF000` with the operation in x0 and the parameter in x1.
-    // The console does NOT go through here, this chip having a real PL011, so the only
-    // callers are the two exits below.
-    // ALWAYS inlined: one of those exits sits in the boot span and can call nothing outside
-    // it.
+    // ALWAYS inlined: a caller in the boot span can call nothing outside it.
     inline __attribute__((always_inline)) long semihost(long op, void* arg)
     {
         register long x0 __asm("x0") = op;
@@ -114,35 +125,9 @@ namespace
     constexpr long SYS_EXIT = 0x18;
     constexpr uint64_t ADP_Stopped_ApplicationExit = 0x20026u;
 
-    volatile uint8_t* r8p(uintptr_t a)
-    {
-        return reinterpret_cast<volatile uint8_t*>(dev_va(a));
-    }
-
     // GICv2 on QEMU `virt`. The distributor is global, the CPU interface is this core's.
     constexpr uintptr_t GICD_BASE = 0x08000000;
     constexpr uintptr_t GICC_BASE = 0x08010000;
-    constexpr uintptr_t GICD_CTLR = GICD_BASE + 0x000;
-    constexpr uintptr_t GICD_ISENABLER = GICD_BASE + 0x100;
-    constexpr uintptr_t GICD_ICENABLER = GICD_BASE + 0x180;
-    constexpr uintptr_t GICD_ICPENDR = GICD_BASE + 0x280;
-    constexpr uintptr_t GICD_ISPENDR = GICD_BASE + 0x200;
-    constexpr uintptr_t GICD_IPRIORITYR = GICD_BASE + 0x400;
-    constexpr uintptr_t GICD_ITARGETSR = GICD_BASE + 0x800;
-    constexpr uintptr_t GICC_CTLR = GICC_BASE + 0x000;
-    constexpr uintptr_t GICC_PMR = GICC_BASE + 0x004;
-    constexpr uintptr_t GICC_IAR = GICC_BASE + 0x00C;
-    constexpr uintptr_t GICC_EOIR = GICC_BASE + 0x010;
-
-    // THE KIND, as a value range rather than a separate field (roadmap.md's `(line, kind)`).
-    // Below 32 the GIC banks its registers per core, so INTID 30 names THIS core's timer; at
-    // or above 32 an interrupt is global and reaches no core until ITARGETSR names one. Every
-    // arch_irq_* body branches on this boundary and nothing else does.
-    constexpr int GIC_BANKED_INTIDS = 32;
-
-    // INTID 1023 means "no pending interrupt" in an IAR read.
-    constexpr uint32_t GICC_IAR_SPURIOUS = 1023;
-    constexpr uint32_t GICC_IAR_ID_MASK = 0x3FF;
 
     // EL1 physical timer, an architecturally assigned PPI. It is NOT a kernel IRQ line:
     // kickos_isr_timer takes no line and the timer is in no dispatch table.
@@ -162,10 +147,177 @@ namespace
         __asm volatile("isb; mrs %0, cntpct_el0" : "=r"(t));
         return t;
     }
+
+#if KICKOS_NUM_CORES > 1
+    // --- Secondary release, PSCI ------------------------------------------------
+    //
+    // QEMU `virt` holds every core but the first inside its own PSCI implementation, so a
+    // secondary's first instruction is the one CPU_ON names and the release is the kernel's to
+    // initiate.
+    //
+    // THE CONDUIT IS A CHIP CONSTANT. QEMU's generated `/psci` node carries it in the `method`
+    // property, readable with `-machine dumpdtb=`: "hvc" under `-M virt`, "smc" under
+    // `-M virt,virtualization=on`. This port parses no device tree, and startup.S admits a
+    // handover at EL1 alone, which is the configuration whose method is "hvc". The i.MX8MP
+    // runs EL3 firmware that owns PSCI behind `smc`.
+    //
+    // SMCCC: the function identifier in x0, the arguments in x1..x3, the result back in x0.
+    // x4..x17 are the callee's scratch for a caller that negotiates no SMCCC version.
+    long psci_hvc(uint32_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
+    {
+        register uint64_t x0 __asm("x0") = fn;
+        register uint64_t x1 __asm("x1") = a1;
+        register uint64_t x2 __asm("x2") = a2;
+        register uint64_t x3 __asm("x3") = a3;
+        __asm volatile("hvc #0"
+                       : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3)
+                       :
+                       : "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
+                         "x14", "x15", "x16", "x17", "memory");
+        return static_cast<long>(x0);
+    }
+
+    // The `/psci` node's own `cpu_on` property reads 0xC4000003, the SMC64 identifier: the
+    // 64-bit variant is the one whose entry-point argument is 64 bits wide.
+    constexpr uint32_t PSCI_FN64_CPU_ON = 0xC4000003u;
+    constexpr long PSCI_SUCCESS = 0;
+
+    // MPIDR_EL1 affinity (DDI 0487 M.b section D24.2.137): Aff0 [7:0], Aff1 [15:8],
+    // Aff2 [23:16], Aff3 [39:32]. Bit 31 is RES1, bit 30 U, bit 24 MT and bits [29:25] and
+    // [63:40] RES0; a PSCI target_cpu carries zero at all of them.
+    constexpr uint64_t MPIDR_AFFINITY = 0x000000FF00FFFFFFull;
+
+    void console_hex(uint64_t v, int digits)
+    {
+        char buf[16];
+        for (int i = 0; i < digits; i++)
+        {
+            unsigned const nib = static_cast<unsigned>((v >> (4 * (digits - 1 - i))) & 0xFu);
+            char c = static_cast<char>('0' + nib);
+            if (nib >= 10)
+            {
+                c = static_cast<char>('a' + (nib - 10));
+            }
+            buf[i] = c;
+        }
+        arch_console_write(buf, static_cast<size_t>(digits));
+    }
+
+    char const BAD_ENTRY[] = "KickOS: qemu-arm64 secondary entry is not identity-linked: 0x";
+    char const BAD_CPU_ON[] = "KickOS: qemu-arm64 PSCI CPU_ON refused core ";
+    char const BAD_CPU_ON_TAIL[] = ", status 0x";
+    char const RELEASE_NL[] = "\n";
+    char const NO_ARRIVAL[] = "KickOS: qemu-arm64 secondary never reached its entry: core ";
+    // A TAP comment, so the line is legal ahead of a plan on the boards that announce one.
+    char const SMP_ONLINE[] = "# smp: ";
+    char const SMP_ONLINE_TAIL[] = " core(s) online\n";
+
+    // Bounded so a core that never arrives refuses rather than hangs: a timeout kill is
+    // indistinguishable from an image that never started. Sized with room over, not tuned.
+    constexpr uint32_t SECONDARY_ARRIVAL_SPINS = 100000000u;
+
+    // A core short of KICKOS_NUM_CORES is FATAL: the count sizes every per-core array, so
+    // continuing would hand threads to a core that is not running.
+    void release_secondaries(void)
+    {
+        uint64_t mpidr = 0;
+        __asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+
+        // A released core fetches from a PHYSICAL address with its MMU off, so a high-half
+        // entry is refused here: CPU_ON would answer SUCCESS and the core would fetch where no
+        // walk of its own resolves, which presents as a core that never started.
+        uintptr_t const entry = reinterpret_cast<uintptr_t>(&kickos_armv8a_secondary_entry);
+        if (entry >= reinterpret_cast<uintptr_t>(__kickos_arm64_va_base))
+        {
+            arch_console_write(BAD_ENTRY, sizeof(BAD_ENTRY) - 1);
+            console_hex(entry, 16);
+            arch_console_write(RELEASE_NL, 1);
+            kfault_terminate();
+        }
+
+        // Orders every write the primary published for a secondary ahead of the release. A
+        // released core reads with its caches off until its own entry turns them on, so data
+        // handed over that way owes a clean to the point of coherency. QEMU models no cache,
+        // so that hazard has no witness here.
+        __asm volatile("dsb sy" ::: "memory");
+
+        // target_cpu is an AFFINITY value, not an index: a part packing eight cores to a
+        // cluster gives index 8 the affinity 0x100. Aff0 alone varies here and the running core
+        // supplies the rest, which is exact on this board, QEMU's generated /cpus/cpu@N `reg`
+        // reading 0, 1, 2, 3 at `-smp 4`. An affinity naming no core is refused by PSCI.
+        uint64_t const cluster = mpidr & MPIDR_AFFINITY & ~uint64_t(0xFF);
+        for (uint32_t index = 1; index < KICKOS_NUM_CORES; index++)
+        {
+            // context_id in x3, which PSCI hands the entry point in x0. Zero: a secondary
+            // reads its identity out of MPIDR_EL1.
+            long const rc = psci_hvc(PSCI_FN64_CPU_ON, cluster | index, entry, 0);
+            if (rc != PSCI_SUCCESS)
+            {
+                arch_console_write(BAD_CPU_ON, sizeof(BAD_CPU_ON) - 1);
+                console_hex(index, 2);
+                arch_console_write(BAD_CPU_ON_TAIL, sizeof(BAD_CPU_ON_TAIL) - 1);
+                console_hex(static_cast<uint64_t>(rc), 16);
+                arch_console_write(RELEASE_NL, 1);
+                kfault_terminate();
+            }
+        }
+
+        // RELEASED is not ARRIVED: CPU_ON answering SUCCESS says the core was started, and a
+        // core handed a bad entry, a bad stack or a translation it cannot walk is started and
+        // never reaches its own code. The online byte is the arrival witness.
+        //
+        // From ZERO, where the release loop above starts at one: every core publishes its own
+        // arrival, so the check is the same question at every index and the running core's own
+        // cell is read rather than assumed.
+        for (uint32_t index = 0; index < KICKOS_NUM_CORES; index++)
+        {
+            uint32_t spins = 0;
+            while (kickos_armv8a_core_online[index] == 0)
+            {
+                spins++;
+                if (spins > SECONDARY_ARRIVAL_SPINS)
+                {
+                    arch_console_write(NO_ARRIVAL, sizeof(NO_ARRIVAL) - 1);
+                    console_hex(index, 2);
+                    arch_console_write(RELEASE_NL, 1);
+                    kfault_terminate();
+                }
+                __asm volatile("yield" ::: "memory");
+            }
+        }
+
+        // The positive statement a gate reads. Absence of a refusal is not a witness: a build
+        // that released nobody would print nothing and boot clean.
+        arch_console_write(SMP_ONLINE, sizeof(SMP_ONLINE) - 1);
+        console_hex(KICKOS_NUM_CORES, 1);
+        arch_console_write(SMP_ONLINE_TAIL, sizeof(SMP_ONLINE_TAIL) - 1);
+    }
+#endif
 }
 
 extern "C"
 {
+
+// This machine's interrupt controller, which the arm64 GICv2 backend reads (gicv2.h).
+struct kickos_gicv2_map const kickos_gicv2 = {
+    GICD_BASE,
+    GICC_BASE,
+    KICKOS_MAX_IRQ,
+    PPI_EL1_PHYS_TIMER,
+};
+
+// This core's hardware edge alone: the distributor's shared half runs once for the machine.
+//
+// A core reaches this with PSTATE.DAIF masked: the primary because startup.S leaves the reset
+// masking alone, a secondary because that is the state PSCI hands a released core.
+void kickos_armv8a_percore_init(void)
+{
+    // CNTP_CTL_EL0's reset value is architecturally UNKNOWN, so an already-asserted timer
+    // would fire the moment this core's PPI and DAIF open.
+    __asm volatile("msr cntp_ctl_el0, %0" ::"r"(uint64_t(0)));
+
+    kickos_gicv2_percore_init();
+}
 
 void arch_init(void)
 {
@@ -181,28 +333,14 @@ void arch_init(void)
     g_ns_per_tick = kickos::KICKOS_NS_PER_SEC / freq;
     SystemCoreClock = static_cast<uint32_t>(freq);
 
-    // CNTP_CTL_EL0's reset value is architecturally UNKNOWN, so an already-asserted timer
-    // would fire the moment the GIC and DAIF open.
-    __asm volatile("msr cntp_ctl_el0, %0" ::"r"(uint64_t(0)));
+    // The distributor is up before any CPU interface is, so a secondary released below finds
+    // the shared half already written.
+    kickos_gicv2_dist_init();
+    kickos_armv8a_percore_init();
 
-    // PMR wide open at 0xF0: everything here sits at priority 0, and the reset PMR of 0
-    // blocks all of it.
-    *r32p(GICD_CTLR) = 0;
-    *r32p(GICC_CTLR) = 0;
-    // arch.h's reset contract: every line starts MASKED.
-    for (int intid = 0; intid < KICKOS_MAX_IRQ; intid += 32)
-    {
-        *r32p(GICD_ICENABLER + (intid / 32) * 4) = 0xFFFFFFFFu;
-        *r32p(GICD_ICPENDR + (intid / 32) * 4) = 0xFFFFFFFFu;
-    }
-    *r32p(GICC_PMR) = 0xF0;
-    *r32p(GICC_CTLR) = 1;
-    *r32p(GICD_CTLR) = 1;
-
-    // Banked, so no target is owed.
-    *r8p(GICD_IPRIORITYR + PPI_EL1_PHYS_TIMER) = 0;
-    *r32p(GICD_ISENABLER + (PPI_EL1_PHYS_TIMER / 32) * 4) =
-        1u << (PPI_EL1_PHYS_TIMER % 32);
+#if KICKOS_NUM_CORES > 1
+    release_secondaries();
+#endif
 
     // PSTATE.I stays SET: interrupts first reach the core through the initial thread's SPSR.
 }
@@ -215,8 +353,8 @@ uint64_t arch_clock_now(void)
 }
 
 // CNTP_CVAL_EL0 is an absolute compare, so the write is idempotent and no armed-deadline
-// dedup is owed: ktime_rearm calls this on every context switch with the same value. The
-// division is what keeps a UINT64_MAX deadline from overflowing, where a multiply would not.
+// dedup is owed. The division is what keeps a UINT64_MAX deadline from overflowing, where
+// a multiply would not.
 void arch_timer_arm(uint64_t deadline_ns)
 {
     uint64_t const ticks = deadline_ns / g_ns_per_tick;
@@ -230,79 +368,7 @@ void arch_timer_arm(uint64_t deadline_ns)
 void arch_timer_disarm(void)
 {
     __asm volatile("msr cntp_ctl_el0, %0" ::"r"(uint64_t(0)));
-    *r32p(GICD_ICPENDR + (PPI_EL1_PHYS_TIMER / 32) * 4) = 1u << (PPI_EL1_PHYS_TIMER % 32);
-}
-
-// --- Interrupt controller: the GIC behind the mask/unmask/clear triad -------
-// Self-bracketed per arch.h at no cost: the enable and pending registers are write-1-to-ACT,
-// so no body here read-modify-writes and every store is single and aligned. Unmask writes the
-// ENABLE last, so a half-applied sequence leaves the line masked.
-void arch_irq_mask(int line)
-{
-    if (line < 0 or line >= KICKOS_MAX_IRQ)
-    {
-        return;
-    }
-    *r32p(GICD_ICENABLER + (line / 32) * 4) = 1u << (line % 32);
-}
-
-void arch_irq_unmask(int line)
-{
-    if (line < 0 or line >= KICKOS_MAX_IRQ)
-    {
-        return;
-    }
-    // BYTE per INTID: a word index programs a different interrupt, and a 32-bit access is
-    // also unaligned, which on Device memory faults.
-    *r8p(GICD_IPRIORITYR + line) = 0;
-    if (line >= GIC_BANKED_INTIDS)
-    {
-        // A global interrupt reaches no core until one is named; a banked one needs none.
-        *r8p(GICD_ITARGETSR + line) = 0x01;
-    }
-    *r32p(GICD_ISENABLER + (line / 32) * 4) = 1u << (line % 32);
-}
-
-void arch_irq_clear_pending(int line)
-{
-    if (line < 0 or line >= KICKOS_MAX_IRQ)
-    {
-        return;
-    }
-    *r32p(GICD_ICPENDR + (line / 32) * 4) = 1u << (line % 32);
-}
-
-// Test scaffolding (arch.h). ISPENDR pends in the controller, so delivery takes the ordinary
-// path and the latch-while-masked contract needs no software shadow.
-void arch_irq_inject(int irq)
-{
-    if (irq < 0 or irq >= KICKOS_MAX_IRQ)
-    {
-        return;
-    }
-    *r32p(GICD_ISPENDR + (irq / 32) * 4) = 1u << (irq % 32);
-}
-
-// One interrupt per entry: the GIC signals again for anything still pending.
-void kickos_armv8a_gic_dispatch(void)
-{
-    uint32_t const iar = *r32p(GICC_IAR);
-    uint32_t const intid = iar & GICC_IAR_ID_MASK;
-    if (intid == GICC_IAR_SPURIOUS)
-    {
-        return; // no EOI is owed for a spurious read
-    }
-    if (intid == static_cast<uint32_t>(PPI_EL1_PHYS_TIMER))
-    {
-        // The output is LEVEL, and kickos_isr_timer's re-arm or disarm is what lowers it;
-        // an EOI alone would re-enter here forever.
-        kickos_isr_timer();
-    }
-    else
-    {
-        kickos_isr_irq(static_cast<int>(intid));
-    }
-    *r32p(GICC_EOIR) = iar;
+    kickos_gicv2_clear_pending(PPI_EL1_PHYS_TIMER);
 }
 
 // Rule 7. Only the GIC is here: the timebase is the architected generic timer, reached

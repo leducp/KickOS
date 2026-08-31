@@ -176,7 +176,7 @@ namespace
     // Drop the entry for `va` only where the walker can hold one. Nothing tags a translation, so
     // write_ttbr0 drops the whole low half on every root change, and no entry for a space this
     // core does not have installed can survive that. A second core holds a TTBR0 this one cannot
-    // read, so the elision is compiled out above one core (docs/design-m6-mmu.md T9).
+    // read, so the elision is compiled out above one core.
     void invalidate_page_if(uintptr_t va, bool installed)
     {
 #if KICKOS_NUM_CORES == 1
@@ -673,7 +673,7 @@ void arch_aspace_activate(struct arch_aspace* space)
     arch_irq_restore(s);
 }
 
-// Called by the fault reporter before it prints. See g_boot_ttbr0.
+// See g_boot_ttbr0.
 void kickos_armv8a_ttbr0_to_boot(void)
 {
     if (g_boot_ttbr0 != 0)

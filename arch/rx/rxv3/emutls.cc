@@ -113,8 +113,8 @@ namespace
 // block and hands it its neighbour's storage. Masking R0 - 1 puts every R0 in
 // (base, base + stride] on base. R0 == base cannot occur: the block below is carved off the
 // stack and ctx.stack_lo is raised above it. On RX the edge happens to be unobservable from
-// inside this function, every call site being a bsr and bsr pushing the return address, but
-// ARM's __aeabi_read_tp is reached by a bl with the caller's SP intact and does see it.
+// inside this function, a bsr entry pushing the return address, but ARM's __aeabi_read_tp
+// is entered by a bl with the caller's SP intact and does see it.
 extern "C" void* __emutls_get_address(void* anchor)
 {
     // THE ANCHOR IS THE ONLY UNTRUSTED INPUT and everything below walks a table reached

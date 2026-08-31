@@ -6,10 +6,10 @@
 // runs, so a normal worker's printf() output reaches the wire THROUGH that driver with
 // zero app code doing the handover.
 //
-// The handover is FUNCTIONAL and RECLAIM-PROOF. This app's window grant is one of the
-// three inert ones (docs/reference/boards.md, "When an MMIO grant is INERT"); what
-// SYSMPU enforces is MEMORY isolation (each thread's stack/data), which is what confines
-// the unprivileged driver that owns the published console.
+// The handover is FUNCTIONAL and RECLAIM-PROOF. This app's window grant feeds no
+// kos_periph_* syscall, so it is inert; what SYSMPU enforces is MEMORY isolation (each
+// thread's stack/data), which is what confines the unprivileged driver that owns the
+// published console.
 //
 // Flow:
 //   * Before main: a global constructor emits one line via printf. Constructors run in

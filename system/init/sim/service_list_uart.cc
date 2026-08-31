@@ -12,8 +12,8 @@
 // keeps its own console and both paths stay readable.
 //
 // There is no hardware TX-empty interrupt and no asynchronous RX here: the doorbell is
-// the ONLY thing that wakes the IRQ thread. Nothing in this list exercises the
-// transition-triggered half of RULE T1, because a host write cannot fail to raise.
+// the ONLY thing that wakes the IRQ thread. Nothing in this list exercises a TX-empty
+// source that raises only on a transition, because a host write cannot fail to raise.
 
 #include <kickos/sys/service.h>
 
@@ -44,7 +44,7 @@ namespace
 
     kos_cap_t g_uart_ep = KOS_CAP_NONE;
 
-    // The per-chip class, sim edition. Every method here may be called ONLY from the IRQ
+    // The per-chip class, sim edition. Every method here may be entered ONLY from the IRQ
     // thread: on a real chip they touch the granted register window, which has exactly
     // one holder.
     struct LoopUart
@@ -60,8 +60,8 @@ namespace
 
         void tx_irq_enable()
         {
-            // Nothing to arm: host stdout is never busy, so there is no TX-empty source.
-            // On silicon this is the CCR.TBIEN / SCR.TIE write, and RULE T1 lives here.
+            // Nothing to arm: host stdout is never busy, so there is no TX-empty source. On
+            // silicon the CCR.TBIEN / SCR.TIE write and the burst's first byte both go here.
         }
 
         // Wakes since boot. The readiness model below is a function of this alone, so it

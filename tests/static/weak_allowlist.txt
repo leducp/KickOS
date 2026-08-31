@@ -40,8 +40,7 @@ _kickos_heap_start
 __kickos_heap_start
 _kickos_heap_limit
 __kickos_heap_limit
-# The app's own low window, carved only where a translating backend splits the image
-# (docs/design-m6-mmu.md, T5b.1).
+# The app's own low window, carved only where a translating backend splits the image.
 __kickos_app_rom_start
 ___kickos_app_rom_start
 __kickos_app_rom_end

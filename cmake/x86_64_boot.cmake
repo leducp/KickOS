@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The x86_64 images (docs/design-m6-mmu.md section 5, M6.4). Every one is a PE32+ UEFI
-# application, and CMake cannot drive `ld -m i386pep` as a linker for a target, so each image
-# is one custom command.
+# The x86_64 images. Every one is a PE32+ UEFI application, and CMake cannot drive
+# `ld -m i386pep` as a linker for a target, so each image is one custom command.
 #
 # Two image families:
 #   - X1 and X2 carry NO kernel and no interrupt source, over an explicit OBJECT subset, and
@@ -309,9 +308,9 @@ message(STATUS "KickOS: x86_64 libraries plus the X1 through X5 images; `ninja x
                "witnesses")
 
 # ---------------------------------------------------------------------------
-# The APPLICATION images. M6.4 (docs/design-m6-mmu.md section 5): the same eight archives
-# the root CMakeLists groups for every other board, linked here rather than through the
-# compiler driver, which cannot select the PE+ emulation.
+# The APPLICATION images: the same eight archives the root CMakeLists groups for every other
+# board, linked here rather than through the compiler driver, which cannot select the PE+
+# emulation.
 #
 # kickos_add_application makes the app target an OBJECT library on this arch and calls the
 # function below, which writes the image and records its path on the target as
@@ -344,8 +343,8 @@ set(KICKOS_X86_64_APP_OBJECTS "${_kos_x86_64_app_objects}" CACHE INTERNAL
 
 # The link group, captured at include time and comma-split into a real list: $<LINK_GROUP:>
 # takes it comma-separated, and an unsplit string reaches the loop below as one name. A
-# function reads its variables from the CALLING scope, and the caller is a user/apps
-# subdirectory; the cache entry is what keeps the two from having to agree by accident.
+# function reads its variables from the CALLING scope, a different directory here; the
+# cache entry is what keeps the two from having to agree by accident.
 string(REPLACE "," ";" _kos_x86_64_group "${_kickos_group}")
 set(KICKOS_X86_64_APP_GROUP "${_kos_x86_64_group}" CACHE INTERNAL
     "The archive group an x86_64 application image links, from the root CMakeLists")

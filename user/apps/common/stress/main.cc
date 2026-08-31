@@ -62,7 +62,7 @@ namespace
     long g_handoffs = 0;     // total ping-pong handoffs; expect 2*pairs*ROUNDS
     long g_churn_runs = 0;   // total churn-worker runs; expect live*CHURN_GENERATIONS
 
-    // Called only from worker threads: names the counter mutex by its delegated cap.
+    // Worker threads only: names the counter mutex by its delegated cap.
     void lock() { kos_sem_wait(CH_MTX); }
     void unlock() { kos_sem_post(CH_MTX); }
 

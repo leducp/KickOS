@@ -58,14 +58,76 @@ source "arch/Kconfig"
 
 # --- Cores ------------------------------------------------------------------
 
+choice
+	prompt "Core count"
+	default KICKOS_CORES_ONE
+
+config KICKOS_CORES_ONE
+	bool "One core"
+
+config KICKOS_CORES_TWO
+	bool "Two cores"
+
+config KICKOS_CORES_FOUR
+	bool "Four cores"
+
+endchoice
+
 config KICKOS_NUM_CORES
 	int
+	default 4 if KICKOS_CORES_FOUR
+	default 2 if KICKOS_CORES_TWO
 	default 1
 	help
-	  How many cores the kernel schedules on. Never prompted: a property of the
-	  silicon and the port. At 1, arch_cpu_id() is a macro expanding to a literal and
-	  no fallback TU exists, so a multi-core port that raises this and ships no
-	  arch_cpu_id gets a link error rather than a kernel that believes it is on core 0.
+	  How many cores THIS IMAGE DRIVES, which is not the same as how many one kernel
+	  schedules on: an AMP image drives every core it launches and runs a kernel per
+	  core. Never prompted, the choice above stating it. At 1, arch_cpu_id() is a macro
+	  expanding to a literal and no fallback TU exists, so a port that raises this and
+	  ships no arch_cpu_id gets a link error rather than a kernel that believes it is on
+	  core 0.
+
+choice
+	prompt "Multicore model"
+	depends on !KICKOS_CORES_ONE
+	default KICKOS_MULTICORE_SHARED
+
+config KICKOS_MULTICORE_SHARED
+	bool "One kernel across every core"
+	help
+	  An arch that declares no smp.cmake is refused at configure rather than at run
+	  time: that declaration asserts coherent shared memory, an inter-core exclusion
+	  primitive, an inter-core interrupt, a per-core identity, symmetric cores and
+	  per-line interrupt targeting. A part meeting all six but the last runs this model
+	  correctly and is declined it on the cost of the software that stands in.
+
+config KICKOS_MULTICORE_AMP
+	bool "One kernel per core, over disjoint memory"
+	help
+	  Each core runs its own kernel and its own memory, so no core needs another's
+	  exclusion, and the predicate above does not apply. The cores reach each other
+	  through the doorbell and a shared window, and every index and length read from
+	  that window is another node's writing.
+
+endchoice
+
+config KICKOS_MULTICORE_MODEL_SHARED
+	int
+	default 1 if KICKOS_MULTICORE_SHARED
+	default 0
+	help
+	  The model above as a number CMake reads, which is what the shared-kernel
+	  predicate is refused against.
+
+config KICKOS_KERNEL_CORES
+	int
+	default KICKOS_NUM_CORES if KICKOS_MULTICORE_SHARED
+	default 1
+	help
+	  How many cores ONE KERNEL schedules on, which is every core the image drives
+	  under the shared model and exactly one under AMP, where a node's peers run
+	  kernels of their own. Per-core state inside struct Kernel is this many cells,
+	  never KICKOS_NUM_CORES: an AMP node holding a cell for a core it does not
+	  schedule describes a machine it is not.
 
 # --- Memory protection ------------------------------------------------------
 

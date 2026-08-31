@@ -141,10 +141,9 @@ namespace
     // touch RESETS/CLOCKS, which the kernel owns for life, so the unprivileged driver
     // cannot do them; everything inside the USB block itself is left to it.
     //
-    // RULE U2 (design-m4.6.2-usb-cdc.md 7.3): refused, at bring-up time, when the
-    // crystal did not come up. A full-speed device cannot be sourced from the ring
-    // oscillator, and a 6.5 MHz clk_sys also violates the clk_sys > 1.1 * clk_usb
-    // workaround for RP2040-E16.
+    // USB bring-up is refused, at bring-up time, when the crystal did not come up.
+    // A full-speed device cannot be sourced from the ring oscillator, and a 6.5 MHz
+    // clk_sys also violates the clk_sys > 1.1 * clk_usb workaround for RP2040-E16.
     void usb_clock_init()
     {
         if (SystemCoreClock < reg::clocks::CLK_SYS_MIN_FOR_USB_HZ)
@@ -354,7 +353,7 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
     *size = CONSOLE_WIN_SIZE;
 }
 
-// Panic-path reclaim (console.cc D6): force UART0 back to a polled-ready 8N1 TX channel after
+// Panic-path reclaim (console.cc): force UART0 back to a polled-ready 8N1 TX channel after
 // a userspace driver may have garbled every writable register in the window. Runs with IRQs
 // masked, privileged; MUST be idempotent and re-entrant, so it is straight-line ABSOLUTE
 // stores only, no read-modify-write.
@@ -535,15 +534,15 @@ int arch_reboot(void)
 
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (RP2040 datasheet). Owns-for-life: the 64-bit TIMER (monotonic
-// base), the WATCHDOG (its /12 TICK feeds the 1 MHz TIMER, so it is reserved despite
-// the general watchdog exclusion, R3), and the RESETS + CLOCKS blocks. Each is a
-// full 16 KB window so the SET/CLR/XOR atomic aliases (+0x1000/+0x2000/+0x3000) are
-// covered too (R2). M0+ has no bit-band -> the arch_bitband_present fallback 0 stands.
+// base), the WATCHDOG (its /12 TICK feeds the 1 MHz TIMER, so it is reserved despite the
+// general watchdog exclusion), and the RESETS + CLOCKS blocks. Each is a full 16 KB window
+// so the SET/CLR/XOR atomic aliases (+0x1000/+0x2000/+0x3000) are covered too. M0+ has no
+// bit-band -> the arch_bitband_present fallback 0 stands.
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {
         {mmap::TIMER_BASE, 0x4000u},    // TIMER: 64-bit us monotonic (DS 4.6)
-        {mmap::WATCHDOG_BASE, 0x4000u}, // WATCHDOG: TICK generator for the TIMER (DS 4.7, R3)
+        {mmap::WATCHDOG_BASE, 0x4000u}, // WATCHDOG: TICK generator for the TIMER (DS 4.7)
         {mmap::RESETS_BASE, 0x4000u},   // RESETS: peripheral reset control (DS 2.14)
         {mmap::CLOCKS_BASE, 0x4000u},   // CLOCKS: clock generators (DS 2.15)
     };

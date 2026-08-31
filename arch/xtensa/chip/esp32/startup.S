@@ -146,17 +146,18 @@ _kickos_lx6_fault:
     .size _kickos_lx6_fault, .-_kickos_lx6_fault
 
 /* ------------------------------------------------------------------------- */
-/* Level-1 interrupt entry. Reached from _UserExceptionVector when EXCCAUSE ==   */
-/* LEVEL1INTERRUPT. On entry: EXCM=1, EPC1 = interrupted PC, original a0 stashed   */
-/* in EXCSAVE1, a1 = interruptee SP. Saves a full frame on the interruptee stack,  */
-/* spills the interruptee's ancestor windows to its stack, runs the C dispatcher   */
-/* at INTLEVEL=1, then on exit either resumes the interruptee (rfe) or, if a switch */
-/* was requested from ISR context (g_arch_switch_pending), completes the deferred   */
-/* swap: the preempted thread is banked in this interrupt-frame format and the      */
-/* incoming thread is resumed by the path its resume_kind selects (retw for a       */
-/* cooperatively-blocked thread, rfe for a previously-preempted one). The switch    */
-/* decision is made in C during dispatch; the physical swap happens here, on the    */
-/* way back to thread level.                                                        */
+/* Level-1 interrupt entry, taken when EXCCAUSE == LEVEL1INTERRUPT. On       */
+/* entry: EXCM=1, EPC1 = interrupted PC, original a0 stashed in EXCSAVE1, a1 */
+/* = interruptee SP. Saves a full frame on the interruptee stack, spills the */
+/* interruptee's ancestor windows to its stack, runs the C dispatcher at     */
+/* INTLEVEL=1, then on exit either resumes the interruptee (rfe) or, if a    */
+/* switch was requested from ISR context (g_arch_switch_pending), completes  */
+/* the deferred swap: the preempted thread is banked in this interrupt-frame */
+/* format and the incoming thread is resumed by the path its resume_kind     */
+/* selects (retw for a cooperatively-blocked thread, rfe for a               */
+/* previously-preempted one). The switch decision is made in C during        */
+/* dispatch; the physical swap happens here, on the way back to thread       */
+/* level.                                                                    */
 /* ------------------------------------------------------------------------- */
     .align 4
     .global _kickos_int_level1

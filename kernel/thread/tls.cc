@@ -30,7 +30,7 @@ namespace
         return static_cast<size_t>(__kickos_tdata_end - __kickos_tdata_start);
     }
 
-    // Only ever called once the sections are known non-empty; see tls_block_size().
+    // Valid only once the sections are known non-empty; see tls_block_size().
     size_t tls_payload_bytes()
     {
         return static_cast<size_t>(__kickos_tbss_end - __kickos_tdata_start);
@@ -76,7 +76,7 @@ bool tls_stack_admissible(uintptr_t base, size_t size)
     // AN ARCH THAT SEATS THE REGISTER OWES NEITHER, and that is the whole of this guard: it
     // computes the block base from the stack by SUBTRACTION, so any size at any
     // KICKOS_STACK_ALIGN boundary carves correctly, which is what lets a stack be frames
-    // with a guard page rather than a power-of-two arena block (docs/design-m6-mmu.md F7).
+    // with a guard page rather than a power-of-two arena block.
     if ((base & (KICKOS_TLS_STRIDE - 1u)) != 0)
     {
         return false;

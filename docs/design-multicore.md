@@ -1,0 +1,462 @@
+<!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
+# Multicore: a shared kernel where the hardware earns it, AMP where it does not
+
+> **Status: ACTIVE** -- the design contract for multicore, written to be audited before code.
+> Section 1 is the hardware predicate that decides which parts get a shared kernel at all,
+> section 2 is what this contract FREEZES, section 6 is the step plan with the expected result
+> of each step. An auditor is invited to add steps, split them, reorder them and correct the
+> expected results; the step identifiers exist so a finding can name one.
+>
+> **This document names no milestone, and that is deliberate.** `roadmap.md` owns the schedule
+> and is the sole entry point mapping a milestone to the documents it draws on and the steps it
+> adopts. A design that carries its own milestone number inverts that: the mechanism starts
+> depending on the plan, and every resequencing rots a document that describes something which
+> did not change. Step identifiers here are local to this file.
+
+`docs/design-m7-smp.md` is the exploration and stays one: it carries the cross-core IPC transport,
+the atomics residue, the hardware mechanics of the RP parts and the corrected TLB bullet, and all of
+that is still the input.
+
+**What it does NOT decide is the target, and its candidate ranking is not this plan.** That ranking
+was written when multicore was expected to precede the MMU. It sorts RP2350 above RP2040 above the
+LX6, it never mentions an A53, and its gate is an MCU gate: exclusives, SIO spinlocks, the E2
+erratum, the windowed ABI. Translation landed first, so the machine multicore arrives on is the A53
+the MMU port already runs on, and every clause of that ranking is satisfied trivially by it. Read the
+spike for its transport design and its hardware mechanics; do not read its ranking as a plan.
+
+The silicon target is the quad-core i.MX8MP. `qemu-arm64` is the development vehicle, which is why
+section 2 freezes bring-up and interrupt decisions against that part rather than against the emulator.
+
+---
+
+## 1. When a shared kernel is reachable
+
+`docs/design-m7-smp.md` states the gate as two coupled facts, the inter-core atomic and switch-path
+maturity. That is not enough: it names the primitive the lock needs and says nothing about the two
+properties whose absence turns a shared kernel into software standing in for missing hardware.
+
+**The predicate is a set of hardware properties, never a family name.** An architecture family is a
+proxy, and a proxy dates the first time a part violates it. A future part qualifies by meeting the
+predicate, with no list to edit.
+
+### 1.1 Mandatory: a shared kernel is not implementable without these
+
+1. **Coherent shared memory with no software maintenance.** Run queues, thread control blocks, the
+   capability table and the lock word are read and written by every core. Satisfied EITHER by
+   hardware coherency (an A53 cluster in an inner-shareable domain) OR by there being no per-core
+   cache over that memory at all. The second clause is why this is stated as a property rather than
+   as "has cache coherency": the RP2040's M0+ has no data cache, so it is coherent by absence.
+2. **An inter-core exclusion primitive**: an architectural atomic (load-exclusive/store-exclusive,
+   compare-and-swap, a large-system atomic) or a hardware lock block. Which one a part has caps the
+   lock ALGORITHM, not the granularity.
+3. **An inter-core interrupt.** Cross-core reschedule, shootdown where the architecture does not
+   broadcast, and the reclamation stall all need one core to reach another.
+4. **A cheap per-core identity**, which is what `arch_cpu_id` becomes above one core.
+5. **Symmetric cores.** One kernel image scheduling a thread onto either core requires the cores to
+   be interchangeable. This is the AMP boundary by definition rather than a quality judgement.
+
+### 1.2 Required for a sane kernel: implementable without, and declined
+
+6. **Per-line interrupt targeting**, a controller that can direct a line to a core. Without it every
+   line lands on every core, and three things follow. Which core services a line becomes software
+   state kept coherent across cores. The interrupt-versus-kernel-lock asymmetry cannot be dodged by
+   pinning, which forces a second lock. And the grant model stops mapping to hardware: a line
+   "granted" to one core is granted only because the other masks it, which the isolation principle
+   reads as the wrong shape, a grant that is a mask being neither the narrowest unit nor a refusal.
+
+### 1.3 The MMU is not on the list
+
+A shared kernel needs coherent memory and exclusion. It does not need translation, and a shipping
+counterexample settles it rather than an argument: FreeRTOS's dual-core RP2040 port is SMP with no
+MMU at all. What translation buys is isolation between processes, which is exactly as valuable on
+four cores as on one and no more.
+
+One consequence belongs in the value section rather than here: without translation the cores share
+one flat physical space, so isolation between their workloads is whatever a per-core protection unit
+gives. That changes what a shared kernel is WORTH on such a part. It does not change whether one
+works.
+
+### 1.4 Efficiency is a property of the workload, and no number is frozen here
+
+The predicate answers "implementable and sane". It says nothing about "worth it", which is a
+different quantity with a different owner.
+
+Under one lock, speedup is Amdahl over the lock-hold fraction `f`: `S(n) = 1 / (f + (1 - f) / n)`.
+`docs/design-m5-ipc-fastpath.md` section 3.0.4 measures `f` at 0.53 on a call and reply round trip,
+with a leaf floor of 0.43, bounding two cores at 1.31x and four at 1.55x.
+
+**`f` is a property of the workload.** That measurement is the most kernel-dense traffic this system
+has; a compute-bound pair has `f` near zero and scales nearly linearly. So a shared kernel pays when
+cores spend their time OUTSIDE the kernel, and this system's characteristic traffic, IPC-mediated
+driver calls, is close to the worst case for it. What raises the payoff structurally is per-core run
+queues so cores stop contending on scheduling, which is the spike's stage 2 and belongs to the IPC
+optimisation work rather than here.
+
+**No speedup figure is a freeze.** Both bounds are re-derived after the lock-hold shortening rather
+than frozen now, and `roadmap.md` already requires that.
+
+### 1.5 How the fleet sorts, with every exclusion named
+
+| part | coherent | atomic | inter-core IRQ | identity | symmetric | targeting | verdict |
+|---|---|---|---|---|---|---|---|
+| A53 cluster (`qemu-arm64`, i.MX8MP) | yes | yes | SGI | MPIDR | yes | GIC | shared kernel |
+| RV64 multi-hart (`qemu-riscv64`) | yes | A extension | MSIP | mhartid | yes | PLIC | shared kernel |
+| RP2040 | by absence | SIO lock | FIFO | CPUID | yes | **NO** | AMP |
+| RP2350 | by absence | exclusives | doorbell | CPUID | yes | **NO** | AMP |
+| ESP32 LX6 | **NO** | S32C1I | yes | yes | yes | matrix | AMP |
+| ESP32-C6 | | | | | **NO** | | AMP |
+| i.MX8MP Cortex-M7 companion | | | | | **NO** | | AMP |
+
+Two rows want their evidence stated, because both are the opposite of the obvious reading.
+
+**The RP parts fail on targeting and nothing else.** The RP2040 datasheet section 2.4.1.3 says it
+in the vendor's own words: "Each M0+ core has its own interrupt controller which can individually
+mask out interrupt sources as required. The same interrupts are routed to both M0+ cores." There is
+no distributor. They pass every mandatory requirement, and they are excluded by 1.2 rather than 1.1.
+
+**The LX6 passes targeting and fails coherency.** The ESP32 TRM chapter 8 says the interrupt matrix
+"independently allocates peripheral interrupt sources to the two CPUs", 67 of 71 sources routable to
+either. What it lacks is coherency between the two cores' caches over external flash and PSRAM.
+
+**These parts CAN run a shared kernel, and the record says so deliberately.** FreeRTOS ships a
+dual-core RP2040 port building two kernel locks from two SIO spinlocks, and ESP-IDF ships dual-core
+FreeRTOS on the ESP32. A future reader meeting either will otherwise reopen this. The exclusion is a
+judgement about value, and it is recorded here so that judgement is what gets argued with:
+requirement 6's absence buys per-core mask reconciliation, a second lock, and a grant model that no
+longer matches the hardware, and it buys them in SHARED kernel source that every preset compiles and
+every single-core board must keep correct. The byte-identical invariant protects the image, not the
+source. That is a fleet-wide charge for a bound of 1.31x on two boards.
+
+---
+
+## 2. The freezes
+
+A freeze is a decision this contract may not reopen without saying so; the deliberately open
+questions are section 8. Per the MMU contract's rule, a freeze rests on another decision and never on
+an observation of the tree: where one needs a fact about the code, it says whether that fact is a
+decision or a measurement.
+
+### N1. The deliverable is a second core, not a lock
+
+`roadmap.md` frames this work as a Big Kernel Lock first. The lock is the smallest and least uncertain
+piece of it, and framing the deliverable around it would ship an empty corpus.
+
+Two reasons, and the second is the one that matters. The lock's span was already frozen by F4 of
+`docs/design-m6-mmu.md`, "one lock spans capability resolve-to-use", carried forward from the spike
+and honoured by the frame-mapping capability pair, so this work does not choose it. And a big lock is
+UNFALSIFIABLE at one core by construction: the invariant is that a single-core build stays
+byte-identical BY THE LOCK COMPILING TO NOTHING, so at one core a correct lock and an absent lock are
+the same image. That is this project's recurring class, an instrument whose corpus can go empty
+without its report changing.
+
+The deliverable is therefore a second core executing the kernel, with the lock as what makes it safe.
+
+### N2. One lock, its span at F4, and the lock and the doorbell are one design
+
+F4 is inherited unchanged and does not widen. Section 4 is why it does not need to: what a lock
+substituted for the current exclusion primitive leaves open is mostly places that never had a lock,
+not spans too narrow.
+
+The coupling is already frozen and `arch/include/kickos/arch/arch.h` carries it in prose: the far
+side's handler takes no kernel lock, and the lock's acquire loop services a pending doorbell.
+Otherwise an initiator holding the lock waits on a core spinning to acquire it. **These are one
+design and may not be built as two**, and the risk is asymmetric: that deadlock is unavailable on A64
+and available on the other two, so it cannot be discovered by the first backend.
+
+### N3. One lock and not two, bought by interrupt affinity
+
+The reference kernel this lineage cites splits into a task lock and an interrupt lock precisely
+because both cores of an MCU take every interrupt and neither can be told not to. Requirement 6
+says we do not ship a shared kernel on such a part. On a GIC, affinity is ours to set, so device
+lines are pinned and one lock suffices.
+
+**The asymmetry is the reason, so it is recorded rather than the conclusion alone.** A future part
+meeting requirements 1 to 5 and failing 6 would reopen the second lock, and requirement 6 exists to
+keep that part out.
+
+### N4. The doorbell serves both models
+
+`arch_ipi_send` and `arch_ipi_wait` are the same seam and the same hardware for a shared kernel's
+cross-core interrupt and for an AMP node's inter-node doorbell. Only the callers differ: under a
+shared kernel the far side is another core of one kernel and N2's rule binds it; under AMP the far
+side is a different kernel and there is no shared lock to reason about.
+
+**Narrowing the doorbell's contract to shared-kernel semantics is a defect, not a simplification.**
+It is the obvious reading of "the MCU class is AMP" and it would break AMP before AMP is written.
+
+### N5. Bring-up is an entry point and a reset release, and a load is a separate question
+
+Every part's start button has one shape: write an entry point, release a reset. The RP2040 sends
+`{0, 0, 1, VTOR, SP, PC}` over the inter-processor FIFO to a bootrom wait loop (datasheet 2.8.2),
+the RP2350 does the same plus an arch marker (datasheet 5.3), the ESP32 writes the entry to the
+APP_CPU boot address register and clears its reset bit, and the i.MX8MP writes the companion's
+initial vector table into an IOMUXC general-purpose register and sets the enable bit in the reset
+controller.
+
+What differs is whether a LOAD precedes it. On the one-image parts the secondary's code is already
+resident and the primary supplies only an entry point. On the i.MX8MP the companion runs from
+tightly-coupled memory and something must place code there first.
+
+**Two consequences.** The launch is chip business below the seam, never a kernel-level concept. And
+because the i.MX8MP companion is startable by two register writes from the A53 side, "the bootloader
+owns it" is a convention rather than a constraint: the seam may not ASSUME it, because owning the
+launch is what makes a hung companion restartable, and a companion that cannot be restarted sits
+badly against a kernel whose posture is that a dying driver is contained and the system continues.
+
+### N6. An AMP node is a single-core kernel
+
+Each node runs its own kernel over its own memory. From inside, the core count is one and every
+single-core invariant holds unchanged: no big lock, no cross-core wait queues, no per-core mask
+reconciliation. That is the whole reason AMP is less code than a shared kernel rather than more, and
+it is why the predicate in section 1 does not apply to an AMP node.
+
+The mechanism exists. `KICKOS_MULTI_INSTANCE` keys instance state through one accessor, and
+`docs/design-m7-state-inventory.md` section 6 already records that a different keying is a
+substitution of one macro.
+
+**THE COUNT IS WHAT THE IMAGE DRIVES AND THE MODEL IS HOW IT DRIVES IT, and separating the two is
+what makes an AMP port writable.** The running thread is reached as
+`per_instance[kickos_instance_index()].current[arch_cpu_id()]`, two keyings composed. A shared
+kernel is one instance over many cores, so the instance index folds and the core identity does the
+work. An AMP node whose image is its own is one instance over one core, so both fold and the node
+correctly believes itself alone. An AMP node sharing ONE IMAGE with its peers is neither: its
+instance index has to come from its core identity, so it needs a count above one to have an identity
+at all, while needing none of section 1's properties, a core whose kernel is its own excluding
+nobody.
+
+So the count states how many cores the image drives and a separate model states whether one kernel
+spans them, and **N10's refusal is the MODEL's rather than the count's.** Keying it on the count
+locked the parts the predicate sends to AMP out of the count AMP needs, which made the first line of
+an AMP port unwritable and is corrected here rather than left for that port to discover.
+
+What an AMP image on one image still owes, and it is not a freeze because no such port exists: the
+instance index is a simulator's host-thread word today, so a chip's has to come from its core
+identity.
+
+### N7. Cross-node IPC is ONE mechanism, and locality never reaches the API
+
+A caller holds an endpoint capability and calls it. Whether the receiver executes on this core, on
+another core of this kernel, or in another kernel is resolved below the seam.
+
+Discovery and invocation are separate questions and only discovery needs naming. In a capability
+system a caller does not find a service by name, it is handed a capability, so the locality
+knowledge a caller might need already arrived with the delegation.
+
+Two API surfaces would be a second truth, two answers to "how do I call a service", with every
+consumer branching on something it has no business knowing. The driver framework and the KickCAT
+reality check are exactly the consumers that would carry that branch.
+
+**One measurement makes it affordable and is recorded so the decision can be rechecked:**
+`KOS_EP_MSG_MAX` is 256, so a ring slot at full message size is 256 bytes and a message that fits
+locally fits remotely. Had the slot been forced smaller, a uniform contract would have been a lie
+and this freeze would not stand.
+
+The register fastpath has no shared registers across cores and bails out on a remote partner, which
+is a kernel-side guard and is invisible above the syscall.
+
+### N8. No capability authorises the crossing; privilege sits at configuration
+
+**The inter-core interrupt is not a user-facing operation.** Userspace never sends one; it calls an
+endpoint it holds a capability for, and the kernel decides what that means. There is nothing to
+authorise.
+
+A crossing capability would also be wrong on its own terms. The endpoint capability IS the
+authority, so requiring a second one to use the first is two answers to "may I invoke this". And it
+would be a COARSER grant than the one already held, authorising any remote endpoint where the
+endpoint capability authorises one, which inverts the isolation principle's rule to grant the
+narrowest unit.
+
+Authority is owed at two configuration acts instead: minting a cross-node endpoint, and starting a
+core. Both are privileged, both are kernel init from a static partition in the first AMP work, and
+both belong to the same undecided question as the frame-run and address-space capability kinds.
+Answering it here for cores would decide the general case through a special case.
+
+**The security work of cross-node IPC is validation, not authorisation.** The shared window is
+memory a peer node writes, so every index and length read from it is untrusted input and the
+receiving kernel validates all of it, trusting nothing. That is the AMP analogue of the per-page
+validation and access split in `docs/design-m6-mmu.md` section 3.3: the far side is untrusted exactly
+as userspace is. Stated because "we have capabilities" invites the assumption that the crossing is
+already safe.
+
+### N9. No read-modify-write surface is added above the seam
+
+`docs/reference/style.md` carries the rule and `tests/static/check_atomic_rmw.sh` enforces it
+tree-wide. The cross-core lock is a per-arch seam whose cheapest correct mechanism differs per part;
+what it must not do is expose an RMW above itself.
+
+### N10. The predicate is enforced at configure time, not documented
+
+An architecture declares the properties it satisfies, and a SHARED-KERNEL selection without that
+declaration is a configure refusal that names the missing properties and points at AMP. The refusal
+matters more than the ruling: the spike already records that on a dual-core part with no cross-core
+primitive, bracketing with the local interrupt mask is a CORRECTNESS bug rather than a slow choice,
+and that the seam should refuse rather than trust the selection.
+
+**It is keyed on the MODEL and not on the count**, per N6: an AMP image raises the count to have a
+core identity at all and satisfies none of the six, so a refusal reading the count alone refuses the
+model that is the predicate's own answer for those parts.
+
+---
+
+## 3. What the MMU work already cut, so this does not
+
+The seams compile to nothing at one core. Stated so the plan is not re-made around work that exists.
+
+- The per-core identity and the doorbell are declared, folded at one core, and frozen as records.
+  The doorbell is TWO calls from its first line because a fire-and-forget one cannot express a
+  rendezvous.
+- `struct armv8a_percpu` is arrayed by the core count with its first field's displacement asserted,
+  and `arch/arm64/armv8a/vectors.S` names the multi-core edit in its own comment.
+- The per-core translation-root cache is already keyed and already loops over every core.
+- The address-space family is frozen and coherence-complete, with no flush call to schedule and no
+  address-space identifier above the seam.
+- The active-core set is DECIDED and not built: a readable field on the opaque space, never a
+  parameter, because the field costs nothing to add later and the parameter edits every backend at
+  once. This work implements rather than re-litigates it.
+- Cross-core maintenance is two file-local bodies inside the armv8a backend. Nothing named a flush
+  crosses the seam, so what changes is those bodies and not a signature.
+- The data-cache clean and invalidate seam is landed with an armv8a backend and no caller.
+
+---
+
+## 4. What a lock substituted for the current primitive leaves open
+
+An audit of `docs/design-capability-table.md` section 8's catalogue against the tree found most of it
+ANSWERED, because `kernel/syscall/cap.cc` states the precondition the substitution needs: every entry
+point's caller holds the lock, and a resolved object pointer is used under the same continuous lock.
+The frame-mapping capability pair honours F4 as written.
+
+Six survive, and the first three are not span problems at all.
+
+1. **The register fastpath holds no lock object**, and says so in its own comment. It reproduces five
+   of the catalogue's hazards unguarded on a peer's thread control block, including the width bound
+   that keeps a slot lookup inside its own run. **It is unreachable on both targets of this work**:
+   the opt-in exists only for armv6m, armv7m, rv32imac and rxv3, and the symbol is in neither image.
+   So this contract RULES on it and does not fix it, and N10's refusal is what carries the ruling.
+2. **The interrupt entry takes no lock** and dereferences a binding a concurrent teardown is freeing.
+   The teardown's own claim to safety is a masked window, and a mask on one core is not exclusion on
+   another. N3 answers it by affinity.
+3. **The exited-slot reclaim window opens where the lock closes**, which no lock scope can contain.
+   `kernel/syscall/syscall_thread.cc` already says it is single-core-only in its own comment.
+4. **Cross-core translation invalidation** after unmap and release. The armv8a maintenance is
+   non-shareable as written and there is no inter-core interrupt in the tree.
+5. **A peer core's installed translation root** at release: every core's cell is cleared, the boot
+   root is reinstalled only locally, and the tables are freed regardless.
+6. **The switch cells are file-scope scalars.** On armv8a the register switch is inline and under the
+   lock for a voluntary switch, so the catalogue's pending-backend hazard does not apply in the form
+   it was stated; what does apply is that two cores would share one cell naming the context on the
+   CPU. Both cells move into the per-core block.
+
+**Every one of these verdicts is conditional on the current thread pointer becoming per-core**, which
+is one global read without the lock at every syscall entry today. That is S1's first item.
+
+One entry was refuted and the refutation is worth keeping: the authority word is read without the
+lock and is safe, not because it is a single byte but because every one of its readers passes the
+CURRENT thread and no path reads a peer's. What it owes is a publication edge at spawn, which is a
+property of the lock this work writes rather than of that code.
+
+---
+
+## 5. What this work must produce as evidence
+
+- Four cores running threads on `qemu-arm64`, with the whole existing fleet green and the
+  single-core images unmoved except where a recorded change explains it.
+- A gate that reddens when a secondary core does not arrive.
+- The SMP-seam signature verdict from a baseline frozen before either backend, which is the method
+  the capability ABI differ used: `tests/static/smp_seam_records.txt` and its differ exist at S0.
+- A configure refusal on a part that fails the predicate, with a positive control showing it fires.
+- For every gap in section 4 that is fixed, a mutation that reddens exactly the arm claiming it.
+
+---
+
+## 6. The plan: steps and expected results
+
+Step identifiers are local to this document. `roadmap.md` maps them to milestones.
+
+**S0 -- the contract and the instrument.** No runtime code. This document; the SMP seam differ with
+its baseline frozen now and its four members MOVED out of the entry family, so this work never
+reddens the entry-and-boot-path verdict the x86_64 port closed; the configure-time refusal of N10.
+*Expected:* the entry differ still passes, the SMP differ passes against its own baseline, the fleet
+is unmoved.
+
+**S1 -- per-core state, at one core.** Everything that must be keyed, landed while the count is one
+so it folds to nothing and every preset proves it: the current thread pointer, the fault record, and
+the two armv8a switch cells into the per-core block. Not the sleep queue and not the ready queues,
+which belong to per-core scheduling and stay global under one lock. *Expected:* fleet green;
+`microbit`'s arena base moves by the documented adjacency and a build catches it.
+
+**S2 -- the second core boots and idles.** The shape the unicore A53 port used: prove the axis with
+no shared-state work. PSCI on four cores from the start so that "the peer" never becomes a synonym
+for one core, secondary stack and exception level and vector base, the identity read from the
+hardware register, the per-core interrupt CPU interface, and the secondaries parked. *Expected:* four
+cores up, core zero runs the selftest unchanged. Measured baseline: raising the core count alone is
+inert today, so any change is ours.
+
+**S3 -- the lock, the doorbell, and threads on every core.** N2 as one design; gaps 2 and 3 of
+section 4; threads scheduled on any core with cross-core wake through the doorbell. *Expected:* the
+selftest runs with threads distributed across four cores. This is the first step at which the lock
+witnesses anything.
+
+**S4 -- translation across cores.** Gaps 4 and 5; the broadcast maintenance and the instruction-side
+poke that A64 genuinely owes, its instruction barrier not being broadcast; the active-core set built
+as it was decided. *Expected:* processes on multiple cores, the address-space arms green at four
+cores.
+
+**S5 -- the RV64 backend and the SMP-seam verdict.** The hart park first, since with no firmware
+every hart currently enters the reset path. Then the lock, the doorbell over the machine software
+interrupt, and the genuine software rendezvous that A64 receives from hardware. *Expected:* the
+differ's verdict, whatever it is, IS the step's finding, exactly as the address-space seam's was.
+
+**S6 -- the GICv3 posture, matching the silicon target.** Gated on acquiring the GIC architecture
+specification, and deliberately off the critical path. *Expected:* a second interrupt posture on
+`qemu-arm64`, the way the RV64 board ships two translation postures.
+
+**The GICv2 code is already out of the chip file, and GICv3 lands beside it rather than inside it.**
+Everything that code holds except its base addresses and its timer identifier is architected rather
+than per part: the register displacements, the boundary below which a distributor register is the
+calling core's own bank, the acknowledge and end-of-interrupt protocol, and the identifier that
+means no interrupt is pending. The chip declares which controller it has and where, because that is
+where the GIC version, the routing and the cluster topology live: an ARCH may not certify them for a
+part it has never seen.
+
+**A shared interface with one consumer is shaped by that consumer, and this one is deliberately
+cheap to reshape.** It is internal to `arch/arm64`, so no backend outside the family satisfies it and
+nothing above the seam names it, which is what separates it from the frozen families F8 of
+`design-m6-mmu.md` reasons about: those are contracts every port must meet, and this is a file
+boundary. Whether the two controllers end up sharing one interface or keeping two is decided when
+the second one exists, by which shape carries less duplication.
+
+---
+
+## 7. What this work will not witness
+
+- **No silicon.** The A53 is an emulator only and the RV64 board has no part at all, so every claim
+  here is emulator-grade until the i.MX8MP arrives. This is the price of section 1's ruling: the RP
+  parts are the fleet's only real multicore hardware, and they are in the AMP column.
+- **The lock has no silicon witness specifically.** An AMP port on a real dual-core part would still
+  exercise the doorbell, the ring and the ordering claims; the shared kernel is what loses its
+  hardware witness.
+- **The fastpath ruling is unexercised.** Neither target links the fastpath, so N10's refusal is what
+  carries it and no run demonstrates it.
+- **The rendezvous is A64-free.** On the first backend the data-side rendezvous is the hardware's, so
+  the doorbell's blocking path is not exercised until S5.
+- **The interrupt-side maintenance has no arm.** Nothing in the tree changes an executable mapping
+  across cores.
+- **The AMP column is a ruling, not a port.** Nothing here builds or runs AMP.
+
+---
+
+## 8. Deliberately NOT frozen
+
+- **Per-core run queues and any finer locking.** The spike's stage 2, and the lock-hold shortening
+  that moves the bound belongs to the IPC optimisation work.
+- **Whether the MCU dual-core parts are worth an AMP port at all**, which the spike lists as open and
+  which is a question about value rather than mechanism. Section 1 rules only that they do not get a
+  shared kernel.
+- **Who may mint a cross-node endpoint or start a core.** Static in kernel init for the first AMP
+  work; the general question is the capability layer's and is answered with it.
+- **The AMP partition layout**, including whether the instance-keyed storage can be made separately
+  protectable, which the current contiguous array does not give for free.
+- **Whether a shared kernel and an AMP node can coexist on one part.** The i.MX8MP is both at once
+  and nothing here decides how the two halves see each other.

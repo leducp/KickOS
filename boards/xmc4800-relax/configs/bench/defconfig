@@ -16,11 +16,10 @@ CONFIG_CONSOLE_BOTH=y
 CONFIG_KICKOS_ENABLE_SELFTEST=y
 CONFIG_KICKOS_BENCH=y
 
-# NO service list, though this board's enforcing default has one, and the reason is the
-# MEASUREMENT rather than the reporting. A console driver is a thread and its device is an
-# interrupt source, and both compete with the bench peers for the window the sweep times:
-# over USB CDC this board's cousins report a round trip 30x long and an above-budget
-# control that is not constant, which is a broken capture and not a slow one
-# (design-m5-ipc-fastpath.md 5.0.2). The app itself now writes through kickos::emit, so a
-# published console would receive the lines; it is still the wrong thing to measure under.
+# NO service list, though this board's enforcing default has one. A console driver is a
+# thread and its device is an interrupt source, and both compete with the bench peers for
+# the window the sweep times: over USB CDC this board's cousins report a round trip 30x
+# long and an above-budget control that is not constant. The app itself writes through
+# kickos::emit, so a published console would receive the lines; it is still the wrong thing
+# to measure under.
 CONFIG_KICKOS_SERVICE_LIST="kickos_services_none"

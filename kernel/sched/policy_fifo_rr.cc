@@ -149,7 +149,7 @@ namespace kickos
 
         uint64_t policy_next_timed_event()
         {
-            Thread* c = kernel().current;
+            Thread* c = kernel().current[kickos_kernel_core()];
             if (c == nullptr or c->policy != Policy::RR or c->quantum_ns == 0)
             {
                 return UINT64_MAX;

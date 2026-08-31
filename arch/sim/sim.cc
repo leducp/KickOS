@@ -179,8 +179,8 @@ namespace
         sim().switch_from = from_tid;
         sim().switch_pending = 1;
     }
-    // Consume the hand-off on the RESUMING side and emit {from -> current}. Called
-    // right after every swapcontext and at the trampoline (a new thread's first run).
+    // Consume the hand-off on the RESUMING side and emit {from -> current}. Owed after
+    // every context resume, a new thread's first run included.
     void trace_emit_switch_in()
     {
         if (sim().switch_pending == 0)
@@ -553,10 +553,10 @@ namespace
 
     void sim_tx_irq_enable()
     {
-        // Enabling the TX-empty IRQ on a channel with queued bytes asserts the
-        // line. Called from console_tx_write under IrqLock (SIGUSR1 blocked), so
-        // the raise stays pending until the lock releases -> the drain then runs
-        // in genuine ISR context, not inline in the producer.
+        // Enabling the TX-empty IRQ on a channel with queued bytes asserts the line.
+        // Entered under IrqLock (SIGUSR1 blocked), so the raise stays pending until the
+        // lock releases -> the drain then runs in genuine ISR context, not inline in the
+        // producer.
         sim().tx_enabled = 1;
         sim().tx_asserted = 1;
         raise(SIGUSR1);
@@ -1194,10 +1194,10 @@ void arch_timer_disarm(void)
 }
 
 // --- MPU: mprotect over the user-RAM arena ---------------------------------
-// Called at switch-in (switch_to, arch_start) for the INCOMING thread while still executing on
-// the OUTGOING thread's stack, arch_switch not having swapped yet. THIS MUST NOT LOWER TO THE
-// INCOMING RESTING POSTURE: that would PROT_NONE the outgoing thread's arena-resident stack and
-// fault the swap itself. It RECORDS the incoming set and RAISES the arena, and the incoming
+// Runs at switch-in for the INCOMING thread while still executing on the OUTGOING thread's
+// stack, arch_switch not having swapped yet. THIS MUST NOT LOWER TO THE INCOMING RESTING
+// POSTURE: that would PROT_NONE the outgoing thread's arena-resident stack and fault the
+// swap itself. It RECORDS the incoming set and RAISES the arena, and the incoming
 // thread's resting posture is applied on ITS OWN stack at its return-to-user boundary
 // (arena_lower_to_applied, or the trampoline for a fresh thread). The regions pointer is the
 // caller's TCB regions[], stable while the thread runs.

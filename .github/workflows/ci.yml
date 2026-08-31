@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
-# KickOS CI: the deterministic, host-runnable green gates (docs/m2-readiness.md #6).
-# Every job mirrors a `--preset` invocation. Every gate here is host or QEMU; a port's
-# hardware status has one home, docs/reference/boards.md.
+# KickOS CI: the deterministic, host-runnable green gates.
+# Every job mirrors a `--preset` invocation. Every gate here is host or QEMU: a job may not
+# depend on a board, so nothing here states a port's hardware status.
 #
 # Warnings-as-errors rides every job with no flag (KICKOS_WERROR defaults ON in tree).
 #
@@ -219,7 +219,8 @@ jobs:
 
   # rv32imac (virt) UNDER PMP ENFORCEMENT, which is this board's base variant: runs the full-C++
   # throw under PMP + the gp-in-appdata CI gates (riscv_no_smalldata, qemu_riscv_cxxtest,
-  # qemu_riscv_mpu_fault; see docs/design-riscv-gp-split.md and docs/design-cxx-under-mpu.md).
+  # qemu_riscv_mpu_fault): the global pointer is kept out of the app's window, and a C++
+  # throw runs under enforcement.
   # Deterministic (~3s). Same RISCstar toolchain as the non-enforcement job.
   qemu-riscv-mpu:
     runs-on: ubuntu-latest

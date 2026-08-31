@@ -3,8 +3,8 @@
 
 CONFIG_BOARD_F302NUCLEO=y
 
-# The MINIMUM tier of docs/reference/boards.md, which states what that tier buys and what
-# it refuses; the per-board arithmetic below is what this part pays for it.
+# The MINIMUM tier: 2 threads, no thread_local, and a self-test that only fits as three
+# images. The per-board arithmetic below is what this part pays for it.
 #
 # 16 KiB of SRAM, and the root stack is one notch above the user default because the
 # suite outgrew a 1024 root.

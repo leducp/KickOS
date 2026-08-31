@@ -45,12 +45,12 @@ namespace kickos
         inline __attribute__((always_inline)) void switch_book(Thread* next)
         {
             KICKOS_BENCH_MARK(bm_book);
-            Thread* prev = kernel().current;
+            Thread* prev = kernel().current[kickos_kernel_core()];
             if (prev->state == ThreadState::RUNNING)
             {
                 prev->state = ThreadState::READY;
             }
-            kernel().current = next;
+            kernel().current[kickos_kernel_core()] = next;
             next->state = ThreadState::RUNNING;
             next->switch_count.store(next->switch_count.load() + 1u);
             kernel().policy->on_switch_in(next);
@@ -103,7 +103,7 @@ namespace kickos
 #endif
         }
 
-        // Declared in arch/arch.h and called from an arch fault reporter.
+        // Returns the context to resume, or nullptr when containment is refused.
         extern "C" struct arch_context* kickos_thread_contain_wild_stack(
             struct arch_context* offender, char const** slain_name)
         {
@@ -115,7 +115,8 @@ namespace kickos
             // PendSV being entered with PRIMASK and BASEPRI both clear.
             IrqLock lock;
             Kernel& k = kernel();
-            if (k.current == nullptr)
+            uint32_t const cpu = arch_cpu_id();
+            if (k.current[cpu] == nullptr)
             {
                 return nullptr;
             }
@@ -159,7 +160,7 @@ namespace kickos
             }
             // A switch booked before the trap has already moved `current` off the offender
             // and stashed the incoming thread's regions.
-            if (k.current == bad)
+            if (k.current[cpu] == bad)
             {
                 Thread* const next = k.policy->pick_next();
                 if (next == nullptr)
@@ -168,12 +169,12 @@ namespace kickos
                 }
                 switch_book(next);
             }
-            return &k.current->ctx;
+            return &k.current[cpu]->ctx;
         }
 
         void switch_to(Thread* next)
         {
-            Thread* prev = kernel().current;
+            Thread* prev = kernel().current[kickos_kernel_core()];
             switch_book(next);
             KICKOS_BENCH_MARK(bm_arch);
             arch_switch(&prev->ctx, &next->ctx);
@@ -188,7 +189,7 @@ namespace kickos
         {
             // No ready-structure reset here: policy-owned, and zeroed with the BSS instance.
             Kernel& k = kernel();
-            k.current = nullptr;
+            k.current[kickos_kernel_core()] = nullptr;
             k.idle = nullptr;
             k.live = 0;
             k.policy = default_policy();
@@ -218,7 +219,7 @@ namespace kickos
         {
             IrqLock lock;
             Thread* first = kernel().policy->pick_next();
-            kernel().current = first;
+            kernel().current[kickos_kernel_core()] = first;
             first->state = ThreadState::RUNNING;
             kernel().policy->on_switch_in(first);
             aspace_activate_for(first);
@@ -247,7 +248,8 @@ namespace kickos
             KICKOS_BENCH_MARK(bm_pick);
             Thread* next = kernel().policy->pick_next();
             KICKOS_BENCH_SPAN(PH_PICK_NEXT, bm_pick);
-            if (next == kernel().current)
+            uint32_t const cpu = arch_cpu_id();
+            if (next == kernel().current[cpu])
             {
                 return;
             }
@@ -267,7 +269,7 @@ namespace kickos
         void yield()
         {
             IrqLock lock;
-            kernel().policy->on_yield(kernel().current);
+            kernel().policy->on_yield(current());
             reschedule();
         }
 
@@ -280,7 +282,7 @@ namespace kickos
             {
                 kpanic(diag::kBlockInIsr);
             }
-            kernel().policy->on_remove(kernel().current);
+            kernel().policy->on_remove(current());
         }
 
         void block_current()
@@ -320,7 +322,7 @@ namespace kickos
         void resched_after_wake(Thread const* t)
         {
             IrqLock lock;
-            Thread const* const c = kernel().current;
+            Thread const* const c = current();
             // Null between sched::init and sched::start.
             if (c == nullptr)
             {
@@ -375,7 +377,7 @@ namespace kickos
 
         void exit_current(int code, ExitCause cause)
         {
-            Thread* const c = kernel().current;
+            Thread* const c = kernel().current[kickos_kernel_core()];
 #if KICKOS_KERNEL_STACKS
             // The only reader of the canary, and the only point where the thread that owns a
             // block is certainly finished with it. Armed at boot and never re-armed, so a
@@ -402,12 +404,12 @@ namespace kickos
                 // with interrupts unmasked between chunks. `state` cannot be the dying marker,
                 // a switch back in rewrites it to RUNNING.
                 c->dying = true;
-                // Task-scoped death (docs/design-task-layer.md section 6). MUST precede
-                // task_release, which may free the slot and leave c->task a dangling name. A
-                // fault is the only death reaching the group from here; every other death
-                // that wants the group has a caller who could name it, and kos_task_kill and
-                // kos_task_slay cancel every member themselves. CANCEL_KILL is cooperative:
-                // a peer keeps the window it holds long enough to quiet its device.
+                // Task-scoped death. MUST precede task_release, which may free the slot and
+                // leave c->task a dangling name. A fault is the only death reaching the group
+                // from here; every other death that wants the group has a caller who could name
+                // it, and kos_task_kill and kos_task_slay cancel every member themselves.
+                // CANCEL_KILL is cooperative: a peer keeps the window it holds long enough to
+                // quiet its device.
                 if (cause == EXIT_FAULTED)
                 {
                     task_cancel_group(c->task, CANCEL_KILL);
@@ -517,7 +519,7 @@ namespace kickos
 
         Thread* current()
         {
-            return kernel().current;
+            return kernel().current[kickos_kernel_core()];
         }
         Thread* idle()
         {
@@ -536,7 +538,7 @@ namespace kickos
         void tick_rr(uint64_t now)
         {
             IrqLock lock;
-            Thread* c = kernel().current;
+            Thread* c = current();
             if (c == nullptr)
             {
                 return;

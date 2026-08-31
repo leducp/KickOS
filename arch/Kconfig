@@ -75,7 +75,7 @@ config ARCH_TLS_FROM_SP
 	  ARMV8A DOES NOT SELECT IT. It seats TPIDR_EL0 from the context, and the context
 	  derives that value from the block by SUBTRACTION, so the stack's low bound owes no
 	  alignment past the ABI's sixteen bytes. That is what lets a stack there be frames
-	  of any page count at any page boundary (docs/design-m6-mmu.md F7).
+	  of any page count at any page boundary.
 
 	  ARCH_SIM does not select it and cannot: it does not select ARCH_HAS_TLS either.
 

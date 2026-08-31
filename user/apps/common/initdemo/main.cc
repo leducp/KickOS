@@ -117,7 +117,7 @@ int main(int, char**)
         return 2;
     }
 
-    // Drop root's own WAIT cap so the sink is the sole receiver (S4). g_stdout_target
+    // Drop root's own WAIT cap so the sink is the sole receiver. g_stdout_target
     // holds the endpoint alive on the kernel ref, so this does not tear it down.
     kos_handle_close(ep);
 

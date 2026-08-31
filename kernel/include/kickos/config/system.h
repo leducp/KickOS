@@ -89,7 +89,7 @@
 // backend reaches at most one distinct domain per thread, every no-grant task resolving to
 // the shared singleton. A translating one spends one per TASK instead: a domain carries an
 // address space there, so no two tasks may share one and the singleton is a template
-// rather than a domain to join (docs/design-m6-mmu.md F2).
+// rather than a domain to join.
 #ifndef KICKOS_MAX_DOMAINS
 #if KICKOS_HAVE_ASPACE
 #define KICKOS_MAX_DOMAINS (KICKOS_MAX_TASKS + 2)

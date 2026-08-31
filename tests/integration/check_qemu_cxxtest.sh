@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# QEMU gate for the full-C++ opt-in (Stage B of docs/design-kickcat-k64f.md): boot
-# the cxxtest image on QEMU via semihosting and assert that exceptions, STL and
-# RTTI all executed (every check printed PASS, and the "ALL PASS" summary). Proves
-# the toolchain libstdc++/libsupc++ over newlib runs on the target ISA.
+# QEMU gate for the full-C++ opt-in: boot the cxxtest image on QEMU via
+# semihosting and assert that exceptions, STL and RTTI all executed (every check
+# printed PASS, and the "ALL PASS" summary). Proves the toolchain
+# libstdc++/libsupc++ over newlib runs on the target ISA.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"

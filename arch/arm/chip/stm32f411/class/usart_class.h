@@ -6,10 +6,6 @@
 // mutable static state. Built as the kickos_class_stm32f411 static lib on a bare include
 // path: repo include/ plus this chip's register dir, excluding kernel/include.
 //
-// f4uartirq is the only consumer today. The kernel console (chip_stm32f411.cc
-// f4_tx_slot_free / arch_console_write_sync) checks the same SR.TXE bit through its own
-// inline read rather than calling this leaf.
-//
 // The register map it reads is the chip's shared regs/usart.h.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_STM32F411_CLASS_USART_CLASS_H

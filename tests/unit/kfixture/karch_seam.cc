@@ -113,8 +113,7 @@ extern "C"
                                            stack_base, stack_size);
     }
 
-    // Link-only: kickos_fault_kill_thread is the only caller of these two, and no arm
-    // drives it.
+    // Link-only stubs.
     bool arch_fault_is_user_thread(void*)
     {
         return false;
@@ -138,10 +137,9 @@ extern "C"
         kickos::testfix::trace_add("reclaim");
     }
 
-    // LOUD, and never with the status it was handed. exit_current calls this when the dying
-    // thread was the last live one, and an exit(0) from there would end the gate green with
-    // failures already printed and later arms never run. An arm that wants the
-    // last-thread-out path keeps a spare thread live.
+    // LOUD, and never with the status it was handed: on the last-thread-out path an exit(0)
+    // would end the gate green with failures already printed and later arms never run. An
+    // arm that wants that path keeps a spare thread live.
     void kickos_terminate(int status)
     {
         printf("FIXTURE FAIL: kickos_terminate(%d) ended the arm\n", status);
@@ -167,7 +165,7 @@ namespace kickos
     }
 #endif
 
-    // Link-only: kickos_thread_fault_exit is the only caller.
+    // Link-only stub.
     void kprintf_fault(char const*, ...)
     {
     }

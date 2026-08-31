@@ -77,7 +77,7 @@ static_assert(sizeof(struct Shared) <= KOS_UART_BLOCK_SIZE,
 static_assert(KOS_UART_TX_SIZE >= 2 and (KOS_UART_TX_SIZE & (KOS_UART_TX_SIZE - 1)) == 0,
               "the TX ring size must be a power of two >= 2 or it never accepts a byte");
 
-// Lay out the block. Not thread-safe: the bring-up calls it before either thread exists.
+// Lay out the block. Not thread-safe: call it before either thread exists.
 void shared_init(Shared* s);
 
 // The whole granted block: the shared rings plus the class config the IRQ thread opens the
@@ -144,7 +144,7 @@ void irq_loop(Uart& dev, Shared* sh)
     while (true)
     {
         // The FIRST wait is also what arms the line: a claim leaves it masked so no window
-        // exists in which it is armed and unowned (INVARIANT H1).
+        // exists in which it is armed and unowned.
         if (kos_irq_wait(KOS_UART_CAP_LINE) != 0)
         {
             break; // the cap went away: the line is gone, so this thread has no work

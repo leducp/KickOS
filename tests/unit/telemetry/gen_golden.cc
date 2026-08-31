@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Golden-vector generator (telemetry.md CI gate 1). Drives the PURE record
-// encoders (include/kickos/trace/record.h) with scripted seq/t/payload, writes
-// the resulting bytes to argv[1], and prints the EXPECTED canonical decode to
+// Golden-vector generator. Drives the PURE record encoders
+// (include/kickos/trace/record.h) with scripted seq/t/payload, writes the
+// resulting bytes to argv[1], and prints the EXPECTED canonical decode to
 // stdout: the exact one-line-per-record form kicktrace.py emits with --csv. The
 // gate runs kicktrace on the bytes and asserts its output equals this expected
 // text: a byte-exact encode -> decode round-trip over every record type.

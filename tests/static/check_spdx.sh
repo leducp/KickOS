@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The SPDX rule of docs/reference/style.md: every tracked file that CAN carry a comment
-# opens with an SPDX-License-Identifier line inside its first five lines, and the
-# copyright line sits directly beneath it. docs/SPDX-header-template.txt spells the
-# per-language forms.
+# The SPDX rule: every tracked file that CAN carry a comment opens with an
+# SPDX-License-Identifier line inside its first five lines, and the copyright line sits
+# directly beneath it, written with the file format's own comment marker.
 #
 # Run from the repo root, no arguments: tests/static/check_spdx.sh
 #
@@ -22,10 +21,10 @@
 # "SPDX-License-Identifier" and "copyright" in prose and read as headered, which
 # docs/SPDX-header-template.txt does.
 #
-# SCOPE. What is read is the presence and adjacency of the two lines within the first five,
-# which is what the rule in style.md states. The identifier's VALUE, the copyright HOLDER
-# and YEAR, and whether either line sits inside a comment rather than in prose are all
-# outside it; the adjacency rule is what makes prose hard to pass off as a header.
+# SCOPE. What is read is the presence and adjacency of the two lines within the first five.
+# The identifier's VALUE, the copyright HOLDER and YEAR, and whether either line sits inside
+# a comment rather than in prose are all outside it; the adjacency rule is what makes prose
+# hard to pass off as a header.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -137,8 +136,8 @@ if [ -s "$TMP/findings" ]; then
     cat "$TMP/findings" >&2
     echo "" >&2
     echo "FAIL: $(wc -l < "$TMP/findings" | tr -d ' ') file(s) without a conforming header." >&2
-    echo "      docs/SPDX-header-template.txt has the form for each language. The copyright" >&2
-    echo "      line goes directly beneath the SPDX line." >&2
+    echo "      Open the file with its own comment marker plus SPDX-License-Identifier," >&2
+    echo "      inside the first five lines, and put the copyright line directly beneath." >&2
     exit 1
 fi
 

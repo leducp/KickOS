@@ -320,7 +320,7 @@ namespace
 
     uint64_t gpt_ticks()
     {
-        // Called from thread and ISR context: the wrap-extend read must be atomic
+        // Runs in thread and ISR context: the wrap-extend read must be atomic
         // against a concurrent reader, so run it under the crit section.
         arch_irq_state_t s = arch_irq_save();
         uint32_t cur = r32(reg::gpt::GPT1_CNT);
@@ -417,7 +417,7 @@ namespace
 #endif
 
 #ifdef KICKOS_UART_BEACON
-    // Baud-beacon diagnostic (docs/design-teensy-rt1062.md bring-up note). Programs
+    // Baud-beacon diagnostic. Programs
     // LPUART6 BAUD with a FIXED SBR (independent of UART_CLK_ROOT_HZ) and transmits
     // 0x55 ('U', alternating bits) forever. Flash once, then sweep the host reader
     // baud; the reader baud that reads clean 0x55 IS the on-wire baud, so
@@ -486,11 +486,11 @@ int arch_mpu_nocache_support(void)
 void arch_init(void)
 {
 #if KICKOS_HAVE_MPU
-    // M7 XIP anti-speculation + L1 caches (ERR011573; docs/design-teensy-mpu-hang.md).
-    // ORDER IS LOAD-BEARING: the fixed MPU regions mark the unbacked external Normal
-    // bands (FlexSPI beyond the 8 MiB image + the SEMC aperture) as Device, so the M7
-    // cannot speculatively prefetch into an AHB slave that never responds. They must be
-    // LIVE BEFORE the cache is enabled; a cache is what arms that speculation.
+    // M7 XIP anti-speculation + L1 caches (ERR011573). ORDER IS LOAD-BEARING: the fixed
+    // MPU regions mark the unbacked external Normal bands (FlexSPI beyond the 8 MiB
+    // image + the SEMC aperture) as Device, so the M7 cannot speculatively prefetch
+    // into an AHB slave that never responds. They must be LIVE BEFORE the cache is
+    // enabled; a cache is what arms that speculation.
     kickos_arm_mpu_fixed_init();
     // The D-cache defaults ON (KICKOS_IMXRT_DCACHE, arch/CMakeLists.txt); the coherency
     // obligation arrives with DMA.

@@ -513,6 +513,30 @@ Re-derive both after M8 rather than freezing a verdict here. Spikes: `docs/desig
 (candidate ranking, cross-core IPC invariants), `docs/design-m7-state-inventory.md` (per-core versus
 global), `docs/design-capability-table.md` section 8.
 
+**The contract is `docs/design-multicore.md`, and THIS FILE OWNS THE MAPPING BETWEEN IT AND THIS
+MILESTONE.** That document names no milestone on purpose: a design describes a mechanism, and a
+mechanism does not move when the schedule does. The inversion is not hypothetical here, the
+2026-08-21 resequencing having cost two file renames and three separate correction passes over
+documents that described something which had not changed.
+
+Two of its rulings decide the shape of this milestone rather than merely informing it. **The
+deliverable is a second core and not the lock**, a big lock compiling to nothing at one core, so a
+correct one and an absent one are the same image. And **a shared kernel is gated on a hardware
+PREDICATE rather than an architecture family**, of which the MMU is not a member and per-line
+interrupt targeting is; the parts that fail it get AMP, which is what closes the AMP-candidate
+question this section leaves open above for the MCU dual-core parts. Its step plan is S0 through S6,
+identifiers local to that file, and this milestone adopts them in order:
+
+| step | sub-milestone | what it lands |
+| --- | --- | --- |
+| S0 | M7.0 | the contract, the SMP seam differ, the configure-time predicate refusal |
+| S1 | M7.1 | per-core state, landed at one core |
+| S2 | M7.1 | the second core boots and idles |
+| S3 | M7.2 | the lock, the doorbell, threads on every core |
+| S4 | M7.3 | translation across cores |
+| S5 | M7.4 | the RV64 backend and the SMP-seam verdict |
+| S6 | M7.5 | the GICv3 posture, gated on the GIC architecture specification |
+
 ### M8 -- IPC and IRQ optimisation, on measured evidence
 Rebaseline FIRST: per-thread kernel stacks and the MMU both change trap and continuation costs, so
 no percentage measured before them is a planning input. Then, in order of structural value rather

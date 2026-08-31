@@ -86,8 +86,8 @@ namespace
 #endif
 
 // Exactly ONE of the three start bodies is compiled. The precedence lives here rather than at
-// the dispatch: a build setting both knobs would otherwise define a variant nothing calls,
-// which is -Werror=unused-function.
+// the dispatch: a build setting both knobs would otherwise define an unused variant, which
+// is -Werror=unused-function.
 #if defined(KICKOS_SIMCON_IRQ_WEDGE) && KICKOS_SIMCON_IRQ_WEDGE
 #define SIMCON_START_WEDGE 1
 #elif defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
@@ -298,8 +298,8 @@ extern "C"
     // The `n < 0` break never fires on a lost sender: no kernel path wakes a receiver
     // parked in kos_recv when the last SIGNAL holder goes (only the mirror case exists,
     // recv_holders -> 0 EPIPEing parked SENDERS), so this loop parks forever unless
-    // KICKOS_SIMCON_EXIT_AFTER bounds it. Filed as the kos_cap_narrow endpoint-rights
-    // residual in TODO.md.
+    // KICKOS_SIMCON_EXIT_AFTER bounds it. kos_cap_narrow cannot express "keep the endpoint
+    // cap but drop WAIT" either, so root's WAIT-bearing cap keeps the mirror wake away too.
     void simconsole_driver(void*)
     {
         kos::print("[simcon] kos::print diagnostic (kernel console path, dropped post-publish)\n");

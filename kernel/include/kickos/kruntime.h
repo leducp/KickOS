@@ -6,12 +6,12 @@
 //
 // WHERE A TRANSLATING BACKEND SPLITS THE IMAGE IN TWO, they are the kernel's OWN copies and
 // the ordinary names belong to the app: app text is EL0-reachable, so it carries
-// privileged-execute-never, and a per-process root need not map it at all
-// (docs/design-m6-mmu.md, T5b). tests/static/check_kernel_runtime.sh refuses an ordinary
-// name in an archive holding kernel text there. A reference the COMPILER emitted, an
-// aggregate copy or the default construction of a struct with default member initialisers,
-// is rewritten to these names after `ar` by kickos_privatise_runtime, so only an EXPLICIT
-// call has to be spelled this way.
+// privileged-execute-never, and a per-process root need not map it at all.
+// tests/static/check_kernel_runtime.sh refuses an ordinary name in an archive holding
+// kernel text there. A reference the COMPILER emitted, an aggregate copy or the default
+// construction of a struct with default member initialisers, is rewritten to these names
+// after `ar` by kickos_privatise_runtime, so only an EXPLICIT call has to be spelled this
+// way.
 //
 // A REGION BACKEND HAS NO SUCH SPLIT and never will: one text mapping serves both
 // privilege levels, so a second copy would be flash spent on nothing. The two 64 KB parts

@@ -592,7 +592,10 @@ as well, and `cmake/cap_table.cmake` refuses at configure any combination that w
 default-width child no dynamic slot of its own once the bound is spent. The guarantee is a
 configure-time property, not a runtime one.
 
-## 8. SMP (M6) consequences
+## 8. SMP (M7) consequences
+
+This section was written when multicore was M6; the 2026-08-21 resequencing made it M7, so an "M6"
+met elsewhere in this section means the same milestone this heading now names.
 
 Three assumptions in the current subsystem are uniprocessor and bear on this design now:
 
@@ -682,7 +685,7 @@ here because they are all in the capability path and all invisible from a unipro
   liveness argument, that a chain member is always a live slot because `server` is cleared before
   `recv_holders` can reach 0, is an ordering claim with no barrier behind it.
 
-**M6 must answer these. This rework does not**, and the entry width is not what decides them: an
+**M7 must answer these. This rework does not**, and the entry width is not what decides them: an
 atomic 64-bit load buys nothing while three writers still write the fields separately, without
 acquire/release ordering, and the real blocker underneath is object reclamation -- a pointer
 `cap_resolve` has just resolved can be freed by another core, which is an RCU or hazard-pointer

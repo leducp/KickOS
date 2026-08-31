@@ -3,8 +3,8 @@
 //
 // Host arms for kernel/mem/frame.cc.
 //
-// The granule is passed explicitly by every arm, never taken from a constant, because F7's
-// freeze is that the figure is the arch's answer. An arm that hardcoded 4096 would still
+// The granule is passed explicitly by every arm, never taken from a constant: the figure
+// is the arch's answer and never a kernel constant. An arm that hardcoded 4096 would still
 // pass on a backend reporting 8 KiB while the allocator handed out overlapping frames.
 
 #include <kickos/frame.h>
@@ -683,8 +683,8 @@ TEST(Frame, an_interleaved_sequence_hands_no_frame_out_twice)
     }
 }
 
-// 8 KiB is in the list on purpose: SPARC v9's smallest page is 8 KiB, which is F7's own
-// reason for the granule being asked rather than believed.
+// 8 KiB is in the list on purpose: SPARC v9's smallest page is 8 KiB, which is the reason
+// the granule is asked rather than believed.
 INSTANTIATE_TEST_SUITE_P(Granules, FrameGranule,
                          ::testing::Values(size_t(1024), size_t(4096), size_t(8192),
                                            size_t(16384), size_t(65536)));

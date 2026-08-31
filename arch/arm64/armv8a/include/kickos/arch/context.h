@@ -33,7 +33,7 @@ struct arch_context
 
 #if defined(KICKOS_TLS) && KICKOS_TLS
     // TPIDR_EL0 while this thread runs. SEATED rather than masked out of the stack pointer,
-    // which is what frees this arch of the power-of-two stride the mask imposes (F7).
+    // which is what frees this arch of the power-of-two stride the mask imposes.
     // Write-once per thread, so no switch saves it.
     uintptr_t tls_base;
 #endif

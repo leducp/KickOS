@@ -108,10 +108,9 @@ namespace kickos
         // Answers false and changes NOTHING when the new attributes are unencodable, the old
         // ones going straight back, so a refused re-type takes no reach away.
         //
-        // noinline is LOAD-BEARING, for the reason console_write_user gives in syscall.cc: its
-        // one caller is `syscall_body`, whose frame the SVC and SYSK red zones are measured on,
-        // and inlined this search cost that frame a spill slot on every board including the
-        // ones no chip reaches this path from.
+        // noinline is LOAD-BEARING, for the reason console_write_user gives in syscall.cc:
+        // inlined, this search costs the `syscall_body` frame the SVC and SYSK red zones are
+        // measured on a spill slot, on every board.
         [[nodiscard]] __attribute__((noinline)) bool add_enforced_retyping(uintptr_t base,
                                                                           size_t size,
                                                                           uint32_t attr)

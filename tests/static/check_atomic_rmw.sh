@@ -2,13 +2,12 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The no-RMW rule of docs/reference/style.md: no atomic read-modify-write anywhere in the
-# tracked tree. An RMW on a 32-bit atomic is a `__atomic_fetch_add_4`-class LIBCALL on armv6m
-# and rxv3 and inline on armv7m, xtensa and the host, so an RMW written against the sim or a
-# Cortex-M4 board builds and links green, and only picopi or microbit refuses it, at LINK
-# time: a freestanding link has no libatomic. `is_always_lock_free` cannot express the rule
-# either: it is 0 on armv6m and rxv3 even where the load and the store are inline plain
-# instructions.
+# The no-RMW rule: no atomic read-modify-write anywhere in the tracked tree. An RMW on a
+# 32-bit atomic is a `__atomic_fetch_add_4`-class LIBCALL on armv6m and rxv3 and inline on
+# armv7m, xtensa and the host, so an RMW written against the sim or a Cortex-M4 board builds
+# and links green, and only picopi or microbit refuses it, at LINK time: a freestanding link
+# has no libatomic. `is_always_lock_free` cannot express the rule either: it is 0 on armv6m
+# and rxv3 even where the load and the store are inline plain instructions.
 # The replacement is a load/store pair under whatever already serialises the field:
 #   x.store(x.load(std::memory_order_relaxed) + 1u, std::memory_order_relaxed);
 #
@@ -16,7 +15,7 @@
 #   tests/static/check_atomic_rmw.sh
 #
 #   corpus     tracked *.c, *.cc, *.cpp, *.h, *.hh, *.hpp, *.inc, *.h.in and *.S. Source
-#              only: a scan of the docs would report style.md stating the rule.
+#              only: a scan of the markdown tree would report the prose stating the rule.
 #
 #   comments   tests/lib/strip_comments.awk blanks `//`, `/* */` and every literal BEFORE
 #              the match; comments and headers in this tree name the banned spellings and
@@ -56,7 +55,7 @@
 #   - the corpus is source text as committed, so an RMW the preprocessor assembles, or one
 #     that becomes an RMW only after a macro argument is substituted, sits outside it.
 #   - a 64-bit atomic LOAD is a `__atomic_load_8` libcall on every backend, armv7m included.
-#     That is a separate rule, and style.md points `volatile` at those fields.
+#     That is a separate rule, and those fields take `volatile` instead.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"

@@ -7,6 +7,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/arch/percpu.h>
 #include <kickos/diag.h>
+#include <kickos/sys/atomic.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -20,9 +21,13 @@ extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
 extern "C" void kickos_armv8a_gic_dispatch(void);
+#if KICKOS_NUM_CORES > 1
+// Defined by the chip layer: this core's interrupt-controller interface and its timer.
+extern "C" void kickos_armv8a_percore_init(void);
+#endif
 
-// aspace_armv8a.cc. Called on the TERMINAL path only: it discards the running space, so the
-// contained path must not use it, that one printing the dead thread's name out of app text.
+// aspace_armv8a.cc. TERMINAL PATHS ONLY: it discards the running space, so the contained
+// path must not use it, that one printing the dead thread's name out of app text.
 extern "C" void kickos_armv8a_ttbr0_to_boot(void);
 
 // switch.S.
@@ -30,16 +35,6 @@ extern "C" void kickos_armv8a_switch_now(struct arch_context* from, struct arch_
 extern "C" void kickos_armv8a_start(struct arch_context* first);
 extern "C" void kickos_armv8a_thread_exit(void);
 
-// kickos_armv8a_ctx_current names the context PHYSICALLY on the CPU, which is not arch_switch's
-// `from`: one ISR can reschedule several times, and every call after the first names a thread
-// the scheduler has merely published, whose registers are still nowhere. The IRQ exit in
-// switch.S saves through this cell and re-seats it to the incoming context, so the request below
-// is a target alone and the last one written wins.
-extern "C"
-{
-    struct arch_context* kickos_armv8a_ctx_current = nullptr;
-    struct arch_context* kickos_armv8a_switch_to = nullptr;
-}
 // switch.S spells these as literal displacements, so a change on one side alone is a silent
 // wrong offset.
 constexpr size_t ARMV8A_FRAME_SIZE = 800;
@@ -69,10 +64,97 @@ static_assert(KICKOS_KERNEL_STACKS != 0,
 // vectors.S spells a link-time constant.
 extern "C"
 {
-    struct armv8a_percpu kickos_armv8a_percpu[KICKOS_NUM_CORES] = {};
+    struct armv8a_percpu_block kickos_armv8a_percpu[KICKOS_NUM_CORES] = {};
 }
-static_assert(offsetof(struct armv8a_percpu, kernel_sp) == 0,
+static_assert(offsetof(struct armv8a_percpu_block, kernel_sp) == 0,
               "vectors.S loads the kernel stack pointer at displacement 0 of the block");
+static_assert(offsetof(struct armv8a_percpu_block, ctx_current) == 8,
+              "switch.S spells PERCPU_CTX_CURRENT as 8");
+static_assert(offsetof(struct armv8a_percpu_block, switch_to) == 16,
+              "switch.S spells PERCPU_SWITCH_TO as 16");
+
+#if KICKOS_NUM_CORES > 1
+// --- Secondary bring-up -----------------------------------------------------
+// The translation a core comes up under, read from the registers the chip programmed. A
+// secondary reads this record with its MMU still off (secondary.S): the publish below cleans
+// it to the point of coherency, and the displacements are spelled as literals on both sides.
+extern "C"
+{
+    struct armv8a_boot_regs
+    {
+        uint64_t mair;
+        uint64_t tcr;
+        uint64_t ttbr0;
+        uint64_t ttbr1;
+        uint64_t sctlr;
+        uint64_t cpacr;
+    };
+    struct armv8a_boot_regs kickos_armv8a_boot_regs = {};
+
+    // Each core's boot and exception stack TOP, indexed by arch_cpu_id and read after
+    // translation is on, so it needs no maintenance. The primary's slot is filled and unused,
+    // its own stack being the linker's _estack.
+    uintptr_t kickos_armv8a_boot_sp[KICKOS_NUM_CORES] = {};
+
+    // A core's arrival witness, set by that core once it is running the kernel's translation
+    // on its own stack. Arrival, not readiness: this core's interrupt-controller interface
+    // comes up after. One writer per cell, one reader, and the cell carries nothing but
+    // itself.
+    kickos::Atomic<uint8_t, kickos::Order::RELAXED> kickos_armv8a_core_online[KICKOS_NUM_CORES] =
+        {};
+}
+static_assert(sizeof(struct armv8a_percpu_block) == 24, "secondary.S spells PERCPU_SIZE as 24");
+static_assert(offsetof(struct armv8a_boot_regs, mair) == 0, "secondary.S spells BOOT_MAIR");
+static_assert(offsetof(struct armv8a_boot_regs, tcr) == 8, "secondary.S spells BOOT_TCR");
+static_assert(offsetof(struct armv8a_boot_regs, ttbr0) == 16, "secondary.S spells BOOT_TTBR0");
+static_assert(offsetof(struct armv8a_boot_regs, ttbr1) == 24, "secondary.S spells BOOT_TTBR1");
+static_assert(offsetof(struct armv8a_boot_regs, sctlr) == 32, "secondary.S spells BOOT_SCTLR");
+static_assert(offsetof(struct armv8a_boot_regs, cpacr) == 40, "secondary.S spells BOOT_CPACR");
+
+namespace
+{
+    // The figure the linker reserves for the primary (_kernel_stack_size, virt_arm64.ld), and
+    // a secondary's SP_EL1 too: every exception it takes builds its frame here, the panic
+    // reporter's descent included.
+    constexpr size_t ARMV8A_CORE_STACK = 64u * 1024u;
+    alignas(16) uint8_t g_core_stack[KICKOS_NUM_CORES][ARMV8A_CORE_STACK];
+
+    // The .init_array slot is an ordering constraint: after .bss is zeroed (the record and the
+    // block array live there) and before arch_init, while TTBR0_EL1 still holds the boot root
+    // a secondary must come up on rather than some process's. A core released ahead of this
+    // would read a record of zeroes.
+    __attribute__((constructor)) void armv8a_boot_publish()
+    {
+        uint32_t const id = arch_cpu_id();
+        __asm volatile("msr tpidr_el1, %0" ::"r"(&kickos_armv8a_percpu[id]) : "memory");
+
+        uint64_t v = 0;
+        __asm volatile("mrs %0, mair_el1" : "=r"(v));
+        kickos_armv8a_boot_regs.mair = v;
+        __asm volatile("mrs %0, tcr_el1" : "=r"(v));
+        kickos_armv8a_boot_regs.tcr = v;
+        __asm volatile("mrs %0, ttbr0_el1" : "=r"(v));
+        kickos_armv8a_boot_regs.ttbr0 = v;
+        __asm volatile("mrs %0, ttbr1_el1" : "=r"(v));
+        kickos_armv8a_boot_regs.ttbr1 = v;
+        __asm volatile("mrs %0, sctlr_el1" : "=r"(v));
+        kickos_armv8a_boot_regs.sctlr = v;
+        __asm volatile("mrs %0, cpacr_el1" : "=r"(v));
+        kickos_armv8a_boot_regs.cpacr = v;
+
+        for (uint32_t i = 0; i < KICKOS_NUM_CORES; i++)
+        {
+            kickos_armv8a_boot_sp[i] =
+                reinterpret_cast<uintptr_t>(&g_core_stack[i][ARMV8A_CORE_STACK]);
+        }
+
+        // A released core reads the record with its MMU off, which is Device-nGnRnE and so
+        // non-cacheable whatever SCTLR_EL1 says: a line still dirty here would not reach it.
+        arch_dcache_flush(&kickos_armv8a_boot_regs, sizeof(kickos_armv8a_boot_regs));
+        kickos_armv8a_core_online[id] = 1;
+    }
+}
+#endif
 
 #if defined(KICKOS_TLS) && KICKOS_TLS
 // The carve sits below the stack arch_context_init is handed, so recovering the TLS block
@@ -82,8 +164,8 @@ namespace kickos
     size_t tls_block_size();
 }
 
-// Called wherever a switch is DECIDED, which is safe ahead of the physical swap because no
-// privileged code reads this register (check_no_privileged_tls.sh).
+// Safe ahead of the physical swap: no privileged code reads this register
+// (check_no_privileged_tls.sh).
 static void armv8a_seat_thread_pointer(struct arch_context const* to)
 {
     __asm volatile("msr tpidr_el0, %0" ::"r"(to->tls_base) : "memory");
@@ -167,6 +249,67 @@ namespace
 extern "C"
 {
 
+#if KICKOS_NUM_CORES > 1
+// --- Core identity ----------------------------------------------------------
+// MPIDR_EL1.Aff0 ALONE. The parts this backend claims are one cluster of symmetric A53s (QEMU
+// virt, i.MX8MP), where Aff0 is dense from 0 and every higher affinity field is 0. Aff0 stops
+// being the core index on two shapes: more than one cluster, where it restarts inside each and
+// two cores answer the same value, and MPIDR_EL1.MT set, where it names a hardware thread and
+// Aff1 names the core. Such a part owes a wider decode here.
+//
+// Read from hardware rather than from per-core software state: the secondary entry needs an
+// identity before its own block pointer is seated (secondary.S).
+uint32_t arch_cpu_id(void)
+{
+    uint64_t mpidr = 0;
+    __asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+    uint32_t const id = static_cast<uint32_t>(mpidr) & 0xFFu;
+    if (id >= KICKOS_NUM_CORES)
+    {
+        // The kernel indexes per-core arrays with this, so an out-of-range answer is a write
+        // through an index no array has.
+        while (true)
+        {
+            __asm volatile("wfi");
+        }
+    }
+    return id;
+}
+
+// TPIDR_EL1 is seated ahead of every reader: on a secondary by the entry stub before it turns
+// translation on, on the primary by the constructor above.
+struct armv8a_percpu_block* armv8a_percpu(void)
+{
+    uint64_t block = 0;
+    __asm volatile("mrs %0, tpidr_el1" : "=r"(block));
+    return reinterpret_cast<struct armv8a_percpu_block*>(static_cast<uintptr_t>(block));
+}
+
+// Publishes core `id`'s arrival and parks it. Such a core is never scheduled: the run queues
+// and the cross-core lock that would make it safe to schedule on do not exist yet.
+//
+// `id` is the caller's own index, already derived and bounded where the core established its
+// identity, so this reads no identity register of its own. Zero is REFUSED: it is the boot
+// core's index, and a core arriving here with it would publish an arrival the boot core has
+// already published. Such a core parks having published nothing, which the count owed on the
+// boot core's console reports.
+void kickos_armv8a_park_core(uint32_t id)
+{
+    if (id != 0 and id < KICKOS_NUM_CORES)
+    {
+        kickos_armv8a_core_online[id] = 1;
+        __asm volatile("dsb ish" ::: "memory");
+        // This core's CPU interface and timer come out of reset unusable, so a core parked
+        // without this could not be reached by an interrupt later.
+        kickos_armv8a_percore_init();
+    }
+    while (true)
+    {
+        __asm volatile("wfi");
+    }
+}
+#endif
+
 // --- Context / switching ----------------------------------------------------
 // Builds the frame switch.S resumes. Every resume being an eret, the entry needs no
 // trampoline: ELR carries it and x0 its argument.
@@ -186,10 +329,10 @@ void arch_context_init(struct arch_context* ctx,
 
     // WHERE THIS FRAME SITS IS THE PRIVILEGE BOUNDARY: it carries SPSR and ELR, so whoever can
     // write it chooses the exception level and the PC of the eret that starts the thread. An EL0
-    // thread's stack is a TASK-WIDE mapping (docs/design-m6-mmu.md F9), so a sibling can write
-    // both fields; the frame goes on this thread's own KERNEL block. A privileged thread resumes
-    // at EL1 on this sp and would then run its whole life on a block sized for one dispatch, so
-    // its frame stays on the stack it was handed.
+    // thread's stack is a TASK-WIDE mapping, so a sibling can write both fields; the frame goes
+    // on this thread's own KERNEL block. A privileged thread resumes at EL1 on this sp and
+    // would then run its whole life on a block sized for one dispatch, so its frame stays on
+    // the stack it was handed.
     //
     // The eret pops the frame, leaving SP_EL1 at the block top, so the first trap an EL0 thread
     // takes already arrives on its own block: that is what lets ENTER_FROM_EL0 trust SP_EL1 and
@@ -273,8 +416,8 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
     {
         // DEFERRED, which arch.h permits: the interrupted thread's state is already in the
         // frame the IRQ entry built, so the swap is two stores at the exception exit.
-        // `from` is dropped here on purpose; see kickos_armv8a_ctx_current.
-        kickos_armv8a_switch_to = to;
+        // `from` is dropped here on purpose; see ctx_current in percpu.h.
+        armv8a_percpu()->switch_to = to;
         armv8a_percpu()->kernel_sp = to->kernel_sp;
 #if defined(KICKOS_TLS) && KICKOS_TLS
         armv8a_seat_thread_pointer(to);
@@ -287,14 +430,14 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
 #endif
     // Thread context under the kernel IrqLock, so no interrupt observes the cell between
     // this write and the frame it describes being the one on the CPU.
-    kickos_armv8a_ctx_current = to;
+    armv8a_percpu()->ctx_current = to;
     kickos_armv8a_switch_now(from, to);
 }
 
 void arch_start(struct arch_context* boot, struct arch_context* first)
 {
     (void)boot; // abandoned, as arch.h permits and the M-profile backend also does
-    kickos_armv8a_ctx_current = first;
+    armv8a_percpu()->ctx_current = first;
     armv8a_percpu()->kernel_sp = first->kernel_sp;
 #if defined(KICKOS_TLS) && KICKOS_TLS
     armv8a_seat_thread_pointer(first);

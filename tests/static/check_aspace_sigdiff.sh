@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The address-space seam's signature diff, which is what docs/design-m6-mmu.md step R5
-# reports. F8 makes M6.3's deliverable a NEGATIVE result: the arch_aspace_* family's
-# signatures do not move when a second, deliberately unlike backend is fitted to them, and
-# where one moves, that diff IS the finding. Section 3.4b requires the API to exist before
-# the second backend starts, so the verdict is a comparison against the frozen records in
-# tests/static/aspace_seam_records.txt, which is the seam as T2 left it.
+# The address-space seam's signature diff, and M6.3's deliverable is a NEGATIVE result:
+# the arch_aspace_* family's signatures do not move when a second, deliberately unlike
+# backend is fitted to them, and where one moves, that diff IS the finding. Section 3.4b
+# requires the API to exist before the second backend starts, so the verdict is a
+# comparison against the frozen records in tests/static/aspace_seam_records.txt, which is
+# the seam as the first backend froze it.
 #
 #   tests/static/check_aspace_sigdiff.sh [<candidate-ref>]
 #

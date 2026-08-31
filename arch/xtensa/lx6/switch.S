@@ -66,10 +66,10 @@
     .text
 
 /* ------------------------------------------------------------------------- */
-/* xtensa_switch(from=a2, to=a3): cooperative windowed swap. Called from thread   */
-/* context only (arch_switch defers when arch_in_isr()). Saves `from`'s resume     */
-/* state, flushes its windows, then resumes `to`. Returns through the windowed     */
-/* underflow chain on the incoming thread's stack, inside its arch_switch call.    */
+/* xtensa_switch(from=a2, to=a3): cooperative windowed swap. THREAD CONTEXT ONLY. */
+/* Saves `from`'s resume state, flushes its windows, then resumes `to`. Returns    */
+/* through the windowed underflow chain on the incoming thread's stack, inside its */
+/* arch_switch call.                                                              */
 /* ------------------------------------------------------------------------- */
     .align 4
     .global xtensa_switch

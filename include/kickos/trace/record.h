@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// KickOS telemetry record format + PURE encoders (telemetry.md deliverable 3).
+// KickOS telemetry record format + PURE encoders.
 //
 // This header is deliberately dependency-free (only <stdint.h>/<stddef.h>) and
 // carries NO globals and NO clock: every encoder is a referentially-transparent

@@ -121,7 +121,7 @@ namespace kickos
                 void* const a = arch_aspace_acquire(space, VA_A);
                 void* const b = arch_aspace_acquire(space, VA_B);
                 // The seam names the frame behind each page, so this compares frames: a
-                // windowed backend hands back two unequal slot addresses for one frame (F8).
+                // windowed backend hands back two unequal slot addresses for one frame.
                 bool const same_frame = arch_aspace_frame_at(space, VA_A) == frame
                                         and arch_aspace_frame_at(space, VA_B) == frame;
                 bool const translated = VA_A != VA_B and
@@ -240,7 +240,7 @@ namespace kickos
         }
 
         // Every frame a whole cycle took must come back, tables included.
-        // C1: the two kinds resolve through the same chokepoint every other kind does.
+        // The two kinds resolve through the same chokepoint every other kind does.
         // Nothing here composes an address; only yes/no bits cross back.
         uint64_t op_cap_objects()
         {
@@ -618,10 +618,10 @@ namespace kickos
             return bits;
         }
 
-        // --- The page split, witnessed where no caller can build it ------------------
+        // --- The page split, built below the reservation API ------------------------
         // A validated range contiguous in virtual memory need not be contiguous in physical
-        // memory, and no userspace arm can construct one: a reservation's virtual address is its
-        // output address. Built with the map editor instead: three consecutive frames, the outer
+        // memory, and a reservation's virtual address is its output address, so no such range
+        // can be reserved. Built with the map editor instead: three consecutive frames, the outer
         // two mapped at adjacent virtual pages and the middle one left unmapped. The middle frame
         // is where a copy written as one memcpy over a translated base spills.
         uint64_t op_split_access()
@@ -1252,7 +1252,7 @@ namespace kickos
             case KOS_ASPACE_OP_SPACE_ID:
             {
                 // Two tasks comparing this is what witnesses that a domain is an address
-                // space of its own (docs/design-m6-mmu.md F2).
+                // space of its own.
                 Thread const* const c = sched::current();
                 if (c == nullptr)
                 {

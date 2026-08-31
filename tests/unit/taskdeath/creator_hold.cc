@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The creator's hold on an EXPLICIT task, and what a creator's death does to it
-// (docs/design-task-layer.md section 9.4).
+// The creator's hold on an EXPLICIT task, and what a creator's
+// death does to it.
 //
 // WHY THIS IS AN AUTHORITY GATE AND NOT A SLOT-LEAK ONE. A kill tag is DERIVED from the pool
 // slot (kill_tag_for_index, thread.h), so the thread that next occupies a dead creator's slot
@@ -75,7 +75,7 @@ namespace kickos
             ASSERT_TRUE(task_created_by(group, tag));
             ASSERT_EQ(task_resolve(handle), group);
 
-            kernel().current = creator;
+            kernel().current[arch_cpu_id()] = creator;
             run_exit(0);
 
             EXPECT_FALSE(task_created_by(group, tag))
@@ -98,7 +98,7 @@ namespace kickos
             Thread* const member = seat_pool(SLOT_MEMBER, PRIO_LOW);
             join_task(member, group);
 
-            kernel().current = creator;
+            kernel().current[arch_cpu_id()] = creator;
             run_exit(0);
 
             Thread* const successor = seat_pool(SLOT_CREATOR, PRIO_MID);
@@ -120,7 +120,7 @@ namespace kickos
             kos_task_t const handle = task_handle(group);
             ASSERT_EQ(domain_refs(dom), 1u);
 
-            kernel().current = creator;
+            kernel().current[arch_cpu_id()] = creator;
             run_exit(0);
 
             EXPECT_EQ(task_resolve(handle), nullptr) << "the slot went back";
@@ -144,7 +144,7 @@ namespace kickos
             kos_task_t const handle = task_handle(group);
             Thread* const stranger = seat_pool(SLOT_MEMBER, PRIO_LOW);
 
-            kernel().current = stranger;
+            kernel().current[arch_cpu_id()] = stranger;
             run_exit(0);
 
             EXPECT_TRUE(task_created_by(group, tag)) << "a stranger's exit is not the creator's";
@@ -165,14 +165,14 @@ namespace kickos
             Thread* const member = seat_pool(SLOT_MEMBER, PRIO_LOW);
             join_task(member, group);
 
-            kernel().current = member;
+            kernel().current[arch_cpu_id()] = member;
             run_exit(0);
 
             ASSERT_EQ(task_member_count(group), 0) << "the group is empty";
             EXPECT_TRUE(task_created_by(group, tag)) << "and still its creator's to spawn into";
             EXPECT_EQ(task_resolve(handle), group) << "so the handle still resolves";
 
-            kernel().current = creator;
+            kernel().current[arch_cpu_id()] = creator;
             run_exit(0);
 
             EXPECT_EQ(task_resolve(handle), nullptr) << "the creator's death is what ends it";
@@ -197,7 +197,7 @@ namespace kickos
             ASSERT_NE(first_group, second_group);
             ASSERT_NE(first_tag, second_tag);
 
-            kernel().current = first;
+            kernel().current[arch_cpu_id()] = first;
             run_exit(0);
 
             EXPECT_FALSE(task_created_by(first_group, first_tag))
@@ -205,7 +205,7 @@ namespace kickos
             EXPECT_TRUE(task_created_by(second_group, second_tag))
                 << "and it took only its own creator's, exactly as a stranger's death would";
 
-            kernel().current = second;
+            kernel().current[arch_cpu_id()] = second;
             run_exit(0);
 
             EXPECT_FALSE(task_created_by(second_group, second_tag))
@@ -226,7 +226,7 @@ namespace kickos
             join_task(member, group);
             EXPECT_EQ(domain_refs(dom), 2u) << "the group's, taken when it became non-empty";
 
-            kernel().current = creator;
+            kernel().current[arch_cpu_id()] = creator;
             run_exit(0);
 
             EXPECT_EQ(domain_refs(dom), 1u)
@@ -234,7 +234,7 @@ namespace kickos
                    "regions";
             EXPECT_EQ(task_domain(group), dom) << "and the task still names the domain";
 
-            kernel().current = member;
+            kernel().current[arch_cpu_id()] = member;
             run_exit(0);
 
             EXPECT_EQ(domain_refs(dom), 0u) << "the last member out returns it";

@@ -97,7 +97,10 @@ namespace kickos
         // The seam reports "no timed event" and parking is a no-op, which leaves the
         // sleeper on the sleepq for an arm to read.
         uint64_t next_timed_event() { return UINT64_MAX; }
-        Thread* current() { return kernel().current; }
+        Thread* current()
+        {
+            return kernel().current[arch_cpu_id()];
+        }
         void block_current() {}
         void wake(Thread*) {}
         void tick_rr(uint64_t) {}
@@ -114,7 +117,7 @@ namespace
     void reset()
     {
         kernel().sleepq = nullptr;
-        kernel().current = &g_sleeper;
+        kernel().current[arch_cpu_id()] = &g_sleeper;
         g_sleeper.tnext = nullptr;
         g_sleeper.on_timer = false;
         g_armed = UINT64_MAX;

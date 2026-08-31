@@ -730,9 +730,9 @@ static uint64_t g_rx_armed_ns = ~0ull;
 
 void arch_timer_arm(uint64_t deadline_ns)
 {
-    // ktime_rearm calls this on EVERY context switch, so the re-arm must be idempotent:
-    // resetting CMWCNT to 0 each switch means the compare is never reached and a far
-    // deadline starves whenever threads ping-pong faster than it. Tracked in software and
+    // The re-arm must be idempotent, being entered on EVERY context switch: resetting
+    // CMWCNT to 0 each switch means the compare is never reached and a far deadline
+    // starves whenever threads ping-pong faster than it. Tracked in software and
     // NOT read back from CMWSTR.STR, which races at full switch speed. The timer ISR sets
     // g_rx_armed_ns = ~0 before it re-arms, so its own re-arm is never skipped.
     if (deadline_ns == g_rx_armed_ns)
@@ -793,10 +793,10 @@ void arch_timer_disarm(void)
 // reduces to a no-access background (MPBAC=0) plus the running thread's regions in the
 // eight RSPAGEn/REPAGEn slots.
 //
-// Deferred-commit seam (docs/design-mpu-commit-deferred.md): arch_mpu_apply only STASHES the
-// incoming set, and kickos_arch_mpu_commit programs the slots from the SWINT switch epilogue
-// AFTER the physical swap. An eager apply would load the incoming region set while the
-// OUTGOING user thread is still running, faulting it on its own stack.
+// Deferred-commit seam: arch_mpu_apply only STASHES the incoming set, and
+// kickos_arch_mpu_commit programs the slots from the SWINT switch epilogue AFTER the
+// physical swap. An eager apply would load the incoming region set while the OUTGOING user
+// thread is still running, faulting it on its own stack.
 #if KICKOS_HAVE_MPU
 // The page masks are field encoding, not rounding: a region the 16-byte pages cannot
 // represent EXACTLY gets REPAGE 0 (V clear), never a window widened by up to 15 bytes on
@@ -950,7 +950,7 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
     (void)n;
     (void)image;
 }
-// The SWINT restore epilogue calls this unconditionally.
+// Nothing to program on this backend.
 void kickos_arch_mpu_commit(void) {}
 #endif
 
@@ -1104,8 +1104,7 @@ void arch_irq_clear_pending(int line)
         // source and go down only when the peripheral request clears or GENxxx.ENj is
         // written 0 (UM sec.15.5.4 p.542). GRPxxx is read-only and sec.15.2.25 p.505 gives a
         // clear register to the edge groups IE0/BE0 alone, so the clear belongs to the
-        // DRIVER's own peripheral write (RULE L1). The no-op is the answer, and the
-        // level-rearm path calls this before every unmask.
+        // DRIVER's own peripheral write (RULE L1). The no-op is the answer.
     }
     else
     {
@@ -1218,7 +1217,7 @@ __attribute__((interrupt)) void kickos_rx_sci6_rxi_isr(void)
     g_in_isr = g_in_isr - 1;
 }
 
-// --- One-time core bring-up, called by the chip's arch_init -----------------
+// --- One-time core bring-up ------------------------------------------------
 // The chip has already released the CMTW module stop and set the CMWCR prescale.
 void kickos_rxv3_init(void)
 {

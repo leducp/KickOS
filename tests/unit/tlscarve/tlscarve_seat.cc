@@ -5,12 +5,12 @@
 // otherwise identical to the other cases: one clause of configuration apart, so what the
 // two report is attributable to that clause and not to a different fabrication.
 //
-// What it pins is the lifting F7 asks for. Where the thread pointer is a register the kernel
-// seats from the context, the block base is computed by SUBTRACTION, so the stride is not a
-// constraint and a stack may be any number of pages at any granule boundary. That is what
-// lets a stack be frames with a guard page below it instead of a naturally aligned
-// power-of-two arena block, and a build that kept the stride refusal here would refuse every
-// spawn on such a board at run time rather than at configure.
+// What it pins is the lifting of the power-of-two stride. Where the thread pointer is a
+// register the kernel seats from the context, the block base is computed by SUBTRACTION,
+// so the stride is not a constraint and a stack may be any number of pages at any granule
+// boundary. That is what lets a stack be frames with a guard page below it instead of a
+// naturally aligned power-of-two arena block, and a build that kept the stride refusal
+// here would refuse every spawn on such a board at run time rather than at configure.
 
 #include <gtest/gtest.h>
 

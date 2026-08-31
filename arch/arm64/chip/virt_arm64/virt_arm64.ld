@@ -5,9 +5,9 @@
  * QEMU (`-kernel <elf>`) loads each segment at its p_paddr and enters at the ELF entry
  * point with the MMU off. So `.text.init` links where it loads.
  *
- * The image is split in two (docs/design-m6-mmu.md, T5b.1). Kernel text and kernel writable
- * state link into the high half TTBR1 translates, with an LMA back in DRAM; the app's text,
- * rodata, data and bss link LOW, where a per-process TTBR0 root can name them and VMA == LMA.
+ * The image is split in two. Kernel text and kernel writable state link into the high half
+ * TTBR1 translates, with an LMA back in DRAM; the app's text, rodata, data and bss link LOW,
+ * where a per-process TTBR0 root can name them and VMA == LMA.
  *
  * The kernel-side TUs that name the app's half are built -mcmodel=large (kickos_split_image_tu,
  * cmake/kickos.cmake), the halves being 2^40 apart where adrp spans 4 GiB. That leaves the ONE

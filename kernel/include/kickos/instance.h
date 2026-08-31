@@ -32,12 +32,23 @@ namespace kickos
 {
     struct SchedPolicy;
 
+    // Which core within THIS kernel is running, in [0, KICKOS_KERNEL_CORES). One kernel
+    // spanning every core the image drives makes a core's machine identity its slot; a kernel
+    // scheduling one core has one slot, whatever that core's identity in the machine is.
+#if KICKOS_MULTICORE_MODEL_SHARED
+#define kickos_kernel_core() arch_cpu_id()
+#else
+#define kickos_kernel_core() 0u
+#endif
+
     struct Kernel
     {
         // --- scheduler mechanism (sched.cc) ---
         List ready[KICKOS_NUM_PRIO]; // one FIFO per priority; running thread at front
         uint32_t ready_bitmap = 0;   // bit p set iff ready[p] non-empty
-        Thread* current = nullptr;
+        Thread* current[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
+        static_assert(sizeof(current) / sizeof(current[0]) == KICKOS_KERNEL_CORES,
+                      "the running-thread cell must be one per core this kernel schedules");
         Thread* idle = nullptr;
         unsigned live = 0; // non-idle threads not yet EXITED
         arch_context boot{};

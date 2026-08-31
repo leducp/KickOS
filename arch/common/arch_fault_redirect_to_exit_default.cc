@@ -4,8 +4,8 @@
 // Lone-TU fallback (arch/CMakeLists.txt states the rule): exactly one symbol, so a
 // backend definition keeps this archive member unextracted.
 //
-// Unreachable: the core calls this only when arch_fault_is_user_thread returned true,
-// and the fallback predicate never does. See arch.h.
+// Empty: the seam is valid only where arch_fault_is_user_thread returned true, and the
+// fallback predicate cannot. See arch.h.
 
 #include <kickos/arch/arch.h>
 

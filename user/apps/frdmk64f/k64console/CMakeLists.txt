@@ -44,5 +44,4 @@ endif()
 
 # An OPERATOR on silicon is the reader of both arms: this app answers a HARDWARE question
 # (userspace UART ownership + the client->driver->wire path + panic-path reclaim), and a live
-# publish silences the TAP stream (docs/reference/boards.md carries which boards a QEMU
-# machine covers).
+# publish silences the TAP stream.

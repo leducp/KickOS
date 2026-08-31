@@ -21,7 +21,7 @@
 //
 // This TU enters the CHIP library only for a PMSAv8 chip (arch/arm/chip/<chip>/mpu.cmake
 // sets KICKOS_ARM_PMSAV8_SOURCE), so a PMSA board links the shared commit fallback
-// instead. See docs/design-rp2350-mpu-armv8m.md.
+// instead.
 
 #include <kickos/arch/arch.h>
 
@@ -80,12 +80,12 @@ extern "C"
 // Read the shared pending stash written by arch_mpu_apply (arch_arm_common.cc).
 struct arch_mpu_encoded const* kickos_arm_mpu_pending(void);
 
-// One-time PMSAv8 setup: the MAIR attribute indirection + MemManage enable. Called
-// from the chip arch_init (chip_rp2350.cc) BEFORE the scheduler starts. This is also the
-// LINK ANCHOR: chip_rp2350.o, always pulled for arch_init, references this symbol, which
-// is defined ONLY here, so GNU ld pulls this member and resolves
-// kickos_arch_mpu_commit / arch_mpu_region_encodable to the overrides below. Without that
-// reference the fallback TU answers them first and the board silently declines.
+// One-time PMSAv8 setup: the MAIR attribute indirection + MemManage enable. Must run
+// BEFORE the scheduler starts. This is also the LINK ANCHOR: chip_rp2350.o, always
+// pulled for arch_init, references this symbol, which is defined ONLY here, so GNU ld
+// pulls this member and resolves kickos_arch_mpu_commit / arch_mpu_region_encodable to
+// the overrides below. Without that reference the fallback TU answers them first and
+// the board silently declines.
 //
 // The MPU is per-core banked, so this must run once PER CORE at bring-up.
 void kickos_arm_pmsav8_init(void)
@@ -151,12 +151,11 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
 
 // Replaces the PMSAv7 kickos_arch_mpu_commit fallback. Programs the running thread's
 // per-thread regions from the shared stash into RBAR/RLAR, disabling the unused
-// descriptors up to MPU_TYPE.DREGION. Called from the armv7m PendSV epilogue AFTER the
-// physical swap. cpsid brackets the disable/reprogram/re-enable: PendSV is lowest
-// priority, so a device IRQ could otherwise preempt a half-programmed MPU, the caller's
-// BASEPRI IrqLock having lapsed by the time the deferred commit runs. Every descriptor
-// on the M33 is a per-thread grant, which is what makes the MPU_CTRL zeroing below
-// sound.
+// descriptors up to MPU_TYPE.DREGION. Runs AFTER the physical swap. cpsid brackets the
+// disable/reprogram/re-enable: PendSV is lowest priority, so a device IRQ could
+// otherwise preempt a half-programmed MPU, the caller's BASEPRI IrqLock having lapsed
+// by the time the deferred commit runs. Every descriptor on the M33 is a per-thread
+// grant, which is what makes the MPU_CTRL zeroing below sound.
 void kickos_arch_mpu_commit(void)
 {
     struct arch_mpu_encoded const* const img = kickos_arm_mpu_pending();

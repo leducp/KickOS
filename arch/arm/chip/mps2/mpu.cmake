@@ -9,9 +9,7 @@
 # serving several FPGA images: qemu, qemu-m7 and qemu-m3 (mps2-an386/an500/an385, M4/M7/M3)
 # are PMSAv7 and take the shared armv7m apply/commit; qemu-m33 (mps2-an505, Cortex-M33) is
 # PMSAv8 and cannot, so it pulls the dedicated backend whose strong kickos_arch_mpu_commit
-# and arch_mpu_region_encodable replace the v7-M fallback TUs. See
-# docs/design-rp2350-mpu-armv8m.md.
-# Validation status of these ports: see docs/reference/boards.md.
+# and arch_mpu_region_encodable replace the v7-M fallback TUs.
 set(KICKOS_CHIP_ENFORCES_MPU ON)
 if(KICKOS_BOARD STREQUAL "qemu-m33")
   set(KICKOS_ARM_PMSAV8_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../common/arch_arm_pmsav8.cc")

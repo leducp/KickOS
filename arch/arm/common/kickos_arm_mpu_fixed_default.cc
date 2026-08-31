@@ -6,7 +6,7 @@
 //
 // No chip fixed regions. The i.MX RT1062 (anti-speculation wrap) defines its own.
 // Added to the arch library only under KICKOS_HAVE_MPU, the posture that declares the
-// region type and calls this.
+// region type.
 
 #include <kickos/arch/arch.h>
 

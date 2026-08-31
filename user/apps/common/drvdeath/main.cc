@@ -3,8 +3,8 @@
 //
 // Console reclaim when the DRIVER DIES. USER_OWNED drops every kernel write, so a driver
 // that exits without the reclaim hook leaves the system permanently mute: no panic
-// banner, no fault dump, no kprintf. Sec.4.4 of docs/design-m4.6-irq-driver.md; the hook
-// is console_on_driver_death, run by exit_current AFTER cap_teardown.
+// banner, no fault dump, no kprintf. The hook is console_on_driver_death, run by
+// exit_current AFTER cap_teardown.
 //
 // Sequenced by the wire, not by sleeps. The service list is built with
 // KICKOS_SIMCON_EXIT_AFTER=1, so the driver serves exactly one message and exits:

@@ -43,7 +43,7 @@ namespace consolepub
     // Whether that seated function ran.
     bool seat_fired();
 
-    // Called by the fixture's publish replica at the instant it flips USER_OWNED.
+    // Called at the instant USER_OWNED is flipped.
     void note_commit();
 }
 

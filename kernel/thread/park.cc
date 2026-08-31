@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The park unwind MUST stay total over WaitKind: a cancel that reached only the kinds a
-// thread happens to park on is not a kill (docs/design-task-layer.md open question 1).
+// thread happens to park on is not a kill.
 
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>

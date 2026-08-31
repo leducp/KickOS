@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The kernel's half seen from EL0, in its own binary because it ends the process: an
-// unprivileged thread READS a word of kernel writable state, and that read must fault. What
-// it witnesses is not a missing mapping but a REVOKED one, the kernel's half being mapped
-// and reachable at every instant by the privileged side of the same core
-// (docs/design-m6-mmu.md, F1 and T5b.3).
+// The kernel's half seen from EL0, in its own binary because it ends the process:
+// an unprivileged thread READS a word of kernel writable state, and that read must
+// fault. What it witnesses is a REVOKED mapping rather than a missing one: the
+// kernel's half is mapped and reachable at every instant by the privileged side of
+// the same core.
 //
 // THE ADDRESS COMES FROM THE KERNEL. App text cannot name a kernel-half symbol under this
 // board's code model, and an address the app computed itself would assert the layout rather

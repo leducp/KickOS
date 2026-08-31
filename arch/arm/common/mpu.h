@@ -4,10 +4,10 @@
 // ARM PMSA fixed-region seam. A chip may declare THREAD-INVARIANT MPU regions that
 // are programmed ONCE at init into the LOW descriptor slots; the per-thread grants
 // (kickos_arm_mpu_program) sit ABOVE them, so a grant correctly overrides the fixed
-// background (PMSAv7: highest-numbered region wins). Introduced for the i.MX RT1062
-// M7 anti-speculation wrap (docs/design-teensy-mpu-hang.md): the fixed rows carry raw
-// PMSAv7 base+RASR so a chip can encode AP/type values (no-access, priv-RO, Device,
-// Strongly-ordered) that the portable R/W/X/DEV attr vocabulary cannot.
+// background (PMSAv7: highest-numbered region wins). For the i.MX RT1062 M7
+// anti-speculation wrap: the fixed rows carry raw PMSAv7 base+RASR so a chip can
+// encode AP/type values (no-access, priv-RO, Device, Strongly-ordered) that the
+// portable R/W/X/DEV attr vocabulary cannot.
 
 #ifndef KICKOS_ARCH_ARM_COMMON_MPU_H
 #define KICKOS_ARCH_ARM_COMMON_MPU_H

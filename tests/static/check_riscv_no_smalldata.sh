@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Security CI gate for RISC-V full-C++ under PMP (docs/design-riscv-gp-split.md,
-# Option 4). The gp small-data window (__global_pointer$ +/- 0x800) is anchored
-# INSIDE the .appdata grant, so it is reachable by an unprivileged thread. That is
-# only safe if the window holds NOTHING kernel-owned: the KickOS libs are built
-# -msmall-data-limit=0 so they emit no .sdata/.sbss and their globals land in the
-# kernel-side .data/.bss instead. One stray KickOS global left in .sdata/.sbss would
-# sit in the app-granted window: a privilege-escalation vector (an unprivileged
-# thread could overwrite g_arch_current / g_clint_msip). The leak is reported per-archive.
+# Security CI gate for RISC-V full-C++ under PMP. The gp small-data window
+# (__global_pointer$ +/- 0x800) is anchored INSIDE the .appdata grant, so it is
+# reachable by an unprivileged thread. That is only safe if the window holds NOTHING
+# kernel-owned: the KickOS libs are built -msmall-data-limit=0 so they emit no
+# .sdata/.sbss and their globals land in the kernel-side .data/.bss instead. One stray
+# KickOS global left in .sdata/.sbss would sit in the app-granted window: a
+# privilege-escalation vector (an unprivileged thread could overwrite g_arch_current /
+# g_clint_msip). The leak is reported per-archive.
 #
 # Section-level via objdump -h: with -msmall-data-limit=0 no KickOS object may carry a
 # .sdata/.sdata2/.sbss section. The section table is the signal, since this toolchain's nm

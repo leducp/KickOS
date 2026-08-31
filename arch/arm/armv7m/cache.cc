@@ -6,10 +6,10 @@
 // the registers are absent, so this is OPT-IN by call (a chip invokes it from
 // arch_init), never ambient. Clean-room from the ARMv7-M ARM / Cortex-M7 TRM.
 //
-// M7 gotcha (see docs/design-teensy-mpu-hang.md): enabling a cache ARMS speculative
-// prefetch of Normal memory, so the MPU anti-speculation regions MUST already be
-// programmed (cache-after-MPU) before calling this, else the M7 speculates into
-// unbacked external memory and the AHB stalls with no fault.
+// M7 gotcha: enabling a cache ARMS speculative prefetch of Normal memory, so the
+// MPU anti-speculation regions MUST already be programmed (cache-after-MPU)
+// before calling this, else the M7 speculates into unbacked external memory and
+// the AHB stalls with no fault.
 
 #include <stdint.h>
 

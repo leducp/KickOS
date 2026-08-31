@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Names a kos_errno code. Its table lives in lib/strerror.cc rather than here so an
-// image that never calls this leaves the archive member unextracted and pays nothing
-// for the prose.
+// Names a kos_errno code. Its table lives in lib/strerror.cc rather than here, so the
+// archive member stays unextracted and the prose costs nothing where it is unused.
 //
 // Lives in the kickos_system library alongside errno.h; keep it dependency-free.
 

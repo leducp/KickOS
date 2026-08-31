@@ -49,13 +49,13 @@ extern "C"
     //   1. create a console endpoint E,
     //   2. kos_console_publish(E)  (relinquishes the kernel UART, routes stdout to E),
     //   3. spawn the UNPRIVILEGED driver granted the UART0 window + {E | WAIT},
-    //   4. close root's own WAIT-bearing cap on E (S4: else driver death cannot EPIPE
+    //   4. close root's own WAIT-bearing cap on E (else driver death cannot EPIPE
     //      and clients hang).
     // `cfg` carries the UART0 window base/size and the driver priority as data (a
     // KOS_SVC_CONSOLE service entry); cfg->prio must be >= every client's priority
     // (D9: no PI on rendezvous). Returns 0, or < 0 on any failure
     // (endpoint/publish/spawn). On failure the caller MUST NOT spawn console-dependent
-    // apps (S6: publish+spawn are inseparable).
+    // apps: publish and spawn are inseparable.
     int k64uart_console_start(struct kos_service_cfg const* cfg);
 
 #ifdef __cplusplus

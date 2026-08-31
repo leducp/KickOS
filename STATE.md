@@ -16,6 +16,152 @@ say.
 
 ## Where we are
 
+**AN EXTERNAL AUDIT OF M7.0 AND M7.1 RETURNED CONDITIONAL ACCEPT, AND ITS TWO BLOCKERS WERE BOTH
+MISSING ARMS RATHER THAN WRONG CODE.** Both are closed and both redden on mutation. The first is the
+one worth carrying: **this file previously recorded the arrival witness as mutation-proven, and that
+claim was false.** The mutation had been a hand-run image, not a gate, and turning
+`release_secondaries()` into an early `return;` left `ctest` at 44 of 44 green. So the bring-up had
+no witness in the tree at all while a record here said it did. `tests/integration/check_smp_arrival.sh`
+is the gate now.
+
+**ASSERTING THE BANNER'S CORE COUNT IS A TAUTOLOGY, AND THAT IS WHY THE GATE RUNS A SHORT MACHINE.**
+The image prints `KICKOS_NUM_CORES` and a gate expecting that same symbol learns nothing: mutating
+both release loops to stop at index 2 releases one secondary of three and the banner still reads 4.
+The second arm runs the image on `-smp N-1`, where PSCI answers `INVALID_PARAMETERS` only for a loop
+that actually reaches the last index, so the refusal names it. **That is an oracle the image does not
+supply, and it is what binds the loop bound.** The same shape is what the predicate refusal owes:
+`tests/static/check_smp_predicate.sh` configures four cores on an arch shipping no `smp.cmake`.
+
+**A WRITE NOBODY READS IS NOT A WITNESS, AND THE ARRIVAL LOOP NOW STARTS AT ZERO.** The primary
+published its own arrival into cell 0 and the wait loop started at 1, so commenting that write out
+changed nothing. The release loop still skips self, because a core does not `CPU_ON` itself; the
+ARRIVAL check is the same question at every index, so it asks it at every index. Removing the
+primary's publication now reddens the gate.
+
+**FIVE THINGS THE AUDIT RAISED ARE ACCEPTED AND DEFERRED TO THE STEP THAT NEEDS THEM**, and none is
+reachable today because secondaries park with interrupts masked. `g_isr_depth` and the fault-report
+depth are shared scalars, so one core's interrupt could make another defer its switch once peers run
+kernel code; they join `Kernel::idle` and `Kernel::boot` as state owed a per-core key. The per-core
+blocks are 24 bytes, so four of them share 64-byte lines and would bounce under real switching.
+`ARMV8A_CORE_STACK` and the linker's `_kernel_stack_size` both spell 64 KiB with no cross-check,
+which is a second truth. The arrival timeout is a spin count rather than a duration, though
+`CNTFRQ_EL0` is already live when it runs. And the SMP predicate is declared per ARCH while GIC
+version, routing and topology are properties of a PART, so a future armv8a chip inherits the
+declaration unreviewed.
+
+**ONE AUDIT ACTION IS REFUSED: it asked that the configure predicate keep an explicit link to its
+contract document.** Code citing an in-repo document is the direction nothing gates, and the refusal
+now enumerates the six required properties in its own message, so the reader gets what to implement
+rather than a file to open. A diagnostic that names a document is worse than a comment that does,
+because the reader is already stuck.
+
+**AN `ESR=0x2000000` AFTER THE PLAN LINE WAS REPORTED AT FOUR CORES AND DOES NOT REPRODUCE.** Four
+runs came back clean, one at the parent commit and three with the fixes, and the gate is green. The
+likely cause is a build taken while another actor was mutating the tree. It is recorded as
+UNREPRODUCED rather than dismissed, because EC 0 is `unknown reason` and four clean runs is not proof
+of absence. **What it does illustrate is real: a fault after the plan line is something a
+TAP-reading gate can miss**, which is the same blindness the arrival gate existed to close.
+
+**M7.1 IS SQUASHED AND UNPUSHED, and `backup/M7.1-presquash-20260831` is the only copy of its
+step history**, local and unpushed, so a `branch -D` loses the step-by-step evidence.
+`master` is byte-identical to `origin/master`.
+
+**THE SIX LINE-BOUND FILES BLOCK FOUR COMMENT FAMILIES, not the five doc citations this file used
+to name as the whole remainder.** `tests/static/trap_redzone_indirect.txt` binds call sites in
+`sched.cc`, `syscall_ipc_fast.cc`, `irq.cc`, `console_tx.cc` and the two rp2 chip files by exact
+`file:line:column`, so a comment edit there costs a re-pin of the table. What is stranded behind
+that: every surviving in-repo doc PATH in code, three step designators, and the DEFINITIONS of the
+`INVARIANT H1..H8`, `D1..D9`, `B1..B3` and `RULE L1/U2/U4` families, whose call sites elsewhere are
+converted while their definitions are not. The selftest reads `// H1 mutual exclusion` beside
+`// close-of-owned refused`, which is what a half-finished family looks like. **The re-pin is
+mechanical rather than manual** (difflib re-pinned 105 records in one step earlier), so the cost is
+smaller than the count suggests; the real fix is the `TODO.md` item asking for a binding an edit
+does not move.
+
+**CODE NO LONGER CITES AN IN-REPO DOCUMENT, and the direction was the ungated one.** A comment
+naming a design document made the code depend on a file that can be renamed, and nothing checked it:
+`check_doc_names.sh` validates markdown naming code and never code naming markdown, so a comment
+citing a nonexistent document passed every gate. The rule now is to state the constraint and never
+cite the document, and a gate's refusal says what to implement rather than which file to open.
+EXTERNAL manual citations are untouched and stay, being immutable and outside the repo. **No gate
+enforces the new direction yet**, so it will regrow; adding one is blocked on the five sites above.
+
+**M7 IS OPEN AND M7.0 IS LANDED: the multicore contract, and the SMP seam frozen before either
+backend.** `docs/design-multicore.md` is the contract. It opens on a HARDWARE PREDICATE rather
+than an architecture family, because a family name is a proxy that dates the first time a part
+violates it. The MMU is NOT one of the six properties and per-line interrupt targeting IS, which is
+what puts the RP parts in the AMP column: the RP2040 datasheet says the same interrupts reach both
+cores' own controllers, so a line "granted" to one core is granted only because the other masks it.
+The LX6 lands there for a different reason, passing targeting and failing coherency. **The record
+says in as many words that all three CAN run a shared kernel**, FreeRTOS and ESP-IDF both shipping
+dual-core ports, so the exclusion is argued as a value judgement and not re-derived from a link.
+
+**THE FLEET WITNESS FOR M7.0 IS 56 presets, 2247 host tests, 56 pass, 0 reused, 0 fail**, with a
+`DONE` sentinel. The figure that matters is the DELTA: M6.5 witnessed 2191, so +56 is exactly one
+new gate on every preset and is what says `smp_sigdiff` actually ran fleet-wide rather than being
+skipped on most of it.
+
+**THE FIRST SWEEP OF M7.0 WAS RED ON ALL 56 AND THE SUMMARY LOOKED LIKE A MISSING TOOLCHAIN.** It
+was not: a new ctest entry carried no line in `tests/static/test_classes.txt` and `test_labels`
+failed everywhere. `CONTEXT.local.md` now carries the separator, which is that the preset log shows
+a BUILD before the failure where a toolchain failure shows none. Worth the line here too because
+the class generalises: **a new ctest registration is invisible to every hand-run static gate**,
+`test_labels` needing a configured build directory, so that kind of change is witnessed by a build
+and never by running `tests/static/*.sh`.
+
+**FOUR THINGS M7.0 DECIDED THAT A READER WILL OTHERWISE RE-LITIGATE.** The deliverable is a second
+core and NOT a lock, because a big lock compiles to nothing at one core, so a correct one and an
+absent one are the same image and shipping it alone would ship an empty corpus. One IPC mechanism,
+not two, locality never reaching the API, which `KOS_EP_MSG_MAX` at 256 makes affordable since a
+ring slot at full message size costs about 1.5 percent of an RP2040's memory. No capability
+authorises a core crossing, the inter-core interrupt not being a user-facing operation at all, and
+privilege sitting at the two configuration acts instead. And the doorbell seam serves BOTH the
+shared-kernel interrupt and the AMP inter-node doorbell, so narrowing its contract to SMP semantics
+would break AMP before AMP is written.
+
+**S1 AND S2 ARE LANDED: PER-CORE STATE AT ONE CORE, THEN FOUR CORES BOOTING AND PARKING.** The
+witness is 57 presets and 2276 host tests, and the delta against M7.0's 2247 is one new preset's
+worth, which is what says `qemu-arm64-smp` ran rather than being skipped. Four cores is a POSTURE of
+the arm64 board, stated by a choice the way the paging mode is, so `KICKOS_NUM_CORES` stays
+unprompted as its own help text requires.
+
+**RELEASED IS NOT ARRIVED, and that distinction is the only reason the bring-up has a witness.**
+PSCI answering SUCCESS says a core was STARTED; a core handed a bad entry, a bad stack or a
+translation it cannot walk is started and never reaches its own code. The release waits on each
+core's own online byte and refuses by name, then states the count positively, because a build that
+released nobody would print nothing and boot clean. Mutation-proven both ways: with the online byte
+unpublished the boot dies naming core 01.
+
+**FOUR LATENT DEFECTS SURFACED AND NONE WAS CAUSED BY THIS WORK.** The multi-core arm of
+`armv8a_percpu` had NEVER COMPILED, a function sharing a struct's name hiding that struct's
+constructor under `-Wshadow` where this tree is `-Werror`; it shipped at M6.2's T9 and is cited in
+three files' comments. `cpu_id_fold` had no `SKIP_RETURN_CODE`, so the exit 77 it has always been
+able to return read as a FAILURE the first time a preset returned it, this being the first test in
+the tree that ever skips. `map_tlbi_elided` asserted a single-core figure unconditionally. And the
+fold gate's own scanner could DIE and still report PASS, which was found by writing `and` for `&&`
+in its awk and watching it go green over a corpus it never read. **The class is the one this project
+keeps meeting: an arm nothing exercises says nothing, and the first thing to exercise it finds
+whatever was wrong with it.**
+
+**TWO THINGS S3 INHERITS THAT A GREEN RUN DOES NOT SAY.** `arch_irq_mask`, `arch_irq_unmask` and
+`arch_irq_clear_pending` write BANKED GIC registers for a line below 32, so they act on whichever
+core calls them; that is correct at one core and is a semantics question the moment threads run on
+more than one. And `Kernel::idle` and `Kernel::boot` are classified per-core in the state inventory
+and are NOT keyed: harmless while secondaries only park, required before a second core runs threads.
+
+**THE CACHE CLEAN THE HANDOVER OWES HAS NO WITNESS HERE.** The primary publishes a boot record that
+secondaries read with their caches off, and `arch_dcache_flush` to the point of coherency is what
+makes that legal. QEMU models no data cache, so deleting that flush passes every run on this bench.
+It is in the code because the architecture requires it, exactly like the fresh-map invalidate.
+
+**THE SIX WINDOWS A BIG LOCK LEAVES OPEN ARE RECORDED IN SECTION 4 OF THE CONTRACT, and three of
+them never had a lock to substitute for.** The audit that produced them refuted two things worth
+carrying: `cap_teardown`'s deliberate mid-chunk lock drop is FINE under a shared kernel, and the
+authority word's unlocked read is safe because every reader passes the CURRENT thread and no path
+reads a peer's. What the fastpath gap costs is a RULING and not a fix, neither M7 backend linking
+it. Every verdict there is conditional on the current-thread pointer becoming per-core, which is
+M7.1's first item.
+
 **M6.2 is CLOSED, every T-step landed, and `qemu-arm64` is the fleet's first ISOLATING translating
 board.** M6.3 is CLOSED, its last step R6, and the aspace-seam VERDICT IS TAKEN, and it is NOT an
 empty diff: one member added, `arch_aspace_frame_at`, thirty five records identical. The verdict
@@ -34,6 +180,16 @@ and unmap capability operations, C3 shared one run into two spaces at two addres
 claim is a NEGATIVE result like M6.3's and M6.4's, and it is measured: `check_cap_sigdiff.sh` is
 PASS at 24 records, the only two members that ever entered being plain enumerators (60 and 61). An
 address never became a FIELD, only ever an argument, which is what let C1's claim survive C2.
+
+**THE FLEET WITNESS FOR M6.5 IS COMPLETE AND BOTH HALVES STAMP THE MERGED COMMIT**, `23dfd8ea`.
+Host: 56 presets, 2191 host tests, 56 pass, 0 reused, 0 fail, with `trap_redzone` in all 56 logs,
+which is the half that matters for two new syscalls, no emulator board registering one. Image: 56
+presets, 473 gates, 0 failed, 0 skipped, 37 declared with no image gate. **The image half took four
+attempts and only the last is evidence**: two were killed because the tree changed under them, and
+the third REFUSED itself for want of `SWEEP_EXPECT_EMPTY=37`. A run of that tool without the
+declared figures is not a witness and says so, its `DONE` sentinel being written only when every
+clause holds. `qemu-x86_64` ran 10 image gates for the first time, the `emulator_for` row added at
+C0 having been what filed them as needing silicon.
 
 **FOUR THINGS ABOUT M6.5 A GREEN RUN DOES NOT SAY.** The two kinds are POSTURE-GATED, so the
 thirteen region boards compile the enum values and nothing can construct one; `qemu-x86_64` runs

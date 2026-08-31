@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The dash rule of docs/reference/style.md: ` -- ` is essay punctuation and does not belong
-# in software. No comment and no string literal in a tracked source file spells a break in a
-# sentence as a double hyphen. Write a comma, a semicolon, a single ` - `, or two sentences.
+# The dash rule: ` -- ` is essay punctuation and does not belong in software. No comment and
+# no string literal in a tracked source file spells a break in a sentence as a double hyphen.
+# Write a comma, a semicolon, a single ` - `, or two sentences.
 #
 # Run from the repo root, no arguments, no build directory:
 #   tests/static/check_dash_punct.sh

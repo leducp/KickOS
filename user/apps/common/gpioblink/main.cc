@@ -81,10 +81,10 @@ namespace
     // PDDR) + include/kickos/chip_mmap.h (GPIOA_BASE 0x400FF000, GPIO_STRIDE 0x40).
     // Direction is a SEPARATE PDDR write: the worker sets output before driving.
     constexpr uintptr_t WINDOW_BASE = 0x400FF000u + PORT * 0x40u;
-    // Whole GPIO instance block. The K64F GPIO block is unprotectable, so this grant is
-    // one of the three genuinely inert ones and is kept for spawn-signature parity and
-    // portability to an enforcing chip (docs/reference/boards.md, "When an MMIO grant is
-    // INERT").
+    // Whole GPIO instance block. The K64F GPIO block is unprotectable
+    // and this grant feeds no kos_periph_* syscall, so it authorises
+    // nothing. Kept for spawn-signature parity and portability to an
+    // enforcing chip.
     constexpr uint32_t WINDOW_SIZE = 0x40u;
     constexpr uintptr_t PSOR_OFF = 0x04u; // set -> high
     constexpr uintptr_t PCOR_OFF = 0x08u; // clear -> low

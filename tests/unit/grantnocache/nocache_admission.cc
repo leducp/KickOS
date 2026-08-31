@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The three-valued non-cacheable admission (docs/design-m4.6.2-usb-cdc.md, S7), read from
-// the REAL kernel/grant/grant.cc over an arch seam this file sets. REFUSED is the answer no
-// chip in tree gives, so this fixture is where that value is driven.
+// The three-valued non-cacheable admission, read from the REAL kernel/grant/grant.cc over
+// an arch seam this file sets. REFUSED is the answer no chip in tree gives, so this fixture
+// is where that value is driven.
 
 #include <kickos/grant.h>
 

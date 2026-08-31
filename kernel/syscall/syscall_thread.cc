@@ -49,11 +49,11 @@ namespace kickos
 
         // Give back everything a spawn took before thread_create committed: the
         // DEMAND-ALLOCATED stack, the thread slot, and the task task_for built that nothing
-        // holds. One helper, each call site being caller stack on the armv7m SVC chain the trap
-        // red zone measures.
+        // holds. One helper, noinline: its frame lands on the armv7m SVC chain the trap red
+        // zone measures.
         //
-        // The flag, not the pointer, says whether the stack was the kernel's: F10's allocator
-        // hands the app frame-pool frames, so the pool cannot tell the two apart.
+        // The flag, not the pointer, says whether the stack was the kernel's: the app's own
+        // allocator hands it frame-pool frames, so the pool cannot tell the two apart.
         //
         // ORDER: the stack goes back BEFORE the task, the run being mapped in that task's space
         // and the discard being what destroys it.
@@ -178,7 +178,7 @@ namespace kickos
             {
 #if KICKOS_HAVE_ASPACE
                 // A range mapped in the space the child will run in, which is the only low
-                // memory an app has to hand in (F10). The image is excluded by name: a stack
+                // memory an app has to hand in. The image is excluded by name: a stack
                 // carved out of an app global would sit inside the process's own static data.
                 //
                 // The TARGET space, which is not always the caller's: a member joins a group
@@ -541,9 +541,9 @@ namespace kickos
         {
 #if KICKOS_HAVE_ASPACE
             // Frames in the task's space: the arena is linked in the kernel's half and EL0
-            // loses that half (docs/design-m6-mmu.md T5b.3). kstack_owned says the KERNEL took
-            // this run, which the frame pool cannot answer, F10's allocator handing app frames
-            // out of that same pool.
+            // loses that half. kstack_owned says the KERNEL took this run, which the frame
+            // pool cannot answer, the app's own allocator handing it frames out of that
+            // same pool.
             UserStack const us = ustack_alloc(domain_space(task_domain(tk)),
                                               KICKOS_USER_STACK_SIZE);
             stack = reinterpret_cast<void*>(us.base);
@@ -669,7 +669,7 @@ namespace kickos
             return -KOS_EBADF; // never allocated, or the slot was reclaimed under this handle
         }
         // An exited-but-unreclaimed slot still gen-matches, and there is nothing left to
-        // cancel in it. thread_join is the one caller that must ACCEPT that state instead.
+        // cancel in it.
         if (t->state == ThreadState::EXITED or t->state == ThreadState::INACTIVE)
         {
             return -KOS_EBADF;

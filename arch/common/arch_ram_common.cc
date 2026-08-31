@@ -149,12 +149,12 @@ uintptr_t arch_mpu_probe_addr(void)
 bool arch_user_text_readable(uintptr_t ptr, size_t len)
 {
 #if KICKOS_MEMORY_ENFORCED
-    // KEYED ON ENFORCEMENT AND NOT ON DESCRIPTORS. Where protection is live the caller's
-    // own reachable set is the whole oracle: real MPU regions on a descriptor board, the
-    // granted-range list the address space carries on a translating one. A link-time
-    // whitelist beside either is a second answer to one question, and it admits a whole
-    // linked window rather than a process's own mapped ranges (docs/design-m6-mmu.md
-    // section 3.3).
+    // KEYED ON ENFORCEMENT AND NOT ON DESCRIPTORS. Where protection is live the
+    // caller's own reachable set is the whole oracle: real MPU regions on a
+    // descriptor board, the granted-range list the address space carries on a
+    // translating one. A link-time whitelist beside either is a second answer to one
+    // question, and it admits a whole linked window rather than a process's own
+    // mapped ranges.
     (void)ptr;
     (void)len;
     return false;

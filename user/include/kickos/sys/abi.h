@@ -214,7 +214,7 @@ enum kos_syscall_nr
                                //   -KOS_ENOMEM when the space cannot take the range there.
                                //   The ADDRESS is an argument and never a field: no struct
                                //   here carries one, which is what keeps it out of the
-                               //   capability ABI's own records (C1).
+                               //   capability ABI's own records.
     KOS_SYS_FRAME_UNMAP = 61   // (frame cap, address-space cap, virtual address) -> 0, or
                                //   -KOS_EPERM for a range this space did not take through
                                //   KOS_SYS_FRAME_MAP, which is what stops one holder
@@ -309,11 +309,11 @@ enum kos_aspace_op
                                  //   frame RUN and an address space: minted into the caller's
                                  //   own table, resolved back through the chokepoint, and
                                  //   closed. Every bit answers about a HANDLE and none of
-                                 //   them is an address, which is C1's own claim
+                                 //   them is an address
     KOS_ASPACE_OP_CAP_SEED = 26, // () -> a frame capability in the low 32 bits and an
                                  //   address-space capability naming the CALLER's own space
                                  //   in the high 32, both minted into the caller's table, or
-                                 //   0 when either could not be. C2's scaffolding: there is no
+                                 //   0 when either could not be. Scaffolding: there is no
                                  //   user-facing mint yet, and the arm drives the REAL
                                  //   kos_frame_map and kos_frame_unmap syscalls on these
     KOS_ASPACE_OP_CAP_SEED_VA = 27, // () -> a page-aligned virtual address the seeded run may
@@ -329,9 +329,9 @@ enum kos_aspace_op
 };
 
 // KOS_ASPACE_OP_SPLIT_ACCESS: one bit per property of an access split at a page boundary.
-/* KOS_ASPACE_OP_CAP_OBJECTS: one bit per property of the two kinds C1 adds. The frames a run
-   holds are the only thing here a number could leak, and none of these bits is one: every bit
-   answers yes or no about a HANDLE, which is what C1 claims the capability layer deals in. */
+/* KOS_ASPACE_OP_CAP_OBJECTS: one bit per property of the two capability kinds. The frames a
+   run holds are the only thing here a number could leak, and none of these bits is one:
+   every bit answers yes or no about a HANDLE. */
 #define KOS_ASPACE_CAPOBJ_FRAME_MINT    0x01u /* a frame-run capability installed in this table */
 #define KOS_ASPACE_CAPOBJ_FRAME_RESOLVE 0x02u /* it resolved back to the run that was minted */
 #define KOS_ASPACE_CAPOBJ_ASPACE_MINT   0x04u /* an address-space capability installed */

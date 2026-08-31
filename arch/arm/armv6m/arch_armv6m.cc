@@ -417,7 +417,7 @@ void kickos_armv6m_no_kernel_stack(uint32_t psp)
     kfault_terminate();
 }
 
-// SHPR is word-access only on v6-M. Called by the chip's arch_init.
+// SHPR is word-access only on v6-M.
 void kickos_armv6m_init(void)
 {
     reg32(SCB_SHPR2) = (reg32(SCB_SHPR2) & 0x00FFFFFFu) | (PRIO_SVCALL << 24);

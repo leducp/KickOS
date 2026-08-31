@@ -17,8 +17,8 @@
 #     wrap bug surfaces as a mismatch rather than a plausible length.
 #
 # Three things stay xmc4800's, per design section 9.2: a hardware TX-empty interrupt driving
-# the drain, asynchronous RX from a real line, and the transition-triggered half of RULE T1
-# (a host write cannot fail to raise).
+# the drain, asynchronous RX from a real line, and a TX-empty source that raises only on a
+# transition (a host write cannot fail to raise).
 #
 # usage: check_sim_uartloop.sh <kickos-source-dir> <cmake>
 

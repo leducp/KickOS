@@ -4,8 +4,8 @@
 // User-selectable CPU clock: the arch-neutral coherence orchestration around the
 // arch_cpu_clock_set MECHANISM seam. NOT policy: no governor, DVFS or idle heuristic
 // belongs here. It changes the clock coherently to the requested P-state and reports the
-// landed Hz, for a future userspace power-manager service to drive. The sequence below is
-// docs/design-m3-clock-select.md section 2.3.
+// landed Hz, for a future userspace power-manager service to drive. The step order below
+// is load-bearing: refuse, mask, disarm, flush to shift-idle, retune, re-derive baud, re-arm.
 
 #include <kickos/time.h>
 #include <kickos/arch/arch.h>
@@ -25,7 +25,7 @@ namespace kickos
     // refusal and the masked transition.
     uint32_t cpu_clock_set(kos_pstate_t target)
     {
-        // S4: a userspace driver owns the UART -> the kernel cannot re-derive or
+        // A userspace driver owns the UART -> the kernel cannot re-derive or
         // relocate its baud across a peripheral-clock move, so REFUSE before any
         // masking (a true no-op: previous Hz, unchanged). RECLAIMED (panic took the
         // UART back) is also not-kernel-owned; a retune on a panic path is never wanted.
@@ -37,7 +37,7 @@ namespace kickos
         IrqLock lock; // single-core: masks the one timer, quiescing time across the change
         uint32_t const previous = arch_cpu_clock_hz();
 
-        // S1: stop SysTick + clear g_armed_deadline_ns + drop a pended SysTick, so
+        // Stop SysTick + clear g_armed_deadline_ns + drop a pended SysTick, so
         // nothing fires mid-transition at the stale rate AND the trailing ktime_rearm
         // cannot be no-op'd by the arm-dedup guard (it always reloads after a disarm).
         arch_timer_disarm();

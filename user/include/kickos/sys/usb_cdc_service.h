@@ -5,7 +5,7 @@
 // No MMIO and no controller knowledge live here. It reuses the UART's ring, its wire ABI
 // (<kickos/sys/uart.h>) and its counters.
 //
-// The UsbDev class supplies the implicit interface (design-m4.6.2-usb-cdc.md sec 3.1):
+// The UsbDev class supplies the implicit interface:
 //     int      bring_up();                    // 0, or negative: nothing else may be called
 //     void     attach();                      // present the device to the bus, LAST
 //     uint32_t take_events();                 // KOS_USB_EV_* ; clears what it reports
@@ -29,11 +29,11 @@
 // so its `pid` arguments are ignored, and it reads software-built descriptor lists out of
 // system RAM as a BUS MASTER, so its shared block must stay coherent with a device that never
 // looks at the D-cache; teensy41 gets that from KICKOS_IMXRT_DCACHE=OFF, which the build
-// derives from the service list (design-m4.6.2-usb-cdc.md sections 2 and 4.3).
+// derives from the service list.
 //
 // The link is host-controlled and may never come up, so `configured` is a SEPARATE,
-// NON-LATCHING flag beside the UART's `ready` latch (design sec 4.5) and a bus reset clears
-// it. This ring's consumer may never exist, so the endpoint starts NON-BLOCKING.
+// NON-LATCHING flag beside the UART's `ready` latch, and a bus reset clears it. This
+// ring's consumer may never exist, so the endpoint starts NON-BLOCKING.
 //
 // TX pacing is self-sustaining only while a buffer is in flight, a bulk IN completion being
 // the wake that pumps the next packet. A host that stops issuing IN tokens without a bus
@@ -123,7 +123,7 @@ static_assert(sizeof(struct Shared) <= KOS_USB_BLOCK_SIZE,
 static_assert(KOS_USB_TX_SIZE >= 2 and (KOS_USB_TX_SIZE & (KOS_USB_TX_SIZE - 1)) == 0,
               "the TX ring size must be a power of two >= 2 or it never accepts a byte");
 
-// Called by the BRING-UP, before either thread exists, so it races nothing.
+// Call before either thread exists, so it races nothing.
 //
 // Seats NON-BLOCKING, unlike the UART: no IN token is issued until a host both enumerates the
 // device AND opens the tty, so a blocking write here is unbounded. That is a static property
@@ -286,7 +286,7 @@ private:
             dev_.ep_open_all();
             if (config_ != 0u)
             {
-                // RULE T1 in its USB form: an unarmed endpoint simply NAKs, so waiting for
+                // An unarmed endpoint simply NAKs, so waiting for
                 // an interrupt before arming the first OUT buffer waits forever while the
                 // host politely retries.
                 dev_.ep_out_arm(KOS_USB_CDC_EP_DATA, bulk_out_pid_);
@@ -637,7 +637,7 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
     while (true)
     {
         // The FIRST wait is also what arms the line: a claim leaves it masked so no
-        // window exists in which it is armed and unowned (INVARIANT H1).
+        // window exists in which it is armed and unowned.
         if (kos_irq_wait(KOS_USB_CAP_LINE) != 0)
         {
             break; // the cap went away: the line is gone, so this thread has no work

@@ -162,7 +162,7 @@ namespace kos
         }
         ~Mutex()
         {
-            // Closing a mutex you still hold is refused (R2: kos_handle_close -> -KOS_EBUSY),
+            // Closing a mutex you still hold is refused (kos_handle_close -> -KOS_EBUSY),
             // so destroying a locked kos::Mutex leaks its cap. Unlock it before letting it
             // die.
             if (id_ != KOS_CAP_NONE)
