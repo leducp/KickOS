@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# No kernel-text instruction names an APP-HALF symbol, bar a named allowlist
-# (docs/design-m6-mmu.md R2.2). The app's window is one level-2 slot of a PER-SPACE table, so
-# an app-half address does not name one process: it names whichever process the core is on. A
-# kernel store meant for process A therefore lands in process B, and nothing reports it.
+# No kernel-text instruction names an APP-HALF symbol, bar a named allowlist. The app's window
+# is one level-2 slot of a PER-SPACE table, so an app-half address does not name one process:
+# it names whichever process the core is on. A kernel store meant for process A therefore
+# lands in process B, and nothing reports it.
 #
 # The link does not already refuse this. The linker script's assert covers only the medany
 # range; the app window is at 0x40000000, inside medlow's `lui`-reachable range, so the linker

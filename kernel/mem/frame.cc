@@ -19,7 +19,7 @@ namespace kickos
         // and report a bit that is not the lowest one set.
         static_assert(sizeof(size_t) == sizeof(unsigned long), "ctz builtin narrower than a word");
 
-        // Undefined for 0; every call site tests the word first.
+        // Undefined for 0: the word must be tested first.
         size_t ctz_word(size_t v)
         {
             return static_cast<size_t>(__builtin_ctzl(static_cast<unsigned long>(v)));

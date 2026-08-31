@@ -17,12 +17,11 @@
  * 0x2008_0000/0x2008_1000 sit outside it, available for per-core stacks.
  *
  * ENFORCEMENT (KICKOS_HAVE_MPU): the armv8-m / PMSAv8 MPU backend
- * (arch/arm/common/arch_arm_pmsav8.cc, docs/design-rp2350-mpu-armv8m.md). PMSAv8 uses
- * RBAR/RLAR base+limit at a 32-byte granule (NON-pow2, like SYSMPU), so the app-data
- * window is two 32-byte-aligned symbols and needs no pow2 ALIGN of the kind the v6-M/v7-M
- * PMSA chips carry (rp2040.ld). The writable state is split KERNEL vs app as in mk64f.ld,
- * the other byte-granular backend. A non-enforcement build (KICKOS_HAVE_MPU=0) reserves
- * no window.
+ * (arch/arm/common/arch_arm_pmsav8.cc). PMSAv8 uses RBAR/RLAR base+limit at a 32-byte
+ * granule (NON-pow2, like SYSMPU), so the app-data window is two 32-byte-aligned symbols
+ * and needs no pow2 ALIGN of the kind the v6-M/v7-M PMSA chips carry (rp2040.ld). The
+ * writable state is split KERNEL vs app as in mk64f.ld, the other byte-granular backend.
+ * A non-enforcement build (KICKOS_HAVE_MPU=0) reserves no window.
  */
 
 #include <sections.ld.h>

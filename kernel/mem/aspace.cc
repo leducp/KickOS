@@ -355,7 +355,7 @@ namespace kickos
             return 0;
         }
         // Compare the frames themselves: a windowed backend answers the same acquire address
-        // for every frame, so unequal frames would compare equal (docs/design-m6-mmu.md F8).
+        // for every frame, so unequal frames would compare equal.
         arch_phys_addr_t const ref = arch_aspace_frame_at(space, text.base);
         if (ref == 0)
         {
@@ -458,7 +458,7 @@ namespace kickos
         {
             return -KOS_ENOMEM;
         }
-        // VR_FRAMECAP and not VR_BORROWED alone: the image and every F10 handoff carry that
+        // VR_FRAMECAP and not VR_BORROWED alone: the image and every handoff carry that
         // bit too, and a revoke keyed on it accepts ranges this call never placed.
         if (not ranges->reserve(va, pages, VR_BORROWED | VR_FRAMECAP))
         {
@@ -492,7 +492,7 @@ namespace kickos
         }
         VirtualRange const* const e = ranges->at_base(va);
         // The range must be one aspace_cap_map placed AND must name this run. Matching a page
-        // count instead accepts the image and every F10 handoff, which carry VR_BORROWED too.
+        // count instead accepts the image and every handoff, which carry VR_BORROWED too.
         if (e == nullptr or e->base != va or (e->flags & VR_FRAMECAP) == 0)
         {
             return -KOS_EPERM;

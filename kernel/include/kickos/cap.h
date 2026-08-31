@@ -138,11 +138,11 @@ namespace kickos
         AUTH_CONSOLE = 1 << 5  // console_publish
     };
 
-    // Where the cut falls: docs/design-unprivileged-root.md section 5.1.
+    // One bit per distinct holder: a bit merging two holders grants each the other's power.
 
     // arch_periph_enable carries NO authority bit and must not be given one: it is gated on
     // the caller holding a live ARCH_MPU_DEV region whose base matches the block exactly
-    // (caller_holds_mmio_block, syscall_mem.cc). See design-unprivileged-root.md section 7.
+    // (caller_holds_mmio_block, syscall_mem.cc).
 
     static constexpr uint8_t CAP_AUTH_ALL = static_cast<uint8_t>(
         AUTH_MEMORY | AUTH_PINMUX | AUTH_PSTATE | AUTH_IRQ | AUTH_SYSTEM | AUTH_CONSOLE);
@@ -511,13 +511,12 @@ namespace kickos
     // that no longer exists.
     void cap_slab_detach(CapRun* run, uint16_t* free_head, uint16_t* out_width);
 
-    // Carve the slab and thread the free list. Called once from kmain before any thread
-    // exists.
+    // Carve the slab and thread the free list. Call once, before any thread exists.
     void cap_slab_init();
 
     // Forget the published stdout target, so no cap_install_defaults seat and no note-site
     // comparison can match a handle from a previous life. It drops the NAME and not the kernel's
-    // reference on that endpoint, so the only sound caller is one resetting the endpoint pool.
+    // reference on that endpoint, so it is sound ONLY as part of resetting the endpoint pool.
     void cap_console_reset();
 
     // The one resolve chokepoint: validate a per-thread cap handle and return the named
@@ -567,9 +566,8 @@ namespace kickos
     uint32_t cap_reply_live(Thread const* c);
 
     // Account one CAP_REPLY entry leaving c's table. EVERY release path that empties one must
-    // call it (kos_reply, handle_close and the teardown sweep), or c's next caller is refused
-    // against a capability that is already gone. A no-op where cap_reply_live counts by
-    // scanning. Caller holds IrqLock.
+    // call it, or c's next caller is refused against a capability that is already gone. A
+    // no-op where cap_reply_live counts by scanning. Caller holds IrqLock.
     void cap_reply_released(Thread* c);
 
     // The probe-before-mint predicate for the reply cap: never pop a receiver a reply cap cannot
@@ -639,8 +637,8 @@ namespace kickos
     bool cap_console_target(int* out);
 
     // Hand kernel-owned text to the published console endpoint, and ONLY to a receiver already
-    // parked: the caller is the thread-fault record path, which must not park, so there is no
-    // send_waiters arm, no deadline and no retry. Returns the bytes handed over, or 0.
+    // parked: the caller must not park, so there is no send_waiters arm, no deadline and no
+    // retry. Returns the bytes handed over, or 0.
     //
     // NEITHER REFUSAL MAY BE AN ASSERT: this runs inside the fault reporter, so a panic here
     // re-enters kputs -> kconsole_write from inside the report it was writing. Neither may be an

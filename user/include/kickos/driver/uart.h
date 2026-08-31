@@ -2,10 +2,10 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The RAW UART driver class: the in-process contract every UART backend implements. Form is
-// design-m4-driver-model.md rule 4's "object in C" (a POD struct plus free functions taking
-// it by pointer, no ctor, no dtor, no vtable), written to rule 3's KERNEL BAR: no
-// exceptions, no STL, explicit init, never implicit lifetime. It compiles as C, because the
-// same code must link from the kernel and from unprivileged userspace unchanged.
+// the "object in C": a POD struct plus free functions taking it by pointer, no ctor, no
+// dtor, no vtable. It links under the KERNEL BAR: no exceptions, no STL, explicit init,
+// never implicit lifetime. It compiles as C, because the same code must link from the
+// kernel and from unprivileged userspace unchanged.
 //
 // FIVE CALLS: open, read, write, flush, close. Interrupt arming, status-flag clearing,
 // FIFO recovery and error-latch handling are MECHANISM and stay inside these five.
@@ -63,7 +63,7 @@ extern "C"
     // The cfg clauses every backend refuses IDENTICALLY, stated once in the contract's own
     // header so a backend cannot grow its own dialect of them. Returns 0, or -KOS_EINVAL.
     //
-    // EVERY kos_uart_open CALLS THIS FIRST, before it touches a register or binds the
+    // EVERY kos_uart_open MUST CALL THIS FIRST, before it touches a register or binds the
     // object. base is dereferenced as MMIO and stats is dereferenced on every read, so a
     // backend that took either as absent would store through a null base and fault on its
     // first byte. Checking them here once is what lets the transfer paths stay branch-free.
@@ -85,7 +85,7 @@ extern "C"
     }
 
     // The rate clause a backend that CANNOT REPROGRAM ITS DIVISOR refuses. Returns 0, or
-    // -KOS_ENOTSUP. Called right after kos_uart_cfg_check, and ONLY by such a backend: one
+    // -KOS_ENOTSUP. Call right after kos_uart_cfg_check, and ONLY from such a backend: one
     // that can program a rate must not call it.
     //
     // -KOS_ENOTSUP WHATEVER THE LOCAL REASON, write-protected divider included. -KOS_EPERM

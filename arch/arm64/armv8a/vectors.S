@@ -16,6 +16,8 @@
  * it needs is in ESR_EL1, FAR_EL1, ELR_EL1 and SPSR_EL1.
  */
 
+#include <kickos/board_config.h>
+
     .macro  VEC_SLOT index
     .balign 128
     mov     x0, #\index
@@ -44,13 +46,18 @@
  *
  * The block is per core and kernel_sp sits at displacement 0 (percpu.h, which static_asserts
  * it). At one core the array's first element IS this core's block, so the address is a
- * link-time constant; above one core the block address comes from TPIDR_EL1 instead, and
- * that is the edit, not the load below.
+ * link-time constant; above one core it is TPIDR_EL1's value, seated on each core before that
+ * core turns translation on (secondary.S, arch_armv8a.cc).
  */
     .macro  LOWER_EL_SLOT index
     .balign 128
+#if KICKOS_NUM_CORES > 1
+    mrs     x0, tpidr_el1
+    ldr     x0, [x0]
+#else
     adrp    x0, kickos_armv8a_percpu
     ldr     x0, [x0, #:lo12:kickos_armv8a_percpu]
+#endif
     mov     sp, x0
     mov     x0, #\index
     mov     x1, x30

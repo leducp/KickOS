@@ -49,7 +49,7 @@ fi
 # the same observable end state as a correct one.
 #
 # The list is by THREAD and not by arm, because the record names the thread and nothing else:
-# the containment arm's own worker is the one deliberate fault in the stream (F5, T8), and
+# the containment arm's own worker is the one deliberate fault in the stream, and
 # every neighbouring arm's worker stays forbidden. A listed thread that did NOT fault is a
 # NOTE here rather than a failure: the arm's join is what asserts the death, and a fault that
 # never happened times that join out and reports `not ok` above.

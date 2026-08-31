@@ -6,10 +6,10 @@
  * the LOWEST of them rather than at the ELF entry field, so .text.init must stay first in
  * .text and .text must keep the lowest load address in the image.
  *
- * The image is split in two (docs/design-m6-mmu.md R2.2). Kernel text and kernel writable state
- * link into the high range the top gigabyte covers, with an LMA back in DRAM; the app links at
- * KICKOS_RV64_APP_VA_BASE, one level-2 slot the boot root leaves empty. The app links low and
- * loads high over one uniform delta, published as __kickos_app_load_delta.
+ * The image is split in two. Kernel text and kernel writable state link into the high range
+ * the top gigabyte covers, with an LMA back in DRAM; the app links at KICKOS_RV64_APP_VA_BASE,
+ * one level-2 slot the boot root leaves empty. The app links low and loads high over one
+ * uniform delta, published as __kickos_app_load_delta.
  *
  * A CROSS-HALF REFERENCE CAN LINK SILENTLY. What catches one is two gates:
  * tests/static/check_riscv_kernel_apphalf.sh over the kernel archives' relocations and

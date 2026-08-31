@@ -44,8 +44,13 @@ CMAKE_STRING_KNOBS = [
 ]
 # The provisioning integers CMake itself has to do arithmetic on: the capability-table
 # sum (cmake/cap_table.cmake) and the boot-arena model (cmake/boot_arena.cmake). A knob
-# CMake computes with belongs here; one only C reads does not.
+# CMake computes with belongs here, and so does one CMake REFUSES on: the core count and the
+# multicore model gate the shared-kernel predicate in CMakeLists.txt, which cannot read a knob
+# that stops at the generated header. A knob only C reads does not.
 CMAKE_INT_KNOBS = [
+    "KICKOS_NUM_CORES",
+    "KICKOS_MULTICORE_MODEL_SHARED",
+    "KICKOS_KERNEL_CORES",
     "KICKOS_HAVE_MPU",
     "KICKOS_HAVE_ASPACE",
     "KICKOS_KERNEL_STACKS",

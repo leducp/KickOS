@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # ROOT's capability-table width, summed at CONFIGURE time from four declarations,
-# each made by whoever owns the fact (docs/design-capability-table.md section 6):
+# each made by whoever owns the fact:
 #
 #   reserved indices      the kernel        KICKOS_CAP_FIRST_DYNAMIC (sys/cap_index.h)
 #   retained for life     the service list  RETAINED_CAPS (kickos_add_board_provider)

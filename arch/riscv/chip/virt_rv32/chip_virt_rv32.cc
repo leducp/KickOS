@@ -190,7 +190,7 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 }
 #endif
 
-// --- C-runtime bring-up (called by _start in startup.S) ---------------------
+// --- C-runtime bring-up (the reset entry) ----------------------------------
 void Reset_Handler(void)
 {
     // QEMU places each segment at its PhysAddr, so the LMA really holds the image bytes.

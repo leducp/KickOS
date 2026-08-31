@@ -63,7 +63,7 @@
 #define MAIR_VALUE      0x4400FF
 
 /* TCR_EL1. T0SZ and T1SZ are both 25, so each half is a 39-bit VA whose walk starts at
- * level 1 and reaches the blocks below. IPS 0b010 is the A53's 40-bit output (F7).
+ * level 1 and reaches the blocks below. IPS 0b010 is the A53's 40-bit output.
  *
  * TG1's 4 KiB encoding is 0b10 and TG0's is 0b00 (DDI 0487 M.b, TCR_EL1): the two granule
  * fields do NOT share an encoding, so TG0's constant is the wrong value here.

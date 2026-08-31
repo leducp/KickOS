@@ -19,7 +19,6 @@ FUNC	arch_console_retune	void (void)	-
 FUNC	arch_console_write	void (char const *, size_t)	-
 FUNC	arch_console_write_sync	void (char const *, size_t)	-
 FUNC	arch_context_init	void (struct arch_context *, void ( * entry)(void * arg), void *, void *, size_t, int)	-
-FUNC	arch_cpu_id	uint32_t (void)	KICKOS_NUM_CORES > 1
 FUNC	arch_ctx_redirect	void (struct arch_context *, void ( * entry)(void * arg), void *, size_t)	-
 FUNC	arch_ctx_set_syscall_result	void (struct arch_context *, uint32_t)	KICKOS_ARCH_HAS_IPC_FASTPATH
 FUNC	arch_fault_is_user_thread	bool (void *)	-
@@ -28,8 +27,6 @@ FUNC	arch_fault_report_extra	void (void)	-
 FUNC	arch_idle_wait	void (void)	-
 FUNC	arch_in_isr	int (void)	-
 FUNC	arch_init	void (void)	-
-FUNC	arch_ipi_send	void (uint32_t)	KICKOS_NUM_CORES > 1
-FUNC	arch_ipi_wait	void (uint32_t)	KICKOS_NUM_CORES > 1
 FUNC	arch_irq_clear_pending	void (int)	-
 FUNC	arch_irq_inject	void (int)	-
 FUNC	arch_irq_mask	void (int)	-
@@ -68,7 +65,6 @@ FUNCNAMES	arch_console_retune	void (void)	-
 FUNCNAMES	arch_console_write	void (char const * buf, size_t n)	-
 FUNCNAMES	arch_console_write_sync	void (char const * buf, size_t n)	-
 FUNCNAMES	arch_context_init	void (struct arch_context * ctx, void ( * entry)(void * arg), void * arg, void * stack_base, size_t stack_size, int privileged)	-
-FUNCNAMES	arch_cpu_id	uint32_t (void)	KICKOS_NUM_CORES > 1
 FUNCNAMES	arch_ctx_redirect	void (struct arch_context * ctx, void ( * entry)(void * arg), void * stack_base, size_t stack_size)	-
 FUNCNAMES	arch_ctx_set_syscall_result	void (struct arch_context * ctx, uint32_t result)	KICKOS_ARCH_HAS_IPC_FASTPATH
 FUNCNAMES	arch_fault_is_user_thread	bool (void * frame)	-
@@ -77,8 +73,6 @@ FUNCNAMES	arch_fault_report_extra	void (void)	-
 FUNCNAMES	arch_idle_wait	void (void)	-
 FUNCNAMES	arch_in_isr	int (void)	-
 FUNCNAMES	arch_init	void (void)	-
-FUNCNAMES	arch_ipi_send	void (uint32_t cores)	KICKOS_NUM_CORES > 1
-FUNCNAMES	arch_ipi_wait	void (uint32_t cores)	KICKOS_NUM_CORES > 1
 FUNCNAMES	arch_irq_clear_pending	void (int line)	-
 FUNCNAMES	arch_irq_inject	void (int irq)	-
 FUNCNAMES	arch_irq_mask	void (int line)	-
@@ -109,8 +103,4 @@ FUNCNAMES	kickos_thread_contain_wild_stack	struct arch_context * (struct arch_co
 FUNCNAMES	kickos_thread_fault_exit	verbatim:void kickos_thread_fault_exit(void) __attribute__((noreturn))	-
 FUNCNAMES	kickos_thread_return	verbatim:void kickos_thread_return(void) __attribute__((noreturn))	-
 FUNCNAMES	kickos_thread_slay_exit	verbatim:void kickos_thread_slay_exit(void * arg) __attribute__((noreturn))	-
-MACRO	KICKOS_NUM_CORES	= 1	-
-MACROFN	arch_cpu_id	() 0u	!(KICKOS_NUM_CORES > 1)
-MACROFN	arch_ipi_send	(cores) ((void)(cores))	!(KICKOS_NUM_CORES > 1)
-MACROFN	arch_ipi_wait	(cores) ((void)(cores))	!(KICKOS_NUM_CORES > 1)
 TYPEDEF	arch_irq_state_t	uintptr_t	-

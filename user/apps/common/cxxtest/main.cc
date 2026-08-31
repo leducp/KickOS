@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Full-C++ opt-in smoke test (Stage B of docs/design-kickcat-k64f.md): proves the
-// toolchain's libstdc++/libsupc++ over newlib actually EXECUTES on the MCU:
-// exceptions (throw/catch, EH unwind), STL (std::vector, std::string over the heap),
-// and RTTI (dynamic_cast + typeid). Built ONLY under the FULL_CXX opt-in (see
-// CMakeLists.txt). Prints one PASS/FAIL line per check then returns (clean exit ->
-// QEMU SYS_EXIT).
+// Full-C++ opt-in smoke test: proves the toolchain's libstdc++/libsupc++
+// over newlib actually EXECUTES on the MCU: exceptions (throw/catch, EH
+// unwind), STL (std::vector, std::string over the heap), and RTTI
+// (dynamic_cast + typeid). Built ONLY under the FULL_CXX opt-in (see
+// CMakeLists.txt). Prints one PASS/FAIL line per check then returns (clean
+// exit -> QEMU SYS_EXIT).
 //
-// The checks run in a spawned UNPRIVILEGED worker, not inline in main: root's grant is
-// composed at boot from the whole app image, so an inline throw would prove nothing
-// about a thread whose grant is composed at spawn from what this app asks for.
-// Under enforcement the worker's throw/catch drives the DWARF/EHABI/SjLj unwinder over
-// eh_globals + the FDE registry, and every new/vector/string allocation goes through the
-// app-side arena, so all of it must lie in the worker's reachable grant. That is the real
-// gate: full-C++ inside MPU confinement (the RISC-V gp-in-appdata layout,
-// docs/design-riscv-gp-split.md).
+// The checks run in a spawned UNPRIVILEGED worker, not inline in main: root's grant
+// is composed at boot from the whole app image, so an inline throw would prove
+// nothing about a thread whose grant is composed at spawn from what this app asks
+// for. Under enforcement the worker's throw/catch drives the DWARF/EHABI/SjLj
+// unwinder over eh_globals + the FDE registry, and every new/vector/string allocation
+// goes through the app-side arena, so all of it must lie in the worker's reachable
+// grant. That is the real gate: full-C++ inside MPU confinement (the RISC-V
+// gp-in-appdata layout).
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

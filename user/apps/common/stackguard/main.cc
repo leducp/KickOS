@@ -4,7 +4,7 @@
 // The guard page below a thread stack, in its own binary because it ends the process: an
 // unprivileged thread walks DOWN from its own stack one page at a time, writing a byte into
 // each, and the first page below the stack must take a translation fault rather than reach
-// whatever lies beneath it (docs/design-m6-mmu.md section 3.4).
+// whatever lies beneath it.
 //
 // EVERY PROBE IS ANNOUNCED BEFORE IT IS MADE, which is what lets the gate compare the LAST
 // announced address against the dump's FAR. Without that the run would only say "something

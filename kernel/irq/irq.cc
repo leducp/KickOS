@@ -72,7 +72,7 @@ namespace kickos
         }
     }
 
-    // Must run before any irq_attach/irq_claim (kmain, pre-start): after it no slot is null.
+    // Must run before any irq_attach/irq_claim, pre-start: after it no slot is null.
     void irq_init()
     {
         IrqLock lock;
@@ -134,8 +134,8 @@ namespace kickos
         }
         Kernel& k = kernel();
         // One driver per line: free iff it still holds the null-object default. This is also
-        // what enforces INVARIANT H2: the console line stays unclaimable until the kernel's
-        // own console_tx_deinit has detached it.
+        // what keeps the console line unclaimable until the kernel's own console_tx_deinit
+        // has detached it.
         if (k.irq_table[line].handler != irq_default_handler)
         {
             return -KOS_EBUSY;
@@ -148,8 +148,8 @@ namespace kickos
         IrqBinding* b = k.irq_bindings.at(i);
         sem_init(&b->sem, 0);
         b->line = line;
-        // The first irq_wait arms the line (INVARIANT H1): a claim leaves it masked, so
-        // there is no window in which the line is armed and unowned.
+        // The first irq_wait arms the line: a claim leaves it masked, so there is no window
+        // in which the line is armed and unowned.
         b->needs_rearm = true;
         b->armed_once = false;
         b->trigger = IRQ_EDGE;
@@ -172,7 +172,7 @@ namespace kickos
         }
         // The ISR is handed the binding's ADDRESS, stable for the slot's life.
         irq_attach(line, irq_event_isr, b);
-        // Deliberately NOT armed here (INVARIANT H1).
+        // The line stays masked until the first irq_wait arms it.
         *out_cap = cap;
         return 0;
     }
@@ -305,7 +305,7 @@ namespace kickos
     }
 }
 
-// Called by the arch backend in ISR context when device line `irq` fires.
+// ISR context. `irq` is the device line that fired.
 extern "C" void kickos_isr_irq(int irq)
 {
     if (irq < 0 or irq >= KICKOS_MAX_IRQ)

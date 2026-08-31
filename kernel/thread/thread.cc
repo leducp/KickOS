@@ -174,8 +174,8 @@ namespace kickos
         // and its own stack. Sizes round to what this MPU can describe (arch_mpu_region_pow2).
         //
         // Portable code may rely only on the floor, that a thread-scoped grant reaches its
-        // HOLDER (docs/design-m6-mmu.md F9); a region backend also makes the stack private,
-        // and a translating backend maps it task-wide.
+        // HOLDER; a region backend also makes the stack private, and a translating backend
+        // maps it task-wide.
         if (not attr.privileged)
         {
             t->mpu.append_statics();
@@ -185,7 +185,7 @@ namespace kickos
         bool const wants_window =
             (not attr.privileged and attr.mmio_base != nullptr and attr.mmio_size != 0);
         // The possession record, seated before the composition that maps the window:
-        // authority and reach are the same bytes only on an MPU (docs/design-m6-mmu.md F9).
+        // authority and reach are the same bytes only on an MPU.
         if (wants_window)
         {
             t->dev_base = reinterpret_cast<uintptr_t>(attr.mmio_base);

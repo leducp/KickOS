@@ -214,6 +214,10 @@ elseif(KICKOS_ARCH STREQUAL "armv8a")
     arm64/armv8a/cache_armv8a.cc
     arm64/armv8a/vectors.S
     arm64/armv8a/switch.S
+    arm64/armv8a/secondary.S
+    # Interrupt controller, one backend per image: the GIC version, its bases and its routing
+    # are the part's, and a chip states them by defining kickos_gicv2 (arm64/common/gicv2.h).
+    arm64/common/arch_arm64_gicv2.cc
     common/arch_ram_common.cc
     common/startup_ranges.cc
     ${KICKOS_SEAM_DEFAULTS_COMMON})
@@ -268,8 +272,7 @@ elseif(KICKOS_ARCH STREQUAL "rv64imac")
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/riscv/rv64imac/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "x86_64")
-  # x86_64 in long mode, entered by UEFI with paging already enabled
-  # (docs/design-m6-mmu.md section 5).
+  # x86_64 in long mode, entered by UEFI with paging already enabled.
   #
   # NO common/arch_ram_common.cc: that file reads the chip linker script's __kickos_ram_start
   # pair, and the image firmware loads here is a PE32+ application with no KickOS script at
@@ -488,15 +491,15 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # stale ON.
   #
   # Coherency with the cache on rests on KOS_MEM_NOCACHE reaching BOTH of the block's grants,
-  # so that no cacheable mapping of it survives (stage S7, docs/design-m4.6.2-usb-cdc.md).
+  # so that no cacheable mapping of it survives (stage S7).
   if(KICKOS_CHIP STREQUAL "imxrt1062" AND KICKOS_USB_CONSOLE AND KICKOS_IMXRT_DCACHE)
     message(WARNING
       "KickOS: KICKOS_IMXRT_DCACHE=ON with a USB console on imxrt1062 is UNWITNESSED ON "
       "SILICON. The device controller reads its descriptor lists out of OCRAM2 as a bus "
       "master and this tree has no cache maintenance at all; coherency rests ENTIRELY on "
-      "the S7 non-cacheable attribute reaching every mapping of the shared block "
-      "(docs/design-m4.6.2-usb-cdc.md section 4.3 and the S7 section). Nothing here has "
-      "enumerated on a host with the cache on. Pass -DKICKOS_IMXRT_DCACHE=OFF for the "
+      "the S7 non-cacheable attribute reaching every mapping of the shared block, the "
+      "driver's and the app's. Nothing here has enumerated on a host with the cache on. "
+      "Pass -DKICKOS_IMXRT_DCACHE=OFF for the "
       "witnessed posture; that is what a fresh build directory selects by default.")
   endif()
   if(KICKOS_CHIP STREQUAL "imxrt1062" AND NOT KICKOS_IMXRT_DCACHE)
@@ -506,7 +509,8 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
       "Code executes XIP from FlexSPI, so literal pools and .rodata are data reads that "
       "reach external QSPI flash with the cache off. A USB console selects this posture by "
       "default because keeping the cache rests on the S7 non-cacheable attribute "
-      "(docs/design-m4.6.2-usb-cdc.md), which no board on this bench can witness. Pass "
+      "reaching every mapping of the shared block, which no board on this bench can "
+      "witness. Pass "
       "-DKICKOS_IMXRT_DCACHE=ON to take that path.")
   endif()
   if(KICKOS_CHIP STREQUAL "imxrt1062" AND KICKOS_IMXRT_DCACHE)

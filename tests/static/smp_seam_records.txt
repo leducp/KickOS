@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The SMP seam as it stood at M7.0, the tree with NO SMP backend in it.
+# tests/static/check_smp_sigdiff.sh compares the working tree against this file and
+# tests/static/smp_seam_family.awk declares what a member is; the driver and the record format
+# are documented in tests/lib/signature_diff.sh.
+#
+# REGENERATING THIS FILE DELETES THE FINDING THE GATE EXISTS TO PRODUCE. These records predate
+# both SMP backends on purpose, and that is the only thing that makes a later diff mean
+# anything: rewritten after a backend lands, this file measures that backend against itself.
+# KOS_SIGDIFF_REGEN=1 rewrites it and takes no verdict; use it only in the commit that
+# deliberately moves a member, never to quiet a red gate.
+#
+# Regenerated, when a milestone deliberately moves the seam, by:
+#   KOS_SIGDIFF_REGEN=1 sh tests/static/check_smp_sigdiff.sh
+#
+# Four TAB-separated fields per record: <kind> <name> <detail> <preprocessor guard>.
+FUNC	arch_cpu_id	uint32_t (void)	KICKOS_NUM_CORES > 1
+FUNC	arch_ipi_send	void (uint32_t)	KICKOS_NUM_CORES > 1
+FUNC	arch_ipi_wait	void (uint32_t)	KICKOS_NUM_CORES > 1
+FUNCNAMES	arch_cpu_id	uint32_t (void)	KICKOS_NUM_CORES > 1
+FUNCNAMES	arch_ipi_send	void (uint32_t cores)	KICKOS_NUM_CORES > 1
+FUNCNAMES	arch_ipi_wait	void (uint32_t cores)	KICKOS_NUM_CORES > 1
+MACRO	KICKOS_NUM_CORES	= 1	-
+MACROFN	arch_cpu_id	() 0u	!(KICKOS_NUM_CORES > 1)
+MACROFN	arch_ipi_send	(cores) ((void)(cores))	!(KICKOS_NUM_CORES > 1)
+MACROFN	arch_ipi_wait	(cores) ((void)(cores))	!(KICKOS_NUM_CORES > 1)

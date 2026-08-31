@@ -22,7 +22,7 @@ namespace kickos
     // Coherently retune the core clock to `target` (the MECHANISM seam; policy lives
     // in a future userspace power manager). Returns the LANDED core Hz, or 0 if the chip
     // cannot change its clock or a userspace driver owns the console. Privileged, thread
-    // context. See kernel/time/clock_select.cc and docs/design-m3-clock-select.md.
+    // context. See kernel/time/clock_select.cc.
     uint32_t cpu_clock_set(kos_pstate_t target);
     uint64_t ktime_now(); // monotonic nanoseconds
 
@@ -37,16 +37,16 @@ namespace kickos
     // (invariant timer-min-delta-guard). Caller holds IrqLock.
     void ktime_deadline_arm(Thread* t, uint32_t timeout_us);
 
-    // Drop `t`'s deadline, if it has one. Called from sched::wake_no_resched (THE unpark
-    // funnel) and nowhere else: a pop is not necessarily an unpark, and a park-to-park
-    // migration must keep its deadline. Caller holds IrqLock.
+    // Drop `t`'s deadline, if it has one. AT AN UNPARK AND NOWHERE ELSE: a pop is not
+    // necessarily an unpark, and a park-to-park migration must keep its deadline. Caller
+    // holds IrqLock.
     void ktime_deadline_cancel(Thread* t);
 
-    // Recompute and (re)arm the one-shot timer. Called after any change that can
+    // Recompute and (re)arm the one-shot timer. Call after any change that can
     // affect the earliest deadline (new sleeper, context switch/RR slice, wake).
     void ktime_rearm();
 
-    // The timer-expiry ISR body (invoked by arch via kickos_isr_timer()).
+    // The timer-expiry ISR body.
     void ktime_on_timer();
 }
 

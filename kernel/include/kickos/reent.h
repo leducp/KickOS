@@ -65,8 +65,8 @@ namespace kickos
     // before the first switch.
     void* reent_state_for_slot(int slot);
 
-    // Bring a slot to its post-boot contents. CALLED FROM THE SWITCH-IN AND NOWHERE ELSE: it
-    // writes hundreds of bytes into memory the INCOMING thread owns.
+    // Bring a slot to its post-boot contents. SWITCH-IN AND NOWHERE ELSE: it writes hundreds
+    // of bytes into memory the INCOMING thread owns.
     //
     // `space` is the incoming thread's own, and both of these reach it through the kaccess seam
     // rather than through the running translation. Null on a board with no translating backend.

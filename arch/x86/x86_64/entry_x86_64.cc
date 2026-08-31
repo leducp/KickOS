@@ -329,8 +329,8 @@ namespace
     }
 }
 
-// Reached from the stub below with the hardware frame on whatever stack was live. It reports
-// and halts, so the frame is never unwound.
+// Entered with the hardware frame on whatever stack was live. It reports and halts, so the
+// frame is never unwound.
 extern "C" [[noreturn]] __attribute__((visibility("hidden"))) void
 kickos_x86_64_early_trap_report(void)
 {

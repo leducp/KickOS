@@ -3,7 +3,7 @@
 //
 // The physical frame allocator: a range handed out one granule at a time.
 //
-// The granule is a parameter and no figure appears here (F7).
+// The granule is a parameter and no figure appears here.
 //
 // The bitmap lives in the first frames of the range it describes.
 

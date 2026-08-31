@@ -82,7 +82,7 @@ namespace kickos
     {
         if (len > KOS_EP_MSG_MAX)
         {
-            return -KOS_EINVAL; // F4: oversize is rejected, never clamped
+            return -KOS_EINVAL; // oversize is rejected, never clamped
         }
         if (not user_readable_ok(buf, len))
         {

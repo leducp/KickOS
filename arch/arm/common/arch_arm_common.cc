@@ -115,8 +115,8 @@ uint32_t arch_cpu_clock_hz(void)
 // --- One-shot timer (SysTick). Clock (arch_clock_now) is a per-CHIP contract on
 // every ARM arch; there is no arch-level fallback. --------------------------
 // Absolute deadline the running SysTick was last programmed for (UINT64_MAX ==
-// disarmed / fired). ktime_rearm() calls arch_timer_arm on EVERY reschedule with
-// the same pending deadline; blindly reloading SYST_CVR each time resets the
+// disarmed / fired). arch_timer_arm is entered on EVERY reschedule with the
+// same pending deadline; blindly reloading SYST_CVR each time resets the
 // countdown, so a far deadline reached only while lower-prio threads switch
 // faster than it can expire (e.g. a bench reporter's 0.5 s sleep behind two
 // CPU-bound players) starves forever. Guard: if the same deadline is already
@@ -220,10 +220,10 @@ extern "C" void kickos_arm_mpu_program(struct arch_mpu_encoded const* img)
     // BusFault instead of letting either escalate to HardFault.
     //
     // MPU_CTRL IS DELIBERATELY NOT ZEROED HERE. Disabling the MPU also stops the CHIP FIXED
-    // rows applying, and on imxrt1062 those carry the ERR011573 anti-speculation wrap over the
-    // FlexSPI band this code is itself executing from (docs/design-teensy-mpu-hang.md). Each
-    // descriptor is instead disabled individually just before it is rewritten, which leaves
-    // [0, k) in force throughout.
+    // rows applying, and on imxrt1062 those carry the ERR011573 anti-speculation wrap over
+    // the FlexSPI band this code is itself executing from. Each descriptor is instead
+    // disabled individually just before it is rewritten, which leaves [0, k) in force
+    // throughout.
     reg32(SCB_SHCSR) |= SHCSR_MEMFAULTENA | SHCSR_BUSFAULTENA;
     __asm volatile("dmb" ::: "memory");
     // Chip fixed regions own the LOW slots [0, k), programmed once by
@@ -294,14 +294,13 @@ void kickos_arm_mpu_fixed_init(void)
     __asm volatile("isb" ::: "memory");
 }
 
-// --- Deferred MPU-commit seam (shared across every ARM backend) ---------------
-// The switch is a PENDED PendSV on every ARM arch: switch_to() calls arch_mpu_apply
-// on the OUTGOING thread, but the physical register/PSP swap only happens later in
-// PendSV. Programming the hardware eagerly would run the outgoing thread under the
-// INCOMING thread's regions until PendSV fires -> a fault on its own stack (proven on
-// RP2040; docs/design-mpu-commit-deferred.md). So arch_mpu_apply only STASHES the
-// region set here; kickos_arch_mpu_commit programs the hardware, called from each
-// deferred arch's PendSV epilogue AFTER the physical swap.
+// --- Deferred MPU-commit seam (shared across every ARM backend) --------------- The
+// switch is a PENDED PendSV on every ARM arch: arch_mpu_apply runs on the OUTGOING
+// thread, but the physical register/PSP swap only happens later in PendSV. Programming
+// the hardware eagerly would run the outgoing thread under the INCOMING thread's
+// regions until PendSV fires -> a fault on its own stack (proven on RP2040). So
+// arch_mpu_apply only STASHES the region set here; kickos_arch_mpu_commit programs the
+// hardware AFTER the physical swap.
 //
 // A POINTER into the incoming thread's TCB, not a copy. The image is re-encoded by its
 // owner alone, and that owner is the thread the pended switch will land on, so a

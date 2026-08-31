@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# No kernel access resolves through gp on a split RISC-V image (docs/design-m6-mmu.md R2.2).
-# __global_pointer$ anchors the APP's small-data window there, and gp is an ordinary register
-# an unprivileged thread writes: a kernel load or store reached through it lands wherever that
-# thread chose.
+# No kernel access resolves through gp on a split RISC-V image. __global_pointer$ anchors the
+# APP's small-data window there, and gp is an ordinary register an unprivileged thread writes:
+# a kernel load or store reached through it lands wherever that thread chose.
 #
 # gp addressing does not exist in an object file: the linker MAKES it, relaxing an ordinary
 # upper/lower pair whose target lands within gp +/- 0x800. An object-level sweep reports zero gp

@@ -3,10 +3,9 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # NO ARCHIVE HOLDING KERNEL TEXT MAY EMIT A GOT REFERENCE, where a translating backend
-# splits the image in two (docs/design-m6-mmu.md, T5b.1). A static link has ONE .got, a GOT
-# slot is reached by adrp like anything else, and the halves are 2^40 apart: a .got with
-# users in both cannot be placed at all. virt_arm64.ld gives it to the app, so the kernel
-# side must want none.
+# splits the image in two. A static link has ONE .got, a GOT slot is reached by adrp like
+# anything else, and the halves are 2^40 apart: a .got with users in both cannot be placed
+# at all. virt_arm64.ld gives it to the app, so the kernel side must want none.
 #
 # Under the small code model a WEAK EXTERN is what emits one, and which construct emits one
 # is a property of the toolchain rather than of the source: of the four kernel TUs holding
@@ -80,8 +79,8 @@ readelf, wrong files, or a link model this gate cannot read (guard would pass va
 
 if grep -q '^HIT ' "$TMP/hits"; then
     echo "FAIL: archive(s) holding kernel text emit GOT references" >&2
-    echo "      A static link has one .got and it belongs to the app's half" >&2
-    echo "      (docs/design-m6-mmu.md, T5b.1). Add the object's source to the" >&2
+    echo "      A static link has one .got and it belongs to the app's half, which" >&2
+    echo "      kernel text may not reach. Add the object's source to the" >&2
     echo "      kickos_split_image_tu() call for the target that built this archive." >&2
     awk '/^HIT /{ printf "        %s emits %s against %s\n", $2, $3, $4 }' "$TMP/hits" >&2
     exit 1

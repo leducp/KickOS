@@ -202,8 +202,8 @@ namespace kickos
 #endif
 
 #if KICKOS_KERNEL_STACKS
-        // The only caller of kstack_arm: nothing re-arms on slot reuse, so a slot's
-        // high-water and canary read since boot and not per thread.
+        // Nothing re-arms on slot reuse, so a slot's high-water and canary read since boot
+        // and not per thread.
         for (int slot = 0; slot < KICKOS_THREAD_SLOTS; slot++)
         {
             kstack_arm(slot);

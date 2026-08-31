@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// F1 guard (Teensy / i.MX RT1062 M7 speculative-access fix, ERR011573). Reads an
-// address INSIDE the FlexSPI aperture but PAST the populated 8 MiB image, i.e. inside
-// the Device + XN + no-access wrap the fix installs (docs/design-teensy-mpu-hang.md).
+// The no-access guard of the Teensy / i.MX RT1062 M7 speculative-access fix (ERR011573).
+// Reads an address INSIDE the FlexSPI aperture but PAST the populated 8 MiB image, i.e.
+// inside the Device + XN + no-access wrap the fix installs.
 //
 // With the wrap at no-access the MPU denies the read and the reporter prints a clean
 // MemManage dump (MPU FAULT, MMFSR DACCVIOL, MMFAR = the address). Should the wrap

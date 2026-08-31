@@ -317,10 +317,10 @@ namespace
                       and reg::uart::OFF_CLKDIV < CONSOLE_WIN_SIZE,
                   "arch_console_reclaim writes outside the window it reports");
 
-    // UART0 sub-source -> logical line. Every entry currently names the ONE grouped line
-    // (design-m4.6-irq-driver.md sections 5.1 and 7.7): the kernel-owned mask is CPU int
-    // 13's INTENABLE bit, which cannot separate sub-sources, so splitting them across
-    // lines would let masking one silently mask the others.
+    // UART0 sub-source -> logical line. Every entry currently names the ONE grouped line:
+    // the kernel-owned mask is CPU int 13's INTENABLE bit, which cannot separate
+    // sub-sources, so splitting them across lines would let masking one silently mask the
+    // others.
     struct uart0_route
     {
         uint32_t bit;
@@ -368,9 +368,8 @@ extern "C"
 {
 
 // --- Device dispatch: one asserted CPU interrupt -> 0..N logical lines --------
-// ISR context, called from the level-1 entry (arch/xtensa/lx6). Every UART0 sub-source
-// shares one interrupt-matrix source and one CPU interrupt, so this is where they are
-// told apart; 0 posts is a valid outcome.
+// ISR context. Every UART0 sub-source shares one interrupt-matrix source and one CPU
+// interrupt, so this is where they are told apart; 0 posts is a valid outcome.
 // INT_ST is already INT_RAW & INT_ENA, so a disabled source cannot appear here. The
 // driver owns every clear: this posts and returns, per RULE L1.
 void kickos_lx6_dispatch_dev(int cpu_int)

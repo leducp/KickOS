@@ -52,8 +52,8 @@ namespace kickos::x86_64
         uint64_t user_rsp;
     };
 
-    // Make ring 3 reachable and arm the fast syscall pair. Called from the chip's arch_init
-    // AFTER desc_init. The range is the conventional memory user stacks are carved out of.
+    // Make ring 3 reachable and arm the fast syscall pair. Call AFTER desc_init. The range
+    // is the conventional memory user stacks are carved out of.
     void ring3_init(uintptr_t ram_base, size_t ram_size);
 
     // The running thread's kernel stack top, published to the block above.

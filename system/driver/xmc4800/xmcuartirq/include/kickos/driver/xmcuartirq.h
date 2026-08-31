@@ -41,7 +41,7 @@ extern "C"
     //
     // The caller needs KOS_AUTH_MEMORY, KOS_AUTH_CONSOLE and KOS_AUTH_IRQ. Returns 0, or
     // < 0 with the console already back, in which case the caller MUST NOT spawn
-    // console-dependent apps (S6: publish + spawn are inseparable).
+    // console-dependent apps: publish and spawn are inseparable.
     int xmcuartirq_console_start(struct kos_service_cfg const* cfg);
 
 #ifdef __cplusplus

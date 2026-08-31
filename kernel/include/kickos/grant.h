@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Rule 7 (docs/design-m4-driver-model.md sec.7): the grant path REFUSES a region that
-// overlaps a kernel-reserved block. The reserved set is the arch's owns-for-life
-// peripherals: the timebase, the IRQ controller, every access-permission controller (the
-// MPU/PMP twin and any bus-side gate) and the clock/reset gates. Each enforcing chip
-// declares it via arch_reserved_blocks (arch.h).
+// Rule 7: the grant path REFUSES a region that overlaps a kernel-reserved block. The
+// reserved set is the arch's owns-for-life peripherals: the timebase, the IRQ
+// controller, every access-permission controller (the MPU/PMP twin and any bus-side
+// gate) and the clock/reset gates. Each enforcing chip declares it via
+// arch_reserved_blocks (arch.h).
 //
 // The geometry and Rule 7 checks compile only where memory protection is LIVE
 // (KICKOS_MEMORY_ENFORCED), which a translating backend sets while carrying no region
@@ -27,8 +27,8 @@
 namespace kickos
 {
     // Overlap of [a_base,a_last] with [b_base,b_last]. Adjacency (a_last+1 == b_base) is
-    // NOT overlap: a grant may sit flush against a reserved block (the mk64f PIT CH2 case,
-    // R4). Callers pass non-wrapping ranges (last >= base).
+    // NOT overlap: a grant may sit flush against a reserved block (the mk64f PIT CH2
+    // case). Callers pass non-wrapping ranges (last >= base).
     inline bool grant_ranges_overlap(uintptr_t a_base, uintptr_t a_last,
                                      uintptr_t b_base, uintptr_t b_last)
     {
@@ -38,7 +38,7 @@ namespace kickos
     // A commit backend silently DROPS a region whose memory type it cannot encode, so an
     // unencodable ARCH_MPU_NOCACHE must be refused here. Live in BOTH postures.
     //
-    // THE QUESTION GOES TO WHICHEVER FAMILY COMMITS THE MAPPING (F6). A translating board
+    // THE QUESTION GOES TO WHICHEVER FAMILY COMMITS THE MAPPING. A translating board
     // seats no region descriptor and answers ARCH_MPU_NOCACHE_REFUSED to the region query
     // whatever its page tables can encode, so asking that one there refuses every memory
     // type the map editor honours.

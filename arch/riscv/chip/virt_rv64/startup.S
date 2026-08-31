@@ -566,7 +566,7 @@ _start:
 3:  j       3b                      /* the finisher answered nothing */
 
 /* One byte, a0, to the console at its PHYSICAL address. Entered with `jal t6` and returned with
- * `jr t6`, so the two callers keep ra for their own return. Clobbers t0-t2. */
+ * `jr t6`, so ra is left for a caller's own return. Clobbers t0-t2. */
 .Lm_putc:
     li      t0, KICKOS_RV64_UART_POLL_BOUND
 1:  li      t1, KICKOS_RV64_UART0_PA + 5
@@ -707,7 +707,7 @@ kickos_rv64_boot_high:
 
 /* The supervisor-mode refusal, a0 naming what happened. Translation is on, so the console and
  * the finisher are reached at the kernel's alias of their physical addresses. NO STACK IS
- * TOUCHED: one caller has not seated one and the other (switch.S) has found it unusable.
+ * TOUCHED: no usable one may be assumed on entry.
  */
     .global kickos_rv64_supervisor_refuse
 kickos_rv64_supervisor_refuse:

@@ -243,7 +243,7 @@ namespace
     // Whether `space` is the root this core is RUNNING on. A space installed nowhere has no
     // cached translation and no cached absence, activate fencing the whole space when it
     // installs a root. Asked of satp itself. A second core holds a root this one cannot read,
-    // so the elision is compiled out above one core (docs/design-m6-mmu.md T9).
+    // so the elision is compiled out above one core.
     bool installed_here(struct arch_aspace* space)
     {
         return (read_satp() & SATP_PPN_MASK) == (satp_of(root_of(space)) & SATP_PPN_MASK);
@@ -961,7 +961,7 @@ arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)
 
 // Chip<->arch contract: the boot root, the transient window's level-0 table and its base
 // address, and the delta between an output address inside the image's DRAM share and the kernel
-// address that reaches it. Called from arch_init before any space exists.
+// address that reaches it. Must run before any space exists.
 void kickos_rv64_aspace_boot(uint64_t* user_root, uint64_t* window_leaves, uintptr_t window_va,
                              uintptr_t window_delta, arch_phys_addr_t pa_lo,
                              arch_phys_addr_t pa_hi, unsigned phys_bits)

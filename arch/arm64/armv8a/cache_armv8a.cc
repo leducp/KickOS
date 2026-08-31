@@ -4,10 +4,6 @@
 // AArch64 data-cache maintenance to the Point of Coherency, the backend of arch.h's
 // flush/invalidate seam. Clean-room from the Armv8-A ARM (DDI 0487, section D7 cache
 // maintenance) and the Cortex-A53 TRM (DDI 0500J section 4.3.26, CTR_EL0).
-//
-// NOTHING IN THE TREE CALLS THIS YET (docs/design-m6-mmu.md section 7), so this member is
-// compiled and never extracted. It is here rather than absent because a port that grows a
-// caller must get maintenance, not a no-op that reports it.
 
 #include <kickos/arch/arch.h>
 
@@ -65,9 +61,10 @@ void arch_dcache_flush(void const* addr, size_t bytes)
     {
         __asm volatile("dc cvac, %0" ::"r"(p) : "memory");
     }
-    // The observer's read may be issued by hardware that never executes our code, so the
-    // barrier is what orders the writes out against whatever the caller writes next to start it.
-    __asm volatile("dsb ish" ::: "memory");
+    // SY, the scope over which a cache maintenance instruction is guaranteed complete for an
+    // observer outside this CPU's coherency domain (ARM DDI 0487 B2.6.9). An ISH barrier
+    // completes it for coherent peers alone.
+    __asm volatile("dsb sy" ::: "memory");
 }
 
 void arch_dcache_invalidate(void* addr, size_t bytes)
@@ -86,7 +83,7 @@ void arch_dcache_invalidate(void* addr, size_t bytes)
         // caller to have prevented it.
         __asm volatile("dc civac, %0" ::"r"(p) : "memory");
     }
-    __asm volatile("dsb ish" ::: "memory");
+    __asm volatile("dsb sy" ::: "memory");
 }
 
 }

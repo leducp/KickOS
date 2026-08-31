@@ -15,9 +15,8 @@
  *
  * OCRAM2 is a dedicated 512 KiB bank, independent of the configurable FlexRAM
  * (ITCM/DTCM/OCRAM) partition and available at reset with no IOMUXC_GPR setup, so
- * the image needs no FlexRAM programming. Moving
- * writable state (and hot code) to DTCM/ITCM is a performance follow-up; see
- * docs/design-teensy-rt1062.md.
+ * the image needs no FlexRAM programming. Moving writable state and hot code to
+ * DTCM/ITCM is a performance follow-up.
  */
 
 #include <sections.ld.h>

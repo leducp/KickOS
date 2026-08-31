@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The kernel calls its own runtime (docs/design-m6-mmu.md, T5b.1). memcpy, memset, strlen and
-# the formatter are called from BOTH halves of the image, and a global symbol has one value:
-# kernel-side, and EL0's call is a high address it cannot reach; app-side, and the kernel calls
-# text that carries privileged-execute-never once EL0 can reach it. So the kernel links its own
-# copies under the private names kernel/include/kickos/kruntime.h declares, and no archive
-# holding kernel text may name an ordinary one.
+# The kernel calls its own runtime. memcpy, memset, strlen and the formatter are called from
+# BOTH halves of the image, and a global symbol has one value: kernel-side, and EL0's call is a
+# high address it cannot reach; app-side, and the kernel calls text that carries
+# privileged-execute-never once EL0 can reach it. So the kernel links its own copies under the
+# private names kernel/include/kickos/kruntime.h declares, and no archive holding kernel text
+# may name an ordinary one.
 #
 # Most kernel-side references have no call in the .cc at all: the COMPILER emits them from
 # ordinary constructions such as `ThreadAttr attr;` and `*d = Domain{}`, and which sites emit
@@ -101,11 +101,11 @@ wrong files, or a link model this gate cannot read (guard would pass vacuously)"
 
 if grep -q '^HIT ' "$TMP/hits"; then
     echo "FAIL: archive(s) holding kernel text name the APP's runtime" >&2
-    echo "      Kernel text runs from the privileged half and may not call app text" >&2
-    echo "      (docs/design-m6-mmu.md, T5b). Either the target that built this archive has" >&2
-    echo "      no kickos_privatise_runtime() call (cmake/kickos.cmake), or the name below" >&2
-    echo "      is missing from cmake/kernel_runtime.syms, or it is an explicit call in the" >&2
-    echo "      source that should read the kickos/kruntime.h name instead." >&2
+    echo "      Kernel text runs from the privileged half and may not call app text," >&2
+    echo "      which carries privileged-execute-never. Either the target that built this" >&2
+    echo "      archive has no kickos_privatise_runtime() call (cmake/kickos.cmake), or the" >&2
+    echo "      name below is missing from cmake/kernel_runtime.syms, or it is an explicit" >&2
+    echo "      call in the source that should read the kickos/kruntime.h name instead." >&2
     awk '/^HIT /{ printf "        %s names %s\n", $2, $3 }' "$TMP/hits" >&2
     exit 1
 fi

@@ -256,7 +256,7 @@ _kickos_rx_pendsw:
     /* Shared restore epilogue (also entered by arch_start). R0 = incoming frame. */
     .global _kickos_rx_restore
 _kickos_rx_restore:
-    /* Deferred MPU commit (docs/design-mpu-commit-deferred.md), after the physical swap and
+    /* Deferred MPU commit, after the physical swap and
        before the frame is popped and RTE drops to user mode. R0 survives the call (RX psABI)
        and the C function pushes BELOW the incoming frame; every register in the frame is
        popped next, so the caller-saved clobbers are harmless. */

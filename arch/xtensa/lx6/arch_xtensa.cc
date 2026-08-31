@@ -336,7 +336,7 @@ int arch_in_isr(void)
     return g_isr_depth != 0;
 }
 
-// --- Level-1 interrupt dispatch (called by startup.S _kickos_int_level1) ------
+// --- Level-1 interrupt dispatch --------------------------------------------
 // Runs at INTLEVEL=1 in thread-style windowed context on the interruptee stack.
 // g_isr_depth is bumped by the asm entry, so arch_in_isr() reads true here.
 void kickos_lx6_dispatch_l1(void)
@@ -541,7 +541,7 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
     (void)image;
 }
 
-// The self-grant path calls this on every arch.
+// Nothing to program on this backend.
 void kickos_arch_mpu_commit(void) {}
 
 // 0 keeps arch_ram_alloc byte-granular.
@@ -737,7 +737,7 @@ uintptr_t arch_syscall(uintptr_t nr,
     return static_cast<uintptr_t>(syscall_dispatch(nr, a0, a1, a2, a3));
 }
 
-// --- One-time core bring-up, called by the chip's arch_init -----------------
+// --- One-time core bring-up ------------------------------------------------
 void kickos_lx6_init(void)
 {
     // Every physical line masked: the timer enables CCOMPARE0 on arm and arch_irq_inject

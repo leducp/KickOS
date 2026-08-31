@@ -44,7 +44,7 @@ namespace
 
     // Who owns the UART TX register. Must be consulted BEFORE the buffered/sync
     // sub-decision: in USER_OWNED the kernel may touch the device on NO path at all.
-    // See docs/design-m3-console-handover-stageii.md.
+    // No path restores KERNEL_OWNED, and only a publish leaves RECLAIMED.
     enum class ConsoleState : uint8_t
     {
         KERNEL_OWNED, // boot default; buffered ring or polled
@@ -131,8 +131,7 @@ extern "C" void console_owner_set_user(void)
 // console_emit can run in ISR/fault context, so an unlocked read-modify-write tears against
 // a thread producer's and an unlocked reader can observe the intermediate. This increment is
 // unconditional, so it must only ever nest inside a chip_writer_enter bracket that already
-// passed the state gate (console_tx.cc's write_unbuffered is the one caller); reached on its
-// own it would keep publish's drain from converging.
+// passed the state gate; reached on its own it would keep publish's drain from converging.
 extern "C" void console_chip_writer_enter(void)
 {
     kickos::IrqLock lock;

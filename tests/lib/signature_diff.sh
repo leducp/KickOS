@@ -616,7 +616,7 @@ sigdiff_run() { # <candidate-ref>, optional
     if cmp -s "$TMP/base.sig" "$TMP/cand.sig"; then
         echo "PASS: no signature difference"
     else
-        echo "DIFF: the signature records moved. Per F8 this diff IS the finding." >&2
+        echo "DIFF: the signature records moved. This diff IS the finding." >&2
         echo "      < baseline, > candidate" >&2
         diff "$TMP/base.sig" "$TMP/cand.sig" | sed 's/^/      /' >&2 || true
         _rc=2

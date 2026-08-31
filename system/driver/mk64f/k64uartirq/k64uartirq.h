@@ -13,13 +13,12 @@
 //
 // ORDERING: the kernel's own console ring owns IRQ 31 until kos_console_publish runs
 // console_tx_deinit, and a claimed line is refused while any handler but the default is
-// attached (INVARIANT H2, kernel/irq/irq.cc irq_claim), so the publish must precede the
-// claim.
+// attached (kernel/irq/irq.cc irq_claim), so the publish must precede the claim.
 //
 // The window grant is LOAD-BEARING: it authorises the kos_periph_enable that opens the
 // AIPS PACR, and it makes the window single-holder, so the service thread structurally
 // cannot poke the device. SYSMPU still enforces the memory isolation of the shared ring
-// block. See docs/reference/boards.md, "When an MMIO grant is INERT".
+// block.
 
 #ifndef KICKOS_DRIVER_MK64F_K64UARTIRQ_H
 #define KICKOS_DRIVER_MK64F_K64UARTIRQ_H
@@ -31,9 +30,8 @@ extern "C"
 {
 #endif
 
-    // Privileged one-shot bring-up, called ONCE from a service list before any client
-    // runs. Needs AUTH_MEMORY, AUTH_CONSOLE and AUTH_IRQ, so it runs as root, not as the
-    // driver.
+    // Privileged one-shot bring-up: ONCE, before any client runs. Needs AUTH_MEMORY,
+    // AUTH_CONSOLE and AUTH_IRQ, so it runs as root, not as the driver.
     //
     // `cfg` carries the UART0 window base/size, the baud in cfg->hz (0 = 115200) and the
     // SERVICE thread priority in cfg->prio; the IRQ thread is spawned at cfg->prio + 1,

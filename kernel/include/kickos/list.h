@@ -103,8 +103,7 @@ namespace kickos
     };
 
     // The same ListNode, one head word instead of two: no tail, so insertion is LIFO and
-    // there is no back(). Removal stays O(1). Its only user takes a max over the members,
-    // so insertion order is not observable there; use List wherever order or the tail IS.
+    // there is no back(). Removal stays O(1). Use List wherever order or the tail matters.
     struct HeadList
     {
         ListNode* head = nullptr;

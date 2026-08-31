@@ -95,8 +95,8 @@ kickos_x86_64_trap_common:
     call    kickos_x86_64_trap
     movq    %rax, %rsp
 
-/* The resume epilogue, reached from the entry above and from switch.S. rsp names the base of
- * a struct trap_frame, and the pops mirror the push order above.
+/* The resume epilogue. rsp names the base of a struct trap_frame, and the pops mirror the
+ * push order above.
  *
  * The 16 bytes dropped are the vector and the error code, which the hardware does not pop. */
     .balign 16

@@ -669,7 +669,7 @@ __attribute__((naked)) void HardFault_Handler(void)
         "b kickos_armv7m_fault_report \n");
 }
 
-// --- One-time core bring-up, called by the chip's arch_init -----------------
+// --- One-time core bring-up ------------------------------------------------
 // The system-handler priorities the BASEPRI crit section depends on, and the DWT cycle
 // counter that backs arch_trace_now.
 void kickos_armv7m_init(void)

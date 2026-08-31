@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The cancellation authority is ONE byte carrying a KIND (docs/design-kill-and-slay.md
-// section 3.5). Two claims, and the second is the one no other gate makes:
+// The cancellation authority is ONE byte carrying a KIND. Two claims, and the second is
+// the one no other gate makes:
 //   * the authority is MONOTONIC over the enum's values (NONE < KILL < SLAY): a kill writes
 //     CANCEL_KILL, a slay escalates it, and a kill arriving afterwards never hands back the
 //     cleanup window the slay took away. A cooperative death still propagates KILL and never
@@ -80,7 +80,7 @@ namespace kickos
                 Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
                 Thread* const waiter = seat_pool(SLOT_VICTIM, PRIO_HIGH);
                 sched::reschedule();
-                EXPECT_EQ(kernel().current, waiter) << "fixture: the waiter is current";
+                EXPECT_EQ(kernel().current[arch_cpu_id()], waiter) << "fixture: the waiter is current";
                 EXPECT_NE(peer, nullptr);
                 g_switches = 0;
                 trace_reset();
@@ -207,7 +207,7 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(victim, group);
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             {
                 IrqLock lock;
@@ -233,7 +233,7 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
             c->cancel_kind = CANCEL_SLAY;
 
             run_exit(0);

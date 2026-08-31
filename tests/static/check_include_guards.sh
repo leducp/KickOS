@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The include-guard rule of docs/reference/style.md, both halves: never `#pragma once`,
-# and the guard macro DERIVES from the project prefix plus the file path.
+# The include-guard rule, both halves: never `#pragma once`, and the guard macro DERIVES
+# from the project prefix plus the file path.
 #
 # Six directories under arch/ share KICKOS_ARCH_CONTEXT_H for their own
 # kickos/arch/context.h, one on the include path per build, so the derivation is
@@ -161,8 +161,8 @@ if [ -s "$TMP/findings" ]; then
     cat "$TMP/findings" >&2
     echo "" >&2
     echo "FAIL: $(wc -l < "$TMP/findings" | tr -d ' ') guard(s) do not follow the path." >&2
-    echo "      The derivation is stated at the top of this script. Rename the guard, or" >&2
-    echo "      change the rule in docs/reference/style.md, not this gate." >&2
+    echo "      The derivation is stated at the top of this script. Rename the guard: the" >&2
+    echo "      rule is the project's, and relaxing this gate does not change it." >&2
     RC=1
 fi
 

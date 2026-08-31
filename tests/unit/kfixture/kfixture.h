@@ -185,7 +185,7 @@ namespace kickos
         void park_plain_sender(Thread* w, Endpoint* ep);
         // A mutex `owner` HOLDS, from the real pool, seated with TWO object refs because a
         // waiter necessarily holds a cap of its own: at one ref the sweep's drop reaches zero
-        // with the ownership just transferred and trips mutex_ref_drop's R4 assert.
+        // with the ownership just transferred and trips mutex_ref_drop's owner assert.
         Mutex* own_mutex(Thread* owner, int* out_handle);
         void park_mutex_waiter(Thread* w, Mutex* m);
         // Runs the REAL sched::exit_current and returns once it parks.
@@ -196,8 +196,8 @@ namespace kickos
         void run_exit_faulted(int code);
         void run_exit_as(int code, sched::ExitCause cause);
 
-        // Called INSIDE a death test's forked child, by KICKOS_EXPECT_PANIC only. gtest matches
-        // the child's STDERR and karch_seam.cc's kpanic writes stdout, which it must keep doing:
+        // DEATH-TEST FORKED CHILD ONLY. gtest matches the child's STDERR and
+        // karch_seam.cc's kpanic writes stdout, which it must keep doing:
         // that stream is what tests/lib/panic.ere gates on target. Folding the other way (fd 1
         // onto fd 2) replaces gtest's own capture pipe, and every death case then reports an
         // empty child message.

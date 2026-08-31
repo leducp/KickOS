@@ -286,7 +286,7 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 
 // --- Switch: record the target + pend the msip switcher ---------------------
 // Always deferred, in ISR and thread context alike: the physical swap happens in the msip
-// trap. Called under the kernel IrqLock (mstatus.MIE=0), so the pended msip fires once the
+// trap. Entered under the kernel IrqLock (mstatus.MIE=0), so the pended msip fires once the
 // lock releases or the current trap returns.
 void arch_switch(struct arch_context* from, struct arch_context* to)
 {
@@ -417,10 +417,10 @@ static uint32_t mpu_bench_cyc(void)
 }
 #endif
 
-// STASH-ONLY (deferred-commit seam, docs/design-mpu-commit-deferred.md):
-// kickos_arch_mpu_commit writes the PMP CSRs from the .Lswitch epilogue AFTER the physical
-// msip-driven swap. An eager apply would run the OUTGOING user thread under the incoming
-// PMP set until msip fires, faulting on its own stack.
+// STASH-ONLY (deferred-commit seam): kickos_arch_mpu_commit writes the PMP CSRs from the
+// .Lswitch epilogue AFTER the physical msip-driven swap. An eager apply would run the
+// OUTGOING user thread under the incoming PMP set until msip fires, faulting on its own
+// stack.
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
                     struct arch_mpu_encoded const* image)
 {
@@ -429,8 +429,8 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
     g_pend_image = image;
 }
 
-// Called from .Lswitch / arch_start after the physical swap, in the M-mode trap with
-// MIE=0, so the CSR writes are already atomic against interrupts and must NOT toggle MIE.
+// Runs after the physical swap, in the M-mode trap with MIE=0, so the CSR writes are
+// already atomic against interrupts and must NOT toggle MIE.
 void kickos_arch_mpu_commit(void)
 {
 #if KICKOS_BENCH
@@ -648,8 +648,8 @@ void arch_idle_wait(void)
     __asm volatile("wfi");
 }
 
-// The call site is inside .Lintr, within the window kernel/bench/bench.cc's injected-IRQ
-// arm measures, so the witness is out of a bench build.
+// Inside the window kernel/bench/bench.cc's injected-IRQ arm measures, so the witness is
+// out of a bench build.
 #if defined(KICKOS_ENABLE_SELFTEST) && !KICKOS_BENCH
 // Nested-trap witness (arch.h), from switch.S's .Lintr demux once msip is out and the whole
 // frame is saved at `frame`. An interrupt taken with mstatus.MPP=M interrupted the kernel,
@@ -854,7 +854,7 @@ bool kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
     kfault_terminate();
 }
 
-// --- One-time core bring-up, called by the chip's arch_init -----------------
+// --- One-time core bring-up ------------------------------------------------
 // The chip has already set g_clint_msip and its timer base.
 void kickos_rv32_init(void)
 {

@@ -38,89 +38,89 @@
 # kernel/sched/policy_fifo_rr.cc, and sched::set_policy has no callers, so each site is bound to
 # its own slot.
 site rv32imac * sched.cc:56:42   policy_fifo_rr.cc:policy_on_switch_in
-site rv32imac * sched.cc:206:38  policy_fifo_rr.cc:policy_on_ready
-site rv32imac * sched.cc:164:57  policy_fifo_rr.cc:policy_pick_next
-site rv32imac * sched.cc:220:55  policy_fifo_rr.cc:policy_pick_next
-site rv32imac * sched.cc:223:42  policy_fifo_rr.cc:policy_on_switch_in
-site rv32imac * sched.cc:248:54  policy_fifo_rr.cc:policy_pick_next
-site rv32imac * sched.cc:270:38  policy_fifo_rr.cc:policy_on_yield
-site rv32imac * sched.cc:283:39  policy_fifo_rr.cc:policy_on_remove
-site rv32imac * sched.cc:315:38  policy_fifo_rr.cc:policy_on_ready
-site rv32imac * sched.cc:366:43  policy_fifo_rr.cc:policy_on_remove
-site rv32imac * sched.cc:368:42  policy_fifo_rr.cc:policy_on_ready
-site rv32imac * sched.cc:467:36  policy_fifo_rr.cc:policy_on_remove
-site rv32imac * sched.cc:533:53  policy_fifo_rr.cc:policy_next_timed_event
-site rv32imac * sched.cc:545:56  policy_fifo_rr.cc:policy_next_timed_event
-site rv32imac * sched.cc:549:45  policy_fifo_rr.cc:policy_on_slice_expire
+site rv32imac * sched.cc:207:38  policy_fifo_rr.cc:policy_on_ready
+site rv32imac * sched.cc:165:57  policy_fifo_rr.cc:policy_pick_next
+site rv32imac * sched.cc:221:55  policy_fifo_rr.cc:policy_pick_next
+site rv32imac * sched.cc:224:42  policy_fifo_rr.cc:policy_on_switch_in
+site rv32imac * sched.cc:249:54  policy_fifo_rr.cc:policy_pick_next
+site rv32imac * sched.cc:272:38  policy_fifo_rr.cc:policy_on_yield
+site rv32imac * sched.cc:285:39  policy_fifo_rr.cc:policy_on_remove
+site rv32imac * sched.cc:317:38  policy_fifo_rr.cc:policy_on_ready
+site rv32imac * sched.cc:368:43  policy_fifo_rr.cc:policy_on_remove
+site rv32imac * sched.cc:370:42  policy_fifo_rr.cc:policy_on_ready
+site rv32imac * sched.cc:469:36  policy_fifo_rr.cc:policy_on_remove
+site rv32imac * sched.cc:535:53  policy_fifo_rr.cc:policy_next_timed_event
+site rv32imac * sched.cc:547:56  policy_fifo_rr.cc:policy_next_timed_event
+site rv32imac * sched.cc:551:45  policy_fifo_rr.cc:policy_on_slice_expire
 site rv32imac * syscall_ipc_fast.cc:156:50 policy_fifo_rr.cc:policy_pick_next
 
 site rxv3 * sched.cc:56:42   policy_fifo_rr.cc:policy_on_switch_in
-site rxv3 * sched.cc:206:38  policy_fifo_rr.cc:policy_on_ready
-site rxv3 * sched.cc:164:57  policy_fifo_rr.cc:policy_pick_next
-site rxv3 * sched.cc:220:55  policy_fifo_rr.cc:policy_pick_next
-site rxv3 * sched.cc:223:42  policy_fifo_rr.cc:policy_on_switch_in
-site rxv3 * sched.cc:248:54  policy_fifo_rr.cc:policy_pick_next
-site rxv3 * sched.cc:270:38  policy_fifo_rr.cc:policy_on_yield
-site rxv3 * sched.cc:283:39  policy_fifo_rr.cc:policy_on_remove
-site rxv3 * sched.cc:315:38  policy_fifo_rr.cc:policy_on_ready
-site rxv3 * sched.cc:366:43  policy_fifo_rr.cc:policy_on_remove
-site rxv3 * sched.cc:368:42  policy_fifo_rr.cc:policy_on_ready
-site rxv3 * sched.cc:467:36  policy_fifo_rr.cc:policy_on_remove
-site rxv3 * sched.cc:533:53  policy_fifo_rr.cc:policy_next_timed_event
-site rxv3 * sched.cc:545:56  policy_fifo_rr.cc:policy_next_timed_event
-site rxv3 * sched.cc:549:45  policy_fifo_rr.cc:policy_on_slice_expire
+site rxv3 * sched.cc:207:38  policy_fifo_rr.cc:policy_on_ready
+site rxv3 * sched.cc:165:57  policy_fifo_rr.cc:policy_pick_next
+site rxv3 * sched.cc:221:55  policy_fifo_rr.cc:policy_pick_next
+site rxv3 * sched.cc:224:42  policy_fifo_rr.cc:policy_on_switch_in
+site rxv3 * sched.cc:249:54  policy_fifo_rr.cc:policy_pick_next
+site rxv3 * sched.cc:272:38  policy_fifo_rr.cc:policy_on_yield
+site rxv3 * sched.cc:285:39  policy_fifo_rr.cc:policy_on_remove
+site rxv3 * sched.cc:317:38  policy_fifo_rr.cc:policy_on_ready
+site rxv3 * sched.cc:368:43  policy_fifo_rr.cc:policy_on_remove
+site rxv3 * sched.cc:370:42  policy_fifo_rr.cc:policy_on_ready
+site rxv3 * sched.cc:469:36  policy_fifo_rr.cc:policy_on_remove
+site rxv3 * sched.cc:535:53  policy_fifo_rr.cc:policy_next_timed_event
+site rxv3 * sched.cc:547:56  policy_fifo_rr.cc:policy_next_timed_event
+site rxv3 * sched.cc:551:45  policy_fifo_rr.cc:policy_on_slice_expire
 site rxv3 * syscall_ipc_fast.cc:156:50 policy_fifo_rr.cc:policy_pick_next
 
 # None of the three TRANSLATING arches compiles the IPC fastpath, so the syscall_ipc_fast.cc
 # site above has no twin here.
 
 site armv8a   * sched.cc:56:42   policy_fifo_rr.cc:policy_on_switch_in
-site armv8a   * sched.cc:164:57  policy_fifo_rr.cc:policy_pick_next
-site armv8a   * sched.cc:206:38  policy_fifo_rr.cc:policy_on_ready
-site armv8a   * sched.cc:220:55  policy_fifo_rr.cc:policy_pick_next
-site armv8a   * sched.cc:223:42  policy_fifo_rr.cc:policy_on_switch_in
-site armv8a   * sched.cc:248:54  policy_fifo_rr.cc:policy_pick_next
-site armv8a   * sched.cc:270:38  policy_fifo_rr.cc:policy_on_yield
-site armv8a   * sched.cc:283:39  policy_fifo_rr.cc:policy_on_remove
-site armv8a   * sched.cc:315:38  policy_fifo_rr.cc:policy_on_ready
-site armv8a   * sched.cc:366:43  policy_fifo_rr.cc:policy_on_remove
-site armv8a   * sched.cc:368:42  policy_fifo_rr.cc:policy_on_ready
-site armv8a   * sched.cc:467:36  policy_fifo_rr.cc:policy_on_remove
-site armv8a   * sched.cc:533:53  policy_fifo_rr.cc:policy_next_timed_event
-site armv8a   * sched.cc:545:56  policy_fifo_rr.cc:policy_next_timed_event
-site armv8a   * sched.cc:549:45  policy_fifo_rr.cc:policy_on_slice_expire
+site armv8a   * sched.cc:165:57  policy_fifo_rr.cc:policy_pick_next
+site armv8a   * sched.cc:207:38  policy_fifo_rr.cc:policy_on_ready
+site armv8a   * sched.cc:221:55  policy_fifo_rr.cc:policy_pick_next
+site armv8a   * sched.cc:224:42  policy_fifo_rr.cc:policy_on_switch_in
+site armv8a   * sched.cc:249:54  policy_fifo_rr.cc:policy_pick_next
+site armv8a   * sched.cc:272:38  policy_fifo_rr.cc:policy_on_yield
+site armv8a   * sched.cc:285:39  policy_fifo_rr.cc:policy_on_remove
+site armv8a   * sched.cc:317:38  policy_fifo_rr.cc:policy_on_ready
+site armv8a   * sched.cc:368:43  policy_fifo_rr.cc:policy_on_remove
+site armv8a   * sched.cc:370:42  policy_fifo_rr.cc:policy_on_ready
+site armv8a   * sched.cc:469:36  policy_fifo_rr.cc:policy_on_remove
+site armv8a   * sched.cc:535:53  policy_fifo_rr.cc:policy_next_timed_event
+site armv8a   * sched.cc:547:56  policy_fifo_rr.cc:policy_next_timed_event
+site armv8a   * sched.cc:551:45  policy_fifo_rr.cc:policy_on_slice_expire
 
 site rv64imac * sched.cc:56:42   policy_fifo_rr.cc:policy_on_switch_in
-site rv64imac * sched.cc:164:57  policy_fifo_rr.cc:policy_pick_next
-site rv64imac * sched.cc:206:38  policy_fifo_rr.cc:policy_on_ready
-site rv64imac * sched.cc:220:55  policy_fifo_rr.cc:policy_pick_next
-site rv64imac * sched.cc:223:42  policy_fifo_rr.cc:policy_on_switch_in
-site rv64imac * sched.cc:248:54  policy_fifo_rr.cc:policy_pick_next
-site rv64imac * sched.cc:270:38  policy_fifo_rr.cc:policy_on_yield
-site rv64imac * sched.cc:283:39  policy_fifo_rr.cc:policy_on_remove
-site rv64imac * sched.cc:315:38  policy_fifo_rr.cc:policy_on_ready
-site rv64imac * sched.cc:366:43  policy_fifo_rr.cc:policy_on_remove
-site rv64imac * sched.cc:368:42  policy_fifo_rr.cc:policy_on_ready
-site rv64imac * sched.cc:467:36  policy_fifo_rr.cc:policy_on_remove
-site rv64imac * sched.cc:533:53  policy_fifo_rr.cc:policy_next_timed_event
-site rv64imac * sched.cc:545:56  policy_fifo_rr.cc:policy_next_timed_event
-site rv64imac * sched.cc:549:45  policy_fifo_rr.cc:policy_on_slice_expire
+site rv64imac * sched.cc:165:57  policy_fifo_rr.cc:policy_pick_next
+site rv64imac * sched.cc:207:38  policy_fifo_rr.cc:policy_on_ready
+site rv64imac * sched.cc:221:55  policy_fifo_rr.cc:policy_pick_next
+site rv64imac * sched.cc:224:42  policy_fifo_rr.cc:policy_on_switch_in
+site rv64imac * sched.cc:249:54  policy_fifo_rr.cc:policy_pick_next
+site rv64imac * sched.cc:272:38  policy_fifo_rr.cc:policy_on_yield
+site rv64imac * sched.cc:285:39  policy_fifo_rr.cc:policy_on_remove
+site rv64imac * sched.cc:317:38  policy_fifo_rr.cc:policy_on_ready
+site rv64imac * sched.cc:368:43  policy_fifo_rr.cc:policy_on_remove
+site rv64imac * sched.cc:370:42  policy_fifo_rr.cc:policy_on_ready
+site rv64imac * sched.cc:469:36  policy_fifo_rr.cc:policy_on_remove
+site rv64imac * sched.cc:535:53  policy_fifo_rr.cc:policy_next_timed_event
+site rv64imac * sched.cc:547:56  policy_fifo_rr.cc:policy_next_timed_event
+site rv64imac * sched.cc:551:45  policy_fifo_rr.cc:policy_on_slice_expire
 
 site x86_64   * sched.cc:56:42   policy_fifo_rr.cc:policy_on_switch_in
-site x86_64   * sched.cc:164:57  policy_fifo_rr.cc:policy_pick_next
-site x86_64   * sched.cc:206:38  policy_fifo_rr.cc:policy_on_ready
-site x86_64   * sched.cc:220:55  policy_fifo_rr.cc:policy_pick_next
-site x86_64   * sched.cc:223:42  policy_fifo_rr.cc:policy_on_switch_in
-site x86_64   * sched.cc:248:54  policy_fifo_rr.cc:policy_pick_next
-site x86_64   * sched.cc:270:38  policy_fifo_rr.cc:policy_on_yield
-site x86_64   * sched.cc:283:39  policy_fifo_rr.cc:policy_on_remove
-site x86_64   * sched.cc:315:38  policy_fifo_rr.cc:policy_on_ready
-site x86_64   * sched.cc:366:43  policy_fifo_rr.cc:policy_on_remove
-site x86_64   * sched.cc:368:42  policy_fifo_rr.cc:policy_on_ready
-site x86_64   * sched.cc:467:36  policy_fifo_rr.cc:policy_on_remove
-site x86_64   * sched.cc:533:53  policy_fifo_rr.cc:policy_next_timed_event
-site x86_64   * sched.cc:545:56  policy_fifo_rr.cc:policy_next_timed_event
-site x86_64   * sched.cc:549:45  policy_fifo_rr.cc:policy_on_slice_expire
+site x86_64   * sched.cc:165:57  policy_fifo_rr.cc:policy_pick_next
+site x86_64   * sched.cc:207:38  policy_fifo_rr.cc:policy_on_ready
+site x86_64   * sched.cc:221:55  policy_fifo_rr.cc:policy_pick_next
+site x86_64   * sched.cc:224:42  policy_fifo_rr.cc:policy_on_switch_in
+site x86_64   * sched.cc:249:54  policy_fifo_rr.cc:policy_pick_next
+site x86_64   * sched.cc:272:38  policy_fifo_rr.cc:policy_on_yield
+site x86_64   * sched.cc:285:39  policy_fifo_rr.cc:policy_on_remove
+site x86_64   * sched.cc:317:38  policy_fifo_rr.cc:policy_on_ready
+site x86_64   * sched.cc:368:43  policy_fifo_rr.cc:policy_on_remove
+site x86_64   * sched.cc:370:42  policy_fifo_rr.cc:policy_on_ready
+site x86_64   * sched.cc:469:36  policy_fifo_rr.cc:policy_on_remove
+site x86_64   * sched.cc:535:53  policy_fifo_rr.cc:policy_next_timed_event
+site x86_64   * sched.cc:547:56  policy_fifo_rr.cc:policy_next_timed_event
+site x86_64   * sched.cc:551:45  policy_fifo_rr.cc:policy_on_slice_expire
 # --- POINTER B: ConsoleTxRing::backend, console_tx_backend const* ---------------
 # Four slots (slot_free/push/irq_enable/irq_disable), set once in console_tx_init from the arch
 # seam arch_console_tx_backend(), of which exactly ONE definition links per image, so the tuple
@@ -243,20 +243,20 @@ site rxv3 * irq.cc:320:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
 
 # --- armv7m: the same two arch-wide pointers ------------------------------------
 site armv7m * sched.cc:56:42       policy_fifo_rr.cc:policy_on_switch_in
-site armv7m * sched.cc:206:38      policy_fifo_rr.cc:policy_on_ready
-site armv7m * sched.cc:164:57      policy_fifo_rr.cc:policy_pick_next
-site armv7m * sched.cc:220:55      policy_fifo_rr.cc:policy_pick_next
-site armv7m * sched.cc:223:42      policy_fifo_rr.cc:policy_on_switch_in
-site armv7m * sched.cc:248:54      policy_fifo_rr.cc:policy_pick_next
-site armv7m * sched.cc:270:38      policy_fifo_rr.cc:policy_on_yield
-site armv7m * sched.cc:283:39      policy_fifo_rr.cc:policy_on_remove
-site armv7m * sched.cc:315:38      policy_fifo_rr.cc:policy_on_ready
-site armv7m * sched.cc:366:43      policy_fifo_rr.cc:policy_on_remove
-site armv7m * sched.cc:368:42      policy_fifo_rr.cc:policy_on_ready
-site armv7m * sched.cc:467:36      policy_fifo_rr.cc:policy_on_remove
-site armv7m * sched.cc:533:53      policy_fifo_rr.cc:policy_next_timed_event
-site armv7m * sched.cc:545:56      policy_fifo_rr.cc:policy_next_timed_event
-site armv7m * sched.cc:549:45      policy_fifo_rr.cc:policy_on_slice_expire
+site armv7m * sched.cc:207:38      policy_fifo_rr.cc:policy_on_ready
+site armv7m * sched.cc:165:57      policy_fifo_rr.cc:policy_pick_next
+site armv7m * sched.cc:221:55      policy_fifo_rr.cc:policy_pick_next
+site armv7m * sched.cc:224:42      policy_fifo_rr.cc:policy_on_switch_in
+site armv7m * sched.cc:249:54      policy_fifo_rr.cc:policy_pick_next
+site armv7m * sched.cc:272:38      policy_fifo_rr.cc:policy_on_yield
+site armv7m * sched.cc:285:39      policy_fifo_rr.cc:policy_on_remove
+site armv7m * sched.cc:317:38      policy_fifo_rr.cc:policy_on_ready
+site armv7m * sched.cc:368:43      policy_fifo_rr.cc:policy_on_remove
+site armv7m * sched.cc:370:42      policy_fifo_rr.cc:policy_on_ready
+site armv7m * sched.cc:469:36      policy_fifo_rr.cc:policy_on_remove
+site armv7m * sched.cc:535:53      policy_fifo_rr.cc:policy_next_timed_event
+site armv7m * sched.cc:547:56      policy_fifo_rr.cc:policy_next_timed_event
+site armv7m * sched.cc:551:45      policy_fifo_rr.cc:policy_on_slice_expire
 site armv7m * syscall_ipc_fast.cc:156:50 policy_fifo_rr.cc:policy_pick_next
 
 # armv7m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
@@ -723,25 +723,25 @@ site armv7m bluepill-c8-st      console_tx.cc:356:27   chip_stm32f103.cc:f1_tx_i
 #
 # arch_reboot sits under #if defined(KICKOS_ENABLE_SELFTEST) (chip_rp2350.cc), so these sites
 # exist in the -st graph alone.
-site armv7m pizero2350-st       chip_rp2350.cc:578:15 NONE
-site armv7m pizero2350-st       chip_rp2350.cc:588:15 NONE
+site armv7m pizero2350-st       chip_rp2350.cc:577:15 NONE
+site armv7m pizero2350-st       chip_rp2350.cc:587:15 NONE
 
 # --- armv6m: the same two arch-wide pointers ------------------------------------
 site armv6m * sched.cc:56:42       policy_fifo_rr.cc:policy_on_switch_in
-site armv6m * sched.cc:206:38      policy_fifo_rr.cc:policy_on_ready
-site armv6m * sched.cc:164:57      policy_fifo_rr.cc:policy_pick_next
-site armv6m * sched.cc:220:55      policy_fifo_rr.cc:policy_pick_next
-site armv6m * sched.cc:223:42      policy_fifo_rr.cc:policy_on_switch_in
-site armv6m * sched.cc:248:54      policy_fifo_rr.cc:policy_pick_next
-site armv6m * sched.cc:270:38      policy_fifo_rr.cc:policy_on_yield
-site armv6m * sched.cc:283:39      policy_fifo_rr.cc:policy_on_remove
-site armv6m * sched.cc:315:38      policy_fifo_rr.cc:policy_on_ready
-site armv6m * sched.cc:366:43      policy_fifo_rr.cc:policy_on_remove
-site armv6m * sched.cc:368:42      policy_fifo_rr.cc:policy_on_ready
-site armv6m * sched.cc:467:36      policy_fifo_rr.cc:policy_on_remove
-site armv6m * sched.cc:533:53      policy_fifo_rr.cc:policy_next_timed_event
-site armv6m * sched.cc:545:56      policy_fifo_rr.cc:policy_next_timed_event
-site armv6m * sched.cc:549:45      policy_fifo_rr.cc:policy_on_slice_expire
+site armv6m * sched.cc:207:38      policy_fifo_rr.cc:policy_on_ready
+site armv6m * sched.cc:165:57      policy_fifo_rr.cc:policy_pick_next
+site armv6m * sched.cc:221:55      policy_fifo_rr.cc:policy_pick_next
+site armv6m * sched.cc:224:42      policy_fifo_rr.cc:policy_on_switch_in
+site armv6m * sched.cc:249:54      policy_fifo_rr.cc:policy_pick_next
+site armv6m * sched.cc:272:38      policy_fifo_rr.cc:policy_on_yield
+site armv6m * sched.cc:285:39      policy_fifo_rr.cc:policy_on_remove
+site armv6m * sched.cc:317:38      policy_fifo_rr.cc:policy_on_ready
+site armv6m * sched.cc:368:43      policy_fifo_rr.cc:policy_on_remove
+site armv6m * sched.cc:370:42      policy_fifo_rr.cc:policy_on_ready
+site armv6m * sched.cc:469:36      policy_fifo_rr.cc:policy_on_remove
+site armv6m * sched.cc:535:53      policy_fifo_rr.cc:policy_next_timed_event
+site armv6m * sched.cc:547:56      policy_fifo_rr.cc:policy_next_timed_event
+site armv6m * sched.cc:551:45      policy_fifo_rr.cc:policy_on_slice_expire
 site armv6m * syscall_ipc_fast.cc:156:50 policy_fifo_rr.cc:policy_pick_next
 
 # armv6m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
@@ -786,8 +786,8 @@ site armv6m picopi-st        console_tx.cc:356:27  chip_rp2040.cc:rp_tx_irq_disa
 # arch_reboot reads two function pointers out of ROM and calls through them. No call graph can
 # follow either and the datasheet gives no stack figure for the bootrom, so these charge 0: a
 # reboot syscall descends an unknown depth of ROM code on the calling thread's stack.
-site armv6m picopi-st        chip_rp2040.cc:523:45 NONE
-site armv6m picopi-st        chip_rp2040.cc:531:13 NONE
+site armv6m picopi-st        chip_rp2040.cc:522:45 NONE
+site armv6m picopi-st        chip_rp2040.cc:530:13 NONE
 
 # The console backend is per BOARD, so every rv32imac preset is bound: qemu-riscv resolves
 # arch_console_tx_backend to the arch/common fallback whatever the variant, and all four
@@ -918,13 +918,13 @@ site armv6m picopi-flat        console_tx.cc:356:27   chip_rp2040.cc:rp_tx_irq_d
 # xtensa. The same six SchedPolicy sites every arch binds; the table is one static instance
 # (policy_fifo_rr.cc) and the site's pointer can hold nothing else.
 site lx6 * sched.cc:56:42       policy_fifo_rr.cc:policy_on_switch_in
-site lx6 * sched.cc:366:43      policy_fifo_rr.cc:policy_on_remove
-site lx6 * sched.cc:368:42      policy_fifo_rr.cc:policy_on_ready
-site lx6 * sched.cc:533:53      policy_fifo_rr.cc:policy_next_timed_event
-site lx6 * sched.cc:545:56      policy_fifo_rr.cc:policy_next_timed_event
-site lx6 * sched.cc:549:45      policy_fifo_rr.cc:policy_on_slice_expire
-site lx6 * sched.cc:248:54      policy_fifo_rr.cc:policy_pick_next
-site lx6 * sched.cc:315:38      policy_fifo_rr.cc:policy_on_ready
+site lx6 * sched.cc:368:43      policy_fifo_rr.cc:policy_on_remove
+site lx6 * sched.cc:370:42      policy_fifo_rr.cc:policy_on_ready
+site lx6 * sched.cc:535:53      policy_fifo_rr.cc:policy_next_timed_event
+site lx6 * sched.cc:547:56      policy_fifo_rr.cc:policy_next_timed_event
+site lx6 * sched.cc:551:45      policy_fifo_rr.cc:policy_on_slice_expire
+site lx6 * sched.cc:249:54      policy_fifo_rr.cc:policy_pick_next
+site lx6 * sched.cc:317:38      policy_fifo_rr.cc:policy_on_ready
 site lx6 * irq.cc:320:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                             syscall.cc:irq_sem_post \
                             console_tx.cc:console_tx_isr_trampoline \

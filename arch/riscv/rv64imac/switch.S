@@ -141,8 +141,8 @@ kickos_rv64_stvec:
     ld      t0, -8(sp)
     j       .Ltrap_nested
 
-/* TERMINAL, and it must EMIT before it stops. Reached from BOTH legs of .Ltrap_from_s with sp
- * still the trap-stack top, so the row's canary is one subtraction away and picks the line.
+/* TERMINAL, and it must EMIT before it stops. Entered with sp still the trap-stack top, so
+ * the row's canary is one subtraction away and picks the line.
  * Nothing below touches a stack, and a0 is clobbered because no resume follows.
  */
 .Ltrap_reentry:

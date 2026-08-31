@@ -31,8 +31,8 @@ namespace
     //
     // GPIOC (K64 RM 55.2) is a direct crossbar slave at 0x400F_F080, system-clocked (RM
     // 55.1.1) and NOT AIPS/MPU-gated (RM 3.10.1.1), so the unprivileged owner reaches it free.
-    // That is about GPIOC ONLY: the DSPI0 window grant is load-bearing
-    // (docs/reference/boards.md, "When an MMIO grant is INERT").
+    // That is about GPIOC ONLY: the DSPI0 window grant is load-bearing, since possession of
+    // the window is the sole authorisation for the kos_periph_enable this driver calls.
     constexpr uintptr_t GPIOC_BASE = 0x400FF080u;
     constexpr uintptr_t GPIOC_PSOR = GPIOC_BASE + 0x04u; // set   -> PTC4 high (CS idle)
     constexpr uintptr_t GPIOC_PCOR = GPIOC_BASE + 0x08u; // clear -> PTC4 low  (CS asserted)

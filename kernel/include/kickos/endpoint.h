@@ -63,9 +63,9 @@ namespace kickos
     // WAIT_EP_REPLY), reverting any priority donation that park had pinned, and wake it with
     // `result`. Implemented in kernel/thread/park.cc so a caller only has to decide THAT the
     // park must end: unlinking the right list and reverting the right boost are endpoint
-    // internals. Two callers, an expired deadline (-KOS_ETIMEDOUT) and a cancel
-    // (-KOS_ECANCELED). Caller holds IrqLock, with `t` already off the timer delta list if it
-    // was on one and its wait edge still set.
+    // internals. `result` is -KOS_ETIMEDOUT for an expired deadline or -KOS_ECANCELED for a
+    // cancel. Caller holds IrqLock, with `t` already off the timer delta list if it was on
+    // one and its wait edge still set.
     void endpoint_wait_abort(Thread* t, intptr_t result);
 }
 

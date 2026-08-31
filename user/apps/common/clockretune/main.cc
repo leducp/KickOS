@@ -5,8 +5,8 @@
 // Gated OFF by default (-DKICKOS_CLOCK_RETUNE_TEST=ON); XMC4800 / K64F only, both of
 // which strong-override arch_cpu_clock_set. It drives the privileged
 // mask/disarm/flush-to-shift-idle/re-anchor/baud/re-arm sequence on silicon
-// (kernel/time/clock_select.cc, section 2.3 of docs/design-m3-clock-select.md); the
-// selftest cpu_clock_set case covers the UNPRIVILEGED returns-0 path.
+// (kernel/time/clock_select.cc); the selftest cpu_clock_set case covers the
+// UNPRIVILEGED returns-0 path.
 //
 // kos_cpu_clock_set needs AUTH_PSTATE, carried only by this app's KICKOS_APP_AUTHORITY
 // below. It returns 0 rather than an errno when refused. The app is single-shot: it
@@ -14,7 +14,7 @@
 // reaches the wire.
 //
 // The console must stay KERNEL_OWNED throughout: a retune is REFUSED while the console
-// is USER_OWNED (S4).
+// is USER_OWNED.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

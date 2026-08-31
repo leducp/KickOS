@@ -8,7 +8,7 @@
 // Each thread carries its own stack region, layered on at switch-in composition (thread.cc).
 // Under an MPU that region is per-thread and a sibling faults on it; under translation the
 // mapping is task-wide and a sibling reaches it. Portable code may rely only on the weaker
-// floor: a thread-scoped grant guarantees access to its holder (docs/design-m6-mmu.md F9).
+// floor: a thread-scoped grant guarantees access to its holder.
 //
 // Non-immortal domains are refcounted by the live tasks holding them, plus one reference per
 // explicit task's creator hold, and returned to the pool at zero.
@@ -105,7 +105,7 @@ namespace kickos
 
     Domain* domain_kernel(void); // privileged, whole arena
     // Unprivileged, empty region set. On a region backend every no-grant task joins it; on a
-    // translating one each such task instantiates it into a slot of its own (F2).
+    // translating one each such task instantiates it into a slot of its own.
     Domain* domain_default_user(void);
 
     // The caller's posture as one word: domain_for and task_for sit on the deepest chain the
@@ -120,7 +120,7 @@ namespace kickos
     // Resolve the domain a group of threads shares. privileged -> kernel; with a data region ->
     // a domain of its own; otherwise -> the default-user domain or an instance of it. Does not
     // take a reference (task_ref does, from thread_create). No reuse across tasks: two tasks
-    // granting the same block get two domains (F2).
+    // granting the same block get two domains.
     //
     // mem_attr is the memory type the region is committed with, over the R|W every RAM grant
     // already has. The prospective committed geometry goes through grant_region_admissible before

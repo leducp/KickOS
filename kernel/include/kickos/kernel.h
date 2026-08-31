@@ -12,9 +12,8 @@
 
 namespace kickos
 {
-    // Kernel entry: called by the arch boot path (sim: host main) after arch_init. Creates the
-    // idle + root threads and starts the scheduler; the host argv is forwarded to the app entry
-    // (argc=0/argv=nullptr on MCU).
+    // Kernel entry, after arch_init. Creates the idle + root threads and starts the
+    // scheduler; the host argv is forwarded to the app entry (argc=0/argv=nullptr on MCU).
     int kmain(int argc, char** argv);
 
     // Console fan-out to every enabled backend (KICKOS_CONSOLE = chip|rtt|both|none).
@@ -63,9 +62,9 @@ namespace kickos
 
     // Raise `t`'s cancellation to `kind` and nothing else: no park is broken and nothing is
     // woken, so the caller owes a reason `t` cannot be parked. Answers whether the record moved.
-    // Its caller is the switch path, and the narrower form is what keeps thread_abort_park's
-    // wait-kind unwind off that callgraph, where every reachable assert is a panic taken inside
-    // the fault record being written.
+    // The narrow form is what keeps thread_abort_park's wait-kind unwind off the switch
+    // path's callgraph, where every reachable assert is a panic taken inside the fault record
+    // being written.
     bool thread_cancel_escalate(Thread* t, uint8_t kind);
 
     // Raise `t`'s cancellation to `kind` and, if it is parked, break that park so it becomes
@@ -80,8 +79,8 @@ namespace kickos
     void thread_cancel(Thread* t);
 }
 
-// Enter the panic / fault dead-end. Called FIRST by kpanic and by every arch fault
-// reporter, before any dump is printed. Three premise-free steps, in order:
+// Enter the panic / fault dead-end. Call FIRST, before any dump is printed. Three
+// premise-free steps, in order:
 //   1. mask IRQs on this core (arch_irq_save, never restored, since we do not return),
 //      so the timer/scheduler/other threads stop while the dump prints and the
 //      terminal blinks (kpanic runs in THREAD context; the fault path is already
@@ -89,14 +88,14 @@ namespace kickos
 //   2. force the console onto the synchronous polled writer for all subsequent
 //      output, whether or not this arch ever armed the buffered ring;
 //   3. drain bytes already queued in the ring so the dump prints in order.
-// Idempotent: safe to call again from kfault_terminate after a reporter called it.
+// Idempotent: safe to call again.
 extern "C" void kpanic_enter(void);
 
 // Terminal for the panic / fault dead-end, shared by kpanic and the arch fault handlers. The
 // fallback blinks the diag LED forever; the host and QEMU targets override it to exit with a
-// fault status. extern "C": overridden across TUs and called from the arch handlers. Under
-// KICKOS_SHUTDOWN_TO_BOOTLOADER the fallback hands the chip to its bootloader instead. An ARM
-// MPU/hard fault terminates HERE, never through kickos_terminate.
+// fault status. extern "C": overridden across TUs. Under KICKOS_SHUTDOWN_TO_BOOTLOADER the
+// fallback hands the chip to its bootloader instead. An ARM MPU/hard fault terminates HERE,
+// never through kickos_terminate.
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
 // The chokepoint every ORDERED terminal path goes through: the KOS_SYS_SHUTDOWN syscall,

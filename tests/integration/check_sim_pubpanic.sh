@@ -118,8 +118,7 @@ fi
 # drops while the console is USER_OWNED (kernel/init/console.cc). kprintf_fault hands it to
 # the published endpoint's parked receiver instead (cap_console_deliver), because the
 # thread-kill path may not call kpanic_enter: that reclaim is permanent and would take the
-# console away from a system that is meant to keep running. See
-# design-m4.7.9-fault-isolation.md section 9.5.
+# console away from a system that is meant to keep running.
 #
 # Both halves are load-bearing: without the survival assertion a permanent reclaim passes,
 # and without the record assertion a swallowed record passes.

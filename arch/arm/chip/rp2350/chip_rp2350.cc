@@ -153,12 +153,11 @@ namespace
     // (arch_reserved_blocks), so the unprivileged driver cannot do them; everything
     // inside the USB block itself is left to it.
     //
-    // RULE U2 (design-m4.6.2-usb-cdc.md 7.3): refused, at bring-up time, when the
-    // crystal did not come up. A full-speed device cannot be sourced from the ring
-    // oscillator, and a 6.5 MHz clk_sys also violates the clk_sys > 1.1 * clk_usb
-    // workaround for RP2350-E12. The refusal is silent here because the console is not
-    // up yet; the driver reports it (its DPRAM reads back as bus errors with the block
-    // still in reset).
+    // USB bring-up is refused, at bring-up time, when the crystal did not come up. A
+    // full-speed device cannot be sourced from the ring oscillator, and a 6.5 MHz
+    // clk_sys also violates the clk_sys > 1.1 * clk_usb workaround for RP2350-E12. The
+    // refusal is silent here because the console is not up yet; the driver reports it
+    // (its DPRAM reads back as bus errors with the block still in reset).
     void usb_clock_init()
     {
         if (SystemCoreClock < reg::clocks::CLK_SYS_MIN_FOR_USB_HZ)
@@ -423,7 +422,7 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
     *size = CONSOLE_WIN_SIZE;
 }
 
-// Panic-path reclaim (console.cc D6): force UART1 back to a polled-ready 8N1 TX channel after
+// Panic-path reclaim (console.cc): force UART1 back to a polled-ready 8N1 TX channel after
 // a userspace driver may have garbled every writable register in the window. Runs with IRQs
 // masked, privileged; MUST be idempotent and re-entrant, so it is straight-line ABSOLUTE
 // stores only, no read-modify-write.

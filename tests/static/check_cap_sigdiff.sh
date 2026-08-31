@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The CAPABILITY ABI's signature diff, which is what docs/design-m6-mmu.md step C0 freezes and
-# what C1 is measured against. F3 makes M6.5's expected result a NEGATIVE one: frame and
-# page-table objects enter the capability layer and the layer stays ADDRESS-SPACE AGNOSTIC,
-# which is the property the spike's QW-5 asked be preserved and the one thing M6.5 could
-# plausibly break. Section 3.4b's rule applies unchanged: an empty signature diff needs a
-# baseline, so the baseline is taken BEFORE the first object kind lands, not after.
+# The CAPABILITY ABI's signature diff, frozen before the first object kind lands and
+# measured against that baseline after. M6.5's expected result is a NEGATIVE one: frame and
+# page-table objects enter the capability layer and the layer stays ADDRESS-SPACE
+# AGNOSTIC, which is the property the spike's QW-5 asked be preserved and the one thing
+# M6.5 could plausibly break. Section 3.4b's rule applies unchanged: an empty signature
+# diff needs a baseline, so the baseline is taken BEFORE the first object kind lands, not
+# after.
 #
 #   tests/static/check_cap_sigdiff.sh [<candidate-ref>]
 #

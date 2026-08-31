@@ -39,14 +39,14 @@ extern "C"
 {
 
 // --- One-time backend bring-up ---------------------------------------------
-// Called once before the kernel runs, from the boot path.
+// Called exactly once, before the kernel runs.
 void arch_init(void);
 
 // C-runtime data init driven by the linker's copy/zero range tables (init .data, zero .bss, for
 // as many ranges as the chip declares, e.g. a separate pow2 app-data block under MPU
-// enforcement). Called from a chip's Reset_Handler before the static ctors and arch_init; a
-// chip whose linker script emits no tables need not call it. Runs before any global is live, so
-// it must touch none of its own.
+// enforcement). Call from the reset entry before the static ctors and arch_init; a chip whose
+// linker script emits no tables need not call it. Runs before any global is live, so it must
+// touch none of its own.
 void kickos_ranges_init(void);
 
 // Terminate the whole system with the given process/exit status. On the sim this ends the host
@@ -74,9 +74,9 @@ uint32_t arch_cpu_id(void);
 // has answered. `cores` at 0 names nobody and both calls are then a no-op.
 //
 // The send is separate from the wait so an initiator can poke every core once and then wait
-// once, which is what a rendezvous such as a TLB shootdown needs (docs/design-m6-mmu.md T9). A
-// backend whose maintenance can invalidate and wait in its own instruction stream does that
-// inside arch_aspace_map and arch_aspace_unmap and must NOT route it through the doorbell.
+// once, which is what a rendezvous such as a TLB shootdown needs. A backend whose maintenance
+// can invalidate and wait in its own instruction stream does that inside arch_aspace_map and
+// arch_aspace_unmap and must NOT route it through the doorbell.
 //
 // The far side takes NO kernel lock, and the lock's own acquire loop services a pending
 // doorbell: otherwise an initiator holding the lock waits on a core spinning to acquire it.
@@ -194,8 +194,8 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 //   - 0 says this chip cannot change its clock at all (the fallback TU, unsupported backend).
 // The backend performs the flash-wait-state / voltage step and the arch_clock_now re-anchor
 // INTERNALLY, bracketing the exact PLL/divider write. MUST be called from privileged thread
-// context with interrupts already masked by the caller and NOT from ISR context (see the
-// coherence sequence, docs/design-m3-clock-select.md sec 2.3). Weak default returns 0.
+// context with interrupts already masked by the caller and NOT from ISR context.
+// Weak default returns 0.
 //
 // `target` carries a kos_pstate_t (sys/abi.h) as a plain u32; a backend that opts in includes
 // sys/abi.h itself to name the KOS_PSTATE_* points.
@@ -203,18 +203,17 @@ uint32_t arch_cpu_clock_set(uint32_t target);
 
 // Console coherence hooks (both no-op fallbacks):
 //   arch_console_flush_sync: block until the TX shift register is fully idle
-//     (transmission-complete, NOT merely buffer-empty). Two callers:
-//       - a clock retune, so no in-flight byte is still clocking out at the OLD baud when
-//         the peripheral clock moves (S6). Called under the caller's IrqLock, BEFORE the
-//         rate change.
-//       - kickos_terminate, so arch_shutdown does not stop the core with a byte still in
-//         the FIFO. EVERY chip whose console can outrun a shutdown needs a body here. A
-//         console that hands each byte to its host inside the write call (semihosting
-//         SYS_WRITEC) has nothing in flight, and the no-op fallback is the body there.
+//     (transmission-complete, NOT merely buffer-empty). Entered under the caller's
+//     IrqLock, and on a retune BEFORE the rate change, so no in-flight byte is still
+//     clocking out at the OLD baud when the peripheral clock moves. On the shutdown
+//     path it is what keeps arch_shutdown from stopping the core with a byte still in the
+//     FIFO. EVERY chip whose console can outrun a shutdown needs a body here. A console
+//     that hands each byte to its host inside the write call (semihosting SYS_WRITEC) has
+//     nothing in flight, and the no-op fallback is the body there.
 //     Must be bounded: it is on the panic and shutdown paths, where a wedged UART must
 //     cost a dropped tail.
 //   arch_console_retune: re-derive + reprogram the console baud from the CURRENT
-//     SystemCoreClock, AFTER the clock has landed. Called only when the clock actually
+//     SystemCoreClock, AFTER the clock has landed. Valid only where the clock actually
 //     moved (achieved != previous).
 void arch_console_flush_sync(void);
 void arch_console_retune(void);
@@ -230,8 +229,7 @@ uint32_t arch_trace_now(void);
 // Stamp the owning thread's trace id into a saved context, so the arch context-switch path
 // emits {from,to} tids read from the physically-swapped contexts, NEVER by re-reading shared
 // scheduler state, which an ISR can rewrite between the switch decision and the physical swap.
-// Telemetry-only: the seam and the id field are both elided otherwise. Called once per thread
-// in thread_create.
+// Telemetry-only: the seam and the id field are both elided otherwise. Once per thread.
 void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id);
 #endif
 
@@ -292,20 +290,18 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
                     struct arch_mpu_encoded const* image);
 
 // Program the hardware from what arch_mpu_apply last recorded. On a backend whose context
-// switch is DEFERRED, arch_mpu_apply only STASHES and the switch epilogue calls this after the
-// physical swap. See docs/design-mpu-commit-deferred.md.
+// switch is DEFERRED, arch_mpu_apply only STASHES and this must run after the physical swap.
 //
-// The kernel calls this directly in exactly one situation: the running thread's own region set
-// was just widened and must be effective before the syscall returns (KOS_SYS_MEM_SELF_GRANT).
-// Do NOT call it to make another thread's set live.
+// Do NOT call it to make another thread's set live. The one sound direct use is the running
+// thread's own region set, just widened and needing to be effective before the syscall
+// returns (KOS_SYS_MEM_SELF_GRANT).
 //
-// Always resolves on every arch and both enforcement postures (the switch assembly calls it
-// unconditionally); an empty no-op where apply already programs the hardware (the sim) or where
-// there is no MPU.
+// Always resolves on every arch and both enforcement postures; an empty no-op where apply
+// already programs the hardware (the sim) or where there is no MPU.
 void kickos_arch_mpu_commit(void);
 
 // This seam is a flat, NON-TRANSLATING protection-region set; a translating port gets the
-// parallel arch_aspace_* family declared below (docs/design-m6-mmu.md F6).
+// parallel arch_aspace_* family declared below.
 
 // The smallest region this arch's MPU can enforce: ARM PMSA 32 bytes, RISC-V PMP NAPOT 8, one
 // host page on the sim. A return of 0 means this arch has NO enforceable MPU (classic ESP32
@@ -484,7 +480,7 @@ uintptr_t arch_mpu_probe_addr(void);
 
 // --- Address space: a translating memory backend ----------------------------
 // The parallel family beside the region calls. A chip selects region descriptors or
-// translation, and no backend implements both (docs/design-m6-mmu.md F6).
+// translation, and no backend implements both.
 //
 // Opaque: the kernel names a space by pointer and never sizes or embeds one. Translation tags
 // are the backend's, allocated and invalidated inside destroy and activate.
@@ -546,27 +542,26 @@ struct arch_aspace* arch_aspace_create(void);
 // backend's invalidation ordered BEFORE the root or its tag can be reused. Null is a no-op.
 // Activate another space before destroying the running one.
 //
-// Holds means mapped, so a space must not still map a frame it does not own when this runs: a
-// borrower of a handoff unmaps its range first, or the frame is freed twice
-// (docs/design-m6-mmu.md F10).
+// Holds means mapped, so a space must not still map a frame it does not own
+// when this runs: a borrower of a handoff unmaps its range first, or the
+// frame is freed twice.
 void arch_aspace_destroy(struct arch_aspace* space);
 
 // Map `pages` granules at `va` onto the frames at `pa`, or remove that many at `va`.
 //
 // COHERENCE-COMPLETE: when either returns the change is visible to this core, whatever
 // maintenance that took having happened inside. A map into a slot that was empty owes that
-// maintenance too (docs/design-m6-mmu.md F8).
+// maintenance too.
 //
 // At more than one core the initiator waits. An unmap whose frames are being FREED may defer
 // the remote half, the boundary being reuse; an unmap that REVOKES may not, and the far-side
-// handler takes no kernel lock. docs/design-m6-mmu.md T9.
+// handler takes no kernel lock.
 //
 // A map may target the space this core is RUNNING on: the self-grant widens it mid-syscall.
 //
-// A failed map leaves its range unmapped: the rollback clears every leaf from `va` up to the
-// first page that has none, whichever call installed it. No caller today maps over a partially
-// mapped range, and the first one that does makes this rollback owe a narrower form
-// (docs/design-m6-mmu.md M6.3 R2.2).
+// A failed map leaves its range unmapped: the rollback clears every leaf from `va` up
+// to the first page that has none, whichever call installed it. Do NOT map over a
+// partially mapped range: this rollback owes a narrower form before that is sound.
 enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
                                         arch_phys_addr_t pa, size_t pages,
                                         uint32_t rights, enum arch_map_memtype type);
@@ -595,9 +590,9 @@ void arch_aspace_activate(struct arch_aspace* space);
 //
 // An address the space may legitimately name, which is the range map and unmap take, and null
 // for anything else. Each backend states that range ONCE, in the predicate its own map and unmap
-// already ask, and its shape differs per backend (docs/design-m6-mmu.md M6.3). A RELEASE outside
-// the range is refused, and a backend must count it as neither a hold nor a mispairing: an
-// address no space may map held no slot.
+// already ask, and its shape differs per backend. A RELEASE outside the range is refused, and a
+// backend must count it as neither a hold nor a mispairing: an address no space may map held no
+// slot.
 //
 // A release pairs with an acquire that ANSWERED: a null answer took no hold, and releasing
 // beside one surrenders somebody else's. A caller checks each acquire before it releases
@@ -614,9 +609,9 @@ void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
 // anything else, on the terms arch_aspace_acquire states above. A backend's own diagnostic probe
 // takes the kernel half from a private walk.
 //
-// 0 means not mapped, so no low-half page may be mapped onto physical frame 0
-// (docs/design-m6-mmu.md M6.3); kernel/mem/aspace.cc's aspace_frame_token and the arms in
-// kernel/syscall/syscall_aspace.cc read 0 that way.
+// 0 means not mapped, so no low-half page may be mapped onto physical frame 0;
+// kernel/mem/aspace.cc's aspace_frame_token and the arms in kernel/syscall/syscall_aspace.cc
+// read 0 that way.
 //
 // Owed to the first backend that installs a block or superpage in the range a space may map: a
 // level-aware walk that resolves the leaf at whatever level it stands and answers its output
@@ -625,7 +620,7 @@ void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
 // Spends no acquire hold and reads no frame's contents, so a caller may compare many pages.
 //
 // Subtracting two acquire pointers names a frame only where acquire is an addition; on a backend
-// windowing a handful of slots that comparison succeeds wrongly (docs/design-m6-mmu.md F8).
+// windowing a handful of slots that comparison succeeds wrongly.
 arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va);
 
 // SELFTEST ONLY: what the machine reports about the translation this port programs.
@@ -673,13 +668,13 @@ uint64_t arch_aspace_tlbi_counts(void);
 // `addr` is a kernel-usable pointer, which is what arch_aspace_acquire answers. Splitting a user
 // virtual range into pages belongs above this seam.
 //
-// There is no fallback definition (docs/design-m6-mmu.md section 7): a port defines these when
-// its first caller arrives and fails the LINK until then. arch_dcache_flush leaves the lines
-// valid, so this core keeps reading them from cache.
+// There is no fallback definition: a port defines these, and a reference fails the LINK
+// until it does. arch_dcache_flush leaves the lines valid, so this core keeps reading them
+// from cache.
 void arch_dcache_flush(void const* addr, size_t bytes);
 void arch_dcache_invalidate(void* addr, size_t bytes);
 
-// --- Rule 7: kernel-reserved MMIO blocks (docs/design-m4-driver-model.md sec.7) --
+// --- Rule 7: kernel-reserved MMIO blocks ------------------------------------
 // The owns-for-life peripherals a grant must NEVER hand to userspace: the timebase
 // block, the IRQ controller, every access-permission controller (the MPU/PMP twin
 // AND any bus-side gate such as the K64F AIPS bridge PACRs or the ESP32-C6
@@ -724,10 +719,10 @@ uint64_t arch_syscall64(uintptr_t nr,
                         uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
 
 // The same trap, spelled from kernel text. Where a translating backend splits the image, the
-// trap above links into the app's half and kernel text may not call it (docs/design-m6-mmu.md
-// T5b.1); the backend assembles a second copy under these names, in its own half, which every
-// address space maps by construction. Spell these in kernel code and the trap is correct on
-// every backend; where the image is not split the names alias the ones above.
+// trap above links into the app's half and kernel text may not call it; the backend assembles
+// a second copy under these names, in its own half, which every address space maps by
+// construction. Spell these in kernel code and the trap is correct on every backend; where
+// the image is not split the names alias the ones above.
 #if KICKOS_HAVE_ASPACE
 uintptr_t karch_syscall(uintptr_t nr,
                         uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
@@ -753,8 +748,8 @@ int32_t arch_syscall_reg(uint32_t* io);
 
 // Store a syscall result into a SAVED context, for a thread the fastpath parked with no kernel
 // continuation to return through. The arch writes it where its own restore path reloads the
-// syscall's return register from. Called only from the switch that resumes that thread, so the
-// context is not live in any register file.
+// syscall's return register from. The context must not be live in any register file when
+// this runs.
 void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result);
 #endif
 
@@ -789,9 +784,9 @@ void arch_irq_mask(int line);
 void arch_irq_unmask(int line);
 
 // Discard any raise latched on a line (best-effort: a controller that cannot drop a native
-// pending, e.g. the PLIC for a real device line, no-ops there). The explicit discard primitive:
-// called at first-arm (irq_claim / console_tx / bench) to drop pre-registration garbage, and
-// reserved for the M4 level-trigger rearm path.
+// pending, e.g. the PLIC for a real device line, no-ops there). The explicit discard
+// primitive, for dropping pre-registration garbage at first arm, and reserved for the M4
+// level-trigger rearm path.
 void arch_irq_clear_pending(int line);
 
 // Raise device line `irq` (the controller's "raise"), so the ISR runs in interrupt context.
@@ -833,7 +828,7 @@ void arch_diag_led_init(void);
 void arch_diag_led_set(int on);
 
 // --- Chip-specific fault decode (optional) ----------------------------------
-// Called by the core fault reporter after it dumps the CPU frame and fault-status registers, so
+// Runs after the core fault reporter has dumped the CPU frame and fault-status registers, so
 // a chip whose isolation trap surfaces elsewhere adds its own capture. Fallback-TU no-op
 // default.
 void arch_fault_report_extra(void);
@@ -855,7 +850,7 @@ bool arch_fault_is_user_thread(void* frame);
 // Rewrite `frame` so the exception return lands in kickos_thread_fault_exit, privileged, in
 // thread mode, at the TOP of the faulting thread's own stack (kickos_fault_stack_top), and hand
 // the fault facts to kickos_fault_record for the stub to print in thread context. The thread is
-// dying, so its register values need not be preserved. Called ONLY when
+// dying, so its register values need not be preserved. Valid ONLY where
 // arch_fault_is_user_thread returned true; fallback-TU default: empty.
 void arch_fault_redirect_to_exit(void* frame);
 
@@ -863,16 +858,16 @@ void arch_fault_redirect_to_exit(void* frame);
 // Block until the next interrupt (ARM WFI; sim sigsuspend).
 void arch_idle_wait(void);
 
-// --- Provided by the kernel, called back by the arch backend ---------------
+// --- Provided by the kernel for the arch backend ---------------------------
 // Next-event timer expired (tickless deadline or, if enabled, periodic tick).
 void kickos_isr_timer(void);
 // Device interrupt line `irq` fired (sim: injected event; ARM: NVIC line).
 void kickos_isr_irq(int irq);
 // A thread's entry function returned; the arch trampoline routes here.
 void kickos_thread_return(void) __attribute__((noreturn));
-// The arch-independent syscall table dispatch, called by arch_syscall. Sign rule: an errno arm
-// returns a NEGATED int and sign-extends, so it stays negative read at any width; every other
-// arm zero-extends. The low half is what a 32-bit target always saw.
+// The arch-independent syscall table dispatch. Sign rule: an errno arm returns a NEGATED int
+// and sign-extends, so it stays negative read at any width; every other arm zero-extends.
+// The low half is what a 32-bit target always saw.
 uint64_t syscall_dispatch(uintptr_t nr,
                           uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
 // A memory-protection violation was caught (sim: SIGSEGV over the arena).
@@ -888,7 +883,7 @@ void kickos_isr_fault(uintptr_t addr, int is_write);
 arch_phys_addr_t kickos_frame_alloc(void);
 void kickos_frame_free(arch_phys_addr_t frame);
 
-// Fault isolation, called from the arch fault handler BEFORE it starts its dump. Applies the
+// Fault isolation. Call from the arch fault handler BEFORE it starts its dump. Applies the
 // kill rule and, when it holds, calls arch_fault_redirect_to_exit. Returns true when the
 // handler must simply RETURN: the exception return then lands in kickos_thread_fault_exit.
 // False means the fault panics.
@@ -939,14 +934,14 @@ void kickos_fault_record(char const* status_name, uint64_t status,
 
 #if defined(KICKOS_ENABLE_SELFTEST)
 // Trap-stack regression: names kickos_trapstack_witness if an unprivileged thread's trap frame
-// reached that kernel word. A backend calls it on its PANIC path, after kpanic_enter, so the
+// reached that kernel word. Call from a backend's PANIC path, after kpanic_enter, so the
 // faultsurvive `kwrite' gate can prove the trap prologue did NOT store through a U-mode sp into
 // kernel memory. Silent when intact.
 void kickos_trapstack_witness_report(void);
 
 // NESTED-TRAP regression: which stack the kernel picked for an interrupt taken while the kernel
 // was ALREADY running. The claim is that a frame built there is never the interrupted THREAD's
-// own stack. A backend calls this once per such trap with the frame it built and the interrupted
+// own stack. Call once per such trap with the frame the backend built and the interrupted
 // thread's stack bounds (`lo` 0 when there is no current thread). KOS_SYS_NEST_WITNESS reads the
 // counters, a kprintf on the shutdown path putting the console's varargs route inside the
 // syscall descent it stands beside.
@@ -985,9 +980,9 @@ struct arch_context* kickos_thread_contain_wild_stack(struct arch_context* offen
 void kickos_thread_slay_exit(void* arg) __attribute__((noreturn));
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-// A context switch physically completed: emit a SWITCH record {from_tid, to_tid}. The arch
-// switch path calls this at the real register swap, from tids read out of the two contexts it
-// swapped. from_tid == 0xFFFF on the very first switch. RESCAN group.
+// A context switch physically completed: emit a SWITCH record {from_tid, to_tid}. Call at the
+// real register swap, with tids read out of the two contexts swapped, NEVER by re-reading
+// shared scheduler state. from_tid == 0xFFFF on the very first switch. RESCAN group.
 void kickos_trace_switch_done(uint16_t from_tid, uint16_t to_tid);
 
 // Emit the closing SESSION record (final records_attempted plus a second clock anchor), from

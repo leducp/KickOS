@@ -429,9 +429,12 @@ different hot/cold profile.
 ## 4. THE MILESTONE-NUMBERING QUESTION (primary deliverable)
 
 > **DECIDED 2026-07-20, Option A.** Driver era = **M4**, SMP = **M5**, MMU / new-platform = **M6**;
-> `roadmap.md` is authoritative. The numbers have since moved again -- the driver era took M4 and
-> M5, SMP is **M6** and MMU / new-platform is **M7** -- and the rest of this section is written in
-> the new numbering. The ORDERING decided here is unchanged; only the labels moved.
+> `roadmap.md` is authoritative. The numbers have moved TWICE since. First the driver era took M4
+> and M5, putting SMP at M6 and MMU / new-platform at M7. Then the **2026-08-21 resequencing SWAPPED
+> those two**: the MMU is **M6** and multicore is **M7**, on the ground that two firsts in one bite
+> makes the switch path undebuggable. 4.1 below is written in that final numbering; a reader meeting
+> an SMP-is-M6 anywhere in this document is reading the middle one. The ORDERING is what moved this
+> time, not only the labels, and M6 shipped translation first.
 > Work is still named by THEME where the number is not load-bearing,
 > because the roadmap's own "anytime-coherence" tagging means several pieces are not strictly gated
 > by number. `design/README.md` cites this section by number.
@@ -440,12 +443,17 @@ different hot/cold profile.
 1. **DRIVER ERA (M4)**, single-core: fleet UART/console drivers, per-chip reclaim, clock-select
    fleet-wide, the driver framework (call/reply IPC, taxonomy, multi-instance), and the enabling
    services init, clock-tree/power-manager, pinmux, gpio.
-2. **SMP (M6)**: one kernel image across cores (RP2040/RP2350), which reworks the foundation because
-   `IrqLock` ("IRQs off means exclusive") is single-core-only (`design-m7-smp.md`).
-3. **MMU / new-platform (M7)**: x86_64 PC plus i.MX8MP heterogeneous AMP, MMU KickOS on the A53 and
-   MPU KickOS on the M7 over cross-core IPC (`design-mmu-era-exploration.md`).
+2. **MMU / new-platform (M6)**: LANDED. A53 under translation, then the RV64 and x86_64 backends
+   (`design-m6-mmu.md` is the contract; `design-mmu-era-exploration.md` the exploration it came out
+   of).
+3. **SMP (M7)**: one kernel image across cores, which reworks the foundation because `IrqLock`
+   ("IRQs off means exclusive") is single-core-only (`design-m7-smp.md`). The target is the A53
+   cluster M6 landed on, with the quad-core i.MX8MP as the silicon it aims at; the RP2040/RP2350
+   pair this bullet used to name is an AMP question that document still lists as open. The
+   i.MX8MP's Cortex-M7 companion stays MPU KickOS over cross-core IPC, and that core is not this
+   milestone number.
 
-**QW-3 carries M6.** Keep the shared-IPC ring contract PHYSICALLY addressed from day one
+**QW-3 carries M7.** Keep the shared-IPC ring contract PHYSICALLY addressed from day one
 (`design-mmu-era-exploration.md:330`). It was flagged for "M3/M4" but belongs with the SMP/AMP
 cross-core IPC work.
 

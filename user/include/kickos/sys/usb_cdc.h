@@ -6,13 +6,13 @@
 // controller knowledge, no ring.
 //
 // PROVENANCE, weaker than every other register fact in this tree: the local reference set
-// holds NO USB 2.0 specification and NO CDC/PSTN class document (design-m4.6.2-usb-cdc.md
-// section 4.4). Every constant below is stated from the specifications as known and is NOT
-// verified against a local copy; the failure mode is a host that refuses to enumerate.
+// holds NO USB 2.0 specification and NO CDC/PSTN class document. Every constant below is
+// stated from the specifications as known and is NOT verified against a local copy; the
+// failure mode is a host that refuses to enumerate.
 //
 // wMaxPacketSize on the two bulk endpoints is 32, not 64: RP2040-E15 hangs the device
 // controller against a VL805 host when a full-speed bulk IN buffer exceeds 50 bytes, and
-// 32 puts every buffer under that threshold on both RP parts (design section 1.3).
+// 32 puts every buffer under that threshold on both RP parts.
 
 #ifndef KICKOS_SYS_USB_CDC_H
 #define KICKOS_SYS_USB_CDC_H

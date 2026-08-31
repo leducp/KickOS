@@ -628,7 +628,7 @@ bool kickos_rv64_fault_report(void* frame)
     kfault_terminate();
 }
 
-// --- One-time core bring-up, called by the chip's arch_init -----------------
+// --- One-time core bring-up ------------------------------------------------
 void kickos_rv64_init(void)
 {
     // DIRECT mode (low 2 bits = 00): one entry point for every cause.

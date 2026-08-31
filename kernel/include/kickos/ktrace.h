@@ -111,7 +111,7 @@ namespace kickos
     // --- SESSION -----------------------------------------------------------
     // Emit a SESSION record: (t, t_anchor) is one point of the two-anchor clock
     // resync; records_attempted lets the host cross-check its decoded/lost count.
-    // Called once at init and once at shutdown (the far anchor + final count).
+    // Emitted twice per session: the near anchor, then the far anchor plus final count.
     inline void ktrace_session(void)
     {
         IrqLock lock;
@@ -133,8 +133,8 @@ namespace kickos
     }
 
     // Measure the probe overhead (a back-to-back arch_trace_now pair minus a null
-    // pair) and emit the opening SESSION. Called from kmain once the arch clock is
-    // live. Idempotent enough for one call per boot.
+    // pair) and emit the opening SESSION. Call once the arch clock is live. Idempotent
+    // enough for one call per boot.
     void ktrace_init(void);
 }
 

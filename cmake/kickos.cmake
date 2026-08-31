@@ -4,8 +4,8 @@
 # KickOS build helpers: per-component flag posture, kickos_add_application() and the image
 # emitter kickos_emit_image().
 #
-# The application owns the final link (architecture.md, invariant #8): the link recipe lives
-# on the exported `kickos` / `kickos_cxx` usage targets, never in these helpers.
+# The application owns the final link: the link recipe lives on the exported `kickos` /
+# `kickos_cxx` usage targets, never in these helpers.
 
 # ---------------------------------------------------------------------------
 # Board -> {arch, chip} resolution.
@@ -110,15 +110,14 @@ function(kickos_apply_freestanding target)
     "$<$<COMPILE_LANGUAGE:CXX>:${KICKOS_FREESTANDING_CXX_FLAGS}>")
   # RISC-V: the KickOS-owned libs must emit NO gp-relative small-data, so the single gp
   # window holds only app and C++-runtime small-data. The app keeps its own: a -fexceptions
-  # TU built -msmall-data-limit=0 hangs __cxa_throw in the FDE walk
-  # (docs/design-cxx-under-mpu.md).
+  # TU built -msmall-data-limit=0 hangs __cxa_throw in the FDE walk.
   #
   # The flag keeps kernel DATA out of .sdata/.sbss; a kernel access can still RESOLVE through
   # gp, the linker making gp addressing out of any upper/lower pair landing within
   # gp +/- 0x800. gp is a register an unprivileged thread writes, so
   # arch/riscv/rv64imac/switch.S re-anchors it twice per trap, at .Ltrap_regs and .Lrestore.
   # check_riscv_no_smalldata.sh reads the archives; gp addressing exists only after link, so
-  # check_riscv_kernel_gp.sh reads the linked image (docs/design-m6-mmu.md R2.2).
+  # check_riscv_kernel_gp.sh reads the linked image.
   if((KICKOS_ARCH STREQUAL "rv32imac" AND KICKOS_HAVE_MPU)
      OR (KICKOS_ARCH STREQUAL "rv64imac" AND KICKOS_HAVE_ASPACE))
     target_compile_options(${target} PRIVATE -msmall-data-limit=0)
@@ -128,7 +127,7 @@ endfunction()
 # kickos_privatise_runtime(<target>)
 #   Rewrites every runtime name a compiler EMITS in this archive to the kernel's private one
 #   (cmake/kernel_runtime.syms). Kernel text may not call the app's copies, whose pages carry
-#   privileged-execute-never once EL0 can reach them (docs/design-m6-mmu.md, T5b).
+#   privileged-execute-never once EL0 can reach them.
 #
 #   The syms file is NOT a dependency of this command, so adding a name to it re-archives
 #   nothing: tests/static/check_kernel_runtime.sh is what turns that into a failure.
@@ -296,8 +295,8 @@ endfunction()
 #   chip-agnostic kickos_spi_proxy. Per consumer TARGET, so two executables in one tree may
 #   differ. Exactly ONE backend per executable: they define the same four symbols.
 #
-#   FULL_CXX (opt-in, docs/design-kickcat-k64f.md "Libc strategy"): compile this app's C++
-#   TUs with -fexceptions/-frtti and link the toolchain's libstdc++/libsupc++ over newlib.
+#   FULL_CXX (opt-in): compile this app's C++ TUs with -fexceptions/-frtti and link the
+#   toolchain's libstdc++/libsupc++ over newlib.
 #   Off by default; no effect on the sim, already hosted against host libstdc++.
 # ---------------------------------------------------------------------------
 function(kickos_add_application name)
@@ -499,7 +498,13 @@ function(kickos_add_qemu_test)
     # A64 image. `-bios none` errors here, there being no firmware to suppress. -nic none
     # drops the default virtio-net-pci, whose option ROM ships in a separate distro package
     # QEMU aborts without.
-    set(_env QEMU=qemu-system-aarch64 "QEMU_EXTRA=-cpu cortex-a53 -nic none")
+    # -smp is what MAKES the cores exist: PSCI CPU_ON answers INVALID_PARAMETERS for a core
+    # the machine was not given, so a multi-core image on a one-core machine refuses at boot.
+    set(_smp "")
+    if(KICKOS_NUM_CORES GREATER 1)
+      set(_smp " -smp ${KICKOS_NUM_CORES}")
+    endif()
+    set(_env QEMU=qemu-system-aarch64 "QEMU_EXTRA=-cpu cortex-a53 -nic none${_smp}")
     set(_machine virt)
   elseif(QT_BOARD STREQUAL "microbit")
     # 32 KiB: QEMU's nRF51 SoC exposes the size as a QOM property and -m is ignored by a

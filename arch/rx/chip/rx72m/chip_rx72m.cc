@@ -425,9 +425,9 @@ void kickos_rx_group_arm(int line, int on)
     arch_irq_restore(s);
 }
 
-// Arch seam (arch_rxv3.cc): the chip's device demux, called from the shared first-level
-// ISR. Only group vectors route here; every dedicated source (CMWI0, the two SCI6 vectors,
-// both software interrupts) has its own INTB slot.
+// Arch seam (arch_rxv3.cc): the chip's device demux, in ISR context. Only group vectors
+// route here; every dedicated source (CMWI0, the two SCI6 vectors, both software
+// interrupts) has its own INTB slot.
 //
 // One group assertion can carry several ISj bits (UM sec.15.5.4 Fig.15.17 p.542), hence
 // the loop.
@@ -737,7 +737,7 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 }
 #endif
 
-// C runtime init, reached from _start (startup.S). Never returns.
+// C runtime init, the reset entry. Never returns.
 void rx_reset_handler(void)
 {
     kickos_ranges_init(); // init .data + the pow2 app-data block; zero .bss + app-bss

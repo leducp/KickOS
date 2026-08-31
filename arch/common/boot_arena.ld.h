@@ -57,7 +57,7 @@
 #define KICKOS_POOL_TOP(ram_start) \
     (KICKOS_POOL_BASE(ram_start) + KICKOS_POOL_STACK_COUNT * KICKOS_POOL_STRIDE)
 
-/* Invoked by every linker script the fleet links, board-local overrides included, and
+/* EVERY linker script the fleet links must invoke it, board-local overrides included:
  * omitting it is a configure FATAL_ERROR exactly as for KICKOS_BOOT_ARENA_ASSERT. The arena
  * base is a link-time value, so only the linker can do this arithmetic.
  *

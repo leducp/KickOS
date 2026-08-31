@@ -18,8 +18,8 @@
 #
 # THE SYNDROME IS READ OFF THE THREAD-KILL RECORD AND NOT A PANIC DUMP. The read is an EL0
 # access, so armv8a now contains it: the same ESR and the same address arrive through
-# kickos_fault_record as `ESR_EL1=` and `ADDR=` instead of the reporter's `ESR=` and `FAR=`
-# (docs/design-m6-mmu.md F5, T8). The image dies of it and the system does not.
+# kickos_fault_record as `ESR_EL1=` and `ADDR=` instead of the reporter's `ESR=` and `FAR=`.
+# The image dies of it and the system does not.
 #
 # ESR 0x9200000e is EC 0x24 (data abort, lower exception level), IL 1 (a 32-bit
 # instruction), WnR clear (a read) and DFSC 0b001110 (permission fault, level 2), which is

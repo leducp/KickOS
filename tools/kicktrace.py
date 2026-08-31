@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# KickOS telemetry decoder (telemetry.md deliverable 8). Pure bytes -> CSV /
+# KickOS telemetry decoder. Pure bytes -> CSV /
 # summary / Chrome-trace JSON. Decodes the little-endian, fixed-length-by-type
 # record stream produced by the kernel frontend (see include/kickos/trace/record.h)
 # and the RTT ch1 sink; the sim flushes that ring to a file at shutdown.

@@ -143,10 +143,10 @@ namespace kickos
 
     namespace
     {
-        // Exact base, so a sub-block window cannot reach a whole-block table entry (K64F PIT
-        // ch2 base 0x40037120, block 0x40037000). Reads the thread's possession record and
-        // never its reachable regions, the mapping being task-wide on a translating backend
-        // (docs/design-m6-mmu.md F9).
+        // Exact base, so a sub-block window cannot reach a whole-block table
+        // entry (K64F PIT ch2 base 0x40037120, block 0x40037000). Reads the
+        // thread's possession record and never its reachable regions, the
+        // mapping being task-wide on a translating backend.
         size_t mmio_block_of(Thread const* c, uintptr_t base)
         {
             if (c->dev_size == 0 or c->dev_base != base)
@@ -331,9 +331,9 @@ namespace kickos
     }
 
     // Disjointness is a (space, range) question, addresses comparing only under one owner.
-    // An overlap is refused and MUST NOT become an assert again: reent_prime calls this from
-    // the switch path, which the fault reporter descends into through cap_console_deliver, so
-    // a panic here re-enters kputs -> kconsole_write from inside the record it was writing.
+    // An overlap is refused and MUST NOT become an assert again: this runs on the switch
+    // path, which the fault reporter descends into through cap_console_deliver, so a panic
+    // here re-enters kputs -> kconsole_write from inside the record it was writing.
     bool ep_copy(struct arch_aspace* dspace, uintptr_t dst, struct arch_aspace* sspace,
                  uintptr_t src, size_t n)
     {

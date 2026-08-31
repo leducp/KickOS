@@ -73,7 +73,7 @@ namespace kickos
     // space means the address is directly kernel-dereferenceable: kernel storage, and
     // every backend that translates nothing. An owner cannot be recovered from an
     // address once two processes hold different frames at one virtual address, so a
-    // site passes what it already holds (docs/design-m6-mmu.md section 3.3).
+    // site passes what it already holds.
     struct Thread;
 #if KICKOS_HAVE_ASPACE
     // The space a thread's own user pointers lie in.

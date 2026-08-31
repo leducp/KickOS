@@ -4520,7 +4520,7 @@ prints this. The rule paragraphs it also prints are elided here and nothing else
        family    identifiers matching arch_aspace / ARCH_ASPACE / arch_map / ARCH_MAP /
                  arch_phys_addr, wherever they stand in the seam headers
 
-    DIFF: the signature records moved. Per F8 this diff IS the finding.
+    DIFF: the signature records moved. This diff IS the finding.
           < baseline, > candidate
           15a16
           > FUNC	arch_aspace_frame_at	arch_phys_addr_t (struct arch_aspace *, uintptr_t)	-

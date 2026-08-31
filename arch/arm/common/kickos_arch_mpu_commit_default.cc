@@ -10,8 +10,8 @@
 // different MPU (K64F SYSMPU) or a v8-M core (arch_arm_pmsav8.cc) defines its own and
 // reads the SAME stash through kickos_arm_mpu_pending.
 //
-// KICKOS_HAVE_MPU=0 still needs the symbol: every deferred arch's PendSV epilogue
-// calls it unconditionally.
+// Built at KICKOS_HAVE_MPU=0 too: the reference is unconditional, so dropping this TU
+// there leaves the symbol undefined.
 
 #include <kickos/arch/arch.h>
 

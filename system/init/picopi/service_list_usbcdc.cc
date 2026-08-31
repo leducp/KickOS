@@ -13,7 +13,7 @@
 // RP2040-E5: the controller needs 800 us of idle J-state after a bus reset, and is
 // hardware-fixed only in stepping B2. An earlier stepping behind a hub transaction
 // translator never enumerates. No workaround is carried here; the bench Pico's stepping
-// is open question 3 of docs/design-m4.6.2-usb-cdc.md.
+// has never been read out.
 
 #include <kickos/sys/service.h>
 #include <kickos/chip_mmap.h>

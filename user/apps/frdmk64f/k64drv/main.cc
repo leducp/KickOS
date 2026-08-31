@@ -7,10 +7,10 @@
 //
 // This app DEMONSTRATES the K64F peripheral ceiling: privilege is gated by the AIPS
 // bridge (PACR) rather than by SYSMPU, so an MMIO grant is not a per-thread peripheral
-// capability on this chip and this window grant is inert. The register-level argument is
-// in docs/reference/boards.md, "When an MMIO grant is INERT"; the slot at issue here is
-// PIT slot 55 in PACRG (RM 20.2.3). The PIT_MCR read at the end sits outside the SYSMPU
-// window and is EXPECTED to succeed; that success is the demonstration.
+// capability on this chip and this window grant feeds no kos_periph_* syscall. The slot
+// at issue here is PIT slot 55 in PACRG (RM 20.2.3). The PIT_MCR read at the end sits
+// outside the SYSMPU window and is EXPECTED to succeed; that success is the
+// demonstration.
 //
 // Diagnostic app (kickos_add_diagnostic_app): the operator flashes and validates on
 // silicon.

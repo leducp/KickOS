@@ -3,8 +3,8 @@
 
 CONFIG_BOARD_BLUEPILL_C8=y
 
-# The MINIMUM tier of docs/reference/boards.md, which states what that tier buys and what
-# it refuses; the per-board arithmetic below is what this part pays for it.
+# The MINIMUM tier: 2 threads, no thread_local, and a self-test that only fits as three
+# images. The per-board arithmetic below is what this part pays for it.
 #
 # 20 KiB of SRAM, so the pools are cut.
 CONFIG_KICKOS_MAX_THREADS=2

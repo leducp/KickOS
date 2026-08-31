@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # The kernel-text instructions that materialise an APP-HALF address and are allowed to
-# (tests/static/check_riscv_kernel_apphalf.sh, docs/design-m6-mmu.md R2.2).
+# (tests/static/check_riscv_kernel_apphalf.sh).
 #
 # One symbol per line, never a pattern, each with the reason the reference is harmless. A
 # reference that DEREFERENCES an app-half address does not belong here whatever it is for: it

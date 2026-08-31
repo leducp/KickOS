@@ -4,7 +4,7 @@
 // The checked page-extent arithmetic every range check needs, shared by the kernel's range
 // list and reservation paths and by an arch map editor's own bounds test.
 //
-// The granule is a parameter and no figure appears here (docs/design-m6-mmu.md F7).
+// The granule's one source of truth is the arch seam query, so it arrives as a parameter.
 
 #ifndef KICKOS_EXTENT_H
 #define KICKOS_EXTENT_H

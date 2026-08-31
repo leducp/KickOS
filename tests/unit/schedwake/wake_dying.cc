@@ -37,7 +37,7 @@ namespace
     {
         Thread* c = spawn(0, PRIO_DYING);
         sched::reschedule();
-        EXPECT_EQ(kernel().current, c) << "fixture: the spawned thread is current";
+        EXPECT_EQ(kernel().current[arch_cpu_id()], c) << "fixture: the spawned thread is current";
         g_switches = 0;
         trace_reset();
         return c;
@@ -71,7 +71,7 @@ TEST_F(SchedWake, a_higher_priority_peer_preempts_a_live_thread)
     sched::wake(p);
 
     EXPECT_EQ(g_switches, 1u) << "a live thread yields to a higher-priority wake";
-    EXPECT_EQ(kernel().current, p) << "the woken peer is current";
+    EXPECT_EQ(kernel().current[arch_cpu_id()], p) << "the woken peer is current";
     EXPECT_EQ(c->state, ThreadState::READY) << "the preempted thread is READY";
 }
 
@@ -107,7 +107,7 @@ TEST_F(SchedWake, a_dying_thread_defers_an_equal_priority_peer)
 
     EXPECT_EQ(g_switches, 0u) << "a dying sweep is not interrupted by an equal-priority peer";
     EXPECT_EQ(p->state, ThreadState::READY) << "the deferred peer is still made READY";
-    EXPECT_EQ(kernel().current, c) << "the dying thread keeps the CPU";
+    EXPECT_EQ(kernel().current[arch_cpu_id()], c) << "the dying thread keeps the CPU";
 }
 
 // The arm that separates the guard from its absence: while the dying thread is the HEAD of
@@ -125,7 +125,7 @@ TEST_F(SchedWake, a_dying_thread_defers_an_equal_priority_peer_that_pick_next_wo
     sched::wake(p);
 
     EXPECT_EQ(g_switches, 0u) << "the sweep keeps the CPU even when it is not the ready head";
-    EXPECT_EQ(kernel().current, c) << "the dying thread keeps the CPU";
+    EXPECT_EQ(kernel().current[arch_cpu_id()], c) << "the dying thread keeps the CPU";
     EXPECT_EQ(p->state, ThreadState::READY) << "the deferred peer is still made READY";
     EXPECT_EQ(ahead->state, ThreadState::READY) << "the thread ahead of it did not run";
 }
@@ -141,7 +141,7 @@ TEST_F(SchedWake, a_dying_thread_defers_a_lower_priority_peer)
     sched::wake(p);
 
     EXPECT_EQ(g_switches, 0u) << "a dying sweep is not interrupted by a lower-priority peer";
-    EXPECT_EQ(kernel().current, c) << "the dying thread keeps the CPU";
+    EXPECT_EQ(kernel().current[arch_cpu_id()], c) << "the dying thread keeps the CPU";
 }
 
 TEST_F(SchedWake, a_dying_thread_yields_to_a_higher_priority_peer)
@@ -153,7 +153,7 @@ TEST_F(SchedWake, a_dying_thread_yields_to_a_higher_priority_peer)
     sched::wake(p);
 
     EXPECT_EQ(g_switches, 1u) << "a higher-priority peer preempts the sweep";
-    EXPECT_EQ(kernel().current, p) << "the woken peer is current";
+    EXPECT_EQ(kernel().current[arch_cpu_id()], p) << "the woken peer is current";
     // The sweep must be RESUMABLE: cap_teardown drops IrqLock between chunks and c is still
     // on the ready structure, so pick_next can return it again.
     EXPECT_EQ(c->state, ThreadState::READY) << "the dying thread stays runnable";
@@ -182,7 +182,7 @@ TEST_F(SchedWake, a_second_wake_under_the_pended_peer_does_not_switch_again)
     sched::wake(under);
 
     EXPECT_STREQ(trace(), "switch1>2") << "the pended switch is not superseded from below it";
-    EXPECT_EQ(kernel().current, first) << "the peer published first is still what will run";
+    EXPECT_EQ(kernel().current[arch_cpu_id()], first) << "the peer published first is still what will run";
     EXPECT_EQ(under->state, ThreadState::READY) << "the second peer is made READY all the same";
     EXPECT_EQ(ahead->state, ThreadState::READY) << "the peer at the sweep's priority did not run";
     EXPECT_EQ(c->state, ThreadState::READY) << "the sweep stays runnable";
@@ -202,7 +202,7 @@ TEST_F(SchedWake, a_second_wake_above_the_pended_peer_supersedes_it)
     // The outgoing side of the second switch is the peer, not the sweep whose stack this runs
     // on, so the token below is not a lost context.
     EXPECT_STREQ(trace(), "switch1>2 switch2>3") << "the higher peer supersedes the pended one";
-    EXPECT_EQ(kernel().current, above) << "the switch lands on the highest-priority thread";
+    EXPECT_EQ(kernel().current[arch_cpu_id()], above) << "the switch lands on the highest-priority thread";
     EXPECT_EQ(first->state, ThreadState::READY) << "the superseded peer is runnable, not RUNNING";
     EXPECT_EQ(c->state, ThreadState::READY) << "the sweep is still runnable";
 }
@@ -242,7 +242,7 @@ TEST_F(SchedWake, an_already_ready_peer_is_left_alone_but_loses_its_deadline)
 
     EXPECT_FALSE(p->on_timer) << "the deadline is dropped before the state test";
     EXPECT_EQ(g_switches, 0u) << "an already-ready peer is not re-readied and does not switch";
-    EXPECT_EQ(kernel().current, c) << "current is unchanged";
+    EXPECT_EQ(kernel().current[arch_cpu_id()], c) << "current is unchanged";
     EXPECT_EQ(c->state, ThreadState::RUNNING) << "a wake does not demote the current thread";
 }
 
@@ -251,7 +251,7 @@ TEST_F(SchedWake, a_wake_before_the_first_pick_does_not_switch)
     Thread* p = blocked_peer(1, PRIO_DYING);
     // sched::init leaves current null and sched::start seats it: tick_rr guards the same
     // pointer and this funnel must too.
-    kernel().current = nullptr;
+    kernel().current[arch_cpu_id()] = nullptr;
 
     sched::wake(p);
 
@@ -274,7 +274,7 @@ TEST_F(SchedWake, an_exited_thread_is_not_woken_and_its_slot_stays_free)
     EXPECT_EQ(dead->state, ThreadState::EXITED) << "an exited thread is not made READY";
     EXPECT_EQ(kernel().ready_bitmap & (1u << dead->prio), 0u) << "and no ready list holds it";
     EXPECT_EQ(g_switches, 0u) << "nothing switched to it";
-    EXPECT_EQ(kernel().current, c) << "current is unchanged";
+    EXPECT_EQ(kernel().current[arch_cpu_id()], c) << "current is unchanged";
     EXPECT_EQ(kernel().threads.alloc(), 0) << "the pool still reads the slot as free";
 }
 
@@ -295,7 +295,7 @@ TEST_F(SchedWake, the_guard_compares_the_effective_priority_not_the_anchor)
     sched::wake(p);
 
     EXPECT_EQ(g_switches, 0u) << "a peer under the boost is deferred, not compared to the anchor";
-    EXPECT_EQ(kernel().current, c) << "the boosted dying thread keeps the CPU";
+    EXPECT_EQ(kernel().current[arch_cpu_id()], c) << "the boosted dying thread keeps the CPU";
     EXPECT_EQ(ahead->state, ThreadState::READY) << "the thread ahead of it did not run";
 }
 
@@ -339,11 +339,11 @@ TEST_F(SchedWake, the_exit_sweep_wakes_every_joiner_before_its_single_switch)
     EXPECT_EQ(g_parked, 1u) << "the exited thread parked once";
 }
 
-// The only arm that drives the real cap_teardown: every arm above calls sched::wake directly,
-// this one puts a live CAP_WAIT entry through obj_close_protocol's endpoint branch, so the wake
-// comes from inside the sweep, from the one site whose woken peer is NOT priority-bounded. A
-// PLAIN sender boosts nothing, where the mutex force-unlock and the reply EPIPE both leave the
-// dying thread boosted at or above the peer they wake.
+// This arm drives the real cap_teardown: it puts a live CAP_WAIT entry through
+// obj_close_protocol's endpoint branch, so the wake comes from inside the sweep, from the one
+// site whose woken peer is NOT priority-bounded. A PLAIN sender boosts nothing, where the
+// mutex force-unlock and the reply EPIPE both leave the dying thread boosted at or above the
+// peer they wake.
 //
 // The ORDER is the whole assertion and it needs the reclaim token to state it: the switch count
 // is 1 either way, and the from/to pair is the same either way, because after a mid-sweep

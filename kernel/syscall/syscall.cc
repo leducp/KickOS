@@ -460,7 +460,7 @@ uint64_t syscall_body(uintptr_t nr,
             int handle = -1;
             {
                 IrqLock lock;
-                // Resolve to the GLOBAL gen-encoded handle, NOT the pool index (S3).
+                // Resolve to the GLOBAL gen-encoded handle, NOT the pool index.
                 // cap_lookup validates the cap-gen; type and object liveness are re-checked
                 // here. Any rights: the publish is identity-only.
                 CapEntry* e = cap_lookup(c, static_cast<uint32_t>(a0));
@@ -615,7 +615,7 @@ uint64_t syscall_body(uintptr_t nr,
 #if defined(KICKOS_ENABLE_SELFTEST)
         case KOS_SYS_REBOOT:
         {
-            // AUTH_SYSTEM, fused with shutdown (docs/design-unprivileged-root.md 9).
+            // AUTH_SYSTEM, fused with shutdown.
             Thread* c = sched::current();
             if (not cap_check_authority(c, AUTH_SYSTEM))
             {
@@ -872,7 +872,7 @@ uint64_t syscall_body(uintptr_t nr,
                 return 0; // NULL, not (uintptr_t)-1
             }
 #if KICKOS_HAVE_ASPACE
-            // F10: a page-aligned range RESERVED in the calling task's own space, mapped
+            // A page-aligned range RESERVED in the calling task's own space, mapped
             // nowhere. The number is a virtual address in that space, and the frames under it
             // are what makes it a globally unique name the handoff can carry. A privileged
             // caller gets null, holding the kernel domain, which carries no space.
@@ -887,7 +887,7 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_FRAME_MAP:
         case KOS_SYS_FRAME_UNMAP:
         {
-            // One lock spans resolve-to-use for BOTH capabilities and the edit they drive (F4).
+            // One lock spans resolve-to-use for BOTH capabilities and the edit they drive.
             IrqLock lock;
             Thread* const c = sched::current();
             if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
@@ -945,7 +945,7 @@ uint64_t syscall_body(uintptr_t nr,
             // The grant half of KOS_SYS_RAM_ALLOC, added to the CALLER's own region set.
             // AUTHORITY is thread-local by contract; how wide the resulting reach is belongs to
             // the backend, and a translating one maps into the task's space, so no caller may
-            // infer sibling denial from this (F9, F10).
+            // infer sibling denial from this.
             IrqLock lock;
             Thread* const c = sched::current();
             if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
@@ -987,7 +987,7 @@ uint64_t syscall_body(uintptr_t nr,
                 return 0;
             }
 #if KICKOS_HAVE_ASPACE
-            // The map half of F10: the range must be one this task RESERVED, which is what
+            // The map half: the range must be one this task RESERVED, which is what
             // refuses an address another task reserved. The arena and natural-alignment arms
             // below do not run here, a reservation naming frame-pool frames.
             enum arch_map_memtype mtype = ARCH_MAP_NORMAL;
@@ -1000,8 +1000,8 @@ uint64_t syscall_body(uintptr_t nr,
                                               size, ARCH_MAP_R | ARCH_MAP_W, mtype);
             // The range list already carries this mapping, at the EXACT extent, so there is no
             // region record beside it. That is what moves the -KOS_ENOMEM budget onto
-            // KICKOS_ASPACE_RANGES (F10) and what makes the grant reach every sibling, the array
-            // being per-THREAD while the mapping is task-wide (F9).
+            // KICKOS_ASPACE_RANGES and what makes the grant reach every sibling, the array
+            // being per-THREAD while the mapping is task-wide.
             return static_cast<uint64_t>(grc);
 #else
             // Rule 7 admission on the geometry that will actually be committed: a window
@@ -1038,10 +1038,10 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_ENOMEM);
             }
-            // Must be effective BEFORE the return: the caller's next instruction may
-            // dereference the region, and on a deferred-switch arch apply() only STASHES,
-            // the commit being what programs the hardware
-            // (docs/design-mpu-commit-deferred.md).
+            // Must be effective BEFORE the return: the caller's next
+            // instruction may dereference the region, and on a deferred-switch
+            // arch apply() only STASHES, the commit being what programs the
+            // hardware.
             c->mpu.apply();
             kickos_arch_mpu_commit();
             return 0;

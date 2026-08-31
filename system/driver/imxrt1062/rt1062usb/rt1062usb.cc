@@ -412,9 +412,9 @@ namespace
 
         void ep_open_all()
         {
-            // QUIESCE FIRST. The class layer also calls this from SET_CONFIGURATION, where
-            // bulk OUT may already be primed, and qh_init would zero a live overlay's page
-            // pointers. RM 42.7.40 also wants an un-primed endpoint before TXR/RXR.
+            // QUIESCE FIRST. On a SET_CONFIGURATION re-entry bulk OUT may already be
+            // primed, and qh_init would zero a live overlay's page pointers. RM 42.7.40
+            // also wants an un-primed endpoint before TXR/RXR.
             (void)flush(reg::EP_BIT_ALL);
             pending_complete_ = 0; // the transfers those bits described are cancelled
             set_stage(STAGE_FLUSHED);
@@ -598,8 +598,8 @@ namespace
 
         void set_address(uint8_t addr)
         {
-            // USBADRA left clear, so the address takes effect at once (RM 42.7.23). The class
-            // layer calls this from the status-stage IN completion, inside chapter 9's 2 ms.
+            // USBADRA left clear, so the address takes effect at once (RM 42.7.23), which
+            // chapter 9's 2 ms status-stage budget requires.
             r32(regs + reg::DEVICEADDR) =
                 static_cast<uint32_t>(addr) << reg::DEVICEADDR_USBADR_SHIFT;
         }

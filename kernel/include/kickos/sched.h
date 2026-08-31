@@ -115,7 +115,7 @@ namespace kickos
         // Consumed by the time subsystem when arming the tickless timer (RR slice
         // expiry today; the core carries no notion of a "slice").
         uint64_t next_timed_event();
-        // Called from the timer ISR on every expiry: if the active policy has a
+        // Runs in the timer ISR on every expiry: if the active policy has a
         // timed event due at `now` (an RR slice), let it act, then reschedule.
         void tick_rr(uint64_t now);
     }

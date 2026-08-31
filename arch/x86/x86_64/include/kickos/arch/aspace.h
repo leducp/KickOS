@@ -15,7 +15,7 @@
 namespace kickos::x86_64
 {
     // Adopt the live regime as the boot space and install this port's kernel window in it.
-    // Called from the chip's arch_init, after ring3_init and BEFORE any space exists.
+    // Call after ring3_init and BEFORE any space exists.
     // `ram_base` and `ram_size` are the conventional-memory run the UEFI memory map named.
     void aspace_init(uintptr_t ram_base, size_t ram_size);
 

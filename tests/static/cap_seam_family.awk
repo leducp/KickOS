@@ -14,7 +14,7 @@
 # MEMBERSHIP. The capability layer as a USER PROGRAM sees it: the handle type, the rights
 # mirror, the grant record a spawn carries, the authority word, the well-known index plane,
 # and the syscalls that close and narrow. M6.5 makes mapping a capability operation over frame
-# and page-table objects, and F3's expected result is that the cap layer absorbs them with NO
+# and page-table objects, and the expected result is that the cap layer absorbs them with NO
 # NEW ADDRESSING CONCEPT anywhere in it. This family is what that claim is checked against: an
 # address, a page number or a frame number arriving in any record below IS the finding.
 #

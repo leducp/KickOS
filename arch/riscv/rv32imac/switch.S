@@ -368,8 +368,8 @@ trap_entry:
     mv      a1, s1
     call    kickos_trace_switch_done   /* (from,to) from the swapped contexts */
 #endif
-    /* Deferred PMP commit, after the physical swap so it is atomic with it
-       (docs/design-mpu-commit-deferred.md). Runs with MIE=0, before .Lrestore pops the frame
+    /* Deferred PMP commit, after the physical swap so it is atomic with it.
+       Runs with MIE=0, before .Lrestore pops the frame
        and mret drops to U-mode. sp is callee-saved and every caller-saved clobber is
        reloaded by .Lrestore next. */
     call    kickos_arch_mpu_commit
@@ -446,12 +446,12 @@ svc_trampoline:
 
 /* --- Shared restore epilogue: pop the frame at sp, mret.                       */
 .Lrestore:
-    /* Force gp to its canonical link-time value. __global_pointer$ is anchored inside the
-       LIVE app small-data window, so a U-mode thread can write gp arbitrarily and the next
-       thread's gp-relative loads would resolve at addresses it chose. Every dispatch path
-       funnels here, so gp is self-healing per switch. norelax: the assembler would otherwise
-       relax the `la` into a no-op that assumes gp already holds it. See
-       docs/design-riscv-gp-split.md. */
+    /* Force gp to its canonical link-time value. __global_pointer$ is anchored inside
+       the LIVE app small-data window, so a U-mode thread can write gp arbitrarily and
+       the next thread's gp-relative loads would resolve at addresses it chose. Every
+       dispatch path funnels here, so gp is self-healing per switch. norelax: the
+       assembler would otherwise relax the `la` into a no-op that assumes gp already
+       holds it. */
     .option push
     .option norelax
     la      gp, __global_pointer$

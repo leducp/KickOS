@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The unbounded-loop rule of docs/reference/style.md: `while (true)`, never `for (;;)`.
+# The unbounded-loop rule: `while (true)`, never `for (;;)`.
 #
 # Run from the repo root, no arguments: tests/static/check_forever_loop.sh
 #

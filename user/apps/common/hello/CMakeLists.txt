@@ -39,6 +39,17 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_hello.sh")
 endif()
 
+# The secondary-arrival gate, on the smallest image that boots the chip: every core comes up
+# in arch_init, so the app itself is only what carries the release there. The expected count is
+# the configured one, and the script boots the image a second time on a machine one core short.
+# TIMEOUT covers two boots plus the arrival spin bound the refusal path has to reach.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64" AND KICKOS_NUM_CORES GREATER 1)
+  kickos_add_qemu_test(NAME qemu_arm64_smp_arrival TARGET hello BOARD qemu-arm64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_arrival.sh"
+    ARGS ${KICKOS_NUM_CORES} "pong 3"
+    TIMEOUT 240)
+endif()
+
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-x86_64")
   kickos_add_qemu_test(NAME qemu_x86_64_hello TARGET hello BOARD qemu-x86_64
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_hello.sh")

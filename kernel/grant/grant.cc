@@ -50,7 +50,7 @@ namespace kickos
             {
                 return true;
             }
-            // R9: a reserved peripheral block is ALSO reachable through its bit-band
+            // A reserved peripheral block is ALSO reachable through its bit-band
             // alias image, so a grant touching that image would poke the reserved
             // registers one bit at a time. Gate the x32 multiply behind the fully-
             // in-region test so neither the (base-0x40000000)*32 offset nor the
@@ -72,7 +72,7 @@ namespace kickos
     bool grant_region_admissible(uintptr_t base, size_t size, uint32_t attr,
                                  bool caller_authorized)
     {
-        // R6/minor: the size-0 and wrap refusals live HERE, not only in the overlap
+        // The size-0 and wrap refusals live HERE, not only in the overlap
         // helper (which treats size 0 as "touches nothing").
         if (size == 0)
         {
@@ -107,7 +107,7 @@ namespace kickos
             {
                 return false;
             }
-            // R5: on a bit-band chip refuse ANY DEV window intersecting either alias
+            // On a bit-band chip refuse ANY DEV window intersecting either alias
             // region; nothing in-tree grants an alias, so a blanket refusal is the
             // simplest sound rule. DEV-only, hence here and not in hits_reserved.
             if (arch_bitband_present() != 0)
@@ -121,7 +121,7 @@ namespace kickos
             }
             return true;
         }
-        // RAM data grant. R1 (CRITICAL): the block must be nameable by ONE descriptor,
+        // RAM data grant: the block must be nameable by ONE descriptor,
         // else the programmed window covers a span the caller did not ask for (a PMSA/
         // NAPOT descriptor snaps an unaligned base downwards). The mask this replaced
         // was only an alignment test, sound while every size was a power of two.

@@ -12,21 +12,21 @@
 #define KICKOS_RV64_DRAM_SIZE 0x04000000
 
 /* The physical extent this platform implements, in bits, and a BOARD fact: RISC-V publishes no
- * identity register reporting it, and the PTE's PPN field is 44 bits in every RV64 mode
- * (docs/design-m6-mmu.md F8). The map editor is handed this to refuse a range the machine does
+ * identity register reporting it, and the PTE's PPN field is 44 bits in every RV64 mode.
+ * The map editor is handed this to refuse a range the machine does
  * not implement before the leaf is written.
  */
 #define KICKOS_RV64_PHYS_ADDR_BITS 32
 
 /* VA = PA + this, so kernel text links at 0xFFFFFFFF_80000000. The top 2 GiB is the one base
  * the prebuilt medlow libc and libgcc multilibs link against, and it is canonical at every
- * paging mode the Kconfig choice offers (docs/design-m6-mmu.md R1.4b, R3).
+ * paging mode the Kconfig choice offers.
  */
 #define KICKOS_RV64_VA_BASE 0xFFFFFFFF00000000
 
-/* The console and the finisher, physical. startup.S reaches them untranslated to refuse a
- * paging mode this hart does not implement; the chip reaches the same registers at
- * KICKOS_RV64_VA_BASE plus these.
+/* The console and the finisher, physical: reached untranslated before paging is on, to
+ * refuse a paging mode this hart does not implement, and at KICKOS_RV64_VA_BASE plus these
+ * once it is.
  *
  * The paging mode is a Kconfig choice and lives in <kickos/arch/rv64_paging.h>, which this file
  * may not include: the linker script reads it with no arch include directory.

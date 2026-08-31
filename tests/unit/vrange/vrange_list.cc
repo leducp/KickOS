@@ -3,8 +3,8 @@
 //
 // Host arms for kernel/mem/vrange.cc.
 //
-// The granule is passed explicitly by every arm, never taken from a constant, because F7's
-// freeze is that the figure is the arch's answer.
+// The granule is passed explicitly by every arm, never taken from a constant: the figure
+// is the arch's answer and never a kernel constant.
 
 #include <kickos/vrange.h>
 #include <kickos/arch/arch.h>
@@ -192,7 +192,7 @@ TEST(VRange, the_granule_is_the_arch_answer_and_not_a_constant)
 TEST(VRange, find_answers_the_one_entry_a_range_lies_inside)
 {
     // An address this list never reserved is in no entry, a cross-task self-grant
-    // included (F10).
+    // included.
     kickos::VirtualRanges v = made();
     ASSERT_TRUE(v.reserve(BASE, 4));
     EXPECT_EQ(v.find(BASE - 1, 1), nullptr);
@@ -256,9 +256,8 @@ TEST(VRange, the_memory_type_is_recorded_by_the_grant_that_maps_it)
 TEST(VRange, overlaps_fails_closed_on_an_extent_whose_arithmetic_wraps)
 {
     // overlaps is public and advertises no precondition, so it owns its own extent
-    // arithmetic. Its only caller checks first today, which is what makes a wrapped end
-    // unwitnessed: a computed end below the base makes the loop's comparisons meet nothing
-    // and the range reads as free.
+    // arithmetic. A wrapped end is what goes unwitnessed elsewhere: a computed end below
+    // the base makes the loop's comparisons meet nothing and the range reads as free.
     kickos::VirtualRanges v = made();
     ASSERT_TRUE(v.reserve(BASE, 1));
     // The byte count itself wraps.

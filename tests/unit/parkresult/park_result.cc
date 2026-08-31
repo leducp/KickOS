@@ -74,7 +74,7 @@ namespace kickos
                 Thread* const holder = spawn(0, PRIO_HOLDER);
                 Thread* const waiter = spawn(1, PRIO_WAITER);
                 sched::reschedule();
-                EXPECT_EQ(kernel().current, waiter) << "fixture: the waiter is current";
+                EXPECT_EQ(kernel().current[arch_cpu_id()], waiter) << "fixture: the waiter is current";
                 g_switches = 0;
                 trace_reset();
                 *out_holder = holder;

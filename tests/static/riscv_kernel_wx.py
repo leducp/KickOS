@@ -2,15 +2,15 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# THE KERNEL'S OWN MAPPING IS NEVER WRITABLE AND EXECUTABLE AT ONCE (docs/design-m6-mmu.md
-# R2.3). The kernel window is one LEVEL-2 slot, filled with a level-1 table whose leaves span
-# 2 MiB each: the leaves covering the KTEXT region are read-execute and every leaf above them
-# is read-write. This reads the LINKED image and refuses a table that widens either side.
+# THE KERNEL'S OWN MAPPING IS NEVER WRITABLE AND EXECUTABLE AT ONCE. The kernel window is one
+# LEVEL-2 slot, filled with a level-1 table whose leaves span 2 MiB each: the leaves covering
+# the KTEXT region are read-execute and every leaf above them is read-write. This reads the
+# LINKED image and refuses a table that widens either side.
 #
 # The paging mode does not reach this gate: a mode with more levels adds tables ABOVE level 2
-# and leaves the level-2 table and everything under it alone (docs/design-m6-mmu.md R3), so the
-# symbol below names the same table at every mode. A level shift that DID move the boundary
-# refuses by name below, the entries there no longer being 2 MiB leaves.
+# and leaves the level-2 table and everything under it alone, so the symbol below names the
+# same table at every mode. A level shift that DID move the boundary refuses by name below,
+# the entries there no longer being 2 MiB leaves.
 #
 # The subject is the IMAGE. The leaves are link-time constants assembled into .mmu_boot, so
 # what the hardware walks is a byte range of the ELF, and the boundary they are checked against
@@ -470,7 +470,7 @@ def check(readelf, elf, report):
     # THE ALIAS THE KERNEL WRITES THROUGH. The app's half loads inside the window's physical
     # span while it links outside the window, and the reset path zeroes .appbss through the
     # kernel's own alias of those frames, so the leaf over them has to be writable. Nothing
-    # demands X there: kernel text never fetches through this alias (R2.2).
+    # demands X there: kernel text never fetches through this alias.
     aliases = 0
     for seg in segs:
         if "W" not in seg["flags"] or seg["memsz"] == 0:

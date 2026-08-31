@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+# A fixture: the base posture with one clause changed, four cores on an arch that ships no
+# smp.cmake. Kconfig resolves it and the shared-kernel hardware predicate in the root
+# CMakeLists refuses it, which is what tests/static/check_smp_predicate.sh reads. Configuring
+# this variant fails by design.
+
+CONFIG_BOARD_SIM=y
+
+CONFIG_MEMORY_MODEL_MPU=y
+CONFIG_KICKOS_DEBUG=y
+CONFIG_KICKOS_ENABLE_SELFTEST=y
+
+CONFIG_KICKOS_CORES_FOUR=y

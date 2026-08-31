@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The redirect hook in switch_to (docs/design-kill-and-slay.md sections 3.2 and 3.5). Four
-// claims:
+// The redirect hook in switch_to. Four claims:
+//
 //   * a CANCEL_SLAY thread's context is rebuilt into kickos_thread_slay_exit at the top of
 //     its own stack, and a CANCEL_KILL one's is not, the two verbs staying distinct at the
 //     point they diverge or a kill silently loses its cleanup window.
@@ -61,7 +61,7 @@ namespace kickos
             {
                 Thread* const r = spawn(SLOT_RUNNER, PRIO_LOW);
                 sched::reschedule();
-                EXPECT_EQ(kernel().current, r) << "fixture: the runner is current";
+                EXPECT_EQ(kernel().current[arch_cpu_id()], r) << "fixture: the runner is current";
                 g_switches = 0;
                 g_redirects = 0;
                 g_redirect_target = nullptr;
@@ -80,7 +80,7 @@ namespace kickos
 
             sched::reschedule();
 
-            EXPECT_EQ(kernel().current, v) << "fixture: the higher-priority victim was picked";
+            EXPECT_EQ(kernel().current[arch_cpu_id()], v) << "fixture: the higher-priority victim was picked";
             EXPECT_EQ(g_redirects, 1u) << "its resume was claimed";
             EXPECT_EQ(g_redirect_target, v) << "and the context named is the victim's own";
         }
@@ -114,7 +114,7 @@ namespace kickos
 
             sched::reschedule();
 
-            EXPECT_EQ(kernel().current, v) << "fixture: the switch happened";
+            EXPECT_EQ(kernel().current[arch_cpu_id()], v) << "fixture: the switch happened";
             EXPECT_EQ(g_redirects, 0u)
                 << "the hook reads the INCOMING thread only; a rebuild of the outgoing "
                    "context is what the switcher's save destroys";
@@ -150,7 +150,7 @@ namespace kickos
 
             sched::reschedule();
 
-            EXPECT_EQ(kernel().current, v) << "fixture: it was switched in";
+            EXPECT_EQ(kernel().current[arch_cpu_id()], v) << "fixture: it was switched in";
             EXPECT_EQ(g_redirects, 0u)
                 << "a kill keeps its cleanup window and dies at its next syscall ENTRY; "
                    "claiming its resume here would silently make kill mean slay";
@@ -180,7 +180,7 @@ namespace kickos
 
             sched::reschedule();
 
-            EXPECT_EQ(kernel().current, v) << "fixture: it was switched in";
+            EXPECT_EQ(kernel().current[arch_cpu_id()], v) << "fixture: it was switched in";
             EXPECT_EQ(g_redirects, 0u)
                 << "`dying` is the window's existing marker and no fourth flag is needed";
         }
@@ -195,7 +195,7 @@ namespace kickos
             v->cancel_kind = CANCEL_SLAY;
 
             sched::reschedule();       // switch to the victim, rebuild #1
-            kernel().current = r;      // the fixture never switches, so put the runner back
+            kernel().current[arch_cpu_id()] = r;      // the fixture never switches, so put the runner back
             r->state = ThreadState::RUNNING;
             v->state = ThreadState::READY;
             sched::reschedule();       // pick the victim again, rebuild #2

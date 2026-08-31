@@ -3,8 +3,9 @@
 
 CONFIG_BOARD_MICROBIT=y
 
-# The RECOMMENDED tier of docs/reference/boards.md, which states what that tier buys; the
-# per-board arithmetic below is what this part pays for it.
+# The RECOMMENDED tier: 4 or more threads, thread_local, the fleet-default cap tables and
+# a self-test that fits as one image. The per-board arithmetic below is what this part
+# pays for it.
 #
 # 32 KiB of SRAM, a departure from the real device's 16 KiB (arch/arm/chip/nrf51/nrf51.ld
 # carries the reason): the fleet's only executable armv6m target, provisioned like the

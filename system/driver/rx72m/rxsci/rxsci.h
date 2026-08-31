@@ -10,8 +10,7 @@
 // kos_uart_read instead, so error recovery waits for the next event.
 //
 // kos_console_publish MUST precede the claim: the kernel console ring holds vector 87
-// until then, and a claim is refused while any handler but the default is attached
-// (INVARIANT H2).
+// until then, and a claim is refused while any handler but the default is attached.
 //
 // The RX MPU checks every user-mode access over the whole address space, SFR aperture
 // included, with no carve-out (UM sec.17.1 and Table 17.1). 16 bytes is the MPU minimum,

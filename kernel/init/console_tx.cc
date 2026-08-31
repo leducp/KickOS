@@ -161,7 +161,7 @@ namespace
     }
 
     // Runs with interrupts UNMASKED: a synchronous write is the long operation this file
-    // keeps out of a masked span. The re-read (B1) is console_chip_writable, which stays true
+    // keeps out of a masked span. The re-read is console_chip_writable, which stays true
     // through a handover: this caller can be the in-flight writer a publish is draining, and
     // refusing it truncates the message it is finishing.
     void write_unbuffered(char const* buf, size_t n)
@@ -311,8 +311,8 @@ void console_tx_flush_sync(void)
     drain_sync();
 }
 
-// Called once from kmain, after irq_init(). The TX line's priority must land in the
-// IrqLock-maskable band. No-op on sim and polled-only chips.
+// Call once, after irq_init(). The TX line's priority must land in the IrqLock-maskable
+// band. No-op on sim and polled-only chips.
 void console_buffer_init(void)
 {
     char* buf = nullptr;
@@ -338,7 +338,7 @@ void console_buffer_init(void)
     arch_irq_unmask(line);
 }
 
-// Relinquish the buffered TX path so a userspace driver can take the UART (D2). One IrqLock
+// Relinquish the buffered TX path so a userspace driver can take the UART. One IrqLock
 // makes the four steps atomic against the drain ISR. console_tx_write holds the lock one
 // chunk at a time, so it re-reads `armed` under the same lock as each enqueue. The disarmed
 // guard also covers polled-only chips (mps2/virt/nrf51 never arm) and a re-publish. The

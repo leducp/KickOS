@@ -38,9 +38,8 @@ namespace kickos
         }
 
 #if KICKOS_HAVE_ASPACE
-        // The only caller of aspace_release in this file, so no site can unmap the borrowed
-        // entry without surrendering the reference it rests on. The edge is returned to the
-        // caller; a release here would recurse down a chain of borrowers.
+        // The edge is returned to the caller; a release here would recurse down a chain of
+        // borrowers.
         Domain* drop_space(Domain* d)
         {
             Domain* const donor = d->borrowed_from;

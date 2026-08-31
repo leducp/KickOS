@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Death scoped by kind, and the group kill (docs/design-task-layer.md sections 6 and 9.5).
+// Death scoped by kind, and the group kill.
 //
 // Three claims, and only one of them is a counter:
 //   * the SCOPE boundary. A FAULT ends the whole group, because siblings share the address
@@ -64,7 +64,7 @@ namespace kickos
             Thread* const stranger = seat_pool(SLOT_OTHER, PRIO_LOW);
             join_task(c, alone);
             join_task(stranger, other);
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             run_exit_faulted(0);
 
@@ -87,7 +87,7 @@ namespace kickos
             join_task(peer, group);
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             run_exit(0);
 
@@ -111,7 +111,7 @@ namespace kickos
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
             c->cancel_kind = CANCEL_KILL;
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             run_exit(0);
 
@@ -134,7 +134,7 @@ namespace kickos
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
             c->cancel_kind = CANCEL_SLAY;
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             run_exit(0);
 
@@ -155,7 +155,7 @@ namespace kickos
             join_task(peer, group);
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             run_exit_faulted(0);
 
@@ -176,7 +176,7 @@ namespace kickos
             join_task(peer, group);
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             run_exit_faulted(0);
 
@@ -199,7 +199,7 @@ namespace kickos
             join_task(peer, group);
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             run_exit_faulted(0);
 
@@ -220,7 +220,7 @@ namespace kickos
             join_task(peer, group);
             Endpoint* const ep = endpoint();
             park_plain_sender(peer, ep);
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             run_exit_faulted(0);
 
@@ -241,7 +241,7 @@ namespace kickos
             join_task(c, group);
             join_task(peer, group);
             park_sleeper(peer, 1000000u);
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             run_exit_faulted(0);
 
@@ -266,7 +266,7 @@ namespace kickos
             park_mutex_waiter(peer, m);
             // The donation the real mutex_lock would have made.
             sched::set_prio(owner, PRIO_HIGH);
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             run_exit_faulted(0);
 
@@ -290,7 +290,7 @@ namespace kickos
             join_task(peer, group);
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
             trace_reset();
 
             run_exit_faulted(0);
@@ -313,7 +313,7 @@ namespace kickos
             join_task(peer, group);
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
             trace_reset();
 
             run_exit_faulted(0);
@@ -335,7 +335,7 @@ namespace kickos
             join_task(c, group);
             join_task(peer, group);
             c->dying = true;
-            kernel().current = peer;
+            kernel().current[arch_cpu_id()] = peer;
 
             IrqLock lock;
             task_cancel_group(group, CANCEL_KILL);
@@ -362,7 +362,7 @@ namespace kickos
             waiter->wait_kind = WAIT_TASK_EMPTY;
             waiter->wait_obj = group;
             waiter->wait_result = WAIT_RESULT_POISON;
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             run_exit(0);
 
@@ -387,7 +387,7 @@ namespace kickos
             waiter->wait_kind = WAIT_TASK_EMPTY;
             waiter->wait_obj = group;
             waiter->wait_result = WAIT_RESULT_POISON;
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             run_exit(0);
 
@@ -409,7 +409,7 @@ namespace kickos
             waiter->wait_kind = WAIT_TASK_EMPTY;
             waiter->wait_obj = other;
             waiter->wait_result = WAIT_RESULT_POISON;
-            kernel().current = c;
+            kernel().current[arch_cpu_id()] = c;
 
             run_exit(0);
 
@@ -424,7 +424,7 @@ namespace kickos
         {
             Task* const empty = task(0);
             Thread* const stranger = seat_pool(SLOT_OTHER, PRIO_LOW);
-            kernel().current = stranger;
+            kernel().current[arch_cpu_id()] = stranger;
 
             IrqLock lock;
             task_cancel_group(empty, CANCEL_KILL);

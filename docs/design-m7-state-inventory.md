@@ -25,6 +25,9 @@ The classification below therefore has two halves, and the second half is where 
 
 ## 2. `struct Kernel`, member by member
 
+`frame_runs` and `frame_run_refs` are M6.5's additions, classified by the step that landed them,
+which is what `design-m6-mmu.md` section 6 asks of every milestone that adds kernel state.
+
 | Member | Class | Why |
 |---|---|---|
 | `ready[KICKOS_NUM_PRIO]` | per-core | one run-queue per core is the whole point of stage 2; global under the stage-1 big lock |
@@ -45,8 +48,9 @@ The classification below therefore has two halves, and the second half is where 
 | `mutexes`, `mutex_refs` | global | same, and PI across cores requires one pool |
 | `endpoints`, `endpoint_refs` | global | same, and cross-core IPC is the stated goal |
 | `threads` (`ThreadPool`) | global | a TCB must be visible from any core |
-| `domains` | global | shared region sets referenced by threads on either core |
+| `domains` | global | shared region sets referenced by threads on either core. `Domain::generation` rides with it, bumped on every claim so a capability naming a reclaimed slot is refused rather than answered by its next occupant, which is the ABA guard `ThreadPool` already uses |
 | `tasks` | global | a task group spans cores by definition |
+| `frame_runs`, `frame_run_refs` | global | object pool reached by capability handle from any core, same argument as `sems`/`endpoints`/`irq_bindings`; the refcount array is a shared read-modify-write serialised by the lock, exactly as `irq_spurious_count`. Storage is posture-gated (`KICKOS_HAVE_ASPACE`); only a translating board has a frame pool to name |
 | `irq_table` | global | see ruling 1 |
 | `irq_bindings`, `irq_refs` | global | cap-refcounted objects, same argument as the other pools |
 | `irq_spurious_count` | global | a diagnostic counter; it is a shared read-modify-write and the lock is what serialises it |
@@ -72,7 +76,7 @@ This is the half an inventory of the struct does not see. Classification as abov
 | `g_console_panicking` | global | a panic on either core must force every core polled |
 | `g_console_state` | global | ownership of one device |
 | `g_console_driver_died` | global | a property of one endpoint |
-| `g_chip_writers` | global | **and it is the one to look at twice**: it counts writers ACROSS cores, which is what makes the drain-to-zero handshake mean anything. It is `Order::RELAXED` today and that is CORRECT today -- `console.cc` requires every access, mutator and reader alike, to run under `IrqLock`, and on one core that is exclusion. Under a shared kernel the lock stops excluding and the handshake needs release/acquire. **A present-tense reading of this row is wrong**; it is M6 work, not a bug |
+| `g_chip_writers` | global | **and it is the one to look at twice**: it counts writers ACROSS cores, which is what makes the drain-to-zero handshake mean anything. It is `Order::RELAXED` today and that is CORRECT today -- `console.cc` requires every access, mutator and reader alike, to run under `IrqLock`, and on one core that is exclusion. Under a shared kernel the lock stops excluding and the handshake needs release/acquire. **A present-tense reading of this row is wrong**; it is M7 work, not a bug |
 | `g_handover_tried` | global | exactly-once reboot, system-wide |
 | `g_led_on` | global | one LED |
 | `g_kernel`, `g_default_user` (`kernel/domain/domain.cc`) | global | they were cached pointers into the global `domains[]`. **RESOLVED, section 6**: both caches were deleted, and `domain_kernel()` / `domain_default_user()` index `kernel().domains[]` on each call |
@@ -165,7 +169,7 @@ listed as ordering work rather than type work: the pair being two relaxed atomic
 
 ## 5. What this classification costs, stated up front
 
-Three consequences that are cheaper to know now than to discover during M6.
+Three consequences that are cheaper to know now than to discover during M7.
 
 - **Splitting `Kernel` moves `microbit`'s arena base**, per the `task_holds`/`sleepq` adjacency
   assert. That board's `_ebss` IS its arena base, so any movement costs a full 32-byte granule and
@@ -175,7 +179,7 @@ Three consequences that are cheaper to know now than to discover during M6.
   because it is correct on its own terms: the idle TCB is instance state sitting outside the
   instance. **It went in; see section 6.**
 - **The sim's `altstack` is a bug now**, not an SMP hazard. It blocks the multi-instance sim the
-  moment two host threads exist, and the multi-instance sim is an M5 requirement rather than an M6
+  moment two host threads exist, and the multi-instance sim is an M5 requirement rather than an M7
   one.
 
 ## 6. The paper classification met an implementation, and mostly survived

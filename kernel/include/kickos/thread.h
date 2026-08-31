@@ -166,7 +166,7 @@ namespace kickos
         // The dev window this thread holds, and the whole of the periph seam's possession gate.
         // Seated once at create from the spawn's grant; dev_size 0 means none, and a window at
         // base 0 is not expressible. This is AUTHORITY and not the mapping: a translating backend
-        // maps task-wide (docs/design-m6-mmu.md F9).
+        // maps task-wide.
         uintptr_t dev_base = 0;
         size_t dev_size = 0;
         // stack_base was demand-allocated by the kernel and must be harvested onto the free

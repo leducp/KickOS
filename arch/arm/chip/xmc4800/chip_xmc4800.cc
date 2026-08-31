@@ -438,7 +438,7 @@ uint32_t arch_cpu_clock_set(uint32_t target)
 
     if (want_hz > previous)
     {
-        // RISE: widen flash wait-states BEFORE the frequency climbs (S3), then walk
+        // RISE: widen flash wait-states BEFORE the frequency climbs, then walk
         // K2DIV DOWN the staircase (every intermediate point is <= want_hz, so want_ws
         // covers them all).
         set_flash_ws(want_ws);

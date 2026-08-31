@@ -75,7 +75,7 @@ namespace
         //
         // Removing the window grant kills the console even though SYSMPU cannot gate a
         // peripheral: possession is the sole authorisation for the kos_periph_enable
-        // inside kos_uart_open (docs/reference/boards.md, "When an MMIO grant is INERT").
+        // inside kos_uart_open.
         .threads = {{.entry = k64uart_console_driver,
                      .name = nullptr,
                      .prio_delta = 0,

@@ -9,7 +9,6 @@
 # ESP32-C6-WROOM-1 (ESP-RISC-V "HP CPU", RV32IMAC, M/U + PMP). Shares the rv32imac
 # arch with the qemu-riscv (virt) board; the esp32c6 chip layer supplies the real
 # UART/SYSTIMER/watchdog/CLINT edges.
-# Validation status of this board: see docs/reference/boards.md.
 set(KICKOS_BOARD_ID    "esp32c6-wroom")
 set(KICKOS_ARCH_FAMILY "riscv")
 set(KICKOS_ARCH        "rv32imac")
