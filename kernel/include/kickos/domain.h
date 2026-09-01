@@ -97,6 +97,13 @@ namespace kickos
     // How many pool slots hold an address space at all, live or free. A free slot legitimately
     // holds one, so a count above the number of live tasks is not a leak by itself.
     size_t domain_spaces_held(void);
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // Bit c set where core c's translation base names a root SOME pool slot still holds; a
+    // core outside this set and the boot root's is translating through tables the frame pool
+    // has taken back.
+    uint32_t domain_cores_on_held_space(void);
+#endif
 #endif
 
     // Boot: build the two immortal domains (kernel = whole arena/privileged,

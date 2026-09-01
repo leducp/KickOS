@@ -2,12 +2,10 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The WHOLE seam between the kernel sources a K-seam gate compiles and the rest of the
-// image: every symbol here is one those sources name and none of them define.
+// image: every symbol here is one those sources leave undefined.
 //
-// RE-DERIVE IT, never assume a total. The set is a property of the chosen sources AND of the
-// preset, and both move: adding a source trades one group of symbols for another, and
-// ktrace.h is header-inline, so under sim-telem irq.cc reaches the trace sink and needs two
-// stubs that no other posture does.
+// RE-DERIVE THE SET, which is a property of the chosen sources AND of the preset, both of
+// which move:
 //
 //   nm --undefined-only <the objects> | comm -23 - <their defined symbols>
 //
@@ -27,6 +25,7 @@
 #include <kickos/instance.h>
 #include <kickos/irq.h>
 #include <kickos/kernel.h>
+#include <kickos/klock.h>
 #include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/time.h>
@@ -35,8 +34,8 @@
 
 extern "C"
 {
-    // Counted, not merely stubbed: the moment the count reaches zero inside a capability
-    // sweep IS the chunk gap, which is where run_in_chunk_gap seats an interleaving.
+    // Counted: the moment the count reaches zero inside a capability sweep IS the chunk gap,
+    // where run_in_chunk_gap seats an interleaving.
     arch_irq_state_t arch_irq_save(void)
     {
         kickos::testfix::note_irq_save();
@@ -61,9 +60,8 @@ extern "C"
     {
     }
 
-    // The interrupt controller. Silent, because what a gate reads is the DISPATCH TABLE
-    // irq.cc keeps in Kernel: a line is free iff it holds the null-object default, which is
-    // the state a claim tests and a detach restores.
+    // The interrupt controller. What a gate reads is the DISPATCH TABLE irq.cc keeps in
+    // Kernel: a line is free iff it holds the null-object default.
     void arch_irq_mask(int)
     {
     }
@@ -81,6 +79,42 @@ extern "C"
         kickos::testfix::note_park();
     }
 
+#if KICKOS_NUM_CORES > 1
+    // At one core arch_cpu_id is a macro folding to a literal and no source in the tree may
+    // define it.
+    uint32_t arch_cpu_id(void)
+    {
+        return kickos::testfix::g_core;
+    }
+#endif
+
+#if KICKOS_KERNEL_CORES > 1
+    void arch_kernel_lock(void)
+    {
+        kickos::testfix::note_klock_acquire();
+    }
+
+    void arch_kernel_unlock(void)
+    {
+        kickos::testfix::note_klock_release();
+    }
+
+    // The raise a release restores an owed reschedule with.
+    void arch_ipi_resched_self(void)
+    {
+    }
+
+    void arch_ipi_send(uint32_t cores)
+    {
+        kickos::testfix::g_ipi_sends++;
+        kickos::testfix::g_ipi_send_mask |= cores;
+    }
+
+    void arch_ipi_wait(uint32_t)
+    {
+    }
+#endif
+
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     // ktrace.h is header-inline and reaches BOTH of these from kernel/irq/irq.cc.
     uint32_t arch_trace_now(void)
@@ -94,8 +128,12 @@ extern "C"
     }
 #endif
 
+    // RETURNS, where the real one does not, into a sched::start bracket that still owes a
+    // leave to the lock and the depth. Re-taking both is what lets that bracket unwind: short
+    // of it the depth wraps and every later acquire in the process is silently skipped.
     void arch_start(struct arch_context*, struct arch_context*)
     {
+        kickos::klock_enter();
     }
 
     // Returns without switching; see kfixture.h for what that costs an arm.
@@ -105,7 +143,7 @@ extern "C"
                                      kickos::testfix::thread_of_context(to));
     }
 
-    // Records rather than rebuilds; kfixture.h states what an arm reads from it.
+    // Records rather than rebuilds; kfixture.h has what an arm reads.
     void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                            void* stack_base, size_t stack_size)
     {
@@ -170,12 +208,12 @@ namespace kickos
     {
     }
 
-    // The domain pool, cut here rather than at kernel/domain/domain.cc: what task.cc asks of
-    // it is to store the pointer, count references and free at zero.
+    // The domain pool: store the pointer, count references, free at zero, which is what
+    // task.cc asks of it.
     //
-    // NO DEDUP: every call hands back a distinct domain, where the real domain_for returns
-    // the shared default-user singleton for a no-grant unprivileged task. That is what lets
-    // an arm read one task's reference count without another task's holds in it.
+    // NO DEDUP: every call hands back a distinct domain, where the real domain_for returns the
+    // shared default-user singleton for a no-grant unprivileged task, so an arm reads one
+    // task's reference count clear of another task's holds.
     Domain* domain_for(uint32_t, void*, size_t, uint32_t, Domain*, int* err)
     {
         *err = 0;

@@ -11,7 +11,8 @@
 #include <kickos/chip_limits.h>  // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
 #include <kickos/sys/atomic.h>
 
-#include "gicv2.h" // arch/arm64/common: the architected half of this machine's controller
+#include "gicv2.h"       // arch/arm64/common: the architected half of this machine's controller
+#include "smp_bringup.h" // arch/arm64/common: ARM64_BRINGUP_WAIT_NS
 
 #include <fatal_status.ld.h>
 
@@ -56,6 +57,10 @@ extern "C"
     // Set by a core once it is executing its own code, which is what separates ARRIVED from
     // the SUCCESS PSCI returns for a core it merely started.
     extern kickos::Atomic<uint8_t, kickos::Order::RELAXED> kickos_armv8a_core_online[];
+
+    // The armv8a doorbell-and-lock bring-up check. Terminates the image on a raise that goes
+    // unanswered.
+    void kickos_armv8a_doorbell_selfcheck(void);
 #endif
 }
 
@@ -212,9 +217,9 @@ namespace
     char const SMP_ONLINE[] = "# smp: ";
     char const SMP_ONLINE_TAIL[] = " core(s) online\n";
 
-    // Bounded so a core that never arrives refuses rather than hangs: a timeout kill is
-    // indistinguishable from an image that never started. Sized with room over, not tuned.
-    constexpr uint32_t SECONDARY_ARRIVAL_SPINS = 100000000u;
+    // Bounded so a core that never arrives refuses rather than hangs. The counter is live
+    // before the release, so the bound means the same on a part of any clock speed.
+    constexpr uint64_t SECONDARY_ARRIVAL_NS = kickos::ARM64_BRINGUP_WAIT_NS;
 
     // A core short of KICKOS_NUM_CORES is FATAL: the count sizes every per-core array, so
     // continuing would hand threads to a core that is not running.
@@ -271,11 +276,10 @@ namespace
         // cell is read rather than assumed.
         for (uint32_t index = 0; index < KICKOS_NUM_CORES; index++)
         {
-            uint32_t spins = 0;
+            uint64_t const deadline = counter_now() * g_ns_per_tick + SECONDARY_ARRIVAL_NS;
             while (kickos_armv8a_core_online[index] == 0)
             {
-                spins++;
-                if (spins > SECONDARY_ARRIVAL_SPINS)
+                if (counter_now() * g_ns_per_tick > deadline)
                 {
                     arch_console_write(NO_ARRIVAL, sizeof(NO_ARRIVAL) - 1);
                     console_hex(index, 2);
@@ -291,6 +295,10 @@ namespace
         arch_console_write(SMP_ONLINE, sizeof(SMP_ONLINE) - 1);
         console_hex(KICKOS_NUM_CORES, 1);
         arch_console_write(SMP_ONLINE_TAIL, sizeof(SMP_ONLINE_TAIL) - 1);
+
+        // AFTER ARRIVAL: the check needs every core's interface live and its target bit
+        // published.
+        kickos_armv8a_doorbell_selfcheck();
     }
 #endif
 }

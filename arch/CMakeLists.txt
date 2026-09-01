@@ -215,6 +215,9 @@ elseif(KICKOS_ARCH STREQUAL "armv8a")
     arm64/armv8a/vectors.S
     arm64/armv8a/switch.S
     arm64/armv8a/secondary.S
+    # The cross-core kernel lock and the doorbell, which are one mechanism: the acquire loop
+    # services a pending doorbell. Empty at one core.
+    arm64/armv8a/klock_armv8a.cc
     # Interrupt controller, one backend per image: the GIC version, its bases and its routing
     # are the part's, and a chip states them by defining kickos_gicv2 (arm64/common/gicv2.h).
     arm64/common/arch_arm64_gicv2.cc
@@ -673,6 +676,8 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
       OUTPUT "${_ld_gen}"
       COMMAND ${CMAKE_C_COMPILER} -E -P -x c ${_ld_defs}
               "-I${CMAKE_CURRENT_SOURCE_DIR}/common"
+              # An arch may state a geometry both its own code and a chip's script read.
+              "-I${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include"
               -MD -MF "${_ld_gen}.d" -MT "${_ld_gen}"
               "${_ld}" -o "${_ld_gen}"
       DEPENDS "${_ld}" "${CMAKE_CURRENT_SOURCE_DIR}/common/boot_arena.ld.h"

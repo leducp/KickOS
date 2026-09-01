@@ -305,7 +305,7 @@ enum kos_aspace_op
                                  //   simultaneous acquires of ONE page, or 0 where the
                                  //   scenario could not be built
     KOS_ASPACE_OP_CAP_OBJECTS = 25, // () -> the KOS_ASPACE_CAPOBJ_* bits that held for the
-                                 //   two object kinds M6.5 adds to the capability layer, a
+                                 //   two object kinds the capability layer carries, a
                                  //   frame RUN and an address space: minted into the caller's
                                  //   own table, resolved back through the chokepoint, and
                                  //   closed. Every bit answers about a HANDLE and none of
@@ -322,10 +322,28 @@ enum kos_aspace_op
                                  //   OWN space, minted into its table, or 0. A child task
                                  //   needs one for its own space and holds no other way to
                                  //   name it
-    KOS_ASPACE_OP_CAP_RUN_REFS = 29 // () -> how many holders the last seeded frame RUN has,
+    KOS_ASPACE_OP_CAP_RUN_REFS = 29, // () -> how many holders the last seeded frame RUN has,
                                  //   capabilities and MAPPINGS alike. A mapping is a holder:
                                  //   without that the last capability's drop frees frames a
                                  //   live leaf still points at
+    KOS_ASPACE_OP_ACTIVE_CORES = 30, // () -> where the kernel's cores stand on translation
+                                 //   roots, three fields in one word:
+                                 //     23..16  cores one kernel schedules on, the denominator
+                                 //     15..8   of those, the ones whose installed root is the
+                                 //             boot root or a root some live domain holds
+                                 //      7..0   cores the CALLING task's own space is installed
+                                 //             on, which is its ACTIVE-CORE SET counted
+                                 //   The middle field equalling the high one is the invariant
+                                 //   that no core holds a root it is not running
+    KOS_ASPACE_OP_DOORBELL_COUNTS = 31 // (core) -> what `core` has done with the cross-core
+                                 //   doorbell, two fields in one word:
+                                 //     63..32  instruction-side rendezvous it INITIATED
+                                 //     31..0   doorbell services it PERFORMED, each of which
+                                 //             takes a Context synchronization event
+                                 //   A core outside the built range reads 0, so a caller may
+                                 //   sweep a fixed width. EVERY service counts here, a
+                                 //   cross-core wake included, so the low field is an upper
+                                 //   bound on the pokes answered
 };
 
 // KOS_ASPACE_OP_SPLIT_ACCESS: one bit per property of an access split at a page boundary.

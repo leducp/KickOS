@@ -472,9 +472,9 @@ namespace kickos
                 return -derr;
             }
         }
-        // Reclaiming an EXITED slot is safe on SINGLE CORE only: such a thread parked in
-        // exit_current until its switch-away committed, so it is off-CPU and off every
-        // ready/wait/timer list by the time another thread gets here.
+        // An EXITED slot's occupant is off-CPU and off every ready, wait and timer list: the
+        // state is published inside the bracket that carries the kernel lock through the swap
+        // parking that frame. Widening the reclaim key past EXITED breaks that.
         int const i = k.threads.alloc();
         if (i < 0)
         {
@@ -716,7 +716,7 @@ namespace kickos
             // Slaying idle ends the scheduler's fallback. A privileged thread may be inside
             // kernel work holding kernel invariants, and discarding its frames discards them
             // mid-flight. Same rule kickos_fault_kill_thread states for itself.
-            if (t == sched::idle() or t->privileged)
+            if (sched::is_idle(t) or t->privileged)
             {
                 return -KOS_EINVAL;
             }

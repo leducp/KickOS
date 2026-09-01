@@ -14,6 +14,7 @@
 #include <kickos/task.h>
 #include <kickos/time.h>
 #include <kickos/irqlock.h>
+#include <kickos/klock.h>
 #include <kickos/reent.h>
 #include <kickos/ustack.h>
 
@@ -176,9 +177,14 @@ namespace kickos
         {
             Thread* prev = kernel().current[kickos_kernel_core()];
             switch_book(next);
+            // THE KERNEL LOCK SPANS THE SWAP: until the swap parks it, the outgoing thread's
+            // saved frame base still describes an earlier run, and kickos_switch_unlock is
+            // what ends the span. The depth rides on this frame, travelling with the thread.
+            uint32_t const klock_depth = klock_detach();
             KICKOS_BENCH_MARK(bm_arch);
             arch_switch(&prev->ctx, &next->ctx);
             KICKOS_BENCH_SPAN(PH_ARCH_SWITCH, bm_arch);
+            klock_attach(klock_depth);
         }
     }
 
@@ -190,7 +196,7 @@ namespace kickos
             // No ready-structure reset here: policy-owned, and zeroed with the BSS instance.
             Kernel& k = kernel();
             k.current[kickos_kernel_core()] = nullptr;
-            k.idle = nullptr;
+            k.idle[kickos_kernel_core()] = nullptr;
             k.live = 0;
             k.policy = default_policy();
         }
@@ -200,6 +206,35 @@ namespace kickos
             kernel().policy = policy;
         }
 
+#if KICKOS_KERNEL_CORES > 1
+        namespace
+        {
+            // Raise a reschedule on every peer running below `prio`, so it looks at the
+            // ready lists.
+            void poke_peers_below(uint8_t prio)
+            {
+                uint32_t const me = kickos_kernel_core();
+                uint32_t peers = 0;
+                for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
+                {
+                    Thread const* const running = kernel().current[core];
+                    if (core == me or running == nullptr)
+                    {
+                        continue;
+                    }
+                    if (running->prio < prio)
+                    {
+                        peers |= 1u << core;
+                    }
+                }
+                if (peers != 0)
+                {
+                    klock_resched_ask(peers);
+                }
+            }
+        }
+#endif
+
         void add(Thread* t)
         {
             IrqLock lock;
@@ -207,13 +242,26 @@ namespace kickos
             kernel().policy->on_ready(t);
             if (t->prio == KICKOS_PRIO_IDLE)
             {
-                kernel().idle = t;
+                kernel().idle[kickos_kernel_core()] = t;
             }
             else
             {
                 kernel().live++;
             }
+#if KICKOS_KERNEL_CORES > 1
+            poke_peers_below(t->prio);
+#endif
         }
+
+#if KICKOS_KERNEL_CORES > 1
+        void add_idle(Thread* t, uint32_t core)
+        {
+            IrqLock lock;
+            t->state = ThreadState::READY;
+            kernel().policy->on_ready(t);
+            kernel().idle[core] = t;
+        }
+#endif
 
         void start()
         {
@@ -239,7 +287,9 @@ namespace kickos
             }
 #endif
             ktime_rearm();
-            arch_start(&kernel().boot, &first->ctx);
+            // arch_start does not return, so the bracket above is dropped by hand.
+            klock_drop();
+            arch_start(&kernel().boot[kickos_kernel_core()], &first->ctx);
         }
 
         void reschedule()
@@ -322,6 +372,10 @@ namespace kickos
         void resched_after_wake(Thread const* t)
         {
             IrqLock lock;
+#if KICKOS_KERNEL_CORES > 1
+            // Ahead of every refusal below: a core declining the switch still owes `t` a core.
+            poke_peers_below(t->prio);
+#endif
             Thread const* const c = current();
             // Null between sched::init and sched::start.
             if (c == nullptr)
@@ -457,6 +511,9 @@ namespace kickos
             {
                 IrqLock lock;
                 Kernel& k = kernel();
+                // THE BRACKET AROUND THIS STORE IS LOAD-BEARING: from here the slot reads
+                // reclaimable to ThreadPool::alloc, and nothing between here and the swap may
+                // release the kernel lock before kickos_switch_unlock parks this frame.
                 c->state = ThreadState::EXITED;
                 // The retry, and the only site that needs one: the reclaim already ran at
                 // the note (cap.cc), and a refusal there means a live thread still held the
@@ -467,7 +524,7 @@ namespace kickos
                     console_on_driver_death();
                 }
                 k.policy->on_remove(c);
-                if (c != k.idle and k.live > 0)
+                if (c != k.idle[kickos_kernel_core()] and k.live > 0)
                 {
                     k.live--;
                 }
@@ -523,8 +580,21 @@ namespace kickos
         }
         Thread* idle()
         {
-            return kernel().idle;
+            return kernel().idle[kickos_kernel_core()];
         }
+#if KICKOS_KERNEL_CORES > 1
+        bool is_idle(Thread const* t)
+        {
+            for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
+            {
+                if (kernel().idle[core] == t)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+#endif
         unsigned live_count()
         {
             return kernel().live;
@@ -554,6 +624,35 @@ namespace kickos
 
     }
 }
+
+#if KICKOS_KERNEL_CORES > 1
+// The two halves of a peer core's arrival at the scheduler (arch/include/kickos/arch/arch.h).
+// The cell read here is valid only on the far side of a nonzero kickos_kernel_core_seated.
+extern "C" int kickos_kernel_core_ready(void)
+{
+    return ::kickos::kernel().idle[kickos_kernel_core()] != nullptr;
+}
+
+extern "C" void kickos_kernel_core_start(void)
+{
+    ::kickos::sched::start();
+    while (true)
+    {
+        arch_idle_wait();
+    }
+}
+
+// Runs in the doorbell's interrupt, so the switch this books is performed at the exception
+// exit. A core still in bring-up reaches this before its scheduler exists.
+extern "C" void kickos_kernel_core_resched(void)
+{
+    if (::kickos::kernel().current[kickos_kernel_core()] == nullptr)
+    {
+        return;
+    }
+    ::kickos::sched::reschedule();
+}
+#endif
 
 // Reached only through a context arch_ctx_redirect rebuilt, so `current` IS the slain thread
 // and this runs privileged at the top of its own stack.

@@ -244,6 +244,22 @@ namespace kickos
         }
         return held;
     }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    uint32_t domain_cores_on_held_space(void)
+    {
+        Kernel& k = kernel();
+        uint32_t set = 0;
+        for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)
+        {
+            if (k.domains[i].space != nullptr)
+            {
+                set |= arch_aspace_active_cores(k.domains[i].space);
+            }
+        }
+        return set;
+    }
+#endif
 #endif
 
     Domain* domain_for(uint32_t caller, void* mem_base, size_t mem_size, uint32_t mem_attr,

@@ -6,6 +6,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/percpu.h>
+#include <kickos/arch/core_stack.ld.h>
 #include <kickos/diag.h>
 #include <kickos/sys/atomic.h>
 
@@ -72,8 +73,15 @@ static_assert(offsetof(struct armv8a_percpu_block, ctx_current) == 8,
               "switch.S spells PERCPU_CTX_CURRENT as 8");
 static_assert(offsetof(struct armv8a_percpu_block, switch_to) == 16,
               "switch.S spells PERCPU_SWITCH_TO as 16");
+static_assert(sizeof(struct armv8a_percpu_block) == 64,
+              "the block must fill its line, and secondary.S spells PERCPU_SIZE as 64");
 
 #if KICKOS_NUM_CORES > 1
+extern "C"
+{
+    void kickos_armv8a_doorbell_park(void);
+}
+
 // --- Secondary bring-up -----------------------------------------------------
 // The translation a core comes up under, read from the registers the chip programmed. A
 // secondary reads this record with its MMU still off (secondary.S): the publish below cleans
@@ -103,7 +111,6 @@ extern "C"
     kickos::Atomic<uint8_t, kickos::Order::RELAXED> kickos_armv8a_core_online[KICKOS_NUM_CORES] =
         {};
 }
-static_assert(sizeof(struct armv8a_percpu_block) == 24, "secondary.S spells PERCPU_SIZE as 24");
 static_assert(offsetof(struct armv8a_boot_regs, mair) == 0, "secondary.S spells BOOT_MAIR");
 static_assert(offsetof(struct armv8a_boot_regs, tcr) == 8, "secondary.S spells BOOT_TCR");
 static_assert(offsetof(struct armv8a_boot_regs, ttbr0) == 16, "secondary.S spells BOOT_TTBR0");
@@ -113,10 +120,7 @@ static_assert(offsetof(struct armv8a_boot_regs, cpacr) == 40, "secondary.S spell
 
 namespace
 {
-    // The figure the linker reserves for the primary (_kernel_stack_size, virt_arm64.ld), and
-    // a secondary's SP_EL1 too: every exception it takes builds its frame here, the panic
-    // reporter's descent included.
-    constexpr size_t ARMV8A_CORE_STACK = 64u * 1024u;
+    constexpr size_t ARMV8A_CORE_STACK = KICKOS_ARMV8A_CORE_STACK;
     alignas(16) uint8_t g_core_stack[KICKOS_NUM_CORES][ARMV8A_CORE_STACK];
 
     // The .init_array slot is an ordering constraint: after .bss is zeroed (the record and the
@@ -182,16 +186,6 @@ namespace
 {
     // PSTATE.I within DAIF, which is read and written at bit 7.
     constexpr uint64_t DAIF_I = 1ULL << 7;
-
-    // The IRQ entry is the only writer and runs with interrupts masked by the exception
-    // itself, so no atomic is owed.
-    uint32_t g_isr_depth = 0;
-
-    // How deep the reporter below is. A reporting slot keeps the SP_EL1 it arrives on and
-    // branches straight to C, so a fault inside the report re-enters at slot 4 with nothing but
-    // this count to tell it from the first arrival. Written under the mask the exception applies,
-    // so no atomic is owed; nothing clears it, the reporter never returning.
-    unsigned long g_report_depth = 0;
 
     // SPSR for a thread: debug masked, interrupts and SError live. EL1h means "EL1 with its
     // own SP"; EL0t is 0, EL0 having only SP_EL0 to run on.
@@ -285,23 +279,20 @@ struct armv8a_percpu_block* armv8a_percpu(void)
     return reinterpret_cast<struct armv8a_percpu_block*>(static_cast<uintptr_t>(block));
 }
 
-// Publishes core `id`'s arrival and parks it. Such a core is never scheduled: the run queues
-// and the cross-core lock that would make it safe to schedule on do not exist yet.
+// Publishes core `id`'s arrival and parks it waiting for a doorbell. `id` is the caller's own
+// index; 0 is REFUSED, the boot core publishing its own arrival.
 //
-// `id` is the caller's own index, already derived and bounded where the core established its
-// identity, so this reads no identity register of its own. Zero is REFUSED: it is the boot
-// core's index, and a core arriving here with it would publish an arrival the boot core has
-// already published. Such a core parks having published nothing, which the count owed on the
-// boot core's console reports.
+// THE INTERFACE COMES UP BEFORE THE ARRIVAL IS PUBLISHED: the bring-up is what discovers this
+// core's GICD_SGIR target bit, and a doorbell can name no core whose bit is unpublished.
 void kickos_armv8a_park_core(uint32_t id)
 {
     if (id != 0 and id < KICKOS_NUM_CORES)
     {
+        // This core's CPU interface and timer come out of reset unusable.
+        kickos_armv8a_percore_init();
         kickos_armv8a_core_online[id] = 1;
         __asm volatile("dsb ish" ::: "memory");
-        // This core's CPU interface and timer come out of reset unusable, so a core parked
-        // without this could not be reached by an interrupt later.
-        kickos_armv8a_percore_init();
+        kickos_armv8a_doorbell_park();
     }
     while (true)
     {
@@ -412,7 +403,7 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 
 void arch_switch(struct arch_context* from, struct arch_context* to)
 {
-    if (g_isr_depth != 0)
+    if (armv8a_percpu()->isr_depth != 0)
     {
         // DEFERRED, which arch.h permits: the interrupted thread's state is already in the
         // frame the IRQ entry built, so the swap is two stores at the exception exit.
@@ -481,7 +472,7 @@ void arch_irq_restore(arch_irq_state_t state)
 // requires: the kernel's blocking primitives depend on that.
 int arch_in_isr(void)
 {
-    return g_isr_depth != 0;
+    return armv8a_percpu()->isr_depth != 0;
 }
 
 // --- Clocks -----------------------------------------------------------------
@@ -595,12 +586,13 @@ void kickos_armv8a_exception(unsigned long slot, unsigned long lr)
 {
     // FIRST, ahead of the space swap and the console: both can fault, and a fault in either
     // arrives back here. The second arrival still emits; the third emits nothing.
-    g_report_depth++;
-    if (g_report_depth >= 3)
+    uint32_t& depth = kickos_armv8a_percpu[arch_cpu_id()].report_depth;
+    depth++;
+    if (depth >= 3)
     {
         kfault_terminate();
     }
-    if (g_report_depth == 2)
+    if (depth == 2)
     {
         kpanic_enter(); // idempotent: the first arrival may have faulted short of it
         ::kickos::kprintf("\n=== ARMV8A EXCEPTION (taken inside the reporter) ===\n");
@@ -655,9 +647,10 @@ void kickos_armv8a_exception(unsigned long slot, unsigned long lr)
 // the chip is asked; this only keeps the depth that makes arch_in_isr honest.
 void kickos_armv8a_irq(void)
 {
-    g_isr_depth++;
+    uint32_t& depth = armv8a_percpu()->isr_depth;
+    depth++;
     kickos_armv8a_gic_dispatch();
-    g_isr_depth--;
+    depth--;
 }
 
 // --- Idle -------------------------------------------------------------------

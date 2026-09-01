@@ -79,7 +79,8 @@ MEMORY
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);   /* boot/exception stack: top of RAM */
-_kernel_stack_size = 64K;              /* boot/exception stack reservation */
+#include <kickos/arch/core_stack.ld.h>
+_kernel_stack_size = KICKOS_ARMV8A_CORE_STACK; /* boot/exception stack reservation */
 
 /* startup.S reads this to reach a physical address from a high one, in the window before
  * the MMU is on where an absolute literal cannot be translated. */

@@ -17,6 +17,16 @@ poll_image "$elf" "KickOS" "ping 3" "pong 3"
 if [ "$POLL_OK" -ne 1 ]; then
     fail "expected banner + ping/pong rounds not observed"
 fi
+
+# Presence, then the PLACEHOLDER, so a board this gate reaches needs no core family added here.
+# Both banner verbosities are matched.
+if ! has_e '(^ *cpu +|^u )[A-Za-z0-9]'; then
+    fail "the banner printed no CPU line"
+fi
+if has_e '(^ *cpu +|^u )unknown'; then
+    fail "the banner resolved no core and printed its placeholder"
+fi
+
 assert_no_panic "hello panicked while ping-ponging"
 
 echo "PASS: QEMU hello ping-ponged"

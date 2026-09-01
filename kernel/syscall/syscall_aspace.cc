@@ -38,6 +38,19 @@ namespace kickos
             return static_cast<uint32_t volatile*>(p);
         }
 
+        // Spelled out rather than __builtin_popcount, which lowers to a libgcc call on a part
+        // without the instruction.
+        uint32_t popcount32(uint32_t v)
+        {
+            uint32_t n = 0;
+            while (v != 0)
+            {
+                v &= v - 1u;
+                n++;
+            }
+            return n;
+        }
+
         // Whether the page is reachable, with the hold surrendered: an acquire that answered
         // took a hold whether the arm wanted the pointer or not, and arch.h counts calls.
         bool acquire_answers(struct arch_aspace* space, uintptr_t va)
@@ -1248,6 +1261,24 @@ namespace kickos
             case KOS_ASPACE_OP_MAP_TLBI:
             {
                 return arch_aspace_tlbi_counts();
+            }
+            case KOS_ASPACE_OP_ACTIVE_CORES:
+            {
+                uint32_t const held = domain_cores_on_held_space()
+                                      | arch_aspace_active_cores(arch_aspace_boot());
+                uint32_t mine = 0;
+                Thread const* const c = sched::current();
+                if (c != nullptr)
+                {
+                    mine = arch_aspace_active_cores(domain_space(task_domain(c->task)));
+                }
+                return (static_cast<uint64_t>(KICKOS_KERNEL_CORES) << 16)
+                       | (static_cast<uint64_t>(popcount32(held)) << 8)
+                       | static_cast<uint64_t>(popcount32(mine));
+            }
+            case KOS_ASPACE_OP_DOORBELL_COUNTS:
+            {
+                return arch_ipi_counts(static_cast<uint32_t>(a1));
             }
             case KOS_ASPACE_OP_SPACE_ID:
             {

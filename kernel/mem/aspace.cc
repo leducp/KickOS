@@ -631,6 +631,18 @@ namespace kickos
 #if defined(KICKOS_ENABLE_SELFTEST)
             g_unseated_switch_ins++;
 #endif
+#if KICKOS_KERNEL_CORES > 1
+            // A core's translation base names the running thread's space or the boot root: an
+            // outgoing space left installed here would have this core walking tables the
+            // release path frees and the pool reissues.
+            struct arch_aspace* const boot = arch_aspace_boot();
+            uint32_t const here = arch_cpu_id();
+            if (g_current[here] != boot)
+            {
+                g_current[here] = boot;
+                arch_aspace_activate(boot);
+            }
+#endif
             return;
         }
         uint32_t const cpu = arch_cpu_id();

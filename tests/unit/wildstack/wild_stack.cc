@@ -38,13 +38,10 @@ namespace kickos
             }
 
             // IDLE IS REFUSED BY NOT BEING A POOL SLOT: the seam resolves an offender by
-            // scanning the pool, and idle is kernel().idle_tcb, outside it. The seam carried a
-            // named `bad == k.idle` clause until mutating it away left this arm passing, which
-            // is how it was found unreachable; the clause is gone and this is the reason that
-            // remains.
+            // scanning the pool, and idle sits outside it.
             TEST_F(WildStack, idle_is_refused_because_no_pool_slot_owns_it)
             {
-                Thread* const victim = kernel().idle;
+                Thread* const victim = kernel().idle[kickos_kernel_core()];
                 ASSERT_NE(victim, nullptr) << "the fixture seats an idle thread";
                 EXPECT_LT(kernel().threads.index_of(victim), 0)
                     << "idle must stay outside the pool: the refusal below rests on it";

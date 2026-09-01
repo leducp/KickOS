@@ -15,6 +15,9 @@
 
 #include <stdint.h>
 
+// KICKOS_NUM_CORES.
+#include <kickos/arch/arch.h>
+
 extern "C"
 {
     // Where a part puts its GICv2, and the routing that is the part's. PHYSICAL addresses:
@@ -40,6 +43,23 @@ extern "C"
 
     // Drops the pending state of one INTID. The INTID is the caller's to bound.
     void kickos_gicv2_clear_pending(int intid);
+
+#if KICKOS_NUM_CORES > 1
+    // Raises the doorbell on every core in `cores`, a bitmask of core INDICES. Orders the
+    // caller's earlier writes ahead of the raise.
+    void kickos_gicv2_doorbell_send(uint32_t cores);
+
+    // Drops the doorbell's pending state on the CALLING core, for every source core. A core
+    // servicing the doorbell outside its handler owes this call.
+    void kickos_gicv2_doorbell_clear(void);
+
+    // Masks every line on the calling core's own bank except the doorbell.
+    void kickos_gicv2_doorbell_only(void);
+
+    // What this backend calls on the calling core when the doorbell arrives. Must not take the
+    // kernel lock: an initiator holding it waits on this.
+    void kickos_arm64_doorbell_service(void);
+#endif
 }
 
 #endif

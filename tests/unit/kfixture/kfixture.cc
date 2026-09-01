@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The K-seam fixture's state and helpers. Contract, and the four traps an arm author must
-// know, are in kfixture.h.
+// The K-seam fixture's state and helpers; the contract is in kfixture.h.
 
 #include <setjmp.h>
 #include <stdarg.h>
@@ -10,7 +9,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#include <new> // Thread holds a kickos::Atomic: a reset is a re-construction, not an assignment
+#include <new> // Thread holds a kickos::Atomic, so a reset is a re-construction
 
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
@@ -65,6 +64,17 @@ namespace kickos
         uint32_t g_console_reclaimed = 0;
         uint32_t g_parked = 0;
 
+#if KICKOS_KERNEL_CORES > 1
+        uint32_t g_core = 0;
+        uint32_t g_parks_committed = 0;
+        uint32_t g_parks_without_lock = 0;
+        uint32_t g_exit_window_opened = 0;
+        Thread* g_park_from = nullptr;
+        ThreadState g_park_from_state = ThreadState::INACTIVE;
+        uint32_t g_ipi_sends = 0;
+        uint32_t g_ipi_send_mask = 0;
+#endif
+
         Fixture g_fx;
 
         namespace
@@ -84,7 +94,66 @@ namespace kickos
             uint32_t g_gap_seen = 0;
             uint32_t g_gap_at = 0;
             GapAction g_gap_action = nullptr;
+
+#if KICKOS_KERNEL_CORES > 1
+            bool g_klock_held = false;
+            SwapMode g_swap_mode = SwapMode::IMMEDIATE;
+            Thread* g_pending_from = nullptr;
+#endif
         }
+
+#if KICKOS_KERNEL_CORES > 1
+        namespace
+        {
+            void commit_park(Thread* from)
+            {
+                g_parks_committed++;
+                g_park_from = from;
+                g_park_from_state = from->state;
+                if (not g_klock_held)
+                {
+                    g_parks_without_lock++;
+                }
+                g_pending_from = nullptr;
+                kickos_switch_unlock();
+            }
+        }
+
+        void set_swap_mode(SwapMode m)
+        {
+            g_swap_mode = m;
+        }
+
+        bool klock_held()
+        {
+            return g_klock_held;
+        }
+
+        void note_klock_acquire()
+        {
+            if (g_klock_held)
+            {
+                printf("FIXTURE FAIL: the kernel lock was acquired while already held\n");
+                exit(1);
+            }
+            g_klock_held = true;
+        }
+
+        void note_klock_release()
+        {
+            if (not g_klock_held)
+            {
+                printf("FIXTURE FAIL: the kernel lock was released while free\n");
+                exit(1);
+            }
+            g_klock_held = false;
+            Thread* const c = kernel().current[kickos_kernel_core()];
+            if (c != nullptr and c->state == ThreadState::EXITED and c != g_park_from)
+            {
+                g_exit_window_opened++;
+            }
+        }
+#endif
 
         char const* trace()
         {
@@ -163,6 +232,18 @@ namespace kickos
         {
             g_switches++;
             trace_add("switch%u>%u", from->id, to->id);
+#if KICKOS_KERNEL_CORES > 1
+            // Before resolve_park below: the outgoing frame is parked and the span ended
+            // before the incoming thread runs a single instruction.
+            if (g_swap_mode == SwapMode::IMMEDIATE)
+            {
+                commit_park(from);
+            }
+            else
+            {
+                g_pending_from = from;
+            }
+#endif
             // BLOCKED names a thread that parked itself: switch_to demotes a RUNNING
             // outgoing thread to READY and leaves every other state alone.
             if (from->state == ThreadState::BLOCKED)
@@ -183,6 +264,12 @@ namespace kickos
         void note_park()
         {
             g_parked++;
+#if KICKOS_KERNEL_CORES > 1
+            if (g_pending_from != nullptr)
+            {
+                commit_park(g_pending_from);
+            }
+#endif
             if (g_park_armed)
             {
                 g_park_armed = false;
@@ -244,6 +331,25 @@ namespace kickos
                 exit(1);
             }
             g_irq_depth = 0;
+#if KICKOS_KERNEL_CORES > 1
+            // klock.cc keeps its per-core row out of reach, so a row left with a swap still
+            // owing the release would make the next arm's acquire silently a no-op.
+            if (g_klock_held)
+            {
+                printf("FIXTURE FAIL: the kernel lock survived the arm\n");
+                exit(1);
+            }
+            g_core = 0;
+            g_swap_mode = SwapMode::IMMEDIATE;
+            g_pending_from = nullptr;
+            g_parks_committed = 0;
+            g_parks_without_lock = 0;
+            g_exit_window_opened = 0;
+            g_park_from = nullptr;
+            g_park_from_state = ThreadState::INACTIVE;
+            g_ipi_sends = 0;
+            g_ipi_send_mask = 0;
+#endif
             if (cap_teardown_active())
             {
                 printf("FIXTURE FAIL: a capability sweep is still in flight\n");
@@ -269,8 +375,8 @@ namespace kickos
             g_parked = 0;
             trace_reset();
 
-            // cap.cc's own constinit state, which the Kernel re-construction above does not
-            // reach; kfixture.h note 4 has what it costs an arm.
+            // cap.cc's own constinit state, out of reach of the Kernel re-construction above;
+            // kfixture.h note 4 has what a stale one costs an arm.
             cap_slab_init();
             cap_console_reset();
             // Every dispatch slot back to the null-object default. The Kernel assignment
@@ -284,8 +390,7 @@ namespace kickos
             sched::start();
         }
 
-        // base_prio is the anchor a priority recompute falls back to, so it is set here and
-        // never again.
+        // base_prio is the anchor a priority recompute falls back to.
         Thread* spawn(int slot, uint8_t prio)
         {
             if (slot < 0 or slot >= MAX_TEST_THREADS)
@@ -463,7 +568,7 @@ namespace kickos
             w->wait_obj = nullptr;
             w->wait_result = WAIT_RESULT_POISON;
             // The delta list itself, so ktime_deadline_cancel has something to unlink. A head
-            // push, not a sorted insert: one sleeper per arm.
+            // push: one sleeper per arm.
             w->deadline_ns = deadline_ns;
             w->tnext = kernel().sleepq;
             kernel().sleepq = w;
@@ -498,8 +603,8 @@ namespace kickos
                 g_park_armed = true;
                 sched::exit_current(code, cause);
             }
-            // Cleared on BOTH paths. exit_current cannot return without parking, but a stale
-            // arm would let a later stray arch_idle_wait longjmp into this dead frame.
+            // Cleared on BOTH paths: a stale arm would let a later stray arch_idle_wait
+            // longjmp into this dead frame.
             g_park_armed = false;
         }
 

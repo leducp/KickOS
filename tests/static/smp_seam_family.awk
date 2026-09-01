@@ -7,43 +7,47 @@
 #   awk -f tests/static/aspace_seam.awk -f tests/static/smp_seam_family.awk <stripped>
 #
 # awk runs BEGIN blocks in the order the programs are named, so the assignment below replaces
-# the aspace family's PREFIX and nothing else. The extraction RULES stay the aspace
-# extractor's, byte for byte, for the reason entry_seam_family.awk gives: a copy with one line
-# changed lets the verdicts drift apart about what a signature IS.
+# the aspace family's PREFIX and nothing else. The extraction RULES stay the aspace extractor's
+# byte for byte: a copy with one line changed lets the verdicts drift apart about what a
+# signature IS.
 #
-# MEMBERSHIP, the four members the seam carries today, all of them in
+# MEMBERSHIP, the seven members the seam carries today, all of them in
 # arch/include/kickos/arch/arch.h:
-#   - KICKOS_NUM_CORES, the core count. Every other member below is shaped by it and folds on
-#     it, so its VALUE is part of this signature.
+#   - KICKOS_NUM_CORES, the core count, and KICKOS_KERNEL_CORES, how many cores ONE KERNEL
+#     schedules on. Every other member below is shaped by one of them and folds on it, so both
+#     VALUES are part of this signature. The two are separate members because they are separate
+#     facts: an AMP image raises the count and keeps one core per kernel.
 #   - arch_cpu_id, the per-core identity: a function above one core, a function-like macro
 #     folding to 0u at one. Both arms are members, so the fold itself is in the record set.
 #   - arch_ipi_send and arch_ipi_wait, the cross-core doorbell. Two calls, so an initiator can
 #     poke every core once and wait once.
+#   - arch_kernel_lock and arch_kernel_unlock, the cross-core kernel lock, folding on
+#     KICKOS_KERNEL_CORES rather than on the count.
+#   - kickos_switch_unlock, kickos_kernel_core_ready, kickos_kernel_core_start and
+#     kickos_kernel_core_resched, the four the KERNEL supplies and a shared kernel's backend
+#     calls: the release that ends the lock's span over a context switch, the two halves of a
+#     peer core's arrival at the scheduler, and the doorbell's scheduling half. Their arm is the
+#     multi-core one alone, where every member above folds: a kernel that schedules one core has
+#     nothing on the far side to call them.
 #
-# THE BASELINE PREDATES EVERY SMP BACKEND: one frozen after the first backend lands measures
-# that backend against itself and reports clean whatever it did.
+# THE DOORBELL IS ONE SEAM WITH TWO SEMANTICS: the shared-kernel IPI a TLB shootdown rendezvous
+# rides on, and the AMP inter-node doorbell. Same hardware, same declaration, so a narrowing of
+# arch_ipi_send or arch_ipi_wait to SMP-only semantics takes the AMP use with it.
 #
-# THE CROSS-CORE LOCK HAS NO SEAM MEMBER YET. When it gets one, the member is added to the
-# PREFIX below and to the group table in check_smp_sigdiff.sh in the same commit, and the
-# baseline moves WITH that commit.
+# The extractor reads C, so the per-core structures above the seam are out of its reach, and a
+# signature is the shape of a call: what a backend DOES behind a member, the acquire loop's
+# servicing of a pending doorbell included, is prose in arch.h and holds or fails in the backend.
 #
-# THE DOORBELL IS ONE SEAM WITH TWO SEMANTICS: the shared-kernel IPI a TLB shootdown
-# rendezvous rides on, and the AMP inter-node doorbell. Same hardware, same declaration. A
-# narrowing of arch_ipi_send or arch_ipi_wait to SMP-only semantics therefore takes the AMP
-# use with it.
-#
-# WHAT THIS FAMILY CANNOT SEE:
-#   - Every per-core structure ABOVE the seam. The kernel-side C++ headers are out of reach of
-#     an extractor that reads C, and a per-core run queue, a per-core idle thread or a core
-#     mask living in one of them changes no record below.
-#   - What a backend DOES behind a member. The doorbell's contract, that the far side takes no
-#     kernel lock, is prose in arch.h and holds or fails in the backend; a signature is the
-#     shape of the call, not its ordering.
-#   - A member named outside the prefixes below. The group table in check_smp_sigdiff.sh
-#     refuses a member admitted here and classified nowhere.
+# The group table in check_smp_sigdiff.sh refuses a member admitted here and classified
+# nowhere.
 
 BEGIN {
     PREFIX = "^(KICKOS_NUM_CORES" \
+             "|KICKOS_KERNEL_CORES" \
              "|arch_cpu_id" \
-             "|arch_ipi_)"
+             "|arch_ipi_" \
+             "|arch_kernel_lock" \
+             "|arch_kernel_unlock" \
+             "|kickos_switch_unlock" \
+             "|kickos_kernel_core_)"
 }

@@ -4,11 +4,13 @@
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/cap.h>
+#include <kickos/corestart.h>
 #include <kickos/domain.h>
 #include <kickos/frame_pool.h>
 #include <kickos/grant.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
+#include <kickos/klock.h>
 #include <kickos/klink.h>
 #include <kickos/reent.h>
 #include <kickos/time.h>
@@ -49,6 +51,9 @@ extern "C"
 #endif
 #ifndef KICKOS_ARCH_NAME
 #define KICKOS_ARCH_NAME "unknown"
+#endif
+#ifndef KICKOS_CPU_NAME
+#define KICKOS_CPU_NAME "unknown"
 #endif
 
 namespace kickos
@@ -103,6 +108,7 @@ namespace kickos
             kputs(rule);
             kprintf(KDIAG_F_BANNER_BOARD, KICKOS_BOARD_NAME);
             kprintf(KDIAG_F_BANNER_ARCH, KICKOS_ARCH_NAME);
+            kprintf(KDIAG_F_BANNER_CPU, KICKOS_CPU_NAME);
             kprintf(KDIAG_F_BANNER_MPU, mpu);
             kprintf(KDIAG_F_BANNER_SCHED, sched);
             kprintf(KDIAG_F_BANNER_BUILD, kickos_build_time);
@@ -149,6 +155,82 @@ namespace kickos
                 arch_idle_wait();
             }
         }
+
+#if KICKOS_KERNEL_CORES > 1
+        // The peer cores' idle stacks. Static, not arena: the link-time arena assert replays
+        // exactly the idle and root allocations and would not see a third kind.
+        alignas(16) uint8_t g_peer_idle_stack[KICKOS_KERNEL_CORES - 1][KICKOS_IDLE_STACK_SIZE];
+
+        char const PEER_STUCK[] = "KickOS: kernel core never reached its scheduler: core ";
+        char const PEER_NL[] = "\n";
+        char const PEER_HEAD[] = "# smp sched: ";
+        char const PEER_TAIL[] = " core(s) in the scheduler\n";
+
+        // Bring-up bound, sized far over rather than tuned: under emulation without icount
+        // the guest clock tracks HOST time, so a contended host spends this budget while the
+        // guest barely executes.
+        constexpr uint64_t PEER_START_NS = 5ull * 1000ull * 1000ull * 1000ull;
+
+        // Every peer's idle thread, published against that peer's own cell.
+        void peer_idle_publish()
+        {
+            uint32_t peers = 0;
+            for (uint32_t core = 1; core < KICKOS_KERNEL_CORES; core++)
+            {
+                ThreadAttr attr;
+                attr.name = "idle";
+                attr.prio = KICKOS_PRIO_IDLE;
+                attr.policy = Policy::FIFO;
+                attr.privileged = true;
+                attr.cap_run = CapRun{};
+                Thread* const tcb = &kernel().idle_tcb_peer[core - 1];
+                thread_create(tcb, idle_entry, nullptr, g_peer_idle_stack[core - 1],
+                              KICKOS_IDLE_STACK_SIZE, attr);
+                sched::add_idle(tcb, core);
+                peers |= 1u << core;
+            }
+            // AFTER every block above is complete: this is the release each peer's wait acquires.
+            corestart_seat(peers);
+            // Out of the wait a released core sits in, so it looks at its cell.
+            arch_ipi_send(peers);
+        }
+
+        // Every peer must have committed to its own scheduler before this core enters its
+        // first thread. MUST SPIN WITHOUT THE KERNEL LOCK: a peer needs it inside its own
+        // start, and this loop would win an unfair lock repeatedly against them.
+        void peer_start_await()
+        {
+            uint32_t const want = KICKOS_KERNEL_CORES - 1u;
+            uint64_t const deadline = ktime_now() + PEER_START_NS;
+            while (true)
+            {
+                uint32_t started = 0;
+                uint32_t missing = 0;
+                for (uint32_t core = 1; core < KICKOS_KERNEL_CORES; core++)
+                {
+                    if (corestart_arrived(core))
+                    {
+                        started++;
+                    }
+                    else
+                    {
+                        missing = core;
+                    }
+                }
+                if (started == want)
+                {
+                    kprintf("%s%u%s", PEER_HEAD, static_cast<unsigned>(started + 1u),
+                            PEER_TAIL);
+                    return;
+                }
+                if (ktime_now() > deadline)
+                {
+                    kprintf("%s%u%s", PEER_STUCK, static_cast<unsigned>(missing), PEER_NL);
+                    kfault_terminate();
+                }
+            }
+        }
+#endif
     }
 
     int kmain(int argc, char** argv)
@@ -297,6 +379,12 @@ namespace kickos
             cap_seat_authority(root_tcb, CAP_AUTH_ALL);
         }
         sched::add(root_tcb);
+
+#if KICKOS_KERNEL_CORES > 1
+        // AFTER ROOT IS SEATED AND ADDED: a peer released here can pick root at once.
+        peer_idle_publish();
+        peer_start_await();
+#endif
 
         sched::start(); // returns only if the scheduler ever unwinds to boot
         return 0;

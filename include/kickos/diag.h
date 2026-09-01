@@ -69,6 +69,7 @@ namespace kickos
 #define KDIAG_F_BANNER_NAME  KICKOS_DIAG_PICK("   KickOS %s  -  microkernel RTOS\n", "K %s\n")
 #define KDIAG_F_BANNER_BOARD KICKOS_DIAG_PICK("   board   %s\n", "b %s\n")
 #define KDIAG_F_BANNER_ARCH  KICKOS_DIAG_PICK("   arch    %s\n", "a %s\n")
+#define KDIAG_F_BANNER_CPU   KICKOS_DIAG_PICK("   cpu     %s\n", "u %s\n")
 #define KDIAG_F_BANNER_MPU   KICKOS_DIAG_PICK("   mpu     %s\n", "m %s\n")
 #define KDIAG_F_BANNER_SCHED KICKOS_DIAG_PICK("   sched   %s\n", "s %s\n")
 #define KDIAG_F_BANNER_BUILD KICKOS_DIAG_PICK("   build   %s\n", "t %s\n")

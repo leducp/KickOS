@@ -49,9 +49,13 @@ namespace kickos
         Thread* current[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
         static_assert(sizeof(current) / sizeof(current[0]) == KICKOS_KERNEL_CORES,
                       "the running-thread cell must be one per core this kernel schedules");
-        Thread* idle = nullptr;
+        Thread* idle[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
+        static_assert(sizeof(idle) / sizeof(idle[0]) == KICKOS_KERNEL_CORES,
+                      "the idle-thread cell must be one per core this kernel schedules");
         unsigned live = 0; // non-idle threads not yet EXITED
-        arch_context boot{};
+        arch_context boot[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
+        static_assert(sizeof(boot) / sizeof(boot[0]) == KICKOS_KERNEL_CORES,
+                      "the abandoned boot context must be one per core this kernel schedules");
         SchedPolicy const* policy = nullptr;
 
         // Per-Kernel monotonic thread-id counter (thread.cc). Starts at 0 so the
@@ -99,6 +103,10 @@ namespace kickos
         // 8-aligned member so it introduces no fill of its own; its STACK is not here,
         // it comes from the arena (boot_stack_alloc).
         Thread idle_tcb;
+#if KICKOS_KERNEL_CORES > 1
+        // The other cores' idle TCBs. Outside the thread pool, exactly as idle_tcb is.
+        Thread idle_tcb_peer[KICKOS_KERNEL_CORES - 1];
+#endif
         // Thread pool (see ThreadPool in thread.h): the TCBs + their kernel stacks,
         // intrinsic liveness (a slot is free iff state==EXITED), generation bumped at
         // reclaim (ABA). All allocation goes through thread_create_call().

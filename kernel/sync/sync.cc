@@ -65,10 +65,29 @@ namespace kickos
         }
     }
 
+#if KICKOS_KERNEL_CORES > 1
+    namespace
+    {
+        // The death point, re-asked under the kernel lock: a cancel raised on a peer core
+        // between syscall_dispatch's entry check and here broke no park, and parking now would
+        // leave a cancelled thread with nothing to wake it. Does not return.
+        void park_death_point(Thread* c)
+        {
+            if (c->cancel_kind != CANCEL_NONE and not c->dying)
+            {
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN);
+            }
+        }
+    }
+#endif
+
     // Returns when woken.
     void wq_block(List& q, WaitKind kind, void* obj)
     {
         Thread* c = sched::current();
+#if KICKOS_KERNEL_CORES > 1
+        park_death_point(c);
+#endif
         // BLOCKED before the detach: on_remove reads `state` to tell a park from a
         // set_prio re-seat, and only a park forfeits the RR slice remainder.
         c->state = ThreadState::BLOCKED;
@@ -84,6 +103,9 @@ namespace kickos
 
     void park_queueless(Thread* c, WaitKind kind, void* obj)
     {
+#if KICKOS_KERNEL_CORES > 1
+        park_death_point(c);
+#endif
         // Same ordering as wq_block: BLOCKED before the detach (on_remove reads it), and the
         // removal reads `link`, so it must run before anything re-uses that node.
         c->state = ThreadState::BLOCKED;
