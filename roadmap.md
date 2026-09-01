@@ -202,9 +202,16 @@ root's summed width: reply traffic can never crowd out a task's own creates, and
 `cmake/cap_table.cmake` refuses a configure where a default-width child would keep no slot of its
 own once the bound is spent.
 
+**THE ABI-FREEZE MILESTONE CARRIES NO NUMBER, AND THAT IS THE RULING RATHER THAN AN OMISSION.** It
+fires when the ABI is ready to freeze, which is a state and not a position in a sequence: a number
+would assert a readiness nobody has yet. It is the last milestone on this roadmap and it is named,
+never numbered. No other document may assign it one -- four design documents and `TODO.md` had
+settled on "M8, the last one", which by 2026-08-31 was wrong twice over, M8 being IPC/IRQ
+optimisation and the list running to M10.
+
 **M4.7.4 exists because compatibility work keeps appearing on its own.** KickOS is not released and
-will not be before the ABI-FREEZE MILESTONE, the last one on this roadmap, so **there is no legacy
-to manage** and every mechanism that manages some is
+will not be before that milestone, so **there is no legacy to manage** and every mechanism that
+manages some is
 pure cost: it has to be kept in sync, it is read as a supported path, and it makes a deleted thing
 look alive. The class, with the instances found so far:
 
@@ -500,8 +507,10 @@ UART on a 1:1 map, then cut `arch_aspace_*` before any second core.
 ### M7 -- multicore: SMP on the A53 port, and AMP where the cores are heterogeneous
 The AMP-versus-shared-kernel question closes **per class**, not as one kernel-wide verdict. A
 homogeneous A53 cluster shares one kernel image; heterogeneous companions (i.MX8MP's Cortex-M7, the
-ESP32-C6 LP core) stay AMP over a ring, and homogeneous MCU dual-core parts are an AMP candidate
-rather than a shared-kernel one.
+ESP32-C6 LP core) stay AMP over a ring, and the homogeneous MCU dual-core parts that fail per-line
+interrupt targeting -- the RP pair -- are an AMP candidate rather than a shared-kernel one. The
+dual-core LX6 is a homogeneous MCU part too and is NOT in that group: it passes targeting, and
+`docs/design-multicore.md` makes it a gated shared-kernel candidate, which is a third class.
 
 `IrqLock` ("interrupts off => exclusive") is single-core-only, so the rework is a **Big Kernel Lock**
 first (local-IRQ-off + one spinlock, byte-identical on single-core builds), then per-core run queues
@@ -524,7 +533,7 @@ deliverable is a second core and not the lock**, a big lock compiling to nothing
 correct one and an absent one are the same image. And **a shared kernel is gated on a hardware
 PREDICATE rather than an architecture family**, of which the MMU is not a member and per-line
 interrupt targeting is; the parts that fail it get AMP, which is what closes the AMP-candidate
-question this section leaves open above for the MCU dual-core parts. Its step plan is S0 through S6,
+question this section leaves open above for the MCU dual-core parts. Its step plan is S0 through S7,
 identifiers local to that file, and this milestone adopts them in order:
 
 | step | sub-milestone | what it lands |
@@ -533,9 +542,56 @@ identifiers local to that file, and this milestone adopts them in order:
 | S1 | M7.1 | per-core state, landed at one core |
 | S2 | M7.1 | the second core boots and idles |
 | S3 | M7.2 | the lock, the doorbell, threads on every core |
-| S4 | M7.3 | translation across cores |
-| S5 | M7.4 | the RV64 backend and the SMP-seam verdict |
-| S6 | M7.5 | the GICv3 posture, gated on the GIC architecture specification |
+| S4 | M7.2 | translation across cores |
+| S5 | M7.3 | the RV64 backend and the SMP-seam verdict |
+| S6 | M7.4 | the GICv3 posture |
+| -- | M7.5 | the cleanup the train owes: single-core-ordering arms, and the one-core death point |
+| S6b | M7.6 | `imx8mp-evk` as a chip port, and the predicate declared per part |
+| S7 | M7.7 | AMP |
+
+**M7.5 IS NOT A STEP OF THE CONTRACT, and it exists because two items were ruled separate rather
+than done.** The selftest arms that assert a single-core ORDERING are skipped as a class above one
+kernel core, so the four-core preset runs four fifths of the suite; giving them real handshakes is
+the first item. The second is the one the contract does not reach at all: **the death point is read
+outside the lock at ONE core, and the fix is written and switched OFF there.** A cancel landing
+between the entry read and the park is owed to nobody, so the target parks forever, and the re-check
+that closes it above one core sits behind the core-count guard. What gates removing that guard is
+cost rather than doubt: the funnels it lives in also serve the register fastpath on four arches, and
+those are the depths `trap_redzone` measures, so it lands with a full fleet sweep and not beside
+other work.
+
+**It sits before the board port and AMP rather than after them because it carries a live defect and
+depends on neither.** A thread cancelled in the window parks forever on every single-core board, so
+the slot is chosen by what the fix is worth rather than by what is left over. It shares no file with
+S5 or S6 either, so the three can run at once.
+
+**S4 JOINED S3 IN ONE SUB-MILESTONE RATHER THAN FOLLOWING IT, and the reason is what S4 turned out to
+be.** Its gap 5 was not groundwork for a later step: a core that switched to a thread holding no
+space kept a dead translation root installed while the release path rerooted only itself and freed
+the tables under it. Closing that alongside the step that put threads on every core is what makes the
+pair coherent, so the two land together and every later row moves up. S4 is complete, its
+instruction-side poke included.
+
+**THE DOORBELL COMES BEFORE THE SECOND INTERRUPT CONTROLLER, AND THAT ORDER WAS ARGUED RATHER THAN
+INHERITED.** GICv2 issues a software-generated interrupt through `GICD_SGIR` and GICv3 through
+`ICC_SGI1R_EL1`, so a reader will ask why GICv3 does not come first and save writing the send twice.
+Because the seam does not change: a core-index bitmask is expressible on both controllers without
+loss, so `arch_ipi_send` is written once and only the lowering is per controller. What DOES change is
+what a failure teaches. S3 is where the rendezvous semantics are discovered, and discovering them
+against one lowering is cheaper than against two at once. The same reasoning puts S5 before S7: the
+doorbell earns a second backend's witness before an AMP node is built on it.
+
+And S6 answers a question S3 leaves open rather than duplicating one: `arch_irq_mask`, `arch_irq_unmask`
+and `arch_irq_clear_pending` write banked registers and act on whichever core calls them. S3 settles
+that, so the second controller implements a settled semantics instead of carrying the same open
+question twice.
+
+**S6b depends on S6 and cannot substitute for S7.** `qemu-system-aarch64 -M imx8mp-evk` exposes no
+`gic-version` option at all, unlike `virt`: the machine's GIC-500 is wired, so that board does not
+boot without the GICv3 posture. Its value is that GIC version, routing and topology are properties of
+a PART while `smp.cmake` declares them per ARCH, which is the audit item it discharges. What it cannot
+carry is the heterogeneous AMP case, the machine modelling the A53 cluster alone with no Cortex-M7
+companion.
 
 ### M8 -- IPC and IRQ optimisation, on measured evidence
 Rebaseline FIRST: per-thread kernel stacks and the MMU both change trap and continuation costs, so

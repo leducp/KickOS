@@ -224,7 +224,7 @@ a live table aliased across tasks, which is an isolation bug rather than a leak.
 negative values are error codes, which is what caps the word at 31 bits. Return a status and write
 the handle to an out-parameter -- `kos_sem_create(&h)` rather than `h = kos_sem_create()` -- and the
 budget is a full 32 bits. That is an ABI change across every capability-minting call, and the ABI is
-unstable exactly until the ABI-freeze milestone (M8, the last one), so it is as cheap now as it will
+unstable exactly until the ABI-freeze milestone, so it is as cheap now as it will
 ever be. It is also what makes the rest
 of this section a free choice rather than a trade.
 
@@ -328,7 +328,7 @@ plus `KCAP_REPLY_SEQ_LO_BITS` is asserted to fill exactly one byte, so the arran
 a silent truncation when an unrelated knob moves.
 
 Two reasons not to defer the choice. A re-cut **renumbers every handle value**, which is an ABI
-change, and the ABI freezes at the freeze milestone (M8, the last one) -- so "later" means under
+change, and the ABI freezes at the freeze milestone -- so "later" means under
 freeze or never. And the split was
 *derived per board* from `KICKOS_MAX_HANDLES`, which made the same logical handle print differently
 on `microbit` and on `mk64f`; one fixed split removed that.
