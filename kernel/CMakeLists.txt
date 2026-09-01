@@ -19,7 +19,7 @@ set(KICKOS_KERNEL_SOURCES
   init/instance.cc
   init/kmain.cc)
 
-foreach(_f mem/aspace.cc mem/frame.cc mem/frame_pool.cc mem/ustack.cc mem/vrange.cc sync/sync.cc time/time.cc time/clock_select.cc syscall/syscall.cc syscall/syscall_aspace.cc syscall/syscall_mem.cc syscall/syscall_obj.cc syscall/syscall_ipc.cc syscall/syscall_ipc_fast.cc syscall/syscall_thread.cc syscall/cap.cc irq/irq.cc)
+foreach(_f mem/aspace.cc mem/frame.cc mem/frame_pool.cc mem/ustack.cc mem/vrange.cc sync/sync.cc sync/klock.cc sync/corestart.cc time/time.cc time/clock_select.cc syscall/syscall.cc syscall/syscall_aspace.cc syscall/syscall_mem.cc syscall/syscall_obj.cc syscall/syscall_ipc.cc syscall/syscall_ipc_fast.cc syscall/syscall_thread.cc syscall/cap.cc irq/irq.cc)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_f}")
     list(APPEND KICKOS_KERNEL_SOURCES "${_f}")
   endif()
@@ -108,10 +108,39 @@ target_include_directories(kickos_kernel PRIVATE
 target_link_libraries(kickos_kernel PUBLIC kickos_arch_${KICKOS_ARCH} kickos_lib)
 
 # Identity baked into the boot banner (kmain kbanner()).
+# The CPU is the token of the resolved compiler CPU flag: -mcpu where the family has one, else
+# -march, else RX's -misa, whose version is an RX ISA level and only ever an RX one.
+set(_kickos_cpu "")
+if(KICKOS_MCPU_FLAGS MATCHES "-mcpu=([^ ;]+)")
+  set(_kickos_cpu "${CMAKE_MATCH_1}")
+elseif(KICKOS_MCPU_FLAGS MATCHES "-march=([^ ;]+)")
+  set(_kickos_cpu "${CMAKE_MATCH_1}")
+elseif(KICKOS_MCPU_FLAGS MATCHES "-misa=([^ ;]+)")
+  set(_kickos_cpu "rx${CMAKE_MATCH_1}")
+elseif(KICKOS_CHIP)
+  # No flag names the core on this family, so the chip states it: the compiler driver serves
+  # more than one core and cannot answer which one a part has.
+  include("${PROJECT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/cpu.cmake"
+          OPTIONAL RESULT_VARIABLE _kickos_cpu_decl)
+  set(_kickos_cpu "${KICKOS_CPU}")
+  if(_kickos_cpu STREQUAL "")
+    message(FATAL_ERROR
+      "KickOS: board '${KICKOS_BOARD}' resolved no CPU name for the boot banner. No compiler "
+      "flag carries one on ${KICKOS_ARCH_FAMILY}, so arch/${KICKOS_ARCH_FAMILY}/chip/"
+      "${KICKOS_CHIP}/cpu.cmake must set KICKOS_CPU (declaration read: ${_kickos_cpu_decl})")
+  endif()
+else()
+  # No chip and no CPU flag: the host build, where the platform's own declaration is the only
+  # authority there is.
+  set(_kickos_cpu "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
 target_compile_definitions(kickos_kernel PRIVATE
   KICKOS_VERSION="${KICKOS_VERSION}"
   KICKOS_BOARD_NAME="${KICKOS_BOARD}"
   KICKOS_ARCH_NAME="${KICKOS_ARCH}")
+if(NOT _kickos_cpu STREQUAL "")
+  target_compile_definitions(kickos_kernel PRIVATE KICKOS_CPU_NAME="${_kickos_cpu}")
+endif()
 
 install(TARGETS kickos_kernel EXPORT KickOSTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")

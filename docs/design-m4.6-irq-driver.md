@@ -24,10 +24,13 @@ privileged thread left in the system, the separate device and clock authority bi
 and the authority set is the six bits in `reference/invariants.md`. That is why the mint gate
 in section 2.4 is stated as an `AUTH_IRQ` check and not as a privilege check.
 
-Prior art folded in and superseded: `git show c296feb:docs/design-m4-rx-irq-demux.md` (the
-277-line RX72M peripheral-IRQ demux spike, never landed on master). Its routing-class
-taxonomy, group-register table, level-vs-edge semantics and the `arch_reserved_blocks`
-finding are carried forward here and **cited, not redone**. Section 6 is its successor.
+Prior art folded in and superseded: the 277-line RX72M peripheral-IRQ demux spike document,
+which never landed on master and whose object no longer resolves --
+it was reachable only from a local branch, and the branch inventory was cleared. Its
+routing-class taxonomy, group-register table, level-vs-edge semantics and the
+`arch_reserved_blocks` finding are carried forward **here**, so nothing below depends on
+reading it; the `c296feb` section numbers cited later are attribution to that spike. Section 6
+is its successor.
 
 ---
 
@@ -245,7 +248,7 @@ distinction is load-bearing rather than fussy.
 
 ### 2.4 ABI
 
-The ABI is unstable until the ABI-freeze milestone (M8, the last one), so syscall 14 is **renamed
+The ABI is unstable until the ABI-freeze milestone, so syscall 14 is **renamed
 in place** (it was the tier-1
 register call), not deprecated alongside a replacement:
 
@@ -1775,7 +1778,7 @@ found it, and it is already filed on its own in `TODO.md`.
    actually receives, and two grants naming one slot is `-KOS_EINVAL` rather than a silent
    overwrite. Gated by selftest `cap_dest`.
 4. **Rename in place, or append?** Sec.2.4 renames the mint at its existing syscall number
-   because the ABI is unstable until the ABI-freeze milestone (M8, the last one). A reviewer who
+   because the ABI is unstable until the ABI-freeze milestone. A reviewer who
    prefers append-only numbering even under
    an unstable ABI should say so now: it is one enumerator either way, but it changes every
    citation of the tier-1 block.

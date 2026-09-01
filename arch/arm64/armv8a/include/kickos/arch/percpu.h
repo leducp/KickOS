@@ -22,7 +22,8 @@ extern "C"
 
 // The type and the accessor may not share a name: a function shadowing a struct hides that
 // struct's constructor, which is -Wshadow and an error here.
-struct armv8a_percpu_block
+// One whole cache line per core: no two cores may share a line of this array.
+struct alignas(64) armv8a_percpu_block
 {
     // The incoming thread's kernel block top. vectors.S spells this displacement as a
     // literal, so a field added AHEAD of it is a silent wrong offset.
@@ -37,6 +38,15 @@ struct armv8a_percpu_block
     // The deferred switch's target, consumed at the exception exit. A target alone, so the
     // last one written wins.
     struct arch_context* switch_to;
+
+    // Nonzero exactly while an IRQ dispatch runs on this core. Written by the owning core
+    // alone, under the mask the exception itself applies.
+    uint32_t isr_depth;
+
+    // Nesting depth of the fault reporter, reached by index and not through armv8a_percpu():
+    // VEC_SLOT (vectors.S) seats no TPIDR_EL1, so on the slots that report a privileged fault
+    // the register carries no promise.
+    uint32_t report_depth;
 };
 
 extern struct armv8a_percpu_block kickos_armv8a_percpu[KICKOS_NUM_CORES];

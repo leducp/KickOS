@@ -44,6 +44,30 @@
 // Unevaluated operand: counts as a use for -Wunused-function without emitting the body.
 #define TAP_ELIDE(fn) ((void)sizeof(&(fn)))
 
+#ifndef KICKOS_KERNEL_CORES
+#define KICKOS_KERNEL_CORES 1
+#endif
+
+// A CROSS-THREAD PROGRESS ORDER IS A SINGLE-CORE CLAIM: priority orders which runnable thread
+// gets a core, and above one core a thread with a core of its own proceeds whatever its
+// priority. An arm reading the interleaving of two threads, or resting on one of them being
+// denied the CPU, therefore asserts what a shared kernel on several cores does not promise.
+// Place this FIRST in such an arm, ahead of any pooled object it would have to give back.
+#if KICKOS_KERNEL_CORES > 1
+#define TAP_SKIP_ONE_CORE_ORDER()                                                          \
+    do                                                                                     \
+    {                                                                                      \
+        tap::skip("a cross-thread progress order is not a property of %u kernel cores",     \
+                  static_cast<unsigned>(KICKOS_KERNEL_CORES));                              \
+        return;                                                                            \
+    } while (0)
+#else
+#define TAP_SKIP_ONE_CORE_ORDER() \
+    do                            \
+    {                             \
+    } while (0)
+#endif
+
 namespace
 {
     using kickos::Atomic;
@@ -254,6 +278,7 @@ namespace
     }
     void t_fifo()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         log_reset();
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}};
         auto a = kos::thread::create_caps(fifo_worker, reinterpret_cast<void*>('A'), "fifoA", 10,
@@ -282,6 +307,7 @@ namespace
     }
     void t_preempt()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         log_reset();
         kos_sem_create(0, &g_go);
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_go, CH_FULL}};
@@ -396,6 +422,7 @@ namespace
     }
     void t_irq()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         log_reset();
         kos_sem_create(0, &g_irq);
         // MUST be checked: unchecked, a refused line leaves no ISR bound, irq_waiter parks
@@ -549,6 +576,7 @@ namespace
     }
     void t_sleep()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         log_reset();
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}};
         auto l = kos::thread::create_caps(sleeper, reinterpret_cast<void*>(uintptr_t{40}), "sleepL",
@@ -693,6 +721,7 @@ namespace
     }
     void t_irq_mask()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         kos_sem_create(0, &g_irq_ready);
         g_mask_serviced = 0;
         kos_cap_t irq = KOS_CAP_NONE;
@@ -759,6 +788,7 @@ namespace
     }
     void t_irq_discard()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         // A bad cap is refused at the same chokepoint as wait/ack, before any controller
         // write. Must stay ahead of every allocation, or its failure return strands them.
         TAP_CHECK(kos_irq_discard(KOS_CAP_NONE) == -KOS_EBADF);
@@ -1115,6 +1145,7 @@ namespace
     }
     void t_mutex_pi()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         log_reset();
         g_mtx_unit = mtx_time_unit();
         kos_cap_t m = KOS_CAP_NONE;
@@ -1206,6 +1237,7 @@ namespace
     }
     void t_mutex_chain()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         // Ask the pool BEFORE creating anything: the three staging semaphores exceed the
         // supply on the small boards, so this stays a skip there instead of a create failure.
         if (not pool_can_host(4))
@@ -1333,6 +1365,7 @@ namespace
     }
     void t_mutex_deadlock()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         // Self-deadlock: a recursive lock is refused (-KOS_EDEADLK), not parked, and leaves
         // the mutex holdable/releasable normally.
         kos_cap_t self = KOS_CAP_NONE;
@@ -1441,6 +1474,7 @@ namespace
     }
     void t_mutex_multi_held()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         log_reset();
         g_mtx_unit = mtx_time_unit();
         kos_cap_t m1 = KOS_CAP_NONE;
@@ -1510,6 +1544,7 @@ namespace
     }
     void t_mutex_owner_died_nowaiter()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         kos_cap_t m = KOS_CAP_NONE;
         kos_cap_t holds = KOS_CAP_NONE;
         int const mrc = kos_mutex_create(&m);
@@ -1818,6 +1853,7 @@ namespace
     }
     void t_irq_reclaim()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         kos_cap_t first = KOS_CAP_NONE;
         TAP_CHECK(kos_irq_claim(RECLAIM_LINE, KOS_IRQ_EDGE, &first) == 0);
         // done@1, line@3, index 2 deliberately EMPTY.
@@ -1846,6 +1882,7 @@ namespace
     // --- Spurious IRQ: an unbound line is masked + counted, never dropped -------
     void t_irq_spurious()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         constexpr int FREE_LINE = KICKOS_SELFTEST_IRQ_BASE + 3; // no driver bound to this line
         // Enable the line so the injected raise reaches the default handler: ARM NVIC and RX
         // are masked by default, sim/riscv are not.
@@ -1877,6 +1914,7 @@ namespace
     }
     void t_irq_stale_register()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         kos_sem_create(0, &g_irq_ready);
         g_stale_seen = 0;
         // Pre-registration garbage: unmask so the default handler runs (mask + count) on the
@@ -3056,6 +3094,7 @@ namespace
 
     void t_aspace_two_spaces_same_grant()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         void* const shared = kos_ram_alloc(256);
         if (shared == nullptr)
         {
@@ -4310,6 +4349,7 @@ namespace
     }
     void t_parked_frame_hostile()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
 #if defined(KICKOS_TLS) && KICKOS_TLS
         // The TLS seat admits a caller stack of exactly one stride, stride-aligned.
         constexpr uint32_t VSTK = KICKOS_TLS_STRIDE;
@@ -5009,17 +5049,11 @@ namespace
                                                       - ((before >> 8) & 0xFFFFFFu));
         TAP_CHECK((after & 0xFFu) == 0);
         tap::diag("image seed: %u sequences issued, %u elided", issued, elided);
-#if KICKOS_NUM_CORES > 1
-        // The elision reads whether THIS core has the space installed, which another core
-        // holding the same root makes unanswerable, so the backends compile it out above one
-        // core: what was elided at one core is issued here.
-        TAP_CHECK(elided == 0);
-        TAP_CHECK(issued >= 32u);
-#else
+        // The elision reads whether ANY core has the space installed, so a space nothing has
+        // yet activated seeds free at every core count.
         TAP_CHECK(issued == 0);
         // A seed reporting a handful mapped almost none of the image.
         TAP_CHECK(elided >= 32u);
-#endif
         // The positive control, without which the arm is vacuous: an editor that had stopped
         // invalidating at all would pass the two checks above.
         void* const blk = kos_ram_alloc(TLBI_BLK);
@@ -5034,6 +5068,120 @@ namespace
         tap::diag("running-space widening: %u sequences issued",
                   static_cast<unsigned>((post >> 32) - (pre >> 32)));
         TAP_CHECK((post >> 32) > (pre >> 32));
+    }
+
+    // --- No core holds a translation root it is not running ------------------------------
+    // A core that ran a thread of some task and then took one holding no space keeps that
+    // task's root installed until something puts the boot root back, and the tables under it
+    // go to the frame pool when the task dies. A core is accounted for when it is on the boot
+    // root or on a root some live domain still holds, and the whole set must be accounted for.
+    void t_aspace_active_cores()
+    {
+        uint64_t const w = kos_aspace_probe(KOS_ASPACE_OP_ACTIVE_CORES, 0);
+        unsigned const cores = static_cast<unsigned>((w >> 16) & 0xFFu);
+        unsigned const accounted = static_cast<unsigned>((w >> 8) & 0xFFu);
+        unsigned const mine = static_cast<unsigned>(w & 0xFFu);
+        tap::diag("%u kernel core(s), %u on a live root, this task's space on %u", cores,
+                  accounted, mine);
+        // The denominator, without which the equality below is satisfied by an empty set.
+        TAP_CHECK(cores == static_cast<unsigned>(KICKOS_KERNEL_CORES));
+        // The calling thread is running, so its own space is installed on at least this core.
+        // A 0 here is a probe that read no set at all.
+        TAP_CHECK(mine >= 1u);
+        TAP_CHECK(accounted == cores);
+
+        // Churn: a task dies and its tables go back to the pool. A core left on that root
+        // reports afterwards as one no live domain accounts for.
+        for (unsigned i = 0; i < 4u; i++)
+        {
+            kos_task_t t = KOS_TASK_NONE;
+            if (kos_task_create(nullptr, 0, 0, &t) != 0)
+            {
+                break;
+            }
+            kos_yield();
+            (void)kos_task_kill(t);
+            kos_yield();
+        }
+        uint64_t const after = kos_aspace_probe(KOS_ASPACE_OP_ACTIVE_CORES, 0);
+        unsigned const cores_after = static_cast<unsigned>((after >> 16) & 0xFFu);
+        unsigned const accounted_after = static_cast<unsigned>((after >> 8) & 0xFFu);
+        tap::diag("after the kill churn: %u of %u core(s) on a live root", accounted_after,
+                  cores_after);
+        TAP_CHECK(cores_after == static_cast<unsigned>(KICKOS_KERNEL_CORES));
+        TAP_CHECK(accounted_after == cores_after);
+    }
+
+    // The doorbell's two per-core counts: services performed, each of which takes a Context
+    // synchronization event, and instruction-side rendezvous initiated.
+    //
+    // A rendezvous is owed only where a peer still has the space installed when its executable
+    // text goes away, which is a scheduling outcome, and no unprivileged mapping call grants
+    // execute permission, so an arm cannot force one. The rendezvous count is therefore
+    // REPORTED across the churn below; a growth assertion on it would flake. What is asserted
+    // is a per-core floor and a pairing invariant, both deterministic.
+    void t_doorbell_xpoke()
+    {
+        uint32_t served = 0;
+        uint32_t initiated = 0;
+        for (unsigned c = 0; c < static_cast<unsigned>(KICKOS_NUM_CORES); c++)
+        {
+            uint64_t const w = kos_aspace_probe(KOS_ASPACE_OP_DOORBELL_COUNTS, c);
+            served += static_cast<uint32_t>(w & 0xFFFFFFFFu);
+            initiated += static_cast<uint32_t>(w >> 32);
+        }
+
+        for (unsigned i = 0; i < 4u; i++)
+        {
+            kos_task_t t = KOS_TASK_NONE;
+            if (kos_task_create(nullptr, 0, 0, &t) != 0)
+            {
+                break;
+            }
+            kos_yield();
+            (void)kos_task_kill(t);
+            kos_yield();
+        }
+
+        uint32_t served_after = 0;
+        uint32_t initiated_after = 0;
+        unsigned silent = 0;
+        for (unsigned c = 0; c < static_cast<unsigned>(KICKOS_NUM_CORES); c++)
+        {
+            uint64_t const w = kos_aspace_probe(KOS_ASPACE_OP_DOORBELL_COUNTS, c);
+            uint32_t const s = static_cast<uint32_t>(w & 0xFFFFFFFFu);
+            uint32_t const n = static_cast<uint32_t>(w >> 32);
+            tap::diag("core %u: %u service(s), %u rendezvous initiated", c, s, n);
+            if (c < static_cast<unsigned>(KICKOS_KERNEL_CORES) and s == 0u)
+            {
+                silent++;
+            }
+            served_after += s;
+            initiated_after += n;
+        }
+        tap::diag("across the kill churn: services %u -> %u, rendezvous %u -> %u", served,
+                  served_after, initiated, initiated_after);
+
+        // Monotonic: a counter that went backwards is a torn read of a cell with one writer.
+        TAP_CHECK(served_after >= served);
+        TAP_CHECK(initiated_after >= initiated);
+#if KICKOS_KERNEL_CORES > 1
+        // EVERY core the kernel schedules on has answered a doorbell, which the bring-up check
+        // makes deterministic: it pokes each secondary for its full round count and reads the
+        // answer back under the lock before the kernel starts. A silent core is one whose
+        // service body never ran, and that body is what carries the barrier.
+        TAP_CHECK(silent == 0u);
+        // Each rendezvous pokes at least one peer and waits for it, so the services performed
+        // across the machine cannot be fewer than the rendezvous initiated.
+        TAP_CHECK(served_after >= initiated_after);
+#else
+        // One core: peer_cores is a constant 0 and the mechanism folds out of the image, so the
+        // probe reads exactly zero rather than an idle counter, and the one core the kernel
+        // schedules on is counted silent for the same reason.
+        TAP_CHECK(served_after == 0u);
+        TAP_CHECK(initiated_after == 0u);
+        TAP_CHECK(silent == static_cast<unsigned>(KICKOS_KERNEL_CORES));
+#endif
     }
 #endif
     void t_confused_deputy()
@@ -5555,6 +5703,7 @@ namespace
     }
     void t_reply_abandoned_cap()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         if (not pool_can_host(2))
         {
             tap::skip("pool too small (2 interdependent workers)");
@@ -5684,6 +5833,7 @@ namespace
     }
     void t_call_timeout_revert()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         // Ask before spawning: the three workers wait on each other, so a partial set
         // cannot be drained and a guard after the spawns would hang rather than skip.
         if (not pool_can_host(3))
@@ -5768,6 +5918,7 @@ namespace
     }
     void t_call_infoless_revert()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         // Ask the pool BEFORE spawning anything: the four workers are mutually dependent, so
         // a partial set cannot be drained. Guarding after the spawns HANGS, it does not skip.
         if (not pool_can_host(4))
@@ -5837,6 +5988,7 @@ namespace
     }
     void t_call_close_reply()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         log_reset();
         g_cc_rc = -99;
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
@@ -6438,6 +6590,7 @@ namespace
     }
     void t_call_donation()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         log_reset();
         g_don_unit = mtx_time_unit();
         g_don_rc = -99;
@@ -6517,6 +6670,7 @@ namespace
     }
     void t_call_donation_hold()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         log_reset();
         g_don_unit = mtx_time_unit();
         g_dh_rc = -99;
@@ -6591,6 +6745,7 @@ namespace
     }
     void t_call_donation_slow()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         log_reset();
         g_don_unit = mtx_time_unit();
         g_dh_rc = -99;
@@ -6668,6 +6823,7 @@ namespace
     }
     void t_call_donation_pending()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         log_reset();
         g_don_unit = mtx_time_unit();
         g_dh_rc = -99;
@@ -7548,12 +7704,14 @@ namespace
     // --- the reply bound, met at endpoint_call's fastpath probe ---------------------------
     void t_cap_reply_bound_fast()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         reply_bound_arm(0, 3);
     }
 
     // --- the same bound, delivered through the recv-side scan of parked callers -----------
     void t_cap_reply_bound_slow()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         reply_bound_arm(4, 0);
     }
 
@@ -8549,6 +8707,7 @@ namespace
 
     void t_thread_slay_window()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         kos_cap_t park = KOS_CAP_NONE;
         if (kos_sem_create(0, &park) != 0)
         {
@@ -8736,6 +8895,7 @@ namespace
 
     void t_thread_slay_timeout()
     {
+        TAP_SKIP_ONE_CORE_ORDER();
         kos_cap_t park = KOS_CAP_NONE;
         if (kos_sem_create(0, &park) != 0)
         {
@@ -9234,6 +9394,8 @@ int main(int, char**)
     TAP_ADD("reent_seating", t_reent_seating);         // no app-half write for a space-less thread
     TAP_ADD("aspace_acquire_balance", t_aspace_acquire_balance); // one release per acquire taken
     TAP_ADD("map_tlbi_elided", t_map_tlbi_elided); // an unpublished space caches nothing to drop
+    TAP_ADD("aspace_active_cores", t_aspace_active_cores); // every core on a root it is running
+    TAP_ADD("doorbell_xpoke", t_doorbell_xpoke); // a rendezvous initiated has a service to show
     // LAST of the block: it drops the space holding the image's own data pages for good, and
     // every process created after it copies the snapshot instead.
     TAP_ADD("process_data_template", t_process_data_template); // the snapshot, once root is gone

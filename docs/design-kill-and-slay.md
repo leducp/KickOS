@@ -66,8 +66,7 @@ concept. Section 6 works it out, and it can land before anything else here.
 ## 2. The ABI
 
 Syscall numbers are append-only; the current high-water mark is `KOS_SYS_TASK_KILL = 52`
-(`user/include/kickos/sys/abi.h:169`). The ABI is unstable until the ABI-freeze milestone (M8, the
-last one), so no versioning and no migration.
+(`user/include/kickos/sys/abi.h:169`). The ABI is unstable until the ABI-freeze milestone, so no versioning and no migration.
 
 ### 2.1 What is appended
 

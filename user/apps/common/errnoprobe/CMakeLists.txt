@@ -25,7 +25,13 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_errnoprobe.sh")
 endif()
 
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
+# NOT registered above one kernel core, and that is a claim rather than a convenience: the
+# reentrancy seat is one word in the process's memory, so two threads of one process on two cores
+# resolve the same errno, and no per-core keying reaches a word read at EL0. Registering it there
+# would assert a gate that can never pass, which a run-time skip then has to explain on every
+# sweep. The app still BUILDS on that posture, so the code stays compiled.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64" AND KICKOS_KERNEL_CORES EQUAL 1)
   kickos_add_qemu_test(NAME qemu_arm64_errnoprobe TARGET errnoprobe BOARD qemu-arm64
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_errnoprobe.sh")
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_errnoprobe.sh"
+    ARGS ${KICKOS_KERNEL_CORES})
 endif()

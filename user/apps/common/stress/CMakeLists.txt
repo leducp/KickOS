@@ -29,3 +29,22 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
     PASS_REGULAR_EXPRESSION "STRESS PASS"
     FAIL_REGULAR_EXPRESSION "STRESS FAIL;${KICKOS_PANIC_REGEX}")
 endif()
+
+# Threads on every core, on THIS image and not the smallest one that boots the chip: the soak
+# holds more runnable threads than the machine has cores for its whole run, so a core running
+# no thread is one the scheduler left idle beside a ready thread. An app whose threads hand off
+# one at a time offers a single runnable thread, and which core takes it is a race the host
+# decides; under saturation it is decided the same way for the whole run, so no bound recovers
+# it.
+#
+# The gate stops the run itself, as soon as QEMU's execution log attributes the trap stub to
+# every vCPU, and it is that log rather than anything the image printed that carries the
+# verdict. The liveness pattern is the app's own FIRST line, a control that the app half ran at
+# all. CMAKE_NM travels with it: the gate reads the trap stub's address out of the image
+# instead of carrying a layout. TIMEOUT covers the gate's own sampling bound.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64" AND KICKOS_KERNEL_CORES GREATER 1)
+  kickos_add_qemu_test(NAME qemu_arm64_smp_threads TARGET stress BOARD qemu-arm64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_threads.sh"
+    ARGS ${KICKOS_KERNEL_CORES} "^stress: scheduler" "${CMAKE_NM}"
+    TIMEOUT 300)
+endif()

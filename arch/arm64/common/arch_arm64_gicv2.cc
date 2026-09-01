@@ -9,6 +9,8 @@
 
 #include "gicv2.h"
 
+#include <kickos/sys/atomic.h>
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -52,6 +54,8 @@ namespace
     constexpr uintptr_t GICD_ICPENDR = 0x280;
     constexpr uintptr_t GICD_IPRIORITYR = 0x400;
     constexpr uintptr_t GICD_ITARGETSR = 0x800;
+    constexpr uintptr_t GICD_SGIR = 0xF00;
+    constexpr uintptr_t GICD_CPENDSGIR = 0xF10;
     constexpr uintptr_t GICC_CTLR = 0x000;
     constexpr uintptr_t GICC_PMR = 0x004;
     constexpr uintptr_t GICC_IAR = 0x00C;
@@ -68,9 +72,20 @@ namespace
     constexpr uint32_t GICC_IAR_ID_MASK = 0x3FF;
 
 #if KICKOS_NUM_CORES > 1
-    // GICD_ITARGETSR is one byte of core bits, so eight cores is the whole space this
-    // controller addresses and a ninth has no target encoding.
+    // GICD_ITARGETSR is one byte of core bits and GICD_SGIR's CPUTargetList the same eight, so
+    // eight cores is the whole space this controller addresses.
     static_assert(KICKOS_NUM_CORES <= 8, "GICv2 ITARGETSR targets at most 8 cores");
+
+    // The doorbell's INTID. Legal range for a GICD_SGIR write is 0 to 15.
+    constexpr int GIC_SGI_DOORBELL = 0;
+    static_assert(GIC_SGI_DOORBELL >= 0 and GIC_SGI_DOORBELL <= 15,
+                  "GICD_SGIR carries a 4-bit INTID");
+
+    // EACH CORE'S GICD_SGIR TARGET BIT, WHICH IS A GIC CPU INTERFACE NUMBER AND NOT A CORE
+    // INDEX. IHI 0048B.b's one discovery mechanism: a read of a CPU-targets field of
+    // GICD_ITARGETSR0-7 returns the number of the processor performing the read.
+    kickos::Atomic<uint8_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE>
+        g_target_bit[KICKOS_NUM_CORES] = {};
 #endif
 }
 
@@ -111,7 +126,70 @@ void kickos_gicv2_percore_init(void)
     int const timer = kickos_gicv2.timer_intid;
     *gicd8(GICD_IPRIORITYR + static_cast<uintptr_t>(timer)) = 0;
     *gicd32(GICD_ISENABLER + (timer / 32) * 4) = 1u << (timer % 32);
+
+#if KICKOS_NUM_CORES > 1
+    // GROUP 0, WHICH IS WHAT THE ACKNOWLEDGE PATH READS. A group mismatch drops a
+    // software-generated interrupt silently, so this INTID keeps the group GICD_IGROUPR0
+    // resets it to and GICD_SGIR.NSATT stays clear to match. Without security extensions
+    // IGROUPR is RAZ/WI and there is one group; with them, GICC_IAR and GICC_EOIR here are
+    // group 0's.
+    //
+    // GICD_ICPENDR writes are ignored for INTIDs below 16; an SGI's pending state is
+    // GICD_CPENDSGIR's. Every source bit of this core's byte, clearing a raise latched before
+    // this core owned an interface.
+    *gicd32(GICD_CPENDSGIR + (GIC_SGI_DOORBELL / 4) * 4)
+        = 0xFFu << ((GIC_SGI_DOORBELL % 4) * 8);
+    *gicd8(GICD_IPRIORITYR + static_cast<uintptr_t>(GIC_SGI_DOORBELL)) = 0;
+    *gicd32(GICD_ISENABLER + (GIC_SGI_DOORBELL / 32) * 4) = 1u << (GIC_SGI_DOORBELL % 32);
+
+    // GICD_ITARGETSR0-7 are read-only and banked, so this byte is this core's own interface
+    // number. Published last, so a sender that finds the bit reaches a live interface.
+    g_target_bit[arch_cpu_id()] = *gicd8(GICD_ITARGETSR);
+#endif
 }
+
+#if KICKOS_NUM_CORES > 1
+// ONE WRITE REACHES ANY SUBSET: TargetListFilter 0b00 in [25:24] uses CPUTargetList in
+// [23:16], NSATT in [15] stays clear for group 0, and the INTID sits in [3:0]. GICD_SGIR is
+// write-only.
+//
+// A core whose target bit is unpublished contributes nothing to the list: its interface number
+// is unknown, and bit `index` would be a bet on interface numbering.
+void kickos_gicv2_doorbell_send(uint32_t cores)
+{
+    uint32_t list = 0;
+    for (uint32_t index = 0; index < KICKOS_NUM_CORES; index++)
+    {
+        if ((cores & (1u << index)) != 0)
+        {
+            list |= g_target_bit[index];
+        }
+    }
+    if (list == 0)
+    {
+        return;
+    }
+    // IHI 0048B.b SPECIFIES NO ORDERING FOR SGI GENERATION, so the far side's view of earlier
+    // writes is the memory model's to order.
+    __asm volatile("dsb ish" ::: "memory");
+    *gicd32(GICD_SGIR) = ((list & 0xFFu) << 16) | static_cast<uint32_t>(GIC_SGI_DOORBELL);
+}
+
+// Write-1-to-clear over all eight source bits of this core's byte. The pending state of an SGI
+// is per target core AND per source core, and GICD_CPENDSGIR is banked to the accessing core.
+void kickos_gicv2_doorbell_clear(void)
+{
+    *gicd32(GICD_CPENDSGIR + (GIC_SGI_DOORBELL / 4) * 4)
+        = 0xFFu << ((GIC_SGI_DOORBELL % 4) * 8);
+}
+
+// This core's banked enable word, doorbell bit excepted. Word 0 covers the SGI and PPI IDs,
+// which are the only ones banked.
+void kickos_gicv2_doorbell_only(void)
+{
+    *gicd32(GICD_ICENABLER) = ~(1u << (GIC_SGI_DOORBELL % 32));
+}
+#endif
 
 // Write-1-to-ACT, so the pending state of one INTID drops with a single aligned store.
 void kickos_gicv2_clear_pending(int intid)
@@ -148,7 +226,12 @@ void arch_irq_unmask(int line)
     if (line >= GIC_BANKED_INTIDS)
     {
         // A global interrupt reaches no core until one is named; a banked one needs none.
+        // Core zero's own PUBLISHED interface number; the literal 0x01 names interface zero.
+#if KICKOS_NUM_CORES > 1
+        *gicd8(GICD_ITARGETSR + static_cast<uintptr_t>(line)) = g_target_bit[0];
+#else
         *gicd8(GICD_ITARGETSR + static_cast<uintptr_t>(line)) = 0x01;
+#endif
     }
     *gicd32(GICD_ISENABLER + (line / 32) * 4) = 1u << (line % 32);
 }
@@ -188,11 +271,33 @@ void kickos_armv8a_gic_dispatch(void)
         // an EOI alone would re-enter here forever.
         kickos_isr_timer();
     }
+#if KICKOS_NUM_CORES > 1
+    else if (intid == static_cast<uint32_t>(GIC_SGI_DOORBELL))
+    {
+        // SGIs are edge-triggered (GICD_ICFGR0's SGI config bits are RAO/WI), and the
+        // acknowledge above cleared the pending state.
+        kickos_arm64_doorbell_service();
+    }
+#endif
     else
     {
         kickos_isr_irq(static_cast<int>(intid));
     }
+    // THE WHOLE VALUE READ: GICC_EOIR must carry back the CPUID that GICC_IAR[12:10] reported
+    // for an SGI, and a PPI or SPI reports zero there.
     *gicc32(GICC_EOIR) = iar;
+#if KICKOS_KERNEL_CORES > 1
+    // AFTER THE END OF INTERRUPT AND OUTSIDE THE SERVICE BODY: this takes the kernel lock,
+    // which the service body may not, the service answering an initiator that may hold it.
+    //
+    // THE CELL IS THE AUTHORITY, NOT THE RAISE: the doorbell also carries rendezvous whose
+    // targets owe no scheduler entry, and the take is what tells the two apart.
+    if (intid == static_cast<uint32_t>(GIC_SGI_DOORBELL)
+        and kickos_kernel_core_resched_take() != 0)
+    {
+        kickos_kernel_core_resched();
+    }
+#endif
 }
 
 }

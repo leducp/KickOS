@@ -3,7 +3,7 @@
 //
 // Host fixture for the kernel's own state machines: a real Kernel instance, the real
 // scheduler, the real FIFO/RR policy, the real capability teardown, the real task pool, with
-// karch_seam.cc standing in for the arch boundary and the subsystems those sources call out to.
+// karch_seam.cc standing in for the arch boundary.
 //
 // Keep this header GTEST-FREE; kseam_test.h is the GoogleTest layer over it. The fixture
 // library is built -fno-exceptions -fno-rtti and gtest's headers configure themselves from
@@ -12,39 +12,31 @@
 //
 // FOUR THINGS TO KNOW BEFORE WRITING AN ARM.
 //
-// 1. arch_switch does NOT switch. The whole state machine (run state, current, the ready
-//    lists, every priority) is committed before switch_to reaches it, so a stub that
-//    returns is exactly "run the machine, skip the machine context". The TEST is therefore
-//    the CPU: after any call that reschedules, kernel().current is the thread the scheduler
-//    PICKED, and an arm that wants to keep speaking as its old thread must re-seat it.
+// 1. arch_switch returns instead of switching, so the state machine is committed and the
+//    machine context is not. After any call that reschedules, kernel().current is the thread
+//    the scheduler PICKED, and an arm that wants to keep speaking as its old thread must
+//    re-seat it.
 //
 // 2. A blocking primitive's RETURN VALUE is worth exactly the waker an arm supplies. The
-//    thread that parks gets the CPU straight back, so the fixture stands in for the other
-//    side of the switch: it POISONS wait_result, credits the switch-in wq_confirm_resume
-//    spins for, and calls the waker armed by wake_next_park. A park with none armed ends
-//    the arm, and a waker that writes no result leaves the poison, so an assertion on a
-//    result nobody wrote cannot pass.
+//    fixture poisons wait_result, credits the switch-in wq_confirm_resume spins for, and
+//    calls the waker armed by wake_next_park, so an assertion on a result nobody wrote
+//    cannot pass; a park with no waker armed ends the arm.
 //
-// 3. A switch REQUEST is the observable, not its effect. Every arch_switch lands in the
-//    trace, so an arm asserts which switch happened and WHEN relative to the other calls.
-//    That is the only way to gate a path whose real switch never returns, exit_current
-//    past its on_remove being exactly that.
+// 3. The switch REQUEST is the observable: every arch_switch lands in the trace, which is
+//    how an arm gates a path whose real switch never returns, exit_current past its
+//    on_remove being exactly that.
 //
-// 4. exit_current does not return on target: it parks in arch_idle_wait forever. run_exit()
-//    ends the arm there with a longjmp, which is safe only because the IrqLock scope closes
-//    before that park loop. Never longjmp out of a held IrqLock, and never out of a
-//    capability sweep. A run_in_chunk_gap action runs INSIDE a sweep, so it may not longjmp
-//    either and run_exit is not available to it.
+// 4. run_exit() ends the arm inside exit_current's arch_idle_wait park with a longjmp, which
+//    requires the IrqLock scope to have closed. Never longjmp out of a held IrqLock, and
+//    never out of a capability sweep: a run_in_chunk_gap action runs INSIDE a sweep, so
+//    run_exit is not available to it.
 //
-//    reset() also restores the state cap.cc keeps outside the Kernel struct, which
-//    re-constructing the Kernel does not reach: cap_slab_init() for the chunk free list, and
-//    cap_console_reset() for g_stdout_target, which is what lets an arm publish a console at
-//    all. Without that clear, a stale global handle survives into an arm whose endpoint pool
-//    has been zeroed and whose gen-encoded handles therefore REPEAT, and an unrelated
-//    endpoint close matches it and notes a console death in ANOTHER arm's counter. cap.cc's
-//    teardown_depth is unreachable from outside it, so an arm that abandons a sweep would
-//    leave cap_teardown_active() true for every later arm, which reads as a suite that
-//    passes: reset() REFUSES rather than continuing.
+//    reset() also restores the state cap.cc keeps outside the Kernel struct: cap_slab_init()
+//    for the chunk free list and cap_console_reset() for g_stdout_target. Without that clear
+//    a stale global handle survives into an arm whose gen-encoded handles therefore REPEAT,
+//    and an unrelated endpoint close matches it and notes a console death in ANOTHER arm's
+//    counter. An arm that abandons a sweep would leave cap_teardown_active() true for every
+//    later arm, which reads as a suite that passes: reset() REFUSES rather than continuing.
 
 #ifndef KICKOS_TESTS_UNIT_KFIXTURE_KFIXTURE_H
 #define KICKOS_TESTS_UNIT_KFIXTURE_KFIXTURE_H
@@ -53,7 +45,7 @@
 
 #include <kickos/domain.h>
 #include <kickos/endpoint.h>
-#include <kickos/sched.h> // sched::ExitCause: run_exit_as picks the death scope
+#include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
 
@@ -67,13 +59,11 @@ namespace kickos
         extern uint64_t g_now_ns;
 
         // The fake domain pool the seam's domain_for/ref/release work over. The creator hold
-        // and the members' hold are TWO references on one domain, and telling them apart is
-        // what gates which of them a death drops.
+        // and the members' hold are TWO references on one domain.
         extern Domain g_domains[KICKOS_MAX_TASKS];
         extern uint16_t g_domain_refs[KICKOS_MAX_TASKS];
         extern bool g_domain_live[KICKOS_MAX_TASKS];
-        // -1 for null and for anything outside the pool, so a release of a task with no
-        // domain is inert exactly as the real one is.
+        // -1 for null and for anything outside the pool.
         int domain_index(Domain const* d);
         uint16_t domain_refs(Domain const* d);
 
@@ -82,9 +72,7 @@ namespace kickos
         extern uint32_t g_console_reclaimed;
         extern uint32_t g_parked;
 
-        // Every TCB an arm may drive without the ThreadPool. Plain storage, because nothing
-        // gated here resolves a thread by handle and the pool's reclaim rules would make the
-        // arms about the pool.
+        // Every TCB an arm may drive without the ThreadPool, in plain storage.
         constexpr int MAX_TEST_THREADS = 8;
 
         struct Fixture
@@ -96,8 +84,8 @@ namespace kickos
         extern Fixture g_fx;
 
         // --- the ordered trace ---------------------------------------------------------
-        // Asserted as ONE string with EXPECT_STREQ, never as a set of counters: the claims
-        // worth gating here are about ORDER, and a counter oracle cannot fail on a reordering.
+        // Asserted as ONE string with EXPECT_STREQ: the claims are about ORDER, and a
+        // counter oracle cannot fail on a reordering.
         char const* trace();
         __attribute__((format(printf, 1, 2))) void trace_add(char const* fmt, ...);
         void trace_reset();
@@ -105,12 +93,10 @@ namespace kickos
         // --- the seam's recorders ------------------------------------------------------
         Thread* thread_of_context(struct arch_context* c);
         void note_switch(Thread* from, Thread* to);
-        // The context rebuild, recorded rather than performed: an arm sees WHICH thread's
-        // context was named and WITH WHAT, and its position in the trace pins the rebuild
-        // before the switch, which is the placement rule the pended backends need.
+        // The context rebuild, recorded rather than performed. Its position in the trace pins
+        // the rebuild before the switch, which is the placement rule the pended backends need.
         void note_ctx_redirect(Thread* t, void (*entry)(void* arg), void* base, size_t size);
-        // The last rebuild's arguments, for an arm that asserts the entry stub and the stack
-        // top rather than only the ordering. Null / 0 until one happens; cleared by reset().
+        // The last rebuild's arguments. Null / 0 until one happens; cleared by reset().
         extern Thread* g_redirect_target;
         extern void (*g_redirect_entry)(void* arg);
         extern uintptr_t g_redirect_stack_top;
@@ -118,6 +104,45 @@ namespace kickos
         void note_park();
         void note_irq_save();
         void note_irq_restore();
+
+#if KICKOS_KERNEL_CORES > 1
+        // --- the kernel lock, and the swap that carries it -----------------------------
+        // Above one core the seam owns the lock word and the swap ends its span the way a
+        // backend's assembly does, by calling kickos_switch_unlock once the outgoing frame is
+        // parked.
+        //
+        // Which half of the swap the seam performs. IMMEDIATE parks inside arch_switch;
+        // DEFERRED books it and parks at the next arch_idle_wait, as a backend whose swap runs
+        // in an exception epilogue does. Set it before the call that reschedules; reset() puts
+        // it back to IMMEDIATE.
+        enum class SwapMode
+        {
+            IMMEDIATE,
+            DEFERRED
+        };
+        void set_swap_mode(SwapMode m);
+
+        // The core identity every keyed read in the compiled sources resolves through.
+        extern uint32_t g_core;
+
+        bool klock_held();
+        void note_klock_acquire();
+        void note_klock_release();
+
+        // Swaps whose park committed, and how many of them found the lock free.
+        extern uint32_t g_parks_committed;
+        extern uint32_t g_parks_without_lock;
+        // Releases taken while the running thread was EXITED and no swap had parked it: each
+        // one is a window in which a peer reads that state off a thread whose saved frame
+        // still describes an earlier run.
+        extern uint32_t g_exit_window_opened;
+        // The thread the last committed park saved, and the state it carried there.
+        extern Thread* g_park_from;
+        extern ThreadState g_park_from_state;
+
+        extern uint32_t g_ipi_sends;
+        extern uint32_t g_ipi_send_mask;
+#endif
 
         // --- the waker a real park needs -----------------------------------------------
         // Called with the parked thread's wait_result already poisoned, as the thread the
@@ -132,9 +157,8 @@ namespace kickos
         // --- the chunk gap -------------------------------------------------------------
         // Runs `fn` at the `ordinal`th moment no IrqLock is held, counting from the arming
         // call, and traces every such moment as gap<n>. cap_teardown opens one before its
-        // first chunk and one after each, so an ordinal names a chunk boundary and `fn`
-        // sees a sweep that holds nothing. Gaps `fn` itself opens are neither counted nor
-        // traced. One-shot; disarmed by reset().
+        // first chunk and one after each, so an ordinal names a chunk boundary. Gaps `fn`
+        // itself opens are neither counted nor traced. One-shot; disarmed by reset().
         using GapAction = void (*)();
         void run_in_chunk_gap(GapAction fn, uint32_t ordinal);
 
@@ -154,10 +178,9 @@ namespace kickos
         // Give `t` a real capability table of `width` slots from the real slab, so an arm can
         // put the REAL cap_teardown through a live entry. Dies if the slab refuses.
         void attach_caps(Thread* t, uint32_t width);
-        // The creator tag task() mints with. It names NO pool slot and is not the boot tag
-        // kill_tag_of answers for a thread outside the pool, so no arm's exiting thread
-        // orphans a hand-made group by accident. Tag 1 would: it is pool slot 0's tag, and
-        // that is the slot the arms seat their dying thread into.
+        // The creator tag task() mints with: it names no pool slot, so no arm's exiting thread
+        // orphans a hand-made group. Tag 1 would, being pool slot 0's tag, which is the slot
+        // the arms seat their dying thread into.
         constexpr uint16_t FIXTURE_TASK_TAG = KICKOS_THREAD_SLOTS + 1;
         static_assert(FIXTURE_TASK_TAG < 0xFFu,
                       "the fixture's creator tag would alias idle's boot tag once truncated "
@@ -169,19 +192,18 @@ namespace kickos
         // lands in `slot`: free_slot() scans upward, so call these in slot order.
         Task* task(int slot);
         // `t` joins `tk` through the real task_ref, which is what takes the members' domain
-        // reference. Only the TCB field matters to the group scan: membership is a pointer
-        // comparison over the thread pool, not a list the task holds.
+        // reference. Group membership is a pointer comparison over the thread pool, so only
+        // the TCB field matters to the scan.
         void join_task(Thread* t, Task* tk);
-        // A semaphore park: the kind with NO error channel at all, so an arm can show that the
-        // cancel reaches it anyway and that the token count is left alone. out_handle may be
-        // null; only the object identity matters to a park.
+        // A semaphore park: the kind with no error channel at all, so an arm can show the
+        // cancel reaches it anyway and leaves the token count alone. out_handle may be null.
         Semaphore* semaphore(int* out_handle);
         void park_sem_waiter(Thread* w, Semaphore* s);
         // A sleeper on the timer delta list. On no wait queue, so the tag is the only edge.
         void park_sleeper(Thread* w, uint64_t deadline_ns);
-        // A PLAIN sender (call_state CALL_NONE) parked on ep->send_waiters. Plain is the
-        // point: a CALL_SEND_WAIT caller boosts the server, so only this shape can carry a
-        // priority the dying server does not already hold.
+        // A PLAIN sender (call_state CALL_NONE) parked on ep->send_waiters: a CALL_SEND_WAIT
+        // caller boosts the server, so only this shape can carry a priority the dying server
+        // does not already hold.
         void park_plain_sender(Thread* w, Endpoint* ep);
         // A mutex `owner` HOLDS, from the real pool, seated with TWO object refs because a
         // waiter necessarily holds a cap of its own: at one ref the sweep's drop reaches zero
@@ -190,17 +212,15 @@ namespace kickos
         void park_mutex_waiter(Thread* w, Mutex* m);
         // Runs the REAL sched::exit_current and returns once it parks.
         void run_exit(int code);
-        // The same exit as a CONTAINED FAULT rather than a return, which is the only thing
-        // exit_current cannot derive from the thread: a fault carries no cancel_kind, and the
-        // two scope the death differently (kernel/sched/sched.cc).
+        // The same exit as a CONTAINED FAULT rather than a return: a fault carries no
+        // cancel_kind, and the two scope the death differently (kernel/sched/sched.cc).
         void run_exit_faulted(int code);
         void run_exit_as(int code, sched::ExitCause cause);
 
-        // DEATH-TEST FORKED CHILD ONLY. gtest matches the child's STDERR and
-        // karch_seam.cc's kpanic writes stdout, which it must keep doing:
-        // that stream is what tests/lib/panic.ere gates on target. Folding the other way (fd 1
-        // onto fd 2) replaces gtest's own capture pipe, and every death case then reports an
-        // empty child message.
+        // DEATH-TEST FORKED CHILD ONLY. gtest matches the child's STDERR and karch_seam.cc's
+        // kpanic writes stdout, which tests/lib/panic.ere gates on target. Folding the other
+        // way (fd 1 onto fd 2) replaces gtest's own capture pipe, and every death case then
+        // reports an empty child message.
         void fold_stdout_into_stderr();
     }
 }

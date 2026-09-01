@@ -357,6 +357,14 @@ int main(int, char**)
         return 0;
     }
 
+    // The realized runnable count, which a gate resting on more runnable threads than cores
+    // must read: the budget probe above shrinks the workload independently of MAX_PAIRS.
+    {
+        char r[64];
+        ksnprintf(r, sizeof(r), "stress: runnable %d\n", live);
+        kos::print(r);
+    }
+
 #ifdef KICKOS_STRESS_FOREVER
     // Endurance soak: repeat the round forever. A clean round prints a compact
     // heartbeat; the first failing round prints it and FREEZES so the FAIL is the

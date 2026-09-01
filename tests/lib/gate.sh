@@ -215,7 +215,20 @@ run_image() {
 # For an app that never terminates on its own: boot it in the background and poll its
 # output until EVERY pattern has appeared, then stop it. POLL_OK is 1 when they all
 # landed, 0 when the poll ran out or the image died first; OUT carries the whole run
-# either way. QEMU_TIMEOUT bounds only the no-progress path.
+# either way. QEMU_TIMEOUT bounds only the no-progress path. POLL_MS is how long the poll
+# ran for, at the resolution of its own tick, and POLL_ALIVE is 0 when the image ended before
+# the poll did: a bound that ran out and an image that stopped early are different findings.
+#
+# KOS_POLL_UNTIL names a shell FUNCTION the poll re-evaluates on every tick beside the
+# patterns, satisfied when it returns 0; the poll stops when the patterns AND the function
+# are both satisfied. POLL_UNTIL_OK carries its final verdict SEPARATELY from POLL_OK: a
+# caller whose bound expires has to say which of the two it was still waiting for, and the
+# function is what knows what is outstanding.
+#
+# A caller's function is called in THIS shell, so what it records stays readable after the
+# poll; it must not exit, a poll tick being no place to reach a verdict.
+KOS_POLL_UNTIL=""
+
 poll_image() { # <elf> <ere>...
     _elf="$1"
     shift
@@ -232,20 +245,31 @@ poll_image() { # <elf> <ere>...
     fi
     _qpid=$!
     _n=0
+    POLL_ALIVE=1
     while [ "$_n" -lt $(( ${QEMU_TIMEOUT:-8} * 5 )) ]; do   # poll at 5 Hz
-        if _poll_matched "$_log" "$@"; then
+        if _poll_matched "$_log" "$@" && _poll_until; then
             break
         fi
-        kill -0 "$_qpid" 2>/dev/null || break               # the image exited on its own
+        if ! kill -0 "$_qpid" 2>/dev/null; then             # the image exited on its own
+            POLL_ALIVE=0
+            break
+        fi
         sleep 0.2
         _n=$((_n + 1))
     done
     { kill "$_qpid"; wait "$_qpid"; } 2>/dev/null
+    POLL_MS=$((_n * 200))
     # Judged on the FINAL log: an image that exited between the last poll and the
-    # liveness check has everything on the wire and must not read as no-progress.
+    # liveness check has everything on the wire and must not read as no-progress. Both
+    # conditions are evaluated, and not short-circuited: each one's verdict is reported on
+    # its own, and the second is what records what it is still short of.
     POLL_OK=0
     if _poll_matched "$_log" "$@"; then
         POLL_OK=1
+    fi
+    POLL_UNTIL_OK=0
+    if _poll_until; then
+        POLL_UNTIL_OK=1
     fi
     OUT="$(tr -d '\r' < "$_log")"
     rm -f "$_log"
@@ -259,6 +283,15 @@ _poll_matched() { # <log> <ere>...
         grep -qE "$_p" "$_l" || return 1
     done
     return 0
+}
+
+# An unset KOS_POLL_UNTIL is SATISFIED, so a caller that names no function polls on the
+# patterns alone.
+_poll_until() {
+    if [ -z "${KOS_POLL_UNTIL:-}" ]; then
+        return 0
+    fi
+    "$KOS_POLL_UNTIL"
 }
 
 # grep OUT as a predicate, with `set -e` kept out of the way.

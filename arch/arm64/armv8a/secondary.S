@@ -25,7 +25,7 @@
 #define BOOT_TTBR1      24
 #define BOOT_SCTLR      32
 #define BOOT_CPACR      40
-#define PERCPU_SIZE     24
+#define PERCPU_SIZE     64
 
     .section .text.init, "ax"
     .global kickos_armv8a_secondary_entry

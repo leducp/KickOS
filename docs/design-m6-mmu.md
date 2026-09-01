@@ -2631,8 +2631,15 @@ Three consequences, and the third is a decision rather than a note:
     and the lock's acquire loop must service a pending doorbell. Otherwise an initiator holding the
     lock waits on a core spinning to acquire it and the system stops. That is a deadlock A64 cannot
     have and the other two can, so it may not be discovered by the first backend.
-  - **DECIDED AT T9, and it is the one freeze this step owes: the ACTIVE-CORE SET IS A READABLE
-    FIELD ON THE OPAQUE SPACE, not a parameter on `unmap`.** The rendezvous needs to know which
+  - **DECIDED AT T9, and it is the one freeze this step owes: the ACTIVE-CORE SET IS READ OFF THE
+    SPACE, not a parameter on `unmap`.** *Corrected when it was built:* this freeze said a
+    readable FIELD, and a field is unimplementable. On all three translating backends the opaque
+    `struct arch_aspace*` IS the root page-table frame, cast, and the translation-base value, the
+    installed-here comparison, the boot space's reconstruction and the subtree walks all rest on
+    that identity, so a header word or a stolen descriptor slot breaks one of them or hands the
+    hardware walker a non-descriptor. What the set actually is, is DERIVED: the backend records
+    what it last installed per core, at the single point that writes the register. Every reason
+    below still holds of the derived form, and holds better. The rendezvous needs to know which
     cores have the space active, which is knowledge the seam does not currently carry. The two
     candidates were a core-set parameter on `unmap`, which is a signature change and puts a
     multicore concept in every backend's face at one core, and a set the kernel can read off the

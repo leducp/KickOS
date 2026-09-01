@@ -1265,6 +1265,19 @@ uint64_t arch_aspace_tlbi_counts(void)
     // spends no slot.
     return (static_cast<uint64_t>(g_tlbi_issued) << 32) | (static_cast<uint64_t>(elided) << 8);
 }
+
+uint32_t arch_aspace_active_cores(struct arch_aspace* space)
+{
+    if (space == nullptr)
+    {
+        return 0;
+    }
+    if (not installed_here(space))
+    {
+        return 0;
+    }
+    return 1u << arch_cpu_id();
+}
 #endif
 
 }

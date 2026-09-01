@@ -17,18 +17,43 @@
 
 #include <kickos/sync.h>
 
+#if KICKOS_KERNEL_CORES > 1
+#include <kickos/sys/atomic.h>
+#endif
+
 namespace kickos
 {
     struct Thread; // kickos/thread.h: tier-1 claim/wait/ack act on a caller's cap table
 
     using IrqHandler = void (*)(void* arg);
 
+#if KICKOS_KERNEL_CORES > 1
+    // The callback pair a dispatch runs for one line.
+    struct IrqDispatch
+    {
+        IrqHandler handler = nullptr;
+        void* arg = nullptr;
+    };
+
+    // Line -> handler dispatch entry; the ISR reads it by index, never a search. The word
+    // names the publication record holding the whole pair. Index 0 names no record and stands
+    // for the line's own null-object default, whose argument is the line the dispatch was
+    // entered for.
+    struct IrqEntry
+    {
+        Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> pub{0u};
+    };
+
+    // The pair a dispatch entered for `line` would run.
+    IrqDispatch irq_published(int line);
+#else
     // Line -> handler dispatch entry; the ISR reads it by index, never a search.
     struct IrqEntry
     {
         IrqHandler handler = nullptr;
         void* arg = nullptr;
     };
+#endif
 
     // Trigger type of a tier-1 binding. EDGE rearms by bare unmask: a raise latched while
     // masked redelivers, so no pulse is lost. LEVEL discards the latch first, because the
@@ -47,7 +72,7 @@ namespace kickos
     // which is what keeps that invariant true once the binding becomes freeable.
     // A freed slot keeps its last contents (slotpool.h), so no field below means anything
     // until irq_claim has seated all five; none of them is a live default. Whether a LINE
-    // is held is not stored here: irq_table[line].handler holds the null-object default
+    // is held is not stored here: the line's dispatch entry names the null-object default
     // exactly while the line is free.
     struct IrqBinding
     {
@@ -75,6 +100,11 @@ namespace kickos
 
     // Tier 2: privileged in-kernel direct handler. Returns false if the line is
     // out of range or already bound (one driver per line); true on success.
+    //
+    // detach leaves the line MASKED and always succeeds. Above one kernel core it does NOT free
+    // the line: the line names its retiring record until no dispatch can still hold that record,
+    // and an attach or claim of the line is refused until then. Every attach and claim drains
+    // first, so that refusal lasts only while another core is inside a dispatch.
     bool irq_attach(int irq, IrqHandler handler, void* arg);
     void irq_detach(int irq);
 
@@ -82,9 +112,10 @@ namespace kickos
     // caller must hold AUTH_IRQ; claims `line` (one owner, no stealing), allocates a
     // binding, and installs a full-rights CAP_IRQ into `c`'s table. The line is left
     // MASKED with needs_rearm set, so the first irq_wait arms it in the thread that
-    // will consume the event. -> 0 with the cap in *out_cap, or -KOS_E*: the two
-    // exhaustion cases are distinct, -KOS_ENOMEM for the binding pool and -KOS_EMFILE
-    // for the caller's own table.
+    // will consume the event. -> 0 with the cap in *out_cap, or -KOS_E*: the exhaustion cases
+    // are distinct, -KOS_ENOMEM for the binding pool or a publication record and -KOS_EMFILE
+    // for the caller's own table. Above one kernel core -KOS_EBUSY also covers a line whose
+    // previous binding is still retiring, which a later claim of the same line takes.
     int irq_claim(Thread* c, int line, unsigned int flags, uint32_t* out_cap);
     // Block until the line fires; 0, or -KOS_E*. Auto-rearms the previously-consumed line
     // on entry, so `wait; service` alone keeps receiving IRQs and an explicit irq_ack is
@@ -112,7 +143,9 @@ namespace kickos
     int irq_notify(Thread* c, uint32_t cap_handle);
 
     // Drop one reference to IRQ binding `obj_handle`; release the line and free the
-    // slot at refs -> 0.
+    // slot at refs -> 0. Caller holds IrqLock. Above one kernel core the line is released
+    // here and the slot returns to the pool from a later reclamation, once no dispatch can
+    // still hold its address.
     void irq_ref_drop(int obj_handle, bool teardown);
 }
 

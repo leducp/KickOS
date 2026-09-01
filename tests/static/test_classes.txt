@@ -38,6 +38,8 @@ host   src    tests/static/check_cpu_id_fold.sh
 host   src    tests/static/check_dash_punct.sh
 host   src    tests/static/check_death_stack_seating.sh
 host   src    tests/static/check_doc_names.sh
+host   src    tests/static/check_doorbell_generic.sh
+host   src    tests/static/check_doorbell_isb.sh
 host   src    tests/static/check_entry_sigdiff.sh
 host   src    tests/static/check_extern_c_linkage.sh
 host   src    tests/static/check_forever_loop.sh
@@ -65,6 +67,7 @@ host   src    tests/static/check_smp_predicate.sh
 host   src    tests/static/check_smp_sigdiff.sh
 host   src    tests/static/check_spdx.sh
 host   src    tests/static/check_test_labels.sh
+host   src    tests/static/check_tlbi_shareability.sh
 host   src    tests/static/check_whitespace.sh
 # Cross-builds a tree of its own and never runs the image.
 host   src    tests/static/check_trap_redzone.sh
@@ -89,13 +92,16 @@ host   build  tests/unit/consoleown/console_publish_handoff  unit
 host   build  tests/unit/consoletx/console_tx_masked_window  unit
 host   build  tests/unit/drvbringup/drv_bringup              unit
 host   build  tests/unit/drvbringup/init_flush               unit
+host   build  tests/unit/exitquiesce/exit_quiesce            unit
 host   build  tests/unit/faultband/fault_band                unit
 host   build  tests/unit/grantnocache/grant_nocache          unit
 host   build  tests/unit/kstring/kstring_words               unit
 host   build  tests/unit/frame/frame_alloc                   unit
+host   build  tests/unit/irqquiesce/irq_quiesce              unit
 host   build  tests/unit/vrange/vrange_list                  unit
 host   build  tests/unit/ktime/ktime_rearm                   unit
 host   build  tests/unit/parkresult/park_result              unit
+host   build  tests/unit/reschedowed/resched_owed            unit
 host   build  tests/unit/schedwake/sched_wake                unit
 host   build  tests/unit/slayhook/slay_hook                  unit
 host   build  tests/unit/slotpool/slotpool_policy            unit
@@ -144,6 +150,8 @@ image  src    tests/integration/check_sim_pubpanic.sh
 image  src    tests/integration/check_sim_selftest.sh
 image  src    tests/integration/check_sim_uartloop.sh
 image  src    tests/integration/check_smp_arrival.sh
+image  src    tests/integration/check_smp_doorbell.sh
+image  src    tests/integration/check_smp_threads.sh
 image  src    tests/integration/telemetry/check_flood.py
 image  src    tests/integration/telemetry/check_qemu.py
 image  src    tests/integration/telemetry/check_run.py

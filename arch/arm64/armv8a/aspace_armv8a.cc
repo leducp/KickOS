@@ -22,6 +22,10 @@ extern "C"
 
     arch_phys_addr_t kickos_frame_alloc(void);
     void kickos_frame_free(arch_phys_addr_t frame);
+
+#if KICKOS_KERNEL_CORES > 1
+    void kickos_arm64_instruction_side_rendezvous(uint32_t peers);
+#endif
 }
 
 namespace
@@ -157,8 +161,14 @@ namespace
 #endif
         __asm volatile("dsb ishst" ::: "memory");
         // VAAE1 and not VAE1: nothing here tags a translation, so an entry must be dropped
-        // whatever ASID it was cached under.
+        // whatever ASID it was cached under. The IS form applies to every PE in the Inner
+        // Shareable domain and the bare form only to the PE executing it (DDI 0487 M.b
+        // section D8.17.5); DSB ISH completes either (section B2.6.9.1).
+#if KICKOS_KERNEL_CORES > 1
+        __asm volatile("tlbi vaae1is, %0" ::"r"(va >> GRANULE_SHIFT) : "memory");
+#else
         __asm volatile("tlbi vaae1, %0" ::"r"(va >> GRANULE_SHIFT) : "memory");
+#endif
         __asm volatile("dsb ish" ::: "memory");
         __asm volatile("isb" ::: "memory");
     }
@@ -173,13 +183,74 @@ namespace
         return (ttbr & DESC_OA_MASK) == static_cast<uint64_t>(phys_of(root_of(space)));
     }
 
-    // Drop the entry for `va` only where the walker can hold one. Nothing tags a translation, so
-    // write_ttbr0 drops the whole low half on every root change, and no entry for a space this
-    // core does not have installed can survive that. A second core holds a TTBR0 this one cannot
-    // read, so the elision is compiled out above one core.
+#if KICKOS_KERNEL_CORES > 1
+    // The TTBR0_EL1 output address each core last had written, indexed by core. write_ttbr0 is
+    // its one writer.
+    uint64_t g_installed_root[KICKOS_NUM_CORES] = {};
+#endif
+
+    // Bit c set where core c's TTBR0 names `space`: the ACTIVE-CORE SET. A peer's TTBR0 is
+    // unreadable from here, so a peer's half comes from the record above and this core's from
+    // the register itself.
+    uint32_t active_cores(struct arch_aspace* space)
+    {
+        uint32_t set = 0;
+        if (installed_here(space))
+        {
+            set |= 1u << arch_cpu_id();
+        }
+#if KICKOS_KERNEL_CORES > 1
+        uint64_t const oa = static_cast<uint64_t>(phys_of(root_of(space)));
+        for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
+        {
+            if (g_installed_root[c] == oa)
+            {
+                set |= 1u << c;
+            }
+        }
+#endif
+        return set;
+    }
+
+    bool installed_anywhere(struct arch_aspace* space)
+    {
+        return active_cores(space) != 0;
+    }
+
+#if KICKOS_KERNEL_CORES > 1
+    uint32_t peer_cores(struct arch_aspace* space)
+    {
+        return active_cores(space) & ~(1u << arch_cpu_id());
+    }
+#else
+    uint32_t peer_cores(struct arch_aspace*)
+    {
+        return 0;
+    }
+#endif
+
+    // The instruction-side half of cross-core maintenance, owed where an EXECUTABLE mapping is
+    // removed from a space a peer holds. A PE may re-execute instructions it has already
+    // fetched, with no bound, until it takes a Context synchronization event of its own (DDI
+    // 0487 M.b section B2.7.4.2), and no A64 operation causes one on another PE (Glossary,
+    // "Context Synchronization event"): every PE executing the changed code runs its own ISB
+    // (section B2.2.5, step 3), which sits in the doorbell's service body.
+#if KICKOS_KERNEL_CORES > 1
+    void instruction_side_rendezvous(uint32_t peers)
+    {
+        kickos_arm64_instruction_side_rendezvous(peers);
+    }
+#else
+    void instruction_side_rendezvous(uint32_t)
+    {
+    }
+#endif
+
+    // Drop the entry for `va` only where a walker can hold one. Nothing tags a translation, so
+    // every root change drops the whole low half (write_ttbr0), which covers a space no core
+    // has installed.
     void invalidate_page_if(uintptr_t va, bool installed)
     {
-#if KICKOS_NUM_CORES == 1
         if (not installed)
         {
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -187,10 +258,17 @@ namespace
 #endif
             return;
         }
-#else
-        (void)installed;
-#endif
         invalidate_page(va);
+    }
+
+    // A descriptor written without an invalidation still owes the DSB that makes the new entry
+    // visible to a walker (DDI 0487 M.b section D8.17.1). One per call covers a whole run of
+    // pages.
+    void publish_edits()
+    {
+#if KICKOS_KERNEL_CORES > 1
+        __asm volatile("dsb ishst" ::: "memory");
+#endif
     }
 
     // A range sweep: a cleared table entry spans up to 1 GiB, which no by-address
@@ -198,7 +276,11 @@ namespace
     void invalidate_all()
     {
         __asm volatile("dsb ishst" ::: "memory");
+#if KICKOS_KERNEL_CORES > 1
+        __asm volatile("tlbi vmalle1is" ::: "memory");
+#else
         __asm volatile("tlbi vmalle1" ::: "memory");
+#endif
         __asm volatile("dsb ish" ::: "memory");
         __asm volatile("isb" ::: "memory");
     }
@@ -216,6 +298,11 @@ namespace
         }
     }
 
+    // The bare TLBI where the editing bodies take the IS form: a root change concerns the PE
+    // whose register changed.
+    //
+    // The record goes AFTER the register: over-reporting a root costs a peer a redundant
+    // invalidate, under-reporting loses one this core needs.
     void write_ttbr0(uint64_t ttbr)
     {
         __asm volatile("msr ttbr0_el1, %0" ::"r"(ttbr) : "memory");
@@ -223,6 +310,9 @@ namespace
         __asm volatile("tlbi vmalle1" ::: "memory");
         __asm volatile("dsb ish" ::: "memory");
         __asm volatile("isb" ::: "memory");
+#if KICKOS_KERNEL_CORES > 1
+        g_installed_root[arch_cpu_id()] = ttbr & DESC_OA_MASK;
+#endif
     }
 
     void zero_table(uint64_t* table)
@@ -303,6 +393,20 @@ namespace
         *out = desc;
         return true;
     }
+
+    // leaf_attrs sets PXN on every entry it builds, so UXN alone carries the execute permission
+    // (DDI 0487 M.b section D8.3, Table D8-52).
+#if KICKOS_KERNEL_CORES > 1
+    bool removal_owes_rendezvous(uint64_t desc)
+    {
+        return (desc & DESC_VALID) != 0 and (desc & DESC_UXN) == 0;
+    }
+#else
+    bool removal_owes_rendezvous(uint64_t)
+    {
+        return false;
+    }
+#endif
 
     void free_subtree(uint64_t* table, int level)
     {
@@ -577,11 +681,15 @@ void arch_aspace_destroy(struct arch_aspace* space)
         return;
     }
     uint64_t* const table = root_of(space);
+    // BEFORE THE FREES: they put this space's identity back in the pool, and the set is derived
+    // from that identity.
+    uint32_t const peers = peer_cores(space);
     // FIRST, not last: a walk caches the address of an intermediate table, so a table freed
     // while such an entry stands would be read as descriptors after the pool reissues it.
     invalidate_all();
     free_subtree(table, LEVEL_ROOT);
     kickos_frame_free(phys_of(table));
+    instruction_side_rendezvous(peers);
 }
 
 enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
@@ -603,9 +711,10 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     }
     // A space installed on no core has no cached entry and no cached absence, so its whole
     // seeding costs no maintenance; the running space's own widening still pays.
-    bool const installed = installed_here(space);
+    bool const installed = installed_anywhere(space);
     enum arch_aspace_result const rc =
         map_into(root_of(space), LEVEL_ROOT, va, pages, pa, leaf, installed);
+    publish_edits();
     if (rc != ARCH_ASPACE_OK)
     {
         // Masked across the whole unwind: this space can be the running one, the self-grant
@@ -647,13 +756,25 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
             return ARCH_ASPACE_EINVAL; // not wholly mapped, and nothing has been cleared
         }
     }
-    bool const installed = installed_here(space);
+    bool const installed = installed_anywhere(space);
+    uint32_t const peers = peer_cores(space);
+    bool executable = false;
     for (size_t i = 0; i < pages; i++)
     {
         uintptr_t const at = va + static_cast<uintptr_t>(i) * GRANULE;
         uint64_t* const entry = leaf_entry(root_of(space), at);
+        // BEFORE THE CLEAR: the execute permission lives in the entry.
+        if (removal_owes_rendezvous(*entry))
+        {
+            executable = true;
+        }
         *entry = 0;
         invalidate_page_if(at, installed);
+    }
+    publish_edits();
+    if (executable)
+    {
+        instruction_side_rendezvous(peers);
     }
     // An intermediate table left empty is not a leak: destroy walks the tree and frees
     // every table under the root.
@@ -771,6 +892,15 @@ uint64_t arch_aspace_tlbi_counts(void)
     // The low byte is the window-release mispairing count, which this backend cannot produce:
     // acquire here is an addition and spends no slot, so release holds nothing to mispair.
     return (static_cast<uint64_t>(g_tlbi_issued) << 32) | (static_cast<uint64_t>(elided) << 8);
+}
+
+uint32_t arch_aspace_active_cores(struct arch_aspace* space)
+{
+    if (space == nullptr)
+    {
+        return 0;
+    }
+    return active_cores(space);
 }
 #endif
 

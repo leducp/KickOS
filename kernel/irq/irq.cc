@@ -14,10 +14,86 @@
 #include <kickos/sys/abi.h>   // KOS_IRQ_LEVEL claim flag
 #include <kickos/sys/errno.h>
 
+#if KICKOS_KERNEL_CORES > 1
+#include <kickos/sys/atomic.h>
+
+#include <stddef.h>
+
+#include <atomic> // atomic_thread_fence
+#endif
+
 namespace kickos
 {
     namespace
     {
+#if KICKOS_KERNEL_CORES > 1
+        // Names no record: the line's own null-object default stands in (kickos/irq.h).
+        constexpr uint32_t IRQ_PUB_NONE = 0u;
+
+        // One record per line plus the reserved index 0, so every line can be bound at once.
+        constexpr int IRQ_PUB_SLOTS = KICKOS_MAX_IRQ + 1;
+
+        // Set beside the record index while that record retires. Both halves are load-bearing:
+        // it fails irq_published's range test, so a dispatch entered on the line runs the
+        // null-object default, and it is not IRQ_PUB_NONE, so the line is not claimable until
+        // pub_reclaim clears it.
+        constexpr uint32_t IRQ_PUB_RETIRING = 0x80000000u;
+        static_assert(IRQ_PUB_RETIRING > static_cast<uint32_t>(IRQ_PUB_SLOTS),
+                      "a retiring mark inside the record range would dispatch a retired pair");
+        // Every record that is not free is named by a line, so a caller that has found a free
+        // line has left a record free for it: pub_reserve cannot refuse a claim that got past
+        // the line test. The refusal stays because this inequality is its only guarantee.
+        static_assert(IRQ_PUB_SLOTS - 1 >= KICKOS_MAX_IRQ,
+                      "fewer usable records than lines would make a free line unpublishable");
+
+        enum PubState : uint8_t
+        {
+            PUB_FREE = 0,
+            PUB_LIVE = 1,
+            // Unpublished, and waiting for the draining batch to clear before it can join one.
+            PUB_PENDING = 2,
+            // Unpublished, and covered by the sample in g_drain_epoch.
+            PUB_DRAINING = 3
+        };
+
+        // Immutable from its publication to its reclamation.
+        IrqDispatch g_pub[IRQ_PUB_SLOTS];
+        uint8_t g_pub_state[IRQ_PUB_SLOTS] = {};
+        // The binding slot this record's grace period ALSO gates, or -1.
+        int g_pub_binding[IRQ_PUB_SLOTS];
+        // The line naming this record, or -1. Reclaiming the record is what frees that line.
+        int g_pub_line[IRQ_PUB_SLOTS];
+
+        // A53 cache line, so no two cores write one.
+        constexpr size_t IRQ_EPOCH_CACHE_LINE = 64u;
+
+        struct alignas(IRQ_EPOCH_CACHE_LINE) EpochRow
+        {
+            // Odd exactly while that core is inside kickos_isr_irq. Written by the owning core
+            // alone, read by every core.
+            Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> epoch{0u};
+            // Dispatch nesting depth, touched by the owning core alone. The epoch turns over
+            // on this field's zero crossings ONLY.
+            uint32_t depth = 0;
+        };
+        static_assert(sizeof(EpochRow) % IRQ_EPOCH_CACHE_LINE == 0,
+                      "a row shorter than a line would share one with the next writer");
+
+        EpochRow g_epoch_row[KICKOS_KERNEL_CORES];
+
+        // Each core's epoch as sampled when the draining batch was closed.
+        uint32_t g_drain_epoch[KICKOS_KERNEL_CORES] = {};
+        bool g_drain_open = false;
+
+        // Store-load ordering, which acquire and release do not give: a core unpublishing a
+        // record then sampling an epoch, against a core raising its epoch then reading a
+        // publication, must not both read the value from before the other's store.
+        void epoch_fence()
+        {
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+        }
+#endif
+
         // Caller holds IrqLock.
         IrqBinding* binding_of_cap(Thread* c, uint32_t cap_handle, uint8_t need, int* err)
         {
@@ -66,17 +142,219 @@ namespace kickos
 
         void set_default(int irq)
         {
+#if KICKOS_KERNEL_CORES > 1
+            kernel().irq_table[irq].pub = IRQ_PUB_NONE;
+#else
             kernel().irq_table[irq].handler = irq_default_handler;
             kernel().irq_table[irq].arg =
                 reinterpret_cast<void*>(static_cast<intptr_t>(irq));
+#endif
         }
+
+#if KICKOS_KERNEL_CORES > 1
+        // Moves every pending record into the draining batch and samples the epoch each of
+        // them must outlive. Only ever called with that batch empty.
+        void pub_batch_close()
+        {
+            bool any = false;
+            for (int i = 1; i < IRQ_PUB_SLOTS; i++)
+            {
+                if (g_pub_state[i] == PUB_PENDING)
+                {
+                    g_pub_state[i] = PUB_DRAINING;
+                    any = true;
+                }
+            }
+            if (not any)
+            {
+                return;
+            }
+            epoch_fence();
+            for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
+            {
+                g_drain_epoch[core] = g_epoch_row[core].epoch.load();
+            }
+            g_drain_open = true;
+        }
+
+        // Whether every core inside the dispatch entry when the batch closed has left it. An
+        // even sample is already out: waiting for it to change would hang the reclamation on a
+        // core that takes no further interrupt.
+        bool pub_batch_elapsed()
+        {
+            for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
+            {
+                if ((g_drain_epoch[core] & 1u) == 0u)
+                {
+                    continue;
+                }
+                if (g_epoch_row[core].epoch.load() == g_drain_epoch[core])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        void pub_reclaim(int slot)
+        {
+            if (g_pub_line[slot] >= 0)
+            {
+                kernel().irq_table[g_pub_line[slot]].pub = IRQ_PUB_NONE;
+            }
+            g_pub_line[slot] = -1;
+            if (g_pub_binding[slot] >= 0)
+            {
+                kernel().irq_bindings.free(g_pub_binding[slot]);
+            }
+            g_pub_binding[slot] = -1;
+            g_pub[slot].handler = nullptr;
+            g_pub[slot].arg = nullptr;
+            g_pub_state[slot] = PUB_FREE;
+        }
+
+        // Reclaims whatever a past retirement is owed and opens a batch for the rest; a record
+        // whose grace period has not elapsed is left to a later call. Two passes: the first
+        // clears the batch a past call left open, the second covers what this call retired.
+        void pub_drain()
+        {
+            for (int pass = 0; pass < 2; pass++)
+            {
+                if (not g_drain_open)
+                {
+                    pub_batch_close();
+                }
+                if (not g_drain_open or not pub_batch_elapsed())
+                {
+                    return;
+                }
+                for (int i = 1; i < IRQ_PUB_SLOTS; i++)
+                {
+                    if (g_pub_state[i] == PUB_DRAINING)
+                    {
+                        pub_reclaim(i);
+                    }
+                }
+                g_drain_open = false;
+            }
+        }
+
+        // Takes `line` off its record, masks it, and hands the record to the next batch. The line
+        // keeps NAMING that record, marked retiring, until pub_reclaim frees it: a claim of the
+        // line is refused until then, so no rebind can arm it under a dispatch that has already
+        // read the record. That grace period also gates binding slot `binding_handle`, or nothing
+        // when it is -1.
+        void line_release(int line, int binding_handle)
+        {
+            uint32_t const word = kernel().irq_table[line].pub.load();
+            uint32_t const slot = word & ~IRQ_PUB_RETIRING;
+            if (slot == IRQ_PUB_NONE or slot >= static_cast<uint32_t>(IRQ_PUB_SLOTS))
+            {
+                kernel().irq_table[line].pub = IRQ_PUB_NONE;
+            }
+            else
+            {
+                if (binding_handle >= 0)
+                {
+                    // Monotone: the record owes this slot until its reclamation, so a second
+                    // release of the same line cannot drop it.
+                    g_pub_binding[slot] = binding_handle;
+                }
+                if ((word & IRQ_PUB_RETIRING) == 0u)
+                {
+                    g_pub_state[slot] = PUB_PENDING;
+                    // BEFORE the epoch sample pub_drain takes: a dispatch that still reads a
+                    // live record must be one whose core that sample sees inside the entry.
+                    kernel().irq_table[line].pub = slot | IRQ_PUB_RETIRING;
+                }
+            }
+            arch_irq_mask(line);
+            pub_drain();
+        }
+
+        // Holds a free record for a caller that has not built what it will publish yet, so the
+        // publication itself cannot fail; -1 when every record is spoken for. A reserved record
+        // is named by no line, so unreserving it is not a reclamation and needs no grace period.
+        int pub_reserve()
+        {
+            for (int i = 1; i < IRQ_PUB_SLOTS; i++)
+            {
+                if (g_pub_state[i] == PUB_FREE)
+                {
+                    g_pub_state[i] = PUB_LIVE;
+                    g_pub_binding[i] = -1;
+                    g_pub_line[i] = -1;
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        void pub_unreserve(int slot)
+        {
+            g_pub_state[slot] = PUB_FREE;
+        }
+
+        // Seats the pair in a reserved record and names it from `line`; the fields must be seated
+        // before the release store that publishes them.
+        void pub_commit(int slot, int line, IrqHandler handler, void* arg)
+        {
+            g_pub[slot].handler = handler;
+            g_pub[slot].arg = arg;
+            g_pub_line[slot] = line;
+            kernel().irq_table[line].pub = static_cast<uint32_t>(slot);
+        }
+
+        bool pub_publish(int line, IrqHandler handler, void* arg)
+        {
+            int const slot = pub_reserve();
+            if (slot < 0)
+            {
+                return false;
+            }
+            pub_commit(slot, line, handler, arg);
+            return true;
+        }
+
+        // Every record free and no batch open. Pre-start only.
+        void pub_reset()
+        {
+            for (int i = 0; i < IRQ_PUB_SLOTS; i++)
+            {
+                g_pub[i].handler = nullptr;
+                g_pub[i].arg = nullptr;
+                g_pub_state[i] = PUB_FREE;
+                g_pub_binding[i] = -1;
+                g_pub_line[i] = -1;
+            }
+            g_drain_open = false;
+        }
+#endif
     }
+
+#if KICKOS_KERNEL_CORES > 1
+    IrqDispatch irq_published(int line)
+    {
+        uint32_t const slot = kernel().irq_table[line].pub.load();
+        if (slot == IRQ_PUB_NONE or slot >= static_cast<uint32_t>(IRQ_PUB_SLOTS))
+        {
+            IrqDispatch d;
+            d.handler = irq_default_handler;
+            d.arg = reinterpret_cast<void*>(static_cast<intptr_t>(line));
+            return d;
+        }
+        return g_pub[slot];
+    }
+#endif
 
     // Must run before any irq_attach/irq_claim, pre-start: after it no slot is null.
     void irq_init()
     {
         IrqLock lock;
         kernel().irq_spurious_count = 0;
+#if KICKOS_KERNEL_CORES > 1
+        pub_reset();
+#endif
         for (int i = 0; i < KICKOS_MAX_IRQ; i++)
         {
             set_default(i);
@@ -95,6 +373,15 @@ namespace kickos
             return false;
         }
         IrqLock lock;
+#if KICKOS_KERNEL_CORES > 1
+        pub_drain();
+        // One driver per line: only a line still naming the null-object default is free.
+        if (kernel().irq_table[irq].pub.load() != IRQ_PUB_NONE)
+        {
+            return false;
+        }
+        return pub_publish(irq, handler, arg);
+#else
         // One driver per line: only a line still holding the null-object default is free.
         if (kernel().irq_table[irq].handler != irq_default_handler)
         {
@@ -103,6 +390,7 @@ namespace kickos
         kernel().irq_table[irq].handler = handler;
         kernel().irq_table[irq].arg = arg;
         return true;
+#endif
     }
 
     void irq_detach(int irq)
@@ -112,8 +400,12 @@ namespace kickos
             return;
         }
         IrqLock lock;
+#if KICKOS_KERNEL_CORES > 1
+        line_release(irq, -1); // back to the null-object
+#else
         set_default(irq); // the null-object, not a null slot
         arch_irq_mask(irq);
+#endif
     }
 
     int irq_claim(Thread* c, int line, unsigned int flags, uint32_t* out_cap)
@@ -133,6 +425,26 @@ namespace kickos
             return -KOS_EINVAL;
         }
         Kernel& k = kernel();
+#if KICKOS_KERNEL_CORES > 1
+        // BEFORE THE ALLOCATION BELOW: a retirement may still owe the pool the slot this claim
+        // is about to ask for.
+        pub_drain();
+        // One driver per line: free iff it still names the null-object default. This is also
+        // what keeps the console line unclaimable until the kernel's own console_tx_deinit
+        // has detached it.
+        if (k.irq_table[line].pub.load() != IRQ_PUB_NONE)
+        {
+            return -KOS_EBUSY;
+        }
+        // BEFORE the binding and the capability: the publication below must not be able to fail,
+        // or a refused claim would have to hand the binding back through the release path, which
+        // reads the line to find the record that owes it and would find none.
+        int const pub = pub_reserve();
+        if (pub < 0)
+        {
+            return -KOS_ENOMEM;
+        }
+#else
         // One driver per line: free iff it still holds the null-object default. This is also
         // what keeps the console line unclaimable until the kernel's own console_tx_deinit
         // has detached it.
@@ -140,9 +452,13 @@ namespace kickos
         {
             return -KOS_EBUSY;
         }
+#endif
         int const i = k.irq_bindings.alloc();
         if (i < 0)
         {
+#if KICKOS_KERNEL_CORES > 1
+            pub_unreserve(pub);
+#endif
             return -KOS_ENOMEM;
         }
         IrqBinding* b = k.irq_bindings.at(i);
@@ -168,10 +484,17 @@ namespace kickos
         {
             k.irq_refs[i] = 0;
             k.irq_bindings.free(obj);
+#if KICKOS_KERNEL_CORES > 1
+            pub_unreserve(pub);
+#endif
             return rc;
         }
         // The ISR is handed the binding's ADDRESS, stable for the slot's life.
+#if KICKOS_KERNEL_CORES > 1
+        pub_commit(pub, line, irq_event_isr, b);
+#else
         irq_attach(line, irq_event_isr, b);
+#endif
         // The line stays masked until the first irq_wait arms it.
         *out_cap = cap;
         return 0;
@@ -295,12 +618,18 @@ namespace kickos
                 r = 1; // leak, never strand
                 return;
             }
+#if KICKOS_KERNEL_CORES > 1
+            // The slot returns with the record's grace period: a dispatch still reading that
+            // record is one still holding this slot's address as its pre-bound argument.
+            line_release(b->line, obj_handle);
+#else
             // DETACH BEFORE FREE: irq_event_isr holds this binding's address as its
             // pre-bound arg, so the slot must leave the dispatch table before it returns
             // to the pool. The detach also masks the line and restores the null-object,
             // which is what lets a later irq_claim of the same line pass its EBUSY test.
             irq_detach(b->line);
             k.irq_bindings.free(obj_handle);
+#endif
         }
     }
 }
@@ -312,6 +641,32 @@ extern "C" void kickos_isr_irq(int irq)
     {
         return;
     }
+#if KICKOS_KERNEL_CORES > 1
+    // Odd from before the entry is read to after the handler returns; a retirement on another
+    // core reads this to tell that this core has left the entry.
+    uint32_t const me = kickos_kernel_core();
+    ::kickos::EpochRow& row = ::kickos::g_epoch_row[me];
+    if (row.depth == 0)
+    {
+        row.epoch = row.epoch.load() + 1u;
+        ::kickos::epoch_fence();
+    }
+    row.depth = row.depth + 1u;
+    // No null check: every publication is a valid callback (the null-object default).
+    ::kickos::IrqDispatch const d = ::kickos::irq_published(irq);
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    ::kickos::ktrace_irq_enter(static_cast<uint16_t>(irq));
+#endif
+    d.handler(d.arg);
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    ::kickos::ktrace_irq_exit(static_cast<uint16_t>(irq));
+#endif
+    row.depth = row.depth - 1u;
+    if (row.depth == 0)
+    {
+        row.epoch = row.epoch.load() + 1u;
+    }
+#else
     ::kickos::Kernel& k = ::kickos::kernel();
     // No null check: every slot is a valid callback (the null-object default).
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
@@ -320,5 +675,6 @@ extern "C" void kickos_isr_irq(int irq)
     k.irq_table[irq].handler(k.irq_table[irq].arg);
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     ::kickos::ktrace_irq_exit(static_cast<uint16_t>(irq));
+#endif
 #endif
 }

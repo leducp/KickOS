@@ -446,7 +446,7 @@ Stated explicitly so this cannot be read as a rewrite.
 
 ## 8. Cost and blast radius, counted
 
-The ABI is unstable until the ABI-freeze milestone (M8, the last one), so a correct ABI change
+The ABI is unstable until the ABI-freeze milestone, so a correct ABI change
 needs no migration ceremony. The cost that
 matters is call sites and TCB bytes.
 

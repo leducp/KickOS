@@ -34,6 +34,16 @@
 #define PERCPU_CTX_CURRENT  8
 #define PERCPU_SWITCH_TO    16
 
+/* Ends the kernel lock's span over the swap. CALL ONLY where the outgoing frame is parked and
+   sp already names the incoming one: the call frame then lands on the incoming thread's own
+   stack below its saved frame, and RESTORE_FRAME_AND_ERET reloads every register the call is
+   free to clobber. */
+    .macro  SWITCH_UNLOCK
+#if KICKOS_KERNEL_CORES > 1
+    bl      kickos_switch_unlock
+#endif
+    .endm
+
 /* One cell of this core's block, addressed. Above one core the base is TPIDR_EL1, seated on
    each core before that core turns translation on (secondary.S, arch_armv8a.cc). */
     .macro  PERCPU_CELL reg, disp
@@ -161,6 +171,7 @@ kickos_armv8a_irq_entry:
     str     x1, [x2]                        /* the incoming one is now the physical current */
     ldr     x4, [x1, #CTX_SP]
     mov     sp, x4                          /* stand on the incoming thread's frame */
+    SWITCH_UNLOCK
 .Lirq_resume:
     RESTORE_FRAME_AND_ERET
 
@@ -246,6 +257,7 @@ kickos_armv8a_el0_irq_entry:
     str     x1, [x2]
     ldr     x4, [x1, #CTX_SP]
     mov     sp, x4
+    SWITCH_UNLOCK
 .Lel0_irq_resume:
     RESTORE_FRAME_AND_ERET
 
@@ -300,6 +312,7 @@ kickos_armv8a_switch_now:
     str     x2, [x0, #CTX_SP]
     ldr     x2, [x1, #CTX_SP]
     mov     sp, x2
+    SWITCH_UNLOCK
     RESTORE_FRAME_AND_ERET
 
 /* --- arch_start -----------------------------------------------------------

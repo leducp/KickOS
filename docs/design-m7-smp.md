@@ -78,8 +78,10 @@ per-core tickless state, the lock discipline) on the simplest possible dual-core
 part.
 
 ### ESP32 WROOM (2x Xtensa LX6) -- DOABLE BUT HARDEST, DEFERRED
-It HAS S32C1I (a compare-and-swap), so cross-core locking is possible in
-principle. But the windowed ABI makes SMP context handling genuinely complex, and
+The Xtensa ISA defines S32C1I (a compare-and-swap) whose stated primary purpose IS
+exclusion between processors, so cross-core locking is possible in principle --
+but the ISA defines it as a configurable OPTION and no manual on this bench says
+whether an LX6 configures it, so read this as unsourced rather than as a fact. But the windowed ABI makes SMP context handling genuinely complex, and
 the prerequisite only just landed: the single-core windowed fresh-thread-start bug
 was FIXED (commit 700ec98, the rfe-start work). That bug was the blocker -- a
 windowed thread that could not even start cleanly single-core could not be an SMP
@@ -101,7 +103,8 @@ and none of which regresses the single-core builds.
 1. **Big-kernel-lock SMP first.** One lock around the whole kernel: cores run user
    code in parallel and serialize whenever they are in-kernel. This is correct on
    EVERY dual-core part regardless of its atomic primitive -- SIO spinlock on
-   RP2040, exclusives on RP2350, S32C1I CAS on Xtensa -- because it needs only ONE
+   RP2040, exclusives on RP2350, an S32C1I CAS on Xtensa if that part configures
+   the option -- because it needs only ONE
    working cross-core lock. Bring this up on RP2040 or RP2350 -- whichever is on the
    bench -- since the BKL runs on both.
 

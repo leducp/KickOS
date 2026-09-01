@@ -16,16 +16,20 @@ namespace kickos
 {
     namespace
     {
-        // Highest set priority (find-first-set from the top), or -1 if the ready
-        // set is empty. Bit 0 (idle) is set once idle exists, so it rarely is.
-        int highest_prio()
+        // Highest set priority in `bm`, or -1 when it is empty.
+        int top_prio(uint32_t bm)
         {
-            uint32_t bm = kernel().ready_bitmap;
             if (bm == 0)
             {
                 return -1;
             }
             return 31 - __builtin_clz(bm);
+        }
+
+        // Highest set priority of the whole ready set.
+        int highest_prio()
+        {
+            return top_prio(kernel().ready_bitmap);
         }
 
         void rq_push_back(Thread* t)
@@ -78,14 +82,51 @@ namespace kickos
             }
         }
 
+#if KICKOS_KERNEL_CORES > 1
+        // Whether core `core` may take `t`. A thread a peer core is running, and a peer core's
+        // idle fallback, are reserved to that core.
+        bool available_to(Thread const* t, uint32_t core)
+        {
+            if (t == kernel().current[core])
+            {
+                return true;
+            }
+            if (t->state == ThreadState::RUNNING)
+            {
+                return false;
+            }
+            return t->prio != KICKOS_PRIO_IDLE or t == kernel().idle[core];
+        }
+#endif
+
         Thread* policy_pick_next()
         {
+#if KICKOS_KERNEL_CORES > 1
+            uint32_t const core = kickos_kernel_core();
+            uint32_t bm = kernel().ready_bitmap;
+            int p = highest_prio();
+            while (p >= 0)
+            {
+                for (ListNode* n = kernel().ready[p].head; n != nullptr; n = n->next)
+                {
+                    Thread* const t = thread_of(n);
+                    if (available_to(t, core))
+                    {
+                        return t;
+                    }
+                }
+                bm &= ~(1u << static_cast<uint32_t>(p));
+                p = top_prio(bm);
+            }
+            return kernel().idle[core];
+#else
             int p = highest_prio();
             if (p < 0)
             {
-                return kernel().idle;
+                return kernel().idle[kickos_kernel_core()];
             }
             return thread_of(kernel().ready[p].head);
+#endif
         }
 
         void policy_on_ready(Thread* t)

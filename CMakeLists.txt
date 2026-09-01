@@ -627,6 +627,23 @@ if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_MULTICORE_MODEL_SHARED AND NOT KICKOS_A
 endif()
 # The generated header guards its own define with #ifndef, so this wins where both are seen.
 add_compile_definitions(KICKOS_NUM_CORES=${KICKOS_NUM_CORES})
+# Beside the count, so an APP TU can ask how many cores one kernel schedules on: a claim about
+# two threads' relative progress is a claim about that number.
+add_compile_definitions(KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES})
+
+# The microbench accumulates into one set of phase cells for the whole image, and its own
+# contract is that every write happens under the interrupt lock or on one thread. A switch span
+# breaks that above one kernel core: it closes when the outgoing thread is next RESUMED, which
+# the swap does after releasing the kernel lock and possibly on a different core, so two cores
+# closing the same phase race unlocked. Refused rather than measured wrong. What it wants is one
+# accumulator per core plus an aggregation at report time.
+if(KICKOS_BENCH AND KICKOS_KERNEL_CORES GREATER 1)
+  message(FATAL_ERROR
+    "KickOS: KICKOS_BENCH=ON with KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES}. The phase "
+    "accumulators are one set for the image and a switch span closes on the resuming core "
+    "outside the kernel lock, so two cores race on the same cells. Give kernel/bench/bench.cc "
+    "one accumulator per core and aggregate when the report is emitted.")
+endif()
 
 # --- Per-arch caller-provided-stack floor (KICKOS_MIN_STACK_SIZE) -----------
 # The floor must cover the thread-exit teardown, which runs on the CALLING thread's stack.
@@ -1082,6 +1099,27 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/consoletx/CMakeLists.txt")
   add_subdirectory(tests/unit/consoletx)
+endif()
+
+# Outside it for the same reason, and additionally because it compiles kernel/irq/irq.cc at a
+# core count the preset does not carry.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/irqquiesce/CMakeLists.txt")
+  add_subdirectory(tests/unit/irqquiesce)
+endif()
+
+# The K-seam sources over again at two kernel cores, for the same reason: the preset drives
+# one, where the lock the swap carries compiles to nothing.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/exitquiesce/CMakeLists.txt")
+  add_subdirectory(tests/unit/exitquiesce)
+endif()
+
+# Outside the K-seam block for the same reason as irqquiesce: it compiles kernel/sync/klock.cc
+# with its own arch seam, at a core count the preset does not carry.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/reschedowed/CMakeLists.txt")
+  add_subdirectory(tests/unit/reschedowed)
 endif()
 
 # Set before kickos_core below, whose LINK_GROUP pulls the provider archive.

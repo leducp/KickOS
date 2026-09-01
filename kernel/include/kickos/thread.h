@@ -553,6 +553,10 @@ namespace kickos
         // Claim a slot: reclaim an EXITED one (bumping its generation to kill stale handles) or
         // bump-allocate a fresh one. Returns the index, or -1 if full. Lowest-exited first, which
         // holds `next` down: the scan below and the spawner_tag sweep are both bounded by it.
+        //
+        // EXITED IS THE ONLY ADMISSIBLE KEY: the one state published with the kernel lock held
+        // through the swap that parks the dying thread's frame, so a holder of that lock reads
+        // it only with the occupant off-CPU.
         [[nodiscard]] int alloc()
         {
             for (int s = 0; s < next; s++)

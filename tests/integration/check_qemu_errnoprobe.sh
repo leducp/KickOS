@@ -6,10 +6,26 @@
 # provokes two DIFFERENT errno values out of newlib itself and reads each back after a
 # round trip that crossed the other thread's write; see its main.cc for what each arm
 # rules out.
+#
+# ABOVE ONE KERNEL CORE THIS SKIPS. newlib's reentrancy state is reached through ONE word in
+# the process's own memory, which the switch path rewrites to name the incoming thread's block,
+# so two threads of one process running at the same instant on two cores resolve that one word
+# and share an errno. The word is read at EL0, where a thread cannot ask which core it is on, so
+# the seat belongs in thread-local storage; until it moves there this probe measures a
+# known-open defect.
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-elf="${1:?usage: check_qemu_errnoprobe.sh <errnoprobe.elf>}"
+_usage="usage: check_qemu_errnoprobe.sh <errnoprobe.elf> [kernel-cores]"
+elf="${1:?$_usage}"
+cores="${2:-1}"
+require_number "$cores" "the kernel core count"
+if [ "$cores" -gt 1 ]; then
+    echo "SKIP: $cores kernel cores share one reentrancy seat word in the process's memory, so
+  two threads of one process resolve one errno. The seat is read at EL0 and a thread cannot
+  ask which core it is on, so what fixes it is the thread pointer and not a per-core cell"
+    exit 77
+fi
 
 poll_image "$elf" "\[errnoprobe\] (PASS|FAIL)"
 

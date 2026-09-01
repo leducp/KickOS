@@ -500,7 +500,7 @@ not deferred for lack of time. Recorded so the next reader does not re-derive th
 
 ## M4.7.4 -- delete the legacy management (nothing is released before the ABI freeze)
 
-KickOS is unreleased and will not ship before the ABI-freeze milestone (M8, the last one), so
+KickOS is unreleased and will not ship before the ABI-freeze milestone, so
 **there is no backward compatibility to manage**. Anything that exists only because something else
 USED to exist is cost: it must be kept in sync, it reads as a supported path, and it makes a deleted
 thing look alive. `roadmap.md`'s ledger
@@ -2222,7 +2222,7 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
       (`system/driver/xmc4800/xmcssc/xmcssc.cc`) all call `kos_irq_register` from a thread holding no
       authority -- `f411spi` declares `KOS_AUTH_MEMORY | KOS_AUTH_PINMUX` and nothing else, and the
       spawned drivers run at authority zero. They move to **root claims, then delegates at spawn**;
-      no compat shim, since the ABI is unstable until the ABI-freeze milestone (M8, the last one).
+      no compat shim, since the ABI is unstable until the ABI-freeze milestone.
       The drivers stay at authority == 0, so the
       frozen cap-index range needs no spawn-ABI work. `selftest` is the one caller that already holds
       `AUTH_IRQ` (`user/apps/common/selftest/main.cc` (`KICKOS_APP_AUTHORITY`)) and its `kos::Irq`
@@ -5389,7 +5389,8 @@ below where they were previously mislabeled.
   a dual-core RP2040 port carrying TWO locks over two SIO spinlocks and no atomic RMW at all, so
   spinlock COUNT and hold time are the real bounds, not exclusives; what IS unreachable there is
   any lock algorithm needing atomic exchange, so no CLH-style FIFO fairness),
-  **ESP32 LX6 last** (S32C1I CAS exists but windowed ABI is hardest; unblocked now
+  **ESP32 LX6 last** (an S32C1I CAS is an ISA OPTION this part is not known to configure, and the
+  windowed ABI is hardest; unblocked now
   that the fresh-thread-start bug is fixed at 700ec98, still gated on the model proven on M-profile
   first). Staged: (1) big-kernel-lock SMP first (correct on every dual-core, single-core build
   byte-identical), (2) fine-grained only where exclusives exist (RP2350), (3) LX6 after. The spike REVISED the earlier
@@ -6681,6 +6682,113 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       `_high`/`_last` clock anchors that `IrqLock` alone makes coherent, and
       the ring publication barrier, then still a consumer `-D` rather than a release
       store on the ring's now-atomic index. `docs/design-m7-smp.md` carries the reasoning.
+
+### Filed out of S3 by ruling, 2026-08-31
+
+- [ ] **28 of the selftest's arms assert a SINGLE-CORE ordering, and most state the premise in their
+      own comment.** "The worker is higher priority, so it has exited by the time root runs again";
+      "priority 1 is below root's own, so the victim cannot be scheduled"; and the same shape in the
+      deadlock-cycle arm, three interrupt arms where root reads a counter an ISR bumps, and a
+      two-space grant arm resting on both workers being spawned before either runs. They are skipped
+      as a CLASS above one kernel core, declared in that preset's expected-skip set. **The reason the
+      class is skipped whole rather than one at a time: a failing arm bails without releasing its
+      pooled object, and one flaky arm turned into 59 red arms in a single run.** Giving them real
+      handshakes is this item. Until it lands, the four-core preset runs 80 percent of the suite and
+      the skip set is what says which fifth is missing. Ruled separate from S3 by the user rather
+      than deferred, S3 having never promised to make a single-core-ordering arm multi-core-safe.
+- [ ] **The death point is read outside the lock at ONE core too, and only the multi-core case was
+      closed.** A cancel landing between the read and the park is owed to nobody: the target is
+      neither blocked yet nor the canceller's current thread, so no park is broken and the target
+      parks forever. Witnessed at four cores as a join returning a timeout twice in succession, and
+      fixed there by re-asking under the park's own lock. The one-core window is a preemption in the
+      same gap. It is NOT fixed because those funnels also serve the register fastpath, which the
+      contract rules on rather than repairs, and because a fleet-wide change landing at the end of a
+      milestone produces a red sweep nobody can attribute.
+
+### S3 inherits seven items, and each carries a constraint a grep does not show
+
+Located 2026-08-31. The LOCATIONS are re-derivable and deliberately not written here; what is
+written is what made each one more than it looks.
+
+- [ ] **`g_isr_depth` and the fault-report depth are TWO distinct file-local scalars, not one.**
+      Different names, different types, no reader in common, three lines apart in the armv8a
+      backend. Both are safe today for the same stated reason, that the exception entry masks
+      interrupts and secondaries park before running kernel code -- which is a claim about the
+      PARKING and stops holding the moment peers run kernel code. Whoever fixes one must not
+      assume the other went with it.
+- [ ] **The per-core keying idiom already exists in TWO forms, so neither needs inventing.** The
+      kernel layer keys an array by `arch_cpu_id()` inside an instance-local wrapper and asserts
+      its own width; the arch layer arrays a block and seats it from a thread-pointer register.
+      A fix picks the layer's own idiom rather than a third.
+- [ ] **`Kernel::idle` and `Kernel::boot` sit immediately beside the keyed member that shows the
+      idiom** and are plain scalars. The state inventory already classifies both per-core, so the
+      document and the code AGREE on the target and only the code lags -- this is a gap, never a
+      contradiction to resolve.
+- [ ] **Padding the per-core block for cache lines cannot be done with `alignas` alone.** Its three
+      field displacements are asserted against literals that assembly spells, and its SIZE is
+      asserted against a literal the secondary entry spells too. So the block's size is an assembly
+      constant and widening it edits assembly. And the tree deliberately makes no compile-time
+      cache-line constant: the maintenance code reads the line size at RUNTIME from the cache type
+      register, its comment saying why a part smaller elsewhere in the hierarchy would leave lines
+      untouched at 64. Padding to 64 is therefore a compile-time bet that code next door refuses to
+      make.
+- [ ] **The 64 KiB kernel stack has two authorities with no shared symbol, and a THIRD nearby figure
+      that must not be merged with them.** One is a backend constant, one a linker-script
+      assignment; nothing relates them and no gate reads both. The trap is that a per-thread kernel
+      stack size also exists and resolves to a different value on this arch -- a sweep for "the
+      kernel stack size" finds all three and unifying them would merge two unrelated things.
+- [ ] **The arrival timeout is a spin count, and the duration idiom it should follow is in the same
+      file.** The timer arm converts nanoseconds through a tick figure derived from the counter
+      frequency register, and that register is read earlier in the same function that later releases
+      the secondaries -- so the frequency is provably live where the spin loop runs. Note a second
+      spin-count bound in the same backend, so the arrival loop is not the only one of its kind and
+      a fix should say whether it covers both.
+- [ ] **The SMP predicate cannot meaningfully move to a chip file until a second chip exists.** The
+      declaration is per arch and already names both controllers' routing registers in its own
+      comment, which is the tell. But the family has exactly ONE chip, and what a chip declares
+      about its controller today is a struct of bases, an interrupt count and a timer identifier --
+      no CMake or Kconfig anywhere selects a GIC VERSION. So the per-part declaration is S6b's to
+      make real; S3 owns only the semantics below.
+- [ ] **Gap 2 is a TORN PAIR before it is a lifetime problem, and affinity is now real rather than
+      assumed.** The interrupt entry takes no lock and reads a binding's handler and its argument as
+      two separate unlocked loads, so the pair can be observed torn, and the event path then
+      dereferences a raw binding pointer a concurrent teardown is freeing. Teardown's claim to
+      safety is an interrupt-masked window, and the lock wrapper is a bare save-and-restore of the
+      local core's mask with no lock word, so it excludes nothing elsewhere; masking a line does not
+      retract an interrupt another interface already acknowledged. What changed in this step: device
+      lines are pinned by a target bit each core PUBLISHES rather than by a hard-coded interface
+      number, so N3's answer by affinity now names a core instead of betting on the numbering.
+      Alongside it, the reference count beside those bindings is a non-atomic byte read-modify-write.
+- [ ] **Gap 3 cannot be closed by lock scope, and the reason is that the switch-away IS the release.**
+      The dying thread publishes its exited state inside its final critical section and the deferred
+      switch fires as that section ends, so it is still executing on its own stack with its own
+      context as the pending save slot while the allocator may claim that slot, bump its generation,
+      push the still-live stack onto a free list and release its capability chunks. Publishing
+      earlier is refused where the code says so; publishing later is impossible, the write having to
+      precede the reschedule that both wakes joiners and hands the CPU away. So widening a scope only
+      moves the release point: this wants an epoch or an off-CPU quiescence flag.
+- [ ] **The doorbell's interrupt group is the reset value and the secure posture is unexercised.**
+      The group register is left as reset with the non-secure attribute clear, matching the
+      acknowledge and end-of-interrupt path already in that file. The security-extensions posture
+      cannot be exercised on this bench at all: that machine option enters at EL3 and the port's own
+      exception-level refusal fires first, from every core at once.
+- [ ] **Keying the idle thread makes one guard PERMISSIVE rather than merely wrong, and that is the
+      shape to look for wherever a per-core accessor gained an index.** The slay path refuses a
+      target that IS the idle thread; with one cell per core the accessor answers for the CALLING
+      core, so slaying a PEER core's idle thread passes the guard and ends that core's scheduler
+      fallback. Asking "is this thread an idle thread" is a question over the SET of cells, which
+      the accessor's signature cannot express -- so the fix is a predicate, not an index. The fault
+      path's own five comparisons are safe by contrast, each comparing against the current thread,
+      so both sides are the calling core's. Nothing is reachable while secondaries park masked.
+- [ ] **Registering the idle thread fills only the creating core's cell.** The scheduler's add path
+      runs on whichever core creates the thread, so it cannot fill a peer's; nothing in the tree
+      creates more than one idle thread. Per-core idle creation is what closes it, and until then the
+      peer cells stay null, which is unreachable for the same parking reason.
+- [ ] **The mask triad's banked-register question has fourteen production call sites and none names a
+      core.** Every one passes a line only, and the seam's own contract says the three are
+      self-bracketed so a caller need not hold the interrupt lock. That contract is what makes the
+      absent core parameter correct at one core; S3 decides what it means when threads run on more
+      than one, and whatever it decides reaches all fourteen.
 
 ## Gate-surface re-inventory (anytime coherence, not scheduled)
 

@@ -37,7 +37,10 @@ namespace
     constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
 
     int g_bad = 0;
-    char g_line[144];
+    // Sized for the widest line any arm emits: two %lx addresses at the full 16 digits a
+    // 64-bit backend can produce, plus the longest verdict. A short buffer truncates the
+    // VERDICT, which is what the gate keys on.
+    char g_line[192];
 
     void say(char const* s)
     {
@@ -441,6 +444,7 @@ namespace
         int hi_provoked;
         unsigned saw_lo_spinning;
         unsigned spin_exhausted;
+        unsigned wakes;
         Flag spinning;
         Flag hi_published;
         Flag lo_done;
@@ -448,17 +452,36 @@ namespace
 
     Preempt g_pre = {};
 
-    // Generous: it only has to outlast the high thread's 10 ms sleep, and the arm reports an
-    // exhausted spin as a failure rather than passing.
-    constexpr unsigned long PREEMPT_SPIN_LIMIT = 400000000ul;
+    constexpr unsigned long long PREEMPT_SLEEP_NS = 10000000ull;
+
+    // The guest clock tracks HOST time (QEMU runs without icount), so a contended host can spend
+    // a whole sleep with the guest barely executing and the low thread not yet spinning. Every
+    // wake is a timer interrupt that takes the CPU off the low thread, so whichever wake sees
+    // `spinning` witnesses the preemption.
+    constexpr unsigned PREEMPT_WAKES = 50;
+
+    // Must outlast PREEMPT_WAKES sleeps. The loop reaches at most 2.0e6 iterations per 10 ms
+    // on the QEMU backends this app boots on, so a 50-wake budget costs under 2e8 even at twice
+    // that rate, leaving this bound 5x spare. An exhausted spin is reported as a failure rather
+    // than passing.
+    constexpr unsigned long PREEMPT_SPIN_LIMIT = 1000000000ul;
 
     constexpr kos_cap_t PRE_DONE = 1;
 
     void preempt_high(void*)
     {
         g_pre.hi_addr = errno_addr();
-        kos_sleep_ns(10000000ull); // parks; the wake is a timer interrupt, not a peer's post
-        g_pre.saw_lo_spinning = g_pre.spinning.load();
+        while (g_pre.wakes < PREEMPT_WAKES)
+        {
+            // parks; the wake is a timer interrupt, not a peer's post
+            kos_sleep_ns(PREEMPT_SLEEP_NS);
+            g_pre.wakes++;
+            if (g_pre.spinning.load() != 0)
+            {
+                g_pre.saw_lo_spinning = 1;
+                break;
+            }
+        }
         g_pre.hi_provoked = provoke(1); // EINVAL, written while the low thread is mid-spin
         g_pre.hi_published = 1;
         kos_sem_post(PRE_DONE);
@@ -536,10 +559,10 @@ namespace
             g_bad++;
         }
         ksnprintf(g_line, sizeof(g_line),
-                  "[errnoprobe] D lo %lx after %d hi %lx set %d overlapped %u %s\n",
+                  "[errnoprobe] D lo %lx after %d hi %lx set %d overlapped %u wakes %u %s\n",
                   static_cast<unsigned long>(g_pre.lo_addr), g_pre.lo_after,
                   static_cast<unsigned long>(g_pre.hi_addr), g_pre.hi_provoked,
-                  g_pre.saw_lo_spinning, verdict);
+                  g_pre.saw_lo_spinning, g_pre.wakes, verdict);
         say(g_line);
 
         (void)hi.join();

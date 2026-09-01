@@ -16,6 +16,125 @@ say.
 
 ## Where we are
 
+**M7.2 LANDED S3 AND S4: THE BIG KERNEL LOCK, THE DOORBELL, THREADS ON EVERY CORE, AND THE
+CROSS-CORE MAINTENANCE THEY OWE.** Two external audits closed with no open correctness or security
+blocker. What follows is what a green run does NOT say.
+
+- **THE BOOT SELFCHECK USED TO KILL A WORKING MACHINE, AND THE LESSON IS ABOUT INSTRUMENTS RATHER
+  THAN ABOUT THE LOCK.** Its contention arm asserted that every peer had taken the lock inside a
+  fixed round count, which a peer can only do in the gap between the primary's release and its next
+  acquire. Losing every gap made the IMAGE call `kfault_terminate`. Saturating the box reproduces it
+  3/3; idle it passes 5/5, which is why it read as weather for a while. **A gate that fails only
+  under load is a claim about the host, not about the kernel.** The fix waits, bounded, for the
+  state each arm needs instead of racing for it.
+- **THAT CHECK'S TWO ARMS WANT OPPOSITE PEER STATES, and making one deterministic breaks the other
+  unless they are separated in time.** The emulator arm needs QEMU's GIC to report each secondary
+  ACKNOWLEDGING the doorbell, which a core polling in the acquire loop never does; the poll arm
+  needs the peers masked and spinning. Hence two phases, interrupts open then peers observed
+  spinning. Anyone tightening this must keep both phases or one arm goes vacuous silently.
+- **THE POKE'S FIRING IS SCHEDULING-DEPENDENT, AND THAT IS CORRECT RATHER THAN A DEFECT.** A peer
+  that has already switched off a dying space took its Context synchronization event in that switch,
+  so the rendezvous is owed only while a peer is still on the space. Over six runs of the four-core
+  selftest the run-total came out 0, 4, 4, 6, 6 and 8. So NO arm may assert that a task kill
+  produced a poke; `doorbell_xpoke` asserts a per-core service floor and a pairing invariant, both
+  of which the bring-up check makes deterministic. **There is no route from an arm to force one**:
+  `KOS_MEM_FLAGS_ALL` is NOCACHE alone, so unprivileged code cannot create the executable page
+  whose removal would owe the poke. Making one forceable is a decision, not a fix.
+- **`hello` CAN NEVER WITNESS THREADS ON EVERY CORE, AND NO SAMPLING BOUND FIXES IT.** It holds one
+  runnable thread: ping and pong alternate through semaphores with a 400 ms sleep each, so which
+  core picks up the single sleeper is the host's draw. Sampled to 180 s under load the vCPU set
+  plateaus at two of four. The gate boots the `stress` soak for that reason -- more runnable threads
+  than cores, so a core running no thread is one the scheduler left idle beside a ready thread.
+- **THAT MAKES THE SOAK'S SIZE LOAD-BEARING, AND ITS BUDGET PROBE CAN SHRINK IT.** `stress` sizes
+  itself down against the board's thread and semaphore pools independently of `MAX_PAIRS`, and a
+  soak at or below the core count returns the gate to a lottery. The app reports the size it
+  realized and the gate refuses anything at or below the core count; without that line the gate
+  would pass while proving nothing.
+- **`trap_redzone_decls` DOES NOT CATCH A STALE PIN LINE.** `trap_redzone_indirect.txt` binds call
+  sites by exact `file:line:column`, and of its readers only `check_trap_redzone.sh` and
+  `check_console_reach.sh` reject a stale line -- both PER SCOPE, so a re-pin is only witnessed by a
+  preset that compiles that scope. `irq.cc` is pinned in armv6m, armv7m, lx6, rv32imac and rxv3 and
+  NOT in armv8a, so an arm64-only run proves nothing about it.
+- **THE AMP POSTURE IS REACHABLE BY CONFIGURATION ALONE**, `KICKOS_MULTICORE_AMP` in `Kconfig`, which
+  sets one kernel core while the image still drives four. It links `kickos_arm64_doorbell_service`,
+  so gates keyed on the kernel-core count silently skip a body that exists. That is why the ISB gate
+  is keyed on `KICKOS_NUM_CORES`.
+- **THE ACTIVE-CORE SET WAS BUILT DERIVED AND THAT WAS A RULING.** Its frozen form, a readable field
+  on the opaque space, is unimplementable: on all three backends the opaque handle IS the root
+  page-table frame, so there is no object to hold a field. A per-core installed-root array written
+  only where the register is written answers the same question and changes no signature.
+
+**M7.2 IS S3: THE LOCK, THE DOORBELL, AND THREADS ON EVERY CORE.** `IrqLock` became the big kernel
+lock rather than 129 call sites changing, its own comment having claimed "interrupts off => exclusive"
+which is false above one core. A per-core depth takes the lock on the zero-to-one transition only.
+
+**THE LOCK SPANS THE CONTEXT SWITCH, AND THAT IS WHAT CLOSED GAP 3 WITHOUT AN EPOCH.** Until the swap
+parks it, an outgoing thread's saved frame still names an earlier run, so the lock is handed THROUGH
+the switch and released in `switch.S` where the outgoing frame is parked. The flag that keeps it held
+across that window is the "a swap owes the park" signal gap 3 was asking for, so a holder observing
+EXITED observes a parked context and the window has ZERO width. **An epoch was deliberately not
+built**: it would be a second answer to one question, and the obvious cell to build it on is
+pre-seated BEFORE the park, so a guard on it would answer "already off-CPU" in exactly the window it
+was guarding. A consequence worth keeping: the lock is never held with interrupts unmasked, so an
+interrupt always enters at depth zero.
+
+**THE DOORBELL'S WAIT IS SOFTWARE ON EVERY BACKEND, and section 7 previously said otherwise.** No GIC
+version reports to a SENDER that a target serviced a software-generated interrupt: v2's per-source
+pending registers are banked to the ACCESSING core, and v3's carry no source identity. The old claim
+that the rendezvous is "A64-free" conflated the DATA half, which coherency does supply, with the
+acknowledgement half, which nothing does.
+
+**DELETING THE PARKED CORE'S INTERRUPT UNMASK LEFT THE IMAGE'S OWN CHANNEL FULLY GREEN.** WFI wakes on
+a pending SGI and the software poll then answered everything, so the count, the postconditions and the
+raise total all held. Only QEMU's own GIC trace caught it. That is why the doorbell gate's oracle is
+the emulator's and not the image's.
+
+**AND THAT ORACLE CANNOT SEPARATE TWO THINGS, WHICH IS WHY THE GATE IS SERIAL.** A core already
+spinning in the lock's acquire loop answers the doorbell by POLLING and acknowledges nothing, so
+"the interrupt path never ran" and "the host starved that core" read identically. Under a parallel
+`ctest` a correct image went red once in three runs. The refusal says so itself.
+
+**THE FOUR-CORE PRESET RUNS FOUR FIFTHS OF THE SELFTEST, and the skip set is what names the fifth.**
+28 arms assert a single-core ORDERING and most state that premise in their own comment. They are
+skipped as a CLASS rather than one at a time because a failing arm bails without releasing its pooled
+object, and one flaky arm became 59 red arms in a single run. Ruled separate work, not deferred.
+
+**`errnoprobe` CANNOT PASS ABOVE ONE KERNEL CORE AND NO PER-CORE KEYING FIXES IT.** newlib's
+reentrancy state is reached through ONE word in the process's memory, and it is read at EL0 where a
+thread cannot ask which core it is on, so two threads of one process on two cores share an errno. The
+seat belongs in thread-local storage. Declined VISIBLY as a skip carrying the mechanism.
+
+**THE SLAY-GUARD PREDICATE IS RIGHT AND HAS NO RUNTIME ARM.** Idle control blocks sit outside the
+pool, so no user handle can name one and the branch is unreachable from userspace. It becomes
+load-bearing the moment an idle block is poolable, and mutating it today reddens nothing.
+
+**THE SMP SEAM BASELINE MOVED TWICE IN THIS MILESTONE, so S5 no longer measures from the frozen set.**
+Cumulatively THIRTEEN records added across S3 and none changed or removed: the lock and its macro,
+then the switch release, the peer ready and start pair, and the resched entry, every one of them the
+kernel-to-arch direction so no port owes an implementation. S5's verdict will be its own delta, and
+this line is where the from-frozen figure lives.
+
+**THE HOST UNIT LAYER IS OFF WITHOUT A GTest, AND THAT HID A SUITE THAT DID NOT BUILD.** A new
+two-core unit suite failed to compile once GTest is provisioned, and a plain preset never revealed it.
+A fixture defect from the same cause is worse than the suite: an `arch_start` stub that RETURNS lets a
+deliberately-abandoned bracket unwind and underflow the lock depth, after which every acquire in the
+process is silently skipped. Derive both counts rather than quoting them, and provision GTest before
+believing a unit verdict.
+
+**THE PER-CORE BLOCK IS PADDED TO A CACHE LINE, and this file argued against that before doing it.**
+The argument was that padding is a compile-time bet the maintenance code beside it refuses to make,
+reading the line size from a register at run time. That was wrong: this family ALREADY gives its
+per-core rows a line each, with named constants, so the bet was made twice before. Its size is a
+literal the secondary entry's assembly spells, so the alignment and that literal move together.
+**What is still unpadded is the ISR, fault-report and dispatch DEPTHS**, which are compact arrays on
+the hottest path, and the block now has room to hold them.
+
+**THE BANNER NAMES THE CPU NOW, WHICH MOVED `.rodata` ON EVERY IMAGE OF EVERY BOARD.** The resolution
+is the compiler flag's token where a family has one, the chip's own statement where none does, and the
+platform's declaration for a host build; no toolchain file states a core name. A first attempt asserted
+the core FAMILY in the gate and reddened `qemu-x86_64`, whose name matches no family it listed, so the
+witness checks presence and then the placeholder instead.
+
 **AN EXTERNAL AUDIT OF M7.0 AND M7.1 RETURNED CONDITIONAL ACCEPT, AND ITS TWO BLOCKERS WERE BOTH
 MISSING ARMS RATHER THAN WRONG CODE.** Both are closed and both redden on mutation. The first is the
 one worth carrying: **this file previously recorded the arrival witness as mutation-proven, and that
@@ -92,9 +211,17 @@ than an architecture family, because a family name is a proxy that dates the fir
 violates it. The MMU is NOT one of the six properties and per-line interrupt targeting IS, which is
 what puts the RP parts in the AMP column: the RP2040 datasheet says the same interrupts reach both
 cores' own controllers, so a line "granted" to one core is granted only because the other masks it.
-The LX6 lands there for a different reason, passing targeting and failing coherency. **The record
-says in as many words that all three CAN run a shared kernel**, FreeRTOS and ESP-IDF both shipping
-dual-core ports, so the exclusion is argued as a value judgement and not re-derived from a link.
+**THE LX6 NO LONGER LANDS THERE, AND THIS FILE SAID IT FAILED COHERENCY.** That was measured out of
+the ESP32 manual and is too broad: the part's two caches sit only on the external flash and PSRAM
+path, their pools carved OUT of internal SRAM rather than covering it, so kernel state placed in
+internal SRAM satisfies the coherency requirement by its second clause. Its interrupt matrix is a
+real distributor besides, per-CPU map register banks with an unconnected input serving as a routing
+sink, so it passes targeting for a stronger reason than the old wording allowed. Its verdict is a
+GATE rather than a ruling now, and what gates it is a per-core data book: the Xtensa ISA defines
+both remaining primitives, the compare-and-swap and the processor identity, and defines both as
+configurable OPTIONS whose realisation no document on this bench states. **The record still says in
+as many words that the RP parts CAN run a shared kernel**, FreeRTOS shipping a dual-core RP2040
+port, so their exclusion is argued as a value judgement and not re-derived from a link.
 
 **THE FLEET WITNESS FOR M7.0 IS 56 presets, 2247 host tests, 56 pass, 0 reused, 0 fail**, with a
 `DONE` sentinel. The figure that matters is the DELTA: M6.5 witnessed 2191, so +56 is exactly one
@@ -181,7 +308,7 @@ claim is a NEGATIVE result like M6.3's and M6.4's, and it is measured: `check_ca
 PASS at 24 records, the only two members that ever entered being plain enumerators (60 and 61). An
 address never became a FIELD, only ever an argument, which is what let C1's claim survive C2.
 
-**THE FLEET WITNESS FOR M6.5 IS COMPLETE AND BOTH HALVES STAMP THE MERGED COMMIT**, `23dfd8ea`.
+**THE FLEET WITNESS FOR M6.5 IS COMPLETE AND BOTH HALVES STAMP ITS MERGE ON MASTER.**
 Host: 56 presets, 2191 host tests, 56 pass, 0 reused, 0 fail, with `trap_redzone` in all 56 logs,
 which is the half that matters for two new syscalls, no emulator board registering one. Image: 56
 presets, 473 gates, 0 failed, 0 skipped, 37 declared with no image gate. **The image half took four
@@ -527,7 +654,7 @@ The whole point of this file. A green fleet pass says none of the following.
   presets a milestone actually measures on -- `qemu-arm64`, both RV64 postures, `qemu-x86_64`,
   `sim` and `sim-telem` -- are exactly the six that declare no pair in `trap_redzone_roots.txt`,
   so a green pass on them is silent about every trap-stack figure in the fleet. One
-  `KICKOS_ASSERT` added on the console route at `fdf58b3d` put `kpanic` on the fault-exit descent
+  `KICKOS_ASSERT` added on the console route put `kpanic` on the fault-exit descent
   and took 32 presets red, and nothing this milestone measured could see it: it surfaces as a red
   gate on boards nobody named, never as a build error. **A change on the syscall or the console
   path needs the full 50-preset sweep, not a three-board sample and not the emulators.**
@@ -544,7 +671,7 @@ The whole point of this file. A green fleet pass says none of the following.
   (`kernel/syscall/syscall_mem.cc`) and, on RV64 only, `arch_aspace_release`
   (`arch/riscv/rv64imac/aspace_rv64imac.cc`); the first two now slay the incoming
   thread, the third refuses and the fourth counts. **The gate was RED on three of the four
-  between `517449e5` and `58b43d62`/`d4977780`, and two Reference records went on saying so
+  for part of M6.4, and two Reference records went on saying so
   afterwards** -- `docs/reference/boards.md` and `docs/design-m6-mmu.md`, corrected 2026-08-29.
   That is worth the line because it is this milestone's own class: a record that was TRUE when it
   was written and stopped being true when the defect it described was fixed, with nothing tying
@@ -552,8 +679,8 @@ The whole point of this file. A green fleet pass says none of the following.
   `tests/static/console_reach_roots.txt` and it states in its own header what it would fail to
   catch; do not widen that file to quiet it.
 - **`bluepill-c8-st` AND `f302nucleo-st` LINK AGAIN, AND WHAT FIXED THEM WAS A FLEET-WIDE COST
-  RATHER THAN THOSE TWO IMAGES.** They contributed no trap-stack figure between `480767f1` and
-  this fix, `trap_redzone` dying at the same link inside its own scratch tree: a build error
+  RATHER THAN THOSE TWO IMAGES.** They contributed no trap-stack figure from the commit that
+  broke their link until this fix, `trap_redzone` dying at the same link inside its own scratch tree: a build error
   wearing a depth gate's name, on a preset that IS declared in `trap_redzone_roots.txt`, so a
   reader scanning for a missing declaration finds nothing. What the fix removed is the per-app
   build stamp's runtime reformat, which every image on every board compiled, so what looked like
@@ -661,6 +788,13 @@ The whole point of this file. A green fleet pass says none of the following.
   boards paying for a translating backend's argument. Two caller booleans became one posture word and
   the measurement came back exactly. A control tree with the argument dropped is what ATTRIBUTED it
   before the fix.
+- **THE ABI-FREEZE MILESTONE IS DELIBERATELY UNNUMBERED, and eight sites had invented a number.**
+  It fires when the ABI is ready, which is a state and not a position, so a number would assert a
+  readiness nobody has. `roadmap.md` states that and owns it. What had drifted: four design
+  documents and `TODO.md` said "the ABI-freeze milestone (M8, the last one)" -- wrong twice over,
+  M8 being IPC/IRQ optimisation and the list running to M10 -- and `docs/README.md` listed the
+  freeze as M8's second half while omitting M10 entirely. The number is stripped everywhere. Do
+  not re-add one, and do not read the absence as an omission to fix.
 - **The fleet shipped `-O0` until M4.5.2, at roughly 2x footprint**, so every silicon witness
   taken before it is invalid. On the K64F, `-Os` then dropped a PIT clock-gate-race write that
   `-O0` had masked. `build: optimise the fleet (MinSizeRel)` is the commit to revert when
@@ -728,9 +862,6 @@ The whole point of this file. A green fleet pass says none of the following.
   and revoking EL0 there was MEASURED green -- but that root is what the fault reporter and
   `aspace_release` install and what `arch_aspace_boot` hands out, so revoking changes what the space
   MEANS. It wants a decision, not a patch.
-- **`M8` is unnumbered in one place and contradicted in another.** `roadmap.md` has M8 as
-  IPC/IRQ optimisation with the list running to M9 and M10, and names an ABI-freeze milestone
-  without assigning it a number. This wants a ruling, not a carry-forward.
 
 ## Machine-local traps live in CONTEXT.local.md, not here
 
@@ -739,48 +870,25 @@ Two that were in this file and belong there instead, and are now recorded there:
 `finished` timestamp), and `genconfig.py` warns "set more than once" whenever a `-D` knob is
 re-passed unchanged, which is noise in a channel documented to mean a declaration is wrong.
 
-## History that must not be garbage-collected
+## A commit hash is never a record
 
-**M4.9.1's SILICON WITNESSES BANNER COMMITS ITS OWN SQUASH DESTROYED**, and
-`backup/m491-presquash-20260816` is what keeps them resolvable -- local and unpushed, like every
-branch named in this section. `usbcdcwit` on `pizero2350` stamps `e0ab9cf9` and the `teensy41`
-selftest `a4a3d8dc`; the `picopi` run carries no banner at all, its console being the device, so its
-tree is named only here. **The squash changed NO CONTENT** -- the four-commit tip is byte-identical
-to that backup outside this file -- so those captures do describe the code that shipped, and the
-backup is what lets a reader CHECK that rather than take it.
+**RULED 2026-09-01: NO HASH GOES IN THIS FILE.** The workflow is fleet-and-measure, then squash,
+then merge, so a hash written down during a milestone names a commit the squash is going to destroy.
+Every hash-as-record here was therefore guaranteed to rot, and the file's old design made that worse
+by claiming local backup branches kept them alive: it carried a table of eleven hashes said to
+"survive on this box only", with a warning that one `git branch -D` would destroy an M4.6.1
+prerequisite. Clearing the branch inventory took three of them out, and neither origin, the reflog,
+nor 232 dangling objects held them. **Branches are not an archive, and a ref nobody pushes keeps
+nothing.**
 
-**`c296feb` is reachable only from the local unpushed branch `m4.2-presquash`.** It holds
-`git show c296feb:docs/design-m4-rx-irq-demux.md`, which `docs/design-m4.6-irq-driver.md` section 6
-cites rather than reproduces for the RX routing-class taxonomy, the group-register table and the
-level-versus-edge semantics. One `git branch -D m4.2-presquash` destroys an M4.6.1 prerequisite.
+**SO A CITATION MUST CARRY ITS OWN CONTENT.** A document citing another reproduces what it needs. A
+capture that matters states its own numbers. A witness names the MILESTONE it measured and what it
+measured, never the commit it sat on -- the tree is what a witness is valid for, and after a squash
+the tree survives while the hash does not.
 
-Captures and records across `TODO.md` and `docs/` stamp pre-squash tips (`c5d9b0d`, `270b6fa`,
-`124b68c`, `989af16`, `16e4af0`, `788b1d8`) that folded into `dde73ca` and reach no branch. The
-stamps stay as written.
-
-**ELEVEN HASHES CITED ACROSS THIS FILE AND `TODO.md` SURVIVE ON THIS BOX ONLY.** Re-derived
-2026-08-16, and the earlier wording -- that squashes "destroyed" them -- was wrong in the direction
-that matters: every one still resolves HERE, each held by a local backup branch, and NONE of those
-branches is pushed. So a fresh clone loses all eleven, and so does one `git branch -D`. The squashed
-commits carry only their final tree; every hash below is an INTERMEDIATE tree that no current commit
-reproduces.
-
-| hash | what it stamps | reachable only from |
-| --- | --- | --- |
-| `b77a3ef4`, `a2695e08` | M4.8.2's six-board pass, and its review | `backup-m4.8.2-presquash` |
-| `f8cc32bd` | the `m483` fleet pass | `backup-preland-final` |
-| `58e7174e` | the `m484` capture banners | `backup/presquash-m483-m484` |
-| `e21167b6`, `1c250bad`, `a1220233`, `367497c2`, `7bdf1067`, `aa38390a` | the M4.8.1 driver-class measurements | `backup/m481-presquash-20260811` |
-| `182e0dd2` | scratch console-reclaim instrumentation | `wip/console-reclaim-window-precondition` |
-
-**Two kinds of citation, and only one of them should ever be rewritten.** A hash naming a TREE you
-might check out is a reference, and it gets converted to the milestone it belongs to. A hash quoted
-as a BANNER is a fact about a string an image printed, and rewriting it would falsify the capture --
-those stay verbatim, and this table is what makes them resolvable. `dde73ca` above is the same
-situation with a happier ending: it is on `master`.
-
-What makes the `58e7174e` witnesses still good is not reachability but the diff: the two commits
-after it touched docs plus one redundant cast, with the armv7m object byte-identical.
+**What was lost with those three, for the record and not for recovery:** the RX72M peripheral-IRQ
+demux spike document, whose taxonomy and findings `docs/design-m4.6-irq-driver.md` carries forward
+in full, and two M4.9.1 silicon banner strings. Do not create a branch to restore any of it.
 
 ## Where to go next
 

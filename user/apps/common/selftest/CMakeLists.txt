@@ -88,6 +88,20 @@ endif()
 # The expected-skip list every gate below carries; checked by name in
 # tests/integration/check_tap_stream.sh.
 set(KICKOS_EXPECT_SKIPS "")
+# Every arm whose pass rests on two threads' relative progress, or on one thread being denied
+# the CPU by another. The claim is a single-core one (main.cc, TAP_SKIP_ONE_CORE_ORDER) and the
+# invariants behind these arms are still checked on every one-core preset in the fleet.
+if(KICKOS_KERNEL_CORES GREATER 1)
+  list(APPEND KICKOS_EXPECT_SKIPS
+    fifo_order preempt_on_ready irq_thread_ctx sleep_order
+    mutex_pi_donation mutex_chain_boost mutex_multi_held mutex_deadlock
+    reply_abandoned_cap call_timeout_revert call_infoless_revert call_close_reply
+    call_donation call_donation_hold call_donation_slow call_donation_pending
+    cap_reply_bound_fast cap_reply_bound_slow thread_slay_timeout
+    irq_discard irq_mask_coalesce irq_spurious irq_stale_register
+    mutex_owner_died_nowaiter aspace_two_spaces_same_grant
+    irq_reclaim parked_frame_hostile thread_slay_window)
+endif()
 
 # The same for the arms that report PARTIAL. A PARTIAL reports `ok`, so neither the plan/case
 # reconciliation nor the skip bookkeeping can see one and this by-name set is the only thing
@@ -131,6 +145,7 @@ endif()
 
 # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a raw list
 # deref would split the value into further bogus environment entries.
+list(JOIN KICKOS_EXPECT_SKIPS "," KICKOS_EXPECT_SKIPS)
 list(JOIN KICKOS_EXPECT_PARTIALS "," KICKOS_EXPECT_PARTIALS)
 list(JOIN KICKOS_EXPECT_FAULTS "," KICKOS_EXPECT_FAULTS)
 
@@ -159,7 +174,7 @@ if(KICKOS_ARCH STREQUAL "sim")
   math(EXPR _tap_arms "${_tap_arms} + 1") # periph_reg_write_mask
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms "${_tap_arms} + 38") # cap_objects, cap_map, cap_map_pins_run, cap_share, aspace_seam, aspace_model, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_acquire_dup, aspace_balance, aspace_domain_balance, aspace_forced_unwind, aspace_churn, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, task_handoff_donor_exits, task_handoff_slice, self_grant_cross_task, reservation_teardown, frame_scrub_cross_task, 2 x spawn_refusal_frees_*, parked_frame_hostile, split_access, process_ipc_same_addr, process_call_reply, grant_kernel_word_refused, self_grant_retype, reent_seating, aspace_acquire_balance, map_tlbi_elided, process_data_template
+  math(EXPR _tap_arms "${_tap_arms} + 40") # cap_objects, cap_map, cap_map_pins_run, cap_share, aspace_seam, aspace_model, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_acquire_dup, aspace_balance, aspace_domain_balance, aspace_forced_unwind, aspace_churn, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, task_handoff_donor_exits, task_handoff_slice, self_grant_cross_task, reservation_teardown, frame_scrub_cross_task, 2 x spawn_refusal_frees_*, parked_frame_hostile, split_access, process_ipc_same_addr, process_call_reply, grant_kernel_word_refused, self_grant_retype, reent_seating, aspace_acquire_balance, map_tlbi_elided, aspace_active_cores, doorbell_xpoke, process_data_template
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms "${_tap_arms} + 1") # fault_kills_task
@@ -202,7 +217,7 @@ if(NOT KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # region_mode
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 38") # cap_objects + cap_map + cap_map_pins_run + cap_share + 14 x aspace_* + stack_is_frames + process_private_data + process_data_template + task_siblings_share + task_handoff_readback + task_handoff_donor_exits + task_handoff_slice + self_grant_cross_task + self_grant_retype + reservation_teardown + frame_scrub_cross_task + 2 x spawn_refusal_frees_* + parked_frame_hostile + split_access + process_ipc_same_addr + process_call_reply + grant_kernel_word_refused + reent_seating + map_tlbi_elided
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 40") # cap_objects + cap_map + cap_map_pins_run + cap_share + 14 x aspace_* + stack_is_frames + process_private_data + process_data_template + task_siblings_share + task_handoff_readback + task_handoff_donor_exits + task_handoff_slice + self_grant_cross_task + self_grant_retype + reservation_teardown + frame_scrub_cross_task + 2 x spawn_refusal_frees_* + parked_frame_hostile + split_access + process_ipc_same_addr + process_call_reply + grant_kernel_word_refused + reent_seating + map_tlbi_elided + aspace_active_cores + doorbell_xpoke
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # fault_kills_task

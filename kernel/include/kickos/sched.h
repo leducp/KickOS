@@ -45,6 +45,11 @@ namespace kickos
         // Register a fully-initialized thread as READY.
         void add(Thread* t);
 
+#if KICKOS_KERNEL_CORES > 1
+        // sched::add for a thread that is to be core `core`'s idle fallback.
+        void add_idle(Thread* t, uint32_t core);
+#endif
+
         // Enter the first thread from the boot context. Does not return: the
         // scheduler ends the process via arch_shutdown (never unwinds to boot).
         void start();
@@ -107,6 +112,16 @@ namespace kickos
 
         Thread* current();
         Thread* idle();
+
+        // Whether `t` is an idle thread on ANY core; idle() answers for the calling core alone.
+#if KICKOS_KERNEL_CORES > 1
+        bool is_idle(Thread const* t);
+#else
+        inline bool is_idle(Thread const* t)
+        {
+            return t == idle();
+        }
+#endif
 
         // Live non-idle thread count (0 => nothing left to run).
         unsigned live_count();

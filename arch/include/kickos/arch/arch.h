@@ -12,13 +12,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Supplies KICKOS_NUM_CORES; a standalone TU has no board config and falls back to 1.
+// Supplies KICKOS_NUM_CORES and KICKOS_KERNEL_CORES; a standalone TU has no board config and
+// falls back to 1 for both.
 #if defined(__has_include) && __has_include(<kickos/board_config.h>)
 #include <kickos/board_config.h>
 #endif
 
 #ifndef KICKOS_NUM_CORES
 #define KICKOS_NUM_CORES 1
+#endif
+
+// How many cores ONE KERNEL schedules on, where KICKOS_NUM_CORES is how many the image drives:
+// an AMP image raises the count while each of the kernels on it spans one core.
+#ifndef KICKOS_KERNEL_CORES
+#define KICKOS_KERNEL_CORES 1
 #endif
 
 // Per-arch definition of `struct arch_context` (opaque to the kernel; sized by the arch).
@@ -73,13 +80,26 @@ uint32_t arch_cpu_id(void);
 // Poke the cores in `cores`, a bitmask of core indices, and wait until every core in it
 // has answered. `cores` at 0 names nobody and both calls are then a no-op.
 //
-// The send is separate from the wait so an initiator can poke every core once and then wait
-// once, which is what a rendezvous such as a TLB shootdown needs. A backend whose maintenance
-// can invalidate and wait in its own instruction stream does that inside arch_aspace_map and
-// arch_aspace_unmap and must NOT route it through the doorbell.
+// The send is separate from the wait so an initiator pokes every core once and waits once.
 //
-// The far side takes NO kernel lock, and the lock's own acquire loop services a pending
-// doorbell: otherwise an initiator holding the lock waits on a core spinning to acquire it.
+// THE TWO HALVES OF CROSS-CORE MAINTENANCE ROUTE DIFFERENTLY. The DATA half is translation:
+// entries a peer's walker may hold. A backend able to invalidate and wait for that in its own
+// instruction stream does so inside arch_aspace_map and arch_aspace_unmap. A64 is such a
+// backend, its broadcast TLBI plus DSB blocking until every PE in the shareability domain has
+// drained.
+//
+// The INSTRUCTION half is a peer's already-fetched instructions, and it is the doorbell's to
+// carry: on A64 an invalidation is broadcast where a Context synchronization event is not, so
+// the barrier belongs in the far side's service body. It is owed when an EXECUTABLE mapping is
+// removed or narrowed in a space a peer has installed.
+//
+// The far side must not take the kernel lock, and that lock's own acquire loop services a
+// pending doorbell: otherwise an initiator holding the lock waits on a core spinning to
+// acquire it.
+//
+// A publish a far side must observe is ordered by the INITIATOR, ahead of the send. GICv2
+// specifies no ordering for software-generated interrupt generation (IHI 0048B.b), so a
+// backend places the barrier itself.
 //
 // At one core both are empty macros: the argument is consumed, never evaluated for effect.
 #if KICKOS_NUM_CORES > 1
@@ -88,6 +108,43 @@ void arch_ipi_wait(uint32_t cores);
 #else
 #define arch_ipi_send(cores) ((void)(cores))
 #define arch_ipi_wait(cores) ((void)(cores))
+#endif
+
+// Raise the doorbell on the CALLING core, so a reschedule the cell still owes is carried by a
+// raise again once this core unmasks. Honoured where every other raise is, in the backend's
+// interrupt dispatch.
+#if KICKOS_KERNEL_CORES > 1
+void arch_ipi_resched_self(void);
+#else
+#define arch_ipi_resched_self() ((void)0)
+#endif
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+// What `core` has done with the doorbell: services performed in bits 31:0, instruction-side
+// rendezvous initiated in bits 63:32. A core outside the built range reads zero.
+#if KICKOS_NUM_CORES > 1
+uint64_t arch_ipi_counts(uint32_t core);
+#else
+#define arch_ipi_counts(core) ((void)(core), 0ull)
+#endif
+#endif
+
+// --- The cross-core kernel lock ---------------------------------------------
+// Exclusion between CORES over kernel state, whose span is capability resolve-to-use. Held by
+// at most one core, and NOT recursive: a core holding it and acquiring again spins on itself.
+//
+// LOCAL interrupt masking is a separate bracket and stays the caller's, through
+// arch_irq_save/arch_irq_restore: a caller that holds this unmasked can be re-entered by its
+// own core's handler.
+//
+// The acquire services a pending doorbell while it spins, so an initiator holding the lock is
+// answered by a core waiting to acquire it.
+#if KICKOS_KERNEL_CORES > 1
+void arch_kernel_lock(void);
+void arch_kernel_unlock(void);
+#else
+#define arch_kernel_lock() ((void)0)
+#define arch_kernel_unlock() ((void)0)
 #endif
 
 // --- Context / switching ---------------------------------------------------
@@ -652,6 +709,11 @@ struct arch_aspace* arch_aspace_boot(void);
 // The low byte is a defect record: it must be 0, and a self-test arm is the only thing that
 // says so.
 uint64_t arch_aspace_tlbi_counts(void);
+
+// Bit c set where core c's translation base names `space`'s root: the ACTIVE-CORE SET.
+// Null-safe, answering 0. A backend that installs no root per core answers bit 0 for the space
+// it is translating under.
+uint32_t arch_aspace_active_cores(struct arch_aspace* space);
 #endif
 
 // --- Data-cache maintenance for an observer that does not snoop -------------
@@ -872,6 +934,50 @@ uint64_t syscall_dispatch(uintptr_t nr,
                           uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
 // A memory-protection violation was caught (sim: SIGSEGV over the arena).
 void kickos_isr_fault(uintptr_t addr, int is_write);
+
+#if KICKOS_KERNEL_CORES > 1
+// --- Provided by the kernel for a shared kernel's backend ------------------
+// Release the kernel lock the switch carries. CALL FROM INSIDE THE SWAP, once the outgoing
+// frame is parked and this core stands on the incoming one: the lock spans the swap so a peer
+// cannot pick a thread whose saved frame still describes an earlier run.
+void kickos_switch_unlock(void);
+
+// Whether the kernel has finished building the control block for the CALLING core. The load is
+// the acquire half of the kernel's release, so a nonzero answer makes every write that built
+// that block visible to this core.
+int kickos_kernel_core_seated(void);
+
+// Whether this kernel has published a thread for the CALLING core. Valid on the far side of a
+// nonzero kickos_kernel_core_seated, which is what orders the state it reads.
+int kickos_kernel_core_ready(void);
+
+// Publish that the CALLING core has committed to its own scheduler. Call once, immediately
+// before kickos_kernel_core_start.
+void kickos_kernel_core_arrive(void);
+
+// Enter the scheduler on the CALLING core, which then runs threads. Never returns, and is
+// valid only once kickos_kernel_core_seated and kickos_kernel_core_ready have both answered
+// nonzero for this core.
+void kickos_kernel_core_start(void) __attribute__((noreturn));
+
+// The doorbell's scheduling half, for the backend to call from its INTERRUPT dispatch and
+// nowhere else. Takes the kernel lock, so it may not be reached from the doorbell's service
+// body.
+void kickos_kernel_core_resched(void);
+
+// Publish a reschedule owed to every core named in `cores`. CALL BEFORE THE RAISE that wakes
+// them: the raise is an edge, and whichever consumer reaches it first absorbs it. The kernel
+// calls this for its own raise, in kickos::klock_resched_ask.
+void kickos_kernel_core_resched_owe(uint32_t cores);
+
+// Whether a reschedule stands owed to the CALLING core. Leaves the cell standing, so a raise
+// restored on the strength of this answer may be absorbed again.
+int kickos_kernel_core_resched_owed(void);
+
+// Consume the reschedules owed to the CALLING core, answering nonzero when any stood. The one
+// body that clears the cell.
+int kickos_kernel_core_resched_take(void);
+#endif
 
 // One frame for a translating backend's own tables, and its release. One allocator exists and
 // the kernel owns it: a backend keeps no pool of its own.
