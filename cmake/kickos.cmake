@@ -491,7 +491,13 @@ function(kickos_add_qemu_test)
     set(_machine virt)
   elseif(QT_BOARD STREQUAL "qemu-riscv64")
     # No -cpu: qemu-system-riscv64 -M virt defaults to the `rv64` generic core.
-    set(_env QEMU=qemu-system-riscv64 "QEMU_EXTRA=-bios none")
+    # -smp is what MAKES the harts exist, and with no firmware every one of them enters _start:
+    # the park in startup.S is what holds all but the boot hart there.
+    set(_smp "")
+    if(KICKOS_NUM_CORES GREATER 1)
+      set(_smp " -smp ${KICKOS_NUM_CORES}")
+    endif()
+    set(_env QEMU=qemu-system-riscv64 "QEMU_EXTRA=-bios none${_smp}")
     set(_machine virt)
   elseif(QT_BOARD STREQUAL "qemu-arm64")
     # -cpu is required: qemu-system-aarch64 -M virt comes up as a cortex-a15 and REFUSES an

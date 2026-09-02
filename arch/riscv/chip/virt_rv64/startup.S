@@ -23,9 +23,16 @@
  * loads below into one.
  */
 
+#include <kickos/arch/rv64_frame.h>
 #include <kickos/arch/rv64_paging.h>
 
 #include "boot_layout.ld.h"
+
+/* Undefined, `#if KICKOS_NUM_CORES > 1` would take the one-core arm silently and every hart
+ * the machine has would race the boot-hart-only work below. */
+#ifndef KICKOS_NUM_CORES
+#error "KICKOS_NUM_CORES is not defined: the hart park cannot know how many harts this image drives"
+#endif
 
 /* Page-table entry bits (RISC-V Privileged ISA, "Sv39 Page Table Entry"; the format is the
  * same in every mode on this ladder). */
@@ -157,6 +164,66 @@ _start:
        mode, bits 1:0 = 00, and .Lmtrap is 4-byte aligned. Its own refusal reaches the console
        without a vector: nothing on the way to it can trap. */
     SEAT_MTVEC .Lmtrap
+
+#if KICKOS_NUM_CORES > 1
+    /* THE PARK IS AHEAD OF THE PMP WRITE AND EVERY PROBE. There is no firmware, so every hart
+       the machine has arrives here, and the boot-hart-only work below is written for one
+       writer: the DRAM probe, the boot page tables and the refusals they can reach.
+       mtvec alone precedes it, a hart that traps before one is seated landing nowhere.
+
+       s11 CARRIES THE HART INDEX FROM HERE TO THE mret and nothing between writes it.
+
+       mhartid IS NOT THE INDEX: it is an integrator-chosen value (the openc906 core hardwires
+       it to zero and its integrator customises it per instance), so the range test below is
+       what makes it one, and the claim is what refuses two harts answering the same. */
+    csrr    s11, mhartid
+    li      t0, KICKOS_NUM_CORES
+    bltu    s11, t0, .Lhart_in_range
+.Lhart_unclaimed:
+    /* No row, so no trap stack and no console turn: a hart this image drives nothing for. */
+    wfi
+    j       .Lhart_unclaimed
+
+.Lhart_in_range:
+    la      t0, kickos_rv64_hart_claim
+    slli    t1, s11, 2
+    add     t0, t0, t1
+    li      t1, 1
+    amoswap.w t1, t1, (t0)
+    beqz    t1, .Lhart_claimed
+    la      a0, .Lhartid_dup
+    la      a1, .Llbl_mhartid
+    mv      a2, s11
+    li      a3, 0
+    j       .Lm_refuse
+
+.Lhart_claimed:
+    beqz    s11, .Lhart_prologue
+
+    /* WFI'S WAKEUP IS GATED BY mie ALONE, not by mstatus.MIE, so a hart parked with mie at its
+       reset zero can never leave: no interrupt is enabled, nothing can make one pending, and
+       the release word alone is a store no hart is watching for. The release therefore rings
+       this hart's own msip word as the EDGE beside the word as the STATE, and this enable is
+       what lets the edge land. The interrupt is never TAKEN here: mstatus.MIE is still zero,
+       so it only ends the wait. */
+    li      t0, 8                   /* mie.MSIE */
+    csrs    mie, t0
+    la      s10, kickos_rv64_hart_release
+    slli    t1, s11, 3
+    add     s10, s10, t1
+.Lhart_park:
+    wfi
+    /* Drop the edge before reading the state: msip is level-sensitive, so a word left set
+       would carry into supervisor mode as a doorbell no peer asked for. */
+    slli    t0, s11, 2
+    li      t1, KICKOS_RV64_CLINT_PA
+    add     t0, t0, t1
+    sw      zero, 0(t0)
+    ld      t0, 0(s10)
+    beqz    t0, .Lhart_park
+
+.Lhart_prologue:
+#endif
 
     /* PMP entry 0: NAPOT over the whole address space, read/write/execute. */
     li      t0, -1
@@ -300,7 +367,13 @@ _start:
 
     /* The DRAM the layout claims, probed while a fault still has a vector: the landing pad
        stores through _estack, and on a machine with less DRAM that store faults in SUPERVISOR
-       mode with stvec still zero. Machine mode over physical addresses here. */
+       mode with stvec still zero. Machine mode over physical addresses here.
+
+       BOOT HART ONLY: it is a property of the machine, and a secondary repeating it would
+       write the top word under a boot hart already standing on the stack below it. */
+#if KICKOS_NUM_CORES > 1
+    bnez    s11, .Lram_probed
+#endif
     li      t0, KICKOS_RV64_DRAM_BASE + KICKOS_RV64_DRAM_SIZE - 8
     li      t1, RAM_PROBE_PATTERN
     sd      t1, 0(t0)
@@ -313,6 +386,9 @@ _start:
     mv      a4, t0
     j       .Lm_refuse
 1:
+#if KICKOS_NUM_CORES > 1
+.Lram_probed:
+#endif
 
     /* What this hart does with a misaligned access, MEASURED: whether one raises an exception
        at all is a per-region property (Privileged ISA 3.6.2), so no register answers it.
@@ -321,10 +397,17 @@ _start:
        so the delegation this hart is held to is the one its own behaviour needs. The vector
        RESUMES at s6, so a hart that resolves misalignment in hardware boots straight through.
 
-       The word is the one the DRAM probe above just wrote, and the store puts back the four
-       bytes already at s7 + 1, so a hart that completes it changes nothing. */
+       s7 IS THE HART'S OWN WORD, never a shared one: the store puts back the four bytes
+       already at s7 + 1, so a hart that completes it changes nothing, but two harts probing
+       one word would interleave a load between another's store and its restore. */
     li      s4, 0
+#if KICKOS_NUM_CORES > 1
+    la      s7, kickos_rv64_hart_probe
+    slli    t0, s11, 3
+    add     s7, s7, t0
+#else
     li      s7, KICKOS_RV64_DRAM_BASE + KICKOS_RV64_DRAM_SIZE - 8
+#endif
     ld      s8, 0(s7)
     SEAT_MTVEC .Lmisaligned_probe
     la      s6, 1f
@@ -353,8 +436,9 @@ _start:
        so this MEASURES the permission the decode above can only describe.
 
        One address stands for every address because the decode above accepts only all-or-nothing
-       across the space. The word is the one the DRAM probe just wrote, so a fault here is the
-       PMP entry alone; mtvec moves to a vector of this probe's own for the two instructions.
+       across the space. The word is the one the misaligned probe above just read and wrote in
+       machine mode, so a fault here is the PMP entry alone; mtvec moves to a vector of this
+       probe's own for the two instructions.
 
        THE REGIME IS ESTABLISHED HERE AND NOT INHERITED. Under MPRV the access is translated as
        well as protected, and RISC-V defines a reset value for satp nowhere, so satp is written
@@ -400,7 +484,11 @@ _start:
     SEAT_MTVEC .Lpmp_probe_trap
     li      t0, 0x20000             /* mstatus.MPRV */
     csrs    mstatus, t0
+#if KICKOS_NUM_CORES > 1
+    mv      t0, s7
+#else
     li      t0, KICKOS_RV64_DRAM_BASE + KICKOS_RV64_DRAM_SIZE - 8
+#endif
     ld      t1, 0(t0)
     sd      t1, 0(t0)
     li      t0, 0x20000
@@ -410,7 +498,13 @@ _start:
     /* The transient window's two non-leaf entries. A non-leaf entry holds the next table's
        PHYSICAL frame number, and a shift of a relocatable symbol is not a relocation any object
        format carries, so they are filled here. The map editor writes the level-0 leaves at run
-       time. */
+       time.
+
+       BOOT HART ONLY, through the end of the chain below: one root serves every hart, so a
+       secondary re-writing these entries would edit tables a walker is already reading. */
+#if KICKOS_NUM_CORES > 1
+    bnez    s11, .Lboot_tables_done
+#endif
     la      t0, kickos_rv64_window_l0
     srli    t0, t0, 12
     slli    t0, t0, 10
@@ -454,6 +548,9 @@ _start:
     mv      t1, t0
     j       1b
 2:
+#if KICKOS_NUM_CORES > 1
+.Lboot_tables_done:
+#endif
 
     /* satp := the configured mode over the one root, at the table's physical address. */
     la      t0, kickos_rv64_root
@@ -486,6 +583,45 @@ _start:
     li      t0, 0x800               /* MPP = supervisor */
     csrs    mstatus, t0
 
+#if KICKOS_NUM_CORES > 1
+    /* sscratch := this hart's per-CPU block, which is also its trap-stack top (percpu.h).
+       MACHINE MODE IS THE ONLY PLACE THIS CAN BE DONE: mhartid is not readable in supervisor
+       mode, so a hart that reached S-mode with sscratch unseated could not find its own row.
+       The HIGH address, out of a link-time absolute word: S-mode runs translated, and `la`
+       here yields the physical alias. */
+    ld      t0, .Lpercpu_high_va
+    li      t1, KICKOS_RV64_PERCPU_ROW_SIZE
+    mul     t2, s11, t1
+    add     t0, t0, t2
+    li      t1, KICKOS_RV64_TRAP_STACK_SIZE
+    add     t0, t0, t1
+    csrw    sscratch, t0
+
+    /* mscratch := this hart's machine-mode save area, PHYSICAL: the trampoline runs
+       untranslated. Its word 0 is this hart's own CLINT msip address, precomputed because the
+       trampoline has two registers and no stack. */
+    la      t0, kickos_rv64_hart_mtrap
+    slli    t1, s11, 4
+    add     t0, t0, t1
+    csrw    mscratch, t0
+    slli    t1, s11, 2
+    li      t2, KICKOS_RV64_CLINT_PA
+    add     t1, t1, t2
+    sd      t1, 0(t0)
+
+    /* The doorbell's machine-level enable. While the hart runs in supervisor mode a machine
+       interrupt is enabled regardless of mstatus.MIE, so this bit alone gates delivery. */
+    li      t0, 8                   /* mie.MSIE */
+    csrs    mie, t0
+
+    /* A SECONDARY LANDS SOMEWHERE ELSE: the boot pad runs the C runtime's data copy and bss
+       zero and calls kmain, all of which are the boot hart's once. */
+    beqz    s11, .Lboot_mret
+    ld      t0, .Lsecondary_high_va
+    csrw    mepc, t0
+    mret
+.Lboot_mret:
+#endif
     ld      t0, .Lboot_high_va      /* the landing pad's high address, link-time absolute */
     csrw    mepc, t0
     mret
@@ -493,12 +629,51 @@ _start:
     .balign 8
 .Lboot_high_va:
     .quad   kickos_rv64_boot_high
+#if KICKOS_NUM_CORES > 1
+.Lsecondary_high_va:
+    .quad   kickos_rv64_secondary_high
+.Lpercpu_high_va:
+    .quad   kickos_rv64_percpu
+#endif
 
 /* The machine-mode trap handler mtvec points at: every machine trap and every S-mode exception
  * medeleg does not cover. Reports the cause and the faulting PC.
  */
     .balign 4
 .Lmtrap:
+#if KICKOS_NUM_CORES > 1
+    /* THE CROSS-HART DOORBELL'S MACHINE-MODE LEG. A peer's CLINT msip write raises a MACHINE
+       software interrupt, cause 3, and mideleg holds bit 3 read-only zero (Privileged ISA
+       3.1.8 forbids only read-only ONE there), so it cannot be delegated and lands here. This
+       lowers it to mip.SSIP, where the existing supervisor arm of kickos_rv64_isr_dispatch
+       already demuxes it.
+
+       IT RUNS UNDER A LIVE SUPERVISOR KERNEL and must leave everything as it found it: two
+       registers through mscratch, no stack, no mstatus write. The mret clears mstatus.MPRV as
+       the architecture requires of a return below machine mode, which is the value the boot
+       path already left.
+
+       CLEARING MSIP IS THIS HART'S OWN and must precede the mret: msip is level-sensitive, so
+       a word left set re-enters here forever. */
+    csrrw   t0, mscratch, t0        /* t0 = &save area; mscratch = t0's original */
+    sd      t1, 8(t0)
+    csrr    t1, mcause
+    bgez    t1, .Lmtrap_hard        /* an exception: the sign bit is what marks an interrupt */
+    addi    t1, t1, -3
+    slli    t1, t1, 1               /* the interrupt bit alone survives iff the code was 3 */
+    bnez    t1, .Lmtrap_hard
+    ld      t1, 0(t0)               /* this hart's CLINT msip word, precomputed at bring-up */
+    sw      zero, 0(t1)
+    li      t1, 2                   /* mip.SSIP */
+    csrs    mip, t1
+    ld      t1, 8(t0)
+    csrrw   t0, mscratch, t0
+    mret
+
+.Lmtrap_hard:
+    ld      t1, 8(t0)
+    csrrw   t0, mscratch, t0
+#endif
     csrr    a2, mcause
     csrr    a4, mepc
     la      a0, .Lmtrap_msg
@@ -539,10 +714,26 @@ _start:
  *
  * mstatus.MPRV is cleared first, and this is the one place it is cleared, so the console is
  * reachable from the PMP probe's vector, the generic vector and every direct jump alike.
+ *
+ * ONE HART TAKES THE CONSOLE. Every refusal here writes a byte at a time to a UART no lock
+ * covers and then stops the machine at the finisher, so a second refusing hart would interleave
+ * its message into the first's and could stop the machine mid-line. The claim decides which
+ * refusal is reported; the harts that lose it stop without emitting and without answering the
+ * finisher, leaving the whole diagnostic and the exit status to the one that won.
  */
 .Lm_refuse:
     li      t0, 0x20000             /* mstatus.MPRV */
     csrc    mstatus, t0
+#if KICKOS_NUM_CORES > 1
+    la      t0, .Lrefuse_claim
+    li      t1, 1
+    amoswap.w t1, t1, (t0)
+    beqz    t1, .Lm_refuse_owned
+.Lm_refuse_lost:
+    wfi
+    j       .Lm_refuse_lost
+.Lm_refuse_owned:
+#endif
     mv      s0, a1
     mv      s1, a2
     mv      s2, a3
@@ -638,6 +829,12 @@ _start:
     .asciz  "\r\nKickOS: mcounteren.TM did not stick: a supervisor read of the time CSR traps and the clock has no source"
 .Lram_refused:
     .asciz  "\r\nKickOS: the top word of the DRAM this layout claims does not read back: the machine has less than KICKOS_RV64_DRAM_SIZE"
+#if KICKOS_NUM_CORES > 1
+.Lhartid_dup:
+    .asciz  "\r\nKickOS: two harts report the same mhartid: mhartid is integrator-chosen rather than an index, and a second hart taking this row would stand on a trap stack another hart is already on"
+.Llbl_mhartid:
+    .asciz  " mhartid=0x"
+#endif
 .Llbl_satp:
     .asciz  " satp=0x"
 .Llbl_mcause:
@@ -729,6 +926,34 @@ kickos_rv64_supervisor_refuse:
     sw      t1, 0(t0)
 5:  j       5b                      /* the finisher answered nothing */
 
+#if KICKOS_NUM_CORES > 1
+/* Where a released secondary lands in supervisor mode, translated, with sscratch already
+ * naming its row. gp is the APP's anchor and is seated the same way the boot pad seats it;
+ * nothing here may make a gp-relative access before that.
+ *
+ * ITS STACK IS ITS OWN SLICE of the boot reservation: hart N's top is _estack minus N strides,
+ * and it carries this hart's early C and the frame of any interrupt taken while it is parked.
+ */
+    .global kickos_rv64_secondary_high
+kickos_rv64_secondary_high:
+    la      t0, .Lboot_trap
+    csrw    stvec, t0
+
+    .option push
+    .option norelax
+    ld      gp, .Lgp_anchor
+    .option pop
+
+    la      sp, _estack
+    li      t0, KICKOS_RV64_HART_STACK_STRIDE
+    mul     t0, t0, s11
+    sub     sp, sp, t0
+    li      tp, 0                   /* no TLS: thread pointer parked at 0 */
+
+    call    kickos_rv64_secondary_entry
+1:  j       1b                      /* kickos_rv64_secondary_entry never returns */
+#endif
+
 .Lboot_trap_msg:
     .asciz  "\r\nKickOS: supervisor trap before the trap entry was installed: the boot path faulted\r\n"
 
@@ -800,6 +1025,41 @@ kickos_rv64_window_l1:
     .global kickos_rv64_window_l0
 kickos_rv64_window_l0:
     .fill   512, 8, 0
+
+#if KICKOS_NUM_CORES > 1
+/* The boot handshake, reached UNTRANSLATED by every hart. LOADED and outside _sbss.._ebss for
+ * the same reason .mmu_leaves is: a hart claims its row and parks before the boot hart has
+ * reached the C runtime, and .bss zeroing would take the claims back under it.
+ *
+ * The release words are what a hart parks on and nothing writes them yet.
+ */
+    .section .smpboot, "aw", @progbits
+    .balign 8
+    .global kickos_rv64_hart_release
+kickos_rv64_hart_release:
+    .fill   KICKOS_NUM_CORES, 8, 0
+
+/* One doubleword per hart for the misaligned-access and PMP-grant probes, so no two harts
+ * write one word. */
+    .global kickos_rv64_hart_probe
+kickos_rv64_hart_probe:
+    .fill   KICKOS_NUM_CORES, 8, 0
+
+/* Two doublewords per hart for the machine-mode trampoline: its own CLINT msip address, then
+ * the one register it cannot hold in mscratch. */
+    .balign 8
+    .global kickos_rv64_hart_mtrap
+kickos_rv64_hart_mtrap:
+    .fill   KICKOS_NUM_CORES * 2, 8, 0
+
+/* Naturally aligned: amoswap.w takes a 4-byte-aligned address. */
+    .global kickos_rv64_hart_claim
+kickos_rv64_hart_claim:
+    .fill   KICKOS_NUM_CORES, 4, 0
+    .balign 4
+.Lrefuse_claim:
+    .word   0
+#endif
 
 /* One page between the root and the level-2 table per level above 2. Checked here because a
  * difference of two labels is a constant only once both are defined.

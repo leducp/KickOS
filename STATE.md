@@ -107,6 +107,19 @@ blocker. What follows is what a green run does NOT say.
   page-table frame, so there is no object to hold a field. A per-core installed-root array written
   only where the register is written answers the same question and changes no signature.
 
+**THE FLEET WITNESS FOR M7.2 IS COMPLETE AND BOTH HALVES STAMP THE MILESTONE'S TIP.**
+Host: 57 presets, 2409 host tests, 57 pass, 0 reused, 0 fail. Image: 57 presets, 490 image gates,
+20 pass, 0 partial, 0 fail, 0 skipped, 37 declared with no image gate. Both carry a `DONE`
+sentinel, and the image half took its declared figures on the first attempt rather than refusing.
+**The host DELTA is what says this milestone's gates ran fleet-wide**: S1 and S2 witnessed 2276
+over the same 57 presets, so +133 is S3 and S4's own arms on every preset that registers them.
+**The image figures are UNMOVED from the last run taken before the records commit, and that is the
+expected reading rather than a stale sweep**: everything landed since is documentation, so no image
+gate was added and nothing could move a preset out of the 37 that register none. Neither half says
+anything about `-LE host` under load: the host tool never runs that set, and the image tool
+serialises it to remove the instrument's own noise rather than to show the gates are
+load-independent.
+
 **M7.2 IS S3: THE LOCK, THE DOORBELL, AND THREADS ON EVERY CORE.** `IrqLock` became the big kernel
 lock rather than 129 call sites changing, its own comment having claimed "interrupts off => exclusive"
 which is false above one core. A per-core depth takes the lock on the zero-to-one transition only.

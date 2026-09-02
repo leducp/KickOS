@@ -45,7 +45,7 @@ MEMORY
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);   /* boot/trap stack: top of RAM */
-_kernel_stack_size = 64K;              /* boot/trap stack reservation */
+_kernel_stack_size = KICKOS_RV64_BOOT_STACK_SIZE;  /* boot/trap stack, one stride per hart */
 
 /* The frame pool the kernel's FrameAllocator describes: page tables and the pages a process
    holds. Its own carve, so the bump allocator and the frame allocator never own the same byte. */
@@ -169,6 +169,17 @@ SECTIONS
         KEEP(*(.mmu_leaves))
     } > RAM
 
+#if KICKOS_NUM_CORES > 1
+    /* The boot handshake (startup.S): the per-hart claim, release and probe words every hart
+       reaches untranslated before the boot hart has run the C runtime. LOADED and outside
+       _sbss.._ebss for the reason .mmu_leaves is, and absent at one core so a single-core
+       image carries no section for a handshake it has nobody to make. */
+    .smpboot : AT(ADDR(.smpboot) - KICKOS_RV64_VA_BASE) ALIGN(8)
+    {
+        KEEP(*(.smpboot))
+    } > RAM
+#endif
+
     .bss (NOLOAD) : AT(ADDR(.bss) - KICKOS_RV64_VA_BASE) ALIGN(8)
     {
         _sbss = .;
@@ -265,6 +276,9 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + boot stack)")
 
 /* The root spends ONE level-2 slot on the kernel window, and a level-2 slot spans 1 GiB. */
+ASSERT(KICKOS_RV64_HART_STACK_STRIDE >= 0x2000,
+       "KickOS: the per-hart boot stack stride is under 8 KiB; a parked secondary builds an interrupt frame on it")
+
 ASSERT(_estack <= ORIGIN(KTEXT) + 0x40000000,
        "KickOS: the image outgrows the 1 GiB the root's kernel-window level-1 table maps; startup.S owes a second level-2 entry")
 

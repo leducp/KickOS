@@ -79,6 +79,10 @@ endif()
 # Keyed on the CORE count, not the kernel-core count: the service body is compiled whenever the
 # image drives more than one core, so it exists under AMP, where one kernel schedules one core.
 # It runs no image, so it carries the host label.
+#
+# armv8a ONLY, and rv64imac is absent by ruling rather than by oversight: the instruction-side
+# barrier is FENCE.I there, and Zifencei is not in that board's ISA baseline, so the backend has
+# no such instruction to assert. Its service body carries the TRANSLATION-side fence alone.
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_NUM_CORES GREATER 1)
   add_test(NAME doorbell_isb
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_doorbell_isb.sh"
@@ -91,10 +95,11 @@ endif()
 # entry exist only where one kernel schedules more than one core, and under AMP there is no
 # scheduling half to separate.
 # It runs no image, so it carries the host label.
-if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_KERNEL_CORES GREATER 1)
+if(KICKOS_BUILD_TESTS AND KICKOS_KERNEL_CORES GREATER 1
+   AND (KICKOS_ARCH STREQUAL "armv8a" OR KICKOS_ARCH STREQUAL "rv64imac"))
   add_test(NAME doorbell_generic
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_doorbell_generic.sh"
-            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
+            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}" "${KICKOS_ARCH}")
   set_tests_properties(doorbell_generic PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 

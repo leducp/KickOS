@@ -32,6 +32,22 @@
  * may not include: the linker script reads it with no arch include directory.
  */
 #define KICKOS_RV64_UART0_PA         0x10000000
+
+/* The CLINT, whose msip word per hart IS the cross-hart doorbell. startup.S's machine-mode
+ * trampoline lowers a raise on it to mip.SSIP, and arch_ipi_send writes a peer's word from
+ * SUPERVISOR mode: PMP entry 0 grants the whole space and QEMU's CLINT gates on no privilege,
+ * both measured on this machine. The trampoline reaches it UNTRANSLATED, so this is the
+ * address it uses; a supervisor writer adds the device window's base.
+ */
+#define KICKOS_RV64_CLINT_PA         0x02000000
+
+/* The boot/trap stack reservation below _estack, SPLIT PER HART: a secondary runs its early
+ * supervisor C and its park loop on one of these before it reaches an idle thread's stack, and
+ * an interrupt taken while parked builds its frame there too. Hart N's top is _estack minus N
+ * strides, so hart 0 keeps the top of RAM and the one-core carve is the whole reservation.
+ */
+#define KICKOS_RV64_BOOT_STACK_SIZE 0x10000
+#define KICKOS_RV64_HART_STACK_STRIDE (KICKOS_RV64_BOOT_STACK_SIZE / KICKOS_NUM_CORES)
 #define KICKOS_RV64_UART_POLL_BOUND  100000
 #define KICKOS_RV64_TEST_FINISHER_PA 0x00100000
 #define KICKOS_RV64_FINISHER_PASS    0x5555

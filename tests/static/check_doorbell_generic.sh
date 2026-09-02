@@ -25,7 +25,7 @@
 # AN EMPTY CORPUS IS A FAILURE, not a pass. A body this cannot decode, or a symbol that moved,
 # is UNKNOWN.
 #
-# usage: check_doorbell_generic.sh <elf> <nm> <objdump>
+# usage: check_doorbell_generic.sh <elf> <nm> <objdump> <arch>
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
@@ -34,16 +34,43 @@ set -eu
 LC_ALL=C
 export LC_ALL
 
-_usage="usage: check_doorbell_generic.sh <elf> <nm> <objdump>"
+_usage="usage: check_doorbell_generic.sh <elf> <nm> <objdump> <arch>"
 elf="${1:?$_usage}"
 nm="${2:?$_usage}"
 objdump="${3:?$_usage}"
+arch="${4:?$_usage}"
 
-# The raise, and the one rendezvous in the tree that goes over it.
+# The raise, which every backend spells the same.
 SEND=arch_ipi_send
-RDV=kickos_arm64_instruction_side_rendezvous
-# The interrupt dispatch, the only body that may enter the scheduler off a doorbell.
-DISPATCH=kickos_armv8a_gic_dispatch
+
+# WHAT IS PER ARCH: the dispatch body's name, the rendezvous body's name where one is linked,
+# the lowering the raise tail-calls, and the mnemonics a direct and a conditional branch are
+# spelled with. A backend not named here is a REFUSAL rather than a skip: an unlisted arch would
+# otherwise read as a gate that passed.
+case "$arch" in
+    armv8a)
+        RDV=kickos_arm64_instruction_side_rendezvous
+        DISPATCH=kickos_armv8a_gic_dispatch
+        RAISE=kickos_armv8a_gic_doorbell_send
+        BRX='^(b|bl|b\\..*)$'
+        CONDX='^(cbz|cbnz|tbz|tbnz|b\\..*)$'
+        ;;
+    rv64imac)
+        # NO RENDEZVOUS BODY IS ASSERTED HERE. The instruction-side rendezvous has no caller on
+        # this backend, so --gc-sections drops it and the symbol is absent by construction
+        # rather than by a defect. What that half needs is FENCE.I, and Zifencei is not in this
+        # board's ISA baseline; until a caller exists the arm has nothing to read.
+        RDV=
+        DISPATCH=kickos_rv64_isr_dispatch
+        RAISE=kickos_rv64_doorbell_send
+        BRX='^(j|jal|call|tail)$'
+        CONDX='^(beq|bne|blt|bge|bltu|bgeu|beqz|bnez|blez|bgez|bltz|bgtz|bgt|ble|bgtu|bleu)$'
+        ;;
+    *)
+        fail "check_doorbell_generic.sh knows no backend '$arch'. The symbol names and the
+  branch mnemonics are both per arch, so an unlisted one would read every body as a leaf and
+  pass without asserting anything" ;;
+esac
 # The cell's publisher, its consumer, and the scheduler entry the consumer guards.
 OWE=kickos_kernel_core_resched_owe
 TAKE=kickos_kernel_core_resched_take
@@ -77,7 +104,7 @@ $0 !~ /^[ \t]*[0-9a-f]+:/ { next }
     n++
     mnem = text
     sub(/[ \t].*$/, "", mnem)
-    if (mnem != "b" && mnem != "bl" && mnem !~ /^b\./) { next }
+    if (mnem !~ brx) { next }
     if (text !~ /</) { next }
     tgt = text
     sub(/^[^<]*</, "", tgt)
@@ -94,7 +121,7 @@ END {
 AWK
 
 body_calls() { # <listing> <symbol>
-    awk -v sym="$2" -f "$TMP/calls.awk" "$1"
+    awk -v sym="$2" -v brx="$BRX" -f "$TMP/calls.awk" "$1"
 }
 
 # --- reader two: the guard between the take and the scheduler entry ----------
@@ -125,15 +152,15 @@ $0 !~ /^[ \t]*[0-9a-f]+:/ { next }
         sub(/>.*$/, "", tgt)
         sub(/\+0x[0-9a-f]+$/, "", tgt)
     }
-    if ((mnem == "b" || mnem == "bl" || mnem ~ /^b\./) && tgt == take && takeat == 0) {
+    if (mnem ~ brx && tgt == take && takeat == 0) {
         takeat = n
         next
     }
-    if ((mnem == "b" || mnem == "bl" || mnem ~ /^b\./) && tgt == resched && reschedat == 0) {
+    if (mnem ~ brx && tgt == resched && reschedat == 0) {
         reschedat = n
     }
     if (takeat != 0 && guard == 0 && reschedat == 0) {
-        if (mnem ~ /^cbn?z$/ || mnem ~ /^tbn?z$/ || mnem ~ /^b\./) { guard = n }
+        if (mnem ~ condx) { guard = n }
     }
 }
 END {
@@ -147,45 +174,57 @@ END {
 AWK
 
 body_guard() { # <listing> <symbol>
-    awk -v sym="$2" -v take="$TAKE" -v resched="$RESCHED" -f "$TMP/guard.awk" "$1"
+    awk -v sym="$2" -v take="$TAKE" -v resched="$RESCHED" -v brx="$BRX" -v condx="$CONDX" -f "$TMP/guard.awk" "$1"
 }
 
 # --- the readers' controls, before the image is read --------------------------
 # Planted listings in the shape the invocation below produces, which is --no-show-raw-insn: a
 # control carrying the raw-bytes column would read its first byte group as the mnemonic and prove
 # the reader against input the gate never hands it.
+# THE CONTROLS ARE PER ARCH TOO, and must be: a reader proven against a listing this
+# disassembler never prints is proven against nothing. The instruction COUNTS are the same on
+# both, so the ordinals the guard reader reports below are as well.
+if [ "$arch" = armv8a ]; then
+    B_CALL="bl 2000"; B_CALL2="bl 2100"; B_TAIL="b 2200"
+    B_FRAME="stp x29, x30, [sp, #-32]!"; B_POP="ldp x29, x30, [sp], #48"
+    B_COND="cbz w0, 1014 <planted_dispatch+0x14>"; B_RET="ret"
+else
+    B_CALL="jal 2000"; B_CALL2="jal 2100"; B_TAIL="j 2200"
+    B_FRAME="addi sp,sp,-32"; B_POP="ld ra,24(sp)"
+    B_COND="beqz a0, 1014 <planted_dispatch+0x14>"; B_RET="ret"
+fi
 cat > "$TMP/ctl_send_clean" <<EOF
 0000000000001000 <planted_send>:
-    1000:	stp	x29, x30, [sp, #-32]!
-    1004:	bl	2000 <arch_cpu_id>
-    1008:	bl	2100 <planted_poll>
-    100c:	b	2200 <kickos_armv8a_gic_doorbell_send>
+    1000: $B_FRAME
+    1004: $B_CALL <arch_cpu_id>
+    1008: $B_CALL2 <planted_poll>
+    100c: $B_TAIL <$RAISE>
 EOF
 cat > "$TMP/ctl_send_dirty" <<EOF
 0000000000001000 <planted_send>:
-    1000:	stp	x29, x30, [sp, #-32]!
-    1004:	bl	2000 <$OWE>
-    1008:	b	2200 <kickos_armv8a_gic_doorbell_send>
+    1000: $B_FRAME
+    1004: $B_CALL <$OWE>
+    1008: $B_TAIL <$RAISE>
 EOF
 cat > "$TMP/ctl_guarded" <<EOF
 0000000000001000 <planted_dispatch>:
-    1000:	bl	2000 <kickos_isr_timer>
-    1004:	bl	2100 <$TAKE>
-    1008:	cbz	w0, 1014 <planted_dispatch+0x14>
-    100c:	b	2200 <$RESCHED>
-    1010:	ret
+    1000: $B_CALL <kickos_isr_timer>
+    1004: $B_CALL2 <$TAKE>
+    1008: $B_COND
+    100c: $B_TAIL <$RESCHED>
+    1010: $B_RET
 EOF
 cat > "$TMP/ctl_unguarded" <<EOF
 0000000000001000 <planted_dispatch>:
-    1000:	bl	2000 <kickos_isr_timer>
-    1004:	bl	2100 <$TAKE>
-    1008:	ldp	x29, x30, [sp], #48
-    100c:	b	2200 <$RESCHED>
+    1000: $B_CALL <kickos_isr_timer>
+    1004: $B_CALL2 <$TAKE>
+    1008: $B_POP
+    100c: $B_TAIL <$RESCHED>
 EOF
 
 ctl="$(body_calls "$TMP/ctl_send_clean" planted_send | tr '\n' ' ')"
 case "$ctl" in
-    "arch_cpu_id planted_poll kickos_armv8a_gic_doorbell_send ") ;;
+    "arch_cpu_id planted_poll $RAISE ") ;;
     *) fail "the branch reader answered [$ctl] for a planted send, so it does not see the
   targets a body branches to and every assertion resting on it is meaningless" ;;
 esac
@@ -231,7 +270,7 @@ if [ "$syms" -lt "$SYM_FLOOR" ]; then
   that short is a misread, not a small image, and the corpus is UNKNOWN"
 fi
 
-for sym in "$SEND" "$RDV" "$DISPATCH" "$OWE" "$TAKE" "$RESCHED"; do
+for sym in "$SEND" ${RDV:+"$RDV"} "$DISPATCH" "$OWE" "$TAKE" "$RESCHED"; do
     size="$(awk -v s="$sym" 'NF == 4 && $4 == s { print $2; exit }' "$TMP/nm")"
     if [ -z "$size" ]; then
         fail "no sized defined symbol '$sym' in $elf: it was renamed, made static or inlined
@@ -253,7 +292,7 @@ echo "== the doorbell's scheduling boundary in $elf =="
 findings=0
 
 # The raise, and the rendezvous over it, publish no reschedule and enter no scheduler.
-for sym in "$SEND" "$RDV"; do
+for sym in "$SEND" ${RDV:+"$RDV"}; do
     rec="$(body_calls "$TMP/dis" "$sym")"
     case "$rec" in
         NOSYM)
@@ -326,7 +365,7 @@ awk '/^[0-9a-f]+ <.*>:$/ { name = $2; gsub(/[<>:]/, "", name); next }
          sub(/^[^:]*:[ \t]*/, "", text)
          mnem = text
          sub(/[ \t].*$/, "", mnem)
-         if (mnem != "b" && mnem != "bl" && mnem !~ /^b\./) { next }
+         if (mnem !~ brx) { next }
          if (text !~ /</) { next }
          tgt = text
          sub(/^[^<]*</, "", tgt)
@@ -334,7 +373,7 @@ awk '/^[0-9a-f]+ <.*>:$/ { name = $2; gsub(/[<>:]/, "", name); next }
          sub(/\+0x[0-9a-f]+$/, "", tgt)
          if (tgt != owe || name == owe) { next }
          print name
-     }' owe="$OWE" "$TMP/dis" | sort -u > "$TMP/publishers" || true
+     }' owe="$OWE" brx="$BRX" "$TMP/dis" | sort -u > "$TMP/publishers" || true
 publishers="$(wc -l < "$TMP/publishers" | tr -d ' ')"
 require_number "$publishers" "the caller count of $OWE"
 if [ "$publishers" -eq 0 ]; then
@@ -360,6 +399,10 @@ if [ "$findings" -ne 0 ]; then
   separated in $elf"
 fi
 
-echo "PASS: '$SEND' and '$RDV' publish no reschedule, '$DISPATCH' enters the scheduler only
+_bodies="'$SEND'"
+if [ -n "$RDV" ]; then
+    _bodies="'$SEND' and '$RDV'"
+fi
+echo "PASS: $_bodies publish no reschedule, '$DISPATCH' enters the scheduler only
   behind '$TAKE', and '$OWE' is published from above the arch seam alone"
 exit 0

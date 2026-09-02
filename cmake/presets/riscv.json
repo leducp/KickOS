@@ -59,6 +59,13 @@
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "sv48" }
     },
     {
+      "name": "qemu-riscv64-smp",
+      "displayName": "QEMU virt (RISC-V RV64IMAC) with four harts under one kernel",
+      "inherits": "qemu-riscv64",
+      "binaryDir": "${sourceDir}/build/qemu-riscv64-smp",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "smp" }
+    },
+    {
       "name": "esp32c6-wroom",
       "displayName": "ESP32-C6-WROOM-1 (RISC-V RV32IMAC)",
       "inherits": "riscv-base",
@@ -93,6 +100,7 @@
     { "name": "qemu-riscv-bench", "configurePreset": "qemu-riscv-bench" },
     { "name": "qemu-riscv64", "configurePreset": "qemu-riscv64" },
     { "name": "qemu-riscv64-sv48", "configurePreset": "qemu-riscv64-sv48" },
+    { "name": "qemu-riscv64-smp", "configurePreset": "qemu-riscv64-smp" },
     { "name": "esp32c6-wroom", "configurePreset": "esp32c6-wroom" },
     { "name": "esp32c6-wroom-st", "configurePreset": "esp32c6-wroom-st" },
     { "name": "esp32c6-wroom-flat", "configurePreset": "esp32c6-wroom-flat" },
@@ -102,6 +110,7 @@
     { "name": "qemu-riscv", "configurePreset": "qemu-riscv", "output": { "outputOnFailure": true } },
     { "name": "qemu-riscv-flat", "configurePreset": "qemu-riscv-flat", "output": { "outputOnFailure": true } },
     { "name": "qemu-riscv64", "configurePreset": "qemu-riscv64", "output": { "outputOnFailure": true } },
-    { "name": "qemu-riscv64-sv48", "configurePreset": "qemu-riscv64-sv48", "output": { "outputOnFailure": true } }
+    { "name": "qemu-riscv64-sv48", "configurePreset": "qemu-riscv64-sv48", "output": { "outputOnFailure": true } },
+    { "name": "qemu-riscv64-smp", "configurePreset": "qemu-riscv64-smp", "output": { "outputOnFailure": true } }
   ]
 }

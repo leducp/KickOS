@@ -216,6 +216,25 @@ namespace
         __asm volatile("sfence.vma zero, zero" ::: "memory");
     }
 
+#if KICKOS_KERNEL_CORES > 1
+    // The satp PPN each core last had written. write_satp is its one writer, and
+    // kickos_rv64_aspace_boot seeds every entry: the machine-mode prologue writes the SAME boot
+    // root on every hart, so a core that has never activated anything is on it by construction.
+    uint64_t g_installed_root[KICKOS_NUM_CORES] = {};
+#endif
+
+    // THE ONE WRITER of the installed-root record, placed where the register is written so the
+    // two cannot disagree. A record that OVER-reports is not harmless: the switch path skips
+    // the activate when the cell already names the incoming space.
+    void write_satp(uint64_t satp)
+    {
+        __asm volatile("csrw satp, %0" ::"r"(satp) : "memory");
+        __asm volatile("sfence.vma zero, zero" ::: "memory");
+#if KICKOS_KERNEL_CORES > 1
+        g_installed_root[arch_cpu_id()] = satp & SATP_PPN_MASK;
+#endif
+    }
+
     // A NON-LEAF entry that has just become valid. The per-leaf fence orders leaf entries only,
     // and a hart may cache PTEs whose V bit is clear, so a page-walk cache holding the absence
     // of this table keeps answering absent for every page under it. Privileged ISA 12.2.1 gives
@@ -223,7 +242,6 @@ namespace
     // There is no narrower form.
     void invalidate_nonleaf(bool installed)
     {
-#if KICKOS_NUM_CORES == 1
         if (not installed)
         {
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -231,27 +249,61 @@ namespace
 #endif
             return;
         }
-#else
-        (void)installed;
-#endif
 #if defined(KICKOS_ENABLE_SELFTEST)
         g_tlbi_issued++;
 #endif
         invalidate_all();
     }
 
-    // Whether `space` is the root this core is RUNNING on. A space installed nowhere has no
-    // cached translation and no cached absence, activate fencing the whole space when it
-    // installs a root. Asked of satp itself. A second core holds a root this one cannot read,
-    // so the elision is compiled out above one core.
+    // Whether `space` is the root THIS core is running on, asked of satp itself.
     bool installed_here(struct arch_aspace* space)
     {
         return (read_satp() & SATP_PPN_MASK) == (satp_of(root_of(space)) & SATP_PPN_MASK);
     }
 
+    // Bit c set where core c's satp names `space`: the ACTIVE-CORE SET, DERIVED from what the
+    // backend last installed rather than held on the space. A peer's satp is unreadable from
+    // here, so a peer's half comes from the record above and this core's from the register.
+    uint32_t active_cores(struct arch_aspace* space)
+    {
+        uint32_t set = 0;
+        if (installed_here(space))
+        {
+            set |= 1u << arch_cpu_id();
+        }
+#if KICKOS_KERNEL_CORES > 1
+        uint64_t const ppn = satp_of(root_of(space)) & SATP_PPN_MASK;
+        for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
+        {
+            if (g_installed_root[c] == ppn)
+            {
+                set |= 1u << c;
+            }
+        }
+#endif
+        return set;
+    }
+
+    // A space no core has installed has no cached translation and no cached absence, so its
+    // seeding costs no maintenance AT EVERY CORE COUNT: the record is what keeps the elision
+    // alive above one core, where the register alone could only answer for this one.
+    bool installed_anywhere(struct arch_aspace* space)
+    {
+        return active_cores(space) != 0;
+    }
+
+    // A descriptor written without an invalidation still owes the fence that makes the new
+    // entry visible to a walker before any later activation reads it. ONE PER CALL covers a
+    // whole run of pages, which is what keeps the elision's measurement intact.
+    void publish_edits()
+    {
+#if KICKOS_KERNEL_CORES > 1
+        __asm volatile("fence w, w" ::: "memory");
+#endif
+    }
+
     void invalidate_page_if(uintptr_t va, bool installed)
     {
-#if KICKOS_NUM_CORES == 1
         if (not installed)
         {
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -259,9 +311,6 @@ namespace
 #endif
             return;
         }
-#else
-        (void)installed;
-#endif
         invalidate_page(va);
     }
 
@@ -772,9 +821,12 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     {
         return ARCH_ASPACE_EINVAL;
     }
-    bool const installed = installed_here(space);
+    // A space installed on no core has no cached entry and no cached absence, so its whole
+    // seeding costs no maintenance; the running space's own widening still pays.
+    bool const installed = installed_anywhere(space);
     enum arch_aspace_result const rc =
         map_into(root_of(space), LEVEL_ROOT, va, pages, pa, leaf, installed);
+    publish_edits();
     if (rc != ARCH_ASPACE_OK)
     {
         // Masked across the whole unwind: this space can be the running one, the self-grant
@@ -816,7 +868,7 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
             return ARCH_ASPACE_EINVAL; // not wholly mapped, and nothing has been cleared
         }
     }
-    bool const installed = installed_here(space);
+    bool const installed = installed_anywhere(space);
     for (size_t i = 0; i < pages; i++)
     {
         uintptr_t const at = va + static_cast<uintptr_t>(i) * GRANULE;
@@ -824,6 +876,7 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
         *entry = 0;
         invalidate_page_if(at, installed);
     }
+    publish_edits();
     // An intermediate table left empty is not a leak: destroy walks the tree and frees every
     // table under the root.
     return ARCH_ASPACE_OK;
@@ -840,8 +893,7 @@ void arch_aspace_activate(struct arch_aspace* space)
     //
     // No identifier is allocated anywhere, so the fence names every address space.
     arch_irq_state_t const s = arch_irq_save();
-    __asm volatile("csrw satp, %0" ::"r"(satp_of(root_of(space))) : "memory");
-    __asm volatile("sfence.vma zero, zero" ::: "memory");
+    write_satp(satp_of(root_of(space)));
     arch_irq_restore(s);
 }
 
@@ -973,6 +1025,16 @@ void kickos_rv64_aspace_boot(uint64_t* user_root, uint64_t* window_leaves, uintp
     g_window_pa_lo = pa_lo;
     g_window_pa_hi = pa_hi;
     g_phys_bits = phys_bits;
+#if KICKOS_KERNEL_CORES > 1
+    // Every hart's machine-mode prologue wrote THIS root into its own satp, so a core that has
+    // activated nothing yet is on it. Seeded rather than left zero: a zero cell names no space
+    // and would leave that core accounted for by nobody.
+    uint64_t const boot_ppn = satp_of(user_root) & SATP_PPN_MASK;
+    for (size_t c = 0; c < KICKOS_NUM_CORES; c++)
+    {
+        g_installed_root[c] = boot_ppn;
+    }
+#endif
     for (size_t c = 0; c < KICKOS_NUM_CORES; c++)
     {
         for (size_t i = 0; i < ACQUIRE_CAPACITY; i++)
@@ -1002,11 +1064,7 @@ uint32_t arch_aspace_active_cores(struct arch_aspace* space)
     {
         return 0;
     }
-    if (not installed_here(space))
-    {
-        return 0;
-    }
-    return 1u << arch_cpu_id();
+    return active_cores(space);
 }
 #endif
 
