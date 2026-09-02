@@ -16,6 +16,49 @@ say.
 
 ## Where we are
 
+**M7.4 LANDED S6: A SECOND INTERRUPT POSTURE ON `qemu-arm64`, GICv3 BESIDE GICv2 RATHER THAN
+INSTEAD OF IT.** What follows is what a green run does NOT say.
+
+- **THE GROUP MISMATCH IS SILENT IN HARDWARE AND LOUD IN THIS FLEET, AND NOTHING IN THE TREE
+  OBSERVES A GROUP DIRECTLY.** `ICC_SGI1R_EL1` generates Group 1 alone, the controller drops a
+  mismatched interrupt with no fault and no log, and the loudness is bought entirely by the timer
+  PPI riding the same group decision: put it in Group 0 while the SGI stays Group 1 and six gates
+  fail. The protection is therefore INCIDENTAL. A future backend that grouped the doorbell and the
+  timer separately would boot, answer doorbells and hang, and no arm would name the reason.
+- **THE FOUR REDS THIS STEP WAS PROVED AGAINST, each named by what it refuses.** A wrong
+  `GICR_BASE` prints `gicv3: no redistributor frame carries this core's affinity` and TERMINATES
+  rather than hanging, which is the whole point of discovering the frame by `GICR_TYPER` instead of
+  indexing it by core number. A GIC version neither backend implements refuses at CONFIGURE with
+  the value in the message, not at link with an absent triad. A wrong acknowledge-event name fails
+  the doorbell gate's timer PARSE CONTROL rather than reporting a vacuous absence of doorbell
+  acknowledgements. And the group mismatch above takes six gates.
+- **THE GICv3 DISABLE PATHS RETURNED BEFORE THE DISABLE TOOK EFFECT, AND EVERY GATE WAS GREEN
+  OVER IT.** Found by external audit after the step was committed. GICv3 applies a cleared
+  enable asynchronously and RWP reports the completion; the backend read `GICD_CTLR.RWP` at the
+  three control writes and read the REDISTRIBUTOR's RWP nowhere at all, so all five `ICENABLER`
+  writes returned early. The operational one is `arch_irq_mask`, the driver teardown path,
+  where it is the contract's section 4 gap 2 in a new place: a mask that is not exclusion.
+  **Nothing on this bench can show it and nothing on this bench ever will** -- QEMU completes
+  these writes synchronously, and a probe that refused the instant RWP read set booted clean
+  through the whole selftest and a 64-round doorbell check, so the poll is never once entered
+  here. A GIC-500 need not behave that way. The lesson is the shape, not the register: the file
+  had the mechanism written down in its own words for one register and applied it to that one
+  only, which is the kind of gap a green fleet is structurally unable to report.
+- **A NON-PROBLEM I CHASED TURNED UP A REAL SECOND TRUTH BESIDE IT.** I flagged the GICv3 trace
+  parse as assuming core numbers below ten; re-reading showed the radix is converted explicitly and
+  a planted 18-core log confirmed cores 10, 15, 16 and 17 each match once. What WAS wrong sat one
+  line away: the timer INTID was hand-spelled twice, `acknowledged irq 30` and `value 0x1e`, with
+  nothing checking the two agreed, so a changed INTID would have left the planted control proving
+  the parse against a line the emulator never emits. Both suffixes are now PRINTED from one
+  constant. **Verify a risk you wrote down before acting on it; the fix may not be where the note
+  says.**
+- **THE GICv3 DISPATCH HAD NO HEADER AT ALL until this step.** `arch_armv8a.cc` hand-declared
+  `kickos_armv8a_gic_dispatch` beside a backend that defined it, two declarations with nothing
+  checking they agreed. It is in `arch/arm64/common/gic.h` now with the rest of the family.
+- **EMULATOR-GRADE, AND ONE DEGREE FURTHER THAN SECTION 7 OF THE CONTRACT STATES.** QEMU's GICv3
+  model is not a GIC-500, so "the posture matches the silicon target" is a claim about the
+  ARCHITECTURE version and not about the i.MX8MP's implementation of it.
+
 **M7.2 LANDED S3 AND S4: THE BIG KERNEL LOCK, THE DOORBELL, THREADS ON EVERY CORE, AND THE
 CROSS-CORE MAINTENANCE THEY OWE.** Two external audits closed with no open correctness or security
 blocker. What follows is what a green run does NOT say.
@@ -475,6 +518,14 @@ The whole point of this file. A green fleet pass says none of the following.
   yields verdicts belonging to different tree states, with no record of which preset saw which. And
   both tools take the service list each preset defaults to, so a provider that lives only in
   `tests/static/service_lists.txt` is compiled by neither.
+- **NOTHING WITNESSES THE MULTI-CORE FOLDS IN THE GICv3 BACKEND, AND `cpu_id_fold` STRUCTURALLY
+  CANNOT.** That gate is skipped as a class above one kernel core, and the only preset carrying the
+  v3 backend runs four. The configuration is not hypothetical and it is not this milestone's:
+  `KICKOS_MULTICORE_AMP` sets ONE kernel core while the image still drives four, which is where a
+  one-core-kernel GICv3 posture becomes load-bearing and where that preset earns its fleet time. It
+  was built and booted by hand once here -- the full selftest passes at one core under GICv3 -- so
+  the gap is an unwitnessed arm rather than an unbuilt one. The AMP step inherits it as a known
+  obligation.
 - **NOTHING WITNESSES THAT THE x86_64 DECODE IS FED THE LIVE ATTRIBUTE TABLE**, and the arm that
   used to is gone on purpose. It proved the feed by REPROGRAMMING `IA32_PAT`, which SDM 14.12.4
   makes the operating system's job to sequence and which this port has no reason to spend a cache

@@ -12,7 +12,11 @@
 #include <kickos/sys/atomic.h>
 
 #include "gic.h"         // arch/arm64/common: the architected half of this machine's controller
-#include "gicv2.h"       // arch/arm64/common: which controller this machine has, and where
+#if KICKOS_ARM64_GIC_VERSION == 3
+#include "gicv3.h" // arch/arm64/common: which controller this machine has, and where
+#else
+#include "gicv2.h" // arch/arm64/common: which controller this machine has, and where
+#endif
 #include "smp_bringup.h" // arch/arm64/common: ARM64_BRINGUP_WAIT_NS
 
 #include <fatal_status.ld.h>
@@ -131,9 +135,17 @@ namespace
     constexpr long SYS_EXIT = 0x18;
     constexpr uint64_t ADP_Stopped_ApplicationExit = 0x20026u;
 
-    // GICv2 on QEMU `virt`. The distributor is global, the CPU interface is this core's.
+    // The distributor is global either way. What sits beside it follows gic-version: a GICv2
+    // CPU interface, or a series of GICv3 redistributors at a window that does not overlap
+    // it.
     constexpr uintptr_t GICD_BASE = 0x08000000;
+#if KICKOS_ARM64_GIC_VERSION == 3
+    // Two 64 KB frames per core, RD_base then SGI_base, contiguous from the first core.
+    constexpr uintptr_t GICR_BASE = 0x080A0000;
+    constexpr uintptr_t GICR_STRIDE = 0x20000;
+#else
     constexpr uintptr_t GICC_BASE = 0x08010000;
+#endif
 
     // EL1 physical timer, an architecturally assigned PPI. It is NOT a kernel IRQ line:
     // kickos_isr_timer takes no line and the timer is in no dispatch table.
@@ -307,13 +319,23 @@ namespace
 extern "C"
 {
 
-// This machine's interrupt controller, which the GICv2 backend reads (gicv2.h).
+// This machine's interrupt controller, which the linked backend reads.
+#if KICKOS_ARM64_GIC_VERSION == 3
+struct kickos_gicv3_map const kickos_gicv3 = {
+    GICD_BASE,
+    GICR_BASE,
+    GICR_STRIDE,
+    KICKOS_MAX_IRQ,
+    PPI_EL1_PHYS_TIMER,
+};
+#else
 struct kickos_gicv2_map const kickos_gicv2 = {
     GICD_BASE,
     GICC_BASE,
     KICKOS_MAX_IRQ,
     PPI_EL1_PHYS_TIMER,
 };
+#endif
 
 // This core's hardware edge alone: the distributor's shared half runs once for the machine.
 //
@@ -387,7 +409,13 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {
         {GICD_BASE, 0x10000u}, // distributor
+#if KICKOS_ARM64_GIC_VERSION == 3
+        // Every core's redistributor, and not this core's alone: the frames a peer's banked
+        // interrupt state lives in are exactly what a grant of this window would hand over.
+        {GICR_BASE, KICKOS_NUM_CORES * GICR_STRIDE},
+#else
         {GICC_BASE, 0x10000u}, // CPU interface
+#endif
     };
     size_t n = sizeof(blocks) / sizeof(blocks[0]);
     if (n > max)

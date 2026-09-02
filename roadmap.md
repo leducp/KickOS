@@ -586,6 +586,41 @@ and `arch_irq_clear_pending` write banked registers and act on whichever core ca
 that, so the second controller implements a settled semantics instead of carrying the same open
 question twice.
 
+**S6 IS LANDED: `qemu-arm64` SHIPS TWO INTERRUPT POSTURES, the way the RV64 board ships Sv39 and
+Sv48.** A Kconfig choice under `ARCH_ARMV8A`, an unprompted derived version reaching CMake as well
+as C, a `gicv3` board-config variant and a `qemu-arm64-gicv3` preset; `arch/CMakeLists.txt` links
+one backend on that version and refuses any other value at configure time. The GICv3 backend sits
+BESIDE the GICv2 one behind a controller-neutral `arch/arm64/common/gic.h`, and the rename that
+created that interface landed as its own commit with every allocated section byte-identical but the
+build stamp, so a bisect separates the rename from the backend. Measured on a quiet box with the
+host unit layer on: seven presets green -- `qemu-arm64` 46, `qemu-arm64-smp` 50, `qemu-arm64-gicv3`
+50, `sim` 405, `qemu-riscv64` and `qemu-riscv64-sv48` 55 each, `qemu` 64. Under GICv3 the doorbell
+arm reports four cores answering over 64 rounds, with each of the three secondaries acknowledging
+INTID 0 thirty-two times and core zero absent because the initiator services its own bit inline.
+Of the emulator's raise count only the round's 64 is fixed; the boot total varies in the low
+eighties because a running kernel raises the doorbell too.
+
+**A POST-COMMIT AUDIT FOUND THE DISABLE PATHS RETURNING BEFORE THE DISABLE TOOK EFFECT**, and it
+is recorded here because a green fleet could not have found it. GICv3 applies a cleared enable
+asynchronously and RWP reports the completion, `GICD_CTLR.RWP` for the distributor and
+`GICR_CTLR.RWP` for each redistributor; the first pass read the distributor's at its three
+control writes and the redistributor's nowhere, leaving all five `ICENABLER` writes returning
+early. `arch_irq_mask` is the operational one, so driver teardown returned with delivery still
+possible -- section 4's gap 2, a mask that is not exclusion, in a new place. QEMU completes these
+writes synchronously, so no arm here can witness either the defect or the fix.
+
+**THE GROUP MISMATCH IS SILENT IN HARDWARE AND LOUD IN THIS FLEET, and the second half is bought by
+the timer rather than by any instrument.** `ICC_SGI1R_EL1` generates Group 1 alone, so every INTID
+this backend configures is Group 1 and the acknowledge and end-of-interrupt registers are Group 1's
+to match. The controller drops a mismatched interrupt and reports nothing -- no fault, no log, no
+INTID -- exactly as `docs/design-multicore.md`'s S3 facts say. What makes it loud here is that the
+timer PPI rides the same group decision: leaving it in Group 0 while the SGI is Group 1 fails six
+gates. A backend with the SGI right and the timer wrong would boot, answer doorbells and hang.
+
+Emulator-grade, per section 7 of the contract, and one degree further than that section states:
+QEMU's GICv3 model is not a GIC-500, so this posture matching the i.MX8MP's controller is a claim
+about the ARCHITECTURE version and not about the part's implementation of it.
+
 **S6b depends on S6 and cannot substitute for S7.** `qemu-system-aarch64 -M imx8mp-evk` exposes no
 `gic-version` option at all, unlike `virt`: the machine's GIC-500 is wired, so that board does not
 boot without the GICv3 posture. Its value is that GIC version, routing and topology are properties of

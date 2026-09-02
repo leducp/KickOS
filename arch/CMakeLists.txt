@@ -208,6 +208,16 @@ elseif(KICKOS_ARCH STREQUAL "lx6")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xtensa/lx6/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "armv8a")
   # ARMv8-A in AArch64 state (QEMU virt, Cortex-A53).
+  # One interrupt-controller backend per image, on the version the board states.
+  if(KICKOS_ARM64_GIC_VERSION EQUAL 2)
+    set(_kos_gic_src arm64/common/arch_arm64_gicv2.cc)
+  elseif(KICKOS_ARM64_GIC_VERSION EQUAL 3)
+    set(_kos_gic_src arm64/common/arch_arm64_gicv3.cc)
+  else()
+    message(FATAL_ERROR
+      "KICKOS_ARM64_GIC_VERSION is '${KICKOS_ARM64_GIC_VERSION}'; this arch implements "
+      "2 and 3. The board states it through the Kconfig choice ARM64_GIC_V2 / ARM64_GIC_V3.")
+  endif()
   add_library(kickos_arch_armv8a STATIC
     arm64/armv8a/arch_armv8a.cc
     arm64/armv8a/aspace_armv8a.cc
@@ -218,9 +228,9 @@ elseif(KICKOS_ARCH STREQUAL "armv8a")
     # The cross-core kernel lock and the doorbell, which are one mechanism: the acquire loop
     # services a pending doorbell. Empty at one core.
     arm64/armv8a/klock_armv8a.cc
-    # Interrupt controller, one backend per image: the GIC version, its bases and its routing
-    # are the part's, and a chip states them by defining kickos_gicv2 (arm64/common/gicv2.h).
-    arm64/common/arch_arm64_gicv2.cc
+    # Interrupt controller: the bases and the routing are the part's, and a chip states them
+    # by defining that backend's map (arm64/common/gicv2.h, gicv3.h).
+    ${_kos_gic_src}
     common/arch_ram_common.cc
     common/startup_ranges.cc
     ${KICKOS_SEAM_DEFAULTS_COMMON})

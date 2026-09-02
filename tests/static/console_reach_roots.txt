@@ -36,6 +36,7 @@
 
 preset  armv8a   qemu-arm64
 preset  armv8a   qemu-arm64-smp
+preset  armv8a   qemu-arm64-gicv3
 preset  rv64imac qemu-riscv64
 preset  rv64imac qemu-riscv64-sv48
 preset  x86_64   qemu-x86_64
@@ -47,6 +48,7 @@ preset  x86_64   qemu-x86_64
 # translation unit must not go red, and a board that sheds a hundred must.
 floor   armv8a   qemu-arm64        files=90 nodes=700 reason: measured 116 .ci files and 931 nodes on 2026-08-29
 floor   armv8a   qemu-arm64-smp    files=90 nodes=700 reason: the same board and route at four cores, the count reaching no console path
+floor   armv8a   qemu-arm64-gicv3  files=90 nodes=700 reason: the same board and route at four cores, the interrupt controller reaching no console path
 floor   rv64imac qemu-riscv64      files=90 nodes=700 reason: measured 115 .ci files and 973 nodes on 2026-08-29
 floor   rv64imac qemu-riscv64-sv48 files=90 nodes=700 reason: measured 115 .ci files and 973 nodes on 2026-08-29
 floor   x86_64   qemu-x86_64       files=90 nodes=700 reason: measured 119 .ci files and 907 nodes on 2026-08-29

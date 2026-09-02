@@ -2,14 +2,12 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The arm64 family's interrupt-controller interface, with one backend linked per image. The
-// register displacements, the boundary below which interrupt state is the calling core's own
-// bank, the acknowledge and end-of-interrupt protocol and the identifier meaning no interrupt
-// is pending are architected by ARM and live in the backend, which is also where arch.h's
-// mask/unmask/clear triad, arch_irq_inject and kickos_armv8a_gic_dispatch are defined.
+// backend also defines arch.h's mask/unmask/clear triad and arch_irq_inject.
 //
 // A chip declares WHICH controller it has, and where, by defining that backend's map: GICv2's
-// is gicv2.h, GICv3's gicv3.h. Nothing here names a register, so a core-index mask is the only
-// currency that crosses this boundary.
+// is gicv2.h, GICv3's gicv3.h. NOTHING HERE NAMES A REGISTER, so a core-index mask is the only
+// currency that crosses this boundary: a target list plus a filter is GICv2's register in
+// disguise, and affinity plus a routing mode is GICv3's.
 
 #ifndef KICKOS_ARCH_ARM64_COMMON_GIC_H
 #define KICKOS_ARCH_ARM64_COMMON_GIC_H
@@ -31,6 +29,11 @@ extern "C"
 
     // Drops the pending state of one INTID. The INTID is the caller's to bound.
     void kickos_armv8a_gic_clear_pending(int intid);
+
+    // ONE INTERRUPT PER ENTRY, called by the exception vector on the core that took it: the
+    // backend acknowledges, dispatches and ends it, and the controller signals again for
+    // anything still pending.
+    void kickos_armv8a_gic_dispatch(void);
 
 #if KICKOS_NUM_CORES > 1
     // Raises the doorbell on every core in `cores`, a bitmask of core INDICES. Orders the

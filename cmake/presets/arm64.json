@@ -25,14 +25,23 @@
       "inherits": "qemu-arm64",
       "binaryDir": "${sourceDir}/build/qemu-arm64-smp",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "smp" }
+    },
+    {
+      "name": "qemu-arm64-gicv3",
+      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1) with four cores under GICv3",
+      "inherits": "qemu-arm64",
+      "binaryDir": "${sourceDir}/build/qemu-arm64-gicv3",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "gicv3" }
     }
   ],
   "buildPresets": [
     { "name": "qemu-arm64", "configurePreset": "qemu-arm64" },
-    { "name": "qemu-arm64-smp", "configurePreset": "qemu-arm64-smp" }
+    { "name": "qemu-arm64-smp", "configurePreset": "qemu-arm64-smp" },
+    { "name": "qemu-arm64-gicv3", "configurePreset": "qemu-arm64-gicv3" }
   ],
   "testPresets": [
     { "name": "qemu-arm64", "configurePreset": "qemu-arm64", "output": { "outputOnFailure": true } },
-    { "name": "qemu-arm64-smp", "configurePreset": "qemu-arm64-smp", "output": { "outputOnFailure": true } }
+    { "name": "qemu-arm64-smp", "configurePreset": "qemu-arm64-smp", "output": { "outputOnFailure": true } },
+    { "name": "qemu-arm64-gicv3", "configurePreset": "qemu-arm64-gicv3", "output": { "outputOnFailure": true } }
   ]
 }

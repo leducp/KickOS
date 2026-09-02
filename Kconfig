@@ -195,9 +195,9 @@ config KICKOS_RV64_SATP_MODE
 # The version is DERIVED from the selection: arch/CMakeLists.txt links one backend on it
 # and cmake/kickos.cmake spells the emulated machine's gic-version from it.
 #
-# The two are different address maps rather than one map with a flag: a GICv3 CPU interface
-# is reached through ICC_* system registers instead of a memory-mapped frame, and the banked
-# registers move to a per-core redistributor.
+# The two are different address maps: a GICv3 CPU interface is reached through ICC_* system
+# registers instead of a memory-mapped frame, and the banked registers move to a per-core
+# redistributor.
 
 choice
 	prompt "arm64 interrupt controller"
