@@ -75,7 +75,7 @@ def main():
     p.kill()
 
     blob = open(dump, "rb").read()
-    recs = []
+    recs, wrapped = [], set()
     for c in range(cores):
         base = c * RING
         nxt = struct.unpack_from("<I", blob, base)[0]
@@ -85,6 +85,7 @@ def main():
             seq, kind, core, a, b, ts = REC.unpack_from(blob, base + 8 + i * REC.size)
             recs.append((ts, seq, kind, core, a, b))
         if nxt > DEPTH:
+            wrapped.add(c)
             print("core %d WRAPPED: %d records, ring holds %d, the start is gone"
                   % (c, nxt, DEPTH))
     recs.sort()
@@ -111,6 +112,10 @@ def main():
             refused.setdefault(a, []).append((ts, b))
 
     stalled = [(t, v) for t, v in parked.items() if ran.get(t, -1) < v[0]]
+    if stalled and wrapped:
+        print("NOTE: core(s) %s wrapped their rings, so every ABSENCE below is a maybe: the "
+              "record may have been overwritten. Presence readings stay sound."
+              % sorted(wrapped))
     if not stalled:
         print("no thread parked and stayed parked: this run did not stall")
         return
@@ -118,10 +123,20 @@ def main():
         print("\n-- thread 0x%08x parked on queue 0x%08x from core %d" % (t, q, core))
         q_searched = [r for r in recs if KIND.get(r[2]) == "SEARCH" and r[4] == q and r[0] > ts]
         if not q_searched:
+            if wrapped:
+                print("   INCONCLUSIVE: no search of that queue is in the rings, but core(s) %s "
+                      "WRAPPED, so the search may have been overwritten rather than absent. An "
+                      "absence verdict needs a run where no ring wrapped; raise KOS_TRACE_DEPTH "
+                      "or narrow the workload." % sorted(wrapped))
+                continue
             print("   VERDICT: NO WAKER RAN. Nothing searched that queue after the park, so "
                   "the question is who owed the wake, not why it failed.")
             continue
         hit = [r for r in q_searched if r[5] == t]
+        if not hit and wrapped:
+            print("   INCONCLUSIVE: no search found this thread, but core(s) %s WRAPPED, so a "
+                  "search that did may have been overwritten." % sorted(wrapped))
+            continue
         if not hit:
             empt = [r for r in recs if KIND.get(r[2]) == "EMPTY" and r[4] == q and r[0] > ts]
             head = ("queue head 0x%08x" % empt[0][5]) if empt and empt[0][5] else "queue empty"
@@ -130,6 +145,10 @@ def main():
                   "waker read." % (len(q_searched), head))
             continue
         if t in readied and readied[t] > ts:
+            if wrapped:
+                print("   INCONCLUSIVE: readied with no RUN after it, but core(s) %s WRAPPED, "
+                      "so a RUN may have been overwritten." % sorted(wrapped))
+                continue
             print("   VERDICT: FOUND AND READIED, THE SWITCH NEVER TOOK. Readied at %d and "
                   "no RUN after it." % readied[t])
             asks = [r for r in recs if KIND.get(r[2]) == "ASK" and r[0] >= readied[t]][:1]

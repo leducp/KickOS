@@ -133,14 +133,26 @@ kos_ack_indices() { # reads $LOG
 kos_ack_plant() { # <core>
     case "$backend" in
         armv8a)
-            printf 'gic_acknowledge_irq cpu %s acknowledged irq 30\n' "$1" ;;
+            # PLANTED IN THE MODELLED CONTROLLER'S OWN SPELLING: a control written in the
+            # other model's would be unreadable by the reader above, and the predicate would
+            # then fail on the control rather than on the run.
+            if [ "${TRACE_ACK:-}" = gicv3_icc_iar1_read ]; then
+                printf 'gicv3_icc_iar1_read GICv3 ICC_IAR1 read cpu 0x%x value 0x1e\n' "$1"
+            else
+                printf 'gic_acknowledge_irq cpu %s acknowledged irq 30\n' "$1"
+            fi ;;
         rv64imac)
             printf 'riscv_cpu_do_interrupt: hart:%s, async:1, cause:0000000000000005, epc:0x0, tval:0x0, desc=s_timer\n' "$1" ;;
     esac
 }
 kos_ack_drop_re() { # <core>
     case "$backend" in
-        armv8a)   printf '^gic_acknowledge_irq cpu %s ' "$1" ;;
+        armv8a)
+            if [ "${TRACE_ACK:-}" = gicv3_icc_iar1_read ]; then
+                printf '^gicv3_icc_iar1_read GICv3 ICC_IAR1 read cpu 0x%x ' "$1"
+            else
+                printf '^gic_acknowledge_irq cpu %s ' "$1"
+            fi ;;
         rv64imac) printf '^riscv_cpu_do_interrupt: hart:%s, async:1,' "$1" ;;
     esac
 }

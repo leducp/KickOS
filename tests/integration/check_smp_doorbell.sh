@@ -50,15 +50,29 @@ fi
 need_qemu_machine
 need_qemu
 
-# THE CHIP'S AND THE BACKEND'S OWN WORDING (arch/arm64/armv8a/klock_armv8a.cc). Each is matched
-# as a literal and each passes require_literal first: an empty marker makes every
-# absence-assertion below vacuous.
-UNANSWERED="KickOS: armv8a doorbell unanswered by core "
-EARLY_WAIT="KickOS: armv8a doorbell wait returned unanswered, rounds 0x"
-NO_CONTEND="KickOS: armv8a kernel lock uncontended, peers "
-NO_SPIN="KickOS: armv8a no peer reached the acquire loop, spinning mask 0x"
+# THE BACKEND'S OWN WORDING, and it is PER BACKEND: each refusal is spelled by the backend that
+# emits it, so a gate carrying one backend's text greps the other for lines it cannot print and
+# four arms below assert nothing. Each is matched as a literal and passes require_literal first.
 CHECK_HEAD="# doorbell: "
 CHECK_TAIL=" core(s) answered, rounds 0x"
+case "$backend" in
+    armv8a) # arch/arm64/armv8a/klock_armv8a.cc
+        UNANSWERED="KickOS: armv8a doorbell unanswered by core "
+        EARLY_WAIT="KickOS: armv8a doorbell wait returned unanswered, rounds 0x"
+        NO_CONTEND="KickOS: armv8a kernel lock uncontended, peers "
+        NO_SPIN="KickOS: armv8a no peer reached the acquire loop, spinning mask 0x"
+        ;;
+    rv64imac) # arch/riscv/rv64imac/klock_rv64imac.cc
+        UNANSWERED="KickOS: rv64 doorbell unanswered by core "
+        EARLY_WAIT="KickOS: rv64 doorbell wait returned early, rounds settled 0x"
+        NO_CONTEND="KickOS: rv64 peers never completed an acquisition, held "
+        NO_SPIN="KickOS: rv64 peers never reached the acquire loop, seen 0x"
+        ;;
+    *)
+        fail "check_smp_doorbell.sh knows no backend '$backend'. Every refusal below is spelled
+  by the backend that emits it, so an unlisted one would grep for text the image cannot print
+  and pass without asserting anything" ;;
+esac
 BANNER_HEAD="# smp: "
 for _m in "$UNANSWERED" "$EARLY_WAIT" "$NO_CONTEND" "$NO_SPIN" "$CHECK_HEAD" "$CHECK_TAIL" \
           "$BANNER_HEAD"; do

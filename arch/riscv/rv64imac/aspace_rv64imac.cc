@@ -331,6 +331,17 @@ namespace
     }
 #endif
 
+    // WHAT armv8a GETS FROM ONE BROADCAST INSTRUCTION TAKES TWO HERE, and they are one unit:
+    // its invalidate_all is `tlbi vmalle1is`, so every core's entries are gone when it returns.
+    // SFENCE.VMA reaches this hart only, so a peer's half is the rendezvous, and ANY SEQUENCE
+    // THAT FREES A TABLE MUST USE THIS RATHER THAN invalidate_all: a frame handed back while a
+    // peer still caches a walk into it is read as descriptors once the pool reissues it.
+    void invalidate_all_everywhere(uint32_t peers)
+    {
+        invalidate_all();
+        translation_rendezvous(peers);
+    }
+
     // A descriptor written without an invalidation still owes the fence that makes the new
     // entry visible to a walker before any later activation reads it. ONE PER CALL covers a
     // whole run of pages, which is what keeps the elision's measurement intact.
@@ -839,13 +850,12 @@ void arch_aspace_destroy(struct arch_aspace* space)
     // BEFORE THE FREES: they put this space's identity back in the pool, and the set is derived
     // from that identity.
     uint32_t const peers = peer_cores(space);
-    // FIRST, not last: a walk caches the address of an intermediate table, so a table freed
-    // while such an entry stands would be read as descriptors after the pool reissues it.
-    invalidate_all();
+    // FIRST, not last, AND ON EVERY HART: a walk caches the address of an intermediate table,
+    // so a table freed while such an entry stands would be read as descriptors after the pool
+    // reissues it. The peers' half is the rendezvous, so it precedes the frees too.
+    invalidate_all_everywhere(peers);
     free_subtree(table, LEVEL_ROOT, g_boot_root);
     kickos_frame_free(phys_of(table));
-    // A space a peer still holds is losing its whole image, so the cost is once per teardown.
-    translation_rendezvous(peers);
 }
 
 enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
@@ -891,15 +901,19 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
             }
             *entry = 0;
         }
-        // One sweep each side of the frees.
-        invalidate_all();
+        // One sweep each side of the frees, and each reaches every hart: prune_empty frees the
+        // tables it empties, so a peer holding a walk into one must have dropped it first.
+        // WHAT THIS DOES NOT CLOSE: prune_empty clears an entry and frees its table in one
+        // pass, so the entries IT clears are dropped by the sweep after its frees. The kernel
+        // lock is what stops the pool reissuing a frame in that window, and splitting the lock
+        // is what would need prune_empty split into a clear pass and a free pass.
+        invalidate_all_everywhere(peers);
         (void)prune_empty(root_of(space), LEVEL_ROOT, g_boot_root);
-        invalidate_all();
+        invalidate_all_everywhere(peers);
         arch_irq_restore(s);
     }
-    // ONCE PER CALL, and owed by BOTH paths above: a fresh non-leaf entry drops a peer's cached
-    // ABSENCE, and the unwind frees tables a peer's walker may hold the address of. `installed`
-    // is what says any of that maintenance ran at all.
+    // A fresh non-leaf entry drops a peer's cached ABSENCE, which no free is racing, so this
+    // one is owed once per call rather than ahead of anything. The unwind above carries its own.
     if (installed)
     {
         translation_rendezvous(peers);

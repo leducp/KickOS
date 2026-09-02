@@ -6702,6 +6702,14 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
 
 ### Filed out of S5 by ruling, 2026-09-01
 
+- [ ] **OWED TO WHOEVER SPLITS THE KERNEL LOCK: `prune_empty` clears an entry and frees its table
+      in one pass.** On rv64 the peers' invalidation is a rendezvous rather than a broadcast, so
+      the entries `prune_empty` itself clears are dropped by the sweep AFTER its frees. The big
+      kernel lock is what stops the frame pool reissuing in that window, so it is unreachable
+      today and becomes unsafe the moment the lock is split. Closing it needs `prune_empty` split
+      into a clear pass and a free pass, with the rendezvous between them. Named rather than
+      half-fixed: the ordering around it is already correct for every other free.
+
 - [ ] **`tools/smptrace_decode.py` and `KICKOS_SMP_TRACE` have never been exercised on a real
       stall.** The ring separates three causes of a thread that never runs again and was proven
       only on a passing run, where the right answer is that nothing stalled. Whoever meets the

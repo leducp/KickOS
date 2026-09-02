@@ -16,7 +16,7 @@ say.
 
 ## Where we are
 
-**M7.3 LANDED S5: THE RV64 BACKEND, ITS DOORBELL AND LOCK, AND THE SMP-SEAM VERDICT.** Four harts
+**M7.4 LANDED S5: THE RV64 BACKEND, ITS DOORBELL AND LOCK, AND THE SMP-SEAM VERDICT.** Four harts
 run kernel code on `qemu-riscv64-smp` under one lock. The verdict is below, with the seam records.
 What follows is what a green run does NOT say.
 
@@ -61,6 +61,14 @@ What follows is what a green run does NOT say.
   lost the event; the inject re-reads and takes the bit back, exactly one side taking it. Every
   mutation of the three words is one instruction. The zero-valued encodings stay, being about
   initialisers rather than about keying.
+- **`invalidate_all()` MEANS DIFFERENT THINGS ON THE TWO BACKENDS, AND COPYING armv8a'S SEQUENCE
+  COPIES AN ASSUMPTION ABOUT BROADCAST THAT DOES NOT HOLD HERE.** Its `tlbi vmalle1is` clears
+  every core before it returns, so ordering a free after it is safe there; `sfence.vma` reaches
+  the executing hart alone, so the same sequence frees frames while peers still hold cached
+  translations into them. The two operations are therefore ONE UNIT here,
+  `invalidate_all_everywhere`, and the comment naming the trap sits at the call a porter would
+  otherwise reach for. **The next backend written against armv8a's shape inherits this**: check
+  what the model's invalidate actually reaches before reusing an ordering built on it.
 - **THE CROSS-CORE SHOOTDOWN WAS WIRED ONLY TO ELIDE, WHICH IS THE HALF THAT COSTS NOTHING.** The
   derived active-core set answered "no core holds this space" and skipped maintenance, correctly;
   the case it exists to detect, a space a PEER holds, had no send at all, so unmap and destroy
@@ -249,7 +257,7 @@ reentrancy state is reached through ONE word in the process's memory, and it is 
 thread cannot ask which core it is on, so two threads of one process on two cores share an errno. The
 seat belongs in thread-local storage. Declined VISIBLY as a skip carrying the mechanism.
 
-**AND THAT DECLINE IS NOW REPRODUCED ON TWO ARCHES RATHER THAN REASONED, which is what M7.3 added
+**AND THAT DECLINE IS NOW REPRODUCED ON TWO ARCHES RATHER THAN REASONED, which is what M7.4 added
 to it.** The claim had never been TESTED: arm64 does not register the test above one kernel core, and
 no other four-core board registered it at all, so "would assert a gate that can never pass" was an
 argument standing on its own. The four-core RV64 board is the first that would have run it. It runs
@@ -627,6 +635,53 @@ takes M7's only free one.
 
 The whole point of this file. A green fleet pass says none of the following.
 
+- **A DRIVER INSIDE THE KERNEL IS A LIABILITY TO A MICROKERNEL, AND THE CONSOLE IS THE ONE THIS
+  PROJECT ACCEPTS.** It is a transgression admitted for the sake of reality rather than a
+  component earning its place: something must print before any userspace driver exists, and
+  during a panic when none can be trusted. It is accepted because it is genuinely needed, not
+  because it is adequate, and it is the only such transgression accepted.
+- **THE OWNERSHIP, PUBLISH AND RECLAIM MACHINERY EXISTS TO END ITS REACH**, as early as a
+  userspace driver can take over. It is not a workaround for a weak console. It is how the
+  project bounds the blast radius of a deliberate violation of its own model, and reading it as
+  an unrelated feature inverts what it is for.
+- **SO IMPROVING THIS CONSOLE WOULD BE INVESTING IN A LIABILITY, and that is what settles
+  serialisation.** Making it ordered, or fast, entrenches the thing the architecture wants to
+  minimise and makes it likelier that something else grows to depend on it. **The interleave is
+  therefore not a defect, not a limitation awaiting a fix, and not primarily a cost trade: it is
+  a property of something accepted under duress and deliberately left unimproved.**
+- **WHICH ROUTE INTERLEAVES, MEASURED PER ROUTE.** Stated this way because a reader who takes
+  the widest form will distrust a published capture that is fine, or hunt for a lock that should
+  not exist.
+  - **The kernel's DIAGNOSTIC route, the chip UART, interleaves at BYTE granularity.** That is
+    what the banner, the status lines and the fault reporter use. `console_emit` brackets only
+    the ownership-count read with `IrqLock` and leaves the device write outside it deliberately;
+    on this board `arch_console_write` is an unlocked byte loop.
+  - **The PUBLISHED route does not interleave kernel records with each other**, and what makes
+    that true is the KERNEL LOCK rather than the driver: `cap_console_deliver` copies the whole
+    record into one parked receiver under `IrqLock`, so a record arrives as one datagram. **What
+    it does NOT guarantee is a single writer.** The kernel pops `wq_pop_highest(recv_waiters)`,
+    so a driver parking more than one thread gets its records spread across them with no
+    ordering enforced between their device writes. A future multi-writer console driver breaks
+    this property without touching the kernel.
+  - **AND THE PUBLISHED ROUTE IS STILL EXPOSED THROUGH THE KERNEL'S FALLBACK.** With no receiver
+    parked, `kvprintf_route` falls back to the chip route with `force_sync`, whose own comment
+    accepts "interleaving with the driver's in-flight bytes". So a published capture can carry
+    interleaved bytes: not two kernel records racing, but a kernel fallback racing the driver.
+    Deliberate and documented rather than a defect, and a gate reading that route inherits it.
+  - **RTT does not interleave**: the whole write runs under `IrqLock`.
+- **THE MECHANICAL COSTS, WHICH BOUND THE IMPLEMENTATION RATHER THAN DECIDE THE QUESTION.**
+  `console.cc` carries the sharpest: the chip transport "must NEVER be held under IrqLock across
+  a whole transmission: a 256 B write at 115200 would mask interrupts for ~22 ms". Beside it, a
+  lock there serialises every core behind the slowest UART poll, and `kprintf_fault` runs in
+  panic and fault context where a lock may already be held, putting the deadlock in the one path
+  that must always work. **A faster transport would not change the answer**: these say only that
+  the lock cannot be taken cheaply, where the ruling above says it must not be taken at all.
+- **WHAT A GATE READING EACH ROUTE MUST DO.** Reading the diagnostic route: tolerate a split and
+  SAY when it did, which is what `check_qemu_panicgate.sh` now does, strict match first and a
+  split recovered only by deleting the KNOWN kernel status lines. Reading a published console:
+  sound for whole records while the driver keeps one writer, and exposed to the fallback above.
+  Reproduced once by an external run and not by two authoritative ones, so it is infrequent
+  rather than rare.
 - **THE RV64 DOORBELL'S INSTRUCTION-SIDE HALF HAS NO OPERATION AT THIS BOARD'S ISA BASELINE, so it
   is not witnessed and cannot be.** The service body carries the TRANSLATION-side fence, which is
   `SFENCE.VMA` and which the ISA gives no way for one hart to perform on behalf of another. The
