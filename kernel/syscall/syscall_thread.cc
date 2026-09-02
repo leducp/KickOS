@@ -700,6 +700,12 @@ namespace kickos
         uint32_t epoch = 0;
         {
             IrqLock lock;
+            // Ahead of the park AND of the cancel below, whose order is load-bearing: an exit
+            // taken between them would leave the victim un-slain with the caller gone.
+            if (park_cancel_pending(c))
+            {
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+            }
             Thread* const t = thread_resolve(thread);
             if (t == nullptr)
             {
@@ -818,6 +824,12 @@ namespace kickos
         Task* t = nullptr;
         {
             IrqLock lock;
+            // Ahead of the resolve: the hold this caller would owe a task_drop_hold is one
+            // task_orphan_created_by drops for it out of sched::exit_current.
+            if (park_cancel_pending(c))
+            {
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+            }
             t = task_resolve(task);
             if (t == nullptr)
             {
@@ -873,6 +885,10 @@ namespace kickos
         uint32_t epoch = 0;
         {
             IrqLock lock;
+            if (park_cancel_pending(c))
+            {
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+            }
             Thread* const t = thread_resolve(thread);
             if (t == nullptr or t->state == ThreadState::INACTIVE)
             {
@@ -918,6 +934,10 @@ namespace kickos
         uint32_t epoch = 0;
         {
             IrqLock lock;
+            if (park_cancel_pending(c))
+            {
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+            }
             if (not kernel().threads.is_root(c))
             {
                 return -KOS_EPERM;

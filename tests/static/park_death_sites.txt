@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Every site in kernel/ that writes ThreadState::BLOCKED, which is every site that PARKS the
+# calling thread. The list is the subject of tests/static/check_park_death_point.sh, and its
+# purpose is to make ADDING a park an act that has to be declared.
+#
+# WHAT THIS FILE IS NOT. It does not say where the death point is asked, and it cannot: two of
+# the three sites below deliberately do NOT ask. park_cancel_pending is asked in each PARKING
+# CALLER's own under-lock prologue, ahead of its first side effect, because a caller may reach
+# its park with a transaction already committed and an exit from inside the park would abandon
+# it. Only ktime_sleep_until, which is reached by no funnel and parks the caller directly, both
+# writes the state and carries the ask.
+#
+# WHY IT EXISTS. Read as "the two park funnels", the class loses ktime_sleep_until, which
+# reaches neither, and a park missing the prologue strands a cancelled thread for the life of
+# the image. Framing the class around the funnels rather than around the state write is the
+# mistake this file is here to stop. A count is the one thing about the class a command can
+# check, so it is the one thing checked.
+#
+# Format, one record per line, '#' starts a comment:
+#   site <path-relative-to-source-dir> <what parks, and where its ask lives>
+
+site kernel/sync/sync.cc  wq_block, asked by each of its callers
+site kernel/sync/sync.cc  park_queueless, asked by each of its callers
+site kernel/time/time.cc  ktime_sleep_until, which asks in its own prologue

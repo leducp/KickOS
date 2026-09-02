@@ -11,6 +11,7 @@
 #include <kickos/bench.h>
 #include <kickos/endpoint.h> // endpoint_wait_abort
 #include <kickos/sched.h>
+#include <kickos/sync.h>  // park_cancel_pending
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/arch/arch.h>
@@ -112,6 +113,16 @@ namespace kickos
     {
         IrqLock lock;
         Thread* c = sched::current();
+        // This park reaches neither wq_block nor park_queueless: the class is every site that
+        // writes ThreadState::BLOCKED, not the two funnels.
+        // Ahead of every side effect below, so the exit leaves no deadline and no
+        // sleep-queue entry. A check at the park instead would exit with this thread already
+        // inserted and the hardware timer armed for it, and sched::exit_current does not sweep
+        // the sleep queue.
+        if (park_cancel_pending(c))
+        {
+            sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+        }
         // The floor is applied HERE, once, against one clock reading. See ktime_rearm.
         uint64_t const floor = ktime_now() + KICKOS_TIMER_MIN_DELTA_NS;
         if (deadline_ns < floor)

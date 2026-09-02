@@ -6765,8 +6765,24 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
 
 ### Filed out of S3 by ruling, 2026-08-31
 
-- [ ] **28 of the selftest's arms assert a SINGLE-CORE ordering, and most state the premise in their
-      own comment.** "The worker is higher priority, so it has exited by the time root runs again";
+- [~] **28 of the selftest's arms assert a SINGLE-CORE ordering, and most state the premise in their
+      own comment.** RETRIAGED IN M7.5 AND PARTLY DONE: 28 to 22. **The premise in the comments was
+      not the blocker, and reading it as one is what kept these filed together.** For at least four
+      of the five tier-1 IRQ arms reworked there the progress order was only how the precondition
+      got MANUFACTURED; what cannot be witnessed above one kernel core is an ABSENCE CLAIM, a
+      service, a redelivery or a wake that must not happen, since a non-event raises nothing for a
+      later read to be ordered after. Proof, one mutation answering two questions: deleting the
+      masked window the coalescing property is about reddens `irq_mask_coalesce` and `irq_discard`
+      at one core and PASSES at four. **So ask each of the remaining 22 whether it asserts that
+      something did NOT happen, not whether it assumes an order.** The five IRQ arms plus
+      `thread_slay_window` came off the set; four of them declare a partial for the non-event half,
+      and `thread_slay_window` declares one for a different reason, an unestablished precondition
+      the machine grants or does not. `thread_slay_timeout` stayed skipped on a THIRD reason again:
+      its instrument is starvation, and denying a victim EVERY core is not a precondition a test can
+      establish.
+
+      THE ORIGINAL TEXT FOLLOWS. "The worker is higher priority, so it has exited by the time root
+      runs again";
       "priority 1 is below root's own, so the victim cannot be scheduled"; and the same shape in the
       deadlock-cycle arm, three interrupt arms where root reads a counter an ISR bumps, and a
       two-space grant arm resting on both workers being spawned before either runs. They are skipped
@@ -6776,8 +6792,29 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       handshakes is this item. Until it lands, the four-core preset runs 80 percent of the suite and
       the skip set is what says which fifth is missing. Ruled separate from S3 by the user rather
       than deferred, S3 having never promised to make a single-core-ordering arm multi-core-safe.
-- [ ] **The death point is read outside the lock at ONE core too, and only the multi-core case was
-      closed.** A cancel landing between the read and the park is owed to nobody: the target is
+- [x] **The death point is read outside the lock at ONE core too, and only the multi-core case was
+      closed.** DONE IN M7.5, and the shape is the finding: the re-check is a PREDICATE asked in
+      each caller's own under-lock prologue, never the noreturn action it was inside `wq_block` and
+      `park_queueless`, because a caller may reach its park with a transaction already committed and
+      exiting from inside the park would abandon it. TEN callers carry it. **The class is every
+      site that writes `ThreadState::BLOCKED`, and there are exactly three: `wq_block`,
+      `park_queueless` and `ktime_sleep_until`.** Enumerating from the two funnels being
+      refactored found the first two and armed their callers, and could not find the third, which
+      reaches neither. Raised by the maintainer after the first pass. A sleep self-wakes on its
+      deadline, so the ordinary miss is a cancelled thread sleeping out its delay, a latency bug;
+      `ktime_sleep_ns` saturating to `UINT64_MAX` on overflow is what makes the unbounded case
+      real, and that one IS the defect this item exists to close. Two things came out better than expected. **Every unwind is
+      EMPTY at prologue placement**, checked per site rather than assumed: the task hold looked like
+      it owed a hand-written drop until `task_orphan_created_by` turned out to run inside
+      `exit_current`, beside `cap_teardown`. **And a prologue check never creates the armed-deadline
+      problem a park-time check cannot avoid**, `endpoint_send` and `endpoint_recv` arming their
+      deadline immediately before the park. The register fastpath is exempt where the exemption
+      lives, on section 4 gap 1's ruling. The fleet sweep answered the cost: `trap_redzone` in all
+      57 preset logs, all 57 passing. **What it does NOT have is a one-core witness**, recorded in
+      `STATE.md` under what the fleet does not witness.
+
+      THE ORIGINAL TEXT FOLLOWS. A cancel landing between the read and the park is owed to
+      nobody: the target is
       neither blocked yet nor the canceller's current thread, so no park is broken and the target
       parks forever. Witnessed at four cores as a join returning a timeout twice in succession, and
       fixed there by re-asking under the park's own lock. The one-core window is a preemption in the

@@ -96,6 +96,10 @@ namespace kickos
         uint32_t epoch = 0;
         {
             IrqLock lock;
+            if (park_cancel_pending(c))
+            {
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+            }
             int err = 0;
             Endpoint* e = static_cast<Endpoint*>(
                 cap_resolve_e(c, cap, CapType::CAP_ENDPOINT, CAP_SIGNAL, &err));
@@ -249,6 +253,10 @@ namespace kickos
         uint32_t epoch = 0;
         {
             IrqLock lock;
+            if (park_cancel_pending(c))
+            {
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+            }
             KICKOS_BENCH_MARK(bm_rlocked);
             KICKOS_BENCH_MARK(bm_rresolve);
             int err = 0;
@@ -412,6 +420,14 @@ namespace kickos
         uint32_t epoch = 0;
         {
             IrqLock lock;
+            // AHEAD OF THE TRANSACTION, not at either park below: the receiver-present arm
+            // pops the receiver, bumps call_seq, mints the reply cap and writes the receiver's
+            // info before it parks, and an exit taken there would strand a receiver that is
+            // off its queue holding a cap for a caller that will never reply.
+            if (park_cancel_pending(c))
+            {
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+            }
             KICKOS_BENCH_MARK(bm_locked);
             // The two controls, taken under the same interrupt mask as the brackets they
             // calibrate. PH_NEST is PH_NULL inside an enclosing span, so it prices the
