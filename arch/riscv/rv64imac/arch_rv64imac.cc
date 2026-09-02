@@ -15,6 +15,8 @@
 // through sip.SSIP, which S-mode may write itself.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/percpu.h>
+#include <kickos/arch/rv64_doorbell.h>
 #include <kickos/arch/rv64_frame.h>
 #include <kickos/diag.h>
 #include <kickos/sys/atomic.h>
@@ -98,6 +100,67 @@ namespace
         }
     }
 
+    // THE SOFTWARE CONTROLLER'S STATE, IMAGE-WIDE AND NOT PER HART. Nothing on this board
+    // implements an interrupt controller, so these mirror no per-hart registers: a line is one
+    // logical resource, and the kernel's IRQ layer masks it on whichever core services it and
+    // unmasks it on whichever core its driver runs on. Every caller holds the kernel lock
+    // (kernel/irq/irq.cc and the syscall entries), which is the exclusion that covers them.
+    //
+    // UNMASKED rather than masked, so that zero is the arch.h reset contract and no
+    // initialiser is owed.
+    uint32_t g_irq_unmasked = 0;
+    uint32_t g_irq_pending = 0;
+
+    // Bit set = this line has a raise no dispatch has taken yet. A SET, NOT ONE LINE IDENTITY:
+    // above one core there are as many producers as cores, and a single identity is overwritten
+    // by the next producer before the first core's dispatch has consumed it, which loses the
+    // raise outright and leaves its driver asleep for good. The two accesses below are one
+    // instruction each, so the producer under the kernel lock and the consumer in a dispatch
+    // that holds no lock are race-free against each other without one.
+    uint32_t g_irq_raised = 0;
+
+    // THE THREE WORDS ABOVE ARE TOUCHED FROM ISR CONTEXT AND FROM THREAD CONTEXT ON ANY CORE,
+    // and the ISR path holds no kernel lock: kickos_isr_irq brackets with an EPOCH above one
+    // core, and irq_event_isr masks the line from inside it. So a plain read-modify-write here
+    // would let a mask on one core clobber a rearm's unmask on another, which leaves the line
+    // masked with nothing left to unmask it. Every mutation below is ONE instruction.
+    uint32_t load_word(uint32_t const* w)
+    {
+        uint32_t v = 0;
+        __asm volatile("lw %0, 0(%1)" : "=r"(v) : "r"(w) : "memory");
+        return v;
+    }
+
+    void set_bit(uint32_t* w, uint32_t bit)
+    {
+        __asm volatile("amoor.w zero, %0, (%1)" ::"r"(bit), "r"(w) : "memory");
+    }
+
+    // Clears the bit and answers whether THIS caller is the one that cleared it, which is what
+    // makes a redelivery happen exactly once when two cores race for it.
+    bool take_bit(uint32_t* w, uint32_t bit)
+    {
+        uint32_t old = 0;
+        __asm volatile("amoand.w %0, %1, (%2)" : "=&r"(old) : "r"(~bit), "r"(w) : "memory");
+        return (old & bit) != 0;
+    }
+
+    // sip.SSIP is the one cause every raise on this hart arrives on.
+    void raise_line(int line)
+    {
+        uint32_t const bit = 1u << line;
+        __asm volatile("amoor.w zero, %0, (%1)" ::"r"(bit), "r"(&g_irq_raised) : "memory");
+        __asm volatile("csrs sip, %0" ::"r"(SIP_SSIP) : "memory");
+    }
+
+    // Takes the whole set and leaves it empty, so a raise landing after this is a new one.
+    uint32_t take_raised(void)
+    {
+        uint32_t taken = 0;
+        __asm volatile("amoswap.w %0, zero, (%1)" : "=r"(taken) : "r"(&g_irq_raised) : "memory");
+        return taken;
+    }
+
     // An interrupt cause the dispatch does not handle. sie enables the timer and the software
     // channel alone, so this is delivery of a source nothing enabled.
     [[noreturn]] void rv64_unexpected_interrupt(uint64_t scause)
@@ -115,15 +178,6 @@ namespace
         kfault_terminate();
     }
 
-    // bit set = line masked. All lines start MASKED at reset (the arch.h reset contract).
-    uint32_t g_irq_masked = 0xFFFFFFFFu;
-
-    // bit set = a raise landed on this line while masked, latched one-deep and redelivered at
-    // unmask.
-    uint32_t g_irq_pending = 0;
-
-    // The line the one physical doorbell is currently carrying.
-    kickos::Atomic<int, kickos::Order::RELAXED> g_inject_line = -1;
 }
 
 // trap.S.
@@ -140,32 +194,25 @@ extern "C" void kickos_user_thread_return(void);
 
 extern "C"
 {
-    // The context PHYSICALLY on the CPU, which the U-mode entry in switch.S reads to find the
-    // interrupted thread's kernel block. A booked switch publishes the incoming thread in the
-    // scheduler's current before its registers exist anywhere, so the two differ.
-    struct arch_context* kickos_rv64_ctx_current = nullptr;
-
-    // Bumped by the interrupt leg of the entry alone (switch.S), so arch_in_isr() reads false
-    // throughout syscall_dispatch and every fault path.
-    uint32_t g_rv64_isr_depth = 0;
-
-    // A switch BOOKED from ISR context, performed by the interrupt leg's own exit; null means
-    // no booking. The outgoing context is read from kickos_rv64_ctx_current at that exit, so an
-    // ISR that reschedules twice still saves the frame the interrupt built.
-    struct arch_context* kickos_rv64_switch_to = nullptr;
-
-    // Trusted per-hart trap stack. sscratch holds its top while a thread runs, so the entry
-    // swaps onto it before it touches the interrupted sp. It also carries the frame of every
-    // S-mode trap whose frame is not a thread's saved context.
-    alignas(KICKOS_RV64_SP_ALIGN)
-    uint8_t g_rv64_trap_stack[KICKOS_NUM_CORES][KICKOS_RV64_TRAP_STACK_SIZE];
-
-    static_assert(sizeof(kickos_rv64_ctx_current) == 8, "switch.S reads one doubleword");
-    static_assert(sizeof(kickos_rv64_switch_to) == 8, "switch.S reads one doubleword");
-    static_assert(sizeof(g_rv64_isr_depth) == 4, "switch.S bumps it with lw/sw");
-    static_assert(sizeof(g_rv64_trap_stack) == KICKOS_NUM_CORES * KICKOS_RV64_TRAP_STACK_SIZE,
-                  "the per-core array costs one stack per core and nothing else");
+    // One row per hart: the trusted trap stack, and above it the block sscratch points at.
+    // Zero-initialised throughout, which is why the mask mirror is stored unmasked.
+    struct rv64_percpu_row kickos_rv64_percpu[KICKOS_NUM_CORES] = {};
 }
+
+static_assert(offsetof(struct rv64_percpu_block, ctx_current) == 0,
+              "switch.S spells PERCPU_CTX_CURRENT as 0");
+static_assert(offsetof(struct rv64_percpu_block, switch_to) == 8,
+              "switch.S spells PERCPU_SWITCH_TO as 8");
+static_assert(offsetof(struct rv64_percpu_block, isr_depth) == 16,
+              "switch.S spells PERCPU_ISR_DEPTH as 16");
+static_assert(offsetof(struct rv64_percpu_row, block) == KICKOS_RV64_TRAP_STACK_SIZE,
+              "sscratch holds the trap-stack top, so the block must begin exactly there");
+static_assert(sizeof(kickos_rv64_percpu[0].trap_stack) == KICKOS_RV64_TRAP_STACK_SIZE,
+              "switch.S reaches the row's canary at the top minus this constant");
+static_assert(sizeof(struct rv64_percpu_block) == KICKOS_RV64_PERCPU_BLOCK_SIZE,
+              "the block must fill its line, and startup.S spells the row stride from this");
+static_assert(sizeof(struct rv64_percpu_row) == KICKOS_RV64_PERCPU_ROW_SIZE,
+              "startup.S indexes this array in machine mode with that stride");
 
 static_assert(offsetof(struct arch_context, sp) == KICKOS_RV64_CTX_OFF_SP,
               "switch.S expects ctx.sp at CTX_SP");
@@ -315,21 +362,21 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 // into `from`'s stack as `to`'s saved context.
 void arch_switch(struct arch_context* from, struct arch_context* to)
 {
-    if (g_rv64_isr_depth != 0)
+    if (rv64_percpu()->isr_depth != 0)
     {
-        // `from` is dropped: switch.S reads the outgoing context from
-        // kickos_rv64_ctx_current, which is the one the interrupt frame belongs to.
-        kickos_rv64_switch_to = to;
+        // `from` is dropped: switch.S reads the outgoing context from the block's
+        // ctx_current, which is the one the interrupt frame belongs to.
+        rv64_percpu()->switch_to = to;
         return;
     }
-    kickos_rv64_ctx_current = to;
+    rv64_percpu()->ctx_current = to;
     kickos_rv64_switch_now(from, to);
 }
 
 void arch_start(struct arch_context* boot, struct arch_context* first)
 {
     (void)boot; // abandoned, as arch.h permits
-    kickos_rv64_ctx_current = first;
+    rv64_percpu()->ctx_current = first;
     kickos_rv64_start(first);
 
     while (true)
@@ -364,7 +411,7 @@ void arch_irq_restore(arch_irq_state_t state)
 // arch.h requires: the kernel's blocking primitives depend on that.
 int arch_in_isr(void)
 {
-    return g_rv64_isr_depth != 0;
+    return rv64_percpu()->isr_depth != 0;
 }
 
 // --- Clocks -----------------------------------------------------------------
@@ -416,13 +463,12 @@ int arch_bitband_present(void)
 }
 
 // --- Interrupt controller ---------------------------------------------------
-// No hardware line exists on this board, so mask/unmask/clear_pending are the bitmask above and
-// a raise reaches the ISR path through ONE doorbell, sip.SSIP, with g_inject_line telling the
-// dispatch which logical line it was. Each body is self-bracketed as arch.h requires.
+// No hardware line exists on this board, so mask/unmask/clear_pending are the three words above
+// and a raise reaches the ISR path through ONE doorbell, sip.SSIP. Each body is self-bracketed
+// as arch.h requires.
 //
-// SINGLE-DOORBELL: at most one unmask carrying a latched raise per interrupts-masked region, a
-// second overwriting the first's identity. irq_claim/wait/ack unmask one line per lock
-// section.
+// EVERY RAISE IS A BIT IN A SET rather than one line identity, so a second raise arriving before
+// the first is dispatched costs nothing: both are taken by whichever dispatch runs next.
 void arch_irq_mask(int line)
 {
     if (line < 0 or line >= IRQ_LINES)
@@ -430,7 +476,7 @@ void arch_irq_mask(int line)
         return;
     }
     arch_irq_state_t s = arch_irq_save();
-    g_irq_masked |= (1u << line);
+    (void)take_bit(&g_irq_unmasked, 1u << line);
     arch_irq_restore(s);
 }
 
@@ -440,15 +486,15 @@ void arch_irq_unmask(int line)
     {
         return;
     }
+    uint32_t const bit = 1u << line;
     arch_irq_state_t s = arch_irq_save();
-    g_irq_masked &= ~(1u << line);
+    set_bit(&g_irq_unmasked, bit);
     // A raise taken while the line was masked redelivers now through the doorbell: sip.SSIP is
-    // set with SIE clear, so it fires at arch_irq_restore on the normal ISR path.
-    if ((g_irq_pending & (1u << line)) != 0)
+    // set with SIE clear, so it fires at arch_irq_restore on the normal ISR path. The TAKE is
+    // what settles a race with a concurrent inject; whichever side takes the bit delivers it.
+    if (take_bit(&g_irq_pending, bit))
     {
-        g_irq_pending &= ~(1u << line);
-        g_inject_line = line;
-        __asm volatile("csrs sip, %0" ::"r"(SIP_SSIP) : "memory");
+        raise_line(line);
     }
     arch_irq_restore(s);
 }
@@ -460,7 +506,7 @@ void arch_irq_clear_pending(int line)
         return;
     }
     arch_irq_state_t s = arch_irq_save();
-    g_irq_pending &= ~(1u << line);
+    (void)take_bit(&g_irq_pending, 1u << line);
     arch_irq_restore(s);
 }
 
@@ -471,17 +517,33 @@ void arch_irq_inject(int irq)
         return;
     }
     // An ISR reaching arch_irq_mask/unmask touches the same words.
+    uint32_t const bit = 1u << irq;
     arch_irq_state_t s = arch_irq_save();
-    if ((g_irq_masked & (1u << irq)) != 0)
+    if ((load_word(&g_irq_unmasked) & bit) != 0)
     {
-        g_irq_pending |= (1u << irq);
+        raise_line(irq);
     }
     else
     {
-        g_inject_line = irq; // BEFORE the raise, so the dispatch sees it
-        __asm volatile("csrs sip, %0" ::"r"(SIP_SSIP) : "memory");
+        set_bit(&g_irq_pending, bit);
+        // THE LINE MAY HAVE BEEN UNMASKED between the read above and the latch, by a rearm that
+        // looked at a pending word this store had not reached. Re-read, and take the bit back
+        // rather than assume: exactly one of the two sides takes it, and that side delivers.
+        if ((load_word(&g_irq_unmasked) & bit) != 0 and take_bit(&g_irq_pending, bit))
+        {
+            raise_line(irq);
+        }
     }
     arch_irq_restore(s);
+}
+
+// Whether a device line is still latched in the controller above. The doorbell poll reads it
+// to know whether the raise it absorbed carried something it did not service.
+int kickos_rv64_inject_owed(void)
+{
+    uint32_t raised = 0;
+    __asm volatile("lw %0, 0(%1)" : "=r"(raised) : "r"(&g_irq_raised) : "memory");
+    return raised != 0u;
 }
 
 // The interrupt leg of the entry (switch.S .Lintr), ISR context with SIE clear. scause is
@@ -503,15 +565,46 @@ void kickos_rv64_isr_dispatch(void* frame)
     }
     if (code == INT_SUPERVISOR_SOFTWARE)
     {
-        // SSIP is software-owned, so the doorbell is rung down here before the handler runs.
+        // ONE CAUSE, THREE SOURCES, AND THE ORDER IS THE CONTRACT. sip.SSIP carries a peer's
+        // cross-hart doorbell, the reschedule that doorbell may stand for, and this hart's own
+        // device-line injection. Each arm is gated on its OWN state, so a raise carrying two of
+        // them loses neither, and getting the order wrong drops a device raise or a rendezvous
+        // and shows up as a hang under load rather than as a red gate.
+
+        // FIRST, AND BEFORE ANY SERVICE: a raise landing during the work below stays pending
+        // and is delivered again, rather than being cleared away underneath.
         __asm volatile("csrc sip, %0" ::"r"(SIP_SSIP) : "memory");
-        int const line = g_inject_line;
-        g_inject_line = -1;
-        if (line >= 0)
+
+#if KICKOS_NUM_CORES > 1
+        // SECOND, the doorbell's far side, which takes no kernel lock: an initiator may be
+        // holding it while it waits here. THE CELL IS THE AUTHORITY, NOT THE RAISE.
+        if (kickos_rv64_doorbell_pending() != 0)
         {
-            // kickos_isr_irq masks the line and wakes its driver (kernel/irq/irq.cc); the
-            // driver re-unmasks via irq_ack.
-            kickos_isr_irq(line);
+            kickos_rv64_doorbell_service();
+        }
+#endif
+#if KICKOS_KERNEL_CORES > 1
+        // THIRD, and OUTSIDE the service body because it takes the kernel lock. The take is
+        // what tells a reschedule from a rendezvous whose target owes no scheduler entry.
+        if (kickos_kernel_core_resched_take() != 0)
+        {
+            kickos_kernel_core_resched();
+        }
+#endif
+        // FOURTH, the device lines the set carries, which share the cause with everything above.
+        // EVERY line the set carries, not one: two raises can land between dispatches, and a
+        // line left in the set with the cause already cleared is a driver that never wakes.
+        // kickos_isr_irq masks the line and wakes its driver (kernel/irq/irq.cc); the driver
+        // re-unmasks via irq_ack or on its next wait.
+        uint32_t raised = take_raised();
+        for (int line = 0; line < IRQ_LINES and raised != 0; line++)
+        {
+            uint32_t const bit = 1u << line;
+            if ((raised & bit) != 0)
+            {
+                raised &= ~bit;
+                kickos_isr_irq(line);
+            }
         }
         return;
     }
@@ -628,6 +721,45 @@ bool kickos_rv64_fault_report(void* frame)
     kfault_terminate();
 }
 
+#if KICKOS_NUM_CORES > 1
+// --- Core identity ----------------------------------------------------------
+// sscratch, which the machine-mode prologue seats on every hart before its mret and which
+// U-mode can neither read nor write. Outside the trap entry's two-instruction prologue it
+// holds this hart's block address.
+struct rv64_percpu_block* rv64_percpu(void)
+{
+    uintptr_t blk = 0;
+    __asm volatile("csrr %0, sscratch" : "=r"(blk));
+    return reinterpret_cast<struct rv64_percpu_block*>(blk);
+}
+
+// mhartid IS NOT THE INDEX. It is integrator-chosen (the openc906 core hardwires it to zero
+// and its integrator customises it per instance), so the dense index the kernel's per-core
+// arrays are keyed by is derived HERE, from the row sscratch names, and a pointer naming no
+// row is refused rather than indexed with.
+struct rv64_percpu_block* rv64_percpu_seat(void)
+{
+    struct rv64_percpu_block* const blk = rv64_percpu();
+    uintptr_t const base = reinterpret_cast<uintptr_t>(&kickos_rv64_percpu[0].block);
+    uintptr_t const offset = reinterpret_cast<uintptr_t>(blk) - base;
+    size_t const stride = sizeof(struct rv64_percpu_row);
+    size_t const id = offset / stride;
+    if (offset % stride != 0 or id >= KICKOS_NUM_CORES)
+    {
+        kpanic_enter();
+        ::kickos::kprintf("\n=== RISC-V S-TRAP (sscratch names no per-hart row) ===\n");
+        kfault_terminate();
+    }
+    blk->id = static_cast<uint32_t>(id);
+    return blk;
+}
+
+uint32_t arch_cpu_id(void)
+{
+    return rv64_percpu()->id;
+}
+#endif
+
 // --- One-time core bring-up ------------------------------------------------
 void kickos_rv64_init(void)
 {
@@ -635,17 +767,18 @@ void kickos_rv64_init(void)
     uintptr_t const tv = reinterpret_cast<uintptr_t>(&kickos_rv64_stvec);
     __asm volatile("csrw stvec, %0" ::"r"(tv) : "memory");
 
+    // THE IDENTITY IS SEATED FIRST: everything below indexes per-hart state with it.
+    struct rv64_percpu_block* const blk = rv64_percpu_seat();
+
     // The entry swaps sp with sscratch, so sscratch must hold the trusted top before the first
-    // trap, and thus before the first sret to U-mode. Indexed by core and sized on the ROW.
-    uint8_t* const trap_stack = g_rv64_trap_stack[arch_cpu_id()];
-    uintptr_t const trap_sp =
-        reinterpret_cast<uintptr_t>(&trap_stack[KICKOS_RV64_TRAP_STACK_SIZE]);
-    __asm volatile("csrw sscratch, %0" ::"r"(trap_sp) : "memory");
+    // trap, and thus before the first sret to U-mode. The block's own address IS that top.
+    __asm volatile("csrw sscratch, %0" ::"r"(blk) : "memory");
 
     // The row's low doubleword, read by switch.S's .Ltrap_reentry to tell a fault inside the
     // reporter from a descent that ran off the row: a store past the bottom lands in ordinary
     // .bss and takes no trap of its own.
-    *reinterpret_cast<uint64_t*>(trap_stack) = KICKOS_RV64_TRAP_CANARY;
+    *reinterpret_cast<uint64_t*>(kickos_rv64_percpu[arch_cpu_id()].trap_stack) =
+        KICKOS_RV64_TRAP_CANARY;
 
     // The chip's startup already installed the root, so it is read back: a zero here means the
     // boot table never took and every address below is a physical one.

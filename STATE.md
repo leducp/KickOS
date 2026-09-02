@@ -16,6 +16,103 @@ say.
 
 ## Where we are
 
+**M7.4 LANDED S5: THE RV64 BACKEND, ITS DOORBELL AND LOCK, AND THE SMP-SEAM VERDICT.** Four harts
+run kernel code on `qemu-riscv64-smp` under one lock. The verdict is below, with the seam records.
+What follows is what a green run does NOT say.
+
+- **TWO DEFECTS IN THIS STEP WERE FOUND ONLY BY BUILDING AND RUNNING, AND NEITHER HAD A GATE.** The
+  kernel lock was never released across a swap on the new backend: the tree held exactly ONE caller
+  of `kickos_switch_unlock`, in the armv8a switch, so the first RV64 core to reach its idle thread
+  carried the lock into `wfi` and three peers spun on a word its holder was asleep behind. A release
+  the seam requires but one backend calls is invisible to every gate in the tree. And the doorbell
+  poll cleared `sip.SSIP` while servicing exactly one of the THREE sources riding that cause, so a
+  device line whose raise the poll absorbed left its driver asleep for good.
+- **THE INSTRUMENT THAT FOUND THE LOCK DEFECT IS WORTH MORE THAN THE FIX: bisect by MODEL.** The
+  same image passes at four harts under AMP and hangs under the shared kernel, which puts the fault
+  in the lock and cross-core scheduling in one step and touches no debugger. The emulator monitor
+  then named it outright, the lock word held, an owner cell naming core 0, and core 0's PC inside
+  the idle wait.
+- **A HART PARKED IN `wfi` OBSERVES NO STORE.** `WFI`'s wakeup is gated by `mie` alone and not by
+  `mstatus.MIE`, so secondaries parked before anything enabled an interrupt could never leave: the
+  release word was state nothing was watching for. The release publishes the word AND rings the
+  hart's own `msip` as the edge, and the park drops the edge before reading the state, a
+  level-sensitive `msip` left set otherwise carrying into supervisor mode as a doorbell no peer
+  asked for.
+- **THE SEND HAS NO MACHINE-MODE LEG AND THE RULING BOUGHT A SMALLER TRAMPOLINE THAN EXPECTED.**
+  `mideleg` bit 3 is not writable here, measured, so a peer's raise arrives as a machine software
+  interrupt that must be lowered; but a SUPERVISOR store to a peer's CLINT `msip` word is permitted,
+  also measured, so only the RECEIVE side runs in machine mode.
+- **THE SOFTWARE INTERRUPT CONTROLLER'S STATE IS IMAGE-WIDE AND KEYING IT PER CORE IS A DEFECT,
+  which is the opposite of the state inventory's classification and of what the rest of S5.4 did.**
+  That classification reads them as mirroring per-core interrupt-controller registers, which is
+  right for a GIC's banked bank and wrong here: this board implements no controller at all, so a
+  line is one logical resource. Keyed per hart, a driver that unmasks on one and an injector that
+  raises on another never meet, and the raise sits latched on the injector's hart awaiting an
+  unmask only the driver's hart will make. It hangs the four-core selftest at the first arm that
+  drives a line, and it hangs rather than reddening.
+- **MAKING THOSE CELLS IMAGE-WIDE WAS NECESSARY AND NOT SUFFICIENT, and the first attempt's own
+  comment was wrong about why.** It said the kernel lock covers every caller. It does not: the ISR
+  path brackets with an EPOCH rather than that lock, and `irq_event_isr` masks a line from inside
+  it, so a mask on one core could clobber a rearm's unmask on another and leave the line masked
+  with nothing left to unmask it. Two further shapes went with it. A raise was ONE LINE IDENTITY
+  for the whole image, so a second producer overwrote the first before any dispatch consumed it;
+  it is a SET now, and the dispatch services every line in it. And an inject that found the line
+  masked latched it without re-checking, so a rearm reading the pending word an instant earlier
+  lost the event; the inject re-reads and takes the bit back, exactly one side taking it. Every
+  mutation of the three words is one instruction. The zero-valued encodings stay, being about
+  initialisers rather than about keying.
+- **`invalidate_all()` MEANS DIFFERENT THINGS ON THE TWO BACKENDS, AND COPYING armv8a'S SEQUENCE
+  COPIES AN ASSUMPTION ABOUT BROADCAST THAT DOES NOT HOLD HERE.** Its `tlbi vmalle1is` clears
+  every core before it returns, so ordering a free after it is safe there; `sfence.vma` reaches
+  the executing hart alone, so the same sequence frees frames while peers still hold cached
+  translations into them. The two operations are therefore ONE UNIT here,
+  `invalidate_all_everywhere`, and the comment naming the trap sits at the call a porter would
+  otherwise reach for. **The next backend written against armv8a's shape inherits this**: check
+  what the model's invalidate actually reaches before reusing an ordering built on it.
+- **THE CROSS-CORE SHOOTDOWN WAS WIRED ONLY TO ELIDE, WHICH IS THE HALF THAT COSTS NOTHING.** The
+  derived active-core set answered "no core holds this space" and skipped maintenance, correctly;
+  the case it exists to detect, a space a PEER holds, had no send at all, so unmap and destroy
+  invalidated the calling hart and left every peer on a revoked translation. **This backend owes a
+  send everywhere armv8a gets peer reach from hardware**: `tlbi vmalle1is` and `vaae1is` are
+  inner-shareable, `sfence.vma` has no broadcast form at all, so map, unmap and destroy each
+  rendezvous once per call. The execute-permission gate armv8a uses is NOT copied: that is its
+  instruction-side optimisation, and gating on it here would leave every DATA removal unsent.
+- **AND THE FAR SIDE FENCED IN THE WRONG ORDER, which the send made reachable and an audit
+  caught.** The service body executed `SFENCE.VMA` and only then loaded the request, so a peer
+  could fence, an initiator could then write tables and raise, and the peer could answer a request
+  its fence never saw. The answer was truthful about the fence and silent about which writes
+  preceded it. The order is three-part now and stated as such: observe the request, THEN fence,
+  THEN answer, with the acquire on the load pairing against the initiator's release of the raise.
+  One fence per service rather than one per requester, `SFENCE.VMA` with both operands x0 being
+  global.
+- **THE SCATTERED STALL IS RETIRED, AND THE TREE THAT SHOWED IT NO LONGER EXISTS.** A run of
+  2 failures in 30 was measured against a working tree carrying an IN-FLIGHT version of the
+  interrupt-controller repair, never committed in that form. Three trees separate the readings.
+  BEFORE the repair, the stall is 3 in 40 and every one of them stops in the same arm,
+  `irq_autorearm`, which is the per-core-keying defect recorded above. WITH the repair complete
+  it is 0 in 40, and at the tip 0 in 40 twice over, instrument on and instrument off. The
+  measured tree sat between those two, and its stalls were in `sem_destroy_quiescent` and
+  `call_timeout_reply`, arms nowhere near the interrupt block. **MASTER COULD NOT HAVE CARRIED
+  IT, and that is a mechanism rather than a bound:** the per-core block the defect lived in does
+  not exist there, `arch/riscv/rv64imac/smp.cmake` does not exist there, and no riscv preset
+  there names a four-core board. The lost wake was introduced by this branch's per-core keying
+  and cured on this branch, so no longer run against master is owed. **A half-applied fix did not cure
+  the lost wake so much as MOVE ITS WINDOW**, which is the reading the three shapes support and
+  the one nobody can now confirm directly: that tree is unreachable and its number is not
+  reproducible by anyone. 120 clean runs at or after the repair bound the rate under about 2.5
+  percent rather than proving it zero.
+- **AND THE INSTRUMENT BUILT TO NAME THE CAUSE NEVER CAUGHT ONE, so its discrimination is
+  unexercised.** `kickos/smptrace.h` separates a park no waker searched for, a search that came
+  back empty, and a wake whose switch never took; it was validated on a PASSING run, where it
+  correctly reports that no thread parked and stayed parked, and on 40 instrumented runs it had
+  nothing to decode. It is kept, off by default and compiling to nothing, because the next lost
+  wake on any backend is what it is for. Nothing here says it works on a real stall.
+- **A FOUR-CORE IMAGE NEEDS REPETITION BEFORE "GREEN" MEANS ANYTHING, and two passes in a row is
+  not repetition.** Four of this milestone's defects announced themselves as a HANG rather than as
+  a red arm, which is the shape a lost wake takes, and a fifth is still open. Every claim about a
+  four-core image in this file rests on a run COUNT, and a single-figure count is not a claim; a
+  count taken while anything else uses the box is not one either.
+
 **M7.3 LANDED S6: A SECOND INTERRUPT POSTURE ON `qemu-arm64`, GICv3 BESIDE GICv2 RATHER THAN
 INSTEAD OF IT.** What follows is what a green run does NOT say.
 
@@ -107,6 +204,19 @@ blocker. What follows is what a green run does NOT say.
   page-table frame, so there is no object to hold a field. A per-core installed-root array written
   only where the register is written answers the same question and changes no signature.
 
+**THE FLEET WITNESS FOR M7.2 IS COMPLETE AND BOTH HALVES STAMP THE MILESTONE'S TIP.**
+Host: 57 presets, 2409 host tests, 57 pass, 0 reused, 0 fail. Image: 57 presets, 490 image gates,
+20 pass, 0 partial, 0 fail, 0 skipped, 37 declared with no image gate. Both carry a `DONE`
+sentinel, and the image half took its declared figures on the first attempt rather than refusing.
+**The host DELTA is what says this milestone's gates ran fleet-wide**: S1 and S2 witnessed 2276
+over the same 57 presets, so +133 is S3 and S4's own arms on every preset that registers them.
+**The image figures are UNMOVED from the last run taken before the records commit, and that is the
+expected reading rather than a stale sweep**: everything landed since is documentation, so no image
+gate was added and nothing could move a preset out of the 37 that register none. Neither half says
+anything about `-LE host` under load: the host tool never runs that set, and the image tool
+serialises it to remove the instrument's own noise rather than to show the gates are
+load-independent.
+
 **M7.2 IS S3: THE LOCK, THE DOORBELL, AND THREADS ON EVERY CORE.** `IrqLock` became the big kernel
 lock rather than 129 call sites changing, its own comment having claimed "interrupts off => exclusive"
 which is false above one core. A per-core depth takes the lock on the zero-to-one transition only.
@@ -147,6 +257,14 @@ reentrancy state is reached through ONE word in the process's memory, and it is 
 thread cannot ask which core it is on, so two threads of one process on two cores share an errno. The
 seat belongs in thread-local storage. Declined VISIBLY as a skip carrying the mechanism.
 
+**AND THAT DECLINE IS NOW REPRODUCED ON TWO ARCHES RATHER THAN REASONED, which is what M7.4 added
+to it.** The claim had never been TESTED: arm64 does not register the test above one kernel core, and
+no other four-core board registered it at all, so "would assert a gate that can never pass" was an
+argument standing on its own. The four-core RV64 board is the first that would have run it. It runs
+the arm and reports the seat's own failure, a preempted thread coming back on the peer's errno; the
+same app on the four-core arm64 preset reports the identical one. The RV64 registration carried no
+core-count clause only because no four-core RV64 board existed to need one, and it has arm64's now.
+
 **THE SLAY-GUARD PREDICATE IS RIGHT AND HAS NO RUNTIME ARM.** Idle control blocks sit outside the
 pool, so no user handle can name one and the branch is unreachable from userspace. It becomes
 load-bearing the moment an idle block is poolable, and mutating it today reddens nothing.
@@ -156,6 +274,16 @@ Cumulatively THIRTEEN records added across S3 and none changed or removed: the l
 then the switch release, the peer ready and start pair, and the resched entry, every one of them the
 kernel-to-arch direction so no port owes an implementation. S5's verdict will be its own delta, and
 this line is where the from-frozen figure lives.
+
+**S5'S DELTA IS ZERO, AND THAT IS A RESULT ABOUT THE SEAM RATHER THAN AN ABSENCE OF NEWS.** A second
+backend went in whose identity is a published index rather than a register read, whose doorbell is a
+CLINT word lowered through a machine-mode trampoline rather than a GIC software interrupt, and whose
+lock is LR/SC rather than load/store-exclusive; not one member of the seam moved. The corpus is real
+and not empty: 25 signature records on each side, every group above its floor at extent 2/2, identity
+2/2, doorbell 8/8, lock 4/4 and peer 9/9, and the differ's own 47-record known-answer control
+answering as expected. What it still cannot see is what a backend DOES behind a member, the coupling
+included, so the acquire loop's servicing of a pending doorbell is witnessed by the bring-up check
+and by nothing in this verdict.
 
 **THE HOST UNIT LAYER IS OFF WITHOUT A GTest, AND THAT HID A SUITE THAT DID NOT BUILD.** A new
 two-core unit suite failed to compile once GTest is provisioned, and a plain preset never revealed it.
@@ -506,6 +634,66 @@ takes M7's only free one.
 ## What the fleet does NOT witness
 
 The whole point of this file. A green fleet pass says none of the following.
+
+- **A DRIVER INSIDE THE KERNEL IS A LIABILITY TO A MICROKERNEL, AND THE CONSOLE IS THE ONE THIS
+  PROJECT ACCEPTS.** It is a transgression admitted for the sake of reality rather than a
+  component earning its place: something must print before any userspace driver exists, and
+  during a panic when none can be trusted. It is accepted because it is genuinely needed, not
+  because it is adequate, and it is the only such transgression accepted.
+- **THE OWNERSHIP, PUBLISH AND RECLAIM MACHINERY EXISTS TO END ITS REACH**, as early as a
+  userspace driver can take over. It is not a workaround for a weak console. It is how the
+  project bounds the blast radius of a deliberate violation of its own model, and reading it as
+  an unrelated feature inverts what it is for.
+- **SO IMPROVING THIS CONSOLE WOULD BE INVESTING IN A LIABILITY, and that is what settles
+  serialisation.** Making it ordered, or fast, entrenches the thing the architecture wants to
+  minimise and makes it likelier that something else grows to depend on it. **The interleave is
+  therefore not a defect, not a limitation awaiting a fix, and not primarily a cost trade: it is
+  a property of something accepted under duress and deliberately left unimproved.**
+- **WHICH ROUTE INTERLEAVES, MEASURED PER ROUTE.** Stated this way because a reader who takes
+  the widest form will distrust a published capture that is fine, or hunt for a lock that should
+  not exist.
+  - **The kernel's DIAGNOSTIC route, the chip UART, interleaves at BYTE granularity.** That is
+    what the banner, the status lines and the fault reporter use. `console_emit` brackets only
+    the ownership-count read with `IrqLock` and leaves the device write outside it deliberately;
+    on this board `arch_console_write` is an unlocked byte loop.
+  - **The PUBLISHED route does not interleave kernel records with each other**, and what makes
+    that true is the KERNEL LOCK rather than the driver: `cap_console_deliver` copies the whole
+    record into one parked receiver under `IrqLock`, so a record arrives as one datagram. **What
+    it does NOT guarantee is a single writer.** The kernel pops `wq_pop_highest(recv_waiters)`,
+    so a driver parking more than one thread gets its records spread across them with no
+    ordering enforced between their device writes. A future multi-writer console driver breaks
+    this property without touching the kernel.
+  - **AND THE PUBLISHED ROUTE IS STILL EXPOSED THROUGH THE KERNEL'S FALLBACK.** With no receiver
+    parked, `kvprintf_route` falls back to the chip route with `force_sync`, whose own comment
+    accepts "interleaving with the driver's in-flight bytes". So a published capture can carry
+    interleaved bytes: not two kernel records racing, but a kernel fallback racing the driver.
+    Deliberate and documented rather than a defect, and a gate reading that route inherits it.
+  - **RTT does not interleave**: the whole write runs under `IrqLock`.
+- **THE MECHANICAL COSTS, WHICH BOUND THE IMPLEMENTATION RATHER THAN DECIDE THE QUESTION.**
+  `console.cc` carries the sharpest: the chip transport "must NEVER be held under IrqLock across
+  a whole transmission: a 256 B write at 115200 would mask interrupts for ~22 ms". Beside it, a
+  lock there serialises every core behind the slowest UART poll, and `kprintf_fault` runs in
+  panic and fault context where a lock may already be held, putting the deadlock in the one path
+  that must always work. **A faster transport would not change the answer**: these say only that
+  the lock cannot be taken cheaply, where the ruling above says it must not be taken at all.
+- **WHAT A GATE READING EACH ROUTE MUST DO.** Reading the diagnostic route: tolerate a split and
+  SAY when it did, which is what `check_qemu_panicgate.sh` now does, strict match first and a
+  split recovered only by deleting the KNOWN kernel status lines. Reading a published console:
+  sound for whole records while the driver keeps one writer, and exposed to the fallback above.
+  Reproduced once by an external run and not by two authoritative ones, so it is infrequent
+  rather than rare.
+- **THE RV64 DOORBELL'S INSTRUCTION-SIDE HALF HAS NO OPERATION AT THIS BOARD'S ISA BASELINE, so it
+  is not witnessed and cannot be.** The service body carries the TRANSLATION-side fence, which is
+  `SFENCE.VMA` and which the ISA gives no way for one hart to perform on behalf of another. The
+  instruction half is what `FENCE.I` exists for, and Zifencei is not in
+  `arch/riscv/chip/virt_rv64/cpu.cmake`'s march string, so the instruction does not assemble.
+  **Writing `SFENCE.VMA` into that comment as though it covered both would be a false statement of
+  contract, which is worse than the gap**, so the body says what it does and no more. No caller
+  exists yet: the rv64 instruction-side rendezvous is unwired and `--gc-sections` drops it, which is
+  also why `check_doorbell_generic.sh` asserts no rendezvous body on this arch and why
+  `check_doorbell_isb.sh` is not registered for it at all. Raising the baseline is a real option and
+  not a free one, the toolchain's multilibs being named for exact march strings, so it is measured
+  against them rather than assumed when a caller appears.
 
 - **THE INSTRUMENT A FLEET VERDICT COMES FROM HAS BLIND SPOTS OF ITS OWN, AND THEY BOUND EVERY
   BULLET BELOW.** That verdict comes from `tools/sweep_host_gates.sh` and

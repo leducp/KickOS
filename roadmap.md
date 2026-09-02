@@ -578,6 +578,25 @@ the tables under it. Closing that alongside the step that put threads on every c
 pair coherent, so the two land together and every later row moves up. S4 is complete, its
 instruction-side poke included.
 
+**S5 IS COMPLETE AND ITS VERDICT IS THE STEP'S FINDING, WHICH IS WHAT THE CONTRACT ASKED FOR.** The
+differ exits 0: not one member of the seam frozen before either backend moved, over a real corpus of
+25 signature records with every group above its floor and a 47-record known-answer control answering
+as expected. A second backend went in whose identity is a published index rather than a register
+read, whose doorbell is a CLINT word lowered through a machine-mode trampoline rather than a GIC
+software interrupt, and whose lock is LR/SC; the seam absorbed all three unchanged. **That is a
+positive result about the seam rather than an absence of news.**
+
+**WHAT S5 ADDED TO THE PLAN'S OWN ACCOUNT, because the RV64 lowering is not the A64 one.** The
+ruling that a peer's machine software interrupt cannot be delegated is measured here rather than
+argued, and the measurement made the trampoline SMALLER than the ruling bought: a supervisor store
+to a peer's CLINT word is permitted on this machine, so only the RECEIVE side runs in machine mode
+and `arch_ipi_send` has no machine-mode leg at all. Against that, this backend is the one that can
+discover what the contract says A64 cannot, and it did twice. The kernel lock had exactly one
+release site across a swap in the whole tree, in the armv8a switch, so the first RV64 core to reach
+its idle thread carried the lock into `wfi`; and the one cause every raise arrives on carries three
+sources here rather than one, so a poll that cleared it while servicing only the doorbell lost a
+device line. Both are in the record, and both were found by running rather than by any gate.
+
 **THE DOORBELL COMES BEFORE THE SECOND INTERRUPT CONTROLLER, AND THAT ORDER WAS ARGUED RATHER THAN
 INHERITED.** GICv2 issues a software-generated interrupt through `GICD_SGIR` and GICv3 through
 `ICC_SGI1R_EL1`, so a reader will ask why GICv3 does not come first and save writing the send twice.

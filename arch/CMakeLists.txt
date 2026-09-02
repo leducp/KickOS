@@ -270,6 +270,7 @@ elseif(KICKOS_ARCH STREQUAL "rv64imac")
   add_library(kickos_arch_rv64imac STATIC
     riscv/rv64imac/arch_rv64imac.cc
     riscv/rv64imac/aspace_rv64imac.cc
+    riscv/rv64imac/klock_rv64imac.cc
     riscv/rv64imac/libgcc_rv64imac.cc
     riscv/rv64imac/switch.S
     riscv/rv64imac/trap.S
@@ -626,6 +627,9 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     # Per-build app-data window size. Each chip .ld carries its own freestanding default; a
     # full-C++ build needs the larger writable window for the heap and libstdc++/unwind state.
     set(_ld_defs -DKICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
+    # A chip whose boot handshake needs storage outside .bss carves it per hart, so its script
+    # must know the count; at one core the carve is absent rather than empty.
+    list(APPEND _ld_defs -DKICKOS_NUM_CORES=${KICKOS_NUM_CORES})
     # KICKOS_TLS_FIT_ASSERT needs the knob, the stride and the arch's ABI bias. The bias is
     # scraped from the arch's context.h, the header the compiler reads being what owns it.
     list(APPEND _ld_defs -DKICKOS_TLS=$<BOOL:${KICKOS_TLS}>)

@@ -24,6 +24,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
+#include <kickos/arch/rv64_doorbell.h>
 
 #include <stdint.h>
 
@@ -96,9 +97,10 @@ namespace
     constexpr uint8_t UART_LSR_TEMT = 1u << 6;
     constexpr uint32_t UART_POLL_BOUND = KICKOS_RV64_UART_POLL_BOUND;
 
-    // QEMU `virt` CLINT (hart 0): the machine timer and the software interrupt. No body here
-    // reads it; the supervisor timebase is the time/stimecmp CSR pair.
-    constexpr uintptr_t CLINT_PA = 0x02000000;
+    // QEMU `virt` CLINT: the machine timer and the per-hart software interrupt. The timebase
+    // here is the time/stimecmp CSR pair; the msip words are the cross-hart doorbell, and
+    // boot_layout.ld.h is where the address lives because startup.S needs it too.
+    constexpr uintptr_t CLINT_PA = KICKOS_RV64_CLINT_PA;
 
     // QEMU `virt` interrupt controller, named for arch_reserved_blocks and driven by nothing
     // here, the console being polled and the timebase a CSR pair.
@@ -114,6 +116,19 @@ namespace
     // all-ones is the one value that asserts nothing for the life of the image.
     constexpr uint64_t STIMECMP_NEVER = ~static_cast<uint64_t>(0);
 
+#if KICKOS_NUM_CORES > 1
+    // Bring-up bound, sized far over rather than tuned: under emulation without icount the
+    // guest clock tracks HOST time, so a contended host spends this budget while the guest
+    // barely executes.
+    constexpr uint64_t RV64_BRINGUP_WAIT_NS = 5ull * 1000ull * 1000ull * 1000ull;
+
+    char const NO_ARRIVAL[] = "KickOS: hart never reached the supervisor park: hart ";
+    char const SMP_HEAD[] = "# smp: ";
+    char const SMP_TAIL[] = " core(s) online\n";
+    char const SMP_NL[] = "\n";
+    static_assert(KICKOS_NUM_CORES <= 9, "the core count is printed as one decimal digit");
+#endif
+
     // QEMU `virt` SiFive test finisher: the only way this machine stops itself with a
     // status a harness can read. Named in boot_layout.ld.h, the pre-translation prologue
     // refusing an unimplemented paging mode through the same register.
@@ -124,6 +139,52 @@ namespace
 
 extern "C"
 {
+
+#if KICKOS_NUM_CORES > 1
+// startup.S's .smpboot carve: one doubleword per hart, and nothing else writes them.
+extern volatile uint64_t kickos_rv64_hart_release[KICKOS_NUM_CORES];
+
+extern "C" void kfault_terminate(void) __attribute__((noreturn));
+
+// Lets every parked hart out of _start's release loop and waits, bounded, for each to reach the
+// supervisor park. THE RELEASE WORD IS THE WHOLE PROTOCOL: startup.S left every secondary
+// spinning on it, so nothing before this point runs on more than one hart.
+void release_secondaries(void)
+{
+    // Everything this hart wrote for a secondary publishes before the word that frees it.
+    __asm volatile("fence rw, w" ::: "memory");
+    uint32_t peers = 0;
+    for (uint32_t index = 1; index < KICKOS_NUM_CORES; index++)
+    {
+        kickos_rv64_hart_release[index] = 1u;
+        peers |= 1u << index;
+    }
+    // THE WORD IS THE STATE AND THE RAISE IS THE EDGE: a hart parked in WFI observes no store,
+    // so the word alone would leave every secondary asleep for good.
+    kickos_rv64_doorbell_send(peers);
+
+    uint64_t const deadline = arch_clock_now() + RV64_BRINGUP_WAIT_NS;
+    for (uint32_t index = 1; index < KICKOS_NUM_CORES; index++)
+    {
+        while (kickos_rv64_core_online_read(index) == 0u)
+        {
+            if (arch_clock_now() > deadline)
+            {
+                arch_console_write(NO_ARRIVAL, sizeof(NO_ARRIVAL) - 1);
+                char const digit = static_cast<char>('0' + index);
+                arch_console_write(&digit, 1);
+                arch_console_write(SMP_NL, sizeof(SMP_NL) - 1);
+                kfault_terminate();
+            }
+        }
+    }
+
+    arch_console_write(SMP_HEAD, sizeof(SMP_HEAD) - 1);
+    char const count = static_cast<char>('0' + KICKOS_NUM_CORES);
+    arch_console_write(&count, 1);
+    arch_console_write(SMP_TAIL, sizeof(SMP_TAIL) - 1);
+}
+#endif
 
 void arch_init(void)
 {
@@ -139,6 +200,15 @@ void arch_init(void)
                             KICKOS_RV64_DRAM_BASE,
                             KICKOS_RV64_DRAM_BASE + KICKOS_RV64_KERNEL_WINDOW_SIZE,
                             KICKOS_RV64_PHYS_ADDR_BITS);
+
+#if KICKOS_NUM_CORES > 1
+    // AFTER the boot hart's own supervisor state and address space exist: a secondary released
+    // here runs a kickos_rv64_init of its own against tables this hart has already installed.
+    release_secondaries();
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
+    kickos_rv64_doorbell_selfcheck();
+#endif
+#endif
 }
 
 // --- Tickless clock: the time CSR (10 MHz) -> ns ----------------------------
@@ -167,6 +237,41 @@ void arch_timer_disarm(void)
 {
     __asm volatile("csrw stimecmp, %0" ::"r"(STIMECMP_NEVER) : "memory");
 }
+
+#if KICKOS_NUM_CORES > 1
+// --- The cross-hart doorbell's raise ----------------------------------------
+// A write of 1 to a hart's CLINT msip word raises a MACHINE software interrupt on it, which
+// mideleg cannot delegate (measured: writing all ones reads back 0x3666, bit 3 clear). The
+// machine-mode trampoline in startup.S clears the word and re-raises it as mip.SSIP.
+//
+// SUPERVISOR MODE MAY DO THIS WRITE. PMP entry 0 grants the whole space and QEMU's CLINT gates
+// on no privilege, both measured on this machine, so the send needs no machine-mode leg.
+//
+// THE DENSE CORE INDEX IS THE HART INDEX HERE: startup.S seats each hart's row from its own
+// mhartid, so msip[index] is that core's word. A part whose ids are not dense would owe a
+// published map instead.
+void kickos_rv64_doorbell_send(uint32_t cores)
+{
+    if (cores == 0)
+    {
+        return;
+    }
+    // THE SUCCESSOR IS A DEVICE STORE, SO THE SUCCESSOR SET MUST NAME THE I/O DOMAIN. RISC-V's
+    // FENCE carries separate predecessor and successor bits for memory (R, W) and for device
+    // (I, O) accesses, and the CLINT sits in an I/O PMA: a successor set of `w` names memory
+    // writes only and so orders nothing against the msip store below. Predecessor `rw` is this
+    // hart's own memory work, the tables and the request cell it published; successor `ow`
+    // names the device write that raises the doorbell, and the memory writes that follow it.
+    __asm volatile("fence rw, ow" ::: "memory");
+    for (uint32_t index = 0; index < KICKOS_NUM_CORES; index++)
+    {
+        if ((cores & (1u << index)) != 0)
+        {
+            *reinterpret_cast<volatile uint32_t*>(DEV_VA + CLINT_PA + 4u * index) = 1u;
+        }
+    }
+}
+#endif
 
 // Rule 7. Only the CLINT is here: the console is the UART a driver may be granted, and the
 // timebase and the translation controls are CSRs, so none of those is nameable by a grant.

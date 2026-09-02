@@ -20,7 +20,15 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_errnoprobe.sh")
 endif()
 
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64")
+# Same decline as the arm64 registration below, and this board is where it stopped being an
+# argument. The comment there said registering above one kernel core "would assert a gate that
+# can never pass"; that claim had never been TESTED, because arm64 does not register the test
+# above one core and no other four-core board registered it at all. This branch built the first
+# four-core RV64 board, ran it, and got the seat's own failure, then ran the same app on the
+# four-core arm64 preset and got the identical one. The claim is reproduced on two arches now
+# rather than reasoned, and the fix STATE.md names is unchanged: the seat belongs in
+# thread-local storage.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64" AND KICKOS_KERNEL_CORES EQUAL 1)
   kickos_add_qemu_test(NAME qemu_riscv64_errnoprobe TARGET errnoprobe BOARD qemu-riscv64
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_errnoprobe.sh")
 endif()

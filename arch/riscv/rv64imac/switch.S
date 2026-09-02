@@ -7,7 +7,8 @@
  * SIE stays masked through the syscall dispatch and nothing here sets it: that is what keeps
  * every interrupt frame a resumable thread context on a stack that outlives the trap.
  *
- * SSCRATCH INVARIANT: outside the prologue, sscratch holds the trap-stack TOP.
+ * SSCRATCH INVARIANT: outside the prologue, sscratch holds the trap-stack TOP, which is also
+ * this hart's per-CPU block address (percpu.h). U-mode can neither read nor write it.
  *
  * sstatus.SUM stays clear, so a kernel dereference of a low-half pointer faults; the kernel
  * reaches memory a process owns through the kaccess seam (kickos/aspace.h).
@@ -64,6 +65,39 @@
     .equ CTX_SP,          KICKOS_RV64_CTX_OFF_SP
     .equ CTX_KERNEL_SP,   KICKOS_RV64_CTX_OFF_KERNEL_SP
 
+/* Displacements into this hart's per-CPU block (percpu.h), static_asserted against offsetof in
+   arch_rv64imac.cc. The block begins where the trap stack ends, so its address IS the value
+   sscratch carries and no second base register exists. */
+#define PERCPU_CTX_CURRENT 0
+#define PERCPU_SWITCH_TO   8
+#define PERCPU_ISR_DEPTH   16
+
+/* Ends the kernel lock's span over the swap. CALL ONLY where the outgoing frame is parked and
+   sp already names the incoming one: the call frame then lands on the incoming thread's own
+   stack below its saved frame, and .Lrestore reloads every register the call is free to
+   clobber. */
+    .macro  SWITCH_UNLOCK
+#if KICKOS_KERNEL_CORES > 1
+    call    kickos_switch_unlock
+#endif
+    .endm
+
+/* One cell of this hart's block, addressed. At one core the array's first row is this hart's,
+   so the address is a link-time constant and the image carries no CSR read to find it. */
+    .macro  PERCPU_CELL reg, disp
+#if KICKOS_NUM_CORES > 1
+    csrr    \reg, sscratch
+    .if \disp != 0
+    addi    \reg, \reg, \disp
+    .endif
+#else
+    .option push
+    .option norelax
+    la      \reg, kickos_rv64_percpu + KICKOS_RV64_TRAP_STACK_SIZE + \disp
+    .option pop
+#endif
+    .endm
+
 /* Its own section so a W^X split of the kernel's half has a boundary here; virt_rv64.ld places
  * it with kernel text.
  */
@@ -84,10 +118,7 @@ kickos_rv64_stvec:
        the nested handler on the U-mode sp. */
     csrr    t1, sscratch            /* t1 = the interrupted user sp */
     csrw    sscratch, sp            /* sscratch = trap top: invariant restored */
-    .option push
-    .option norelax
-    la      t0, kickos_rv64_ctx_current
-    .option pop
+    PERCPU_CELL t0, PERCPU_CTX_CURRENT
     ld      t0, 0(t0)
     ld      t0, CTX_KERNEL_SP(t0)
     beqz    t0, .Ltrap_nokstack
@@ -249,41 +280,30 @@ kickos_rv64_stvec:
 
 /* Every interrupt cause. The depth bracket is what makes arch_in_isr honest, and a switch
  * decided inside the handler is BOOKED: this frame already IS the outgoing thread's saved
- * context, and the outgoing context is read from kickos_rv64_ctx_current, so an ISR that
+ * context, and the outgoing context is read from the block's ctx_current, so an ISR that
  * rescheduled twice still saves THIS frame.
  */
 .Lintr:
-    .option push
-    .option norelax
-    la      t0, g_rv64_isr_depth
-    .option pop
+    PERCPU_CELL t0, PERCPU_ISR_DEPTH
     lw      t1, 0(t0)
     addi    t1, t1, 1
     sw      t1, 0(t0)
     mv      a0, sp
     call    kickos_rv64_isr_dispatch
-    .option push
-    .option norelax
-    la      t0, g_rv64_isr_depth
-    .option pop
+    PERCPU_CELL t0, PERCPU_ISR_DEPTH
     lw      t1, 0(t0)
     addi    t1, t1, -1
     sw      t1, 0(t0)
-    .option push
-    .option norelax
-    la      t0, kickos_rv64_switch_to
-    .option pop
+    PERCPU_CELL t0, PERCPU_SWITCH_TO
     ld      t1, 0(t0)
     beqz    t1, .Lrestore
     sd      zero, 0(t0)             /* consume the booking before it can be seen again */
-    .option push
-    .option norelax
-    la      t0, kickos_rv64_ctx_current
-    .option pop
+    PERCPU_CELL t0, PERCPU_CTX_CURRENT
     ld      t2, 0(t0)
     sd      sp, CTX_SP(t2)          /* this frame is the outgoing thread's saved context */
     sd      t1, 0(t0)               /* publish the incoming context */
-    ld      sp, CTX_SP(t1)
+    ld      sp, CTX_SP(t1)          /* stand on the incoming thread's frame */
+    SWITCH_UNLOCK
     j       .Lrestore
 
 /* A non-zero return means fault isolation claimed this fault and the reporter has rewritten the
@@ -346,8 +366,8 @@ kickos_rv64_stvec:
 
 /* void kickos_rv64_switch_now(struct arch_context* from, struct arch_context* to)
  *
- * THE CALLER MUST HAVE INTERRUPTS MASKED. arch_switch has already published `to` as
- * kickos_rv64_ctx_current, so an interrupt before the store of `from` below reaches .Lintr and
+ * THE CALLER MUST HAVE INTERRUPTS MASKED. arch_switch has already published `to` in the
+ * block's ctx_current, so an interrupt before the store of `from` below reaches .Lintr and
  * books a swap that records a pointer into `from`'s stack as `to`'s saved context.
  */
     .global kickos_rv64_switch_now
@@ -395,7 +415,8 @@ kickos_rv64_switch_now:
     or      t0, t0, t2
     sd      t0,  F_SSTATUS(sp)
     sd      sp, CTX_SP(a0)
-    ld      sp, CTX_SP(a1)
+    ld      sp, CTX_SP(a1)          /* stand on the incoming thread's frame */
+    SWITCH_UNLOCK
     j       .Lrestore
 
 /* void kickos_rv64_start(struct arch_context* first) */

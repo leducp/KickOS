@@ -19,7 +19,7 @@ set(KICKOS_KERNEL_SOURCES
   init/instance.cc
   init/kmain.cc)
 
-foreach(_f mem/aspace.cc mem/frame.cc mem/frame_pool.cc mem/ustack.cc mem/vrange.cc sync/sync.cc sync/klock.cc sync/corestart.cc time/time.cc time/clock_select.cc syscall/syscall.cc syscall/syscall_aspace.cc syscall/syscall_mem.cc syscall/syscall_obj.cc syscall/syscall_ipc.cc syscall/syscall_ipc_fast.cc syscall/syscall_thread.cc syscall/cap.cc irq/irq.cc)
+foreach(_f mem/aspace.cc mem/frame.cc mem/frame_pool.cc mem/ustack.cc mem/vrange.cc sync/sync.cc sync/klock.cc sync/corestart.cc sync/smptrace.cc time/time.cc time/clock_select.cc syscall/syscall.cc syscall/syscall_aspace.cc syscall/syscall_mem.cc syscall/syscall_obj.cc syscall/syscall_ipc.cc syscall/syscall_ipc_fast.cc syscall/syscall_thread.cc syscall/cap.cc irq/irq.cc)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_f}")
     list(APPEND KICKOS_KERNEL_SOURCES "${_f}")
   endif()

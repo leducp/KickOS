@@ -9,8 +9,10 @@
 #                 vCPU index. The stub is the unprivileged side of the trap seam
 #                 (arch_syscall, in the app half), so a line under index N says vCPU N fetched
 #                 and executed instructions that only a thread at EL0 reaches.
-#   the check     QEMU's GIC model must report every core's CPU interface acknowledging an
-#                 interrupt, which says each core is live and its own interface is enabled.
+#   the check     the emulator must report every core TAKING an interrupt, which says each
+#                 core is live and its own delivery path is enabled. WHICH FACILITY REPORTS
+#                 THAT IS PER BACKEND: arm64 reads the GIC model's acknowledge event, rv64
+#                 reads the trap log, whose line names the hart and the cause directly.
 #
 # THE INDEX ON A `Trace N:` LINE IS THE EMULATOR'S OWN cpu_index for the vCPU executing that
 # translation block, which guest code cannot write, forge across vCPUs, or reach on a core the
@@ -44,7 +46,7 @@
 # length of time are all outside it. It licenses no claim about migration either: a thread per
 # core and one thread visiting four cores read identically here.
 #
-# usage: check_smp_threads.sh <elf> <expect-cores> <live-ere> <nm>
+# usage: check_smp_threads.sh <elf> <expect-cores> <live-ere> <nm> <backend>
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -52,11 +54,12 @@ set -u
 # and a full suite under an execution log is what makes the failure path this long.
 : "${QEMU_TIMEOUT:=120}"
 
-_usage="usage: check_smp_threads.sh <elf> <expect-cores> <live-ere> <nm>"
+_usage="usage: check_smp_threads.sh <elf> <expect-cores> <live-ere> <nm> <backend>"
 elf="${1:?$_usage}"
 want="${2:?$_usage}"
 live="${3:?$_usage}"
 nm="${4:?$_usage}"
+backend="${5:?$_usage}"
 
 require_number "$want" "the expected core count"
 require_literal "$live" "the liveness pattern"
@@ -74,40 +77,84 @@ need_qemu
 # The unprivileged side of the trap seam, in the APP half. Named as a symbol: a gate carrying
 # the layout would keep passing after the layout moved.
 STUB_SYM=arch_syscall
-# The two instructions of that stub (`svc`, then the return): a window around the address a
-# translation block must be ENTERED at below.
-STUB_WINDOW=8
 
-# The trace event this gate's second channel reads, as QEMU's model spells it, and which
-# controller is modelled read off QEMU_MACHINE: the same string this gate hands the emulator, so
-# the parse cannot be looking for one model while the run boots the other. ACK_PREFIX runs up to
-# the core number and ACK_SUFFIX is what a planted line puts after it.
+# PER BACKEND, AND NEITHER IS DERIVABLE FROM THE IMAGE. The stub carries no `.size`, so its
+# extent is an instruction-width fact stated here rather than read with nm; and the facility
+# that reports a core taking an interrupt is a property of the emulator's device model.
 #
-# THE TIMER PPI HAS ONE SOURCE HERE, and the suffixes are PRINTED from it rather than typed:
-# the two models spell the same INTID in different radixes, so a second hand-written copy could
-# disagree with the first and the planted control would then prove the parse against a line the
-# emulator never emits.
-TIMER_INTID=30
-case " ${QEMU_MACHINE:-} " in
-    *gic-version=3*)
-        TRACE_ACK=gicv3_icc_iar1_read
-        ACK_PREFIX="gicv3_icc_iar1_read GICv3 ICC_IAR1 read cpu 0x"
-        ACK_SUFFIX="$(printf ' value 0x%x' "$TIMER_INTID")" ;;
+#   STUB_WINDOW  a window around the stub's address that a translation block must be ENTERED
+#                inside of.
+#   CHAN_ITEMS   the -d log items this gate's second channel needs.
+#   CHAN_NAME    what to call that channel in a refusal.
+case "$backend" in
+    armv8a)
+        # `svc` then the return, both 4 bytes.
+        STUB_WINDOW=8
+        # Which controller is modelled is read off the machine string this gate itself hands
+        # the emulator, so the parse cannot look for one model while the run boots the other.
+        case " ${QEMU_MACHINE:-} " in
+            *gic-version=3*) TRACE_ACK=gicv3_icc_iar1_read ;;
+            *)               TRACE_ACK=gic_acknowledge_irq ;;
+        esac
+        CHAN_ITEMS="trace:$TRACE_ACK"
+        CHAN_NAME="the GIC model's acknowledge event"
+        ;;
+    rv64imac)
+        # `ecall` at 4 bytes then a compressed `ret` at 2, rounded up.
+        STUB_WINDOW=8
+        CHAN_ITEMS="int"
+        CHAN_NAME="the trap log"
+        ;;
     *)
-        TRACE_ACK=gic_acknowledge_irq
-        ACK_PREFIX="gic_acknowledge_irq cpu "
-        ACK_SUFFIX="$(printf ' acknowledged irq %d' "$TIMER_INTID")" ;;
+        fail "check_smp_threads.sh knows no backend '$backend'. The stub's extent and the
+  facility that reports a core taking an interrupt are both per backend, so an unlisted one
+  would read an empty second channel as a core that ran no thread" ;;
 esac
 
-# The core number as the modelled controller's log spells it: GICv3's is HEXADECIMAL, and the
-# conversion is made rather than assumed. Nothing here rests on the two radixes coinciding, so
-# no core count below sixteen is assumed either.
-ack_cpu_token() { # <core>
-    if [ "$TRACE_ACK" = gicv3_icc_iar1_read ]; then
-        printf '%x' "$1"
-        return
-    fi
-    printf '%d' "$1"
+# The core index a second-channel line names, and a planted line of that shape. Per backend
+# because the two emulator facilities print nothing alike.
+kos_ack_indices() { # reads $LOG
+    case "$backend" in
+        armv8a)
+            # GICv3 spells the core number in HEXADECIMAL and GICv2 in decimal, so the pattern
+            # follows the modelled controller rather than assuming the two radixes coincide.
+            if [ "${TRACE_ACK:-}" = gicv3_icc_iar1_read ]; then
+                sed -n "s/^gicv3_icc_iar1_read GICv3 ICC_IAR1 read cpu 0x\\([0-9a-f][0-9a-f]*\\) .*/\\1/p" \
+                    "$LOG" 2>/dev/null | while read -r _h; do printf '%d\n' "0x$_h"; done | sort -u
+            else
+                sed -n "s/^gic_acknowledge_irq cpu \\([0-9][0-9]*\\) acknowledged.*/\\1/p" \
+                    "$LOG" 2>/dev/null | sort -u
+            fi ;;
+        rv64imac)
+            sed -n "s/^riscv_cpu_do_interrupt: hart:\\([0-9][0-9]*\\), async:1,.*/\\1/p" \
+                "$LOG" 2>/dev/null | sort -u ;;
+    esac
+}
+kos_ack_plant() { # <core>
+    case "$backend" in
+        armv8a)
+            # PLANTED IN THE MODELLED CONTROLLER'S OWN SPELLING: a control written in the
+            # other model's would be unreadable by the reader above, and the predicate would
+            # then fail on the control rather than on the run.
+            if [ "${TRACE_ACK:-}" = gicv3_icc_iar1_read ]; then
+                printf 'gicv3_icc_iar1_read GICv3 ICC_IAR1 read cpu 0x%x value 0x1e\n' "$1"
+            else
+                printf 'gic_acknowledge_irq cpu %s acknowledged irq 30\n' "$1"
+            fi ;;
+        rv64imac)
+            printf 'riscv_cpu_do_interrupt: hart:%s, async:1, cause:0000000000000005, epc:0x0, tval:0x0, desc=s_timer\n' "$1" ;;
+    esac
+}
+kos_ack_drop_re() { # <core>
+    case "$backend" in
+        armv8a)
+            if [ "${TRACE_ACK:-}" = gicv3_icc_iar1_read ]; then
+                printf '^gicv3_icc_iar1_read GICv3 ICC_IAR1 read cpu 0x%x ' "$1"
+            else
+                printf '^gic_acknowledge_irq cpu %s ' "$1"
+            fi ;;
+        rv64imac) printf '^riscv_cpu_do_interrupt: hart:%s, async:1,' "$1" ;;
+    esac
 }
 
 # The image's own cross-check line, the app's refusal and the chip's, each as the emitter
@@ -119,8 +166,7 @@ SCHED_TAIL=" core(s) in the scheduler"
 PEER_STUCK="KickOS: kernel core never reached its scheduler: core "
 NO_SPREAD="STRESS SKIP (board thread/sem pool too small)"
 RUNNABLE="stress: runnable "
-for _m in "$SCHED_HEAD" "$SCHED_TAIL" "$PEER_STUCK" "$NO_SPREAD" "$RUNNABLE" "$STUB_SYM" \
-          "$TRACE_ACK" "$ACK_PREFIX" "$ACK_SUFFIX"; do
+for _m in "$SCHED_HEAD" "$SCHED_TAIL" "$PEER_STUCK" "$NO_SPREAD" "$RUNNABLE" "$STUB_SYM" "$CHAN_ITEMS"; do
     require_literal "$_m" "a gate marker"
 done
 
@@ -131,10 +177,25 @@ if ! "$QEMU_BIN" -d 'help' 2>&1 | grep -qE '^exec[ ,]'; then
   unavailable and only the image's own count would be left"
     exit 77
 fi
-if ! "$QEMU_BIN" -d 'trace:help' 2>&1 | grep -q "^$TRACE_ACK\$"; then
-    echo "SKIP: $QEMU_BIN reports no '$TRACE_ACK' trace event"
-    exit 77
-fi
+# QEMU'S TRACE REGISTRY IS BUILD-GLOBAL AND NOT TARGET-SCOPED: a qemu-system-riscv64 built in
+# a tree that also builds arm targets LISTS gic_acknowledge_irq, though `-M virt` there
+# instantiates no GIC. So a registry name is NECESSARY AND NOT SUFFICIENT, and what actually
+# settles whether the channel is live is the parse control below, which runs on the real log
+# before any absence is judged. Only the trace: form needs the registry at all.
+case "$CHAN_ITEMS" in
+    trace:*)
+        _ev="${CHAN_ITEMS#trace:}"
+        if ! "$QEMU_BIN" -d 'trace:help' 2>&1 | grep -q "^$_ev\$"; then
+            echo "SKIP: $QEMU_BIN reports no '$_ev' trace event"
+            exit 77
+        fi ;;
+    *)
+        if ! "$QEMU_BIN" -d 'help' 2>&1 | grep -qE "^$CHAN_ITEMS[ ,]"; then
+            echo "SKIP: $QEMU_BIN reports no '$CHAN_ITEMS' log item, so $CHAN_NAME is
+  unavailable and only the image's own count would be left"
+            exit 77
+        fi ;;
+esac
 
 # The machine has to carry the count this gate was handed, or the run measures a posture nobody
 # asked for. The two values reach here by different routes.
@@ -180,8 +241,7 @@ kos_spread_seen() {
     KOS_MISS_ACK=""
     _seen_stub=" $(sed -n "s/^Trace \\([0-9][0-9]*\\):.*\\/$stub_pc\\/.*/\\1/p" "$LOG" \
         2>/dev/null | sort -u | tr '\n' ' ')"
-    _seen_ack=" $(sed -n "s/^$ACK_PREFIX\\([0-9a-f][0-9a-f]*\\) .*/\\1/p" "$LOG" \
-        2>/dev/null | sort -u | tr '\n' ' ')"
+    _seen_ack=" $(kos_ack_indices | tr '\n' ' ')"
     _core=0
     while [ "$_core" -lt "$want" ]; do
         case "$_seen_stub" in
@@ -189,7 +249,7 @@ kos_spread_seen() {
             *) KOS_MISS_STUB="$KOS_MISS_STUB $_core" ;;
         esac
         case "$_seen_ack" in
-            *" $(ack_cpu_token "$_core") "*) ;;
+            *" $_core "*) ;;
             *) KOS_MISS_ACK="$KOS_MISS_ACK $_core" ;;
         esac
         _core=$((_core + 1))
@@ -211,7 +271,7 @@ kos_spread_control() {
     _core=0
     while [ "$_core" -lt "$want" ]; do
         printf 'Trace %s: 0xdeadbeef [ffffffffffffffff/%s/0x0/0x0] \n' "$_core" "$stub_pc"
-        printf '%s%s%s\n' "$ACK_PREFIX" "$(ack_cpu_token "$_core")" "$ACK_SUFFIX"
+        kos_ack_plant "$_core"
         _core=$((_core + 1))
     done > "$TMP/control.full"
     cp "$TMP/control.full" "$LOG"
@@ -227,10 +287,10 @@ kos_spread_control() {
       $_last, so it would stop the sampling with a core unwitnessed and the run would be
       judged on a log nobody waited for"
     fi
-    grep -v "^$ACK_PREFIX$(ack_cpu_token "$_last") " "$TMP/control.full" > "$LOG"
+    grep -v "$(kos_ack_drop_re "$_last")" "$TMP/control.full" > "$LOG"
     if kos_spread_seen; then
-        fail "the sampling predicate is satisfied by a log carrying no acknowledgement by cpu
-      $_last, so it ignores its second channel"
+        fail "the sampling predicate is satisfied by a log carrying nothing on $CHAN_NAME for
+      core $_last, so it ignores its second channel"
     fi
     rm -f "$TMP/control.full" "$LOG"
     LOG="$_keep"
@@ -243,7 +303,7 @@ echo "   sampling predicate control: satisfied by a complete log, refused by eit
 # nochain, so a block reached through a chain from an earlier one is still logged: short of it
 # a core that entered the stub only through a chain leaves no line. dfilter bounds the log to
 # the stub's own window.
-QEMU_EXTRA="${QEMU_EXTRA:-} -d exec,nochain,trace:$TRACE_ACK"
+QEMU_EXTRA="${QEMU_EXTRA:-} -d exec,nochain,$CHAN_ITEMS"
 QEMU_EXTRA="$QEMU_EXTRA -dfilter 0x$stub_hex+$STUB_WINDOW -D $LOG"
 KOS_POLL_UNTIL=kos_spread_seen
 poll_image "$elf" "$live"
@@ -336,32 +396,35 @@ fi
 # Its own parse control first, on ANY core: the timer PPI is acknowledged on every boot of
 # this board, so a trace carrying no acknowledgement at all is a format that moved rather than
 # four interfaces that took nothing.
-acks="$(grep -c "^$ACK_PREFIX[0-9a-f][0-9a-f]* " "$LOG")" || acks=0
-require_number "$acks" "the acknowledgement count"
+# THIS CONTROL IS WHAT SETTLES THE CHANNEL, not the registry name checked at the top: that
+# registry is build-global, so a listed event proves the binary was compiled with it and never
+# that this machine emits it.
+acks="$(kos_ack_indices | wc -l)" || acks=0
+require_number "$acks" "the count of cores seen on $CHAN_NAME"
 if [ "$acks" -eq 0 ]; then
-    grep "^$TRACE_ACK" "$LOG" | sed -n '1,5p'
-    fail "the log carries no acknowledgement line on any core, which every boot of this board
+    sed -n '1,5p' "$LOG"
+    fail "the log carries nothing on $CHAN_NAME for any core, which every boot of this board
   produces. The event name or the log format has moved, so the per-core reading below reports
   an absence it cannot distinguish from a failure to read"
 fi
 
+_seen=" $(kos_ack_indices | tr '\n' ' ')"
 ack_missing=""
 core=0
 while [ "$core" -lt "$want" ]; do
-    n="$(grep -c "^$ACK_PREFIX$(ack_cpu_token "$core") " "$LOG")" || n=0
-    require_number "$n" "the acknowledgement count for cpu $core"
-    if [ "$n" -eq 0 ]; then
-        ack_missing="$ack_missing $core"
-    fi
+    case "$_seen" in
+        *" $core "*) ;;
+        *) ack_missing="$ack_missing $core" ;;
+    esac
     core=$((core + 1))
 done
 if [ -n "$ack_missing" ]; then
-    grep "^$TRACE_ACK" "$LOG" | sort -u | sed -n '1,10p'
-    fail "$sampling_end, and QEMU's GIC model reports no acknowledgement by cpu(s)$ack_missing.
-  Those interfaces took no interrupt at all, so whatever ran on them was never preempted or
-  woken through the controller"
+    kos_ack_indices | sed -n '1,10p'
+    fail "$sampling_end, and $CHAN_NAME reports nothing for core(s)$ack_missing. Those cores
+  took no interrupt at all, so whatever ran on them was never preempted or woken through the
+  delivery path"
 fi
-echo "   every core's interface acknowledged an interrupt"
+echo "   every core took an interrupt, seen on $CHAN_NAME"
 
 # The poll's own verdict on the same two channels, which the two loops above have just
 # re-derived off the final log. A disagreement is this gate's parse against itself.

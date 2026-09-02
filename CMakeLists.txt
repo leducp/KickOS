@@ -269,6 +269,16 @@ else()
   add_compile_definitions(KICKOS_DEBUG=0)
 endif()
 
+# A per-core event ring for diagnosing a park that never woke (kickos/smptrace.h). OFF by
+# default and compiling to nothing: it is a diagnostic knob, not a posture, and no preset
+# selects it. Configure with -DKICKOS_SMP_TRACE=ON to turn it on for one build.
+option(KICKOS_SMP_TRACE "Record a per-core park/wake event ring for SMP diagnosis" OFF)
+if(KICKOS_SMP_TRACE)
+  add_compile_definitions(KICKOS_SMP_TRACE=1)
+else()
+  add_compile_definitions(KICKOS_SMP_TRACE=0)
+endif()
+
 # --- Console backend selection ---------------------------------------------
 # `chip` = the board's native transport (UART / semihosting / USIC); `rtt` = SEGGER RTT,
 # which needs a debug probe.
@@ -952,6 +962,15 @@ if(KICKOS_BUILD_TESTS)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_smp_predicate.sh"
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_COMMAND}")
   set_tests_properties(smp_predicate PROPERTIES TIMEOUT 300 LABELS host)
+
+  # KICKOS_SMP_TRACE is OFF in every preset, so nothing else compiles its enabled arm and it
+  # would rot unnoticed. This compiles that arm alone, taking the flags from this build's own
+  # compile_commands.json so they cannot drift, and runs no image. Registered where the trace
+  # hooks are compiled at all, which is every board.
+  _add_test(NAME smp_trace_builds
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_smp_trace_builds.sh"
+                    "${CMAKE_BINARY_DIR}/compile_commands.json")
+  set_tests_properties(smp_trace_builds PROPERTIES TIMEOUT 180 LABELS host)
 
   # Reads the forwarding lists above out of this very file, so it is registered from every
   # board and never from a generated copy.

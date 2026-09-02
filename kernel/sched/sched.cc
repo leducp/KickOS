@@ -5,6 +5,7 @@
 
 #include <kickos/aspace.h>
 #include <kickos/sched.h>
+#include <kickos/smptrace.h>
 #include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/console_tx.h>
@@ -53,6 +54,7 @@ namespace kickos
             }
             kernel().current[kickos_kernel_core()] = next;
             next->state = ThreadState::RUNNING;
+            KOS_TRACE(::kickos::KOS_TR_RUN, KOS_TRACE_ID(next), next->prio);
             next->switch_count.store(next->switch_count.load() + 1u);
             kernel().policy->on_switch_in(next);
             KICKOS_BENCH_SPAN(PH_SWITCH_BOOK, bm_book);
@@ -227,6 +229,10 @@ namespace kickos
                         peers |= 1u << core;
                     }
                 }
+                // RECORDED EVEN WHEN THE MASK IS EMPTY: a wake whose target was owed a core
+                // and asked nobody is a different finding from one that asked and was not
+                // answered, and only the zero mask tells them apart.
+                KOS_TRACE(::kickos::KOS_TR_ASK, peers, prio);
                 if (peers != 0)
                 {
                     klock_resched_ask(peers);
@@ -361,10 +367,15 @@ namespace kickos
             // free slot, so readying an exited thread takes that slot out of the pool for good.
             if (t->state != ThreadState::BLOCKED)
             {
+                // NOT A STALL: the wake reached a thread whose state forbade it, and b says
+                // which state that was.
+                KOS_TRACE(::kickos::KOS_TR_REFUSED, KOS_TRACE_ID(t),
+                          static_cast<uint32_t>(t->state));
                 return false;
             }
             t->state = ThreadState::READY;
             kernel().policy->on_ready(t);
+            KOS_TRACE(::kickos::KOS_TR_READY, KOS_TRACE_ID(t), t->prio);
             KICKOS_BENCH_SPAN(PH_WAKE_UNPARK, bm_unpark);
             return true;
         }

@@ -64,6 +64,7 @@ host   src    tests/static/check_x86_64_entry_cld.sh
 host   src    tests/static/check_service_lists.sh
 host   src    tests/static/check_shell_special_names.sh
 host   src    tests/static/check_smp_predicate.sh
+host   src    tests/static/check_smp_trace_builds.sh
 host   src    tests/static/check_smp_sigdiff.sh
 host   src    tests/static/check_spdx.sh
 host   src    tests/static/check_test_labels.sh

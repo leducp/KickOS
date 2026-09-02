@@ -74,7 +74,7 @@
  */
 #define KICKOS_RV64_CAUSE_ECALL_U   8
 
-/* The trusted per-hart trap stack (g_rv64_trap_stack, arch_rv64imac.cc). sscratch holds its top
+/* The trusted per-hart trap stack (kickos_rv64_percpu, percpu.h). sscratch holds its top
  * while a thread runs, so the entry swaps onto it before it touches the interrupted sp.
  *
  * THE DEPTH IS PROVISIONAL: nothing has run -fcallgraph-info on this arch and this port ships no
@@ -83,6 +83,15 @@
 #define KICKOS_RV64_TRAP_NESTED_DEPTH 3840
 #define KICKOS_RV64_TRAP_STACK_SIZE \
     (KICKOS_RV64_FRAME + KICKOS_RV64_TRAP_NESTED_DEPTH)
+
+/* One per-hart row is its trap stack with the block at the top, so the block's ADDRESS is the
+ * trap-stack top and sscratch carries both at once (percpu.h). Both sizes are spelled here
+ * because startup.S indexes the array in machine mode, where no C declaration reaches, and
+ * arch_rv64imac.cc static_asserts sizeof against them.
+ */
+#define KICKOS_RV64_PERCPU_BLOCK_SIZE 64
+#define KICKOS_RV64_PERCPU_ROW_SIZE \
+    (KICKOS_RV64_TRAP_STACK_SIZE + KICKOS_RV64_PERCPU_BLOCK_SIZE)
 
 /* The doubleword at the LOW end of each trap-stack row, written by kickos_rv64_init and read by
  * switch.S. It is what tells an S-mode exception outside the row from a descent that ran off the
