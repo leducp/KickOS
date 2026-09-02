@@ -159,13 +159,13 @@ cat > "$TMP/ctl_send_clean" <<EOF
     1000:	stp	x29, x30, [sp, #-32]!
     1004:	bl	2000 <arch_cpu_id>
     1008:	bl	2100 <planted_poll>
-    100c:	b	2200 <kickos_gicv2_doorbell_send>
+    100c:	b	2200 <kickos_armv8a_gic_doorbell_send>
 EOF
 cat > "$TMP/ctl_send_dirty" <<EOF
 0000000000001000 <planted_send>:
     1000:	stp	x29, x30, [sp, #-32]!
     1004:	bl	2000 <$OWE>
-    1008:	b	2200 <kickos_gicv2_doorbell_send>
+    1008:	b	2200 <kickos_armv8a_gic_doorbell_send>
 EOF
 cat > "$TMP/ctl_guarded" <<EOF
 0000000000001000 <planted_dispatch>:
@@ -185,7 +185,7 @@ EOF
 
 ctl="$(body_calls "$TMP/ctl_send_clean" planted_send | tr '\n' ' ')"
 case "$ctl" in
-    "arch_cpu_id planted_poll kickos_gicv2_doorbell_send ") ;;
+    "arch_cpu_id planted_poll kickos_armv8a_gic_doorbell_send ") ;;
     *) fail "the branch reader answered [$ctl] for a planted send, so it does not see the
   targets a body branches to and every assertion resting on it is meaningless" ;;
 esac

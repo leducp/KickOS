@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// GICv2 backend for the arm64 family: the half ARM architects. The chip's kickos_gicv2
-// (gicv2.h) supplies the distributor and CPU-interface bases, the INTID count and the INTID
-// the EL1 physical timer asserts.
+// GICv2 backend for the arm64 family: the half ARM architects, behind gic.h. The chip's
+// kickos_gicv2 (gicv2.h) supplies the distributor and CPU-interface bases, the INTID count
+// and the INTID the EL1 physical timer asserts.
 
 #include <kickos/arch/arch.h>
 
+#include "gic.h"
 #include "gicv2.h"
 
 #include <kickos/sys/atomic.h>
@@ -95,7 +96,7 @@ extern "C"
 // The distributor's SHARED half, one write set for the machine. GICD_CTLR and every register
 // at or above GIC_BANKED_INTIDS answer the same for every CPU interface, so a second core
 // repeating this would overwrite the first core's answers.
-void kickos_gicv2_dist_init(void)
+void kickos_armv8a_gic_dist_init(void)
 {
     *gicd32(GICD_CTLR) = 0;
     // arch.h's reset contract: every line starts MASKED. The first word is the running core's
@@ -110,7 +111,7 @@ void kickos_gicv2_dist_init(void)
 
 // This core's hardware edge alone. GICC_CTLR and GICC_PMR are its memory-mapped CPU interface,
 // and the distributor registers below GIC_BANKED_INTIDS are its own bank of them.
-void kickos_gicv2_percore_init(void)
+void kickos_armv8a_gic_percore_init(void)
 {
     *gicc32(GICC_CTLR) = 0;
     // arch.h's reset contract over this core's banked lines. The sweep covers the SGI IDs, so
@@ -155,7 +156,7 @@ void kickos_gicv2_percore_init(void)
 //
 // A core whose target bit is unpublished contributes nothing to the list: its interface number
 // is unknown, and bit `index` would be a bet on interface numbering.
-void kickos_gicv2_doorbell_send(uint32_t cores)
+void kickos_armv8a_gic_doorbell_send(uint32_t cores)
 {
     uint32_t list = 0;
     for (uint32_t index = 0; index < KICKOS_NUM_CORES; index++)
@@ -177,7 +178,7 @@ void kickos_gicv2_doorbell_send(uint32_t cores)
 
 // Write-1-to-clear over all eight source bits of this core's byte. The pending state of an SGI
 // is per target core AND per source core, and GICD_CPENDSGIR is banked to the accessing core.
-void kickos_gicv2_doorbell_clear(void)
+void kickos_armv8a_gic_doorbell_clear(void)
 {
     *gicd32(GICD_CPENDSGIR + (GIC_SGI_DOORBELL / 4) * 4)
         = 0xFFu << ((GIC_SGI_DOORBELL % 4) * 8);
@@ -185,14 +186,14 @@ void kickos_gicv2_doorbell_clear(void)
 
 // This core's banked enable word, doorbell bit excepted. Word 0 covers the SGI and PPI IDs,
 // which are the only ones banked.
-void kickos_gicv2_doorbell_only(void)
+void kickos_armv8a_gic_doorbell_only(void)
 {
     *gicd32(GICD_ICENABLER) = ~(1u << (GIC_SGI_DOORBELL % 32));
 }
 #endif
 
 // Write-1-to-ACT, so the pending state of one INTID drops with a single aligned store.
-void kickos_gicv2_clear_pending(int intid)
+void kickos_armv8a_gic_clear_pending(int intid)
 {
     *gicd32(GICD_ICPENDR + (intid / 32) * 4) = 1u << (intid % 32);
 }
@@ -242,7 +243,7 @@ void arch_irq_clear_pending(int line)
     {
         return;
     }
-    kickos_gicv2_clear_pending(line);
+    kickos_armv8a_gic_clear_pending(line);
 }
 
 // Test scaffolding (arch.h). ISPENDR pends in the controller, so delivery takes the ordinary

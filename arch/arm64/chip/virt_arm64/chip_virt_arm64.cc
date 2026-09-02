@@ -11,7 +11,8 @@
 #include <kickos/chip_limits.h>  // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
 #include <kickos/sys/atomic.h>
 
-#include "gicv2.h"       // arch/arm64/common: the architected half of this machine's controller
+#include "gic.h"         // arch/arm64/common: the architected half of this machine's controller
+#include "gicv2.h"       // arch/arm64/common: which controller this machine has, and where
 #include "smp_bringup.h" // arch/arm64/common: ARM64_BRINGUP_WAIT_NS
 
 #include <fatal_status.ld.h>
@@ -306,7 +307,7 @@ namespace
 extern "C"
 {
 
-// This machine's interrupt controller, which the arm64 GICv2 backend reads (gicv2.h).
+// This machine's interrupt controller, which the GICv2 backend reads (gicv2.h).
 struct kickos_gicv2_map const kickos_gicv2 = {
     GICD_BASE,
     GICC_BASE,
@@ -324,7 +325,7 @@ void kickos_armv8a_percore_init(void)
     // would fire the moment this core's PPI and DAIF open.
     __asm volatile("msr cntp_ctl_el0, %0" ::"r"(uint64_t(0)));
 
-    kickos_gicv2_percore_init();
+    kickos_armv8a_gic_percore_init();
 }
 
 void arch_init(void)
@@ -343,7 +344,7 @@ void arch_init(void)
 
     // The distributor is up before any CPU interface is, so a secondary released below finds
     // the shared half already written.
-    kickos_gicv2_dist_init();
+    kickos_armv8a_gic_dist_init();
     kickos_armv8a_percore_init();
 
 #if KICKOS_NUM_CORES > 1
@@ -376,7 +377,7 @@ void arch_timer_arm(uint64_t deadline_ns)
 void arch_timer_disarm(void)
 {
     __asm volatile("msr cntp_ctl_el0, %0" ::"r"(uint64_t(0)));
-    kickos_gicv2_clear_pending(PPI_EL1_PHYS_TIMER);
+    kickos_armv8a_gic_clear_pending(PPI_EL1_PHYS_TIMER);
 }
 
 // Rule 7. Only the GIC is here: the timebase is the architected generic timer, reached
