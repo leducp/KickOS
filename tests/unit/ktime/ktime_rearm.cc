@@ -23,6 +23,7 @@
 #include <kickos/instance.h>
 #include <kickos/arch/arch.h>
 
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -92,8 +93,34 @@ namespace kickos
         abort();
     }
 
+    // The death point's predicate, whose BODY is not this gate's subject: what the sleep
+    // arms below judge is that ktime_sleep_until ASKS it, and asks before it touches
+    // anything. The body is witnessed on the four-core target.
+    bool park_cancel_pending(Thread const* c)
+    {
+        return c->cancel_kind != CANCEL_NONE and not c->dying;
+    }
+
     namespace sched
     {
+        // exit_current is noreturn, so the arm resumes through this rather than returning.
+        // Set by an arm that expects the death point; reaching it with no landing pad staged
+        // is a park that exited where no arm asked it to.
+        bool g_exited = false;
+        jmp_buf g_exit_pad;
+        bool g_exit_pad_armed = false;
+
+        void exit_current(int, ExitCause)
+        {
+            g_exited = true;
+            if (not g_exit_pad_armed)
+            {
+                fprintf(stderr, "exit_current: no landing pad staged for this arm\n");
+                abort();
+            }
+            longjmp(g_exit_pad, 1);
+        }
+
         // The seam reports "no timed event" and parking is a no-op, which leaves the
         // sleeper on the sleepq for an arm to read.
         uint64_t next_timed_event() { return UINT64_MAX; }
@@ -120,6 +147,11 @@ namespace
         kernel().current[arch_cpu_id()] = &g_sleeper;
         g_sleeper.tnext = nullptr;
         g_sleeper.on_timer = false;
+        g_sleeper.cancel_kind = CANCEL_NONE;
+        g_sleeper.dying = false;
+        g_sleeper.state = ThreadState::RUNNING; // the caller of a sleep syscall
+        sched::g_exited = false;
+        sched::g_exit_pad_armed = false;
         g_armed = UINT64_MAX;
         g_arms = 0;
         g_disarms = 0;
@@ -197,6 +229,63 @@ TEST(KTime, floor_is_applied_at_birth)
     g_now = 5000000;
     ktime_sleep_ns(1000000);
     EXPECT_EQ(g_sleeper.deadline_ns, g_now + 1000000) << "a normal sleep was perturbed";
+}
+
+// THE DEATH POINT ON THE SLEEP PATH. A sleep reaches neither wq_block nor park_queueless,
+// so the two park funnels' prologues do not cover it and it carries its own. The claim is
+// that a cancelled caller ENDS here, and ends before the sleep has touched anything: no
+// deadline written, no sleep-queue entry, no timer armed.
+TEST(KTime, a_cancelled_sleeper_dies_before_it_touches_anything)
+{
+    reset();
+    g_now = 5000000;
+    g_sleeper.cancel_kind = CANCEL_SLAY;
+    if (setjmp(sched::g_exit_pad) == 0)
+    {
+        sched::g_exit_pad_armed = true;
+        ktime_sleep_until(g_now + 1000000);
+        ADD_FAILURE() << "a cancelled caller parked instead of reaching its death point, and a "
+                         "cancel that arrived behind the syscall entry read breaks no park";
+    }
+    sched::g_exit_pad_armed = false;
+    EXPECT_TRUE(sched::g_exited) << "the sleep did not reach the death point at all";
+    EXPECT_EQ(kernel().sleepq, nullptr)
+        << "the dying thread was left on the sleep queue, which sched::exit_current does not "
+           "sweep, so the list keeps a pointer into a slot the pool will re-hand";
+    EXPECT_EQ(g_arms, 0u) << "a one-shot was armed for a thread that is not going to wake";
+    EXPECT_FALSE(g_sleeper.on_timer) << "the dying thread kept its timer membership";
+    EXPECT_NE(g_sleeper.state, ThreadState::BLOCKED) << "the caller was marked BLOCKED anyway";
+}
+
+// THE UNBOUNDED HALF. A sleeper normally self-wakes at its own deadline, so a cancel missed
+// here costs the remaining delay and nothing more. ktime_sleep_ns saturates on overflow, and
+// a saturated deadline is a park nothing ever ends.
+TEST(KTime, a_cancelled_saturated_sleep_does_not_park_forever)
+{
+    reset();
+    g_now = 5000000;
+    g_sleeper.cancel_kind = CANCEL_KILL;
+    if (setjmp(sched::g_exit_pad) == 0)
+    {
+        sched::g_exit_pad_armed = true;
+        ktime_sleep_ns(UINT64_MAX); // saturates to a deadline no clock reaches
+        ADD_FAILURE() << "a cancelled caller parked on a saturated deadline, which is a thread "
+                         "lost for the lifetime of the image";
+    }
+    sched::g_exit_pad_armed = false;
+    EXPECT_TRUE(sched::g_exited);
+    EXPECT_EQ(kernel().sleepq, nullptr);
+}
+
+// The paired control, without which both arms above pass on a sleep that stopped working.
+TEST(KTime, an_uncancelled_sleeper_still_parks)
+{
+    reset();
+    g_now = 5000000;
+    ktime_sleep_until(g_now + 1000000);
+    EXPECT_FALSE(sched::g_exited) << "an uncancelled sleeper was ended at the death point";
+    EXPECT_EQ(kernel().sleepq, &g_sleeper) << "an uncancelled sleeper did not park";
+    EXPECT_EQ(g_arms, 1u) << "an uncancelled sleeper armed no one-shot";
 }
 
 // Tickless: nothing pending must disarm, not arm something far away.

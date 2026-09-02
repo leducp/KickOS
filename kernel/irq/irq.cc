@@ -8,6 +8,7 @@
 #include <kickos/irqlock.h>
 #include <kickos/cap.h>
 #include <kickos/kernel.h> // KICKOS_ASSERT
+#include <kickos/debug.h>  // KICKOS_DEBUG_ASSERT
 #include <kickos/arch/arch.h>
 #include <kickos/ktrace.h>
 
@@ -18,6 +19,7 @@
 #include <kickos/sys/atomic.h>
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <atomic> // atomic_thread_fence
 #endif
@@ -45,6 +47,9 @@ namespace kickos
         // the line test. The refusal stays because this inequality is its only guarantee.
         static_assert(IRQ_PUB_SLOTS - 1 >= KICKOS_MAX_IRQ,
                       "fewer usable records than lines would make a free line unpublishable");
+        // -1 terminates every chain, so an index must survive the link array's narrowing.
+        static_assert(IRQ_PUB_SLOTS - 1 <= INT16_MAX,
+                      "a record index the link array cannot hold would truncate a chain");
 
         enum PubState : uint8_t
         {
@@ -63,6 +68,13 @@ namespace kickos
         int g_pub_binding[IRQ_PUB_SLOTS];
         // The line naming this record, or -1. Reclaiming the record is what frees that line.
         int g_pub_line[IRQ_PUB_SLOTS];
+        // The next record on whichever chain this one is on, or -1 for the last. A record is
+        // on AT MOST ONE chain, and a LIVE record is on NONE: that is what makes a free pop
+        // safe. Slot 0 is on none of them.
+        int16_t g_pub_link[IRQ_PUB_SLOTS];
+        int16_t g_free_head = -1;
+        int16_t g_pending_head = -1;
+        int16_t g_draining_head = -1;
 
         // A53 cache line, so no two cores write one.
         constexpr size_t IRQ_EPOCH_CACHE_LINE = 64u;
@@ -91,6 +103,41 @@ namespace kickos
         void epoch_fence()
         {
             std::atomic_thread_fence(std::memory_order_seq_cst);
+        }
+
+        // g_pub_state and the three chains are two records of one membership, kept apart so
+        // either can check the other. Compiled out of a shipped image, and called only from
+        // the batch paths: it walks the whole record space, which the reserve and the release
+        // must not.
+        void pub_lists_check()
+        {
+#if KICKOS_DEBUG
+            int16_t const heads[3] = {g_free_head, g_pending_head, g_draining_head};
+            uint8_t const want[3] = {PUB_FREE, PUB_PENDING, PUB_DRAINING};
+            int chained[PUB_DRAINING + 1] = {};
+            for (int c = 0; c < 3; c++)
+            {
+                int guard = IRQ_PUB_SLOTS;
+                for (int i = heads[c]; i >= 0; i = g_pub_link[i])
+                {
+                    // A chain longer than the record space is a cycle, or a record threaded
+                    // onto two of them.
+                    KICKOS_DEBUG_ASSERT(guard > 0);
+                    guard--;
+                    KICKOS_DEBUG_ASSERT(i > 0 and i < IRQ_PUB_SLOTS);
+                    KICKOS_DEBUG_ASSERT(g_pub_state[i] == want[c]);
+                    chained[want[c]]++;
+                }
+            }
+            int stated[PUB_DRAINING + 1] = {};
+            for (int i = 1; i < IRQ_PUB_SLOTS; i++)
+            {
+                stated[g_pub_state[i]]++;
+            }
+            KICKOS_DEBUG_ASSERT(chained[PUB_FREE] == stated[PUB_FREE]);
+            KICKOS_DEBUG_ASSERT(chained[PUB_PENDING] == stated[PUB_PENDING]);
+            KICKOS_DEBUG_ASSERT(chained[PUB_DRAINING] == stated[PUB_DRAINING]);
+#endif
         }
 #endif
 
@@ -156,18 +203,16 @@ namespace kickos
         // them must outlive. Only ever called with that batch empty.
         void pub_batch_close()
         {
-            bool any = false;
-            for (int i = 1; i < IRQ_PUB_SLOTS; i++)
-            {
-                if (g_pub_state[i] == PUB_PENDING)
-                {
-                    g_pub_state[i] = PUB_DRAINING;
-                    any = true;
-                }
-            }
-            if (not any)
+            KICKOS_DEBUG_ASSERT(g_draining_head < 0);
+            if (g_pending_head < 0)
             {
                 return;
+            }
+            g_draining_head = g_pending_head;
+            g_pending_head = -1;
+            for (int i = g_draining_head; i >= 0; i = g_pub_link[i])
+            {
+                g_pub_state[i] = PUB_DRAINING;
             }
             epoch_fence();
             for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
@@ -175,6 +220,7 @@ namespace kickos
                 g_drain_epoch[core] = g_epoch_row[core].epoch.load();
             }
             g_drain_open = true;
+            pub_lists_check();
         }
 
         // Whether every core inside the dispatch entry when the batch closed has left it. An
@@ -211,6 +257,8 @@ namespace kickos
             g_pub[slot].handler = nullptr;
             g_pub[slot].arg = nullptr;
             g_pub_state[slot] = PUB_FREE;
+            g_pub_link[slot] = g_free_head;
+            g_free_head = static_cast<int16_t>(slot);
         }
 
         // Reclaims whatever a past retirement is owed and opens a batch for the rest; a record
@@ -218,6 +266,7 @@ namespace kickos
         // clears the batch a past call left open, the second covers what this call retired.
         void pub_drain()
         {
+            pub_lists_check();
             for (int pass = 0; pass < 2; pass++)
             {
                 if (not g_drain_open)
@@ -228,12 +277,15 @@ namespace kickos
                 {
                     return;
                 }
-                for (int i = 1; i < IRQ_PUB_SLOTS; i++)
+                int i = g_draining_head;
+                g_draining_head = -1;
+                while (i >= 0)
                 {
-                    if (g_pub_state[i] == PUB_DRAINING)
-                    {
-                        pub_reclaim(i);
-                    }
+                    // Read before the reclamation, which rethreads this record onto the free
+                    // chain and so overwrites its link.
+                    int const next = g_pub_link[i];
+                    pub_reclaim(i);
+                    i = next;
                 }
                 g_drain_open = false;
             }
@@ -263,6 +315,8 @@ namespace kickos
                 if ((word & IRQ_PUB_RETIRING) == 0u)
                 {
                     g_pub_state[slot] = PUB_PENDING;
+                    g_pub_link[slot] = g_pending_head;
+                    g_pending_head = static_cast<int16_t>(slot);
                     // BEFORE the epoch sample pub_drain takes: a dispatch that still reads a
                     // live record must be one whose core that sample sees inside the entry.
                     kernel().irq_table[line].pub = slot | IRQ_PUB_RETIRING;
@@ -277,22 +331,24 @@ namespace kickos
         // is named by no line, so unreserving it is not a reclamation and needs no grace period.
         int pub_reserve()
         {
-            for (int i = 1; i < IRQ_PUB_SLOTS; i++)
+            int const i = g_free_head;
+            if (i < 0)
             {
-                if (g_pub_state[i] == PUB_FREE)
-                {
-                    g_pub_state[i] = PUB_LIVE;
-                    g_pub_binding[i] = -1;
-                    g_pub_line[i] = -1;
-                    return i;
-                }
+                return -1;
             }
-            return -1;
+            g_free_head = g_pub_link[i];
+            g_pub_link[i] = -1;
+            g_pub_state[i] = PUB_LIVE;
+            g_pub_binding[i] = -1;
+            g_pub_line[i] = -1;
+            return i;
         }
 
         void pub_unreserve(int slot)
         {
             g_pub_state[slot] = PUB_FREE;
+            g_pub_link[slot] = g_free_head;
+            g_free_head = static_cast<int16_t>(slot);
         }
 
         // Seats the pair in a reserved record and names it from `line`; the fields must be seated
@@ -326,8 +382,19 @@ namespace kickos
                 g_pub_state[i] = PUB_FREE;
                 g_pub_binding[i] = -1;
                 g_pub_line[i] = -1;
+                g_pub_link[i] = -1;
             }
+            // Lowest index first, and slot 0 stays off every chain.
+            g_free_head = -1;
+            for (int i = IRQ_PUB_SLOTS - 1; i >= 1; i--)
+            {
+                g_pub_link[i] = g_free_head;
+                g_free_head = static_cast<int16_t>(i);
+            }
+            g_pending_head = -1;
+            g_draining_head = -1;
             g_drain_open = false;
+            pub_lists_check();
         }
 #endif
     }

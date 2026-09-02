@@ -98,15 +98,26 @@ if(KICKOS_KERNEL_CORES GREATER 1)
     reply_abandoned_cap call_timeout_revert call_infoless_revert call_close_reply
     call_donation call_donation_hold call_donation_slow call_donation_pending
     cap_reply_bound_fast cap_reply_bound_slow thread_slay_timeout
-    irq_discard irq_mask_coalesce irq_spurious irq_stale_register
     mutex_owner_died_nowaiter aspace_two_spaces_same_grant
-    irq_reclaim parked_frame_hostile thread_slay_window)
+    parked_frame_hostile)
 endif()
 
 # The same for the arms that report PARTIAL. A PARTIAL reports `ok`, so neither the plan/case
 # reconciliation nor the skip bookkeeping can see one and this by-name set is the only thing
 # that can. It is NOT derivable from _tap_arms: the conditions below name the postures.
 set(KICKOS_EXPECT_PARTIALS "")
+# Above one kernel core, five arms can each reach a half they cannot judge, for two different
+# reasons. FOUR tier-1 IRQ arms carry a claim about an event that must NOT happen (a service,
+# a redelivery or a wake), and a non-event raises nothing to order a later read after, so
+# there is no closed interval to read the result in. thread_slay_window is the other reason:
+# its control leg needs the victim to reach a park before the kill lands, and that race is the
+# machine's to grant. Each arm names its own in main.cc, and the one-core fleet checks them
+# all. thread_slay_window partials only when its restage budget is spent, so the name is
+# listed here rather than reported every run.
+if(KICKOS_KERNEL_CORES GREATER 1)
+  list(APPEND KICKOS_EXPECT_PARTIALS irq_spurious irq_mask_coalesce irq_discard
+                                     irq_stale_register thread_slay_window)
+endif()
 if(KICKOS_ARCH STREQUAL "sim")
   list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
 endif()

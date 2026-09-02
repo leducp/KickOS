@@ -60,6 +60,32 @@ namespace kickos
     // waking; a parked thread never writes its own result. Caller holds IrqLock.
     void park_queueless(Thread* c, WaitKind kind, void* obj);
 
+    // Whether a cancel landed BEHIND syscall_dispatch's entry read of the same field. That
+    // read is outside the kernel lock, so a cancel raised after it aborted no park: the target
+    // was not BLOCKED, thread_cancel_kind therefore returned without unwinding anything, and a
+    // thread that parks after it is owed a wake by nobody.
+    //
+    // ASK IT IN THE CALLER'S OWN UNDER-LOCK PROLOGUE, before the first side effect, and end
+    // the thread there exactly as the entry check does. Not inside wq_block or park_queueless:
+    // a caller may reach its park with a transaction already committed, and exiting from
+    // inside the park would abandon it. Placed in the prologue there is nothing to unwind by
+    // hand: everything the caller holds that early is something sched::exit_current already
+    // sweeps, caps through cap_teardown and task holds through task_orphan_created_by.
+    //
+    // cancel_kind is written only under this same lock, so a prologue answer holds until the
+    // lock is released.
+    //
+    // TWO SHAPES ANSWER A PENDING CANCEL, and which one a site takes is the site's own. A
+    // parking caller ENDS the thread here, as syscall_dispatch's entry check does. irq_wait
+    // RETURNS -KOS_ECANCELED instead, being the kernel's one cancellation point, and its caller
+    // is owed the code. That divergence is why no park_cancel_or_exit helper folds the
+    // conditional away: a helper whose name promises an exit is wrong at the one site that
+    // returns. The conditional also keeps the check looking like a PROLOGUE rather than a
+    // statement that could be moved, and moving it is what breaks it: at the park instead,
+    // ktime_sleep_until would exit with the thread already on the sleep queue and its one-shot
+    // armed.
+    [[nodiscard]] bool park_cancel_pending(Thread const* c);
+
     // Resume barrier, MANDATORY for any blocking primitive that reads waker-set TCB state
     // (wait_result) after resuming:
     //     Thread* c = sched::current(); uint32_t epoch;

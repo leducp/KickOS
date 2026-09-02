@@ -701,9 +701,14 @@ namespace
     }
 
     // --- IRQ mask latches-and-coalesces a masked raise -------------------------
-    // Driver MUST run below root so root can fire three raises back-to-back. Fire #1
-    // delivers and masks the line; #2 and #3 land masked and COALESCE one-deep, so the
-    // driver services EXACTLY twice, never a phantom third.
+    // THE MASKED WINDOW IS HELD BY THIS ARM, not incidental. The driver stops between its
+    // wake and its ack until root reopens the gate, so the raises root fires in between land
+    // on a line root KNOWS is masked. A window manufactured by running the driver below root
+    // holds on one core only.
+    //
+    // g_irq_ready carries BOTH directions: the driver posts it once when it is about to park,
+    // and root posts it to release each ack. Strictly alternating and root-driven, so the two
+    // senses never overlap.
     int g_mask_serviced = 0;
     constexpr int MASK_LINE = KICKOS_SELFTEST_IRQ_BASE + 0;
 
@@ -715,38 +720,74 @@ namespace
         {
             irq.wait();
             g_mask_serviced++;
+            kos_sem_post(CH_DONE);  // phase A: serviced, line still MASKED, not yet acked
+            kos_sem_wait(CH_READY); // root holds the masked window open
             irq.ack();
-            kos_sem_post(CH_DONE);
+            kos_sem_post(CH_DONE);  // phase B: the line is ARMED again
         }
     }
     void t_irq_mask()
     {
-        TAP_SKIP_ONE_CORE_ORDER();
         kos_sem_create(0, &g_irq_ready);
         g_mask_serviced = 0;
         kos_cap_t irq = KOS_CAP_NONE;
-        TAP_CHECK(kos_irq_claim(MASK_LINE, KOS_IRQ_EDGE, &irq) == 0);
-        kos_irq_ack(irq); // arm: root injects below and this driver runs BELOW root
+        if (kos_irq_claim(MASK_LINE, KOS_IRQ_EDGE, &irq) != 0)
+        {
+            kos_sem_destroy(g_irq_ready);
+            tap::fail("the mask line could not be claimed");
+            return;
+        }
+        kos_irq_ack(irq); // arm the freshly-claimed (masked) line
         kos_cap_grant caps[] = {{g_done, CH_FULL},
                                 {g_irq_ready, CH_FULL},
                                 {irq, KOS_CAP_WAIT}};
-        auto drv = kos::thread::create_caps(mask_driver, nullptr, "maskdrv", 1, caps, 3); // below root
-        TAP_CHECK(drv.valid());        // spawn failure would hang the ready handshake below
+        auto drv = kos::thread::create_caps(mask_driver, nullptr, "maskdrv", 1, caps, 3);
+        if (not drv.valid())
+        {
+            kos_handle_close(irq);
+            kos_sem_destroy(g_irq_ready);
+            tap::fail("the mask driver did not spawn"); // its absence would hang the gate below
+            return;
+        }
         kos_handle_close(irq);
         kos_sem_wait(g_irq_ready); // driver holds the line cap, about to wait
-        kos_sem_destroy(g_irq_ready);
+
+        kos_irq_inject(MASK_LINE);
+        wait_n(1); // phase A: serviced once, stopped before its ack, so masked from here
         kos_irq_inject(MASK_LINE);
         kos_irq_inject(MASK_LINE);
-        kos_irq_inject(MASK_LINE);
+        kos_sem_post(g_irq_ready); // release the window; the driver acks
+        // THE LATCH HALF: a raise taken while the line was masked was kept and redelivered
+        // at the ack. Root injected nothing after the gate opened, so the second service can
+        // only be a redelivery. Two posts: the ack's phase B, then that service's phase A.
         wait_n(2);
-        // Bounded settle: a spurious third wake would bump serviced past 2 while the
-        // driver is parked in its third wait.
+        bool const latched = (g_mask_serviced == 2);
+
+        kos_sem_post(g_irq_ready);
+        wait_n(1); // phase B: acked and ARMED, so a raise below cannot beat the ack
+        bool one_deep = true;
+#if KICKOS_KERNEL_CORES > 1
+        // THE ONE-DEEP HALF IS NOT WITNESSED ABOVE ONE KERNEL CORE. Queueing rather than
+        // coalescing shows up ONLY as a service that must not happen, and a service that does
+        // not happen raises no event to order a later read after. Gating the driver does not
+        // help: a queued latch is consumed at the next gate release and is indistinguishable
+        // there from the redelivery of a fresh raise. Checked on every one-core preset.
+        tap::partial("one-deep coalescing is a service that must NOT happen");
+#else
         kos_sleep_ns(2000000ull);
-        TAP_CHECK(g_mask_serviced == 2);
-        // Release the parked third wait with a fresh event so the driver exits + joins.
+        one_deep = (g_mask_serviced == 2);
+#endif
+        // Liveness: a fresh raise reaches the re-armed line, and the driver's loop ends.
         kos_irq_inject(MASK_LINE);
-        wait_n(1);
-        TAP_CHECK(g_mask_serviced == 3);
+        wait_n(1); // phase A of the third service
+        bool const live = (g_mask_serviced == 3);
+        kos_sem_post(g_irq_ready);
+        wait_n(1); // phase B, which is also what says the driver is past its last gate
+        kos_sem_destroy(g_irq_ready);
+
+        TAP_CHECK(latched);
+        TAP_CHECK(one_deep);
+        TAP_CHECK(live);
     }
 
     // --- An EDGE driver can retire a latch it knows is stale -------------------
@@ -773,6 +814,9 @@ namespace
     static_assert(IRQ_CTX_LINE != DISCARD_LINE,
                   "the irq-context and discard arms would share a line");
 
+    // Same held window as the mask arm: the driver stops between its wake and its discard
+    // until root reopens the gate, so the raises root fires in between land on a line root
+    // knows is masked. g_irq_ready carries both directions, strictly alternating.
     void discard_driver(void*)
     {
         auto irq = kos::Irq::adopt(CH_IRQ);
@@ -781,43 +825,73 @@ namespace
         {
             irq.wait();
             g_disc_serviced++;
-            irq.discard(); // the line is masked here: retire anything coalesced onto it
+            kos_sem_post(CH_DONE);  // phase A: serviced, MASKED, nothing retired yet
+            kos_sem_wait(CH_READY); // root holds the masked window open
+            irq.discard();          // retire anything coalesced onto the masked line
             irq.ack();
-            kos_sem_post(CH_DONE);
+            kos_sem_post(CH_DONE);  // phase B: the line is ARMED again
         }
     }
     void t_irq_discard()
     {
-        TAP_SKIP_ONE_CORE_ORDER();
         // A bad cap is refused at the same chokepoint as wait/ack, before any controller
         // write. Must stay ahead of every allocation, or its failure return strands them.
         TAP_CHECK(kos_irq_discard(KOS_CAP_NONE) == -KOS_EBADF);
         kos_sem_create(0, &g_irq_ready);
         g_disc_serviced = 0;
         kos_cap_t irq = KOS_CAP_NONE;
-        TAP_CHECK(kos_irq_claim(DISCARD_LINE, KOS_IRQ_EDGE, &irq) == 0);
-        kos_irq_ack(irq); // arm: root injects below and this driver runs BELOW root
+        if (kos_irq_claim(DISCARD_LINE, KOS_IRQ_EDGE, &irq) != 0)
+        {
+            kos_sem_destroy(g_irq_ready);
+            tap::fail("the discard line could not be claimed");
+            return;
+        }
+        kos_irq_ack(irq); // arm the freshly-claimed (masked) line
         kos_cap_grant caps[] = {{g_done, CH_FULL},
                                 {g_irq_ready, CH_FULL},
                                 {irq, KOS_CAP_WAIT}};
         auto drv = kos::thread::create_caps(discard_driver, nullptr, "discirq", 1, caps, 3);
-        TAP_CHECK(drv.valid()); // spawn failure would hang the ready handshake below
+        if (not drv.valid())
+        {
+            kos_handle_close(irq);
+            kos_sem_destroy(g_irq_ready);
+            tap::fail("the discard driver did not spawn"); // its absence would hang the gate
+            return;
+        }
         kos_handle_close(irq);
         kos_sem_wait(g_irq_ready);
-        kos_sem_destroy(g_irq_ready);
-        // #1 delivers + masks; #2 and #3 coalesce into one latch on the masked line.
+
+        kos_irq_inject(DISCARD_LINE);
+        wait_n(1); // phase A: serviced once, stopped before its discard, so masked from here
         kos_irq_inject(DISCARD_LINE);
         kos_irq_inject(DISCARD_LINE);
-        kos_irq_inject(DISCARD_LINE);
+        kos_sem_post(g_irq_ready); // release the window; the driver discards, then acks
+        // PHASE B IS LOAD-BEARING HERE, not bookkeeping: a raise from root that beat the
+        // discard would be retired by it, and the driver would then wait on a line nothing
+        // will raise again.
         wait_n(1);
-        // Bounded settle: without the discard the coalesced latch redelivers here and the
-        // driver reaches its second service.
+        bool retired = true;
+#if KICKOS_KERNEL_CORES > 1
+        // THE RETIREMENT HALF IS NOT WITNESSED ABOVE ONE KERNEL CORE. That the discard
+        // dropped the coalesced latch shows up ONLY as a second service that must not happen,
+        // and a service that does not happen raises no event to order a later read after.
+        // Checked on every one-core preset.
+        tap::partial("a retired latch is a service that must NOT happen");
+#else
         kos_sleep_ns(2000000ull);
-        TAP_CHECK(g_disc_serviced == 1);
-        // Liveness: discard must retire the latch without wedging the line.
+        retired = (g_disc_serviced == 1);
+#endif
+        // Liveness, and this half holds on every core count: the discard must retire the
+        // latch without wedging the line.
         kos_irq_inject(DISCARD_LINE);
-        wait_n(1);
-        TAP_CHECK(g_disc_serviced == 2);
+        wait_n(1); // phase A of the second service
+        bool const live = (g_disc_serviced == 2);
+        kos_sem_post(g_irq_ready);
+        wait_n(1); // phase B, which is also what says the driver is past its last gate
+        kos_sem_destroy(g_irq_ready);
+
+        TAP_CHECK(retired);
+        TAP_CHECK(live);
     }
 
     // --- Auto-rearm: wait; service with NO explicit ack ------------------------
@@ -1784,6 +1858,49 @@ namespace
     }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
+    // A bounded POSITIVE edge. Both helpers report whether the state was REACHED and never
+    // that it was not: an absence has no event to wait on, so no arm may read a false return
+    // as a verdict about ordering.
+    constexpr uint64_t IRQ_EDGE_BUDGET_NS = 2000000000ull;
+    constexpr uint64_t IRQ_EDGE_POLL_NS = 100000ull;
+
+    // Above one kernel core a device line is targeted at core zero alone, so its handler runs
+    // on a core of its own and the count root reads on the next instruction may not have
+    // moved yet.
+    bool irq_spurious_await(uint32_t target)
+    {
+        uint64_t const deadline = kos_clock_now() + IRQ_EDGE_BUDGET_NS;
+        while (kos_irq_spurious_count() != target)
+        {
+            if (kos_clock_now() > deadline)
+            {
+                return false;
+            }
+            kos_sleep_ns(IRQ_EDGE_POLL_NS);
+        }
+        return true;
+    }
+
+    // A retired line comes back with its publication record's grace period, which ends when
+    // every peer core has left the interrupt dispatch entry. That is not a property of the
+    // calling thread's progress, so above one kernel core a first attempt can legally find
+    // the line still retiring; only a refusal that never lifts is a lost line.
+    int irq_claim_await(int line, kos_cap_t* out)
+    {
+        uint64_t const deadline = kos_clock_now() + IRQ_EDGE_BUDGET_NS;
+        int rc = kos_irq_claim(line, KOS_IRQ_EDGE, out);
+        while (rc == -KOS_EBUSY)
+        {
+            if (kos_clock_now() > deadline)
+            {
+                return rc;
+            }
+            kos_sleep_ns(IRQ_EDGE_POLL_NS);
+            rc = kos_irq_claim(line, KOS_IRQ_EDGE, out);
+        }
+        return rc;
+    }
+
     // --- One driver per line: a second claim on a bound line is refused --------
     void t_irq_ownership()
     {
@@ -1851,9 +1968,9 @@ namespace
         kos_irq_ack(CH_IRQ);
         kos_sem_post(CH_DONE);
     }
+    constexpr uint32_t RECLAIM_JOIN_US = 200000;
     void t_irq_reclaim()
     {
-        TAP_SKIP_ONE_CORE_ORDER();
         kos_cap_t first = KOS_CAP_NONE;
         TAP_CHECK(kos_irq_claim(RECLAIM_LINE, KOS_IRQ_EDGE, &first) == 0);
         // done@1, line@3, index 2 deliberately EMPTY.
@@ -1871,29 +1988,48 @@ namespace
         // Root drops its copy BEFORE the worker dies, so the worker's exit is what takes the
         // refcount to zero. Closing after would not prove that DEATH releases the line.
         TAP_CHECK(kos_handle_close(first) == 0);
-        wait_n(1);
-        // The worker is higher priority, so it has exited by the time root runs again.
+        wait_n(1); // consumes the worker's post; the ORDER below comes from the join
+        // The claim is that DEATH releases the line, so the edge has to be the death itself:
+        // sched::exit_current runs cap_teardown BEFORE it wakes a joiner, so a join that
+        // returns 0 has the worker's line cap already dropped. The post above is raised
+        // before the worker returns and names no such point.
+        int const jrc = w.join(RECLAIM_JOIN_US);
         kos_cap_t second = KOS_CAP_NONE;
-        // -KOS_EBUSY here means death did not release the line
-        TAP_CHECK(kos_irq_claim(RECLAIM_LINE, KOS_IRQ_EDGE, &second) == 0);
-        TAP_CHECK(kos_handle_close(second) == 0);
+        int const crc = irq_claim_await(RECLAIM_LINE, &second);
+        int close_rc = 0;
+        if (crc == 0)
+        {
+            close_rc = kos_handle_close(second);
+        }
+        TAP_CHECK(jrc == 0);
+        TAP_CHECK(crc == 0); // a refusal that never lifts means death did not release the line
+        TAP_CHECK(close_rc == 0);
     }
 
     // --- Spurious IRQ: an unbound line is masked + counted, never dropped -------
     void t_irq_spurious()
     {
-        TAP_SKIP_ONE_CORE_ORDER();
         constexpr int FREE_LINE = KICKOS_SELFTEST_IRQ_BASE + 3; // no driver bound to this line
         // Enable the line so the injected raise reaches the default handler: ARM NVIC and RX
         // are masked by default, sim/riscv are not.
         kos_irq_unmask(FREE_LINE);
-        uint32_t before = kos_irq_spurious_count();
+        uint32_t const before = kos_irq_spurious_count();
         kos_irq_inject(FREE_LINE);   // default handler runs: mask + bump counter
-        TAP_CHECK(kos_irq_spurious_count() == before + 1);
+        TAP_CHECK(irq_spurious_await(before + 1));
+#if KICKOS_KERNEL_CORES > 1
+        // THE SECOND HALF IS NOT WITNESSED ABOVE ONE KERNEL CORE, and no deadline fixes it.
+        // The claim is that a raise on the now-masked line does NOT reach the handler, and a
+        // non-delivery raises no event: the only thing that could order a later read after
+        // the delivery this claim forbids is that delivery itself, so there is no closed
+        // interval to read the counter in. It is checked on every one-core preset, where the
+        // inject and its handler run on the calling core.
+        tap::partial("a masked line's non-delivery has no event to be ordered after");
+#else
         // The default handler masked the line, so a second raise LATCHES rather than
         // delivering: the counter must NOT advance until the line is unmasked again.
         kos_irq_inject(FREE_LINE);
         TAP_CHECK(kos_irq_spurious_count() == before + 1);
+#endif
     }
 
     // --- First-arm discards pre-claim garbage ----------------------------------
@@ -1914,35 +2050,76 @@ namespace
     }
     void t_irq_stale_register()
     {
-        TAP_SKIP_ONE_CORE_ORDER();
         kos_sem_create(0, &g_irq_ready);
         g_stale_seen = 0;
         // Pre-registration garbage: unmask so the default handler runs (mask + count) on the
         // first raise; the second raise then latches on the now-masked line.
         kos_irq_unmask(STALE_LINE);
-        uint32_t before = kos_irq_spurious_count();
+        uint32_t const before = kos_irq_spurious_count();
         kos_irq_inject(STALE_LINE);
-        TAP_CHECK(kos_irq_spurious_count() == before + 1);
+        if (not irq_spurious_await(before + 1))
+        {
+            kos_sem_destroy(g_irq_ready);
+            tap::fail("the pre-registration raise never reached the default handler");
+            return;
+        }
         kos_irq_inject(STALE_LINE);
         // Claim but deliberately do NOT arm: the latch must still be there for the
         // driver's own first wait to discard.
         kos_cap_t irq = KOS_CAP_NONE;
-        TAP_CHECK(kos_irq_claim(STALE_LINE, KOS_IRQ_EDGE, &irq) == 0);
+        if (kos_irq_claim(STALE_LINE, KOS_IRQ_EDGE, &irq) != 0)
+        {
+            kos_sem_destroy(g_irq_ready);
+            tap::fail("the stale line could not be claimed");
+            return;
+        }
         kos_cap_grant caps[] = {{g_done, CH_FULL},
                                 {g_irq_ready, CH_FULL},
                                 {irq, KOS_CAP_WAIT}};
-        auto drv = kos::thread::create_caps(stale_driver, nullptr, "staleirq", 1, caps, 3); // below root
-        TAP_CHECK(drv.valid());         // spawn failure would hang the ready handshake below
+        auto drv = kos::thread::create_caps(stale_driver, nullptr, "staleirq", 1, caps, 3);
+        if (not drv.valid())
+        {
+            kos_handle_close(irq);
+            kos_sem_destroy(g_irq_ready);
+            tap::fail("the stale driver did not spawn"); // its absence would hang the wait below
+            return;
+        }
         kos_handle_close(irq);
         kos_sem_wait(g_irq_ready); // driver holds the line cap, about to take its first wait
         kos_sem_destroy(g_irq_ready);
-        // No phantom: the driver's first wait blocks despite the pre-registration latch.
+        bool no_phantom = true;
+#if KICKOS_KERNEL_CORES > 1
+        // THE NO-PHANTOM HALF IS NOT WITNESSED ABOVE ONE KERNEL CORE. A wake that must not
+        // happen raises no event, and the liveness half below cannot separate the two: under
+        // the phantom the driver wakes on the stale latch, and root's later inject then lands
+        // on a line with no waiter, leaving the same count. Checked on every one-core preset.
+        tap::partial("a phantom wake is a wake that must NOT happen");
+#else
         kos_sleep_ns(2000000ull);
-        TAP_CHECK(g_stale_seen == 0);
-        // Liveness: a real event delivers on the freshly-armed line, driver exits + joins.
+        no_phantom = (g_stale_seen == 0);
+#endif
+        // Liveness, on every core count. Root cannot observe the driver REACH its first
+        // wait, and that wait is what arms the line: a raise landing before it is cleared by
+        // the arm itself, which is the behaviour under test. So raise until one is delivered,
+        // bounded. THIS LEAVES STRAY RAISES ON STALE_LINE: every raise after the driver has
+        // serviced reaches the null-object default, which masks the line and bumps the
+        // spurious count, so an arm that reads that count after this one must take its own
+        // `before` reading rather than one taken earlier.
+        uint64_t const deadline = kos_clock_now() + IRQ_EDGE_BUDGET_NS;
         kos_irq_inject(STALE_LINE);
-        wait_n(1);
-        TAP_CHECK(g_stale_seen == 1);
+        while (g_stale_seen == 0 and kos_clock_now() <= deadline)
+        {
+            kos_sleep_ns(IRQ_EDGE_POLL_NS);
+            kos_irq_inject(STALE_LINE);
+        }
+        bool const live = (g_stale_seen == 1);
+        if (live)
+        {
+            wait_n(1); // the driver's own post, so the counter is left balanced
+        }
+
+        TAP_CHECK(no_phantom);
+        TAP_CHECK(live);
     }
 #endif
 
@@ -8705,29 +8882,52 @@ namespace
         return true;
     }
 
+    // How many times leg 1 may restage. The worker posts before it parks, and above one
+    // kernel core a kill can land in that gap, ending it at its next syscall entry with no
+    // window at all. That is a staging that did not take, not a failure of the property.
+    constexpr int SLAY_STAGE_TRIES = 8;
+
     void t_thread_slay_window()
     {
-        TAP_SKIP_ONE_CORE_ORDER();
         kos_cap_t park = KOS_CAP_NONE;
         if (kos_sem_create(0, &park) != 0)
         {
             tap::skip("no semaphore slot");
             return;
         }
-        g_slay_window = 0;
         // LEG 1, the control. A kill breaks the park and the target returns to userspace for
         // exactly as long as it takes to reach its next syscall.
-        kos::thread::Handle killed;
-        if (not stage_a_parked_slay_worker(&killed, park))
+        int slay_window = 0;
+        for (int attempt = 0; attempt < SLAY_STAGE_TRIES and slay_window != 1; attempt++)
+        {
+            kos::thread::Handle killed;
+            if (not stage_a_parked_slay_worker(&killed, park))
+            {
+                (void)kos_handle_close(park);
+                tap::skip("pool too small");
+                return;
+            }
+            g_slay_window = 0;
+            int const krc = killed.kill();
+            int const jrc = killed.join(JOIN_GENEROUS_US);
+            if (krc != 0 or jrc != 0)
+            {
+                (void)kos_handle_close(park);
+                tap::fail("the control worker could not be killed and joined");
+                return;
+            }
+            slay_window = g_slay_window;
+        }
+        if (slay_window != 1)
         {
             (void)kos_handle_close(park);
-            tap::skip("pool too small");
+            // A PARTIAL, not a failure. The window is the machine's to grant: every restage
+            // lost the race to root's kill, which says nothing about the redirect leg 2
+            // judges, so a red here would be a claim about the host and not about the tree.
+            // The arm still reddens when the redirect itself is broken, at leg 2.
+            tap::partial("the kill window never opened, so the slay leg would be vacuous");
             return;
         }
-        TAP_CHECK(killed.kill() == 0);
-        TAP_CHECK(killed.join(JOIN_GENEROUS_US) == 0);
-        int const slay_window = g_slay_window;
-        TAP_CHECK(slay_window == 1); // the window is real, so leg 2 is not vacuous
 
         // LEG 2, the subject. Same body, same park, same parent: only the verb differs.
         kos::thread::Handle slain;
@@ -8738,6 +8938,12 @@ namespace
             return;
         }
         // 0, not -KOS_ETIMEDOUT: the call WAITS, and gone is what it returns.
+        //
+        // THE CLAIM HOLDS ON EITHER INTERLEAVING, which is why this leg needs no restaging.
+        // A slay reaching a victim already parked aborts the park and switch_to redirects its
+        // resume; one reaching a victim still short of that park is found at the victim's own
+        // syscall entry. Neither lets it run a further user instruction, and above one kernel
+        // core both are reachable.
         TAP_CHECK(slain.slay(JOIN_GENEROUS_US) == 0);
         int const slay_window_after = g_slay_window;
         TAP_CHECK(slay_window_after == 1); // unchanged: it executed no further user instruction
@@ -8895,6 +9101,11 @@ namespace
 
     void t_thread_slay_timeout()
     {
+        // A THIRD REASON TO STAND DOWN ABOVE ONE KERNEL CORE, and not this file's usual two.
+        // The instrument is starvation: one hog outranking the victim denies it THE core, so
+        // the slay's wait expires while the death stays owed. Denying it EVERY core is not a
+        // precondition a test can establish, the placement of N spinners being the
+        // scheduler's to choose, so the arm would measure the scheduler and not the timeout.
         TAP_SKIP_ONE_CORE_ORDER();
         kos_cap_t park = KOS_CAP_NONE;
         if (kos_sem_create(0, &park) != 0)

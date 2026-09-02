@@ -589,6 +589,68 @@ namespace
     }
 
     // =======================================================================================
+    // THE RECORD POOL AS A POOL. There is one record per line, so "every record taken" and
+    // "every line bound" are the same state and the boundary is read from the LINE side: a
+    // record index is observable nowhere outside kernel/irq/irq.cc, and the refusal for want
+    // of a record is unreachable through the public API by construction, since a caller that
+    // found a free line has left a record free for it.
+    //
+    // Runs with the peer inside the dispatch entry, so no reclamation can elapse and a record
+    // a retirement takes stays taken until the arm lets the peer out.
+
+    struct Pool
+    {
+        unsigned bound = 0;           // lines the pool admitted while records were owed to them
+        bool last_took = false;       // the held-back line got the last record
+        bool retired_refused = false; // and was refused once that record was retiring
+    };
+    Pool g_pool;
+
+    void bind_every_line_then_retire_one()
+    {
+        kickos::irqfix::g_core = 0;
+        for (int line = 0; line < KICKOS_MAX_IRQ; line++)
+        {
+            if (line == LINE_CARRIER or line == LINE_FREE)
+            {
+                continue;
+            }
+            if (kickos::irq_attach(line, probe_handler, nullptr))
+            {
+                g_pool.bound++;
+            }
+        }
+        // Held back so exactly one record is left for it: LINE_CARRIER holds one and the loop
+        // above holds the rest.
+        g_pool.last_took = kickos::irq_attach(LINE_FREE, probe_handler, nullptr);
+        kickos::irq_detach(LINE_FREE);
+        g_pool.retired_refused = not kickos::irq_attach(LINE_FREE, probe_handler, nullptr);
+        kickos::irqfix::g_core = 1;
+    }
+
+    TEST_F(IrqQuiesce, EveryLineBoundTakesEveryRecordAndOneDrainReturnsOne)
+    {
+        g_pool = Pool();
+
+        peer_dispatch_running(bind_every_line_then_retire_one);
+
+        EXPECT_EQ(g_pool.bound, static_cast<unsigned>(KICKOS_MAX_IRQ - 2))
+            << "a line was refused with a record still owed to it: the pool hands out fewer "
+               "records than the space holds, so a board cannot bind every line it has";
+        EXPECT_TRUE(g_pool.last_took)
+            << "the last record was never handed out";
+        EXPECT_TRUE(g_pool.retired_refused)
+            << "a record was handed out again inside its grace period, with the pool otherwise "
+               "empty: the retirement put it back where a dispatch may still hold it";
+
+        // The peer is out, so the next operation on the line drains what that retirement owes
+        // and the record it took is the only one there is to hand back.
+        EXPECT_TRUE(kickos::irq_attach(LINE_FREE, probe_handler, nullptr))
+            << "the retired record never came back, so every record a driver retires is lost "
+               "for the lifetime of the image";
+    }
+
+    // =======================================================================================
     // A DISPATCH THAT ALREADY HOLDS THE RETIRED PAIR, against a rebind of its line. The entry
     // snapshots the pair once and the handler masks the line as its first act, so a rebind that
     // arms the line in between leaves the new owner parked on a line the old handler masks.

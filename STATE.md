@@ -16,6 +16,17 @@ say.
 
 ## Where we are
 
+**M7.5 LANDED THE DEATH POINT ON EVERY BOARD AND RETRIAGED THE SKIP SET, both witnessed by a full
+fleet sweep against a frozen tree.** Host: 57 presets, 2411 host tests, 57 pass and 0 fail. Image:
+57 presets, 490 image gates, 20 run and passing, 0 partial, 0 fail, 0 skipped, 37 presets
+registering no image gate. Both wrote their DONE sentinel, and the image half took its expected
+empty and skip counts on the first declaration rather than refusing. **The figure item 1 needed is
+in neither summary line: `trap_redzone` appears in all 57 preset logs and all 57 passed**, so no
+preset moved past its red zone on any of the five classes rooted at `syscall_dispatch`. Host is +2
+against M7.2 over the same 57 presets, which is this branch's new unit coverage and nothing else;
+the image half is unmoved in every figure, so this branch added no image gate and moved no preset
+out of the set registering none.
+
 **M7.4 LANDED S5: THE RV64 BACKEND, ITS DOORBELL AND LOCK, AND THE SMP-SEAM VERDICT.** Four harts
 run kernel code on `qemu-riscv64-smp` under one lock. The verdict is below, with the seam records.
 What follows is what a green run does NOT say.
@@ -247,10 +258,26 @@ spinning in the lock's acquire loop answers the doorbell by POLLING and acknowle
 "the interrupt path never ran" and "the host starved that core" read identically. Under a parallel
 `ctest` a correct image went red once in three runs. The refusal says so itself.
 
-**THE FOUR-CORE PRESET RUNS FOUR FIFTHS OF THE SELFTEST, and the skip set is what names the fifth.**
-28 arms assert a single-core ORDERING and most state that premise in their own comment. They are
-skipped as a CLASS rather than one at a time because a failing arm bails without releasing its pooled
-object, and one flaky arm became 59 red arms in a single run. Ruled separate work, not deferred.
+**THE SKIP SET'S LABEL WAS A MISDIAGNOSIS, AND THE LABEL COST MORE THAN THE SKIPS DID.** It reads
+"a cross-thread progress order is not a property of N kernel cores", and this file used to say 28
+arms assert a single-core ORDERING. For at least four of the five tier-1 IRQ arms reworked in M7.5
+the progress order was only how the precondition got MANUFACTURED; the real blocker is an ABSENCE
+CLAIM, a service, a redelivery or a wake that must not happen, and a non-event raises nothing for a
+later read to be ordered after. **THE PROOF is one mutation answering two questions: deleting the
+masked window the coalescing property is about reddens `irq_mask_coalesce` and `irq_discard` at one
+core and PASSES at four.** Six arms came off the set, 28 to 22. **Ask each of the remaining 22
+whether it asserts that something did NOT happen, not whether it assumes an order.** The class is
+still skipped whole rather than one at a time, for the reason that has not changed: a failing arm
+bails without releasing its pooled object, and one flaky arm became 59 red arms in a single run.
+
+**FIVE ARMS NOW REPORT PARTIAL ABOVE ONE KERNEL CORE FOR TWO DIFFERENT REASONS, and collapsing them
+into one loses the distinction.** `irq_spurious`, `irq_mask_coalesce`, `irq_discard` and
+`irq_stale_register` each carry a half that is a NON-EVENT, unwitnessable wherever the observer runs
+concurrently with the subject; the one-core fleet still checks those halves in full.
+`thread_slay_window` is the other reason and not the same one: its control leg needs the victim to
+reach a park before the kill lands, an UNESTABLISHED PRECONDITION that the machine grants or does
+not, so a spent restage budget is a partial and never a red. A red that is a claim about the host
+rather than about the tree is the failure mode this project pays most for.
 
 **`errnoprobe` CANNOT PASS ABOVE ONE KERNEL CORE AND NO PER-CORE KEYING FIXES IT.** newlib's
 reentrancy state is reached through ONE word in the process's memory, and it is read at EL0 where a
@@ -706,6 +733,37 @@ The whole point of this file. A green fleet pass says none of the following.
   yields verdicts belonging to different tree states, with no record of which preset saw which. And
   both tools take the service list each preset defaults to, so a provider that lives only in
   `tests/static/service_lists.txt` is compiled by neither.
+- **THE SLEEP PATH WAS MISSED ON THE FIRST PASS, AND THE ENUMERATION IS WHY.** The death point's
+  class is every site that writes `ThreadState::BLOCKED`, and there are exactly three:
+  `wq_block`, `park_queueless` and `ktime_sleep_until`. Enumerating from the two park funnels
+  being refactored finds the first two and misses the third, which reaches neither. **A sleep
+  self-wakes on its deadline, so the ordinary miss is a latency bug**, a cancelled thread sleeping
+  out its remaining delay before dying; `ktime_sleep_ns` saturating to `UINT64_MAX` on overflow is
+  what makes the unbounded case real, and that one is the defect item 1 exists to close. The check
+  belongs in the prologue for a reason sharper than the empty unwind: **a check at the park would
+  exit with the thread already on the sleep queue and the one-shot armed for it, and
+  `sched::exit_current` does not sweep the sleep queue**, so the list would keep a pointer into a
+  slot the pool re-hands. Witnessed at the unit layer, deterministically. **The on-target
+  suite cannot witness it at all: no arm anywhere cancels a SLEEPING thread.** Every
+  cancel-facing worker in the selftest is written to park on a semaphore nothing posts, so 64
+  sleep call sites and every kill, slay and group-kill site between them never produce the
+  interleaving. Recorded rather than closed with a probabilistic arm. **`park_death_point` is
+  now a closed class enforced by a gate**, which counts the `ThreadState::BLOCKED` writes
+  against a declared set: it cannot check that each park ASKS, the ask being in the caller for
+  two of the three sites, but it can refuse a park nobody declared, which is the failure that
+  actually happened.
+- **THE SINGLE-CORE DEFECT M7.5's DEATH POINT EXISTS TO CLOSE HAS NO WITNESS IN THIS SUITE.**
+  Forcing the predicate to answer false reddens NOTHING at one kernel core: the window needs a
+  preemption between `syscall_dispatch`'s entry read and the lock acquisition, and no arm can drive
+  that from userspace. The fix is correct BY CONSTRUCTION, the predicate being read under the same
+  lock every writer of `cancel_kind` holds, and it IS witnessed at four cores, where the same
+  forced-off predicate parks a group member forever and reddens `task_group_kill` 3 of 3. It is NOT
+  witnessed through the slay-window arm, which stayed green in all three runs: root must return
+  from a syscall, run the wrapper and enter the kill syscall while the worker needs two or three
+  user instructions to reach its park, so that staging race is not close. **A randomised soak would
+  reach the one-core window eventually and was DECLINED**: an arm that fails intermittently reads
+  exactly like one that is broken.
+
 - **NOTHING WITNESSES THE MULTI-CORE FOLDS IN THE GICv3 BACKEND, AND `cpu_id_fold` STRUCTURALLY
   CANNOT.** That gate is skipped as a class above one kernel core, and the only preset carrying the
   v3 backend runs four. The configuration is not hypothetical and it is not this milestone's:
@@ -982,6 +1040,13 @@ The whole point of this file. A green fleet pass says none of the following.
 
 ## Debts and declines a command cannot re-derive
 
+- **A PARK THAT IS NEVER WOKEN HANGS THE SUITE INSTEAD OF REDDENING IT, and no arm can bound it.**
+  There is no timed semaphore wait in the ABI, so every counted wait in the selftest is untimed: a
+  dropped latch or a stranded park stops the run with no verdict, which is worse than a failure
+  because a timeout reports nothing about which claim broke. Tree-wide and long-standing; M7.5's
+  gated IRQ arms add counted waits and so add surface, and one of them found it the hard way as a
+  30 second timeout during development. Closing it is an ABI change and belongs to whoever adds the
+  timed wait.
 - **`errno` is not thread-local, and the reason is not in our code.** `_REENT_THREAD_LOCAL` is
   off on all three pinned toolchains; 239 `libc.a` members reference `_impure_ptr` and NONE
   calls `__errno()`, so overriding `__errno` reaches nothing. `sizeof(struct _reent)` is

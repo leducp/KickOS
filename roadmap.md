@@ -545,7 +545,7 @@ identifiers local to that file, and this milestone adopts every one of them:
 | S4 | M7.2 | translation across cores |
 | S6 | M7.3 | the GICv3 posture |
 | S5 | M7.4 | the RV64 backend and the SMP-seam verdict |
-| -- | M7.5 | the cleanup the train owes: single-core-ordering arms, and the one-core death point |
+| -- | M7.5 | the cleanup the train owes: the death point on every board, and the skip set retriaged |
 | S6b | M7.6 | `imx8mp-evk` as a chip port, and the predicate declared per part |
 | S7 | M7.7 | AMP |
 
@@ -555,21 +555,50 @@ positions, and these two steps depend on neither each other nor a shared file, s
 posture takes the earlier slot because the controller-neutral rename it carries is what the RV64
 branch's gates are resolved against.
 
-**M7.5 IS NOT A STEP OF THE CONTRACT, and it exists because two items were ruled separate rather
-than done.** The selftest arms that assert a single-core ORDERING are skipped as a class above one
-kernel core, so the four-core preset runs four fifths of the suite; giving them real handshakes is
-the first item. The second is the one the contract does not reach at all: **the death point is read
-outside the lock at ONE core, and the fix is written and switched OFF there.** A cancel landing
-between the entry read and the park is owed to nobody, so the target parks forever, and the re-check
-that closes it above one core sits behind the core-count guard. What gates removing that guard is
-cost rather than doubt: the funnels it lives in also serve the register fastpath on four arches, and
-those are the depths `trap_redzone` measures, so it lands with a full fleet sweep and not beside
-other work.
 
-**It sits before the board port and AMP rather than after them because it carries a live defect and
-depends on neither.** A thread cancelled in the window parks forever on every single-core board, so
-the slot is chosen by what the fix is worth rather than by what is left over. It shares no file with
-S5 or S6 either, so the three can run at once.
+**M7.5 IS NOT A STEP OF THE CONTRACT, and it existed because two items were ruled separate rather
+than done. Both landed, and a full fleet sweep witnessed the pair.** The one the contract does not
+reach at all was the death point: read outside the lock at ONE core with the fix written and
+switched OFF there, so a cancel landing between `syscall_dispatch`'s entry read and the park was
+owed to nobody and the target parked forever on every single-core board. It is now asked on every
+board, and as a PREDICATE in each caller's own under-lock prologue rather than as the noreturn
+action it was inside the shared park helpers: a caller may reach its park with a transaction
+already committed, and exiting from inside the park would abandon it. TEN callers carry it. The
+register fastpath is exempt on the ruling `docs/design-multicore.md` section 4 gap 1 already made,
+and says so where the exemption lives.
+
+**THE CLASS IS EVERY SITE THAT WRITES `ThreadState::BLOCKED`, NOT THE TWO PARK FUNNELS, and framing
+it the other way is what made this take two passes.** Enumerating from the funnels being refactored
+found `wq_block` and `park_queueless` and armed their callers; it could not find the third writer,
+`ktime_sleep_until`, which reaches neither. A sleep carries a deadline and so self-wakes, which
+makes the ordinary miss a cancelled thread sleeping out its remaining delay rather than a thread
+lost, a latency bug. **The unbounded case is real though:** `ktime_sleep_ns` saturates to
+`UINT64_MAX` on overflow, and a saturated sleep parks on a deadline no clock reaches, which is
+exactly the defect this item exists to close. The same shape as the skip-set misdiagnosis below:
+the question was framed around the mechanism being touched rather than around the claim being
+made.
+
+**WHAT GATED IT WAS COST RATHER THAN DOUBT, AND THE SWEEP PRICED THAT COST AT ZERO.** Those funnels
+also serve the register fastpath on four arches, and they carry the depths `trap_redzone` measures,
+so the change was held back to land with a full sweep and not beside other work. On
+`qemu-riscv`/rv32imac the eight class depths came out byte-for-byte what they were before it, which
+does not generalise on its own: armv7m carries a hardware frame in the zone that rv32imac does not,
+and that is exactly why the rest stayed unknown until measured. The sweep measured them.
+`trap_redzone` appears in all 57 preset logs and all 57 passed, so no preset moved past its red zone
+on any of the five classes rooted at `syscall_dispatch`.
+
+**THE OTHER ITEM WAS RETRIAGED RATHER THAN COMPLETED, BECAUSE THE LABEL IT INHERITED WAS WRONG.**
+The arms skipped above one kernel core were filed as asserting a single-core ORDERING. For at least
+four of the five tier-1 IRQ arms reworked here the progress order was only how the precondition got
+manufactured, and the real blocker is an ABSENCE CLAIM: a service, a redelivery or a wake that must
+not happen raises no event for a later read to be ordered after. Six arms came off the skip set, 28
+to 22. The question for the remaining 22 is not whether an arm assumes an order but whether it
+asserts that something did NOT happen.
+
+**It sat before the board port and AMP rather than after them because it carried a live defect and
+depended on neither.** A thread cancelled in the window parked forever on every single-core board,
+so the slot was chosen by what the fix was worth rather than by what was left over. It shared no
+file with S5 or S6 either, so the three ran at once.
 
 **S4 JOINED S3 IN ONE SUB-MILESTONE RATHER THAN FOLLOWING IT, and the reason is what S4 turned out to
 be.** Its gap 5 was not groundwork for a later step: a core that switched to a thread holding no

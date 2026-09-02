@@ -143,6 +143,11 @@ namespace kickos
         // No kernel continuation exists for this park: the caller's resume is the arch
         // restoring the frame this call trapped on, so the switch stores the result in args[0].
         c->call_frame_parked = 1;
+        // NO park_cancel_pending HERE, and the entry read above is the whole guard: this path
+        // takes no lock, so it releases none, and nothing can land behind that read on this
+        // core. A peer core is ruled out rather than handled: docs/design-multicore.md
+        // section 4 gap 1 puts this path out of scope for the multicore contract, and N10's
+        // configure-time refusal is what carries the ruling.
         park_queueless(c, WAIT_EP_REPLY, w);
         reply_donor_park(w, c);
         // No deadline: the untimed kos_call is the only shape the stub selects this number for.

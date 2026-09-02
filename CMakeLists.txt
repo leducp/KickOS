@@ -883,6 +883,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(death_stack_seating PROPERTIES TIMEOUT 120 LABELS host)
 
+  _add_test(NAME park_death_point
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_park_death_point.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(park_death_point PROPERTIES TIMEOUT 120 LABELS host)
+
   # --- The trap red-zone gate --------------------------------------------------
   # The preset name is derived here: the base variant is the board name, every other variant
   # is <board>-<variant>. trap_redzone_roots.txt declares which pairs are measurable, and an

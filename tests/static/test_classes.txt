@@ -50,6 +50,7 @@ host   src    tests/static/check_kernel_ctor_placement.sh
 host   src    tests/static/check_kernel_got.sh
 host   src    tests/static/check_kernel_runtime.sh
 host   src    tests/static/check_panic_banners.sh
+host   src    tests/static/check_park_death_point.sh
 host   src    tests/static/check_arm_read_tp.sh
 host   src    tests/static/check_no_privileged_tls.sh
 host   src    tests/static/rx_tls_fit.py
