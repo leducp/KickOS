@@ -78,8 +78,37 @@ STUB_SYM=arch_syscall
 # translation block must be ENTERED at below.
 STUB_WINDOW=8
 
-# The trace event this gate's second channel reads, as QEMU's model spells it.
-TRACE_ACK=gic_acknowledge_irq
+# The trace event this gate's second channel reads, as QEMU's model spells it, and which
+# controller is modelled read off QEMU_MACHINE: the same string this gate hands the emulator, so
+# the parse cannot be looking for one model while the run boots the other. ACK_PREFIX runs up to
+# the core number and ACK_SUFFIX is what a planted line puts after it.
+#
+# THE TIMER PPI HAS ONE SOURCE HERE, and the suffixes are PRINTED from it rather than typed:
+# the two models spell the same INTID in different radixes, so a second hand-written copy could
+# disagree with the first and the planted control would then prove the parse against a line the
+# emulator never emits.
+TIMER_INTID=30
+case " ${QEMU_MACHINE:-} " in
+    *gic-version=3*)
+        TRACE_ACK=gicv3_icc_iar1_read
+        ACK_PREFIX="gicv3_icc_iar1_read GICv3 ICC_IAR1 read cpu 0x"
+        ACK_SUFFIX="$(printf ' value 0x%x' "$TIMER_INTID")" ;;
+    *)
+        TRACE_ACK=gic_acknowledge_irq
+        ACK_PREFIX="gic_acknowledge_irq cpu "
+        ACK_SUFFIX="$(printf ' acknowledged irq %d' "$TIMER_INTID")" ;;
+esac
+
+# The core number as the modelled controller's log spells it: GICv3's is HEXADECIMAL, and the
+# conversion is made rather than assumed. Nothing here rests on the two radixes coinciding, so
+# no core count below sixteen is assumed either.
+ack_cpu_token() { # <core>
+    if [ "$TRACE_ACK" = gicv3_icc_iar1_read ]; then
+        printf '%x' "$1"
+        return
+    fi
+    printf '%d' "$1"
+}
 
 # The image's own cross-check line, the app's refusal and the chip's, each as the emitter
 # spells it (kernel/init/kmain.cc, user/apps/common/stress/main.cc). Each is matched as a
@@ -90,7 +119,8 @@ SCHED_TAIL=" core(s) in the scheduler"
 PEER_STUCK="KickOS: kernel core never reached its scheduler: core "
 NO_SPREAD="STRESS SKIP (board thread/sem pool too small)"
 RUNNABLE="stress: runnable "
-for _m in "$SCHED_HEAD" "$SCHED_TAIL" "$PEER_STUCK" "$NO_SPREAD" "$RUNNABLE" "$STUB_SYM" "$TRACE_ACK"; do
+for _m in "$SCHED_HEAD" "$SCHED_TAIL" "$PEER_STUCK" "$NO_SPREAD" "$RUNNABLE" "$STUB_SYM" \
+          "$TRACE_ACK" "$ACK_PREFIX" "$ACK_SUFFIX"; do
     require_literal "$_m" "a gate marker"
 done
 
@@ -150,7 +180,7 @@ kos_spread_seen() {
     KOS_MISS_ACK=""
     _seen_stub=" $(sed -n "s/^Trace \\([0-9][0-9]*\\):.*\\/$stub_pc\\/.*/\\1/p" "$LOG" \
         2>/dev/null | sort -u | tr '\n' ' ')"
-    _seen_ack=" $(sed -n "s/^$TRACE_ACK cpu \\([0-9][0-9]*\\) acknowledged.*/\\1/p" "$LOG" \
+    _seen_ack=" $(sed -n "s/^$ACK_PREFIX\\([0-9a-f][0-9a-f]*\\) .*/\\1/p" "$LOG" \
         2>/dev/null | sort -u | tr '\n' ' ')"
     _core=0
     while [ "$_core" -lt "$want" ]; do
@@ -159,7 +189,7 @@ kos_spread_seen() {
             *) KOS_MISS_STUB="$KOS_MISS_STUB $_core" ;;
         esac
         case "$_seen_ack" in
-            *" $_core "*) ;;
+            *" $(ack_cpu_token "$_core") "*) ;;
             *) KOS_MISS_ACK="$KOS_MISS_ACK $_core" ;;
         esac
         _core=$((_core + 1))
@@ -181,7 +211,7 @@ kos_spread_control() {
     _core=0
     while [ "$_core" -lt "$want" ]; do
         printf 'Trace %s: 0xdeadbeef [ffffffffffffffff/%s/0x0/0x0] \n' "$_core" "$stub_pc"
-        printf '%s cpu %s acknowledged irq 30\n' "$TRACE_ACK" "$_core"
+        printf '%s%s%s\n' "$ACK_PREFIX" "$(ack_cpu_token "$_core")" "$ACK_SUFFIX"
         _core=$((_core + 1))
     done > "$TMP/control.full"
     cp "$TMP/control.full" "$LOG"
@@ -197,7 +227,7 @@ kos_spread_control() {
       $_last, so it would stop the sampling with a core unwitnessed and the run would be
       judged on a log nobody waited for"
     fi
-    grep -v "^$TRACE_ACK cpu $_last " "$TMP/control.full" > "$LOG"
+    grep -v "^$ACK_PREFIX$(ack_cpu_token "$_last") " "$TMP/control.full" > "$LOG"
     if kos_spread_seen; then
         fail "the sampling predicate is satisfied by a log carrying no acknowledgement by cpu
       $_last, so it ignores its second channel"
@@ -306,7 +336,7 @@ fi
 # Its own parse control first, on ANY core: the timer PPI is acknowledged on every boot of
 # this board, so a trace carrying no acknowledgement at all is a format that moved rather than
 # four interfaces that took nothing.
-acks="$(grep -c "^$TRACE_ACK cpu [0-9][0-9]* acknowledged" "$LOG")" || acks=0
+acks="$(grep -c "^$ACK_PREFIX[0-9a-f][0-9a-f]* " "$LOG")" || acks=0
 require_number "$acks" "the acknowledgement count"
 if [ "$acks" -eq 0 ]; then
     grep "^$TRACE_ACK" "$LOG" | sed -n '1,5p'
@@ -318,7 +348,7 @@ fi
 ack_missing=""
 core=0
 while [ "$core" -lt "$want" ]; do
-    n="$(grep -c "^$TRACE_ACK cpu $core acknowledged" "$LOG")" || n=0
+    n="$(grep -c "^$ACK_PREFIX$(ack_cpu_token "$core") " "$LOG")" || n=0
     require_number "$n" "the acknowledgement count for cpu $core"
     if [ "$n" -eq 0 ]; then
         ack_missing="$ack_missing $core"

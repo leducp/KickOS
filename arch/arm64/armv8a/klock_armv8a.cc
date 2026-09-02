@@ -13,7 +13,7 @@
 
 #include <kickos/arch/arch.h>
 
-#include "../common/gicv2.h"
+#include "../common/gic.h"
 #include "../common/smp_bringup.h"
 
 #include <kickos/sys/atomic.h>
@@ -139,7 +139,7 @@ namespace
         }
         arch_irq_state_t const state = arch_irq_save();
         // BEFORE THE SERVICE: a raise landing after the clear stays pending and is delivered.
-        kickos_gicv2_doorbell_clear();
+        kickos_armv8a_gic_doorbell_clear();
         kickos_arm64_doorbell_service();
 #if KICKOS_KERNEL_CORES > 1
         // AFTER THE CLEAR THAT ABSORBED IT: the clear above drops every source's pending bit,
@@ -314,7 +314,7 @@ void arch_ipi_send(uint32_t cores)
     {
         doorbell_poll();
     }
-    kickos_gicv2_doorbell_send(cores & ~(1u << me));
+    kickos_armv8a_gic_doorbell_send(cores & ~(1u << me));
 }
 
 #if KICKOS_KERNEL_CORES > 1
@@ -322,7 +322,7 @@ void arch_ipi_send(uint32_t cores)
 // so a raise over one already pending is idempotent.
 void arch_ipi_resched_self(void)
 {
-    kickos_gicv2_doorbell_send(1u << arch_cpu_id());
+    kickos_armv8a_gic_doorbell_send(1u << arch_cpu_id());
 }
 #endif
 
@@ -423,7 +423,7 @@ void kickos_armv8a_doorbell_park(void)
 {
     // This core's own interface enabled the timer PPI, so masking its bank down to the doorbell
     // is what keeps kickos_isr_timer out of a core that reaches no scheduler.
-    kickos_gicv2_doorbell_only();
+    kickos_armv8a_gic_doorbell_only();
     __asm volatile("msr daifclr, #2" ::: "memory");
     uint32_t const me = arch_cpu_id();
     while (true)
@@ -436,7 +436,7 @@ void kickos_armv8a_doorbell_park(void)
             // narrowed and drops this core's doorbell pending state, so it belongs on this arm
             // alone.
             (void)arch_irq_save();
-            kickos_gicv2_percore_init();
+            kickos_armv8a_gic_percore_init();
             kickos_kernel_core_arrive();
             kickos_kernel_core_start();
         }

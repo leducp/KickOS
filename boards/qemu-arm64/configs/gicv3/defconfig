@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+CONFIG_BOARD_QEMU_ARM64=y
+
+# The smp posture with one clause added: the interrupt controller the i.MX8MP A53 cluster
+# wires. Four cores, so the doorbell is exercised over ICC_SGI1R_EL1 and not only the timer
+# PPI.
+CONFIG_KICKOS_CORES_FOUR=y
+CONFIG_ARM64_GIC_V3=y
+
+CONFIG_KICKOS_USER_STACK_SIZE=12288
+CONFIG_KICKOS_IDLE_STACK_SIZE=4096
+CONFIG_KICKOS_ROOT_STACK_SIZE=20480
+
+CONFIG_KICKOS_ENABLE_SELFTEST=y

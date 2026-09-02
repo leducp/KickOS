@@ -467,7 +467,7 @@ endfunction()
 #     qemu-riscv64 -> virt, plus QEMU=qemu-system-riscv64 QEMU_EXTRA=-bios none
 #                   (RV64IMAC bare metal, no OpenSBI).
 #     qemu-arm64 -> virt, plus QEMU=qemu-system-aarch64 QEMU_EXTRA=-cpu cortex-a53 -nic none
-#                   (AArch64 bare metal at EL1).
+#                   (AArch64 bare metal at EL1), and virt,gic-version=3 under that posture.
 #     qemu-x86_64 -> q35, plus QEMU=qemu-system-x86_64 and KICKOS_BOOT=uefi-pe, which is
 #                   what makes gate.sh build an EFI system partition and boot OVMF instead
 #                   of passing -kernel (the image is a PE32+ application, which -kernel
@@ -505,7 +505,13 @@ function(kickos_add_qemu_test)
       set(_smp " -smp ${KICKOS_NUM_CORES}")
     endif()
     set(_env QEMU=qemu-system-aarch64 "QEMU_EXTRA=-cpu cortex-a53 -nic none${_smp}")
+    # -M virt defaults to a GICv2, so the GICv3 posture has to ask for the model it is built
+    # against: an image whose CPU interface is the ICC_* registers finds none on a GICv2
+    # machine and traps on the first access.
     set(_machine virt)
+    if(KICKOS_ARM64_GIC_VERSION EQUAL 3)
+      set(_machine "virt,gic-version=3")
+    endif()
   elseif(QT_BOARD STREQUAL "microbit")
     # 32 KiB: QEMU's nRF51 SoC exposes the size as a QOM property and -m is ignored by a
     # fixed-SoC machine, so an image linked for 32 KiB without this locks up on its first

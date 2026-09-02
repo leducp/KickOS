@@ -10,6 +10,8 @@
 #include <kickos/diag.h>
 #include <kickos/sys/atomic.h>
 
+#include "../common/gic.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -21,7 +23,6 @@ namespace kickos
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
-extern "C" void kickos_armv8a_gic_dispatch(void);
 #if KICKOS_NUM_CORES > 1
 // Defined by the chip layer: this core's interrupt-controller interface and its timer.
 extern "C" void kickos_armv8a_percore_init(void);

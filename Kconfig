@@ -191,6 +191,38 @@ config KICKOS_RV64_SATP_MODE
 	  level count is derived from. Unprompted, the choice above being what a board
 	  states.
 
+# --- Interrupt controller ---------------------------------------------------
+# The version is DERIVED from the selection: arch/CMakeLists.txt links one backend on it
+# and cmake/kickos.cmake spells the emulated machine's gic-version from it.
+#
+# The two are different address maps: a GICv3 CPU interface is reached through ICC_* system
+# registers instead of a memory-mapped frame, and the banked registers move to a per-core
+# redistributor.
+
+choice
+	prompt "arm64 interrupt controller"
+	depends on ARCH_ARMV8A
+	default ARM64_GIC_V2
+
+config ARM64_GIC_V2
+	bool "GICv2: memory-mapped CPU interface"
+
+config ARM64_GIC_V3
+	bool "GICv3: system-register CPU interface, one redistributor per core"
+	help
+	  Obliges the chip to describe and reserve one redistributor frame per core,
+	  which is a per-part fact an arch cannot supply, and adds a wake handshake per
+	  core at bring-up. Software interrupts are generated in Group 1, so the timer
+	  PPI must join them or the image boots, answers doorbells and never preempts.
+
+endchoice
+
+config KICKOS_ARM64_GIC_VERSION
+	int
+	depends on ARCH_ARMV8A
+	default 2 if ARM64_GIC_V2
+	default 3 if ARM64_GIC_V3
+
 # The arch fact ARCH_TLS_FROM_SP, in the form CMake and C read.
 config KICKOS_TLS_FROM_SP
 	int

@@ -16,6 +16,32 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is
 `docs/archive/M1_state.md`; the board/console readiness matrix is `docs/m2-readiness.md`.
 
+## M7.3 -- the GICv3 posture
+
+S6 is landed: `qemu-arm64` ships a GICv3 posture beside its GICv2 one, selected by a Kconfig choice
+and a derived version that reaches CMake as well as C. What is left here is what the step
+deliberately did not close.
+
+- [ ] **A ONE-CORE-KERNEL GICv3 PRESET, OWED TO THE AMP STEP AND NOT TO THIS ONE.** Nothing
+      witnesses the `KICKOS_NUM_CORES > 1` folds in `arch/arm64/common/arch_arm64_gicv3.cc`, and
+      `cpu_id_fold` cannot: it is skipped as a class above one kernel core, and the only preset
+      carrying that backend runs four. Deliberately NOT added now -- an arm nothing exercises says
+      nothing, and the configuration where one kernel core meets a live GICv3 is
+      `KICKOS_MULTICORE_AMP`, which sets one kernel core while the image still drives four. That is
+      where the preset earns its fleet time. Built and booted by hand once during S6, the full
+      selftest passing at one core under GICv3, so this is an unwitnessed arm rather than an
+      unbuilt one.
+- [ ] **`ICC_SGI1R_EL1.RS` IS IMPLEMENTED AND UNEXERCISED.** Every part in scope has affinity 0 in
+      0 to 3, so the range selector is always zero and the send emits one write per cluster. A core
+      with affinity 0 at or above 16 on an interface whose `ICC_CTLR_EL1.RSS` is clear REFUSES at
+      bring-up rather than raising an interrupt that goes nowhere, and that refusal rests on
+      `arch_cpu_id`'s existing claim of one cluster of symmetric cores. Nothing on this bench can
+      produce the case.
+- [ ] **NO ARM OBSERVES AN INTERRUPT GROUP.** The group mismatch is caught only because the timer
+      PPI shares the group decision with the doorbell SGI, so a backend that grouped them
+      separately would boot, answer doorbells and hang with every gate green. Making a group
+      readable by an arm is a decision, not a fix.
+
 ## M6.5
 
 Steps C0 through C3 are landed. What is left here is carried-in work and what the steps deliberately
