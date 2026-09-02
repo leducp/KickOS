@@ -16,7 +16,7 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is
 `docs/archive/M1_state.md`; the board/console readiness matrix is `docs/m2-readiness.md`.
 
-## M7.4 -- the GICv3 posture
+## M7.3 -- the GICv3 posture
 
 S6 is landed: `qemu-arm64` ships a GICv3 posture beside its GICv2 one, selected by a Kconfig choice
 and a derived version that reaches CMake as well as C. What is left here is what the step

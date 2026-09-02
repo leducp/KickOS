@@ -534,7 +534,7 @@ correct one and an absent one are the same image. And **a shared kernel is gated
 PREDICATE rather than an architecture family**, of which the MMU is not a member and per-line
 interrupt targeting is; the parts that fail it get AMP, which is what closes the AMP-candidate
 question this section leaves open above for the MCU dual-core parts. Its step plan is S0 through S7,
-identifiers local to that file, and this milestone adopts them in order:
+identifiers local to that file, and this milestone adopts every one of them:
 
 | step | sub-milestone | what it lands |
 | --- | --- | --- |
@@ -543,11 +543,17 @@ identifiers local to that file, and this milestone adopts them in order:
 | S2 | M7.1 | the second core boots and idles |
 | S3 | M7.2 | the lock, the doorbell, threads on every core |
 | S4 | M7.2 | translation across cores |
-| S5 | M7.3 | the RV64 backend and the SMP-seam verdict |
-| S6 | M7.4 | the GICv3 posture |
+| S6 | M7.3 | the GICv3 posture |
+| S5 | M7.4 | the RV64 backend and the SMP-seam verdict |
 | -- | M7.5 | the cleanup the train owes: single-core-ordering arms, and the one-core death point |
 | S6b | M7.6 | `imx8mp-evk` as a chip port, and the predicate declared per part |
 | S7 | M7.7 | AMP |
+
+**S5 AND S6 ARE RESEQUENCED, SO THE STEP COLUMN NO LONGER RUNS IN ORDER AND THE MILESTONE
+COLUMN DOES.** The step identifiers are the contract's while the milestone numbers are schedule
+positions, and these two steps depend on neither each other nor a shared file, so the GICv3
+posture takes the earlier slot because the controller-neutral rename it carries is what the RV64
+branch's gates are resolved against.
 
 **M7.5 IS NOT A STEP OF THE CONTRACT, and it exists because two items were ruled separate rather
 than done.** The selftest arms that assert a single-core ORDERING are skipped as a class above one
