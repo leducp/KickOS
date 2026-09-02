@@ -4,8 +4,8 @@
 // The cross-core kernel lock and the doorbell it is coupled to, for rv64imac: the acquire loop
 // services a pending doorbell, and the doorbell's far side must not take the lock.
 //
-// THE RENDEZVOUS IS SHARED MEMORY. A CLINT msip word carries the wake and reports nothing back;
-// the answer travels in the cells below, exactly as it does on the GIC backends.
+// THE RENDEZVOUS IS SHARED MEMORY: a CLINT msip word carries the wake and reports nothing back,
+// so the answer travels in the cells below.
 //
 // EVERY CELL HAS EXACTLY ONE WRITER: a request word is written by the core asking, an answer
 // word by the core answering, and the lock word only through LR/SC inside this file.
@@ -30,8 +30,7 @@ extern "C" void kickos_rv64_init(void);
 
 namespace
 {
-    // RISC-V publishes no cache-line width in any CSR, so this is a CHOICE sized to the
-    // widest line the fleet's parts use rather than a fact read from the machine.
+    // A CHOICE, not a measurement: RISC-V publishes no cache-line width in any CSR.
     constexpr size_t RV64_CACHE_LINE = 64u;
 
     using Seq = kickos::Atomic<uint32_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE>;
@@ -307,25 +306,55 @@ int kickos_rv64_doorbell_pending(void)
 void kickos_rv64_doorbell_service(void)
 {
     uint32_t const me = arch_cpu_id();
+
+    // THE ORDER IS THE WHOLE CONTRACT AND IT HAS THREE PARTS: observe the request, THEN fence,
+    // THEN answer. An initiator writes the tables, raises the request, and waits on the answer,
+    // so only having observed the request does this hart's fence sit after those table writes.
+    // A fence executed BEFORE the request is loaded attests to nothing the initiator cares
+    // about: the peer could fence, the initiator could then write tables and raise, and the
+    // peer could answer a request it never fenced for, leaving the initiator free to release
+    // memory this hart still holds translations for.
+    //
+    // Seq is acquire on load and release on store, which is what stops the compiler and the
+    // machine from undoing the order: the acquire pairs with the initiator's release of the
+    // request, and the release publishes the fence ahead of the answer.
+    uint32_t asked[KICKOS_NUM_CORES] = {};
+    bool owed = false;
+    for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
+    {
+        asked[from] = g_request[from].seq[me].load();
+        if (asked[from] != g_answer[me].seq[from].load())
+        {
+            owed = true;
+        }
+    }
+    if (not owed)
+    {
+        return;
+    }
+
+    // ONE FENCE PER SERVICE, NOT ONE PER REQUESTER: SFENCE.VMA with rs1 = rs2 = x0 is global,
+    // so a single execution after observing ANY outstanding request covers every one of them.
+    //
     // The translation half a peer owes for itself: SFENCE.VMA orders THIS hart's address
     // translation against another hart's table writes, and the ISA gives no operation by which
     // one hart performs it for another (Privileged ISA, "Supervisor Memory-Management Fence").
-    // rs1 = rs2 = x0 because nothing here is tagged.
-    //
-    // Before the answer stores, so an initiator that has seen an answer has seen this.
     //
     // THE INSTRUCTION HALF IS NOT COVERED HERE: its operation is FENCE.I, and Zifencei is not
     // in this board's ISA baseline (arch/riscv/chip/virt_rv64/cpu.cmake).
     __asm volatile("sfence.vma zero, zero" ::: "memory");
+
 #if defined(KICKOS_ENABLE_SELFTEST)
     g_served[me].seq[0] = g_served[me].seq[0].load() + 1u;
 #endif
+
+    // The sequence OBSERVED above, never a re-read: a request raised after the fence is not one
+    // this fence covers, and answering it here would attest to a fence that never saw it.
     for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
     {
-        uint32_t const asked = g_request[from].seq[me].load();
-        if (asked != g_answer[me].seq[from].load())
+        if (asked[from] != g_answer[me].seq[from].load())
         {
-            g_answer[me].seq[from] = asked;
+            g_answer[me].seq[from] = asked[from];
         }
     }
 }
@@ -398,8 +427,14 @@ void arch_ipi_wait(uint32_t cores)
     }
 }
 
-// One poke and one wait over `peers`, whose whole effect is the fence every serviced core runs.
-void kickos_rv64_instruction_side_rendezvous(uint32_t peers)
+// One poke and one wait over `peers`, whose whole effect is the fence every serviced hart runs.
+//
+// THE TRANSLATION HALF ONLY. RISC-V gives no broadcast form of SFENCE.VMA, so a peer holding a
+// space whose tables changed must be made to run its own. The instruction half would be FENCE.I,
+// absent from this board's ISA baseline, and this call does not stand in for it.
+//
+// arch_ipi_counts calls its high half instruction-side; on this backend it counts these.
+void kickos_rv64_translation_rendezvous(uint32_t peers)
 {
 #if defined(KICKOS_ENABLE_SELFTEST)
     if (peers != 0)

@@ -269,6 +269,16 @@ else()
   add_compile_definitions(KICKOS_DEBUG=0)
 endif()
 
+# A per-core event ring for diagnosing a park that never woke (kickos/smptrace.h). OFF by
+# default and compiling to nothing: it is a diagnostic knob, not a posture, and no preset
+# selects it. Configure with -DKICKOS_SMP_TRACE=ON to turn it on for one build.
+option(KICKOS_SMP_TRACE "Record a per-core park/wake event ring for SMP diagnosis" OFF)
+if(KICKOS_SMP_TRACE)
+  add_compile_definitions(KICKOS_SMP_TRACE=1)
+else()
+  add_compile_definitions(KICKOS_SMP_TRACE=0)
+endif()
+
 # --- Console backend selection ---------------------------------------------
 # `chip` = the board's native transport (UART / semihosting / USIC); `rtt` = SEGGER RTT,
 # which needs a debug probe.

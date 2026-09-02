@@ -106,11 +106,60 @@ namespace
     // unmasks it on whichever core its driver runs on. Every caller holds the kernel lock
     // (kernel/irq/irq.cc and the syscall entries), which is the exclusion that covers them.
     //
-    // UNMASKED rather than masked, and the inject line BIASED BY ONE, so that zero is the
-    // arch.h reset contract and neither needs an initialiser.
+    // UNMASKED rather than masked, so that zero is the arch.h reset contract and no
+    // initialiser is owed.
     uint32_t g_irq_unmasked = 0;
     uint32_t g_irq_pending = 0;
-    kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_inject_line_1 = 0;
+
+    // Bit set = this line has a raise no dispatch has taken yet. A SET, NOT ONE LINE IDENTITY:
+    // above one core there are as many producers as cores, and a single identity is overwritten
+    // by the next producer before the first core's dispatch has consumed it, which loses the
+    // raise outright and leaves its driver asleep for good. The two accesses below are one
+    // instruction each, so the producer under the kernel lock and the consumer in a dispatch
+    // that holds no lock are race-free against each other without one.
+    uint32_t g_irq_raised = 0;
+
+    // THE THREE WORDS ABOVE ARE TOUCHED FROM ISR CONTEXT AND FROM THREAD CONTEXT ON ANY CORE,
+    // and the ISR path holds no kernel lock: kickos_isr_irq brackets with an EPOCH above one
+    // core, and irq_event_isr masks the line from inside it. So a plain read-modify-write here
+    // would let a mask on one core clobber a rearm's unmask on another, which leaves the line
+    // masked with nothing left to unmask it. Every mutation below is ONE instruction.
+    uint32_t load_word(uint32_t const* w)
+    {
+        uint32_t v = 0;
+        __asm volatile("lw %0, 0(%1)" : "=r"(v) : "r"(w) : "memory");
+        return v;
+    }
+
+    void set_bit(uint32_t* w, uint32_t bit)
+    {
+        __asm volatile("amoor.w zero, %0, (%1)" ::"r"(bit), "r"(w) : "memory");
+    }
+
+    // Clears the bit and answers whether THIS caller is the one that cleared it, which is what
+    // makes a redelivery happen exactly once when two cores race for it.
+    bool take_bit(uint32_t* w, uint32_t bit)
+    {
+        uint32_t old = 0;
+        __asm volatile("amoand.w %0, %1, (%2)" : "=&r"(old) : "r"(~bit), "r"(w) : "memory");
+        return (old & bit) != 0;
+    }
+
+    // sip.SSIP is the one cause every raise on this hart arrives on.
+    void raise_line(int line)
+    {
+        uint32_t const bit = 1u << line;
+        __asm volatile("amoor.w zero, %0, (%1)" ::"r"(bit), "r"(&g_irq_raised) : "memory");
+        __asm volatile("csrs sip, %0" ::"r"(SIP_SSIP) : "memory");
+    }
+
+    // Takes the whole set and leaves it empty, so a raise landing after this is a new one.
+    uint32_t take_raised(void)
+    {
+        uint32_t taken = 0;
+        __asm volatile("amoswap.w %0, zero, (%1)" : "=r"(taken) : "r"(&g_irq_raised) : "memory");
+        return taken;
+    }
 
     // An interrupt cause the dispatch does not handle. sie enables the timer and the software
     // channel alone, so this is delivery of a source nothing enabled.
@@ -414,13 +463,12 @@ int arch_bitband_present(void)
 }
 
 // --- Interrupt controller ---------------------------------------------------
-// No hardware line exists on this board, so mask/unmask/clear_pending are the bitmask above and
-// a raise reaches the ISR path through ONE doorbell, sip.SSIP, with the block's inject line
-// telling the dispatch which logical line it was. Each body is self-bracketed as arch.h requires.
+// No hardware line exists on this board, so mask/unmask/clear_pending are the three words above
+// and a raise reaches the ISR path through ONE doorbell, sip.SSIP. Each body is self-bracketed
+// as arch.h requires.
 //
-// SINGLE-DOORBELL: at most one unmask carrying a latched raise per interrupts-masked region, a
-// second overwriting the first's identity. irq_claim/wait/ack unmask one line per lock
-// section.
+// EVERY RAISE IS A BIT IN A SET rather than one line identity, so a second raise arriving before
+// the first is dispatched costs nothing: both are taken by whichever dispatch runs next.
 void arch_irq_mask(int line)
 {
     if (line < 0 or line >= IRQ_LINES)
@@ -428,7 +476,7 @@ void arch_irq_mask(int line)
         return;
     }
     arch_irq_state_t s = arch_irq_save();
-    g_irq_unmasked &= ~(1u << line);
+    (void)take_bit(&g_irq_unmasked, 1u << line);
     arch_irq_restore(s);
 }
 
@@ -438,15 +486,15 @@ void arch_irq_unmask(int line)
     {
         return;
     }
+    uint32_t const bit = 1u << line;
     arch_irq_state_t s = arch_irq_save();
-    g_irq_unmasked |= (1u << line);
+    set_bit(&g_irq_unmasked, bit);
     // A raise taken while the line was masked redelivers now through the doorbell: sip.SSIP is
-    // set with SIE clear, so it fires at arch_irq_restore on the normal ISR path.
-    if ((g_irq_pending & (1u << line)) != 0)
+    // set with SIE clear, so it fires at arch_irq_restore on the normal ISR path. The TAKE is
+    // what settles a race with a concurrent inject; whichever side takes the bit delivers it.
+    if (take_bit(&g_irq_pending, bit))
     {
-        g_irq_pending &= ~(1u << line);
-        g_inject_line_1 = static_cast<uint32_t>(line) + 1u;
-        __asm volatile("csrs sip, %0" ::"r"(SIP_SSIP) : "memory");
+        raise_line(line);
     }
     arch_irq_restore(s);
 }
@@ -458,7 +506,7 @@ void arch_irq_clear_pending(int line)
         return;
     }
     arch_irq_state_t s = arch_irq_save();
-    g_irq_pending &= ~(1u << line);
+    (void)take_bit(&g_irq_pending, 1u << line);
     arch_irq_restore(s);
 }
 
@@ -469,15 +517,22 @@ void arch_irq_inject(int irq)
         return;
     }
     // An ISR reaching arch_irq_mask/unmask touches the same words.
+    uint32_t const bit = 1u << irq;
     arch_irq_state_t s = arch_irq_save();
-    if ((g_irq_unmasked & (1u << irq)) == 0)
+    if ((load_word(&g_irq_unmasked) & bit) != 0)
     {
-        g_irq_pending |= (1u << irq);
+        raise_line(irq);
     }
     else
     {
-        g_inject_line_1 = static_cast<uint32_t>(irq) + 1u; // BEFORE the raise
-        __asm volatile("csrs sip, %0" ::"r"(SIP_SSIP) : "memory");
+        set_bit(&g_irq_pending, bit);
+        // THE LINE MAY HAVE BEEN UNMASKED between the read above and the latch, by a rearm that
+        // looked at a pending word this store had not reached. Re-read, and take the bit back
+        // rather than assume: exactly one of the two sides takes it, and that side delivers.
+        if ((load_word(&g_irq_unmasked) & bit) != 0 and take_bit(&g_irq_pending, bit))
+        {
+            raise_line(irq);
+        }
     }
     arch_irq_restore(s);
 }
@@ -486,7 +541,9 @@ void arch_irq_inject(int irq)
 // to know whether the raise it absorbed carried something it did not service.
 int kickos_rv64_inject_owed(void)
 {
-    return g_inject_line_1.load() != 0u;
+    uint32_t raised = 0;
+    __asm volatile("lw %0, 0(%1)" : "=r"(raised) : "r"(&g_irq_raised) : "memory");
+    return raised != 0u;
 }
 
 // The interrupt leg of the entry (switch.S .Lintr), ISR context with SIE clear. scause is
@@ -534,14 +591,20 @@ void kickos_rv64_isr_dispatch(void* frame)
             kickos_kernel_core_resched();
         }
 #endif
-        // FOURTH, this hart's own device line, which shares the cause with everything above.
-        uint32_t const line_1 = g_inject_line_1;
-        g_inject_line_1 = 0;
-        if (line_1 != 0)
+        // FOURTH, the device lines the set carries, which share the cause with everything above.
+        // EVERY line the set carries, not one: two raises can land between dispatches, and a
+        // line left in the set with the cause already cleared is a driver that never wakes.
+        // kickos_isr_irq masks the line and wakes its driver (kernel/irq/irq.cc); the driver
+        // re-unmasks via irq_ack or on its next wait.
+        uint32_t raised = take_raised();
+        for (int line = 0; line < IRQ_LINES and raised != 0; line++)
         {
-            // kickos_isr_irq masks the line and wakes its driver (kernel/irq/irq.cc); the
-            // driver re-unmasks via irq_ack.
-            kickos_isr_irq(static_cast<int>(line_1 - 1u));
+            uint32_t const bit = 1u << line;
+            if ((raised & bit) != 0)
+            {
+                raised &= ~bit;
+                kickos_isr_irq(line);
+            }
         }
         return;
     }

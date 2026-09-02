@@ -33,6 +33,12 @@ namespace kickos
     void kpanic(char const* msg) __attribute__((noreturn)); // a mispaired release refuses
 }
 
+#if KICKOS_KERNEL_CORES > 1
+// klock_rv64imac.cc: one poke and one wait over `peers`, whose whole effect is the fence every
+// serviced hart runs in the doorbell's service body.
+extern "C" void kickos_rv64_translation_rendezvous(uint32_t peers);
+#endif
+
 extern "C"
 {
     arch_phys_addr_t kickos_frame_alloc(void);
@@ -291,6 +297,39 @@ namespace
     {
         return active_cores(space) != 0;
     }
+
+#if KICKOS_KERNEL_CORES > 1
+    uint32_t peer_cores(struct arch_aspace* space)
+    {
+        return active_cores(space) & ~(1u << arch_cpu_id());
+    }
+#else
+    uint32_t peer_cores(struct arch_aspace*)
+    {
+        return 0;
+    }
+#endif
+
+    // THE TRANSLATION HALF, AND ON THIS ISA IT IS THE DOORBELL'S RATHER THAN THE HARDWARE'S.
+    // SFENCE.VMA orders the EXECUTING hart's translation alone and RISC-V defines no broadcast
+    // form, so a peer holding this space is made to run its own through the service body.
+    //
+    // DO NOT COPY armv8a'S EXECUTE-PERMISSION GATE. Its TLBI is inner-shareable, so it owes a
+    // send for the instruction side only and may gate on execute; gating here would leave every
+    // DATA removal unsent.
+    //
+    // The instruction half is FENCE.I, absent from this board's ISA baseline, and is neither
+    // sent nor approximated.
+#if KICKOS_KERNEL_CORES > 1
+    void translation_rendezvous(uint32_t peers)
+    {
+        kickos_rv64_translation_rendezvous(peers);
+    }
+#else
+    void translation_rendezvous(uint32_t)
+    {
+    }
+#endif
 
     // A descriptor written without an invalidation still owes the fence that makes the new
     // entry visible to a walker before any later activation reads it. ONE PER CALL covers a
@@ -797,11 +836,16 @@ void arch_aspace_destroy(struct arch_aspace* space)
         return;
     }
     uint64_t* const table = root_of(space);
+    // BEFORE THE FREES: they put this space's identity back in the pool, and the set is derived
+    // from that identity.
+    uint32_t const peers = peer_cores(space);
     // FIRST, not last: a walk caches the address of an intermediate table, so a table freed
     // while such an entry stands would be read as descriptors after the pool reissues it.
     invalidate_all();
     free_subtree(table, LEVEL_ROOT, g_boot_root);
     kickos_frame_free(phys_of(table));
+    // A space a peer still holds is losing its whole image, so the cost is once per teardown.
+    translation_rendezvous(peers);
 }
 
 enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
@@ -824,6 +868,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     // A space installed on no core has no cached entry and no cached absence, so its whole
     // seeding costs no maintenance; the running space's own widening still pays.
     bool const installed = installed_anywhere(space);
+    uint32_t const peers = peer_cores(space);
     enum arch_aspace_result const rc =
         map_into(root_of(space), LEVEL_ROOT, va, pages, pa, leaf, installed);
     publish_edits();
@@ -852,6 +897,13 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
         invalidate_all();
         arch_irq_restore(s);
     }
+    // ONCE PER CALL, and owed by BOTH paths above: a fresh non-leaf entry drops a peer's cached
+    // ABSENCE, and the unwind frees tables a peer's walker may hold the address of. `installed`
+    // is what says any of that maintenance ran at all.
+    if (installed)
+    {
+        translation_rendezvous(peers);
+    }
     return rc;
 }
 
@@ -869,6 +921,7 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
         }
     }
     bool const installed = installed_anywhere(space);
+    uint32_t const peers = peer_cores(space);
     for (size_t i = 0; i < pages; i++)
     {
         uintptr_t const at = va + static_cast<uintptr_t>(i) * GRANULE;
@@ -877,6 +930,10 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
         invalidate_page_if(at, installed);
     }
     publish_edits();
+    // ONCE PER CALL rather than once per page, which is what keeps the elision's measurement
+    // intact. NOT gated on the execute permission: this backend's send carries the TRANSLATION
+    // half, which every removal owes.
+    translation_rendezvous(peers);
     // An intermediate table left empty is not a leak: destroy walks the tree and frees every
     // table under the root.
     return ARCH_ASPACE_OK;

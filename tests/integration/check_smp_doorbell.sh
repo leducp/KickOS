@@ -7,9 +7,9 @@
 #
 #   the image     must print `# doorbell: <n> core(s) answered, rounds 0x<r>` once with n the
 #                 configured count, raise no unanswered-doorbell refusal, and go on running.
-#   the emulator  QEMU's own GIC model, through its trace events, must report the raise and
-#                 must report the CPU INTERFACE of every secondary acknowledging the doorbell
-#                 INTID.
+#   the emulator  QEMU's own GIC model, through its trace events, must report a GICD_SGIR write
+#                 and must report the CPU INTERFACE of every secondary acknowledging the
+#                 doorbell INTID.
 #
 # THE EMULATOR-SIDE ARMS READ THE ROUND'S OWN WINDOW, which is the trace up to and including the
 # LAST raise the round made. The round runs inside arch_init, ahead of any other raise, so its
@@ -18,15 +18,11 @@
 # inflate the count the round is checked against and put the doorbell on core zero's own
 # interface, which the round forbids.
 #
-# THE SECOND CHANNEL IS THE ORACLE: `gic_acknowledge_irq cpu 3 acknowledged irq 0` under GICv2,
-# `gicv3_icc_iar1_read GICv3 ICC_IAR1 read cpu 0x3 value 0x0` under GICv3, is QEMU's model
-# stating that core 3's CPU interface acknowledged that INTID, which guest code cannot write to
-# this log, where a count the image printed says only that the image reached its own print. The
-# two channels also CROSS-CHECK: the number of raises QEMU counted must equal the round count
-# the image printed, two routes to one number.
-#
-# WHICH CONTROLLER IS MODELLED IS READ OFF QEMU_MACHINE, the same string this gate hands the
-# emulator, so the parse cannot be looking for one model while the run boots the other.
+# THE SECOND CHANNEL IS THE ORACLE: `gic_acknowledge_irq cpu 3 acknowledged irq 0` is QEMU's
+# model stating that core 3's CPU interface read that INTID out of GICC_IAR, which guest code
+# cannot write to this log, where a count the image printed says only that the image reached its
+# own print. The two channels also CROSS-CHECK: the number of GICD_SGIR writes QEMU counted must
+# equal the round count the image printed, two routes to one number.
 #
 # The refusal check runs before the banner check, so an image whose doorbell went unanswered is
 # reported on the refusal it printed rather than on the line it did not.
@@ -38,10 +34,11 @@ set -u
 # The doorbell rounds run inside the arrival spin bound, and the trace log costs time.
 : "${QEMU_TIMEOUT:=60}"
 
-_usage="usage: check_smp_doorbell.sh <elf> <expect-cores> <live-ere>"
+_usage="usage: check_smp_doorbell.sh <elf> <expect-cores> <live-ere> <backend>"
 elf="${1:?$_usage}"
 want="${2:?$_usage}"
 live="${3:?$_usage}"
+backend="${4:?$_usage}"
 
 require_number "$want" "the expected core count"
 require_literal "$live" "the liveness pattern"
@@ -68,36 +65,56 @@ for _m in "$UNANSWERED" "$EARLY_WAIT" "$NO_CONTEND" "$NO_SPIN" "$CHECK_HEAD" "$C
     require_literal "$_m" "a doorbell marker"
 done
 
-# The trace events this gate reads, and the doorbell's INTID as QEMU's model spells them.
-# Restated here: a parse built out of the emitter would assert nothing about it.
-DOORBELL_INTID=0
-TIMER_INTID=30
-case " ${QEMU_MACHINE:-} " in
-    *gic-version=3*)
-        TRACE_ACK=gicv3_icc_iar1_read
-        TRACE_WRITE=gicv3_icc_generate_sgi
-        RAISE_LINE="gicv3_icc_generate_sgi"
-        RAISE_NAME="ICC_SGI1R_EL1 write" ;;
-    *)
-        TRACE_ACK=gic_acknowledge_irq
-        TRACE_WRITE=gic_dist_write
-        RAISE_LINE="dist write at 0x00000f00"
-        RAISE_NAME="GICD_SGIR write" ;;
-esac
-for _m in "$TRACE_ACK" "$TRACE_WRITE" "$RAISE_LINE" "$RAISE_NAME"; do
-    require_literal "$_m" "a trace marker"
-done
-
-# One acknowledgement line, as the modelled controller spells it. `*` matches any core, which is
-# what the timer control wants: the PPI is banked and which core takes one is the scheduler's.
+# WHAT THE EMULATOR CAN SEE OF THE DOORBELL, PER BACKEND, AND ONE BACKEND SEES LESS.
 #
-# BOTH THE CORE NUMBER AND THE INTID ARE PRINTED IN THE LOG'S OWN RADIX, GICv3 spelling each in
-# hexadecimal. The conversion is made rather than assumed, so nothing here rests on the two
-# radixes coinciding and no core count below sixteen is assumed.
+#   arm64  the GIC model traces both halves: the RAISE, as a GICD_SGIR write, and the
+#          ACKNOWLEDGEMENT, as a GICC_IAR read. The two cross-check.
+#   rv64   the CLINT msip store is a plain MMIO write with no trace event, so THE RAISE HALF
+#          HAS NO ORACLE HERE AT ALL. What the trap log does carry is stronger on the other
+#          half: its line names the hart AND the cause, where the GIC's event names the
+#          interface and the INTID. This gate therefore runs with ONE channel on rv64 and says
+#          so; it does not check a raise count and must not read as though it had.
+#
+# HAS_RAISE is what gates the arms that need the missing half.
+case "$backend" in
+    armv8a)
+        # The controller is a POSTURE of this board, so the events come from the machine string
+        # the gate itself hands the emulator: a parse cannot then disagree with what booted.
+        case " ${QEMU_MACHINE:-} " in
+            *gic-version=3*)
+                TRACE_ACK=gicv3_icc_iar1_read
+                TRACE_WRITE=gicv3_icc_generate_sgi
+                SGIR_LINE="gicv3_icc_generate_sgi" ;;
+            *)
+                TRACE_ACK=gic_acknowledge_irq
+                TRACE_WRITE=gic_dist_write
+                SGIR_LINE="dist write at 0x00000f00" ;;
+        esac
+        CHAN_ITEMS="trace:$TRACE_ACK,trace:$TRACE_WRITE"
+        HAS_RAISE=1
+        CTL_NAME="timer acknowledgement"
+        CHAN_NAME="QEMU's GIC model"
+        ;;
+    rv64imac)
+        CHAN_ITEMS="int"
+        HAS_RAISE=0
+        SGIR_LINE=""
+        CTL_NAME="privilege-probe trap"
+        CHAN_NAME="QEMU's trap log"
+        ;;
+    *)
+        fail "check_smp_doorbell.sh knows no backend '$backend'. What the emulator can see of
+  a doorbell is a property of its device model, so an unlisted backend would read an empty
+  channel as a core that never answered" ;;
+esac
+
+# One acknowledgement line, as the modelled controller spells it. BOTH THE CORE NUMBER AND THE
+# INTID ARE PRINTED IN THE LOG'S OWN RADIX, GICv3 spelling each in hexadecimal, so the
+# conversion is made rather than assumed.
 ack_ere() { # <cpu|*> <intid>
     _cpu="$1"
     _id="$2"
-    if [ "$TRACE_ACK" = gicv3_icc_iar1_read ]; then
+    if [ "${TRACE_ACK:-}" = gicv3_icc_iar1_read ]; then
         if [ "$_cpu" = "*" ]; then
             _cpu="[0-9a-f][0-9a-f]*"
         else
@@ -112,18 +129,47 @@ ack_ere() { # <cpu|*> <intid>
     printf '^%s cpu %s acknowledged irq %d$' "$TRACE_ACK" "$_cpu" "$_id"
 }
 
-# CAN THIS EMULATOR REPORT THE ORACLE AT ALL. Asked of the binary, and a build without the
-# events SKIPs: an absent event would otherwise read as an absent acknowledgement, which is
-# exactly the finding this gate exists to make.
-if ! "$QEMU_BIN" -d 'trace:help' 2>&1 | grep -q "^$TRACE_ACK\$"; then
-    echo "SKIP: $QEMU_BIN reports no '$TRACE_ACK' trace event, so the emulator-side oracle
-  is unavailable and the image's own count would be the only channel"
-    exit 77
-fi
-if ! "$QEMU_BIN" -d 'trace:help' 2>&1 | grep -q "^$TRACE_WRITE\$"; then
-    echo "SKIP: $QEMU_BIN reports no '$TRACE_WRITE' trace event"
-    exit 77
-fi
+# The channel's readers, per backend. Each takes the file to read.
+kos_ctl_count() { # <file>: an event every boot produces, INDEPENDENT of the doorbell
+    case "$backend" in
+        armv8a)
+            grep -c "$(ack_ere '*' 30)" "$1" ;;
+        rv64imac)
+            # kickos_rv64_privilege_probe reads a machine CSR from supervisor mode on purpose,
+            # once per hart, so every boot produces exactly one of these per core.
+            grep -c 'desc=illegal_instruction' "$1" ;;
+    esac
+}
+kos_doorbell_count() { # <file> <core>: that core taking the CROSS-CORE doorbell
+    case "$backend" in
+        armv8a)
+            grep -c "$(ack_ere "$2" 0)" "$1" ;;
+        rv64imac)
+            # cause 3 is the machine software interrupt a peer's msip write raises.
+            grep -c "^riscv_cpu_do_interrupt: hart:$2, async:1, cause:0*3," "$1" ;;
+    esac
+}
+
+# CAN THIS EMULATOR REPORT THE ORACLE AT ALL. The trace REGISTRY is build-global rather than
+# target-scoped, so a listed event proves the binary was compiled with it and never that this
+# machine emits it; the parse control below, on the real log, is what settles that.
+case "$CHAN_ITEMS" in
+    trace:*)
+        for _ev in $(printf '%s' "$CHAN_ITEMS" | tr ',' ' '); do
+            _ev="${_ev#trace:}"
+            if ! "$QEMU_BIN" -d 'trace:help' 2>&1 | grep -q "^$_ev\$"; then
+                echo "SKIP: $QEMU_BIN reports no '$_ev' trace event, so the emulator-side
+  oracle is unavailable and the image's own count would be the only channel"
+                exit 77
+            fi
+        done ;;
+    *)
+        if ! "$QEMU_BIN" -d 'help' 2>&1 | grep -qE "^$CHAN_ITEMS[ ,]"; then
+            echo "SKIP: $QEMU_BIN reports no '$CHAN_ITEMS' log item, so $CHAN_NAME is
+  unavailable and the image's own count would be the only channel"
+            exit 77
+        fi ;;
+esac
 
 # The machine has to carry the count this gate was handed, or the run measures a posture nobody
 # asked for. The two values reach here by different routes.
@@ -140,7 +186,7 @@ TRACE="$TMP/gic.log"
 
 # --- The boot, with QEMU's GIC model logging beside the console ----------------
 echo "== $want core(s), doorbell round with the GIC model traced =="
-QEMU_EXTRA="${QEMU_EXTRA:-} -d trace:$TRACE_ACK,trace:$TRACE_WRITE -D $TRACE"
+QEMU_EXTRA="${QEMU_EXTRA:-} -d $CHAN_ITEMS -D $TRACE"
 poll_image "$elf" "$CHECK_HEAD$want core\\(s\\) answered" "$live"
 
 # --- Channel 1: what the image said ------------------------------------------
@@ -220,25 +266,39 @@ require_nonempty "$TRACE" "QEMU wrote no trace log at $TRACE, so the oracle is U
 # every boot of this board, so a parse that cannot find THAT cannot be trusted to report a
 # missing doorbell acknowledgement. Matched on ANY core: the PPI is banked and only a core whose
 # current thread carries a deadline arms it, so which core takes one is the scheduler's.
-ctl="$(grep -c "$(ack_ere '*' "$TIMER_INTID")" "$TRACE")" || ctl=0
-require_number "$ctl" "the control acknowledgement count"
+ctl="$(kos_ctl_count "$TRACE")" || ctl=0
+require_number "$ctl" "the control event count"
 if [ "$ctl" -eq 0 ]; then
     sed -n '1,5p' "$TRACE"
-    fail "the trace carries no acknowledgement of INTID $TIMER_INTID on any core, which every
-  boot of this board produces. The event names or the log format have moved, so this parse
-  reports an absence it cannot distinguish from a failure to read"
+    fail "the trace carries no $CTL_NAME line at all, which every boot of this board produces.
+  The event names or the log format have moved, so this parse reports an absence it cannot
+  distinguish from a failure to read"
 fi
-echo "   trace parse control: $ctl timer acknowledgement(s)"
+echo "   trace parse control: $ctl $CTL_NAME(s)"
+
+HEAD="$TMP/chan.head"
+if [ "$HAS_RAISE" -eq 0 ]; then
+    # NO RAISE ORACLE ON THIS BACKEND, so the raise arm and the cross-check against the round
+    # count are both absent and this gate does not pretend otherwise. The window is cut at the
+    # emulator's own first record of userspace instead: the bring-up round runs before any
+    # thread has issued a syscall, so everything before the first one is the boot's.
+    awk '/desc=user_ecall/ { exit } { print }' "$TRACE" > "$HEAD"
+    require_nonempty "$HEAD" "the boot window is empty, so the cut found no userspace entry to
+  stop at and every assertion below it would read a window that is not the boot's"
+    echo "   NO RAISE ORACLE: the CLINT store carries no trace event, so this run checks that
+   every peer TOOK the doorbell and not that the initiator raised it. Window cut at the first
+   userspace entry: $(wc -l < "$HEAD") of $(wc -l < "$TRACE") traced line(s)"
+else
 
 # A raise happened at all, and at least as many as the image says rounds it ran.
-raises="$(grep -c -F -e "$RAISE_LINE" "$TRACE")" || raises=0
-require_number "$raises" "the $RAISE_NAME count"
+raises="$(grep -c -F -e "$SGIR_LINE" "$TRACE")" || raises=0
+require_number "$raises" "the GICD_SGIR write count"
 if [ "$raises" -eq 0 ]; then
-    fail "QEMU's GIC model logged no $RAISE_NAME ($RAISE_LINE). No software-generated
+    fail "QEMU's GIC model logged no write to GICD_SGIR ($SGIR_LINE). No software-generated
   interrupt was ever raised, whatever the image printed about cores answering"
 fi
 if [ "$raises" -lt "$rounds" ]; then
-    fail "QEMU counted $raises $RAISE_NAME(s) and the image reports $rounds round(s). The
+    fail "QEMU counted $raises GICD_SGIR write(s) and the image reports $rounds round(s). The
   two numbers reach this gate by different routes and one raise per round is what the send
   owes; fewer means rounds completed without reaching the controller"
 fi
@@ -246,39 +306,39 @@ fi
 # THE ROUND'S OWN WINDOW: every line up to and including the round's last raise. Its raises are
 # the first in the boot, so counting them off is what finds the boundary, and everything the
 # round owes, each peer's acknowledgement of the raise it answered, lies inside it.
-HEAD="$TMP/gic.head"
-awk -v want="$rounds" -v pat="$RAISE_LINE" '
+awk -v want="$rounds" -v pat="$SGIR_LINE" '
     index($0, pat) > 0 { seen = seen + 1; if (seen > want) { exit } }
     { print }
 ' "$TRACE" > "$HEAD"
 require_nonempty "$HEAD" "the round's window is empty, so the cut found no raise to count off"
-head_raises="$(grep -c -F -e "$RAISE_LINE" "$HEAD")" || head_raises=0
-require_number "$head_raises" "the windowed $RAISE_NAME count"
+head_raises="$(grep -c -F -e "$SGIR_LINE" "$HEAD")" || head_raises=0
+require_number "$head_raises" "the windowed GICD_SGIR write count"
 if [ "$head_raises" -ne "$rounds" ]; then
     fail "the round's window holds $head_raises raise(s) for $rounds round(s), so the cut did
   not land: every assertion below it would read a window that is not the round's"
 fi
-echo "   the emulator counted $raises $RAISE_NAME(s), $head_raises of them the round's,
+echo "   the emulator counted $raises GICD_SGIR write(s), $head_raises of them the round's,
    over $(wc -l < "$HEAD") of $(wc -l < "$TRACE") traced line(s)"
+fi
 
 # EVERY SECONDARY'S CPU INTERFACE ACKNOWLEDGED THE DOORBELL, which the image cannot state: the
-# interface number is the controller's and the acknowledgement is a read of the acknowledge
-# register QEMU observed.
+# interface number is the controller's and the acknowledgement is a GICC_IAR read QEMU
+# observed.
 missing=""
 core=1
 while [ "$core" -lt "$want" ]; do
-    n="$(grep -c "$(ack_ere "$core" "$DOORBELL_INTID")" "$HEAD")" || n=0
-    require_number "$n" "the acknowledgement count for cpu $core"
+    n="$(kos_doorbell_count "$HEAD" "$core")" || n=0
+    require_number "$n" "the doorbell count for core $core"
     if [ "$n" -eq 0 ]; then
         missing="$missing $core"
     else
-        echo "   cpu $core acknowledged INTID $DOORBELL_INTID $n time(s)"
+        echo "   core $core took the doorbell $n time(s)"
     fi
     core=$((core + 1))
 done
 if [ -n "$missing" ]; then
-    grep "^$TRACE_ACK" "$HEAD" | sort -u | sed -n '1,10p'
-    fail "QEMU's GIC model reports no acknowledgement of INTID $DOORBELL_INTID by cpu(s)$missing.
+    sed -n '1,10p' "$HEAD"
+    fail "$CHAN_NAME reports no doorbell taken by core(s)$missing.
       A core already spinning in the lock's acquire loop answers by POLLING and acknowledges
       nothing, so this arm cannot separate an interrupt path that never ran from a core the host
       starved. The test is registered RUN_SERIAL for that reason; a parallel ctest reopens it.
@@ -288,13 +348,20 @@ fi
 
 # THE INITIATOR SERVICES ITS OWN BIT INLINE AND MUST NOT RAISE ON ITSELF: a self-raise taken
 # while the initiator waits with interrupts masked is a deadlock.
-self="$(grep -c "$(ack_ere 0 "$DOORBELL_INTID")" "$HEAD")" || self=0
-require_number "$self" "the self-acknowledgement count"
+self="$(kos_doorbell_count "$HEAD" 0)" || self=0
+require_number "$self" "the self-doorbell count"
 if [ "$self" -ne 0 ]; then
-    fail "cpu 0 acknowledged INTID $DOORBELL_INTID $self time(s): the initiator raised the
-  doorbell on itself instead of servicing its own bit in the send"
+    fail "core 0 took the doorbell $self time(s) inside the boot window: the initiator raised
+  it on itself instead of servicing its own bit in the send"
 fi
 
-echo "PASS: $want core(s) answer the doorbell over $rounds round(s) held under the kernel lock;
-  QEMU's GIC model witnesses the raise and every secondary interface acknowledging it"
+if [ "$HAS_RAISE" -eq 1 ]; then
+    echo "PASS: $want core(s) answer the doorbell over $rounds round(s) held under the kernel
+  lock; $CHAN_NAME witnesses the raise and every secondary acknowledging it"
+else
+    echo "PASS: $want core(s) answer the doorbell over $rounds round(s) held under the kernel
+  lock; $CHAN_NAME witnesses every secondary TAKING it and the initiator taking none. THE
+  RAISE ITSELF IS UNWITNESSED on this backend: the CLINT store carries no trace event, so no
+  arm here counts raises and the image's own round count is the only statement about them"
+fi
 exit 0

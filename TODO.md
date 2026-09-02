@@ -6700,6 +6700,52 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
 
 ## M7 -- multicore (SMP on the A53 port, AMP where cores are heterogeneous)
 
+### Filed out of S5 by ruling, 2026-09-01
+
+- [ ] **`tools/smptrace_decode.py` and `KICKOS_SMP_TRACE` have never been exercised on a real
+      stall.** The ring separates three causes of a thread that never runs again and was proven
+      only on a passing run, where the right answer is that nothing stalled. Whoever meets the
+      next lost wake on any backend should use it FIRST and report whether the three-way verdict
+      actually discriminates; if it does not, the fault is in the hook placement rather than in
+      the idea, and the hooks are five one-line calls.
+
+- [ ] **Decide what a per-core interrupt controller means for a backend that HAS one.** S5 ruled the
+      rv64 software controller image-wide because nothing on that board implements a controller, so
+      a line is one logical resource. `docs/design-m7-state-inventory.md` still classifies
+      `g_irq_masked`, `g_irq_pending` and the inject line as per-core, which is right for a banked
+      bank and wrong for a stand-in. The document owes the distinction. **And the shape S5 had to
+      replace is shared by five other backends**: rv32imac, esp32c6, lx6, rxv3 and x86_64 all carry
+      a single `g_inject_line` identity plus plain read-modify-write on the mask and pending words.
+      That is correct while local interrupt masking is the whole exclusion, which is true of every
+      one of them today, and it is exactly what stops being true on the first of them to drive a
+      second core. Whichever does it next owes the raised SET and the one-instruction mutations
+      rather than a per-core copy.
+- [ ] **The cross-core shootdown has no witness on this bench, and that is architecture-mandated
+      code rather than a gap to close with a test.** STATE.md already records that removing rv64's
+      per-page invalidate leaves every arm green, so the LOCAL invalidate is unwitnessed here; a
+      missing REMOTE one is unwitnessed for the same reason and worse, QEMU's TLB model not being
+      the machine the ISA describes. What the send has instead is structural: the rendezvous body
+      is now reachable and `check_doorbell_generic.sh` asserts it on this arch, where before the
+      symbol was dropped for want of a caller. Treated the way the contract treats the data-cache
+      seam: correct by construction, recorded as unwitnessed, not described as complete.
+
+- [ ] **The RV64 doorbell's INSTRUCTION-side half has no operation at this board's ISA baseline.**
+      The service body carries `SFENCE.VMA`, which orders TRANSLATION and which the ISA gives no
+      way for one hart to perform for another. The instruction half is `FENCE.I`, and Zifencei is
+      absent from `arch/riscv/chip/virt_rv64/cpu.cmake`'s march string, so it does not assemble.
+      Ruled DEFERRED rather than papered over: calling `SFENCE.VMA` sufficient would put an untrue
+      statement of contract in the tree. No caller exists yet, the rv64 instruction-side rendezvous
+      being unwired and dropped by `--gc-sections`, so this is owed by the first caller that needs
+      it. Raising the baseline is a real option and not a free one: the toolchain's multilibs are
+      named for exact march strings, so a change is measured against them rather than assumed.
+- [ ] **`errnoprobe`'s decline is now REPRODUCED rather than argued, and the fix it names is
+      unchanged.** The registration comment said running it above one kernel core "would assert a
+      gate that can never pass"; that had never been tested, arm64 not registering it above one
+      core and no other four-core board registering it at all. The four-core RV64 board ran it and
+      got the seat's own failure, and the same app on the four-core arm64 preset got the identical
+      one. The seat belongs in thread-local storage; until then both registrations carry the
+      core-count clause.
+
 - [ ] **Give the converted fields their real ORDER.** M4.9.2 turned every cross-thread field
       into a relaxed `std::atomic`, which is a type change and nothing more: relaxed says
       nothing a second core will honour. What is left is deciding, per site, where an

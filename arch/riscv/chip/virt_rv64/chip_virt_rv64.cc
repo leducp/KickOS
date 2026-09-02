@@ -256,8 +256,13 @@ void kickos_rv64_doorbell_send(uint32_t cores)
     {
         return;
     }
-    // A publish the far side must observe is the initiator's to order, ahead of the raise.
-    __asm volatile("fence rw, w" ::: "memory");
+    // THE SUCCESSOR IS A DEVICE STORE, SO THE SUCCESSOR SET MUST NAME THE I/O DOMAIN. RISC-V's
+    // FENCE carries separate predecessor and successor bits for memory (R, W) and for device
+    // (I, O) accesses, and the CLINT sits in an I/O PMA: a successor set of `w` names memory
+    // writes only and so orders nothing against the msip store below. Predecessor `rw` is this
+    // hart's own memory work, the tables and the request cell it published; successor `ow`
+    // names the device write that raises the doorbell, and the memory writes that follow it.
+    __asm volatile("fence rw, ow" ::: "memory");
     for (uint32_t index = 0; index < KICKOS_NUM_CORES; index++)
     {
         if ((cores & (1u << index)) != 0)

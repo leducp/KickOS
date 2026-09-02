@@ -46,7 +46,17 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64" AND KICKOS_NUM_CORES GREATER 1)
   kickos_add_qemu_test(NAME qemu_arm64_smp_arrival TARGET hello BOARD qemu-arm64
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_arrival.sh"
-    ARGS ${KICKOS_NUM_CORES} "pong 3"
+    ARGS ${KICKOS_NUM_CORES} "pong 3" armv8a
+    TIMEOUT 240)
+endif()
+
+# The same gate on the second backend. Its short-machine arm binds the release loop to the count
+# the same way, by a different mechanism: rv64 has no firmware to refuse a start, so the missing
+# hart never publishes arrival and the bounded wait names it.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64" AND KICKOS_NUM_CORES GREATER 1)
+  kickos_add_qemu_test(NAME qemu_riscv64_smp_arrival TARGET hello BOARD qemu-riscv64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_arrival.sh"
+    ARGS ${KICKOS_NUM_CORES} "pong 3" rv64imac
     TIMEOUT 240)
 endif()
 
@@ -56,13 +66,27 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64" AND KICKOS_NUM_CORES GREATER 1)
   kickos_add_qemu_test(NAME qemu_arm64_smp_doorbell TARGET hello BOARD qemu-arm64
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_doorbell.sh"
-    ARGS ${KICKOS_NUM_CORES} "pong 3"
+    ARGS ${KICKOS_NUM_CORES} "pong 3" armv8a
     TIMEOUT 240)
   # Serial: the emulator arm reads whether a core took the doorbell INTERRUPT, and a core that
   # is already spinning in the lock's acquire loop answers by polling instead and acknowledges
   # nothing. Which path runs depends on host scheduling, the guest clock tracking host time, so
   # peers competing for CPU turn a correct image red.
   set_tests_properties(qemu_arm64_smp_doorbell PROPERTIES RUN_SERIAL TRUE)
+endif()
+
+# The same gate on the second backend, with ONE channel rather than two and its header saying
+# so: the CLINT store that raises a doorbell carries no trace event, so no arm here counts
+# raises. What the trap log does carry is the hart and the cause, which is what the per-peer
+# and initiator arms read.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64" AND KICKOS_KERNEL_CORES GREATER 1)
+  kickos_add_qemu_test(NAME qemu_riscv64_smp_doorbell TARGET hello BOARD qemu-riscv64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_doorbell.sh"
+    ARGS ${KICKOS_NUM_CORES} "pong 3" rv64imac
+    TIMEOUT 240)
+  # Serial for the same reason as the arm64 arm: a peer already spinning in the acquire loop
+  # answers by POLLING and takes no interrupt, so a starved peer and a broken vector read alike.
+  set_tests_properties(qemu_riscv64_smp_doorbell PROPERTIES RUN_SERIAL TRUE)
 endif()
 
 # The TLB maintenance the map editor spends, read out of the linked image. Registered from BOTH

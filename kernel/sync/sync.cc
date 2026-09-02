@@ -3,6 +3,7 @@
 
 #include <kickos/sync.h>
 #include <kickos/sched.h>
+#include <kickos/smptrace.h>
 #include <kickos/cap.h>
 #include <kickos/instance.h>
 #include <kickos/kernel.h>
@@ -18,6 +19,15 @@ namespace kickos
     Thread* wq_pop_highest(List& q)
     {
         Thread* best = wq_peek_highest(q);
+        // THE SEARCH IS RECORDED WHETHER OR NOT IT FOUND ANYTHING: an absent record says
+        // nobody looked, which is a different finding from looking and coming back empty.
+        KOS_TRACE(::kickos::KOS_TR_SEARCH, KOS_TRACE_ID(&q), KOS_TRACE_ID(best));
+        if (best == nullptr)
+        {
+            // The head too, so a queue that is genuinely empty is told apart from a search
+            // that read a queue the parked thread is not on.
+            KOS_TRACE(::kickos::KOS_TR_EMPTY, KOS_TRACE_ID(&q), KOS_TRACE_ID(q.head));
+        }
         if (best != nullptr)
         {
             q.unlink(&best->link);
@@ -98,6 +108,8 @@ namespace kickos
         c->wait_kind = kind;
         c->wait_obj = obj;
         q.push_back(&c->link);
+        // BEFORE the reschedule, which on a stall never returns.
+        KOS_TRACE(::kickos::KOS_TR_PARK, KOS_TRACE_ID(c), KOS_TRACE_ID(&q));
         sched::reschedule();
     }
 

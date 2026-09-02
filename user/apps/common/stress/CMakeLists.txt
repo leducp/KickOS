@@ -45,6 +45,16 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64" AND KICKOS_KERNEL_CORES GREATER 1)
   kickos_add_qemu_test(NAME qemu_arm64_smp_threads TARGET stress BOARD qemu-arm64
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_threads.sh"
-    ARGS ${KICKOS_KERNEL_CORES} "^stress: scheduler" "${CMAKE_NM}"
+    ARGS ${KICKOS_KERNEL_CORES} "^stress: scheduler" "${CMAKE_NM}" armv8a
+    TIMEOUT 300)
+endif()
+
+# The same gate on the second backend. Its first channel is the emulator's execution log and is
+# architecture-neutral; its second reads the trap log, whose line names the hart and the cause
+# where the GIC's event names the interface and the INTID.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64" AND KICKOS_KERNEL_CORES GREATER 1)
+  kickos_add_qemu_test(NAME qemu_riscv64_smp_threads TARGET stress BOARD qemu-riscv64
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_threads.sh"
+    ARGS ${KICKOS_KERNEL_CORES} "^stress: scheduler" "${CMAKE_NM}" rv64imac
     TIMEOUT 300)
 endif()

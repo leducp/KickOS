@@ -38,8 +38,12 @@ int kickos_rv64_doorbell_pending(void);
 // and parks it on the doorbell. Never returns. Called from the chip's supervisor landing pad.
 void kickos_rv64_secondary_entry(void) __attribute__((noreturn));
 
-// Nonzero while the software controller is carrying a device line no dispatch has taken. The
-// poll clears the one cause every raise arrives on, so it must know what it did not service.
+// One poke and one wait over `peers`: every serviced hart runs the SFENCE.VMA in the doorbell's
+// service body, which is the only way one hart's translation is reached from another here.
+void kickos_rv64_translation_rendezvous(uint32_t peers);
+
+// Nonzero while the software controller is carrying a raise no dispatch has taken. The poll
+// clears the one cause every raise arrives on, so it must know what it did not service.
 int kickos_rv64_inject_owed(void);
 
 // Nonzero once hart `id` has reached the park. Read by the chip's arrival wait.

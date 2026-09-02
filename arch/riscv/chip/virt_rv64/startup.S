@@ -173,9 +173,9 @@ _start:
 
        s11 CARRIES THE HART INDEX FROM HERE TO THE mret and nothing between writes it.
 
-       mhartid IS NOT THE INDEX: it is an integrator-chosen value (the openc906 core hardwires
-       it to zero and its integrator customises it per instance), so the range test below is
-       what makes it one, and the claim is what refuses two harts answering the same. */
+       mhartid IS NOT THE INDEX: it is integrator-chosen (the openc906 hardwires it to zero),
+       so the range test below is what makes it one and the claim refuses two harts
+       answering the same. */
     csrr    s11, mhartid
     li      t0, KICKOS_NUM_CORES
     bltu    s11, t0, .Lhart_in_range
@@ -201,11 +201,10 @@ _start:
     beqz    s11, .Lhart_prologue
 
     /* WFI'S WAKEUP IS GATED BY mie ALONE, not by mstatus.MIE, so a hart parked with mie at its
-       reset zero can never leave: no interrupt is enabled, nothing can make one pending, and
-       the release word alone is a store no hart is watching for. The release therefore rings
-       this hart's own msip word as the EDGE beside the word as the STATE, and this enable is
-       what lets the edge land. The interrupt is never TAKEN here: mstatus.MIE is still zero,
-       so it only ends the wait. */
+       reset zero can never leave and the release word alone is a store nothing is watching for.
+       The release rings this hart's own msip word as the EDGE beside the word as the STATE, and
+       this enable is what lets the edge land. Never TAKEN here, mstatus.MIE being zero: it only
+       ends the wait. */
     li      t0, 8                   /* mie.MSIE */
     csrs    mie, t0
     la      s10, kickos_rv64_hart_release
@@ -715,11 +714,10 @@ _start:
  * mstatus.MPRV is cleared first, and this is the one place it is cleared, so the console is
  * reachable from the PMP probe's vector, the generic vector and every direct jump alike.
  *
- * ONE HART TAKES THE CONSOLE. Every refusal here writes a byte at a time to a UART no lock
- * covers and then stops the machine at the finisher, so a second refusing hart would interleave
- * its message into the first's and could stop the machine mid-line. The claim decides which
- * refusal is reported; the harts that lose it stop without emitting and without answering the
- * finisher, leaving the whole diagnostic and the exit status to the one that won.
+ * ONE HART TAKES THE CONSOLE. Every refusal writes a byte at a time to a UART no lock covers
+ * and then stops the machine at the finisher, so a second refusing hart would interleave its
+ * message into the first's and could stop the machine mid-line. The harts that lose the claim
+ * stop without emitting and without answering the finisher.
  */
 .Lm_refuse:
     li      t0, 0x20000             /* mstatus.MPRV */

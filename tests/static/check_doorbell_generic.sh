@@ -56,11 +56,11 @@ case "$arch" in
         CONDX='^(cbz|cbnz|tbz|tbnz|b\\..*)$'
         ;;
     rv64imac)
-        # NO RENDEZVOUS BODY IS ASSERTED HERE. The instruction-side rendezvous has no caller on
-        # this backend, so --gc-sections drops it and the symbol is absent by construction
-        # rather than by a defect. What that half needs is FENCE.I, and Zifencei is not in this
-        # board's ISA baseline; until a caller exists the arm has nothing to read.
-        RDV=
+        # The rendezvous this backend raises carries the TRANSLATION half, not the instruction
+        # half: SFENCE.VMA has no broadcast form on RISC-V, so a peer runs its own through the
+        # service body. The instruction half would be FENCE.I, absent from this board's ISA
+        # baseline, so no body here asserts it and check_doorbell_isb.sh is not registered.
+        RDV=kickos_rv64_translation_rendezvous
         DISPATCH=kickos_rv64_isr_dispatch
         RAISE=kickos_rv64_doorbell_send
         BRX='^(j|jal|call|tail)$'

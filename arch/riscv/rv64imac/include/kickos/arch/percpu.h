@@ -44,12 +44,10 @@ struct alignas(KICKOS_RV64_PERCPU_BLOCK_SIZE) rv64_percpu_block
     // The dense index this hart answers arch_cpu_id with, seated by kickos_rv64_init.
     uint32_t id;
 
-    // THE SOFTWARE INTERRUPT CONTROLLER'S CELLS ARE NOT HERE, and that is a ruling rather than
-    // an omission: this board has no interrupt controller, so those cells mirror no per-hart
-    // hardware and a logical line is one system-wide resource. Keyed per hart, a driver that
-    // unmasks on one and an injector that raises on another never meet, and the raise sits
-    // latched on the injector's hart until an unmask that only the driver's hart will make.
-    // They live at file scope in arch_rv64imac.cc, under the kernel lock every caller holds.
+    // THE SOFTWARE CONTROLLER'S CELLS MAY NOT BE KEYED HERE. A logical line is one system-wide
+    // resource, so per hart a driver that unmasks on one and an injector that raises on another
+    // never meet. They are file-scope in arch_rv64imac.cc, mutated one instruction at a time
+    // because the ISR path brackets with an epoch and not the kernel lock.
 };
 
 // The trap stack FIRST: its top is the block's address, which is what sscratch holds.
