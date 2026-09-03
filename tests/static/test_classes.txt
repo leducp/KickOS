@@ -39,7 +39,9 @@ host   src    tests/static/check_dash_punct.sh
 host   src    tests/static/check_death_stack_seating.sh
 host   src    tests/static/check_doc_names.sh
 host   src    tests/static/check_doorbell_generic.sh
+host   src    tests/static/check_arm64_entry_order.sh
 host   src    tests/static/check_doorbell_isb.sh
+host   src    tests/static/check_rv64_irq_fence.sh
 host   src    tests/static/check_entry_sigdiff.sh
 host   src    tests/static/check_extern_c_linkage.sh
 host   src    tests/static/check_forever_loop.sh

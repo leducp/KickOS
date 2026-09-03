@@ -103,6 +103,7 @@ code wins, then this file.
 | `microbit` | nRF51822 / M0, 32 KiB | -- | semihosting | `ctest --preset microbit` | [x] CI (armv6m run gate; the fleet's only measured expected-skip list -- see *microbit* below) |
 | `qemu-riscv` | QEMU virt / RV32IMAC | -- | semihosting | `ctest --preset qemu-riscv` | [x] CI (first RISC-V) |
 | `qemu-arm64` | QEMU virt / Cortex-A53 (AArch64) | -- | PL011 UART at `0x09000000` | `ctest --preset qemu-arm64` | [x] CI (first 64-bit ISA, and **emulator only** -- there is no A-profile silicon on this bench; see *Per-board caveats* below) |
+| `imx8mp-evk` | QEMU imx8mp-evk / NXP i.MX 8M Plus, quad Cortex-A53 | -- | i.MX UART1 at `0x30860000` | `ctest --preset imx8mp-evk` | (!) **emulated only, and not in CI**: 48 arms registered (`ctest -N` 2026-09-02), witnessed 2026-09-02 under `qemu-system-aarch64` 11.1.0 at 48 of 48. The SECOND armv8a part and the first whose interrupt controller is the die's rather than a machine option. **ONE CORE OF THE FOUR**: the machine models no way to release a secondary -- see *Per-board caveats* below |
 | `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and not in CI**: 52 arms registered (re-derived 2026-08-29 by `ctest -N`), witnessed 2026-08-29 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` at 52 of 52. This row read 50 under a 2026-08-28 stamp and BOTH halves of that were wrong: the fleet-wide `whitespace` gate took the total to 51 and `console_reach` to 52, and the SET had already changed on 2026-08-29, `qemu_riscv64_aspace_fault` being retired that day and `qemu_riscv64_aspace_ufault` registered in its place. **It then read 51 of 52 with `console_reach` red for part of the same day**, which was true at `517449e5` and stopped being true at `58b43d62` and `d4977780`, the two commits that closed the four panic doors that gate names. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
 | `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and not in CI**: 52 arms registered (re-derived 2026-08-29 by `ctest -N`), witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
 | `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and not in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip selects no memory family, so the map is flat. See *Per-board caveats* below |
@@ -206,6 +207,91 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   gyro stays deselected and its SDO tri-stated off MISO. Confirmed against the UM1842 pin table;
   `f411spi` does exactly this in root. A gyro fighting for MISO with PE3 high means the preset
   did not take, not a wiring fault.
+- **`imx8mp-evk` IS THE FLEET'S FIRST MODEL OF A REAL PART RATHER THAN OF A BOARD, and every
+  number below is emulator-grade.** There is no i.MX8MP on this bench; the witness is
+  `qemu-system-aarch64 -M imx8mp-evk` (11.1.0) and nothing else. The board is `arch/arm64` /
+  arch `armv8a` / chip `imx8mp`, translating exactly as `qemu-arm64` is, and it registers 48
+  ctest arms of which 16 are image gates (`ctest -N` 2026-09-02, 48 of 48 green). Its selftest
+  is 143 arms with ONE partial and ZERO skips, the partial being `periph_reg_write_unheld` for
+  the same reason it is one on `qemu-arm64`: the board mints no free DEV window, its map keeping
+  the device gigabyte EL1-only. What separates it from `qemu-arm64` is three structural facts
+  rather than a different address map.
+  - **IT HANDS OVER AT EL3 WITH NO FIRMWARE UNDER IT, so the chip's `startup.S` stands in for
+    the BL31 an EVK would have run.** The machine sets no PSCI conduit and leaves EL3
+    implemented, and `-kernel` makes this image the first thing on the part. The kernel is an
+    EL1 kernel and cannot be otherwise, EL3 having no `TTBR1` while the whole port rests on the
+    kernel owning the high half. So the handover programs what a lower level cannot reach for
+    itself and then `eret`s: `ICC_SRE_EL3` and `ICC_SRE_EL2` (both, because the part implements
+    EL2 whether or not anything executes there, and without the second the GICv3 backend's first
+    `ICC_*` write traps to an EL2 vector nothing has written), `HCR_EL2.RW`, `CPTR_EL2`,
+    `CNTHCTL_EL2`'s two enables (without which every `CNTPCT_EL0` read at EL1 traps the same
+    way, and that counter is the kernel's whole timebase), `CNTVOFF_EL2`, `SCTLR_EL1`,
+    `CNTFRQ_EL0`, and `SCR_EL3` with `NS` set. **`SP_EL1` is UNKNOWN across that `eret`** and is
+    re-seated past it rather than assumed to survive from `_start`. An EL1 handover is accepted
+    too, which is what a board booted through ATF and U-Boot arrives at; EL2 is refused by name.
+  - **ITS CONSOLE IS AN i.MX UART AND NOT A PL011.** UART1 at `0x30860000` (RM rev 3 section
+    2.5), which is the one the machine backs with its first chardev; the other three are decoded
+    and connected to nothing, so a console pointed at one of them is silent rather than
+    faulting. Which UART carries the EVK's debug header is a schematic fact the RM does not
+    carry. No baud rate is programmed: the divider runs off a CCM clock this port configures
+    nothing else in, and the machine ignores it entirely, so no arm here can witness a wrong
+    one. `UCR1.UARTEN` and `UCR2.TXEN` ARE written, correctly for silicon and unwitnessably
+    here, the model emitting on the `UTXD` write whatever those hold.
+  - **ITS GIC IS THE DIE'S, WHICH IS THE WHOLE REASON THIS PART EARNS A PORT.** A GIC-500, so
+    the GICv3 posture is mandatory rather than a variant and there is no `gic-version` option to
+    pass; `chip_imx8mp.cc` refuses any other version at compile time, and the Kconfig choice
+    defaults to GICv3 on this chip. Wire values: distributor `0x38800000`, redistributors
+    `0x38880000` with a `0x20000` stride, FOUR frame pairs, and 192 INTIDs. **The count is the
+    DIE's and not the image's**: four A53s means four redistributors, decoded and grantable
+    whatever `KICKOS_NUM_CORES` this image drives, so it is what the reservation and the frame
+    walk are both sized on. **The RM states only the 1 MB block**
+    `0x38800000` to `0x388FFFFF` and documents no distributor or redistributor offset anywhere,
+    so the sub-layout is the GIC-500's own integration cross-checked against what the machine
+    decodes; the stride counts two 64 KB frames per core (IHI 0069H.b section 12.10). The INTID
+    count agrees from both directions: `GICD_TYPER.ITLinesNumber` reads 5, and RM section 7.1.2
+    gives 160 shared peripheral interrupts above the 32 banked IDs. `GICD_CTLR` reads back
+    `0x50`, so ARE is on and the controller reports a SINGLE security state. The timebase is the
+    architected generic timer at 8 MHz, a 24 MHz base divided by three, which is the value
+    `CNTFID0` itself carries (RM section 4.11.4.1.1, reset `0x007A1200`); a second divides
+    exactly by it, so the ns-per-tick conversion is lossless at 125.
+- **`imx8mp-evk` BRINGS UP ONE CORE OF FOUR, AND WHAT IS MISSING IS THE RELEASE RATHER THAN
+  ANYTHING THE PREDICATE ASKS.** The A53 cluster meets all six properties of a shared kernel and
+  `arch/arm64/chip/imx8mp/smp.cmake` declares all three of the part's. What has no vehicle is
+  STARTING a secondary, and that is not one of the six: writing an entry point and releasing a
+  reset is how a chip starts a core, not a property of one image spanning cores. Three
+  measurements say the machine cannot do it, and they agree. `psci-conduit` reads 0 on every
+  CPU object, so there is no PSCI at any conduit and an `SMC` from EL3 is just an exception to
+  our own vector. Cores 1 to 3 carry `start-powered-off` true, and nothing in the model can
+  clear it. And the SRC at `0x30390000` and IOMUXC_GPR at `0x30340000` are both
+  `unimplemented-device`: the model logs every write and discards it, and reads back zero, which
+  was confirmed by writing a pattern and reading it back. So a count above one is refused at
+  compile time rather than left to present as a boot that stops, a four-core image otherwise
+  sizing every per-core array for cores that never arrive. **On silicon the release is
+  documented and is the SRC's**: core N's reset vector base is
+  `{SRC_GPR(2N+1)[15:0], SRC_GPR(2N+2)[21:2]}` from offset `0x74` upward, its enable is
+  `SRC_A53RCR1` bit N at offset `0x08` (reset `0x00000001`, so core 0 alone is enabled and its
+  bit is fixed at 1), and its reset is released through `SRC_A53RCR0` at offset `0x04` (reset
+  `0x000A0000`) whose per-core POR and core-reset bits are self-clearing. RM rev 3 sections
+  6.5.5.2, 6.5.5.3 and 6.5.5.26 to 6.5.5.33. **The RM states no ordering requirement** for that
+  sequence; programming the vector before deasserting the reset is an inference from the field
+  semantics, not a documented procedure. A released core would also arrive at EL3 with its own
+  vector base, so the release owes the same handover the primary gets.
+- **THE i.MX8MP IS BOTH AN SMP PART AND AN AMP PART AT ONCE, AND NOTHING IN THE TREE REACHES
+  THAT CASE.** The Cortex-M7 companion beside the A53 cluster has its own NVIC and its own
+  instruction set, so it is asymmetric BY CONSTRUCTION rather than by policy: one part is
+  symmetric within its cluster and asymmetric across the die, which is why symmetry is declared
+  per part and not per arch. It is startable from the A53 side by two register writes, which is
+  the concrete form of the ruling that a bootloader owning a companion is a convention rather
+  than a constraint: `IOMUXC_GPR_GPR6` at `0x30340018` carries `GPR_M7_INITVTOR` in bits 31:7,
+  so 128-byte aligned (RM section 8.2.3.7), and `SRC_M7RCR` at `0x3039000C` (reset `0x000000A8`,
+  RM section 6.5.5.4) carries `ENABLE_M7` at bit 3, already set out of reset, and `SW_M7C_RST`
+  at bit 1, self-clearing. The companion runs from tightly-coupled memory, which the A53 sees at
+  `0x007E0000` for 128 KB of ITCM and `0x00800000` for 128 KB of DTCM, so something must place
+  code there before the release. **QEMU's `imx8mp-evk` models the A53 cluster alone and ships no
+  Cortex-M7**, and it decodes those two TCM windows as unimplemented devices, so the
+  heterogeneous case has no emulated vehicle at all. Recorded here rather than left for a later
+  milestone to discover: it is not a gap in the AMP work, it is the absence of any machine on
+  this bench that is both at once.
 - **`qemu-arm64` is EMULATOR ONLY, and nothing on this bench can change that.** There is no
   A-profile silicon here, so every armv8a claim in this file is emulator-grade: the port is
   witnessed by `qemu-system-aarch64 -M virt -cpu cortex-a53 -nic none` and by nothing else. Both
@@ -635,7 +721,7 @@ the board".
 | rv32imac | `qemu-riscv`, `esp32c6-wroom` | `qemu-riscv` run gate; C6 + bench build-only | **runtime** (PMP, the `qemu-riscv-mpu` job) |
 | armv7m | `qemu`, `qemu-m33`, `qemu-m7`, `qemu-m3`, and the board sweep | four MPS2 run gates (an386/an505/an500/an385) + build sweep | **runtime** (PMSAv7 on M4/M7/M3, **PMSAv8** on the M33) |
 | armv6m | `microbit`, `picopi` | `microbit` run gate + `picopi` build | **build only** |
-| armv8a | `qemu-arm64` | `qemu-arm64` run gate -- the only witness this ISA has | -- (no region MPU; enforcement is VMSAv8 page tables and it is LIVE in that gate) |
+| armv8a | `qemu-arm64`, `imx8mp-evk` | `qemu-arm64` run gate -- the only CI witness this ISA has; `imx8mp-evk` is a LOCAL run gate in no CI job | -- (no region MPU; enforcement is VMSAv8 page tables and it is LIVE in both gates) |
 | rv64imac | `qemu-riscv64`, `qemu-riscv64-sv48` | **none** | -- (no region MPU; enforcement is Sv39/Sv48 page tables, live in both LOCAL postures and in no CI job) |
 | Xtensa LX6 | `esp32-wroom` | build only, plain and `-st` | -- (no per-domain unit) |
 | RXv3 | `rx72m` | **none** | -- |
@@ -2221,10 +2307,11 @@ actual mask column. A green host gate says the seam's LOGIC is right, never that
 
 **`panicgate` is FIVE cases, and it is a real gate.** One source, five images, because a run observes
 exactly one panic; each image carries `KICKOS_PANICGATE_CASE=<n>` and is registered as a CTest on
-every one of the NINETEEN presets whose board registers it (`sim`, `sim-telem`, `qemu`, `qemu-telem`,
+every one of the TWENTY presets whose board registers it (`sim`, `sim-telem`, `qemu`, `qemu-telem`,
 `qemu-flat`, `qemu-m3`, `qemu-m3-flat`, `qemu-m7`, `qemu-m7-flat`, `qemu-m33`, `qemu-m33-flat`,
 `microbit`, `qemu-riscv`, `qemu-riscv-flat`, `qemu-riscv-bench`, `qemu-riscv64`, `qemu-riscv64-sv48`,
-`qemu-arm64`, `qemu-x86_64` -- registration keys off `KICKOS_BOARD`, not the configuration variant).
+`qemu-arm64`, `imx8mp-evk`, `qemu-x86_64` -- registration keys off `KICKOS_BOARD`, not the
+configuration variant).
 **This read FOURTEEN and named nine boards until 2026-08-29**, omitting `qemu-riscv-bench` and the
 whole 64-bit half; re-derived by configuring each preset and counting `panicgate` in `ctest -N`.
 Two spellings of each verdict -- a CTest regex

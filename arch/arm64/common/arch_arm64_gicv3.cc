@@ -263,13 +263,14 @@ namespace
     }
 
     // The frame whose GICR_TYPER names this core, found by walking the contiguous series the
-    // chip declares. The walk stops at the Last bit and is bounded by the core count either
-    // way, so a series that never sets Last cannot run off the end of the window the grant
-    // model reserved.
+    // chip declares. The walk stops at the Last bit and is bounded by the PART's frame count
+    // either way, so a series that never sets Last cannot run off the end of the window the
+    // grant model reserved. BOUNDED ON THE PART AND NOT ON KICKOS_NUM_CORES: a core handed over
+    // at EL1 on a die whose other frames this image never drove still has to reach its own.
     uintptr_t find_my_redistributor(uint32_t packed)
     {
         uintptr_t base = kickos_gicv3.rdist_pa;
-        for (uint32_t seen = 0; seen < KICKOS_NUM_CORES; seen++)
+        for (int seen = 0; seen < kickos_gicv3.rdist_count; seen++)
         {
             uint64_t const typer = *gicr64(base, GICR_TYPER);
             if (static_cast<uint32_t>(typer >> 32) == packed)

@@ -1,14 +1,19 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * QEMU `virt` (AArch64, Cortex-A53) startup. `-kernel <elf>` loads the image into DRAM at
+ * i.MX 8M Plus EVK (quad Cortex-A53) startup. `-kernel <elf>` loads the image into DDR at
  * 0x4000_0000 and enters at the ELF entry point with the MMU and caches off. A64 loads no SP
- * from a vector table, so SP is set here; .data and .bss are Reset_Handler's, as on
- * virt_rv32.
+ * from a vector table, so SP is set here; .data and .bss are Reset_Handler's.
  *
- * The entry exception level is a property of the QEMU INVOCATION: `-M virt` hands over at
- * EL1, `virtualization=on` at EL2, `secure=on` at EL3. This port implements EL1 and refuses
- * the others by name.
+ * THIS PART HANDS OVER AT EL3 AND THIS FILE STANDS IN FOR THE FIRMWARE THAT WOULD NOT.
+ * `qemu-system-aarch64 -M imx8mp-evk` sets no PSCI conduit and leaves EL3 implemented, so an
+ * image loaded with `-kernel` is the first thing to run on the part and there is no BL31 under
+ * it. The kernel itself is an EL1 kernel and cannot be anything else: EL3 has no TTBR1, and
+ * the whole port rests on the kernel owning the high half while a process owns the low one.
+ * So the block below programs what a lower EL cannot reach for itself and erets to EL1.
+ *
+ * EL1 ENTRY IS ALSO ACCEPTED, which is what a board booted through ATF and U-Boot arrives at;
+ * the EL3 block is then skipped and its work has already been done. EL2 is refused by name.
  *
  * THE MMU COMES UP BEFORE ANY C. While SCTLR_EL1.M is 0 every access is Device-nGnRnE, which
  * mandates natural alignment whatever SCTLR_EL1.A says, and AArch64 GCC stages array and
@@ -20,7 +25,7 @@
  * virtual address that no walk can resolve yet and `adrp` to a high symbol is out of its
  * 4 GiB reach. x9 carries the offset back to the physical address, and the branch into the
  * high half is what stops needing it. The EL refusal reporter is linked into this section
- * for the same reason (chip_virt_arm64.cc).
+ * for the same reason (chip_imx8mp.cc).
  */
 
 /* Level-1 block descriptor (4 KiB granule, so one block spans 1 GiB). */
@@ -87,6 +92,36 @@
 #define SCTLR_C         (1 << 2)
 #define SCTLR_I         (1 << 12)
 
+/* The EL3 handover set. DDI 0487 M.b names every field; what is written and why is at the
+ * block that uses them.
+ *
+ * SCR_EL3 bits [5:4] are RES1, so a value without them is not the register's reset shape.
+ * NS moves the lower levels to Non-secure, which is where this part's GIC-500 reports a
+ * single Security state and where semihosting is admitted. */
+#define SCR_EL3_NS      (1 << 0)
+#define SCR_EL3_RES1    (3 << 4)
+#define SCR_EL3_RW      (1 << 10)       /* the next lower level is AArch64 */
+#define SCR_EL3_VALUE   (SCR_EL3_NS | SCR_EL3_RES1 | SCR_EL3_RW)
+
+/* SPSR for the eret: EL1h, so SP_EL1 rather than SP_EL0, with DAIF masked. Interrupts first
+ * reach the core through the initial thread's SPSR, exactly as on a part whose firmware
+ * hands over masked. */
+#define SPSR_EL3_EL1H   0x3c5
+
+#define HCR_EL2_RW      (1 << 31)
+#define CPTR_EL2_RES1   0x33ff
+#define CNTHCTL_EL1PCTEN (1 << 0)
+#define CNTHCTL_EL1PCEN  (1 << 1)
+
+/* SCTLR_EL1's RES1 bits with M, C and I clear: the MMU comes up below, not here. */
+#define SCTLR_EL1_RES1  0x30d00800
+
+/* The system counter feeding CNTPCT_EL0, written into CNTFRQ_EL0 at EL3: a 24 MHz base
+ * divided by three, which is the value CNTFID0 itself reads (IMX8MPRM rev 3 section
+ * 4.11.4.1.1, reset 0x007A_1200). A second divides exactly by it, which is what keeps the
+ * ns-per-tick conversion lossless. */
+#define KICKOS_IMX8MP_SYSCNT_HZ 8000000
+
     .section .text.init, "ax"
     .global _start
 _start:
@@ -108,7 +143,64 @@ _start:
     lsr     x0, x0, #2
     and     x0, x0, #3
     cmp     x0, #1
-    b.ne    .Lbad_el
+    b.eq    .Lat_el1
+    cmp     x0, #3
+    b.ne    .Lbad_el                /* EL2: refused by name, x0 still carries the level */
+
+    /* --- EL3: what a lower EL cannot program for itself ---------------------------
+       Every register here is written because EL1 either cannot reach it or would trap
+       through it. x9 and the literals survive the eret; general registers are not
+       cleared by it. */
+
+    msr     cptr_el3, xzr           /* CPTR_EL3.TFP resets UNKNOWN: it would trap the FP below */
+    msr     mdcr_el3, xzr
+
+    /* The GICv3 CPU interface is a set of system registers, and EL1's access to them is
+       gated at BOTH higher levels: ICC_SRE_EL3.Enable, and ICC_SRE_EL2.Enable because this
+       part implements EL2 whether or not anything executes there. Without the second, the
+       backend's first ICC_* write traps to an EL2 vector nothing has written. */
+    mov     x0, #9                  /* SRE | Enable */
+    msr     ICC_SRE_EL3, x0
+    isb
+    msr     ICC_SRE_EL2, x0
+    isb
+
+    ldr     x0, =HCR_EL2_RW         /* EL1 is AArch64; without it the eret targets AArch32 */
+    msr     HCR_EL2, x0
+    ldr     x0, =CPTR_EL2_RES1      /* the FP traps EL2 would otherwise impose on EL1 */
+    msr     CPTR_EL2, x0
+
+    /* THE GENERIC TIMER IS THE KERNEL'S WHOLE TIMEBASE AND EL1 CANNOT REACH IT BY DEFAULT:
+       CNTHCTL_EL2's two enables reset clear, which sends every CNTPCT_EL0 and CNTP_* access
+       at EL1 to that same unwritten EL2 vector. */
+    mov     x0, #(CNTHCTL_EL1PCTEN | CNTHCTL_EL1PCEN)
+    msr     CNTHCTL_EL2, x0
+    msr     CNTVOFF_EL2, xzr
+
+    /* CNTFRQ_EL0 is WRITABLE AT EL3 ONLY and reads UNKNOWN out of reset, so programming it
+       is the firmware role this block is standing in for. arch_init reads it back and
+       refuses a value that does not divide a second exactly. */
+    ldr     x0, =KICKOS_IMX8MP_SYSCNT_HZ
+    msr     CNTFRQ_EL0, x0
+
+    ldr     x0, =SCTLR_EL1_RES1     /* MMU and caches off, RES1 bits set: EL1's reset is ours */
+    msr     SCTLR_EL1, x0
+
+    ldr     x0, =SCR_EL3_VALUE
+    msr     SCR_EL3, x0
+    ldr     x0, =SPSR_EL3_EL1H
+    msr     SPSR_EL3, x0
+    adr     x0, .Lat_el1
+    msr     ELR_EL3, x0
+    isb
+    eret
+
+.Lat_el1:
+    /* SP_EL1 IS UNKNOWN ACROSS THE ERET, and the SP written at _start was the entry level's
+       own bank. Re-seated rather than assumed, and idempotent on the EL1 entry path. */
+    ldr     x0, =_estack
+    sub     x0, x0, x9
+    mov     sp, x0
 
     /* CPACR_EL1.FPEN resets to TRAPPING, so the q-register copies above would trap. */
     mov     x0, #(3 << 20)          /* FPEN=0b11: no trapping at either level */
@@ -157,7 +249,7 @@ _start:
     /* The level stays in x0 as the argument. A direct branch, the callee being linked into
        this same section: no literal to unbias, and nothing it reads sits in the high half. */
 .Lbad_el:
-    b       kickos_arm64_bad_el     /* noreturn (chip_virt_arm64.cc) */
+    b       kickos_arm64_bad_el     /* noreturn (chip_imx8mp.cc) */
 
 /* Reached through TTBR1. SP and VBAR_EL1 still hold the physical aliases .text.init needed
  * before the walk existed.
@@ -176,12 +268,13 @@ kickos_arm64_boot_high:
     wfi
     b       .Lhang
 
-/* THE TABLES ARE IDENTITY-LINKED (virt_arm64.ld places .rodata.mmu_ident in .text.init):
+/* THE TABLES ARE IDENTITY-LINKED (imx8mp.ld places .rodata.mmu_ident in .text.init):
  * a descriptor names its output by physical address, so every expression here has to be one.
  *
- * Whole and constant, both roots: entry 0 covers the device window that holds the GIC and
- * the PL011, entry 1 the DRAM this image links into. Every other entry is invalid, so a
- * stray access outside the two faults rather than reading a neighbour. TTBR0's is replaced by
+ * Whole and constant, both roots: entry 0 covers the device gigabyte that holds this part's
+ * GIC-500 at 0x3880_0000 and its UART1 at 0x3086_0000, entry 1 the DDR this image links into.
+ * Every other entry is invalid, so a stray access outside the two faults rather than reading
+ * a neighbour. TTBR0's is replaced by
  * a per-task root once a domain owns an address space; TTBR1's stays a constant.
  */
     .section .rodata.mmu_ident, "a"

@@ -32,16 +32,25 @@
       "inherits": "qemu-arm64",
       "binaryDir": "${sourceDir}/build/qemu-arm64-gicv3",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "gicv3" }
+    },
+    {
+      "name": "imx8mp-evk",
+      "displayName": "NXP i.MX 8M Plus EVK (quad Cortex-A53, GIC-500, EL3 handover)",
+      "inherits": "arm64-base",
+      "binaryDir": "${sourceDir}/build/imx8mp-evk",
+      "cacheVariables": { "KICKOS_BOARD": "imx8mp-evk" }
     }
   ],
   "buildPresets": [
     { "name": "qemu-arm64", "configurePreset": "qemu-arm64" },
     { "name": "qemu-arm64-smp", "configurePreset": "qemu-arm64-smp" },
-    { "name": "qemu-arm64-gicv3", "configurePreset": "qemu-arm64-gicv3" }
+    { "name": "qemu-arm64-gicv3", "configurePreset": "qemu-arm64-gicv3" },
+    { "name": "imx8mp-evk", "configurePreset": "imx8mp-evk" }
   ],
   "testPresets": [
     { "name": "qemu-arm64", "configurePreset": "qemu-arm64", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-smp", "configurePreset": "qemu-arm64-smp", "output": { "outputOnFailure": true } },
-    { "name": "qemu-arm64-gicv3", "configurePreset": "qemu-arm64-gicv3", "output": { "outputOnFailure": true } }
+    { "name": "qemu-arm64-gicv3", "configurePreset": "qemu-arm64-gicv3", "output": { "outputOnFailure": true } },
+    { "name": "imx8mp-evk", "configurePreset": "imx8mp-evk", "output": { "outputOnFailure": true } }
   ]
 }

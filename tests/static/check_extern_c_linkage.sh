@@ -39,6 +39,65 @@ command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be buil
 
 scratch_dir
 
+# --- the scanner's controls, before the corpus is read ------------------------
+# The scan is character-level and carries STATE across lines, so a mis-parse does not report a
+# wrong line: it stops counting braces at all and every file past the slip reads as clean at
+# depth 0. Nothing in the corpus can show that, which is what these planted files are for.
+cat > "$TMP/ctl_hit.cc" <<'EOF'
+extern "C" {
+namespace {
+int g;
+}
+}
+EOF
+cat > "$TMP/ctl_clean.cc" <<'EOF'
+namespace {
+int g;
+}
+extern "C" {
+int h;
+}
+EOF
+# THE CONTINUED DIRECTIVE, which is the slip: a `#` line is skipped, its continuations are not
+# unless they are skipped WITH it, and an apostrophe on one of them opens a character literal
+# that swallows the rest of the file.
+cat > "$TMP/ctl_contd.cc" <<'EOF'
+#define KICKOS_CTL_TEXT "this part's release is the reset controller's, and \
+a continuation line that spells don't leaves an apostrophe unpaired \
+before this closing quote"
+extern "C" {
+namespace {
+int g;
+}
+}
+EOF
+
+scan_ctl() { # <file>
+    awk -v FNAME="$1" -f "$AWK_PROG" "$1" 2>"$TMP/ctl.err"
+    _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        sed 's/^/      /' "$TMP/ctl.err" >&2
+        fail "the scanner exited $_rc on the planted $1, so it cannot count a file of that
+    shape and its verdict over the corpus below would be UNKNOWN"
+    fi
+}
+
+ctl="$(scan_ctl "$TMP/ctl_hit.cc")"
+[ "$ctl" = "$TMP/ctl_hit.cc:2" ] || fail "the scanner reported [$ctl] for a planted anonymous
+    namespace INSIDE an extern \"C\" block, rather than its line 2. That is the one defect this
+    gate exists to catch, so a scanner that misses it cannot go red"
+
+ctl="$(scan_ctl "$TMP/ctl_clean.cc")"
+[ -z "$ctl" ] || fail "the scanner reported [$ctl] for a planted anonymous namespace OUTSIDE the
+    extern \"C\" block, which is the legitimate spelling every arch backend uses"
+
+ctl="$(scan_ctl "$TMP/ctl_contd.cc")"
+[ "$ctl" = "$TMP/ctl_contd.cc:5" ] || fail "the scanner reported [$ctl] rather than line 5 for a
+    planted file whose LINE-CONTINUED preprocessor directive leaves an apostrophe unpaired. The
+    continuation is not a directive line and is scanned as code, so an unpaired quote or
+    apostrophe there shifts the state machine and no brace after it is counted: the file, and
+    every hit in it, then reads as clean at depth 0"
+
 # `git ls-files`, not find: an untracked scratch file is neither gated nor counted.
 git ls-files -- '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp' > "$TMP/all" \
     || fail "git ls-files failed"

@@ -151,7 +151,19 @@ kos_ctl_count() { # <file>: an event every boot produces, INDEPENDENT of the doo
         rv64imac)
             # kickos_rv64_privilege_probe reads a machine CSR from supervisor mode on purpose,
             # once per hart, so every boot produces exactly one of these per core.
-            grep -c 'desc=illegal_instruction' "$1" ;;
+            #
+            # ANCHORED ON THE WHOLE TRACE SHAPE, and this is the control that cannot fail: an
+            # unanchored `desc=illegal_instruction` is validated by any line carrying the
+            # substring, so the one arm asserting this parse works at all would pass on output
+            # the emulator never produced.
+            #
+            # ANCHORED AT ^ AND NOT WITH A TRAILING $, which is a trap and not a style choice.
+            # GNU grep counts a CR as part of the line and ugrep does not, so `...$` matches
+            # under one and not the other on byte-identical CRLF input, and the boards that
+            # emit CRLF put a CR on every console line. Leading the pattern with the complete
+            # field prefix pins the shape without depending on where the line ends, which is
+            # also what the doorbell counter below does.
+            grep -c '^riscv_cpu_do_interrupt: hart:[0-9][0-9]*, async:0, cause:0*2,.*desc=illegal_instruction' "$1" ;;
     esac
 }
 kos_doorbell_count() { # <file> <core>: that core taking the CROSS-CORE doorbell

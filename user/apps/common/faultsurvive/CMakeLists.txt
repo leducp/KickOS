@@ -66,7 +66,7 @@ if(NOT KICKOS_BUILD_TESTS)
 endif()
 
 set(_fs_boards ${KICKOS_QEMU_MPS2_BOARDS})
-list(APPEND _fs_boards qemu-riscv qemu-riscv64 qemu-arm64 qemu-x86_64 sim)
+list(APPEND _fs_boards ${KICKOS_QEMU_ARM64_BOARDS} qemu-riscv qemu-riscv64 qemu-x86_64 sim)
 if(NOT KICKOS_BOARD IN_LIST _fs_boards)
   return()
 endif()

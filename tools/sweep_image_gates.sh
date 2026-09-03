@@ -230,6 +230,9 @@ emulator_for() {
     if [ "$1" = qemu-arm64 ]; then
         echo qemu-system-aarch64
     fi
+    if [ "$1" = imx8mp-evk ]; then
+        echo qemu-system-aarch64
+    fi
     # Without this row the board falls to the no-emulator branch below and is reported as
     # needing SILICON, which files it beside the boards that really do and hides every image
     # gate it declares.
@@ -350,7 +353,14 @@ for p in $LIST; do
     echo "=== $p ($BOARD) ===" >&2
     : > "$LOG"
 
-    if ! cmake --preset "$p" -B "$DIR" $PREFIX_ARG >> "$LOG" 2>&1; then
+    # -S "$ROOT" IS LOAD-BEARING: `cmake --preset` resolves CMakePresets.json against the
+    # CURRENT DIRECTORY, and nothing here ever changes it. Invoked from another checkout this
+    # configured 59 of 60 presets against THAT tree while every result was stamped against
+    # $ROOT, and the only preset that failed was the one this tree alone carries, so the
+    # sweep read as a clean pass over a tree it never compiled. THE TREE STAMP IS NOT
+    # PROTECTION: it is taken from $ROOT by `git -C`, so it agrees with itself no matter which
+    # sources cmake actually read.
+    if ! cmake -S "$ROOT" --preset "$p" -B "$DIR" $PREFIX_ARG >> "$LOG" 2>&1; then
         printf 'FAIL    %-22s configure failed, see logs/%s.log\n' "$p" "$p" > "$ST"
         N_FAIL=$((N_FAIL + 1))
         cat "$ST" >> "$SUMMARY"

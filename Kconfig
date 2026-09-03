@@ -202,6 +202,9 @@ config KICKOS_RV64_SATP_MODE
 choice
 	prompt "arm64 interrupt controller"
 	depends on ARCH_ARMV8A
+	# A default, not an enforcement: selecting the other value on that chip still configures,
+	# and chip_imx8mp.cc is what refuses it.
+	default ARM64_GIC_V3 if CHIP_IMX8MP
 	default ARM64_GIC_V2
 
 config ARM64_GIC_V2

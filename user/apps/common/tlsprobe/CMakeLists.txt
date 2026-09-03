@@ -30,8 +30,9 @@ endif()
 
 # The only arch in the fleet that SEATS the thread pointer instead of masking SP down to a
 # stride, so this arm is what says the seating is real rather than the mask by another name.
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
-  kickos_add_qemu_test(NAME qemu_arm64_tlsprobe TARGET tlsprobe BOARD qemu-arm64
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_ARM64_BOARDS)
+  string(REPLACE "-" "_" _tag "${KICKOS_BOARD}")
+  kickos_add_qemu_test(NAME ${_tag}_tlsprobe TARGET tlsprobe BOARD ${KICKOS_BOARD}
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_tlsprobe.sh")
 endif()
 

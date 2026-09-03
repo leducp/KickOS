@@ -1,17 +1,19 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# armv8a meets every property a part running ONE kernel image across cores requires, and by
-# what mechanism:
+# What ARMv8-A gives every part it defines, of the six properties one kernel image across
+# cores requires. The other three are the PART's and live in
+# arch/arm64/chip/<chip>/smp.cmake.
 #
-#   coherency       an A53 cluster is one inner-shareable domain, and every Normal descriptor
-#                   this port programs carries SH=0b11 (the chip's boot tables and
-#                   aspace_armv8a.cc), so shared kernel state needs no software maintenance.
-#   exclusion       LDXR/STXR on the same inner-shareable domain, which is architectural on
-#                   ARMv8-A and needs no hardware lock block.
-#   inter-core IRQ  GIC software-generated interrupts, INTIDs 0..15, targeted per core.
-#   identity        MPIDR_EL1.Aff0, which arch_cpu_id reads (arch_armv8a.cc).
-#   symmetry        one cluster of identical A53s, so a thread runs the same on either core.
-#   targeting       the GIC distributor routes a device line per core (GICD_ITARGETSR on a
-#                   GICv2, GICD_IROUTER on a GICv3), so a line is pinned rather than masked.
-set(KICKOS_ARCH_SMP_CAPABLE 1)
+#   coherency   the architecture defines the inner-shareable domain and the shareability
+#               attribute that places Normal memory in it, so shared kernel state needs no
+#               software maintenance. A CHIP OWES SH=0b11 ON ITS NORMAL BOOT DESCRIPTORS for
+#               that to hold, which is what the boot tables in each chip's startup.S and
+#               aspace_armv8a.cc program; a chip mapping kernel state non-shareable breaks
+#               this declaration silently.
+#   exclusion   LDXR/STXR over that same domain, architectural on ARMv8-A rather than an
+#               integration option, so no hardware lock block is needed.
+#   identity    MPIDR_EL1, which arch_cpu_id reads (arch_armv8a.cc).
+set(KICKOS_ARCH_SMP_COHERENT 1)
+set(KICKOS_ARCH_SMP_EXCLUSION 1)
+set(KICKOS_ARCH_SMP_IDENTITY 1)

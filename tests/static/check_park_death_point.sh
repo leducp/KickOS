@@ -25,8 +25,9 @@
 #
 # TWO CLAIMS. 1: park_cancel_pending exists, so the rule the records file describes is not a
 # name nothing defines. It fires when the mechanism is REMOVED and deliberately not when it is
-# merely renamed, the header declaration being in this corpus and a missing definition being
-# the LINK's finding rather than this gate's. 2: the ThreadState::BLOCKED writes in kernel/ are
+# merely renamed: the predicate is an inline in kernel/include/kickos/sync.h, so this corpus
+# carries its one and only body and a rename keeps every count matching. 2: the
+# ThreadState::BLOCKED writes in kernel/ are
 # exactly the declared ones, by file and by count, and any other is named.
 #
 # Comments and literals are blanked before anything is read, so no claim can be met by prose.

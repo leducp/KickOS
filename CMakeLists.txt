@@ -604,37 +604,17 @@ if(EXISTS "${_ipc_fastpath_optin}")
 endif()
 add_compile_definitions(KICKOS_ARCH_HAS_IPC_FASTPATH=${KICKOS_ARCH_HAS_IPC_FASTPATH})
 
-# --- Shared-kernel hardware predicate (KICKOS_ARCH_SMP_CAPABLE) -------------
-# An arch declares here that its parts meet every requirement of ONE kernel image running
-# across cores: coherent shared memory with no software maintenance, an inter-core exclusion
-# primitive, an inter-core interrupt, a per-core identity, symmetric cores, and per-line
-# interrupt targeting.
-#
-# THE PREDICATE IS THE MODEL'S, NOT THE COUNT'S. An AMP image drives every core it launches
-# and runs a kernel per core, so it raises the count while needing none of the six: a core
-# whose kernel is its own excludes nobody. Refusing on the count alone locks the parts the
-# predicate sends to AMP out of the count AMP needs.
-set(KICKOS_ARCH_SMP_CAPABLE 0)
-set(_smp_optin
-  "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/smp.cmake")
-if(KICKOS_ARCH_FAMILY STREQUAL KICKOS_ARCH)
-  # The sim's backend sits at arch/sim, with no family level.
-  set(_smp_optin "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH}/smp.cmake")
-endif()
-if(EXISTS "${_smp_optin}")
-  include("${_smp_optin}")
-endif()
-if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_MULTICORE_MODEL_SHARED AND NOT KICKOS_ARCH_SMP_CAPABLE)
-  message(FATAL_ERROR
-    "KickOS: KICKOS_NUM_CORES=${KICKOS_NUM_CORES} on arch '${KICKOS_ARCH}', which ships no "
-    "${_smp_optin} and so declares none of the properties a shared kernel requires: coherent "
-    "shared memory, an inter-core exclusion primitive, an inter-core interrupt, a per-core "
-    "identity, symmetric cores and per-line interrupt targeting. A part that fails the "
-    "predicate runs AMP, one kernel per core over disjoint memory, rather than one image "
-    "across cores. This refuses rather than warns because on a part with no cross-core "
-    "primitive, bracketing with the LOCAL interrupt mask is a correctness bug and not a slow "
-    "choice.")
-endif()
+# --- Shared-kernel hardware predicate ---------------------------------------
+include(smp_predicate)
+kickos_smp_predicate(
+  SOURCE_DIR   "${CMAKE_CURRENT_SOURCE_DIR}"
+  ARCH         "${KICKOS_ARCH}"
+  ARCH_FAMILY  "${KICKOS_ARCH_FAMILY}"
+  CHIP         "${KICKOS_CHIP}"
+  BOARD        "${KICKOS_BOARD}"
+  NUM_CORES    "${KICKOS_NUM_CORES}"
+  MODEL_SHARED "${KICKOS_MULTICORE_MODEL_SHARED}")
+
 # The generated header guards its own define with #ifndef, so this wins where both are seen.
 add_compile_definitions(KICKOS_NUM_CORES=${KICKOS_NUM_CORES})
 # Beside the count, so an APP TU can ask how many cores one kernel schedules on: a claim about
