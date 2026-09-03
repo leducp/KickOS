@@ -2823,8 +2823,10 @@ its figures and its host arms at `kernel/mem/frame.cc`.
 bytes and is 16: `pages` is `uint32_t` and `rights` `uint8_t`. Neither width is assumed. Three
 `static_assert`s in `kernel/include/kickos/vrange.h` say the widest value each setter can be handed round-trips through its
 field, and the setters refuse rather than truncate: `reserve` refuses above `VR_MAX_PAGES` and `grant`
-refuses a rights word carrying a bit the entry cannot hold. `Domain::regions` is one descriptor rather
-than `KICKOS_MPU_MAX_REGIONS` where a backend translates, the kernel singleton's whole-arena
+refuses a rights word carrying a bit the entry cannot hold. The sixteen is T11d's figure and not a
+standing one: C2 below spends eight bytes back on a `run` field and the record measures 24 again,
+with `pages` keeping all 32 bits and `VR_MAX_PAGES` unmoved. `Domain::regions` is one descriptor
+rather than `KICKOS_MPU_MAX_REGIONS` where a backend translates, the kernel singleton's whole-arena
 descriptor being the only one any domain there records, and `region_count` is a byte.
   - **Measured on the kernel instance:** 35,752 bytes to 27,112, of which 5,120 is the range lists
     (20 slots x 256), 3,360 the region arrays and 160 the region counts. Per-domain range bookkeeping
@@ -6691,20 +6693,45 @@ own image text included; and the map took no reference, so the last CAPABILITY's
 live leaf still pointed at. C3's own lesson is why neither showed: a freed frame stays readable
 through a leaf nobody tore down, and the tests unmapped before closing.
 
-*The fix is identity, and it is asked of the HARDWARE rather than stored.* A `VR_FRAMECAP` flag says
-this range came from `aspace_cap_map`, and WHICH run is settled by comparing
-`arch_aspace_frame_at(space, va)` against the named run's base. A field on the range would have been
-the obvious answer and it costs eight bytes in every range of every domain: measured, a `run` field
-defaulted to -1 also made `VirtualRange` non-zero-initialised and moved the whole domain array out
+*The fix is identity, and the range STORES it: the frame run's SLOT.* A `VR_FRAMECAP` flag says this
+range came from `aspace_cap_map`, and WHICH run is the `run` field beside the page count, written by
+the `reserve` that places the range and matched by the revoke against the slot the handle resolves
+to. A SLOT and not a handle, a handle spending half its word on a generation, and a plain
+`uint32_t` at full width rather than squeezed beside the page count: `pages` keeps all 32 bits and
+`VR_MAX_PAGES` is unchanged, so no bound on what a caller may reserve moved. Narrowing would have
+bought nothing, there being no padding here to steal -- `base` 8 plus `pages` 4 plus four one-byte
+fields 4 is exactly 16 -- so the field costs eight bytes to alignment whatever width it is given.
+The price is RECORD WIDTH and it is measured: `VirtualRange` is 24 bytes, and on the `qemu-arm64`
+preset `aarch64-none-elf-size -A` reads `.bss` 98,536 to 103,656, +5,120 bytes, which is 20 domains
+x 256, with the frame-pool base moved by one 4 KB frame.
+
+*The measurement that once argued against an added word is why the ENCODING is what it is.* A `run`
+field defaulted to -1 made `VirtualRange` non-zero-initialised and moved the whole domain array out
 of `.bss` into `.data`, 32 KiB of image and boot-time copy, and even zero-defaulted its 5 KiB of
 `.bss` shrank the arena enough to break `mem_self_grant`, which sat on ONE range slot of margin.
-The final shape costs sixteen bytes.
+`VR_RUN_NONE` is ZERO and the field holds the slot PLUS ONE, so the record's default stays all-zero
+and the array stays in `.bss`: the `.data` move that measurement warned of does not happen here. The
+margin itself was not spent -- no arena figure moved -- and the consequence that did show was range
+slots, the fleet's own selftest losing three arms at 32 once a thread stack takes one each, cured by
+making `KICKOS_ASPACE_RANGES` a real Kconfig symbol and raising its default from 32 to 40.
+
+*THE HARDWARE-ASKED IDENTITY IS REVERSED HERE, AND WHAT IT RESTED ON IS WHY.* Identity was
+`arch_aspace_frame_at(space, va)` compared against the named run's base, which holds on two
+premises: no two LIVE runs share a physical base, and the leaf still stands at the moment of the
+read. The second is the one that broke. The range list did not describe every mapping in the space
+-- an unprivileged thread's stack was mapped and recorded nowhere -- so a `VR_FRAMECAP` range could
+sit over pages a stack mapping already held, and the unmap that returns that stack clears the leaf
+underneath it. After that the read answers 0, the comparison matches no run, and the release drops
+nothing while the mapping that held the reference is gone. The stored slot rests on neither premise:
+it is pinned by the very reference the release drops, and the order against any unmap stops
+mattering. `VR_USTACK` closes the other half, recording a thread's stack and its guard page in the
+list so `reserve` refuses anything landing on either.
 
 *And a MAPPING IS A HOLDER.* `aspace_cap_map` takes a reference on the run and `aspace_cap_unmap`
-surrenders it; a space that dies still mapping surrenders it in the teardown sweep, which reads the
-frame before the unmap clears it and releases by base. Witnessed by `cap_map_pins_run`: a child maps
-the delegated run, drops its own capability, root drops the last one, and the holder count reads ONE
-with no capability anywhere naming it.
+surrenders it; a space that dies still mapping surrenders it in the teardown sweep, which releases
+by the slot the range recorded and so reads no leaf it is itself clearing. Witnessed by
+`cap_map_pins_run`: a child maps the delegated run, drops its own capability, root drops the last
+one, and the holder count reads ONE with no capability anywhere naming it.
 
 *One arm's limit, measured rather than assumed.* "A second unmap is refused" does NOT witness that
 the range came back: with the release deleted, the backend refuses an already-unmapped range on its

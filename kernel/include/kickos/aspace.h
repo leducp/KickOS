@@ -87,7 +87,7 @@ namespace kickos
     // `run_obj`. Matching a page count instead accepts the image and every handoff, which
     // carry VR_BORROWED too.
     int aspace_cap_unmap(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
-                         int run_obj, arch_phys_addr_t base);
+                         int run_obj);
 
     // The handoff: map the donor's reservation into `space` at the same virtual address and
     // record it borrowed, so the target unmaps and frees nothing. -KOS_EPERM when the donor

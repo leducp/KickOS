@@ -66,7 +66,8 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
   foreach(_knob KICKOS_MAX_THREADS KICKOS_USER_STACK_SIZE KICKOS_IDLE_STACK_SIZE
                 KICKOS_ROOT_STACK_SIZE KICKOS_MAX_SEMAPHORES KICKOS_MAX_MUTEXES
                 KICKOS_MAX_ENDPOINTS KICKOS_CAP_TABLE_SUPPLY KICKOS_MAX_SPAWN_GRANTS
-                KICKOS_MAX_IRQ_HANDLES KICKOS_MAX_FRAME_RUNS KICKOS_RTT_CH1_SIZE
+                KICKOS_MAX_IRQ_HANDLES KICKOS_MAX_FRAME_RUNS KICKOS_ASPACE_RANGES
+                KICKOS_RTT_CH1_SIZE
                 KICKOS_USER_HEAP_SIZE
                 KICKOS_MAX_INSTANCES KICKOS_PANIC_DUMP KICKOS_DIAG_TERSE)
     if(DEFINED ${_knob})
@@ -621,6 +622,10 @@ add_compile_definitions(KICKOS_NUM_CORES=${KICKOS_NUM_CORES})
 # two threads' relative progress is a claim about that number.
 add_compile_definitions(KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES})
 
+# Beside them again, for an app TU that has to ask which MODEL it runs under: KICKOS_AMP_NODE
+# lives in a kernel header an app may not include, so this is the spelling an app tests.
+add_compile_definitions(KICKOS_MULTICORE_MODEL_SHARED=${KICKOS_MULTICORE_MODEL_SHARED})
+
 # The microbench accumulates into one set of phase cells for the whole image, and its own
 # contract is that every write happens under the interrupt lock or on one thread. A switch span
 # breaks that above one kernel core: it closes when the outgoing thread is next RESUMED, which
@@ -928,6 +933,13 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(atomic_rmw PROPERTIES TIMEOUT 120 LABELS host)
 
+  # The kernel-core seam against the machine's core identity. Corpus-wide source scan, so it
+  # is registered from every board and reads no build output.
+  _add_test(NAME kernel_core_index
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kernel_core_index.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(kernel_core_index PROPERTIES TIMEOUT 120 LABELS host)
+
   _add_test(NAME service_lists
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_service_lists.sh"
                     "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1124,6 +1136,13 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/reschedowed/CMakeLists.txt")
   add_subdirectory(tests/unit/reschedowed)
+endif()
+
+# Outside it again: it compiles kernel/amp/ampwindow.cc with its own arch seam, at a core
+# count and under a multicore model the preset carries neither of.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/ampwindow/CMakeLists.txt")
+  add_subdirectory(tests/unit/ampwindow)
 endif()
 
 # Set before kickos_core below, whose LINK_GROUP pulls the provider archive.

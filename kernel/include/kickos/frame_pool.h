@@ -37,8 +37,13 @@ namespace kickos
     void frame_run_release(int obj_handle);
     // Holders, capabilities and mappings alike. 0 when the handle does not resolve.
     uint8_t frame_run_refcount(int obj_handle);
-    // A teardown's release, where only the frame is known: the range stores no run handle.
-    void frame_run_release_by_base(arch_phys_addr_t base);
+    // The frame RUN slot a handle names, or -1. This is what a VirtualRange stores.
+    int frame_run_slot_of(int obj_handle);
+
+    // A teardown's release, named by the run's SLOT as the range recorded it. A slot out of
+    // range, or one holding no reference, is a no-op rather than a drop of whatever sits there.
+    // The slot is pinned by the very reference this drops.
+    void frame_run_release_by_slot(int slot);
 
     // Describes the carve at the granule the arch reports. False on a carve too small for a
     // bitmap plus one usable frame. A second call strands every frame handed out since the first.

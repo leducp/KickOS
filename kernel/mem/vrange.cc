@@ -49,7 +49,7 @@ namespace kickos
         return false;
     }
 
-    bool VirtualRanges::reserve(uintptr_t base, size_t pages, uint8_t flags)
+    bool VirtualRanges::reserve(uintptr_t base, size_t pages, uint8_t flags, uint32_t run)
     {
         if (granule_ == 0 or pages == 0 or (base & (granule_ - 1u)) != 0)
         {
@@ -74,6 +74,7 @@ namespace kickos
             {
                 ranges_[i].base = base;
                 ranges_[i].pages = static_cast<uint32_t>(pages);
+                ranges_[i].run = run;
                 ranges_[i].rights = 0;
                 ranges_[i].memtype = 0;
                 ranges_[i].flags = flags;

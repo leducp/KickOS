@@ -5,6 +5,8 @@
 
 #if KICKOS_LIBC_REENT
 
+#include <kickos/config/system.h> // KICKOS_THREAD_SLOTS
+#include <kickos/instance_local.h>
 #include <kickos/kruntime.h>
 #include <kickos/aspace.h>
 #include <kickos/kernel.h>
@@ -59,16 +61,35 @@ namespace kickos
         }
 #endif
         s_seam = *src;
+
+        // REFUSED AT BOOT, because the fallback below is an ALIAS and not an error: a
+        // descriptor short of one bank per instance resolves two kernels' slots to one
+        // struct _reent, so they share an errno and nothing on any later path says so.
+        size_t const banked =
+            static_cast<size_t>(KICKOS_MAX_INSTANCES) * KICKOS_THREAD_SLOTS;
+        if (s_seam.count < 0 or static_cast<size_t>(s_seam.count) < banked)
+        {
+            kpanic("libc reentrant-state descriptor is short of "
+                   "KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS slots");
+        }
     }
 
     void* reent_state_for_slot(int slot)
     {
-        if (slot < 0 or slot >= s_seam.count)
+        if (slot < 0)
         {
             return s_seam.shared;
         }
-        return static_cast<unsigned char*>(s_seam.slots)
-               + static_cast<size_t>(slot) * s_seam.stride;
+        // ONE BANK PER INSTANCE (reent.h). The bound is still read: reent_seam_read refused a
+        // descriptor too short for the banking, so what reaches here is a slot out of range.
+        size_t const index =
+            static_cast<size_t>(kickos_instance_index()) * KICKOS_THREAD_SLOTS
+            + static_cast<size_t>(slot);
+        if (index >= static_cast<size_t>(s_seam.count))
+        {
+            return s_seam.shared;
+        }
+        return static_cast<unsigned char*>(s_seam.slots) + index * s_seam.stride;
     }
 
     void reent_prime(struct arch_aspace* space, void* state)

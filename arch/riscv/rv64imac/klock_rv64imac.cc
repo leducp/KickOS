@@ -357,6 +357,12 @@ void kickos_rv64_doorbell_service(void)
             g_answer[me].seq[from] = asked[from];
         }
     }
+#if KICKOS_AMP_NODE
+    // AFTER THE ANSWERS, and that order is the contract: an AMP payload drain may not delay
+    // the rendezvous a shared kernel's callers wait on through this same body. The early
+    // return above cannot lose a payload wake, a send raising the request cell like any other.
+    kickos_amp_node_service();
+#endif
 }
 
 // The calling core's own bit is serviced HERE rather than raised: a core that raised the

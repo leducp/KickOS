@@ -417,9 +417,10 @@ namespace kickos
         {
             return 0;
         }
-        if ((e->flags & VR_IMAGE) != 0)
+        if (not vr_caller_nameable(e))
         {
-            return -KOS_EPERM; // the image is nobody's reservation
+            // A stack run's base is its GUARD, so an admitted grant maps that page too.
+            return -KOS_EPERM;
         }
         uintptr_t const b = e->base;
         size_t const pages = e->pages;
@@ -460,7 +461,15 @@ namespace kickos
         }
         // VR_FRAMECAP and not VR_BORROWED alone: the image and every handoff carry that
         // bit too, and a revoke keyed on it accepts ranges this call never placed.
-        if (not ranges->reserve(va, pages, VR_BORROWED | VR_FRAMECAP))
+        // PLUS ONE, so the stored word is never the no-run encoding for a real slot 0.
+        int const run_slot = frame_run_slot_of(run_obj);
+        if (run_slot < 0)
+        {
+            frame_run_release(run_obj);
+            return -KOS_EINVAL;
+        }
+        if (not ranges->reserve(va, pages, VR_BORROWED | VR_FRAMECAP,
+                                static_cast<uint32_t>(run_slot) + 1u))
         {
             frame_run_release(run_obj);
             return -KOS_ENOMEM; // overlaps something this space already names, or the list is full
@@ -484,7 +493,7 @@ namespace kickos
     }
 
     int aspace_cap_unmap(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
-                         int run_obj, arch_phys_addr_t base)
+                         int run_obj)
     {
         if (space == nullptr or ranges == nullptr)
         {
@@ -497,10 +506,8 @@ namespace kickos
         {
             return -KOS_EPERM;
         }
-        // The identity is the first page's PHYSICAL address, which holds only while no two
-        // LIVE runs share a base. A mint that seated two run objects over one address at once
-        // would break this.
-        if (arch_aspace_frame_at(space, va) != base)
+        int const run_slot = frame_run_slot_of(run_obj);
+        if (run_slot < 0 or e->run != static_cast<uint32_t>(run_slot) + 1u)
         {
             return -KOS_EPERM;
         }
@@ -523,8 +530,9 @@ namespace kickos
             return -KOS_EPERM;
         }
         VirtualRange const* const e = donor->find(base, size);
-        if (e == nullptr or (e->flags & VR_IMAGE) != 0)
+        if (not vr_caller_nameable(e))
         {
+            // A donor's live stack would reach the target and outlive the donor's own run.
             return -KOS_EPERM;
         }
         size_t const g = arch_aspace_granule();
@@ -597,15 +605,24 @@ namespace kickos
             {
                 continue;
             }
+            if ((e->flags & VR_USTACK) != 0)
+            {
+                // NEITHER ARM BELOW, which is the whole reason the flag exists. ustack_free
+                // released this run before the task's reference dropped; where it never ran,
+                // the destroy walk below frees the still-mapped stack pages off their leaves
+                // and strands only the guard. The reserved arm would free frames a leaf still
+                // points at.
+                continue;
+            }
             if ((e->flags & VR_BORROWED) != 0)
             {
-                arch_phys_addr_t const frame = arch_aspace_frame_at(space, e->base);
                 // Another space's frames: unmapped here, freed by their owner.
                 (void)arch_aspace_unmap(space, e->base, e->pages);
                 if ((e->flags & VR_FRAMECAP) != 0)
                 {
-                    // `frame` is read BEFORE the unmap above clears the leaf.
-                    frame_run_release_by_base(frame);
+                    // Stored plus one; the VR_FRAMECAP flag is what says this entry named a
+                    // run at all, so the subtraction cannot reach VR_RUN_NONE.
+                    frame_run_release_by_slot(static_cast<int>(e->run) - 1);
                 }
                 continue;
             }

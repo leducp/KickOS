@@ -35,6 +35,10 @@ namespace kickos
     // Which core within THIS kernel is running, in [0, KICKOS_KERNEL_CORES). One kernel
     // spanning every core the image drives makes a core's machine identity its slot; a kernel
     // scheduling one core has one slot, whatever that core's identity in the machine is.
+    //
+    // THE TWO SEAMS DIVERGE UNDER AMP: arch_cpu_id() answers 1..3 on a peer while this
+    // answers 0, so current[], idle[] and boot[] take THIS index and never the core's.
+    // tests/static/check_kernel_core_index.sh refuses the other subscript.
 #if KICKOS_MULTICORE_MODEL_SHARED
 #define kickos_kernel_core() arch_cpu_id()
 #else

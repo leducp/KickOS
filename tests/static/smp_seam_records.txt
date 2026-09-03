@@ -39,6 +39,20 @@
 # unchanged, which is why no record below moves. _owed and _take still run the direction the
 # note above records, called from klock_armv8a.cc and arch_arm64_gicv2.cc respectively.
 #
+# This set adds TWO and CHANGES NONE of the forty-one. Both are the one member an AMP node's
+# backend calls, kickos_amp_node_service, in the direction kickos_kernel_core_resched already
+# ran: the kernel supplies and the backend calls, from its doorbell SERVICE BODY and after the
+# answer stores, so a payload drain cannot delay a rendezvous. It has ONE arm and no fold,
+# being declared under the unshared model alone. That every earlier record is byte-identical is
+# what says a second MODEL was built on this seam rather than out of it -- the same reading the
+# RV64 backend's verdict carried for a second lowering.
+#
+# ADMITTING IT MOVED THE FAMILY'S PREFIX, AND THAT IS THE FINDING THIS ADDITION CARRIES.
+# Membership is an ALLOWLIST of identifier prefixes, so a member named outside it is a member
+# no verdict guards, and the group table's refusal of an unclassified member cannot see one the
+# family never admitted. The first AMP member was named outside it and the differ passed over
+# it in silence.
+#
 # REGENERATING THIS FILE DELETES THE FINDING THE GATE EXISTS TO PRODUCE. Rewritten outside the
 # commit that deliberately moves a member, it measures a backend against itself.
 # KOS_SIGDIFF_REGEN=1 rewrites it and takes no verdict; use it only in the commit that
@@ -55,6 +69,7 @@ FUNC	arch_ipi_send	void (uint32_t)	KICKOS_NUM_CORES > 1
 FUNC	arch_ipi_wait	void (uint32_t)	KICKOS_NUM_CORES > 1
 FUNC	arch_kernel_lock	void (void)	KICKOS_KERNEL_CORES > 1
 FUNC	arch_kernel_unlock	void (void)	KICKOS_KERNEL_CORES > 1
+FUNC	kickos_amp_node_service	void (void)	KICKOS_AMP_NODE
 FUNC	kickos_kernel_core_arrive	void (void)	KICKOS_KERNEL_CORES > 1
 FUNC	kickos_kernel_core_ready	int (void)	KICKOS_KERNEL_CORES > 1
 FUNC	kickos_kernel_core_resched	void (void)	KICKOS_KERNEL_CORES > 1
@@ -71,6 +86,7 @@ FUNCNAMES	arch_ipi_send	void (uint32_t cores)	KICKOS_NUM_CORES > 1
 FUNCNAMES	arch_ipi_wait	void (uint32_t cores)	KICKOS_NUM_CORES > 1
 FUNCNAMES	arch_kernel_lock	void (void)	KICKOS_KERNEL_CORES > 1
 FUNCNAMES	arch_kernel_unlock	void (void)	KICKOS_KERNEL_CORES > 1
+FUNCNAMES	kickos_amp_node_service	void (void)	KICKOS_AMP_NODE
 FUNCNAMES	kickos_kernel_core_arrive	void (void)	KICKOS_KERNEL_CORES > 1
 FUNCNAMES	kickos_kernel_core_ready	int (void)	KICKOS_KERNEL_CORES > 1
 FUNCNAMES	kickos_kernel_core_resched	void (void)	KICKOS_KERNEL_CORES > 1

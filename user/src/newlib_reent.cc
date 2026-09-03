@@ -10,7 +10,7 @@
 // pinned toolchain but the Xtensa one, and calls __errno() nowhere. Swapping that one
 // pointer is therefore what moves errno AND every other member of the state.
 
-#include <kickos/config/system.h> // KICKOS_THREAD_SLOTS
+#include <kickos/config/system.h> // KICKOS_THREAD_SLOTS, KICKOS_MAX_INSTANCES
 #include <kickos/reent.h>
 
 #include <sys/reent.h>
@@ -18,7 +18,11 @@
 // UNPRIVILEGED APP MEMORY. This lands in .appbss, the window granted R/W to every
 // unprivileged thread, so a peer can scribble another thread's errno. That is the same
 // posture thread_local storage has: naming, not isolation.
-static struct _reent s_reent[KICKOS_THREAD_SLOTS];
+//
+// ONE BANK OF KICKOS_THREAD_SLOTS PER INSTANCE: the kernel indexes this array as
+// instance * KICKOS_THREAD_SLOTS + slot, and the seam's count below must match this extent
+// or a short bank aliases silently onto the process-wide state.
+static struct _reent s_reent[KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS];
 
 #ifdef __XTENSA__
 // esp-elf newlib resolves _REENT through __getreent() and ships a weak fallback returning
@@ -47,6 +51,6 @@ KickosReentSeam const kickos_reent_seam = {
     &_impure_ptr,
 #endif
     sizeof(struct _reent),
-    KICKOS_THREAD_SLOTS,
+    KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS,
 };
 }

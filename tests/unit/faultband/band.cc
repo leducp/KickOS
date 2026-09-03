@@ -40,7 +40,7 @@ namespace kickos
                 Thread* const t = spawn(0, PRIO);
                 t->stack_base = reinterpret_cast<void*>(base);
                 t->stack_size = size;
-                kernel().current[arch_cpu_id()] = t;
+                kernel().current[kickos_kernel_core()] = t;
                 return t;
             }
 
@@ -168,7 +168,7 @@ namespace kickos
                 Thread* const t = spawn(0, PRIO);
                 t->stack_base = nullptr;
                 t->stack_size = 0;
-                kernel().current[arch_cpu_id()] = t;
+                kernel().current[kickos_kernel_core()] = t;
                 EXPECT_EQ(kickos_fault_stack_top(), 0u);
 
                 t->stack_base = reinterpret_cast<void*>(STACK_BASE);
@@ -189,7 +189,7 @@ namespace kickos
             //                         nobody established it may use.
             TEST_F(FaultBand, an_unattributable_fault_escalates_and_relocates_nothing)
             {
-                kernel().current[arch_cpu_id()] = nullptr;
+                kernel().current[kickos_kernel_core()] = nullptr;
                 EXPECT_TRUE(kickos_fault_below_stack(STACK_BASE - 4));
                 EXPECT_EQ(kickos_fault_stack_top(), 0u);
             }
@@ -201,7 +201,7 @@ namespace kickos
                 Thread* const t = spawn(0, PRIO);
                 t->stack_base = nullptr;
                 t->stack_size = 0;
-                kernel().current[arch_cpu_id()] = t;
+                kernel().current[kickos_kernel_core()] = t;
                 EXPECT_TRUE(kickos_fault_below_stack(STACK_BASE - 4));
             }
         }

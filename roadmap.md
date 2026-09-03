@@ -548,6 +548,71 @@ identifiers local to that file, and this milestone adopts every one of them:
 | -- | M7.5 | the cleanup the train owes: the death point on every board, and the skip set retriaged |
 | S6b | M7.6 | `imx8mp-evk` as a chip port, and the predicate declared per part |
 | S7 | M7.7 | AMP |
+| -- | M7.8 | the shared window reached through an endpoint: N7's remaining half |
+| -- | M7.9 | SMP/AMP witness: AMP on the RP pair, SMP on the LX6 |
+
+**M7.8 AND M7.9 TAKE `--` IN THE STEP COLUMN, as M7.5 does, because neither is a step of the
+contract.** M7.8 completes freeze N7 rather than implementing a numbered step, and M7.9 is a
+witness plus a gate probe. The contract's own step plan ends at S7 and is not reopened by either.
+
+**AND IT FOUND A DEFECT OLDER THAN ITSELF, which is recorded here because the sequencing looks
+odd otherwise: a step about AMP carries a fix to the map editor's bookkeeping.** The range list
+was not a total record of a space's mappings, an unprivileged thread's stack being installed
+behind its back, so a frame capability could be mapped over a live stack and the release path,
+which re-derived a run's identity by reading the page tables back, then dropped nothing. AMP
+only moved the layout onto it: the branch never touched that code path, and a stack size alone
+reproduces and un-reproduces the collision with the instance keying untouched. The stack and
+its guard are one recorded range now, which makes the list total, and the run's slot is stored
+on the range rather than asked of the hardware.
+
+**WHAT THAT COST, MEASURED RATHER THAN ARGUED, because the shape of the cost decided the fix.**
+The record grew from sixteen bytes to twenty-four: there is no padding in it to steal, so the
+field costs eight bytes to alignment whatever width it is given, and squeezing it beside the
+page count would have bought a saving nobody needs while narrowing what a caller may reserve.
+Only translating boards keep a range list, so no region board pays. The other half of the cost
+is the budget: a thread's stack takes a slot now, so the figure scales with the thread count,
+and it is a real configuration knob rather than a hardcoded fallback for that reason.
+
+**S7 IS LANDED AND WHAT IT PORTED IS NARROWER THAN "AMP", which is worth stating because the
+column stays a ruling.** `qemu-arm64` ships a fourth posture where the image DRIVES four cores
+and ONE kernel schedules on one of them: the count and the model diverge, which is the whole
+point of separating them. The instance index comes from the core identity there, the third
+keying and the one a chip owes, so every core reaches its own kernel with no adoption call. The
+peers are nodes for the shared window and reached over the same doorbell the shared kernel uses;
+each validates what it is sent and answers, and none of them runs a scheduler.
+
+**THAT LAST CLAUSE IS THE BOUNDARY AND IT IS DELIBERATE.** The arena is one linker region with a
+link-time assert modelling its exact allocation order, so a per-node arena IS the partition
+layout the contract leaves open, and building one inside this step would have answered that
+question by accident. So the node whose kernel believes itself alone is core 0's, and what the
+peers demonstrate is the crossing rather than a second scheduler.
+
+**THE SECURITY WORK LANDED AS VALIDATION AND IT VALIDATES BOTH WAYS.** Every index and length
+read out of the window is another node's writing: a head that names more outstanding slots than
+the ring holds, a length past a slot and a port outside the receiver's own mint are each refused
+by name, and the SEND side refuses a malformed tail for the same reason, a producer believing the
+consumer's index overwriting slots the consumer is reading. No index read from the window is
+ever used as an index. One ring per ORDERED PAIR of nodes is forced by the no-RMW rule rather
+than chosen: one inbox per receiver would have several producers on one head. What one service
+call will do is bounded per sender and across the call, an unbounded drain being a peer's hold
+on a masked handler rather than a correctness question; and a refused far depth no longer owns
+its ring for the life of the image.
+
+**AND IT IS PROTOCOL SCAFFOLDING, NOT AN ISOLATION BOUNDARY BETWEEN KERNELS, which is stated
+in the window's own header so that no later reader has to infer it.** Every node maps the same
+writable kernel RAM. The mint sits outside the shared window and the counters sit beside it,
+which puts them out of a far side's reach through the PROTOCOL and not out of a compromised
+peer KERNEL's reach at all: that peer rewrites the mint, the counters and every other node's
+kernel data. So what validation buys is defence against a MALFORMED peer, and the boundary
+against a hostile one is per-node memory partitioning, which is the partition layout this
+milestone deliberately leaves open.
+
+**WHAT IT DOES NOT REACH, both recorded rather than left for rediscovery.** The window is not
+yet reached through an endpoint, so nothing above the syscall can tell the two localities apart
+and no second API surface exists; the resolve-to-ring branch and the reply path's local thread
+pointer are a later step's. And the heterogeneous case has NO VEHICLE: the emulated i.MX8MP
+models the A53 cluster alone, ships no Cortex-M7 companion, and cannot release a second core of
+the cluster either.
 
 **S5 AND S6 ARE RESEQUENCED, SO THE STEP COLUMN NO LONGER RUNS IN ORDER AND THE MILESTONE
 COLUMN DOES.** The step identifiers are the contract's while the milestone numbers are schedule
@@ -699,6 +764,55 @@ would have declared this part predicate-failing, which is false.
 What S6b cannot carry, and neither can S7: the heterogeneous AMP case. The machine models the A53
 cluster alone with no Cortex-M7 companion and decodes the companion's tightly-coupled memory as
 unimplemented, so the part that is both SMP and AMP at once has no vehicle on this bench at all.
+
+**M7.8 IS THE HALF OF N7 THAT S7 DID NOT REACH, and the freeze is what says it is owed rather
+than optional.** S7 built the window and its validation; nothing above the syscall can yet tell a
+local receiver from a remote one, because no user-facing cross-node call exists. N7 freezes ONE
+IPC mechanism with locality resolved below the seam, so a second API surface is not the
+alternative -- the alternative is that the freeze is unmet. The hard half is the reply path: it
+rests on a raw local thread pointer with a one-shot generation guard riding the minted
+capability, and a remote caller has no such thread in this kernel. Priority donation across nodes
+has no meaning at all, which is a thing to state rather than to solve.
+
+**M7.9 IS THE MILESTONE THAT TAKES BOTH MODELS OFF EMULATOR-GRADE EVIDENCE, one per half, and the
+title is load-bearing.** Section 7 of the contract carries two no-silicon bullets and this
+milestone retires one each. The RP pair is what that section names as still exercising the
+doorbell, the ring and the ordering claims on real hardware; the LX6 is what it names as the one
+part that could carry a SHARED-KERNEL silicon witness. So the LX6 probe gates only HALF of this
+milestone: a negative answer leaves the AMP half standing and section 7 keeps its shared-kernel
+bullet.
+
+**The LX6 half is gated on a MEASUREMENT and the gate is cheap, which is the whole reason it is
+scheduled at all.** Its two open predicate columns, the inter-core compare-and-swap and the
+per-core identity, are sourced as ARCHITECTURE and unsourced as this part's REALISATION: the ISA
+defines both, and defines both as configurable options whose values the integrator wires. No data
+book on this bench states them. A probe on silicon closes what no document here can -- the
+compare-and-swap attempted between the two CPUs over INTERNAL SRAM, and the privileged
+processor-identity register read on both cores. The backend is not cheap and is not the gate; if
+either column answers no, the LX6 backend does not happen and M7.9 is the RP half alone.
+
+**AMP on the RP parts needs no predicate declaration, which is what makes it a backend rather
+than a model.** N10's refusal is keyed on the MODEL, so an AMP image raises the core count and
+declares none of the six, and the per-part split S6b landed carries an arm for exactly that case.
+N5 already holds the bring-up for both parts. What M7.9 must decide instead is a question no
+mechanism answers: two kernels on one chip share one UART, and the in-kernel console interleaves
+at byte granularity by ruling. Node 1 reaching node 0's console over the ring is what M7.8 makes
+possible, which is why these two sit in this order.
+
+**TWO REAL PARTS ARE NAMED FOR THE MULTICORE ERA, AND THE SECOND IS POST-M8.** The i.MX8MP
+Verdin at 4 GiB is the shared-kernel target and the part S6b's chip port is written against. The
+**Milk-V Duo (CV1800B) at 64 MB is a candidate for after M8**, and it is an AMP part by the
+predicate rather than by judgement: the datasheet's own words make its two C906 cores asymmetric,
+so it fails requirement 5 outright.
+
+**It also carries a port shape nothing in the tree has.** Its main C906 has an MMU and its
+companion has none, so the first real AMP silicon is MIXED-MODEL AMP, a translating node beside a
+region-model node. M7.7's AMP node is translating-model on both sides, so that is a different
+port and not an increment on this one. Two further facts belong here rather than being
+rediscovered: no coherency unit is documented anywhere in that part's datasheet, and `mhartid` is
+hardwired to zero in the openc906 release with the integrator customising it per instance -- so
+an AMP node taking its instance index from its core identity, which is N6's rule, has no register
+to stand on there.
 
 ### M8 -- IPC and IRQ optimisation, on measured evidence
 Rebaseline FIRST: per-thread kernel stacks and the MMU both change trap and continuation costs, so

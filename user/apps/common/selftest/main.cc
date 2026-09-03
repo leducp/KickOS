@@ -2819,6 +2819,258 @@ namespace
         kos_sem_post(CH_DONE);
     }
 
+    // What a LIVE thread sees of its own space's range list, read from inside the worker: a
+    // cap granted so that root could read it instead costs a capability-slab chunk that comes
+    // back at thread RECLAIM and not at exit, so a churn of eight starves the arms after this.
+    Atomic<uint32_t, Order::RELAXED> g_ssr_live{0};
+
+    void ssr_worker(void*)
+    {
+        g_ssr_live = static_cast<uint32_t>(kos_aspace_probe(KOS_ASPACE_OP_RANGES_FREE, 0));
+    }
+
+    // A thread stack takes a range slot, so a slot leaked at thread exit exhausts the list
+    // after thirty threads and no arm above would notice.
+    void t_stack_slot_returns()
+    {
+        uint64_t const free0 = kos_aspace_probe(KOS_ASPACE_OP_RANGES_FREE, 0);
+        TAP_CHECK(free0 != 0);
+
+        uint32_t live_low = static_cast<uint32_t>(free0);
+        unsigned churned = 0;
+        for (unsigned i = 0; i < 8u; i++)
+        {
+            g_ssr_live = 0;
+            auto w = kos::thread::create(ssr_worker, nullptr, "ssr", 10);
+            if (not w.valid())
+            {
+                break;
+            }
+            churned++;
+            TAP_CHECK(w.join() == 0);
+            uint32_t const live = g_ssr_live.load();
+            if (live != 0 and live < live_low)
+            {
+                live_low = live;
+            }
+        }
+        uint64_t const after = kos_aspace_probe(KOS_ASPACE_OP_RANGES_FREE, 0);
+        tap::diag("stack slots: %u free, %u seen live over %u thread(s), %u after",
+                  static_cast<unsigned>(free0), static_cast<unsigned>(live_low), churned,
+                  static_cast<unsigned>(after));
+        TAP_CHECK(churned > 0);
+        // NOT VACUOUS: on a build where a stack takes no slot every other line here passes.
+        TAP_CHECK(live_low < free0);
+        TAP_CHECK(after == free0);
+    }
+
+    // A frame capability mapped onto a live stack page, refused because the range list names
+    // thread stacks. Accepted, it replaces the frame under a running thread's locals.
+    void t_cap_map_over_stack()
+    {
+        uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 0);
+        TAP_CHECK(seed != 0);
+        if (seed == 0)
+        {
+            return;
+        }
+        kos_cap_t const fcap = static_cast<kos_cap_t>(seed & 0xFFFFFFFFu);
+        kos_cap_t const acap = static_cast<kos_cap_t>(seed >> 32);
+        uintptr_t const g = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        TAP_CHECK(g != 0);
+
+        // A local, so the page under it is this thread's own stack whatever the board's layout.
+        volatile uint32_t canary = 0x5A17C0DEu;
+        uintptr_t const page = reinterpret_cast<uintptr_t>(&canary) & ~(g - 1u);
+        TAP_CHECK(kos_frame_map(fcap, acap, page, 0) != 0);
+        TAP_CHECK(canary == 0x5A17C0DEu);
+        // The reference the map takes BEFORE the record refuses it must come back, or a run
+        // nobody mapped is held for good by a call that failed.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_CAP_RUN_REFS, 0) == 1u);
+
+        // THE POSITIVE CONTROL: on a build where every map is refused the refusal above
+        // passes vacuously.
+        uintptr_t const free_va =
+            static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, 0));
+        TAP_CHECK(free_va != 0);
+        TAP_CHECK(kos_frame_map(fcap, acap, free_va, 0) == 0);
+        TAP_CHECK(kos_frame_unmap(fcap, acap, free_va) == 0);
+        kos_handle_close(fcap);
+        kos_handle_close(acap);
+    }
+
+    // --- A LIVE THREAD STACK IS NOT THE CALLER'S TO NAME ---------------------------------
+    // Every caller-controlled admission path asks ONE question of a range it found
+    // (vr_caller_nameable): may a caller name this at all. The image and a thread's stack with
+    // its guard both answer no. Before that predicate the paths filtered on the image alone,
+    // so a task could self-grant its own live stack, which maps the guard and retypes the
+    // frames under a running thread, and hand a donor's stack to a child, which then keeps
+    // the mapping after the donor's run is freed.
+    constexpr uint32_t SNP_BLK = 256;
+    // ONE reservation for all three arms: a range slot is a LIFETIME cost with no user-facing
+    // free, so a block per arm would spend three of the app's budget.
+    void* g_snp_blk = nullptr;
+
+    void* snp_block()
+    {
+        if (g_snp_blk == nullptr)
+        {
+            void* const blk = kos_ram_alloc(SNP_BLK);
+            if (blk != nullptr and kos_mem_self_grant(blk, SNP_BLK, 0) == 0)
+            {
+                g_snp_blk = blk;
+            }
+        }
+        return g_snp_blk;
+    }
+
+    // The first page below `page` this space does not map. A thread stack's guard is exactly
+    // that: ustack_alloc records the run over guard AND stack and leaves the guard frame
+    // unmapped. Bounded, so a space that maps everything below answers 0.
+    //
+    // ANSWERED ONCE AND REMEMBERED, which is what makes the arms below witness anything: a
+    // build that admits a stack grant MAPS the guard, and a fresh walk would then step past it
+    // and call the next unmapped page the guard. Every arm here runs on one thread's stack, so
+    // one answer serves them all, and the first caller asks while nothing has been granted.
+    uintptr_t g_snp_guard = 0;
+
+    uintptr_t snp_guard(uintptr_t page, uintptr_t g)
+    {
+        if (g_snp_guard != 0)
+        {
+            return g_snp_guard;
+        }
+        uintptr_t p = page;
+        for (unsigned i = 0; i < 64u and p >= g; i++)
+        {
+            uintptr_t const below = p - g;
+            if (kos_aspace_probe(KOS_ASPACE_OP_FRAME_AT, below) == 0)
+            {
+                g_snp_guard = below;
+                return below;
+            }
+            p = below;
+        }
+        return 0;
+    }
+
+    void t_stack_grant_refused()
+    {
+        uintptr_t const g = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        TAP_CHECK(g != 0);
+        void* const mine = snp_block();
+        if (mine == nullptr)
+        {
+            tap::skip("no reservation left for the positive control");
+            return;
+        }
+        // A local, so the page under it is this thread's own stack whatever the board's layout.
+        volatile uint32_t canary = 0x51AC0DE5u;
+        uintptr_t const page = reinterpret_cast<uintptr_t>(&canary) & ~(g - 1u);
+        uintptr_t const guard = snp_guard(page, g);
+        TAP_CHECK(page != 0 and guard != 0);
+        // Mapped, so a refusal below is the predicate's and not the one for an address this
+        // space never reserved, which would say nothing about a list that names stacks.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAME_AT, page) != 0);
+
+        // THE GUARD IS THE RECORDED RANGE'S BASE, so naming it names the whole stack run.
+        TAP_CHECK(kos_mem_self_grant(reinterpret_cast<void*>(guard), g, 0) == -KOS_EPERM);
+        TAP_CHECK(kos_mem_self_grant(reinterpret_cast<void*>(guard), 2u * g, 0) == -KOS_EPERM);
+        // THE STACK PAGE ITSELF, and it takes a memory type to get here: a thread carries its
+        // own stack as one R|W region, so the syscall's already-reachable short circuit
+        // answers a plain R|W request 0 without ever consulting the range list. A request
+        // naming a type the mapping does not carry is the one that reaches admission, and
+        // granting it would retype the frames under a running thread.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE, 1) != 0);
+        TAP_CHECK(kos_mem_self_grant(reinterpret_cast<void*>(page), g, KOS_MEM_NOCACHE)
+                  == -KOS_EPERM);
+        TAP_CHECK(canary == 0x51AC0DE5u);
+
+        // THE POSITIVE CONTROL, and what makes the refusals about the ADDRESS rather than
+        // about the call: the same calls on a range this task did reserve succeed.
+        TAP_CHECK(kos_mem_self_grant(mine, SNP_BLK, 0) == 0);
+        TAP_CHECK(kos_mem_self_grant(mine, SNP_BLK, KOS_MEM_NOCACHE) == 0);
+        TAP_CHECK(kos_mem_self_grant(mine, SNP_BLK, 0) == 0);
+        // Still refused after a success on the same path, so it is not a one-shot state.
+        TAP_CHECK(kos_mem_self_grant(reinterpret_cast<void*>(guard), g, 0) == -KOS_EPERM);
+    }
+
+    // The guard's own integrity, which is the damage an admitted stack grant does: the
+    // recorded range's BASE is the guard, so a grant maps the whole run and the page below the
+    // stack acquires a translation it must never have. Asserted on the TRANSLATION and not on
+    // the return code, because that is what a wild pointer meets.
+    void t_stack_guard_intact()
+    {
+        uintptr_t const g = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        TAP_CHECK(g != 0);
+        volatile uint32_t canary = 0x6BA2DEEDu;
+        uintptr_t const page = reinterpret_cast<uintptr_t>(&canary) & ~(g - 1u);
+        uintptr_t const guard = snp_guard(page, g);
+        TAP_CHECK(guard != 0);
+        tap::diag("stack guard at 0x%lx, one granule below the run's low bound",
+                  static_cast<unsigned long>(guard));
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAME_AT, guard) == 0);
+
+        // Every way a caller can name the run, each followed by the guard's translation.
+        (void)kos_mem_self_grant(reinterpret_cast<void*>(guard), g, 0);
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAME_AT, guard) == 0);
+        (void)kos_mem_self_grant(reinterpret_cast<void*>(guard), 2u * g, 0);
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAME_AT, guard) == 0);
+        (void)kos_mem_self_grant(reinterpret_cast<void*>(page), g, KOS_MEM_NOCACHE);
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAME_AT, guard) == 0);
+        TAP_CHECK(canary == 0x6BA2DEEDu);
+    }
+
+    // The DONOR side: a task hands a range of its own to a child at create. Its own stack is
+    // not one of those, or the child keeps a live mapping of frames the donor's stack run
+    // returns to the pool at thread exit.
+    void t_stack_handoff_refused()
+    {
+        uintptr_t const g = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        TAP_CHECK(g != 0);
+        void* const mine = snp_block();
+        if (mine == nullptr)
+        {
+            tap::skip("no reservation left for the positive control");
+            return;
+        }
+        volatile uint32_t canary = 0x4A0FF5EDu;
+        uintptr_t const page = reinterpret_cast<uintptr_t>(&canary) & ~(g - 1u);
+        uintptr_t const guard = snp_guard(page, g);
+        TAP_CHECK(guard != 0);
+        uint64_t const frames = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+
+        // NO EXTENT ADMITS IT. The handoff requires the donor's own base and its own page
+        // count, and the base is the guard; the count is this board's root-stack provisioning,
+        // which the app is not told, so every extent a board could have is asked for rather
+        // than one figure read out of the build.
+        unsigned admitted = 0;
+        int32_t last = 0;
+        for (unsigned pages = 1; pages <= 32u; pages++)
+        {
+            kos_task_t t = KOS_TASK_NONE;
+            last = kos_task_create(reinterpret_cast<void*>(guard),
+                                   static_cast<size_t>(pages) * g, 0, &t);
+            if (last == 0)
+            {
+                admitted++;
+                (void)kos_task_kill(t);
+            }
+        }
+        tap::diag("stack handoff: %u of 32 extents admitted, last code %d", admitted,
+                  static_cast<int>(last));
+        TAP_CHECK(admitted == 0);
+        TAP_CHECK(canary == 0x4A0FF5EDu);
+        // A refused handoff frees the space it half-built, so no frame is spent by the sweep.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0) == frames);
+
+        // THE POSITIVE CONTROL: a range this task really reserved is handed off by the same
+        // syscall, so the sweep above is about which range and not about the call.
+        kos_task_t ok = KOS_TASK_NONE;
+        TAP_CHECK(kos_task_create(mine, SNP_BLK, 0, &ok) == 0);
+        TAP_CHECK(kos_task_kill(ok) == 0);
+    }
+
     // A MAPPING IS A HOLDER. Without that the last capability's drop frees frames a live leaf
     // still points at, and reading the page does not say so.
     void t_cap_map_pins_run()
@@ -5322,6 +5574,7 @@ namespace
 
         uint32_t served_after = 0;
         uint32_t initiated_after = 0;
+        uint32_t peer_served = 0;
         unsigned silent = 0;
         for (unsigned c = 0; c < static_cast<unsigned>(KICKOS_NUM_CORES); c++)
         {
@@ -5333,11 +5586,16 @@ namespace
             {
                 silent++;
             }
+            if (c >= static_cast<unsigned>(KICKOS_KERNEL_CORES))
+            {
+                peer_served += s;
+            }
             served_after += s;
             initiated_after += n;
         }
         tap::diag("across the kill churn: services %u -> %u, rendezvous %u -> %u", served,
                   served_after, initiated, initiated_after);
+        (void)peer_served;
 
         // Monotonic: a counter that went backwards is a torn read of a cell with one writer.
         TAP_CHECK(served_after >= served);
@@ -5351,6 +5609,14 @@ namespace
         // Each rendezvous pokes at least one peer and waits for it, so the services performed
         // across the machine cannot be fewer than the rendezvous initiated.
         TAP_CHECK(served_after >= initiated_after);
+#elif KICKOS_NUM_CORES > 1
+        // ONE KERNEL CORE OVER SEVERAL CORES DRIVEN, which is AMP: the peers are parked with
+        // the doorbell open, so a zero here says the doorbell never reached one.
+        TAP_CHECK(peer_served > 0u);
+        // An instruction-side poke is owed only where a PEER holds one of ITS spaces, and a
+        // node whose peers run kernels of their own has no such peer.
+        TAP_CHECK(initiated_after == 0u);
+        TAP_CHECK(served_after >= initiated_after);
 #else
         // One core: peer_cores is a constant 0 and the mechanism folds out of the image, so the
         // probe reads exactly zero rather than an idle counter, and the one core the kernel
@@ -5361,6 +5627,103 @@ namespace
 #endif
     }
 #endif
+
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_NUM_CORES > 1 \
+    && KICKOS_MULTICORE_MODEL_SHARED == 0
+    // --- The shared window, and the validation the reading node owes it -------------------
+    // arch.h names this posture KICKOS_AMP_NODE and an app may not include that header, hence
+    // the condition above.
+    // How long one echo round is given, and the step it waits in. Both far over what the
+    // crossing costs: what is being waited on is the HOST scheduling another vCPU thread.
+    constexpr uint64_t AMP_REPLY_NS = 2ull * 1000ull * 1000ull * 1000ull;
+    constexpr uint64_t AMP_REPLY_TICK_NS = 1ull * 1000ull * 1000ull;
+
+    void t_amp_window()
+    {
+        // The order matters at the end and not the start: the last inbox forge must leave the
+        // ring well formed, a refused depth deliberately not advancing the tail.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_HEAD_DEPTH)
+                  == KOS_AMP_V_DEPTH);
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_LENGTH)
+                  == KOS_AMP_V_LENGTH);
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_PORT)
+                  == KOS_AMP_V_PORT);
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_PORT_WIDE)
+                  == KOS_AMP_V_PORT);
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_ZERO_LEN)
+                  == KOS_AMP_V_TOOK);
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_WELL_FORMED)
+                  == KOS_AMP_V_TOOK);
+        // The SEND side's own untrusted index, which no receive-side arm reaches.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_TAIL_DEPTH)
+                  == KOS_AMP_V_SEND_DEPTH);
+        // THE LOCAL NODE, refused by name: node_service skips its own self-ring, so four
+        // accepted self-sends would fill it permanently and no verdict would ever say so.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_SELF_SEND)
+                  == KOS_AMP_V_SEND_NODE);
+        // A REFUSED DEPTH DOES NOT ADVANCE THE TAIL, so the refusal is bounded rather than
+        // permanent: after DEPTH_STRIKES the ring is resynchronised and the next well-formed
+        // publication is taken. A ring left dead answers DEPTH here instead.
+        uint64_t const resets = kos_aspace_probe(KOS_ASPACE_OP_AMP_RESETS, 0);
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_DEPTH_RESET)
+                  == KOS_AMP_V_TOOK);
+        // WHICH mechanism recovered it: without this the arm passes on a build that simply
+        // stopped refusing the depth.
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_RESETS, 0) == resets + 1u);
+
+        unsigned answered = 0;
+        for (unsigned n = 1; n < static_cast<unsigned>(KICKOS_NUM_CORES); n++)
+        {
+            uint64_t const mine0 = kos_aspace_probe(KOS_ASPACE_OP_AMP_COUNTS, 0);
+            uint64_t const peer0 = kos_aspace_probe(KOS_ASPACE_OP_AMP_COUNTS, n);
+            TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_ROUND, n) == 0u);
+            // The reply is taken by THIS node's own doorbell service, so this thread has to
+            // leave the CPU with interrupts open: a syscall runs with them masked.
+            //
+            // A TIME BOUND AND NOT A SPIN COUNT, sized far over rather than tuned. A yield
+            // with nothing else runnable returns at once, so a count of them is microseconds
+            // of guest time; the far side is a vCPU thread the HOST schedules, and under
+            // emulation without icount it can go unscheduled for milliseconds while this core
+            // spends any count at all. A spin count here was a coin flip on a loaded box.
+            uint64_t const deadline = kos_clock_now() + AMP_REPLY_NS;
+            while (kos_clock_now() < deadline)
+            {
+                if ((kos_aspace_probe(KOS_ASPACE_OP_AMP_COUNTS, 0) & 0xFFu) != (mine0 & 0xFFu))
+                {
+                    break;
+                }
+                kos_sleep_ns(AMP_REPLY_TICK_NS);
+            }
+            uint64_t const mine1 = kos_aspace_probe(KOS_ASPACE_OP_AMP_COUNTS, 0);
+            uint64_t const peer1 = kos_aspace_probe(KOS_ASPACE_OP_AMP_COUNTS, n);
+            // The SERVICED field is what separates the two ways this can go wrong: a peer
+            // that never entered its handler, and one that entered and took nothing.
+            tap::diag("node %u: took %u->%u sent %u->%u serviced %u->%u; node 0 took %u->%u",
+                      n, static_cast<unsigned>(peer0 & 0xFFu),
+                      static_cast<unsigned>(peer1 & 0xFFu),
+                      static_cast<unsigned>((peer0 >> 32) & 0xFFu),
+                      static_cast<unsigned>((peer1 >> 32) & 0xFFu),
+                      static_cast<unsigned>((peer0 >> 48) & 0xFFFFu),
+                      static_cast<unsigned>((peer1 >> 48) & 0xFFFFu),
+                      static_cast<unsigned>(mine0 & 0xFFu),
+                      static_cast<unsigned>(mine1 & 0xFFu));
+            if ((mine1 & 0xFFu) == (mine0 & 0xFFu))
+            {
+                continue;
+            }
+            answered++;
+            // Both: the peer read the payload it was handed rather than answering an empty ring.
+            TAP_CHECK((peer1 & 0xFFu) > (peer0 & 0xFFu));
+            TAP_CHECK(((peer1 >> 32) & 0xFFu) > ((peer0 >> 32) & 0xFFu));
+        }
+        tap::diag("amp window: %u of %u peer node(s) answered over the doorbell", answered,
+                  static_cast<unsigned>(KICKOS_NUM_CORES) - 1u);
+        TAP_CHECK(answered == static_cast<unsigned>(KICKOS_NUM_CORES) - 1u);
+        // Not vacuous: a node that never serviced a doorbell answered nothing.
+        TAP_CHECK(((kos_aspace_probe(KOS_ASPACE_OP_AMP_COUNTS, 0) >> 48) & 0xFFFFu) > 0u);
+    }
+#endif
+
     void t_confused_deputy()
     {
         kos_sem_create(0, &g_cd_done);
@@ -9570,6 +9933,11 @@ int main(int, char**)
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
     TAP_ADD("cap_objects", t_cap_objects);           // frame-run and address-space capabilities
     TAP_ADD("cap_map", t_cap_map);                   // map and unmap through the cap layer
+    TAP_ADD("cap_map_over_stack", t_cap_map_over_stack); // a live stack page refuses a framecap
+    TAP_ADD("stack_grant_refused", t_stack_grant_refused);   // a self-grant of one's own stack
+    TAP_ADD("stack_guard_intact", t_stack_guard_intact);     // the guard page keeps no translation
+    TAP_ADD("stack_handoff_refused", t_stack_handoff_refused); // a donor's stack, at any extent
+    TAP_ADD("stack_slot_returns", t_stack_slot_returns); // the per-thread range slot comes back
     TAP_ADD("cap_map_pins_run", t_cap_map_pins_run); // a mapping is a holder of the run
     TAP_ADD("cap_share", t_cap_share);               // one frame, two spaces, two addresses
     TAP_ADD("aspace_seam", t_aspace_seam);           // granule, the three memory types, the frame pool
@@ -9613,6 +9981,10 @@ int main(int, char**)
 #endif
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST) && KICKOS_FAULT_ISOLATION
     TAP_ADD("fault_kills_task", t_fault_kills_task); // a translation fault ends the TASK, root survives
+#endif
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_NUM_CORES > 1 \
+    && KICKOS_MULTICORE_MODEL_SHARED == 0
+    TAP_ADD("amp_window", t_amp_window); // every index and length read from the window bounded
 #endif
     TAP_ADD("confused_deputy", t_confused_deputy); // readable-buffer/name floor (accept rodata, reject bogus)
     // Last, deliberately: the blocks it buys are never returned (bump allocator), so

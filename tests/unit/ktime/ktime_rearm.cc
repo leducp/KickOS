@@ -118,7 +118,7 @@ namespace kickos
         uint64_t next_timed_event() { return UINT64_MAX; }
         Thread* current()
         {
-            return kernel().current[arch_cpu_id()];
+            return kernel().current[kickos_kernel_core()];
         }
         void block_current() {}
         void wake(Thread*) {}
@@ -136,7 +136,7 @@ namespace
     void reset()
     {
         kernel().sleepq = nullptr;
-        kernel().current[arch_cpu_id()] = &g_sleeper;
+        kernel().current[kickos_kernel_core()] = &g_sleeper;
         g_sleeper.tnext = nullptr;
         g_sleeper.on_timer = false;
         g_sleeper.cancel_kind = CANCEL_NONE;

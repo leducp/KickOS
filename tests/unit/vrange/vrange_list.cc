@@ -280,23 +280,69 @@ TEST(VRange, reserve_refuses_a_page_count_the_entry_cannot_hold)
     // VirtualRange::pages is narrower than the size_t reserve is handed, so the ceiling has
     // to be a refusal: truncating the count would store a shorter range than the caller
     // asked for, and every later overlap and coverage answer would be about that shorter one.
-    // At a 4096-byte granule the byte count wraps first on a 32-bit host, so the arm runs
-    // only where the ceiling is the binding limit.
     kickos::VirtualRanges v = made();
-    if (sizeof(size_t) > 4)
-    {
-        size_t const over = kickos::VR_MAX_PAGES + 1u;
-        EXPECT_FALSE(v.reserve(BASE, over));
-        EXPECT_EQ(v.count(), 0u);
-        EXPECT_FALSE(v.overlaps(BASE, 1));
-    }
-    // The ceiling itself is representable, which is what the static_assert in vrange.h says
-    // and what makes the refusal above a bound rather than an off-by-one.
+    // The ceiling round-trips through the field's own width, host-width independent unlike
+    // the reserve arms below.
     EXPECT_EQ(static_cast<size_t>(static_cast<uint32_t>(kickos::VR_MAX_PAGES)),
               kickos::VR_MAX_PAGES);
+    // At a 4096-byte granule the byte count of either figure wraps first on a 32-bit host, so
+    // the two arms below run only where the ceiling is the binding limit.
+    if (sizeof(size_t) > 4)
+    {
+        EXPECT_FALSE(v.reserve(BASE, kickos::VR_MAX_PAGES + 1u));
+        EXPECT_EQ(v.count(), 0u);
+        EXPECT_FALSE(v.overlaps(BASE, 1));
+        // Admitted AT the ceiling and read back whole, which is what makes the refusal above
+        // the width's bound rather than a store that kept a shorter range than was asked for.
+        ASSERT_TRUE(v.reserve(BASE, kickos::VR_MAX_PAGES));
+        kickos::VirtualRange const* const at_ceiling = v.at_base(BASE);
+        ASSERT_NE(at_ceiling, nullptr);
+        EXPECT_EQ(static_cast<size_t>(at_ceiling->pages), kickos::VR_MAX_PAGES);
+        ASSERT_TRUE(v.release(BASE));
+    }
     // A count the entry holds is still admitted, so the refusal is not blanket.
     EXPECT_TRUE(v.reserve(BASE, 4));
     EXPECT_EQ(v.count(), 1u);
+}
+
+TEST(VRange, the_frame_run_slot_travels_with_the_entry)
+{
+    // Teardown releases the run by the SLOT the entry recorded, so a slot reserve() drops on
+    // the floor is a run nothing ever gives back. THE FIELD HOLDS THE SLOT PLUS ONE and the
+    // sentinel is ZERO, which is what keeps a record of every-bit-zero meaning "no run" and
+    // the domain array in .bss; the caller of reserve() is what adds the one.
+    kickos::VirtualRanges v = made();
+    EXPECT_EQ(kickos::VR_RUN_NONE, 0u);
+    ASSERT_TRUE(v.reserve(BASE, 2, kickos::VR_BORROWED | kickos::VR_FRAMECAP, 3u + 1u));
+    kickos::VirtualRange const* const named = v.at_base(BASE);
+    ASSERT_NE(named, nullptr);
+    EXPECT_EQ(named->run, 4u);
+    // SLOT ZERO IS THE ENCODING'S WHOLE POINT: stored plus one it is 1, distinct from the
+    // sentinel, where a raw slot index would have been indistinguishable from "no run".
+    ASSERT_TRUE(v.reserve(BASE + 2 * G, 1, kickos::VR_BORROWED | kickos::VR_FRAMECAP, 0u + 1u));
+    kickos::VirtualRange const* const slot_zero = v.at_base(BASE + 2 * G);
+    ASSERT_NE(slot_zero, nullptr);
+    EXPECT_EQ(slot_zero->run, 1u);
+    EXPECT_NE(slot_zero->run, kickos::VR_RUN_NONE);
+    // A slot far above anything the pool can hand out, so a store that truncated the word is
+    // caught here rather than at a release that drops the wrong run.
+    ASSERT_TRUE(v.reserve(BASE + 4 * G, 1, kickos::VR_BORROWED | kickos::VR_FRAMECAP,
+                          0xFFFFFFFEu));
+    kickos::VirtualRange const* const top = v.at_base(BASE + 4 * G);
+    ASSERT_NE(top, nullptr);
+    EXPECT_EQ(top->run, 0xFFFFFFFEu);
+    // A range naming no run, and the sentinel survives the grant.
+    ASSERT_TRUE(v.reserve(BASE + 6 * G, 1));
+    ASSERT_TRUE(v.grant(BASE + 6 * G, 1, ARCH_MAP_R, ARCH_MAP_NORMAL));
+    kickos::VirtualRange const* const unnamed = v.at_base(BASE + 6 * G);
+    ASSERT_NE(unnamed, nullptr);
+    EXPECT_EQ(unnamed->run, kickos::VR_RUN_NONE);
+    // A recycled slot must not carry its predecessor's run.
+    ASSERT_TRUE(v.release(BASE));
+    ASSERT_TRUE(v.reserve(BASE, 2));
+    kickos::VirtualRange const* const reused = v.at_base(BASE);
+    ASSERT_NE(reused, nullptr);
+    EXPECT_EQ(reused->run, kickos::VR_RUN_NONE);
 }
 
 TEST(VRange, grant_refuses_a_right_the_entry_cannot_hold)

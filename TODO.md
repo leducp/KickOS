@@ -16,6 +16,90 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is
 `docs/archive/M1_state.md`; the board/console readiness matrix is `docs/m2-readiness.md`.
 
+## M7.7 -- AMP
+
+S7 is landed: `qemu-arm64` ships an AMP posture as a preset, the instance index comes from the
+core identity, and the shared window's validation is driven by forged publications rather than
+argued. What is left here is what the step deliberately did not close, and one ruling it hands
+back.
+
+- [x] **RESOLVED, A PLUS C, both landed.** A `VR_FRAMECAP` mapping re-derived its run identity
+      from the page tables, so an unmap that had already cleared the leaf made the release read a
+      physical base of 0, match no run and drop nothing: one reference and one frame leaked, and
+      `cap_map_pins_run` went red on the AMP preset. **A** puts the run's SLOT on `VirtualRange`,
+      16 bytes to 24, encoded as the slot PLUS ONE so the record's all-zero default keeps the
+      domain array in `.bss`; the release drops the reference the range names and reads no leaf.
+      **C** records an unprivileged thread's stack and its unmapped guard page as one `VR_USTACK`
+      range, which makes the list a TOTAL record of the space, so `reserve` refuses anything
+      landing on either and neither release arm touches those frames. `KICKOS_ASPACE_RANGES`
+      became a real Kconfig symbol at default 40 to pay for the per-thread slot. The defect was
+      AMP-EXPOSED AND NOT AMP-CAUSED: the branch never touched `kernel/mem/ustack.cc`,
+      `kernel/include/kickos/ustack.h` or `kernel/mem/vrange.cc`, and the bigger app half only
+      moved the layout onto it. Recorded in `docs/design-m6-mmu.md`.
+- [ ] **`KOS_ASPACE_OP_CAP_SEED_VA` DOES NOT KEEP ITS OWN PROMISE.** Its contract says the
+      address it hands back is one nothing in the caller's space names, and it cannot check
+      that: the CHILD whose stack collides does not exist when the address is chosen, so no
+      list it could consult describes that space yet. `VR_USTACK` closed the other half, the
+      caller's own stack now being in its range list. It is scaffolding, so this is a note
+      rather than a defect, but an arm built on that promise is resting on a layout.
+- [x] **RETIRED BY `VR_USTACK`: a task can no longer map a frame capability over its own stack.**
+      A thread's stack and its guard page are one range now, so `aspace_cap_map` is refused at
+      the reserve with -KOS_ENOMEM instead of taking the stack page and leaving the unmap
+      answering -EPERM once the exit path had zeroed the leaf.
+- [x] **RESOLVED: the reent descriptor's slot count is checked at boot.** The array is banked
+      one bank of `KICKOS_THREAD_SLOTS` per instance; a descriptor short of that panics where
+      it is read, because the out-of-range fallback is the process-wide state and aliases two
+      kernels onto one errno rather than refusing. Nothing witnesses it, the in-tree app
+      provisioning correctly.
+- [x] **RESOLVED: a range the KERNEL placed is not the caller's to name, and one predicate
+      says so.** Making the list total put every thread stack and its guard in it, so a live
+      stack became findable while all three caller-controlled admission paths still filtered
+      on the image flag alone: a task could self-grant its own stack run, whose base is the
+      unmapped guard, and a donor could hand its stack to a child that keeps the mapping after
+      the run is freed. `VR_KERNEL_PLACED` and `vr_caller_nameable` are the one flag list, and
+      the supplied-stack path's share was already covered by its granted-state requirement.
+      Three arms, and each reddens without killing the run.
+- [x] **RESOLVED: the doorbell service is bounded, the local node is refused, and a wedged ring
+      recovers.** A peer refilling as the tail advanced kept the receiver inside the masked
+      handler with no bound; a self-send filled a ring no service drains; a forged depth was
+      sticky for the life of the image. What is NOT closed is witnessing the ceiling: a static
+      ring set cannot exceed either bound, so the arms pin the floor and the hostile refiller
+      has no in-tree far side to play it.
+- [ ] **THE PER-NODE COUNTERS ARE RELAXED ATOMICS AND THE ROWS ARE STILL SHARED RAM.** One
+      writer per row makes the load/store pair enough for a torn read, which is all that was
+      claimed. It is not protection: a peer kernel writes any row it likes, and the labelling
+      below is the whole of the answer until partitioning lands.
+- [ ] **AMP IS PROTOCOL SCAFFOLDING AND NOT A HOSTILE-KERNEL BOUNDARY, and the window's header
+      says so.** The mint sits outside the shared window, but every node maps the same writable
+      kernel RAM, so a compromised peer kernel rewrites validation state and every other node's
+      kernel data. The label stands until per-node memory partitioning lands, which is the
+      partition layout the contract leaves deliberately open.
+- [ ] **THE WINDOW IS NOT REACHED THROUGH AN ENDPOINT YET, and that is the freeze's remaining
+      half rather than a second API.** One IPC mechanism with locality resolved below the seam
+      is the freeze; no user-facing cross-node call was added, so nothing above the syscall can
+      tell the two localities apart. What a later step wires is the resolve-to-ring branch, and
+      the reply path is the hard half: it is built on a raw local thread pointer with a
+      one-shot generation guard riding the minted capability, and a remote caller has no such
+      thread in this kernel. Priority donation across nodes has no meaning at all.
+- [ ] **A PEER NODE RUNS NO SCHEDULER, and giving it one is the AMP partition layout the
+      contract leaves open.** The arena is one linker region with a link-time assert modelling
+      its allocation order; a per-node arena, and whether instance-keyed storage can be made
+      separately protectable, are the same question.
+- [ ] **THE PORT MINT IS ONE MASK SEATED FOR EVERY NODE FROM ONE KERNEL INIT.** That is the
+      static configuration act the freeze names, and it is deliberately not an answer to who
+      may mint one: the mask is written once before any node can be poked and read-only after,
+      and it sits OUTSIDE the window so a far side able to write it cannot validate itself.
+- [ ] **THE NODE BUILT HERE IS TRANSLATING-MODEL AMP, AND THE FIRST REAL AMP SILICON IS
+      MIXED-MODEL.** Both sides of this posture have an MMU. The CV1800B does not: its main C906
+      has one and its companion C906 has none, in the datasheet's own words, which is also why
+      that part fails the predicate's symmetry requirement and is an AMP part BY THE PREDICATE
+      rather than by judgement. Nothing in the tree witnesses a translating node beside a region
+      node, and that pairing is a different port from the one just written.
+- [ ] **`mhartid` IS HARDWIRED TO ZERO IN THE OPENC906 RELEASE**, the integrator customising it
+      per instance, and no document on hand states what the two CV1800B cores report. An AMP node
+      that takes its instance index from its core identity, which is the contract's own rule and
+      what this step implemented, therefore has no register to stand on there. What those two
+      cores report has to be established before an AMP posture is claimed for that part.
 ## M7.6 -- the i.MX 8M Plus EVK and the per-part predicate
 
 S6b is landed: the predicate splits by owner, and a second armv8a part boots under its own GIC-500.
@@ -112,14 +196,16 @@ did not answer.
       which are selftest scaffolding. C1 through C3 witness the objects, the map pair and the
       sharing; WHO MAY MINT ONE is undecided, and that is the question a real mint has to answer
       rather than a gap in the steps. It wants a ruling before an ABI freeze, not before the audit.
-- [ ] **A MINT MUST NOT LET TWO LIVE RUNS SHARE A PHYSICAL BASE.** `aspace_cap_unmap` matches a
-      mapping to its run by the first page's PHYSICAL address, read back with
-      `arch_aspace_frame_at`, because a field on `VirtualRange` costs eight bytes in every range
-      of every domain and was measured shrinking the arena past what `mem_self_grant` had to
-      spare. That is sound while the frame pool hands out unique live bases, which it does: a
-      run holds its frames until its last holder drops it. A user-facing mint that could seat
-      two run objects over one address at once breaks the identity, so this is a constraint on
-      the mint rather than an assumption the map editor may make.
+- [ ] **A MINT MUST NOT LET TWO LIVE RUN OBJECTS SHARE A PHYSICAL BASE, AND THE REASON IS
+      OWNERSHIP RATHER THAN IDENTITY NOW.** The identity half is retired: `aspace_cap_unmap` no
+      longer matches a mapping to its run by the first page's physical address read back with
+      `arch_aspace_frame_at`, the range carrying the run's SLOT instead, so the map editor makes
+      no uniqueness assumption at all. What survives is the lifetime: each run object carries its
+      own holder count and the last drop hands the frames back to the pool, so two objects over
+      one base return the same frames twice -- the first to empty frees them under the second's
+      live mappings, and nothing notices until the pool refuses the second free. A user-facing
+      mint has to answer that; it is a constraint on the mint and not an assumption the map
+      editor may make.
 - [ ] **The type field is exactly full: a third kind is a repartition.** Values 6 and 7 are spent,
       and `KCAP_TYPE_BITS` is welded to the reply call sequence packed beside it
       (`KCAP_REPLY_SEQ_LO_BITS`), so widening costs that and breaks the frozen 8-byte `CapEntry`

@@ -65,7 +65,7 @@ namespace kickos
             (void)k;
             if (attr.kstack_owned)
             {
-                ustack_free(domain_space(task_domain(tk)),
+                ustack_free(task_domain(tk),
                             reinterpret_cast<uintptr_t>(stack), bytes);
             }
 #else
@@ -201,12 +201,12 @@ namespace kickos
                     e = cr->find(base, p->stack_size);
                 }
                 if (cr != nullptr
-                    and (e == nullptr or e->state != VirtualState::Granted
-                         or (e->flags & VR_IMAGE) != 0
+                    and (not vr_caller_nameable(e) or e->state != VirtualState::Granted
                          or (e->rights & (ARCH_MAP_R | ARCH_MAP_W))
                                 != (ARCH_MAP_R | ARCH_MAP_W)))
                 {
-                    return -KOS_EPERM; // never reserved there, never mapped, or the image
+                    // Never reserved there, never mapped, or a range the kernel placed.
+                    return -KOS_EPERM;
                 }
                 // A SPAWN THAT BRINGS ITS OWN GRANT OPENS A SPACE THAT DOES NOT EXIST YET,
                 // and the only app memory in it will be the handoff of that grant. So the
@@ -544,7 +544,7 @@ namespace kickos
             // loses that half. kstack_owned says the KERNEL took this run, which the frame
             // pool cannot answer, the app's own allocator handing it frames out of that
             // same pool.
-            UserStack const us = ustack_alloc(domain_space(task_domain(tk)),
+            UserStack const us = ustack_alloc(task_domain(tk),
                                               KICKOS_USER_STACK_SIZE);
             stack = reinterpret_cast<void*>(us.base);
             stack_size = us.bytes;

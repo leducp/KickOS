@@ -22,7 +22,12 @@
 #define KICKOS_MAX_INSTANCES 1
 #endif
 
-#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+// KICKOS_AMP_NODE and arch_cpu_id, for the AMP keying below.
+#include <kickos/arch/arch.h>
+
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE && KICKOS_AMP_NODE
+#define kickos_instance_index() (arch_cpu_id())
+#elif defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
 namespace kickos
 {
     namespace detail
@@ -49,15 +54,23 @@ namespace kickos
     template <typename T>
     struct InstanceLocal
     {
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE && KICKOS_AMP_NODE
+        static_assert(KICKOS_MAX_INSTANCES >= KICKOS_NUM_CORES,
+                      "an AMP image keys the instance on the core, so it must provision one "
+                      "instance per core the image drives");
+#endif
         T per_instance[KICKOS_MAX_INSTANCES];
 
         T& get() { return per_instance[kickos_instance_index()]; }
     };
 
-#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE && !KICKOS_AMP_NODE
     // Adopt instance `i`, and hand back the index it displaced. A host thread that never
     // calls this holds index 0, so every spawned one must adopt before its first
     // instance-scoped access.
+    //
+    // The host-thread keying only: an index READ from the hardware has nothing to adopt, so
+    // there is no AMP arm of this and a setter over a core identity would be a second truth.
     inline unsigned instance_select(unsigned i)
     {
         unsigned const prev = detail::g_instance_index;
