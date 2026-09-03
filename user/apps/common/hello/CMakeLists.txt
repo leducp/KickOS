@@ -34,8 +34,9 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64")
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_hello.sh")
 endif()
 
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
-  kickos_add_qemu_test(NAME qemu_arm64_hello TARGET hello BOARD qemu-arm64
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_ARM64_BOARDS)
+  string(REPLACE "-" "_" _tag "${KICKOS_BOARD}")
+  kickos_add_qemu_test(NAME ${_tag}_hello TARGET hello BOARD ${KICKOS_BOARD}
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_hello.sh")
 endif()
 
@@ -99,6 +100,21 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "armv8a")
   set_tests_properties(tlbi_shareability PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 
+# Three orderings the arm64 entry and timer paths owe, read out of the linked image: the SPSel
+# select ahead of the first stack write, and the ISB after each CNTP_CTL_EL0 disable ahead of the
+# Device write it protects. Registered on the ARCH and not on a board or a core count: all three
+# bodies are compiled on every armv8a posture, both GIC versions and one core included.
+# It runs no image, so it carries the host label.
+#
+# Structural because no arm64 machine in the fleet can witness any of the three: QEMU enters at
+# reset with PSTATE.SP already 1, and its timer model deasserts on the register write.
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "armv8a")
+  add_test(NAME arm64_entry_order
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_arm64_entry_order.sh"
+            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
+  set_tests_properties(arm64_entry_order PROPERTIES TIMEOUT 120 LABELS host)
+endif()
+
 # The doorbell service body's instruction barrier and its position, read out of the linked image.
 # Keyed on the CORE count, not the kernel-core count: the service body is compiled whenever the
 # image drives more than one core, so it exists under AMP, where one kernel schedules one core.
@@ -112,6 +128,22 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_NUM_CORES GRE
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_doorbell_isb.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
   set_tests_properties(doorbell_isb PROPERTIES TIMEOUT 120 LABELS host)
+endif()
+
+# The store->load fence both sides of the rv64imac interrupt-controller handshake owe, read out
+# of the linked image. UNCONDITIONAL on the core count, as the fence is: the three words the
+# handshake turns on are image-wide rather than per hart, so a fence keyed on the count would
+# encode an assumption about who may call that the backend does not enforce.
+# It runs no image, so it carries the host label.
+#
+# rv64imac ONLY. The other backends reach an interrupt controller in hardware and take no
+# software handshake between two words; where one exists it is a different shape and this
+# reader's word names do not occur.
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "rv64imac")
+  add_test(NAME rv64_irq_fence
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_rv64_irq_fence.sh"
+            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
+  set_tests_properties(rv64_irq_fence PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 
 # The boundary between the doorbell's rendezvous half and its scheduling half, read out of the

@@ -26,9 +26,16 @@ BEGIN { depth = 0; ext = 0; buf = ""; state = 0; refuse = "" }
 {
     # A preprocessor directive contributes no braces. Safe only because END asserts the
     # file still balances; a macro body carrying an unmatched brace is refused, not guessed.
-    # A directive cannot begin inside a comment or a string, and a line-continued one is
-    # covered because its tail carries no brace either.
-    if (state == 0 && $0 ~ /^[ \t]*#/) { next }
+    # A directive cannot begin inside a comment or a string.
+    #
+    # ITS LINE CONTINUATIONS ARE SKIPPED WITH IT, and a tail carrying no brace is NOT what makes
+    # that safe: a continued `#error` carries QUOTES and APOSTROPHES, and one of those left
+    # unpaired shifts `state` for the whole rest of the file. That reads as clean rather than
+    # loud, the depth staying at 0 because no brace is counted at all.
+    if (state == 0 && (contd || $0 ~ /^[ \t]*#/)) {
+        contd = ($0 ~ /\\$/)
+        next
+    }
 
     n = length($0)
     for (i = 1; i <= n; i++) {

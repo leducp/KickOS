@@ -60,8 +60,9 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64")
     ARGS "${_fault_marker}" ${_fault_status})
 endif()
 
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
-  kickos_add_qemu_test(NAME qemu_arm64_fault_dump TARGET fault BOARD qemu-arm64
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_ARM64_BOARDS)
+  string(REPLACE "-" "_" _tag "${KICKOS_BOARD}")
+  kickos_add_qemu_test(NAME ${_tag}_fault_dump TARGET fault BOARD ${KICKOS_BOARD}
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh"
     ARGS "${_fault_marker}" ${_fault_status})
 endif()

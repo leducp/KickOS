@@ -16,6 +16,99 @@ say.
 
 ## Where we are
 
+**M7.6 LANDED S6b: THE PREDICATE IS DECLARED PER PART, AND THE BOARD THAT MOVED IT THERE BOOTS ONE
+CORE OF FOUR RATHER THAN FOUR.** The audit item is discharged. What follows is what a green run does
+NOT say, and the first item is a finding the step did not go looking for.
+
+**THE FOUR-CORE HALF OF S6b's EXPECTED RESULT HAS NO VEHICLE, AND THAT IS THE MILESTONE'S HEADLINE
+RATHER THAN A CORNER IT CUT.** `qemu-system-aarch64 -M imx8mp-evk` models no way to release a
+secondary core at all, measured three independent ways that agree: every CPU object reports
+`psci-conduit` 0, so there is no PSCI at any conduit and an `SMC` is an exception to our own vector;
+cores 1 to 3 carry `start-powered-off` true with nothing in the model able to clear it; and the
+reset controller and the mux registers that would do it on silicon are both `unimplemented-device`,
+confirmed by writing a pattern and reading back zero while the model logged the discard. So the
+board is refused above one core at COMPILE time rather than left to present as a boot that stops.
+**The release was deliberately NOT written**, and that is the decision to argue with: the silicon
+sequence is documented in the reference down to the register offsets, but it is an entry-point pair
+split across two registers with an ordering the manual does not state, a released core arrives at
+EL3 owing the same handover the primary gets, and no preset could compile it or run it. Unrunnable
+code carrying a correctness claim was judged worse than a recorded mechanism. It is a raise, not a
+ruling.
+
+**THE PART IS WHAT FORCED THE LAUNCH AND THE PREDICATE APART, and the separation is the real
+lesson.** Starting a core is not one of the six properties: two parts of one arch can meet every
+one of them and still release a secondary by different mechanisms, which is exactly what `virt` and
+this die do. Had the predicate absorbed the launch, this part would have been declared predicate-
+FAILING, which is false: its cluster meets all six and the declaration says so. The refusal that
+fires is the chip's own and says the machine cannot start a core, which is a different sentence.
+
+**THE SPLIT ITSELF IS THREE AND THREE, and the reasoning is what to argue with rather than the
+lists.** An arch declares what an ISA hands every part it defines: the exclusion primitive, the
+mechanism a core reads its own identity by, and the coherency model the descriptors program. A part
+declares what its die and interconnect decide: which inter-core interrupt it has, whether the
+controller can point one line at one core, and whether the cores are interchangeable. Coherency
+sitting on the arch side carries an OBLIGATION rather than a guarantee: the arch declaration is true
+only while every chip of that arch programs shared-attribute descriptors over kernel state, and a
+chip that did not would break it silently. Symmetry moved to the part because of this die
+specifically, which is symmetric within its cluster and asymmetric across it.
+
+**THE OWNERSHIP IS STRUCTURAL AND NOT CONVENTIONAL, which took a refusal in BOTH DIRECTIONS to
+achieve.** The two owners get separate variable namespaces, but each declaration is included into
+one shared scope, so nothing but an explicit refusal stops an arch file certifying GIC version,
+routing and topology for parts nobody has seen, or one die's file satisfying the ISA's half for an
+arch that declares it nowhere. **The second direction was missing when the step first landed**, and
+that is worth keeping rather than tidying away: a boundary enforced one way is the naming convention
+the namespacing alone would have been, which is the branch's own argument about the arch side turned
+back on it. The cure is two parts, and the isolation is the load-bearing one: each owner's variables
+are taken OUT OF THE SCOPE across the other's include and put back past it, so a line in the wrong
+file cannot stand in for a declaration even when it writes the value the right file would have
+written. The refusal on top is what makes that diagnosable rather than silently discarded.
+
+**THE PART CASE COULD NOT BE WITNESSED BY A WHOLE-TREE CONFIGURE, and the gate says why.** No board
+in the tree fails the part's three while passing the arch's: every chip that ships a declaration
+declares all three. So the predicate became one authority driven twice, the build calling it and the
+gate calling the same function over synthetic declaration trees. Seven cases, each against a control
+differing in one clause, and each was checked by MUTATION rather than by passing: removing either
+overreach refusal, rekeying the refusal on the count, collapsing the two owners into one list, and
+deleting the refusal outright each redden exactly the arm that claims them. The AMP-model case is
+the one worth keeping: it is a positive control that the refusal keys on the model, and rekeying it
+on the count is what reddens it. **And the restatement case is the one that separates the two halves
+of the cure**: a chip file setting an arch-owned property its arch ALREADY declares changes no value,
+so replacing the scope isolation with a comparison across the include leaves that arm alone red
+while the blunt case still refuses.
+
+**THE HETEROGENEOUS CASE HAS NO VEHICLE EITHER, AND NEITHER S6b NOR S7 REACHES IT.** This part is
+both an SMP part and an AMP part at once. The Cortex-M7 companion has its own NVIC and its own
+instruction set, so it is asymmetric by construction rather than by policy, and it is startable from
+the A53 side by two register writes, which is the concrete form of the ruling that a bootloader
+owning a companion is a convention. The machine models the A53 cluster alone, ships no companion,
+and decodes its tightly-coupled memory as unimplemented, so nothing on this bench is both at once.
+Recorded so a later milestone does not discover it: this is not a gap in the AMP work, it is the
+absence of any machine that could carry the case.
+
+**WHAT THE BOARD'S GREEN RUN DOES NOT WITNESS.** The EL3 handover is exercised on every run, and
+that is the one piece of it a run does witness. Nothing exercises the EL1-entry path, no vehicle
+here producing it, and the EL2 refusal beside it has never fired. The UART enable is correct for
+silicon and unwitnessable: the model emits on the data-register write whatever the enables hold, so
+an image that never enabled the transmitter prints the same. No baud rate is programmed at all,
+which the model ignores entirely. And the system counter's own enable is never written, the block
+being unmodelled here; on silicon out of reset a stopped counter would read a constant with a
+plausible frequency beside it, which is the shape that hangs a bounded wait rather than reddening
+it.
+
+**IT CLOSED AN OPEN ITEM NOBODY ASSIGNED TO IT.** M7.3 deferred a one-kernel-core GICv3 preset to
+the AMP step, on the reasoning that the only configuration where one kernel core meets a live GICv3
+was an AMP image. This board is that configuration for a different reason, so the `KICKOS_NUM_CORES
+> 1` folds in the GICv3 backend now have a fleet preset that exercises them, and the fold arm that
+is skipped as a class above one kernel core RUNS here.
+
+**FIGURES, AND THE TREE THEY WERE TAKEN ON.** Everything measured for this branch was measured on
+the branch's own tree with the host unit layer off for the cross presets, on a box shared with a
+sibling branch's builds, and every count in this milestone is derivable by `ctest -N` and `ctest`
+on the four presets involved rather than written here. NO FLEET SWEEP HAS RUN for this branch. The
+board's own numbers were taken once each, not repeated: one core needs no repetition the way a
+four-core image does, and no four-core claim is made here at all.
+
 **M7.5 LANDED THE DEATH POINT ON EVERY BOARD AND RETRIAGED THE SKIP SET, both witnessed by a full
 fleet sweep against a frozen tree.** Host: 57 presets, 2411 host tests, 57 pass and 0 fail. Image:
 57 presets, 490 image gates, 20 run and passing, 0 partial, 0 fail, 0 skipped, 37 presets
@@ -722,6 +815,52 @@ The whole point of this file. A green fleet pass says none of the following.
   not a free one, the toolchain's multilibs being named for exact march strings, so it is measured
   against them rather than assumed when a caller appears.
 
+- **THE RV64 IRQ HANDSHAKE'S STORE-TO-LOAD FENCE IS ARCHITECTURE-MANDATED, HAS NO WITNESS HERE, AND
+  NOTHING ON THIS BENCH WILL EVER GIVE IT ONE.** `arch_irq_unmask` and `arch_irq_inject` are
+  DEKKER-SHAPED against each other, each writing its OWN word and then reading the PEER's, and
+  RVWMO preserves no order between a store and a later load to another address (RISC-V
+  Unprivileged ISA 18.1.3) while an AMO with `.aq` and `.rl` both clear adds none (13.1). With no
+  fence on BOTH sides both writes may sit behind both reads at once and NEITHER side raises
+  `sip.SSIP`: the bit pending, the line unmasked, the driver asleep for good. **The take-back
+  settles the LOGICAL race and never the visibility one**, which is what that code's own comment
+  claimed for it until this hotfix, and a false statement of contract is worse than a gap. QEMU's
+  TCG orders more strongly than RVWMO, so an image carrying no fence at all passes every arm in
+  this tree and the defect is indistinguishable from the fix under emulation; a randomised soak was
+  DECLINED for the standing reason, an arm that fails intermittently reading exactly like a broken
+  one. So it is held by the SPECIFICATION and by a DISASSEMBLY gate, `rv64_irq_fence`, which
+  resolves each access to the word it names out of objdump's own symbol annotation. **FENCE.TSO is
+  as much what that gate exists for as a deleted fence**: it is spelled like a fence, assembles at
+  this board's baseline, and omits exactly this edge. What the gate does NOT say is which word
+  `arch_irq_inject` reads after its fence: the re-read goes through a register the unmasked branch
+  rebinds, so the walk drops that binding at the join and that side is asserted on its publish
+  alone. **AND THE THIRD WORD OWES NO FENCE FOR A REASON THAT IS NOT ATOMICITY.** `g_irq_raised`'s
+  accesses are one instruction each, which buys no visibility; what does is that `raise_line` sets
+  `sip.SSIP` on the CALLING hart, so the consumer that must not miss a bit is the hart that set it
+  and the load value axiom orders it (Appendix A.3.2). A peer's doorbell poll may read that word
+  stale in either direction at no cost. **FOUR OTHER BACKENDS CARRY THE SAME THREE WORDS AND OWE
+  NOTHING**, none of them being SMP-capable: at one hart the local interrupt mask those bodies
+  already take IS exclusion, and a fence written there would be cargo.
+
+- **THREE ORDERINGS ON THE arm64 ENTRY AND TIMER PATHS REST ON THE ARCHITECTURE AND ON A
+  DISASSEMBLY GATE, AND NO MACHINE ON THIS BENCH CAN WITNESS ANY OF THEM.** `msr SPSel, #1` ahead of
+  the first write to SP, and an ISB after each `CNTP_CTL_EL0` disable ahead of the Device write it
+  protects, in `arch_timer_disarm` and in `kickos_armv8a_percore_init`. Every emulator here enters at
+  reset with `PSTATE.SP` already 1, so the SP_EL0-versus-SP_ELx confusion is reachable only from a
+  firmware handover that left `SPSel` 0, which no machine here produces; and the timer models
+  deassert on the register write with no pipeline to drain, so an image carrying neither barrier
+  boots green on all four arm64 presets. Held by `arm64_entry_order`, which reads the three bodies
+  out of the linked image and asserts ORDINALS, and by nothing else. **What that gate does NOT say
+  is that the barrier is SUFFICIENT**: it asserts one ISB stands in the window, not that a Context
+  synchronization event is all the part owes between a system-register write and a Device store.
+- **THE `extern_c_linkage` SCANNER WAS VACUOUS OVER A WHOLE FILE OF THIS BRANCH AND REPORTED CLEAN,
+  which is the failure mode the whole character-level design has.** It skipped `#` directive lines
+  but not their LINE CONTINUATIONS, and this branch's chip file is the tree's only one whose
+  continued `#error` leaves an apostrophe unpaired. The state machine then sat inside a literal from
+  line 40 to the end of the file, counted ZERO braces, and passed at depth 0. Fixed, and the arm
+  that would have caught it is a planted file rather than anything in the corpus: a mis-parse does
+  not report the wrong line, it stops reporting, so no real file can distinguish a working scanner
+  from a stalled one. Every other continued directive in the tree happens to carry even quote
+  parity, which is luck and not a property.
 - **THE INSTRUMENT A FLEET VERDICT COMES FROM HAS BLIND SPOTS OF ITS OWN, AND THEY BOUND EVERY
   BULLET BELOW.** That verdict comes from `tools/sweep_host_gates.sh` and
   `tools/sweep_image_gates.sh`, and a green run of both leaves each of these standing. The emulator
@@ -732,7 +871,10 @@ The whole point of this file. A green fleet pass says none of the following.
   snapshots the tree: each preset reads the source afresh, so a tree edited while a sweep runs
   yields verdicts belonging to different tree states, with no record of which preset saw which. And
   both tools take the service list each preset defaults to, so a provider that lives only in
-  `tests/static/service_lists.txt` is compiled by neither.
+  `tests/static/service_lists.txt` is compiled by neither. **And the TREE STAMP each tool prints is a check
+  on none of this**: it is taken from `$ROOT` by `git -C` and agrees with itself whatever sources
+  cmake actually read, which is how a sweep invoked from another checkout once reported 59 of 60
+  presets against a tree it had never compiled.
 - **THE SLEEP PATH WAS MISSED ON THE FIRST PASS, AND THE ENUMERATION IS WHY.** The death point's
   class is every site that writes `ThreadState::BLOCKED`, and there are exactly three:
   `wq_block`, `park_queueless` and `ktime_sleep_until`. Enumerating from the two park funnels

@@ -93,14 +93,6 @@ namespace kickos
         abort();
     }
 
-    // The death point's predicate, whose BODY is not this gate's subject: what the sleep
-    // arms below judge is that ktime_sleep_until ASKS it, and asks before it touches
-    // anything. The body is witnessed on the four-core target.
-    bool park_cancel_pending(Thread const* c)
-    {
-        return c->cancel_kind != CANCEL_NONE and not c->dying;
-    }
-
     namespace sched
     {
         // exit_current is noreturn, so the arm resumes through this rather than returning.

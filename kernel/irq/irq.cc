@@ -581,7 +581,7 @@ namespace kickos
             {
                 return -err; // EBADF (bad/closed cap, freed slot) or EPERM (no WAIT right)
             }
-            if (c->cancel_kind != CANCEL_NONE)
+            if (park_cancel_pending(c))
             {
                 return -KOS_ECANCELED;
             }

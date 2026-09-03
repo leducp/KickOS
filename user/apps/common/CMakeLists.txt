@@ -9,6 +9,11 @@ set(KICKOS_QEMU_MPS2_BOARDS qemu qemu-m33 qemu-m7 qemu-m3)
 # The board name as a CTest-name prefix, so each image reports under its own name.
 string(REPLACE "-" "_" KICKOS_QEMU_MPS2_TAG "${KICKOS_BOARD}")
 
+# The runnable QEMU arm64 boards. Every gate keyed on this list reads an ARCH-level fault
+# marker or status, so the two take the same scripts and differ only in the name each reports
+# under. imx8mp-evk brings up one core, so the SMP gates stay keyed on the core count.
+set(KICKOS_QEMU_ARM64_BOARDS qemu-arm64 imx8mp-evk)
+
 add_subdirectory(hello)
 add_subdirectory(hello_c)
 add_subdirectory(mpu_fault)
@@ -81,7 +86,7 @@ if(KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "qemu"
    OR KICKOS_BOARD STREQUAL "qemu-m33"
    OR KICKOS_BOARD STREQUAL "qemu-m7"
-   OR KICKOS_BOARD STREQUAL "qemu-arm64")
+   OR KICKOS_BOARD IN_LIST KICKOS_QEMU_ARM64_BOARDS)
   add_subdirectory(fp_switch)
 endif()
 

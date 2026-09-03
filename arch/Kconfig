@@ -228,6 +228,11 @@ config CHIP_VIRT_RV32
 	select HAS_MPU
 	select HAS_TRACE_CLOCK
 
+config CHIP_IMX8MP
+	bool
+	select ARCH_ARMV8A
+	select HAS_ASPACE
+
 config CHIP_VIRT_ARM64
 	bool
 	select ARCH_ARMV8A
@@ -268,6 +273,7 @@ config KICKOS_CHIP
 	default "esp32" if CHIP_ESP32
 	default "esp32c6" if CHIP_ESP32C6
 	default "virt_rv32" if CHIP_VIRT_RV32
+	default "imx8mp" if CHIP_IMX8MP
 	default "virt_arm64" if CHIP_VIRT_ARM64
 	default "virt_rv64" if CHIP_VIRT_RV64
 	default "q35" if CHIP_Q35

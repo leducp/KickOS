@@ -84,7 +84,14 @@ namespace kickos
     // statement that could be moved, and moving it is what breaks it: at the park instead,
     // ktime_sleep_until would exit with the thread already on the sleep queue and its one-shot
     // armed.
-    [[nodiscard]] bool park_cancel_pending(Thread const* c);
+    //
+    // Inline and not out-of-line: a host fixture compiling one kernel source against its own
+    // seam would otherwise stub this symbol, giving the death point a second body that cannot
+    // diverge loudly. One such stub was already in the tree.
+    [[nodiscard]] inline bool park_cancel_pending(Thread const* c)
+    {
+        return c->cancel_kind != CANCEL_NONE and not c->dying;
+    }
 
     // Resume barrier, MANDATORY for any blocking primitive that reads waker-set TCB state
     // (wait_result) after resuming:

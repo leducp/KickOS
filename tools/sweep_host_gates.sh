@@ -131,7 +131,14 @@ sweep_one() {
     echo "=== $p ===" >&2
     : > "$LOG"
     STAGE=""
-    if ! cmake --preset "$p" -B "$DIR" $PREFIX_ARG >> "$LOG" 2>&1; then
+    # -S "$ROOT" IS LOAD-BEARING: `cmake --preset` resolves CMakePresets.json against the
+    # CURRENT DIRECTORY, and nothing here ever changes it. Invoked from another checkout this
+    # configured 59 of 60 presets against THAT tree while every result was stamped against
+    # $ROOT, and the only preset that failed was the one this tree alone carries, so the
+    # sweep read as a clean pass over a tree it never compiled. THE TREE STAMP IS NOT
+    # PROTECTION: it is taken from $ROOT by `git -C`, so it agrees with itself no matter which
+    # sources cmake actually read.
+    if ! cmake -S "$ROOT" --preset "$p" -B "$DIR" $PREFIX_ARG >> "$LOG" 2>&1; then
         STAGE=configure
     elif ! cmake --build "$DIR" "-j$JOBS" >> "$LOG" 2>&1; then
         STAGE=build

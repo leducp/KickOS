@@ -15,8 +15,9 @@ endif()
 # 139 is KOS_EXIT_FAULT and "THREAD FAULT" the thread-kill banner. The gate asserts them as
 # literals; computing them from the sources that produce them would assert nothing. The access
 # is an EL0 one, so armv8a contains it and the marker is the kill banner.
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64")
-  kickos_add_qemu_test(NAME qemu_arm64_kernel_half TARGET kernelhalf BOARD qemu-arm64
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_ARM64_BOARDS)
+  string(REPLACE "-" "_" _tag "${KICKOS_BOARD}")
+  kickos_add_qemu_test(NAME ${_tag}_kernel_half TARGET kernelhalf BOARD ${KICKOS_BOARD}
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_kernel_half.sh"
     ARGS "THREAD FAULT" 139)
 endif()

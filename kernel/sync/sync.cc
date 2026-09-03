@@ -75,11 +75,6 @@ namespace kickos
         }
     }
 
-    bool park_cancel_pending(Thread const* c)
-    {
-        return c->cancel_kind != CANCEL_NONE and not c->dying;
-    }
-
     // Returns when woken.
     void wq_block(List& q, WaitKind kind, void* obj)
     {

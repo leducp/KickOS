@@ -518,6 +518,13 @@ function(kickos_add_qemu_test)
     if(KICKOS_ARM64_GIC_VERSION EQUAL 3)
       set(_machine "virt,gic-version=3")
     endif()
+  elseif(QT_BOARD STREQUAL "imx8mp-evk")
+    # No -cpu and no gic-version: the machine fixes both, being a model of a die rather than a
+    # configurable board.
+    # -m bounds the machine's DDR window, which defaults to the EVK's 6 GiB and is mapped
+    # lazily; the linker script carves 64 MiB of it, so this is headroom rather than a fit.
+    set(_env QEMU=qemu-system-aarch64 QEMU_EXTRA=-m\ 512M)
+    set(_machine imx8mp-evk)
   elseif(QT_BOARD STREQUAL "microbit")
     # 32 KiB: QEMU's nRF51 SoC exposes the size as a QOM property and -m is ignored by a
     # fixed-SoC machine, so an image linked for 32 KiB without this locks up on its first

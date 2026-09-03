@@ -41,6 +41,10 @@ config BOARD_FRDMK64F
 	bool "frdmk64f (NXP FRDM-K64F)"
 	select CHIP_MK64F
 
+config BOARD_IMX8MP_EVK
+	bool "imx8mp-evk (i.MX 8M Plus, quad Cortex-A53)"
+	select CHIP_IMX8MP
+
 config BOARD_MICROBIT
 	bool "microbit (BBC micro:bit, nRF51822)"
 	select CHIP_NRF51
@@ -112,6 +116,7 @@ config KICKOS_BOARD
 	default "f302nucleo" if BOARD_F302NUCLEO
 	default "f411disco" if BOARD_F411DISCO
 	default "frdmk64f" if BOARD_FRDMK64F
+	default "imx8mp-evk" if BOARD_IMX8MP_EVK
 	default "microbit" if BOARD_MICROBIT
 	default "picopi" if BOARD_PICOPI
 	default "pizero2350" if BOARD_PIZERO2350

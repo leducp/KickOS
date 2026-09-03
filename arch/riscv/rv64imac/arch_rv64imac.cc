@@ -114,9 +114,15 @@ namespace
     // Bit set = this line has a raise no dispatch has taken yet. A SET, NOT ONE LINE IDENTITY:
     // above one core there are as many producers as cores, and a single identity is overwritten
     // by the next producer before the first core's dispatch has consumed it, which loses the
-    // raise outright and leaves its driver asleep for good. The two accesses below are one
-    // instruction each, so the producer under the kernel lock and the consumer in a dispatch
-    // that holds no lock are race-free against each other without one.
+    // raise outright and leaves its driver asleep for good.
+    //
+    // THIS WORD OWES NO FENCE, AND THE REASON IS NOT THAT ITS ACCESSES ARE SINGLE INSTRUCTIONS.
+    // One instruction buys atomicity, never visibility. What buys visibility is that raise_line
+    // sets sip.SSIP on the CALLING hart, so the consumer that must not miss a bit is the hart
+    // that set it: that hart's own dispatch, and its own doorbell poll. Same-hart accesses to
+    // one address are ordered by the load value axiom (RISC-V Unprivileged ISA, Appendix
+    // A.3.2). A PEER's poll may read this word stale; that costs nothing in either direction,
+    // the producing hart's sip.SSIP still standing.
     uint32_t g_irq_raised = 0;
 
     // THE THREE WORDS ABOVE ARE TOUCHED FROM ISR CONTEXT AND FROM THREAD CONTEXT ON ANY CORE,
@@ -124,6 +130,12 @@ namespace
     // core, and irq_event_isr masks the line from inside it. So a plain read-modify-write here
     // would let a mask on one core clobber a rearm's unmask on another, which leaves the line
     // masked with nothing left to unmask it. Every mutation below is ONE instruction.
+    //
+    // AND NOT ONE OF THEM ORDERS ANYTHING. The "memory" clobber constrains GCC and not the
+    // hardware; RVWMO preserves no order between a store and a later load to a DIFFERENT
+    // address (RISC-V Unprivileged ISA 18.1.3), and an AMO with .aq and .rl both clear adds
+    // none (13.1). A caller that publishes to one of these words and then reads another owes
+    // the fence below.
     uint32_t load_word(uint32_t const* w)
     {
         uint32_t v = 0;
@@ -143,6 +155,16 @@ namespace
         uint32_t old = 0;
         __asm volatile("amoand.w %0, %1, (%2)" : "=&r"(old) : "r"(~bit), "r"(w) : "memory");
         return (old & bit) != 0;
+    }
+
+    // Store->load, the one order RVWMO does not preserve; `rw,rw` is the form the
+    // specification's mapping guidelines use for full ordering (RISC-V Unprivileged ISA,
+    // Appendix A.5). FENCE.TSO IS NOT A SUBSTITUTE; it omits exactly the store->load edge.
+    // FENCE is base-ISA (2.7), which this board's march string needs it to be: Zifencei is
+    // absent, so FENCE.I does not assemble here.
+    void fence_store_load(void)
+    {
+        __asm volatile("fence rw, rw" ::: "memory");
     }
 
     // sip.SSIP is the one cause every raise on this hart arrives on.
@@ -490,8 +512,16 @@ void arch_irq_unmask(int line)
     arch_irq_state_t s = arch_irq_save();
     set_bit(&g_irq_unmasked, bit);
     // A raise taken while the line was masked redelivers now through the doorbell: sip.SSIP is
-    // set with SIE clear, so it fires at arch_irq_restore on the normal ISR path. The TAKE is
-    // what settles a race with a concurrent inject; whichever side takes the bit delivers it.
+    // set with SIE clear, so it fires at arch_irq_restore on the normal ISR path.
+    //
+    // THE FENCE AND NOT THE TAKE IS WHAT MAKES THE HANDSHAKE HOLD. Both sides publish to their
+    // OWN word and then read the PEER's. This one writes g_irq_unmasked then reads
+    // g_irq_pending and arch_irq_inject does the reverse, so with no fence on both sides both
+    // writes may sit behind both reads and NEITHER side raises: the bit pending, unmasked,
+    // and the driver asleep for good. The take settles only WHICH side delivers once each
+    // write is visible. arch_irq_save brackets this body and masks THIS hart alone, which is
+    // not exclusion against a peer.
+    fence_store_load();
     if (take_bit(&g_irq_pending, bit))
     {
         raise_line(line);
@@ -529,6 +559,11 @@ void arch_irq_inject(int irq)
         // THE LINE MAY HAVE BEEN UNMASKED between the read above and the latch, by a rearm that
         // looked at a pending word this store had not reached. Re-read, and take the bit back
         // rather than assume: exactly one of the two sides takes it, and that side delivers.
+        //
+        // The fence is the other half of arch_irq_unmask's and is useless without it: the write
+        // above must be visible to that hart's take before this re-read answers, or both sides
+        // read stale and no raise is made at all.
+        fence_store_load();
         if ((load_word(&g_irq_unmasked) & bit) != 0 and take_bit(&g_irq_pending, bit))
         {
             raise_line(irq);

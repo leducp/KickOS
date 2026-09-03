@@ -143,6 +143,10 @@ namespace
     // Two 64 KB frames per core, RD_base then SGI_base, contiguous from the first core.
     constexpr uintptr_t GICR_BASE = 0x080A0000;
     constexpr uintptr_t GICR_STRIDE = 0x20000;
+    // THE ONE MACHINE WHERE THE IMAGE'S CORE COUNT IS ALSO THE PART'S: `virt` instantiates a
+    // redistributor per core `-smp` gave it, and the harness passes KICKOS_NUM_CORES. On a die
+    // the two are unrelated and this spelling must not be copied there.
+    constexpr int GICR_COUNT = KICKOS_NUM_CORES;
 #else
     constexpr uintptr_t GICC_BASE = 0x08010000;
 #endif
@@ -325,6 +329,7 @@ struct kickos_gicv3_map const kickos_gicv3 = {
     GICD_BASE,
     GICR_BASE,
     GICR_STRIDE,
+    GICR_COUNT,
     KICKOS_MAX_IRQ,
     PPI_EL1_PHYS_TIMER,
 };
@@ -346,6 +351,10 @@ void kickos_armv8a_percore_init(void)
     // CNTP_CTL_EL0's reset value is architecturally UNKNOWN, so an already-asserted timer
     // would fire the moment this core's PPI and DAIF open.
     __asm volatile("msr cntp_ctl_el0, %0" ::"r"(uint64_t(0)));
+    // The disable governs the timer's output only past a context synchronisation event. Without
+    // this, an output still asserted when the GIC below enables this core's PPI pends the line
+    // the write above exists to silence.
+    __asm volatile("isb" ::: "memory");
 
     kickos_armv8a_gic_percore_init();
 }
@@ -399,6 +408,10 @@ void arch_timer_arm(uint64_t deadline_ns)
 void arch_timer_disarm(void)
 {
     __asm volatile("msr cntp_ctl_el0, %0" ::"r"(uint64_t(0)));
+    // Between the two: the disable reaches the timer's output only past a context
+    // synchronisation event, and the Device write below is not ordered against a system-register
+    // write by anything else, so a level still asserted re-pends the line behind the clear.
+    __asm volatile("isb" ::: "memory");
     kickos_armv8a_gic_clear_pending(PPI_EL1_PHYS_TIMER);
 }
 
@@ -410,9 +423,10 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
     static struct arch_reserved_block const blocks[] = {
         {GICD_BASE, 0x10000u}, // distributor
 #if KICKOS_ARM64_GIC_VERSION == 3
-        // Every core's redistributor, and not this core's alone: the frames a peer's banked
-        // interrupt state lives in are exactly what a grant of this window would hand over.
-        {GICR_BASE, KICKOS_NUM_CORES * GICR_STRIDE},
+        // Every redistributor the machine instantiates, and not this core's alone: the frames a
+        // peer's banked interrupt state lives in are exactly what a grant of this window would
+        // hand over.
+        {GICR_BASE, GICR_COUNT * GICR_STRIDE},
 #else
         {GICC_BASE, 0x10000u}, // CPU interface
 #endif

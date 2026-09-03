@@ -67,9 +67,10 @@ foreach(_case 1 2 3 4 5)
       TARGET panicgate${_case} BOARD qemu-riscv64
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_panicgate.sh"
       ARGS "${_pg_txt_${_case}}" "${_pg_absent_${_case}}")
-  elseif(KICKOS_BOARD STREQUAL "qemu-arm64")
-    kickos_add_qemu_test(NAME qemu_arm64_panicgate${_case}
-      TARGET panicgate${_case} BOARD qemu-arm64
+  elseif(KICKOS_BOARD IN_LIST KICKOS_QEMU_ARM64_BOARDS)
+    string(REPLACE "-" "_" _tag "${KICKOS_BOARD}")
+    kickos_add_qemu_test(NAME ${_tag}_panicgate${_case}
+      TARGET panicgate${_case} BOARD ${KICKOS_BOARD}
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_panicgate.sh"
       ARGS "${_pg_txt_${_case}}" "${_pg_absent_${_case}}")
   elseif(KICKOS_BOARD STREQUAL "qemu-x86_64")

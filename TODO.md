@@ -16,13 +16,73 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is
 `docs/archive/M1_state.md`; the board/console readiness matrix is `docs/m2-readiness.md`.
 
+## M7.6 -- the i.MX 8M Plus EVK and the per-part predicate
+
+S6b is landed: the predicate splits by owner, and a second armv8a part boots under its own GIC-500.
+What is left here is what the step deliberately did not close.
+
+- [ ] **THE SECONDARY RELEASE IS UNWRITTEN, AND THIS IS THE ITEM TO ARGUE WITH FIRST.** The A53
+      cluster meets all six properties and declares the part's three; what has no vehicle is
+      STARTING a core. QEMU's `imx8mp-evk` carries no PSCI conduit, holds cores 1 to 3 powered off
+      with nothing able to clear it, and models the reset controller and the mux registers as
+      unimplemented devices. The silicon sequence is recorded in `docs/reference/boards.md` down to
+      the register offsets, including that the manual states no ordering for it and that a released
+      core arrives at EL3 owing the same handover the primary gets. Writing it would mean an
+      entry-point pair split across two registers, on a path no preset can compile or run. Held
+      back on that ground rather than on cost; reverse it if a vehicle appears or the silicon does.
+- [ ] **THE SYSTEM COUNTER'S OWN ENABLE IS NEVER WRITTEN.** The chip programs `CNTFRQ_EL0` at EL3,
+      standing in for firmware, but not the counter block's control register: that block is
+      unmodelled here, so a write to it could not be witnessed either way. On silicon out of reset
+      a stopped counter reads a constant with a plausible frequency beside it, which is the shape
+      that hangs a bounded wait instead of reddening it, so this is a real silicon hazard rather
+      than tidiness.
+- [ ] **THE CLOCK AND RESET GATES ARE ABSENT FROM THE RESERVED SET.** `arch_reserved_blocks` names
+      the GIC alone, while this die's clock controller and reset controller reach every peripheral
+      on it, so a domain handed either could stop a core it does not own. Nothing in the tree grants
+      an MMIO window on this board yet, so the gap has no reachable consequence and no arm could
+      witness a refusal; it becomes real with the first grant.
+- [ ] **NO BAUD RATE IS PROGRAMMED ON THE CONSOLE.** The divider runs off a clock this port
+      configures nothing else in, and the model ignores it entirely. Real hardware needs it, and it
+      arrives with the clock tree rather than on its own.
+- [ ] **THE EL1-ENTRY PATH AND THE EL2 REFUSAL HAVE NO VEHICLE.** The machine always hands over at
+      EL3, so the branch that accepts a firmware handover at EL1 is never taken and the EL2 refusal
+      beside it has never fired. Both are one branch each and were written rather than left out, an
+      unnamed handover being worse than a named refusal.
+- [ ] **THE BOARD IS IN NO CI JOB.** It is a local `ctest` preset only, like every arm64 preset but
+      the base one. Adding a job is cheap, the aarch64 toolchain action already existing; not done
+      here because no arm64 variant preset is in CI and doing one and not the others would be
+      arbitrary.
+- [ ] **THE TWO arm64 CHIP PORTS ARE NEAR-CLONES. RAISED BY AN EXTERNAL AUDIT OF THIS BRANCH AND
+      DELIBERATELY NOT ACTED ON HERE.** `virt_arm64` and `imx8mp` duplicate the linker script, the
+      MMU startup, the generic-timer body, the semihosted shutdown and the high-half helpers. The
+      boundary the audit proposes: extract the common structure with the chip addresses and the
+      archive names parameterised, keeping the EL3 handover and the UART wiring chip-specific. Not
+      done on this branch because it is a refactor across two SHIPPED ports, which is milestone-
+      sized, and this branch is meant to merge. The evidence for it is that the audit's own timer
+      finding had to be fixed in both files, as did the boot stack ordering beside it, and the
+      comment trim before them.
+- [ ] **`KICKOS_QEMU_MPS2_TAG` AND THE ARM64 BLOCKS' LOCAL TAG COMPUTE THE SAME THING.** The
+      board-name-to-CTest-prefix derivation is now spelled in two places, the MPS2 global and a
+      local in each arm64 registration, both being `KICKOS_BOARD` with dashes swapped. Converging
+      them means renaming the MPS2 global to a family-neutral name across its call sites; not done
+      on this branch because a rename of shared app registrations conflicts with work running in
+      parallel, and it is a cleanup rather than a defect.
+
 ## M7.3 -- the GICv3 posture
 
 S6 is landed: `qemu-arm64` ships a GICv3 posture beside its GICv2 one, selected by a Kconfig choice
 and a derived version that reaches CMake as well as C. What is left here is what the step
 deliberately did not close.
 
-- [ ] **A ONE-CORE-KERNEL GICv3 PRESET, OWED TO THE AMP STEP AND NOT TO THIS ONE.** Nothing
+- [x] **A ONE-CORE-KERNEL GICv3 PRESET: CLOSED BY M7.6, FOR A REASON THIS ITEM DID NOT ANTICIPATE.**
+      The reasoning below is that the only configuration where one kernel core meets a live GICv3 is
+      an AMP image. `imx8mp-evk` is that configuration for a different reason entirely: the part
+      wires a GIC-500 so the posture is obligatory, and the machine can release no secondary so the
+      count is one. The `KICKOS_NUM_CORES > 1` folds in the GICv3 backend now have a fleet preset
+      that exercises them, and the fold arm skipped as a class above one kernel core RUNS there. The
+      original text is kept below because its reasoning about what an arm nothing exercises is worth
+      is still right; only its conclusion about which preset would come first was wrong.
+- [ ] **(superseded) A ONE-CORE-KERNEL GICv3 PRESET, OWED TO THE AMP STEP AND NOT TO THIS ONE.** Nothing
       witnesses the `KICKOS_NUM_CORES > 1` folds in `arch/arm64/common/arch_arm64_gicv3.cc`, and
       `cpu_id_fold` cannot: it is skipped as a class above one kernel core, and the only preset
       carrying that backend runs four. Deliberately NOT added now -- an arm nothing exercises says

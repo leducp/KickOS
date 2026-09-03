@@ -24,8 +24,13 @@ extern "C"
         uintptr_t dist_pa;      // GICD, one distributor for the machine
         uintptr_t rdist_pa;     // GICR, the first core's RD_base of a contiguous series
         uintptr_t rdist_stride; // bytes from one core's RD_base to the next
-        int intid_count;        // INTIDs the distributor implements, the banked IDs included
-        int timer_intid;        // the PPI the EL1 physical timer asserts
+        // FRAMES THE DIE CARRIES, WHICH IS NOT KICKOS_NUM_CORES. A redistributor exists per
+        // core the part implements, decoded and reachable whether or not this image released a
+        // core into it, so an image driving one core of four still owes the other three a
+        // reservation and still has to search them on an EL1 handover.
+        int rdist_count;
+        int intid_count; // INTIDs the distributor implements, the banked IDs included
+        int timer_intid; // the PPI the EL1 physical timer asserts
     };
 
     // The chip's controller, read from bring-up onward and never written.

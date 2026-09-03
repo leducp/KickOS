@@ -675,12 +675,30 @@ Emulator-grade, per section 7 of the contract, and one degree further than that 
 QEMU's GICv3 model is not a GIC-500, so this posture matching the i.MX8MP's controller is a claim
 about the ARCHITECTURE version and not about the part's implementation of it.
 
-**S6b depends on S6 and cannot substitute for S7.** `qemu-system-aarch64 -M imx8mp-evk` exposes no
-`gic-version` option at all, unlike `virt`: the machine's GIC-500 is wired, so that board does not
-boot without the GICv3 posture. Its value is that GIC version, routing and topology are properties of
-a PART while `smp.cmake` declares them per ARCH, which is the audit item it discharges. What it cannot
-carry is the heterogeneous AMP case, the machine modelling the A53 cluster alone with no Cortex-M7
-companion.
+**S6b IS LANDED AND ITS SECOND HALF WAS NOT REACHABLE.** `qemu-system-aarch64 -M imx8mp-evk`
+exposes no `gic-version` option at all, unlike `virt`: the machine's GIC-500 is wired, so that board
+does not boot without the GICv3 posture. Its value is that GIC version, routing and topology are
+properties of a PART while `smp.cmake` declared them per ARCH, and that audit item is discharged:
+the six properties now split by owner in separate namespaces, an arch declaring the three an ISA
+hands every part it defines and a part declaring the three its die decides, with an arch that sets a
+part-owned property refused.
+
+**What it did NOT deliver is the four cores its expected result named, and the reason is the
+emulator rather than the port.** The machine models no secondary release whatever: no PSCI conduit,
+the other three cores held powered off, and the reset controller that would release them present
+only as an unimplemented device. The board therefore boots ONE core of four and refuses more at
+compile time. The silicon sequence is recorded in `docs/reference/boards.md` and was deliberately
+not written, an unrunnable release path carrying a correctness claim being judged worse than a
+recorded mechanism; that is a decision open to reversal rather than a ruling.
+
+**The step also settled something its own description had folded together: the LAUNCH is not one of
+the six properties.** Two parts of one arch can meet every one of them and still release a secondary
+by different mechanisms, which is what `virt` and this die do. A predicate that absorbed the launch
+would have declared this part predicate-failing, which is false.
+
+What S6b cannot carry, and neither can S7: the heterogeneous AMP case. The machine models the A53
+cluster alone with no Cortex-M7 companion and decodes the companion's tightly-coupled memory as
+unimplemented, so the part that is both SMP and AMP at once has no vehicle on this bench at all.
 
 ### M8 -- IPC and IRQ optimisation, on measured evidence
 Rebaseline FIRST: per-thread kernel stacks and the MMU both change trap and continuation costs, so
