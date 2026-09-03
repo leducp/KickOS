@@ -16,6 +16,173 @@ say.
 
 ## Where we are
 
+**M7.6 AND M7.7 ARE ONE TRAIN, not two milestones that happened to be adjacent, and reading them
+apart loses what the pair cost.** They branched off the same master as siblings, deliberately, on
+a measured claim that their only shared surface was three places: the predicate block, the two
+`smp.cmake` files, and two Kconfig symbols. That held -- the merge conflicted in a preset file and
+in these records and nowhere else. They were audited together, one external pass returning **do
+not merge on both**, and they were fixed and re-audited together to zero open blockers. M7.7 then
+rebased onto M7.6, which is how it inherits the RV64 ordering fence. **One fleet sweep witnesses
+the integrated tip and nothing witnesses either branch alone any more**, which is the right shape:
+a witness is valid for a TREE, and the per-branch trees stopped existing at the rebase.
+
+**THE WITNESS, AND WHAT TO READ IN IT RATHER THAN THE TOTALS.** Host: 61 presets, 2767 host tests,
+61 pass, 0 reused, 0 fail. Image: 61 presets, 562 image gates run, 24 pass, 0 partial, 0 fail, 0
+skipped, 37 registering none. Both wrote their `DONE` sentinel and the image half took its declared
+empty and skip counts on the first attempt rather than refusing. **`0 reused` on both halves is the
+figure that matters**: every preset genuinely configured, built and ran, which is the clause that
+separates this from a sweep reprinting an older tree's status. And 24 image gates against the 20
+this fleet last carried, over four more presets, says both new boards register real gates rather
+than joining the 37. **What it does NOT say:** it is one sweep of one tip on an idle box. The image
+half serialises to remove the instrument's own noise, which is not evidence that these gates are
+load-independent, and no figure here is a silicon claim -- for `imx8mp-evk` that is the whole
+four-core half of S6b.
+
+**AND THE TRAIN'S OWN INSTRUMENT LIED ONCE, which is the finding neither branch was looking for.**
+A host sweep of M7.6 came back with its new board failing to configure while the branch built it
+cleanly by hand. The board was fine: both sweep tools ran `cmake --preset` with no source argument
+and never changed directory, so the presets file came from wherever the caller stood while the
+result was stamped against the tool's own root. Run from the main checkout it configured **59 of
+60 presets against master** and reported them as the branch. The only failure was the one preset
+master does not have -- **without it the whole run would have been a silent false witness for the
+wrong tree, and its tree stamp would have agreed.** A stamp records what a tool was POINTED at,
+never what `cmake` actually read.
+
+**M7.7 LANDED S7: AMP.** `qemu-arm64` ships a fourth posture in which the image DRIVES four
+cores and ONE kernel schedules on one of them, the instance index comes from the core identity,
+and every index and length read out of the shared window is validated as another node's writing.
+What follows is what a green run does NOT say.
+
+- **THE PEERS ARE NODES FOR THE WINDOW AND NOT FOR A SCHEDULER, AND THAT BOUNDARY IS THE
+  PARTITION LAYOUT THE CONTRACT LEAVES OPEN.** A peer core answers the doorbell, drains its
+  inbox, validates it and publishes a reply, all under its own node identity and touching
+  nothing the kernel built. It runs no scheduler, and the reason is not effort: the arena is
+  ONE linker region with a link-time assert modelling its exact allocation order, so giving
+  each node an arena of its own IS the unfrozen question and building one would have answered
+  it by accident. So the node whose kernel believes itself alone is core 0's, and what the
+  peers witness is the crossing.
+- **NOTHING WITNESSES THAT THE INSTANCE HOLDER RESOLVES A PEER'S OWN KERNEL.** What the board
+  witnesses is a peer core running the shared service body and reading its own core identity:
+  its counters move and node 0's do not. That the instance index IS that same function is a
+  two-line header substitution; the fold at one instance is gated, and the host-thread keying's
+  end-to-end behaviour is the sim's multi-instance gate. No run on hardware says a peer
+  resolved a Kernel of its own, and provisioning four is what makes the claim cheap to believe
+  rather than what checks it.
+- **THIS POSTURE DOES NOT CLOSE THE GICv3 ONE-KERNEL-CORE OBLIGATION AND MUST NOT BE READ AS
+  DOING SO.** `cpu_id_fold` skips on the CORE COUNT and not on the kernel's, so it skips here
+  too; the chip port is what made it run on a GICv3 preset. What this posture adds is the
+  configuration where the count and the model genuinely DIVERGE, four cores driven by one
+  kernel core, which the chip port's single driven core does not reach.
+- **THE DEFECT THIS PRESET FOUND WAS AMP-EXPOSED AND NOT AMP-CAUSED, and the difference is
+  checkable rather than a claim.** `VirtualRanges` was not a total record of a space's
+  mappings: the user stack was installed behind its back and recorded in no range, so a frame
+  capability could be mapped ON TOP of a live thread's stack with no overlap refusal, the exit
+  path then zeroed that leaf, and the release path re-derived the run's identity by reading the
+  leaf back and dropped nothing. Raising the instance provisioning only moved the app half far
+  enough for one arm's chosen address to land on a child's stack base, and changing a stack
+  size alone reproduces and un-reproduces it with the keying untouched.
+- **THE MUTATION THAT WITNESSES THE FIX DOES NOT REDDEN AN ARM, IT KILLS THE RUN.** With the
+  stack's range record removed, the framecap map onto root's own stack page is accepted, the
+  frame under root's locals is replaced, and root faults at once with the whole stream
+  truncated. So the arm asserts the refusal and the CRASH is what demonstrates the defect; the
+  arm's own red is unreachable, because the same acceptance that would fail it also kills the
+  thread that would report it. THE ADMISSION ARMS BESIDE IT DO NOT SHARE THAT SHAPE: dropping
+  the stack from the caller-nameable predicate reddens all three cleanly, the mapping being a
+  second live mapping of frames already there rather than a replacement of them.
+- **A TOTAL RANGE LIST MADE A LIVE STACK FINDABLE, AND THE ADMISSION PATHS HAD NEVER BEEN
+  TAUGHT ABOUT IT.** Before it, `find()` answered null over a stack and the refusal for an
+  address the space never reserved covered it BY ACCIDENT; after it, a stack is a reservation
+  like any other and each of the three caller-controlled paths was filtering on the image flag
+  alone. They ask one predicate over one flag list now. The lesson is the shape and not the
+  bug: widening what a record NAMES silently widens what every reader of that record admits.
+- **THE STACK'S OWN SELF-GRANT NEVER REACHED ADMISSION, AND A RETYPE IS WHAT DOES.** A thread
+  carries its stack as one R|W region, so the syscall's already-reachable short circuit
+  answers a plain R|W request 0 without consulting the range list at all. What reaches the
+  range list is a request naming a memory type the mapping does not carry, and the GUARD,
+  which no region covers. So the arms name a type or name the guard; a plain grant of one's
+  own stack page still answers 0 and maps nothing, which is a no-op and not an admission.
+- **THE STORED RUN SLOT HAS AN ARM AND IT IS NOT THE LEAK'S.** Dropping the identity check
+  reddens the arm that revokes with a DIFFERENT run's capability of the same length. The leak
+  itself is no longer reachable to redden anything, the mapping that caused it being refused
+  one step earlier, so what stands behind that half is that arm plus the absence of any leaf
+  read on the release path.
+- **RECORDING THE STACK COST THE RANGE BUDGET AND THE COMPILE-TIME FLOOR DID NOT CATCH IT.**
+  A thread's stack takes a slot now, so the budget scales with the thread count. The floor
+  refuses a configuration that cannot seat its own threads' stacks, which is a structural
+  claim; what actually bit was an APP's demand, the fleet's own selftest losing three arms at
+  the old figure, one saying outright that no reservation was left to name a page with and two
+  unable to spawn a thread whose stack had nowhere to be recorded. A floor sized for the
+  selftest would force every translating board to provision for an app it does not run, so the
+  two figures stay separate and only the DEFAULT moved.
+- **THAT LOSS PRESENTED AS THREE SKIPS AND NOT AS A RED, which is the failing-declaration
+  shape rather than a failing arm.** The self-grant arm reads the free-slot count live and
+  takes one more, so it reaches its ceiling whatever the budget is; at zero free slots it seats
+  nothing and skips by its own guard. Two of the three said only "thread pool too small",
+  which is the spawn refusal's message and names the wrong resource. The skip set needed no
+  edit in the end, the skips being gone once the budget was raised, and it was diffed by eye
+  for that reason rather than trusted.
+- **A SCAFFOLDING OP WAS HANDING OUT AN ADDRESS INSIDE THE FRAME POOL'S OWN WINDOW.** The
+  seeded-address probe returned the run's physical base, on the stated ground that nothing in
+  the space named it. Every thread stack is mapped at its own output address, so that window is
+  exactly where a future stack lands: the promise held for the caller's space at that instant
+  and never for a child's. It hands back a low-half address far from DRAM now, checked against
+  the range list, which is a question the list can only answer because the stack is in it.
+- **A MALFORMED SLOT IS DROPPED AND THE TAIL ADVANCES, deliberately.** Leaving it would let one
+  bad publication wedge a ring for good, which is a denial the receiving node must not accept
+  from the far side; the verdict is counted instead, so the drop is visible. The refused DEPTH
+  is the exception and for the opposite reason: no slot has been identified to drop, and
+  advancing on an index this node has just refused to believe would take the ring further into
+  the far side's arithmetic. THAT REFUSAL IS BOUNDED NOW rather than permanent: four
+  consecutive strikes resynchronise the tail to the far head and count the reset, so a far
+  side owns one of its rings for four takes and not for the life of the image.
+- **NEITHER SERVICE BOUND IS REACHABLE BY AN ARM, AND THAT IS BY CONSTRUCTION.** One call
+  drains a ring's worth per sender and every peer's across the call, which is exactly what a
+  static ring set holds, so no arm built out of publications can exceed either. What the arms
+  pin is the FLOOR, one call emptying a full ring from every sender, plus two static asserts;
+  the ceiling's whole subject is a peer refilling while the receiver drains, and that needs a
+  hostile far side no in-tree node can play. What a green run says here is that the bounds do
+  not truncate the honest path, never that they hold against one that is not.
+- **THE PEER'S LEFTOVER RESTS ON THE DOORBELL BEING LATCHED, WHICH NO ARM CHECKS EITHER.** A
+  publication made after a service call started rings the doorbell itself, and the raise is
+  taken to survive being made while the handler runs. That is the GIC's and the CLINT's
+  behaviour and not this tree's, and there is no seam by which the window could re-raise its
+  own: `arch_ipi_send` services the caller's own bit inline rather than sending it, so a node
+  cannot ring itself without re-entering the body it is already inside.
+- **BOTH SIDES VALIDATE, and the SEND side's half is the one a receive-side test cannot reach.**
+  The producer reads a tail the consumer owns, and a producer that believed it would compute a
+  free-slot count out of it and overwrite slots the consumer is still reading. One ring per
+  ORDERED PAIR is forced rather than preferred: a single inbox shared by every sender has
+  several producers on one head, and moving that head needs a read-modify-write.
+- **A FORGED PUBLICATION IS THE ONLY WAY AN ARM REACHES A BOUND**, no peer being willing to
+  malform its own writing, and one arm is honestly weaker than the rest: a zero-length message
+  being a message and not an empty ring is a DISCRIMINATION, and the mutation that reddens it
+  is an addition rather than a deletion. Every other bound was reddened by deleting it.
+- **THE SEAM FAMILY'S MEMBERSHIP IS AN ALLOWLIST OF IDENTIFIER PREFIXES**, so the first AMP
+  member was invisible to the differ until the prefix moved, and the group table's refusal of
+  an unclassified member cannot see one the family never admitted. The differ passed clean over
+  a member it had never heard of.
+- **A UNIT FIXTURE THAT DEFINES `arch_cpu_id` REDDENS EVERY SINGLE-CORE PRESET IN THE FLEET.**
+  That gate reads tracked SOURCE and skips only a block opened by the literal
+  `#if KICKOS_NUM_CORES > 1`, so a host fixture stubbing the seam is a finding on boards the
+  fixture never runs on. It was found by running one single-core preset, never by the preset
+  the fixture belongs to.
+- **THE REENT DESCRIPTOR IS CHECKED AT BOOT NOW, AND NOTHING WITNESSES THE CHECK.** A thread
+  slot number means nothing across kernels, so the app provisions one bank each and a shorter
+  descriptor panics where it is read. The in-tree app provisions correctly, so no run reaches
+  that panic: raising the required count by one is what shows it is live, and it truncates
+  every image test on the board rather than reddening an arm.
+- **THE PEERS ARE NOT AN ISOLATION BOUNDARY AND THE HEADER NOW SAYS SO.** `g_minted` sits
+  outside the shared window, but every node maps the same writable kernel RAM, so a
+  compromised peer KERNEL rewrites the mint, the counters and every other node's kernel data
+  whatever the window validates. What is built is defence against a MALFORMED peer. Reading it
+  as a privilege boundary is the misreading the label exists to stop, and per-node memory
+  partitioning is the partition layout the contract leaves open.
+- **THE AMP COLUMN STAYS A RULING EVEN THOUGH THIS STEP BUILT AMP.** What is ported is an AMP
+  node on a part the predicate sends to the SHARED kernel, so the parts section 1 excludes
+  still get no port and whether they are worth one is still open. And the HETEROGENEOUS case
+  has no vehicle at all: the emulated i.MX8MP models the A53 cluster alone, ships no Cortex-M7
+  companion, and cannot release a second core of the cluster either, so the two register writes
+  the bring-up freeze rests on have no emulated far side on that machine.
 **M7.6 LANDED S6b: THE PREDICATE IS DECLARED PER PART, AND THE BOARD THAT MOVED IT THERE BOOTS ONE
 CORE OF FOUR RATHER THAN FOUR.** The audit item is discharged. What follows is what a green run does
 NOT say, and the first item is a finding the step did not go looking for.
@@ -99,8 +266,8 @@ it.
 **IT CLOSED AN OPEN ITEM NOBODY ASSIGNED TO IT.** M7.3 deferred a one-kernel-core GICv3 preset to
 the AMP step, on the reasoning that the only configuration where one kernel core meets a live GICv3
 was an AMP image. This board is that configuration for a different reason, so the `KICKOS_NUM_CORES
-> 1` folds in the GICv3 backend now have a fleet preset that exercises them, and the fold arm that
-is skipped as a class above one kernel core RUNS here.
+> 1` folds in the GICv3 backend now have a fleet preset that exercises them, and `cpu_id_fold`,
+which skips above one DRIVEN core rather than above one kernel core, RUNS here.
 
 **FIGURES, AND THE TREE THEY WERE TAKEN ON.** Everything measured for this branch was measured on
 the branch's own tree with the host unit layer off for the cross presets, on a box shared with a
@@ -906,14 +1073,16 @@ The whole point of this file. A green fleet pass says none of the following.
   reach the one-core window eventually and was DECLINED**: an arm that fails intermittently reads
   exactly like one that is broken.
 
-- **NOTHING WITNESSES THE MULTI-CORE FOLDS IN THE GICv3 BACKEND, AND `cpu_id_fold` STRUCTURALLY
-  CANNOT.** That gate is skipped as a class above one kernel core, and the only preset carrying the
-  v3 backend runs four. The configuration is not hypothetical and it is not this milestone's:
-  `KICKOS_MULTICORE_AMP` sets ONE kernel core while the image still drives four, which is where a
-  one-core-kernel GICv3 posture becomes load-bearing and where that preset earns its fleet time. It
-  was built and booted by hand once here -- the full selftest passes at one core under GICv3 -- so
-  the gap is an unwitnessed arm rather than an unbuilt one. The AMP step inherits it as a known
-  obligation.
+- **THE GICv3 BACKEND'S ONE-CORE FOLDS ARE WITNESSED NOW, AND THE IMPRECISION THAT DELAYED IT IS
+  THE PART WORTH KEEPING.** `cpu_id_fold` reads the count of cores the image DRIVES and skips as a
+  class above one of those. This bullet used to call that the kernel-core count, and the wrong
+  word is what made two readers reason wrongly about which preset could ever close the arm: an
+  AMP image was expected to, because it sets one kernel core while driving four -- but it drives
+  four, so the gate skips there too. What closes it is a GICv3 board that drives ONE core, which
+  `imx8mp-evk` is for an unrelated reason, the emulator modelling no secondary release. **A gate's
+  skip condition is a claim about which figure it reads, and naming the wrong figure moved an
+  obligation onto the wrong milestone for two whole steps.** The multi-core folds above one driven
+  core remain unwitnessed and `cpu_id_fold` structurally cannot reach them.
 - **NOTHING WITNESSES THAT THE x86_64 DECODE IS FED THE LIVE ATTRIBUTE TABLE**, and the arm that
   used to is gone on purpose. It proved the feed by REPROGRAMMING `IA32_PAT`, which SDM 14.12.4
   makes the operating system's job to sequence and which this port has no reason to spend a cache

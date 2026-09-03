@@ -144,14 +144,27 @@ interchangeable for anything a thread does, while not being identical: one 8 KB 
 by one core only, and a per-CPU peripheral answers differently at one address, so requirement 5
 holds for scheduling and not as a general statement about the part.
 
-**THE RP PARTS CAN RUN A SHARED KERNEL AND ARE DECLINED ONE, and the record says so deliberately.**
-FreeRTOS ships a dual-core RP2040 port building two kernel locks from two SIO spinlocks. A future
-reader meeting it will otherwise reopen this. The exclusion is a judgement about value, and it is
-recorded here so that judgement is what gets argued with: requirement 6's absence buys per-core mask
-reconciliation, a second lock, and a grant model that no longer matches the hardware, and it buys
-them in SHARED kernel source that every preset compiles and every single-core board must keep
-correct. The byte-identical invariant protects the image, not the source. That is a fleet-wide
-charge for a bound of 1.31x on two boards.
+**THE RP PARTS CAN RUN A SHARED KERNEL AND ARE DECLINED ONE, and the ground is FIT rather than
+cost.** FreeRTOS ships a dual-core RP2040 port building two kernel locks from two SIO spinlocks, so
+a future reader meeting it will otherwise reopen this. What requirement 6's absence costs is not
+effort: it is that the MODEL WOULD MISREPRESENT THE HARDWARE. A line "granted" to one core is
+granted only because the other masks it, which the isolation principle reads as the wrong shape, a
+grant that is a mask being neither the narrowest unit nor a refusal. Shipping that on a part whose
+hardware makes AMP the fitting model hands a user a tool whose grants are masks in disguise, and
+refusing rather than silently masking is the principle's own rule -- the same rule N10's
+configure-time refusal enforces.
+
+**The cost corroborates and does not decide.** Requirement 6's absence also buys per-core mask
+reconciliation and a second lock, in SHARED kernel source that every preset compiles and every
+single-core board must keep correct, for a bound of 1.31x on two boards; the byte-identical
+invariant protects the image, not the source. Worth recording, because it is the half a reader can
+measure -- but a fleet-wide charge is a reason to dislike the work, where misrepresenting the
+hardware is a reason not to ship it.
+
+**AND NONE OF IT TRANSFERS TO AMP, which is why these parts get one.** N6 states that the section
+1 predicate does not apply to an AMP node: each node's kernel is its own, so there is no per-core
+mask to reconcile and nothing stands in for absent hardware. This decline is a ruling about ONE
+model on these parts and about nothing else.
 
 **That argument covered three parts and was only ever valid for two, which is how the LX6 row's
 error survived.** It turns on requirement 6's ABSENCE, and the LX6 satisfies requirement 6. ESP-IDF
@@ -640,9 +653,11 @@ the second one exists, by which shape carries less duplication.
 
 - **Per-core run queues and any finer locking.** The spike's stage 2, and the lock-hold shortening
   that moves the bound belongs to the IPC optimisation work.
-- **Whether the MCU dual-core parts are worth an AMP port at all**, which the spike lists as open and
-  which is a question about value rather than mechanism. Section 1 rules only that they do not get a
-  shared kernel.
+- **The MCU dual-core parts' MODEL is settled and their port was never in question.** This entry
+  used to ask whether they were "worth an AMP port at all", which was badly worded and invited
+  the wrong reading: the only question was ever SMP versus AMP, and requirement 6 answers it.
+  They get AMP. Nothing in this contract declines support for a part on the ground that the work
+  is not worth doing -- section 1 gates on HARDWARE, never on whether a port earns its keep.
 - **Whether the LX6 gets a shared kernel.** Section 1.5 makes it a candidate rather than a ruling.
   **The gate is NOT an architecture reference, which is what reading one established.** The ISA
   defines both missing primitives -- a compare-and-swap against a dedicated compare register whose

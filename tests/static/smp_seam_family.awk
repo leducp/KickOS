@@ -11,8 +11,7 @@
 # byte for byte: a copy with one line changed lets the verdicts drift apart about what a
 # signature IS.
 #
-# MEMBERSHIP, the seven members the seam carries today, all of them in
-# arch/include/kickos/arch/arch.h:
+# MEMBERSHIP, all of it in arch/include/kickos/arch/arch.h:
 #   - KICKOS_NUM_CORES, the core count, and KICKOS_KERNEL_CORES, how many cores ONE KERNEL
 #     schedules on. Every other member below is shaped by one of them and folds on it, so both
 #     VALUES are part of this signature. The two are separate members because they are separate
@@ -29,6 +28,11 @@
 #     peer core's arrival at the scheduler, and the doorbell's scheduling half. Their arm is the
 #     multi-core one alone, where every member above folds: a kernel that schedules one core has
 #     nothing on the far side to call them.
+#   - kickos_amp_node_service, the one the kernel supplies for an AMP NODE's backend to call
+#     from its doorbell service body. It has ONE arm and no fold: it is declared under the
+#     unshared model alone, where the members above that fold on KICKOS_KERNEL_CORES have
+#     already folded. THE PREFIX BELOW IS AN ALLOWLIST: a member named outside it is a member
+#     no verdict guards, which the group table's refusal of an unclassified member cannot see.
 #
 # THE DOORBELL IS ONE SEAM WITH TWO SEMANTICS: the shared-kernel IPI a TLB shootdown rendezvous
 # rides on, and the AMP inter-node doorbell. Same hardware, same declaration, so a narrowing of
@@ -49,5 +53,6 @@ BEGIN {
              "|arch_kernel_lock" \
              "|arch_kernel_unlock" \
              "|kickos_switch_unlock" \
-             "|kickos_kernel_core_)"
+             "|kickos_kernel_core_" \
+             "|kickos_amp_)"
 }

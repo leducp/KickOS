@@ -185,10 +185,14 @@ if(KICKOS_ARCH STREQUAL "sim")
   math(EXPR _tap_arms "${_tap_arms} + 1") # periph_reg_write_mask
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms "${_tap_arms} + 40") # cap_objects, cap_map, cap_map_pins_run, cap_share, aspace_seam, aspace_model, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_acquire_dup, aspace_balance, aspace_domain_balance, aspace_forced_unwind, aspace_churn, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, task_handoff_donor_exits, task_handoff_slice, self_grant_cross_task, reservation_teardown, frame_scrub_cross_task, 2 x spawn_refusal_frees_*, parked_frame_hostile, split_access, process_ipc_same_addr, process_call_reply, grant_kernel_word_refused, self_grant_retype, reent_seating, aspace_acquire_balance, map_tlbi_elided, aspace_active_cores, doorbell_xpoke, process_data_template
+  math(EXPR _tap_arms "${_tap_arms} + 45") # cap_objects, cap_map, cap_map_over_stack, stack_grant_refused, stack_guard_intact, stack_handoff_refused, stack_slot_returns, cap_map_pins_run, cap_share, aspace_seam, aspace_model, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_acquire_dup, aspace_balance, aspace_domain_balance, aspace_forced_unwind, aspace_churn, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, task_handoff_donor_exits, task_handoff_slice, self_grant_cross_task, reservation_teardown, frame_scrub_cross_task, 2 x spawn_refusal_frees_*, parked_frame_hostile, split_access, process_ipc_same_addr, process_call_reply, grant_kernel_word_refused, self_grant_retype, reent_seating, aspace_acquire_balance, map_tlbi_elided, aspace_active_cores, doorbell_xpoke, process_data_template
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms "${_tap_arms} + 1") # fault_kills_task
+endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_NUM_CORES GREATER 1
+   AND KICKOS_MULTICORE_MODEL_SHARED EQUAL 0)
+  math(EXPR _tap_arms "${_tap_arms} + 1") # amp_window
 endif()
 
 # The same count per region. The regions are separated by the `#undef TAP_ADD` lines in main.cc:
@@ -228,10 +232,14 @@ if(NOT KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # region_mode
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 40") # cap_objects + cap_map + cap_map_pins_run + cap_share + 14 x aspace_* + stack_is_frames + process_private_data + process_data_template + task_siblings_share + task_handoff_readback + task_handoff_donor_exits + task_handoff_slice + self_grant_cross_task + self_grant_retype + reservation_teardown + frame_scrub_cross_task + 2 x spawn_refusal_frees_* + parked_frame_hostile + split_access + process_ipc_same_addr + process_call_reply + grant_kernel_word_refused + reent_seating + map_tlbi_elided + aspace_active_cores + doorbell_xpoke
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 45") # cap_objects + cap_map + cap_map_over_stack + 3 x stack_* refusals + stack_slot_returns + cap_map_pins_run + cap_share + 14 x aspace_* + stack_is_frames + process_private_data + process_data_template + task_siblings_share + task_handoff_readback + task_handoff_donor_exits + task_handoff_slice + self_grant_cross_task + self_grant_retype + reservation_teardown + frame_scrub_cross_task + 2 x spawn_refusal_frees_* + parked_frame_hostile + split_access + process_ipc_same_addr + process_call_reply + grant_kernel_word_refused + reent_seating + map_tlbi_elided + aspace_active_cores + doorbell_xpoke
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # fault_kills_task
+endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_NUM_CORES GREATER 1
+   AND KICKOS_MULTICORE_MODEL_SHARED EQUAL 0)
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # amp_window
 endif()
 
 math(EXPR _tap_arms_split "${_tap_arms_p1} + ${_tap_arms_p2} + ${_tap_arms_p3}")

@@ -16,6 +16,7 @@
 #include <kickos/time.h>
 #include <kickos/irq.h>
 #include <kickos/app.h>
+#include <kickos/ampwindow.h>
 #include <kickos/aspace.h>
 #include <kickos/sys/init.h>
 #include <kickos/arch/arch.h>
@@ -261,6 +262,11 @@ namespace kickos
         irq_init();            // before any driver attaches
         console_buffer_init(); // after irq_init
         ktrace_init();
+#if KICKOS_AMP_NODE
+        // Before any node can be poked: the doorbell is open from arch_init, and a service
+        // reaching an unminted node refuses every message it was sent.
+        amp::window_init();
+#endif
 
         static_assert(KICKOS_ROOT_STACK_SIZE >= KICKOS_MIN_STACK_SIZE,
                       "KICKOS_ROOT_STACK_SIZE is below the arch's syscall stack floor: root "
@@ -339,7 +345,7 @@ namespace kickos
         }
         root_attr.task = root_task;
         UserStack const root_us =
-            ustack_alloc(domain_space(task_domain(root_task)), KICKOS_ROOT_STACK_SIZE);
+            ustack_alloc(task_domain(root_task), KICKOS_ROOT_STACK_SIZE);
         if (root_us.base == 0)
         {
             kpanic(diag::kBootRootStack);

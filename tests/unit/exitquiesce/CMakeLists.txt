@@ -7,13 +7,13 @@
 # preset drives one core, where every body of the lock compiles to nothing and the span this
 # gate asserts is not expressible.
 #
-# The core count reaches C through the root's add_compile_definitions, which this directory
-# INHERITS, so it is dropped from the inherited copy rather than shadowed: two -D of one macro
-# with different values is a redefinition -Werror refuses. TWO PLACES CARRY IT: this directory
-# inherited the root's copy, and kickos_kernel's own COMPILE_DEFINITIONS was seeded from the
-# same place when that target was created.
+# The core counts AND THE MODEL reach C through the root's add_compile_definitions, which
+# this directory INHERITS, so each is dropped from the inherited copy rather than shadowed: two
+# -D of one macro with different values is a redefinition -Werror refuses.
+# TWO PLACES CARRY IT: this directory inherited the root's copy, and kickos_kernel's own
+# COMPILE_DEFINITIONS was seeded from the same place when that target was created.
 get_directory_property(_exitq_dirdefs COMPILE_DEFINITIONS)
-list(FILTER _exitq_dirdefs EXCLUDE REGEX "^KICKOS_(NUM|KERNEL)_CORES=")
+list(FILTER _exitq_dirdefs EXCLUDE REGEX "^KICKOS_((NUM|KERNEL)_CORES|MULTICORE_MODEL_SHARED)=")
 set_directory_properties(PROPERTIES COMPILE_DEFINITIONS "${_exitq_dirdefs}")
 
 set(_exitq_fixture "${PROJECT_SOURCE_DIR}/tests/unit/kfixture")
@@ -39,7 +39,7 @@ target_compile_features(kickos_kseam_smp PUBLIC ${KICKOS_CXX_STANDARD})
 target_include_directories(kickos_kseam_smp PUBLIC
   $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES> "${_exitq_fixture}")
 target_compile_definitions(kickos_kseam_smp PUBLIC
-  "$<FILTER:$<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS>,EXCLUDE,^KICKOS_(NUM|KERNEL)_CORES=>"
+  "$<FILTER:$<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS>,EXCLUDE,^KICKOS_((NUM|KERNEL)_CORES|MULTICORE_MODEL_SHARED)=>"
   KICKOS_NUM_CORES=2
   KICKOS_KERNEL_CORES=2
   KICKOS_MULTICORE_MODEL_SHARED=1)

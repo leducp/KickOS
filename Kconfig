@@ -249,27 +249,37 @@ menu "Kernel provisioning"
 
 config KICKOS_MULTI_INSTANCE
 	bool "Several independent kernels in one address space"
-	depends on ARCH_SIM
+	depends on ARCH_SIM || KICKOS_MULTICORE_AMP
 	default n
 	help
 	  Host one kernel per emulated MCU in a single process, which is how a fleet of
 	  KickCAT slaves gets driven against an emulator and how the driver APIs get
-	  exercised at scale. Gated to the sim: the selector is keyed on the host thread,
-	  and a chip has neither host threads nor a second kernel to select.
+	  exercised at scale.
+
+	  THE SELECTOR IS WHAT THE TWO POSTURES DIFFER IN, not the mechanism. Under the sim
+	  the index is a host-thread word, N instances being able to share one thread. Under
+	  AMP it is the CORE IDENTITY, so every core reaches its own kernel with no adoption
+	  call at all, which is why an AMP image needs a core count above one to have an
+	  identity to key on.
 
 	  Off, kickos_instance_index() folds to the literal 0, so the image carries one
-	  literal for it and no load, multiply, branch or symbol, on the arch_cpu_id
-	  model.
+	  literal for it and no load, multiply, branch or symbol.
 
 config KICKOS_MAX_INSTANCES
 	int "Independent kernels the image provisions" if KICKOS_MULTI_INSTANCE
 	range 1 256
+	default KICKOS_NUM_CORES if KICKOS_MULTICORE_AMP && KICKOS_MULTI_INSTANCE
 	default 64 if KICKOS_MULTI_INSTANCE
 	default 1
 	help
 	  Every instance-scoped object is this many copies, so raising it costs .bss
 	  linearly across the whole tree, not just struct Kernel. It is a provisioning
 	  bound like the pool sizes, not a preference.
+
+	  Under the AMP keying it is a BOUND ON THE INDEX rather than a provisioning
+	  preference: the index is a core identity, so a count below the core count would
+	  send a core past the end of every instance-scoped array. instance_local.h holds
+	  that as a static assert.
 
 config KICKOS_MAX_THREADS
 	int "Static thread pool"
@@ -290,6 +300,37 @@ config KICKOS_MAX_ENDPOINTS
 	int "IPC endpoint pool"
 	range 0 32
 	default 4
+
+config KICKOS_ASPACE_RANGES
+	int "Virtual ranges one address space can name"
+	range 8 256
+	default 40
+	help
+	  Slots in one address space's range list (vrange.h). THREE KINDS OF CLAIM SHARE
+	  THEM and they are spent differently, so a figure sized against one of them is
+	  wrong for the others:
+
+	  A RESERVATION is a lifetime cost. There is no user-facing free, so this is how
+	  many distinct blocks one process may allocate over its life.
+
+	  A FRAME-CAPABILITY MAPPING is a live-set cost. Its slot comes back at the unmap
+	  that surrenders the run's reference.
+
+	  A THREAD STACK is a PER-THREAD cost, taken when the stack is mapped and returned
+	  at thread exit. That is what makes this figure scale with KICKOS_MAX_THREADS, and
+	  vrange.h asserts the STRUCTURAL floor: the two the image spends, plus one per
+	  thread slot, plus a small margin. Raising the thread count on a translating board
+	  without raising this fails the BUILD rather than a spawn.
+
+	  THE DEFAULT IS SIZED AGAINST AN APP AND THE FLOOR IS NOT, which is why they are
+	  different figures. 40 is what the fleet's own selftest needs: at 32 three of its
+	  arms cannot run, one saying outright that no reservation is left to name a page
+	  with and two failing to spawn a thread whose stack has nowhere to be recorded.
+	  Measured by bisection, 32 short and 40 and 48 clean. An app that reserves less can
+	  go lower, down to the floor.
+
+	  Only a translating board keeps a range list at all, so no region board pays for
+	  this.
 
 config KICKOS_MAX_FRAME_RUNS
 	int "Frame-run capability objects"

@@ -118,7 +118,7 @@ namespace kickos
             // PendSV being entered with PRIMASK and BASEPRI both clear.
             IrqLock lock;
             Kernel& k = kernel();
-            uint32_t const cpu = arch_cpu_id();
+            uint32_t const cpu = kickos_kernel_core();
             if (k.current[cpu] == nullptr)
             {
                 return nullptr;
@@ -304,7 +304,7 @@ namespace kickos
             KICKOS_BENCH_MARK(bm_pick);
             Thread* next = kernel().policy->pick_next();
             KICKOS_BENCH_SPAN(PH_PICK_NEXT, bm_pick);
-            uint32_t const cpu = arch_cpu_id();
+            uint32_t const cpu = kickos_kernel_core();
             if (next == kernel().current[cpu])
             {
                 return;
@@ -488,7 +488,7 @@ namespace kickos
                 // stack.
                 if (c->kstack_owned)
                 {
-                    ustack_free(domain_space(task_domain(c->task)),
+                    ustack_free(task_domain(c->task),
                                 reinterpret_cast<uintptr_t>(c->stack_base), c->stack_size);
                     c->stack_base = nullptr;
                     c->stack_size = 0;

@@ -11,6 +11,7 @@
 
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
 
+#include <kickos/ampwindow.h>
 #include <kickos/aspace.h>
 #include <kickos/domain.h>
 #include <kickos/frame_pool.h>
@@ -37,6 +38,134 @@ namespace kickos
         {
             return static_cast<uint32_t volatile*>(p);
         }
+
+#if KICKOS_AMP_NODE
+        uint64_t sat8(uint32_t v)
+        {
+            uint64_t o = v;
+            if (v > 0xFFu)
+            {
+                o = 0xFFu;
+            }
+            return o;
+        }
+
+        uint64_t amp_counts_packed(uint32_t node)
+        {
+            amp::Counts const& c = amp::counts(node);
+            uint64_t serviced = c.serviced;
+            if (c.serviced > 0xFFFFu)
+            {
+                serviced = 0xFFFFu;
+            }
+            return (serviced << 48) | (sat8(c.send_refused) << 40) | (sat8(c.sent) << 32)
+                   | (sat8(c.port) << 24) | (sat8(c.length) << 16) | (sat8(c.depth) << 8)
+                   | sat8(c.took);
+        }
+
+        constexpr uint32_t ROUND_LEN = 16u;
+
+        uint64_t amp_round(uint32_t node)
+        {
+            uint8_t payload[ROUND_LEN];
+            for (uint32_t i = 0; i < ROUND_LEN; i++)
+            {
+                payload[i] = static_cast<uint8_t>(0xA0u + i);
+            }
+            return static_cast<uint64_t>(
+                static_cast<uint32_t>(amp::send(node, amp::PORT_ECHO, payload, ROUND_LEN)));
+        }
+
+        uint64_t verdict_code(amp::Verdict v)
+        {
+            if (v == amp::Verdict::TOOK)
+            {
+                return KOS_AMP_V_TOOK;
+            }
+            if (v == amp::Verdict::DEPTH)
+            {
+                return KOS_AMP_V_DEPTH;
+            }
+            if (v == amp::Verdict::LENGTH)
+            {
+                return KOS_AMP_V_LENGTH;
+            }
+            if (v == amp::Verdict::PORT)
+            {
+                return KOS_AMP_V_PORT;
+            }
+            return KOS_AMP_V_EMPTY;
+        }
+
+        constexpr uint32_t FORGE_FROM = 1u;
+
+        uint64_t send_code(amp::Sent rc)
+        {
+            if (rc == amp::Sent::OK)
+            {
+                return KOS_AMP_V_SEND_OK;
+            }
+            if (rc == amp::Sent::DEPTH)
+            {
+                return KOS_AMP_V_SEND_DEPTH;
+            }
+            if (rc == amp::Sent::NODE)
+            {
+                return KOS_AMP_V_SEND_NODE;
+            }
+            return KOS_AMP_V_SEND_REFUSED;
+        }
+
+        uint64_t amp_forge(uint32_t selector)
+        {
+            if (selector == KOS_AMP_FORGE_TAIL_DEPTH)
+            {
+                return send_code(amp::forge_tail_and_send(FORGE_FROM, amp::RING_SLOTS + 1u));
+            }
+            if (selector == KOS_AMP_FORGE_SELF_SEND)
+            {
+                // The caller's own node, named through the real send rather than a forge: no
+                // far side is involved and nothing has to be malformed.
+                uint8_t byte = 0;
+                return send_code(
+                    amp::send(arch_cpu_id(), amp::PORT_ECHO, &byte, sizeof(byte)));
+            }
+            if (selector == KOS_AMP_FORGE_DEPTH_RESET)
+            {
+                return verdict_code(amp::forge_depth_recovery(FORGE_FROM));
+            }
+
+            uint32_t port = amp::PORT_ECHO;
+            uint32_t len = ROUND_LEN;
+            uint32_t head_jump = 0;
+            if (selector == KOS_AMP_FORGE_HEAD_DEPTH)
+            {
+                head_jump = amp::RING_SLOTS + 1u;
+            }
+            else if (selector == KOS_AMP_FORGE_LENGTH)
+            {
+                len = amp::SLOT_BYTES + 1u;
+            }
+            else if (selector == KOS_AMP_FORGE_PORT)
+            {
+                // Inside the mint's width and never minted, which a width check alone passes.
+                port = amp::PORT_MAX - 1u;
+            }
+            else if (selector == KOS_AMP_FORGE_PORT_WIDE)
+            {
+                port = amp::PORT_MAX;
+            }
+            else if (selector == KOS_AMP_FORGE_ZERO_LEN)
+            {
+                len = 0;
+            }
+            else if (selector != KOS_AMP_FORGE_WELL_FORMED)
+            {
+                return KOS_AMP_V_EMPTY;
+            }
+            return verdict_code(amp::forge_and_take(FORGE_FROM, port, len, head_jump));
+        }
+#endif
 
         // Spelled out rather than __builtin_popcount, which lowers to a libgcc call on a part
         // without the instruction.
@@ -373,9 +502,14 @@ namespace kickos
             return bits;
         }
 
-        // The seeded run is in no range list, so its own physical base is a virtual address
-        // nothing in this space names.
-        arch_phys_addr_t g_seed_base = 0;
+        // A LOW-HALF ADDRESS FAR FROM DRAM, and never a physical base out of the frame pool:
+        // that window is where ustack_alloc maps every thread stack, so an address inside it
+        // is one a CHILD's stack may take even where nothing in this space names it yet.
+        constexpr uintptr_t VA_SEED = 0x14000000;
+        // Pages per candidate: a holder adds offsets to pick an address of its own and must
+        // stay inside the window this checked.
+        constexpr size_t VA_SEED_PAGES = 16u;
+
         int g_seed_obj = -1;
 
         uint64_t op_cap_seed()
@@ -421,7 +555,6 @@ namespace kickos
                 handle_close(self, fcap);
                 return 0;
             }
-            g_seed_base = run;
             g_seed_obj = fobj;
             return (static_cast<uint64_t>(acap) << 32) | static_cast<uint64_t>(fcap);
         }
@@ -452,7 +585,29 @@ namespace kickos
         uint64_t op_cap_seed_va()
         {
             IrqLock lock;
-            return static_cast<uint64_t>(g_seed_base);
+            Thread const* const c = sched::current();
+            size_t const g = arch_aspace_granule();
+            if (c == nullptr or g == 0)
+            {
+                return 0;
+            }
+            VirtualRanges const* const r = domain_ranges(task_domain(c->task));
+            if (r == nullptr)
+            {
+                return static_cast<uint64_t>(VA_SEED);
+            }
+            // ASKABLE ONLY BECAUSE THE LIST IS TOTAL: thread stacks and their guards are
+            // recorded, so "an address nothing in this space names" is a question it answers.
+            for (unsigned i = 0; i < 8u; i++)
+            {
+                uintptr_t const va =
+                    VA_SEED + static_cast<uintptr_t>(i) * static_cast<uintptr_t>(VA_SEED_PAGES * g);
+                if (not r->overlaps(va, VA_SEED_PAGES))
+                {
+                    return static_cast<uint64_t>(va);
+                }
+            }
+            return 0;
         }
 
         uint64_t op_cap_run_refs()
@@ -1280,6 +1435,24 @@ namespace kickos
             {
                 return arch_ipi_counts(static_cast<uint32_t>(a1));
             }
+#if KICKOS_AMP_NODE
+            case KOS_ASPACE_OP_AMP_ROUND:
+            {
+                return amp_round(static_cast<uint32_t>(a1));
+            }
+            case KOS_ASPACE_OP_AMP_COUNTS:
+            {
+                return amp_counts_packed(static_cast<uint32_t>(a1));
+            }
+            case KOS_ASPACE_OP_AMP_FORGE:
+            {
+                return amp_forge(static_cast<uint32_t>(a1));
+            }
+            case KOS_ASPACE_OP_AMP_RESETS:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).depth_reset.load();
+            }
+#endif
             case KOS_ASPACE_OP_SPACE_ID:
             {
                 // Two tasks comparing this is what witnesses that a domain is an address

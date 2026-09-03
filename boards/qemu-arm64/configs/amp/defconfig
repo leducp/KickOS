@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+CONFIG_BOARD_QEMU_ARM64=y
+
+# The gicv3 posture with one clause changed: one kernel per core over disjoint memory
+# instead of one kernel across all four, so KICKOS_KERNEL_CORES falls to 1 while
+# KICKOS_NUM_CORES stays 4.
+CONFIG_KICKOS_CORES_FOUR=y
+CONFIG_KICKOS_MULTICORE_AMP=y
+CONFIG_ARM64_GIC_V3=y
+
+# The instance index is the core identity here, so this is a bound on that index and not a
+# preference: one short of the core count is a build error.
+CONFIG_KICKOS_MULTI_INSTANCE=y
+CONFIG_KICKOS_MAX_INSTANCES=4
+
+CONFIG_KICKOS_USER_STACK_SIZE=12288
+CONFIG_KICKOS_IDLE_STACK_SIZE=4096
+CONFIG_KICKOS_ROOT_STACK_SIZE=20480
+
+CONFIG_KICKOS_ENABLE_SELFTEST=y

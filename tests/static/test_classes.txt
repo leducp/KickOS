@@ -48,6 +48,7 @@ host   src    tests/static/check_forever_loop.sh
 host   src    tests/static/check_include_guards.sh
 host   src    tests/static/check_kconfig_forwarding.sh
 host   src    tests/static/check_kconfig_gen.sh
+host   src    tests/static/check_kernel_core_index.sh
 host   src    tests/static/check_kernel_ctor_placement.sh
 host   src    tests/static/check_kernel_got.sh
 host   src    tests/static/check_kernel_runtime.sh
@@ -83,6 +84,7 @@ host   src    tests/unit/telemetry/check_golden.py
 host   src    tests/unit/telemetry/check_idmap.py
 
 # --- host unit-test binaries (GoogleTest, one ctest entry per case) ----------
+host   build  tests/unit/ampwindow/amp_window                unit
 host   build  tests/unit/cancelkind/cancel_kind              unit
 host   build  tests/unit/capprobe/cap_probe                  unit
 host   build  tests/unit/capreply/capreply_packing           unit

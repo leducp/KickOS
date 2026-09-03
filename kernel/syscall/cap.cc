@@ -543,22 +543,23 @@ namespace kickos
         return true;
     }
 
-    void frame_run_release_by_base(arch_phys_addr_t base)
+    int frame_run_slot_of(int obj_handle)
     {
-        if (base == 0)
+        return frame_run_index_of(obj_handle);
+    }
+
+    void frame_run_release_by_slot(int slot)
+    {
+        if (slot < 0 or slot >= static_cast<int>(kernel().frame_runs.capacity()))
         {
             return;
         }
-        for (int i = 0; i < static_cast<int>(kernel().frame_runs.capacity()); i++)
+        FrameRun const* const f = kernel().frame_runs.at(slot);
+        if (f == nullptr or f->pages == 0 or kernel().frame_run_refs[slot] == 0)
         {
-            FrameRun* f = kernel().frame_runs.at(i);
-            if (f != nullptr and f->pages > 0 and f->base == base
-                and kernel().frame_run_refs[i] > 0)
-            {
-                frame_run_ref_drop(kernel().frame_runs.handle_for(i), true);
-                return;
-            }
+            return;
         }
+        frame_run_ref_drop(kernel().frame_runs.handle_for(slot), true);
     }
 
     uint8_t frame_run_refcount(int obj_handle)

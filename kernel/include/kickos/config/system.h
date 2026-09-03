@@ -61,16 +61,22 @@
 #ifndef KICKOS_MAX_SPAWN_GRANTS
 #define KICKOS_MAX_SPAWN_GRANTS 6
 #endif
-// Virtual ranges one address space can name (see vrange.h): its process image and whatever
-// it has reserved. A page table has no describable-extent ceiling, so nothing here is paid
-// out of KICKOS_MPU_MAX_REGIONS and no hardware bounds it.
+// Virtual ranges one address space can name (see vrange.h): its process image, whatever it
+// has reserved, the frame capabilities it has mapped, and its threads' stacks. A page table
+// has no describable-extent ceiling, so nothing here is paid out of
+// KICKOS_MPU_MAX_REGIONS and no hardware bounds it.
 //
-// IT IS THE ALLOCATION BUDGET TOO, which is what separates it from a descriptor count: a
-// reservation takes a slot and there is no free, so this is how many distinct blocks one
-// process may allocate over its life, over and above the two the image spends. A figure
-// mirrored from the descriptor bound left an app with six.
+// THREE KINDS OF CLAIM SHARE THESE SLOTS AND THEY ARE SPENT DIFFERENTLY, so a figure sized
+// against one of them is wrong for the others:
+//   reservation      A LIFETIME cost. There is no user-facing free, so this is how many
+//                    distinct blocks one process may allocate over its life, over and above
+//                    the two the image spends. A figure mirrored from the descriptor bound
+//                    left an app with six.
+//   framecap mapping A LIVE-SET cost. aspace_cap_unmap releases the slot, so it comes back.
+//   thread stack     A PER-THREAD cost, taken where the stack is mapped and returned at
+//                    thread exit, which is what makes the figure scale with the thread count.
 #ifndef KICKOS_ASPACE_RANGES
-#define KICKOS_ASPACE_RANGES 32
+#define KICKOS_ASPACE_RANGES 40
 #endif
 // Task pool (see task.h). One task per LIVE THREAD, since grouping is implicit today, so
 // the bound is every TCB that can exist at once: KICKOS_THREAD_SLOTS (root + the threads

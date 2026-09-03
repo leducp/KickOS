@@ -28,6 +28,19 @@
 #define KICKOS_KERNEL_CORES 1
 #endif
 
+// Whether one kernel spans every core. A model, independent of the core count.
+#ifndef KICKOS_MULTICORE_MODEL_SHARED
+#define KICKOS_MULTICORE_MODEL_SHARED 1
+#endif
+
+// This image drives several cores and runs a kernel per core, so a doorbell's far side is a
+// DIFFERENT kernel with no shared lock to reason about.
+#if KICKOS_NUM_CORES > 1 && KICKOS_MULTICORE_MODEL_SHARED == 0
+#define KICKOS_AMP_NODE 1
+#else
+#define KICKOS_AMP_NODE 0
+#endif
+
 // Per-arch definition of `struct arch_context` (opaque to the kernel; sized by the arch).
 // Resolved to arch/<arch>/include/kickos/arch/context.h.
 #include <kickos/arch/context.h>
@@ -977,6 +990,17 @@ int kickos_kernel_core_resched_owed(void);
 // Consume the reschedules owed to the CALLING core, answering nonzero when any stood. The one
 // body that clears the cell.
 int kickos_kernel_core_resched_take(void);
+#endif
+
+#if KICKOS_AMP_NODE
+// --- Provided by the kernel for an AMP node's backend ----------------------
+// The calling node's own inbox drain, for the backend to call from its doorbell SERVICE BODY
+// and nowhere else, AFTER the answer stores: a payload drain may not delay the rendezvous an
+// initiator waits on.
+//
+// Takes no kernel lock and reads nothing the kernel built: exclusion is the calling core's
+// own interrupt mask, which the service body already holds.
+void kickos_amp_node_service(void);
 #endif
 
 // One frame for a translating backend's own tables, and its release. One allocator exists and

@@ -32,11 +32,11 @@ struct arch_aspace;
 
 #if KICKOS_LIBC_REENT
 
-// The array behind the seam is ONE array indexed by thread slot, so two kernel instances
-// would hand the same slot number the same struct _reent.
-#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
-#error "KICKOS_MULTI_INSTANCE is set on a build that is not the sim"
-#endif
+// THE ARRAY BEHIND THE SEAM IS BANKED BY INSTANCE, one bank of KICKOS_THREAD_SLOTS each: a
+// thread slot number is a coordinate inside ONE kernel, so two co-resident kernels resolving
+// the same slot to the same struct _reent would share one errno. reent_seam_read PANICS on a
+// descriptor short of KICKOS_MAX_INSTANCES banks, because the out-of-range fallback below is
+// the process-wide state, which ALIASES rather than refuses.
 
 extern "C"
 {

@@ -73,19 +73,24 @@ KOS_SD_REPORT_KINDS="FUNC MACRO MACROFN TAG TYPEDEF OBJ"
 # sets with no doorbell in either and reads clean, which the total floor does not catch.
 #
 # Every member here has TWO records, the multi-core declaration and the single-core fold,
-# except the two counts which have one each. The floors sit one member below each group so
-# removing a member is a diff rather than a refusal.
+# except the two counts and the AMP node's service, which have one each. The floors sit one
+# member below each group so removing a member is a diff rather than a refusal.
+#
+# `node` IS THE EXCEPTION TO THAT RULE and it is floored at its only record on purpose: a group
+# with one member cannot lose it and still be a group, so retiring that member means retiring
+# this row rather than watching a diff go by.
 #
 # NOT NAMED `GROUPS`: that identifier is a bash special variable (the caller's group ids), and
 # an assignment to it does not take. KOS_GROUP_ROWS is the count the driver checks the parse
 # against, so a shell that mangles this text fails loudly instead of dropping the floors.
-KOS_GROUP_ROWS=5
+KOS_GROUP_ROWS=6
 KOS_GROUP_TABLE="
 extent    ^KICKOS_(NUM|KERNEL)_CORES   1
 identity  ^arch_cpu_id                 1
 doorbell  ^arch_ipi_                   2
 lock      ^arch_kernel_(un)?lock       2
 peer      ^kickos_(switch_unlock|kernel_core_)  3
+node      ^kickos_amp_                 1
 "
 KOS_SD_MANGLED_TAIL="every per-group floor below would be empty and a family that lost the
       doorbell whole would compare two short sets and report clean"
@@ -94,8 +99,9 @@ sigdiff_family_prose() {
     echo "   family    the SMP seam as the kernel reaches a second core through it: the core"
     echo "             count, the count one kernel schedules on, the per-core identity, the two"
     echo "             halves of the cross-core doorbell, the two halves of the cross-core"
-    echo "             kernel lock, and the set the kernel supplies for a shared kernel's"
-    echo "             backend to call. Both arms of every member that HAS two, the multi-core"
+    echo "             kernel lock, the set the kernel supplies for a shared kernel's backend"
+    echo "             to call, and the one it supplies for an AMP node's. Both arms of every"
+    echo "             member that HAS two, the multi-core"
     echo "             declaration and the single-core fold, so a change to the fold is a"
     echo "             difference too. Membership by declared IDENTIFIER, in"
     echo "             tests/static/smp_seam_family.awk, wherever it stands."

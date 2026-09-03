@@ -37,7 +37,7 @@ namespace
         Thread* c = seat_pool(0, PRIO_DYING);
         seat_pool(1, PRIO_DYING - 1);
         sched::reschedule();
-        EXPECT_EQ(kernel().current[arch_cpu_id()], c) << "fixture: the seated thread is current";
+        EXPECT_EQ(kernel().current[kickos_kernel_core()], c) << "fixture: the seated thread is current";
         g_switches = 0;
         g_parks_committed = 0;
         g_parks_without_lock = 0;

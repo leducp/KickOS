@@ -5,7 +5,9 @@
 
 #if KICKOS_HAVE_ASPACE
 
+#include <kickos/domain.h>
 #include <kickos/frame_pool.h>
+#include <kickos/vrange.h>
 
 #include <stdint.h>
 
@@ -21,10 +23,12 @@ namespace kickos
         }
     }
 
-    UserStack ustack_alloc(struct arch_aspace* space, size_t want)
+    UserStack ustack_alloc(Domain* d, size_t want)
     {
         UserStack out;
-        if (space == nullptr or want == 0)
+        struct arch_aspace* const space = domain_space(d);
+        VirtualRanges* const ranges = domain_ranges_mut(d);
+        if (space == nullptr or ranges == nullptr or want == 0)
         {
             return out;
         }
@@ -44,9 +48,18 @@ namespace kickos
         // granule above it, so the first store below the stack's base has no translation.
         arch_phys_addr_t const stack = run + static_cast<arch_phys_addr_t>(g);
         uintptr_t const va = static_cast<uintptr_t>(stack);
+        // BEFORE THE MAP, and over the guard as well as the stack: the record is what refuses
+        // a later reservation here, and reserving after mapping would leave a mapping standing
+        // on a refusal. Keyed on the RUN's base, which is the guard page.
+        if (not ranges->reserve(static_cast<uintptr_t>(run), run_pages(pages), VR_USTACK))
+        {
+            frame_pool_free_run(run, run_pages(pages), g);
+            return out;
+        }
         if (arch_aspace_map(space, va, stack, pages, ARCH_MAP_R | ARCH_MAP_W,
                             ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
         {
+            (void)ranges->release(static_cast<uintptr_t>(run));
             frame_pool_free_run(run, run_pages(pages), g);
             return out;
         }
@@ -55,15 +68,16 @@ namespace kickos
         return out;
     }
 
-    void ustack_free(struct arch_aspace* space, uintptr_t base, size_t bytes)
+    void ustack_free(Domain* d, uintptr_t base, size_t bytes)
     {
+        struct arch_aspace* const space = domain_space(d);
         if (space == nullptr or base == 0 or bytes == 0)
         {
             return;
         }
         size_t const g = arch_aspace_granule();
         size_t const pages = bytes / g;
-        if (pages == 0)
+        if (pages == 0 or base < g)
         {
             return;
         }
@@ -74,8 +88,14 @@ namespace kickos
         if (rc != ARCH_ASPACE_OK)
         {
             // The unmap is total-or-fail, so a refusal left every entry standing: the space
-            // still maps these frames and destroy is what frees them.
+            // still maps these frames and destroy is what frees them. THE RECORD STAYS with
+            // them, so nothing can be reserved over a window this space still maps.
             return;
+        }
+        VirtualRanges* const ranges = domain_ranges_mut(d);
+        if (ranges != nullptr)
+        {
+            (void)ranges->release(base - g);
         }
         frame_pool_free_run(static_cast<arch_phys_addr_t>(base), pages, g);
     }

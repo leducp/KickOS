@@ -80,7 +80,7 @@ namespace kickos
                 Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
                 Thread* const waiter = seat_pool(SLOT_VICTIM, PRIO_HIGH);
                 sched::reschedule();
-                EXPECT_EQ(kernel().current[arch_cpu_id()], waiter) << "fixture: the waiter is current";
+                EXPECT_EQ(kernel().current[kickos_kernel_core()], waiter) << "fixture: the waiter is current";
                 EXPECT_NE(peer, nullptr);
                 g_switches = 0;
                 trace_reset();
@@ -207,7 +207,7 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(victim, group);
-            kernel().current[arch_cpu_id()] = c;
+            kernel().current[kickos_kernel_core()] = c;
 
             {
                 IrqLock lock;
@@ -233,7 +233,7 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            kernel().current[arch_cpu_id()] = c;
+            kernel().current[kickos_kernel_core()] = c;
             c->cancel_kind = CANCEL_SLAY;
 
             run_exit(0);

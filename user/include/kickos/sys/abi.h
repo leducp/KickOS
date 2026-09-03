@@ -335,6 +335,31 @@ enum kos_aspace_op
                                  //             on, which is its ACTIVE-CORE SET counted
                                  //   The middle field equalling the high one is the invariant
                                  //   that no core holds a root it is not running
+    KOS_ASPACE_OP_AMP_ROUND = 32, // (node) -> drive ONE echo round at `node`: publish a
+                                 //   request on the echo port and ring that node's doorbell.
+                                 //   Returns the send's own verdict, 0 for accepted; the
+                                 //   REPLY arrives later, through this node's own doorbell,
+                                 //   so a caller reads KOS_ASPACE_OP_AMP_COUNTS for it
+    KOS_ASPACE_OP_AMP_COUNTS = 33, // (node) -> what `node` has done with the window, packed:
+                                 //     63..48  doorbell services that drained its inboxes
+                                 //     47..40  sends it refused
+                                 //     39..32  messages it published
+                                 //     31..24  slots refused on the far PORT
+                                 //     23..16  slots refused on the far LENGTH
+                                 //     15..8   takes refused on the far HEAD's depth
+                                 //      7..0   messages it took
+                                 //   Every field saturates at its width. A node outside the
+                                 //   built range reads node 0's, so a caller bounds its sweep
+    KOS_ASPACE_OP_AMP_FORGE = 34, // (selector) -> write ONE publication into THIS node's
+                                 //   inbox exactly as a far side would and report what the
+                                 //   validation made of it, or drive the send side's own
+                                 //   refusal. The KOS_AMP_FORGE_* selectors say which
+                                 //   malformation, and the KOS_AMP_V_* codes are the answers
+    KOS_ASPACE_OP_AMP_RESETS = 35, // (node) -> times `node` resynchronised an inbox after
+                                 //   DEPTH_STRIKES consecutive refused depths, which is what
+                                 //   bounds how long a far side may keep one of its rings
+                                 //   dead. Saturating at the word. A node outside the built
+                                 //   range reads node 0's
     KOS_ASPACE_OP_DOORBELL_COUNTS = 31 // (core) -> what `core` has done with the cross-core
                                  //   doorbell, two fields in one word:
                                  //     63..32  instruction-side rendezvous it INITIATED
@@ -344,6 +369,35 @@ enum kos_aspace_op
                                  //   sweep a fixed width. EVERY service counts here, a
                                  //   cross-core wake included, so the low field is an upper
                                  //   bound on the pokes answered
+};
+
+/* KOS_ASPACE_OP_AMP_FORGE: which malformation to write, and what the validation answers with.
+   A selector this build does not know reads back KOS_AMP_V_EMPTY. */
+enum
+{
+    KOS_AMP_FORGE_WELL_FORMED = 0, // the control: nothing malformed, so it must be taken
+    KOS_AMP_FORGE_HEAD_DEPTH = 1,  // the far head names more outstanding slots than the ring
+    KOS_AMP_FORGE_LENGTH = 2,      // the far length exceeds one slot
+    KOS_AMP_FORGE_PORT = 3,        // the far port names nothing this node minted
+    KOS_AMP_FORGE_PORT_WIDE = 4,   // the far port is outside the mint's own width
+    KOS_AMP_FORGE_ZERO_LEN = 5,    // a zero-length message, which is one and not an empty ring
+    KOS_AMP_FORGE_TAIL_DEPTH = 6,  // the SEND side's half: the far tail is the malformed index
+    KOS_AMP_FORGE_SELF_SEND = 7,   // a send to the LOCAL node, whose ring nothing drains
+    KOS_AMP_FORGE_DEPTH_RESET = 8  // a depth left standing, then a well-formed publication:
+                                   // the answer is whether the ring recovered
+};
+
+enum
+{
+    KOS_AMP_V_EMPTY = 0,
+    KOS_AMP_V_TOOK = 1,
+    KOS_AMP_V_DEPTH = 2,
+    KOS_AMP_V_LENGTH = 3,
+    KOS_AMP_V_PORT = 4,
+    KOS_AMP_V_SEND_OK = 16,
+    KOS_AMP_V_SEND_DEPTH = 17,
+    KOS_AMP_V_SEND_REFUSED = 18,
+    KOS_AMP_V_SEND_NODE = 19
 };
 
 // KOS_ASPACE_OP_SPLIT_ACCESS: one bit per property of an access split at a page boundary.

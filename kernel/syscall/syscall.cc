@@ -924,7 +924,7 @@ uint64_t syscall_body(uintptr_t nr,
             }
             if (nr == KOS_SYS_FRAME_UNMAP)
             {
-                return static_cast<uint64_t>(aspace_cap_unmap(sp, vr, a2, run_obj, run->base));
+                return static_cast<uint64_t>(aspace_cap_unmap(sp, vr, a2, run_obj));
             }
             enum arch_map_memtype type = ARCH_MAP_NORMAL;
             if ((static_cast<uint32_t>(a3) & KOS_MEM_NOCACHE) != 0)

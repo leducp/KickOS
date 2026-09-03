@@ -129,7 +129,7 @@ namespace kickos
             {
                 Thread* const c = spawn(slot, PRIO_SWEEPER);
                 sched::reschedule();
-                EXPECT_EQ(kernel().current[arch_cpu_id()], c) << "fixture: the sweeper is current";
+                EXPECT_EQ(kernel().current[kickos_kernel_core()], c) << "fixture: the sweeper is current";
                 c->dying = true;
                 attach_caps(c, width);
                 return c;
@@ -400,7 +400,7 @@ namespace kickos
             park_plain_sender(sender, kernel().endpoints.resolve(handle));
 
             sched::reschedule();
-            EXPECT_EQ(kernel().current[arch_cpu_id()], g_closer) << "fixture: the closer holds the CPU";
+            EXPECT_EQ(kernel().current[kickos_kernel_core()], g_closer) << "fixture: the closer holds the CPU";
             EXPECT_FALSE(g_closer->dying) << "fixture: a voluntary close, not a teardown";
 
             trace_reset();

@@ -29,6 +29,8 @@
 
 namespace kickos
 {
+    struct Domain;
+
 #if KICKOS_HAVE_ASPACE
 
     struct UserStack
@@ -37,15 +39,18 @@ namespace kickos
         size_t bytes = 0;   // `want` rounded up to the granule
     };
 
-    // Frames for one stack of at least `want` bytes, mapped read-write into `space`, plus
+    // Frames for one stack of at least `want` bytes, mapped read-write into `d`'s space, plus
     // one frame below them held allocated and left UNMAPPED. Total-or-fail: a partial
     // mapping is rolled back and every frame returned.
-    UserStack ustack_alloc(struct arch_aspace* space, size_t want);
+    //
+    // The whole run is recorded as one VR_USTACK range BEFORE the map, so a reservation
+    // landing on the stack or on its guard is refused rather than accepted.
+    UserStack ustack_alloc(Domain* d, size_t want);
 
-    // Unmap the stack and return every frame the allocation took, guard included. `space`
-    // must still be the live space the stack was mapped into, which is why a thread's stack
+    // Unmap the stack and return every frame the allocation took, guard included. `d` must
+    // still hold the live space the stack was mapped into, which is why a thread's stack
     // is released before its task's reference is dropped and not at slot reclaim.
-    void ustack_free(struct arch_aspace* space, uintptr_t base, size_t bytes);
+    void ustack_free(Domain* d, uintptr_t base, size_t bytes);
 
     // The pointer the KERNEL reaches a frame-pool run's bytes through, or null when `base`
     // names no frame this pool handed out. Null is the answer for an arena block, which is
