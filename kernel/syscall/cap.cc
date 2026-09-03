@@ -952,15 +952,13 @@ namespace kickos
         return cap_reply_live(c) < KICKOS_CAP_REPLY_MAX;
     }
 
-    Thread* cap_reply_caller(CapEntry const& e)
+    Thread* cap_reply_thread(uint32_t handle, uint8_t seq8)
     {
-        uint32_t const u = cap_reply_handle(e);
-        uint32_t const index = u & ((1u << ThreadPool::INDEX_BITS) - 1u);
+        uint32_t const index = handle & ((1u << ThreadPool::INDEX_BITS) - 1u);
         // The FULL high bits, not truncated to the generation's storage width: a handle
         // carrying anything above the field must fail to resolve rather than alias a live
         // slot.
-        uint32_t const gen = u >> ThreadPool::INDEX_BITS;
-        uint8_t const seq8 = cap_reply_seq(e);
+        uint32_t const gen = handle >> ThreadPool::INDEX_BITS;
         ThreadPool& tp = kernel().threads;
         if (index >= static_cast<uint32_t>(tp.next))
         {
@@ -980,6 +978,11 @@ namespace kickos
             return nullptr; // a newer call rolled the seq (late-reply ABA guard)
         }
         return t;
+    }
+
+    Thread* cap_reply_caller(CapEntry const& e)
+    {
+        return cap_reply_thread(cap_reply_handle(e), cap_reply_seq(e));
     }
 
     namespace

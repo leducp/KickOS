@@ -388,6 +388,17 @@ uint64_t syscall_body(uintptr_t nr,
             rc = endpoint_create(&h);
             return cap_out_deliver(a0, rc, h);
         }
+        case KOS_SYS_AMP_ENDPOINT_CREATE:
+        {
+            int rc = cap_out_check(a2);
+            if (rc != 0)
+            {
+                return static_cast<uint64_t>(rc);
+            }
+            uint32_t h = KCAP_INVALID;
+            rc = amp_endpoint_create(static_cast<uint32_t>(a0), static_cast<uint32_t>(a1), &h);
+            return cap_out_deliver(a2, rc, h);
+        }
         case KOS_SYS_SEND:
         {
             // No dispatch IrqLock: endpoint_send takes and releases its own around the

@@ -129,6 +129,77 @@ config KICKOS_KERNEL_CORES
 	  never KICKOS_NUM_CORES: an AMP node holding a cell for a core it does not
 	  schedule describes a machine it is not.
 
+# --- The AMP posture --------------------------------------------------------
+
+choice
+	prompt "AMP node posture"
+	default KICKOS_AMP_POSTURE_NONE
+
+config KICKOS_AMP_POSTURE_NONE
+	bool "Not a node of an AMP partition"
+	help
+	  No shared window, no ring, no far endpoint. Every board that reaches nothing
+	  across a kernel boundary, which is nearly all of them.
+
+config KICKOS_AMP_POSTURE_SHARED_IMAGE
+	bool "AMP node, sharing one image with its peers"
+	depends on KICKOS_MULTICORE_AMP
+	help
+	  Several cores, one image, one configuration, one instruction set, and a node's
+	  identity read out of the core register. Available only under the AMP model,
+	  which is itself only offered above one core, so the identity has a register to
+	  come from.
+
+config KICKOS_AMP_POSTURE_OWN_IMAGE
+	bool "AMP node, its image its own"
+	depends on KICKOS_CORES_ONE
+	help
+	  One image per node, which is the ordinary shape (docs/design-multicore.md N6b):
+	  the peers may run another instruction set or another kernel configuration
+	  entirely. The image drives ONE core and reads no core register to learn which
+	  node it is, KICKOS_AMP_NODE_ID stating that.
+
+endchoice
+
+config KICKOS_AMP_NODE
+	int
+	default 1 if KICKOS_AMP_POSTURE_SHARED_IMAGE
+	default 1 if KICKOS_AMP_POSTURE_OWN_IMAGE
+	default 0
+	help
+	  The posture above as a number C reads. IT IS STATED AND NEVER DERIVED: an
+	  own-image node drives exactly one core, so a count implies nothing about it, and
+	  deriving it from the count is what N6c records as a defect.
+
+config KICKOS_AMP_OWN_IMAGE
+	int
+	default 1 if KICKOS_AMP_POSTURE_OWN_IMAGE
+	default 0
+	help
+	  Which of the two node postures, as a number C reads. Meaningless where
+	  KICKOS_AMP_NODE is 0.
+
+config KICKOS_AMP_NODES
+	int "Nodes the AMP partition holds"
+	depends on !KICKOS_AMP_POSTURE_NONE
+	range 1 32
+	default KICKOS_NUM_CORES
+	help
+	  How many nodes the WHOLE PARTITION holds, which is a property of the part and
+	  not of how many cores this image drives: an own-image node drives one core and
+	  still names every peer it can reach. The window is this many inboxes squared,
+	  and the doorbell's core mask is 32 bits, which is the range's ceiling.
+
+config KICKOS_AMP_NODE_ID
+	int "This image's own node index"
+	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
+	range 0 31
+	default 0
+	help
+	  WHICH node this image is built as. An own-image node reads no core register to
+	  learn it: on the CV1800B mhartid is hardwired to zero in the openc906 release
+	  and customised per integrator, so there is no register to stand on.
+
 # --- Memory protection ------------------------------------------------------
 
 choice

@@ -16,6 +16,27 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is
 `docs/archive/M1_state.md`; the board/console readiness matrix is `docs/m2-readiness.md`.
 
+## Root can reach EXITED, and the invariants say it cannot (external audit, M7.8 second pass)
+
+Raised by the external auditor of M7.8 as a PRE-EXISTING issue outside that milestone, to be
+resolved centrally rather than patched at a call site.
+
+- [ ] **ROOT CAN REACH `EXITED` THROUGH KERNEL-INTERNAL ROUTES, WHILE INVARIANTS ASSUME SLOT 0
+      IS PERMANENT.** `KOS_SYS_EXIT` refuses root's slot, so the USERSPACE path is closed; the
+      fault, slay and group-cancel routes inside the kernel are not, and `kos_slay` carries no
+      guard of its own. So `slots[ROOT_INDEX].task` can reach the `c->task = nullptr` in
+      `sched::exit_current`, and readers that treat root's slot as permanent are then wrong.
+      **The direct userspace refusal is indirect rather than stated**, which is why this
+      survived: nothing names root's permanence as the property being enforced.
+      **What M7.8 already did and what it did NOT do.** It made the AMP probe's root-only gate
+      fail closed on a null root task, because a bare equality test would otherwise have
+      MATCHED a caller mid-exit, whose own task is null for the same reason -- opening a
+      root-only gate exactly when it should shut. That is one reader defended. Every other
+      reader of root's permanence is untouched, and finding them is the work.
+      **Resolve centrally**: decide whether root's death is permitted at all, enforce that in
+      `sched::exit_current` rather than per-caller, and reconcile the contradictory
+      root-death invariants in the reference docs against whichever way it goes.
+
 ## M7.7 -- AMP
 
 S7 is landed: `qemu-arm64` ships an AMP posture as a preset, the instance index comes from the

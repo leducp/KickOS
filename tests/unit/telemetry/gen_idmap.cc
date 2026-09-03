@@ -48,6 +48,7 @@ int main()
         KOS_SYS_ASPACE_PROBE,
     KOS_SYS_FRAME_MAP,
     KOS_SYS_FRAME_UNMAP,
+    KOS_SYS_AMP_ENDPOINT_CREATE,
     };
     for (kos_syscall_nr s : calls)
     {

@@ -85,9 +85,21 @@ namespace kickos
         int err = 0;
         Endpoint* e = static_cast<Endpoint*>(
             cap_resolve_e(c, args[1], CapType::CAP_ENDPOINT, CAP_SIGNAL, &err));
-        if (e == nullptr or e->recv_holders == 0)
+        if (e == nullptr)
         {
-            return nullptr; // bad cap, no SIGNAL right, or a dead endpoint
+            return nullptr; // bad cap, or no SIGNAL right
+        }
+        // AHEAD OF THE DEAD-ENDPOINT TEST, as in endpoint_send and endpoint_call, and for the
+        // same reason: a far endpoint holds no local receiver ever, so a locality test placed
+        // after that one could never run. A fall-through and never an errno, so endpoint_call
+        // produces the answer (docs/design-multicore.md N7).
+        if (endpoint_is_far(e))
+        {
+            return nullptr;
+        }
+        if (e->recv_holders == 0)
+        {
+            return nullptr; // a dead endpoint
         }
         Thread* w = wq_peek_highest(e->recv_waiters);
         if (w == nullptr)

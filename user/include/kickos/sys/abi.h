@@ -215,10 +215,15 @@ enum kos_syscall_nr
                                //   The ADDRESS is an argument and never a field: no struct
                                //   here carries one, which is what keeps it out of the
                                //   capability ABI's own records.
-    KOS_SYS_FRAME_UNMAP = 61   // (frame cap, address-space cap, virtual address) -> 0, or
+    KOS_SYS_FRAME_UNMAP = 61,  // (frame cap, address-space cap, virtual address) -> 0, or
                                //   -KOS_EPERM for a range this space did not take through
                                //   KOS_SYS_FRAME_MAP, which is what stops one holder
                                //   revoking another's mapping.
+    KOS_SYS_AMP_ENDPOINT_CREATE = 62 // (node, port, kos_cap_t* out) -> 0, or -KOS_ENOSYS on an
+                               //   image running one kernel, -KOS_EPERM for an unprivileged
+                               //   caller, -KOS_EINVAL for the caller's own node or a port
+                               //   that node did not mint, plus the mint refusals every
+                               //   creator carries. The cap it grants is SIGNAL-only.
 };
 
 // `op` selector for KOS_SYS_ASPACE_PROBE (self-test only). Values are a frozen contract:
@@ -339,27 +344,36 @@ enum kos_aspace_op
                                  //   request on the echo port and ring that node's doorbell.
                                  //   Returns the send's own verdict, 0 for accepted; the
                                  //   REPLY arrives later, through this node's own doorbell,
-                                 //   so a caller reads KOS_ASPACE_OP_AMP_COUNTS for it
-    KOS_ASPACE_OP_AMP_COUNTS = 33, // (node) -> what `node` has done with the window, packed:
-                                 //     63..48  doorbell services that drained its inboxes
-                                 //     47..40  sends it refused
-                                 //     39..32  messages it published
-                                 //     31..24  slots refused on the far PORT
-                                 //     23..16  slots refused on the far LENGTH
-                                 //     15..8   takes refused on the far HEAD's depth
-                                 //      7..0   messages it took
-                                 //   Every field saturates at its width. A node outside the
-                                 //   built range reads node 0's, so a caller bounds its sweep
-    KOS_ASPACE_OP_AMP_FORGE = 34, // (selector) -> write ONE publication into THIS node's
+                                 //   so a caller reads KOS_ASPACE_OP_AMP_TOOK for it
+    KOS_ASPACE_OP_AMP_FORGE = 33, // (selector) -> write ONE publication into THIS node's
                                  //   inbox exactly as a far side would and report what the
                                  //   validation made of it, or drive the send side's own
                                  //   refusal. The KOS_AMP_FORGE_* selectors say which
                                  //   malformation, and the KOS_AMP_V_* codes are the answers
-    KOS_ASPACE_OP_AMP_RESETS = 35, // (node) -> times `node` resynchronised an inbox after
-                                 //   DEPTH_STRIKES consecutive refused depths, which is what
-                                 //   bounds how long a far side may keep one of its rings
-                                 //   dead. Saturating at the word. A node outside the built
-                                 //   range reads node 0's
+                                 // The counter family below: ONE OP PER FIELD of `node`'s
+                                 //   window record, each (node) -> that one counter, whole.
+                                 //   A node outside the built range reads node 0's, so a
+                                 //   caller may sweep a fixed width
+    KOS_ASPACE_OP_AMP_TOOK = 34, // messages it took
+    KOS_ASPACE_OP_AMP_DEPTH = 35, // takes refused on the far HEAD's depth
+    KOS_ASPACE_OP_AMP_DEPTH_RESET = 36, // inboxes it resynchronised after DEPTH_STRIKES
+                                 //   consecutive refused depths, which is what bounds how
+                                 //   long a far side may keep one of its rings dead
+    KOS_ASPACE_OP_AMP_LENGTH = 37, // slots refused on the far LENGTH
+    KOS_ASPACE_OP_AMP_PORT = 38, // slots refused on the far PORT
+    KOS_ASPACE_OP_AMP_SENT = 39, // messages it published
+    KOS_ASPACE_OP_AMP_SEND_REFUSED = 40, // sends it refused
+    KOS_ASPACE_OP_AMP_SERVICED = 41, // doorbell services that drained its inboxes
+    KOS_ASPACE_OP_AMP_REPLY_DROP = 42, // replies taken and then refused by the tag validation
+    KOS_ASPACE_OP_AMP_FAR_PARKED = 43, // () -> 1 while some thread is parked on a far reply,
+                                 //   which is what the hostile-reply forges need to exist
+                                 //   before they mean anything
+    KOS_ASPACE_OP_AMP_FAR_EP = 44, // (port) -> a FAR endpoint capability naming node 1's
+                                 //   `port`, minted into the caller's table, or 0. The same
+                                 //   mint body with the privilege gate left out:
+                                 //   KOS_SYS_AMP_ENDPOINT_CREATE is privileged and root is
+                                 //   unprivileged from its first instruction, so on this board
+                                 //   no user thread can reach that syscall
     KOS_ASPACE_OP_DOORBELL_COUNTS = 31 // (core) -> what `core` has done with the cross-core
                                  //   doorbell, two fields in one word:
                                  //     63..32  instruction-side rendezvous it INITIATED
@@ -369,6 +383,13 @@ enum kos_aspace_op
                                  //   sweep a fixed width. EVERY service counts here, a
                                  //   cross-core wake included, so the low field is an upper
                                  //   bound on the pokes answered
+};
+
+/* The ports a node mints in kernel init, which is what kos_amp_endpoint_create names. */
+enum
+{
+    KOS_AMP_PORT_ECHO = 0, /* the payload comes back to the sender's reply port */
+    KOS_AMP_PORT_REPLY = 1 /* a reply, routed to whatever local caller its tag names */
 };
 
 /* KOS_ASPACE_OP_AMP_FORGE: which malformation to write, and what the validation answers with.
@@ -383,8 +404,15 @@ enum
     KOS_AMP_FORGE_ZERO_LEN = 5,    // a zero-length message, which is one and not an empty ring
     KOS_AMP_FORGE_TAIL_DEPTH = 6,  // the SEND side's half: the far tail is the malformed index
     KOS_AMP_FORGE_SELF_SEND = 7,   // a send to the LOCAL node, whose ring nothing drains
-    KOS_AMP_FORGE_DEPTH_RESET = 8  // a depth left standing, then a well-formed publication:
+    KOS_AMP_FORGE_DEPTH_RESET = 8, // a depth left standing, then a well-formed publication:
                                    // the answer is whether the ring recovered
+    /* The four below play a PORT_REPLY at whatever thread is parked on a far call, which is
+       the only way an arm reaches the tag validation's bounds. Each answers KOS_AMP_V_TOOK
+       where the reply reached that caller and KOS_AMP_V_EMPTY where it was dropped. */
+    KOS_AMP_FORGE_REPLY_UNPARKED = 9,   // a tag for a thread that is not parked at all
+    KOS_AMP_FORGE_REPLY_WRONG_RING = 10, // the parked caller's own tag, on another node's ring
+    KOS_AMP_FORGE_REPLY_STALE_SEQ = 11,  // the parked caller, one call sequence out of date
+    KOS_AMP_FORGE_REPLY_GOOD = 12        // the control: the right tag on the right ring
 };
 
 enum

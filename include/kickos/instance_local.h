@@ -22,10 +22,10 @@
 #define KICKOS_MAX_INSTANCES 1
 #endif
 
-// KICKOS_AMP_NODE and arch_cpu_id, for the AMP keying below.
+// KICKOS_AMP_SHARED_IMAGE and arch_cpu_id, for the AMP keying below.
 #include <kickos/arch/arch.h>
 
-#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE && KICKOS_AMP_NODE
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE && KICKOS_AMP_SHARED_IMAGE
 #define kickos_instance_index() (arch_cpu_id())
 #elif defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
 namespace kickos
@@ -54,7 +54,7 @@ namespace kickos
     template <typename T>
     struct InstanceLocal
     {
-#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE && KICKOS_AMP_NODE
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE && KICKOS_AMP_SHARED_IMAGE
         static_assert(KICKOS_MAX_INSTANCES >= KICKOS_NUM_CORES,
                       "an AMP image keys the instance on the core, so it must provision one "
                       "instance per core the image drives");
@@ -64,7 +64,7 @@ namespace kickos
         T& get() { return per_instance[kickos_instance_index()]; }
     };
 
-#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE && !KICKOS_AMP_NODE
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE && !KICKOS_AMP_SHARED_IMAGE
     // Adopt instance `i`, and hand back the index it displaced. A host thread that never
     // calls this holds index 0, so every spawned one must adopt before its first
     // instance-scoped access.

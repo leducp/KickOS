@@ -13,7 +13,7 @@ namespace kickos
     {
         constinit InstanceLocal<Kernel> g_instance;
 
-#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE && !KICKOS_AMP_NODE
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE && !KICKOS_AMP_SHARED_IMAGE
         __thread unsigned g_instance_index __attribute__((tls_model("initial-exec"))) = 0;
 #endif
     }

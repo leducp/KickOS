@@ -443,6 +443,11 @@ namespace kickos
         // From the REAL pool: the served-endpoint chain is a pool INDEX biased by one
         // (endpoint.h), which thread_effective_prio resolves through kernel().endpoints, so a
         // stack-local Endpoint cannot be named by that chain at all.
+        //
+        // The whole-aggregate reset below MIRRORS endpoint_slot_claim rather than calling it:
+        // that funnel is file-local to syscall_ipc.cc and no host fixture can reach it. Keep
+        // the two in step: a slot handed out with a previous occupant's fields standing is
+        // the defect the funnel exists to prevent.
         Endpoint* endpoint()
         {
             int const i = kernel().endpoints.alloc();

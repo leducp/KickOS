@@ -5,9 +5,10 @@
 //
 //   nm --undefined-only <the object> | comm -23 - <its defined symbols>
 //
-// which is arch_cpu_id and arch_ipi_send at four nodes; kmemcpy folds to memcpy where no
-// address space is enforced. One thread of execution runs the arms, so the doorbell only
-// records: servicing it here would echo a payload an arm has not yet inspected.
+// which is arch_cpu_id, arch_ipi_send and endpoint_far_reply_deliver at four nodes; kmemcpy
+// folds to memcpy where no address space is enforced. One thread of execution runs the arms,
+// so the doorbell only records: servicing it here would echo a payload an arm has not yet
+// inspected.
 
 #include "amp_seam.h"
 
@@ -25,6 +26,13 @@ namespace kickos
         uint32_t g_node = 0;
         uint32_t g_sends = 0;
         uint32_t g_sent_mask = 0;
+        uint32_t g_replies = 0;
+        bool g_reply_answer = false;
+        uint32_t g_reply_from = 0;
+        uint32_t g_reply_thread = 0;
+        uint32_t g_reply_seq = 0;
+        uint32_t g_reply_len = 0;
+        uint8_t g_reply_first = 0;
 
         void reset()
         {
@@ -42,6 +50,7 @@ namespace kickos
                     {
                         r.slot[i].len = 0u;
                         r.slot[i].port = amp::PORT_MAX;
+                        r.slot[i].tag = amp::ReplyTag{};
                         for (uint32_t b = 0; b < amp::SLOT_BYTES; b++)
                         {
                             r.slot[i].payload[b] = 0u;
@@ -53,7 +62,30 @@ namespace kickos
             g_node = 0;
             g_sends = 0;
             g_sent_mask = 0;
+            g_replies = 0;
+            g_reply_answer = false;
+            g_reply_from = 0;
+            g_reply_thread = 0;
+            g_reply_seq = 0;
+            g_reply_len = 0;
+            g_reply_first = 0;
         }
+    }
+
+    bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, void const* payload,
+                                    uint32_t len)
+    {
+        ampfix::g_replies++;
+        ampfix::g_reply_from = from;
+        ampfix::g_reply_thread = tag.thread;
+        ampfix::g_reply_seq = tag.seq;
+        ampfix::g_reply_len = len;
+        ampfix::g_reply_first = 0;
+        if (len != 0)
+        {
+            ampfix::g_reply_first = static_cast<uint8_t const*>(payload)[0];
+        }
+        return ampfix::g_reply_answer;
     }
 }
 

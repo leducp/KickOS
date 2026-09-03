@@ -77,7 +77,7 @@ SYSCALL_NAME = {
     51: "task_create", 52: "task_kill", 53: "thread_slay",
     54: "task_slay", 55: "bench", 56: "call_reg", 57: "ipc_fast_taken",
     58: "nest_witness", 59: "aspace_probe", 60: "frame_map",
-    61: "frame_unmap",
+    61: "frame_unmap", 62: "amp_endpoint_create",
 }
 
 TRACE_MAGIC = 0x4B545243

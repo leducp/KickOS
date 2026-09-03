@@ -10,6 +10,11 @@ CONFIG_KICKOS_CORES_FOUR=y
 CONFIG_KICKOS_MULTICORE_AMP=y
 CONFIG_ARM64_GIC_V3=y
 
+# The narrow node posture: four cores, one image, one configuration, one instruction set, so
+# the node's identity is the core register. The four nodes are the four cores here, which is
+# what leaving KICKOS_AMP_NODES at the core count states.
+CONFIG_KICKOS_AMP_POSTURE_SHARED_IMAGE=y
+
 # The instance index is the core identity here, so this is a bound on that index and not a
 # preference: one short of the core count is a build error.
 CONFIG_KICKOS_MULTI_INSTANCE=y

@@ -100,6 +100,15 @@ int kos_endpoint_create(kos_cap_t* out_cap)
                                          reinterpret_cast<uintptr_t>(out_cap), 0, 0, 0));
 }
 
+int kos_amp_endpoint_create(uint32_t node, uint32_t port, kos_cap_t* out_cap)
+{
+    cap_out_clear(out_cap);
+    return static_cast<int>(arch_syscall(KOS_SYS_AMP_ENDPOINT_CREATE,
+                                         static_cast<uintptr_t>(node),
+                                         static_cast<uintptr_t>(port),
+                                         reinterpret_cast<uintptr_t>(out_cap), 0));
+}
+
 int32_t kos_send(kos_cap_t ep, void const* buf, size_t len)
 {
     return static_cast<int32_t>(arch_syscall(KOS_SYS_SEND,

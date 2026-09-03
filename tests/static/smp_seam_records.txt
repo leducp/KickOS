@@ -53,6 +53,22 @@
 # family never admitted. The first AMP member was named outside it and the differ passed over
 # it in silence.
 #
+# This set adds NONE, removes NONE, and MOVES NINE, which is the verdict this addition wanted
+# rather than one it worked around. arch_ipi_send, arch_ipi_wait and arch_ipi_counts widen
+# their guard from the core count alone to the count OR the AMP posture, and each is recorded
+# three times -- FUNC, FUNCNAMES, and the MACROFN carrying the negated fold -- so nine records
+# carry one change. WHAT IT BUYS: an own-image node drives one core, so under the old guard the
+# doorbell folded to an empty macro and amp::send published into the window and rang nobody, in
+# silence. Declared, a port that raises the posture and ships no backend fails to LINK, which
+# is the shape arch_cpu_id already had against the count. NOTHING ELSE MOVES, arch_cpu_id and
+# arch_ipi_resched_self included: the identity still folds at one core because an own-image
+# node reads its node from a build constant, and the reschedule half still folds on
+# KICKOS_KERNEL_CORES because an AMP node schedules one core. The guards are PARENTHESISED at
+# the source, which is why every record reads as one term: arch_ipi_counts nests inside the
+# selftest guard, and the extractor joins nested guards with && and no parentheses of its own,
+# so an unbracketed disjunction would have recorded as (A && B) || C where the preprocessor
+# reads A && (B || C).
+#
 # REGENERATING THIS FILE DELETES THE FINDING THE GATE EXISTS TO PRODUCE. Rewritten outside the
 # commit that deliberately moves a member, it measures a backend against itself.
 # KOS_SIGDIFF_REGEN=1 rewrites it and takes no verdict; use it only in the commit that
@@ -63,10 +79,10 @@
 #
 # Four TAB-separated fields per record: <kind> <name> <detail> <preprocessor guard>.
 FUNC	arch_cpu_id	uint32_t (void)	KICKOS_NUM_CORES > 1
-FUNC	arch_ipi_counts	uint64_t (uint32_t)	defined(KICKOS_ENABLE_SELFTEST) && KICKOS_NUM_CORES > 1
+FUNC	arch_ipi_counts	uint64_t (uint32_t)	defined(KICKOS_ENABLE_SELFTEST) && (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 FUNC	arch_ipi_resched_self	void (void)	KICKOS_KERNEL_CORES > 1
-FUNC	arch_ipi_send	void (uint32_t)	KICKOS_NUM_CORES > 1
-FUNC	arch_ipi_wait	void (uint32_t)	KICKOS_NUM_CORES > 1
+FUNC	arch_ipi_send	void (uint32_t)	(KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
+FUNC	arch_ipi_wait	void (uint32_t)	(KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 FUNC	arch_kernel_lock	void (void)	KICKOS_KERNEL_CORES > 1
 FUNC	arch_kernel_unlock	void (void)	KICKOS_KERNEL_CORES > 1
 FUNC	kickos_amp_node_service	void (void)	KICKOS_AMP_NODE
@@ -80,10 +96,10 @@ FUNC	kickos_kernel_core_seated	int (void)	KICKOS_KERNEL_CORES > 1
 FUNC	kickos_kernel_core_start	verbatim:void kickos_kernel_core_start(void) __attribute__((noreturn))	KICKOS_KERNEL_CORES > 1
 FUNC	kickos_switch_unlock	void (void)	KICKOS_KERNEL_CORES > 1
 FUNCNAMES	arch_cpu_id	uint32_t (void)	KICKOS_NUM_CORES > 1
-FUNCNAMES	arch_ipi_counts	uint64_t (uint32_t core)	defined(KICKOS_ENABLE_SELFTEST) && KICKOS_NUM_CORES > 1
+FUNCNAMES	arch_ipi_counts	uint64_t (uint32_t core)	defined(KICKOS_ENABLE_SELFTEST) && (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 FUNCNAMES	arch_ipi_resched_self	void (void)	KICKOS_KERNEL_CORES > 1
-FUNCNAMES	arch_ipi_send	void (uint32_t cores)	KICKOS_NUM_CORES > 1
-FUNCNAMES	arch_ipi_wait	void (uint32_t cores)	KICKOS_NUM_CORES > 1
+FUNCNAMES	arch_ipi_send	void (uint32_t cores)	(KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
+FUNCNAMES	arch_ipi_wait	void (uint32_t cores)	(KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 FUNCNAMES	arch_kernel_lock	void (void)	KICKOS_KERNEL_CORES > 1
 FUNCNAMES	arch_kernel_unlock	void (void)	KICKOS_KERNEL_CORES > 1
 FUNCNAMES	kickos_amp_node_service	void (void)	KICKOS_AMP_NODE
@@ -99,9 +115,9 @@ FUNCNAMES	kickos_switch_unlock	void (void)	KICKOS_KERNEL_CORES > 1
 MACRO	KICKOS_KERNEL_CORES	= 1	-
 MACRO	KICKOS_NUM_CORES	= 1	-
 MACROFN	arch_cpu_id	() 0u	!(KICKOS_NUM_CORES > 1)
-MACROFN	arch_ipi_counts	(core) ((void)(core), 0ull)	defined(KICKOS_ENABLE_SELFTEST) && !(KICKOS_NUM_CORES > 1)
+MACROFN	arch_ipi_counts	(core) ((void)(core), 0ull)	defined(KICKOS_ENABLE_SELFTEST) && !((KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE))
 MACROFN	arch_ipi_resched_self	() ((void)0)	!(KICKOS_KERNEL_CORES > 1)
-MACROFN	arch_ipi_send	(cores) ((void)(cores))	!(KICKOS_NUM_CORES > 1)
-MACROFN	arch_ipi_wait	(cores) ((void)(cores))	!(KICKOS_NUM_CORES > 1)
+MACROFN	arch_ipi_send	(cores) ((void)(cores))	!((KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE))
+MACROFN	arch_ipi_wait	(cores) ((void)(cores))	!((KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE))
 MACROFN	arch_kernel_lock	() ((void)0)	!(KICKOS_KERNEL_CORES > 1)
 MACROFN	arch_kernel_unlock	() ((void)0)	!(KICKOS_KERNEL_CORES > 1)

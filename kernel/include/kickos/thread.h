@@ -62,6 +62,9 @@ namespace kickos
         WAIT_EP_SEND,   // wait_obj: the Endpoint; on its send_waiters
         WAIT_EP_RECV,   // wait_obj: the Endpoint; on its recv_waiters
         WAIT_EP_REPLY,  // wait_obj: the SERVER thread; queue-less on its reply_waiters
+        // wait_obj: the FAR Endpoint; queue-less on no list at all. No server thread exists
+        // to name, the receiver being in another kernel.
+        WAIT_EP_FAR_REPLY,
         WAIT_SLEEP,     // wait_obj: none; on the timer delta list
         WAIT_JOIN,      // wait_obj: the TARGET thread; queue-less on no list at all
         WAIT_LIVE_LAST,  // wait_obj: none; queue-less. Carries no deadline, ever.
@@ -298,6 +301,14 @@ namespace kickos
                 return nullptr;
             }
             return static_cast<Thread*>(wait_obj);
+        }
+        Endpoint* wait_far_endpoint() const
+        {
+            if (wait_kind != WAIT_EP_FAR_REPLY)
+            {
+                return nullptr;
+            }
+            return static_cast<Endpoint*>(wait_obj);
         }
         Thread* wait_join_target() const
         {

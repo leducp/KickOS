@@ -52,7 +52,7 @@ site rv32imac * sched.cc:537:36  policy_fifo_rr.cc:policy_on_remove
 site rv32imac * sched.cc:616:53  policy_fifo_rr.cc:policy_next_timed_event
 site rv32imac * sched.cc:628:56  policy_fifo_rr.cc:policy_next_timed_event
 site rv32imac * sched.cc:632:45  policy_fifo_rr.cc:policy_on_slice_expire
-site rv32imac * syscall_ipc_fast.cc:161:50 policy_fifo_rr.cc:policy_pick_next
+site rv32imac * syscall_ipc_fast.cc:173:50 policy_fifo_rr.cc:policy_pick_next
 
 site rxv3 * sched.cc:59:42   policy_fifo_rr.cc:policy_on_switch_in
 site rxv3 * sched.cc:248:38  policy_fifo_rr.cc:policy_on_ready
@@ -69,7 +69,7 @@ site rxv3 * sched.cc:537:36  policy_fifo_rr.cc:policy_on_remove
 site rxv3 * sched.cc:616:53  policy_fifo_rr.cc:policy_next_timed_event
 site rxv3 * sched.cc:628:56  policy_fifo_rr.cc:policy_next_timed_event
 site rxv3 * sched.cc:632:45  policy_fifo_rr.cc:policy_on_slice_expire
-site rxv3 * syscall_ipc_fast.cc:161:50 policy_fifo_rr.cc:policy_pick_next
+site rxv3 * syscall_ipc_fast.cc:173:50 policy_fifo_rr.cc:policy_pick_next
 
 # None of the three TRANSLATING arches compiles the IPC fastpath, so the syscall_ipc_fast.cc
 # site above has no twin here.
@@ -257,7 +257,7 @@ site armv7m * sched.cc:537:36      policy_fifo_rr.cc:policy_on_remove
 site armv7m * sched.cc:616:53      policy_fifo_rr.cc:policy_next_timed_event
 site armv7m * sched.cc:628:56      policy_fifo_rr.cc:policy_next_timed_event
 site armv7m * sched.cc:632:45      policy_fifo_rr.cc:policy_on_slice_expire
-site armv7m * syscall_ipc_fast.cc:161:50 policy_fifo_rr.cc:policy_pick_next
+site armv7m * syscall_ipc_fast.cc:173:50 policy_fifo_rr.cc:policy_pick_next
 
 # armv7m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
 # re-enter the scheduler on this stack.
@@ -742,7 +742,7 @@ site armv6m * sched.cc:537:36      policy_fifo_rr.cc:policy_on_remove
 site armv6m * sched.cc:616:53      policy_fifo_rr.cc:policy_next_timed_event
 site armv6m * sched.cc:628:56      policy_fifo_rr.cc:policy_next_timed_event
 site armv6m * sched.cc:632:45      policy_fifo_rr.cc:policy_on_slice_expire
-site armv6m * syscall_ipc_fast.cc:161:50 policy_fifo_rr.cc:policy_pick_next
+site armv6m * syscall_ipc_fast.cc:173:50 policy_fifo_rr.cc:policy_pick_next
 
 # armv6m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
 # re-enter the scheduler on this stack.

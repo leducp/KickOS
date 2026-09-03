@@ -225,6 +225,7 @@ namespace kickos
                 case WAIT_EP_SEND:
                 case WAIT_EP_RECV:
                 case WAIT_EP_REPLY:
+                case WAIT_EP_FAR_REPLY:
                 {
                     // Which list to unlink from and which priority donation to revert are
                     // endpoint internals.

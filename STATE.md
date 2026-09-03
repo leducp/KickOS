@@ -26,17 +26,12 @@ rebased onto M7.6, which is how it inherits the RV64 ordering fence. **One fleet
 the integrated tip and nothing witnesses either branch alone any more**, which is the right shape:
 a witness is valid for a TREE, and the per-branch trees stopped existing at the rebase.
 
-**THE WITNESS, AND WHAT TO READ IN IT RATHER THAN THE TOTALS.** Host: 61 presets, 2767 host tests,
-61 pass, 0 reused, 0 fail. Image: 61 presets, 562 image gates run, 24 pass, 0 partial, 0 fail, 0
-skipped, 37 registering none. Both wrote their `DONE` sentinel and the image half took its declared
-empty and skip counts on the first attempt rather than refusing. **`0 reused` on both halves is the
-figure that matters**: every preset genuinely configured, built and ran, which is the clause that
-separates this from a sweep reprinting an older tree's status. And 24 image gates against the 20
-this fleet last carried, over four more presets, says both new boards register real gates rather
-than joining the 37. **What it does NOT say:** it is one sweep of one tip on an idle box. The image
-half serialises to remove the instrument's own noise, which is not evidence that these gates are
-load-independent, and no figure here is a silicon claim -- for `imx8mp-evk` that is the whole
-four-core half of S6b.
+**WHAT THE TRAIN'S FLEET SWEEP DOES NOT SAY, which is the only half worth writing down.** Both
+halves passed with their sentinels and the figures are re-derivable, so they are not here. It was
+one sweep of one tip on an idle box: the image half serialises to remove the instrument's own
+noise, which is not evidence that these gates are load-independent, and a gate that fails only
+under load passes here. Nothing in it is a silicon claim -- for `imx8mp-evk` that is the entire
+four-core half of S6b, and for the AMP node it is every ordering claim the window rests on.
 
 **AND THE TRAIN'S OWN INSTRUMENT LIED ONCE, which is the finding neither branch was looking for.**
 A host sweep of M7.6 came back with its new board failing to configure while the branch built it

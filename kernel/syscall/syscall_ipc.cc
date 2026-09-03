@@ -5,6 +5,7 @@
 // before the resume barrier, and a spanning caller lock keeps BASEPRI raised across
 // wq_confirm_resume and livelocks ARM.
 
+#include <kickos/ampwindow.h>
 #include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
@@ -35,6 +36,57 @@ namespace kickos
                 ktime_deadline_arm(t, timeout_us);
             }
         }
+
+        // Claim an endpoint slot and hand it back with EVERY field of Endpoint at the value
+        // the type declares. A pooled slot keeps its last occupant's fields, so one this
+        // caller does not overwrite still names that occupant. -1 where the pool is full,
+        // and `*out` untouched there.
+        [[nodiscard]] int endpoint_slot_claim(Endpoint** out)
+        {
+            int const i = kernel().endpoints.alloc();
+            if (i < 0)
+            {
+                return -1;
+            }
+            Endpoint* const ep = kernel().endpoints.at(i);
+            *ep = Endpoint{};
+            *out = ep;
+            return i;
+        }
+
+#if KICKOS_AMP_NODE
+        // Publish `len` bytes of `c`'s buffer at `buf` to the far endpoint `e`, and answer the
+        // byte count or the errno the window's refusal maps to. `tag` is the route a reply
+        // takes back, or REPLY_TAG_NONE where the sender does not park.
+        //
+        // A KERNEL STAGE, because amp::send copies from a kernel pointer and `buf` names user
+        // memory in a space the window layer may not reach into. Both copies run under the
+        // caller's IrqLock and the stage is KOS_EP_MSG_MAX of syscall stack.
+        int32_t far_publish(Thread* c, Endpoint const* e, uintptr_t buf, size_t len,
+                            amp::ReplyTag const& tag)
+        {
+            uint8_t stage[KOS_EP_MSG_MAX];
+            if (not kaccess_from_user(stage, user_space_of(c), buf, len))
+            {
+                return -KOS_EFAULT;
+            }
+            amp::Sent const rc = amp::send(endpoint_far_node(e), e->far_port, tag, stage,
+                                           static_cast<uint32_t>(len));
+            if (rc == amp::Sent::OK)
+            {
+                return static_cast<int32_t>(len);
+            }
+            if (rc == amp::Sent::FULL)
+            {
+                return -KOS_EBUSY;
+            }
+            if (rc == amp::Sent::DEPTH)
+            {
+                return -KOS_EPIPE;
+            }
+            return -KOS_EINVAL;
+        }
+#endif
     }
 
     // Two counters track an endpoint, endpoint_refs (all caps) and recv_holders (WAIT-bearing
@@ -48,19 +100,13 @@ namespace kickos
         {
             return -KOS_EPERM;
         }
-        int const i = kernel().endpoints.alloc();
+        Endpoint* ep = nullptr;
+        int const i = endpoint_slot_claim(&ep);
         if (i < 0)
         {
             return -KOS_ENOMEM;
         }
-        Endpoint* ep = kernel().endpoints.at(i);
-        ep->send_waiters = List{};
-        ep->recv_waiters = List{};
-        ep->recv_holders = 1;         // creator holds a WAIT-bearing cap
-        ep->server = nullptr;         // no conventional receiver until the first recv
-        // A reused slot keeps its last occupant's link, and "server null implies unlinked"
-        // must hold from the moment the slot is handed out.
-        ep->next_served = EP_SERVED_NONE;
+        ep->recv_holders = 1; // creator holds a WAIT-bearing cap
         kernel().endpoint_refs[i] = 1;
         int const obj = kernel().endpoints.handle_for(i);
         int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT,
@@ -74,10 +120,75 @@ namespace kickos
         return 0;
     }
 
+#if KICKOS_AMP_NODE
+    static_assert(amp::NODE_MAX + 1u <= 0xFFu,
+                  "a node index plus one must fit Endpoint::far_node, whose 0 is the local "
+                  "sentinel");
+    static_assert(amp::PORT_MAX <= 0xFFu, "a port must fit Endpoint::far_port");
+#endif
+
+#if KICKOS_AMP_NODE
+    // Caller holds IrqLock and owes the privilege gate.
+    int amp_endpoint_mint(Thread* c, uint32_t node, uint32_t port, uint32_t* out_cap)
+    {
+        *out_cap = KCAP_INVALID;
+        // port_minted is total over BOTH arguments, so it is the whole range check too.
+        if (not amp::port_minted(node, port) or node == amp::self())
+        {
+            return -KOS_EINVAL;
+        }
+        Endpoint* ep = nullptr;
+        int const i = endpoint_slot_claim(&ep);
+        if (i < 0)
+        {
+            return -KOS_ENOMEM;
+        }
+        ep->far_node = static_cast<uint8_t>(node + 1u);
+        ep->far_port = static_cast<uint8_t>(port);
+        kernel().endpoint_refs[i] = 1;
+        int const obj = kernel().endpoints.handle_for(i);
+        // CAP_SIGNAL ALONE, AND NOT AN OVERSIGHT TO BE WIDENED: endpoint_recv resolves for
+        // CAP_WAIT, so this refuses a far endpoint there with no branch of its own, and
+        // endpoint_server_set is unreachable on one as a consequence.
+        int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, CAP_SIGNAL, out_cap);
+        if (rc != 0)
+        {
+            kernel().endpoint_refs[i] = 0;
+            kernel().endpoints.free(obj);
+            return rc;
+        }
+        return 0;
+    }
+#endif
+
+    // Mints an endpoint whose receiver runs in ANOTHER node's kernel. `node` and `port` name
+    // a crossing the static mint already allows; no capability authorises the crossing
+    // itself (docs/design-multicore.md N8), so this is privileged and takes no authority bit.
+    int amp_endpoint_create(uint32_t node, uint32_t port, uint32_t* out_cap)
+    {
+        *out_cap = KCAP_INVALID;
+#if KICKOS_AMP_NODE
+        IrqLock lock;
+        Thread* c = sched::current();
+        if (c == nullptr or not c->privileged)
+        {
+            return -KOS_EPERM;
+        }
+        return amp_endpoint_mint(c, node, port, out_cap);
+#else
+        (void)node;
+        (void)port;
+        return -KOS_ENOSYS;
+#endif
+    }
+
     // Returns bytes transferred (>= 0), or -KOS_E* (EINVAL oversize, EFAULT bad buffer,
     // EBADF/EPERM bad cap or missing SIGNAL, EPIPE dead endpoint or last receiver left,
     // ETIMEDOUT `timeout_us` elapsed, ECANCELED cancelled while parked; in the last three
     // cases nothing was sent). `timeout_us` bounds the PARK only.
+    //
+    // A FAR ENDPOINT NEVER PARKS, so it never times out and answers -KOS_EBUSY where the
+    // peer's ring is full (docs/reference/ipc-call-reply.md).
     int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us)
     {
         if (len > KOS_EP_MSG_MAX)
@@ -107,6 +218,15 @@ namespace kickos
             {
                 return -err; // EBADF (bad cap) or EPERM (no SIGNAL right)
             }
+#if KICKOS_AMP_NODE
+            // BEFORE the dead-endpoint test and not after: a far endpoint carries no local
+            // receiver, so recv_holders is 0 on one by construction and the test below would
+            // answer -KOS_EPIPE for every far send.
+            if (endpoint_is_far(e))
+            {
+                return far_publish(c, e, buf, len, amp::REPLY_TAG_NONE);
+            }
+#endif
             if (e->recv_holders == 0)
             {
                 return -KOS_EPIPE; // dead endpoint: no receiver can ever exist
@@ -392,6 +512,10 @@ namespace kickos
     // bound, ENOSYS server took an info-less recv, ETIMEDOUT `timeout_us` elapsed, ECANCELED
     // cancelled while parked on either half). `timeout_us` bounds the WHOLE call: ONE deadline
     // covers the wait on send_waiters AND the wait for the reply.
+    //
+    // A FAR CALL parks on one wait only, for the reply, and diverges on back-pressure alone:
+    // -KOS_EBUSY where the peer's ring is full, with nothing mutated
+    // (docs/reference/ipc-call-reply.md).
     int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
                           uint32_t timeout_us)
     {
@@ -445,13 +569,50 @@ namespace kickos
             {
                 return -err; // EBADF (bad cap) or EPERM (no SIGNAL right)
             }
-            if (e->recv_holders == 0)
+            // WHETHER THE RECEIVER IS IN ANOTHER KERNEL, decided immediately after the
+            // resolve because the order is load-bearing: a far endpoint carries no local
+            // receiver, so recv_holders is 0 on one by construction and a dead-endpoint
+            // refusal taken first would answer -KOS_EPIPE for every far call.
+            bool const far = endpoint_is_far(e);
+            if (not far and e->recv_holders == 0)
             {
                 return -KOS_EPIPE; // dead endpoint: no receiver can ever exist
             }
             KICKOS_BENCH_MARK(bm_peek);
             Thread* w = wq_peek_highest(e->recv_waiters);
             KICKOS_BENCH_SPAN(PH_CALL_PEEK, bm_peek);
+#if KICKOS_AMP_NODE
+            if (far)
+            {
+                int const idx = kernel().threads.index_of(c);
+                KICKOS_ASSERT(idx >= 0); // idle is the one TCB outside the pool and calls nothing
+                // The seq is DECIDED here and committed only once the publication is taken:
+                // a refused call must leave the caller exactly as it found it.
+                uint16_t const seq = static_cast<uint16_t>(c->call_seq + 1u);
+                amp::ReplyTag const tag = {kernel().threads.handle_for(idx),
+                                           amp::reply_seq(seq)};
+                int32_t const sent = far_publish(c, e, buf, send_len, tag);
+                if (sent < 0)
+                {
+                    return sent;
+                }
+                c->call_seq = seq;
+                c->ipc.buf = buf;
+                c->ipc.len = recv_cap;
+                c->ipc.badge_out = 0;
+                c->call_rx_cap = recv_cap;
+                c->call_state = CALL_REPLY_WAIT;
+                // No donation, where the local arm below donates at D1: there is no thread on
+                // the far side to raise and no seam by which this node's priority reaches a
+                // peer's scheduler (N6e).
+                epoch = c->switch_count;
+                park_queueless(c, WAIT_EP_FAR_REPLY, e);
+                park_deadline_arm(c, timeout_us);
+                // Nothing was woken, so no wake carries the switch: this park owes its own.
+                sched::reschedule();
+            }
+            else
+#endif
             if (w != nullptr)
             {
                 // Fastpath: a receiver is parked. Probe BEFORE popping (B3): a popped
@@ -646,4 +807,63 @@ namespace kickos
         KICKOS_BENCH_SPAN(PH_REPLY_TOTAL, bm_total);
         return 0;
     }
+
+#if KICKOS_AMP_NODE
+    // Reached from the doorbell service body, so this core's interrupts are masked and that
+    // mask is the whole of a one-core kernel's exclusion.
+    bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, void const* payload,
+                                    uint32_t len)
+    {
+        Thread* caller = cap_reply_thread(tag.thread, amp::reply_seq(tag.seq));
+        if (caller == nullptr)
+        {
+            return false;
+        }
+        // THE FIFTH CLAUSE, and the only cross-node one: the four above are satisfied by any
+        // caller parked in a call, a LOCAL one included, so without this node 2 completes a
+        // call node 0 made to node 1.
+        Endpoint const* const e = caller->wait_far_endpoint();
+        if (e == nullptr or endpoint_far_node(e) != from)
+        {
+            return false;
+        }
+        size_t n = len;
+        if (caller->call_rx_cap < n)
+        {
+            n = caller->call_rx_cap; // reply truncation into the caller's capacity
+        }
+        // NOT ASSERTED: this copies into a parked thread from a masked handler, so the
+        // caller is told nothing arrived instead.
+        if (not kaccess_to_user(ipc_buf_space(caller), caller->ipc.buf, payload, n))
+        {
+            n = 0;
+        }
+        caller->wait_result = static_cast<intptr_t>(n);
+        caller->call_state = CALL_NONE;
+        caller->clear_wait_edge();
+        sched::wake(caller);
+        return true;
+    }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    bool endpoint_far_reply_route(amp::ReplyTag* out_tag, uint32_t* out_node)
+    {
+        ThreadPool& tp = kernel().threads;
+        for (int i = 0; i < tp.next; i++)
+        {
+            Thread* const t = &tp.slots[i];
+            Endpoint const* const e = t->wait_far_endpoint();
+            if (e == nullptr or t->state != ThreadState::BLOCKED)
+            {
+                continue;
+            }
+            out_tag->thread = tp.handle_for(i);
+            out_tag->seq = amp::reply_seq(t->call_seq);
+            *out_node = endpoint_far_node(e);
+            return true;
+        }
+        return false;
+    }
+#endif
+#endif
 }

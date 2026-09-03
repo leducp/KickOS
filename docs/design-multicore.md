@@ -104,7 +104,7 @@ than frozen now, and `roadmap.md` already requires that.
 | RV64 multi-hart (`qemu-riscv64`) | yes | A extension | MSIP | mhartid | yes | PLIC | shared kernel |
 | RP2040 | by absence | SIO lock | FIFO | CPUID | yes | **NO** | AMP |
 | RP2350 | by absence | exclusives | doorbell | CPUID | yes | **NO** | AMP |
-| ESP32 LX6 | yes, in internal SRAM | **not established** | matrix, sources 24-27 | **not established** | yes | matrix | shared-kernel CANDIDATE, gated |
+| ESP32 LX6 | yes, in internal SRAM | S32C1I, MEASURED | matrix, sources 24-27 | PRID, MEASURED | yes | matrix | shared kernel |
 | ESP32-C6 | | | | | **NO** | | AMP |
 | i.MX8MP Cortex-M7 companion | | | | | **NO** | | AMP |
 
@@ -132,11 +132,30 @@ four sources that are not routable to either core are hard-BOUND to one core eac
 unroutable, and GPIO targets per PIN per CPU underneath. The inter-core interrupt is four sources
 of that same matrix, so the doorbell and the targeting are one mechanism.
 
-**What blocks it is two columns a chip manual cannot answer, and they are the same kind.** The
-atomic and the per-core identity are core-architectural, and the ESP32 TRM has no instruction-set
-chapter, mentions its own core three times, and lists no architecture reference to defer to. So
-both are unsourced rather than absent, one document settles both, and until it does this part
-cannot DECLARE the predicate -- which is what `smp.cmake` exists to make a part do.
+**THE TWO COLUMNS A CHIP MANUAL COULD NOT ANSWER ARE MEASURED NOW, AND BOTH ANSWER YES.** The
+atomic and the per-core identity are core-architectural; the ESP32 TRM has no instruction-set
+chapter and lists no architecture reference to defer to, and the ISA defines both as configurable
+OPTIONS whose realisation only the part can state. So neither was settled by reading, and a probe
+on silicon settled both.
+
+What it measured, on an ESP32-D0WD-V3 revision v3.1 at 240 MHz, both cores incrementing one word
+in internal SRAM a hundred thousand times each: the counter finished EXACTLY at two hundred
+thousand while the primary recorded a hundred thousand retries, so the loops genuinely overlapped
+and no update was lost. Losing one lowers the total and nothing can raise it, so an exact total
+under witnessed contention is exclusion rather than arithmetic -- and the probe refuses its own
+verdict when NEITHER core retries, which is the reading that would have been a coincidence. The
+two identity registers answered `0xcdcd` and `0xabab`, so the option is realised and the
+integrator wired the cores apart.
+
+**AND THE ATOMIC CONTROL REGISTER READ BACK ALL-RCW, WHICH IS THE MECHANISM AND NOT ONLY THE
+OUTCOME.** The ISA leaves an inter-processor conditional store to the part precisely because it
+may execute locally in DataRAM, raise a load-store error, or issue a read-conditional-write bus
+transaction. This die selects the bus transaction for every memory class, which is the arm that
+makes the instruction exclude between two CPUs over shared internal memory.
+
+**Both properties are INTEGRATION OPTIONS, so this is one die's answer**, and a record of it names
+the die. The two conditions above still ride: kernel state PLACED in internal SRAM by a linker
+rule, and requirement 5 holding for scheduling rather than as a general statement about the part.
 
 Two conditions ride with the row even if that document satisfies both. Kernel state must be PLACED
 in internal SRAM, so a port owes a linker rule rather than a runtime check. And the cores are
@@ -244,10 +263,25 @@ structural rather than conventional.
 
 Every part's start button has one shape: write an entry point, release a reset. The RP2040 sends
 `{0, 0, 1, VTOR, SP, PC}` over the inter-processor FIFO to a bootrom wait loop (datasheet 2.8.2),
-the RP2350 does the same plus an arch marker (datasheet 5.3), the ESP32 writes the entry to the
-APP_CPU boot address register and clears its reset bit, and the i.MX8MP writes the companion's
-initial vector table into an IOMUXC general-purpose register and sets the enable bit in the reset
+the RP2350 sends the SAME six words (datasheet 5.3), the ESP32 writes the entry to the APP_CPU
+boot address register and clears its reset bit, and the i.MX8MP writes the companion's initial
+vector table into an IOMUXC general-purpose register and sets the enable bit in the reset
 controller.
+
+**THE RP2350 CLAUSE SAID "the same plus an arch marker" AND THAT WAS FALSE.** Section 5.3 carries
+the identical six-word sequence with no seventh word, and one `cmd_sequence` in the vendor SDK
+serves both parts. Which architecture an RP2350 core comes up in is a boot-time property of the
+part rather than a word in this handshake. The freeze's ruling is untouched and only its citation
+moved; it is corrected here because the wrong reading costs a porter a word that does not exist.
+
+**AND THE ESP32 CLAUSE NAMES TWO WRITES WHERE THE PART TAKES SIX**, established by a probe that
+started the second core rather than by reading. Beyond the boot address and the reset bit, the
+core is held by TWO separate software stall fields in different registers of the always-on
+domain, and by a CLOCK GATE that **resets closed**. The gate is the one a porter loses a day to:
+a core released from reset with its clock ungated does nothing whatever, which looks exactly like
+a core that never started. The shape the freeze states is still right -- write an entry point,
+release a reset -- and what it understates is how many holds a part may keep the core under.
+Read the count off the port, never off this sentence.
 
 What differs is whether a LOAD precedes it. On the one-image parts the secondary's code is already
 resident and the primary supplies only an entry point. On the i.MX8MP the companion runs from
@@ -289,6 +323,141 @@ What an AMP image on one image still owes, and it is not a freeze because no suc
 instance index is a simulator's host-thread word today, so a chip's has to come from its core
 identity.
 
+### N6b. AN AMP NODE'S IMAGE IS ITS OWN, and the one-image node is the special case
+
+N6 above admits two shapes and reads as though the one-image shape were the ordinary one. It is
+not, and the parts decide it rather than taste. **The default is one image per node.** A node
+sharing an image with its peers is a narrower case, available only where the cores run the same
+instruction set and want the same kernel configuration.
+
+**Two named parts settle it, and neither is reachable by a shared image.** The i.MX8MP's companion
+is a Cortex-M7 beside an A53 cluster: a different instruction set, so one image is not a
+preference it declines but a thing it cannot execute. The CV1800B's second C906 has no MMU where
+its first has one, so even at one instruction set the two kernels are different builds, a region
+model beside a translating one, with different pools and different stack sizes. A model that
+cannot express either of the two parts this work names is not the default.
+
+**FOUR THINGS FOLLOW, AND THREE OF THEM DELETE MACHINERY RATHER THAN ADDING IT.**
+
+- **The node's identity is a BUILD CONSTANT.** An own-image node reads no core register to learn
+  which node it is; its image is built as that node. This is not only simpler, it is the only
+  shape that works on the CV1800B, where `mhartid` is hardwired to zero in the openc906 release
+  and customised per instance by the integrator, so a node keying on its core identity has no
+  register to stand on.
+- **`KICKOS_MULTI_INSTANCE` leaves the AMP path.** Instance keying exists so several kernels can
+  share one address space; own-image nodes share none. With it goes the homogeneous holder, whose
+  cost is that `InstanceLocal<T>` gives every node a `T` of the same size: a node provisioned for
+  work it does not do, in `.bss` that the part's other node pays for.
+- **USERSPACE NEEDS NO NEW MECHANISM AT ALL, and that is the strongest evidence for this shape.**
+  A second kernel needs a second root, and under its own image that root is the ordinary
+  `KICKOS_INIT_PROVIDER`, `KICKOS_SERVICE_LIST` and application entry every image already selects.
+  Under one image the same requirement is a per-instance selection of all three, invented only to
+  keep the binary count at one.
+- **What it costs is a PLACEMENT CONTRACT.** The shared window was one image's `.bss` object; two
+  images must agree on a region at a fixed address, outside either one's own allocations. That is
+  the AMP partition layout section 8 leaves open, and meeting it deliberately is better than
+  inheriting it from a linker that was never asked.
+- **AND A DOORBELL MAP, WHICH THE TREE DOES NOT HAVE, SO THE POSTURE IS REFUSED AT CONFIGURE.**
+  `amp::send` rings its peer with `arch_ipi_send(1u << to)`, spending a NODE index as a hardware
+  CORE mask. That holds only under the shared image, where a node's identity IS the core register;
+  under one image per node the two are unrelated, and nothing in the tree maps a node onto the core
+  carrying it, so the doorbell would ring the wrong core and answer OK.
+  `KICKOS_AMP_POSTURE_OWN_IMAGE` is therefore offered by Kconfig and REFUSED by `CMakeLists.txt`,
+  the refusal naming the missing map rather than the broken line. This sits beside the placement
+  contract above and not under it: both are the partition layout section 8 leaves open, and both
+  are what an own-image part owes before its first boot. No board in the tree selects the posture,
+  so the refusal costs nothing today.
+
+**THE CONTRACT COVERS EVERY CELL TWO NODES BOTH WRITE, WHICH IS MORE THAN THE WINDOW, and getting
+this wrong presents as a HANG rather than as a build error.** A doorbell backend keeps its
+rendezvous cells -- the per-pair request and answer counters and the served count -- as ordinary
+statics indexed by the writing core. Under one image that is one array both cores address. Under
+one image per node it is two private copies: each core bumps and reads its own, the initiator's
+wait never observes an answer, and the spin runs to its bound and terminates the image. Nothing in
+either build can see it, because each side compiles and links perfectly. So the region two link
+scripts agree on holds the window AND the rendezvous cells, and a backend that leaves either
+behind is broken in the one way no gate on a single image can report.
+
+**DEPLOYMENT IS A MERGE AND NOT A SECOND FLASH.** Two images are built and combined into one
+programmable artefact. The launch freeze already permits it: N5's handshake hands the secondary an
+arbitrary vector table, stack pointer and entry, so the started core may enter a wholly separate
+image resident in the same flash. On a part whose companion runs from tightly-coupled memory the
+LOAD half of N5 is what places it.
+
+**THE SHAPE WAS CHECKED AGAINST A WORKLOAD RATHER THAN DERIVED FROM THE PARTS ALONE**, and the
+workload is recorded because it is what every clause above was tested on. Fieldbus communication
+owns one core with its controller and its bus; motor control owns another with its converter and
+its own bus; a logging store on a third device is owned by the first node and written by both.
+Each node's peripherals are granted by its own image, which is the partitioning falling out of the
+model rather than being imposed on it -- and on a part failing requirement 6 it is also why the
+missing per-line targeting stops mattering, each core masking what it does not own. The shared
+store is reached as a SERVICE per N6d: the owning node publishes a port, the other holds a far
+endpoint. The logging path is a SEND under N6e, because a control loop may not wait on the other
+node's scheduler, and the record's size against the ring's depth is what decides how many ticks a
+transfer spans.
+
+### N6c. THE DERIVATION OF `KICKOS_AMP_NODE` CONTRADICTS N6b AND IS A DEFECT
+
+Measured against the tree rather than argued: `KICKOS_AMP_NODE` is derived from
+`KICKOS_NUM_CORES > 1` together with the model, and the model choice is itself unavailable at one
+core. So an own-image AMP node -- whose image drives exactly one core, which is N6's own
+description of it -- resolves the macro to 0, compiles the shared window to nothing, and cannot
+join the ring at all. **The mechanism is one-image-only by construction, and the parts it excludes
+are precisely the two the work targets.**
+
+What it must become is a posture a board STATES, carrying the node's identity with it, rather than
+an inference from a core count. The count then says what it says everywhere else, how many cores
+this image drives, and an own-image node says one.
+
+### N6d. A NAME CROSSES BETWEEN KERNELS, NEVER A CAPABILITY
+
+A capability entry names an object in the kernel that issued it, by pool slot or by generational
+handle. Another kernel's pools are its own, so the bit pattern carries no meaning across the
+boundary, and the delegation right is about handing a capability into a CHILD table in one kernel
+rather than about a wire format. **There is no representation of a capability that a second kernel
+could accept, and the absence is the boundary working.**
+
+What crosses is a NAME the far kernel can interpret: a node and a port, which are configuration on
+both sides rather than a pointer on either. The receiving kernel then mints a capability of its
+own for that name, under its own policy. **The far kernel MINTS; the near one may only ask**,
+because authority comes from the table's owner and no table spans two kernels.
+
+Two consequences. Only globally nameable things can cross, so an endpoint can and a frame run or an
+address space cannot, those naming memory inside one node's own partition. And a service SHARED
+across nodes -- one node's driver serving another's threads -- is exactly this and needs nothing
+further: the serving node publishes a port, the calling node holds a far endpoint for it, and the
+receiver is an ordinary thread parked in its own kernel.
+
+### N6e. PRIORITY DOES NOT CROSS, AND THE TWO SCALES ARE NOT COMPARABLE
+
+Donation across nodes has no meaning: there is no thread on the far side to raise and no seam by
+which one scheduler reaches another. Stated rather than solved.
+
+**The sharper half is that the two priority scales are unrelated number lines.** Under one kernel a
+priority orders every thread; under two kernels a number on one node and the same number on the
+other order nothing between them. So making a cross-node service meet a deadline is a SYSTEM
+INTEGRATION act performed across two configurations, and neither kernel can check the result --
+which puts it in the same column as every other claim no green run makes.
+
+The design rule that follows, for a caller with a deadline: a cross-node CALL blocks at the far
+node's scheduling discretion, so work a real-time loop must not wait on is published with a send
+and drained by the far node at its own priority.
+
+**WHAT THE CALLER DOES WITH A REFUSAL IS THE APPLICATION'S AND NOT THIS CONTRACT'S, which is the
+microkernel posture applied to back-pressure rather than a preference.** Retry, drop and buffer
+are POLICY: how stale a dropped record may be, and how much may be held back for a later tick,
+are properties of the workload and of nothing else. So the kernel supplies the mechanism -- an
+immediate refusal, named and counted, spending no time -- and supplies no queue, no retry and no
+deadline of its own behind it. A loop can then treat a publication as a budgeted attempt. **A
+kernel that buffered on the caller's behalf would be choosing the staleness policy for every
+workload at once**, which is the same error as a kernel-side driver, one layer out.
+
+**RING DEPTH IS THEREFORE A PARTITION-SIZING INPUT rather than an internal constant.** One ring
+per ordered pair holds a fixed number of slots at the local message bound, so a producer offering
+more than that per drain is refused by construction and must chunk across ticks. A workload that
+moves kilobytes at low priority and one that exchanges single records have different right
+answers, and a partition that cannot state its own depth forces both to live at one.
+
 ### N7. Cross-node IPC is ONE mechanism, and locality never reaches the API
 
 A caller holds an endpoint capability and calls it. Whether the receiver executes on this core, on
@@ -307,8 +476,30 @@ reality check are exactly the consumers that would carry that branch.
 locally fits remotely. Had the slot been forced smaller, a uniform contract would have been a lie
 and this freeze would not stand.
 
-The register fastpath has no shared registers across cores and bails out on a remote partner, which
-is a kernel-side guard and is invisible above the syscall.
+**THE FASTPATH SENTENCE DESCRIBED A GUARD THE TREE DID NOT HAVE, and it does now.** It read that
+the register fastpath "bails out on a remote partner", present tense, when nothing in
+`kernel/syscall/syscall_ipc_fast.cc` tested locality at all: what it had was a `recv_holders == 0`
+test, which is a DEAD-ENDPOINT test and refuses a far endpoint only incidentally, because one
+carries no local receiver. Incidental is not a guard, and a freeze asserting one it does not have
+cannot be checked against the tree. The ruling is untouched and only its standing moves.
+
+What the fastpath now carries is a locality test of its own: a far endpoint's partner holds no
+register of this core's, and a reply arrives from a doorbell rather than from a thread the path
+could hand off to. It is a FALL-THROUGH and never an errno, in that file's own terms, so
+`endpoint_call` produces the answer and the guard stays invisible above the syscall. It folds to
+nothing wherever the posture makes `endpoint_is_far` constant, which is every part that links the
+fastpath today, so section 7's "the fastpath ruling is unexercised" stays true and this adds no
+run that would make it false.
+
+**AND IT SITS AHEAD OF THE DEAD-ENDPOINT TEST, WHICH IS WHAT MAKES IT A TEST AT ALL.** Placed
+after, it is unreachable BY CONSTRUCTION rather than merely unexercised: a far endpoint is minted
+with no local receiver and only the wait right raises that count, which a signal-only mint can
+never hold, so the dead-endpoint refusal answers first in every case forever. **This sentence
+described such a guard when it was first written, which is the SECOND time this freeze has
+misdescribed the fastpath in one milestone** -- the first was claiming a guard the tree did not
+have at all. The lesson is the one the review that caught it names: a refusal that happens to be
+reached by another clause is not the same object as a refusal that states its own reason, and only
+the ordering tells them apart.
 
 ### N8. No capability authorises the crossing; privilege sits at configuration
 
@@ -586,16 +777,46 @@ the second one exists, by which shape carries less duplication.
 - **AND THE ONE PART THAT COULD CARRY A SHARED-KERNEL SILICON WITNESS IS THE LX6, which this work
   does not target.** This bullet used to say the RP parts are the fleet's only real multicore
   hardware and are all in the AMP column, which stopped being true when the LX6 row was corrected.
-  The LX6 satisfies four of the six properties on sourced evidence and its two open columns need one
-  document, so it is the only candidate on this bench for taking the shared kernel off emulator-grade
-  evidence. Nothing here schedules that: it is a whole backend, the part has no emulator, and its
-  atomic is exactly the property a shared kernel rests on. Recorded so the gap has a named way out
-  rather than only a date.
+  **Its two open columns are no longer open: a probe measured both on silicon and both answer
+  yes**, so the part satisfies all six on evidence rather than four. What that changes is the
+  STANDING of the gap and not the gap itself -- the PRIMITIVE a shared kernel rests on is now
+  witnessed on real hardware, and no kernel is. A whole backend still separates the two, so every
+  shared-kernel claim in this document stays emulator-grade until one exists.
 - **The lock has no silicon witness specifically.** An AMP port on a real dual-core part would still
   exercise the doorbell, the ring and the ordering claims; the shared kernel is what loses its
   hardware witness.
 - **The fastpath ruling is unexercised.** Neither target links the fastpath, so N10's refusal is what
-  carries it and no run demonstrates it.
+  carries it and no run demonstrates it. **The locality guard N7 asserts now EXISTS in that file
+  and this bullet is unmoved by it**: the guard folds to nothing on every part that links the
+  fastpath, so what a green run there witnesses is that it compiles away, not that it fires.
+- **A FAR CALL IS WITNESSED END TO END, AND THE FAR SIDE IS NOT A KERNEL.** On `qemu-arm64-amp` a
+  call on a far endpoint crosses to node 1, is echoed by that node's service body carrying the
+  token it was handed, and comes back through node 0's own doorbell service to wake the parked
+  caller. That is a real witness of the token, the ring, the five validation clauses and the
+  wake. What it is NOT is a far side that is a receiving THREAD in another kernel: the peers here
+  run no scheduler, so the receiving half of N6d's shared service is still unwitnessed and needs
+  the two-image posture and a part that has one.
+- **THE FAR-ENDPOINT SYSCALL HAS NO USER-SIDE CALLER ON ANY BOARD IN THE TREE.**
+  `KOS_SYS_AMP_ENDPOINT_CREATE` is privileged per N8, and root is unprivileged from its first
+  instruction, so what a run witnesses of it is its REFUSAL and nothing else. The arms that
+  exercise a far endpoint reach the same mint body through the probe scaffolding instead. **That
+  scaffolding is gated to root's TASK**, so the other tasks of a selftest image reach neither the
+  mint nor the reply forge; what that narrows is who can cross a node on such an image, and it
+  does not answer who SHOULD be able to mint one. Who may mint one is section 8's open question,
+  and this is what that question costs today.
+- **THE MASKED WINDOW A FAR PUBLISH HOLDS IS UNMEASURED, AND THERE IS NO FIGURE TO REPORT.** A far
+  send copies TWICE with this core's interrupts masked: user memory into a `KOS_EP_MSG_MAX` kernel
+  stage on the syscall stack, and that stage into the peer's ring slot, so up to 512 bytes move
+  inside one `IrqLock`. What it costs is not known, and the reason is not that nobody looked.
+  `bench_cyccnt` has a source for RISC-V, RX, Xtensa and armv7m and returns 0 on every other arch,
+  so on the ONE board carrying this posture, `qemu-arm64-amp`, every phase accumulator and
+  `bench_irq_masked_once` alike read zero; a wall-clock figure taken around the syscall on a
+  host-scheduled vCPU would measure the emulator. An A64 source is arch work rather than an
+  instrumentation switch: `CNTVCT_EL0` counts system-counter ticks and not cycles, and
+  `PMCCNTR_EL0` needs a PMU no image here programs. The order is not negotiable either way:
+  instrument before replacing, because a reserve/commit API is safe only if a failed user copy
+  cannot leave the ring a half-written slot, and that is a harder contract than the copy it
+  removes. So this is a recorded debt with an explicit absence of a number, not an accepted cost.
 - **The rendezvous is A64-free on the DATA side ONLY, and the acknowledgement side is software on
   every backend.** A64's coherency supplies the data half. What no interrupt controller supplies is
   the other half: neither GIC version reports to a SENDER that a target has serviced a
@@ -658,15 +879,15 @@ the second one exists, by which shape carries less duplication.
   the wrong reading: the only question was ever SMP versus AMP, and requirement 6 answers it.
   They get AMP. Nothing in this contract declines support for a part on the ground that the work
   is not worth doing -- section 1 gates on HARDWARE, never on whether a port earns its keep.
-- **Whether the LX6 gets a shared kernel.** Section 1.5 makes it a candidate rather than a ruling.
-  **The gate is NOT an architecture reference, which is what reading one established.** The ISA
-  defines both missing primitives -- a compare-and-swap against a dedicated compare register whose
-  stated primary purpose is exclusion between processors, and a privileged single-instruction
-  processor identity -- and defines BOTH as configurable OPTIONS, the identity's value being wired by
-  the integrator. So the ISA closes what a shared kernel would USE and cannot say whether this part
-  has it: that is a per-core data book, and neither document on hand carries one. Which way it goes
-  changes what the AMP silicon paths ARE, the RP parts being the only others and both excluded on
-  targeting rather than on anything a document could settle.
+- **Whether the LX6 gets a shared kernel. THE GATE IS ANSWERED AND WHAT REMAINS IS A DECISION.**
+  The two open columns were measured on silicon and both answer yes, so section 1.5 now rules
+  rather than gates and this entry is no longer waiting on a fact. **The reason it stays open is
+  cost, and cost is the one ground section 1 refuses to gate on** -- so this is a scheduling
+  question and never a verdict about the part. What it costs: the arch backend exists and is
+  single-core, so the SMP half is a per-core identity, a lock, a doorbell over four GLOBAL
+  single-bit triggers that hardware never clears, a lock release across the swap, a linker rule
+  placing kernel state in internal SRAM, and the windowed ABI, which the spike names as the real
+  work and which a probe running one core in CALL0 assembly deliberately sidesteps.
 - **What the ISA DID settle needs no further source and bears on every backend's ordering.** Memory
   ordering is core architecture on this family rather than an option, so it is present on any part;
   ordinary loads and stores carry NO inter-processor ordering at all, the model being an explicitly
@@ -675,7 +896,13 @@ the second one exists, by which shape carries less duplication.
   be reading past the specification.
 - **Who may mint a cross-node endpoint or start a core.** Static in kernel init for the first AMP
   work; the general question is the capability layer's and is answered with it.
-- **The AMP partition layout**, including whether the instance-keyed storage can be made separately
-  protectable, which the current contiguous array does not give for free.
+- **The AMP partition layout, NARROWED BY N6b RATHER THAN STILL OPEN AS WRITTEN.** The image
+  boundary is decided: one image per node, so instance-keyed storage is not what an AMP partition
+  is made of and the contiguous array's protectability is a question about the SIM's posture
+  alone. What stays open is the memory partition itself -- the region each node's image owns, the
+  fixed address the shared window sits at, and whether a part's protection unit is asked to
+  enforce the boundary or merely to describe it. Until something enforces it, the window's header
+  rule stands: a compromised peer kernel reaches every other node's memory, and validation defends
+  against a malformed peer and not a hostile one.
 - **Whether a shared kernel and an AMP node can coexist on one part.** The i.MX8MP is both at once
   and nothing here decides how the two halves see each other.

@@ -69,7 +69,8 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
                 KICKOS_MAX_IRQ_HANDLES KICKOS_MAX_FRAME_RUNS KICKOS_ASPACE_RANGES
                 KICKOS_RTT_CH1_SIZE
                 KICKOS_USER_HEAP_SIZE
-                KICKOS_MAX_INSTANCES KICKOS_PANIC_DUMP KICKOS_DIAG_TERSE)
+                KICKOS_MAX_INSTANCES KICKOS_PANIC_DUMP KICKOS_DIAG_TERSE
+                KICKOS_AMP_NODES KICKOS_AMP_NODE_ID)
     if(DEFINED ${_knob})
       list(APPEND _kcfg_req "CONFIG_${_knob}=${${_knob}}")
     endif()
@@ -622,9 +623,30 @@ add_compile_definitions(KICKOS_NUM_CORES=${KICKOS_NUM_CORES})
 # two threads' relative progress is a claim about that number.
 add_compile_definitions(KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES})
 
-# Beside them again, for an app TU that has to ask which MODEL it runs under: KICKOS_AMP_NODE
-# lives in a kernel header an app may not include, so this is the spelling an app tests.
+# Beside them again, for an app TU that has to ask which MODEL it runs under.
 add_compile_definitions(KICKOS_MULTICORE_MODEL_SHARED=${KICKOS_MULTICORE_MODEL_SHARED})
+
+# The AMP posture and the partition's width, for an app TU that has to ask whether it runs on
+# a node at all and how many peers it may sweep. Both live in the generated board config,
+# which an app does not include.
+add_compile_definitions(KICKOS_AMP_NODE=${KICKOS_AMP_NODE})
+add_compile_definitions(KICKOS_AMP_NODES=${KICKOS_AMP_NODES})
+
+# The doorbell a publication rings is arch_ipi_send(1 << node), a HARDWARE CORE MASK spent on
+# a node index. Refused here rather than rung at the wrong core.
+if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
+  message(FATAL_ERROR
+    "KickOS: the own-image AMP posture is refused. amp::send in kernel/amp/ampwindow.cc "
+    "rings its peer with arch_ipi_send(1u << to), where `to` is a NODE index and the "
+    "argument is a hardware CORE mask. The two coincide only under the shared-image "
+    "posture, where the node's identity IS the core register. Under one image per node they "
+    "are unrelated, the image driving one core while naming peers it never launches, so the "
+    "doorbell would ring whichever local core carries the target's index, silently and with "
+    "no refusal. What is missing is a partition-owned node-to-core map: the partition layout "
+    "stating, per node, which core carries it, and amp::send taking its doorbell target from "
+    "that map instead of from the node index. Until a part declares one, build this board "
+    "with CONFIG_KICKOS_AMP_POSTURE_SHARED_IMAGE.")
+endif()
 
 # The microbench accumulates into one set of phase cells for the whole image, and its own
 # contract is that every write happens under the interrupt lock or on one thread. A switch span
