@@ -65,6 +65,18 @@ namespace kickos
                 // -KOS_ESRCH.
                 break;
             }
+            case WAIT_EP_FAR_REPLY:
+            {
+                // Queue-less on no list at all, and no donation to revert: priority does not
+                // cross to a peer's scheduler (docs/design-multicore.md N6e).
+                t->clear_wait_edge();
+                t->call_state = CALL_NONE;
+                // For the same reason the local arm above bumps it: a reply still in flight
+                // names this call by the low 8 bits of call_seq alone, so a seq left standing
+                // resolves to this thread again after exactly 256 further calls.
+                t->call_seq++;
+                break;
+            }
             default:
             {
                 KICKOS_UNREACHABLE(::kickos::diag::kTimeoutNotEp);
@@ -81,6 +93,7 @@ namespace kickos
             case WAIT_EP_SEND:
             case WAIT_EP_RECV:
             case WAIT_EP_REPLY:
+            case WAIT_EP_FAR_REPLY:
             {
                 endpoint_wait_abort(t, result); // wakes it itself
                 return;

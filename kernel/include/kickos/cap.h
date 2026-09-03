@@ -682,11 +682,20 @@ namespace kickos
     // (the handle names something else). Caller holds IrqLock.
     int cap_narrow_authority(Thread* c, uint32_t cap_handle, uint8_t mask);
 
-    // Resolve a CAP_REPLY entry to the parked caller thread, or nullptr if it is stale. The
-    // full one-shot guard: index in range, thread-gen match, state == BLOCKED, call_state ==
-    // REPLY_WAIT, and the packed seq8 matches the caller's live call_seq. Used by kos_reply and
-    // the reply-cap death arm. Caller holds IrqLock. Decodes obj through UNSIGNED shifts: a
-    // fully aged thread generation sets bit 31, and an arithmetic shift would corrupt it.
+    // Resolve a generational thread handle plus a call sequence to the parked caller thread,
+    // or nullptr if it is stale. The full one-shot guard: index in range, thread-gen match,
+    // state == BLOCKED, call_state == REPLY_WAIT, and seq8 matching the caller's live
+    // call_seq. THE ONE BODY OF THAT GUARD: a CAP_REPLY entry carries the pair, and so does a
+    // far node's reply tag, and a second copy of these clauses is a second answer to whether
+    // a reply may land. Caller holds IrqLock. Decodes through UNSIGNED shifts: a fully aged
+    // thread generation sets bit 31, and an arithmetic shift would corrupt it.
+    //
+    // TOTAL OVER A ZEROED ThreadPool, which is what a node running no kernel of its own has:
+    // `next` is 0 there, so the first clause refuses every index.
+    Thread* cap_reply_thread(uint32_t handle, uint8_t seq8);
+
+    // The guard above over what a CAP_REPLY entry carries. Used by kos_reply and the
+    // reply-cap death arm.
     Thread* cap_reply_caller(CapEntry const& e);
 }
 

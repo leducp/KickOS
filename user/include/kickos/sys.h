@@ -73,6 +73,13 @@ int kos_mutex_unlock(kos_cap_t mtx);
 // min(sent, capacity) bytes and receiver-side truncation is NOT an error. A send above
 // KOS_EP_MSG_MAX is rejected (-KOS_EINVAL); recv clamps its capacity.
 int kos_endpoint_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EINVAL/-KOS_EFAULT
+// The same endpoint, with its receiver in the kernel running on `node`: locality is settled
+// at the mint and never reaches a caller of kos_send. Privileged, and the cap it grants
+// carries SIGNAL alone, so a far endpoint is never received on or served locally.
+// -> 0, or -KOS_ENOSYS (this image runs one kernel), -KOS_EPERM (unprivileged caller),
+// -KOS_EINVAL (the caller's own node, or a port that node did not mint), plus the mint
+// refusals above.
+int kos_amp_endpoint_create(uint32_t node, uint32_t port, kos_cap_t* out_cap);
 // Send `len` bytes, giving up after `timeout_us` RELATIVE microseconds, or never if that is
 // KOS_TIMEOUT_NONE. The deadline bounds the PARK only: a receiver already waiting
 // rendezvouses regardless of it.

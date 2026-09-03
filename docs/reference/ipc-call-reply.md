@@ -7,8 +7,10 @@ rendezvous (`../book/endpoints-synchronous-ipc-by-rendezvous.md` narrates the en
 `../book/synchronous-call-and-reply.md` narrates the why of this layer). Code source of
 truth: `kernel/syscall/syscall_ipc.cc` (`endpoint_call` / `endpoint_reply` /
 `endpoint_recv`),
-`kernel/syscall/cap.cc` (the `CAP_REPLY` arm + `cap_reply_caller`), `kernel/sync/sync.cc`
-(`thread_effective_prio`), `user/include/kickos/sys/abi.h` (numbers + `kos_recv_info`),
+`kernel/syscall/cap.cc` (the `CAP_REPLY` arm + `cap_reply_thread` / `cap_reply_caller`),
+`kernel/sync/sync.cc` (`thread_effective_prio`), `kernel/thread/park.cc`
+(`endpoint_wait_abort`), `kernel/amp/ampwindow.cc` (the far reply's route),
+`user/include/kickos/sys/abi.h` (numbers + `kos_recv_info`),
 `user/include/kickos/sys.h` (the C stubs). If a page and the code disagree, the page is
 the bug.
 
@@ -45,10 +47,13 @@ parked TCB is the reply object.
   EVERY exit from the in-flight state (see the death matrix). A second `kos_reply` on the
   same handle fails resolve.
 
-**Stale-resolve (`cap_reply_caller`, `cap.cc`).** Decoding the obj word to a live caller
+**Stale-resolve (`cap_reply_thread`, `cap.cc`).** Decoding the obj word to a live caller
 requires, under one `IrqLock`: index in range, thread-slot gen match, `state == BLOCKED`,
 `call_state == CALL_REPLY_WAIT`, and `call_seq & 0xFF == seq8`. ANY mismatch resolves to
 `nullptr` (a stale caller). This is the late-reply ABA guard (see limits).
+`cap_reply_caller` is that body over what a `CAP_REPLY` entry carries; the far-call section
+below runs the SAME body over a peer node's reply token, which is why the clauses have one
+home and not two.
 
 ## TCB call state
 
@@ -58,7 +63,8 @@ requires, under one `IrqLock`: index in range, thread-slot gen match, `state == 
 - `call_seq` (`uint16_t`) -- bumped per call BEFORE the reply cap is packed; its low byte
   rides the entry's `seq_lo` / `seq_hi` spare bits.
 - `call_state` -- `CALL_NONE` / `CALL_SEND_WAIT` (still parked on the endpoint's
-  `send_waiters`) / `CALL_REPLY_WAIT` (queue-less, bound to the reply cap).
+  `send_waiters`) / `CALL_REPLY_WAIT` (queue-less, bound to the reply cap, or to a far
+  node's reply token where the park is `WAIT_EP_FAR_REPLY`).
 
 `call_state` is single-writer-clean at every park/unpark: `endpoint_send` sets
 `CALL_NONE` before parking a plain sender; `endpoint_call` sets `CALL_NONE` after
@@ -259,6 +265,100 @@ pool either: the
 same cheap-scan philosophy as the mutex held-list walk. `Endpoint::server` is a raw
 `Thread*` set at every recv and CLEARED in the endpoint close/teardown arm when the server
 drops its `WAIT` cap (waker-cleared discipline, like every wait edge).
+
+## A FAR call -- the receiver is in another kernel
+
+Present only where `KICKOS_AMP_NODE`, and reached through the SAME `kos_call` /
+`kos_call_timed` / `kos_send`: locality never reaches the API
+(`../design-multicore.md` N7). What decides it is the endpoint object, whose
+`far_node` (biased by one, so 0 is local) and `far_port` are the whole answer and
+have no flag beside them to disagree with. `endpoint_is_far` folds to a constant
+`false` below the AMP posture, so every arm below compiles out there.
+
+**A pooled slot keeps its last occupant's fields**, so a far endpoint that is closed would
+leave its route standing for whatever local endpoint lands on that slot next. Both fields
+are reset through the ONE slot claim in `kernel/syscall/syscall_ipc.cc` that every endpoint
+allocation goes through, which resets the whole aggregate; each caller then applies only the
+mode fields it owns. There is deliberately no per-caller list of fields to forget, a list
+being incomplete the moment a field is added.
+
+**Placement is load-bearing.** In both `endpoint_send` and `endpoint_call` the
+locality decision is taken immediately after the capability resolve and AHEAD of the
+`recv_holders == 0` test. A far endpoint carries no local receiver -- its capability
+is minted with `CAP_SIGNAL` alone and `recv_holders = 0` -- so a dead-endpoint refusal
+taken first would answer `-KOS_EPIPE` for every far send and every far call.
+
+**The reply token.** `amp::ReplyTag` is two words carried across the shared window and
+handed straight back to the taker; nothing in `kernel/amp/ampwindow.cc` spends either,
+which is the whole of why an unvalidated one may cross.
+
+- `tag.thread` -- the caller's generational thread handle, `ThreadPool::handle_for`,
+  whole and unshifted, exactly as a `CAP_REPLY` entry's `obj` carries it.
+- `tag.seq` -- the low byte of the caller's `call_seq`, the same late-reply ABA guard.
+- `amp::REPLY_TAG_NONE` -- the route of a sender that does not park. It is NOT the zero
+  tag: zero is index 0 at generation 0, which a live slot can be, so it carries
+  `KOS_THREAD_NONE`, whose all-ones index the thread pool reserves and never seats.
+
+`endpoint_send` publishes `REPLY_TAG_NONE` and never parks. `endpoint_call` decides
+`call_seq + 1`, builds the tag from it, publishes, and COMMITS the sequence only once the
+publication is taken, so a refused call leaves the caller exactly as it found it.
+
+**Delivering it (`endpoint_far_reply_deliver`).** The window's `PORT_REPLY` route runs it
+from inside the doorbell service body, so this core's interrupts are masked and that mask
+is the exclusion; no `IrqLock` is taken. FIVE clauses, and any failure counts
+`amp::Counts::reply_drop` and drops:
+
+1-4. `cap_reply_thread(tag.thread, tag.seq)`, which is the same body `cap_reply_caller`
+   runs over a `CAP_REPLY` entry: index in range, thread-slot gen match, `state ==
+   BLOCKED` with `call_state == CALL_REPLY_WAIT`, and the seq8 match. One body and not a
+   copy -- a second set of these clauses would be a second answer to whether a reply may
+   land. A node whose `ThreadPool` is zeroed has `next == 0` and refuses every index at
+   the first clause, which is what makes the same call inert on a peer that runs no kernel
+   of its own.
+5. **The cross-node clause**, which the four above cannot carry: the resolved caller must
+   be parked on a far endpoint whose node equals the RING the reply arrived on
+   (`caller->wait_far_endpoint()`, `WAIT_EP_FAR_REPLY`). The four above are satisfied by any
+   caller parked in a call, a LOCAL one included, so without this node 2 can complete a call
+   node 0 made to node 1.
+
+On success the length is clamped into `call_rx_cap` and copied with `kaccess_to_user`,
+whose result is NOT asserted -- `cap_console_deliver` is the standing precedent for copying
+into a parked thread from a masked handler, and a refused copy tells the caller nothing
+arrived rather than panicking inside one. Then `wait_result`, `call_state = CALL_NONE`,
+`clear_wait_edge()` and `sched::wake`.
+
+**The park.** `WAIT_EP_FAR_REPLY`, `wait_obj` the far `Endpoint`, queue-less on no list at
+all. `endpoint_wait_abort` unwinds it with no donor list to unlink and no server to deflate,
+and it MUST bump `call_seq` for the same reason the local `WAIT_EP_REPLY` arm does: a reply
+still in flight names the call by the low 8 bits alone, so a sequence left standing resolves
+to this thread again after exactly 256 further calls.
+
+**What DIVERGES from a local call, and it is one thing.** Back-pressure. A local caller
+parks on `send_waiters` until a receiver takes its request; a far caller cannot, the ring
+being finite and the far scheduler not this kernel's. So a full peer ring answers
+`-KOS_EBUSY` immediately, with nothing mutated. Per `../design-multicore.md` N6e that
+refusal IS the contract: named, counted, spending no time, with no queue and no retry
+behind it, because how stale a dropped record may be is the workload's property and not the
+kernel's. The rest of the window's refusals map to `-KOS_EPIPE` (a far index this node
+cannot believe) and `-KOS_EINVAL`.
+
+**Donation does not cross.** There is no thread on the far side to raise and no seam by
+which this node's priority reaches a peer's scheduler, so D1 and D2 have no far arm and D3
+has nothing to recompute. This is stated and not solved (N6e), and it is deliberately NOT an
+errno: refusing a far call because it cannot donate would be locality reaching the API,
+which is exactly what N7 forbids. The sharper half is that the two priority scales are
+unrelated number lines, so meeting a deadline across nodes is a system-integration act
+across two configurations and neither kernel can check the result.
+
+**No reply capability exists.** Nothing is minted into a far server's table -- it has none
+this kernel can name (N6d) -- so there is no one-shot cap to consume, no `reply_waiters`
+membership, and `kos_reply` is not part of this path. What makes the delivery one-shot is
+`call_state`: the wake sets `CALL_NONE`, and clause 3 refuses every later reply carrying the
+same tag.
+
+**The register fastpath refuses a far endpoint** as a fall-through returning null, never an
+errno, so `endpoint_call` produces the answer. It folds to nothing on every part that links
+the fastpath today.
 
 ## Lifecycle / death matrix
 

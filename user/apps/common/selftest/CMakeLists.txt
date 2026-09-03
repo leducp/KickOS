@@ -192,7 +192,7 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_NUM_CORES GREATER 1
    AND KICKOS_MULTICORE_MODEL_SHARED EQUAL 0)
-  math(EXPR _tap_arms "${_tap_arms} + 1") # amp_window
+  math(EXPR _tap_arms "${_tap_arms} + 5") # amp_window, amp_far_call, amp_far_reply_guard, amp_probe_root_only, amp_far_slot_reuse
 endif()
 
 # The same count per region. The regions are separated by the `#undef TAP_ADD` lines in main.cc:
@@ -239,7 +239,7 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_NUM_CORES GREATER 1
    AND KICKOS_MULTICORE_MODEL_SHARED EQUAL 0)
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # amp_window
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 5") # amp_window, amp_far_call, amp_far_reply_guard, amp_probe_root_only, amp_far_slot_reuse
 endif()
 
 math(EXPR _tap_arms_split "${_tap_arms_p1} + ${_tap_arms_p2} + ${_tap_arms_p3}")

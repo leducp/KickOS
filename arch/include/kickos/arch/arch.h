@@ -33,13 +33,21 @@
 #define KICKOS_MULTICORE_MODEL_SHARED 1
 #endif
 
-// This image drives several cores and runs a kernel per core, so a doorbell's far side is a
-// DIFFERENT kernel with no shared lock to reason about.
-#if KICKOS_NUM_CORES > 1 && KICKOS_MULTICORE_MODEL_SHARED == 0
-#define KICKOS_AMP_NODE 1
-#else
+// Whether this image is a node of an AMP partition, so a doorbell's far side is a DIFFERENT
+// kernel with no shared lock to reason about. STATED by the board and never derived from the
+// core count: an own-image node drives exactly one core (docs/design-multicore.md N6c).
+#ifndef KICKOS_AMP_NODE
 #define KICKOS_AMP_NODE 0
 #endif
+
+// Whether that node's image is its own, which is the ordinary shape.
+#ifndef KICKOS_AMP_OWN_IMAGE
+#define KICKOS_AMP_OWN_IMAGE 0
+#endif
+
+// The narrow posture: several cores under one image, so a node's identity is the core
+// register and instance keying has several kernels to separate.
+#define KICKOS_AMP_SHARED_IMAGE (KICKOS_AMP_NODE && !KICKOS_AMP_OWN_IMAGE)
 
 // Per-arch definition of `struct arch_context` (opaque to the kernel; sized by the arch).
 // Resolved to arch/<arch>/include/kickos/arch/context.h.
@@ -114,8 +122,13 @@ uint32_t arch_cpu_id(void);
 // specifies no ordering for software-generated interrupt generation (IHI 0048B.b), so a
 // backend places the barrier itself.
 //
-// At one core both are empty macros: the argument is consumed, never evaluated for effect.
-#if KICKOS_NUM_CORES > 1
+// AN AMP NODE RINGS PEERS AT ONE CORE, so the fold may not key on the count alone: an
+// own-image node drives one core and still reaches every node its partition names. Folded
+// there, amp::send would publish into the window and ring nobody, in silence. Declared, a
+// port that ships no backend fails to LINK, which is the shape arch_cpu_id already has.
+//
+// Below both, empty macros: the argument is consumed, never evaluated for effect.
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 void arch_ipi_send(uint32_t cores);
 void arch_ipi_wait(uint32_t cores);
 #else
@@ -135,7 +148,10 @@ void arch_ipi_resched_self(void);
 #if defined(KICKOS_ENABLE_SELFTEST)
 // What `core` has done with the doorbell: services performed in bits 31:0, instruction-side
 // rendezvous initiated in bits 63:32. A core outside the built range reads zero.
-#if KICKOS_NUM_CORES > 1
+//
+// Guarded with the two above and not against the count: a node whose doorbell is declared
+// owes the probe that reads it.
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 uint64_t arch_ipi_counts(uint32_t core);
 #else
 #define arch_ipi_counts(core) ((void)(core), 0ull)

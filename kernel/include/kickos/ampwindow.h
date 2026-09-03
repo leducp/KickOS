@@ -30,16 +30,38 @@
 #include <kickos/sys/abi.h>
 #include <kickos/sys/atomic.h>
 
-// A node IS a core, so the window is indexed by core identity.
 #if KICKOS_AMP_NODE
 
 namespace kickos
 {
     namespace amp
     {
-        constexpr uint32_t NODE_MAX = KICKOS_NUM_CORES;
+        // The PARTITION's width, which is not how many cores this image drives: an own-image
+        // node drives one and still names every peer it can reach.
+        constexpr uint32_t NODE_MAX = KICKOS_AMP_NODES;
         static_assert(NODE_MAX <= 32,
                       "a node mask is 32 bits wide, as the doorbell's core mask is");
+#if KICKOS_AMP_SHARED_IMAGE
+        static_assert(NODE_MAX >= KICKOS_NUM_CORES,
+                      "one image drives every node under this posture, so a core it drives "
+                      "that the partition does not name would index past the window");
+#else
+        static_assert(KICKOS_AMP_NODE_ID < NODE_MAX,
+                      "this image is built as a node its own partition does not hold");
+        static_assert(KICKOS_NUM_CORES == 1,
+                      "an own-image node drives one core: a count above it names peers this "
+                      "image does not launch");
+#endif
+
+        // WHICH NODE THIS IMAGE IS, and the only site that answers it.
+        inline uint32_t self(void)
+        {
+#if KICKOS_AMP_SHARED_IMAGE
+            return arch_cpu_id();
+#else
+            return KICKOS_AMP_NODE_ID;
+#endif
+        }
 
         constexpr uint32_t RING_SLOTS = 4u;
         static_assert((RING_SLOTS & (RING_SLOTS - 1u)) == 0u,
@@ -70,9 +92,9 @@ namespace kickos
         // Ports a node mints. Static in kernel init: no capability authorises a crossing.
         enum : uint32_t
         {
-            PORT_ECHO = 0u,  // the payload comes back to the sender's PORT_REPLY
-            PORT_REPLY = 1u, // consumed and counted; a reply is never echoed
-            PORT_MAX = 32u   // the mint is a 32-bit mask, so this is its width
+            PORT_ECHO = KOS_AMP_PORT_ECHO,
+            PORT_REPLY = KOS_AMP_PORT_REPLY,
+            PORT_MAX = 32u // the mint is a 32-bit mask, so this is its width
         };
 
         // What one receive found. A refusal names WHICH untrusted field was malformed.
@@ -96,10 +118,44 @@ namespace kickos
             PORT    // the target port is outside the mint width
         };
 
+        // A caller's reply route, carried across and handed straight back. Neither field is
+        // ever spent as an index or a length here, which is the whole of why an unvalidated
+        // one may cross.
+        struct ReplyTag
+        {
+            uint32_t thread; // far
+            uint32_t seq;    // far
+        };
+
+        // THE WIRE WIDTH OF A REPLY SEQUENCE, and the ONE conversion to it: the publisher,
+        // the validator and the selftest forge all take their sequence from here, so the
+        // width cannot be changed at one site and left standing at another.
+        //
+        // `seq` carries 32 bits and only these are validated, so a caller that RETAINS a tag
+        // aliases the same long-lived caller after 256 calls to that node. The validation
+        // defends a node against a MALFORMED peer and not a hostile one, and a peer that
+        // replays a tag it kept is the hostile case. Widening this widens the wire.
+        constexpr uint32_t REPLY_SEQ_MASK = 0xFFu;
+
+        constexpr uint8_t reply_seq(uint32_t seq)
+        {
+            return static_cast<uint8_t>(seq & REPLY_SEQ_MASK);
+        }
+        static_assert(REPLY_SEQ_MASK <= 0xFFu,
+                      "reply_seq narrows to the uint8_t cap_reply_thread takes, so a wider "
+                      "mask would be masked again on the way in");
+
+        // The route of a sender that does not park, and it is NOT the zero one: zero is index
+        // 0 at generation 0, which a live thread slot can be, so an echo of it could complete
+        // some unrelated caller's call. KOS_THREAD_NONE carries the all-ones index the thread
+        // pool reserves and never seats, so no generation resolves it.
+        constexpr ReplyTag REPLY_TAG_NONE = {KOS_THREAD_NONE, 0u};
+
         struct Slot
         {
             uint32_t len;  // far: payload bytes, bounded against SLOT_BYTES before any copy
             uint32_t port; // far: the receiving node's port, bounded against its own mint
+            ReplyTag tag;  // far: handed back to the taker, spent by nothing in this file
             uint8_t payload[SLOT_BYTES];
         };
 
@@ -125,8 +181,10 @@ namespace kickos
         // The sender's identity is the RING it wrote; no field in the window claims a sender.
         Ring& ring_for(uint32_t to, uint32_t from);
 
-        // Mint `port` on every node. Kernel init only: one image configures them all, so
-        // every node's mint is identical.
+        // Mint `port` on every node's row. Kernel init only.
+        //
+        // A SENDER VALIDATES A FAR PORT AGAINST ITS OWN COPY OF THE FAR NODE'S ROW, so under
+        // one image per node every node's image owes the same mint; nothing here checks that.
         void port_mint(uint32_t port);
 
         // True where `node` has minted `port`. Total: an out-of-range node or port answers
@@ -137,20 +195,22 @@ namespace kickos
         //
         // THE LOCAL NODE IS REFUSED: node_service skips its own self-ring, so a self-send
         // fills four slots nothing will ever take.
-        Sent send(uint32_t to, uint32_t port, void const* payload, uint32_t len);
+        Sent send(uint32_t to, uint32_t port, ReplyTag const& tag, void const* payload,
+                  uint32_t len);
 
         // Take one message out of the ring `from` writes to THIS node; the local node reads
         // EMPTY, its self-ring being the one no service drains. `out` takes at most
-        // SLOT_BYTES, `*out_len` the bytes taken and `*out_port` the port; none of the three
-        // is touched on any verdict but TOOK.
+        // SLOT_BYTES, `*out_len` the bytes taken, `*out_port` the port and `*out_tag` the
+        // reply route; none of the four is touched on any verdict but TOOK.
         //
-        // THE PORT IS HANDED BACK RATHER THAN LEFT TO BE RE-READ. Its slot is free the instant
-        // the tail advances, so a caller reading the field again reads whatever the producer
-        // has since put there.
+        // THE PORT AND THE TAG ARE HANDED BACK RATHER THAN LEFT TO BE RE-READ. Their slot is
+        // free the instant the tail advances, so a caller reading either field again reads
+        // whatever the producer has since put there.
         //
         // A MALFORMED SLOT IS DROPPED AND THE TAIL ADVANCES. Leaving it would let one bad
         // publication wedge the ring for good; the verdict is counted, so the drop is visible.
-        Verdict take(uint32_t from, void* out, uint32_t* out_len, uint32_t* out_port);
+        Verdict take(uint32_t from, void* out, uint32_t* out_len, uint32_t* out_port,
+                     ReplyTag* out_tag);
 
         // Per-node bookkeeping. OUTSIDE the window: no far side may write it.
         //
@@ -168,16 +228,23 @@ namespace kickos
             Atomic<uint32_t, Order::RELAXED> sent;
             Atomic<uint32_t, Order::RELAXED> send_refused;
             Atomic<uint32_t, Order::RELAXED> serviced; // times its doorbell drained its inboxes
+            // Replies taken and then refused by the endpoint layer's validation of the tag.
+            // A node running no kernel of its own counts EVERY reply here, its thread pool
+            // refusing each at the first clause.
+            Atomic<uint32_t, Order::RELAXED> reply_drop;
         };
 
         Counts const& counts(uint32_t node);
 
         // Drain every inbox of THIS node, echoing a PORT_ECHO message back to its sender's
-        // PORT_REPLY and consuming a PORT_REPLY.
+        // PORT_REPLY and routing a PORT_REPLY to whatever local caller its tag names.
         //
         // Reached from the backend's doorbell service, so it runs with this core's interrupts
-        // masked, which is the whole of a one-core kernel's exclusion. IT TOUCHES NO kernel()
-        // STATE: a peer node's Kernel is provisioned and never initialised.
+        // masked, which is the whole of a one-core kernel's exclusion.
+        //
+        // THE REPLY ROUTE READS kernel() AND IS INERT ON A NODE THAT RUNS NO KERNEL: a peer
+        // node's Kernel is provisioned and never initialised, so its thread pool is zeroed and
+        // refuses every index at the first clause. Nothing else here touches kernel() state.
         void node_service(void);
 
         // Seat the static mint. Kernel init, before any node can be poked.
@@ -189,11 +256,19 @@ namespace kickos
         // pushed.
         //
         // BOTH INDICES ARE RESET FIRST, so a real message in flight from that node is lost.
-        Verdict forge_and_take(uint32_t from, uint32_t port, uint32_t len, uint32_t head_jump);
+        Verdict forge_and_take(uint32_t from, uint32_t port, ReplyTag const& tag, uint32_t len,
+                               uint32_t head_jump);
 
         // The send side's half: push the far TAIL of the ring this node produces to `to`, and
         // report what the send made of it. The forged tail is put back afterwards.
         Sent forge_tail_and_send(uint32_t to, uint32_t tail_jump);
+
+        // Publish ONE PORT_REPLY into THIS node's inbox from `from` carrying `tag`, then take
+        // it and route it exactly as node_service does, so a HOSTILE reply is playable at a
+        // caller that is genuinely parked. True where it reached one.
+        //
+        // BOTH INDICES ARE RESET FIRST, as forge_and_take does.
+        bool forge_reply(uint32_t from, ReplyTag const& tag);
 
         // Publish a depth this node cannot believe, take DEPTH_STRIKES times so the strike
         // bound resynchronises the ring, then publish one WELL-FORMED message and take it.

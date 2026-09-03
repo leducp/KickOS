@@ -5,6 +5,7 @@
 
 #if KICKOS_AMP_NODE
 
+#include <kickos/endpoint.h>
 #include <kickos/kruntime.h>
 
 namespace kickos
@@ -43,6 +44,28 @@ namespace kickos
             {
                 return head - tail;
             }
+
+            // True where a reply reached a parked caller.
+            bool dispatch(uint32_t from, uint32_t port, ReplyTag const& tag, void const* buf,
+                          uint32_t len)
+            {
+                // A reply is never echoed: two nodes would trade the same payload for good.
+                if (port == PORT_ECHO)
+                {
+                    (void)send(from, PORT_REPLY, tag, buf, len);
+                    return false;
+                }
+                if (port != PORT_REPLY)
+                {
+                    return false;
+                }
+                if (endpoint_far_reply_deliver(from, tag, buf, len))
+                {
+                    return true;
+                }
+                count_up(g_counts[self()].reply_drop);
+                return false;
+            }
         }
 
         Ring& ring_for(uint32_t to, uint32_t from)
@@ -80,9 +103,10 @@ namespace kickos
             return g_counts[node];
         }
 
-        Sent send(uint32_t to, uint32_t port, void const* payload, uint32_t len)
+        Sent send(uint32_t to, uint32_t port, ReplyTag const& tag, void const* payload,
+                  uint32_t len)
         {
-            uint32_t const me = arch_cpu_id();
+            uint32_t const me = self();
             // The local node included: node_service skips its own self-ring, so a self-send
             // is four slots nothing will ever take.
             if (to >= NODE_MAX or to == me)
@@ -121,6 +145,7 @@ namespace kickos
             // The slot index comes from the producer's OWN head, never from the far tail.
             Slot& s = r.slot[head & RING_MASK];
             s.port = port;
+            s.tag = tag;
             s.len = len;
             if (len != 0u)
             {
@@ -131,13 +156,17 @@ namespace kickos
             r.head.v.store(head + 1u);
             count_up(g_counts[me].sent);
 
+            // A NODE INDEX SPENT AS A CORE MASK, which holds only where node equals core, the
+            // shared-image posture. The own-image posture is REFUSED AT CONFIGURE for this
+            // line's sake (CMakeLists.txt), so no build reaches it with the two apart.
             arch_ipi_send(1u << to);
             return Sent::OK;
         }
 
-        Verdict take(uint32_t from, void* out, uint32_t* out_len, uint32_t* out_port)
+        Verdict take(uint32_t from, void* out, uint32_t* out_len, uint32_t* out_port,
+                     ReplyTag* out_tag)
         {
-            uint32_t const me = arch_cpu_id();
+            uint32_t const me = self();
             // The local node included: nothing drains a self-ring, so there is nothing in one
             // to take.
             if (from >= NODE_MAX or from == me)
@@ -180,9 +209,10 @@ namespace kickos
             Slot const& s = r.slot[tail & RING_MASK];
             uint32_t const len = s.len;
             uint32_t const port = s.port;
+            ReplyTag const tag = s.tag;
 
-            // Both fields below are the far side's writing, so each is bounded before it is
-            // spent.
+            // Both fields checked below are the far side's writing, so each is bounded before
+            // it is spent. The tag is bounded by nothing: no arm of this file spends it.
             if (len > SLOT_BYTES)
             {
                 r.tail.v.store(tail + 1u);
@@ -202,6 +232,7 @@ namespace kickos
             }
             *out_len = len;
             *out_port = port;
+            *out_tag = tag;
             r.tail.v.store(tail + 1u);
             count_up(g_counts[me].took);
             return Verdict::TOOK;
@@ -209,7 +240,7 @@ namespace kickos
 
         void node_service(void)
         {
-            uint32_t const me = arch_cpu_id();
+            uint32_t const me = self();
             count_up(g_counts[me].serviced);
 
             // BOUNDED BOTH WAYS. This body runs with this core's interrupts masked, so a peer
@@ -230,7 +261,8 @@ namespace kickos
                     uint8_t buf[SLOT_BYTES];
                     uint32_t len = 0;
                     uint32_t port = PORT_MAX;
-                    Verdict const v = take(from, buf, &len, &port);
+                    ReplyTag tag = {};
+                    Verdict const v = take(from, buf, &len, &port, &tag);
                     if (v == Verdict::EMPTY or v == Verdict::DEPTH)
                     {
                         break;
@@ -240,20 +272,16 @@ namespace kickos
                     {
                         continue;
                     }
-                    // A reply is consumed here; echoing one would make two nodes trade the
-                    // same payload for good.
-                    if (port == PORT_ECHO)
-                    {
-                        (void)send(from, PORT_REPLY, buf, len);
-                    }
+                    (void)dispatch(from, port, tag, buf, len);
                 }
             }
         }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-        Verdict forge_and_take(uint32_t from, uint32_t port, uint32_t len, uint32_t head_jump)
+        Verdict forge_and_take(uint32_t from, uint32_t port, ReplyTag const& tag, uint32_t len,
+                               uint32_t head_jump)
         {
-            uint32_t const me = arch_cpu_id();
+            uint32_t const me = self();
             if (from >= NODE_MAX or from == me)
             {
                 return Verdict::EMPTY;
@@ -265,6 +293,7 @@ namespace kickos
 
             Slot& s = r.slot[0];
             s.port = port;
+            s.tag = tag;
             s.len = len;
             for (uint32_t i = 0; i < SLOT_BYTES; i++)
             {
@@ -275,12 +304,47 @@ namespace kickos
             uint8_t buf[SLOT_BYTES];
             uint32_t got_len = 0;
             uint32_t got_port = PORT_MAX;
-            return take(from, buf, &got_len, &got_port);
+            ReplyTag got_tag = {};
+            return take(from, buf, &got_len, &got_port, &got_tag);
+        }
+
+        bool forge_reply(uint32_t from, ReplyTag const& tag)
+        {
+            uint32_t const me = self();
+            if (from >= NODE_MAX or from == me)
+            {
+                return false;
+            }
+            Ring& r = ring_for(me, from);
+            r.head.v.store(0u);
+            r.tail.v.store(0u);
+            g_depth_strikes[me][from] = 0;
+
+            constexpr uint32_t REPLY_LEN = 8u;
+            Slot& s = r.slot[0];
+            s.port = PORT_REPLY;
+            s.tag = tag;
+            s.len = REPLY_LEN;
+            for (uint32_t i = 0; i < REPLY_LEN; i++)
+            {
+                s.payload[i] = static_cast<uint8_t>(0xC0u + i);
+            }
+            r.head.v.store(1u);
+
+            uint8_t buf[SLOT_BYTES];
+            uint32_t got_len = 0;
+            uint32_t got_port = PORT_MAX;
+            ReplyTag got_tag = {};
+            if (take(from, buf, &got_len, &got_port, &got_tag) != Verdict::TOOK)
+            {
+                return false;
+            }
+            return dispatch(from, got_port, got_tag, buf, got_len);
         }
 
         Verdict forge_depth_recovery(uint32_t from)
         {
-            uint32_t const me = arch_cpu_id();
+            uint32_t const me = self();
             if (from >= NODE_MAX or from == me)
             {
                 return Verdict::EMPTY;
@@ -295,9 +359,10 @@ namespace kickos
             uint8_t buf[SLOT_BYTES];
             uint32_t got_len = 0;
             uint32_t got_port = PORT_MAX;
+            ReplyTag got_tag = {};
             for (uint32_t i = 0; i < DEPTH_STRIKES; i++)
             {
-                (void)take(from, buf, &got_len, &got_port);
+                (void)take(from, buf, &got_len, &got_port, &got_tag);
             }
 
             // The far side going back to publishing properly: one slot at the head the reset
@@ -305,15 +370,16 @@ namespace kickos
             uint32_t const head = r.head.v.load();
             Slot& s = r.slot[head & RING_MASK];
             s.port = PORT_ECHO;
+            s.tag = ReplyTag{};
             s.len = 1u;
             s.payload[0] = 0x5Au;
             r.head.v.store(head + 1u);
-            return take(from, buf, &got_len, &got_port);
+            return take(from, buf, &got_len, &got_port, &got_tag);
         }
 
         Sent forge_tail_and_send(uint32_t to, uint32_t tail_jump)
         {
-            uint32_t const me = arch_cpu_id();
+            uint32_t const me = self();
             if (to >= NODE_MAX or to == me)
             {
                 return Sent::NODE;
@@ -323,7 +389,8 @@ namespace kickos
             r.tail.v.store(0u - tail_jump);
 
             uint8_t pattern[8] = {};
-            Sent const rc = send(to, PORT_ECHO, pattern, sizeof(pattern));
+            ReplyTag const tag = {};
+            Sent const rc = send(to, PORT_ECHO, tag, pattern, sizeof(pattern));
 
             r.head.v.store(0u);
             r.tail.v.store(0u);

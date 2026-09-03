@@ -30,33 +30,57 @@ namespace
     constexpr uint8_t OUT_FILL = 0xAAu;
     constexpr uint32_t LEN_SENTINEL = 0xDEADBEEFu;
     constexpr uint32_t PORT_SENTINEL = 0xFEEDFACEu;
+    constexpr amp::ReplyTag TAG_SENTINEL = {0xF00DF00Du, 0xF00DBEEFu};
 
-    amp::Sent send_as(uint32_t me, uint32_t to, uint32_t port, void const* payload, uint32_t len)
+    // What the arms whose subject is not the tag publish. NON-ZERO on both fields, so a slot
+    // reset leaves neither of them by accident.
+    constexpr amp::ReplyTag TAG_CARRIED = {0x11112222u, 0x33334444u};
+
+    // What publish_raw leaves in a malformed slot, distinct from the poison above: a refusal
+    // that wrote the tag through would show up as this.
+    constexpr amp::ReplyTag TAG_FORGED = {0x0BADF00Du, 0x0BADBEEFu};
+
+    amp::Sent send_tagged_as(uint32_t me, uint32_t to, uint32_t port, amp::ReplyTag const& tag,
+                             void const* payload, uint32_t len)
     {
         uint32_t const was = fix::g_node;
         fix::g_node = me;
-        amp::Sent const s = amp::send(to, port, payload, len);
+        amp::Sent const s = amp::send(to, port, tag, payload, len);
         fix::g_node = was;
         return s;
+    }
+
+    amp::Sent send_as(uint32_t me, uint32_t to, uint32_t port, void const* payload, uint32_t len)
+    {
+        return send_tagged_as(me, to, port, TAG_CARRIED, payload, len);
+    }
+
+    amp::Verdict take_tagged_as(uint32_t me, uint32_t from, void* out, uint32_t* out_len,
+                                uint32_t* out_port, amp::ReplyTag* out_tag)
+    {
+        uint32_t const was = fix::g_node;
+        fix::g_node = me;
+        amp::Verdict const v = amp::take(from, out, out_len, out_port, out_tag);
+        fix::g_node = was;
+        return v;
     }
 
     amp::Verdict take_as(uint32_t me, uint32_t from, void* out, uint32_t* out_len,
                          uint32_t* out_port)
     {
-        uint32_t const was = fix::g_node;
-        fix::g_node = me;
-        amp::Verdict const v = amp::take(from, out, out_len, out_port);
-        fix::g_node = was;
-        return v;
+        amp::ReplyTag scratch = {};
+        return take_tagged_as(me, from, out, out_len, out_port, &scratch);
     }
 
-    // The three out-parameters of take(), pre-poisoned: a verdict other than TOOK must leave
-    // all three exactly as they came.
+    // The four out-parameters of take(), pre-poisoned: a verdict other than TOOK must leave
+    // all four exactly as they came. An arm reaching take through take_as leaves `tag`
+    // poisoned by construction, that wrapper keeping a scratch of its own.
     struct Taken
     {
         uint8_t buf[amp::SLOT_BYTES];
         uint32_t len;
         uint32_t port;
+        amp::ReplyTag tag;
 
         Taken()
         {
@@ -66,11 +90,16 @@ namespace
             }
             len = LEN_SENTINEL;
             port = PORT_SENTINEL;
+            tag = TAG_SENTINEL;
         }
 
         bool untouched() const
         {
             if (len != LEN_SENTINEL or port != PORT_SENTINEL)
+            {
+                return false;
+            }
+            if (tag.thread != TAG_SENTINEL.thread or tag.seq != TAG_SENTINEL.seq)
             {
                 return false;
             }
@@ -94,6 +123,7 @@ namespace
         amp::Slot& s = r.slot[head % amp::RING_SLOTS];
         s.len = len;
         s.port = port;
+        s.tag = TAG_FORGED;
         for (uint32_t i = 0; i < amp::SLOT_BYTES; i++)
         {
             s.payload[i] = fill;
@@ -370,6 +400,85 @@ namespace
         EXPECT_EQ(0x31u, good.buf[0]);
     }
 
+    // The tag is the one far field no arm of the window spends, so what it owes is a
+    // byte-for-byte crossing and nothing else.
+    TEST_F(AmpWindow, a_reply_tag_crosses_byte_for_byte)
+    {
+        amp::ReplyTag const sent = {0x89ABCDEFu, 0x01234567u};
+        uint8_t const payload[3] = {0x51u, 0x52u, 0x53u};
+        ASSERT_EQ(amp::Sent::OK,
+                  send_tagged_as(NODE_B, NODE_A, amp::PORT_ECHO, sent, payload, 3u));
+
+        Taken t;
+        ASSERT_EQ(amp::Verdict::TOOK,
+                  take_tagged_as(NODE_A, NODE_B, t.buf, &t.len, &t.port, &t.tag));
+        EXPECT_EQ(sent.thread, t.tag.thread);
+        EXPECT_EQ(sent.seq, t.tag.seq);
+        EXPECT_EQ(3u, t.len);
+        EXPECT_EQ(amp::PORT_ECHO, t.port);
+    }
+
+    TEST_F(AmpWindow, a_verdict_other_than_took_leaves_the_tag_with_the_other_three)
+    {
+        // EMPTY: nothing was published at all.
+        Taken empty;
+        EXPECT_EQ(amp::Verdict::EMPTY,
+                  take_tagged_as(NODE_A, NODE_B, empty.buf, &empty.len, &empty.port, &empty.tag));
+        EXPECT_TRUE(empty.untouched());
+
+        // LENGTH and PORT: a slot IS there, and it carries a tag distinct from the poison.
+        publish_raw(NODE_A, NODE_B, amp::SLOT_BYTES + 1u, amp::PORT_ECHO, 0x77u);
+        Taken overlong;
+        EXPECT_EQ(amp::Verdict::LENGTH,
+                  take_tagged_as(NODE_A, NODE_B, overlong.buf, &overlong.len, &overlong.port,
+                                 &overlong.tag));
+        EXPECT_TRUE(overlong.untouched());
+
+        publish_raw(NODE_A, NODE_B, 4u, PORT_UNMINTED, 0x66u);
+        Taken unminted;
+        EXPECT_EQ(amp::Verdict::PORT,
+                  take_tagged_as(NODE_A, NODE_B, unminted.buf, &unminted.len, &unminted.port,
+                                 &unminted.tag));
+        EXPECT_TRUE(unminted.untouched());
+
+        // DEPTH: the far head is one the consumer refuses to believe.
+        amp::ring_for(NODE_A, NODE_B).head.v.store(
+            amp::ring_for(NODE_A, NODE_B).tail.v.load() + amp::RING_SLOTS + 1u);
+        Taken deep;
+        EXPECT_EQ(amp::Verdict::DEPTH,
+                  take_tagged_as(NODE_A, NODE_B, deep.buf, &deep.len, &deep.port, &deep.tag));
+        EXPECT_TRUE(deep.untouched());
+    }
+
+    // The reason the tag is handed back rather than left to be re-read, which is the port's
+    // reason too: the slot is the producer's again the instant the tail advances.
+    TEST_F(AmpWindow, the_tag_is_not_re_readable_from_the_slot_once_the_tail_moved)
+    {
+        amp::ReplyTag const first = {0x1111AAAAu, 0x2222BBBBu};
+        uint8_t const payload[1] = {0x93u};
+        ASSERT_EQ(amp::Sent::OK,
+                  send_tagged_as(NODE_B, NODE_A, amp::PORT_ECHO, first, payload, 1u));
+        Taken t;
+        ASSERT_EQ(amp::Verdict::TOOK,
+                  take_tagged_as(NODE_A, NODE_B, t.buf, &t.len, &t.port, &t.tag));
+
+        // One ring's worth more, so the last of them lands back on the slot just taken.
+        amp::ReplyTag const second = {0x3333CCCCu, 0x4444DDDDu};
+        for (uint32_t i = 0; i < amp::RING_SLOTS; i++)
+        {
+            ASSERT_EQ(amp::Sent::OK,
+                      send_tagged_as(NODE_B, NODE_A, amp::PORT_ECHO, second, payload, 1u))
+                << "refill " << i;
+        }
+
+        amp::Ring const& r = amp::ring_for(NODE_A, NODE_B);
+        EXPECT_EQ(second.thread, r.slot[0].tag.thread);
+        EXPECT_EQ(second.seq, r.slot[0].tag.seq);
+        // The taker holds its own copy, which the refill did not reach.
+        EXPECT_EQ(first.thread, t.tag.thread);
+        EXPECT_EQ(first.seq, t.tag.seq);
+    }
+
     // node_service is BOUNDED per sender and per call, and these are what say the bounds do
     // not truncate the honest path: one call empties a FULL ring from every peer. A static
     // ring set cannot exceed either bound, so what an arm can pin is the floor.
@@ -416,5 +525,62 @@ namespace
             EXPECT_EQ(amp::RING_SLOTS, amp::ring_for(from, NODE_A).head.v.load())
                 << "replies to " << from;
         }
+    }
+
+    // A REPLY IS ROUTED, NEVER ECHOED, and the endpoint layer is handed the RING it arrived
+    // on beside the tag: that ring is the fifth validation clause's whole input, so a route
+    // that dropped it would leave any node able to complete any node's call.
+    TEST_F(AmpWindow, a_reply_is_routed_to_the_endpoint_layer_with_its_ring_and_tag)
+    {
+        uint8_t const payload[2] = {0x5Eu, 0x5Fu};
+        fix::g_reply_answer = true;
+        uint32_t const was_drop = amp::counts(NODE_A).reply_drop;
+        ASSERT_EQ(amp::Sent::OK,
+                  send_tagged_as(NODE_B, NODE_A, amp::PORT_REPLY, TAG_CARRIED, payload, 2u));
+        fix::g_node = NODE_A;
+        amp::node_service();
+        fix::g_node = 0;
+        EXPECT_EQ(1u, fix::g_replies);
+        EXPECT_EQ(NODE_B, fix::g_reply_from);
+        EXPECT_EQ(TAG_CARRIED.thread, fix::g_reply_thread);
+        EXPECT_EQ(TAG_CARRIED.seq, fix::g_reply_seq);
+        EXPECT_EQ(2u, fix::g_reply_len);
+        EXPECT_EQ(0x5Eu, fix::g_reply_first);
+        // Delivered, so nothing is counted, and no echo went back to the sender.
+        EXPECT_EQ(was_drop, amp::counts(NODE_A).reply_drop);
+        EXPECT_EQ(0u, amp::ring_for(NODE_B, NODE_A).head.v.load());
+    }
+
+    // A REFUSED REPLY IS COUNTED, which is what separates one the validation rejected from
+    // one that never arrived.
+    TEST_F(AmpWindow, a_reply_the_endpoint_layer_refuses_is_counted_and_dropped)
+    {
+        uint8_t const payload[1] = {0x60u};
+        fix::g_reply_answer = false;
+        uint32_t const was_drop = amp::counts(NODE_A).reply_drop;
+        ASSERT_EQ(amp::Sent::OK,
+                  send_tagged_as(NODE_B, NODE_A, amp::PORT_REPLY, TAG_CARRIED, payload, 1u));
+        fix::g_node = NODE_A;
+        amp::node_service();
+        fix::g_node = 0;
+        EXPECT_EQ(1u, fix::g_replies);
+        EXPECT_EQ(was_drop + 1u, amp::counts(NODE_A).reply_drop);
+        // The tail advanced anyway: a refused reply may not wedge the ring.
+        amp::Ring const& in = amp::ring_for(NODE_A, NODE_B);
+        EXPECT_EQ(in.head.v.load(), in.tail.v.load());
+    }
+
+    // AN ECHO REACHES THE ENDPOINT LAYER NEVER, whatever the tag it carries.
+    TEST_F(AmpWindow, an_echo_is_not_routed_to_the_endpoint_layer)
+    {
+        uint8_t const payload[1] = {0x61u};
+        fix::g_reply_answer = true;
+        ASSERT_EQ(amp::Sent::OK,
+                  send_tagged_as(NODE_B, NODE_A, amp::PORT_ECHO, TAG_CARRIED, payload, 1u));
+        fix::g_node = NODE_A;
+        amp::node_service();
+        fix::g_node = 0;
+        EXPECT_EQ(0u, fix::g_replies);
+        EXPECT_EQ(1u, amp::ring_for(NODE_B, NODE_A).head.v.load());
     }
 }

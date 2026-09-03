@@ -14,7 +14,9 @@
 #include <kickos/ampwindow.h>
 #include <kickos/aspace.h>
 #include <kickos/domain.h>
+#include <kickos/endpoint.h>
 #include <kickos/frame_pool.h>
+#include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/reent.h>
@@ -40,30 +42,9 @@ namespace kickos
         }
 
 #if KICKOS_AMP_NODE
-        uint64_t sat8(uint32_t v)
-        {
-            uint64_t o = v;
-            if (v > 0xFFu)
-            {
-                o = 0xFFu;
-            }
-            return o;
-        }
-
-        uint64_t amp_counts_packed(uint32_t node)
-        {
-            amp::Counts const& c = amp::counts(node);
-            uint64_t serviced = c.serviced;
-            if (c.serviced > 0xFFFFu)
-            {
-                serviced = 0xFFFFu;
-            }
-            return (serviced << 48) | (sat8(c.send_refused) << 40) | (sat8(c.sent) << 32)
-                   | (sat8(c.port) << 24) | (sat8(c.length) << 16) | (sat8(c.depth) << 8)
-                   | sat8(c.took);
-        }
-
         constexpr uint32_t ROUND_LEN = 16u;
+
+        constexpr amp::ReplyTag PROBE_TAG = amp::REPLY_TAG_NONE;
 
         uint64_t amp_round(uint32_t node)
         {
@@ -72,8 +53,8 @@ namespace kickos
             {
                 payload[i] = static_cast<uint8_t>(0xA0u + i);
             }
-            return static_cast<uint64_t>(
-                static_cast<uint32_t>(amp::send(node, amp::PORT_ECHO, payload, ROUND_LEN)));
+            return static_cast<uint64_t>(static_cast<uint32_t>(
+                amp::send(node, amp::PORT_ECHO, PROBE_TAG, payload, ROUND_LEN)));
         }
 
         uint64_t verdict_code(amp::Verdict v)
@@ -97,7 +78,33 @@ namespace kickos
             return KOS_AMP_V_EMPTY;
         }
 
+        // The peer every forge and every far endpoint below names.
         constexpr uint32_t FORGE_FROM = 1u;
+        constexpr uint32_t AMP_PEER_NODE = FORGE_FROM;
+
+        // WHO MAY REACH THE TWO OPS BELOW THAT CROSS A NODE. Root's TASK and not root's
+        // thread: the arms run the forge from a worker root spawned. NOT `privileged`, which
+        // root is not on any board carrying this posture and which is what leaves
+        // amp_endpoint_create unreachable from user code.
+        //
+        // A NULL root task REFUSES rather than matching: nothing declines a slay of root, so
+        // its slot can reach the exit that clears the field, and a caller mid-exit has a null
+        // task of its own. Equality alone would open the gate exactly then.
+        //
+        // Caller holds IrqLock: the field is another thread's and that exit writes it there.
+        bool amp_probe_caller_ok(Thread const* c)
+        {
+            if (c == nullptr)
+            {
+                return false;
+            }
+            Task const* const root = kernel().threads.slots[ThreadPool::ROOT_INDEX].task;
+            if (root == nullptr)
+            {
+                return false;
+            }
+            return c->task == root;
+        }
 
         uint64_t send_code(amp::Sent rc)
         {
@@ -116,8 +123,74 @@ namespace kickos
             return KOS_AMP_V_SEND_REFUSED;
         }
 
+        // The reply forges, which mean nothing without a caller genuinely parked on a far
+        // call.
+        uint64_t amp_forge_reply(uint32_t selector)
+        {
+            amp::ReplyTag tag = {};
+            uint32_t node = 0;
+            if (selector == KOS_AMP_FORGE_REPLY_UNPARKED)
+            {
+                // The CALLER's own route, which is running rather than parked, so the state
+                // clause refuses it.
+                Thread const* const c = sched::current();
+                if (c == nullptr)
+                {
+                    return KOS_AMP_V_EMPTY;
+                }
+                int const idx = kernel().threads.index_of(c);
+                if (idx < 0)
+                {
+                    return KOS_AMP_V_EMPTY;
+                }
+                tag.thread = kernel().threads.handle_for(idx);
+                tag.seq = amp::reply_seq(c->call_seq);
+                node = FORGE_FROM;
+            }
+            else
+            {
+                if (not endpoint_far_reply_route(&tag, &node))
+                {
+                    return KOS_AMP_V_EMPTY;
+                }
+                if (selector == KOS_AMP_FORGE_REPLY_WRONG_RING)
+                {
+                    // Any peer ring the caller is NOT parked on.
+                    uint32_t const parked = node;
+                    node = amp::NODE_MAX;
+                    for (uint32_t n = 0; n < amp::NODE_MAX; n++)
+                    {
+                        if (n == parked or n == amp::self())
+                        {
+                            continue;
+                        }
+                        node = n;
+                        break;
+                    }
+                    if (node >= amp::NODE_MAX)
+                    {
+                        return KOS_AMP_V_EMPTY; // a two-node partition has no third ring
+                    }
+                }
+                else if (selector == KOS_AMP_FORGE_REPLY_STALE_SEQ)
+                {
+                    tag.seq = amp::reply_seq(tag.seq + 1u);
+                }
+            }
+            if (amp::forge_reply(node, tag))
+            {
+                return KOS_AMP_V_TOOK;
+            }
+            return KOS_AMP_V_EMPTY;
+        }
+
         uint64_t amp_forge(uint32_t selector)
         {
+            if (selector >= KOS_AMP_FORGE_REPLY_UNPARKED
+                and selector <= KOS_AMP_FORGE_REPLY_GOOD)
+            {
+                return amp_forge_reply(selector);
+            }
             if (selector == KOS_AMP_FORGE_TAIL_DEPTH)
             {
                 return send_code(amp::forge_tail_and_send(FORGE_FROM, amp::RING_SLOTS + 1u));
@@ -128,7 +201,7 @@ namespace kickos
                 // far side is involved and nothing has to be malformed.
                 uint8_t byte = 0;
                 return send_code(
-                    amp::send(arch_cpu_id(), amp::PORT_ECHO, &byte, sizeof(byte)));
+                    amp::send(amp::self(), amp::PORT_ECHO, PROBE_TAG, &byte, sizeof(byte)));
             }
             if (selector == KOS_AMP_FORGE_DEPTH_RESET)
             {
@@ -163,7 +236,8 @@ namespace kickos
             {
                 return KOS_AMP_V_EMPTY;
             }
-            return verdict_code(amp::forge_and_take(FORGE_FROM, port, len, head_jump));
+            return verdict_code(
+                amp::forge_and_take(FORGE_FROM, port, PROBE_TAG, len, head_jump));
         }
 #endif
 
@@ -1440,17 +1514,80 @@ namespace kickos
             {
                 return amp_round(static_cast<uint32_t>(a1));
             }
-            case KOS_ASPACE_OP_AMP_COUNTS:
-            {
-                return amp_counts_packed(static_cast<uint32_t>(a1));
-            }
             case KOS_ASPACE_OP_AMP_FORGE:
             {
+                {
+                    // Scoped to the gate alone: amp_forge takes the doorbell's own path and
+                    // is not run under a lock the real one does not hold.
+                    IrqLock lock;
+                    if (not amp_probe_caller_ok(sched::current()))
+                    {
+                        return static_cast<uint64_t>(-KOS_EPERM);
+                    }
+                }
                 return amp_forge(static_cast<uint32_t>(a1));
             }
-            case KOS_ASPACE_OP_AMP_RESETS:
+            case KOS_ASPACE_OP_AMP_TOOK:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).took.load();
+            }
+            case KOS_ASPACE_OP_AMP_DEPTH:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).depth.load();
+            }
+            case KOS_ASPACE_OP_AMP_DEPTH_RESET:
             {
                 return amp::counts(static_cast<uint32_t>(a1)).depth_reset.load();
+            }
+            case KOS_ASPACE_OP_AMP_LENGTH:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).length.load();
+            }
+            case KOS_ASPACE_OP_AMP_PORT:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).port.load();
+            }
+            case KOS_ASPACE_OP_AMP_SENT:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).sent.load();
+            }
+            case KOS_ASPACE_OP_AMP_SEND_REFUSED:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).send_refused.load();
+            }
+            case KOS_ASPACE_OP_AMP_SERVICED:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).serviced.load();
+            }
+            case KOS_ASPACE_OP_AMP_REPLY_DROP:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).reply_drop.load();
+            }
+            case KOS_ASPACE_OP_AMP_FAR_EP:
+            {
+                IrqLock lock;
+                Thread* const c = sched::current();
+                // 0 and not an errno: the caller reads any non-zero answer as the capability.
+                if (not amp_probe_caller_ok(c))
+                {
+                    return 0;
+                }
+                uint32_t cap = KCAP_INVALID;
+                if (amp_endpoint_mint(c, AMP_PEER_NODE, static_cast<uint32_t>(a1), &cap) != 0)
+                {
+                    return 0;
+                }
+                return cap;
+            }
+            case KOS_ASPACE_OP_AMP_FAR_PARKED:
+            {
+                amp::ReplyTag tag = {};
+                uint32_t node = 0;
+                if (endpoint_far_reply_route(&tag, &node))
+                {
+                    return 1;
+                }
+                return 0;
             }
 #endif
             case KOS_ASPACE_OP_SPACE_ID:
