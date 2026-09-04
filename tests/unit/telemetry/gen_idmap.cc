@@ -49,6 +49,9 @@ int main()
     KOS_SYS_FRAME_MAP,
     KOS_SYS_FRAME_UNMAP,
     KOS_SYS_AMP_ENDPOINT_CREATE,
+    KOS_SYS_THREAD_SET_AFFINITY,
+    KOS_SYS_TASK_SCHED_GRANT,
+    KOS_SYS_SCHED_PROBE,
     };
     for (kos_syscall_nr s : calls)
     {

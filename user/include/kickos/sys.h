@@ -193,6 +193,44 @@ int kos_thread_kill(kos_thread_t thread);
 // the target must be SCHEDULED to run its own teardown.
 int kos_thread_slay(kos_thread_t thread, uint32_t timeout_us);
 
+// Place a thread: `core_mask` names the cores it may run on, and the kernel intersects it with
+// the thread's task's core set. THE ONE PLACEMENT CALL; kos::thread::pin and kos::thread::unpin
+// in <kickos/kos.h> are spellings of it, not operations of their own.
+//
+// A thread may place any thread of its OWN TASK, itself included where it holds its own
+// handle. A task is one SCHEDULING DOMAIN: its threads share one grant, one priority ceiling
+// and one core set, and no placement inside it can raise that ceiling, widen that core set or
+// reach another task. Placing a thread of another task is privileged.
+//
+// `core_mask` of 0 asks for the task's DEFAULT set, its core set less the cores the image
+// isolates, which is the same resolution a spawn makes of a zero core_mask and is how unpin
+// is spelled. A NONZERO mask is a SET OF ACCEPTABLE CORES: it is intersected with the machine
+// and then with the grant, so all ones is an ordinary request rather than a magic value, and
+// it asks for the whole grant INCLUDING the isolated cores.
+//
+// An isolated core is named here like any other. Nothing arrives on one by default, and only
+// an explicit mask that names it reaches it; a mask naming it beside ordinary cores lets that
+// core's picker take the thread like any other core in the set.
+// Returns 0, -KOS_EPERM (the mask meets the task's core set nowhere, or a cross-task target),
+// -KOS_EINVAL (a nonzero mask naming no core this kernel schedules at all), -KOS_EBADF (a bad
+// handle, or one whose thread has exited), or -KOS_ENOSYS on an image whose kernel drives one
+// core.
+int kos_thread_set_affinity(kos_thread_t thread, uint32_t core_mask);
+
+// Narrow a task's SCHEDULING GRANT: the highest priority its threads may take, and the cores
+// they may run on. Narrowing-only against the caller's own grant, and 0 in either argument
+// leaves that half alone. Only the task's creator may call it, and only while the task is still
+// EMPTY, a grant that narrowed under a live thread having stranded it.
+//
+// The core set is intersected with the machine before it is weighed, so a bit naming a core
+// this kernel does not schedule is dropped rather than refused; what survives must be a subset
+// of the grant it narrows.
+//
+// Returns 0, -KOS_EPERM (wider than the caller's own grant, or not the creator), -KOS_EINVAL
+// (it names no core this kernel schedules at all, or the ceiling is out of range), -KOS_EBADF,
+// or -KOS_EBUSY (the task has a member).
+int kos_task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask);
+
 // Create a TASK: a group of threads that share one data region and one fate. `mem_base` /
 // `mem_size` is the shared region, or 0/0 for a group that shares no memory and is only a
 // kill group; it is granted R|W to every member and is admitted exactly as a spawn-time
@@ -299,6 +337,11 @@ uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size);
 // for a whole scenario rather than for a mapping. -KOS_ENOSYS where the board describes
 // regions instead of translating, cast up through the uintptr_t return.
 uintptr_t kos_aspace_probe(uintptr_t op, uintptr_t a1);
+
+// Test-only: read one item of the CALLER's own scheduling state (see enum kos_sched_op in
+// sys/abi.h). -KOS_EINVAL for a bad op and on an image built without KICKOS_ENABLE_SELFTEST,
+// cast up through the uintptr_t return.
+uintptr_t kos_sched_probe(uintptr_t op);
 // Test-only: enable a controller line directly, so an injected raise reaches the
 // default handler on masked-by-default controllers (ARM NVIC, RX). Needs KOS_AUTH_IRQ.
 int kos_irq_unmask(int line); // 0, or -KOS_EPERM (no KOS_AUTH_IRQ) / -KOS_EINVAL (bad line)

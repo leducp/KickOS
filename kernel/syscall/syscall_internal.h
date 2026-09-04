@@ -181,6 +181,10 @@ namespace kickos
     // 0 means GONE; -KOS_ETIMEDOUT means the redirect is armed and irrevocable with the
     // capability sweep unfinished.
     int thread_slay(kos_thread_t thread, uint32_t timeout_us);
+    // Placement and the scheduling grant. Both are total over every posture: at one kernel
+    // core the placement call answers -KOS_ENOSYS and the grant carries its ceiling half only.
+    int thread_set_affinity(kos_thread_t thread, uint32_t core_mask);
+    int task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask);
     int task_slay(kos_task_t task, uint32_t timeout_us);
 
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)

@@ -16,6 +16,26 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is
 `docs/archive/M1_state.md`; the board/console readiness matrix is `docs/m2-readiness.md`.
 
+## f302nucleo-st runs two threads to pay for the priority ceiling (parked for M8)
+
+- [ ] **THE BOARD LOST A THREAD SLOT AND THE CHASE IS PARKED, NOT ABANDONED.** The scheduling
+      grant's priority ceiling is unconditional by design -- it closes a starvation hole on
+      every board, single-core included -- and costs `Task` four bytes through alignment. On
+      `f302nucleo-st`, which had no arena slack, that tipped the link-time assert refusing a
+      board that advertises more thread slots than it can seat. Measured rather than guessed:
+      at three threads the link fails at user stacks of 1024, 896 and 768 alike, so the user
+      stack is NOT the lever; two threads at 1024 links. The dominant term is the KERNEL stack
+      each slot also carries in `.bss` below the arena, which the assert names itself.
+      **What is NOT established**: whether a smaller `KICKOS_KERNEL_STACK_SIZE` would buy the
+      third slot back. The probe was inconclusive because that knob is read from the generated
+      board config rather than the CMake cache, so a `-D` may never have reached it, and a
+      failed probe there cannot be told from an inert one.
+      **The cost of the drop**: this board's selftest skip set grows by whatever needs a third
+      thread, and the size of that set is unwitnessed -- `f302nucleo` is main-bench only and
+      has no emulator, so only a silicon run names it. Any record saying this board runs three
+      threads is now wrong.
+      Chase it with the M8 footprint work, where the question is the right shape.
+
 ## Root can reach EXITED, and the invariants say it cannot (external audit, M7.8 second pass)
 
 Raised by the external auditor of M7.8 as a PRE-EXISTING issue outside that milestone, to be

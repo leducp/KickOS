@@ -9,6 +9,7 @@
 #include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/console_tx.h>
+#include <kickos/debug.h>
 #include <kickos/kernel.h>
 #include <kickos/instance.h>
 #include <kickos/domain.h>
@@ -40,6 +41,41 @@ namespace kickos
         }
 #endif
 
+#if KICKOS_KERNEL_CORES > 1
+        // Raise a reschedule on every peer running below `prio` that could take `t`, so it
+        // looks at the ready lists. Narrowed by the placement rule: a core `t` may not run on
+        // would wake, pick the same thread it already runs, and go back to sleep.
+        void poke_peers_below(Thread const* t, uint8_t prio)
+        {
+            uint32_t const me = kickos_kernel_core();
+            uint32_t peers = 0;
+            for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
+            {
+                Thread const* const running = kernel().current[core];
+                if (core == me or running == nullptr)
+                {
+                    continue;
+                }
+                if (not sched_placeable_on(t, core))
+                {
+                    continue;
+                }
+                if (running->prio < prio)
+                {
+                    peers |= 1u << core;
+                }
+            }
+            // RECORDED EVEN WHEN THE MASK IS EMPTY: a wake whose target was owed a core and
+            // asked nobody is a different finding from one that asked and was not answered,
+            // and only the zero mask tells them apart.
+            KOS_TRACE(::kickos::KOS_TR_ASK, peers, prio);
+            if (peers != 0)
+            {
+                klock_resched_ask(peers);
+            }
+        }
+#endif
+
         // Caller holds IrqLock. `prev` is the PUBLISHED thread, not necessarily the
         // executing one: a switch pended earlier under this same lock has already moved off
         // it. always_inline keeps the split from moving a call frame into or out of the
@@ -48,9 +84,22 @@ namespace kickos
         {
             KICKOS_BENCH_MARK(bm_book);
             Thread* prev = kernel().current[kickos_kernel_core()];
+#if KICKOS_KERNEL_CORES > 1
+            Thread* migrated = nullptr;
+#endif
             if (prev->state == ThreadState::RUNNING)
             {
                 prev->state = ThreadState::READY;
+#if KICKOS_KERNEL_CORES > 1
+                // THE ONE POINT WHERE A RE-MASKED THREAD BECOMES AVAILABLE TO ITS NEW CORES:
+                // until this store it is RUNNING and every peer's pick_next refuses it, so a
+                // poke sent any earlier is consumed against a thread nobody could take. One
+                // mask test on the switch path, and the call is reached only by a migration.
+                if (not sched_placeable_on(prev, kickos_kernel_core()))
+                {
+                    migrated = prev;
+                }
+#endif
             }
             kernel().current[kickos_kernel_core()] = next;
             next->state = ThreadState::RUNNING;
@@ -79,6 +128,12 @@ namespace kickos
                     reent_prime(rspace, next->reent);
                 }
                 reent_seat(rspace, next->reent);
+            }
+#endif
+#if KICKOS_KERNEL_CORES > 1
+            if (migrated != nullptr)
+            {
+                poke_peers_below(migrated, migrated->prio);
             }
 #endif
             // Must arm for the INCOMING thread before the jump: nothing else will program
@@ -208,39 +263,6 @@ namespace kickos
             kernel().policy = policy;
         }
 
-#if KICKOS_KERNEL_CORES > 1
-        namespace
-        {
-            // Raise a reschedule on every peer running below `prio`, so it looks at the
-            // ready lists.
-            void poke_peers_below(uint8_t prio)
-            {
-                uint32_t const me = kickos_kernel_core();
-                uint32_t peers = 0;
-                for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
-                {
-                    Thread const* const running = kernel().current[core];
-                    if (core == me or running == nullptr)
-                    {
-                        continue;
-                    }
-                    if (running->prio < prio)
-                    {
-                        peers |= 1u << core;
-                    }
-                }
-                // RECORDED EVEN WHEN THE MASK IS EMPTY: a wake whose target was owed a core
-                // and asked nobody is a different finding from one that asked and was not
-                // answered, and only the zero mask tells them apart.
-                KOS_TRACE(::kickos::KOS_TR_ASK, peers, prio);
-                if (peers != 0)
-                {
-                    klock_resched_ask(peers);
-                }
-            }
-        }
-#endif
-
         void add(Thread* t)
         {
             IrqLock lock;
@@ -249,13 +271,17 @@ namespace kickos
             if (t->prio == KICKOS_PRIO_IDLE)
             {
                 kernel().idle[kickos_kernel_core()] = t;
+#if KICKOS_KERNEL_CORES > 1
+                // The boot core's idle, seated by the same rule add_idle uses for a peer's.
+                t->affinity = 1u << kickos_kernel_core();
+#endif
             }
             else
             {
                 kernel().live++;
             }
 #if KICKOS_KERNEL_CORES > 1
-            poke_peers_below(t->prio);
+            poke_peers_below(t, t->prio);
 #endif
         }
 
@@ -264,8 +290,66 @@ namespace kickos
         {
             IrqLock lock;
             t->state = ThreadState::READY;
+            // EXACTLY ITS OWN CORE'S BIT. What guarantees an isolated core still has an idle
+            // thread is pick_next's unconditional fallback, not this; this keeps idle inside
+            // the affinity invariant, which every reader of the field relies on.
+            t->affinity = 1u << core;
             kernel().policy->on_ready(t);
             kernel().idle[core] = t;
+        }
+#endif
+
+#if KICKOS_KERNEL_CORES > 1
+        void set_affinity(Thread* t, uint32_t mask)
+        {
+            IrqLock lock;
+            if (t->affinity == mask)
+            {
+                return;
+            }
+            t->affinity = mask;
+            if (t->state != ThreadState::RUNNING)
+            {
+                // Only a READY thread is on a ready list for a peer to find; the ask is so a
+                // core that could take it now looks, instead of waiting for its next natural
+                // switch.
+                if (t->state == ThreadState::READY)
+                {
+                    poke_peers_below(t, t->prio);
+                }
+                return;
+            }
+            // A RUNNING thread the new mask still admits keeps the core it is on: placement
+            // says where a thread MAY run, never where it runs best.
+            uint32_t const me = kickos_kernel_core();
+            for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
+            {
+                if (kernel().current[core] != t)
+                {
+                    continue;
+                }
+                if (sched_placeable_on(t, core))
+                {
+                    return;
+                }
+                if (core == me)
+                {
+                    // klock_resched_ask strips the caller's own bit from what it publishes, so
+                    // a core cannot ask itself; the pass is taken here instead. switch_book
+                    // does the poke, on the far side of the store that makes `t` takeable.
+                    reschedule();
+                    return;
+                }
+                // STATE PUBLISHED AGAINST THE TARGET AND THEN THE RAISE, never a raise
+                // carrying scheduling meaning of its own (docs/design-multicore.md N4). That
+                // core's pass is the only thing that can move `t` off it.
+                klock_resched_ask(1u << core);
+                return;
+            }
+            // RUNNING is published with the current[] seat of the core running it, so the
+            // loop above leaves through one of its returns and this is only ever reached with
+            // the two disagreeing.
+            KICKOS_DEBUG_ASSERT(t->state != ThreadState::RUNNING);
         }
 #endif
 
@@ -385,7 +469,7 @@ namespace kickos
             IrqLock lock;
 #if KICKOS_KERNEL_CORES > 1
             // Ahead of every refusal below: a core declining the switch still owes `t` a core.
-            poke_peers_below(t->prio);
+            poke_peers_below(t, t->prio);
 #endif
             Thread const* const c = current();
             // Null between sched::init and sched::start.

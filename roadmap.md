@@ -549,11 +549,28 @@ identifiers local to that file, and this milestone adopts every one of them:
 | S6b | M7.6 | `imx8mp-evk` as a chip port, and the predicate declared per part |
 | S7 | M7.7 | AMP |
 | -- | M7.8 | the shared window reached through an endpoint: N7's remaining half |
-| -- | M7.9 | SMP/AMP witness: AMP on the RP pair, SMP on the LX6 |
+| -- | M7.9 | thread placement: the task's scheduling grant, the affinity mask, core isolation |
+| -- | M7.10 | the LX6 shared kernel, and the silicon measurement that made it declarable |
+| -- | M7.11 | AMP on the RP pair as two images, and the cross-node ping-pong |
 
-**M7.8 AND M7.9 TAKE `--` IN THE STEP COLUMN, as M7.5 does, because neither is a step of the
-contract.** M7.8 completes freeze N7 rather than implementing a numbered step, and M7.9 is a
-witness plus a gate probe. The contract's own step plan ends at S7 and is not reopened by either.
+**M7.8 THROUGH M7.11 TAKE `--` IN THE STEP COLUMN, as M7.5 does, because none is a step of the
+contract.** M7.8 completes freeze N7 rather than implementing a numbered step; M7.9 is a
+scheduling contract the contract itself does not carry; M7.10 and M7.11 are a backend and a
+witness. The contract's own step plan ends at S7 and none of them reopens it.
+
+**THE LAST THREE ROWS WERE REDRAWN AFTER THE WORK, WHICH IS THE WRONG ORDER AND IS RECORDED AS
+SUCH.** M7.9 was once "SMP/AMP witness: AMP on the RP pair, SMP on the LX6", one row for two
+models on two parts. Three things pulled it apart. AMP-by-convention was ruled out for the LX6
+and the A53 -- a partition nothing enforces is not isolation, and the LX6 passes the predicate,
+so it gets a shared kernel. The RP pair moved to two images per node, which is most of a
+milestone rather than a tail. And thread placement turned out to be the thing that makes an LX6
+shared kernel worth having at all, since without a way to reserve a core the second core buys a
+control loop nothing.
+**An external audit read the ledger, read the branch, and refused the mismatch**, which is the
+ledger working: this file is the sole place a milestone number is assigned, so a branch whose
+content contradicts it is unmergeable by construction. The rows are now what the branches are.
+The lesson is the ordering, not the renumber -- a scope decision taken in conversation is not
+taken until this table says so.
 
 **AND IT FOUND A DEFECT OLDER THAN ITSELF, which is recorded here because the sequencing looks
 odd otherwise: a step about AMP carries a fix to the map editor's bookkeeping.** The range list
@@ -774,30 +791,38 @@ rests on a raw local thread pointer with a one-shot generation guard riding the 
 capability, and a remote caller has no such thread in this kernel. Priority donation across nodes
 has no meaning at all, which is a thing to state rather than to solve.
 
-**M7.9 IS THE MILESTONE THAT TAKES BOTH MODELS OFF EMULATOR-GRADE EVIDENCE, one per half, and the
-title is load-bearing.** Section 7 of the contract carries two no-silicon bullets and this
-milestone retires one each. The RP pair is what that section names as still exercising the
-doorbell, the ring and the ordering claims on real hardware; the LX6 is what it names as the one
-part that could carry a SHARED-KERNEL silicon witness. So the LX6 probe gates only HALF of this
-milestone: a negative answer leaves the AMP half standing and section 7 keeps its shared-kernel
-bullet.
+**M7.9 IS THREAD PLACEMENT, AND THE MILESTONE THAT ONCE HELD THIS NUMBER IS NOW M7.10 AND
+M7.11.** What it lands is a scheduling grant carried by the task -- a priority ceiling and a core
+set, given at creation and narrowing only -- one affinity mask per thread, one syscall that
+intersects a request against the grant, and core isolation as a Kconfig knob that cannot take the
+boot core. `pin` and `unpin` are userspace wrappers over the one call, a zero mask being the ask
+for the task's default set rather than a malformed one.
 
-**The LX6 half is gated on a MEASUREMENT and the gate is cheap, which is the whole reason it is
-scheduled at all.** Its two open predicate columns, the inter-core compare-and-swap and the
-per-core identity, are sourced as ARCHITECTURE and unsourced as this part's REALISATION: the ISA
-defines both, and defines both as configurable options whose values the integrator wires. No data
-book on this bench states them. A probe on silicon closes what no document here can -- the
-compare-and-swap attempted between the two CPUs over INTERNAL SRAM, and the privileged
-processor-identity register read on both cores. The backend is not cheap and is not the gate; if
-either column answers no, the LX6 backend does not happen and M7.9 is the RP half alone.
+**IT IS NOT ONLY A MULTICORE FEATURE, AND A RECORD THAT FILES IT AS ONE HIDES WHAT IT CLOSES.**
+The placement half folds to nothing at one core, proven byte-identical. The priority CEILING does
+not: an unbounded priority let any unprivileged thread take the top of the run queue and starve
+the system, on every board in the fleet, single-core included. That hole predates multicore and
+this is what shuts it.
 
-**AMP on the RP parts needs no predicate declaration, which is what makes it a backend rather
-than a model.** N10's refusal is keyed on the MODEL, so an AMP image raises the core count and
-declares none of the six, and the per-part split S6b landed carries an arm for exactly that case.
-N5 already holds the bring-up for both parts. What M7.9 must decide instead is a question no
-mechanism answers: two kernels on one chip share one UART, and the in-kernel console interleaves
-at byte granularity by ruling. Node 1 reaching node 0's console over the ring is what M7.8 makes
-possible, which is why these two sit in this order.
+**AND IT IS WHAT MAKES A SECOND CORE WORTH HAVING ON A CONTROL SYSTEM.** Without a way to reserve
+a core, a shared kernel hands a motor loop a scheduler that may migrate it mid-cycle and a comms
+stack that competes with it. Isolation plus pinning is what turns two cores into two jobs.
+Priority does not cross a node boundary and the two scales are incomparable, so tuning across
+nodes is an integration act no run checks -- which is a reason to place work deliberately rather
+than a reason to distrust the mechanism.
+
+**M7.10 IS THE LX6 SHARED KERNEL**, and the measurement that made its predicate declarable at
+all: `S32C1I` excluding between PRO_CPU and APP_CPU over internal SRAM, and two processor
+identities that differ, both taken on silicon because the ISA defines each as a configurable
+option no document on this bench resolves. **M7.11 IS AMP ON THE RP PAIR AS TWO IMAGES**, with
+the cross-node ping-pong that is also the first witness of a far reply reaching a receiving
+thread in another kernel rather than a service body.
+
+**WHY THE ORIGINAL ROW DID NOT SURVIVE CONTACT.** It paired two models on two parts as one
+milestone. AMP-by-convention was then ruled out wherever nothing enforces a partition, which
+sends the LX6 to the shared kernel it already qualifies for; the RP pair moved to one image per
+node, which is most of a milestone rather than a tail; and placement turned out to be the
+prerequisite that makes the LX6 backend worth building. Three rows where there was one.
 
 **TWO REAL PARTS ARE NAMED FOR THE MULTICORE ERA, AND THE SECOND IS POST-M8.** The i.MX8MP
 Verdin at 4 GiB is the shared-kernel target and the part S6b's chip port is written against. The

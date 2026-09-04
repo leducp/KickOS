@@ -46,6 +46,7 @@ host   src    tests/static/check_entry_sigdiff.sh
 host   src    tests/static/check_extern_c_linkage.sh
 host   src    tests/static/check_forever_loop.sh
 host   src    tests/static/check_include_guards.sh
+host   src    tests/static/check_isolated_cores.sh
 host   src    tests/static/check_kconfig_forwarding.sh
 host   src    tests/static/check_kconfig_gen.sh
 host   src    tests/static/check_kernel_core_index.sh
@@ -107,6 +108,8 @@ host   build  tests/unit/irqquiesce/irq_quiesce              unit
 host   build  tests/unit/vrange/vrange_list                  unit
 host   build  tests/unit/ktime/ktime_rearm                   unit
 host   build  tests/unit/parkresult/park_result              unit
+host   build  tests/unit/placeadmit/admit_mask              unit
+host   build  tests/unit/migrateask/migrate_ask              unit
 host   build  tests/unit/reschedowed/resched_owed            unit
 host   build  tests/unit/schedwake/sched_wake                unit
 host   build  tests/unit/slayhook/slay_hook                  unit

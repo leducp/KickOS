@@ -966,9 +966,11 @@ every spawn. At the `f302nucleo-st` provisioning the same 16 KiB part runs the s
 silicon at **63 ok / 0 not ok / 5 skipped**, plan `1..63` (measured at `124b68c`,
 `.session/m456-silicon/b5-nuc-selftest-after.log`). That provisioning is one file, the `st` variant's
 defconfig (`../../boards/f302nucleo/configs/st/defconfig`): self-test on,
-`KICKOS_USER_HEAP_SIZE 0`, `KICKOS_MAX_SEMAPHORES 6`, `KICKOS_MAX_THREADS 3`, and the
+`KICKOS_USER_HEAP_SIZE 0`, `KICKOS_MAX_SEMAPHORES 6`, `KICKOS_MAX_THREADS 2`, and the
 stack sizes (`KICKOS_USER_STACK_SIZE 1024`, `KICKOS_ROOT_STACK_SIZE 1536`,
-`KICKOS_IDLE_STACK_SIZE 512`). It used to be split between the preset and the board's
+`KICKOS_IDLE_STACK_SIZE 512`). **That capture was taken at three slots and the file states
+two**: the unconditional priority ceiling grew `Task` past the slack the third slot needed,
+and the pool assert refused it. It used to be split between the preset and the board's
 defconfig, and a porter had to read both. So "KickOS runs here", "KickOS is validated here with named skips" and "KickOS is
 validated here with none" are three different claims about one board.
 
@@ -1029,8 +1031,10 @@ debuggability: `MinSizeRel` carries `-g`, so the symbols are all there and only 
 unavailable. No gate builds these boards in `Debug`, deliberately -- the link failure
 already names the overflow in bytes.
 
-**The tightest link in the fleet is the POOL term, not the boot term, and it is
-`f302nucleo-st` at 1,248 B.** Configure prints only the needed side:
+**The tightest link is the POOL term and not the boot term, on every board measured
+below, and on `bluepill-c8` the pool margin is exactly ZERO.** The assert is `<=`, so a
+margin of zero links and the next byte of static footprint below the arena does not.
+Configure prints only the needed side:
 
 ```
 -- KickOS: boot stacks idle=512->512/16 root=1536->1536/16 (mpu granule 0 pow2=1)
@@ -1038,20 +1042,37 @@ already names the overflow in bytes.
 ```
 
 Worst-image margin against `KICKOS_POOL_ARENA_ASSERT`, tightest first (re-measured
-2026-08-23): `f302nucleo-st` **1,248 B**, `f302nucleo` 1,280 B, `bluepill-c8` 1,344 B,
-`bluepill-c8-st` 1,632 B, `microbit` 6,144 B, `frdmk64f{,-st} +MPU` 24,576 B. Nothing in the
-fleet is at or below zero on either assert, and the tightest BOOT margin is `f302nucleo`'s
-3,328 B.
+2026-09-04): `bluepill-c8` **0 B**, `f302nucleo` 96 B, `f302nucleo-st` 1,952 B,
+`bluepill-c8-st` 2,048 B, `microbit` 4,096 B, `frdmk64f{,-st} +MPU` 24,576 B. The binding
+image is `selftest_p3` on every split board; on `frdmk64f{,-st}` every image reports the
+same figure, so there is no binding image to name there. The tightest BOOT margin is
+`f302nucleo`'s 2,144 B, and no board measured is below zero on either assert.
 
-**A margin is not a spare-slot count.** Dividing it by the stride overestimates, because each
-added slot ALSO raises `__kickos_ram_start`: on `f302nucleo` the 1,280 B margin against a
-1,024 B stride suggests a third thread and there is none, the per-slot `.bss` run-up
-measuring +416 B there. Only where a large root alignment absorbs the whole run-up do the two
-agree. On both `frdmk64f` variants every image has the same `__kickos_ram_start`, the
-SYSMPU putting app `.bss` in the fixed `.appdata` window, so "worst image" is a tie rather
-than a pick; on the four flat ARM boards it is always `selftest_p3`. **`bluepill-c8-st` used to hold this title
-at exactly zero boot slack** (2,560 needed against 2,560 available); surrendering its 8 KiB
-heap carve in M4.9.3 took it to 8,192 B and moved the fleet's fragile edge to the 16 KiB part.
+**The margin QUANTIZES to `KICKOS_POOL_STACK_ALIGN` wherever that exceeds the stack size**,
+which is what `KICKOS_TLS` does to every block: the pool base is aligned up, so static
+growth that stays inside one alignment window moves no margin at all and the window's last
+byte moves it by a whole stride. `f302nucleo` aligns to 16 and reports to the byte;
+`bluepill-c8` and `microbit` align to 2,048 and `frdmk64f` to 8,192, so their figures are
+multiples of that and a number between two of them cannot be a current reading.
+
+**A margin is not a spare-slot count, and QUOTING THE STRIDE ALONE IS WHAT MAKES TWO
+PARAGRAPHS DISAGREE.** Dividing a margin by the stride overestimates, because each added slot
+ALSO raises `__kickos_ram_start`. On both `f302nucleo` postures one slot costs the 1,024 B
+pool stride PLUS **960 B** of static `.bss` below the arena, so the step is **1,984 B**. The
+960 is the same on both and splits three ways: 392 B of `g_instance`, 56 B of the cap run
+(`kernel/syscall/cap.cc`) and the 512 B newlib reent bank the user library carries per slot.
+So `f302nucleo-st`'s 1,952 B margin buys no further thread -- it is 32 B short of one step --
+and `f302nucleo`'s 96 B is short by 1,888.
+
+Only where a large ROOT alignment absorbs the whole run-up do the margin and the slot count
+agree, and `frdmk64f{,-st}` is that case: an 8,192 B root and pool alignment quantizes the
+per-slot `.bss` away, so a slot costs one stride there. Across IMAGES at one slot count every
+one of its images has the same `__kickos_ram_start`, the SYSMPU putting app `.bss` in the
+fixed `.appbss` window, so "worst image" is a tie rather than a pick; on the five flat ARM
+boards above it is always `selftest_p3`. **`bluepill-c8-st` used to hold this title at exactly zero
+boot slack** (2,560 needed against 2,560 available); surrendering its 8 KiB heap carve in
+M4.9.3 bought that slack back and moved the fleet's fragile edge to the 16 KiB part, its
+worst-image boot margin reading 6,144 B here.
 
 Both asserts are `<=`, so an exact fit passes and the next byte of static RAM in a SHARED
 test breaks the link. There is no available-vs-needed pair anywhere in the build output and
@@ -1190,7 +1211,8 @@ board.** Where `__kickos_ram_start` follows `.bss`, each app's static footprint 
 arena base and the FATTEST image is what caps `KICKOS_MAX_THREADS`: on `bluepill-c8-st`
 the images span 3,040 B of base, and the split `selftest_p3` is the binding one. Where an
 alignment window pins the base instead, every image on the board reports the SAME headroom
--- that is `frdmk64f` at `KICKOS_HAVE_MPU=1`, where all images sit at `0x20012940`. Check
+-- that is `frdmk64f` at `KICKOS_HAVE_MPU=1`, where all images sit at `0x20014320`
+(`0x20014340` on `frdmk64f-st`). Check
 which shape a board has before quoting a number, and never quote a board-wide figure for
 the first shape. Only the linker knows the arena base, which is exactly why the assert
 lives in the linker script and not in CMake.
@@ -1204,8 +1226,9 @@ base.** Each has a different owner and the demand side may be blameless:
   128 KiB `stm32f411` sibling, on a part with 20 KiB of SRAM. Its thread provisioning
   (`KICKOS_MAX_THREADS 2` x 2048) was never the problem.
 - the `.appdata` enforcement window on an enforcing chip. `frdmk64f` WITHOUT the MPU has
-  **+83,328 B** of headroom at `KICKOS_MAX_THREADS 16`; `KICKOS_HAVE_MPU=1` moves
-  `__kickos_ram_start` to `0x20012940` and the window eats ~110 KiB of arena. There the
+  **+49,152 B** of pool margin at `KICKOS_MAX_THREADS 16`; `KICKOS_HAVE_MPU=1` pins every
+  image's `__kickos_ram_start` at `0x20014320` and the window costs `hello` **94,336 B** of
+  arena (`0x1fffd2a0` flat against `0x20014320` enforcing). There the
   demand side genuinely had to come down, which is why the enforcing variants provision
   **8** at 8192-byte stacks (`../../boards/frdmk64f/configs/base/defconfig`, `.../st/`)
   while `flat` states no `KICKOS_MAX_THREADS` at all and keeps the default 16. The 8192 is
@@ -1214,14 +1237,31 @@ base.** Each has a different owner and the demand side may be blameless:
   of the table above.
 
 The model is validated against the real linker rather than by inspection, on both arena
-shapes, and re-swept 2026-08-23. `f302nucleo-st` at `KICKOS_MAX_THREADS=3` measures
-**+1,248 B** and links, and at `-DKICKOS_MAX_THREADS=4` FAILS. `frdmk64f-st +MPU` is
-provisioned at 8 with **+24,576 B**; it links at 9, 10 and 11, and FAILS at
-`-DKICKOS_MAX_THREADS=12` -- at 11 `KICKOS_POOL_TOP` computes to exactly
-`__kickos_ram_end`, margin zero, which the `<=` accepts. `bluepill-c8-st` at heap 0 measures
-**+1,632 B** on the pool assert and +5,728 B on the boot one, and at
-`-DKICKOS_USER_HEAP_SIZE=8192` it FAILS the BOOT assert first. The sign flip lands where the
-model says it does in all three.
+shapes, and re-swept 2026-09-04. `f302nucleo-st` is provisioned at `KICKOS_MAX_THREADS=2`,
+measures **+1,952 B** and links, and FAILS at `-DKICKOS_MAX_THREADS=3` -- on `selftest_p3`
+alone, every other image on the board still linking.
+
+**That step costs 1,984 B and not the 1,024 B of one pool stride, which is the whole reason
+a margin is not a slot count.** A slot also adds 960 B of static `.bss` BELOW the arena on
+this board -- 448 B of kernel state plus the 512 B newlib reent bank the user library carries
+per slot -- so `__kickos_ram_start` rises by that much and the demand and the supply move
+towards each other at once. 1,952 against 1,984 is 32 B over, and only the linker can see
+it: the pool arithmetic above prices the stride and never the `.bss` term. `f302nucleo` at
+the chip defaults pays the same 960 B against a 96 B margin, so there ALL ELEVEN images fail
+at three slots rather than the fattest one alone.
+
+`frdmk64f-st +MPU` is provisioned at 8 with **+24,576 B**; it links at 9, 10 and 11, and
+FAILS at `-DKICKOS_MAX_THREADS=12` -- at 11 `KICKOS_POOL_TOP` computes to exactly
+`__kickos_ram_end`, margin zero, which the `<=` accepts. It follows the pure stride model
+where `f302nucleo-st` does not because its 8,192 B root and pool alignment quantizes the
+per-slot `.bss` away, NOT because its base is fixed: the base moves with `.bss` across slot
+counts (`0x20014340` at 8, `0x20015580` at 11) and both round to one root base.
+`bluepill-c8-st`, whose defconfig states heap 0, measures **+2,048 B** on the pool assert and
++6,144 B on the boot one, and at `-DKICKOS_USER_HEAP_SIZE=8192` the POOL assert fires on all
+34 images while the BOOT assert, which the linker script evaluates FIRST, fires on
+`selftest_p3` alone -- that image's 6,144 B of boot slack being the only one under the 8 KiB
+carve. Which shape a board has is what decides whether a slot costs one stride or more, so
+read the shape before predicting a count.
 
 ### The heap is a per-board profile, not a requirement
 
@@ -1280,9 +1320,11 @@ Thread capacity that follows, each board with its own stack sizes:
 | `microbit` `hello` | 512 | 2,048 | 2,048 | -- | -- | 4 | -- |
 | `f411disco` `hello` | 2,048 | 4,096 | 4,096 | 101,664 | 24 | 8 | **8** |
 
-**The `f302nucleo` and `f411disco` rows predate the `124b68c` right-size** (which
-took `KICKOS_ROOT_STACK_SIZE` to 1,536 and `KICKOS_MAX_THREADS` to 3; N stayed **3**, so
-those readings hold while their byte columns do not). **The `microbit` rows are worse than
+**The `f302nucleo` and `f411disco` rows predate the `124b68c` right-size** (which took
+`KICKOS_ROOT_STACK_SIZE` to 1,536 and `KICKOS_MAX_THREADS` to 3), and the `f302nucleo-st`
+row's N has since moved AGAIN, to **2**: the third slot's 1,984 B no longer fits the 1,952 B
+the arena leaves. Neither the N column nor the byte columns of those rows are current.
+**The `microbit` rows are worse than
 stale and their byte columns are struck out rather than carried**: that board moved to the
 32 KiB nRF51822 at four thread slots, and it also acquired `KICKOS_THREAD_SLOTS` kernel-stack
 blocks in `.bss` below the arena, so both the SRAM constant and every term derived from it
@@ -1450,10 +1492,11 @@ overshoots by roughly 165 bytes.
 
 That arena pays `align(512) + align(2,048) = 2,560` for the boot stacks and then holds
 `floor((5,664 - 2,560) / 1,024) = 3` user stacks with 32 bytes to spare, so
-N = min(3, 4) = **3**. That is the whole result and the right-size did not move it: **the
-suite passes on 16 KiB of SRAM**, 63 ok / 0 not ok / 5 skipped (measured at `124b68c`,
-before `9da898e` split this board's suite into two images), because the cases that do
-not need a 4th worker all run at N = 3. This arithmetic is exactly what
+N = min(3, 4) = **3**, which is what the board carried when **the suite passed on 16 KiB of
+SRAM**, 63 ok / 0 not ok / 5 skipped (measured at `124b68c`, before `9da898e` split this
+board's suite into two images), the cases that do not need a 4th worker all running at
+N = 3. **The board states N = 2 now** and that capture has not been retaken there, so read
+the arithmetic and not the N. This arithmetic is exactly what
 `KICKOS_POOL_ARENA_ASSERT` now replays at link time for this chip, with the run-ups paid
 against the real arena base instead of a quoted one.
 

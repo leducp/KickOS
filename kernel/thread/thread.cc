@@ -4,6 +4,7 @@
 #include <kickos/kernel.h>
 #include <kickos/instance_local.h>
 #include <kickos/sched.h>
+#include <kickos/debug.h> // KICKOS_DEBUG_ASSERT
 #include <kickos/domain.h>
 #include <kickos/grant.h>
 #include <kickos/instance.h>
@@ -168,6 +169,28 @@ namespace kickos
             t->task = task_for(caller, attr.mem_base, attr.mem_size, nullptr, &derr);
         }
         task_ref(t->task);
+#if KICKOS_KERNEL_CORES > 1
+        // AFTER the task is resolved, which is what the default set is read from. idle and
+        // root pass 0 and take it.
+#if KICKOS_DEBUG
+        // The store below is verbatim and nothing downstream re-checks it, so the precondition
+        // the spawn boundary satisfies is asserted here rather than left to that one caller.
+        uint32_t admitted = 0;
+        KICKOS_DEBUG_ASSERT(attr.core_mask == 0
+                            or (sched_admit_mask(attr.core_mask, task_core_set(t->task),
+                                                 MaskBound::SUBSET, &admitted)
+                                    == 0
+                                and admitted == attr.core_mask));
+#endif
+        if (attr.core_mask == 0)
+        {
+            t->affinity = task_default_cores(t->task);
+        }
+        else
+        {
+            t->affinity = attr.core_mask;
+        }
+#endif
 
         // An unprivileged thread has no background region, so its set is assembled
         // explicitly: app code and static data, its task's domain regions, its own DEV window

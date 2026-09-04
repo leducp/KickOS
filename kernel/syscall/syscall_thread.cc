@@ -471,7 +471,33 @@ namespace kickos
                 // EPERM inadmissible grant, ENOMEM domain or task pool full.
                 return -derr;
             }
+            task_sched_inherit(tk, spawner->task);
         }
+        // THE TASK'S SCHEDULING GRANT, checked here because this is where the child's task is
+        // finally known. The ceiling bounds what a task may ASK for; a priority INHERITANCE
+        // boost is not bounded by it (sched::set_prio), being the kernel's and not the task's.
+        if (p->prio > task_prio_ceiling(tk))
+        {
+            task_discard(tk);
+            return -KOS_EPERM;
+        }
+#if KICKOS_KERNEL_CORES > 1
+        // A spawn naming no core asks for the task's default set, which is not a request
+        // against the machine at all.
+        uint32_t requested = p->core_mask;
+        if (requested == 0)
+        {
+            requested = task_default_cores(tk);
+        }
+        uint32_t seated_cores = 0;
+        int const crc = sched_admit_mask(requested, task_core_set(tk), MaskBound::INTERSECT,
+                                         &seated_cores);
+        if (crc != 0)
+        {
+            task_discard(tk);
+            return crc;
+        }
+#endif
         // An EXITED slot's occupant is off-CPU and off every ready, wait and timer list: the
         // state is published inside the bracket that carries the kernel lock through the swap
         // parking that frame. Widening the reclaim key past EXITED breaks that.
@@ -532,6 +558,9 @@ namespace kickos
         attr.mmio_size = p->mmio_size;
         attr.task = tk;
         attr.spawner_tag = k.threads.kill_tag_of(spawner);
+#if KICKOS_KERNEL_CORES > 1
+        attr.core_mask = seated_cores;
+#endif
 
         // BOTH sources failing must release the slot just claimed, or the spawn leaks a TCB
         // and burns the prior occupant's join handle.
@@ -757,6 +786,105 @@ namespace kickos
         return static_cast<int>(c->wait_result);
     }
 
+    int thread_set_affinity(kos_thread_t thread, uint32_t core_mask)
+    {
+#if KICKOS_KERNEL_CORES > 1
+        IrqLock lock;
+        Thread* const c = sched::current();
+        Thread* const t = thread_resolve(thread);
+        if (t == nullptr)
+        {
+            return -KOS_EBADF;
+        }
+        // As thread_kill: an exited-but-unreclaimed slot still gen-matches, and there is
+        // nothing left in it to place.
+        if (t->state == ThreadState::EXITED or t->state == ThreadState::INACTIVE)
+        {
+            return -KOS_EBADF;
+        }
+        // ONE PREDICATE, and self needs no clause of its own: a thread is its own group. A task
+        // is one SCHEDULING DOMAIN, its threads sharing a single grant that bounds every
+        // placement made inside it, so direction between them decides nothing. Placing a thread
+        // of ANOTHER task is the remnant owed to the capability layer, beside who may mint a
+        // cross-node endpoint (docs/design-multicore.md N8); answering it here would decide the
+        // general case through a special case.
+        if (not task_same_group(c, t) and not c->privileged)
+        {
+            return -KOS_EPERM;
+        }
+        // A mask naming no core asks for the task's DEFAULT set, the same resolution the spawn
+        // boundary makes of a zero kos_thread_params::core_mask, through the same authority.
+        uint32_t requested = core_mask;
+        if (requested == 0)
+        {
+            requested = task_default_cores(t->task);
+        }
+        uint32_t effective = 0;
+        int const arc = sched_admit_mask(requested, task_core_set(t->task),
+                                         MaskBound::INTERSECT, &effective);
+        if (arc != 0)
+        {
+            return arc;
+        }
+        sched::set_affinity(t, effective);
+        return 0;
+#else
+        (void)thread;
+        (void)core_mask;
+        return -KOS_ENOSYS;
+#endif
+    }
+
+    int task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask)
+    {
+        IrqLock lock;
+        Thread* const c = sched::current();
+        Task* const t = task_resolve(task);
+        if (t == nullptr)
+        {
+            return -KOS_EBADF; // never created, or the slot was freed under this handle
+        }
+        if (not task_created_by(t, kernel().threads.kill_tag_of(c)))
+        {
+            return -KOS_EPERM;
+        }
+        // Thread::affinity is a subset of this set and nothing re-derives it, so a grant that
+        // narrowed under a live member would strand that member where it already runs.
+        if (task_member_count(t) != 0)
+        {
+            return -KOS_EBUSY;
+        }
+        if (prio_ceiling > KICKOS_PRIO_MAX)
+        {
+            return -KOS_EINVAL;
+        }
+        // Both halves against the CALLER's grant and not only the task's: a creator cannot give
+        // what it does not hold. task_sched_narrow re-checks against the task's, which is what
+        // makes a second narrowing of the same task narrowing-only too.
+        uint32_t asked = core_mask;
+#if KICKOS_KERNEL_CORES > 1
+        if (core_mask != 0)
+        {
+            int const crc = sched_admit_mask(core_mask, task_core_set(c->task),
+                                             MaskBound::SUBSET, &asked);
+            if (crc != 0)
+            {
+                return crc;
+            }
+        }
+#else
+        if (core_mask != 0 and (core_mask & KICKOS_CORE_SET_ALL) == 0)
+        {
+            return -KOS_EINVAL; // names no core this kernel schedules
+        }
+#endif
+        if (prio_ceiling != 0 and prio_ceiling > task_prio_ceiling(c->task))
+        {
+            return -KOS_EPERM;
+        }
+        return task_sched_narrow(t, prio_ceiling, asked);
+    }
+
     // Create a task: an empty group that exists before any of its threads, holding a domain
     // built from THIS grant. Only the creator may seat members into it or end it, on the
     // same non-transferable parenthood gate as thread_kill.
@@ -786,6 +914,7 @@ namespace kickos
         {
             return -derr; // EPERM inadmissible grant, ENOMEM domain or task pool full
         }
+        task_sched_inherit(t, c->task);
         *out_task = task_handle(t);
         return 0;
     }

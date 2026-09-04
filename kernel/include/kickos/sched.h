@@ -12,8 +12,69 @@
 
 #include <kickos/thread.h>
 
+#include <kickos/sys/errno.h>
+
 namespace kickos
 {
+#if KICKOS_KERNEL_CORES > 1
+    // THE PLACEMENT RULE, and the only one. `t->affinity` already carries every narrowing
+    // applied to the thread, so its task's core set is not re-read here.
+    //
+    // ANTI-WORK-CONSERVING BY CONSTRUCTION: a runnable thread waits while a core it may not run
+    // on idles. That is the feature.
+    inline bool sched_placeable_on(Thread const* t, uint32_t core)
+    {
+        return (t->affinity & (1u << core)) != 0;
+    }
+
+    // How a grant bounds a request. A THREAD's affinity is a set of acceptable cores, so the
+    // grant intersects it and all ones is the identity of that intersection rather than a
+    // magic value. A TASK's grant is an authority: it narrows only, and a request reaching
+    // past it is refused and never clamped.
+    enum class MaskBound : uint8_t
+    {
+        INTERSECT,
+        SUBSET
+    };
+
+    // THE ONE ADMISSION OF A CORE MASK. Every path that seats one goes through it: a spawn, a
+    // re-affinity, and both halves of a task's grant.
+    //
+    // The machine first, then the grant: a bit naming a core this kernel does not schedule
+    // cannot be refused merely for being set, which is what keeps all ones an ordinary
+    // request. Naming NO core it schedules is the -KOS_EINVAL, a request no grant could
+    // satisfy.
+    //
+    // `requested` is a REAL MASK here, empty being malformed. A zero word means something
+    // different at each ABI that carries one (the task's default set at spawn and at
+    // kos_thread_set_affinity, leave this half alone in a grant), so each resolves its own
+    // before calling.
+    //
+    // TWO CLAUSES SUFFICE, so no placeability test belongs here: what survives is a NON-EMPTY
+    // subset of KICKOS_CORE_SET_ALL, which is exactly bits [0, KICKOS_KERNEL_CORES), and every
+    // one of those bits names a core pick_next scans.
+    inline int sched_admit_mask(uint32_t requested, uint32_t grant, MaskBound bound,
+                                uint32_t* effective)
+    {
+        uint32_t const wanted = requested & KICKOS_CORE_SET_ALL;
+        if (wanted == 0)
+        {
+            return -KOS_EINVAL;
+        }
+        uint32_t const admitted = wanted & grant;
+        if (bound == MaskBound::SUBSET and admitted != wanted)
+        {
+            return -KOS_EPERM;
+        }
+        if (admitted == 0)
+        {
+            return -KOS_EPERM;
+        }
+        *effective = admitted;
+        return 0;
+    }
+#endif
+
     // Pluggable scheduling policy. The core is pure mechanism (run state, current, the
     // context switch); the policy owns WHICH thread runs next and holds the ready
     // structure. The core must never touch ready state except through these hooks.
@@ -44,6 +105,16 @@ namespace kickos
 
         // Register a fully-initialized thread as READY.
         void add(Thread* t);
+
+#if KICKOS_KERNEL_CORES > 1
+        // Re-place `t` onto `mask`. The caller has already intersected it with t's task's core
+        // set and found it non-empty, so this writes and re-places rather than judging.
+        //
+        // A READY, BLOCKED or newly created thread just becomes eligible elsewhere at the next
+        // pick. A thread EXECUTING on a core the new mask excludes is not yanked: it is made
+        // ineligible there and that core is asked to reschedule, which is the only way off.
+        void set_affinity(Thread* t, uint32_t mask);
+#endif
 
 #if KICKOS_KERNEL_CORES > 1
         // sched::add for a thread that is to be core `core`'s idle fallback.
@@ -93,7 +164,10 @@ namespace kickos
         // rq_remove locates its list by reading t->prio and a bare field write would
         // corrupt the ready lists; a BLOCKED thread takes the value directly,
         // because wait queues scan lazily at pop and the timer list is prio-independent.
-        // Does NOT reschedule; the caller decides.
+        // Does NOT reschedule; the caller decides. NOT BOUNDED BY THE TASK'S PRIORITY
+        // CEILING: every caller here is priority inheritance or the console-publish temporary,
+        // which are the kernel's own and not a task asking for priority. The ceiling is
+        // enforced where a task asks, at the spawn boundary.
         void set_prio(Thread* t, uint8_t p);
 
         // What this death is, which is the one thing exit_current cannot derive: a fault

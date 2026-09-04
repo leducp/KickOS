@@ -405,7 +405,7 @@ namespace kos::thread
                         void* mmio = nullptr, uint32_t mmio_size = 0,
                         kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0,
                         uint8_t authority = 0, uint16_t const* cap_dest = nullptr,
-                        kos_task_t task = KOS_TASK_NONE)
+                        kos_task_t task = KOS_TASK_NONE, uint32_t core_mask = 0)
     {
         kos_thread_params p{};
         p.entry = entry;
@@ -426,9 +426,27 @@ namespace kos::thread
         p.authority = authority;
         p.cap_dest = cap_dest;
         p.task = task;
+        p.core_mask = core_mask;
         kos_thread_t h = KOS_THREAD_NONE;
         int const rc = kos_thread_create(&p, &h);
         return Handle(h, rc);
+    }
+
+    // Placement, spelled two ways over one kernel call. A mask of zero asks for the task's
+    // DEFAULT set, so unpin restores what a thread naming no core is given at spawn without
+    // userspace ever having to learn that set. All ones would be a wider request than the
+    // default: it names the isolated cores too.
+    inline int pin(kos_thread_t thread, uint32_t core)
+    {
+        if (core >= 32u)
+        {
+            return -KOS_EINVAL; // 1u << core is undefined at the mask's width and past it
+        }
+        return kos_thread_set_affinity(thread, 1u << core);
+    }
+    inline int unpin(kos_thread_t thread)
+    {
+        return kos_thread_set_affinity(thread, 0);
     }
 
     // Delegate a fixed cap list to the child (B1 default: cap i -> child index i+1, and a
@@ -439,10 +457,11 @@ namespace kos::thread
                              bool privileged = false, void* mem = nullptr, uint32_t mem_size = 0,
                              uint8_t authority = 0, uint16_t const* cap_dest = nullptr,
                              kos_task_t task = KOS_TASK_NONE, void* stack = nullptr,
-                             uint32_t stack_size = 0)
+                             uint32_t stack_size = 0, uint32_t core_mask = 0)
     {
         return create(entry, arg, name, prio, policy, quantum_ns, privileged, mem, mem_size,
-                     stack, stack_size, nullptr, 0, caps, cap_count, authority, cap_dest, task);
+                     stack, stack_size, nullptr, 0, caps, cap_count, authority, cap_dest, task,
+                     core_mask);
     }
 }
 

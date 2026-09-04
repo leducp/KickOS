@@ -160,6 +160,26 @@ namespace kickos
         // moving it grows every TCB.
         uint8_t cap_irq_live = 0;
 
+#if KICKOS_KERNEL_CORES > 1
+        // THE CORES THIS THREAD MAY RUN ON, and the whole of placement: a single-bit mask is a
+        // pin and a multi-bit one is affinity, so there is no flag beside it saying which.
+        //
+        // INVARIANT: never empty, and always a subset of task_core_set(task). Seated at create
+        // from task_default_cores, restored to it by a zero mask, and every write intersects
+        // with the grant, so no narrowing can strand it. A task's grant cannot narrow out from
+        // under it either: the grant is refused once the task has a member.
+        //
+        // A NONZERO ThreadAttr::core_mask WAS ADMITTED BY sched_admit_mask AT THE SPAWN
+        // BOUNDARY, against this same grant, before thread_create stores it verbatim.
+        //
+        // 0 here means the thread was never seated, which only a slot no thread occupies is.
+        uint32_t affinity = 0;
+        static_assert(KICKOS_KERNEL_CORES <= 32,
+                      "a core set is a 32-bit mask, as the doorbell's core mask is "
+                      "(arch_ipi_send) and as an AMP node mask is (kickos/ampwindow.h). "
+                      "Widen all three together or a mask silently truncates");
+#endif
+
         // Round-robin: quantum_ns == 0 means no slicing (pure FIFO within prio).
         uint32_t quantum_ns = 0;
         uint64_t slice_deadline_ns = 0;
@@ -369,6 +389,16 @@ namespace kickos
         {
             bytes = bytes + 2 * sizeof(uint16_t);
         }
+#if KICKOS_KERNEL_CORES > 1
+        // Thread::affinity, FREE wherever uint64_t aligns to 8: it lands in the padding
+        // quantum_ns already leaves before slice_deadline_ns. Measured 0 on armv8a. RXv3 is
+        // the one target with no such padding and pays four; no multicore RXv3 preset exists
+        // to measure, so that arm is derived from the alignment and not witnessed.
+        if (alignof(uint64_t) == 4)
+        {
+            bytes = bytes + sizeof(uint32_t);
+        }
+#endif
         // Thread::dev_base + Thread::dev_size, in the pointer-aligned run beside
         // stack_base/stack_size, so neither adds padding on any target.
         return bytes + sizeof(uintptr_t) + sizeof(size_t);
@@ -445,6 +475,13 @@ namespace kickos
         uint32_t quantum_ns = 0;
         // Default false: an attr struct that forgets the field must not mint privilege.
         bool privileged = false;
+#if KICKOS_KERNEL_CORES > 1
+        // Cores the new thread may run on, ALREADY ADMITTED against `task`'s core set by the
+        // caller: it is stored as the affinity verbatim, so a mask reaching outside that set
+        // breaks the Thread::affinity invariant. 0 asks for the task's default set, which is
+        // what an attr struct that forgets the field gets.
+        uint32_t core_mask = 0;
+#endif
         // Optional domain data region granted to an unprivileged thread (RW).
         // Threads sharing one region share a memory domain; base==0 => none.
         void* mem_base = nullptr;

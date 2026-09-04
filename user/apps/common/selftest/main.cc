@@ -6045,6 +6045,1012 @@ namespace
     }
 #endif
 
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // --- Placement and the scheduling grant ----------------------------------------------
+    // A member of ANOTHER task gets its own copy of this image's static data, so every report
+    // from one crosses on an ENDPOINT and every release crosses on a semaphore. A global
+    // would be written in the member's copy and read in root's.
+    constexpr uint32_t PLACE_JOIN_US = 2000000u;
+    constexpr uint8_t PC_CEILING = 5;
+
+    kos_cap_t g_pl_ep = KOS_CAP_NONE; // root's report endpoint, delegated at child index 1
+
+    void pc_idle_worker(void*)
+    {
+    }
+
+    void t_prio_ceiling_refused()
+    {
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            tap::skip("task pool too small");
+            return;
+        }
+        int const granted = kos_task_sched_grant(t, PC_CEILING, 0);
+        auto above = kos::thread::create_caps(pc_idle_worker, nullptr, "pcabv",
+                                              PC_CEILING + 1, nullptr, 0, KOS_POLICY_FIFO, 0,
+                                              false, nullptr, 0, 0, nullptr, t);
+        bool const above_valid = above.valid();
+        int const above_err = above.error();
+        auto at = kos::thread::create_caps(pc_idle_worker, nullptr, "pcat", PC_CEILING,
+                                           nullptr, 0, KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                           0, nullptr, t);
+        bool const at_valid = at.valid();
+        int at_join = -1;
+        if (at_valid)
+        {
+            at_join = at.join(PLACE_JOIN_US);
+        }
+        (void)kos_task_kill(t);
+        TAP_CHECK(granted == 0);
+        TAP_CHECK(not above_valid);
+        TAP_CHECK(above_err == -KOS_EPERM);
+        TAP_CHECK(at_valid);
+        TAP_CHECK(at_join == 0);
+    }
+
+    enum
+    {
+        PN_MADE = 0,  // the member got a task of its own to narrow
+        PN_ABOVE = 1, // a ceiling above the member's own
+        PN_SAME = 2,  // ... and one equal to it
+        PN_WORDS = 3
+    };
+    // Refusals only, no probe: KOS_SYS_SCHED_PROBE is compiled out at one kernel core and this
+    // arm runs on every posture.
+    void pc_narrow_worker(void*) // caps: E(SIGNAL)@1
+    {
+        int32_t rep[PN_WORDS] = {0, -99, -99};
+        kos_task_t u = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &u) == 0)
+        {
+            rep[PN_MADE] = 1;
+            rep[PN_ABOVE] = kos_task_sched_grant(u, PC_CEILING + 1, 0);
+            rep[PN_SAME] = kos_task_sched_grant(u, PC_CEILING, 0);
+            (void)kos_task_kill(u);
+        }
+        (void)kos_send(1, rep, sizeof(rep));
+    }
+
+    void t_prio_ceiling_narrow_only()
+    {
+        if (kos_endpoint_create(&g_pl_ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            (void)kos_handle_close(g_pl_ep);
+            tap::skip("task pool too small");
+            return;
+        }
+        int const granted = kos_task_sched_grant(t, PC_CEILING, 0);
+        // The same task, still empty: narrowing-only is checked against the TASK's ceiling
+        // too, so root widening one it already narrowed is refused although root's own
+        // ceiling admits it.
+        int const widen = kos_task_sched_grant(t, PC_CEILING + 1, 0);
+        kos_cap_grant caps[] = {{g_pl_ep, KOS_CAP_SIGNAL}};
+        auto m = kos::thread::create_caps(pc_narrow_worker, nullptr, "pcnar", PC_CEILING,
+                                          caps, 1, KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                          0, nullptr, t);
+        bool const seated = m.valid();
+        int32_t rep[PN_WORDS] = {0, 0, 0};
+        bool heard = false;
+        int join_rc = -1;
+        if (seated)
+        {
+            heard = kos_recv(g_pl_ep, rep, sizeof(rep), nullptr)
+                    == static_cast<int32_t>(sizeof(rep));
+            join_rc = m.join(PLACE_JOIN_US);
+        }
+        (void)kos_task_kill(t);
+        (void)kos_handle_close(g_pl_ep);
+        TAP_CHECK(granted == 0);
+        TAP_CHECK(widen == -KOS_EPERM);
+        TAP_CHECK(seated);
+        TAP_CHECK(heard);
+        TAP_CHECK(join_rc == 0);
+        TAP_CHECK(rep[PN_MADE] == 1);
+        TAP_CHECK(rep[PN_ABOVE] == -KOS_EPERM);
+        TAP_CHECK(rep[PN_SAME] == 0);
+    }
+#endif
+
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
+    // --- Placement: affinity, the task's core set, and the isolated cores -----------------
+    // Every scheduling probe reads the CALLER's own state, so what a worker reports is what
+    // the kernel seated on that worker and not what root asked for.
+    constexpr uint64_t PLACE_STEP_NS = 500000ull;
+    constexpr unsigned PL_SAMPLES = 64;
+    constexpr unsigned PL_DEADLINE_STEPS = 400; // PL_DEADLINE_STEPS * PLACE_STEP_NS = 200 ms
+    constexpr uint32_t PL_ALL = ~0u >> (32 - KICKOS_KERNEL_CORES);
+
+    kos_cap_t g_pl_gate = KOS_CAP_NONE; // root's release semaphore, delegated at child index 1
+
+    // Holds a task non-empty while root asks something of it, and is released from root.
+    void pl_gate_worker(void*) // caps: gate@1
+    {
+        kos_sem_wait(1);
+    }
+
+    Atomic<uint32_t, Order::RELAXED> g_pl_go{0};
+    Atomic<uint32_t, Order::RELAXED> g_pl_stop{0};
+    Atomic<uint32_t, Order::RELAXED> g_pl_core{0xffu};
+    Atomic<uint32_t, Order::RELAXED> g_pl_seen{0};
+    Atomic<uint32_t, Order::RELAXED> g_pl_aff{0};
+    Atomic<uint32_t, Order::RELAXED> g_pl_cores{0};
+
+    void pl_reset()
+    {
+        g_pl_go = 0;
+        g_pl_stop = 0;
+        g_pl_core = 0xffu;
+        g_pl_seen = 0;
+        g_pl_aff = 0;
+        g_pl_cores = 0;
+    }
+
+    // The gate SLEEPS rather than yields: a worker above root's priority that spun here would
+    // hold the core root has to run on to release it.
+    void pl_wait_go()
+    {
+        while (g_pl_go.load() == 0)
+        {
+            kos_sleep_ns(PLACE_STEP_NS);
+        }
+    }
+
+    void pl_sample_worker(void*)
+    {
+        pl_wait_go();
+        g_pl_aff = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_AFFINITY));
+        g_pl_cores = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_TASK_CORES));
+        uint32_t seen = 0;
+        for (unsigned i = 0; i < PL_SAMPLES; i++)
+        {
+            uint32_t const c = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
+            g_pl_core = c;
+            seen |= 1u << c;
+            kos_yield();
+        }
+        g_pl_seen = seen;
+    }
+
+    void pl_park_worker(void*)
+    {
+        while (g_pl_stop.load() == 0)
+        {
+            kos_sleep_ns(PLACE_STEP_NS);
+        }
+    }
+
+    // RUNNABLE THROUGHOUT, never parked: the migration arm needs a target the kernel has to
+    // take OFF a core rather than one it can simply place at its next wake.
+    void pl_spin_worker(void*)
+    {
+        while (g_pl_stop.load() == 0)
+        {
+            g_pl_core = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
+        }
+    }
+
+    uint32_t pl_lowest(uint32_t mask)
+    {
+        for (uint32_t c = 0; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
+        {
+            if ((mask & (1u << c)) != 0)
+            {
+                return c;
+            }
+        }
+        return 0;
+    }
+
+    void t_pin_places()
+    {
+        pl_reset();
+        auto w = kos::thread::create(pl_sample_worker, nullptr, "pinpl", 12);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        int const rc = kos::thread::pin(w.id(), 1);
+        g_pl_go = 1;
+        int const joined = w.join(PLACE_JOIN_US);
+        uint32_t const aff = g_pl_aff;
+        uint32_t const core = g_pl_core;
+        tap::diag("pinned to core 1: affinity 0x%x, running on core %u",
+                  static_cast<unsigned>(aff), static_cast<unsigned>(core));
+        TAP_CHECK(rc == 0);
+        TAP_CHECK(joined == 0);
+        TAP_CHECK(aff == (1u << 1));
+        TAP_CHECK(core == 1u);
+    }
+
+    void t_pin_wrong_core_never()
+    {
+        pl_reset();
+        auto w = kos::thread::create(pl_sample_worker, nullptr, "pinnv", 12);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        int const rc = kos::thread::pin(w.id(), 1);
+        g_pl_go = 1;
+        int const joined = w.join(PLACE_JOIN_US);
+        uint32_t const seen = g_pl_seen;
+        tap::diag("%u samples across a yield each: cores 0x%x", PL_SAMPLES,
+                  static_cast<unsigned>(seen));
+        TAP_CHECK(rc == 0);
+        TAP_CHECK(joined == 0);
+        TAP_CHECK(seen == (1u << 1));
+    }
+
+    void t_unpin_restores()
+    {
+        pl_reset();
+        auto w = kos::thread::create_caps(pl_sample_worker, nullptr, "unpin", 12, nullptr, 0,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          KOS_TASK_NONE, nullptr, 0, 1u << 1);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
+        int const rc = kos::thread::unpin(w.id());
+        g_pl_go = 1;
+        int const joined = w.join(PLACE_JOIN_US);
+        uint32_t const aff = g_pl_aff;
+        uint32_t const cores = g_pl_cores;
+        tap::diag("unpin returned %d: affinity 0x%x, task core set 0x%x, isolated 0x%x", rc,
+                  static_cast<unsigned>(aff), static_cast<unsigned>(cores),
+                  static_cast<unsigned>(iso));
+        TAP_CHECK(joined == 0);
+        TAP_CHECK(cores == PL_ALL);
+        // TOTAL: unpin is a mask of zero, which the kernel resolves to the task's DEFAULT set,
+        // so there is nothing here for it to refuse. The DEFAULT and not the grant: the grant
+        // names the isolated cores and a thread that never named one must not gain them here.
+        TAP_CHECK(rc == 0);
+        TAP_CHECK(aff == (cores & ~iso));
+    }
+
+    enum
+    {
+        XS_CORES = 0, // the member's own task core set
+        XS_MADE = 1,  // it got a sibling to place at all
+        XS_ONE = 2,   // placing that sibling on core 1
+        XS_ZERO = 3,  // ... and on core 0
+        XS_WORDS = 4
+    };
+    // Spawns a SIBLING of its own task and places it, one task being one scheduling domain
+    // whose single grant bounds the placement.
+    void sib_pin_worker(void*) // caps: E(SIGNAL)@1
+    {
+        int32_t rep[XS_WORDS] = {0, 0, -99, -99};
+        rep[XS_CORES] = static_cast<int32_t>(kos_sched_probe(KOS_SCHED_OP_TASK_CORES));
+        g_pl_stop = 0;
+        auto s = kos::thread::create(pl_park_worker, nullptr, "sibpk", 9);
+        if (s.valid())
+        {
+            rep[XS_MADE] = 1;
+            rep[XS_ONE] = kos::thread::pin(s.id(), 1);
+            rep[XS_ZERO] = kos::thread::pin(s.id(), 0);
+            g_pl_stop = 1;
+            (void)s.join(PLACE_JOIN_US);
+        }
+        (void)kos_send(1, rep, sizeof(rep));
+    }
+
+    // Runs sib_pin_worker as a member of `t` (KOS_TASK_NONE for root's own task) and collects
+    // its report. False when the spawn or the rendezvous did not happen.
+    bool sib_pin_run(kos_task_t t, int32_t* rep)
+    {
+        kos_cap_grant caps[] = {{g_pl_ep, KOS_CAP_SIGNAL}};
+        auto m = kos::thread::create_caps(sib_pin_worker, nullptr, "sibpn", 11, caps, 1,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          t);
+        if (not m.valid())
+        {
+            return false;
+        }
+        bool const heard = kos_recv(g_pl_ep, rep, sizeof(int32_t) * XS_WORDS, nullptr)
+                           == static_cast<int32_t>(sizeof(int32_t) * XS_WORDS);
+        bool const joined = m.join(PLACE_JOIN_US) == 0;
+        return heard and joined;
+    }
+
+    void t_affinity_zero_defaults()
+    {
+        pl_reset();
+        auto w = kos::thread::create(pl_park_worker, nullptr, "azero", 9);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        // A mask of zero is the ask for the task's DEFAULT set, the same word a spawn's zero
+        // core_mask carries, and not a malformed request. The malformed answer is a NONZERO
+        // mask naming no core this kernel schedules: t_affinity_undriven_refused.
+        int const zero = kos_thread_set_affinity(w.id(), 0);
+        g_pl_stop = 1;
+        int const joined = w.join(PLACE_JOIN_US);
+        TAP_CHECK(joined == 0);
+        TAP_CHECK(zero == 0);
+
+        // The AUTHORITY refusal beside it, where the mask names a core the image really
+        // drives: the target's task holds core 0 alone, so core 1 meets it nowhere.
+        if (kos_endpoint_create(&g_pl_ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            (void)kos_handle_close(g_pl_ep);
+            tap::skip("task pool too small");
+            return;
+        }
+        int const granted = kos_task_sched_grant(t, 0, 0x1);
+        int32_t rep[XS_WORDS] = {0, 0, 0, 0};
+        bool const ran = sib_pin_run(t, rep);
+        (void)kos_task_kill(t);
+        (void)kos_handle_close(g_pl_ep);
+        TAP_CHECK(granted == 0);
+        TAP_CHECK(ran);
+        TAP_CHECK(rep[XS_CORES] == 0x1);
+        TAP_CHECK(rep[XS_MADE] == 1);
+        TAP_CHECK(rep[XS_ONE] == -KOS_EPERM);
+        TAP_CHECK(rep[XS_ZERO] == 0);
+    }
+
+    void t_affinity_undriven_refused()
+    {
+        pl_reset();
+        auto w = kos::thread::create(pl_park_worker, nullptr, "aundr", 9);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        uint32_t const undriven = 1u << static_cast<uint32_t>(KICKOS_KERNEL_CORES);
+        int const bad = kos_thread_set_affinity(w.id(), undriven);
+        // A MASK IS A SET OF ACCEPTABLE CORES, so a bit the kernel does drive alongside one it
+        // does not names the driven one and is granted. Refusing it would make all ones a
+        // magic value rather than an ordinary request for the whole grant.
+        int const mixed = kos_thread_set_affinity(w.id(), undriven | 0x1u);
+        int const good = kos_thread_set_affinity(w.id(), 0x1u);
+        g_pl_stop = 1;
+        int const joined = w.join(PLACE_JOIN_US);
+        TAP_CHECK(joined == 0);
+        TAP_CHECK(bad == -KOS_EINVAL);
+        TAP_CHECK(mixed == 0);
+        TAP_CHECK(good == 0);
+    }
+
+    void t_migrate_running()
+    {
+        uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
+        // Core 0 is excluded: root has to keep running to move the worker, and a spinner above
+        // its priority seated there would never give the core back.
+        uint32_t a = 0;
+        uint32_t b = 0;
+        unsigned found = 0;
+        for (uint32_t c = 1; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
+        {
+            if ((iso & (1u << c)) != 0)
+            {
+                continue;
+            }
+            if (found == 0)
+            {
+                a = c;
+                found = 1;
+                continue;
+            }
+            b = c;
+            found = 2;
+            break;
+        }
+        if (found < 2)
+        {
+            tap::skip("a migration needs two non-isolated cores beside the boot core");
+            return;
+        }
+        pl_reset();
+        auto w = kos::thread::create_caps(pl_spin_worker, nullptr, "migr", 12, nullptr, 0,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          KOS_TASK_NONE, nullptr, 0, 1u << a);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        // WAIT FOR THE WORKER TO PUBLISH AT ALL, and only then ask which core: it was pinned
+        // to `a` at creation, so any value it publishes must be `a`, and waiting for the value
+        // itself turns a slow start into a red precondition instead of a lost race.
+        uint32_t first = 0xffu;
+        for (unsigned i = 0; i < PL_DEADLINE_STEPS; i++)
+        {
+            first = g_pl_core.load();
+            if (first != 0xffu)
+            {
+                break;
+            }
+            kos_sleep_ns(PLACE_STEP_NS);
+        }
+        bool const on_a = (first == a);
+        int const rc = kos::thread::pin(w.id(), b);
+        bool on_b = false;
+        for (unsigned i = 0; i < PL_DEADLINE_STEPS; i++)
+        {
+            if (g_pl_core.load() == b)
+            {
+                on_b = true;
+                break;
+            }
+            kos_sleep_ns(PLACE_STEP_NS);
+        }
+        uint32_t const last = g_pl_core;
+        g_pl_stop = 1;
+        int const joined = w.join(PLACE_JOIN_US);
+        tap::diag("spinner core %u -> %u: arrived %d, last read %u",
+                  static_cast<unsigned>(a), static_cast<unsigned>(b),
+                  static_cast<int>(on_b), static_cast<unsigned>(last));
+        TAP_CHECK(joined == 0);
+        TAP_CHECK(on_a);
+        TAP_CHECK(rc == 0);
+        // A DEADLINE and not a park: a worker that never arrives fails here instead of
+        // hanging the suite.
+        TAP_CHECK(on_b);
+    }
+
+    void t_pin_same_task_ok()
+    {
+        if (kos_endpoint_create(&g_pl_ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        pl_reset();
+        int32_t rep[XS_WORDS] = {0, 0, 0, 0};
+        bool const ran = sib_pin_run(KOS_TASK_NONE, rep);
+        (void)kos_handle_close(g_pl_ep);
+        TAP_CHECK(ran);
+        TAP_CHECK(rep[XS_CORES] == static_cast<int32_t>(PL_ALL));
+        TAP_CHECK(rep[XS_MADE] == 1);
+        TAP_CHECK(rep[XS_ONE] == 0);
+        TAP_CHECK(rep[XS_ZERO] == 0);
+    }
+
+    void t_pin_cross_task_refused()
+    {
+        if (kos_sem_create(0, &g_pl_gate) != 0)
+        {
+            tap::skip("semaphore pool too small");
+            return;
+        }
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            (void)kos_handle_close(g_pl_gate);
+            tap::skip("task pool too small");
+            return;
+        }
+        kos_cap_grant caps[] = {{g_pl_gate, CH_FULL}};
+        auto m = kos::thread::create_caps(pl_gate_worker, nullptr, "xtask", 9, caps, 1,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          t);
+        bool const seated = m.valid();
+        int rc = -99;
+        int mj = -1;
+        if (seated)
+        {
+            rc = kos_thread_set_affinity(m.id(), 0x1u);
+            kos_sem_post(g_pl_gate);
+            mj = m.join(PLACE_JOIN_US);
+        }
+        (void)kos_task_kill(t);
+        (void)kos_handle_close(g_pl_gate);
+        TAP_CHECK(seated);
+        TAP_CHECK(mj == 0);
+        // Root is unprivileged here, and a core its OWN grant holds does not make the target
+        // its to place.
+        TAP_CHECK(rc == -KOS_EPERM);
+    }
+
+    enum
+    {
+        GN_CORES = 0, // the member's task core set
+        GN_AFF = 1,   // the affinity the kernel seated on it from that set
+        GN_CORE = 2,  // the core it was reading this on
+        GN_WORDS = 3
+    };
+    void gn_worker(void*) // caps: E(SIGNAL)@1
+    {
+        int32_t rep[GN_WORDS];
+        rep[GN_CORES] = static_cast<int32_t>(kos_sched_probe(KOS_SCHED_OP_TASK_CORES));
+        rep[GN_AFF] = static_cast<int32_t>(kos_sched_probe(KOS_SCHED_OP_AFFINITY));
+        rep[GN_CORE] = static_cast<int32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
+        (void)kos_send(1, rep, sizeof(rep));
+    }
+
+    void t_grant_narrows()
+    {
+        if (kos_endpoint_create(&g_pl_ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            (void)kos_handle_close(g_pl_ep);
+            tap::skip("task pool too small");
+            return;
+        }
+        int const granted = kos_task_sched_grant(t, 0, 0x3);
+        kos_cap_grant caps[] = {{g_pl_ep, KOS_CAP_SIGNAL}};
+        auto m = kos::thread::create_caps(gn_worker, nullptr, "gnarr", 11, caps, 1,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          t);
+        bool const seated = m.valid();
+        int32_t rep[GN_WORDS] = {0, 0, 0};
+        bool heard = false;
+        int mj = -1;
+        if (seated)
+        {
+            heard = kos_recv(g_pl_ep, rep, sizeof(rep), nullptr)
+                    == static_cast<int32_t>(sizeof(rep));
+            mj = m.join(PLACE_JOIN_US);
+        }
+        (void)kos_task_kill(t);
+        (void)kos_handle_close(g_pl_ep);
+        TAP_CHECK(granted == 0);
+        TAP_CHECK(seated);
+        TAP_CHECK(heard);
+        TAP_CHECK(mj == 0);
+        TAP_CHECK(rep[GN_CORES] == 0x3);
+        // The member's affinity is seated FROM the set, so a grant nothing re-derived would
+        // show here as a thread wider than its own task.
+        TAP_CHECK(rep[GN_AFF] == 0x3);
+        TAP_CHECK((0x3 & (1 << rep[GN_CORE])) != 0);
+    }
+
+    enum
+    {
+        GW_CORES = 0,  // the member's task core set
+        GW_MADE = 1,   // it got a task of its own to narrow
+        GW_WIDER = 2,  // a set wider than that
+        GW_WITHIN = 3, // ... and one inside it
+        GW_WORDS = 4
+    };
+    void gw_worker(void*) // caps: E(SIGNAL)@1
+    {
+        int32_t rep[GW_WORDS] = {0, 0, -99, -99};
+        rep[GW_CORES] = static_cast<int32_t>(kos_sched_probe(KOS_SCHED_OP_TASK_CORES));
+        kos_task_t u = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &u) == 0)
+        {
+            rep[GW_MADE] = 1;
+            rep[GW_WIDER] = kos_task_sched_grant(u, 0, 0x3);
+            rep[GW_WITHIN] = kos_task_sched_grant(u, 0, 0x1);
+            (void)kos_task_kill(u);
+        }
+        (void)kos_send(1, rep, sizeof(rep));
+    }
+
+    void t_grant_wider_refused()
+    {
+        if (kos_endpoint_create(&g_pl_ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            (void)kos_handle_close(g_pl_ep);
+            tap::skip("task pool too small");
+            return;
+        }
+        int const granted = kos_task_sched_grant(t, 0, 0x1);
+        kos_cap_grant caps[] = {{g_pl_ep, KOS_CAP_SIGNAL}};
+        auto m = kos::thread::create_caps(gw_worker, nullptr, "gwide", 11, caps, 1,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          t);
+        bool const seated = m.valid();
+        int32_t rep[GW_WORDS] = {0, 0, 0, 0};
+        bool heard = false;
+        int mj = -1;
+        if (seated)
+        {
+            heard = kos_recv(g_pl_ep, rep, sizeof(rep), nullptr)
+                    == static_cast<int32_t>(sizeof(rep));
+            mj = m.join(PLACE_JOIN_US);
+        }
+        (void)kos_task_kill(t);
+        (void)kos_handle_close(g_pl_ep);
+        TAP_CHECK(granted == 0);
+        TAP_CHECK(seated);
+        TAP_CHECK(heard);
+        TAP_CHECK(mj == 0);
+        TAP_CHECK(rep[GW_CORES] == 0x1);
+        TAP_CHECK(rep[GW_MADE] == 1);
+        TAP_CHECK(rep[GW_WIDER] == -KOS_EPERM);
+        TAP_CHECK(rep[GW_WITHIN] == 0);
+    }
+
+    // --- A SECOND grant narrows again and never re-widens -------------------------------
+    // The caller-side check in task_sched_grant weighs a request against the CALLER's grant,
+    // which root holds whole, so only task_sched_narrow's own check against the TASK's current
+    // set can refuse this. Nothing else in the suite reaches that check.
+    void t_grant_second_narrow_only()
+    {
+        if (PL_ALL == 0x1u)
+        {
+            tap::skip("re-widening needs a set wider than core 0 to ask for");
+            return;
+        }
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            tap::skip("task pool too small");
+            return;
+        }
+        int const first = kos_task_sched_grant(t, 0, 0x1);
+        int const rewiden = kos_task_sched_grant(t, 0, PL_ALL);
+        int const again = kos_task_sched_grant(t, 0, 0x1);
+        (void)kos_task_kill(t);
+        TAP_CHECK(first == 0);
+        TAP_CHECK(rewiden == -KOS_EPERM);
+        TAP_CHECK(again == 0);
+    }
+
+    // --- A task inherits its creator's grant --------------------------------------------
+    // Only a MEMBER of the created task can show this: every refusal path weighs the caller's
+    // grant, so a task that wrongly defaulted to the whole machine is invisible until a thread
+    // of it reports the set it actually got.
+    enum
+    {
+        GI_MADE = 0,   // the nested task was created
+        GI_SEATED = 1, // a member of it was seated
+        GI_CORES = 2,  // and the set that member reports
+        GI_WORDS = 3
+    };
+    void gi_child(void*) // caps: E(SIGNAL)@1
+    {
+        int32_t rep[GI_WORDS] = {1, 1,
+                                 static_cast<int32_t>(kos_sched_probe(KOS_SCHED_OP_TASK_CORES))};
+        (void)kos_send(1, rep, sizeof(rep));
+    }
+    void gi_worker(void*) // caps: E(SIGNAL)@1
+    {
+        int32_t rep[GI_WORDS] = {0, 0, -1};
+        kos_task_t u = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &u) != 0)
+        {
+            (void)kos_send(1, rep, sizeof(rep));
+            return;
+        }
+        rep[GI_MADE] = 1;
+        kos_cap_grant caps[] = {{1, KOS_CAP_SIGNAL}};
+        auto c = kos::thread::create_caps(gi_child, nullptr, "ginh", 11, caps, 1,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr, u);
+        if (not c.valid())
+        {
+            (void)kos_task_kill(u);
+            (void)kos_send(1, rep, sizeof(rep));
+            return;
+        }
+        // The CHILD answers on the same endpoint, so this thread sends nothing more.
+        (void)c.join(PLACE_JOIN_US);
+        (void)kos_task_kill(u);
+    }
+    void t_grant_inherited_by_child_task()
+    {
+        if (PL_ALL == 0x1u)
+        {
+            tap::skip("inheritance needs a set narrower than the whole machine to inherit");
+            return;
+        }
+        if (kos_endpoint_create(&g_pl_ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            (void)kos_handle_close(g_pl_ep);
+            tap::skip("task pool too small");
+            return;
+        }
+        int const granted = kos_task_sched_grant(t, 0, 0x1);
+        // TRANSFER as well as SIGNAL: the worker hands this endpoint on to the member it
+        // seats into the nested task, and that member is what reports the inherited set.
+        kos_cap_grant caps[] = {{g_pl_ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}};
+        auto m = kos::thread::create_caps(gi_worker, nullptr, "ginhw", 11, caps, 1,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr, t);
+        bool const seated = m.valid();
+        int32_t rep[GI_WORDS] = {0, 0, -1};
+        bool heard = false;
+        if (seated)
+        {
+            heard = kos_recv(g_pl_ep, rep, sizeof(rep), nullptr)
+                    == static_cast<int32_t>(sizeof(rep));
+            (void)m.join(PLACE_JOIN_US);
+        }
+        (void)kos_task_kill(t);
+        (void)kos_handle_close(g_pl_ep);
+        TAP_CHECK(granted == 0);
+        TAP_CHECK(seated);
+        TAP_CHECK(heard);
+        tap::diag("nested task made %d, member seated %d, cores/err %d",
+                  static_cast<int>(rep[GI_MADE]), static_cast<int>(rep[GI_SEATED]),
+                  static_cast<int>(rep[GI_CORES]));
+        TAP_CHECK(rep[GI_MADE] == 1);
+        TAP_CHECK(rep[GI_SEATED] == 1);
+        // 0x1 and not PL_ALL: a task that did not inherit reads as the whole machine.
+        TAP_CHECK(rep[GI_CORES] == 0x1);
+    }
+
+    void t_grant_after_member_refused()
+    {
+        if (kos_sem_create(0, &g_pl_gate) != 0)
+        {
+            tap::skip("semaphore pool too small");
+            return;
+        }
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            (void)kos_handle_close(g_pl_gate);
+            tap::skip("task pool too small");
+            return;
+        }
+        int const empty_ok = kos_task_sched_grant(t, 0, 0x3);
+        kos_cap_grant caps[] = {{g_pl_gate, CH_FULL}};
+        auto m = kos::thread::create_caps(pl_gate_worker, nullptr, "gbusy", 9, caps, 1,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          t);
+        bool const seated = m.valid();
+        int busy = -99;
+        int mj = -1;
+        if (seated)
+        {
+            busy = kos_task_sched_grant(t, 0, 0x1);
+            kos_sem_post(g_pl_gate);
+            mj = m.join(PLACE_JOIN_US);
+        }
+        (void)kos_task_kill(t);
+        (void)kos_handle_close(g_pl_gate);
+        TAP_CHECK(empty_ok == 0);
+        TAP_CHECK(seated);
+        TAP_CHECK(mj == 0);
+        // Thread::affinity is a subset of the set and nothing re-derives it, so a grant that
+        // narrowed under a live member would strand it.
+        TAP_CHECK(busy == -KOS_EBUSY);
+    }
+
+    // A task granted EXACTLY ONE isolated core. Its grant names nothing else, so the default
+    // set IS the grant and an unpinned member is pinned by construction. Only a member can show
+    // it, the set a task really got being invisible from outside.
+    void t_isolated_single_grant_ok()
+    {
+        uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
+        if (iso == 0)
+        {
+            tap::skip("this image isolates no core");
+            return;
+        }
+        uint32_t const core = pl_lowest(iso);
+        uint32_t const bit = 1u << core;
+        if (kos_endpoint_create(&g_pl_ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            (void)kos_handle_close(g_pl_ep);
+            tap::skip("task pool too small");
+            return;
+        }
+        int const granted = kos_task_sched_grant(t, 0, bit);
+        kos_cap_grant caps[] = {{g_pl_ep, KOS_CAP_SIGNAL}};
+        auto m = kos::thread::create_caps(gn_worker, nullptr, "isogr", 11, caps, 1,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          t);
+        bool const seated = m.valid();
+        int32_t rep[GN_WORDS] = {0, 0, 0};
+        bool heard = false;
+        int mj = -1;
+        if (seated)
+        {
+            heard = kos_recv(g_pl_ep, rep, sizeof(rep), nullptr)
+                    == static_cast<int32_t>(sizeof(rep));
+            mj = m.join(PLACE_JOIN_US);
+        }
+        (void)kos_task_kill(t);
+        (void)kos_handle_close(g_pl_ep);
+        tap::diag("granted isolated core %u alone: task cores 0x%x, affinity 0x%x, ran on %d",
+                  static_cast<unsigned>(core), static_cast<unsigned>(rep[GN_CORES]),
+                  static_cast<unsigned>(rep[GN_AFF]), static_cast<int>(rep[GN_CORE]));
+        TAP_CHECK(granted == 0);
+        TAP_CHECK(seated);
+        TAP_CHECK(heard);
+        TAP_CHECK(mj == 0);
+        TAP_CHECK(rep[GN_CORES] == static_cast<int32_t>(bit));
+        TAP_CHECK(rep[GN_AFF] == static_cast<int32_t>(bit));
+        TAP_CHECK(rep[GN_CORE] == static_cast<int32_t>(core));
+    }
+
+    void pl_exit_worker(void*)
+    {
+    }
+
+    // An exited-but-unreclaimed slot still gen-matches, so the handle resolves and there is
+    // nothing left in it to place. Kill and slay answer the same way.
+    void t_affinity_dead_handle_refused()
+    {
+        auto w = kos::thread::create(pl_exit_worker, nullptr, "adead", 9);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        int const joined = w.join(PLACE_JOIN_US);
+        int const dead = kos_thread_set_affinity(w.id(), 0x1u);
+        TAP_CHECK(joined == 0);
+        TAP_CHECK(dead == -KOS_EBADF);
+    }
+
+    // THE DRIFT MECHANISM, read at the mask and then at the cores. A thread that names no core
+    // is given the task's set less the isolated ones, so it arrives on none of them; the cores
+    // it was actually seen on are the second half, a mask that excluded them proving nothing on
+    // its own if the thread never ran. It says nothing about a thread that DOES name one:
+    // t_isolated_takes_pinned and t_isolated_mixed_mask_ok are that half.
+    void t_isolated_unpinned_never()
+    {
+        uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
+        if (iso == 0)
+        {
+            tap::skip("this image isolates no core");
+            return;
+        }
+        pl_reset();
+        auto w = kos::thread::create(pl_sample_worker, nullptr, "isonv", 12);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        g_pl_go = 1;
+        int const joined = w.join(PLACE_JOIN_US);
+        uint32_t const aff = g_pl_aff;
+        uint32_t const seen = g_pl_seen;
+        tap::diag("unpinned worker: affinity 0x%x, cores seen 0x%x, isolated 0x%x",
+                  static_cast<unsigned>(aff), static_cast<unsigned>(seen),
+                  static_cast<unsigned>(iso));
+        TAP_CHECK(joined == 0);
+        TAP_CHECK(aff == (PL_ALL & ~iso));
+        TAP_CHECK(seen != 0); // the denominator: a worker that never ran would satisfy the rest
+        TAP_CHECK((seen & iso) == 0);
+    }
+
+    // THE SAME MECHANISM READ AT THE OTHER END: a thread that WAS pinned to the isolated core
+    // and is then unpinned. Unpin restores the DEFAULT set and not the grant, so the isolated
+    // core is gone from the mask; a thread widened to the whole grant instead would keep the
+    // core it already holds and go on running there. Both channels are read, the mask and the
+    // cores the thread was actually seen on, the mask alone proving nothing if it never ran.
+    void t_isolated_unpin_excludes()
+    {
+        uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
+        if (iso == 0)
+        {
+            tap::skip("this image isolates no core");
+            return;
+        }
+        uint32_t const core = pl_lowest(iso);
+        pl_reset();
+        auto w = kos::thread::create_caps(pl_sample_worker, nullptr, "isoup", 12, nullptr, 0,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          KOS_TASK_NONE, nullptr, 0, 1u << core);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        int const rc = kos::thread::unpin(w.id());
+        g_pl_go = 1;
+        int const joined = w.join(PLACE_JOIN_US);
+        uint32_t const aff = g_pl_aff;
+        uint32_t const seen = g_pl_seen;
+        tap::diag("unpinned off isolated core %u: affinity 0x%x, cores seen 0x%x, isolated 0x%x",
+                  static_cast<unsigned>(core), static_cast<unsigned>(aff),
+                  static_cast<unsigned>(seen), static_cast<unsigned>(iso));
+        TAP_CHECK(rc == 0);
+        TAP_CHECK(joined == 0);
+        TAP_CHECK(aff == (PL_ALL & ~iso));
+        TAP_CHECK(seen != 0); // the denominator: a worker that never ran would satisfy the rest
+        TAP_CHECK((seen & iso) == 0);
+    }
+
+    void t_isolated_takes_pinned()
+    {
+        uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
+        if (iso == 0)
+        {
+            tap::skip("this image isolates no core");
+            return;
+        }
+        uint32_t const core = pl_lowest(iso);
+        pl_reset();
+        auto w = kos::thread::create(pl_sample_worker, nullptr, "isopn", 12);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        int const rc = kos::thread::pin(w.id(), core);
+        g_pl_go = 1;
+        int const joined = w.join(PLACE_JOIN_US);
+        uint32_t const aff = g_pl_aff;
+        uint32_t const seen = g_pl_seen;
+        tap::diag("pinned to isolated core %u: affinity 0x%x, cores seen 0x%x",
+                  static_cast<unsigned>(core), static_cast<unsigned>(aff),
+                  static_cast<unsigned>(seen));
+        TAP_CHECK(rc == 0);
+        TAP_CHECK(joined == 0);
+        TAP_CHECK(aff == (1u << core));
+        TAP_CHECK(seen == (1u << core));
+    }
+
+    // THE OTHER HALF OF THE OPT-IN, and the one the guarantee's wording turns on: an isolated
+    // core named BESIDE an ordinary one. The mask is admitted whole and lands verbatim, so
+    // that core's picker holds the thread like any other core in the set. WHICH of the two it
+    // is seen on is the picker's and is not asserted; what is asserted is that it ran, and
+    // never outside the mask.
+    void t_isolated_mixed_mask_ok()
+    {
+        uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
+        if (iso == 0)
+        {
+            tap::skip("this image isolates no core");
+            return;
+        }
+        uint32_t const mixed = iso | 1u; // core 0 can never be isolated, so the two are disjoint
+        pl_reset();
+        auto w = kos::thread::create(pl_sample_worker, nullptr, "isomx", 12);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        int const rc = kos_thread_set_affinity(w.id(), mixed);
+        g_pl_go = 1;
+        int const joined = w.join(PLACE_JOIN_US);
+        uint32_t const aff = g_pl_aff;
+        uint32_t const seen = g_pl_seen;
+        tap::diag("isolated core named beside core 0: asked 0x%x, affinity 0x%x, cores seen 0x%x",
+                  static_cast<unsigned>(mixed), static_cast<unsigned>(aff),
+                  static_cast<unsigned>(seen));
+        TAP_CHECK(rc == 0);
+        TAP_CHECK(joined == 0);
+        TAP_CHECK(aff == mixed);
+        TAP_CHECK(seen != 0);
+        TAP_CHECK((seen & ~mixed) == 0);
+    }
+#endif
+
     void t_confused_deputy()
     {
         kos_sem_create(0, &g_cd_done);
@@ -10299,6 +11305,31 @@ int main(int, char**)
     // LAST of the block: it drops the space holding the image's own data pages for good, and
     // every process created after it copies the snapshot instead.
     TAP_ADD("process_data_template", t_process_data_template); // the snapshot, once root is gone
+#endif
+#if defined(KICKOS_ENABLE_SELFTEST)
+    TAP_ADD("prio_ceiling_refused", t_prio_ceiling_refused); // a spawn above the task's ceiling
+    TAP_ADD("prio_ceiling_narrow_only", t_prio_ceiling_narrow_only); // and a grant above the caller's own
+#endif
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
+    TAP_ADD("pin_places", t_pin_places);               // a pinned worker reports the core it asked for
+    TAP_ADD("pin_wrong_core_never", t_pin_wrong_core_never); // ... and no other, sampled across yields
+    TAP_ADD("unpin_restores", t_unpin_restores);       // unpin gives the task's default set back
+    TAP_ADD("affinity_zero_defaults", t_affinity_zero_defaults); // a zero mask, and one meeting the grant nowhere
+    TAP_ADD("affinity_undriven_refused", t_affinity_undriven_refused); // a core the image does not drive
+    TAP_ADD("migrate_running", t_migrate_running);     // a SPINNING thread is moved across cores
+    TAP_ADD("pin_same_task_ok", t_pin_same_task_ok);   // a sibling of one's own task may be placed
+    TAP_ADD("pin_cross_task_refused", t_pin_cross_task_refused); // a thread of another task may not
+    TAP_ADD("grant_narrows", t_grant_narrows);         // a narrowed core set reaches the member
+    TAP_ADD("grant_wider_refused", t_grant_wider_refused); // wider than the caller's own grant
+    TAP_ADD("grant_after_member_refused", t_grant_after_member_refused); // a task that already has one
+    TAP_ADD("grant_second_narrow_only", t_grant_second_narrow_only); // a second grant cannot re-widen
+    TAP_ADD("grant_inherited_by_child_task", t_grant_inherited_by_child_task); // a child task is no wider than its creator
+    TAP_ADD("isolated_single_grant_ok", t_isolated_single_grant_ok);   // one isolated core is a pin
+    TAP_ADD("affinity_dead_handle_refused", t_affinity_dead_handle_refused);
+    TAP_ADD("isolated_unpinned_never", t_isolated_unpinned_never); // the default set holds none
+    TAP_ADD("isolated_unpin_excludes", t_isolated_unpin_excludes); // and an unpin restores that set
+    TAP_ADD("isolated_takes_pinned", t_isolated_takes_pinned);     // and a pinned thread does run there
+    TAP_ADD("isolated_mixed_mask_ok", t_isolated_mixed_mask_ok);   // named beside core 0, admitted whole
 #endif
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST) && KICKOS_FAULT_ISOLATION
     TAP_ADD("fault_kills_task", t_fault_kills_task); // a translation fault ends the TASK, root survives

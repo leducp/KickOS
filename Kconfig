@@ -129,6 +129,25 @@ config KICKOS_KERNEL_CORES
 	  never KICKOS_NUM_CORES: an AMP node holding a cell for a core it does not
 	  schedule describes a machine it is not.
 
+config KICKOS_ISOLATED_CORES
+	hex "Cores held out of the default core set"
+	depends on KICKOS_MULTICORE_SHARED
+	default 0x0
+	help
+	  A bitmask of cores subtracted from the DEFAULT core set, which is what a task's
+	  grant gives a thread that names no core: at spawn, and again when
+	  kos_thread_set_affinity is called with a zero mask. THE GUARANTEE IS THAT
+	  NOTHING ARRIVES BY DEFAULT AND ONLY AN EXPLICIT MASK REACHES AN ISOLATED CORE.
+	  It is not that nothing else ever runs there: a mask naming an isolated core,
+	  alone or beside ordinary ones, is the opt-in, and that core's picker then takes
+	  the thread like any other core in the set. A core no explicit mask names runs
+	  its own idle thread. CORE 0 MAY NOT BE ISOLATED and setting bit 0 is refused at
+	  configure: it is the boot core, and an image whose every core is isolated boots
+	  and then schedules nothing. So on a two-core part the only isolatable core is
+	  core 1, which is the intended shape: everything holding the default set runs on
+	  the boot core and a latency-critical thread is pinned alone onto the isolated
+	  one.
+
 # --- The AMP posture --------------------------------------------------------
 
 choice
