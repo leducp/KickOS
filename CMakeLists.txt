@@ -70,7 +70,7 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
                 KICKOS_RTT_CH1_SIZE
                 KICKOS_USER_HEAP_SIZE
                 KICKOS_MAX_INSTANCES KICKOS_PANIC_DUMP KICKOS_DIAG_TERSE
-                KICKOS_AMP_NODES KICKOS_AMP_NODE_ID)
+                KICKOS_AMP_NODES KICKOS_AMP_NODE_ID KICKOS_ISOLATED_CORES)
     if(DEFINED ${_knob})
       list(APPEND _kcfg_req "CONFIG_${_knob}=${${_knob}}")
     endif()
@@ -626,6 +626,20 @@ add_compile_definitions(KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES})
 # Beside them again, for an app TU that has to ask which MODEL it runs under.
 add_compile_definitions(KICKOS_MULTICORE_MODEL_SHARED=${KICKOS_MULTICORE_MODEL_SHARED})
 
+# --- Isolated cores ----------------------------------------------------------
+# The knob depends on the shared model, so it is absent from the generated header on every
+# other posture and the C side carries the same zero default.
+if(NOT DEFINED KICKOS_ISOLATED_CORES OR KICKOS_ISOLATED_CORES STREQUAL "")
+  set(KICKOS_ISOLATED_CORES 0)
+endif()
+include(isolated_cores)
+kickos_isolated_cores_check(
+  ISOLATED      "${KICKOS_ISOLATED_CORES}"
+  KERNEL_CORES  "${KICKOS_KERNEL_CORES}"
+  ORIGIN        "${KICKOS_DEFCONFIG}")
+# An APP TU asks this to know which cores it may pin onto.
+add_compile_definitions(KICKOS_ISOLATED_CORES=${KICKOS_ISOLATED_CORES})
+
 # The AMP posture and the partition's width, for an app TU that has to ask whether it runs on
 # a node at all and how many peers it may sweep. Both live in the generated board config,
 # which an app does not include.
@@ -982,6 +996,14 @@ if(KICKOS_BUILD_TESTS)
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_COMMAND}")
   set_tests_properties(smp_predicate PROPERTIES TIMEOUT 300 LABELS host)
 
+  # The isolated-core mask's two configure refusals, driven over synthetic values against the
+  # same module this file calls above. Registered from every board: the module is this tree's,
+  # and the gate configures nothing and builds nothing.
+  _add_test(NAME isolated_cores
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_isolated_cores.sh"
+                    "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_COMMAND}")
+  set_tests_properties(isolated_cores PROPERTIES TIMEOUT 120 LABELS host)
+
   # KICKOS_SMP_TRACE is OFF in every preset, so nothing else compiles its enabled arm and it
   # would rot unnoticed. This compiles that arm alone, taking the flags from this build's own
   # compile_commands.json so they cannot drift, and runs no image. Registered where the trace
@@ -1151,6 +1173,18 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/exitquiesce/CMakeLists.txt")
   add_subdirectory(tests/unit/exitquiesce)
+  # Links the object library the directory above defines, so it cannot precede it.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/migrateask/CMakeLists.txt")
+    add_subdirectory(tests/unit/migrateask)
+  endif()
+endif()
+
+# Header-only, and outside the K-seam block because it needs an ISOLATION MASK no preset
+# carries: a mask over SEVERAL isolated cores, the pool an explicit affinity reserves, needs two
+# and qemu-arm64-smpiso isolates one.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/placeadmit/CMakeLists.txt")
+  add_subdirectory(tests/unit/placeadmit)
 endif()
 
 # Outside the K-seam block for the same reason as irqquiesce: it compiles kernel/sync/klock.cc

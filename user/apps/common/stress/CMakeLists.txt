@@ -42,10 +42,24 @@ endif()
 # verdict. The liveness pattern is the app's own FIRST line, a control that the app half ran at
 # all. CMAKE_NM travels with it: the gate reads the trap stub's address out of the image
 # instead of carrying a layout. TIMEOUT covers the gate's own sampling bound.
+#
+# THE CORE COUNT STAYS THE MACHINE'S, and the isolated mask travels beside it as its own
+# argument: stress names no core, and an isolated core is held out of the default core set that
+# gives it, so the gate asserts a thread on every other core AND no thread at all on that one.
+# It is the by-default half of the guarantee and not a claim that the core is unreachable. A
+# count alone
+# could not say which core the absence belongs to. The knob is absent on every posture but the
+# shared model, so it carries the same zero default here that the C side does.
+set(_stress_isolated 0)
+if(DEFINED KICKOS_ISOLATED_CORES AND NOT KICKOS_ISOLATED_CORES STREQUAL "")
+  set(_stress_isolated ${KICKOS_ISOLATED_CORES})
+endif()
+
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-arm64" AND KICKOS_KERNEL_CORES GREATER 1)
   kickos_add_qemu_test(NAME qemu_arm64_smp_threads TARGET stress BOARD qemu-arm64
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_threads.sh"
     ARGS ${KICKOS_KERNEL_CORES} "^stress: scheduler" "${CMAKE_NM}" armv8a
+         ${_stress_isolated}
     TIMEOUT 300)
 endif()
 
@@ -56,5 +70,6 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64" AND KICKOS_KERNEL
   kickos_add_qemu_test(NAME qemu_riscv64_smp_threads TARGET stress BOARD qemu-riscv64
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_threads.sh"
     ARGS ${KICKOS_KERNEL_CORES} "^stress: scheduler" "${CMAKE_NM}" rv64imac
+         ${_stress_isolated}
     TIMEOUT 300)
 endif()

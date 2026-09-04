@@ -6,13 +6,15 @@
 # core. One boot, read through two channels, both of them the emulator's own.
 #
 #   the oracle    QEMU's own execution log must show the APP's `svc` stub executed under every
-#                 vCPU index. The stub is the unprivileged side of the trap seam
-#                 (arch_syscall, in the app half), so a line under index N says vCPU N fetched
-#                 and executed instructions that only a thread at EL0 reaches.
-#   the check     the emulator must report every core TAKING an interrupt, which says each
-#                 core is live and its own delivery path is enabled. WHICH FACILITY REPORTS
-#                 THAT IS PER BACKEND: arm64 reads the GIC model's acknowledge event, rv64
-#                 reads the trap log, whose line names the hart and the cause directly.
+#                 vCPU index the posture expects a thread on, and under NO isolated one. The
+#                 stub is the unprivileged side of the trap seam (arch_syscall, in the app
+#                 half), so a line under index N says vCPU N fetched and executed instructions
+#                 that only a thread at EL0 reaches.
+#   the check     the emulator must report every core the posture expects a thread on TAKING
+#                 an interrupt, which says each core is live and its own delivery path is
+#                 enabled. WHICH FACILITY REPORTS THAT IS PER BACKEND: arm64 reads the GIC
+#                 model's acknowledge event, rv64 reads the trap log, whose line names the
+#                 hart and the cause directly.
 #
 # THE INDEX ON A `Trace N:` LINE IS THE EMULATOR'S OWN cpu_index for the vCPU executing that
 # translation block, which guest code cannot write, forge across vCPUs, or reach on a core the
@@ -41,12 +43,21 @@
 # all means the filter or the log format moved, which is UNKNOWN rather than a core that ran
 # no thread.
 #
-# A GREEN SAYS EVERY vCPU EXECUTED A THREAD, AND NOTHING ABOUT BALANCE: how the work was split
+# A GREEN SAYS EVERY vCPU IT COVERS EXECUTED A THREAD, AND NOTHING ABOUT BALANCE: how the work was split
 # across the cores, in what order they were reached, and whether a core kept a thread for any
 # length of time are all outside it. It licenses no claim about migration either: a thread per
 # core and one thread visiting four cores read identically here.
 #
-# usage: check_smp_threads.sh <elf> <expect-cores> <live-ere> <nm> <backend>
+# THE OPTIONAL MASK SPLITS THE MACHINE IN TWO, and both halves are asserted. An ISOLATED core is
+# held out of the DEFAULT core set, so only a thread whose explicit mask names it reaches it, and
+# a workload that names no core must leave it EMPTY. Every core outside the mask is asserted the
+# way it always was, on both channels; every core inside it is asserted to carry NO stub block at
+# all, which is this gate witnessing from outside the image, on the emulator's own execution log,
+# that nothing arrives there by default. It says nothing about a workload that DOES name the core:
+# such a thread is placed there by design. The mask never moves <expect-cores>, which stays the
+# MACHINE's core count and is still cross-checked against -smp.
+#
+# usage: check_smp_threads.sh <elf> <expect-cores> <live-ere> <nm> <backend> [isolated-mask]
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -54,12 +65,13 @@ set -u
 # and a full suite under an execution log is what makes the failure path this long.
 : "${QEMU_TIMEOUT:=120}"
 
-_usage="usage: check_smp_threads.sh <elf> <expect-cores> <live-ere> <nm> <backend>"
+_usage="usage: check_smp_threads.sh <elf> <expect-cores> <live-ere> <nm> <backend> [isolated-mask]"
 elf="${1:?$_usage}"
 want="${2:?$_usage}"
 live="${3:?$_usage}"
 nm="${4:?$_usage}"
 backend="${5:?$_usage}"
+iso_arg="${6:-0}"
 
 require_number "$want" "the expected core count"
 require_literal "$live" "the liveness pattern"
@@ -68,6 +80,47 @@ if [ "$want" -le 1 ]; then
   oracle is satisfied by any image at all, so this gate belongs only on a preset whose core
   count exceeds one"
 fi
+
+# --- Which cores this posture expects a thread on, and which it forbids one on -
+# The knob this mask comes from is spelled in hexadecimal where it is configured, so both
+# radixes arrive here; an unparsed one read as a zero would silently drop the second arm.
+iso="$iso_arg"
+case "$iso" in
+    0x*|0X*)
+        _iso_digits="${iso#0[xX]}"
+        case "$_iso_digits" in
+            ''|*[!0-9a-fA-F]*)
+                fail "the isolated-core mask must be a decimal or 0x hexadecimal number, got
+  [$iso_arg]" ;;
+        esac
+        iso="$(printf '%d' "0x$_iso_digits")" ;;
+esac
+require_number "$iso" "the isolated-core mask"
+
+ISO_CORES=""
+SPREAD_CORES=""
+_core=0
+while [ "$_core" -lt "$want" ]; do
+    if [ $(( (iso >> _core) & 1 )) -eq 1 ]; then
+        ISO_CORES="$ISO_CORES $_core"
+    else
+        SPREAD_CORES="$SPREAD_CORES $_core"
+    fi
+    _core=$((_core + 1))
+done
+# ORDERED BEFORE THE BIT 0 REFUSAL: a mask covering every core also names core 0, so refusing
+# bit 0 first would leave this arm unreachable.
+if [ -z "$SPREAD_CORES" ]; then
+    fail "the isolated-core mask $iso_arg isolates every one of the $want core(s), so the
+  assertion that a thread ran on each core this posture expects one on is left with no core
+  and is satisfied by any image at all"
+fi
+if [ $((iso & 1)) -ne 0 ]; then
+    fail "the isolated-core mask $iso_arg names core 0, which is the boot core and can never
+  be isolated: a mask naming it is a value the caller got wrong rather than a posture to
+  measure"
+fi
+
 [ -f "$elf" ] || fail "no image at $elf"
 [ -x "$nm" ] || fail "no nm at $nm; the stub's address cannot be read out of the image and
   every assertion below would rest on a hard-coded layout"
@@ -223,7 +276,11 @@ require_number "$stub_dec" "the stub address"
 # QEMU prints a translation block's PC as sixteen zero-padded hex digits.
 stub_pc="$(printf '%016x' "$stub_dec")"
 require_literal "$stub_pc" "the stub's printed program counter"
-echo "== $want core(s), $STUB_SYM at 0x$stub_pc under an execution log =="
+_iso_note="none isolated"
+if [ -n "$ISO_CORES" ]; then
+    _iso_note="isolated:$ISO_CORES, expecting a thread on:$SPREAD_CORES"
+fi
+echo "== $want core(s) ($_iso_note), $STUB_SYM at 0x$stub_pc under an execution log =="
 
 # --- What the sampling waits for ----------------------------------------------
 # Both channels, re-read out of the growing log on every tick. The two lists are what an
@@ -242,8 +299,10 @@ kos_spread_seen() {
     _seen_stub=" $(sed -n "s/^Trace \\([0-9][0-9]*\\):.*\\/$stub_pc\\/.*/\\1/p" "$LOG" \
         2>/dev/null | sort -u | tr '\n' ' ')"
     _seen_ack=" $(kos_ack_indices | tr '\n' ' ')"
-    _core=0
-    while [ "$_core" -lt "$want" ]; do
+    # THE NON-ISOLATED CORES ONLY. An isolated core is expected to stay empty for the whole
+    # run, so waiting on one would burn the whole bound on every green run of that posture.
+    # shellcheck disable=SC2086
+    for _core in $SPREAD_CORES; do
         case "$_seen_stub" in
             *" $_core "*) ;;
             *) KOS_MISS_STUB="$KOS_MISS_STUB $_core" ;;
@@ -252,9 +311,28 @@ kos_spread_seen() {
             *" $_core "*) ;;
             *) KOS_MISS_ACK="$KOS_MISS_ACK $_core" ;;
         esac
-        _core=$((_core + 1))
     done
     if [ -n "$KOS_MISS_STUB" ] || [ -n "$KOS_MISS_ACK" ]; then
+        return 1
+    fi
+    return 0
+}
+
+# The isolated arm's own predicate, over the same log: which isolated cores the execution log
+# attributes a stub block to. Never part of the sampling condition, which waits for presences
+# and would otherwise wait forever for an absence.
+KOS_ISO_HIT=""
+kos_iso_hits() { # reads $LOG, 0 when no isolated core ran the stub
+    KOS_ISO_HIT=""
+    _seen_iso=" $(sed -n "s/^Trace \\([0-9][0-9]*\\):.*\\/$stub_pc\\/.*/\\1/p" "$LOG" \
+        2>/dev/null | sort -u | tr '\n' ' ')"
+    # shellcheck disable=SC2086
+    for _core in $ISO_CORES; do
+        case "$_seen_iso" in
+            *" $_core "*) KOS_ISO_HIT="$KOS_ISO_HIT $_core" ;;
+        esac
+    done
+    if [ -n "$KOS_ISO_HIT" ]; then
         return 1
     fi
     return 0
@@ -267,18 +345,25 @@ kos_spread_seen() {
 kos_spread_control() {
     _keep="$LOG"
     LOG="$TMP/control.log"
-    _last=$((want - 1))
-    _core=0
-    while [ "$_core" -lt "$want" ]; do
+    # The highest core the spread arm covers, which is not the machine's highest: an isolated
+    # core may sit above it and dropping THAT one would prove nothing about this predicate.
+    # shellcheck disable=SC2086
+    for _last in $SPREAD_CORES; do :; done
+    # shellcheck disable=SC2086
+    for _core in $SPREAD_CORES; do
         printf 'Trace %s: 0xdeadbeef [ffffffffffffffff/%s/0x0/0x0] \n' "$_core" "$stub_pc"
         kos_ack_plant "$_core"
-        _core=$((_core + 1))
     done > "$TMP/control.full"
     cp "$TMP/control.full" "$LOG"
     kos_spread_seen \
-        || fail "the sampling predicate is not satisfied by a planted log naming every one of
-      $want core(s) on both channels (stub short of [$KOS_MISS_STUB], acknowledgement short
-      of [$KOS_MISS_ACK]), so every run would burn its whole bound"
+        || fail "the sampling predicate is not satisfied by a planted log naming every core
+      this posture expects a thread on ($SPREAD_CORES ) on both channels (stub short of
+      [$KOS_MISS_STUB], acknowledgement short of [$KOS_MISS_ACK]), so every run would burn
+      its whole bound"
+    kos_iso_hits \
+        || fail "the isolated-core assertion refuses a planted log naming ONLY the cores this
+      posture expects a thread on ($SPREAD_CORES ), reporting[$KOS_ISO_HIT], so every clean
+      run of this posture would be reported as a breach"
     # One core dropped from each channel, one channel at a time: a predicate reading only the
     # other one passes this and reports nothing.
     grep -v "^Trace $_last:" "$TMP/control.full" > "$LOG"
@@ -292,12 +377,41 @@ kos_spread_control() {
         fail "the sampling predicate is satisfied by a log carrying nothing on $CHAN_NAME for
       core $_last, so it ignores its second channel"
     fi
+    # THE ISOLATED ARM IN THE DIRECTION THAT CAN GO VACUOUS. It reports an absence, and an
+    # assertion that reads nothing reports the same absence forever; only a planted breach
+    # separates the two.
+    if [ -n "$ISO_CORES" ]; then
+        # shellcheck disable=SC2086
+        for _plant in $ISO_CORES; do :; done
+        cp "$TMP/control.full" "$LOG"
+        printf 'Trace %s: 0xdeadbeef [ffffffffffffffff/%s/0x0/0x0] \n' "$_plant" "$stub_pc" \
+            >> "$LOG"
+        if kos_iso_hits; then
+            fail "the isolated-core assertion is satisfied by a planted log carrying a stub
+      block for isolated vCPU $_plant, so it would report nothing when a thread does land
+      there and this gate's whole isolation arm is vacuous"
+        fi
+        case " $KOS_ISO_HIT " in
+            *" $_plant "*) ;;
+            *) fail "the isolated-core assertion refused a planted log naming isolated vCPU
+      $_plant and reports[$KOS_ISO_HIT] instead, so its refusal would send a reader to the
+      wrong core" ;;
+        esac
+        kos_spread_seen \
+            || fail "the sampling predicate stops being satisfied once an isolated core
+      carries a stub block, so a breaching run would burn its whole bound instead of being
+      reported on the log that holds the breach"
+    fi
     rm -f "$TMP/control.full" "$LOG"
     LOG="$_keep"
 }
 kos_spread_control
 echo "   sampling predicate control: satisfied by a complete log, refused by either channel
    one core short"
+if [ -n "$ISO_CORES" ]; then
+    echo "   isolated-core control: clean on a log naming only$SPREAD_CORES, refused on the
+   same log plus one stub block for isolated vCPU $_plant"
+fi
 
 # --- The boot ------------------------------------------------------------------
 # nochain, so a block reached through a chain from an earlier one is still logged: short of it
@@ -377,11 +491,16 @@ core=0
 while [ "$core" -lt "$want" ]; do
     n="$(grep -c "^Trace $core:.*/$stub_pc/" "$LOG")" || n=0
     require_number "$n" "the stub execution count for vCPU $core"
-    if [ "$n" -eq 0 ]; then
-        missing="$missing $core"
-    else
-        echo "   vCPU $core executed the unprivileged trap stub $n time(s)"
-    fi
+    case " $ISO_CORES " in
+        *" $core "*)
+            echo "   vCPU $core is isolated: $n stub block(s), and this posture owes 0" ;;
+        *)
+            if [ "$n" -eq 0 ]; then
+                missing="$missing $core"
+            else
+                echo "   vCPU $core executed the unprivileged trap stub $n time(s)"
+            fi ;;
+    esac
     core=$((core + 1))
 done
 if [ -n "$missing" ]; then
@@ -390,6 +509,23 @@ if [ -n "$missing" ]; then
   vCPU(s)$missing, so no thread ran there. A core that reaches no scheduler, an idle thread
   with no peer to schedule and a wake that never leaves the waking core all present exactly
   this way"
+fi
+
+# --- The other direction: NO isolated core executed the stub ------------------
+# An isolated core is held out of the DEFAULT core set, and this workload names no core, so a
+# stub block attributed to one is a thread that arrived where only an explicit mask reaches.
+# Read off the same log, by the emulator's own attribution.
+if ! kos_iso_hits; then
+    # shellcheck disable=SC2086
+    for _c in $KOS_ISO_HIT; do
+        grep "^Trace $_c:.*/$stub_pc/" "$LOG" | sed -n '1,3p'
+    done
+    fail "QEMU's execution log attributes the unprivileged trap stub to isolated vCPU(s)
+  $KOS_ISO_HIT: an unprivileged thread ran on a core held out of the default core set, and this
+  workload names no core, so nothing here should ever have been eligible there"
+fi
+if [ -n "$ISO_CORES" ]; then
+    echo "   no stub block on isolated vCPU(s)$ISO_CORES, so nothing arrived there by default"
 fi
 
 # --- The second channel: every core's interface took an interrupt -------------
@@ -410,13 +546,12 @@ fi
 
 _seen=" $(kos_ack_indices | tr '\n' ' ')"
 ack_missing=""
-core=0
-while [ "$core" -lt "$want" ]; do
+# shellcheck disable=SC2086
+for core in $SPREAD_CORES; do
     case "$_seen" in
         *" $core "*) ;;
         *) ack_missing="$ack_missing $core" ;;
     esac
-    core=$((core + 1))
 done
 if [ -n "$ack_missing" ]; then
     kos_ack_indices | sed -n '1,10p'
@@ -424,7 +559,7 @@ if [ -n "$ack_missing" ]; then
   took no interrupt at all, so whatever ran on them was never preempted or woken through the
   delivery path"
 fi
-echo "   every core took an interrupt, seen on $CHAN_NAME"
+echo "   every core this posture expects a thread on took an interrupt, seen on $CHAN_NAME"
 
 # The poll's own verdict on the same two channels, which the two loops above have just
 # re-derived off the final log. A disagreement is this gate's parse against itself.
@@ -446,7 +581,11 @@ if [ "$POLL_OK" -ne 1 ]; then
   reached its own first line inside ${QEMU_TIMEOUT}s"
 fi
 
-echo "PASS: $want core(s) each executed the unprivileged trap stub within ${POLL_MS} ms of
-  sampling, so a thread ran on every one; QEMU's own execution log is the witness and the
-  image supplied none of it"
+_pass_iso=""
+if [ -n "$ISO_CORES" ]; then
+    _pass_iso=", and the log attributes no stub block at all to isolated vCPU(s)$ISO_CORES"
+fi
+echo "PASS: vCPU(s)$SPREAD_CORES each executed the unprivileged trap stub within ${POLL_MS} ms
+  of sampling on a $want-core machine$_pass_iso; QEMU's own execution log is the witness and
+  the image supplied none of it"
 exit 0

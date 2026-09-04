@@ -232,6 +232,21 @@ int kos_thread_slay(kos_thread_t thread, uint32_t timeout_us)
                                          static_cast<uintptr_t>(timeout_us), 0, 0));
 }
 
+int kos_thread_set_affinity(kos_thread_t thread, uint32_t core_mask)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_SET_AFFINITY,
+                                         static_cast<uintptr_t>(thread),
+                                         static_cast<uintptr_t>(core_mask), 0, 0));
+}
+
+int kos_task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_TASK_SCHED_GRANT,
+                                         static_cast<uintptr_t>(task),
+                                         static_cast<uintptr_t>(prio_ceiling),
+                                         static_cast<uintptr_t>(core_mask), 0));
+}
+
 int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
                     kos_task_t* out_task)
 {
@@ -375,6 +390,11 @@ uint32_t kos_nest_witness(int which)
 uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size)
 {
     return arch_syscall(KOS_SYS_GRANT_PROBE, op, base, size, 0);
+}
+
+uintptr_t kos_sched_probe(uintptr_t op)
+{
+    return static_cast<uintptr_t>(arch_syscall(KOS_SYS_SCHED_PROBE, op, 0, 0, 0));
 }
 
 uintptr_t kos_aspace_probe(uintptr_t op, uintptr_t a1)

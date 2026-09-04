@@ -89,13 +89,23 @@ namespace kickos
         {
             if (t == kernel().current[core])
             {
-                return true;
+                // THE PLACEMENT CHECK AND NOT A BARE TRUE, WHICH IS THE WHOLE OF MIGRATION:
+                // re-masking a running thread is what stops its own core picking it again, so
+                // reschedule() switches away instead of the thread being yanked off.
+                return sched_placeable_on(t, core);
             }
             if (t->state == ThreadState::RUNNING)
             {
                 return false;
             }
-            return t->prio != KICKOS_PRIO_IDLE or t == kernel().idle[core];
+            if (t->prio == KICKOS_PRIO_IDLE and t != kernel().idle[core])
+            {
+                return false;
+            }
+            // Idle needs no exemption from isolation: a core that reaches the end of the scan
+            // takes kernel().idle[core] unconditionally below, and add_idle gives idle exactly
+            // this core's bit so the scan cannot hand it to a peer either.
+            return sched_placeable_on(t, core);
         }
 #endif
 

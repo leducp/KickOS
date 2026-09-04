@@ -195,7 +195,7 @@ be declined; it is better read as the part meeting the predicate.
 ## 2. The freezes
 
 A freeze is a decision this contract may not reopen without saying so; the deliberately open
-questions are section 8. Per the MMU contract's rule, a freeze rests on another decision and never on
+questions are section 9. Per the MMU contract's rule, a freeze rests on another decision and never on
 an observation of the tree: where one needs a fact about the code, it says whether that fact is a
 decision or a measurement.
 
@@ -355,7 +355,7 @@ cannot express either of the two parts this work names is not the default.
   keep the binary count at one.
 - **What it costs is a PLACEMENT CONTRACT.** The shared window was one image's `.bss` object; two
   images must agree on a region at a fixed address, outside either one's own allocations. That is
-  the AMP partition layout section 8 leaves open, and meeting it deliberately is better than
+  the AMP partition layout section 9 leaves open, and meeting it deliberately is better than
   inheriting it from a linker that was never asked.
 - **AND A DOORBELL MAP, WHICH THE TREE DOES NOT HAVE, SO THE POSTURE IS REFUSED AT CONFIGURE.**
   `amp::send` rings its peer with `arch_ipi_send(1u << to)`, spending a NODE index as a hardware
@@ -364,7 +364,7 @@ cannot express either of the two parts this work names is not the default.
   carrying it, so the doorbell would ring the wrong core and answer OK.
   `KICKOS_AMP_POSTURE_OWN_IMAGE` is therefore offered by Kconfig and REFUSED by `CMakeLists.txt`,
   the refusal naming the missing map rather than the broken line. This sits beside the placement
-  contract above and not under it: both are the partition layout section 8 leaves open, and both
+  contract above and not under it: both are the partition layout section 9 leaves open, and both
   are what an own-image part owes before its first boot. No board in the tree selects the posture,
   so the refusal costs nothing today.
 
@@ -802,7 +802,7 @@ the second one exists, by which shape carries less duplication.
   exercise a far endpoint reach the same mint body through the probe scaffolding instead. **That
   scaffolding is gated to root's TASK**, so the other tasks of a selftest image reach neither the
   mint nor the reply forge; what that narrows is who can cross a node on such an image, and it
-  does not answer who SHOULD be able to mint one. Who may mint one is section 8's open question,
+  does not answer who SHOULD be able to mint one. Who may mint one is section 9's open question,
   and this is what that question costs today.
 - **THE MASKED WINDOW A FAR PUBLISH HOLDS IS UNMEASURED, AND THERE IS NO FIGURE TO REPORT.** A far
   send copies TWICE with this core's interrupts masked: user memory into a `KOS_EP_MSG_MAX` kernel
@@ -866,11 +866,293 @@ the second one exists, by which shape carries less duplication.
     seam's non-witness does, and not on a green run.
 - **The AMP column stays a ruling even though S7 builds AMP.** What S7 ports is an AMP node on
   `qemu-arm64`, a part the predicate sends to the SHARED kernel. So the parts section 1 excludes
-  still get no port, and whether they are worth one is still section 8's open question.
+  still get no port, and whether they are worth one is still section 9's open question.
 
 ---
 
-## 8. Deliberately NOT frozen
+## 8. Thread placement: the grant, the mask, and the default core set
+
+### The scheduling grant
+
+A task carries a SCHEDULING GRANT: a priority ceiling and a core set, both members of `struct Task`
+(`kernel/include/kickos/task.h`). It is made at task creation and it only ever narrows.
+`task_create_call` seats both halves from the CREATOR's own task, inherited whole, and
+`kos_task_sched_grant` narrows them afterwards; a request wider than the grant it is narrowing is
+refused with `-KOS_EPERM` and never clamped. The narrowing is checked against the CALLER's grant as
+well as the target's, because **a creator cannot give what it does not hold**, and a task that
+defaulted to the whole machine would make creating a group a way to widen a grant.
+
+**Inside its grant a task plays freely with its own scheduling and consults no capability.** There
+is no capability for pinning, no authority bit for choosing a priority, and no per-call lookup: the
+grant IS the authority, and it was checked at the moment it was given. That is why the grant is a
+pair of scalars beside the task's domain pointer rather than an object in a table. A capability
+consulted on every placement call would pay, on the frequent side, for a question already settled
+on the rare one.
+
+Both halves are read through accessors that are TOTAL over an absent or zero-initialised task: a
+stored 0 reads back as the machine's full width. That is what lets idle, root and every implicit
+task answer without an initialiser, and it is what keeps every `Task` member zero-initialised, which
+is a hard requirement of its own (a non-zero initialiser anywhere in `Kernel` moves the whole
+constinit instance out of `.bss`).
+
+A grant may not narrow under a live member: `kos_task_sched_grant` answers `-KOS_EBUSY` once the
+task has one. `Thread::affinity` is a subset of the task's core set and nothing re-derives it, so a
+narrowing under a member would strand that member where it already runs. Refusing while the group is
+empty is what makes the thread-side invariant hold with no re-scan and no fixup pass.
+
+### One mask, no flag
+
+A thread carries one core mask, `Thread::affinity`, and its default is its task's core set
+less the isolated cores. **A
+single-bit mask is a pin and a multi-bit mask is affinity, so there is deliberately no boolean
+beside it saying which.** A flag would be a second truth about the same fact: two fields to write,
+two to read, and a disagreement between them that no code could interpret.
+
+`kos::thread::pin` and `kos::thread::unpin` (`user/include/kickos/kos.h`) are SPELLINGS of
+`kos_thread_set_affinity`, not operations of their own. Every NONZERO set is
+`requested & task_core_set(task)`, and that intersection is what makes the operation total: it
+cannot produce a set outside the grant. **Unpin is `set_affinity(0)`**, and a zero mask is resolved
+to `task_default_cores` at the syscall boundary before that intersection runs, which is the same
+resolution the spawn boundary makes of a zero `kos_thread_params::core_mask`. There is exactly one
+authority for the default set and both paths call it.
+
+Unpin is `set_affinity(0)` and not `set_affinity(~0u)` because the two differ on an image that
+isolates a core: all ones is an ordinary request for the WHOLE grant, isolated cores included, so
+spelling unpin with it would let a thread that had never named an isolated core drift onto one at
+its first unpin. Userspace still restores the default without learning what it is; the word it
+passes is 0 rather than all ones.
+
+The invariant on `affinity` is that it is never empty and always a subset of the task's core set.
+It is seated at create from `task_default_cores`, restored to it by a zero mask, and admitted
+against the task's set on every later write. **A NONZERO `ThreadAttr::core_mask` HAS ALREADY BEEN
+ADMITTED WHEN `thread_create` SEES IT**: the spawn boundary ran it through `sched_admit_mask`
+against this same task's core set and put the admitted set into the attr, so the store at create
+is verbatim by contract rather than unchecked, and a `KICKOS_DEBUG` build re-asserts the subset
+where the store happens. A stored 0 is therefore not a thread that may run nowhere; it is a slot
+no thread occupies.
+
+A thread may place any thread of its OWN TASK unprivileged, itself included where it holds its own
+handle. **A TASK IS THE SCHEDULING DOMAIN.** Its threads share one grant, one priority ceiling and
+one core set, and placing each other inside that grant is what a task is for rather than an
+escalation within it: no such placement can raise the ceiling, widen the core set, or reach a
+thread of another task. Direction therefore decides nothing, and a child placing its parent is as
+ordinary as the reverse.
+
+Reaching into ANOTHER task is privileged today and is the one remnant this work leaves to the
+capability layer, listed in section 9; answering it here would decide the general case through a
+special case, exactly as N8 says of the crossing.
+
+### The pick rule
+
+`sched_placeable_on` (`kernel/include/kickos/sched.h`) is the placement rule and the only one:
+
+```c
+    inline bool sched_placeable_on(Thread const* t, uint32_t core)
+    {
+        return (t->affinity & (1u << core)) != 0;
+    }
+```
+
+It reads `t->affinity` alone and never re-reads the task's core set, because the mask already
+carries every narrowing that was ever applied to the thread. **It is the mask test and nothing
+else**, which is what the next two subsections are about: what stops an unpinned thread reaching an
+isolated core is the mask it was given, not a clause here.
+
+The rule has exactly two consumers, and both call it rather than re-deriving it: `available_to` in
+`kernel/sched/policy_fifo_rr.cc`, which is what `pick_next` scans the ready lists with, and
+`poke_peers_below` in `kernel/sched/sched.cc`, which narrows a cross-core ask by it, so a core the
+thread may not run on is never woken to pick the thread it is already running.
+
+**THIS IS ANTI-WORK-CONSERVING BY CONSTRUCTION: a runnable thread waits while a core it may not run
+on idles.** That is the feature and not a price paid for it. A latency-critical thread pinned alone
+onto an isolated core is worth having exactly because nothing ARRIVES there by default and only a
+mask that names the core reaches it, and a policy that borrowed the core whenever it looked free
+would be selling that guarantee back. What the guarantee does NOT say is that nothing else will
+ever run there: an explicit mask naming the isolated core beside an ordinary one puts the thread in
+that core's picker like any other, which is the opt-in and not a leak.
+
+### Migration rides N4's mechanism and grows no second one
+
+A thread EXECUTING on a core its new mask excludes is not yanked off it. It is made INELIGIBLE
+there, and that core is asked to reschedule; that core's own scheduler pass is the only thing that
+moves it. `sched::set_affinity` writes the mask and then splits three ways:
+
+- a READY thread is already eligible elsewhere at the next pick, so the ask exists only so a core
+  that could take it now LOOKS, instead of waiting for its next natural switch. A BLOCKED,
+  INACTIVE or EXITED thread is on no ready list any core reads, so it gets no ask: the cores that
+  could one day take it are woken by whatever makes it READY;
+- a RUNNING thread the new mask still admits KEEPS the core it is on, placement saying where a
+  thread MAY run and never where it runs best;
+- a RUNNING thread the new mask excludes gets `kickos::klock_resched_ask` against the core running
+  it.
+
+That last path is N4 unchanged: **the state is published against the target and then the raise
+goes out**, never a raise carrying scheduling meaning of its own. Two details the code carries are
+worth naming, because neither follows from the rule.
+
+**`klock_resched_ask` strips the caller's own bit from what it PUBLISHES** (`kernel/sync/klock.cc`),
+so a core can never owe itself a reschedule. Self-migration therefore cannot travel through the ask
+at all, and `set_affinity` takes its own scheduler pass directly, calling `reschedule()` when the
+running thread it is re-masking is on the calling core.
+
+**`switch_book` is where a re-masked thread becomes available to its new cores.** Until the store
+that moves it out of RUNNING it IS running, and every peer's `pick_next` refuses a thread another
+core is running, so a poke sent any earlier is consumed against a thread nobody could have taken.
+`switch_book` therefore tests placement once on the outgoing thread and, when that test fails,
+issues the poke on the far side of the store that makes the thread takeable. One mask test on the
+switch path, and the call it guards is reached only by an actual migration.
+
+`available_to` is the other half of the same seam: for the thread a core is CURRENTLY running it
+returns the placement test rather than a bare true. That is what stops a core re-picking the thread
+it must give up, and it is what makes `reschedule()` the thing that moves a thread rather than any
+yank.
+
+### Isolation shapes the default, not the admission
+
+`KICKOS_ISOLATED_CORES` is subtracted from the DEFAULT core set and from nothing else.
+`task_default_cores` (`kernel/task/task.cc`) is the task's grant less the isolated cores, and it is
+what a thread takes when it names no core: at `thread_create` with an empty `ThreadAttr::core_mask`,
+at the spawn boundary where `kos_thread_params::core_mask` is zero, and at
+`kos_thread_set_affinity` where the requested mask is zero, which is how `unpin` is spelled. Those
+three are ONE authority called from three places, not three computations of the same set.
+
+**THE GUARANTEE, EXACTLY: nothing arrives on an isolated core by default, and only an explicit mask
+reaches one.** A thread that never names a core never runs on an isolated core, whatever sequence
+of unpins it goes through. It is NOT the stronger claim that nothing else will ever be placed
+there. A mask naming an isolated core beside ordinary ones is admitted, and that core's picker then
+takes the thread exactly as an ordinary core's would; a caller that asks for that has asked to
+share the core.
+
+That distinction is where the Linux analogy stops, and it is worth naming because it was got wrong
+once. Under `isolcpus` a task may name an isolated CPU in its affinity mask freely and still not be
+migrated onto it, because `isolcpus` removes the CPU from the load balancer's domains and the mask
+is not what moves a task there. **KickOS has no balancer.** Each core's picker takes any runnable
+thread whose mask includes that core, so naming IS being picked and the two Linux behaviours
+collapse into one. The default set is therefore the ONLY thing between an ordinary thread and an
+isolated core, which is why `unpin` restores the default and not the grant.
+
+**An explicit mask names isolated cores freely** -- one, several, or only isolated ones. A grant of
+{2,3} on a four-core image is a reserved pool, which is the normal way to hand a real-time workload
+more than one core, and `kos_thread_set_affinity` over the same pair is placeable on both.
+
+A grant naming nothing BUT isolated cores answers itself: `task_default_cores` subtracts and finds
+nothing left, so it returns the grant. Its unpinned members are pinned by construction, which is
+what the operator asked for by granting that set.
+
+### One admission
+
+`sched_admit_mask` (`kernel/include/kickos/sched.h`) is the single gate every core mask passes
+through before it is stored anywhere: a spawn's `kos_thread_params::core_mask`, a
+`kos_thread_set_affinity`, and both halves of `kos_task_sched_grant` (the caller's grant in
+`syscall_thread.cc`, the task's own in `task_sched_narrow`). It applies two clauses in order.
+
+It takes a REAL mask, empty being malformed, and a zero word means something different at each ABI
+that carries one, so each entry resolves its own before calling: the spawn boundary and
+`kos_thread_set_affinity` both resolve 0 to `task_default_cores`, and `kos_task_sched_grant` reads
+it as "leave this half alone".
+
+**The machine, then the grant.** A request is intersected with
+`KICKOS_CORE_SET_ALL` first, so a bit naming a core this kernel does not schedule is DROPPED rather
+than refused; that is what keeps all ones an ordinary request. A NONZERO mask naming no core this
+kernel schedules at all is `-KOS_EINVAL`, a request no grant could satisfy. Then the grant bounds
+it, in one of two disciplines the caller states:
+
+- a THREAD's affinity is a set of ACCEPTABLE cores, so the grant INTERSECTS it and an empty
+  intersection is `-KOS_EPERM`;
+- a TASK's grant is an AUTHORITY, so it narrows only: a request reaching past it is refused and
+  never clamped.
+
+**There is no third clause, and none is reachable.** What a mask surviving both is worth asking is
+whether the pick rule can seat a thread on it, and it always can: the survivor is non-empty and is a
+subset of `KICKOS_CORE_SET_ALL`, whose bits are exactly the cores `pick_next` scans, so some core in
+the scan takes it. A clause here would guard a case the two above cannot produce.
+
+### The configuration refusal beside it
+
+**Core 0 may never be isolated.** `kickos_isolated_cores_check` (`cmake/isolated_cores.cmake`)
+refuses bit 0. Core 0 is the boot core, and it is what guarantees the kernel, root and every task
+holding a default grant have somewhere to run; an image that isolates it boots and then schedules
+nothing. On a two-core part this leaves core 1 as the only isolatable core, which is the intended
+shape: everything unpinned runs on the boot core and a latency-critical thread is pinned alone onto
+the isolated one. The same function refuses an isolation mask naming a core this kernel does not
+schedule.
+
+**It is the one refusal isolation needs, and it follows from the default rather than standing
+beside it.** The default core set is the machine less the isolated cores; holding bit 0 out of the
+mask is what keeps that set non-empty at any core count, so a board can never be configured into an
+image whose unpinned threads have nowhere to go. It turns a silent hang into a NAMED REFUSAL at the
+moment the mistake is committed, which is when the image is configured. A board that boots and does
+nothing is the most expensive shape a configuration error can take.
+
+The core-0 check lives in a CMake function rather than inline in the root lists file so that
+`tests/static/check_isolated_cores.sh` can drive the same authority the build drives, over synthetic
+values, with a control beside every refusal. An inline `FATAL_ERROR` is reachable only by
+configuring a whole tree that actually fails, which is one arm and no controls.
+
+### The errno split
+
+`-KOS_EPERM` and `-KOS_EINVAL` answer different questions here, and collapsing them would lose the
+answer.
+
+- **`-KOS_EPERM` means the caller's GRANT is too narrow.** The mask names real cores and the request
+  is expressible; this caller may not have it. That is a CONFIGURATION answer: widen the grant, or
+  ask from a thread that holds a wider one.
+- **`-KOS_EINVAL` means the request could never be satisfied by ANY grant.** A NONZERO mask that
+  meets `KICKOS_CORE_SET_ALL` nowhere names no core this kernel schedules, and no grant on any
+  board could contain it. A mask of zero is not this: it is the ask for the default set.
+
+A mask is a SET OF ACCEPTABLE CORES, so it is intersected with the machine before it is weighed
+against the grant, and a bit naming no core costs nothing beside one that does. **That is what
+keeps all ones an ordinary request rather than a magic value**, so a caller wanting the whole
+grant, isolated cores included, can spell it. A mask refused for merely CONTAINING an unschedulable
+bit would refuse that request on every board.
+
+Under one code a too-narrow grant becomes indistinguishable from a typo in a mask literal, and the
+reader debugging it widens the wrong thing: adds a core to a grant to fix a shifted constant, or
+edits a constant to fix an access decision. The split costs one comparison at the syscall boundary,
+and it is made at every entry that takes a mask: the spawn boundary, `kos_thread_set_affinity` and
+`kos_task_sched_grant` all range-check before they authority-check.
+
+### What folds and what does not
+
+The placement half is entirely behind `#if KICKOS_KERNEL_CORES > 1` and contributes NOTHING to a
+single-core image. `Task::core_set`, `Thread::affinity`, `sched_placeable_on`, `sched::set_affinity`,
+`sched::add_idle`, `available_to`, `poke_peers_below` and `switch_book`'s mask test are all absent
+from such a build, and `kos_thread_set_affinity` is `-KOS_ENOSYS`.
+
+**The PRIORITY CEILING does not fold, and it is not meant to.** It is unconditional where the core
+set is conditional, because the hole it closes is not an SMP hole: unbounded priority let any
+unprivileged thread take the top of the run queue and starve the system, on every board including
+every single-core one. The ceiling closes a liability that predates multicore and it closes it for
+every image. Reading it as an SMP feature would be reading it as optional.
+
+One thing the ceiling deliberately does NOT bound is a priority INHERITANCE boost. `sched::set_prio`
+is the sole writer of an effective priority and is not ceiling-checked, because every caller of it
+is the kernel's own, inheritance and the console-publish temporary, and not a task asking for
+priority. The ceiling is enforced where a task ASKS, at the spawn boundary.
+
+### Idle needs no exemption
+
+An isolated core still needs something to run when nothing is pinned to it, and the obvious way to
+give it one is an exemption clause in the placement rule for idle threads. There is none, and two
+separate things are why.
+
+What GUARANTEES the core has an idle thread is `policy_pick_next`'s last line: a scan that admits
+nothing falls through to `kernel().idle[core]` unconditionally, and that predates this work. What
+`sched::add_idle` adds is the mask, EXACTLY that core's own bit, which is what keeps idle inside the
+`affinity` invariant every reader of the field relies on and what stops a peer's scan taking it.
+`sched::add` seats the boot core's idle by the same rule, so the two paths agree rather than one of
+them being the exception.
+
+**This is what kept the placement rule TOTAL instead of special-cased**, and it is recorded as a
+decision rather than left to look like a coincidence. The alternative, a rule reading "placeable, or
+idle", would have to be repeated at every one of the rule's call sites, and it would be the seam
+through which the second exemption arrived: once the rule admits one class of thread on grounds
+other than its mask, nothing in it argues against the next.
+
+---
+
+## 9. Deliberately NOT frozen
 
 - **Per-core run queues and any finer locking.** The spike's stage 2, and the lock-hold shortening
   that moves the bound belongs to the IPC optimisation work.
@@ -894,8 +1176,13 @@ the second one exists, by which shape carries less duplication.
   weak release consistency, and the acquire and release pair rather than the blanket memory-wait is
   the intended cross-processor tool. A rendezvous written against the blanket instruction alone would
   be reading past the specification.
-- **Who may mint a cross-node endpoint or start a core.** Static in kernel init for the first AMP
-  work; the general question is the capability layer's and is answered with it.
+- **Who may mint a cross-node endpoint, start a core, or PLACE A THREAD OF ANOTHER TASK.** Static
+  in kernel init for the first AMP work; the general question is the capability layer's and is
+  answered with it. The third is the placement work's one remnant: a thread places itself and its
+  own siblings unprivileged, a task being one scheduling domain whose single grant bounds every
+  placement made inside it. Reaching into ANOTHER task is the case no existing authority answers,
+  and answering it here would decide the general case through a special case, exactly as N8 says
+  of the crossing.
 - **The AMP partition layout, NARROWED BY N6b RATHER THAN STILL OPEN AS WRITTEN.** The image
   boundary is decided: one image per node, so instance-keyed storage is not what an AMP partition
   is made of and the contiguous array's protectability is a question about the SIM's posture

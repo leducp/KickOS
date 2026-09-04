@@ -421,6 +421,12 @@ namespace kickos
             w->base_prio = prio;
             w->prio = prio;
             w->id = static_cast<uint16_t>(10 + slot);
+#if KICKOS_KERNEL_CORES > 1
+            // thread_create is what normally seats this from the thread's task, and this
+            // fixture bypasses it exactly as it bypasses prio and id above. A zero mask is
+            // placeable on no core at all, so pick_next would answer idle for every arm.
+            w->affinity = KICKOS_CORE_SET_ALL;
+#endif
             if (k.threads.next <= slot)
             {
                 k.threads.next = slot + 1;

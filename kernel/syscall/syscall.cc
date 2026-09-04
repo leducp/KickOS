@@ -576,6 +576,17 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(
                 thread_join(static_cast<kos_thread_t>(a0), static_cast<uint32_t>(a1)));
         }
+        case KOS_SYS_THREAD_SET_AFFINITY:
+        {
+            return static_cast<uint64_t>(
+                thread_set_affinity(static_cast<kos_thread_t>(a0), static_cast<uint32_t>(a1)));
+        }
+        case KOS_SYS_TASK_SCHED_GRANT:
+        {
+            return static_cast<uint64_t>(
+                task_sched_grant(static_cast<kos_task_t>(a0), static_cast<uint8_t>(a1),
+                                 static_cast<uint32_t>(a2)));
+        }
         case KOS_SYS_THREAD_SLAY:
         {
             // Blocks, so no dispatch IrqLock. Parenthood-gated inside, reaching exactly the
@@ -670,6 +681,47 @@ uint64_t syscall_body(uintptr_t nr,
             // privilege-gated, and not range-checked beyond what the accessor does: an
             // unknown selector answers KOS_NEST_UNSET.
             return static_cast<uint64_t>(kickos_nestwitness_count(static_cast<int>(a0)));
+        }
+#endif
+// KICKOS_KERNEL_CORES AND NOT ONLY THE SELFTEST FLAG: every op here is placement
+// scaffolding, and an arm at one core would put the dispatch arm, its switch and its
+// IrqLock into an image whose placement half is otherwise provably absent. The ceiling
+// arms need no probe, reading refusals rather than state.
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
+        case KOS_SYS_SCHED_PROBE:
+        {
+            // Test scaffolding for placement. Pure reads of the CALLER's own scheduling state,
+            // so not privilege-gated and no op takes an argument.
+            IrqLock lock;
+            Thread const* const c = sched::current();
+            switch (static_cast<kos_sched_op>(a0))
+            {
+                case KOS_SCHED_OP_CORE:
+                {
+                    return kickos_kernel_core();
+                }
+                case KOS_SCHED_OP_AFFINITY:
+                {
+                    return c->affinity;
+                }
+                case KOS_SCHED_OP_TASK_CORES:
+                {
+                    return task_core_set(c->task);
+                }
+                case KOS_SCHED_OP_CEILING:
+                {
+                    return task_prio_ceiling(c->task);
+                }
+                case KOS_SCHED_OP_ISOLATED:
+                {
+                    return static_cast<uint32_t>(KICKOS_ISOLATED_CORES);
+                }
+                default:
+                {
+                    break;
+                }
+            }
+            return static_cast<uint64_t>(-KOS_EINVAL);
         }
 #endif
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)

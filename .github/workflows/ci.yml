@@ -181,6 +181,53 @@ jobs:
           ctest --preset qemu-arm64 --no-tests=error --output-on-failure \
             -R 'death_stack_seating|no_privileged_tls|qemu_arm64_tlsprobe'
 
+  # armv8a (virt) at FOUR KERNEL CORES, in the two postures the placement work is written
+  # against. The qemu-arm64 job above drives ONE core, where sched_admit_mask, the affinity
+  # syscall and every placement arm compile out, so nothing there covers them.
+  #
+  # smp is the plain four-core posture; smpiso adds the isolation mask, which is what makes
+  # three of the placement arms run instead of skip.
+  #
+  # THE EXPECTED-SKIP LIST CANNOT WITNESS THE MASK. It is DERIVED from the same knob, so a
+  # variant that lost its mask moves the list with it and the selftest gate passes on a run
+  # that covered the plain SMP posture twice. The configured value is read below instead.
+  qemu-arm64-smp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      QEMU_TIMEOUT: "30"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kconfiglib
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build qemu-system-arm curl xz-utils
+      - uses: ./.github/actions/aarch64-toolchain
+      - name: armv8a (virt) four cores
+        run: |
+          cmake --preset qemu-arm64-smp -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          cmake --build --preset qemu-arm64-smp
+          ctest --preset qemu-arm64-smp --no-tests=error --output-on-failure
+          # Posture pin, as in qemu-arm: the core count is a line in this variant's defconfig,
+          # and dropping it de-registers these three instead of failing them.
+          ctest --preset qemu-arm64-smp --no-tests=error --output-on-failure \
+            -R 'qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads'
+      - name: armv8a (virt) four cores, core 3 isolated
+        run: |
+          cmake --preset qemu-arm64-smpiso -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          # Posture pin, read from the RESOLVED configuration and not from anything the knob
+          # also derives. A mask of zero here is the plain SMP posture under another name.
+          iso=$(sed -n 's/^#define KICKOS_ISOLATED_CORES //p' \
+                build/qemu-arm64-smpiso/generated/include/kickos/board_config.h)
+          if [ -z "$iso" ] || [ "$((iso))" -eq 0 ]; then
+            echo "smpiso resolved KICKOS_ISOLATED_CORES='$iso': this step would re-run the plain SMP posture"
+            exit 1
+          fi
+          cmake --build --preset qemu-arm64-smpiso
+          ctest --preset qemu-arm64-smpiso --no-tests=error --output-on-failure
+          ctest --preset qemu-arm64-smpiso --no-tests=error --output-on-failure \
+            -R 'isolated_cores|qemu_arm64_selftest'
+
   # rv32imac (virt) under QEMU, plus build-only checks of three more rv32 presets,
   # on the pinned RISCstar toolchain (newlib, soft-float rv32imac/ilp32 multilib).
   # RISC-V clocks off the CLINT mtime, which keeps ticking during WFI, so a timed sleep

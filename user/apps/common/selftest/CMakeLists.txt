@@ -102,6 +102,38 @@ if(KICKOS_KERNEL_CORES GREATER 1)
     parked_frame_hostile)
 endif()
 
+# The isolated-core mask, normalised: the knob is hex text, which `if(... EQUAL 0)` does not
+# read as a number.
+set(_selftest_isolated 0)
+if(DEFINED KICKOS_ISOLATED_CORES AND NOT KICKOS_ISOLATED_CORES STREQUAL "")
+  math(EXPR _selftest_isolated "${KICKOS_ISOLATED_CORES} | 0")
+endif()
+# Five placement arms assert something about an ISOLATED core, and a posture that isolates
+# none has no such core to assert it of. They run on qemu-arm64's smpiso variant.
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND _selftest_isolated EQUAL 0)
+  list(APPEND KICKOS_EXPECT_SKIPS
+    isolated_single_grant_ok isolated_unpinned_never isolated_unpin_excludes
+    isolated_takes_pinned isolated_mixed_mask_ok)
+endif()
+
+# migrate_running moves a spinner between two cores and needs both of them, so it counts the
+# cores in [1, KICKOS_KERNEL_CORES) that the isolated mask does not name, core 0 excluded
+# because root has to keep running to do the moving. DERIVED and not a posture list: the arm
+# scans exactly this set, and a two-core part leaves one core in it.
+set(_selftest_movable 0)
+if(KICKOS_KERNEL_CORES GREATER 1)
+  math(EXPR _selftest_top "${KICKOS_KERNEL_CORES} - 1")
+  foreach(_c RANGE 1 ${_selftest_top})
+    math(EXPR _selftest_c_iso "(${_selftest_isolated} >> ${_c}) & 1")
+    if(_selftest_c_iso EQUAL 0)
+      math(EXPR _selftest_movable "${_selftest_movable} + 1")
+    endif()
+  endforeach()
+endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND _selftest_movable LESS 2)
+  list(APPEND KICKOS_EXPECT_SKIPS migrate_running)
+endif()
+
 # The same for the arms that report PARTIAL. A PARTIAL reports `ok`, so neither the plan/case
 # reconciliation nor the skip bookkeeping can see one and this by-name set is the only thing
 # that can. It is NOT derivable from _tap_arms: the conditions below name the postures.
@@ -168,6 +200,7 @@ set(_tap_arms 86) # unconditional, incl. readable_global, endpoint_send_timeout,
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
   math(EXPR _tap_arms "${_tap_arms} + 1") # call_reg_fastpath (region 2)
+  math(EXPR _tap_arms "${_tap_arms} + 2") # prio_ceiling_refused, prio_ceiling_narrow_only
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 3") # endpoint_bound, grant_reserved, dev_window_exclusive
@@ -194,6 +227,9 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_NUM_CORES GREATER 1
    AND KICKOS_MULTICORE_MODEL_SHARED EQUAL 0)
   math(EXPR _tap_arms "${_tap_arms} + 5") # amp_window, amp_far_call, amp_far_reply_guard, amp_probe_root_only, amp_far_slot_reuse
 endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
+  math(EXPR _tap_arms "${_tap_arms} + 19") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task
+endif()
 
 # The same count per region. The regions are separated by the `#undef TAP_ADD` lines in main.cc:
 # region 1 ends after call_timeout_reply, region 2 after cap_reply_slot_reuse, region 3 is the
@@ -215,6 +251,7 @@ endif()
 set(_tap_arms_p3 26) # region 3, unconditional, incl. console_publish_priv, shutdown_priv, writable_global, readable_global, authority_cap, periph_enable_unheld, periph_reg_write_unheld, privileged_spawn_refused, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*, caller_stack, mem_self_grant_nonpow2, domain_share, mmio_grant, confused_deputy, mem_self_grant
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 12") # reboot_priv, 11 x irq_*
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 2") # prio_ceiling_refused, prio_ceiling_narrow_only
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 2") # grant_reserved, dev_window_exclusive
@@ -240,6 +277,9 @@ endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_NUM_CORES GREATER 1
    AND KICKOS_MULTICORE_MODEL_SHARED EQUAL 0)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 5") # amp_window, amp_far_call, amp_far_reply_guard, amp_probe_root_only, amp_far_slot_reuse
+endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 19") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task
 endif()
 
 math(EXPR _tap_arms_split "${_tap_arms_p1} + ${_tap_arms_p2} + ${_tap_arms_p3}")

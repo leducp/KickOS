@@ -6,7 +6,7 @@ CONFIG_BOARD_F302NUCLEO=y
 # Adds the test-only self-test syscalls the TAP suite calls. On 64 KiB of flash and
 # 16 KiB of SRAM the suite is split over two images, the heap goes entirely, and the
 # pools buy back what the arms need.
-CONFIG_KICKOS_MAX_THREADS=3
+CONFIG_KICKOS_MAX_THREADS=2
 CONFIG_KICKOS_MAX_SEMAPHORES=6
 CONFIG_KICKOS_MAX_IRQ_HANDLES=4
 CONFIG_KICKOS_CAP_TABLE_SUPPLY=7
@@ -21,7 +21,7 @@ CONFIG_KICKOS_ENABLE_SELFTEST=y
 CONFIG_KICKOS_DIAG_TERSE=1
 
 # NO TLS ON THIS PART: deriving the ARM thread pointer from SP needs every stack block
-# strided by one power of two, and three blocks of 2048 do not fit an arena the fattest
-# image leaves at 4672 bytes; paying it would cost one thread instead of three. A
-# thread_local in an app built for this board is a link error naming __aeabi_read_tp.
+# strided by one power of two, which this board's stacks are not, so a TLS build is refused
+# at configure by the stride check. A thread_local in an app built for this board is a link
+# error naming __aeabi_read_tp.
 # CONFIG_KICKOS_TLS is not set

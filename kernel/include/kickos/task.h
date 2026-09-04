@@ -22,6 +22,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <kickos/arch/arch.h> // KICKOS_KERNEL_CORES, KICKOS_CORE_SET_ALL
 #include <kickos/config.h>
 
 #include <kickos/sys/abi.h> // kos_task_t, KOS_TASK_NONE
@@ -45,15 +46,30 @@ namespace kickos
         uint8_t creator_tag = 0;
         // Bumped when the slot is freed, so a handle to a dead task stops resolving.
         uint16_t gen = 0;
+        // THE SCHEDULING GRANT. Checked once, where it is given, which is what lets a task
+        // play freely with its own scheduling afterwards and consult no capability. Read
+        // through the total accessors below and never raw: a stored 0 is the WHOLE grant, and
+        // that is what keeps every member here zero-initialised.
+        //
+        // The ceiling is UNCONDITIONAL where the core set is not: unbounded priority let any
+        // unprivileged thread take the top of the run queue, which is a starvation hole on a
+        // one-core board too.
+        uint8_t prio_ceiling = 0;
+#if KICKOS_KERNEL_CORES > 1
+        uint32_t core_set = 0;
+#endif
     };
 
-    // 8 bytes on 32-bit, the figure the KICKOS_MAX_TASKS budget is priced against. MEASURE ON A
-    // 32-BIT TARGET if this fires: a host build prices the tail differently, so a host
-    // measurement cannot settle it.
+    // What the KICKOS_MAX_TASKS budget is priced against, 12 bytes on a 32-bit target at one
+    // kernel core and one core-set word more above it. MEASURE ON A 32-BIT TARGET if this
+    // fires: a host build prices the tail differently, so a host measurement cannot settle it.
     constexpr size_t task_scalar_bytes()
     {
-        size_t const raw = sizeof(Domain*) + sizeof(Task::refcount) + sizeof(Task::creator_tag)
-                          + sizeof(Task::gen);
+        size_t raw = sizeof(Domain*) + sizeof(Task::refcount) + sizeof(Task::creator_tag)
+                     + sizeof(Task::gen) + sizeof(Task::prio_ceiling);
+#if KICKOS_KERNEL_CORES > 1
+        raw = raw + sizeof(Task::core_set);
+#endif
         return ((raw + sizeof(void*) - 1) / sizeof(void*)) * sizeof(void*);
     }
 
@@ -137,8 +153,42 @@ namespace kickos
     // otherwise KICKOS_MAX_TASKS compares interrupt-masked on EVERY thread exit.
     void task_orphan_created_by(uint16_t tag);
 
-    // Live members. Null-safe (0). The ONLY reader outside task.cc is the already-empty
-    // early return in kos_task_slay, where a park would never be woken.
+    // The scheduling grant, TOTAL over a zero-initialised or absent task: a stored 0 is the
+    // whole grant, so idle, root and every implicit task answer the machine's full width
+    // without an initialiser. Null-safe.
+    uint8_t task_prio_ceiling(Task const* t);
+#if KICKOS_KERNEL_CORES > 1
+    uint32_t task_core_set(Task const* t);
+
+    // The cores a member takes when it asks for none: the grant less the isolated ones, which
+    // is what keeps automatic placement off them. A grant naming nothing else answers itself,
+    // so this is never empty where the grant is not.
+    uint32_t task_default_cores(Task const* t);
+#endif
+
+    // Narrow `t`'s grant. `ceiling` 0 and `cores` 0 each mean "leave that half alone", which is
+    // what a caller naming only one of them passes. Returns 0, -KOS_EPERM for a request wider
+    // than the grant it is narrowing, which is refused and never clamped, or -KOS_EINVAL for
+    // one naming no core this kernel schedules.
+    int task_sched_narrow(Task* t, uint8_t ceiling, uint32_t cores);
+
+    // A new task takes its creator's grant WHOLE, both halves together; task_sched_narrow is
+    // what moves it afterwards. A task that defaulted to the full machine would be a way to
+    // widen a grant by creating a group.
+    inline void task_sched_inherit(Task* child, Task const* from)
+    {
+        child->prio_ceiling = task_prio_ceiling(from);
+#if KICKOS_KERNEL_CORES > 1
+        child->core_set = task_core_set(from);
+#endif
+    }
+
+    // Whether two threads belong to one task. THE tree's answer to that question. A task is one
+    // SCHEDULING DOMAIN: its threads share a single grant, so a placement gated on this predicate
+    // stays inside that grant. False when either side holds no task.
+    bool task_same_group(Thread const* a, Thread const* b);
+
+    // Live members. Null-safe (0).
     uint8_t task_member_count(Task const* t);
 
     void task_ref(Task* t); // a thread joins; the first one acquires the domain

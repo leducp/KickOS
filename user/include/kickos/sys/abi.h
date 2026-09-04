@@ -219,11 +219,51 @@ enum kos_syscall_nr
                                //   -KOS_EPERM for a range this space did not take through
                                //   KOS_SYS_FRAME_MAP, which is what stops one holder
                                //   revoking another's mapping.
-    KOS_SYS_AMP_ENDPOINT_CREATE = 62 // (node, port, kos_cap_t* out) -> 0, or -KOS_ENOSYS on an
+    KOS_SYS_AMP_ENDPOINT_CREATE = 62, // (node, port, kos_cap_t* out) -> 0, or -KOS_ENOSYS on an
                                //   image running one kernel, -KOS_EPERM for an unprivileged
                                //   caller, -KOS_EINVAL for the caller's own node or a port
                                //   that node did not mint, plus the mint refusals every
                                //   creator carries. The cap it grants is SIGNAL-only.
+    KOS_SYS_THREAD_SET_AFFINITY = 63, // (kos_thread_t, core mask) -> 0, or -KOS_EPERM (the
+                               //   mask meets the thread's task's core set nowhere, or the
+                               //   target is in another task and the caller is unprivileged),
+                               //   -KOS_EINVAL (a NONZERO mask naming no core this kernel
+                               //   schedules), -KOS_EBADF. The ONE placement operation: pin is
+                               //   a mask of one bit and unpin is a mask of ZERO, which the
+                               //   kernel resolves to the task's DEFAULT set exactly as a
+                               //   spawn's zero core_mask is resolved. A NONZERO mask is a SET
+                               //   OF ACCEPTABLE CORES and is intersected with the machine
+                               //   before the grant, so a bit naming no core costs nothing
+                               //   beside one that does, and a bit naming an isolated core is
+                               //   the opt-in that reaches it.
+                               //   -KOS_ENOSYS on an image whose kernel drives one core.
+    KOS_SYS_TASK_SCHED_GRANT = 64, // (kos_task_t, priority ceiling, core mask) -> 0, or
+                               //   -KOS_EPERM (either half wider than the creator's own
+                               //   grant, or a caller that did not create the task),
+                               //   -KOS_EINVAL (a mask naming no core this kernel schedules,
+                               //   or a ceiling outside the priority range), -KOS_EBADF,
+                               //   -KOS_EBUSY (the task already has a member).
+                               //   NARROWING-ONLY, and 0 in either field leaves that half
+                               //   alone.
+    KOS_SYS_SCHED_PROBE = 65   // (op) -> per-op (see enum kos_sched_op), or -KOS_EINVAL for a
+                               //   bad op (self-test only: the dispatch arm is compiled out
+                               //   unless KICKOS_ENABLE_SELFTEST AND the kernel drives more
+                               //   than one core, so every other image returns -KOS_EINVAL
+                               //   for every op).
+};
+
+// `op` selector for KOS_SYS_SCHED_PROBE (self-test only). Values are a frozen contract:
+// append, never reorder.
+enum kos_sched_op
+{
+    // The core the caller is running on AT THE MOMENT OF THE READ. Meaningful only for a
+    // thread whose affinity is a single bit; anything else may have moved by the time the
+    // answer lands, which is the point of asking it of a pinned thread.
+    KOS_SCHED_OP_CORE = 0,
+    KOS_SCHED_OP_AFFINITY = 1,   // () -> the caller's own core mask
+    KOS_SCHED_OP_TASK_CORES = 2, // () -> the caller's task's core set
+    KOS_SCHED_OP_CEILING = 3,    // () -> the caller's task's priority ceiling
+    KOS_SCHED_OP_ISOLATED = 4    // () -> the cores this image isolates
 };
 
 // `op` selector for KOS_SYS_ASPACE_PROBE (self-test only). Values are a frozen contract:
@@ -767,10 +807,6 @@ struct kos_thread_params
                          // in that task under translation. App static data is neither.
     uint32_t stack_size; // size of the caller stack (bytes); ignored when stack_base == 0
     struct kos_cap_grant const* caps; // optional caps to delegate to the child (0 => none)
-    uint8_t cap_count;   // number of entries in caps[]; under default placement they land
-                         // at child indices 1..cap_count.
-                         // Above KICKOS_MAX_SPAWN_GRANTS: -KOS_EINVAL. That bound is the
-                         // spawn stager's, NOT the child table's ceiling.
     // OPTIONAL per-grant destination indices, cap_count entries parallel to caps[], or null
     // for "every cap takes its default index". An entry of 0 also means default: index 0 is
     // the kernel's stdout slot and cap_install_at refuses it outright.
@@ -787,6 +823,21 @@ struct kos_thread_params
     // The array must be uint16_t-aligned; the kernel refuses it otherwise rather than take
     // a misaligned privileged load on a strict-align arch.
     uint16_t const* cap_dest;
+    // Cores the child may run on, as a mask. 0 asks for its task's DEFAULT set, which is that
+    // task's core set less the cores the image isolates; kos_thread_set_affinity resolves a
+    // zero mask to the same set. Nothing reaches an isolated core without an explicit mask
+    // naming it, here or through that call. Narrows and never widens: the
+    // kernel intersects it with the task's set, and a mask meeting that set nowhere is
+    // -KOS_EPERM. A bit naming a core the image does not drive is DROPPED, and only a mask
+    // naming no core it drives at all is -KOS_EINVAL.
+    //
+    // IGNORED on an image whose kernel drives one core, where every mask names the same
+    // placement.
+    uint32_t core_mask;
+    uint8_t cap_count;   // number of entries in caps[]; under default placement they land
+                         // at child indices 1..cap_count.
+                         // Above KICKOS_MAX_SPAWN_GRANTS: -KOS_EINVAL. That bound is the
+                         // spawn stager's, NOT the child table's ceiling.
     // Authority bits (kos_cap_authority KOS_AUTH_*) to seat as the child's authority word;
     // 0 => none. Only a thread that already holds each bit may pass it: narrows, never
     // widens, like a cap_grant mask. This 8-bit field bounds the authority word to 8 bits.
@@ -799,5 +850,29 @@ struct kos_thread_params
     // a fault ends the whole task.
     kos_task_t task;
 };
+
+// sizeof is NOT assertable here: three pointers make it width-dependent (64 B on armv7m,
+// 112 B on a 64-bit host). What is width-independent is the TAIL PACKING, and that is the
+// part a new field would move silently: core_mask is the 32-bit word the placement syscalls
+// carry, and cap_count and authority sit immediately behind it with no padding between.
+#ifdef __cplusplus
+static_assert(sizeof(((struct kos_thread_params*)0)->core_mask) == 4,
+              "the core mask is a 32-bit word at every ABI that carries one");
+static_assert(offsetof(struct kos_thread_params, cap_count)
+                  == offsetof(struct kos_thread_params, core_mask) + 4,
+              "cap_count must sit immediately behind core_mask (ABI)");
+static_assert(offsetof(struct kos_thread_params, authority)
+                  == offsetof(struct kos_thread_params, cap_count) + 1,
+              "authority must sit immediately behind cap_count (ABI)");
+#else
+_Static_assert(sizeof(((struct kos_thread_params*)0)->core_mask) == 4,
+               "the core mask is a 32-bit word at every ABI that carries one");
+_Static_assert(offsetof(struct kos_thread_params, cap_count)
+                   == offsetof(struct kos_thread_params, core_mask) + 4,
+               "cap_count must sit immediately behind core_mask (ABI)");
+_Static_assert(offsetof(struct kos_thread_params, authority)
+                   == offsetof(struct kos_thread_params, cap_count) + 1,
+               "authority must sit immediately behind cap_count (ABI)");
+#endif
 
 #endif

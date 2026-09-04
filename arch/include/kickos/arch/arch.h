@@ -28,6 +28,17 @@
 #define KICKOS_KERNEL_CORES 1
 #endif
 
+// Cores held out of the default core set. NOTHING ARRIVES BY DEFAULT AND ONLY AN EXPLICIT MASK
+// REACHES ONE; a mask naming an isolated core beside ordinary ones still lets that core's picker
+// take the thread. The knob depends on the shared model, so every other posture has no bit set.
+#ifndef KICKOS_ISOLATED_CORES
+#define KICKOS_ISOLATED_CORES 0
+#endif
+
+// Every core one kernel schedules, as a mask. Shifted rather than shifted-into: a 32-core
+// kernel would make 1u << KICKOS_KERNEL_CORES undefined.
+#define KICKOS_CORE_SET_ALL (~0u >> (32 - KICKOS_KERNEL_CORES))
+
 // Whether one kernel spans every core. A model, independent of the core count.
 #ifndef KICKOS_MULTICORE_MODEL_SHARED
 #define KICKOS_MULTICORE_MODEL_SHARED 1

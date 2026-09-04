@@ -6,6 +6,8 @@
 #include <kickos/debug.h> // KICKOS_DEBUG_ASSERT
 #include <kickos/domain.h>
 #include <kickos/instance.h>
+#include <kickos/sched.h>
+#include <kickos/thread.h>
 
 #include <kickos/sys/errno.h>
 
@@ -287,6 +289,86 @@ namespace kickos
         }
         KICKOS_DEBUG_ASSERT(t->refcount < UINT8_MAX);
         t->refcount++;
+    }
+
+    uint8_t task_prio_ceiling(Task const* t)
+    {
+        if (t == nullptr or t->prio_ceiling == 0)
+        {
+            return KICKOS_PRIO_MAX;
+        }
+        return t->prio_ceiling;
+    }
+
+#if KICKOS_KERNEL_CORES > 1
+    uint32_t task_core_set(Task const* t)
+    {
+        if (t == nullptr or t->core_set == 0)
+        {
+            return KICKOS_CORE_SET_ALL;
+        }
+        return t->core_set;
+    }
+
+    uint32_t task_default_cores(Task const* t)
+    {
+        uint32_t const grant = task_core_set(t);
+        uint32_t const open = grant & ~static_cast<uint32_t>(KICKOS_ISOLATED_CORES);
+        if (open == 0)
+        {
+            return grant;
+        }
+        return open;
+    }
+#endif
+
+    int task_sched_narrow(Task* t, uint8_t ceiling, uint32_t cores)
+    {
+        if (t == nullptr)
+        {
+            return -KOS_EPERM;
+        }
+        if (ceiling != 0)
+        {
+            if (ceiling > task_prio_ceiling(t))
+            {
+                return -KOS_EPERM;
+            }
+        }
+#if KICKOS_KERNEL_CORES > 1
+        uint32_t admitted = 0;
+        if (cores != 0)
+        {
+            int const crc = sched_admit_mask(cores, task_core_set(t), MaskBound::SUBSET,
+                                             &admitted);
+            if (crc != 0)
+            {
+                return crc;
+            }
+        }
+#else
+        (void)cores;
+#endif
+        if (ceiling != 0)
+        {
+            t->prio_ceiling = ceiling;
+        }
+#if KICKOS_KERNEL_CORES > 1
+        if (cores != 0)
+        {
+            t->core_set = admitted;
+        }
+#endif
+        return 0;
+    }
+
+    bool task_same_group(Thread const* a, Thread const* b)
+    {
+        if (a == nullptr or b == nullptr or a->task == nullptr)
+        {
+            return false;
+        }
+        return a->task == b->task;
     }
 
     uint8_t task_member_count(Task const* t)
