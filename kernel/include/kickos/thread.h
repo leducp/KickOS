@@ -14,7 +14,13 @@
 #include <kickos/list.h>
 #include <kickos/mpuset.h>
 
-#include <kickos/sys/abi.h> // KOS_THREAD_NONE
+#include <kickos/sys/abi.h> // KOS_THREAD_NONE, KOS_AMP_RING_SLOTS
+
+// The partition's width, which the reply-record band below is sized by. A standalone TU has no
+// board config, and one node is the width at which no record crosses a kernel boundary.
+#ifndef KICKOS_AMP_NODES
+#define KICKOS_AMP_NODES 1
+#endif
 #include <kickos/sys/atomic.h>
 
 namespace kickos
@@ -544,6 +550,49 @@ namespace kickos
                       "pool would seat the index KOS_THREAD_NONE reserves");
         static_assert((KOS_THREAD_NONE & ((1u << INDEX_BITS) - 1u)) == ((1u << INDEX_BITS) - 1u),
                       "KOS_THREAD_NONE must carry the reserved all-ones index");
+
+        // A far caller's reply record is named through a band of indices this pool never seats:
+        // a reply capability for a peer's caller is an ordinary CAP_REPLY whose handle index
+        // lies here, the reservation KOS_THREAD_NONE already makes for one index widened to one
+        // record per held call slot.
+        //
+        // Squared in the node count: under the shared image this kernel serves every node of
+        // the partition, so a record is keyed by the RECEIVING node as well as the sending one.
+        static constexpr uint32_t FAR_REPLY_RECORDS =
+            static_cast<uint32_t>(KICKOS_AMP_NODES) * static_cast<uint32_t>(KICKOS_AMP_NODES)
+            * KOS_AMP_RING_SLOTS;
+        static constexpr uint32_t FAR_REPLY_BASE =
+            ((1u << INDEX_BITS) - 1u) - FAR_REPLY_RECORDS;
+
+        // cap_reply_thread refuses an index at or above `next`, so a band handle resolves to no
+        // thread only while the pool stays below the band. A pool grown into it stops
+        // discriminating silently, on the one path where a mistake completes a stranger's call.
+        static_assert(KICKOS_THREAD_SLOTS < FAR_REPLY_BASE,
+                      "the thread pool reaches into the reply-record band, so a far reply "
+                      "capability could resolve to a local thread");
+
+        // The generation half carries the RECORD's own, not the capability's. A ring
+        // resynchronisation destroys the slot a record IS while the capability naming it is
+        // still live, and the table slot is reseated by the next call to land there, so the
+        // window layer compares this half. Only the index half is a range check, which is why
+        // far_reply_is masks to it.
+        static constexpr uint32_t far_reply_handle(uint32_t record)
+        {
+            return (record & ~((1u << INDEX_BITS) - 1u))
+                   | (FAR_REPLY_BASE + (record & ((1u << INDEX_BITS) - 1u)));
+        }
+
+        static constexpr bool far_reply_is(uint32_t handle)
+        {
+            uint32_t const index = handle & ((1u << INDEX_BITS) - 1u);
+            return index >= FAR_REPLY_BASE and index < FAR_REPLY_BASE + FAR_REPLY_RECORDS;
+        }
+
+        static constexpr uint32_t far_reply_record(uint32_t handle)
+        {
+            return (handle & ~((1u << INDEX_BITS) - 1u))
+                   | ((handle & ((1u << INDEX_BITS) - 1u)) - FAR_REPLY_BASE);
+        }
 
         // Kill-gate identity, DERIVED from the slot index. KILL_TAG_BOOT names idle and only
         // idle, the one TCB outside the pool: every other thread, root included, has a slot and

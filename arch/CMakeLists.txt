@@ -216,6 +216,18 @@ elseif(KICKOS_ARCH STREQUAL "armv8a")
   # ARMv8-A in AArch64 state (QEMU virt, Cortex-A53).
   # One interrupt-controller backend per image, on the version the board states.
   if(KICKOS_ARM64_GIC_VERSION EQUAL 2)
+    # A GICv2 target list names CPU interface numbers, which the architecture ties to no
+    # identity register, so only the core a number names can publish it. GICv3 targets the
+    # affinity in MPIDR instead.
+    if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
+      message(FATAL_ERROR
+        "KickOS: the own-image AMP posture is refused under ARM64_GIC_V2. A GICv2 doorbell "
+        "targets CPU INTERFACE numbers, which the architecture ties to no identity register, "
+        "so each core must publish its own and a peer's publication never reaches this "
+        "image. What would fix it is a target number carried in the partition's shared "
+        "region, published by each node before any peer sends. Build this partition under "
+        "CONFIG_ARM64_GIC_V3, whose target is the affinity in MPIDR.")
+    endif()
     set(_kos_gic_src arm64/common/arch_arm64_gicv2.cc)
   elseif(KICKOS_ARM64_GIC_VERSION EQUAL 3)
     set(_kos_gic_src arm64/common/arch_arm64_gicv3.cc)
@@ -484,6 +496,13 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     set(KICKOS_BOOT2_FORCE_SYMBOL "${_boot2_sym}" PARENT_SCOPE)
   endif()
 
+  # node_vectors.S is referenced by nothing until the launch writes VTOR, so the app link must
+  # force its object in from the chip archive: KEEP only protects an object already included.
+  # The table is compiled out below two cores, where forcing it leaves an unresolvable symbol.
+  if(_chip_src MATCHES "/node_vectors\\.S" AND KICKOS_NUM_CORES GREATER 1)
+    set(KICKOS_NODE_VECTOR_FORCE_SYMBOL "g_node_isr_vector" PARENT_SCOPE)
+  endif()
+
   add_library(kickos_chip_${KICKOS_CHIP} STATIC ${_chip_src})
   kickos_apply_freestanding(kickos_chip_${KICKOS_CHIP})
   if(KICKOS_HAVE_ASPACE)
@@ -636,6 +655,16 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     # A chip whose boot handshake needs storage outside .bss carves it per hart, so its script
     # must know the count; at one core the carve is absent rather than empty.
     list(APPEND _ld_defs -DKICKOS_NUM_CORES=${KICKOS_NUM_CORES})
+    # Both nodes' scripts derive this image's base and the shared region from one geometry.
+    list(APPEND _ld_defs -DKICKOS_AMP_OWN_IMAGE=${KICKOS_AMP_OWN_IMAGE})
+    if(KICKOS_AMP_OWN_IMAGE)
+      list(APPEND _ld_defs
+        -DKICKOS_AMP_PARTITION_BASE=${KICKOS_AMP_PARTITION_BASE}
+        -DKICKOS_AMP_NODE_SHARE=${KICKOS_AMP_NODE_SHARE}
+        -DKICKOS_AMP_SHARED_SIZE=${KICKOS_AMP_SHARED_SIZE}
+        -DKICKOS_AMP_NODES=${KICKOS_AMP_NODES}
+        -DKICKOS_AMP_NODE_ID=${KICKOS_AMP_NODE_ID})
+    endif()
     # KICKOS_TLS_FIT_ASSERT needs the knob, the stride and the arch's ABI bias. The bias is
     # scraped from the arch's context.h, the header the compiler reads being what owns it.
     list(APPEND _ld_defs -DKICKOS_TLS=$<BOOL:${KICKOS_TLS}>)

@@ -48,6 +48,20 @@
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp" }
     },
     {
+      "name": "qemu-arm64-amp2-n0",
+      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), node 0 of a two-image AMP partition",
+      "inherits": "qemu-arm64",
+      "binaryDir": "${sourceDir}/build/qemu-arm64-amp2-n0",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "0" }
+    },
+    {
+      "name": "qemu-arm64-amp2-n1",
+      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), node 1 of a two-image AMP partition",
+      "inherits": "qemu-arm64",
+      "binaryDir": "${sourceDir}/build/qemu-arm64-amp2-n1",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "1" }
+    },
+    {
       "name": "imx8mp-evk",
       "displayName": "NXP i.MX 8M Plus EVK (quad Cortex-A53, GIC-500, EL3 handover)",
       "inherits": "arm64-base",
@@ -61,6 +75,8 @@
     { "name": "qemu-arm64-smpiso", "configurePreset": "qemu-arm64-smpiso" },
     { "name": "qemu-arm64-gicv3", "configurePreset": "qemu-arm64-gicv3" },
     { "name": "qemu-arm64-amp", "configurePreset": "qemu-arm64-amp" },
+    { "name": "qemu-arm64-amp2-n0", "configurePreset": "qemu-arm64-amp2-n0" },
+    { "name": "qemu-arm64-amp2-n1", "configurePreset": "qemu-arm64-amp2-n1" },
     { "name": "imx8mp-evk", "configurePreset": "imx8mp-evk" }
   ],
   "testPresets": [
@@ -69,6 +85,8 @@
     { "name": "qemu-arm64-smpiso", "configurePreset": "qemu-arm64-smpiso", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-gicv3", "configurePreset": "qemu-arm64-gicv3", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-amp", "configurePreset": "qemu-arm64-amp", "output": { "outputOnFailure": true } },
+    { "name": "qemu-arm64-amp2-n0", "configurePreset": "qemu-arm64-amp2-n0", "output": { "outputOnFailure": true } },
+    { "name": "qemu-arm64-amp2-n1", "configurePreset": "qemu-arm64-amp2-n1", "output": { "outputOnFailure": true } },
     { "name": "imx8mp-evk", "configurePreset": "imx8mp-evk", "output": { "outputOnFailure": true } }
   ]
 }

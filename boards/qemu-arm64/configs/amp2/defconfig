@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+CONFIG_BOARD_QEMU_ARM64=y
+
+# One image per node: this image drives one core and names a peer it never launches. The node
+# index is the only thing that differs between the two builds, and the preset states it.
+CONFIG_KICKOS_CORES_ONE=y
+CONFIG_KICKOS_AMP_POSTURE_OWN_IMAGE=y
+CONFIG_ARM64_GIC_V3=y
+
+# The partition. Two nodes of 64 MiB from the DRAM base, with the region every node writes
+# above both. The emulated machine's DRAM and core count are sized from these.
+CONFIG_KICKOS_AMP_NODES=2
+CONFIG_KICKOS_AMP_PARTITION_BASE=0x40000000
+CONFIG_KICKOS_AMP_NODE_SHARE=0x4000000
+CONFIG_KICKOS_AMP_SHARED_SIZE=0x200000
+
+# The node-to-core map, in node order. A node index is not a core index.
+CONFIG_KICKOS_AMP_PARTITION_CORES=2
+CONFIG_KICKOS_AMP_NODE_CORES="0,1"
+
+# The partition's crossings, stated once and read identically by every node's image. Each
+# image derives its own local and far sets from its own index.
+#
+# Node 1 is named two ports on purpose: its kernel binds both and its app receives on the
+# first alone, so the second is a bound port with no receiver and an arm that needs a caller
+# parked has somewhere to park one.
+CONFIG_KICKOS_AMP_PORTS="0:2,1:3,1:4"
+
+# Each entry above takes an endpoint slot for the life of the image: a local entry the
+# endpoint its port is bound to, a far one the endpoint that names the crossing. This supply
+# must cover them and what the app holds beside them.
+CONFIG_KICKOS_MAX_ENDPOINTS=9
+
+CONFIG_KICKOS_USER_STACK_SIZE=12288
+CONFIG_KICKOS_IDLE_STACK_SIZE=4096
+CONFIG_KICKOS_ROOT_STACK_SIZE=20480
+
+CONFIG_KICKOS_ENABLE_SELFTEST=y

@@ -35,7 +35,8 @@ extern "C"
     // anything still pending.
     void kickos_armv8a_gic_dispatch(void);
 
-#if KICKOS_NUM_CORES > 1
+// A node rings peers at one core, so these fold with the seam in arch.h and not with the count.
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
     // Raises the doorbell on every core in `cores`, a bitmask of core INDICES. Orders the
     // caller's earlier writes ahead of the raise.
     void kickos_armv8a_gic_doorbell_send(uint32_t cores);
@@ -46,6 +47,12 @@ extern "C"
 
     // Masks every line on the calling core's own bank except the doorbell.
     void kickos_armv8a_gic_doorbell_only(void);
+
+#if defined(KICKOS_ENABLE_SELFTEST) && (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
+    // Scaffolding: reopens the bring-up window a running partition has already closed.
+    uint32_t kickos_armv8a_gic_seat_set(uint32_t core, uint32_t seated);
+    uint32_t kickos_armv8a_gic_deferred(uint32_t core);
+#endif
 
     // What a backend calls on the calling core when the doorbell arrives. Must not take the
     // kernel lock: an initiator holding it waits on this.

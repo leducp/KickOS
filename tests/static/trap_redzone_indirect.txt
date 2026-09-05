@@ -646,6 +646,18 @@ site armv7m pizero2350          console_tx.cc:295:31   chip_rp2350.cc:rp_tx_irq_
 site armv7m pizero2350          console_tx.cc:311:27   chip_rp2350.cc:rp_tx_irq_disable
 site armv7m pizero2350          console_tx.cc:357:27   chip_rp2350.cc:rp_tx_irq_disable
 
+# Nine of the twelve sites the sibling presets carry; console_tx.cc:285, :287 and :295 are not
+# in this preset's graph, and an over-declared set is refused as loudly as an under-declared one.
+site armv7m pizero2350-amp      console_tx.cc:70:37    chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350-amp      console_tx.cc:92:28    chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-amp      console_tx.cc:142:30   chip_rp2350.cc:rp_tx_irq_enable
+site armv7m pizero2350-amp      console_tx.cc:156:63   chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350-amp      console_tx.cc:158:28   chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-amp      console_tx.cc:260:35   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350-amp      console_tx.cc:268:32   chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-amp      console_tx.cc:311:27   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350-amp      console_tx.cc:357:27   chip_rp2350.cc:rp_tx_irq_disable
+
 site armv7m pizero2350-flat     console_tx.cc:70:37    chip_rp2350.cc:rp_tx_slot_free
 site armv7m pizero2350-flat     console_tx.cc:92:28    chip_rp2350.cc:rp_tx_push
 site armv7m pizero2350-flat     console_tx.cc:142:30   chip_rp2350.cc:rp_tx_irq_enable
@@ -733,6 +745,9 @@ site armv7m bluepill-c8-st      console_tx.cc:357:27   chip_stm32f103.cc:f1_tx_i
 # exist in the -st graph alone.
 site armv7m pizero2350-st       chip_rp2350.cc:577:15 NONE
 site armv7m pizero2350-st       chip_rp2350.cc:587:15 NONE
+# The AMP preset enables the selftest too, so arch_reboot is in its graph for the same reason.
+site armv7m pizero2350-amp      chip_rp2350.cc:577:15 NONE
+site armv7m pizero2350-amp      chip_rp2350.cc:587:15 NONE
 
 # --- armv6m: the same two arch-wide pointers ------------------------------------
 site armv6m * sched.cc:108:42       policy_fifo_rr.cc:policy_on_switch_in

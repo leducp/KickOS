@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+CONFIG_BOARD_PIZERO2350=y
+
+# Provisional scaffolding, not a shipped posture: it exists so the chip's doorbell, its core
+# identity and its node vector table configure and build. Do not tune anything here.
+#
+# One kernel per core over disjoint memory: KICKOS_NUM_CORES rises to 2 while
+# KICKOS_KERNEL_CORES stays 1. KICKOS_MULTI_INSTANCE is spelled in neither direction, since
+# KICKOS_AMP_NODE derives from the count and the model alone.
+CONFIG_KICKOS_CORES_TWO=y
+CONFIG_KICKOS_MULTICORE_AMP=y
+CONFIG_MEMORY_MODEL_MPU=y
+
+CONFIG_KICKOS_USER_STACK_SIZE=8192
+CONFIG_KICKOS_IDLE_STACK_SIZE=512
+CONFIG_KICKOS_ROOT_STACK_SIZE=8192
+
+CONFIG_KICKOS_ENABLE_SELFTEST=y

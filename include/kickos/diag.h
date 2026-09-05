@@ -49,6 +49,10 @@
     X(kParkNoKind,      "unreachable: park abort on a thread with no wait edge",     "P16")       \
     X(kKstackOverflow,  "kernel stack canary broken on this thread's slot",          "P17")       \
     X(kBootFramePool,   "kmain: the frame carve is too small to describe",           "P18")       \
+    X(kBootAmpPort,     "kmain: a port CONFIG_KICKOS_AMP_PORTS names could not be seated \n"      \
+                        "       into root; this node could not serve or reach it",       "P19")    \
+    X(kBootAmpSlot,     "kmain: a partition port landed off its derived capability slot \n"       \
+                        "       (a dynamic install into root ran before the partition's)", "P20")  \
     X(kBannerRule,      "  ==============================================\n",        "\n")
 
 namespace kickos

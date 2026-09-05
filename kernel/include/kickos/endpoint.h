@@ -93,12 +93,42 @@ namespace kickos
         return static_cast<uint32_t>(e->far_node) - 1u;
     }
 
+    // Hand one far CALL to a thread parked on the endpoint its port is bound to, minting that
+    // thread the reply capability for it. True where a receiver took it, and then the call
+    // slot is held as this node's record of the caller until the reply is sent.
+    bool endpoint_far_call_deliver(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
+                                   void const* payload, uint32_t len, uint32_t slot);
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // Arm ONE far delivery to refuse the disclosure of the capability it just installed. NO
+    // SYSCALL REACHES THAT STATE: endpoint_recv proves the out-ptr writable and aligned before
+    // the park, so only a buffer that went away under a parked receiver presents it, and the
+    // scaffolding is what an arm has instead. Consumed by the next delivery, armed or not.
+    void endpoint_far_blind_arm(void);
+    bool endpoint_far_blind_take(void);
+#else
+    inline bool endpoint_far_blind_take(void)
+    {
+        return false;
+    }
+#endif
+
     // Hand one far reply to whatever local thread `tag` names, and answer whether it landed.
     // `tag` is another node's writing: nothing in it may be spent before this validates it.
     // `from` is the RING the reply arrived on, which the validation tests the caller's own
     // far node against. Caller holds no lock; the doorbell's mask is the exclusion.
     bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, void const* payload,
                                     uint32_t len);
+
+    // Create a LOCAL endpoint, bind `port` of this node to it, and install a capability for it
+    // in `c`. Caller holds IrqLock.
+    int amp_port_bind_local(Thread* c, uint32_t port, uint32_t* out_cap);
+
+    // Walk CONFIG_KICKOS_AMP_PORTS in order and seat this node's derived capabilities into
+    // `root`: a local endpoint per entry naming this node, a far endpoint per entry naming
+    // another. Kernel init, before root's first instruction and before any other dynamic
+    // install into its run. Panics rather than booting a node that could not be seated.
+    void amp_ports_seat(Thread* root);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Scaffolding: the route a far side would have been handed for the one thread parked on

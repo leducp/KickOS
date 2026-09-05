@@ -39,11 +39,13 @@ namespace kickos
             // THE WINDOW AND THE MINT LIVE IN THE REAL ampwindow.cc, so this reseats those:
             // an arm that left a slot outstanding would hand it to the next, whose verdict
             // would then depend on the order GoogleTest ran them in.
-            for (uint32_t to = 0; to < amp::NODE_MAX; to++)
+            for (unsigned cls = 0; cls < static_cast<unsigned>(amp::Class::CLASS_MAX); cls++)
             {
+              for (uint32_t to = 0; to < amp::NODE_MAX; to++)
+              {
                 for (uint32_t from = 0; from < amp::NODE_MAX; from++)
                 {
-                    amp::Ring& r = amp::ring_for(to, from);
+                    amp::Ring& r = amp::ring_for(static_cast<amp::Class>(cls), to, from);
                     r.head.v.store(0u);
                     r.tail.v.store(0u);
                     for (uint32_t i = 0; i < amp::RING_SLOTS; i++)
@@ -57,8 +59,15 @@ namespace kickos
                         }
                     }
                 }
+              }
             }
-            amp::window_init();
+            // ONCE PER NODE IDENTITY: window_init seats THIS node's own rows and no other's,
+            // and the arms below consume at more than one.
+            for (uint32_t n = 0; n < amp::NODE_MAX; n++)
+            {
+                g_node = n;
+                amp::window_init();
+            }
             g_node = 0;
             g_sends = 0;
             g_sent_mask = 0;
@@ -70,6 +79,14 @@ namespace kickos
             g_reply_len = 0;
             g_reply_first = 0;
         }
+    }
+
+    // No endpoint layer here: the window's own arms bind no port, so this answers as an
+    // unbound one.
+    bool endpoint_far_call_deliver(uint32_t, uint32_t, amp::ReplyTag const&, void const*,
+                                   uint32_t, uint32_t)
+    {
+        return false;
     }
 
     bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, void const* payload,
@@ -106,6 +123,11 @@ void arch_ipi_send(uint32_t cores)
 {
     kickos::ampfix::g_sends++;
     kickos::ampfix::g_sent_mask |= cores;
+}
+
+// The host fixture runs one thread, so the pairing this orders has no second side here.
+void arch_ipi_fence(void)
+{
 }
 #endif
 

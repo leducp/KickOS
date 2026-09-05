@@ -16,12 +16,17 @@
 #include "../common/gic.h"
 #include "../common/smp_bringup.h"
 
+#include <kickos/arch/doorbell_cells.h>
+
 #include <kickos/sys/atomic.h>
 
 #include <stddef.h>
 #include <stdint.h>
 
-#if KICKOS_NUM_CORES > 1
+// The doorbell half is built whenever something rings it: a shared kernel's peers above one
+// core, an AMP node's peer nodes at one core. The lock, the bring-up check and the park below
+// stay above one core, being about cores of ONE kernel.
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 
 extern "C"
 {
@@ -33,20 +38,18 @@ namespace
     // A53 cache line.
     constexpr size_t ARMV8A_CACHE_LINE = 64u;
 
-    using Seq = kickos::Atomic<uint32_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE>;
-
-    // One row per core, each row written by that core alone.
-    struct alignas(ARMV8A_CACHE_LINE) SeqRow
-    {
-        Seq seq[KICKOS_NUM_CORES];
-    };
+    using Seq = kickos::doorbell::Seq;
+    using SeqRow = kickos::doorbell::Row<ARMV8A_CACHE_LINE>;
     static_assert(sizeof(SeqRow) % ARMV8A_CACHE_LINE == 0,
                   "a row shorter than a line would share one with the next writer");
 
+    // Both nodes write these, so under one image per node they sit in the region the two link
+    // scripts agree on rather than being allocated per image.
+    //
     // g_request[i].seq[t]: how many times core i has asked core t. Written by i, read by t.
     // g_answer[t].seq[i]: how far core t has answered core i. Written by t, read by i.
-    SeqRow g_request[KICKOS_NUM_CORES] = {};
-    SeqRow g_answer[KICKOS_NUM_CORES] = {};
+    KICKOS_AMP_SHARED("cells.request") SeqRow g_request[KICKOS_DOORBELL_CORES] = {};
+    KICKOS_AMP_SHARED("cells.answer") SeqRow g_answer[KICKOS_DOORBELL_CORES] = {};
 
     // Bounds a wait that can no longer be answered, so a lost raise REPORTS rather than hanging
     // the machine. Far above the handful of iterations an answer takes.
@@ -69,6 +72,7 @@ namespace
     static_assert(DOORBELL_CHECK_ROUNDS <= 0xFFu, "the round count is printed in two digits");
     static_assert(KICKOS_NUM_CORES <= 0xFu, "a core count is printed in one digit");
 
+#if KICKOS_NUM_CORES > 1
     // What the check asks of a parked secondary. 0 parks it in WFI; 1 spins it with its
     // interrupts open; 2 makes it take the lock under its own interrupt mask.
     //
@@ -88,11 +92,15 @@ namespace
     // core is in the acquire loop and cannot leave it, which is what makes the overlap the check
     // needs an arrival to wait for rather than a race to win.
     SeqRow g_spinning[KICKOS_NUM_CORES] = {};
+#endif
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // Per-core doorbell services, and per-core instruction-side rendezvous initiated.
-    SeqRow g_served[KICKOS_NUM_CORES] = {};
+    // Per-core doorbell services, read across nodes, so placed with the cells.
+    KICKOS_AMP_SHARED("cells.served") SeqRow g_served[KICKOS_DOORBELL_CORES] = {};
+#if KICKOS_NUM_CORES > 1
+    // Per-core instruction-side rendezvous initiated. No peer reads it.
     SeqRow g_initiated[KICKOS_NUM_CORES] = {};
+#endif
 #endif
 
     char const WAIT_STUCK[] = "KickOS: armv8a doorbell unanswered by core ";
@@ -117,8 +125,8 @@ namespace
     // Whether any peer has asked this core for something it has not answered.
     bool doorbell_pending(void)
     {
-        uint32_t const me = arch_cpu_id();
-        for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
+        uint32_t const me = arch_doorbell_core();
+        for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
         {
             if (g_request[from].seq[me].load() != g_answer[me].seq[from].load())
             {
@@ -177,6 +185,7 @@ namespace
     }
 #endif
 
+#if KICKOS_NUM_CORES > 1
     // One round's raise and rendezvous, WITH THE LOCK ALREADY HELD, and the postcondition read
     // before the caller releases it: what arch_ipi_wait owes is that every peer answered THIS
     // round's request before it returned, and a peer catching up afterwards would satisfy a
@@ -187,7 +196,7 @@ namespace
         arch_ipi_wait(peers);
 
         uint32_t settled = 0;
-        for (uint32_t to = 0; to < KICKOS_NUM_CORES; to++)
+        for (uint32_t to = 0; to < KICKOS_DOORBELL_CORES; to++)
         {
             if ((peers & (1u << to)) != 0
                 and g_answer[to].seq[me].load() == g_request[me].seq[to].load())
@@ -257,6 +266,7 @@ namespace
         return held;
     }
 #endif
+#endif
 }
 
 extern "C"
@@ -266,12 +276,12 @@ extern "C"
 // poll inside a spin, and MASKED either way.
 void kickos_arm64_doorbell_service(void)
 {
-    uint32_t const me = arch_cpu_id();
+    uint32_t const me = arch_doorbell_core();
     // Observed once and answered from the observation, never re-read: the ISB below must
     // attest to THIS snapshot, and a request raised after it is not one it covers.
-    uint32_t asked[KICKOS_NUM_CORES] = {};
+    uint32_t asked[KICKOS_DOORBELL_CORES] = {};
     bool owed = false;
-    for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
+    for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
     {
         asked[from] = g_request[from].seq[me].load();
         if (asked[from] != g_answer[me].seq[from].load())
@@ -304,7 +314,7 @@ void kickos_arm64_doorbell_service(void)
     kickos_irq_route_service();
 #endif
 
-    for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
+    for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
     {
         if (asked[from] != g_answer[me].seq[from].load())
         {
@@ -313,7 +323,8 @@ void kickos_arm64_doorbell_service(void)
     }
 #if KICKOS_AMP_NODE
     // AFTER THE ANSWERS, and that order is the contract: an AMP payload drain may not delay
-    // the rendezvous a shared kernel's callers wait on through this same body.
+    // the rendezvous a shared kernel's callers wait on through this same body. The early
+    // return above cannot lose a payload wake, a send raising the request cell like any other.
     kickos_amp_node_service();
 #endif
 }
@@ -328,9 +339,9 @@ void kickos_arm64_doorbell_service(void)
 // without entering any scheduler.
 void arch_ipi_send(uint32_t cores)
 {
-    uint32_t const me = arch_cpu_id();
+    uint32_t const me = arch_doorbell_core();
 
-    for (uint32_t to = 0; to < KICKOS_NUM_CORES; to++)
+    for (uint32_t to = 0; to < KICKOS_DOORBELL_CORES; to++)
     {
         if ((cores & (1u << to)) != 0)
         {
@@ -354,15 +365,24 @@ void arch_ipi_resched_self(void)
 }
 #endif
 
+// A FULL barrier, and neither half of an acquire/release pair: the pairing it serves is a store
+// then a load on both sides, which is the one direction release and acquire leave free.
+// Reached through a plain call that no callgraph gate follows, so its body is asserted out of
+// the linked image (tests/static/check_ipi_fence.sh).
+void arch_ipi_fence(void)
+{
+    __asm volatile("dmb ish" ::: "memory");
+}
+
 // Spins on the answer cells alone, the calling core's own bit excepted: the send answered that
 // one synchronously. SERVICES ITS OWN DOORBELL WHILE IT SPINS: two cores can each be an
 // initiator waiting on the other.
 void arch_ipi_wait(uint32_t cores)
 {
-    uint32_t const me = arch_cpu_id();
+    uint32_t const me = arch_doorbell_core();
     uint32_t const peers = cores & ~(1u << me);
 
-    for (uint32_t to = 0; to < KICKOS_NUM_CORES; to++)
+    for (uint32_t to = 0; to < KICKOS_DOORBELL_CORES; to++)
     {
         if ((peers & (1u << to)) == 0)
         {
@@ -387,6 +407,7 @@ void arch_ipi_wait(uint32_t cores)
 }
 
 // One poke and one wait over `peers`, whose whole effect is the ISB every serviced core runs.
+#if KICKOS_NUM_CORES > 1
 void kickos_arm64_instruction_side_rendezvous(uint32_t peers)
 {
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -399,17 +420,31 @@ void kickos_arm64_instruction_side_rendezvous(uint32_t peers)
     arch_ipi_send(peers);
     arch_ipi_wait(peers);
 }
+#endif
 
 #if defined(KICKOS_ENABLE_SELFTEST)
+uint32_t arch_ipi_deferred(uint32_t core)
+{
+    return kickos_armv8a_gic_deferred(core);
+}
+
+uint32_t arch_ipi_seat_set(uint32_t core, uint32_t seated)
+{
+    return kickos_armv8a_gic_seat_set(core, seated);
+}
+
 // Services in the low half, rendezvous initiated in the high half (arch.h, arch_ipi_counts).
 uint64_t arch_ipi_counts(uint32_t core)
 {
-    if (core >= KICKOS_NUM_CORES)
+    if (core >= KICKOS_DOORBELL_CORES)
     {
         return 0;
     }
-    return (static_cast<uint64_t>(g_initiated[core].seq[0].load()) << 32)
-           | static_cast<uint64_t>(g_served[core].seq[0].load());
+    uint64_t initiated = 0;
+#if KICKOS_NUM_CORES > 1
+    initiated = g_initiated[core].seq[0].load();
+#endif
+    return (initiated << 32) | static_cast<uint64_t>(g_served[core].seq[0].load());
 }
 #endif
 
@@ -447,12 +482,20 @@ void arch_kernel_unlock(void)
 // can. The spinning cell is what tells the initiator this core is in the second.
 //
 // A SHARED KERNEL LEAVES THIS LOOP FOR GOOD once it has published a thread for this core.
+#if KICKOS_NUM_CORES > 1
 void kickos_armv8a_doorbell_park(void)
 {
     // This core's own interface enabled the timer PPI, so masking its bank down to the doorbell
     // is what keeps kickos_isr_timer out of a core that reaches no scheduler.
     kickos_armv8a_gic_doorbell_only();
     __asm volatile("msr daifclr, #2" ::: "memory");
+#if KICKOS_AMP_NODE
+    // What was sent to this core before it could be poked: a sender that found it unseatable
+    // published anyway and skipped the raise. Read once here, behind the barrier pairing with
+    // the sender's, before this core waits for a doorbell it may already have missed.
+    arch_ipi_fence();
+    kickos_amp_node_service();
+#endif
     uint32_t const me = arch_cpu_id();
     while (true)
     {
@@ -599,6 +642,7 @@ void kickos_armv8a_doorbell_selfcheck(void)
     arch_console_write(CHECK_NL, sizeof(CHECK_NL) - 1);
 }
 
+#endif
 }
 
 #endif

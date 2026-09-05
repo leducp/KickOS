@@ -538,6 +538,69 @@ What it must become is a posture a board STATES, carrying the node's identity wi
 an inference from a core count. The count then says what it says everywhere else, how many cores
 this image drives, and an own-image node says one.
 
+**THE CLASS IS WIDER THAN ONE MACRO: IT IS A PARTITION FACT TAKEN FROM AN IMAGE FACT, and it is
+right for exactly one node.** The derivation above is the first instance and not the shape of the
+whole. Every one of them reads a quantity that belongs to the partition -- how many nodes there
+are, which core carries one, where the region every node writes sits, how much memory the machine
+has -- out of a quantity that belongs to THIS IMAGE, and every one is correct for node 0 and
+silently wrong for its peers.
+
+The sharpest instance is a translation table whose OUTPUT is biased by the image's own base while
+its INDEX is a virtual address. It is an identity map on the node whose base is the window's base
+and an offset map on every other, so a node's own text is unreachable at the address it was linked
+at; the image does not fault on a peer's memory, it faults on its own, before a console exists to
+say so. A count of blocks describing one node's share is the same error one step further out: the
+region every node writes lies above every share, so a table sized by a share cannot reach it and a
+write to it takes a translation fault at the leaf.
+
+**The rule that follows is a reading rule, not a list.** Where a value differs between two nodes
+of one partition, it is the partition's and a node derives its own from its index; where it does
+not, it is the machine's and every node states the same. A constant that is neither is a constant
+that happens to be true for node 0.
+
+**AND THE DETECTION RULE, which is what the class costs to FIND rather than what it is.** The
+shared-image posture is the only one that can see this family, and the own-image postures are
+structurally blind to it: there a node's identity is a build constant, so every collapse of a
+partition index onto an image index looks correct, and a row keyed on one node reads exactly as a
+row keyed on the right one. Under one image the same code runs on every core of the partition at
+once with a different identity each, and a keying that collapsed is two cores writing one row.
+
+So the shared-image board is not a posture kept alive out of caution, and it is not the narrow
+case's test vehicle: **it is the arm that sees a whole family of partition-versus-image defects,
+and anything keyed by node is exercised there before it is believed.** This was learnt the way
+the rest of the class was, by a green own-image run beside a red shared-image one on the same
+defect.
+
+**AND A THIRD CLAUSE, WHICH THE FIRST TWO CANNOT COVER BECAUSE BOTH RUN ONE IMAGE AT A TIME.**
+The two halves above are each a single image under test. A quantity that is only ever SPENT when
+one node acts on a peer that is genuinely RUNNING is outside both: the shared image has no
+separate peer image to be wrong about, and an own-image node alone has no peer that has reached
+the point of being addressable, so the path short circuits before the quantity is used.
+**Two kernels running at once is what reaches those, and it is the third arm rather than a
+demonstration.** The instance that taught it: the GICv3 raise split its target mask with a bound
+of `KICKOS_NUM_CORES`, which is the cores THIS IMAGE drives and is one under the own-image
+posture, while the mask names the partition's. Node 0 raising at node 1 cleared no bit and spun
+that core inside a syscall with its interrupts masked, forever. The shared image passes it,
+`KICKOS_NUM_CORES` and `KICKOS_DOORBELL_CORES` being equal there; an own-image node alone passes
+it, its peer being unseated so the raise is skipped before the split; and every forged-peer arm
+passes it, a forge publishing into a ring without raising at anything. Measured rather than
+argued: with the bound put back, `qemu-arm64-amp` passes every one of its arms and only the
+two-kernel gate fails.
+
+**THE READING RULE THAT FOLLOWS is about WHEN a quantity is spent and not only about what it
+is.** A partition quantity read out of an image quantity is caught by the two halves above where
+it is spent on THIS node's own behalf. Where it is spent only on a peer's behalf, and only once
+that peer is live, no single-image run of either posture reaches it and the merged artefact is
+the only instrument that does.
+
+**AND THE MIRROR OF IT, which is why the pair is the instrument and neither half is.** A quantity
+keyed by the RECEIVING node is exercised by the shared image at every index and by an own-image
+node at exactly one, so a table sized for one receiver passes the shared board on node zero's
+records alone and fails the first node whose index is not zero. The two postures fail on opposite
+halves of the same keying: one catches a collapse, the other catches a bound. **A node other than
+node ZERO is what makes the second half visible**, so a partition of two is the smallest useful
+one and a node-1 build is not a duplicate of a node-0 build.
+
 ### N6d. A NAME CROSSES BETWEEN KERNELS, NEVER A CAPABILITY
 
 A capability entry names an object in the kernel that issued it, by pool slot or by generational
@@ -581,11 +644,349 @@ deadline of its own behind it. A loop can then treat a publication as a budgeted
 kernel that buffered on the caller's behalf would be choosing the staleness policy for every
 workload at once**, which is the same error as a kernel-side driver, one layer out.
 
-**RING DEPTH IS THEREFORE A PARTITION-SIZING INPUT rather than an internal constant.** One ring
-per ordered pair holds a fixed number of slots at the local message bound, so a producer offering
-more than that per drain is refused by construction and must chunk across ticks. A workload that
+**RING DEPTH IS THEREFORE A PARTITION-SIZING INPUT rather than an internal constant.** A ring
+holds a fixed number of slots at the local message bound, so a producer offering more than that
+per drain is refused by construction and must chunk across ticks. An ordered pair carries two of
+them, a call ring and a reply ring, for the reason N6f gives. A workload that
 moves kilobytes at low priority and one that exchanges single records have different right
 answers, and a partition that cannot state its own depth forces both to live at one.
+
+### N6f. A FAR CALLER IS NAMED INDIRECTLY, AND THE ORDERED PAIR IS TWO RINGS
+
+N6d rules that a name crosses between kernels and a capability does not. This freeze is the
+receiving half of that rule: what the serving node holds while a far caller waits, and what it
+may do with it. It is a set of decisions; where a clause rests on a fact about the tree, that
+fact is named as measured.
+
+**THE SERVING NODE MINTS AN ORDINARY LOCAL REPLY CAPABILITY, and the service cannot tell a far
+caller from a near one.** A node serving a call from a peer keeps a record of the caller's
+route -- the origin node and the reply token, stored verbatim -- and mints its receiver a
+`CAP_REPLY` naming that record. The receiver replies through the one reply call it already
+uses. **A service that needed a second call for far callers would not be shared, it would be
+forked**, and sharing one driver across nodes is the workload this model was checked against.
+
+**THE RECORD IS NAMED THROUGH A RESERVED BAND OF THE THREAD HANDLE SPACE, because the
+capability entry is full.** Measured: `CapEntry::obj` is 32 bits and a thread handle spends all
+32, sixteen of index and sixteen of generation; the type field is three bits and the eighth
+encoding is taken, its assert sitting at equality. So a far reply capability can be neither a
+new type nor a flagged object, and widening either would tax every capability on every board to
+describe a case that exists on an AMP part alone. What it costs instead is a BAND OF INDICES THE
+THREAD POOL NEVER SEATS, which is the reservation `KOS_THREAD_NONE` already makes for one index,
+made wide enough to name one record per held call slot.
+
+**THE ASSERT THAT KEEPS THE POOL BELOW THE BAND IS NOT HYGIENE: IT IS WHAT MAKES THE REFUSAL
+TOTAL.** A reply capability naming a record must never resolve to a thread. It does not, because
+the first clause of the four-clause reply resolve refuses an index at or above the pool's seated
+high-water mark, and the band sits above every index that mark can reach. Let the pool grow into
+the band and that clause stops discriminating, silently, on the one path where a mistake
+completes a stranger's call.
+
+**THE RECORD CARRIES A GENERATION AND IT IS THE STALENESS AUTHORITY FOR THE RECORD.** The
+capability's own generation, checked where every capability is resolved, is total over the
+CAPABILITY: an index beyond the run, an emptied slot and a stale generation are all refused
+before anything reads a record. What it cannot see is the record dying underneath it. A CALL RING
+SLOT IS THE RECORD (below) and the record table is keyed by ring position, so the
+resynchronisation the depth clause performs, which abandons a sender's whole held run at once,
+frees records whose capabilities are still live and leaves the next call landing on that masked
+slot to reseat them. Without a count on the record, such a holder's token would name the slot's
+NEXT tenant: its reply would answer a stranger's caller and release a stranger's slot. So a
+record's token is its generation over its table index, the resolve refuses a token the record has
+moved past, and every death bumps the count: the reply, the teardown arm that answers a service
+which never replied, the mint that was installed and could not be disclosed, and the
+resynchronisation this clause exists for.
+
+**IT IS NOT A SECOND TRUTH BESIDE THE CAPABILITY'S GENERATION, because the two answer different
+questions.** The capability's says whether this handle still resolves in this thread's table. The
+record's says whether the record the token was minted for is still the one seated at that index.
+The resynchronisation is exactly the event the first cannot answer: it destroys the record
+without touching the table entry that names it. An earlier freeze here refused a record
+generation on the ground that the capability dies with the record, which holds for every death
+but that one.
+
+**THE COUNT IS 16 BITS WIDE AND WRAPS, and the bound is stated here because the other one is.**
+`Inbound::gen` is a `uint16_t` and the token carries all sixteen of them, so a reply capability
+that outlives 65536 deaths of the SAME record slot resolves again against the seating current
+when it was minted. That is the record's counterpart to the 8-bit `ReplyTag` sequence, which
+aliases a long-lived caller after 256 calls to a node. Neither bound defends against a holder
+that retains a token deliberately; each says how far a holder may drift behind before its token
+stops being refused.
+
+**TWO QUESTIONS, ONE AUTHORITY EACH, NEITHER REDUNDANT.** The serving node's capability answers
+whether a reply may be SENT. The calling node's sequence, carried in the token and checked when
+the reply lands, answers whether it may be DELIVERED. They are not two checkers on one question:
+they are one authority each at opposite ends of the crossing, and removing either leaves a real
+hole.
+
+**THE SERVING NODE STORES THE TOKEN UNVALIDATED PRECISELY BECAUSE IT SPENDS NONE OF IT.** Neither
+field is ever used as an index or a length there; both are handed back as they arrived. A
+malformed peer that sends a token naming nothing gets that token echoed back and refused at the
+calling node's own clause, which is the only place that can judge it.
+
+#### The ordered pair is a CALL ring and a REPLY ring, and their reclamation differs
+
+**A CALL RING SLOT IS THE RECORD.** It is reclaimed when the reply is sent, not when the payload
+is copied out. Measured, and the reason this clause exists: the take advances the consumer's tail
+as it copies, so a slot freed at take bounds nothing -- a peer with more threads than the ring has
+slots publishes, is drained, and publishes again, and the serving node's live records grow with
+the CALLER'S thread count rather than with the ring. Holding the slot until the reply makes
+"outstanding inbound calls at a node are RING_SLOTS per peer" true by construction rather than by
+assertion, and turns exhaustion into the refusal the producer already understands.
+
+Reclamation is separate from the take: a released mask per pair, with the tail advancing over the
+leading run of released slots. Replies may complete out of order; only reclamation is ordered, so
+a slow slot delays reclaiming the slots behind it and delays serving none of them.
+
+**THE CONSUMER NEVER REFUSES FOR WANT OF A RECORD, and a verdict for it would be unreachable.**
+Held plus unread is the far head over this node's tail, which the depth clause already bounds at
+the ring's depth, so a ring with every slot held has nothing unread in it and the take reads
+empty. The producer meeting a full ring is the whole of the back-pressure, and it is a refusal
+that already exists. Recorded because the opposite was frozen here first and an arm falsified it:
+a mechanism that cannot be reached is one no run can witness.
+
+**A REPLY RING SLOT IS RECLAIMED AT TAKE.** Delivering a reply wakes a parked caller inside the
+doorbell handler: it resolves the token, copies into the caller's buffer, and wakes it. No service
+thread is involved and nothing about it can wait on one.
+
+**THAT ASYMMETRY IS NOT A CONVENIENCE. IT IS WHAT REMOVES A LIVENESS CYCLE**, and a cycle is not a
+sizing input. One ring per direction carrying both classes deadlocks under the rule above: the
+calling node's threads park awaiting replies, the ring toward it fills with the serving node's own
+un-replied calls, the serving node's reply is refused because that ring is full, and no thread
+remains at the calling node to drain the calls that would free it. Neither side is at fault, both
+retry forever, and no depth removes the cycle -- a larger ring only moves the thread count at
+which it bites. **Refusal is the caller's problem for a refused CALL; it is not an answer for a
+system that cannot make progress.**
+
+**WITH THE SPLIT, A REPLY IS ALWAYS SENDABLE, and the bound is arithmetic rather than hopeful.**
+Replies in flight from one node to another are at most the call slots that node holds for it,
+which is at most the call ring's depth, which is the reply ring's depth. Exactly one reply leaves
+each held slot and that reply releases it. So a reply ring cannot be full when a reply is
+published, and the send cannot refuse one.
+
+**A RING NOW CARRIES ONE CLASS, AND A MESSAGE OF THE OTHER CLASS ON IT IS MALFORMED.** The call
+ring accepts only a port the receiving node has minted; the reply ring accepts only a reply. That
+clause is not tidiness, and the split is what makes it necessary: without it a peer publishing
+replies into the CALL ring takes a record for each, and nothing ever replies to a reply, so the
+slots are held for the life of the image. Refused by class, such a publication is dropped and the
+tail advances, which is what a malformed length and an unminted port already do.
+
+**THE REPLY RING IS DRAINED BEFORE THE CALL RING IN EVERY SERVICE.** The handler's work is bounded
+both ways, so an order exists whether or not one is chosen, and the wrong one makes a burst of
+inbound calls delay every reply behind it -- a caller parked on a node that is busy being called.
+This is the rule the doorbell already carries one layer down, where the payload drain may not
+delay the rendezvous a shared kernel's callers wait on through the same body.
+
+**THE ONE OUTCOME THAT HOLDS A REPLY RING IS BOUNDED AND SELF-HEALING**, and it is named rather
+than left to be discovered. A depth verdict -- the far head naming more outstanding slots than the
+ring holds -- does not advance the tail, because no slot has been identified to drop. It is the
+only non-advancing outcome on a reply ring, it can only be produced by a malformed peer, and it
+resolves itself: after the strike bound the tail is resynchronised to the far head and the ring
+runs again. A malformed length or an unminted port is dropped and the tail advances.
+
+**WHAT THE SPLIT COSTS is the shared window, which is quadratic in the partition's width and now
+carries twice the constant.** A wide partition states a larger region for it, and the link refuses
+an overflow rather than the region absorbing one.
+
+#### What the receiving side owes, and one shape that has bitten three times
+
+**A RECEIVER ONCE POPPED IS COMPLETED WHATEVER FOLLOWS.** It is off its queue, so a return that
+left it there would park it on nothing. A record it cannot be handed a capability for is
+FORGOTTEN rather than answered, and the call slot stays the taker's to release, so the far
+caller gets an empty reply instead of waiting on one nobody can send.
+
+**NOTHING PARKED ON THE PORT IS REFUSED ON THE SPOT rather than held for a service that may
+arrive.** Holding a slot for an absence fills the ring behind it, and a ring full of calls
+nobody will ever take is the same wedge a malformed peer would have made.
+
+**AND THE MEASUREMENT RULE THAT FOLLOWS FROM IT: AN ARM COUNTING A QUANTITY THE WHOLE PARTITION
+CONTRIBUTES TO MUST OWN THE WHOLE WINDOW.** A far SEND to a port a peer THREAD serves is answered
+by that thread, and that answer names no caller, so it lands at the sender as a dropped reply at
+a moment the sender does not control. An arm counting dropped replies over a window therefore
+counts somebody else's traffic unless nothing of its own is still in flight. The general form:
+where a counter is fed by every node, an arm reading a DELTA of it owes an empty partition for
+the length of that delta, and the way to get one is to leave nothing outstanding rather than to
+widen the tolerance.
+
+**A PEER THAT IS A WINDOW LAYER IS A WEAKER ENVIRONMENT THAN A PEER THAT IS A THREAD, and that
+is the half worth writing down.** The window layer answers only the echo port and generates no
+reply for anything else, so it produces no stray at all. An arm written against it is sound and
+STAYS sound for as long as no real service exists on the other side; it breaks on the first run
+against a peer that is a kernel. So an arm that will one day face a thread is not validated by
+passing against a body, and the two-kernel vehicle is where such an arm is first believed.
+
+**THE BINDING RESOLVES ITS ENDPOINT BY INDEX AND NOT BY HANDLE**, because it names a slot of
+this node's own pool held live by the bind's own reference: there is no generation for it to
+have lost. This was written the other way first and presented as a call that arrived, found no
+receiver and said nothing.
+
+**AND THAT IS THE THIRD PLACE ONE SHAPE HAS BITTEN, so the shape is the record rather than the
+instance.** A lookup keyed on the wrong space -- a handle where an index was stored, a row keyed
+by sender where receiver and sender were both needed, a band sized for one receiving node where
+every ordered pair has records -- does not fault and does not refuse. It resolves to nothing, or
+to the wrong thing, and the path simply does not happen. **Every one of the three presented as a
+silent non-delivery**, and every one was found by an arm that asserted a POSITIVE outcome rather
+than the absence of a bad one. An arm that checks a message did not arrive wrongly would have
+passed all three.
+
+#### A publication outlives the doorbell that would have announced it
+
+**THE RING IS THE AUTHORITY AND A RAISE IS A HINT.** A peer whose interrupt-controller state is
+not yet published cannot be targeted. Its message is published anyway and only its NOTICE is
+deferred: that peer reads its rings once it can be poked, before it waits on a doorbell of any
+kind. A skipped raise costs latency and never a message.
+
+**THE REPLY PATH IS WHAT MAKES THIS PRINCIPLED RATHER THAN PREFERRED.** A refusal is the obvious
+alternative and it is wrong here for a reason that is not taste: a reply is published from a path
+whose capability is ALREADY CONSUMED, so a refused reply is a loss nobody can retry -- not the
+service, which no longer holds the capability, and not the caller, which is parked. A bounded
+wait is wrong for a different reason: the publication can be reached from a doorbell handler,
+where waiting spends a core with its interrupts masked on a peer that may never start.
+
+**THE BARRIER IS A FULL ONE ON BOTH SIDES, and neither half of an acquire/release pair.** The
+publication and the seat read are a store then a load; so are the peer's seating and its drain.
+Release and acquire order the opposite direction and leave this one free, and the outcome in
+which BOTH sides read the older value is exactly the one a store buffer produces: the sender
+sees no seat and skips the raise, the peer drains a ring the publication has not reached, and
+the message stands with no notice and no later scan. A barrier on one side alone does not
+remove it.
+
+**WHAT KEEPS THE FAST PATH FREE IS THAT THE FLAG IS MONOTONIC.** It goes unseated to seated and
+never back, so a load reading SEATED is never stale and that branch needs no barrier at all; it
+raises, and the raise already carries the ordering the far side's view of earlier writes needs.
+A load reading UNSEATED may be stale, and skipping on a stale one is the only decision that can
+strand a publication, so that decision alone is made behind the barrier.
+
+**AND A PEER THAT NEVER STARTS IS BOUNDED RATHER THAN SILENT.** Its ring fills at the call
+ring's own depth and every further publication is refused FULL, which is the back-pressure this
+contract already carries, reached in bounded time and counted at both ends.
+
+#### What this does NOT guarantee
+
+- **That an application cannot construct a wait cycle across nodes.** The machine guarantees a
+  reply is always sendable. It does not guarantee that a service on one node which itself calls
+  the other, while that other waits on it, makes progress. Priority does not cross either (N6e),
+  so neither scheduler can break such a cycle. That is a partitioning act performed across two
+  configurations, and it sits in the same column as every other claim no green run makes.
+- **That a peer's memory is out of reach.** Every node maps the region every node writes, and on a
+  part whose bus enforces nothing the boundary is DESCRIBED and not enforced. The validation here
+  defends a node against a MALFORMED peer and never against a hostile one.
+
+### N6g. THE PARTITION HANDS A NODE ITS PORTS, AND A NODE DERIVES BOTH ITS SETS FROM ITS INDEX
+
+N6d rules that a name crosses and a capability does not, and N6f settles what the serving node
+holds while a far caller waits. What neither says is where a node's capabilities come from in the
+first place. This freeze answers that, in one shape for both directions.
+
+**ONE LIST FOR THE WHOLE PARTITION, AND A SECOND TRUTH WOULD MEAN A SECOND LIST.**
+`CONFIG_KICKOS_AMP_PORTS` names, for the partition and not for this image, which node serves
+which port. Every node's image reads the same string and derives BOTH of its own sets from its
+own index: an entry naming this node is a port bound to a local endpoint it receives on, an entry
+naming another node is a far endpoint it calls. Node 0 and node 1 read the same entries and get
+opposite roles. This is section 9's memory partition applied one layer up, and for the same
+reason: two images cannot disagree about a value neither of them states.
+
+**THE KERNEL SEATS THEM INTO ROOT AT INIT, AND NO SYSCALL REPORTS THE RESULT.** Measured rather
+than assumed: `cap_run_free_build` threads a fresh run's dynamic slots in ASCENDING order from
+`KICKOS_CAP_FIRST_DYNAMIC`, `cap_install` pops the head, and the reserved plane is never in that
+list. So N sequential installs into root's freshly attached run land at `FIRST_DYNAMIC` through
+`FIRST_DYNAMIC + N - 1` in caller order, and an entry's POSITION in the list is its capability
+handle. `<kickos/amp.h>` spells that constant. **No directory syscall is owed and no well-known
+ABI index is added**: a well-known index would cost a slot on every board in the fleet to describe
+a case that exists on an AMP part alone, which is the same tax N6f refuses for the reply record.
+
+**THREE BUILD-TIME FACTS RIDE ON THAT, AND EACH IS CHECKED RATHER THAN TRUSTED.** The seating is
+the FIRST dynamic install into root's run; it runs in list order, the derivation being positional;
+and root's run carries a slot per entry, which `cmake/cap_table.cmake` sums as a term the
+PARTITION declares, beside the ones the kernel, the service list and the app declare. The seating
+asserts the node it seats for against `amp::self()`, which under the shared image is a core
+register and not a build constant, and it panics by name on a handle that is not the derived one.
+
+**AND THE BREAKAGE IS NAMED WHERE A FUTURE EDITOR WILL MEET IT.** Any init path that installs a
+dynamic capability into root BEFORE the partition's shifts every constant positionally, with
+nothing at the app's end to notice: an app would spell one crossing and reach another. That is
+why it is a boot panic and not a comment.
+
+**THE MINT IS PER NODE, WHICH IS WHAT MAKES THE REFUSAL TOTAL IN BOTH DIRECTIONS.** A port minted
+on every node's row says nothing about which node serves it, so a far endpoint could be minted
+for a node that serves nothing and would then answer a caller with silence. Minted on the row of
+the node the partition names, the far mint refuses an unnamed crossing outright and an arriving
+call on an unminted port is refused by class with a counted verdict. **A crossing the partition
+does not name has no capability at all**, and a user meets that where they ASK for it rather than
+in an answer that never comes. Silent non-delivery is what this work has been bitten by three
+times (N6f), and this is the fourth place it was refused.
+
+**THE WINDOW LAYER KEEPS TWO PORTS AND THE PARTITION MAY NOT SERVE ONE OF THEM.** Port 1 carries
+every reply and is routed to the caller its token names, so no node can serve it and an entry
+naming it is refused at configure. Port 0 is the echo the window layer answers with no thread
+involved; the partition MAY name it for a peer, which is how it names what a node running no
+kernel of its own can answer, and may not name it for a node that runs one, since such a node
+binds every port the partition names it and would take the echo from the layer that owns it.
+
+**THE OUTBOUND SIDE TAKES THE SAME SHAPE, AND THAT CLOSES A HOLE RATHER THAN WORKING AROUND ONE.**
+Section 7 recorded that `KOS_SYS_AMP_ENDPOINT_CREATE` has no reachable caller, root being
+unprivileged from its first instruction, and that the arms reached the mint body through probe
+scaffolding instead. Under this freeze the far endpoint has an origin that is not a syscall, so
+the scaffolding goes and the syscall stays as what N8 makes it: the privileged path, whose
+REFUSAL is what a run witnesses and what an arm asserts. One shape, one origin, both directions.
+
+**WHAT AN APP WRITES IS A PLAIN `add_executable` LINKING `kickos` WITH A PURE C `main`.**
+`<kickos/amp.h>` is a header of static inline functions over a generated table: no syscall, no
+kernel type, no C++. A node's app names a crossing and gets a capability it then spends through
+the ordinary `kos_send`, `kos_call`, `kos_recv` and `kos_reply`, which is N7's one mechanism
+reaching userspace unchanged.
+
+**WHAT THIS DOES NOT SETTLE.** WHO may state the list is the partition integrator and nothing
+checks their authority, which is section 9's open question about who may mint a crossing, narrowed
+rather than closed: it is now answered statically, by configuration, for the endpoint half. And a
+node holding a capability for a crossing is not a node whose peer is running: the list is a
+partition fact, and whether the far side exists is a deployment one.
+
+### N6h. A PARTITION IS DEPLOYED AS ONE ARTEFACT, AND THE TWO IMAGES ARE CHECKED AGAINST EACH OTHER
+
+N6b rules that deployment is a MERGE and not a second flash. This freeze is what that costs and
+what it buys, now that two kernels boot from one file.
+
+**THE ARTEFACT IS AN ELF CARRYING ONE `PT_LOAD` PER NODE, not a flat span.** The nodes are a
+NODE_SHARE apart, which is 64 MiB on the vehicle, so a flat image would be almost entirely
+padding and would grow with a knob that says nothing about how much code there is. Program
+headers cost nothing per gap: the artefact is the sum of what the nodes actually hold, about
+6 MiB where a flat span is 130, and a loader reads the same headers a flashing tool would.
+
+**EVERY ADDRESS IN IT COMES OUT OF THE IMAGES.** The merge reads each node's lowest loaded
+address from that node's own ELF and takes the entry from node 0's, so the artefact restates no
+part of the geometry and cannot disagree with the partition it assembles. A constant repeated in
+the merge step would be the second truth N6g refuses, one layer further out.
+
+**NODE 0 OWNS THE MERGE**, being the node that releases the others (N5), so one step in a node 0
+build produces the whole partition and a user flashes once.
+
+**AND THE TWO IMAGES ARE CHECKED AGAINST EACH OTHER, WHICH NO SINGLE LINK CAN DO.** Each node is
+linked from its own configure and every link succeeds whatever the other one did, so two images
+built from different partition descriptions BUILD CLEANLY AND BOOT. What they then disagree about
+is where the region every node writes sits and how wide it is, and N6b already records that this
+presents as a HANG rather than as an error. Four clauses, each a thing one link cannot see: the
+window at the same address and the same size in both; the window NOBITS in both, an image that
+LOADS it carrying initialised bytes into memory a peer may already be using; the two images'
+loaded spans disjoint; and node 1 not linked at node 0's base, a partition of two node zeros
+being the collapse N6c names and one that every arm on node 0 passes.
+
+**A GATE MAY NOT READ THE QUIETER NODE'S CONSOLE LINE.** The nodes of a partition share one
+console and no lock spans two kernels, so the stream interleaves at byte granularity BY RULING
+and any single line from the quieter node can arrive cut in half. A gate that greps for such a
+line is measuring the console rather than the claim, and it fails on a draw: measured here at
+about one run in ten, on a gate whose only fault was reading the peer's own banner. **Witness a
+peer through a counter the OTHER node reads** -- the window's per-node rows exist for exactly
+that -- and never through what the peer printed.
+
+**AND A GREEN RUN OF A TWO-KERNEL GATE WITNESSES LESS THAN A GREEN RUN OF A ONE-KERNEL GATE.**
+The interleaving, the order the two kernels reach their first publication, and which of them is
+inside a masked handler when the other rings are a fresh draw every run. Repetition is therefore
+what such a gate owes before it is believed, and the standard this vehicle carries is TEN. It is
+stated where the gates live so the next author does not take one green as settled.
+
+**ONE OF THOSE FOUR HAS NO REACHABLE RED AND IS RECORDED AS A THIRD LINE OF DEFENCE.** The window
+is NOBITS because the link script places it `(NOLOAD)`; an initialiser in C cannot change that,
+and dropping the `(NOLOAD)` fails the link outright. So the clause guards against a future link
+script rather than against anything reachable today, and calling it a witness would overstate it.
 
 ### N7. Cross-node IPC is ONE mechanism, and locality never reaches the API
 
@@ -978,14 +1379,15 @@ the second one exists, by which shape carries less duplication.
   wake. What it is NOT is a far side that is a receiving THREAD in another kernel: the peers here
   run no scheduler, so the receiving half of N6d's shared service is still unwitnessed and needs
   the two-image posture and a part that has one.
-- **THE FAR-ENDPOINT SYSCALL HAS NO USER-SIDE CALLER ON ANY BOARD IN THE TREE.**
-  `KOS_SYS_AMP_ENDPOINT_CREATE` is privileged per N8, and root is unprivileged from its first
-  instruction, so what a run witnesses of it is its REFUSAL and nothing else. The arms that
-  exercise a far endpoint reach the same mint body through the probe scaffolding instead. **That
-  scaffolding is gated to root's TASK**, so the other tasks of a selftest image reach neither the
-  mint nor the reply forge; what that narrows is who can cross a node on such an image, and it
-  does not answer who SHOULD be able to mint one. Who may mint one is section 9's open question,
-  and this is what that question costs today.
+- **THE FAR-ENDPOINT SYSCALL STILL HAS NO USER-SIDE CALLER, AND THAT IS NOW THE DESIGN RATHER
+  THAN A GAP.** `KOS_SYS_AMP_ENDPOINT_CREATE` is privileged per N8 and root is unprivileged from
+  its first instruction, so what a run witnesses of it is its REFUSAL and nothing else. What
+  changed under N6g is where a far endpoint comes from instead: the PARTITION states it and the
+  kernel seats it into root at init, so no user-side caller is owed and the probe scaffolding
+  that used to reach the mint body is gone. What is still unwitnessed is a PRIVILEGED caller
+  reaching it, there being none in the tree, and who SHOULD be able to mint one dynamically stays
+  section 9's open question. The forge that stands in for a peer's publication remains gated to
+  root's TASK, which is what a single-image run needs and not a path to a capability.
 - **THE MASKED WINDOW A FAR PUBLISH HOLDS IS UNMEASURED, AND THERE IS NO FIGURE TO REPORT.** A far
   send copies TWICE with this core's interrupts masked: user memory into a `KOS_EP_MSG_MAX` kernel
   stage on the syscall stack, and that stage into the peer's ring slot, so up to 512 bytes move
@@ -1046,6 +1448,28 @@ the second one exists, by which shape carries less duplication.
     the fact that every way of taking one is self-executed, and section B2.2.5 step 3 for the
     requirement that each PE executing changed code run its own -- exactly as the data-cache
     seam's non-witness does, and not on a green run.
+- **A DEFERRED PUBLICATION IS WITNESSED AS DELIVERED; THE BRING-UP WINDOW ITSELF IS NOT.** On the
+  merged two-image artefact node 0 publishes with its peer's seat forced unseated, so the raise
+  is skipped and counted, and then makes an ordinary call that carries the next notice. The
+  PEER'S OWN take counter, read out of the shared window, then stands at two: the publication
+  nobody announced, and the call. That is the clause N6f states and it had been cut twice for
+  want of a vehicle, because a partition whose peer drains ONCE after seating cannot re-enter the
+  window a probe reopens, and seating is monotonic. A live peer drains on every doorbell, which
+  is what makes the next notice something a test can cause.
+  **What is still unwitnessed is the REAL bring-up window**, between node 0 releasing its peer
+  and that peer seating: node 0's earliest userspace code races it, and closing that race needs
+  either test code in kernel init or a peer deliberately started late. The mechanism is the same
+  one either way; what the vehicle does not pin down is the timing.
+- **THE BRING-UP BARRIER PAIRING IS ARGUED AND NOT WITNESSED, and the instrument that would
+  witness it is on the bench in a form that cannot.** The store-then-load pairing the deferred
+  raise rests on is a store-buffer shape, which QEMU's TCG does not model: the arms stay green
+  with both barriers removed, so no run here distinguishes the pairing from its absence. What
+  would settle it is a memory-model checker or real hardware. `herd7` and `litmus7` ARE
+  installed on this bench and cannot answer: the packaging ships the binaries without the `.cat`
+  model library, so the checker evaluates no model at all, AArch64's or any other. The other
+  route is the one the fleet already names -- the i.MX8MP is a real ARMv8 part with a real
+  cluster, so this is reachable later rather than impossible, and it is recorded here as owed
+  rather than settled.
 - **The AMP column stays a ruling even though S7 builds AMP.** What S7 ports is an AMP node on
   `qemu-arm64`, a part the predicate sends to the SHARED kernel. So the parts section 1 excludes
   still get no port, and whether they are worth one is still section 9's open question.
@@ -1394,19 +1818,23 @@ other than its mask, nothing in it argues against the next.
   weak release consistency, and the acquire and release pair rather than the blanket memory-wait is
   the intended cross-processor tool. A rendezvous written against the blanket instruction alone would
   be reading past the specification.
-- **Who may mint a cross-node endpoint, start a core, or PLACE A THREAD OF ANOTHER TASK.** Static
-  in kernel init for the first AMP work; the general question is the capability layer's and is
-  answered with it. The third is the placement work's one remnant: a thread places itself and its
-  own siblings unprivileged, a task being one scheduling domain whose single grant bounds every
-  placement made inside it. Reaching into ANOTHER task is the case no existing authority answers,
-  and answering it here would decide the general case through a special case, exactly as N8 says
-  of the crossing.
-- **The AMP partition layout, NARROWED BY N6b RATHER THAN STILL OPEN AS WRITTEN.** The image
-  boundary is decided: one image per node, so instance-keyed storage is not what an AMP partition
-  is made of and the contiguous array's protectability is a question about the SIM's posture
-  alone. What stays open is the memory partition itself -- the region each node's image owns, the
-  fixed address the shared window sits at, and whether a part's protection unit is asked to
-  enforce the boundary or merely to describe it. Until something enforces it, the window's header
+- **Who may mint a cross-node endpoint, start a core, or PLACE A THREAD OF ANOTHER TASK. THE
+  MINT'S STATIC HALF IS ANSWERED AND THE OTHER TWO ARE UNTOUCHED.** N6g makes the PARTITION the
+  origin of a crossing: a node's endpoints are seated into root at init from one configured list
+  and no capability authorises one, so what stays open there is a DYNAMIC mint, of a crossing the
+  partition did not state, and by what authority. Starting a core is unchanged. The third is the
+  placement work's one remnant: a thread places itself and its own siblings unprivileged, a task
+  being one scheduling domain whose single grant bounds every placement made inside it. Reaching
+  into ANOTHER task is the case no existing authority answers, and answering it here would decide
+  the general case through a special case, exactly as N8 says of the crossing.
+- **The AMP partition layout, NARROWED TWICE AND NOW OPEN ON ONE CLAUSE ONLY.** N6b decided the
+  image boundary: one image per node, so instance-keyed storage is not what an AMP partition is
+  made of and the contiguous array's protectability is a question about the SIM's posture alone.
+  The memory partition is decided too, and by DERIVATION rather than by statement: a partition
+  states a base, a per-node share and the size of the region every node writes, and each node
+  computes its own base and that region's from its own index, so no two images can state one
+  apart. **What stays open is ENFORCEMENT** -- whether a part's protection unit is asked to hold
+  the boundary or merely to describe it. Until something enforces it, the window's header
   rule stands: a compromised peer kernel reaches every other node's memory, and validation defends
   against a malformed peer and not a hostile one. **The LX6 names two of those shapes concretely
   and owes neither today.** Its cross-core rendezvous cells are ordinary statics indexed by the

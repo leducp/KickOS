@@ -31,6 +31,11 @@
 # preset selects ONE test, and that one is a build. A selection empty once the fixture is
 # discounted is reported EMPTY.
 #
+# THE `tree` LABEL NEEDS NO FLAG HERE. Those gates carry `host` beside it, so `-LE host`
+# already drops every one of them. A second `-LE` would not narrow this selection but INVERT
+# it: ctest excludes only what matches EVERY exclude pattern, so `-LE host -LE tree` selects
+# the whole host half this tool must never batch.
+#
 # Every preset in the selection reaches one of three ends and is counted in it: it ran every
 # test its post-build census selected, it registered no image gate, or it was not run at all.
 # The last two refuse unless SWEEP_EXPECT_EMPTY and SWEEP_EXPECT_SKIP declare how many of

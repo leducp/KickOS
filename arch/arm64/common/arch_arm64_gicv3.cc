@@ -12,6 +12,7 @@
 // end-of-interrupt registers are Group 1's for the same reason.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/doorbell_cells.h>
 
 #include "gic.h"
 #include "gicv3.h"
@@ -161,15 +162,27 @@ namespace
 
     // Each core's affinity, packed Aff3:Aff2:Aff1:Aff0 one byte per level, which is
     // GICR_TYPER's Affinity_Value form. Published by the core it names.
+    //
+    // Both nodes write it under one image per node, so it is placed with the doorbell's cells:
+    // a copy per image leaves every peer's row unseated, and the send below SKIPS an unseated
+    // core.
+    KICKOS_AMP_SHARED("affinity")
     kickos::Atomic<uint32_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE>
-        g_affinity[KICKOS_NUM_CORES] = {};
+        g_affinity[KICKOS_DOORBELL_CORES] = {};
 
     // WHETHER THAT AFFINITY STANDS, published last. Affinity zero is a real core rather than
     // an absence, so unlike a GICv2 target BIT the affinity word cannot say this itself, and a
     // send that read an unpublished zero would target core zero twice and the intended core
     // never.
+    KICKOS_AMP_SHARED("affinity_seated")
     kickos::Atomic<uint8_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE>
-        g_affinity_seated[KICKOS_NUM_CORES] = {};
+        g_affinity_seated[KICKOS_DOORBELL_CORES] = {};
+
+#if defined(KICKOS_ENABLE_SELFTEST) && (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
+    // Raises this core skipped because the target was unseated, per target: the only place a
+    // peer that never started can be counted from.
+    kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_deferred[KICKOS_DOORBELL_CORES] = {};
+#endif
 
     inline uint32_t affinity_packed(uint64_t mpidr)
     {
@@ -304,10 +317,11 @@ namespace
         }
     }
 
-#if KICKOS_NUM_CORES > 1
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
     // A core index mask is what crosses gic.h, so a target list of 32 is the widest this
-    // backend is ever handed.
-    static_assert(KICKOS_NUM_CORES <= 32, "a core-index mask is 32 bits wide");
+    // backend is ever handed, at the PARTITION's width: an own-image AMP node is handed a mask
+    // naming cores its own image does not drive.
+    static_assert(KICKOS_DOORBELL_CORES <= 32, "a core-index mask is 32 bits wide");
 
     // The doorbell's INTID. ICC_SGI1R_EL1 carries a 4-bit INTID.
     constexpr int GIC_SGI_DOORBELL = 0;
@@ -403,7 +417,7 @@ void kickos_armv8a_gic_percore_init(void)
     *gicr8(base, GICR_IPRIORITYR + static_cast<uintptr_t>(timer)) = 0;
     *gicr32(base, GICR_ISENABLER0) = 1u << (timer % 32);
 
-#if KICKOS_NUM_CORES > 1
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
     // GICR_ICPENDR0 carries one bit per INTID with no source identity, so this clears a raise
     // latched before this core owned an interface, whoever made it.
     *gicr32(base, GICR_ICPENDR0) = 1u << (GIC_SGI_DOORBELL % 32);
@@ -423,25 +437,70 @@ void kickos_armv8a_gic_percore_init(void)
 #endif
 
     // Published last, so a sender that finds the seat reaches a live interface.
-    g_affinity[arch_cpu_id()] = packed;
-    g_affinity_seated[arch_cpu_id()] = 1u;
+    g_affinity[arch_doorbell_core()] = packed;
+    g_affinity_seated[arch_doorbell_core()] = 1u;
 }
 
-#if KICKOS_NUM_CORES > 1
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 // ONE WRITE PER AFFINITY-AND-RANGE WINDOW: GICv3 has no target list spanning clusters, so how
 // many writes a send costs is a property of the machine's topology rather than of the mask.
 //
 // A core whose affinity is unpublished contributes to no window: a zero read out of the array
 // is core zero's affinity rather than an absence.
+#if defined(KICKOS_ENABLE_SELFTEST) && (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
+uint32_t kickos_armv8a_gic_seat_set(uint32_t core, uint32_t seated)
+{
+    if (core >= KICKOS_DOORBELL_CORES)
+    {
+        return 0u;
+    }
+    uint32_t const was = g_affinity_seated[core].load();
+    g_affinity_seated[core] = static_cast<uint8_t>(seated);
+    return was;
+}
+
+uint32_t kickos_armv8a_gic_deferred(uint32_t core)
+{
+    if (core >= KICKOS_DOORBELL_CORES)
+    {
+        return 0;
+    }
+    return g_deferred[core].load();
+}
+#endif
+
 void kickos_armv8a_gic_doorbell_send(uint32_t cores)
 {
+    // The ring is the authority and this raise is a hint: a core whose affinity is unpublished
+    // cannot be targeted, so its publication stands and only its notice is deferred, that peer
+    // draining what it was sent before it waits on a doorbell of any kind.
+    //
+    // The seating flag is MONOTONIC, only ever going unseated to seated, so a load reading
+    // seated is never stale and needs no barrier. A load reading unseated may be, and skipping
+    // on a stale one strands a publication with no notice and no later scan, so that decision
+    // alone is made behind a full barrier, pairing with the one the peer runs between seating
+    // and draining.
     uint32_t pending = 0;
-    for (uint32_t index = 0; index < KICKOS_NUM_CORES; index++)
+    for (uint32_t index = 0; index < KICKOS_DOORBELL_CORES; index++)
     {
-        if ((cores & (1u << index)) != 0 and g_affinity_seated[index].load() != 0)
+        if ((cores & (1u << index)) == 0)
+        {
+            continue;
+        }
+        if (g_affinity_seated[index].load() != 0)
         {
             pending |= 1u << index;
+            continue;
         }
+        arch_ipi_fence();
+        if (g_affinity_seated[index].load() != 0)
+        {
+            pending |= 1u << index;
+            continue;
+        }
+#if defined(KICKOS_ENABLE_SELFTEST)
+        g_deferred[index].store(g_deferred[index].load() + 1u);
+#endif
     }
     if (pending == 0)
     {
@@ -458,11 +517,19 @@ void kickos_armv8a_gic_doorbell_send(uint32_t cores)
         {
             lead++;
         }
+        // The lead leaves `pending` HERE and not in the sweep below, whose every other exit is
+        // a `continue`: a bound or a predicate that stopped agreeing with the mask would else
+        // leave the lead bit set and spin this core masked, which is a hang, not a lost raise.
+        pending &= ~(1u << lead);
         uint32_t const packed = g_affinity[lead].load();
         uint32_t const cluster = packed & 0xFFFFFF00u;
         uint32_t const rs = (packed & 0xFFu) / SGI_TARGETS_PER_WINDOW;
-        uint32_t targets = 0;
-        for (uint32_t index = lead; index < KICKOS_NUM_CORES; index++)
+        uint32_t targets = 1u << ((packed & 0xFFu) % SGI_TARGETS_PER_WINDOW);
+        // The partition's width and not this image's (docs/design-multicore.md N6c): the mask
+        // names machine cores, and an own-image AMP node drives ONE while naming peers on
+        // others, so a bound from KICKOS_NUM_CORES is 1 on the one posture with somewhere to
+        // raise.
+        for (uint32_t index = lead + 1u; index < KICKOS_DOORBELL_CORES; index++)
         {
             if ((pending & (1u << index)) == 0)
             {
@@ -567,11 +634,12 @@ void arch_irq_unmask(int line)
     // is expressible; affinity zero is a real core rather than an absence, so it is not. The
     // line is left MASKED instead, which refuses rather than routing to a guess. Unreachable
     // in practice, the primary publishing inside arch_init before anything here can run.
-    if (g_affinity_seated[0].load() == 0)
+    if (g_affinity_seated[arch_doorbell_core()].load() == 0)
     {
         return;
     }
-    *gicd64(GICD_IROUTER + static_cast<uintptr_t>(line) * 8) = router_value(g_affinity[0].load());
+    *gicd64(GICD_IROUTER + static_cast<uintptr_t>(line) * 8) =
+        router_value(g_affinity[arch_doorbell_core()].load());
     *gicd32(GICD_ISENABLER + (line / 32) * 4) = 1u << (line % 32);
 }
 
@@ -616,7 +684,7 @@ void kickos_armv8a_gic_dispatch(void)
         // an end of interrupt alone would re-enter here forever.
         kickos_isr_timer();
     }
-#if KICKOS_NUM_CORES > 1
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
     else if (intid == static_cast<uint32_t>(GIC_SGI_DOORBELL))
     {
         // SGIs are edge-triggered, and the acknowledge above cleared the pending state.

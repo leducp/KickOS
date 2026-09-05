@@ -26,7 +26,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Authoritative deterministic gate: the full ctest suite on the host sim.
+  # The gates whose verdict is a function of the source tree alone: one configure answers
+  # for every preset, and none of them opens the build directory. Every other job excludes
+  # this label.
+  code-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kconfiglib
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build g++
+      - run: cmake --preset sim
+      - run: ctest --preset sim -L tree --no-tests=error --output-on-failure
+
+  # Authoritative deterministic gate: the host sim suite, less the tree gates code-quality
+  # already answered for every preset.
   sim:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -41,7 +57,7 @@ jobs:
       - uses: ./.github/actions/gtest
       - run: cmake --preset sim -DCMAKE_PREFIX_PATH="$KICKOS_GTEST_PREFIX" -DKICKOS_BUILD_UNIT_TESTS=ON
       - run: cmake --build --preset sim
-      - run: ctest --preset sim --no-tests=error --output-on-failure
+      - run: ctest --preset sim -LE tree --no-tests=error --output-on-failure
 
   # The sim gate rebuilt under UndefinedBehaviorSanitizer. -fno-sanitize-recover=all is what
   # makes it a GATE: UBSan's default is print-and-continue, exit status 0.
@@ -70,7 +86,7 @@ jobs:
       - uses: ./.github/actions/gtest
       - run: cmake --preset sim -B build/sim-ubsan -DCMAKE_PREFIX_PATH="$KICKOS_GTEST_PREFIX" -DKICKOS_BUILD_UNIT_TESTS=ON
       - run: cmake --build build/sim-ubsan
-      - run: ctest --test-dir build/sim-ubsan --no-tests=error --output-on-failure
+      - run: ctest --test-dir build/sim-ubsan -LE tree --no-tests=error --output-on-failure
 
   # armv7m (mps2-an386) + armv6m (microbit) under QEMU, on the pinned Arm GNU toolchain.
   qemu-arm:
@@ -101,7 +117,7 @@ jobs:
         run: |
           cmake --preset qemu -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu
-          ctest --preset qemu -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset qemu -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           ctest --preset qemu -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
           # Posture pin. Those two gates are REGISTERED only when the enforcing posture in
           # this board's base defconfig resolves on, so naming them makes an empty selection
@@ -113,7 +129,7 @@ jobs:
         run: |
           cmake --preset qemu-m33 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m33
-          ctest --preset qemu-m33 -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset qemu-m33 -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           ctest --preset qemu-m33 -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
           # Posture pin, as on the an386: this board carries its own base defconfig.
           ctest --preset qemu-m33 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:2
@@ -121,7 +137,7 @@ jobs:
         run: |
           cmake --preset qemu-m7 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m7
-          ctest --preset qemu-m7 -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset qemu-m7 -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           ctest --preset qemu-m7 -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
           # Posture pin, as on the an386: this board carries its own base defconfig.
           ctest --preset qemu-m7 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:2
@@ -129,7 +145,7 @@ jobs:
         run: |
           cmake --preset qemu-m3 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m3
-          ctest --preset qemu-m3 -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset qemu-m3 -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           ctest --preset qemu-m3 -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
           # Posture pin, as on the an386: this board carries its own base defconfig.
           ctest --preset qemu-m3 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:2
@@ -140,14 +156,14 @@ jobs:
           for b in qemu qemu-m33 qemu-m7 qemu-m3; do
             cmake --preset "$b-flat" -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
             cmake --build --preset "$b-flat"
-            ctest --preset "$b-flat" -E "$POLLED" --no-tests=error --output-on-failure
+            ctest --preset "$b-flat" -E "$POLLED" -LE tree --no-tests=error --output-on-failure
             ctest --preset "$b-flat" -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
           done
       - name: armv6m (microbit)
         run: |
           cmake --preset microbit -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset microbit
-          ctest --preset microbit -E "$POLLED" --no-tests=error --output-on-failure
+          ctest --preset microbit -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           ctest --preset microbit -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
           # Pins the REGISTRATION, not just the result. microbit is the only CI board that
           # carves kernel blocks without enforcing, so it is the only one where the block
@@ -175,7 +191,7 @@ jobs:
         run: |
           cmake --preset qemu-arm64 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
           cmake --build --preset qemu-arm64
-          ctest --preset qemu-arm64 --no-tests=error --output-on-failure
+          ctest --preset qemu-arm64 -LE tree --no-tests=error --output-on-failure
           # Capability pin, not just a result: armv8a selects both kernel-stack symbols and
           # TLS, and naming these three makes an empty selection the failure.
           ctest --preset qemu-arm64 --no-tests=error --output-on-failure \
@@ -207,7 +223,7 @@ jobs:
         run: |
           cmake --preset qemu-arm64-smp -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
           cmake --build --preset qemu-arm64-smp
-          ctest --preset qemu-arm64-smp --no-tests=error --output-on-failure
+          ctest --preset qemu-arm64-smp -LE tree --no-tests=error --output-on-failure
           # Posture pin, as in qemu-arm: the core count is a line in this variant's defconfig,
           # and dropping it de-registers these three instead of failing them.
           ctest --preset qemu-arm64-smp --no-tests=error --output-on-failure \
@@ -224,9 +240,61 @@ jobs:
             exit 1
           fi
           cmake --build --preset qemu-arm64-smpiso
-          ctest --preset qemu-arm64-smpiso --no-tests=error --output-on-failure
+          ctest --preset qemu-arm64-smpiso -LE tree --no-tests=error --output-on-failure
           ctest --preset qemu-arm64-smpiso --no-tests=error --output-on-failure \
             -R 'isolated_cores|qemu_arm64_selftest'
+
+  # armv8a (virt) as an AMP PARTITION, in BOTH halves of the instrument.
+  # docs/design-multicore.md N6c states the three clauses: the shared image catches a keying
+  # COLLAPSE, an own-image node catches a BOUND, and two kernels running at once catches what
+  # neither can, both of those running one image at a time.
+  #
+  # NOT UNDER `--repeat until-pass`. That flag rides the POLLED gates above and nothing else: a
+  # two-kernel gate draws fresh every run on the console interleaving and on which kernel
+  # publishes first, so a retry would mask the class this vehicle exists to find.
+  qemu-arm64-amp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      QEMU_TIMEOUT: "90"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kconfiglib
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build qemu-system-arm curl xz-utils
+      - uses: ./.github/actions/aarch64-toolchain
+      - name: armv8a (virt) AMP, one image over four cores
+        run: |
+          cmake --preset qemu-arm64-amp -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          # Posture pin, read from the RESOLVED partition and not from anything that derives
+          # with it. A build that lost its AMP posture states no crossing, so the count is zero
+          # and every arm below de-registers instead of failing.
+          . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp 0 shared
+          cmake --build --preset qemu-arm64-amp
+          ctest --preset qemu-arm64-amp -LE tree --no-tests=error --output-on-failure
+          # Naming them makes an EMPTY selection the failure, as the pins above do elsewhere.
+          ctest --preset qemu-arm64-amp --no-tests=error --output-on-failure \
+            -R 'ipi_fence|qemu_arm64_selftest'
+      - name: armv8a (virt) AMP, node 0 of a two-image partition
+        run: |
+          cmake --preset qemu-arm64-amp2-n0 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp2-n0 0 own
+          cmake --build --preset qemu-arm64-amp2-n0
+          # The two vehicle gates build the PEER and merge the partition themselves, so this
+          # covers the merged artefact, the two-ELF agreement check and the arms that need a
+          # peer that is running.
+          ctest --preset qemu-arm64-amp2-n0 -LE tree --no-tests=error --output-on-failure
+          ctest --preset qemu-arm64-amp2-n0 --no-tests=error --output-on-failure \
+            -R 'amp_partition|amp_two_elf|amp_peer_arms|ipi_fence'
+      - name: armv8a (virt) AMP, node 1 of a two-image partition
+        run: |
+          cmake --preset qemu-arm64-amp2-n1 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          # Node ONE and not a second node zero: a pair built as two node zeros is N6c's
+          # collapse, it links and boots, and every arm that runs on node 0 passes on it.
+          . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp2-n1 1 own
+          cmake --build --preset qemu-arm64-amp2-n1
+          ctest --preset qemu-arm64-amp2-n1 -LE tree --no-tests=error --output-on-failure
 
   # rv32imac (virt) under QEMU, plus build-only checks of three more rv32 presets,
   # on the pinned RISCstar toolchain (newlib, soft-float rv32imac/ilp32 multilib).
@@ -250,19 +318,19 @@ jobs:
         run: |
           cmake --preset qemu-riscv-flat -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-flat
-          ctest --preset qemu-riscv-flat --no-tests=error --output-on-failure
+          ctest --preset qemu-riscv-flat -LE tree --no-tests=error --output-on-failure
       # -L host is the gate set that executes no image.
       - name: build-only rv32 boards
         run: |
           cmake --preset esp32c6-wroom -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset esp32c6-wroom
-          ctest --test-dir build/esp32c6-wroom -L host --no-tests=error --output-on-failure
+          ctest --test-dir build/esp32c6-wroom -L host -LE tree --no-tests=error --output-on-failure
           cmake --preset esp32c6-wroom-flat -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset esp32c6-wroom-flat
-          ctest --test-dir build/esp32c6-wroom-flat -L host --no-tests=error --output-on-failure
+          ctest --test-dir build/esp32c6-wroom-flat -L host -LE tree --no-tests=error --output-on-failure
           cmake --preset qemu-riscv-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-bench
-          ctest --test-dir build/qemu-riscv-bench -L host --no-tests=error --output-on-failure
+          ctest --test-dir build/qemu-riscv-bench -L host -LE tree --no-tests=error --output-on-failure
 
   # rv32imac (virt) UNDER PMP ENFORCEMENT, which is this board's base variant: runs the full-C++
   # throw under PMP + the gp-in-appdata CI gates (riscv_no_smalldata, qemu_riscv_cxxtest,
@@ -285,14 +353,14 @@ jobs:
         run: |
           cmake --preset qemu-riscv -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv
-          ctest --preset qemu-riscv --no-tests=error --output-on-failure
+          ctest --preset qemu-riscv -LE tree --no-tests=error --output-on-failure
           # Posture pin, as in qemu-arm: PMP enforcement is a line in this board's base
           # defconfig, and dropping it de-registers these gates instead of failing them.
           ctest --preset qemu-riscv -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure
 
   # Xtensa LX6 (esp32-wroom) gate: proves build/link/linker-script + windowed-ABI asm. It runs
-  # the `host` label, whose verdict is per-link or reads THIS tree. The selftest config is
-  # built too, for the wider link surface.
+  # the `host` label less the tree gates, which leaves the checks whose verdict is per-link or
+  # per-preset. The selftest config is built too, for the wider link surface.
   xtensa:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -307,20 +375,21 @@ jobs:
         run: |
           cmake --preset esp32-wroom -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
           cmake --build --preset esp32-wroom
-          ctest --test-dir build/esp32-wroom -L host --no-tests=error --output-on-failure
+          ctest --test-dir build/esp32-wroom -L host -LE tree --no-tests=error --output-on-failure
       - name: xtensa lx6 + selftest config
         run: |
           cmake --preset esp32-wroom-st -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
           cmake --build --preset esp32-wroom-st
-          ctest --test-dir build/esp32-wroom-st -L host --no-tests=error --output-on-failure
+          ctest --test-dir build/esp32-wroom-st -L host -LE tree --no-tests=error --output-on-failure
       - name: xtensa lx6 on both cores
         run: |
           cmake --preset esp32-wroom-smp -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
           cmake --build --preset esp32-wroom-smp
-          ctest --test-dir build/esp32-wroom-smp -L host --no-tests=error --output-on-failure
+          ctest --test-dir build/esp32-wroom-smp -L host -LE tree --no-tests=error --output-on-failure
 
   # Build sweep of the remaining ARM boards (catches build/link/linker-script
-  # regressions). The `host` label runs, which is every gate reading this board's own tree.
+  # regressions). The `host` label runs less the tree gates, which leaves every gate reading
+  # this board's own configuration.
   build-boards:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -344,7 +413,7 @@ jobs:
       - run: cmake --build --preset ${{ matrix.preset }}
       # -L host, not a bare ctest: qemu-telem registers the full QEMU boot suite, and a
       # suite whose every case skipped reads like a suite that ran.
-      - run: ctest --test-dir build/${{ matrix.preset }} -L host --no-tests=error --output-on-failure
+      - run: ctest --test-dir build/${{ matrix.preset }} -L host -LE tree --no-tests=error --output-on-failure
       # And the one image arm -L host selects away. telemetry_qemu_contained is the only
       # witness that a contained refusal still emits its SWITCH record, and this job is the
       # only one that builds qemu-telem. --no-tests=error stops a rename reading as a pass.
@@ -393,4 +462,4 @@ jobs:
       - uses: ./.github/actions/arm-toolchain
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
-      - run: ctest --test-dir build/${{ matrix.preset }} --no-tests=error --output-on-failure
+      - run: ctest --test-dir build/${{ matrix.preset }} -LE tree --no-tests=error --output-on-failure

@@ -551,12 +551,15 @@ identifiers local to that file, and this milestone adopts every one of them:
 | -- | M7.8 | the shared window reached through an endpoint: N7's remaining half |
 | -- | M7.9 | thread placement: the task's scheduling grant, the affinity mask, core isolation |
 | -- | M7.10 | the LX6 shared kernel, and the silicon measurement that made it declarable |
-| -- | M7.11 | AMP on the RP pair as two images, and the cross-node ping-pong |
+| -- | M7.11 | AMP as two images: the partition's port capabilities, one artefact, the ping-pong |
+| -- | M7.12 | the RP pair as two images, and the partition generalised past two nodes |
 
 **M7.8 THROUGH M7.11 TAKE `--` IN THE STEP COLUMN, as M7.5 does, because none is a step of the
 contract.** M7.8 completes freeze N7 rather than implementing a numbered step; M7.9 is a
-scheduling contract the contract itself does not carry; M7.10 and M7.11 are a backend and a
-witness. The contract's own step plan ends at S7 and none of them reopens it.
+scheduling contract the contract itself does not carry; M7.10 is a backend; M7.11 is the
+two-image posture N6b decided plus the port capabilities N6g freezes; and M7.12 is a port plus a
+width. The contract's own step
+plan ends at S7 and none of them reopens it.
 
 **THE LAST THREE ROWS WERE REDRAWN AFTER THE WORK, WHICH IS THE WRONG ORDER AND IS RECORDED AS
 SUCH.** M7.9 was once "SMP/AMP witness: AMP on the RP pair, SMP on the LX6", one row for two
@@ -571,6 +574,14 @@ ledger working: this file is the sole place a milestone number is assigned, so a
 content contradicts it is unmergeable by construction. The rows are now what the branches are.
 The lesson is the ordering, not the renumber -- a scope decision taken in conversation is not
 taken until this table says so.
+
+**M7.11 IS WHERE THE PARTITION BECOMES AN ORIGIN AND NOT ONLY A GEOMETRY, which is why its row
+gained a clause after the redraw above rather than being resequenced again.** N6b left one image
+per node owing a placement contract and a doorbell map, which M7.11's vehicle pays; what it then
+found is that a node had no way to be HANDED anything. A capability cannot cross (N6d) and the
+privileged mint has no reachable caller (contract section 7), so a node's endpoints came from
+probe scaffolding and nowhere else. N6g answers it with the shape the memory partition already
+uses: one list, per-node derivation, nothing stated twice.
 
 **AND IT FOUND A DEFECT OLDER THAN ITSELF, which is recorded here because the sequencing looks
 odd otherwise: a step about AMP carries a fix to the map editor's bookkeeping.** The range list
@@ -814,9 +825,21 @@ than a reason to distrust the mechanism.
 **M7.10 IS THE LX6 SHARED KERNEL**, and the measurement that made its predicate declarable at
 all: `S32C1I` excluding between PRO_CPU and APP_CPU over internal SRAM, and two processor
 identities that differ, both taken on silicon because the ISA defines each as a configurable
-option no document on this bench resolves. **M7.11 IS AMP ON THE RP PAIR AS TWO IMAGES**, with
+option no document on this bench resolves. **M7.11 IS THE TWO-IMAGE MECHANISM ON AN EMULATED PART**, with
 the cross-node ping-pong that is also the first witness of a far reply reaching a receiving
-thread in another kernel rather than a service body.
+thread in another kernel rather than a service body. It does NOT deliver the RP pair: the only
+own-image posture it lands is `qemu-arm64`'s, and the row said otherwise until 2026-09-04.
+
+**M7.12 IS THE RP PAIR AND THE WIDTH, and it exists because M7.11's row was redrawn to describe
+what landed.** Two halves, neither of which the other needs. The PORT is the named part M7's own
+header calls an AMP candidate for failing per-line interrupt targeting: two images on the RP2350,
+which also forces the merged artefact into that part's flash container, since an ELF is what an
+emulator boots and not what a board takes. The WIDTH is the partition past two nodes: the kernel
+layer is already N-general and witnessed at four in the host fixture, so what is two-node is the
+scaffolding around it -- a pair-shaped two-ELF comparator, three per-node demo sources where one
+node-agnostic app belongs, and N6h stating the check's obligation in two-node words. **A
+three-node partition is witnessable in emulation with no new hardware**, which is what keeps the
+width honest while the port waits on a board.
 
 **WHY THE ORIGINAL ROW DID NOT SURVIVE CONTACT.** It paired two models on two parts as one
 milestone. AMP-by-convention was then ruled out wherever nothing enforces a partition, which

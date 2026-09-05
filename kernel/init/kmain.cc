@@ -6,6 +6,7 @@
 #include <kickos/cap.h>
 #include <kickos/corestart.h>
 #include <kickos/domain.h>
+#include <kickos/endpoint.h>
 #include <kickos/frame_pool.h>
 #include <kickos/grant.h>
 #include <kickos/instance.h>
@@ -266,6 +267,9 @@ namespace kickos
         // Before any node can be poked: the doorbell is open from arch_init, and a service
         // reaching an unminted node refuses every message it was sent.
         amp::window_init();
+        // AFTER the window is seated and before anything can be published at a peer: a node
+        // released earlier would publish into bytes this node is about to clear.
+        arch_amp_release_peers();
 #endif
 
         static_assert(KICKOS_ROOT_STACK_SIZE >= KICKOS_MIN_STACK_SIZE,
@@ -384,6 +388,12 @@ namespace kickos
             IrqLock lock;
             cap_seat_authority(root_tcb, CAP_AUTH_ALL);
         }
+#if KICKOS_AMP_NODE
+        // THE FIRST DYNAMIC INSTALL INTO ROOT'S RUN: <kickos/amp.h> derives a capability index
+        // per listed crossing from that. An install added above this line shifts every one of
+        // them positionally, and the seating panics rather than boot past a shifted slot.
+        amp_ports_seat(root_tcb);
+#endif
         sched::add(root_tcb);
 
 #if KICKOS_KERNEL_CORES > 1

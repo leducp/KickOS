@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# ROOT's capability-table width, summed at CONFIGURE time from four declarations,
+# ROOT's capability-table width, summed at CONFIGURE time from five declarations,
 # each made by whoever owns the fact:
 #
 #   reserved indices      the kernel        KICKOS_CAP_FIRST_DYNAMIC (sys/cap_index.h)
@@ -10,6 +10,7 @@
 #   peak inbound replies  whoever knows the protocol's fan-in, service list or app:
 #                                           INBOUND_REPLY_CAPS (kickos_add_board_provider)
 #                                           CAPABILITIES_INBOUND_REPLY (kickos_add_application)
+#   partition ports       the partition     CONFIG_KICKOS_AMP_PORTS (one per listed crossing)
 #
 # The summed width is what ROOT gets, and root alone. Every spawned child gets
 # KICKOS_CAP_CHILD_WIDTH, the grant-list floor below, and nothing can ask for another width.
@@ -170,6 +171,14 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
   # MIRRORS KICKOS_THREAD_SLOTS in kernel/include/kickos/config/system.h.
   math(EXPR _pool "${_threads} + 1")
 
+  # An AMP node's port capabilities are seated into root at init and held for the life of the
+  # image. Without a term for them the seating runs out of slots on a board whose supply was
+  # sized before the partition named a port.
+  set(_amp_ports 0)
+  if("${KICKOS_AMP_PORT_COUNT}" MATCHES "^[0-9]+$")
+    set(_amp_ports "${KICKOS_AMP_PORT_COUNT}")
+  endif()
+
   set(_retained 0)
   set(_retained_by "${service_list}")
   set(_reply 0)
@@ -225,8 +234,8 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
     endif()
   endforeach()
 
-  math(EXPR _sum "${_reserved} + ${_retained} + ${_peak} + ${_reply}")
-  math(EXPR _sum_full "${_reserved} + ${_retained} + ${_full} + ${_reply}")
+  math(EXPR _sum "${_reserved} + ${_retained} + ${_amp_ports} + ${_peak} + ${_reply}")
+  math(EXPR _sum_full "${_reserved} + ${_retained} + ${_amp_ports} + ${_full} + ${_reply}")
 
   # A table that cannot seat the reserved plane plus a full grant list is unsound whatever any
   # app declared: delegated cap i lands at child index i+1 and nothing checks it at runtime
@@ -265,6 +274,7 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
   set(_terms
     "  reserved indices, kernel (KICKOS_CAP_FIRST_DYNAMIC) : ${_reserved}\n"
     "  retained for life by ${_retained_by} : ${_retained}\n"
+    "  partition ports, seated into root at init (KICKOS_AMP_PORTS) : ${_amp_ports}\n"
     "  peak concurrent, declared by ${_peak_by} : ${_peak}\n"
     "  peak inbound reply caps, declared by ${_reply_by} : ${_reply}\n"
     "  = demand : ${_sum}\n"
@@ -312,9 +322,13 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
                    _bytes _slab_chunks _child_chunks)
   # string(CONCAT), never set() with several arguments: that makes a LIST, and a list deref
   # inside message() shows its separating semicolons.
+  set(_why_amp "")
+  if(_amp_ports GREATER 0)
+    set(_why_amp " + ${_amp_ports} partition port(s) (KICKOS_AMP_PORTS)")
+  endif()
   string(CONCAT _why
-    "${_reserved} reserved + ${_retained} retained (${_retained_by}) + ${_peak} app peak "
-    "(${_peak_by}) + ${_reply} inbound reply (${_reply_by})")
+    "${_reserved} reserved + ${_retained} retained (${_retained_by})${_why_amp} + ${_peak} "
+    "app peak (${_peak_by}) + ${_reply} inbound reply (${_reply_by})")
   if(_floor GREATER _sum)
     string(CONCAT _why
       "the KICKOS_MAX_SPAWN_GRANTS ${_grants} grant-list floor, wider than the demand "

@@ -506,11 +506,20 @@ function(kickos_add_qemu_test)
     # QEMU aborts without.
     # -smp is what MAKES the cores exist: PSCI CPU_ON answers INVALID_PARAMETERS for a core
     # the machine was not given, so a multi-core image on a one-core machine refuses at boot.
+    # Under one image per node the machine geometry is the PARTITION's: sized from
+    # KICKOS_NUM_CORES instead, the machine would have one CPU for a PSCI CPU_ON to fail on and
+    # its DRAM would end below the region every node writes.
     set(_smp "")
-    if(KICKOS_NUM_CORES GREATER 1)
+    set(_mem "")
+    if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
+      set(_smp " -smp ${KICKOS_AMP_PARTITION_CORES}")
+      math(EXPR _part_mib
+           "(${KICKOS_AMP_NODES} * ${KICKOS_AMP_NODE_SHARE} + ${KICKOS_AMP_SHARED_SIZE} + 1048575) / 1048576")
+      set(_mem " -m ${_part_mib}M")
+    elseif(KICKOS_NUM_CORES GREATER 1)
       set(_smp " -smp ${KICKOS_NUM_CORES}")
     endif()
-    set(_env QEMU=qemu-system-aarch64 "QEMU_EXTRA=-cpu cortex-a53 -nic none${_smp}")
+    set(_env QEMU=qemu-system-aarch64 "QEMU_EXTRA=-cpu cortex-a53 -nic none${_smp}${_mem}")
     # -M virt defaults to a GICv2, so the GICv3 posture has to ask for the model it is built
     # against: an image whose CPU interface is the ICC_* registers finds none on a GICv2
     # machine and traps on the first access.

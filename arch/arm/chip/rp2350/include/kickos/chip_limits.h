@@ -18,6 +18,13 @@
  */
 #define KICKOS_IRQ_SOFT_ONLY_BASE 46
 
+/*
+ * SIO_IRQ_BELL, the cross-core doorbell line (datasheet RP-008373-DS-2, 3.1.6). Core-local:
+ * the same number on each core, each core seeing only its own. Here rather than in irq.h
+ * because node_vectors.S reads it.
+ */
+#define KICKOS_RP2350_SIO_IRQ_BELL 26
+
 /* Clear of USBCTRL_IRQ (14, irq.h), which the default block 6..14 would cover. */
 #define KICKOS_SELFTEST_IRQ_BASE 15
 

@@ -7,6 +7,8 @@
 
 #include <kickos/arch/arch.h>
 
+#include <kickos/arch/doorbell_cells.h> // arch_doorbell_core: which matrix row this core writes
+
 #include "syscall_internal.h"
 
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
@@ -78,9 +80,48 @@ namespace kickos
             return KOS_AMP_V_EMPTY;
         }
 
-        // The peer every forge and every far endpoint below names.
-        constexpr uint32_t FORGE_FROM = 1u;
-        constexpr uint32_t AMP_PEER_NODE = FORGE_FROM;
+        // The peer every forge and every far endpoint below names: the lowest node that is NOT
+        // this one. A constant would name this node's own ring on every node but 0, and no
+        // service drains a self-ring.
+        uint32_t amp_peer_node(void)
+        {
+            if (amp::self() == 0u)
+            {
+                return 1u;
+            }
+            return 0u;
+        }
+
+        // The first port the partition names THIS node, or PORT_MAX where it names none. What
+        // the peer-call forge publishes on, so it names no port of its own.
+        uint32_t amp_self_port(void)
+        {
+            for (uint32_t i = 0; i < amp::PORT_COUNT; i++)
+            {
+                if (amp::PORT_NODE[i] == amp::SELF_NODE)
+                {
+                    return amp::PORT_PORT[i];
+                }
+            }
+            return amp::PORT_MAX;
+        }
+
+        // A port inside the mint's width that THIS node has not minted. Derived and not a
+        // constant: the partition may name any port, so a constant one could be a port this
+        // node genuinely serves, leaving the forge well-formed.
+        uint32_t amp_unminted_port(void)
+        {
+            uint32_t p = amp::PORT_MAX;
+            while (p > 0u)
+            {
+                p--;
+                if (not amp::port_minted(amp::self(), p))
+                {
+                    return p;
+                }
+            }
+            return amp::PORT_MAX;
+        }
 
         // WHO MAY REACH THE TWO OPS BELOW THAT CROSS A NODE. Root's TASK and not root's
         // thread: the arms run the forge from a worker root spawned. NOT `privileged`, which
@@ -145,7 +186,7 @@ namespace kickos
                 }
                 tag.thread = kernel().threads.handle_for(idx);
                 tag.seq = amp::reply_seq(c->call_seq);
-                node = FORGE_FROM;
+                node = amp_peer_node();
             }
             else
             {
@@ -193,7 +234,7 @@ namespace kickos
             }
             if (selector == KOS_AMP_FORGE_TAIL_DEPTH)
             {
-                return send_code(amp::forge_tail_and_send(FORGE_FROM, amp::RING_SLOTS + 1u));
+                return send_code(amp::forge_tail_and_send(amp_peer_node(), amp::RING_SLOTS + 1u));
             }
             if (selector == KOS_AMP_FORGE_SELF_SEND)
             {
@@ -205,7 +246,39 @@ namespace kickos
             }
             if (selector == KOS_AMP_FORGE_DEPTH_RESET)
             {
-                return verdict_code(amp::forge_depth_recovery(FORGE_FROM));
+                return verdict_code(amp::forge_depth_recovery(amp_peer_node()));
+            }
+            if (selector == KOS_AMP_FORGE_REPLY_DEPTH_SERVICE)
+            {
+                return verdict_code(amp::forge_reply_depth_recovery(amp_peer_node()));
+            }
+            if (selector == KOS_AMP_FORGE_PEER_CALL
+                or selector == KOS_AMP_FORGE_PEER_CALL_BLIND)
+            {
+                // A peer's publication and nothing else: the port is the partition's, and
+                // everything past the publication is the real mechanism.
+                uint32_t const port = amp_self_port();
+                if (port >= amp::PORT_MAX)
+                {
+                    return KOS_AMP_V_EMPTY;
+                }
+                amp::ReplyTag const tag = {KOS_THREAD_NONE, 0u};
+                if (not amp::forge_publish(amp_peer_node(), port, tag))
+                {
+                    return KOS_AMP_V_EMPTY;
+                }
+                // After the publication, so a forge that could not publish leaves nothing
+                // armed for the next delivery to consume.
+                if (selector == KOS_AMP_FORGE_PEER_CALL_BLIND)
+                {
+                    endpoint_far_blind_arm();
+                }
+                uintptr_t answer = KOS_AMP_V_TOOK;
+                if (amp::forge_drain_held(amp_peer_node()))
+                {
+                    answer = answer | KOS_AMP_PEER_CALL_HELD;
+                }
+                return answer;
             }
 
             uint32_t port = amp::PORT_ECHO;
@@ -222,7 +295,11 @@ namespace kickos
             else if (selector == KOS_AMP_FORGE_PORT)
             {
                 // Inside the mint's width and never minted, which a width check alone passes.
-                port = amp::PORT_MAX - 1u;
+                port = amp_unminted_port();
+                if (port >= amp::PORT_MAX)
+                {
+                    return KOS_AMP_V_EMPTY; // a node that minted every port of its width
+                }
             }
             else if (selector == KOS_AMP_FORGE_PORT_WIDE)
             {
@@ -237,7 +314,7 @@ namespace kickos
                 return KOS_AMP_V_EMPTY;
             }
             return verdict_code(
-                amp::forge_and_take(FORGE_FROM, port, PROBE_TAG, len, head_jump));
+                amp::forge_and_take(amp_peer_node(), port, PROBE_TAG, len, head_jump));
         }
 #endif
 
@@ -1509,6 +1586,14 @@ namespace kickos
             {
                 return arch_ipi_counts(static_cast<uint32_t>(a1));
             }
+            case KOS_ASPACE_OP_DOORBELL_WIDTH:
+            {
+                return static_cast<uint64_t>(KICKOS_DOORBELL_CORES);
+            }
+            case KOS_ASPACE_OP_DOORBELL_SELF:
+            {
+                return static_cast<uint64_t>(arch_doorbell_core());
+            }
 #if KICKOS_AMP_NODE
             case KOS_ASPACE_OP_AMP_ROUND:
             {
@@ -1563,21 +1648,76 @@ namespace kickos
             {
                 return amp::counts(static_cast<uint32_t>(a1)).reply_drop.load();
             }
-            case KOS_ASPACE_OP_AMP_FAR_EP:
+            case KOS_ASPACE_OP_AMP_DEFER:
             {
                 IrqLock lock;
                 Thread* const c = sched::current();
-                // 0 and not an errno: the caller reads any non-zero answer as the capability.
                 if (not amp_probe_caller_ok(c))
                 {
                     return 0;
                 }
-                uint32_t cap = KCAP_INVALID;
-                if (amp_endpoint_mint(c, AMP_PEER_NODE, static_cast<uint32_t>(a1), &cap) != 0)
+                uint32_t const peer = amp_peer_node();
+                // The doorbell's cells are indexed by CORE and this probe names a NODE; the
+                // two coincide for node 0 alone.
+                uint32_t const peer_core = amp::core_of(peer);
+                uint32_t const before = arch_ipi_deferred(peer_core);
+                // The bring-up window, reopened: this peer cannot be poked again until it is
+                // seated, so the publication below carries no notice at all.
+                uint32_t const was = arch_ipi_seat_set(peer_core, 0u);
+                uint8_t const body[4] = {0xD0u, 0xD1u, 0xD2u, 0xD3u};
+                amp::ReplyTag const tag = {KOS_THREAD_NONE, 0u};
+                (void)amp::send(peer, KOS_AMP_PORT_ECHO, tag, body, sizeof(body));
+                uint32_t const skipped = arch_ipi_deferred(peer_core) - before;
+                // Put back what was there: a peer that was never up must not be left seated,
+                // an unpublished affinity reading as affinity zero, which is a real core.
+                (void)arch_ipi_seat_set(peer_core, was);
+                // The node travels with the count: which peer this went to is this function's
+                // choice, so a caller naming its own is measuring a crossing never made.
+                static_assert(amp::NODE_MAX <= 0xFFFFu, "the node field is 16 bits wide");
+                return (static_cast<uintptr_t>(skipped) << 16) | static_cast<uintptr_t>(peer);
+            }
+            case KOS_ASPACE_OP_AMP_BAND_RESOLVE:
+            {
+                IrqLock lock;
+                if (a1 >= ThreadPool::FAR_REPLY_RECORDS)
                 {
                     return 0;
                 }
-                return cap;
+                uint32_t const handle =
+                    ThreadPool::far_reply_handle(static_cast<uint32_t>(a1));
+                // The clause under test, driven rather than read: a band handle must resolve
+                // to no thread whatever generation or sequence accompanies it.
+                uint32_t resolved = 0u;
+                if (cap_reply_thread(handle, 0u) != nullptr)
+                {
+                    resolved = 1u;
+                }
+                // Which clause refused it: "did not resolve" is satisfied by four of them and
+                // only the first is the claim, a handle below the pool's high-water mark being
+                // refused by a generation that merely happened not to match.
+                uint32_t const index = handle & ((1u << ThreadPool::INDEX_BITS) - 1u);
+                uint32_t above = 0u;
+                if (index >= static_cast<uint32_t>(kernel().threads.next))
+                {
+                    above = 1u;
+                }
+                // The margin the refusal rests on, reported so the arm asserts a NUMBER rather
+                // than an absence: the pool's high-water mark below the band's base.
+                uint32_t const margin =
+                    ThreadPool::FAR_REPLY_BASE - static_cast<uint32_t>(kernel().threads.next);
+                return (static_cast<uintptr_t>(margin) << 2) | (above << 1) | resolved;
+            }
+            case KOS_ASPACE_OP_AMP_RESET_RECORD:
+            {
+                IrqLock lock;
+                Thread* const c = sched::current();
+                if (not amp_probe_caller_ok(c))
+                {
+                    return 0;
+                }
+                // Scoped to the gate alone, as amp_forge is: this walks the doorbell's own take
+                // path over a ring it has stomped, losing a live peer's traffic on it.
+                return amp::forge_reset_record(amp_peer_node());
             }
             case KOS_ASPACE_OP_AMP_FAR_PARKED:
             {
