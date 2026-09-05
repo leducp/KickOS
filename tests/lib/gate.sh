@@ -206,6 +206,13 @@ run_image() {
         OUT="$(timeout "${SIM_TIMEOUT:-20}" "$1" 2>&1)"
     fi
     RC=$?
+    # Every capture-parsing pattern in tests/ rests on this line: the console lowers '\n' to
+    # CR+LF on every board but the sim (KICKOS_CONSOLE_CRLF), so the wire carries
+    # `ok 149 - amp_window\r\n`, and stripping the CR is what makes a '$' anchor and a
+    # whole-line `grep -c` mean what the gate author expects. The break is ASYMMETRIC: GNU
+    # grep's '$' does not match before a CR while the ugrep that shadows `grep` on an
+    # interactive shell does, so it fails in CI and passes by hand. The bench chain keeps the
+    # CR on purpose, a line ending being evidence there (tools/bench/bench-capture.sh).
     OUT="$(printf '%s\n' "$OUT" | tr -d '\r')"
     boot_status "$RC" "$OUT"
     RC="$KOS_STATUS"

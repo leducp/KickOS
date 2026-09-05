@@ -375,6 +375,31 @@
   - *applies:* synchronization primitives; kernel
   - *source:* kernel/sync/sync.cc (sem_post, sem_wait, sem_trywait)
 
+## What a test environment can witness
+
+- **`stub-is-a-weaker-environment-than-the-real-thing`** -- An arm that will one day face the real
+  participant is NOT validated by passing against a stub, a fake, a loopback or a body. The weaker
+  environment does less: it generates no traffic of its own, holds no state between calls, never
+  blocks, and never becomes unavailable partway through. So an arm that would break against the
+  real thing is SOUND against the stub and STAYS sound for exactly as long as the real thing does
+  not exist, which makes its green run a statement about the environment rather than about the
+  claim. Two ways this is paid: an arm whose environment is about to be replaced is re-run against
+  the replacement before it is believed, and an arm held because its environment does not exist yet
+  is a debt rather than a pass.
+  - *worked example, and where the rule came from:* the AMP peer. While a peer was a WINDOW LAYER
+    it answered one port, produced no reply for anything else, and never occupied a receiver, so
+    `amp_far_reply_guard` could count dropped replies over a window it did not own and
+    `amp_far_call` could send before it called. Both were correct for as long as they were held
+    under a posture with no live peer. Both broke on the first run against a peer that is a KERNEL,
+    one on a stray reply the peer's service thread generated and one on N6f's rule that a call
+    finding nothing parked is refused on the spot. Neither is a test-writing slip; each is the
+    stronger environment doing something the weaker one could not.
+  - *applies:* every arm whose counterpart is stubbed, forged, looped back or simulated, which is
+    not only AMP: a forged publication, a host seam standing in for a backend, and a loopback
+    console are the same shape.
+  - *source:* docs/design-multicore.md (N6f, the measurement rule beside the receiving side's
+    rules); user/apps/common/selftest/main.cc (t_amp_far_call, t_amp_far_reply_guard)
+
 ## App entry & init seam
 
 - **`app-entry-via-init-seam`** -- The kernel's root thread calls exactly one seam symbol `kickos_init_entry(argc, argv)` (`<kickos/sys/init.h>`) once kernel init is complete; the app's `main` is NOT itself pid-1. The provider of that symbol is a build-time-selected CMake target (cache var `KICKOS_INIT_PROVIDER`, default `kickos_default_init`, a `kickos_system` service that passes through `kickos_init_entry -> kickos_default_init_run -> kickos_app_main`). Low barrier is preserved: a plain app writes only `int main` and no manifest; a power user names their own provider target and may delegate to `kickos_default_init_run` to reuse the app-main body.

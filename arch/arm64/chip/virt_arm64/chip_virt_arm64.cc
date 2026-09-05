@@ -7,6 +7,8 @@
 
 #include <kickos/arch/arch.h>
 
+#include <kickos/arch/amp_shared.h> // arch_amp_shared_zero: the partition primary's own clear
+
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
 #include <kickos/chip_limits.h>  // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
 #include <kickos/sys/atomic.h>
@@ -143,10 +145,11 @@ namespace
     // Two 64 KB frames per core, RD_base then SGI_base, contiguous from the first core.
     constexpr uintptr_t GICR_BASE = 0x080A0000;
     constexpr uintptr_t GICR_STRIDE = 0x20000;
-    // THE ONE MACHINE WHERE THE IMAGE'S CORE COUNT IS ALSO THE PART'S: `virt` instantiates a
-    // redistributor per core `-smp` gave it, and the harness passes KICKOS_NUM_CORES. On a die
-    // the two are unrelated and this spelling must not be copied there.
-    constexpr int GICR_COUNT = KICKOS_NUM_CORES;
+    // `virt` instantiates a redistributor per core `-smp` gave it, so this is the MACHINE's
+    // core count and never the count this image drives: an image driving one core still has to
+    // find its own frame among the others. On a die the two are unrelated and this spelling
+    // must not be copied there.
+    constexpr int GICR_COUNT = KICKOS_DOORBELL_CORES;
 #else
     constexpr uintptr_t GICC_BASE = 0x08010000;
 #endif
@@ -170,7 +173,9 @@ namespace
         return t;
     }
 
-#if KICKOS_NUM_CORES > 1
+// A peer is started by the partition and not by the cores this image drives, so the conduit is
+// built for either: a shared kernel releasing its secondaries, or a node releasing its peers.
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_OWN_IMAGE)
     // --- Secondary release, PSCI ------------------------------------------------
     //
     // QEMU `virt` holds every core but the first inside its own PSCI implementation, so a
@@ -229,6 +234,55 @@ namespace
     char const BAD_CPU_ON[] = "KickOS: qemu-arm64 PSCI CPU_ON refused core ";
     char const BAD_CPU_ON_TAIL[] = ", status 0x";
     char const RELEASE_NL[] = "\n";
+
+#if KICKOS_AMP_OWN_IMAGE
+    char const BAD_NODE_ON[] = "KickOS: PSCI CPU_ON refused for AMP node ";
+
+    // The partition primary starts every other node at the image base the partition derives
+    // for it: node index times the per-node share, above the partition's own base.
+    //
+    // After the window is seated, which is why kmain calls this and arch_init does not: a peer
+    // released before the shared region is zeroed would publish into bytes its starter is
+    // about to clear.
+    void release_partition_peers(void)
+    {
+        if (KICKOS_AMP_NODE_ID != 0)
+        {
+            return;
+        }
+        uint64_t mpidr = 0;
+        __asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+        uint64_t const cluster = mpidr & MPIDR_AFFINITY & ~uint64_t(0xFF);
+
+        // Every write this node made for a peer, ahead of the release that lets it read them.
+        __asm volatile("dsb sy" ::: "memory");
+
+        for (uint32_t node = 0; node < KICKOS_AMP_NODES; node++)
+        {
+            if (node == KICKOS_AMP_NODE_ID)
+            {
+                continue;
+            }
+            uintptr_t const entry = static_cast<uintptr_t>(KICKOS_AMP_PARTITION_BASE)
+                                    + static_cast<uintptr_t>(node)
+                                          * static_cast<uintptr_t>(KICKOS_AMP_NODE_SHARE);
+            uint64_t const core = kickos_amp_node_core(node);
+            long const rc = psci_hvc(PSCI_FN64_CPU_ON, cluster | core, entry, 0);
+            if (rc != PSCI_SUCCESS)
+            {
+                arch_console_write(BAD_NODE_ON, sizeof(BAD_NODE_ON) - 1);
+                console_hex(node, 2);
+                arch_console_write(BAD_CPU_ON_TAIL, sizeof(BAD_CPU_ON_TAIL) - 1);
+                console_hex(static_cast<uint64_t>(rc), 16);
+                arch_console_write(RELEASE_NL, 1);
+                kfault_terminate();
+            }
+        }
+    }
+#endif
+
+#endif
+#if KICKOS_NUM_CORES > 1
     char const NO_ARRIVAL[] = "KickOS: qemu-arm64 secondary never reached its entry: core ";
     // A TAP comment, so the line is legal ahead of a plan on the boards that announce one.
     char const SMP_ONLINE[] = "# smp: ";
@@ -358,6 +412,13 @@ void kickos_armv8a_percore_init(void)
 
     kickos_armv8a_gic_percore_init();
 }
+
+#if KICKOS_AMP_OWN_IMAGE
+void arch_amp_release_peers(void)
+{
+    release_partition_peers();
+}
+#endif
 
 void arch_init(void)
 {
@@ -530,6 +591,9 @@ void Reset_Handler(void)
     {
         *b = 0;
     }
+    // Ahead of arch_init, which publishes this core's affinity into that region: later would
+    // erase the primary's own publication. A peer's call is a no-op by node index.
+    arch_amp_shared_zero();
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {
         (*fn)();

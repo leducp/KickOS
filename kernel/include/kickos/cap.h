@@ -682,6 +682,20 @@ namespace kickos
     // (the handle names something else). Caller holds IrqLock.
     int cap_narrow_authority(Thread* c, uint32_t cap_handle, uint8_t mask);
 
+#if KICKOS_AMP_NODE
+    // Mint the one-shot reply capability for a caller in ANOTHER kernel. `record` names an AMP
+    // inbound record, and the handle it is stored under lies in the thread pool's reserved
+    // band, so cap_reply_thread's first clause refuses it. Caller holds IrqLock.
+    int cap_install_far_reply(Thread* c, uint32_t record, uint32_t* out_cap);
+
+    // Undo that mint where the capability was never disclosed to `c`. NOT handle_close: the
+    // CAP_REPLY close protocol answers the record and releases its call slot, and the one
+    // caller here is about to release that slot itself. False where `cap` no longer names the
+    // far reply for `record`, which nothing between the mint and the undo can cause. Caller
+    // holds IrqLock.
+    bool cap_uninstall_far_reply(Thread* c, uint32_t cap, uint32_t record);
+#endif
+
     // Resolve a generational thread handle plus a call sequence to the parked caller thread,
     // or nullptr if it is stale. The full one-shot guard: index in range, thread-gen match,
     // state == BLOCKED, call_state == REPLY_WAIT, and seq8 matching the caller's live

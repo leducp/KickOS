@@ -8,6 +8,7 @@
 #include <kickos/ampwindow.h>
 #include <kickos/bench.h>
 #include <kickos/cap.h>
+#include <kickos/diag.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
@@ -304,10 +305,12 @@ namespace kickos
     }
 
     // Returns bytes received (>= 0), or -KOS_E* (EFAULT bad buffer or out-ptr, EINVAL
-    // misaligned badge, EBADF/EPERM bad cap or missing WAIT, ETIMEDOUT the deadline elapsed
-    // with no sender, ECANCELED cancelled while parked). n == 0 is a valid zero-length signal.
-    // Under `timed`, `badge_out` names a kos_recv_timed_opts; the deadline is read out of it
-    // here and everything downstream sees only the nested kos_recv_info.
+    // misaligned badge or an undefined flag bit, EBADF/EPERM bad cap or missing WAIT,
+    // ETIMEDOUT the deadline elapsed with no sender, ECANCELED cancelled while parked).
+    // n == 0 is a valid zero-length signal.
+    // Under `timed`, `badge_out` names a kos_recv_timed_opts; the deadline and the flags are
+    // read out of it here and everything downstream sees only the nested kos_recv_info, or 0
+    // where KOS_RECV_NO_INFO asked for the info-less receive.
     int32_t endpoint_recv(uint32_t cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out,
                           bool timed)
     {
@@ -353,12 +356,28 @@ namespace kickos
                                               sizeof(timeout_us));
             KICKOS_ASSERT(ok);
             (void)ok;
+            uint32_t flags = 0;
+            bool const flags_ok = kaccess_from_user(&flags, user_space_of(c),
+                                                    badge_out
+                                                        + offsetof(kos_recv_timed_opts, flags),
+                                                    sizeof(flags));
+            KICKOS_ASSERT(flags_ok);
+            (void)flags_ok;
+            if ((flags & ~KOS_RECV_NO_INFO) != 0)
+            {
+                return -KOS_EINVAL;
+            }
             badge_out = badge_out + offsetof(kos_recv_timed_opts, info);
+            if ((flags & KOS_RECV_NO_INFO) != 0)
+            {
+                badge_out = 0; // the info-less receive a plain recv spells with a null out-ptr
+            }
         }
         else // binds to the `if` below, past the comment block
         // The out-ptr delivers a kos_recv_info (8 bytes, 4-aligned); badge_out == 0 is an
         // info-less recv, which cannot host a call. Not reached on the timed path, whose
-        // rewritten badge_out was already proved writable and 4-aligned in the opts struct.
+        // rewritten badge_out is either 0 or an address already proved writable and 4-aligned
+        // in the opts struct.
         if (badge_out != 0
             and ((badge_out & (alignof(uint32_t) - 1)) != 0
                  or not user_writable_ok(badge_out, sizeof(kos_recv_info))))
@@ -758,6 +777,34 @@ namespace kickos
         {
             return -KOS_EBADF;
         }
+#if KICKOS_AMP_NODE
+        // A caller in ANOTHER kernel, named through the pool's reserved band. The service
+        // holding this capability cannot tell it from a local one and calls the same reply.
+        //
+        // The wire carries no errno, only bytes and a length: a caller that must tell an empty
+        // reply from a service that died carries its own marker in the payload.
+        if (ThreadPool::far_reply_is(static_cast<uint32_t>(cap_reply_handle(*e))))
+        {
+            uint32_t const record =
+                ThreadPool::far_reply_record(static_cast<uint32_t>(cap_reply_handle(*e)));
+            // Consumed on EVERY exit, exactly as the local arm below consumes it.
+            e->gen++;
+            e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
+            e->rights = 0;
+            cap_run_free_release(c->caps, reply_cap & KCAP_INDEX_MASK, &c->cap_free_head);
+            cap_reply_released(c);
+            uint8_t stage[KOS_EP_MSG_MAX];
+            if (not kaccess_from_user(stage, user_space_of(c), buf, len))
+            {
+                // The record is freed and its call slot released even here: a service whose
+                // buffer went away may not hold a peer's slot for the life of the image.
+                amp::inbound_reply(record, stage, 0u);
+                return -KOS_EFAULT;
+            }
+            amp::inbound_reply(record, stage, static_cast<uint32_t>(len));
+            return 0;
+        }
+#endif
         Thread* caller = cap_reply_caller(*e); // full stale-resolve BEFORE consume
         // cap_run_free_release writes the free-list links over `obj`, so it must follow the
         // resolve above.
@@ -809,6 +856,25 @@ namespace kickos
     }
 
 #if KICKOS_AMP_NODE
+#if defined(KICKOS_ENABLE_SELFTEST)
+    namespace
+    {
+        bool g_far_blind = false;
+    }
+
+    void endpoint_far_blind_arm(void)
+    {
+        g_far_blind = true;
+    }
+
+    bool endpoint_far_blind_take(void)
+    {
+        bool const armed = g_far_blind;
+        g_far_blind = false;
+        return armed;
+    }
+#endif
+
     // Reached from the doorbell service body, so this core's interrupts are masked and that
     // mask is the whole of a one-core kernel's exclusion.
     bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, void const* payload,
@@ -843,6 +909,172 @@ namespace kickos
         caller->clear_wait_edge();
         sched::wake(caller);
         return true;
+    }
+
+    // A call from another kernel, reaching a thread of this one. Runs from the doorbell service
+    // body with this core's interrupts masked, and takes no lock for that reason.
+    //
+    // TRUE where a receiver took it and the call slot is now this node's record of the caller,
+    // released when the reply is sent. FALSE where nothing took it, and the slot is released at
+    // once so the ring does not fill behind a service that is not there.
+    bool endpoint_far_call_deliver(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
+                                   void const* payload, uint32_t len, uint32_t slot)
+    {
+        uint16_t const bound = amp::port_endpoint(port);
+        if (bound == amp::EP_BOUND_NONE)
+        {
+            return false;
+        }
+        // By index and not by handle: the bind's own reference holds the slot live, so there
+        // is no generation for it to have lost.
+        Endpoint* const e = kernel().endpoints.at(static_cast<int>(bound));
+        if (e == nullptr or e->recv_holders == 0)
+        {
+            return false;
+        }
+        Thread* const w = wq_pop_highest(e->recv_waiters);
+        if (w == nullptr)
+        {
+            return false; // no thread parked: refused now rather than held for one
+        }
+
+        // Once popped, this receiver is completed whatever follows: it is off its queue, so an
+        // early return would leave it parked on nothing. A record it cannot be handed a
+        // capability for is forgotten and the slot stays the taker's to release.
+        uint32_t rcap = KCAP_INVALID;
+        bool held = false;
+        // An info-less recv has nowhere to be handed a capability, and write_recv_info answers
+        // TRUE for it, so the seat is gated here rather than undone below.
+        uint32_t record = amp::FAR_RECORD_NONE;
+        if (w->ipc.badge_out != 0)
+        {
+            record = amp::inbound_seat(from, slot, tag);
+        }
+        if (record != amp::FAR_RECORD_NONE)
+        {
+            if (cap_install_far_reply(w, record, &rcap) == 0)
+            {
+                held = true;
+            }
+            else
+            {
+                amp::inbound_forget(record);
+                rcap = KCAP_INVALID;
+            }
+        }
+
+        size_t n = len;
+        if (w->ipc.len < n)
+        {
+            n = w->ipc.len; // datagram truncation, as for any sender
+        }
+        // Not asserted: this copies into a parked thread from a masked handler, so a receiver
+        // whose buffer went away is told nothing arrived rather than killing the handler.
+        if (not kaccess_to_user(ipc_buf_space(w), w->ipc.buf, payload, n))
+        {
+            n = 0;
+        }
+        bool info_ok = not endpoint_far_blind_take();
+        if (info_ok)
+        {
+            info_ok = write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, rcap);
+        }
+        // Refused the same way and never by an early return: the waiter is already off
+        // recv_waiters, so returning here would leave it parked with nothing to wake it.
+        if (not info_ok)
+        {
+            n = 0;
+            if (held)
+            {
+                // The capability was installed and never disclosed, so nothing will ever
+                // spend it: the same forgetting the mint refusal above takes.
+                bool const undone = cap_uninstall_far_reply(w, rcap, record);
+                KICKOS_ASSERT(undone);
+                (void)undone;
+                amp::inbound_forget(record);
+                rcap = KCAP_INVALID;
+                held = false;
+            }
+        }
+        w->wait_result = static_cast<intptr_t>(n);
+        sched::wake(w);
+        return held;
+    }
+
+    // Caller holds IrqLock. Kernel init only, per N8: no capability authorises a crossing and
+    // the partition is what states one.
+    int amp_port_bind_local(Thread* c, uint32_t port, uint32_t* out_cap)
+    {
+        *out_cap = KCAP_INVALID;
+        if (not amp::port_minted(amp::self(), port))
+        {
+            return -KOS_EINVAL;
+        }
+        Endpoint* ep = nullptr;
+        int const i = endpoint_slot_claim(&ep);
+        if (i < 0)
+        {
+            return -KOS_ENOMEM;
+        }
+        // A LOCAL endpoint: far_node stays 0. What makes it a service for a peer is the port
+        // bound to it.
+        kernel().endpoint_refs[i] = 1;
+        int const obj = kernel().endpoints.handle_for(i);
+        int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, CAP_WAIT | CAP_SIGNAL, out_cap);
+        if (rc != 0)
+        {
+            kernel().endpoint_refs[i] = 0;
+            kernel().endpoints.free(obj);
+            return rc;
+        }
+        ep->recv_holders = 1;
+        amp::port_bind(port, static_cast<uint16_t>(i));
+        return 0;
+    }
+
+    // The partition's port capabilities, seated into root before its first instruction. One
+    // list (CONFIG_KICKOS_AMP_PORTS) names every crossing; an entry naming this node becomes a
+    // local endpoint with the port bound to it, an entry naming another becomes a far endpoint.
+    //
+    // ENTRY i LANDS AT CAPABILITY INDEX KICKOS_CAP_FIRST_DYNAMIC + i, which is how
+    // <kickos/amp.h> names the result without asking the kernel. That rests on this being the
+    // FIRST dynamic install into root's freshly attached run, on the walk running in list
+    // order, and on root's run carrying a slot per entry (cmake/cap_table.cmake sums one). An
+    // install placed before this one shifts every constant positionally, and the slot check
+    // below refuses to boot past it.
+    void amp_ports_seat(Thread* root)
+    {
+        IrqLock lock;
+        // Under the shared image self() is a core register while these constants are the
+        // build's, so the two agreeing is a claim and not a restatement.
+        KICKOS_ASSERT(amp::self() == amp::SELF_NODE);
+        for (uint32_t i = 0; i < amp::PORT_COUNT; i++)
+        {
+            uint32_t const node = amp::PORT_NODE[i];
+            uint32_t const port = amp::PORT_PORT[i];
+            uint32_t cap = KCAP_INVALID;
+            int rc = 0;
+            if (node == amp::SELF_NODE)
+            {
+                rc = amp_port_bind_local(root, port, &cap);
+            }
+            else
+            {
+                rc = amp_endpoint_mint(root, node, port, &cap);
+            }
+            if (rc != 0)
+            {
+                kpanic(diag::kBootAmpPort);
+            }
+            // The whole handle and not only its index: <kickos/amp.h> names the capability as
+            // a bare index, which is the handle only while the generation is zero. A run reused
+            // with a bumped generation would answer the right slot under a handle no app can
+            // spell.
+            if (cap != KICKOS_CAP_FIRST_DYNAMIC + i)
+            {
+                kpanic(diag::kBootAmpSlot);
+            }
+        }
     }
 
 #if defined(KICKOS_ENABLE_SELFTEST)

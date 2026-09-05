@@ -297,6 +297,7 @@ preset  armv7m due-st
 preset  armv7m pizero2350
 preset  armv7m pizero2350-flat
 preset  armv7m pizero2350-st
+preset  armv7m pizero2350-amp
 # The two 64 KiB FLASH parts, whose OWN dispatch is smaller than the fleet worst case.
 preset  armv7m f302nucleo
 preset  armv7m f302nucleo-st

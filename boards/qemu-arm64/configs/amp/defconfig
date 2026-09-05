@@ -20,6 +20,17 @@ CONFIG_KICKOS_AMP_POSTURE_SHARED_IMAGE=y
 CONFIG_KICKOS_MULTI_INSTANCE=y
 CONFIG_KICKOS_MAX_INSTANCES=4
 
+# The partition's crossings, stated once and read identically by every node. Node 0 serves
+# port 2 and binds it here; node 1 serves ports 0 and 3, held here as far endpoints. Those
+# peers run no kernel, so the window layer answers port 0 with no thread involved and port 3
+# reaches a thread only on a node with a pool to park one in.
+CONFIG_KICKOS_AMP_PORTS="0:2,1:0,1:3"
+
+# Each entry above takes an endpoint slot for the life of the image: a local entry the
+# endpoint its port is bound to, a far one the endpoint that names the crossing. This supply
+# must cover them and what the app holds beside them.
+CONFIG_KICKOS_MAX_ENDPOINTS=8
+
 CONFIG_KICKOS_USER_STACK_SIZE=12288
 CONFIG_KICKOS_IDLE_STACK_SIZE=4096
 CONFIG_KICKOS_ROOT_STACK_SIZE=20480

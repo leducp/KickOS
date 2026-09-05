@@ -149,16 +149,25 @@ deadline, which is exactly `kos_call`). Same returns as `KOS_SYS_CALL`, plus:
 `kos_recv` with a deadline. It travels in a struct because `kos_recv` also spends all four
 argument slots and a 9-bit `cap_len` has no packing partner. Same returns as
 `KOS_SYS_RECV`, plus `-KOS_ETIMEDOUT`, and `-KOS_EINVAL` when `opts == NULL` (there is
-nowhere else to state a deadline). `opts` is IN-OUT, so it is checked readable as well as
-writable; plain `kos_recv` keeps its writable-only check.
+nowhere else to state a deadline) or when `flags` holds a bit this kernel does not define.
+`opts` is IN-OUT, so it is checked readable as well as writable; plain `kos_recv` keeps its
+writable-only check.
 
 **`kos_recv_info` did NOT grow a timeout field; a separate type appeared that NESTS it**,
 and that separation is the load-bearing part:
 
     struct kos_recv_timed_opts {
         uint32_t timeout_us;        // IN
+        uint32_t flags;             // IN: KOS_RECV_NO_INFO, or 0
         struct kos_recv_info info;  // OUT, written exactly as a plain recv writes it
-    };                              // 12 bytes, info at offset 4
+    };                              // 16 bytes, info at offset 8
+
+`KOS_RECV_NO_INFO` is how a timed receive spells the info-less posture a plain `kos_recv`
+spells with a null out-pointer: the dispatch passes 0 as the out-pointer, so nothing is
+written to `info` and the receiver rejects calls exactly as the plain form does. Without it
+the two are mutually exclusive -- an opts struct always has an address, so a timed receive
+could never present a null out-pointer -- and a receiver that wanted both had to give up
+its deadline, which on a board is an unbounded park with nothing behind it.
 
 A third member on `kos_recv_info` would have put an *input* field inside the struct every
 plain recv loop declares uninitialised (`struct kos_recv_info info;` in `uart_service.h`
@@ -207,11 +216,11 @@ own `kos_recv_timed_opts`, which nests this one (see `KOS_SYS_RECV_TIMED` above)
 - A `kos_call` arrival delivers a real one-shot `CAP_REPLY` handle in the receiver's
   table; the receiver must eventually `kos_reply` it or `kos_handle_close` it. Test it
   against `KOS_CAP_NONE`: a handle fills all 32 bits, so no sign test works.
-- **Info-less recv** (`out == NULL`, i.e. `badge_out == 0`): the receiver is NOT minted a
-  reply cap and REJECTS calls -- the caller's `kos_call` fails `-KOS_ENOSYS`. Plain sends
-  behave exactly as before. `endpoint_recv` validates 8 writable bytes at a 4-aligned
-  out-ptr (misalignment `-KOS_EINVAL`, unowned `-KOS_EFAULT`); alignment is load-bearing
-  for the privileged store.
+- **Info-less recv** (`out == NULL`, i.e. `badge_out == 0`, or `KOS_RECV_NO_INFO` on the
+  timed form): the receiver is NOT minted a reply cap and REJECTS calls -- the caller's
+  `kos_call` fails `-KOS_ENOSYS`. Plain sends behave exactly as before. `endpoint_recv`
+  validates 8 writable bytes at a 4-aligned out-ptr (misalignment `-KOS_EINVAL`, unowned
+  `-KOS_EFAULT`); alignment is load-bearing for the privileged store.
 
 This is a deliberate DoS closure: a service that must not have its handle table filled by
 untrusted callers (the console, which every task holds a `SIGNAL` cap on) uses a plain
@@ -274,6 +283,26 @@ Present only where `KICKOS_AMP_NODE`, and reached through the SAME `kos_call` /
 `far_node` (biased by one, so 0 is local) and `far_port` are the whole answer and
 have no flag beside them to disagree with. `endpoint_is_far` folds to a constant
 `false` below the AMP posture, so every arm below compiles out there.
+
+**Where a far endpoint comes from.** The PARTITION states it: `CONFIG_KICKOS_AMP_PORTS` names
+every crossing once for the whole partition, and the kernel seats this node's derived set into
+root before root's first instruction (`../design-multicore.md` N6g). An entry's position in that
+list is its capability handle, `KOS_CAP_FIRST_DYNAMIC + i`, and `<kickos/amp.h>` is how an app
+spells it: `kos_amp_port(node, port)` answers the handle, or `KOS_CAP_NONE` for a crossing the
+partition does not name. No syscall is involved and nothing is minted at run time.
+`KOS_SYS_AMP_ENDPOINT_CREATE` remains the privileged mint of N8 and has no caller in the tree.
+
+**A NODE THAT SERVES MUST NOT RETURN FROM `main`.** Root returning ends the system
+(`<kickos/sys/init.h>`), and the nodes of an AMP partition share one machine, so a serving
+node's main taking the exit halts its callers too. It is the same rule any persisting init
+already lives by and not a new burden the partition invents; what the partition changes is that
+somebody else is now affected by breaking it. A node that only CALLS may return as any app does.
+
+**Which capability a node gets is its own reading of the same entry.** An entry naming this node
+is a LOCAL endpoint carrying `CAP_WAIT | CAP_SIGNAL`, with the port bound to it, so a call
+arriving on that port reaches a thread parked in an ordinary `kos_recv`. An entry naming another
+node is a FAR endpoint carrying `CAP_SIGNAL` alone, which is what refuses it at `kos_recv`'s
+resolve with no branch of `endpoint_recv` having to learn about locality.
 
 **A pooled slot keeps its last occupant's fields**, so a far endpoint that is closed would
 leave its route standing for whatever local endpoint lands on that slot next. Both fields

@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Configures every visible configure preset and runs `ctest -L host` on each.
+# Configures every visible configure preset and runs `ctest -L host` on each, less the
+# `tree` gates, whose verdict is a function of the source tree alone: those run on the FIRST
+# preset of the selection and are excluded from every preset after it.
 #
 # An OPERATOR TOOL and deliberately not a gate: it configures and builds one tree per visible
 # configure preset and needs all four cross toolchain families on the box. A ctest entry
@@ -114,15 +116,22 @@ fi
 # preset that dies without writing one is missing rather than silently counted as a pass.
 sweep_one() {
     p="$1"
+    TREE="$2"
     ST="$OUT/status/$p"
     LOG="$OUT/logs/$p.log"
     DIR="$OUT/trees/$p"
 
     # Reused only when the recorded line still names its own test count: a line that does
     # not is not readable evidence.
+    REUSE='s/^PASS  *[^ ][^ ]*  *[0-9][0-9]* host test(s).*/y/p'
+    # A status recorded WITHOUT the tree gates is not evidence for the preset that carries
+    # them, and a selection whose first preset moved would otherwise reuse it and run them
+    # nowhere at all.
+    if [ "$TREE" = 1 ]; then
+        REUSE='s/^PASS  *[^ ][^ ]*  *[0-9][0-9]* host test(s), tree included.*/y/p'
+    fi
     if [ "$FORCE" != 1 ] && [ -f "$ST" ] \
-            && sed -n 's/^PASS  *[^ ][^ ]*  *[0-9][0-9]* host test(s).*/y/p' "$ST" \
-               | grep -q y; then
+            && sed -n "$REUSE" "$ST" | grep -q y; then
         : > "$OUT/status/$p.reused"
         return 0
     fi
@@ -149,7 +158,13 @@ sweep_one() {
         return 0
     fi
 
-    ctest --test-dir "$DIR" -L host --output-on-failure >> "$LOG" 2>&1
+    LABELS="-L host -LE tree"
+    NOTE=""
+    if [ "$TREE" = 1 ]; then
+        LABELS="-L host"
+        NOTE=", tree included"
+    fi
+    ctest --test-dir "$DIR" $LABELS --output-on-failure >> "$LOG" 2>&1
     RC=$?
     # A run whose total cannot be read is refused: a suite that registered nothing passes
     # 100% of nothing.
@@ -164,7 +179,7 @@ sweep_one() {
         printf 'FAIL    %-22s %s of %s host test(s) failed, see logs/%s.log\n' \
             "$p" "$FAILED" "$TOTAL" "$p" > "$ST"
     else
-        printf 'PASS    %-22s %s host test(s)\n' "$p" "$TOTAL" > "$ST"
+        printf 'PASS    %-22s %s host test(s)%s\n' "$p" "$TOTAL" "$NOTE" > "$ST"
     fi
 }
 
@@ -172,7 +187,7 @@ sweep_one() {
 # shell function because this is /bin/sh, which does not export functions.
 if [ "${1:-}" = "--sweep-one" ]; then
     shift
-    sweep_one "$1"
+    sweep_one "$2" "$1"
     exit 0
 fi
 
@@ -221,7 +236,7 @@ N_REUSED=0
 N_TESTS=0
 
 {
-    echo "== ctest -L host over every named configure preset =="
+    echo "== ctest -L host over every named configure preset, -LE tree past the first =="
     echo "root    $ROOT"
     echo "out     $OUT"
     echo "gtest   $GPREFIX"
@@ -229,7 +244,23 @@ N_TESTS=0
     echo ""
 } > "$SUMMARY"
 
-printf '%s\n' $LIST | xargs -P "$PAR" -n1 "$0" --sweep-one
+# The tree gates read the source tree and nothing else, so one preset answers for the fleet.
+# It is swept alone first: the fan-out below hands the worker nothing but a preset name, so
+# there is no ordinal inside it to single one out with.
+FIRST=""
+REST=""
+for p in $LIST; do
+    if [ -z "$FIRST" ]; then
+        FIRST="$p"
+    else
+        REST="$REST $p"
+    fi
+done
+
+"$0" --sweep-one 1 "$FIRST"
+if [ -n "$REST" ]; then
+    printf '%s\n' $REST | xargs -P "$PAR" -n1 "$0" --sweep-one 0
+fi
 
 # The counts come from the status files and not from the workers, which ran in their own
 # processes. A preset whose file is ABSENT is reported as such.

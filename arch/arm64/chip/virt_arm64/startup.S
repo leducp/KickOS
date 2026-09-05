@@ -53,6 +53,101 @@
  */
 #define L2_BLOCK_SIZE   0x200000
 #define RAM_L2_BLOCKS   32              /* 64 MiB of DRAM in 2 MiB blocks */
+#define L2_ENTRIES      512             /* one 4 KiB table of 8-byte descriptors */
+/* One level-1 entry spans a whole level-2 table, and the DRAM entry is index 1 in both roots
+ * below, so this table's slot 0 describes the VA one level-1 entry up from zero. */
+#define L1_BLOCK_SIZE   (L2_ENTRIES * L2_BLOCK_SIZE)
+#define DRAM_L1_ENTRY   1
+
+/* The level-2 table describes the PARTITION and not this image.
+ *
+ * A slot's index is its own VA, so the output has to be MAP_BASE + index * block for the map
+ * to be an identity: an output biased by this image's base would leave the image unreachable
+ * from its own entry point.
+ *
+ * Each node maps ITS OWN share and the shared region, which sits above every node's share, so
+ * a count describing one share leaves that region outside the table and every write to it
+ * faults. A peer's memory is left invalid. Nothing on this machine ENFORCES the boundary.
+ */
+#if KICKOS_AMP_OWN_IMAGE
+#include <amp_partition.ld.h>
+
+/* Every derivation below is an integer division that TRUNCATES rather than failing, and an
+ * index whose meaning is fixed by the level-1 entry this table hangs off, so a partition
+ * breaking any of the three links here would link cleanly and fault at the first touch of
+ * memory no descriptor ever covered.
+ */
+#if (KICKOS_AMP_PARTITION_BASE) != (DRAM_L1_ENTRY * L1_BLOCK_SIZE)
+#error "KICKOS_AMP_PARTITION_BASE is not the base of the DRAM level-1 entry this table hangs \
+off. A descriptor's slot index IS its virtual address here, so slot 0 describes DRAM_L1_ENTRY \
+* L1_BLOCK_SIZE whatever output it names: a partition based anywhere else maps every node at \
+an offset from where it linked, and this image is unreachable from its own entry point. Base \
+the partition at that address, or add the level-1 entry that covers the one it states."
+#endif
+
+#if ((KICKOS_AMP_NODE_SHARE) % L2_BLOCK_SIZE) != 0
+#error "KICKOS_AMP_NODE_SHARE is not a whole number of L2_BLOCK_SIZE blocks. This table maps 2 \
+MiB blocks and nothing finer, so OWN_L2_LO truncates a node's base DOWN into its predecessor's \
+share and OWN_L2_HI truncates its top DOWN inside its own: node 0 keeps a mapping it does not \
+own and every node loses the tail of its RAM, with a clean link. Round the share up to a \
+multiple of 2 MiB."
+#endif
+
+#if ((KICKOS_AMP_SHARED_SIZE) % L2_BLOCK_SIZE) != 0
+#error "KICKOS_AMP_SHARED_SIZE is not a whole number of L2_BLOCK_SIZE blocks. SHARED_L2_HI \
+truncates DOWN, so a region narrower than one 2 MiB block is described by NO descriptor at all \
+and every write to the region every node writes takes a level-2 translation fault, while a \
+wider unaligned one loses its tail. This is the ONE region both nodes write, so it fails as a \
+partition that boots and never converses. Round it up to a multiple of 2 MiB."
+#endif
+
+#define MAP_BASE        KICKOS_AMP_PARTITION_BASE
+#define MAP_L2_BLOCKS   ((KICKOS_AMP_PARTITION_END - KICKOS_AMP_PARTITION_BASE) / L2_BLOCK_SIZE)
+
+#if (MAP_L2_BLOCKS) > (L2_ENTRIES)
+#error "The AMP partition spans more than L2_ENTRIES blocks of L2_BLOCK_SIZE, one L1_BLOCK_SIZE \
+(1 GiB) in total, and this table has one level-2 page for the whole partition. The .fill below \
+would run with a negative count, which the assembler only WARNS about, so the table ends short \
+of the partition and a slot past it aliases the next table in memory instead of faulting. Shrink \
+KICKOS_AMP_NODE_SHARE, KICKOS_AMP_NODES or KICKOS_AMP_SHARED_SIZE below 1 GiB, or add the second \
+level-2 table and level-1 entry a wider partition needs."
+#endif
+
+#define OWN_L2_LO       ((KICKOS_AMP_IMAGE_BASE - KICKOS_AMP_PARTITION_BASE) / L2_BLOCK_SIZE)
+#define OWN_L2_HI       (OWN_L2_LO + KICKOS_AMP_NODE_SHARE / L2_BLOCK_SIZE)
+#define SHARED_L2_LO    ((KICKOS_AMP_SHARED_BASE - KICKOS_AMP_PARTITION_BASE) / L2_BLOCK_SIZE)
+#define SHARED_L2_HI    (SHARED_L2_LO + KICKOS_AMP_SHARED_SIZE / L2_BLOCK_SIZE)
+#else
+#define MAP_BASE        __kickos_dram_base
+#define MAP_L2_BLOCKS   RAM_L2_BLOCKS
+#define OWN_L2_LO       0
+#define OWN_L2_HI       RAM_L2_BLOCKS
+#define SHARED_L2_LO    0
+#define SHARED_L2_HI    0
+#endif
+
+/* The one block the kernel is fetched from, read-only and executable at EL1. */
+#define CODE_L2_BLOCK   OWN_L2_LO
+
+/* One level-2 table for 0x4000_0000..0x8000_0000. Emitted twice, into the two roots, which
+   differ in their comments and not in their descriptors. */
+.macro  L2_PARTITION_TABLE
+    .set    _blk, 0
+    .rept   MAP_L2_BLOCKS
+    .if     _blk == CODE_L2_BLOCK
+    .quad   MAP_BASE + (_blk * L2_BLOCK_SIZE) + BLOCK + AF + ATTR_NORMAL + SH_INNER + \
+            AP_RO_EL1 + UXN
+    .elseif (_blk >= OWN_L2_LO && _blk < OWN_L2_HI) || \
+            (_blk >= SHARED_L2_LO && _blk < SHARED_L2_HI)
+    .quad   MAP_BASE + (_blk * L2_BLOCK_SIZE) + BLOCK + AF + ATTR_NORMAL + SH_INNER + \
+            AP_RW_EL1 + UXN + PXN
+    .else
+    .quad   0
+    .endif
+    .set    _blk, _blk + 1
+    .endr
+    .fill   L2_ENTRIES - MAP_L2_BLOCKS, 8, 0
+.endm
 
 /* MAIR_EL1: Attr0 Normal write-back read/write-allocate, Attr1 Device-nGnRnE, Attr2 Normal
  * outer and inner non-cacheable (DDI 0487 M.b section D24.2.126: oooo and iiii both 0b0100,
@@ -190,9 +285,10 @@ kickos_arm64_boot_high:
 kickos_arm64_ident_table:
     /* EL1-only: every device touch on this port goes through a syscall. */
     .quad   BLOCK + AF + ATTR_DEVICE + UXN + PXN    /* 0x0000_0000..0x4000_0000 */
-    /* A table rather than a block, for the split above. */
+    /* A table rather than a block, for the split above. DRAM_L1_ENTRY names this slot, and
+       the refusals above rest on it being this one. */
     .quad   kickos_arm64_ram_table + TABLE
-    .fill   510, 8, 0
+    .fill   L2_ENTRIES - DRAM_L1_ENTRY - 1, 8, 0
 
 /* The high half, VA = PA + __kickos_arm64_va_base. One set of descriptors is both the
  * kernel window and the map of all physical RAM, so the level-1 indices are the ones above.
@@ -204,7 +300,7 @@ kickos_arm64_ident_table:
 kickos_arm64_kernel_table:
     .quad   BLOCK + AF + ATTR_DEVICE + UXN + PXN
     .quad   kickos_arm64_kernel_ram_table + TABLE
-    .fill   510, 8, 0
+    .fill   L2_ENTRIES - DRAM_L1_ENTRY - 1, 8, 0
 
 /* Level 2 for 0x4000_0000..0x8000_0000 through TTBR0's boot root, one entry per 2 MiB.
  * The EL0 grants here are the identity map's own: .text.init runs untranslated against
@@ -218,15 +314,8 @@ kickos_arm64_ram_table:
        before its first instruction, and the three other holders of this space (the fault
        reporter, aspace release, and the boot answer itself) all run privileged. PXN stays
        clear because kbanner reaches the app's build stamp at EL1 before any space exists. */
-    .quad   __kickos_dram_base + BLOCK + AF + ATTR_NORMAL + SH_INNER + AP_RO_EL1 + UXN
-    .set    _blk, 1
-    .rept   RAM_L2_BLOCKS - 1
-    .quad   __kickos_dram_base + (_blk * L2_BLOCK_SIZE) + BLOCK + AF + ATTR_NORMAL + \
-            SH_INNER + AP_RW_EL1 + UXN + PXN
-    .set    _blk, _blk + 1
-    .endr
-    /* Past the end of DRAM: invalid, so a stray access faults rather than aliasing. */
-    .fill   512 - RAM_L2_BLOCKS, 8, 0
+    /* Past the mapped span: invalid, so a stray access faults rather than aliasing. */
+    L2_PARTITION_TABLE
 
 /* The same DRAM through TTBR1, and the whole point of the second page: AP names no EL0
  * access and UXN forbids the fetch, so the half every address space shares grants an
@@ -236,13 +325,6 @@ kickos_arm64_ram_table:
     .balign 4096
     .global kickos_arm64_kernel_ram_table
 kickos_arm64_kernel_ram_table:
-    .quad   __kickos_dram_base + BLOCK + AF + ATTR_NORMAL + SH_INNER + AP_RO_EL1 + UXN
-    .set    _blk, 1
-    .rept   RAM_L2_BLOCKS - 1
-    .quad   __kickos_dram_base + (_blk * L2_BLOCK_SIZE) + BLOCK + AF + ATTR_NORMAL + \
-            SH_INNER + AP_RW_EL1 + UXN + PXN
-    .set    _blk, _blk + 1
-    .endr
-    .fill   512 - RAM_L2_BLOCKS, 8, 0
+    L2_PARTITION_TABLE
 
     .end

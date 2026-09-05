@@ -5,6 +5,7 @@
 // global object pools, plus the object-side refcount (kernel().sem_refs) that owns
 // destroy-on-last-close. slotpool.h stays generic: refs[] lives here.
 
+#include <kickos/ampwindow.h>
 #include <kickos/cap.h>
 #include <kickos/console_tx.h> // console_note_driver_death
 #include <kickos/instance.h>
@@ -401,6 +402,23 @@ namespace kickos
                 // caller is still parked, EPIPE it; the one-shot consume (empty + gen bump)
                 // happens at the shared close/teardown site after this returns. A dying
                 // closer skips its recompute: it has only the rest of its own sweep left.
+#if KICKOS_AMP_NODE
+                // A caller in ANOTHER kernel. Its record is freed and its call slot released
+                // here, or the peer holds that slot for the life of the image. The wire carries
+                // no errno, so a service that died and a service that answered nothing both
+                // reach the caller as an empty reply.
+                if (ThreadPool::far_reply_is(static_cast<uint32_t>(cap_reply_handle(e))))
+                {
+                    amp::inbound_reply(
+                        ThreadPool::far_reply_record(static_cast<uint32_t>(cap_reply_handle(e))),
+                        nullptr, 0u);
+                    if (not teardown)
+                    {
+                        sched::set_prio(closer, thread_effective_prio(closer));
+                    }
+                    return 0;
+                }
+#endif
                 Thread* caller = cap_reply_caller(e);
                 // The unlink DECIDES, and so must precede every other write: a stale reply
                 // cap can resolve to a caller parked on a DIFFERENT server, and this arm
@@ -910,6 +928,54 @@ namespace kickos
 #endif
         return 0;
     }
+
+#if KICKOS_AMP_NODE
+    // The same one-shot capability for a caller in ANOTHER kernel, whose handle names a reply
+    // RECORD in the pool's reserved band rather than a thread. No sequence is seated: the
+    // record holds the far caller's token, and the capability's own generation is what refuses
+    // a stale handle.
+    int cap_install_far_reply(Thread* c, uint32_t record, uint32_t* out_cap)
+    {
+        if (cap_reply_live(c) >= KICKOS_CAP_REPLY_MAX)
+        {
+            *out_cap = KCAP_INVALID;
+            return -KOS_EMFILE;
+        }
+        int const rc =
+            cap_install(c, static_cast<int>(ThreadPool::far_reply_handle(record)),
+                        CapType::CAP_REPLY, 0, out_cap);
+        if (rc != 0)
+        {
+            return rc;
+        }
+#if KCAP_RUN_CHUNKS > 1
+        c->cap_reply_live++;
+#endif
+        return 0;
+    }
+
+    bool cap_uninstall_far_reply(Thread* c, uint32_t cap, uint32_t record)
+    {
+        CapEntry* const e = cap_lookup(c, cap);
+        if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_REPLY))
+        {
+            return false;
+        }
+        uint32_t const handle = static_cast<uint32_t>(cap_reply_handle(*e));
+        if (not ThreadPool::far_reply_is(handle) or ThreadPool::far_reply_record(handle) != record)
+        {
+            return false;
+        }
+        // cap_run_free_release writes the free-list links over `obj`, so it must follow the
+        // read above. CAP_REPLY holds no object reference, so nothing is dropped.
+        e->gen++;
+        e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
+        e->rights = 0;
+        cap_run_free_release(c->caps, cap & KCAP_INDEX_MASK, &c->cap_free_head);
+        cap_reply_released(c);
+        return true;
+    }
+#endif
 
     uint32_t cap_reply_live(Thread const* c)
     {

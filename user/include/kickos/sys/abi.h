@@ -148,7 +148,8 @@ enum kos_syscall_nr
                                //   the deadline.
     KOS_SYS_RECV_TIMED = 47,   // (cap, buf, cap_len, kos_recv_timed_opts* in-out) -> as
                                //   KOS_SYS_RECV, plus -KOS_ETIMEDOUT, and -KOS_EINVAL for a
-                               //   null opts, which carries the deadline.
+                               //   null opts, which carries the deadline, or for a flags
+                               //   word holding a bit this kernel does not define.
     KOS_SYS_THREAD_JOIN = 48,  // (kos_thread_t, timeout_us) -> 0 (the target is gone,
                                //   INCLUDING a target that had already exited),
                                //   -KOS_ETIMEDOUT, -KOS_ECANCELED (the CALLER was cancelled
@@ -412,12 +413,37 @@ enum kos_aspace_op
     KOS_ASPACE_OP_AMP_FAR_PARKED = 43, // () -> 1 while some thread is parked on a far reply,
                                  //   which is what the hostile-reply forges need to exist
                                  //   before they mean anything
-    KOS_ASPACE_OP_AMP_FAR_EP = 44, // (port) -> a FAR endpoint capability naming node 1's
-                                 //   `port`, minted into the caller's table, or 0. The same
-                                 //   mint body with the privilege gate left out:
-                                 //   KOS_SYS_AMP_ENDPOINT_CREATE is privileged and root is
-                                 //   unprivileged from its first instruction, so on this board
-                                 //   no user thread can reach that syscall
+    KOS_ASPACE_OP_AMP_BAND_RESOLVE = 45, // (record) -> 1 where a reply handle naming reply
+                                 //   record `record` RESOLVES to a local thread, which it
+                                 //   must never do: the band sits above every index the pool
+                                 //   can seat, so cap_reply_thread's first clause refuses it
+    KOS_ASPACE_OP_DOORBELL_SELF = 46, // () -> which row of that matrix the CALLING core writes.
+                                 //   Not derivable in userspace: under the shared image it is
+                                 //   a core register read on whichever core the kernel
+                                 //   scheduled the caller on, and under one image per node it
+                                 //   is that node's build constant. A caller assuming row 0
+                                 //   reads a peer's row on every node but the first
+    KOS_ASPACE_OP_AMP_DEFER = 47, // () -> drive ONE publication at a peer whose seat has been
+                                 //   put back to unseated, so the raise is skipped, then seat
+                                 //   it again and let it drain. Two fields in one word:
+                                 //     15..0   the node it published to
+                                 //     31..16  raises skipped at that node
+                                 //   The node is reported because the caller cannot derive it:
+                                 //   the peer is the kernel's own choice
+    KOS_ASPACE_OP_AMP_RESET_RECORD = 48, // () -> the four claims a ring resynchronisation
+                                 //   owes the inbound records it abandons, as a bit each:
+                                 //   1 the reset freed the record whose slot it abandoned,
+                                 //   2 the next call at that masked slot was granted one,
+                                 //   4 that record's token is not the abandoned one's,
+                                 //   8 spending the abandoned token released no slot.
+                                 //   Bit 16 says the scaffold ran to the end, so 0 is a forge
+                                 //   that could not run rather than four failed claims.
+    KOS_ASPACE_OP_DOORBELL_WIDTH = 49, // () -> how many cores the doorbell's rendezvous matrix
+                                 //   is indexed by, which is the MACHINE's core count and not
+                                 //   the cores this image drives. An own-image AMP node drives
+                                 //   one and still reaches every core its partition spans, so
+                                 //   a sweep bounded by the image's count reads one row of
+                                 //   several and reports the rest as absent
     KOS_ASPACE_OP_DOORBELL_COUNTS = 31 // (core) -> what `core` has done with the cross-core
                                  //   doorbell, two fields in one word:
                                  //     63..32  instruction-side rendezvous it INITIATED
@@ -429,7 +455,13 @@ enum kos_aspace_op
                                  //   bound on the pokes answered
 };
 
-/* The ports a node mints in kernel init, which is what kos_amp_endpoint_create names. */
+/* Slots in ONE ring of an ordered pair. The reply-record band the thread pool reserves is sized
+   by it, so a second spelling would size that band against a ring the window does not have. */
+#define KOS_AMP_RING_SLOTS 4
+
+/* The window layer's own two ports, which every node mints and no node binds. Every OTHER
+   port is the partition's: CONFIG_KICKOS_AMP_PORTS names which node serves which, and
+   <kickos/amp.h> is how an app names the capability it was handed for one. */
 enum
 {
     KOS_AMP_PORT_ECHO = 0, /* the payload comes back to the sender's reply port */
@@ -456,8 +488,38 @@ enum
     KOS_AMP_FORGE_REPLY_UNPARKED = 9,   // a tag for a thread that is not parked at all
     KOS_AMP_FORGE_REPLY_WRONG_RING = 10, // the parked caller's own tag, on another node's ring
     KOS_AMP_FORGE_REPLY_STALE_SEQ = 11,  // the parked caller, one call sequence out of date
-    KOS_AMP_FORGE_REPLY_GOOD = 12        // the control: the right tag on the right ring
+    KOS_AMP_FORGE_REPLY_GOOD = 12,       // the control: the right tag on the right ring
+
+    /* The peer's own publication, and the only selector that stands in for a NODE rather than
+       for a malformation. It publishes one well-formed CALL from the peer on the first port
+       the partition names this node, then runs the doorbell's own service body, so what takes
+       it is the real dispatch onto the endpoint the partition bound. Answers KOS_AMP_V_TOOK
+       where the drain ran and KOS_AMP_V_EMPTY where the partition names this node no port,
+       with KOS_AMP_PEER_CALL_HELD set above the verdict where the delivery kept the slot. */
+    KOS_AMP_FORGE_PEER_CALL = 13,
+
+    /* The strike bound on the REPLY ring, run through the doorbell's own service body so the
+       call ring of the same pair is taken between every pair of reply strikes. Answers
+       KOS_AMP_V_TOOK where the reply ring recovered and KOS_AMP_V_DEPTH where it is still
+       wedged, which is what a strike count shared between the two classes leaves it. */
+    KOS_AMP_FORGE_REPLY_DEPTH_SERVICE = 14,
+
+    /* The same publication, with the delivery's disclosure of the reply capability refused.
+       That refusal is forged because no syscall reaches it: the receive proves its out-ptr
+       writable before the park, so only a buffer that went away under a parked receiver
+       presents it. Answers as KOS_AMP_FORGE_PEER_CALL does, and KOS_AMP_PEER_CALL_HELD must
+       be CLEAR: a capability nobody was told of holds the caller's slot for the life of the
+       image. */
+    KOS_AMP_FORGE_PEER_CALL_BLIND = 15
 };
+
+/* KOS_AMP_FORGE_PEER_CALL rides its answer above the verdict: SET where the call's ring slot
+   is still the receiver's to release through kos_reply, CLEAR where the taker released it on
+   the spot. A receiver that cannot be handed a reply capability must read CLEAR, or its
+   caller's slot is held by a capability nobody can spend. Every verdict below is under 0x100,
+   so KOS_AMP_PEER_CALL_VERDICT is the whole of the split. */
+#define KOS_AMP_PEER_CALL_HELD 0x100u
+#define KOS_AMP_PEER_CALL_VERDICT(x) ((x) & 0xFFu)
 
 enum
 {
@@ -636,24 +698,33 @@ static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 byte
 _Static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 bytes (ABI)");
 #endif
 
-// KOS_SYS_RECV_TIMED's argument struct: the deadline plus, NESTED, the out-struct above.
+// kos_recv_timed_opts::flags. An unknown bit is -KOS_EINVAL, never masked.
+//
+// KOS_RECV_NO_INFO asks for the info-less receive a plain kos_recv spells with a null
+// out-pointer: the kernel writes nothing to `info` and the receiver rejects calls
+// (-KOS_ENOSYS to the caller). Without it a timed receive can never present a null
+// out-pointer, so the deadline and the info-less posture would be mutually exclusive.
+#define KOS_RECV_NO_INFO 0x1u
+
+// KOS_SYS_RECV_TIMED's argument struct: the inputs plus, NESTED, the out-struct above.
 // The kernel's write-back is a WHOLE-struct copy of the nested kos_recv_info, so it
 // preserves no input word in it.
 struct kos_recv_timed_opts
 {
     uint32_t timeout_us;       // IN: relative microseconds, or KOS_TIMEOUT_NONE
+    uint32_t flags;            // IN: KOS_RECV_NO_INFO, or 0
     struct kos_recv_info info; // OUT: written exactly as a plain kos_recv writes it
 };
 #ifdef __cplusplus
-static_assert(sizeof(struct kos_recv_timed_opts) == 12,
-              "kos_recv_timed_opts must stay 12 bytes (ABI)");
-static_assert(offsetof(struct kos_recv_timed_opts, info) == 4,
-              "the nested kos_recv_info must sit at offset 4 (ABI)");
+static_assert(sizeof(struct kos_recv_timed_opts) == 16,
+              "kos_recv_timed_opts must stay 16 bytes (ABI)");
+static_assert(offsetof(struct kos_recv_timed_opts, info) == 8,
+              "the nested kos_recv_info must sit at offset 8 (ABI)");
 #else
-_Static_assert(sizeof(struct kos_recv_timed_opts) == 12,
-               "kos_recv_timed_opts must stay 12 bytes (ABI)");
-_Static_assert(offsetof(struct kos_recv_timed_opts, info) == 4,
-               "the nested kos_recv_info must sit at offset 4 (ABI)");
+_Static_assert(sizeof(struct kos_recv_timed_opts) == 16,
+               "kos_recv_timed_opts must stay 16 bytes (ABI)");
+_Static_assert(offsetof(struct kos_recv_timed_opts, info) == 8,
+               "the nested kos_recv_info must sit at offset 8 (ABI)");
 #endif
 
 // P-state selector for KOS_SYS_CPU_CLOCK_SET, NOT a raw Hz: the landed Hz is the syscall's

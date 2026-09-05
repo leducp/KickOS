@@ -147,6 +147,18 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1
   list(APPEND KICKOS_EXPECT_SKIPS slice_preempts_every_core threads_reach_every_core)
 endif()
 
+# The two arms that need a peer running a kernel of its own. They are compiled on every AMP
+# posture and decide at RUNTIME off the peer's own serviced count, so this permission covers the
+# image run STANDALONE: the same binary in a merged partition finds a peer and reports ok, and
+# tests/integration/check_amp_peer_arms.sh asserts they are NOT skipped there. Under one image
+# the peers are this image's own cores and always answer.
+#
+# amp_far_reply_guard is node 0's alone: it parks a caller on a far port nobody answers, and a
+# partition of two leaves exactly one such port over, node 1 binding every port it is named.
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
+  list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_reply_guard)
+endif()
+
 # The same for the arms that report PARTIAL. A PARTIAL reports `ok`, so neither the plan/case
 # reconciliation nor the skip bookkeeping can see one and this by-name set is the only thing
 # that can. It is NOT derivable from _tap_arms: the conditions below name the postures.
@@ -236,9 +248,12 @@ endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms "${_tap_arms} + 1") # fault_kills_task
 endif()
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_NUM_CORES GREATER 1
-   AND KICKOS_MULTICORE_MODEL_SHARED EQUAL 0)
-  math(EXPR _tap_arms "${_tap_arms} + 5") # amp_window, amp_far_call, amp_far_reply_guard, amp_probe_root_only, amp_far_slot_reuse
+# Mirrors the C guard, which is the AMP POSTURE and not the core count: an own-image node drives
+# one core and registers these all the same.
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
+  # amp_far_call and amp_far_reply_guard are in this count on every posture: they skip by name
+  # where no peer answers rather than being compiled out.
+  math(EXPR _tap_arms "${_tap_arms} + 14") # amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_service, amp_deferred_doorbell, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_probe_root_only, amp_far_slot_reuse
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _tap_arms "${_tap_arms} + 21") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core
@@ -287,9 +302,8 @@ endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # fault_kills_task
 endif()
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_NUM_CORES GREATER 1
-   AND KICKOS_MULTICORE_MODEL_SHARED EQUAL 0)
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 5") # amp_window, amp_far_call, amp_far_reply_guard, amp_probe_root_only, amp_far_slot_reuse
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 14") # amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_service, amp_deferred_doorbell, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_probe_root_only, amp_far_slot_reuse
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 21") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core

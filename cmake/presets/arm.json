@@ -145,7 +145,8 @@
     { "name": "blackpill-flat", "displayName": "STM32F411 Black Pill with no PMSA enforcement", "inherits": "blackpill", "binaryDir": "${sourceDir}/build/blackpill-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
     { "name": "picopi-flat", "displayName": "RP2040 Pico with no PMSA enforcement", "inherits": "picopi", "binaryDir": "${sourceDir}/build/picopi-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
     { "name": "pizero2350-flat", "displayName": "RP2350 Pi-Zero with no PMSAv8 enforcement", "inherits": "pizero2350", "binaryDir": "${sourceDir}/build/pizero2350-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "xmc4800-relax-flat", "displayName": "XMC4800 Relax with no PMSA enforcement", "inherits": "xmc4800-relax", "binaryDir": "${sourceDir}/build/xmc4800-relax-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } }
+    { "name": "xmc4800-relax-flat", "displayName": "XMC4800 Relax with no PMSA enforcement", "inherits": "xmc4800-relax", "binaryDir": "${sourceDir}/build/xmc4800-relax-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "pizero2350-amp", "displayName": "RP2350 Pi-Zero AMP scaffolding (provisional)", "inherits": "pizero2350", "binaryDir": "${sourceDir}/build/pizero2350-amp", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp" } }
   ],
   "buildPresets": [
     { "name": "qemu",      "configurePreset": "qemu" },
@@ -185,7 +186,8 @@
     { "name": "blackpill-flat", "configurePreset": "blackpill-flat" },
     { "name": "picopi-flat", "configurePreset": "picopi-flat" },
     { "name": "pizero2350-flat", "configurePreset": "pizero2350-flat" },
-    { "name": "xmc4800-relax-flat", "configurePreset": "xmc4800-relax-flat" }
+    { "name": "xmc4800-relax-flat", "configurePreset": "xmc4800-relax-flat" },
+    { "name": "pizero2350-amp", "configurePreset": "pizero2350-amp" }
   ],
   "testPresets": [
     { "name": "qemu",       "configurePreset": "qemu",       "output": { "outputOnFailure": true } },
@@ -197,6 +199,7 @@
     { "name": "qemu-m7-flat",  "configurePreset": "qemu-m7-flat",  "output": { "outputOnFailure": true } },
     { "name": "qemu-m3-flat",  "configurePreset": "qemu-m3-flat",  "output": { "outputOnFailure": true } },
     { "name": "qemu-telem", "configurePreset": "qemu-telem", "output": { "outputOnFailure": true } },
-    { "name": "microbit",   "configurePreset": "microbit",   "output": { "outputOnFailure": true } }
+    { "name": "microbit",   "configurePreset": "microbit",   "output": { "outputOnFailure": true } },
+    { "name": "pizero2350-amp", "configurePreset": "pizero2350-amp", "output": { "outputOnFailure": true } }
   ]
 }

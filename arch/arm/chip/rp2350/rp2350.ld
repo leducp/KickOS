@@ -58,6 +58,7 @@ SECTIONS
     {
         KEEP(*(.isr_vector))   /* vector table at 0x1000_0000 */
         KEEP(*(.image_def))    /* boot IMAGE_DEF block, right after the vectors */
+        KEEP(*(.node_vector))  /* node 1's table (node_vectors.S), VTOR-aligned */
         *(.text .text.*)
         *(.rodata .rodata.*)
         *(.glue_7) *(.glue_7t)

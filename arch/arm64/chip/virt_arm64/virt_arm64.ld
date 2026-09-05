@@ -30,8 +30,16 @@
  */
 ENTRY(_start)
 
+/* This image's share is one node's slice of the partition. Every node's script computes it
+ * the same way from the same three constants, so no two of them can state it apart. */
+#if KICKOS_AMP_OWN_IMAGE
+#include <amp_partition.ld.h>
+#define KICKOS_ARM64_DRAM_BASE  KICKOS_AMP_IMAGE_BASE
+#define KICKOS_ARM64_DRAM_SIZE  KICKOS_AMP_NODE_SHARE
+#else
 #define KICKOS_ARM64_DRAM_BASE  0x40000000      /* QEMU virt DRAM (ample) */
 #define KICKOS_ARM64_DRAM_SIZE  64M
+#endif
 
 /* TCR_EL1.T1SZ is 25 (startup.S), which makes the high half the 39-bit range at this
  * base. VA is PA plus this, so the kernel window and the map of physical RAM are one set
@@ -76,6 +84,11 @@ MEMORY
                              + KICKOS_ARM64_CODE_BLOCK + KICKOS_ARM64_APP_DATA_SIZE,
                     LENGTH = KICKOS_ARM64_DRAM_SIZE - KICKOS_ARM64_CODE_BLOCK
                              - KICKOS_ARM64_APP_DATA_SIZE
+#if KICKOS_AMP_OWN_IMAGE
+    /* Above every node's share, so no image's own allocations can reach it. */
+    SHARED  (rw)  : ORIGIN = KICKOS_ARM64_VA_BASE + KICKOS_AMP_SHARED_BASE,
+                    LENGTH = KICKOS_AMP_SHARED_SIZE
+#endif
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);   /* boot/exception stack: top of RAM */
@@ -290,6 +303,38 @@ SECTIONS
     __kickos_app_sram_start = ADDR(.appdata);
     __kickos_app_sram_end = _kickos_heap_limit;
 
+#if KICKOS_AMP_OWN_IMAGE
+    /* The region every node of the partition writes. NOLOAD: a region carrying bytes is
+       written at load time, and by then a peer may already have published into it. Outside
+       .bss, so no C runtime clears it; arch_amp_shared_zero does, from the primary's
+       Reset_Handler, before it releases any peer.
+
+       Every node links through this one script, so the order below is the order on every node
+       and an object placed here cannot land at two addresses. */
+    .amp_shared (NOLOAD) : ALIGN(64)
+    {
+        __kickos_amp_shared_start = .;
+        __kickos_amp_cells_start = .;
+        KEEP(*(.amp_shared.cells.request))
+        KEEP(*(.amp_shared.cells.answer))
+        KEEP(*(.amp_shared.cells.served))
+        /* The controller's own publication: which affinity carries each core, written by that
+           core and read by every sender. */
+        KEEP(*(.amp_shared.affinity))
+        KEEP(*(.amp_shared.affinity_seated))
+        __kickos_amp_cells_end = .;
+        . = ALIGN(64);
+        __kickos_amp_window_start = .;
+        KEEP(*(.amp_shared.window))
+        __kickos_amp_window_end = .;
+        . = ALIGN(64);
+        __kickos_amp_counts_start = .;
+        KEEP(*(.amp_shared.counts))
+        __kickos_amp_counts_end = .;
+        __kickos_amp_shared_end = .;
+    } > SHARED
+#endif
+
     /DISCARD/ : { *(.comment) *(.note.gnu.build-id) *(.ARM.attributes) }
 
     KICKOS_NONALLOC_SECTIONS
@@ -329,4 +374,42 @@ ASSERT(_ebss > _sbss,
 #ifdef KICKOS_HEAP_MIN
 ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
        "KickOS: heap below KICKOS_HEAP_MIN")
+#endif
+
+
+#if KICKOS_AMP_OWN_IMAGE
+/* --- The placement contract, as a refusal ----------------------------------------------
+ * The bounds below are the PARTITION's own constants and never this script's regions: an
+ * assert reading ORIGIN(SHARED) against LENGTH(SHARED) passes wherever the region is
+ * repointed, which is the one edit it exists to catch. Two images that place these objects
+ * differently link perfectly and then hang, each node reading cells the other never sees.
+ */
+ASSERT(ADDR(.amp_shared) - KICKOS_ARM64_VA_BASE == KICKOS_AMP_SHARED_BASE,
+       "KickOS: the AMP shared region is not at the address the partition derives. Every node's script computes KICKOS_AMP_PARTITION_BASE + KICKOS_AMP_NODES * KICKOS_AMP_NODE_SHARE, so a region elsewhere means this image was built against a different geometry than its peers")
+
+ASSERT(__kickos_amp_shared_end - __kickos_amp_shared_start <= KICKOS_AMP_SHARED_SIZE,
+       "KickOS: the AMP shared objects overflow KICKOS_AMP_SHARED_SIZE. Raise it in the partition's defconfig, in every node's, or narrow KICKOS_AMP_NODES / KICKOS_AMP_PARTITION_CORES")
+
+/* One arm and not two: the DRAM size is derived from KICKOS_AMP_NODE_SHARE, so a separate
+   assert on the top of RAM could never redden without this one. */
+ASSERT(ORIGIN(BOOT) >= KICKOS_AMP_PARTITION_BASE
+       && _estack - KICKOS_ARM64_VA_BASE <= KICKOS_AMP_SHARED_BASE,
+       "KickOS: this node's image is not inside its own share of the partition. It starts at KICKOS_AMP_PARTITION_BASE plus its node index times KICKOS_AMP_NODE_SHARE and must end below the region every node writes")
+
+/* A peer is started at its own image base, which no cross-image symbol states: the entry has
+   to BE the base rather than merely lie in it. PSCI hands a released core a physical address
+   with its MMU off, and .text.init is the span linked where it loads. */
+ASSERT(_start == ORIGIN(BOOT),
+       "KickOS: this node's entry is not at its own image base, so a peer started at the address the partition derives would fetch something other than _start")
+
+/* Placement-attribute guards: a KICKOS_AMP_SHARED that expanded to nothing leaves the section
+   EMPTY and every node back on a private copy, which is the failure no run reports. */
+ASSERT(__kickos_amp_cells_end > __kickos_amp_cells_start,
+       "KickOS: .amp_shared.cells is empty: the doorbell backend's rendezvous cells are not placed in the shared region, so each node would rendezvous with itself")
+
+ASSERT(__kickos_amp_window_end > __kickos_amp_window_start,
+       "KickOS: .amp_shared.window is empty: kernel/amp/ampwindow.cc's window is not placed in the shared region, so each node would publish into a ring no peer reads")
+
+ASSERT(__kickos_amp_counts_end > __kickos_amp_counts_start,
+       "KickOS: .amp_shared.counts is empty: a node sweeping a peer's row would read its own")
 #endif

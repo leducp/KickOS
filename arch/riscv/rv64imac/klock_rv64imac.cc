@@ -16,6 +16,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/percpu.h>
+#include <kickos/arch/doorbell_cells.h>
 #include <kickos/arch/rv64_doorbell.h>
 
 #if KICKOS_NUM_CORES > 1
@@ -33,28 +34,27 @@ namespace
     // A CHOICE, not a measurement: RISC-V publishes no cache-line width in any CSR.
     constexpr size_t RV64_CACHE_LINE = 64u;
 
-    using Seq = kickos::Atomic<uint32_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE>;
-
-    // One row per core, each row written by that core alone.
-    struct alignas(RV64_CACHE_LINE) SeqRow
-    {
-        Seq seq[KICKOS_NUM_CORES];
-    };
+    using Seq = kickos::doorbell::Seq;
+    using SeqRow = kickos::doorbell::Row<RV64_CACHE_LINE>;
     static_assert(sizeof(SeqRow) % RV64_CACHE_LINE == 0,
                   "a row shorter than a line would share one with the next writer");
 
+    // Both nodes write these, so under one image per node they sit in the region the two link
+    // scripts agree on rather than being allocated per image.
+    //
     // g_request[i].seq[t]: how many times core i has asked core t. Written by i, read by t.
     // g_answer[t].seq[i]: how far core t has answered core i. Written by t, read by i.
-    SeqRow g_request[KICKOS_NUM_CORES] = {};
-    SeqRow g_answer[KICKOS_NUM_CORES] = {};
+    KICKOS_AMP_SHARED("cells.request") SeqRow g_request[KICKOS_DOORBELL_CORES] = {};
+    KICKOS_AMP_SHARED("cells.answer") SeqRow g_answer[KICKOS_DOORBELL_CORES] = {};
 
     // Bounds a wait that can no longer be answered, so a lost raise REPORTS rather than hanging
     // the machine. Far above the handful of iterations an answer takes.
     constexpr uint32_t DOORBELL_WAIT_SPINS = 4000000u;
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // Per-core doorbell services, and per-core instruction-side rendezvous initiated.
-    SeqRow g_served[KICKOS_NUM_CORES] = {};
+    // Per-core doorbell services, and per-core instruction-side rendezvous initiated. Only
+    // the first is read across nodes, so only it is placed in the shared region.
+    KICKOS_AMP_SHARED("cells.served") SeqRow g_served[KICKOS_DOORBELL_CORES] = {};
     SeqRow g_initiated[KICKOS_NUM_CORES] = {};
 #endif
 
@@ -215,7 +215,7 @@ namespace
         arch_ipi_wait(peers);
 
         uint32_t settled = 0;
-        for (uint32_t to = 0; to < KICKOS_NUM_CORES; to++)
+        for (uint32_t to = 0; to < KICKOS_DOORBELL_CORES; to++)
         {
             if ((peers & (1u << to)) != 0
                 and g_answer[to].seq[me].load() == g_request[me].seq[to].load())
@@ -290,8 +290,8 @@ extern "C"
 
 int kickos_rv64_doorbell_pending(void)
 {
-    uint32_t const me = arch_cpu_id();
-    for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
+    uint32_t const me = arch_doorbell_core();
+    for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
     {
         if (g_request[from].seq[me].load() != g_answer[me].seq[from].load())
         {
@@ -305,7 +305,7 @@ int kickos_rv64_doorbell_pending(void)
 // from a poll inside a spin, and MASKED either way.
 void kickos_rv64_doorbell_service(void)
 {
-    uint32_t const me = arch_cpu_id();
+    uint32_t const me = arch_doorbell_core();
 
     // THE ORDER IS THE WHOLE CONTRACT AND IT HAS THREE PARTS: observe the request, THEN fence,
     // THEN answer. An initiator writes the tables, raises the request, and waits on the answer,
@@ -318,9 +318,9 @@ void kickos_rv64_doorbell_service(void)
     // Seq is acquire on load and release on store, which is what stops the compiler and the
     // machine from undoing the order: the acquire pairs with the initiator's release of the
     // request, and the release publishes the fence ahead of the answer.
-    uint32_t asked[KICKOS_NUM_CORES] = {};
+    uint32_t asked[KICKOS_DOORBELL_CORES] = {};
     bool owed = false;
-    for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
+    for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
     {
         asked[from] = g_request[from].seq[me].load();
         if (asked[from] != g_answer[me].seq[from].load())
@@ -356,7 +356,7 @@ void kickos_rv64_doorbell_service(void)
     kickos_irq_route_service();
 #endif
 
-    for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
+    for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
     {
         if (asked[from] != g_answer[me].seq[from].load())
         {
@@ -381,9 +381,9 @@ void kickos_rv64_doorbell_service(void)
 // without entering any scheduler.
 void arch_ipi_send(uint32_t cores)
 {
-    uint32_t const me = arch_cpu_id();
+    uint32_t const me = arch_doorbell_core();
 
-    for (uint32_t to = 0; to < KICKOS_NUM_CORES; to++)
+    for (uint32_t to = 0; to < KICKOS_DOORBELL_CORES; to++)
     {
         if ((cores & (1u << to)) != 0)
         {
@@ -407,15 +407,24 @@ void arch_ipi_resched_self(void)
 }
 #endif
 
+// A FULL barrier, and neither half of an acquire/release pair: the pairing it serves is a store
+// then a load on both sides, which is the one direction release and acquire leave free.
+// Reached through a plain call that no callgraph gate follows, so its body is asserted out of
+// the linked image (tests/static/check_ipi_fence.sh).
+void arch_ipi_fence(void)
+{
+    __asm volatile("fence rw, rw" ::: "memory");
+}
+
 // Spins on the answer cells alone, the calling core's own bit excepted: the send answered that
 // one synchronously. SERVICES ITS OWN DOORBELL WHILE IT SPINS: two cores can each be an
 // initiator waiting on the other.
 void arch_ipi_wait(uint32_t cores)
 {
-    uint32_t const me = arch_cpu_id();
+    uint32_t const me = arch_doorbell_core();
     uint32_t const peers = cores & ~(1u << me);
 
-    for (uint32_t to = 0; to < KICKOS_NUM_CORES; to++)
+    for (uint32_t to = 0; to < KICKOS_DOORBELL_CORES; to++)
     {
         if ((peers & (1u << to)) == 0)
         {
@@ -463,7 +472,7 @@ void kickos_rv64_translation_rendezvous(uint32_t peers)
 // Services in the low half, rendezvous initiated in the high half (arch.h, arch_ipi_counts).
 uint64_t arch_ipi_counts(uint32_t core)
 {
-    if (core >= KICKOS_NUM_CORES)
+    if (core >= KICKOS_DOORBELL_CORES)
     {
         return 0;
     }

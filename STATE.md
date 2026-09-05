@@ -1488,6 +1488,411 @@ the tree survives while the hash does not.
 demux spike document, whose taxonomy and findings `docs/design-m4.6-irq-driver.md` carries forward
 in full, and two M4.9.1 silicon banner strings. Do not create a branch to restore any of it.
 
+## M7.11 SITS ON M7.10, WHICH SITS ON M7.9, AND THIS FILE RECORDS ONLY THE LAST OF THE THREE
+
+Read that first, because nothing below says it and the branch no longer means what its own
+history suggests. M7.11 was a SIBLING off the M7.8 merge and was rebased onto M7.10 on
+2026-09-04, so it now carries thread placement (M7.9) and the LX6 shared kernel (M7.10) beneath
+it. **Neither of those milestones wrote a section here**, on this branch or on either of theirs:
+their records are on `master`, in the entry covering the three unmerged branches, and that entry
+does not reach this branch until the merge. So the two sections below are M7.11's alone and are
+NOT a summary of what this tree contains. Do not read their silence about placement or the LX6
+as those milestones having nothing to say.
+
+**AND THE CONTRACT RENUMBERED UNDER THE REBASE.** M7.10 inserted `docs/design-multicore.md`
+section 8, thread placement, so "Deliberately NOT frozen" is section 9 now. Every cross-reference
+written before that date says 8 and means 9; the ones in N6g were re-pointed by hand, because git
+merged them cleanly and wrongly.
+
+**AND THE SAME CLASS BIT A SECOND TIME, IN `ci.yml`, ON THE 2026-09-04 REBASE ONTO M7.10's LATER
+TIP.** M7.10 added `fetch-depth: 0` to every checkout THEN EXISTING and a header saying every
+checkout carries it; M7.11 had added the `qemu-arm64-amp` job further down. The two deltas never
+touched the same lines, so git produced a lossless union in which the new job keeps the bare
+default. `witness_reconcile` is registered under a plain `if(KICKOS_BUILD_TESTS)` and labelled
+`host`, so it runs on every preset and refuses a shallow checkout BY NAME: a red CI job that no
+local run reproduces, because a local tree is never shallow. Re-audited by counting rather than by
+reading the diff, which is the only thing that finds it -- eleven checkouts against eleven hits of
+the string, one of them the header prose, so ten real blocks and one job uncovered.
+**The lesson for the next rebase of this branch: a diff of diffs proves no line was LOST and says
+nothing about an invariant that is stated over a whole file.** Check the invariant, per file, after
+every rebase.
+
+## M7.11: the partition's port capabilities, what the run does NOT say
+
+The port capabilities landed. `docs/design-multicore.md` **N6g** is the contract and carries
+every ruling; this section is only what a green run and that contract do not say.
+
+**THE POSITIONAL DERIVATION IS DEFENDED BY A BOOT PANIC AND NOT BY AN ARM, and no arm can carry
+it.** A dynamic install into root ahead of the partition's shifts every constant by one, and the
+seating's own handle check refuses to boot past it. That was executed: with a `cap_install` into
+root added ahead of `amp_ports_seat`, the image panics `kmain: a partition port landed off its
+derived capability slot` before any arm runs. So the arm `amp_port_seating` witnesses the ROLE
+half and the panic witnesses the POSITION half, and reading the arm as covering both is wrong.
+
+**AND THE AMBIENT-HANDOUT MUTATION IS REFUSED BY THE CAPABILITY TABLE'S OWN INVARIANT, so that
+column of `amp_probe_root_only` has no reachable red.** Seating the partition's first port into
+every spawned child, which is the defect shape the column names, trips `cap_install_at`'s
+already-live assert against the grant list's own placement and kills the run. What separates that
+arm instead is the forge's caller gate. The column stands as a positive statement about what a
+non-root task sees and not as a mutated claim.
+
+**THE ARMS WERE COUPLED BY `KICKOS_CAP_REPLY_MAX` AND THAT IS AN ARM DEFECT, NOT A MECHANISM
+ONE.** `TAP_CHECK` returns on failure, so an arm that asserts before spending its reply capability
+abandons a live one; at a reply ceiling of 1 the NEXT arm's far caller is then refused one and
+reddens with it. Two arms redden as one until the reply is sent ahead of every check. Any future
+arm holding a reply capability owes the same order.
+
+**WHAT THE SHARED IMAGE AND THE OWN-IMAGE PAIR EACH REFUSED TO SEE, measured rather than argued.**
+A role keyed on node ZERO instead of on this node leaves `qemu-arm64-amp` and `qemu-arm64-amp2-n0`
+entirely green, all eleven and all nine arms, and kills `qemu-arm64-amp2-n1` at boot. That is
+N6c's class exactly, and it is the concrete demonstration that the node-1 build is not a duplicate
+of the node-0 build.
+
+**THE SHARED IMAGE'S PEERS CONSTRAIN WHAT THE PARTITION MAY NAME THERE, which reads as an odd
+list until the reason is stated.** Its peers run a service body and no kernel, so they bind
+nothing: a call to a partition port at one is dropped and only port 0, the window layer's echo,
+comes back. That is why that board's list names `1:0` beside `1:3` and why the two behave
+differently. On the own-image pair both nodes run kernels and both entries reach threads.
+
+**THE ENDPOINT POOL IS A PARTITION COST NOW AND THE DEFAULT DOES NOT COVER IT.** Every listed
+crossing claims an endpoint slot for the life of the image. The fleet default of 4 left the AMP
+boards' apps with one, which presented as `kos_endpoint_create` failing in twenty unrelated arms
+rather than as anything about AMP. Both AMP defconfigs state 8, and a partition the pool cannot
+seat is refused at configure.
+
+**WHAT NO RUN HERE SAYS.** Two kernels never ran at once: every inbound call in these arms is a
+forged publication standing in for a peer, and the own-image pair is still two images run one at a
+time. The merged single artefact and the ping-pong across two roots are still owed, and the arms
+held under the own-image posture are still held.
+
+## M7.11: the vehicle, the ping-pong, and the defect only it could reach
+
+**THE DEFECT IS THE HEADLINE, because it says what the vehicle is FOR.** The GICv3 SGI raise
+bounded its target sweep on `KICKOS_NUM_CORES`, which is how many cores THIS IMAGE drives and is
+1 under the own-image posture, while the mask it sweeps names the PARTITION's cores. Node 0
+raising at node 1 set the lead bit at index 1, the sweep `for (index = 1; index < 1; ...)` never
+ran, nothing cleared the bit, and the enclosing `while (pending != 0)` spun that core forever
+with its interrupts masked. Not a dropped raise: a hang.
+
+**AND EVERY PLACE IT COULD HAVE BEEN CAUGHT EARLIER IS BLIND TO IT.** Under the shared image
+`KICKOS_NUM_CORES` and `KICKOS_DOORBELL_CORES` are both the core count, so the bound is right. An
+own-image node running ALONE skips the raise before that loop, its peer never being seated. It
+needed a seated peer in another image, which needed the merged artefact. Measured, not argued:
+with the bound put back, `qemu-arm64-amp` passes 55 of 55 and `qemu-arm64-amp2-n0` fails exactly
+one, the partition gate.
+
+**WHAT THE FIX ADDED BESIDES THE BOUND.** The lead bit now leaves `pending` before the sweep
+runs, so the loop's progress is structural: a future bound that stops agreeing with the mask
+drops a raise, which is visible, instead of hanging a core, which is not.
+
+**THE ARTEFACT IS AN ELF AND THAT RETIRED A WORRY RATHER THAN ACCEPTING IT.** A flat span across
+a 64 MiB stride is 130 MiB of mostly padding; one `PT_LOAD` per node is about 6. Nothing in the
+merge restates an address: each node's load address is read from its own ELF and the entry from
+node 0's.
+
+**WHAT THE PING-PONG IS AND IS NOT.** It is two roots, two images, two init providers, two apps,
+one artefact, and an ordinary `kos_call_timed` answered by a thread parked in the other kernel's
+`kos_recv_timed` and replying through `kos_reply`. Neither app names a node identity, a ring, a
+window or a doorbell. What it is NOT is a witness that the two kernels are ISOLATED: they share
+one machine and one console, and the console interleaves at byte granularity by ruling, which is
+visible in the run's own output.
+
+**THE DEFERRED-DELIVERY CLAUSE IS WITNESSED AND ITS TIMING IS NOT.** The peer's own take counter
+standing at two is the witness. The real bring-up window, between node 0 releasing its peer and
+that peer seating, is still a race node 0's userspace cannot reliably enter; that half is
+recorded as a non-witness in the contract's section 7 rather than left to lapse a third time.
+
+**TWO GATE CLAUSES HAVE NO REACHABLE RED, and saying so is worth more than claiming them.** The
+window's NOBITS clause is defended by `(NOLOAD)` in the link script, so a C initialiser cannot
+reach it and dropping the `(NOLOAD)` fails the link; the clause guards a future link script. And
+a peer built as a second node ZERO reddens the partition gate AND the two-ELF gate together,
+because it genuinely breaks both claims rather than because the two arms are one.
+
+## M7.11: what is still owed, and the two merge conditions
+
+The two-image AMP vehicle boots and the partition's port capabilities land on it.
+`docs/design-multicore.md` N6b through N6g is the contract.
+
+**STILL OWED.** Nothing of the list this section used to carry: the deferred-delivery arm, the
+ping-pong across two roots, the merged artefact and both gates all landed. What remains is the
+two merge conditions below, and the bring-up window's own timing, which the contract records as
+a non-witness rather than as work.
+
+**BOTH MERGE CONDITIONS ARE MET.** They are recorded here with what they turned out to be, since
+both had been carried as labels rather than as findings.
+
+**THE FIRST WAS A BINDING JOB AND NOT A DEPTH ONE.** `pizero2350-amp`'s `trap_redzone` was eleven
+unbound indirect sites: nine in `console_tx.cc` and the two `chip_rp2350.cc` bootrom pointers.
+Every enforced depth class was inside budget the whole time. The nine are the same call sites its
+sibling presets bind, and the AMP graph reaches nine of their twelve, so the set was taken from
+what the gate reported rather than copied from a sibling block: this gate hard-fails an
+over-declaration as loudly as an under-declaration, which is what confirms the set is exact. The
+two bootrom sites take NONE for the reason already in that file. The preset's own comment said
+those sites exist in the `-st` graph alone, which stopped being true when the AMP defconfig turned
+the selftest on.
+
+**THE SECOND COST A PEER, A WIDER PARTITION AND A GATE, and removing the `#if` was the smallest
+part of it.** The three arms were held by the posture; they decide at RUNTIME now, off the peer's
+own serviced count, because the same image runs both standalone and inside a merged partition and
+only the second has a peer. Three things had to exist first. A peer the selftest can talk to,
+which echoes the caller's bytes verbatim, since a far call is witnessed by its payload coming
+back. A THIRD crossing in the partition: `t_amp_far_reply_guard` needs a call that stays
+unanswered so its caller parks, and at a peer running a kernel every listed port is BOUND at
+init, so the unanswered one has to be a second port whose receive nobody holds. And a gate that
+asserts those arms are `ok` and NOT skipped, because the standalone run is permitted to skip one
+of them and a permission with nothing to bound it is how an arm lapses.
+
+**AND THE VEHICLE'S GATES WERE FLAKY UNTIL BOTH CAUSES WERE REMOVED. Both are now RULES in the
+contract rather than fixes in a commit** -- the console one in N6h, the counting one beside
+N6f's receiving-side rules it follows from -- because the next person to write a gate against
+this vehicle meets both on a first attempt. Two failures in ten runs, two different ones, and
+neither reachable by running the gate once.
+
+**A GATE MAY NOT READ THE QUIETER NODE'S CONSOLE LINE.** Both kernels write one console with no
+lock between them, interleaved at byte granularity by ruling, so the peer's single banner is
+regularly cut in half by node 0's TAP traffic. A gate that greps for it is measuring the console.
+The peer is witnessed through NODE 0's own reading of the peer's counters instead.
+
+**TEN RUNS IS THIS VEHICLE'S STANDARD AND IT IS WRITTEN WHERE THE GATES LIVE.** A green run of a
+two-kernel gate witnesses less than a green run of a one-kernel one, the interleaving being a
+fresh draw each time. CI runs the gates ONCE, in the `qemu-arm64-amp` job, and that job's own
+comment carries why one run is honest HERE and would not be for a gate that still read the
+console: both causes were removed rather than retried. **The job may not join the
+`--repeat until-pass` set**, which rides the polled gates in the same file: that flag exists for
+host-scheduling artefacts of polling, and retrying an interleaving-sensitive gate would mask the
+exact class this vehicle exists to find.
+
+**AND THE JOB'S POSTURE PIN IS WHAT KEEPS IT FROM PASSING VACUOUSLY.** Every AMP gate is
+registered by a CMake clause keyed on the posture, so a preset that lost it does not FAIL those
+gates, it stops registering them, and ctest then passes on a run that covered plain arm64 under
+another name. That is the shape M7.9's smpiso job was caught with. `.github/scripts/amp-pin.sh`
+reads the partition's own generated description and compares it against LITERALS the job states,
+so nothing in the expectation derives with the knob being checked. Exercised in both directions
+rather than assumed: a plain arm64 build is refused for stating no crossing, a node 0 build used
+where node 1 is needed is refused by name as N6c's collapse, an own-image build pinned as shared
+is refused, and the two correct pairings pass.
+
+**AND AN ARM THAT COUNTS DROPPED REPLIES MUST HAVE NOTHING OF ITS OWN IN FLIGHT.** A far SEND to
+a port a peer THREAD serves is answered by that thread, and that answer names no caller, so it
+lands as a dropped reply at a moment the sender does not control. `amp_far_reply_guard` counts
+dropped replies over a window, and a stray one arriving inside it made the count wrong. The send
+now goes to the crossing nothing answers, so nothing trails it. A peer that is a WINDOW LAYER
+never produced that stray, which is why the arm was sound for as long as it was held.
+
+**AND TURNING THEM ON FOUND TWO THINGS A HELD ARM COULD NOT.** `t_amp_far_reply_guard` expected
+three dropped replies, which needs a THIRD RING for the wrong-ring forge; a partition of two has
+none, so the expected count is the partition's width and not a constant. And `t_amp_far_call` sent
+before it called, which is harmless against a window layer and wrong against a THREAD: a far call
+finding nothing parked is refused on the spot (N6f), so the arm was calling the peer while it was
+still replying to the send. The order is load-bearing now and says so.
+
+**BOTH WERE MEASURED BOTH WAYS.** Dropping one of the eleven bindings reddens `trap_redzone` and
+restoring it greens it. Making the peer answer with bytes that are not the caller's reddens the
+held-arms gate alone, one of fifty-four, and leaves the standalone run of the same image green.
+
+**AND THE FIGURES BEHIND THE FIRST ONE, since they are what turned a label into a job.** The
+eleven were `chip_rp2350.cc:577:15` and `:587:15` plus nine in `console_tx.cc` (69:37, 91:28,
+141:30, 155:63, 157:28, 259:35, 267:32, 310:27, 356:27). Every ENFORCED depth class was inside
+budget throughout: PENDSV 0 of 0, SVCK 744 of 768, EXITK 576 of 584, RET 296 of 312. The two that
+read over, SVC 640 of 448 and EXIT 576 of 576, are the classes this image does not enforce, the
+entry design they describe not being compiled here. Reading that red as "the trap path got too
+deep" sends the next session at the wrong thing entirely.
+
+**ONE MEASUREMENT TRAP AROUND IT, because it is how that red was confirmed to be the same red
+across the rebase and not a new one wearing its name.** `/var/tmp/kickos-trap-redzone-<preset>`
+is kept per preset and reused, and it does not re-derive Kconfig: without removing it between two
+readings the second one IS the first one. With it removed, taking M7.9 and M7.10 underneath moved
+the reachable node count from 288 to 292 and the unenforced SVC reading from 632 to 640, and the
+eleven sites and every enforced class were byte-identical.
+
+**ONE THING THE CONTRACT RECORDS THAT IS EASY TO READ PAST.** `qemu-arm64-amp` is not a legacy
+posture. It and the own-image pair are one instrument: the shared image exercises a keying at
+every index, an own-image node at exactly one, and they fail on opposite halves. A node-1 build is
+not a duplicate of a node-0 build. N6c carries both halves, and the section above carries the run
+that demonstrates it.
+
+## M7.11: the partition-versus-image sweep, and which half of the instrument each defect hid from
+
+The seven items of this pass landed. What follows is only what a green run and the contract do
+not say.
+
+**THE TWO HALVES OF THE INSTRUMENT WERE MEASURED AGAINST EACH OTHER, and that is the finding
+rather than any of the fixes.** Three mutations of ONE keying redden on opposite sides, executed
+rather than argued. A doorbell sweep bounded by the cores THIS IMAGE drives, and a matrix row
+taken as zero instead of as this node's, each redden the node 1 build ALONE: node 0 passes both
+because its bound and the matrix's agree and because row zero genuinely is its row, and the
+shared image passes both for the same two reasons. A total accessor that answers an out-of-range
+row with node 0's row reddens node 0 AND the shared image alone, and the node 1 build passes it,
+that row being a peer's and quiescent in a node booted alone. N6c states this shape; this is the
+run that shows it on three defects at once, and it is why the node-1 build is not a duplicate.
+
+**A CLAIM WITH NO WRITER IS THIS MILESTONE'S RECURRING SHAPE AND IT WAS FOUND TWICE MORE.** The
+region every node writes was stated as cleared by the partition primary in two documents and was
+cleared by nothing: no C, no assembly and no tool referenced its bounds, and the section is
+NOBITS so nothing loads it either. A bench whose RAM starts zeroed cannot see that, which is the
+whole reason it survived. The doorbell probe's ABI carried the same shape one layer in: a
+documented bit 0 meaning the peer took the message with no raise, never written, and not
+implementable synchronously at all, since the probe cannot observe a peer draining at its own
+pace. Both consumers read past it. **So the reading rule earned here is that a field's
+DOCUMENTATION is not evidence of a writer, and the grep for its writer is one command.**
+
+**WHAT STANDS BEHIND THE REGION'S CLEAR IS TWO MUTATIONS AND NO ARM, and no arm is possible on
+this bench.** The primary writing ones rather than zeros reddens four arms and the peer-arms
+gate, which is what proves both that the region's initial content is load-bearing and that the
+call site is reached at all; moving the clear after arch_init kills the run outright, which is
+what proves the PLACEMENT is load-bearing rather than decorative. **Neither is a witness that
+the clear is needed**: that claim rests on a part whose RAM does not start zeroed, and this bench
+has none. The same is true of a warm start on any board here.
+
+**AND TWO OF THE PASS'S FIXES HAVE NO REACHABLE RED, which is worth more than claiming them.**
+The send-side tail forge restores the indices it pushes now, and the residual is a LOST UPDATE
+rather than nothing: the tail belongs to the consuming node, the forge deliberately runs outside
+any lock the real path holds, and no lock spans two kernels, so a live consumer's move inside
+that window is lost and recovered only by the depth resync that bounds it. No arm reddens the
+restore, the arm driving it running ahead of any real traffic on that ring. And the refusal for a
+map that does not put node 0 on the core the machine resets into is defended by a CONFIGURE
+refusal and not by an arm, the map it refuses having killed the boot in the launch handshake
+before the refusal existed.
+
+**THE NODE-1 DEFECTS NEEDED AN ARTEFACT THIS TREE DOES NOT BUILD, and that is a standing gap
+rather than a step that was skipped.** A gating or keying defect on any node but the first is
+invisible to every registered target: a node booted alone has no live peer, and the merged
+artefact this tree assembles puts the selftest at node 0, where a sweep from index 1 never meets
+itself. What reached them was a partition merged the other way round, the demo caller at node 0
+and the selftest at node 1, assembled by hand from the two builds. It is not a target, nothing in
+CI runs it, and its own far-call arm is red there because that pairing puts a caller opposite a
+caller. It is an instrument for two claims and not a board.
+
+**AND THAT ARTEFACT IS WHY THE DOORBELL ARM CARRIES NO POSITIVE SERVICE CLAIM UNDER ONE IMAGE PER
+NODE.** Its rows read zero on either node booted alone and inside the artefact this tree builds,
+where the peer only ever answers; on the partition merged the other way round this node's own row
+carries services before the arm runs. A count asserted there would be asserting the DEPLOYMENT.
+Before this pass that arm asserted the FOLD instead, which is the claim that nothing has ever
+answered a doorbell, on the one posture built to be rung: it passed because it read a peer's
+quiescent row and because it runs ahead of every arm that rings anything. **Green on arm ordering
+rather than on construction is the definition of passing on a draw**, and the cure was to key the
+arm on the matrix's own width and its own row, both asked of the kernel, because under the shared
+image the row is a core REGISTER and no build constant can answer it.
+
+**A SHAPE DIFFERENCE BETWEEN THE TWO DOORBELL BACKENDS IS A PORT THAT IS OWED, not a line nobody
+wrote.** The armv8a backend builds its doorbell half whenever something rings it, which above one
+core is a shared kernel's peers and at one core is an AMP node's peer nodes; the rv64imac twin is
+guarded on the core count alone, so an own-image RV64 node gets no doorbell backend and fails to
+LINK, loudly, which is the shape the seam intends. An out-of-bounds read that looks like a defect
+there is unreachable BY THAT GUARD rather than by luck, and an inner guard added to bound it can
+never be false. Matching the shape is a port to a backend no board selects, and it is recorded
+here as owed rather than half-done.
+
+**THE FORGES REACH ONE SENDER ROW OF THE WINDOW'S TABLE AND THE TABLE IS NOT WHAT IS NARROW.**
+The peer every forge names is the lowest node that is not this one, which under the shared image
+is a constant, so every forge arm exercises the inbox, the inbound records and the strike count
+at ONE sender index and at no other. Those records are keyed per ordered pair and are correct;
+it is the arms' reach into them that stops at one row. The ring half of the window arm does sweep
+every peer, through a probe that takes an explicit node. Widening the forges is a milestone of
+its own and was deliberately not attempted.
+
+**TWO READING RULES THIS PASS PAID FOR, both cheap to lose and expensive to rediscover.** A
+non-vacuity guard resting on a counter the path under test does not increment proves NOTHING: the
+window's forges write their slots directly rather than through the send path, so the publication
+counters do not move across them and a guard built on one reddens while saying nothing about the
+claim beside it. Read WHICH LINE failed, never only which arm. And a refusal you have never seen
+PRINT is not a refusal you have witnessed, which is a live hazard wherever a console is reclaimed
+before a fatal path speaks; the launch-handshake refusal above was seen on the wire on this
+board, which is why the configure refusal quotes it verbatim.
+
+**AN INTERLEAVING-SENSITIVE GATE OWES TEN RUNS BECAUSE ITS DRAW IS FRESH EACH TIME, AND ONE CI
+RUN IS A REGRESSION PIN RATHER THAN A STUDY.** Those are two different questions and the same
+green answers only the first. The count from any particular study is re-derivable by re-running
+and is deliberately not written here; the rule is what this file carries.
+
+**AND A GATE THAT SHELLS OUT TO THE BUILD SYSTEM MAY NOT RUN CONCURRENTLY WITH ANOTHER THAT
+DOES.** Two ninja invocations on one build directory race on the intermediates they share, which
+was proven directly by starting two of these gates' builds together and finding a kernel archive
+truncated mid-file with one process dead in ranlib. **The dangerous half is that the same race
+can leave a WRONG archive rather than an error.** Under a parallel test runner it is a DRAW, not
+a certainty, which is why it resists re-provoking; the tell is a gate failing far too fast to
+have built or booted anything, so read the DURATION and not just the name. It is fixed in-tree by
+a serial property on the three gates that build artefacts, and no test preset requests
+parallelism, so CI was never exposed. The rule outlives the fix for anything copied from them.
+
+## M7.11: the audited findings, and the two audit claims that turned out misattributed
+
+An external audit blocked this branch on three HIGH findings in the AMP window and two MAJOR
+ones in the partition tooling. All five are fixed and each has a mutation of its own. What
+follows is only what the fixes and a green run do NOT say.
+
+**THE RECORD IS THE RING SLOT, SO THE RESYNCHRONISATION OWNS ITS RECORDS' DEATH.** N6f rules
+that a call ring slot is reclaimed when the reply is sent, and the record IS that slot, so
+whatever destroys the slot destroys the record. The reply path owns that death on the ordinary
+path; the depth reset is the one path that destroys a slot with NO reply to spend it, and
+unlike the reply path it frees a record whose CAPABILITY IS STILL LIVE. That is the whole
+reason the record carries a generation: it is the reclamation rule followed through, not
+caution about a stale index. Left standing, such a record refused a seat to every later call
+landing on its masked slot, so that far caller reached a service with no reply capability and
+waited out its own deadline; and its holder's release landed on the slot at the same masked
+index ONE WRAP LATER, a different call whose reply was still owed.
+
+**AND THE ARM REPRODUCES THAT ALIASING BY CONSTRUCTION AND NOT BY CHOSEN NUMBERS.** The forge
+jumps the far head by 2 * RING_SLOTS, and RING_SLOTS is a power of two, so the tail the reset
+adopts masks back onto the abandoned record's slot at ANY ring width. An arm that hits a defect
+because its constants happen to collide becomes an arm that passes while testing nothing the
+first time someone resizes the ring; this one cannot. Anything but a whole multiple of
+RING_SLOTS there would be such an arm.
+
+**THE PORT TABLE'S SENTINEL IS THE CLEARED STATE NOW, AND THAT IS WHAT REMOVED A CROSS-NODE
+WRITE RATHER THAN ORDERING IT.** window_init used to seat every node's rows. Under the shared
+image that is one node writing rows a peer is reading: peers are released by
+release_secondaries inside arch_init, which kmain calls BEFORE window_init, and each parks in
+the backend's doorbell body, which services the rings. Of the three per-node tables only the
+port bindings were not already at their identity at zero, unbound being 0xFFFF so that a row
+nobody wrote read as endpoint 0, a real endpoint. Biased by one, the cleared state IS the
+unbound state, nothing needs seating on any node or any path, and the shared-image peer that
+never runs window_init needs nothing done for it. The mint stays table-wide, port_minted being
+asked about peers, but each row is stored WHOLE: a bit-at-a-time or is a read-modify-write on a
+word another node is writing, and two nodes interleaving those loops lose a bit for the life of
+the image.
+
+**THE RACE ITSELF HAS NO REACHABLE RED AND CANNOT HAVE ONE HERE.** No deterministic run enters
+the window between the mint loop and the row loop. What IS measured is that the peer's row
+genuinely needs to read unbound and that nothing else seats it: reverting the bias reddens
+`amp_window` and `amp_far_call` on `qemu-arm64-amp` and leaves `qemu-arm64-amp2-n0` ENTIRELY
+GREEN. That is N6c's instrument split again, and it is the opposite way round from the record
+defect above, which reddens at the same line on node 0, node 1 and the shared image, being
+keyed per ordered pair.
+
+**TWO OF THE AUDIT'S OWN CLAIMS ARE MISATTRIBUTED, AND BOTH ARE RECORDED BECAUSE A SEVERITY
+THAT STANDS ON A WRONG MECHANISM GETS RE-DIAGNOSED BY THE NEXT READER.**
+
+First, the gawk-only conversion in the partition merge was reported as failing SILENTLY, a
+wrong address still merging. It does not. Measured end to end on the real two-ELF partition:
+mawk exits 2 and busybox awk exits 1, both before a single record, so the script produces
+nothing and its existing emptiness check refuses. The severity stands, but the failure is a
+REFUSAL NAMING THE WRONG THING, `has no loadable segment`, which accuses the ELF instead of the
+awk. Under gawk the same code merges correctly, which is why nothing in the tree could see it:
+`awk` on a Debian developer box IS gawk. `tests/static/check_awk_portable.sh` is what makes that
+non-silent from now on, and it found a SECOND instance nobody named, in
+`tests/static/check_amp_two_elf.sh`, where the same call sat inside a GATE's span arithmetic
+and would have had that gate report its own clause instead of the awk.
+
+Second, this tree's 2^53 awk-precision warning DOES NOT APPLY to a PT_LOAD address, and
+inheriting it here would have bought a fix for a defect that is not present. Checked rather
+than assumed, against real kernel-half addresses: `0xffffff8040000000` and `0xffffff8044000000`
+both round-trip through a double EXACTLY, because a p_paddr is at least page-aligned (12 low
+zero bits) and the spacing of doubles at 1.8e19 is 2 KiB. The warning is about a SUBTRACTION
+that materialises a small delta out of two large addresses, which is a different arithmetic.
+The merge reads addresses as hex STRINGS anyway, so it never converts one; the span arithmetic
+that genuinely adds is the shell's, which is signed 64-bit and refuses a p_paddr at or above
+2^63 by name rather than wrapping.
+
+**AND THE GEOMETRY REFUSALS BELONG TO THE TABLE, NOT TO THE PARTITION.** The three geometries
+that used to link cleanly and fault at the first touch of unmapped RAM are refused in
+`arch/arm64/chip/virt_arm64/startup.S`, each clause naming its own field, because every
+derivation they guard is a truncating division or an index fixed by which level-1 entry that
+table hangs off. They are NOT in CMakeLists.txt beside the geometry: that site is arch-agnostic
+and also serves a part whose whole share is smaller than one 2 MiB block of this one. Written
+against the three raw parameters, so M7.12's per-aperture parameterisation of the same header
+carries them unchanged.
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).

@@ -17,6 +17,19 @@
 # child of its shell and does not survive to the next invocation, and a remote step that
 # refuses while the local script keeps going reads as a pass.
 #
+# THE LOGS THIS SCRIPT WRITES ARE RAW: nothing here strips CR, and nothing here may start. The
+# console lowers '\n' to CR+LF on every board but the sim (KICKOS_CONSOLE_CRLF), so a line
+# arriving as CR+LF was written through the cooking path and a BARE LF was written by
+# arch_console_write_sync, the arch layer speaking under its own steam. That difference is how
+# a message is attributed to a layer. tests/lib/gate.sh normalises instead, and the two paths
+# are correctly different.
+#
+# SO ANY PATTERN WRITTEN AGAINST THESE LOGS MUST BE CR-TOLERANT: leave it unanchored, or anchor
+# it explicitly CR-optional, NEVER a bare '$'. GNU grep's '$' does not match before a CR while
+# the ugrep that shadows `grep` on an interactive shell does, so a bare '$' passes by hand and
+# fails where it counts. The one pattern arriving from outside is cap_esp.py's `until` regex,
+# taken from its argv, so the rule binds that script's CALLER.
+#
 # Env:
 #   ROOT        directory holding tools/ and boards/ (the flash recipes). Default: this
 #               script's grandparent.

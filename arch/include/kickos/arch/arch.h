@@ -142,9 +142,16 @@ uint32_t arch_cpu_id(void);
 #if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 void arch_ipi_send(uint32_t cores);
 void arch_ipi_wait(uint32_t cores);
+
+// A FULL barrier, and neither half of an acquire/release pair: it orders this core's earlier
+// stores against its later loads, the one direction release and acquire leave open. A node's
+// bring-up pairs a publish then a read on both sides, and ordering one side only strands the
+// publication.
+void arch_ipi_fence(void);
 #else
 #define arch_ipi_send(cores) ((void)(cores))
 #define arch_ipi_wait(cores) ((void)(cores))
+#define arch_ipi_fence() ((void)0)
 #endif
 
 // Raise the doorbell on the CALLING core, so a reschedule the cell still owes is carried by a
@@ -164,9 +171,30 @@ void arch_ipi_resched_self(void);
 // owes the probe that reads it.
 #if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 uint64_t arch_ipi_counts(uint32_t core);
+
+// Raises this core could not give `core` because that core's controller state was not yet
+// published. A backend needing no such publication answers a real zero, not a stub's.
+uint32_t arch_ipi_deferred(uint32_t core);
+
+// Answers what it REPLACED, so a caller puts back what was there rather than asserting a seat.
+// Seating a core whose controller state was never published names affinity zero, a real core
+// and not an absence: the raise would land on the sender itself.
+uint32_t arch_ipi_seat_set(uint32_t core, uint32_t seated);
 #else
 #define arch_ipi_counts(core) ((void)(core), 0ull)
+#define arch_ipi_deferred(core) ((void)(core), 0u)
+#define arch_ipi_seat_set(core, seated) ((void)(core), (void)(seated), 0u)
 #endif
+#endif
+
+// Start every OTHER node of the partition at the image base the partition derives for it, and
+// zero nothing: arch_amp_shared_zero cleared the shared region at reset and this node has
+// published into it since. The partition primary alone, and a node a peer started must not
+// start it back.
+#if KICKOS_AMP_OWN_IMAGE
+void arch_amp_release_peers(void);
+#else
+#define arch_amp_release_peers() ((void)0)
 #endif
 
 // --- The cross-core kernel lock ---------------------------------------------
@@ -1048,6 +1076,10 @@ void kickos_irq_route_service(void);
 // Takes no kernel lock and reads nothing the kernel built: exclusion is the calling core's
 // own interrupt mask, which the service body already holds.
 void kickos_amp_node_service(void);
+
+// Which machine core carries `node`, out of the partition's own map. The chip's bring-up takes
+// it from here rather than re-reading the map.
+uint32_t kickos_amp_node_core(uint32_t node);
 #endif
 
 // One frame for a translating backend's own tables, and its release. One allocator exists and

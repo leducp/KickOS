@@ -40,6 +40,8 @@ preset  armv8a   qemu-arm64-smp
 preset  armv8a   qemu-arm64-smpiso
 preset  armv8a   qemu-arm64-gicv3
 preset  armv8a   qemu-arm64-amp
+preset  armv8a   qemu-arm64-amp2-n0
+preset  armv8a   qemu-arm64-amp2-n1
 preset  rv64imac qemu-riscv64
 preset  rv64imac qemu-riscv64-sv48
 preset  rv64imac qemu-riscv64-smp
@@ -56,6 +58,8 @@ floor   armv8a   qemu-arm64-smp    files=90 nodes=700 reason: the same board and
 floor   armv8a   qemu-arm64-smpiso files=90 nodes=700 reason: the same board and route at four cores with one isolated, placement reaching no console path
 floor   armv8a   qemu-arm64-gicv3  files=90 nodes=700 reason: the same board and route at four cores, the interrupt controller reaching no console path
 floor   armv8a   qemu-arm64-amp    files=90 nodes=700 reason: the same board and route at four cores, one kernel core, the model reaching no console path
+floor   armv8a   qemu-arm64-amp2-n0 files=90 nodes=700 reason: the same board and route at one core, the partition posture reaching no console path
+floor   armv8a   qemu-arm64-amp2-n1 files=90 nodes=700 reason: the same board and route at one core, the node index reaching no console path
 floor   rv64imac qemu-riscv64      files=90 nodes=700 reason: measured 115 .ci files and 973 nodes on 2026-08-29
 floor   rv64imac qemu-riscv64-sv48 files=90 nodes=700 reason: measured 115 .ci files and 973 nodes on 2026-08-29
 floor   rv64imac qemu-riscv64-smp  files=90 nodes=700 reason: same board and arch as qemu-riscv64; the core count moves no console route

@@ -27,6 +27,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/instance_local.h>
 
+#include <kickos/config/amp_ports.h>
 #include <kickos/sys/abi.h>
 #include <kickos/sys/atomic.h>
 
@@ -63,7 +64,22 @@ namespace kickos
 #endif
         }
 
-        constexpr uint32_t RING_SLOTS = 4u;
+        // The partition's port list, in the order the kernel seats it into root's table. AN
+        // ENTRY'S POSITION IS ITS CAPABILITY INDEX, so reordering renumbers every constant
+        // derived from it. Both nodes of a crossing read the same entry and derive opposite
+        // roles: node == self() binds a local endpoint, any other node is a far endpoint.
+        constexpr uint32_t PORT_COUNT = KICKOS_AMP_PORT_COUNT;
+        static_assert(PORT_COUNT > 0u,
+                      "a node whose partition names no crossing can neither be called nor "
+                      "call; CMakeLists.txt refuses an empty KICKOS_AMP_PORTS");
+        constexpr uint8_t PORT_NODE[PORT_COUNT] = {KICKOS_AMP_PORT_NODE_LIST};
+        constexpr uint8_t PORT_PORT[PORT_COUNT] = {KICKOS_AMP_PORT_PORT_LIST};
+
+        // The node the seating runs for, as a build constant. Asserted equal to self() where
+        // the seating happens: under the shared image self() is a core register, this is not.
+        constexpr uint32_t SELF_NODE = KICKOS_AMP_SELF_NODE;
+
+        constexpr uint32_t RING_SLOTS = KOS_AMP_RING_SLOTS;
         static_assert((RING_SLOTS & (RING_SLOTS - 1u)) == 0u,
                       "RING_SLOTS must be a power of two");
 
@@ -89,12 +105,24 @@ namespace kickos
         // have one writer each and different owners.
         constexpr uint32_t LINE_BYTES = 64u;
 
-        // Ports a node mints. Static in kernel init: no capability authorises a crossing.
+        // The window layer's own two ports, which every node mints and no node binds, and the
+        // width of the mint mask. Every other port is the partition's (PORT_NODE above).
         enum : uint32_t
         {
             PORT_ECHO = KOS_AMP_PORT_ECHO,
             PORT_REPLY = KOS_AMP_PORT_REPLY,
             PORT_MAX = 32u // the mint is a 32-bit mask, so this is its width
+        };
+
+        // Which ring of the ordered pair. The two are reclaimed differently and cannot be one:
+        // a CALL slot is this node's record of the caller until the reply is sent, a REPLY slot
+        // is released as it is taken. Merged, a node's parked callers fill the ring toward them
+        // with the peer's un-replied calls and the reply that would free them finds no slot.
+        enum class Class : uint8_t
+        {
+            CALL = 0,
+            REPLY,
+            CLASS_MAX
         };
 
         // What one receive found. A refusal names WHICH untrusted field was malformed.
@@ -104,7 +132,8 @@ namespace kickos
             TOOK,      // one message copied out
             DEPTH,     // the far head names more outstanding slots than the ring holds
             LENGTH,    // the far length exceeds one slot
-            PORT       // the far port names nothing this node minted
+            PORT,      // the far port names nothing this node minted
+            CLASS      // a message of the other class: a reply on the call ring, or the reverse
         };
 
         // Why one send was refused.
@@ -175,21 +204,40 @@ namespace kickos
 
         struct Window
         {
-            Ring inbox[NODE_MAX][NODE_MAX]; // inbox[to][from]
+            Ring inbox[static_cast<unsigned>(Class::CLASS_MAX)][NODE_MAX][NODE_MAX];
         };
 
         // The sender's identity is the RING it wrote; no field in the window claims a sender.
-        Ring& ring_for(uint32_t to, uint32_t from);
+        Ring& ring_for(Class cls, uint32_t to, uint32_t from);
 
-        // Mint `port` on every node's row. Kernel init only.
-        //
-        // A SENDER VALIDATES A FAR PORT AGAINST ITS OWN COPY OF THE FAR NODE'S ROW, so under
-        // one image per node every node's image owes the same mint; nothing here checks that.
-        void port_mint(uint32_t port);
+        // Bind a port of THIS node to one of its own endpoints, so a call arriving on it
+        // reaches a thread rather than the window layer. Static per N8: no capability
+        // authorises the crossing. A port bound to nothing is not an error and is what
+        // PORT_ECHO is, the window layer answering it with no thread involved.
+        void port_bind(uint32_t port, uint16_t endpoint);
+
+        // The endpoint `port` is bound to on THIS node, or EP_BOUND_NONE. Binding to
+        // EP_BOUND_NONE itself unbinds, the store being biased so that the two coincide.
+        constexpr uint16_t EP_BOUND_NONE = 0xFFFFu;
+        uint16_t port_endpoint(uint32_t port);
 
         // True where `node` has minted `port`. Total: an out-of-range node or port answers
         // false rather than reading past the record.
+        //
+        // Per node: a mint spread over every row makes a far endpoint mintable for a node that
+        // serves nothing, which then answers a caller with silence rather than a refusal.
+        //
+        // A sender validates a far port against its OWN copy of the far node's row
+        // (kernel/syscall/syscall_ipc.cc), which is why window_init seats every row and not just
+        // its own. Both images derive the mint from the one partition list, so neither has to
+        // check the other.
         bool port_minted(uint32_t node, uint32_t port);
+
+        // Ring `to`'s doorbell. kernel/amp/ampmap.cc owns the node-to-core map it needs.
+        void ring(uint32_t to);
+
+        // Which machine core carries `node`. The partition states the map; nothing derives it.
+        uint32_t core_of(uint32_t node);
 
         // Publish `len` bytes into `to`'s inbox from THIS node and ring its doorbell.
         //
@@ -198,7 +246,7 @@ namespace kickos
         Sent send(uint32_t to, uint32_t port, ReplyTag const& tag, void const* payload,
                   uint32_t len);
 
-        // Take one message out of the ring `from` writes to THIS node; the local node reads
+        // Take one REPLY out of the ring `from` writes to THIS node; the local node reads
         // EMPTY, its self-ring being the one no service drains. `out` takes at most
         // SLOT_BYTES, `*out_len` the bytes taken, `*out_port` the port and `*out_tag` the
         // reply route; none of the four is touched on any verdict but TOOK.
@@ -209,10 +257,67 @@ namespace kickos
         //
         // A MALFORMED SLOT IS DROPPED AND THE TAIL ADVANCES. Leaving it would let one bad
         // publication wedge the ring for good; the verdict is counted, so the drop is visible.
-        Verdict take(uint32_t from, void* out, uint32_t* out_len, uint32_t* out_port,
-                     ReplyTag* out_tag);
+        Verdict take_reply(uint32_t from, void* out, uint32_t* out_len, uint32_t* out_port,
+                           ReplyTag* out_tag);
 
-        // Per-node bookkeeping. OUTSIDE the window: no far side may write it.
+        // Take one CALL and HOLD its slot: on TOOK the slot is this node's record of the caller
+        // until release_call frees it, so outstanding inbound calls from one peer are RING_SLOTS
+        // by construction. `*out_slot` names the held slot, masked to the ring, and is what
+        // release_call takes back. The tag is copied OUT rather than re-read from the held slot,
+        // which a malformed producer may have touched.
+        Verdict take_call(uint32_t from, void* out, uint32_t* out_len, uint32_t* out_port,
+                          ReplyTag* out_tag, uint32_t* out_slot);
+
+        // A held call's record: the origin node and the reply token, stored verbatim and never
+        // spent here. One per slot of every ordered pair, so the table is a build constant.
+        //
+        // `gen` counts the deaths of this slot's record. The record IS the ring slot
+        // (docs/design-multicore.md N6f), and the resynchronisation in depth_ok is the one path
+        // that frees one whose capability is still live; the table slot is keyed by ring
+        // position, so without the count that holder's token would name the slot's NEXT tenant
+        // and would answer a stranger's caller and release a stranger's slot.
+        struct Inbound
+        {
+            ReplyTag tag;
+            uint16_t gen;
+            uint8_t from;
+            uint8_t slot;
+            uint8_t live;
+        };
+
+        // Seat a record for a held call and answer a TOKEN for it, or FAR_RECORD_NONE where the
+        // table has none free. Kernel only, from the doorbell service. The token is the record's
+        // generation in its upper half and the flat table index in its lower, the encoding
+        // kickos::ThreadPool::far_reply_handle carries through a reply capability.
+        constexpr uint32_t FAR_RECORD_NONE = 0xFFFFFFFFu;
+        uint32_t inbound_seat(uint32_t from, uint32_t slot, ReplyTag const& tag);
+
+        // What record `token` names, or nullptr where it names nothing: an index outside the
+        // table, a free record, or a record whose generation has moved past this token's.
+        Inbound const* inbound_at(uint32_t token);
+
+        // Free the record `token` names WITHOUT answering and WITHOUT releasing its call slot.
+        // For the one path that seats a record and then cannot hand anyone a capability for it:
+        // the slot is the caller's answer and stays the taker's to release.
+        void inbound_forget(uint32_t token);
+
+        // Send `payload` as the reply the record `token` names, release its call slot, and
+        // free the record. Total over a token naming nothing, which includes a record a ring
+        // resynchronisation freed under its holder: that slot belongs to a later wrap's call
+        // by then and its caller is gone, so nothing is sent and nothing is released.
+        void inbound_reply(uint32_t token, void const* payload, uint32_t len);
+
+        // Release a held call slot. The tail advances over released slots from the oldest, so
+        // replies may complete OUT OF ORDER while reclamation stays in order. `slot` is the
+        // index take_call handed out, masked to the ring; a resynchronisation between the take
+        // and the release makes that index name a later wrap's slot, which the record
+        // generation above keeps out of here.
+        void release_call(uint32_t from, uint32_t slot);
+
+        // Per-node bookkeeping, one row per node, each row written by that node alone.
+        //
+        // A count is a REPORT and never an input: no field of a peer's row is spent as an index
+        // or a length anywhere, which is what lets it sit where a peer can write it.
         //
         // RELAXED ATOMICS BECAUSE THEY ARE READ ACROSS NODES: a syscall on node 0 sweeps every
         // node's row while a peer is inside its own doorbell handler writing its own. One
@@ -225,6 +330,7 @@ namespace kickos
             Atomic<uint32_t, Order::RELAXED> depth_reset; // rings resynchronised after DEPTH_STRIKES
             Atomic<uint32_t, Order::RELAXED> length;
             Atomic<uint32_t, Order::RELAXED> port;
+            Atomic<uint32_t, Order::RELAXED> wrong_class; // a reply on the call ring, or the reverse
             Atomic<uint32_t, Order::RELAXED> sent;
             Atomic<uint32_t, Order::RELAXED> send_refused;
             Atomic<uint32_t, Order::RELAXED> serviced; // times its doorbell drained its inboxes
@@ -247,7 +353,13 @@ namespace kickos
         // refuses every index at the first clause. Nothing else here touches kernel() state.
         void node_service(void);
 
-        // Seat the static mint. Kernel init, before any node can be poked.
+        // Seat the static mint and THIS NODE'S OWN rows, then read the rings once. Kernel init,
+        // before any node can be poked.
+        //
+        // The mint is every row because port_minted is asked about peers; every other table here
+        // is this node's alone. A peer is already inside node_service by the time kmain reaches
+        // here, having been released in arch_init, so writing a peer's row would race its own
+        // drain with nothing ordering the two.
         void window_init(void);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -270,10 +382,42 @@ namespace kickos
         // BOTH INDICES ARE RESET FIRST, as forge_and_take does.
         bool forge_reply(uint32_t from, ReplyTag const& tag);
 
+        // Scaffolding: publish ONE well-formed call from `from` on `port` into THIS node's
+        // ring and take it no further, so the doorbell's own service body is what drains it.
+        // BOTH INDICES ARE RESET FIRST, as the other forges do.
+        bool forge_publish(uint32_t from, uint32_t port, ReplyTag const& tag);
+
+        // Drain what forge_publish left, and answer whether the delivery kept the call's slot.
+        // The CALL ring tail moves in release_call alone, so an unmoved tail is the whole of
+        // "the receiver holds this slot until it replies" and a moved one the whole of "the
+        // taker released it".
+        bool forge_drain_held(uint32_t from);
+
         // Publish a depth this node cannot believe, take DEPTH_STRIKES times so the strike
         // bound resynchronises the ring, then publish one WELL-FORMED message and take it.
         // The verdict of that last take is whether the ring recovered.
         Verdict forge_depth_recovery(uint32_t from);
+
+        // The same bound on the REPLY ring, driven through node_service rather than a bare take
+        // because that is where the two rings of a pair meet: one pass yields at most one reply
+        // strike and then runs the call ring's depth clause, which a strike count not keyed by
+        // class would clear. The verdict of a well-formed reply taken afterwards is whether the
+        // ring recovered.
+        Verdict forge_reply_depth_recovery(uint32_t from);
+
+        // One inbound record across a resynchronisation: a record seated on a HELD slot, the
+        // ring resynchronised under it, a fresh call taken at the same masked slot, and the
+        // first holder's token spent afterwards, in that order and on one ring.
+        //
+        // Answers a bit per claim, all four set where the reset owns the record's death:
+        //   1  the resynchronisation freed the record it abandoned the slot of
+        //   2  the call taken after it was granted a record of its own
+        //   4  that record's token differs from the abandoned one's
+        //   8  spending the abandoned token released no slot
+        // Bit 16 says the scaffold reached the end, so a zero answer is a forge that could not
+        // run rather than four failed claims.
+        constexpr uint32_t RESET_RECORD_OK = 0x1Fu;
+        uint32_t forge_reset_record(uint32_t from);
 #endif
     }
 }

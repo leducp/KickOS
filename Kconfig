@@ -219,6 +219,79 @@ config KICKOS_AMP_NODE_ID
 	  learn it: on the CV1800B mhartid is hardwired to zero in the openc906 release
 	  and customised per integrator, so there is no register to stand on.
 
+# --- The AMP partition's geometry -------------------------------------------
+# Nothing per-node is stated here: every image derives its own base from its index
+# and the three facts below. Two images cannot disagree about a value neither of
+# them states.
+
+config KICKOS_AMP_PARTITION_BASE
+	hex "Physical base of the whole AMP partition"
+	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
+	default 0x0
+	help
+	  Where node 0's image starts. A zero here is refused by CMakeLists.txt: a board
+	  that states no geometry would otherwise link every node at the same address.
+
+config KICKOS_AMP_NODE_SHARE
+	hex "Bytes of the partition one node's image owns"
+	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
+	default 0x0
+	help
+	  The stride between node images and the bound on one image's own allocations.
+	  Uniform across nodes, so a node's base is its index times this.
+
+config KICKOS_AMP_SHARED_SIZE
+	hex "Bytes reserved for the region every node writes"
+	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
+	default 0x0
+	help
+	  Sits above every node's share and holds the window, the doorbell's rendezvous
+	  cells and the per-node counts. Sized so a part whose protection unit can
+	  describe the partition has one region to name.
+
+config KICKOS_AMP_PARTITION_CORES
+	int "Machine cores the AMP partition spans"
+	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
+	range 1 32
+	default KICKOS_AMP_NODES
+	help
+	  Not KICKOS_NUM_CORES, which is one for every own-image node: this is how many
+	  cores the doorbell's cells are indexed by, and the machine's own core count.
+
+config KICKOS_AMP_NODE_CORES
+	string "Machine core carrying each node, comma-separated, one per node"
+	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
+	default ""
+	help
+	  The partition's node-to-core map. CMakeLists.txt refuses a list whose length is
+	  not KICKOS_AMP_NODES, or that names a core twice, or a core the partition does
+	  not span. A node index is not a core index and nothing derives one from the
+	  other.
+
+config KICKOS_AMP_PORTS
+	string "Ports the partition's nodes serve, as node:port, comma separated"
+	depends on !KICKOS_AMP_POSTURE_NONE
+	default ""
+	help
+	  ONE list for the whole partition, and every node's image reads the same
+	  string. An entry naming THIS node is a port this image binds to an endpoint
+	  of its own and receives on; an entry naming another node is a far endpoint
+	  this image holds and calls. Node 0 and node 1 derive opposite roles from the
+	  same entries, so a second list would be a second truth.
+
+	  CMakeLists.txt refuses a malformed entry, a node the partition does not hold,
+	  a port outside the mint's 32-bit width, a repeated crossing, and ports 0 and
+	  1, which are the window layer's own echo and reply protocol.
+
+config KICKOS_DOORBELL_CORES
+	int
+	default KICKOS_AMP_PARTITION_CORES if KICKOS_AMP_POSTURE_OWN_IMAGE
+	default KICKOS_NUM_CORES
+	help
+	  The width of the doorbell's rendezvous matrix. It is the MACHINE's core count,
+	  which is what one image drives everywhere except under the own-image posture,
+	  where the image drives one core and the doorbell still reaches the others.
+
 # --- Memory protection ------------------------------------------------------
 
 choice

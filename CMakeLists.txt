@@ -70,7 +70,9 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
                 KICKOS_RTT_CH1_SIZE
                 KICKOS_USER_HEAP_SIZE
                 KICKOS_MAX_INSTANCES KICKOS_PANIC_DUMP KICKOS_DIAG_TERSE
-                KICKOS_AMP_NODES KICKOS_AMP_NODE_ID KICKOS_ISOLATED_CORES)
+                KICKOS_AMP_NODES KICKOS_AMP_NODE_ID
+                KICKOS_AMP_PARTITION_BASE KICKOS_AMP_NODE_SHARE KICKOS_AMP_SHARED_SIZE
+                KICKOS_AMP_PARTITION_CORES KICKOS_ISOLATED_CORES)
     if(DEFINED ${_knob})
       list(APPEND _kcfg_req "CONFIG_${_knob}=${${_knob}}")
     endif()
@@ -85,7 +87,8 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
   endif()
   # A knob the fragment sets but this translation omits is one the fragment silently
   # overwrites.
-  foreach(_str KICKOS_SERVICE_LIST KICKOS_BOARD_PINMAP)
+  foreach(_str KICKOS_SERVICE_LIST KICKOS_BOARD_PINMAP KICKOS_AMP_NODE_CORES
+               KICKOS_AMP_PORTS)
     if(DEFINED ${_str})
       list(APPEND _kcfg_req "CONFIG_${_str}=\"${${_str}}\"")
     endif()
@@ -120,7 +123,7 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
   set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" APPEND
                PROPERTY CMAKE_CONFIGURE_DEPENDS
                ${KICKOS_KCONFIG_SOURCES} "${PROJECT_BINARY_DIR}/generated/.config")
-  message(STATUS "KickOS: configuration from ${KICKOS_DEFCONFIG}")
+  message(STATUS "KickOS: configuration from ${KICKOS_KCONFIG_BASE}")
 
   kickos_find_kconfig(_kcfg_py _kcfg_found)
   if(_kcfg_found)
@@ -645,21 +648,204 @@ add_compile_definitions(KICKOS_ISOLATED_CORES=${KICKOS_ISOLATED_CORES})
 # which an app does not include.
 add_compile_definitions(KICKOS_AMP_NODE=${KICKOS_AMP_NODE})
 add_compile_definitions(KICKOS_AMP_NODES=${KICKOS_AMP_NODES})
+add_compile_definitions(KICKOS_AMP_OWN_IMAGE=${KICKOS_AMP_OWN_IMAGE})
 
-# The doorbell a publication rings is arch_ipi_send(1 << node), a HARDWARE CORE MASK spent on
-# a node index. Refused here rather than rung at the wrong core.
+# --- The AMP partition's geometry -------------------------------------------------------
+# Under one image per node the region every node writes has to sit at one address two link
+# scripts agree on. They agree by DERIVING it: each image states its own node index and the
+# three partition facts, and arch/common/amp_partition.ld.h computes every address from them.
 if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
-  message(FATAL_ERROR
-    "KickOS: the own-image AMP posture is refused. amp::send in kernel/amp/ampwindow.cc "
-    "rings its peer with arch_ipi_send(1u << to), where `to` is a NODE index and the "
-    "argument is a hardware CORE mask. The two coincide only under the shared-image "
-    "posture, where the node's identity IS the core register. Under one image per node they "
-    "are unrelated, the image driving one core while naming peers it never launches, so the "
-    "doorbell would ring whichever local core carries the target's index, silently and with "
-    "no refusal. What is missing is a partition-owned node-to-core map: the partition layout "
-    "stating, per node, which core carries it, and amp::send taking its doorbell target from "
-    "that map instead of from the node index. Until a part declares one, build this board "
-    "with CONFIG_KICKOS_AMP_POSTURE_SHARED_IMAGE.")
+  foreach(_geo KICKOS_AMP_PARTITION_BASE KICKOS_AMP_NODE_SHARE KICKOS_AMP_SHARED_SIZE)
+    # Through math(), so every spelling of zero answers zero: a string test would pass 0x00.
+    set(_geo_v 0)
+    if(NOT "${${_geo}}" STREQUAL "")
+      math(EXPR _geo_v "${${_geo}}")
+    endif()
+    if(_geo_v EQUAL 0)
+      message(FATAL_ERROR
+        "KickOS: the own-image AMP posture states no ${_geo}. Every node's image is linked at "
+        "KICKOS_AMP_PARTITION_BASE plus its own index times KICKOS_AMP_NODE_SHARE, and the "
+        "region every node writes sits above the last of them and is KICKOS_AMP_SHARED_SIZE "
+        "wide. With any of the three unstated the images link on top of each other. Give all "
+        "three in boards/<board>/configs/<variant>/defconfig.")
+    endif()
+  endforeach()
+
+  # amp::ring turns a node index into a doorbell target, and the two coincide only under the
+  # shared-image posture, where a node's identity IS the core register. Under one image per
+  # node they are unrelated, so without this map the doorbell would ring whichever local core
+  # carries the target's index, silently and with no refusal.
+  string(REPLACE "," ";" _amp_cores "${KICKOS_AMP_NODE_CORES}")
+  list(LENGTH _amp_cores _amp_cores_len)
+  if(NOT _amp_cores_len EQUAL KICKOS_AMP_NODES)
+    message(FATAL_ERROR
+      "KickOS: KICKOS_AMP_NODE_CORES is '${KICKOS_AMP_NODE_CORES}', which names "
+      "${_amp_cores_len} cores for a partition of ${KICKOS_AMP_NODES} nodes. It states, per "
+      "node and in node order, which machine core carries that node, and amp::ring takes its "
+      "doorbell target from it. Without one a node index would be spent as a hardware core "
+      "mask, which holds only under CONFIG_KICKOS_AMP_POSTURE_SHARED_IMAGE. Give one core per "
+      "node in boards/<board>/configs/<variant>/defconfig.")
+  endif()
+  set(_amp_seen "")
+  set(_amp_node 0)
+  foreach(_core IN LISTS _amp_cores)
+    if(NOT _core MATCHES "^[0-9]+$")
+      message(FATAL_ERROR
+        "KickOS: KICKOS_AMP_NODE_CORES entry '${_core}' is not a core index.")
+    endif()
+    if(_core GREATER_EQUAL KICKOS_AMP_PARTITION_CORES)
+      message(FATAL_ERROR
+        "KickOS: KICKOS_AMP_NODE_CORES puts node ${_amp_node} on core ${_core}, and the "
+        "partition spans ${KICKOS_AMP_PARTITION_CORES} cores. The doorbell's cells are indexed "
+        "by core, so this node would answer out of the matrix.")
+    endif()
+    if(_core IN_LIST _amp_seen)
+      message(FATAL_ERROR
+        "KickOS: KICKOS_AMP_NODE_CORES puts two nodes on core ${_core}. Each node's image "
+        "drives its own core, and the doorbell's rendezvous row is written by that core alone.")
+    endif()
+    list(APPEND _amp_seen "${_core}")
+    math(EXPR _amp_node "${_amp_node} + 1")
+  endforeach()
+  # Node 0 is the partition primary and the node the machine enters; arch_amp_release_peers
+  # starts every OTHER node at the core this map names it, so a map putting a peer on the
+  # primary's own core makes the primary release itself. No chip in the tree states which core
+  # it resets into, so 0 is the assumption.
+  list(GET _amp_cores 0 _amp_node0_core)
+  if(NOT _amp_node0_core EQUAL 0)
+    message(FATAL_ERROR
+      "KickOS: KICKOS_AMP_NODE_CORES is '${KICKOS_AMP_NODE_CORES}', which puts node 0 on core "
+      "${_amp_node0_core}. Node 0 is the partition primary and runs on the core the machine "
+      "resets into, which this tree takes to be core 0. Stated otherwise, some peer is mapped "
+      "onto the core the primary is already running on, and releasing that peer is the primary "
+      "releasing itself: the boot dies in the launch handshake rather than at build time, on "
+      "qemu-arm64 as 'KickOS: PSCI CPU_ON refused for AMP node 01, status "
+      "0xfffffffffffffffc', which is PSCI_ALREADY_ON. Give node 0 core 0 and permute the peers "
+      "instead.")
+  endif()
+
+  list(GET _amp_cores ${KICKOS_AMP_NODE_ID} KICKOS_AMP_SELF_CORE)
+  string(REPLACE ";" "," _amp_core_init "${_amp_cores}")
+  add_compile_definitions(KICKOS_AMP_NODE_CORE_LIST={${_amp_core_init}})
+  add_compile_definitions(KICKOS_AMP_SELF_CORE=${KICKOS_AMP_SELF_CORE})
+  # The geometry reaches a chip's startup ASSEMBLY too: its translation tables map the
+  # partition.
+  add_compile_definitions(
+    KICKOS_AMP_PARTITION_BASE=${KICKOS_AMP_PARTITION_BASE}
+    KICKOS_AMP_NODE_SHARE=${KICKOS_AMP_NODE_SHARE}
+    KICKOS_AMP_SHARED_SIZE=${KICKOS_AMP_SHARED_SIZE}
+    KICKOS_AMP_NODE_ID=${KICKOS_AMP_NODE_ID})
+  message(STATUS
+    "KickOS: AMP node ${KICKOS_AMP_NODE_ID} of ${KICKOS_AMP_NODES} on core "
+    "${KICKOS_AMP_SELF_CORE}, map ${KICKOS_AMP_NODE_CORES}")
+endif()
+
+# --- The partition's port capabilities ---------------------------------------------------
+# ONE list for the whole partition: every node's image reads the same string and derives both
+# its sets from its own index, so there is no second list to disagree with this one.
+#
+# The order here is the order the kernel seats them into root's table, so an entry's position
+# IS its capability index and every check below defends that.
+if(KICKOS_AMP_NODE)
+  # Which node this image seats for. Under the shared image the identity is a core register
+  # and exactly one core runs a kernel, the one kmain boots on; kernel/init/kmain.cc asserts
+  # the two agree rather than trusting this.
+  set(KICKOS_AMP_SELF_NODE 0)
+  if(KICKOS_AMP_OWN_IMAGE)
+    set(KICKOS_AMP_SELF_NODE "${KICKOS_AMP_NODE_ID}")
+  endif()
+
+  string(REPLACE "," ";" _amp_ports "${KICKOS_AMP_PORTS}")
+  list(LENGTH _amp_ports _amp_ports_len)
+  if("${KICKOS_AMP_PORTS}" STREQUAL "")
+    set(_amp_ports "")
+    set(_amp_ports_len 0)
+  endif()
+  if(_amp_ports_len EQUAL 0)
+    message(FATAL_ERROR
+      "KickOS: this board is a node of an AMP partition and KICKOS_AMP_PORTS names no "
+      "crossing at all. A node whose partition hands it no port capability can neither be "
+      "called nor call, and it would boot and answer nothing with nothing to say so. State "
+      "the whole partition's ports once, as node:port pairs in node order, in "
+      "boards/<board>/configs/<variant>/defconfig. For example "
+      "CONFIG_KICKOS_AMP_PORTS=\"0:2,1:3\" for a node 0 serving port 2 and a node 1 "
+      "serving port 3.")
+  endif()
+
+  set(_amp_port_nodes "")
+  set(_amp_port_ports "")
+  set(_amp_port_seen "")
+  set(_amp_port_local 0)
+  foreach(_entry IN LISTS _amp_ports)
+    if(NOT _entry MATCHES "^([0-9]+):([0-9]+)$")
+      message(FATAL_ERROR
+        "KickOS: KICKOS_AMP_PORTS entry '${_entry}' is not a node:port pair. The list names, "
+        "for the WHOLE partition, which node serves which port; every node's image reads it "
+        "and derives its own two sets from its own index.")
+    endif()
+    set(_n "${CMAKE_MATCH_1}")
+    set(_p "${CMAKE_MATCH_2}")
+    if(_n GREATER_EQUAL KICKOS_AMP_NODES)
+      message(FATAL_ERROR
+        "KickOS: KICKOS_AMP_PORTS entry '${_entry}' names node ${_n} and the partition holds "
+        "${KICKOS_AMP_NODES} node(s). A crossing to a node the partition does not hold has "
+        "no ring to travel on.")
+    endif()
+    if(_p EQUAL 1)
+      message(FATAL_ERROR
+        "KickOS: KICKOS_AMP_PORTS entry '${_entry}' names port 1, which is the port every "
+        "reply travels on: a message published on it is a REPLY and is routed to the caller "
+        "its token names, so no node can serve it. Service ports start at 2.")
+    endif()
+    if(_p EQUAL 0 AND _n EQUAL KICKOS_AMP_SELF_NODE)
+      message(FATAL_ERROR
+        "KickOS: KICKOS_AMP_PORTS entry '${_entry}' names port 0 for this image's own node. "
+        "Port 0 is the echo the WINDOW LAYER answers with no thread involved, and a node that "
+        "runs a kernel binds every port the partition names it, so this entry would take the "
+        "echo away from the window layer and hand it to a thread. Name port 0 only for a peer "
+        "that runs no kernel of its own, or give this node a service port from 2 up.")
+    endif()
+    if(_p GREATER_EQUAL 32)
+      message(FATAL_ERROR
+        "KickOS: KICKOS_AMP_PORTS entry '${_entry}' names port ${_p} and a node's mint is a "
+        "32-bit mask, so 31 is its last port.")
+    endif()
+    if("${_n}:${_p}" IN_LIST _amp_port_seen)
+      message(FATAL_ERROR
+        "KickOS: KICKOS_AMP_PORTS names node ${_n} port ${_p} twice. A repeated crossing "
+        "would seat two capabilities for one endpoint and shift every constant after it.")
+    endif()
+    list(APPEND _amp_port_seen "${_n}:${_p}")
+    list(APPEND _amp_port_nodes "${_n}")
+    list(APPEND _amp_port_ports "${_p}")
+    if(_n EQUAL KICKOS_AMP_SELF_NODE)
+      math(EXPR _amp_port_local "${_amp_port_local} + 1")
+    endif()
+  endforeach()
+
+  # Checked where a number can still be changed: a pool that cannot cover the list would
+  # panic at boot on a board that configured and built cleanly.
+  if(NOT KICKOS_MAX_ENDPOINTS GREATER _amp_ports_len)
+    message(FATAL_ERROR
+      "KickOS: KICKOS_AMP_PORTS names ${_amp_ports_len} crossing(s) and the board provisions "
+      "${KICKOS_MAX_ENDPOINTS} endpoint slot(s). Each entry claims one for the life of the "
+      "image, a local one for the port it binds and a far one for the crossing it names, so "
+      "this partition cannot seat itself and would leave nothing for the app besides. Raise "
+      "CONFIG_KICKOS_MAX_ENDPOINTS in this board's defconfig.")
+  endif()
+
+  set(KICKOS_AMP_PORT_COUNT "${_amp_ports_len}")
+  string(REPLACE ";" "," KICKOS_AMP_PORT_NODE_INIT "${_amp_port_nodes}")
+  string(REPLACE ";" "," KICKOS_AMP_PORT_PORT_INIT "${_amp_port_ports}")
+  math(EXPR _amp_port_far "${KICKOS_AMP_PORT_COUNT} - ${_amp_port_local}")
+  message(STATUS
+    "KickOS: AMP node ${KICKOS_AMP_SELF_NODE} derives ${_amp_port_local} local port(s) and "
+    "${_amp_port_far} far endpoint(s) from KICKOS_AMP_PORTS='${KICKOS_AMP_PORTS}'")
+else()
+  set(KICKOS_AMP_SELF_NODE 0)
+  set(KICKOS_AMP_PORT_COUNT 0)
+  set(KICKOS_AMP_PORT_NODE_INIT "")
+  set(KICKOS_AMP_PORT_PORT_INIT "")
 endif()
 
 # The microbench accumulates into one set of phase cells for the whole image, and its own
@@ -813,43 +999,47 @@ if(KICKOS_BUILD_TESTS)
   endfunction()
 
 
+  # The `tree` label marks a verdict that is a function of the source tree alone. CI runs that
+  # label once and excludes it from every other job, so a gate reading anything a preset
+  # decides must not carry it.
+  #
   # Registered with _add_test, so it does not require the build fixture: the gate reads the
   # source tree through `git ls-files` and never opens the build directory. WORKING_DIRECTORY
   # because the script refuses to run anywhere but the repo root.
   _add_test(NAME doc_names
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_doc_names.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(doc_names PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(doc_names PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   _add_test(NAME extern_c_linkage
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_extern_c_linkage.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(extern_c_linkage PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(extern_c_linkage PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   _add_test(NAME ascii
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_ascii.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(ascii PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(ascii PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   _add_test(NAME spdx
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_spdx.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(spdx PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(spdx PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   _add_test(NAME include_guards
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_include_guards.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(include_guards PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(include_guards PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   _add_test(NAME whitespace
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_whitespace.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(whitespace PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(whitespace PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   _add_test(NAME shell_special_names
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_shell_special_names.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(shell_special_names PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(shell_special_names PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
 
   # Takes the generated board config: the gate must read the knob spelling C reads.
@@ -864,27 +1054,27 @@ if(KICKOS_BUILD_TESTS)
   _add_test(NAME forever_loop
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_forever_loop.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(forever_loop PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(forever_loop PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   _add_test(NAME dash_punct
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_dash_punct.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(dash_punct PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(dash_punct PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   _add_test(NAME panic_banners
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_panic_banners.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(panic_banners PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(panic_banners PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   _add_test(NAME death_stack_seating
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_death_stack_seating.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(death_stack_seating PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(death_stack_seating PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   _add_test(NAME park_death_point
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_park_death_point.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(park_death_point PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(park_death_point PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   # --- The trap red-zone gate --------------------------------------------------
   # The preset name is derived here: the base variant is the board name, every other variant
@@ -917,7 +1107,7 @@ if(KICKOS_BUILD_TESTS)
   _add_test(NAME trap_redzone_decls
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_trap_redzone_decls.sh"
                     "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(trap_redzone_decls PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(trap_redzone_decls PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   # --- The console-route reachability gate -------------------------------------
   # Registered on the TRANSLATING presets, where cap_console_deliver's error paths survive the
@@ -944,25 +1134,32 @@ if(KICKOS_BUILD_TESTS)
   _add_test(NAME atomic_rmw
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_atomic_rmw.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(atomic_rmw PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(atomic_rmw PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
+  # No gawk-only extension in an awk program this tree runs: a non-gawk awk REFUSES such a
+  # program, which leaves the calling gate reporting its own clause instead of the awk.
+  _add_test(NAME awk_portable
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_awk_portable.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(awk_portable PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   # The kernel-core seam against the machine's core identity. Corpus-wide source scan, so it
   # is registered from every board and reads no build output.
   _add_test(NAME kernel_core_index
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kernel_core_index.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(kernel_core_index PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(kernel_core_index PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   _add_test(NAME service_lists
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_service_lists.sh"
                     "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(service_lists PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(service_lists PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   kickos_find_kconfig(_kconfig_py _kconfig_found)
   _add_test(NAME kconfig_gen
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_gen.sh"
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(kconfig_gen PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(kconfig_gen PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   # The shared-kernel hardware predicate above, driven on a board whose arch declares no
   # smp.cmake. Registered from every board because the predicate lives in this file: it
@@ -971,7 +1168,7 @@ if(KICKOS_BUILD_TESTS)
   _add_test(NAME smp_predicate
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_smp_predicate.sh"
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_COMMAND}")
-  set_tests_properties(smp_predicate PROPERTIES TIMEOUT 300 LABELS host)
+  set_tests_properties(smp_predicate PROPERTIES TIMEOUT 300 LABELS "host;tree")
 
   # The isolated-core mask's two configure refusals, driven over synthetic values against the
   # same module this file calls above. Registered from every board: the module is this tree's,
@@ -979,7 +1176,7 @@ if(KICKOS_BUILD_TESTS)
   _add_test(NAME isolated_cores
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_isolated_cores.sh"
                     "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_COMMAND}")
-  set_tests_properties(isolated_cores PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(isolated_cores PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   # KICKOS_SMP_TRACE is OFF in every preset, so nothing else compiles its enabled arm and it
   # would rot unnoticed. This compiles that arm alone, taking the flags from this build's own
@@ -995,7 +1192,7 @@ if(KICKOS_BUILD_TESTS)
   _add_test(NAME kconfig_forwarding
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_forwarding.sh"
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(kconfig_forwarding PROPERTIES TIMEOUT 120 LABELS host)
+  set_tests_properties(kconfig_forwarding PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
 endif()
 
@@ -1224,6 +1421,7 @@ if(TARGET kickos_kernel)
       # ARM's vector table (g_isr_vector) is a data object nothing references. RX pulls its
       # vector tables via ENTRY(_start) + KEEP() and defines no such symbol to force.
       "$<$<STREQUAL:${KICKOS_ARCH_FAMILY},arm>:-Wl,-u,g_isr_vector>"
+      $<$<BOOL:${KICKOS_NODE_VECTOR_FORCE_SYMBOL}>:-Wl,-u,${KICKOS_NODE_VECTOR_FORCE_SYMBOL}>
       # Force our libc syscall stubs in (libc's raise->_exit). The RX psABI prefixes
       # C identifiers with a leading underscore, so C `_exit` is asm `__exit`; forcing
       # `_exit` there would pull nothing and drop newlib_stubs.o (RX sbrk/__dso_handle).
@@ -1344,6 +1542,8 @@ kickos_cap_table_resolve("${KICKOS_SERVICE_LIST}" KICKOS_CAP_TABLE_SLOTS
                          KICKOS_CAP_TABLE_REPLY_MAX)
 configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/cap_width.h.in"
                "${PROJECT_BINARY_DIR}/generated/include/kickos/config/cap_width.h" @ONLY)
+configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/amp_ports.h.in"
+               "${PROJECT_BINARY_DIR}/generated/include/kickos/config/amp_ports.h" @ONLY)
 if(TARGET kickos_core)
   # The in-tree include_directories at the top of this file does not reach an
   # add_subdirectory/FetchContent consumer's own targets; this does.
@@ -1400,6 +1600,10 @@ install(DIRECTORY
 # An installed consumer that includes a kernel header must take the same width as the
 # prebuilt libraries, or its sizeof(Thread) does not match theirs.
 install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/config/cap_width.h"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos/config")
+
+# The partition's port list an app's <kickos/amp.h> derives its capability indices from.
+install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/config/amp_ports.h"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos/config")
 
 # The generated provisioning header is the one the prebuilt libs were compiled against.

@@ -184,6 +184,45 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "lx6" AND KICKOS_NUM_CORES GREATE
   set_tests_properties(lx6_park_mask PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 
+# arch_ipi_fence's own barrier, read out of the linked image. It is reached through a plain call
+# from amp::window_init and from the deferred-seat scan in the raise path, and no callgraph gate
+# follows either, so nothing else in the tree would notice the body being emptied.
+#
+# KEYED ON WHERE A CALLER EXISTS, and not on the core count: the deferred-seat pairing lives in
+# the GICv3 backend and in the AMP window, so a GICv2 SMP image links no caller and
+# --gc-sections drops the symbol entirely. imx8mp-evk is the other half of the same key, being
+# GICv3 at one core and no AMP node, so it links no caller either.
+#
+# The rv64 clause has no multicore preset in the tree yet; it is written so it lights up with
+# the first one.
+# It runs no image, so it carries the host label.
+set(_fence_owed FALSE)
+if(KICKOS_AMP_NODE OR KICKOS_NUM_CORES GREATER 1)
+  if(KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_ARM64_GIC_VERSION EQUAL 3)
+    set(_fence_owed TRUE)
+  elseif(KICKOS_ARCH STREQUAL "rv64imac")
+    set(_fence_owed TRUE)
+  endif()
+endif()
+if(KICKOS_BUILD_TESTS AND _fence_owed)
+  set(_fence_full "")
+  set(_fence_refused "")
+  if(KICKOS_ARCH STREQUAL "armv8a")
+    set(_fence_full "ish")
+    set(_fence_refused "ishld ishst")
+  elseif(KICKOS_ARCH STREQUAL "rv64imac")
+    set(_fence_full "rw,rw")
+    set(_fence_refused "r,r w,w rw,w r,rw")
+  endif()
+  if(NOT _fence_full STREQUAL "")
+    add_test(NAME ipi_fence
+      COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_ipi_fence.sh"
+              "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}"
+              "${_fence_full}" "${_fence_refused}")
+    set_tests_properties(ipi_fence PROPERTIES TIMEOUT 120 LABELS host)
+  endif()
+endif()
+
 # The store->load fence both sides of the rv64imac interrupt-controller handshake owe, read out
 # of the linked image. UNCONDITIONAL on the core count, as the fence is: the three words the
 # handshake turns on are image-wide rather than per hart, so a fence keyed on the count would
@@ -230,6 +269,17 @@ if(KICKOS_BUILD_TESTS AND KICKOS_KERNEL_CORES GREATER 1
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_doorbell_generic.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}" "${KICKOS_ARCH}")
   set_tests_properties(doorbell_generic PROPERTIES TIMEOUT 120 LABELS host)
+endif()
+
+# Node 1's own vector table, read out of the linked image: every line but the doorbell parks,
+# and the doorbell reaches the service body.
+# It runs no image, so it carries the host label.
+if(KICKOS_BUILD_TESTS AND KICKOS_NUM_CORES GREATER 1 AND KICKOS_CHIP STREQUAL "rp2350")
+  add_test(NAME rp_node_vectors
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_rp_node_vectors.sh"
+            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}" "${KICKOS_CHIP}"
+            "${PROJECT_SOURCE_DIR}")
+  set_tests_properties(rp_node_vectors PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-x86_64")

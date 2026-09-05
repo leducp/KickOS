@@ -30,6 +30,9 @@ add_subdirectory(sched_exit)
 add_subdirectory(libc_exit)
 
 add_subdirectory(selftest)
+# AFTER selftest: the AMP partition targets consume $<TARGET_FILE:selftest>, and a target has to
+# exist before another directory can name it.
+add_subdirectory(ampping)
 add_subdirectory(stress)
 
 add_subdirectory(gpioblink)
