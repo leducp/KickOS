@@ -147,21 +147,48 @@ verdict when NEITHER core retries, which is the reading that would have been a c
 two identity registers answered `0xcdcd` and `0xabab`, so the option is realised and the
 integrator wired the cores apart.
 
-**AND THE ATOMIC CONTROL REGISTER READ BACK ALL-RCW, WHICH IS THE MECHANISM AND NOT ONLY THE
-OUTCOME.** The ISA leaves an inter-processor conditional store to the part precisely because it
-may execute locally in DataRAM, raise a load-store error, or issue a read-conditional-write bus
-transaction. This die selects the bus transaction for every memory class, which is the arm that
-makes the instruction exclude between two CPUs over shared internal memory.
+**AND `ATOMCTL` READ BACK ALL-RCW, WHICH IS THE MECHANISM AND NOT ONLY THE OUTCOME.** The ISA
+leaves an inter-processor conditional store to the part precisely because it may execute locally in
+DataRAM, raise a load-store error, or issue a read-conditional-write bus transaction; Special
+Register 99 is what selects between them, per memory class (ISA summary 4.3.13.4 and Table 52,
+p.121). The probe read `0x15`, all three fields selecting the bus transaction, which is the arm
+that makes the instruction exclude between two CPUs over shared internal memory.
+
+**AND THAT READING WAS A DRAW, WHICH IS THE HALF WORTH WRITING DOWN.** The probe never WROTE the
+register, and `0x15` is not the architectural reset value: Table 190 (p.313) gives that as `0x28`,
+which selects the core-local arm for both cacheable classes and an exception for bypass, so not one
+class reaches the bus. The exclusion the probe witnessed is therefore an observation and not a
+guarantee -- it held because something outside the image had left the register usable, and nothing
+in the image asked. What makes the LX6 row's exclusion column a fact about an IMAGE rather than
+about one boot of one die is that `kickos_lx6_init` now SEATS `0x15` on every core and reads it
+back, REFUSING by name before that core can reach `arch_kernel_lock`. The refusal is what the
+declaration rests on; the measurement is what made the declaration worth attempting.
+
+**THE FAILURE THIS CLOSES IS SILENT AND IT IS THE ONLY KIND HERE THAT IS.** A part selecting the
+core-local arm executes every instruction of `arch_kernel_lock` and excludes a core from itself and
+from nobody else: the lock appears to work while excluding nothing, and no fault is raised
+anywhere. `arch/xtensa/lx6/smp.cmake` states that hazard in its `exclusion` predicate and could not
+check it, a predicate being a configure-time declaration; `tests/static/check_lx6_atomctl.sh` reads
+the seat and the read-back out of the linked image, and the die's answer stays the board's.
 
 **Both properties are INTEGRATION OPTIONS, so this is one die's answer**, and a record of it names
-the die. The two conditions above still ride: kernel state PLACED in internal SRAM by a linker
-rule, and requirement 5 holding for scheduling rather than as a general statement about the part.
+the die.
 
-Two conditions ride with the row even if that document satisfies both. Kernel state must be PLACED
-in internal SRAM, so a port owes a linker rule rather than a runtime check. And the cores are
-interchangeable for anything a thread does, while not being identical: one 8 KB memory is reachable
-by one core only, and a per-CPU peripheral answers differently at one address, so requirement 5
-holds for scheduling and not as a general statement about the part.
+**TWO CONDITIONS RIDE WITH THIS ROW, AND EACH IS DISCHARGED WHERE IT CAN BE REFUSED RATHER THAN
+DESCRIBED.** Kernel state must be PLACED in internal SRAM, which is a link-time property and never
+a runtime one, so the chip owes a link that REFUSES the placement it cannot support: kernel data, a
+boot stack or kernel text leaving internal SRAM each fail the link by name in
+`arch/xtensa/chip/esp32/esp32.ld`. Two things about those refusals are the decision rather than the
+detail. They read the SoC's own bounds and not the script's own regions, because an assert
+comparing a region against itself passes wherever the region is repointed, which is the one edit it
+exists to catch. And they are unconditional rather than gated on the core count, because a rule
+that runs only once the backend needing it exists is a rule nothing has ever run.
+
+The second condition is requirement 5, and it is declared at the granularity the scheduler asks it
+at. The cores are interchangeable for anything a thread does and they are not identical: one 8 KB
+memory answers to one core alone, and a per-CPU peripheral answers differently to each core at one
+address. So the chip declares symmetry for SCHEDULING, and a caller reaching either of those two
+places is outside what the declaration covers.
 
 **THE RP PARTS CAN RUN A SHARED KERNEL AND ARE DECLINED ONE, and the ground is FIT rather than
 cost.** FreeRTOS ships a dual-core RP2040 port building two kernel locks from two SIO spinlocks, so
@@ -236,6 +263,108 @@ lines are pinned and one lock suffices.
 **The asymmetry is the reason, so it is recorded rather than the conclusion alone.** A future part
 meeting requirements 1 to 5 and failing 6 would reopen the second lock, and requirement 6 exists to
 keep that part out.
+
+**A SERVER MAY BE REQUIRED TO SIT WHERE ITS LINE IS, AND A PASSER-BY MAY NOT BE MOVED.** N3 buys one
+lock with a pin, so the words a logical line is gated by are image-wide, and they record ONE core's
+view soundly and two cores' views not at all. Two kinds of caller reach them and the rule is not the
+same for both, which is what keeps this consistent with section 8's placement being an ASK AND NEVER
+A YANK.
+
+A thread holding `CAP_WAIT` on a line is ASKING to serve it, so `irq_wait`, `irq_ack` and
+`irq_discard` require it to be on the routed core: the request is admitted through
+`sched_admit_mask` as a SUBSET, so a task whose grant cannot reach that core is REFUSED and never
+clamped. That is an ask with a refusal, made by the thread that asked, and it needs no exception to
+section 8. `CAP_SIGNAL` is deliberately outside it: `irq_notify` posts on the binding and reaches no
+controller register, so its holder is not a server.
+
+A caller that merely PASSES a line on its way to something else, such as the console handover
+masking the kernel's own TX line inside `kos_console_publish`, asked for none of that. Its affinity
+is its own and narrowing-only, and re-placing it as a side effect of an unrelated syscall would be a
+yank. So the discipline for a passer-by is not a pin: the TOUCH is routed to the owning core rather
+than the thread being routed to the line. Measured on esp32-wroom, where the debug guard named line
+0x1e as routed to core 0 and touched from core 1, from `console_tx_deinit`.
+
+**AND THE PIN COVERS A ROUTED LINE ONLY, WHICH IS MOST OF WHAT N3 BUYS AND NOT ALL OF IT.** A
+logical line with no device route has no owning core: `arch_irq_line_core` answers -1,
+`irq_line_op` performs the op on whatever core called, `pin_to_line_core` places nothing, and the
+debug guard's refusal is silent because its subject is the routed core. On `esp32-wroom` exactly
+one line is routed, the console's TX; every software-injected line, which is every selftest line,
+is unrouted. So the backend's image-wide gating cells are reached from more than one core there,
+and what carries them is NOT the pin.
+
+**WHAT CARRIES THEM, PER CELL, BECAUSE THE TWO ANSWERS ARE DIFFERENT.** The pending latch is
+serialised by the kernel lock: every one of its accesses is reached with that lock held, or is
+performed by a doorbell service body on behalf of a core that holds it, and no ISR-context path
+touches it at all, the two callers of `irq_line_op_local` both asking for a mask. The mask cell is
+not: the ISR's mask is the one unlocked writer in the image. It is therefore an ATOMIC CELL, which
+buys the two things a plain byte does not, one indivisible access of a stated width and a compiler
+that may no longer cache the load across a branch nor sink or elide the store. Its ordering against
+the waiter's unmask is carried by the kernel lock's own causal chain: the ISR masks and then calls
+`sem_post`, which takes the lock, and `S32C1I` "plays the role of both acquire and release",
+requiring every ordinary store to have performed before its atomic pair performs (Xtensa ISA
+summary 4.3.13.5, p.122); the release is `S32RI`; the waiter takes the same lock before it
+unmasks.
+
+**WHY THE LX6 DOES NOT NEED THE RV64 BACKEND'S ATOMIC READ-MODIFY-WRITE, stated because the two
+are now visibly different and the difference reads like drift.** rv64imac keeps its gating state as
+a BITMASK WORD, so setting one line's bit is a read-modify-write of a word carrying every other
+line's, and a peer mutating it concurrently clobbers the update; that is what `amoor.w` and
+`amoand.w` are there for, and its own declaration says so. **One cell per line removes that
+read-modify-write outright**: a mask is a store of 0 and an unmask a store of 1, whole values, so
+there is no shared word to clobber and nothing for an atomic RMW to protect. Read out of the linked
+image, every write to either cell is a `movi` followed by an `s8i`, and not one of them derives its
+value from a value read. rv64's other half, the store-load fence pair between its unmask and its
+inject, answers a Dekker race between those two bodies; here both of those bodies hold the kernel
+lock, so that race does not arise, and importing one fence without the exactly-once take that
+settles which side delivers would assert a completeness this backend does not have. Freeze N9 is
+the licence rather than an excuse: the cross-core mechanism is a per-arch seam whose cheapest
+correct mechanism differs per part. `tests/static/check_lx6_irq_cells.sh` asserts the no-RMW half
+out of the image, because it is exactly the property an innocent edit removes with no local
+symptom.
+
+**AND ONE THING IS NOT CLOSED BY ANY OF IT, so it is recorded rather than implied.** Two stores to
+one cell from two cores have no order that a primitive can give: an atomic access is indivisible
+and still unordered against a peer's, and rv64's AMOs do not order its equivalent pair either. For
+an unrouted line the mask-versus-unmask order therefore rests entirely on the causal chain above,
+with no pin behind it. No reachable inversion of that chain was constructed, and none is claimed
+impossible.
+
+`kernel/irq/irq_route.cc` is the one place that decides, and
+`tests/static/check_irq_line_op_sole.sh` refuses a kernel-layer call to `arch_irq_mask`,
+`arch_irq_unmask` or `arch_irq_clear_pending` anywhere else. **The gate ships with the routing and
+not after it**, because N3's discipline was correct and unenforced for the whole of this backend's
+life, and that is precisely how a wrong-core touch reached an audit and stranded a board with no
+message. A rule enforced by nothing is a rule someone has to remember.
+
+**THE PRICE OF ROUTING RATHER THAN PLACING, AND THE HISTORY OF GETTING IT WRONG TWICE.** The first
+estimate was new machinery: a cross-core action queue. That was wrong, and wrong because the
+far-side hook was invisible until someone looked. All three shared-kernel backends already call a
+kernel-layer function from their doorbell service bodies (`kickos_amp_node_service`), so a second
+one is one line in each. The second estimate was that line plus a helper. That was also wrong, and
+it was wrong FOR THE VERY REASON THE DESIGN IS CORRECT.
+
+The drain must live in the doorbell SERVICE BODY, because the poll inside `arch_kernel_lock`'s
+acquire loop is the only thing that answers a peer spinning for the lock an initiator holds, and an
+action anywhere else deadlocks exactly as N2 warns. `klock_resched_ask`'s consumer looks like the
+natural home and is not: it is drained by the dispatch ENTERING THE SCHEDULER, which the acquire
+poll never does. But the service body is reachable from every chain that can spin on the kernel
+lock, so every one of them now charges the deepest line-gating operation, whether or not an ask is
+pending, because **A STATIC CALLGRAPH BUDGET CHARGES WHAT IS REACHABLE, NOT WHAT IS TAKEN** and a
+runtime "nothing owed" test is invisible to the reader. On lx6 that is 128 bytes measured:
+`KICKOS_LX6_TRAP_DEPTH` moved 496 to 608 and the smp board's idle stack 768 to 896, both refused by
+a gate until they did. `arch/xtensa/lx6/include/kickos/arch/lx6_trap_stack.h` carries the resulting
+32-byte margin as a constraint on future work, with the exits named. arm64 and rv64 absorbed the
+same hook with no knob moved.
+
+That is the transferable lesson rather than a local figure: anyone adding a cross-core action
+anywhere near a lock path pays it, and the way to find out is to let the budget gate answer.
+
+**One claim in this area had no writer in the other direction and was false.** The routing's own
+comment said the rendezvous is never reached from interrupt context and that no such call exists;
+the callgraph reader proved it reachable from the first-level dispatch through `irq_event_isr`. The
+fix is two entry points rather than a reworded comment, `irq_line_op` for a caller that may need
+routing and `irq_line_op_local` for one that is the routed core by construction, so it is a fact
+about the graph instead of a promise about the code.
 
 ### N4. The doorbell serves both models
 
@@ -634,8 +763,6 @@ property of the lock this work writes rather than of that code.
 - Four cores running threads on `qemu-arm64`, with the whole existing fleet green and the
   single-core images unmoved except where a recorded change explains it.
 - A gate that reddens when a secondary core does not arrive.
-- The SMP-seam signature verdict from a baseline frozen before either backend, which is the method
-  the capability ABI differ used: `tests/static/smp_seam_records.txt` and its differ exist at S0.
 - A configure refusal on a part that fails the predicate, with a positive control showing it fires.
 - For every gap in section 4 that is fixed, a mutation that reddens exactly the arm claiming it.
 
@@ -772,19 +899,74 @@ the second one exists, by which shape carries less duplication.
 
 ## 7. What this work will not witness
 
-- **No silicon.** The A53 is an emulator only and the RV64 board has no part at all, so every claim
-  here is emulator-grade until the i.MX8MP arrives.
-- **AND THE ONE PART THAT COULD CARRY A SHARED-KERNEL SILICON WITNESS IS THE LX6, which this work
-  does not target.** This bullet used to say the RP parts are the fleet's only real multicore
-  hardware and are all in the AMP column, which stopped being true when the LX6 row was corrected.
-  **Its two open columns are no longer open: a probe measured both on silicon and both answer
-  yes**, so the part satisfies all six on evidence rather than four. What that changes is the
-  STANDING of the gap and not the gap itself -- the PRIMITIVE a shared kernel rests on is now
-  witnessed on real hardware, and no kernel is. A whole backend still separates the two, so every
-  shared-kernel claim in this document stays emulator-grade until one exists.
+- **No silicon, and the three shared-kernel backends do not share one standing.** The A53 is an
+  emulator only and the RV64 board has no part at all, so those two are emulator-grade until the
+  i.MX8MP arrives.
+- **THE LX6 IS STILL THE ONLY BACKEND HERE THAT NO MODEL RUNS, AND IT IS NOW THE ONLY ONE A
+  MACHINE HAS RUN.** Upstream QEMU models no ESP32, so this image is executed by nothing in CI and
+  by nothing on this bench without a board on the bus: the other two backends are witnessed by a
+  model of the architecture and this one by no model at all. What changed is the other side of it.
+  The bring-up check is no longer compiled into every build and executed by none of them: it has
+  been executed on silicon, answering all 0x40 rounds, on an ESP32-WROOM-32 module. **A green CI
+  run stands behind none of that** -- what stands behind it is a board, and a serial capture is
+  dated evidence rather than a standing fact.
+- **AND THE PART THAT CAN CARRY A SHARED-KERNEL SILICON WITNESS IS THAT SAME LX6, so the two
+  standings meet on one board. THAT WITNESS NOW EXISTS.** Its two open columns were measured on
+  silicon and both answer yes, so the part satisfies all six on evidence rather than four, and a
+  backend rests on them. It remains a BENCH OPERATION AND NOT A GATE: no run in this tree produces
+  it and no green run stands in for it. **What the shared kernel now has behind it is more than
+  the primitive**: two cores in one scheduler completing 125 selftest arms with a userspace UART
+  driver owning the console, the doorbell and the kernel lock answering their bring-up check on the
+  die, and a device line's gating routed to its owning core. What it does not have is a SECOND
+  die, or any of the specific non-witnesses below.
 - **The lock has no silicon witness specifically.** An AMP port on a real dual-core part would still
   exercise the doorbell, the ring and the ordering claims; the shared kernel is what loses its
   hardware witness.
+- **THE SECOND CPU'S RELEASE HAS A DOCUMENTED HALF AND AN INFERRED HALF, and the inferred half is
+  the one that makes it run.** Six writes start the LX6's second CPU. The manual states the value
+  that STALLS it, split across two RTC_CNTL fields, and states nowhere the value that releases it;
+  clearing both fields is taken from their reset value and from a probe that started the core. So
+  that half of the sequence rests on a measurement precisely where the page is silent, and a
+  reader looking for its authority will not find one. What the image adds beside it is a refusal
+  rather than a claim: the primary waits a bounded interval for the core to publish its own
+  arrival and terminates by name if it does not, because released is not arrived.
+- **AN UNROUTED LINE'S MASK ORDERING IS ARGUED AND NOT WITNESSED, and no run can witness it.**
+  N3 records that the pin covers a routed line only, that the gating cells are atomic, and that
+  the order between the ISR's mask and the waiter's unmask rests on the kernel lock's
+  `S32C1I`/`S32RI` chain. Two stores to one cell from two cores admit no primitive that orders
+  them, so what stands behind that order is the chain and the ISA's wording, not an arm. **The
+  archived boots exercise those cells through a real driver and through the widened park window,
+  which is evidence that the cells WORK and not evidence about the ordering**: the interleaving
+  that would expose it needs the ISR's mask to land after an unmask that is logically later, and
+  nothing in this tree can schedule that on purpose. Same standing as the lost-edge argument
+  above, and the same reason: a probabilistic soak here would read exactly like a broken one.
+
+- **THE DOORBELL'S LOST-EDGE ARGUMENT IS WRITTEN AND NOT EXERCISED.** No hardware clears an
+  inter-CPU trigger on this part, so a sender's set can be erased by a receiver's clear. What
+  bounds that at one spurious entry rather than a lost request is an ordering discipline on both
+  sides plus the input being LEVEL, so a set landing after a clear re-asserts and the receiver
+  enters again. No arm reaches that interleaving and none could be built from an honest sender, so
+  this is a proof about the mechanism and not an observation of it.
+- **THE SINGLE-LOCK RULING IS CHECKED IN A DEBUG BUILD, AND A DEBUG BUILD HAS NOW RUN IT.** N3 buys one
+  lock with interrupt affinity, and this backend makes the pin structural rather than
+  conventional: binding a device interrupt takes the core that will take it, with no default, so a
+  route cannot silently mean the primary. **The debug build ran, and the discipline did NOT hold**:
+  the guard fired on the first board, naming line 0x1e as routed to core 0 and touched from core 1,
+  and the caller was the kernel's own console handover inside `kos_console_publish`. That is what
+  the archive's boots 2, 3 and 9 through 12 record, and it is why the other direction is no longer
+  a caller's discipline at all: `kernel/irq/irq_route.cc` routes the touch to the owning core, its
+  per-line cells give each line a single writer, and two gates hold both
+  (`check_irq_line_op_sole.sh`, `check_route_service_order.sh`). N3 in section 2 carries the
+  server-versus-passer-by split that resulted.
+  **What no run still says** is whether that holds under a caller nobody has written yet: the
+  routing is a shape rather than a rule, but `arch_irq_inject` remains a cross-core writer of one
+  line's cell, gated to selftest and refused by name in a debug build rather than made impossible.
+  A release image still compiles the guard to nothing, which stays the deliberate half of the
+  trade.
+- **THIS BACKEND'S RENDEZVOUS COUNTER IS STRUCTURALLY ZERO AND IS NOT AN ABSENCE OF SENDS.** There
+  is no translation to invalidate and no cache over the memory both cores fetch from, so nothing
+  pairs a send with a wait here at all. The counter reads zero on a correct image, which means a
+  reader comparing it against a backend that does pair them is comparing two different questions.
 - **The fastpath ruling is unexercised.** Neither target links the fastpath, so N10's refusal is what
   carries it and no run demonstrates it. **The locality guard N7 asserts now EXISTS in that file
   and this bullet is unmoved by it**: the guard folds to nothing on every part that links the
@@ -1007,6 +1189,51 @@ returns the placement test rather than a bare true. That is what stops a core re
 it must give up, and it is what makes `reschedule()` the thing that moves a thread rather than any
 yank.
 
+### Placement rests on every kernel core taking its own scheduler passes
+
+A re-placement moves nothing by itself. The mask is written, the core running the thread is ASKED,
+and that core's own scheduler pass is what moves it. So the whole of placement is alive only while
+every kernel core actually takes scheduler passes, which on a shared kernel means every core arming
+its own comparator and preempting on it. **A backend whose secondary never arms one satisfies every
+line of this section and still strands what runs there**: the call returns 0, the mask is stored,
+every invariant holds, and a thread RUNNING on that core stays on it for the life of the image.
+The failure is silent by construction, because a placement is an ask and never a yank.
+
+That is a property of the MACHINE and not of this section, so an image states it rather than
+assuming it. `KOS_SCHED_OP_PREEMPTED` answers one bit per core whose own slice timer has taken a
+thread off it. It is the one scheduling probe that is machine-wide rather than a read of the
+caller's own state, and it has to be: what a fresh backend leaves open is whether a SECONDARY
+preempts at all, and nothing a thread can read of itself on the boot core says that.
+
+**A set bit is a conjunction and the exclusions are the content.** It says that core's comparator
+fired AND the scheduler put a different thread on it. A cross-core reschedule, a device wake, and a
+slice expiry that re-picked the same thread each set nothing, because none of the three is evidence
+that this core can take a thread off itself on its own clock. The answer is monotonic and
+machine-wide, so a caller reads a FLOOR of what has ever happened and never a sample of what is
+happening.
+
+**It is one cell per core and never one shared mask**, which is the same rule N9 states one level
+down. A shared mask is a read-modify-write from several cores, and a lost update there erases a bit
+that may never be set again: a core preempting once and its only evidence going with it. One writer
+per cell has no such failure.
+
+### Two kernel cores is the narrow case, and the boot core is a destination there
+
+On a part with two kernel cores the boot core is the only core a thread on the other one can be
+moved ONTO. Nothing in the pick rule or in admission distinguishes it, and nothing should: it is an
+ordinary scheduling core, and the single thing that treats it apart is the configuration refusal
+that keeps it out of the isolated set, which exists so the default core set is never empty. So a
+placement claim on such a part is a claim about the boot core carrying an ordinary thread, and a
+part that could not do that would be a part on which the default core set means nothing.
+
+**Observing that costs an observer that cannot be root, and the reason is the ABI rather than the
+scheduler.** A thread above the observer's priority spinning on the observer's own core never gives
+it back, so the observer must be somewhere else, and no call answers "which thread am I": a
+thread's handles are the ones it was handed, and nothing hands a thread its own. Root therefore
+cannot place root. What closes it needs no new authority, because a task is one scheduling domain:
+a spawner places its child, so an observer pinned off the core under test is an ordinary child of
+the thread that wants the observation, and the placement is one the grant already permits.
+
 ### Isolation shapes the default, not the admission
 
 `KICKOS_ISOLATED_CORES` is subtracted from the DEFAULT core set and from nothing else.
@@ -1161,15 +1388,6 @@ other than its mask, nothing in it argues against the next.
   the wrong reading: the only question was ever SMP versus AMP, and requirement 6 answers it.
   They get AMP. Nothing in this contract declines support for a part on the ground that the work
   is not worth doing -- section 1 gates on HARDWARE, never on whether a port earns its keep.
-- **Whether the LX6 gets a shared kernel. THE GATE IS ANSWERED AND WHAT REMAINS IS A DECISION.**
-  The two open columns were measured on silicon and both answer yes, so section 1.5 now rules
-  rather than gates and this entry is no longer waiting on a fact. **The reason it stays open is
-  cost, and cost is the one ground section 1 refuses to gate on** -- so this is a scheduling
-  question and never a verdict about the part. What it costs: the arch backend exists and is
-  single-core, so the SMP half is a per-core identity, a lock, a doorbell over four GLOBAL
-  single-bit triggers that hardware never clears, a lock release across the swap, a linker rule
-  placing kernel state in internal SRAM, and the windowed ABI, which the spike names as the real
-  work and which a probe running one core in CALL0 assembly deliberately sidesteps.
 - **What the ISA DID settle needs no further source and bears on every backend's ordering.** Memory
   ordering is core architecture on this family rather than an option, so it is present on any part;
   ordinary loads and stores carry NO inter-processor ordering at all, the model being an explicitly
@@ -1190,6 +1408,11 @@ other than its mask, nothing in it argues against the next.
   fixed address the shared window sits at, and whether a part's protection unit is asked to
   enforce the boundary or merely to describe it. Until something enforces it, the window's header
   rule stands: a compromised peer kernel reaches every other node's memory, and validation defends
-  against a malformed peer and not a hostile one.
+  against a malformed peer and not a hostile one. **The LX6 names two of those shapes concretely
+  and owes neither today.** Its cross-core rendezvous cells are ordinary statics indexed by the
+  writing core, which is the placement N6b requires two link scripts to agree on once each node
+  carries its own image; and its doorbell partition is target-keyed, one trigger per core, which is
+  a node index spent as a hardware core mask. Both are sound under one image spanning the cores and
+  both are exactly what an own-image node on this part would have to redo.
 - **Whether a shared kernel and an AMP node can coexist on one part.** The i.MX8MP is both at once
   and nothing here decides how the two halves see each other.

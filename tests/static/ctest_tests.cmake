@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Flattens `ctest --show-only=json-v1` into one TAB-separated line per test, for
-# check_test_labels.sh:
+# tools/sweep_image_gates.sh:
 #
 #   <name> <TAB> <,label,label,> <TAB> <0|1 DISABLED> <TAB> <program>
 #

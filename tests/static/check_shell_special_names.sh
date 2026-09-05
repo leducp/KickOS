@@ -183,10 +183,10 @@ N="$(wc -l < "$TMP/corpus" | tr -d ' ')"
       the tree, so a clean result below would be a corpus that shrank and not a tree that is
       clean."
 
-# The gate that closed this class is itself in the corpus, so its presence is asserted: a
-# rename would otherwise leave the scan reading one file fewer and still passing.
-grep -Fxq "tests/static/check_aspace_sigdiff.sh" "$TMP/corpus" \
-    || fail "the corpus does not hold tests/static/check_aspace_sigdiff.sh, so it was built
+# This script is itself a corpus member, so its presence is asserted: a corpus built from the
+# wrong path would otherwise read one file fewer and still pass.
+grep -Fxq "tests/static/check_shell_special_names.sh" "$TMP/corpus" \
+    || fail "the corpus does not hold tests/static/check_shell_special_names.sh, so it was built
       from the wrong path and every finding below would be missing rather than absent"
 
 : > "$TMP/findings"

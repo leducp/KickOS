@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-D0WDQ6 GPIO + IO_MUX register map (ESP32 TRM GPIO / IO_MUX chapters), as
+// ESP32 GPIO + IO_MUX register map (ESP32 TRM GPIO / IO_MUX chapters), as
 // used by the kernel diagnostic LED on GPIO2 (DOIT DevKit v1 / NodeMCU-32S blue
 // LED, active-high).
 

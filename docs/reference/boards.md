@@ -108,7 +108,7 @@ code wins, then this file.
 | `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and not in CI**: 52 arms registered (re-derived 2026-08-29 by `ctest -N`), witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
 | `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and not in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip selects no memory family, so the map is flat. See *Per-board caveats* below |
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
-| `esp32-wroom` | ESP32-D0WD / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
+| `esp32-wroom` | ESP32 / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
 | `rx72m` | RX72M / RXv3 @240 MHz | P80 (LED6, active-low) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **Fourth board with an UNPRIVILEGED root, and the only one on the RX MPU** (2026-07-28) -- see *Unprivileged root* below. Re-witnessed 2026-07-30 at a clean `270b6fa`, closing the owed stage-4 `rxdrv` mux-write arm and the M4.5.5 granular-shaping debt in one visit -- see *M4.5.6* below. **No CI gate** -- see *CI coverage* below |
 | `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + `HARD FAULT` dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed. **First board with an UNPRIVILEGED root** (2026-07-27) -- see *Unprivileged root* below |
 | `f411disco` | STM32F411 / M4F | PD12 (LD4 grn) | USART2, PA2/PA3, 115200 (ext adapter) | onboard ST-Link (`st-flash`) | [x] full selftest + all apps + fault dump + bench + LED; **PMSAv7 enforcement silicon-witnessed 2026-07-29** -- enforcement selftest 62/62 + `mpu_fault` cross-domain MemManage denial, closing the `stm32f411` MPU HW debt for the chip. **Fifth board with an UNPRIVILEGED root, and the second on PMSAv7** (2026-07-29) -- see *Unprivileged root* below |
@@ -723,7 +723,7 @@ the board".
 | armv6m | `microbit`, `picopi` | `microbit` run gate + `picopi` build | **build only** |
 | armv8a | `qemu-arm64`, `imx8mp-evk` | `qemu-arm64` run gate -- the only CI witness this ISA has; `imx8mp-evk` is a LOCAL run gate in no CI job | -- (no region MPU; enforcement is VMSAv8 page tables and it is LIVE in both gates) |
 | rv64imac | `qemu-riscv64`, `qemu-riscv64-sv48` | **none** | -- (no region MPU; enforcement is Sv39/Sv48 page tables, live in both LOCAL postures and in no CI job) |
-| Xtensa LX6 | `esp32-wroom` | build only, plain and `-st` | -- (no per-domain unit) |
+| Xtensa LX6 | `esp32-wroom` | build only, plain, `-st` and `-smp` | -- (no per-domain unit) |
 | RXv3 | `rx72m` | **none** | -- |
 | x86_64 | `qemu-x86_64` | **none** | -- (no memory family selected; the map is flat) |
 
@@ -857,9 +857,12 @@ the board".
      *before* spawning anything, which is what `pool_can_host` in the suite now does; the test
      reports a real TAP skip instead.
 - **Xtensa is build-only** because upstream QEMU ships no ESP32 machine model. The gate builds
-  both `esp32-wroom` and `esp32-wroom-st` (the `-st` config is what is HW-validated), catching
-  link / linker-script / windowed-ABI asm regressions. `esptool` is deliberately absent: only the
-  bootable `.app.bin` post-step needs it, and CI cannot boot the image anyway.
+  `esp32-wroom`, `esp32-wroom-st` and `esp32-wroom-smp` (the `-st` config is what is HW-validated),
+  catching link / linker-script / windowed-ABI asm regressions. `esptool` is deliberately absent:
+  only the bootable `.app.bin` post-step needs it, and CI cannot boot the image anyway.
+  `-smp` is the two-core image, both CPUs under one kernel; what it adds to the other two is the
+  cross-core lock, the doorbell, and the gates that read them out of a linked image. What it
+  cannot add is a run: the SMP claims in its selftest suite are read off a serial capture.
 
 ### Cross toolchains (the local convention)
 

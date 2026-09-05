@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-D0WDQ6 UART0 register map, from the ESP32 TRM v5.8 chapter 19 (UART Controller):
+// ESP32 UART0 register map, from the ESP32 TRM v5.8 chapter 19 (UART Controller):
 // offsets per section 19.4.1, fields per the per-register descriptions cited below.
 // Console UART; the ROM leaves it at 115200 8N1 on GPIO1 TX / GPIO3 RX, which is also
 // Register 19.9's reset framing (BIT_NUM=3, STOP_BIT_NUM=1, PARITY_EN=0).

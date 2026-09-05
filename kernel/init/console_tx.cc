@@ -9,6 +9,7 @@
 // interleaved at a chunk boundary. The CRLF cooking in console.cc already splits
 // every write over 127 bytes the same way on each board that has a ring.
 
+#include <kickos/irq_route.h>
 #include <kickos/console_tx.h>
 
 #include <kickos/config/limits.h>
@@ -334,8 +335,8 @@ void console_buffer_init(void)
     // pend latched on this line before boot the instant ISER is set, and console_tx_isr on a
     // zero-init ring would deref a NULL backend.
     console_tx_init(be, buf, size, line);
-    arch_irq_clear_pending(line);
-    arch_irq_unmask(line);
+    kickos::irq_line_op(line, kickos::LineOp::CLEAR);
+    kickos::irq_line_op(line, kickos::LineOp::UNMASK);
 }
 
 // Relinquish the buffered TX path so a userspace driver can take the UART. One IrqLock

@@ -26,6 +26,28 @@
 
 namespace kickos
 {
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
+    namespace
+    {
+        // One writer per cell: a shared mask would be a cross-core read-modify-write, and a
+        // lost update erases a bit that may never be set again.
+        Atomic<uint32_t, Order::RELAXED> g_slice_preempt[KICKOS_KERNEL_CORES] = {};
+    }
+
+    uint32_t ktime_slice_preempt_cores()
+    {
+        uint32_t seen = 0;
+        for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
+        {
+            if (g_slice_preempt[core].load() != 0u)
+            {
+                seen |= 1u << core;
+            }
+        }
+        return seen;
+    }
+#endif
+
     namespace
     {
         // Sorted ascending by deadline, singly-linked through tnext, rooted at the kernel.
@@ -194,7 +216,18 @@ namespace kickos
         // MUST precede the wake loop: sched::wake reassigns kernel().current and tick_rr
         // reads it, so running it after drops any slice expiry landing on the same interrupt
         // as a sleeper wake.
+        // The observation brackets tick_rr alone: the wake loop below can change the running
+        // thread too, and a bit set across both would not mean a slice preemption.
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
+        Thread const* const ran = sched::current();
+#endif
         sched::tick_rr(now);
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
+        if (sched::current() != ran)
+        {
+            g_slice_preempt[kickos_kernel_core()].store(1u);
+        }
+#endif
 
         while (kernel().sleepq != nullptr and kernel().sleepq->deadline_ns <= now)
         {

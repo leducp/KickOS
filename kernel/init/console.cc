@@ -149,6 +149,18 @@ extern "C" void console_note_driver_death(void)
     g_console_driver_died = true;
 }
 
+// A chip's reclaim silences and reprograms the device, destroying in-flight TX: a FIFO reset
+// on esp32, a transmitter held in reset on esp32c6, UARTEN/UE/TE cleared on the PL011, USART,
+// LPUART, SCI and USIC parts. arch_console_write_sync hands bytes to a FIFO and not to the
+// wire, so the flush has to come first. It stays OUT of the chip body: arch.h scopes
+// arch_console_reclaim to straight-line absolute stores, since it may run in a partial
+// nested-fault state.
+static void console_flush_then_reclaim(void)
+{
+    arch_console_flush_sync();
+    arch_console_reclaim();
+}
+
 extern "C" void console_on_driver_death(void)
 {
     if (not g_console_driver_died)
@@ -181,7 +193,7 @@ extern "C" void console_on_driver_death(void)
         return;
     }
     g_console_state = ConsoleState::RECLAIMED;
-    arch_console_reclaim();
+    console_flush_then_reclaim();
 }
 
 // A stale zero here makes kos_console_publish's handover drain give the UART to a
@@ -380,7 +392,7 @@ extern "C" void kpanic_enter(void)
     if (g_console_state != ConsoleState::RECLAIMED)
     {
         g_console_state = ConsoleState::RECLAIMED;
-        arch_console_reclaim();
+        console_flush_then_reclaim();
     }
     g_console_panicking = true;
     console_tx_flush_sync();

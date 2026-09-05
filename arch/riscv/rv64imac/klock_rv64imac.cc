@@ -350,6 +350,12 @@ void kickos_rv64_doorbell_service(void)
 
     // The sequence OBSERVED above, never a re-read: a request raised after the fence is not one
     // this fence covers, and answering it here would attest to a fence that never saw it.
+#if KICKOS_KERNEL_CORES > 1
+    // After the snapshot above and before the answer stores below; both halves are the
+    // contract (kernel/irq/irq_route.cc, line_op_ask).
+    kickos_irq_route_service();
+#endif
+
     for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
     {
         if (asked[from] != g_answer[me].seq[from].load())

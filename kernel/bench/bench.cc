@@ -13,6 +13,7 @@
 //
 // The KERNEL prints both tables, from thread context and outside any IrqLock.
 
+#include <kickos/irq_route.h>
 #include <kickos/bench.h>
 #include <kickos/irq.h>
 #include <kickos/irqlock.h>
@@ -227,8 +228,8 @@ namespace kickos
     void bench_irq_setup(int line)
     {
         (void)irq_attach(line, bench_irq_handler, nullptr);
-        arch_irq_clear_pending(line); // discard pre-arm garbage (latch-and-coalesce contract)
-        arch_irq_unmask(line);
+        irq_line_op(line, LineOp::CLEAR); // discard pre-arm garbage (latch-and-coalesce contract)
+        irq_line_op(line, LineOp::UNMASK);
     }
 
     // One IRQ-entry-latency sample in cycles (0 if the line did not fire, or the arch
@@ -239,7 +240,7 @@ namespace kickos
         // expect a driver's irq_ack to re-unmask (xtensa's software-doorbell path). The bench
         // handler does not ack, so without this only the FIRST inject would fire. No-op on
         // backends that do not mask on delivery (ARM NVIC / RISC-V).
-        arch_irq_unmask(line);
+        irq_line_op(line, LineOp::UNMASK);
         g_irq_seen = 0;
         uint32_t t0 = bench_cyccnt();
         bench_irq_raise(line);
@@ -274,7 +275,7 @@ namespace kickos
         {
             span_bytes = BENCH_LAT_SPAN_MAX;
         }
-        arch_irq_unmask(line);
+        irq_line_op(line, LineOp::UNMASK);
         g_irq_seen = 0;
         arch_irq_state_t st = arch_irq_save(); // span begins; a raised IRQ is held off
         uint32_t t0 = bench_cyccnt();

@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 
+#include <kickos/irq_route.h>
 #include <kickos/irq.h>
 #include <kickos/instance.h>
 #include <kickos/config.h>
 #include <kickos/sync.h>
 #include <kickos/irqlock.h>
 #include <kickos/cap.h>
+#include <kickos/sched.h> // sched_admit_mask + sched::set_affinity, for the routed-core pin
+#include <kickos/task.h> // task_core_set, the grant the pin is admitted against
 #include <kickos/kernel.h> // KICKOS_ASSERT
 #include <kickos/debug.h>  // KICKOS_DEBUG_ASSERT
 #include <kickos/arch/arch.h>
@@ -148,6 +151,48 @@ namespace kickos
                 cap_resolve_e(c, cap_handle, CapType::CAP_IRQ, need, err));
         }
 
+        // Places a line's SERVER on the core the line is routed to (freeze N3): the masked
+        // and pending words below the arch seam are image-wide, so a touch from another core
+        // loses a mask or a latched raise with no fault anywhere. CAP_WAIT is what identifies
+        // a server, and the claiming thread is usually not the serving one (root claims every
+        // line in the descriptor and grants it to the threads it spawns), so the pin cannot be
+        // made at the claim. A CAP_SIGNAL holder reaches no controller register and is not
+        // pinned.
+        //
+        // Called AHEAD of the lock scope from every entry that can reach the controller, since
+        // sched::set_affinity reschedules a running thread whose new mask excludes its core.
+        // SUBSET: a task whose grant cannot reach that core is REFUSED and never clamped.
+        int pin_to_line_core(Thread* c, uint32_t cap_handle)
+        {
+#if KICKOS_KERNEL_CORES > 1
+            IrqLock lock;
+            int err = 0;
+            IrqBinding* const b = binding_of_cap(c, cap_handle, CAP_WAIT, &err);
+            if (b == nullptr)
+            {
+                return -err;
+            }
+            int const dev_core = arch_irq_line_core(b->line);
+            if (dev_core < 0)
+            {
+                return 0;
+            }
+            uint32_t effective = 0;
+            int const arc = sched_admit_mask(1u << static_cast<unsigned>(dev_core),
+                                             task_core_set(c->task), MaskBound::SUBSET,
+                                             &effective);
+            if (arc != 0)
+            {
+                return arc;
+            }
+            sched::set_affinity(c, effective);
+#else
+            (void)c;
+            (void)cap_handle;
+#endif
+            return 0;
+        }
+
         // Caller holds IrqLock.
         // The FIRST arm discards the latch whatever the trigger: a raise latched before the
         // line had an owner would phantom-wake the first wait. After that only LEVEL keeps
@@ -162,10 +207,10 @@ namespace kickos
             b->needs_rearm = false;
             if (not b->armed_once or b->trigger == IRQ_LEVEL)
             {
-                arch_irq_clear_pending(b->line);
+                irq_line_op(b->line, LineOp::CLEAR);
             }
             b->armed_once = true;
-            arch_irq_unmask(b->line);
+            irq_line_op(b->line, LineOp::UNMASK);
         }
 
         // ISR context. `arg` is the pre-bound binding, not a line number.
@@ -173,7 +218,7 @@ namespace kickos
         void irq_event_isr(void* arg)
         {
             IrqBinding* b = static_cast<IrqBinding*>(arg);
-            arch_irq_mask(b->line);
+            irq_line_op_local(b->line, LineOp::MASK);
             sem_post(&b->sem);
         }
 
@@ -183,7 +228,7 @@ namespace kickos
         void irq_default_handler(void* arg)
         {
             int line = static_cast<int>(reinterpret_cast<intptr_t>(arg));
-            arch_irq_mask(line);
+            irq_line_op_local(line, LineOp::MASK);
             kernel().irq_spurious_count++;
         }
 
@@ -322,7 +367,7 @@ namespace kickos
                     kernel().irq_table[line].pub = slot | IRQ_PUB_RETIRING;
                 }
             }
-            arch_irq_mask(line);
+            irq_line_op(line, LineOp::MASK);
             pub_drain();
         }
 
@@ -471,7 +516,7 @@ namespace kickos
         line_release(irq, -1); // back to the null-object
 #else
         set_default(irq); // the null-object, not a null slot
-        arch_irq_mask(irq);
+        irq_line_op(irq, LineOp::MASK);
 #endif
     }
 
@@ -571,6 +616,11 @@ namespace kickos
     // returns void and never reads wait_result, so an early wake would look like a post.
     int irq_wait(Thread* c, uint32_t cap_handle)
     {
+        int const prc = pin_to_line_core(c, cap_handle);
+        if (prc != 0)
+        {
+            return prc;
+        }
         IrqBinding* b = nullptr;
         uint32_t epoch = 0;
         {
@@ -620,6 +670,11 @@ namespace kickos
 
     int irq_ack(Thread* c, uint32_t cap_handle)
     {
+        int const prc = pin_to_line_core(c, cap_handle);
+        if (prc != 0)
+        {
+            return prc;
+        }
         IrqLock lock;
         int err = 0;
         IrqBinding* b = binding_of_cap(c, cap_handle, CAP_WAIT, &err);
@@ -634,6 +689,11 @@ namespace kickos
 
     int irq_discard(Thread* c, uint32_t cap_handle)
     {
+        int const prc = pin_to_line_core(c, cap_handle);
+        if (prc != 0)
+        {
+            return prc;
+        }
         IrqLock lock;
         int err = 0;
         IrqBinding* b = binding_of_cap(c, cap_handle, CAP_WAIT, &err);
@@ -644,7 +704,7 @@ namespace kickos
         // The controller only: needs_rearm and the mask state are both untouched, so a
         // discard can neither arm nor open a line. Discarding an armed line races the
         // device; the latch is only known stale between a wait return and its ack.
-        arch_irq_clear_pending(b->line);
+        irq_line_op(b->line, LineOp::CLEAR);
         return 0;
     }
 

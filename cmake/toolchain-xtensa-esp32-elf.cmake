@@ -77,7 +77,12 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 # link) drop unreferenced code.
 set(KICKOS_MCPU_FLAGS "" CACHE INTERNAL "Xtensa ABI/core baseline (windowed default)")
 
-string(JOIN " " _kos_common -mlongcalls -mtext-section-literals
+# -mserialize-volatile IS PINNED. It brackets every volatile access with MEMW, and MEMW is the
+# ordering this backend's MMIO sequences rest on: the APP_CPU release writes six registers in an
+# order the part requires, and the TIMG counter is read through a shadow register that must be
+# latched before it is read. Neither carries a barrier of its own. It is the toolchain default
+# at esp-16.1.0, and pinned here so the next toolchain's default cannot decide it.
+string(JOIN " " _kos_common -mlongcalls -mtext-section-literals -mserialize-volatile
        -ffunction-sections -fdata-sections)
 set(CMAKE_C_FLAGS_INIT   "${_kos_common}")
 set(CMAKE_CXX_FLAGS_INIT "${_kos_common}")

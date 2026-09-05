@@ -52,9 +52,10 @@ namespace
 
 extern "C" __attribute__((noreturn)) void kfault_terminate(void)
 {
+    // Before kpanic_enter, which reclaims the console and may reset the TX FIFO: a reporter's
+    // bytes are still queued in that FIFO. Bounded, per arch.h.
+    arch_console_flush_sync();
     kpanic_enter(); // idempotent; masks IRQs for any path reaching here directly
-    // The dump is already on the wire (the reporter printed it through the forced
-    // synchronous writer), so this is the last point before the dead-end.
     kickos_bootloader_handover();
     while (true)
     {

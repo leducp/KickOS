@@ -852,7 +852,7 @@ cannot currently tell those apart.
 
 **THE DIFF LANDS BEFORE R5 AND R5 ONLY COLLECTS IT.** R2.2's arms are among the three callers, so the
 member has to exist for that step to have a witness. The verdict step reports the diff; it does not
-originate it. **And the baseline does NOT move:** `tests/static/check_aspace_sigdiff.sh` measures
+originate it. **And the baseline does NOT move:** the aspace seam differ measured
 against a frozen commit precisely so this shows up, so its DIFF exit is the verdict rather than a
 regression to be tidied away. Updating the baseline to make it quiet would delete the milestone's
 result.
@@ -4501,8 +4501,8 @@ address for a mapped virtual one, because three callers above the seam require `
 like an offset map and one of them reports SUCCESS while naming every frame identically on a windowed
 backend. The member lands at R2.2, whose own arms are among those three callers, so this step
 COLLECTS the verdict rather than producing it.
-*What this step therefore does:* run `tests/static/check_aspace_sigdiff.sh` against the frozen
-baseline, record its output as the verdict, and update A64 to the changed family. The instrument's
+*What this step therefore did:* it ran the aspace seam differ against the frozen
+baseline, recorded its output as the verdict, and updated A64 to the changed family. The instrument's
 DIFF exit IS the result. **Do not move the baseline to quiet it**, which would delete the finding the
 milestone exists to produce.
 *And two things the verdict must say that a signature diff cannot show*, both recorded at R2's
@@ -4513,8 +4513,8 @@ land as MECHANISM rather than as signatures, which F8 says is the shape a good s
 verdict reporting only the diff would miss both.
 
 **RESULT. TAKEN, AND THE VERDICT IS THE INSTRUMENT'S OUTPUT RATHER THAN A SENTENCE ABOUT IT.**
-`tests/static/check_aspace_sigdiff.sh`, run from the repository root with no arguments, exits 2 and
-prints this. The rule paragraphs it also prints are elided here and nothing else is:
+The aspace seam differ, run from the repository root with no arguments, exited 2 and
+printed this. The rule paragraphs it also prints are elided here and nothing else is:
 
     == address-space seam signature diff ==
        baseline  f0360d3ae88a4958358ecd8a2769119bff455265 (3 seam header(s))
@@ -4536,7 +4536,7 @@ prints this. The rule paragraphs it also prints are elided here and nothing else
 
 That is the whole of it. One record added, thirty five identical, and the exit code IS the verdict:
 0 for no difference, 2 for a difference, 1 for a comparison that could not be made, which is UNKNOWN
-and not clean. `tests/static/aspace_seam_records.txt` is untouched by this step, as it was by R2.3,
+and not clean. The frozen records are untouched by this step, as they were by R2.3,
 R3 and R4. *And this stanza's "update A64 to the changed family" clause was discharged at R2.2 and
 not here:* the member landed on both backends in that step, and its A64 body gained the walk mask its
 rv64 twin carries after an audit of this branch, so what R5 had left to do was the collection.
@@ -4693,13 +4693,10 @@ makes that impossible. Groups of ONE carry a floor of 1, so a legitimate removal
 `arch_phys_addr_t` or of the memory-type enum tag does trip the floor and force it to be re-decided,
 which is the right cost on a family this small.
 
-**HOW A READER WHO WAS NOT HERE RE-TAKES THIS.** From the repository root, on a checkout that has its
-`.git` (the instrument reads BOTH sides through `git`, so an exported tarball cannot answer):
-
-    sh tests/static/check_aspace_sigdiff.sh
-
-No arguments, no build, no toolchain and no environment file: it needs `git` and `awk` and nothing
-else.
+**HOW THIS WAS TAKEN.** From the repository root, on a checkout that has its
+`.git` (the instrument read BOTH sides through `git`, so an exported tarball could not answer), the
+aspace seam differ was invoked with no arguments, no build, no toolchain and no environment file: it
+needed `git` and `awk` and nothing else.
 
 **IT IS DELIBERATELY NOT A CTEST TEST, AND THE ABSENCE IS THE DECISION AND NOT AN OVERSIGHT.** The
 rule is about which verdict the instrument EXPECTS, not about what kind of instrument it is. This
@@ -4711,12 +4708,10 @@ A signature differ whose expected verdict is PASS has the opposite shape and bel
 and a sibling milestone registered its own differ for exactly that reason: its seam gained no member,
 so exit 0 is both its expected verdict and ctest's success. The two calls are the same rule applied
 to two expected verdicts. Do not register this one to make the set look uniform. The baseline is the
-frozen records themselves, checked in as `tests/static/aspace_seam_records.txt`: the seam as T2 left
+frozen records themselves, checked in beside the instrument: the seam as T2 left
 it, held as text, so the verdict rests on no commit that has to stay reachable. An optional argument
-takes a candidate ref in place of the working tree, so the verdict can be re-taken at any commit;
-`KOS_SIGDIFF_KEEP=<dir>` copies both record sets out, and `KOS_SIGDIFF_REGEN=1` rewrites the
-baseline from the candidate and takes no verdict at all. THE RESULT IS THE EXIT CODE AND THE DIFF
-BODY: exit 2 with one added `FUNC arch_aspace_frame_at` record is this milestone's verdict, exit 0
+took a candidate ref in place of the working tree, so the verdict could be re-taken at any commit.
+THE RESULT IS THE EXIT CODE AND THE DIFF BODY: exit 2 with one added `FUNC arch_aspace_frame_at` record is this milestone's verdict, exit 0
 would mean the member had gone, and exit 1 means the comparison failed and the verdict is UNKNOWN.
 Do not move the baseline to make it quiet.
 
@@ -4761,7 +4756,7 @@ board's own map is entirely below 4 GiB. Read a `56 PA bits` in a dated step rec
 that step measured, not as what a re-run answers.
 *WHY EACH BOARD MOVED, stated here once rather than by rewriting twenty dated measurements.* THREE
 changes are FLEET-WIDE and lift every board by one each: `tests/static/check_shell_special_names.sh`,
-`tests/static/check_entry_sigdiff.sh` and, on 2026-08-29, `tests/static/check_whitespace.sh`, each
+the entry seam differ and, on 2026-08-29, `tests/static/check_whitespace.sh`, each
 registered unconditionally under the `host` label. TWO more are BOARD-LOCAL and landed the same day:
 five `qemu_arm64_panicgate` arms, which take `qemu-arm64` from 35 to 40 before the fleet-wide one,
 and two x86_64 static gates, which take `qemu-x86_64` from 34 to 36 before it. The RV64 total moved
@@ -5367,8 +5362,8 @@ way past `$<TARGET_FILE:>` were still owed. Three more were not on it.
 `arch_syscall`, `arch_syscall64` and their two kernel-half twins are X4's and gate the app link
 outright. `tests/lib/gate.sh` boots every image as `-kernel <elf> -semihosting`, which cannot start a
 PE32+ application at all: this board needs OVMF pflash and a FAT system partition, so either that
-library grows a branch or the x86 scripts stay standalone as they are. And `tests/static/test_classes.txt`
-plus `check_test_labels.sh` classify every registered test by the program ctest resolved for it, so
+library grows a branch or the x86 scripts stay standalone as they are. And the test-class list
+plus its label check classified every registered test by the program ctest resolved for it, so
 each x86 script owed a line there. The three witnesses stayed `ninja` targets until X4b, which took
 all of it: `tests/lib/gate.sh` carries the `KICKOS_BOOT=uefi-pe` branch that boots the image off an
 OVMF pflash pair and a FAT system partition, `cmake/presets/x86.json` registers the `qemu-x86_64`
@@ -5550,7 +5545,7 @@ base-relocation directory, from a static function-pointer table in the scheduler
 toolchain file's claim that `-fpie` leaves that directory empty holds for the kernel-free images
 only. A `BOARD` branch in `kickos_add_qemu_test`, a way past `$<TARGET_FILE:>` and
 `tests/lib/gate.sh`'s `-kernel <elf> -semihosting` assumption are all still owed, and
-`tests/static/test_classes.txt` owes a line per x86 script. The five witnesses stay `ninja` targets.
+the test-class list owes a line per x86 script. The five witnesses stay `ninja` targets.
 
 **X4b. THE LADDER, and every item on that list is discharged.** `KICKOS_BUILD_APPS` is on, the board
 runs its own `ctest`, and the five `ninja` witnesses are unchanged beside it. Each of the eight took
@@ -5712,8 +5707,8 @@ this branch (`git log --oneline` shows one linear stack, `480767f1 R2.2` below t
 "this branch's base predates that commit" was wrong; and the member is declared in the SEAM header
 `arch/include/kickos/arch/arch.h`, with no declaration of it anywhere under `arch/x86/`, so
 "declared in the backend's own header" was wrong too. What follows from the corrected pair is the
-opposite reading of the instrument: `sh tests/static/check_aspace_sigdiff.sh` run from THIS tree
-reports DIFF and exits 2, 36 candidate records against 35 baseline, the one added record being
+opposite reading of the instrument: the aspace seam differ run from THIS tree
+reported DIFF and exited 2, 36 candidate records against 35 baseline, the one added record being
 `FUNC arch_aspace_frame_at`. That exit 2 IS the result and the baseline does not move. This tree
 holds both halves, so the figure it prints is the UNION's and it is M6.3's verdict arriving
 unchanged, not a contribution from this backend.
@@ -5999,8 +5994,8 @@ Running the aspace differ here and calling its answer this backend's verdict wou
 this port contributed nothing to. So X6's subject is the entry and boot paths, and the expected
 result above is corrected to that.
 
-*Landed at X6.* `tests/static/check_entry_sigdiff.sh` with
-`tests/static/entry_seam_family.awk` beside it for the instrument, and one measurement landed in
+*Landed at X6.* The entry seam differ with
+its family program beside it for the instrument, and one measurement landed in
 `arch/x86/x86_64/entry_x86_64.cc` with its assertion in `tools/run-qemu-x86_64.sh`.
 *The "nothing else moved" evidence this record first cited was false and is replaced by what is
 true.* `git diff 7ee94a94 -- arch/include/ arch/riscv/ arch/arm64/ arch/arm/` was never empty at
@@ -6039,7 +6034,7 @@ own family or it collapses to the eye, which is exactly what R5's instrument exi
 subject half again the size of R5's, 54 records against 35. The second reason is F8's own
 doctrine: the litmus is a future port held against the seam, and the entry path is the half
 every port implements first, so this is the differ the next backend runs.
-*What it reuses, and that is the design.* `tests/static/aspace_seam.awk` VERBATIM. awk runs BEGIN
+*What it reuses, and that is the design.* R5's extraction program VERBATIM. awk runs BEGIN
 blocks in the order its `-f` programs are named, so a second program carrying nothing but the family
 PREFIX replaces the family and leaves every extraction rule alone. The rules that decide what a
 signature IS are therefore R5's own, byte for byte, and the two verdicts cannot come to disagree
@@ -6604,9 +6599,9 @@ that clause overstates by one.
 
 **C0. The baseline, before the first object kind. LANDED.** F8's verdict is a diff against a frozen
 API and 3.4b requires the API to exist before the falsifier starts; C1's expected result is a diff
-too, and it had nothing to diff against. `tests/static/check_cap_sigdiff.sh` declares the capability
+too, and it had nothing to diff against. The capability ABI differ declares the capability
 ABI family over `user/include/kickos/sys/abi.h` and `system/include/kickos/sys/cap_index.h`, and
-`tests/static/cap_seam_records.txt` freezes it. Unlike the aspace differ it is ON the ctest ladder,
+its frozen records hold it. Unlike the aspace differ it is ON the ctest ladder,
 because its expected verdict is PASS for the whole milestone: where the aspace differ reports a diff
 for a seam that was moving, this one asserts the capability ABI did not gain an addressing concept.
 *Expected, and observed at C0:* PASS, 22 records.

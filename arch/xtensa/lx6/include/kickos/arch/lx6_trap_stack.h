@@ -29,7 +29,29 @@
 #define KICKOS_LX6_TRAP_FRAME 256
 
 /* What kickos_lx6_dispatch_l1 and everything it reaches descend BELOW that frame, measured by
- * tests/static/check_trap_redzone.sh. */
+ * tests/static/check_trap_redzone.sh.
+ *
+ * PER KERNEL-CORE COUNT. Above one core the deepest descent leaves the scheduler through the
+ * kernel lock and keeps going: klock_enter -> arch_kernel_lock -> doorbell_poll ->
+ * kickos_lx6_doorbell_service -> kickos_irq_route_service -> arch_irq_mask ->
+ * kickos_lx6_hw_mask -> phys_int_disable. At one core arch_kernel_lock is an empty macro
+ * (arch/arch.h) and the chain ends at klock_enter.
+ *
+ * THE LAST FOUR FRAMES ARE CHARGED WHETHER OR NOT AN ASK IS PENDING. Freeze N2 puts the route
+ * drain in the doorbell SERVICE BODY, that body is reached from arch_kernel_lock's acquire
+ * poll, and the callgraph reader is reachability-based, so every chain that can spin on the
+ * kernel lock charges the deepest gating operation. A cross-core action added near a lock path
+ * pays the same way.
+ *
+ * MARGIN: KICKOS_LX6_TRAP_FRAME 256 + 608 = 864 against a KICKOS_MIN_STACK_SIZE of 896, so 32
+ * bytes. The next thing that deepens the lx6 interrupt path fails the BUILD in
+ * tests/static/check_trap_redzone.sh. The two ways out are shortening the chain named above,
+ * whose last three frames are this backend's own gating path and used everywhere, or raising
+ * KICKOS_MIN_STACK_SIZE, which is fleet-wide. */
+#if KICKOS_KERNEL_CORES > 1
+#define KICKOS_LX6_TRAP_DEPTH 608
+#else
 #define KICKOS_LX6_TRAP_DEPTH 432
+#endif
 
 #endif

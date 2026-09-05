@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-D0WDQ6 (WROOM-32) chip backend. Register addresses are clean-room facts
+// ESP32 (WROOM-32) chip backend. Register addresses are clean-room facts
 // transcribed from the ESP32 TRM v5.8 (peripheral base addresses per Table 3.3-6 in
 // chapter 3, "System and Memory"; UART/WDT register offsets per the UART and Watchdog
 // chapters). Hand-rolled, no ESP-IDF/HAL sources.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/lx6_doorbell.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/config/limits.h> // KICKOS_POLL_SPIN_MAX
 #include <kickos/console_tx.h>
@@ -14,6 +15,7 @@
 
 #include <stdint.h>
 
+#include <kickos/chip_cpuid.h>
 #include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/uart.h"
@@ -35,11 +37,15 @@ namespace kickos
 extern "C"
 {
     void kickos_lx6_init(void);
+#if KICKOS_NUM_CORES > 1
+    void _kickos_lx6_core1_entry(void);
+    void kfault_terminate(void) __attribute__((noreturn));
+#endif
 
     // Add a (CPU interrupt, logical line) device route and arm that CPU interrupt in
     // INTENABLE, which then serves as the line's kernel-owned mask (RULE L1). The
     // per-transfer gate stays at the peripheral, in the driver-owned reg::uart::INT_ENA.
-    void kickos_lx6_bind_dev_int(int cpu_int, int line);
+    void kickos_lx6_bind_dev_int(int cpu_int, int line, int core);
 
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     extern void (*__init_array_start[])();
@@ -55,6 +61,48 @@ extern "C"
 namespace
 {
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
+
+#if KICKOS_NUM_CORES > 1
+    // Sized far over: an expiry means the mechanism failed, not that a core was slow.
+    constexpr uint64_t ESP32_ARRIVAL_WAIT_NS = 1000ull * 1000ull * 1000ull;
+
+    char const NO_ARRIVE[] = "KickOS: esp32 APP_CPU released and never arrived, core ";
+    char const NL[] = "\n";
+    // These print through arch_console_write_sync: every site runs before kmain arms the
+    // console ring (arch_init) or inside an interrupt, where the buffered writer drops.
+    char const ARRIVED[] = "# cores: ";
+    char const ARRIVED_TAIL[] = " arrived\n";
+
+    void hex1(uint32_t v)
+    {
+        char c = static_cast<char>('0' + (v & 0xFu));
+        if ((v & 0xFu) > 9u)
+        {
+            c = static_cast<char>('a' + (v & 0xFu) - 10u);
+        }
+        arch_console_write_sync(&c, 1);
+    }
+#endif
+
+    // Point ONE core's matrix bank at `cpu_int` for `source` and sink it in every other
+    // core's bank. The sink write is a no-op against a map register's reset value of 16, itself
+    // one of the six sinks (TRM v5.8, the shared map-register diagram, p.262), and is made
+    // anyway so the pin is a fact of this image.
+    void route_source(uint32_t source, uint32_t core, uint32_t cpu_int)
+    {
+        uint32_t pro = reg::dport::INTR_MAP_SINK;
+        uint32_t app = reg::dport::INTR_MAP_SINK;
+        if (core == 0u)
+        {
+            pro = cpu_int;
+        }
+        else
+        {
+            app = cpu_int;
+        }
+        r32(reg::dport::pro_intr_map(source)) = pro;
+        r32(reg::dport::app_intr_map(source)) = app;
+    }
 
     // Logical kernel IRQ line the console_tx drain ISR is bound to (irq_table index).
     // DISTINCT namespace from the CPU interrupt number: on this arch the arch.h irq_*
@@ -220,9 +268,8 @@ namespace
     // Replaces the CCOUNT-backed arch_clock_now fallback (arch/xtensa/lx6). CCOUNT is a
     // 32-bit core cycle counter software-extended to 64 bits, so a wrap not observed
     // within one 2^32-cycle window (~17.9 s at 240 MHz) is lost; a native 64-bit counter
-    // has no software wrap word to miss. CCOUNT is also gated by WAITI, so the idle path
-    // freezes it on every idle, while the TIMG runs off APB, which keeps running in
-    // plain WAITI.
+    // has no software wrap word to miss. CCOUNT is also per core and the two are not
+    // synchronised, while TIMG0 T0 is one counter both CPUs reach at one address.
     constexpr uintptr_t TIMG0_T0CONFIG = mmap::TIMG0_BASE + reg::timg::T0CONFIG_OFF;
     constexpr uintptr_t TIMG0_T0LO = mmap::TIMG0_BASE + reg::timg::T0LO_OFF;
     constexpr uintptr_t TIMG0_T0HI = mmap::TIMG0_BASE + reg::timg::T0HI_OFF;
@@ -267,14 +314,23 @@ namespace
     // reader's UPDATE landing between the LO and HI reads tears the pair across a
     // low-word rollover. On the classic ESP32 T0UPDATE has no ready/self-clearing bit
     // (that is an S2/S3 addition); a single write latches synchronously.
+    // THE SHADOW IS ONE RESOURCE FOR BOTH CPUS: a peer's UPDATE lands between this core's LO
+    // and HI reads, and no local interrupt mask excludes it. A matching pair of HI reads means
+    // LO belongs to a latch carrying that HI. HI advances once per 2^32 ticks, about 107 s at
+    // 40 MHz.
     uint64_t timg_ticks()
     {
-        arch_irq_state_t s = arch_irq_save();
-        r32(TIMG0_T0UPDATE) = 1;
-        uint32_t lo = r32(TIMG0_T0LO);
-        uint32_t hi = r32(TIMG0_T0HI);
-        arch_irq_restore(s);
-        return (static_cast<uint64_t>(hi) << 32) | lo;
+        while (true)
+        {
+            r32(TIMG0_T0UPDATE) = 1;
+            uint32_t const hi1 = r32(TIMG0_T0HI);
+            uint32_t const lo = r32(TIMG0_T0LO);
+            uint32_t const hi2 = r32(TIMG0_T0HI);
+            if (hi1 == hi2)
+            {
+                return (static_cast<uint64_t>(hi1) << 32) | lo;
+            }
+        }
     }
 
     // --- Buffered console TX backend (console_tx.h). The ring drains via the UART0
@@ -359,8 +415,10 @@ namespace
                  << reg::uart::TXFIFO_EMPTY_THRHD_SHIFT;
         r32(reg::uart::CONF1) = conf1;
 
-        r32(reg::dport::PRO_UART_INTR_MAP) = irq::UART0_CPU_INT;
-        kickos_lx6_bind_dev_int(static_cast<int>(irq::UART0_CPU_INT), irq::CONSOLE_TX_LINE);
+        // Pinned to the taking core's bank, which is the form freeze N3 rests on.
+        route_source(irq::UART0_SRC, irq::CONSOLE_CORE, irq::UART0_CPU_INT);
+        kickos_lx6_bind_dev_int(static_cast<int>(irq::UART0_CPU_INT), irq::CONSOLE_TX_LINE,
+                                static_cast<int>(irq::CONSOLE_CORE));
     }
 }
 
@@ -538,6 +596,94 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
     return reg::system::APB_CLOCK_HZ;
 }
 
+#if KICKOS_NUM_CORES > 1
+// PRID (Special Register 235) is loaded from pins, and the ISA states only that a processor's
+// value is TYPICALLY 0..NPROCESSORS-1. This die's two are neither, and the TRM documents no
+// per-core identity register: PRO_CPU reads 0x0000cdcd and APP_CPU 0x0000abab, measured on
+// silicon.
+//
+// Refuses an unknown value: the kernel indexes per-core arrays with the answer. It parks
+// instead of reporting because a secondary reaches this before its console exists.
+uint32_t arch_cpu_id(void)
+{
+    constexpr uint32_t PRID_PRO_CPU = 0x0000cdcdu;
+    constexpr uint32_t PRID_APP_CPU = 0x0000ababu;
+
+    // Pins the assembly core index, which extracts one bit of PRID (chip_cpuid.h), against
+    // these two values.
+    static_assert(((PRID_PRO_CPU >> KICKOS_CHIP_CPUID_PRID_BIT) & 1u) == 0u,
+                  "the assembly core index reads core 0 out of this bit of PRID");
+    static_assert(((PRID_APP_CPU >> KICKOS_CHIP_CPUID_PRID_BIT) & 1u) == 1u,
+                  "the assembly core index reads core 1 out of this bit of PRID");
+
+    uint32_t prid = 0;
+    __asm volatile("rsr.prid %0" : "=a"(prid));
+    if (prid == PRID_PRO_CPU)
+    {
+        return 0u;
+    }
+    if (prid == PRID_APP_CPU)
+    {
+        return 1u;
+    }
+    while (true)
+    {
+        // waiti 15, never waiti 0: waiti writes PS.INTLEVEL from its immediate.
+        __asm volatile("waiti 15");
+    }
+}
+#endif
+
+#if KICKOS_NUM_CORES > 1
+// Release APP_CPU and WAIT FOR IT TO ARRIVE. Returns the number of cores that arrived,
+// counting this one.
+//
+// Six writes, not the two freeze N5 names: the clock gate RESETS CLOSED, and the software
+// stall is split across two RTC_CNTL registers whose RELEASE value the manual never states,
+// only the value that stalls.
+//
+// RELEASED IS NOT ARRIVED: every write below can succeed against a core that then executes
+// nothing useful. The release ends in a bounded wait on a byte the far core writes only once
+// it has seated its own vectors, coprocessor, mask and doorbell route.
+uint32_t kickos_esp32_release_secondaries(void)
+{
+    uint32_t const entry = reinterpret_cast<uint32_t>(&_kickos_lx6_core1_entry);
+
+    // 1. The boot address the ROM jumps to (Register 12.8).
+    r32(reg::dport::APPCPU_CTRL_D) = entry;
+    // 2 and 3. The software stall, both halves (Registers 9.1 and 9.34).
+    r32(reg::rtc_cntl::OPTIONS0) =
+        r32(reg::rtc_cntl::OPTIONS0) & ~reg::rtc_cntl::SW_STALL_APPCPU_C0_MASK;
+    r32(reg::rtc_cntl::SW_CPU_STALL) =
+        r32(reg::rtc_cntl::SW_CPU_STALL) & ~reg::rtc_cntl::SW_STALL_APPCPU_C1_MASK;
+    // 4. The clock gate, which resets CLOSED (Register 12.6).
+    r32(reg::dport::APPCPU_CTRL_B) = r32(reg::dport::APPCPU_CTRL_B) | reg::dport::APPCPU_CLKGATE_EN;
+    // 5. Runstall (Register 12.7).
+    r32(reg::dport::APPCPU_CTRL_C) = r32(reg::dport::APPCPU_CTRL_C) & ~reg::dport::APPCPU_RUNSTALL;
+    // 6. Reset, asserted then released (Register 12.5, which resets ASSERTED).
+    r32(reg::dport::APPCPU_CTRL_A) = r32(reg::dport::APPCPU_CTRL_A) | reg::dport::APPCPU_RESETTING;
+    r32(reg::dport::APPCPU_CTRL_A) = r32(reg::dport::APPCPU_CTRL_A) & ~reg::dport::APPCPU_RESETTING;
+
+    uint32_t arrived = 1; // this core
+    for (uint32_t core = 1; core < KICKOS_NUM_CORES; core++)
+    {
+        uint64_t const deadline = arch_clock_now() + ESP32_ARRIVAL_WAIT_NS;
+        while (kickos_lx6_core_arrived(core) == 0u)
+        {
+            if (arch_clock_now() > deadline)
+            {
+                arch_console_write_sync(NO_ARRIVE, sizeof(NO_ARRIVE) - 1);
+                hex1(core);
+                arch_console_write_sync(NL, sizeof(NL) - 1);
+                kfault_terminate();
+            }
+        }
+        arrived++;
+    }
+    return arrived;
+}
+#endif
+
 void arch_init(void)
 {
     // FP: the LX6 single-precision FPU (coprocessor 0) is enabled for all threads
@@ -551,19 +697,38 @@ void arch_init(void)
     timg_clock_init();   // 64-bit monotonic time base; AFTER the PLL (rate is off APB)
     kickos_lx6_init();
     uart0_irq_setup(); // route + arm the UART0 TX-empty interrupt for the console ring
+#if KICKOS_NUM_CORES > 1
+    // AFTER the console is routed, so the release can report.
+    uint32_t const arrived = kickos_esp32_release_secondaries();
+    arch_console_write_sync(ARRIVED, sizeof(ARRIVED) - 1);
+    hex1(arrived);
+    arch_console_write_sync(ARRIVED_TAIL, sizeof(ARRIVED_TAIL) - 1);
+    // AFTER ARRIVAL: the check needs every peer's route live and its mask open.
+    kickos_lx6_doorbell_selfcheck();
+#endif
 }
 
 // Monotonic clock override: convert the free-running TIMG0 T0 64-bit count (40 MHz,
 // off the fixed 80 MHz APB) to ns via the cached reciprocal multiply, replacing the
-// CCOUNT-backed arch_clock_now fallback (arch/xtensa/lx6) whose 32-bit + software-wrap
-// source loses a wrap unobserved within ~17.9 s and stalls under WAITI. Only the
-// scheduler's monotonic clock moves: arch_trace_now + the KICKOS_BENCH switch.S
-// timestamps intentionally stay on raw CCOUNT (a cycle-accurate trace source; an
-// intermittent skew there is a tolerable telemetry sample, fatal only to the clock).
+// CCOUNT-backed arch_clock_now fallback (arch/xtensa/lx6), whose 32-bit software-extended
+// source loses a wrap unobserved within ~17.9 s and whose base is per core.
+//
+// The KICKOS_BENCH switch.S timestamps stay on raw CCOUNT: the top-level CMakeLists refuses
+// that knob above one kernel core, so there is only ever one base to read.
 uint64_t arch_clock_now(void)
 {
     uint64_t ticks = timg_ticks();
     return kickos::arch_clk_mul_q32(ticks, TIMG_NS_MULT);
+}
+
+// Trace clock override. CCOUNT is per core and each counter starts at its own core's launch,
+// so a cross-core trace on it carries two time bases with an offset that is neither known nor
+// constant. TIMG0 T0 is one 64-bit counter off the fixed 80 MHz APB that both CPUs read at one
+// address, at 40 MHz ticks and three MMIO reads. The decoder needs no change: the SESSION
+// record carries this tick beside an arch_clock_now anchor and derives the rate from the pair.
+uint32_t arch_trace_now(void)
+{
+    return static_cast<uint32_t>(timg_ticks());
 }
 
 void arch_console_write(char const* buf, size_t n)

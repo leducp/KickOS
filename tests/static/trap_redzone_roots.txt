@@ -416,6 +416,7 @@ unsized armv6m __ctzsi2           0 reason: measured, frameless register-only le
 arch    lx6 header=arch/xtensa/lx6/include/kickos/arch/lx6_trap_stack.h
 preset  lx6 esp32-wroom
 preset  lx6 esp32-wroom-st
+preset  lx6 esp32-wroom-smp
 class   lx6 PREEMPT frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH
 root    lx6 PREEMPT kickos_lx6_dispatch_l1
 
@@ -426,4 +427,4 @@ exclude lx6 ?_ZN6kickos9kpanic_atEPKcj reason: the SECOND door into the same nor
 # chain below it. __divdi3 is referenced but linked into no image, so it is read from libgcc.a.
 unsized lx6 __divdi3      64 reason: entry a1 32, then a call0 into __udivdi3 which entries another 32
 unsized lx6 __udivdi3     32 reason: entry a1 32, calls nothing
-unsized lx6 xtensa_switch 32 reason: entry a1 32, calls nothing; the swap itself leaves the interrupted stack
+unsized lx6 xtensa_switch 128 reason: above one kernel core the swap ends in SWITCH_UNLOCK (arch/xtensa/lx6/include/kickos/arch/lx6_switch_unlock.h), a call4 into kickos_switch_unlock descending through kickos::klock_drop to arch_kernel_unlock and arch_cpu_id. From the linked esp32-wroom-smp image: entry a1 32 for xtensa_switch, 32 for kickos_switch_unlock, 32 for klock_drop, 32 for the deeper of its two leaves, so 128. This record is keyed on the ARCH and carries no core-count dimension, so at one kernel core SWITCH_UNLOCK expands to nothing and 96 bytes are reserved unused, which is the safe direction.

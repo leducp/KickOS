@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-D0WDQ6 (WROOM-32) interrupt-source numbers.
+// ESP32 (WROOM-32) interrupt-source numbers.
 //
 // THREE distinct numbering spaces meet on this core (the Xtensa interrupt-matrix
 // quirk):
@@ -9,9 +9,9 @@
 //     routes a source to a CPU interrupt via the source's DPORT map register.
 //  2. CPU interrupt NUMBERS (the Xtensa core's 0..31 lines). Level/type is fixed
 //     per number by the core; a matrix-routed source targets an external line.
-//     The internal lines (timer 6, software doorbell 7) are owned by the
-//     arch/xtensa/lx6 layer (arch_xtensa.cc CCOMPARE0_INT / SW_INT_L1) and are
-//     mirrored here for reference only, NOT redefined as chip constants.
+//     The internal lines (timer 6, software 7) are owned by the arch/xtensa/lx6
+//     layer (arch_xtensa.cc CCOMPARE0_INT / SW_INT_L1) and are mirrored here for
+//     reference only, NOT redefined as chip constants.
 //  3. Logical kernel IRQ lines (irq_table index / irq_claim). A software
 //     controller decoupled from the physical Xtensa interrupts; chip-local.
 
@@ -35,8 +35,20 @@ namespace kickos::esp32::irq
     enum cpu_int
     {
         UART0_CPU_INT = 13,
+        // The cross-core doorbell. Must be Level-Triggered at priority 1, which Table 8.3-2
+        // fixes per number and no register can change: a level input's pending state follows
+        // the trigger register, so clearing the trigger is the whole acknowledgement. The
+        // number is free within that set: 0, 1, 2, 3, 4, 5, 8, 9, 12, 17 and 18 all qualify
+        // and 13 is taken above.
+        DOORBELL_CPU_INT = 12,
         CCOMPARE0_INT = 6, // arch/xtensa/lx6-owned (timer); reference only
-        SW_INT_L1 = 7,     // arch/xtensa/lx6-owned (doorbell); reference only
+        SW_INT_L1 = 7,     // arch/xtensa/lx6-owned (local injection); reference only
+    };
+
+    // Which core takes a pinned device line (freeze N3): every route names its core.
+    enum dev_core
+    {
+        CONSOLE_CORE = 0, // the console is the primary's: kmain's own output path
     };
 
     // Logical kernel IRQ lines. Kept clear of the selftest's injected lines (6..16, from

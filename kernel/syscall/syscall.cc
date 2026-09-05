@@ -8,6 +8,7 @@
 // static pools referenced by small integer handles: no pointers cross the
 // boundary.
 
+#include <kickos/irq_route.h>
 #include <kickos/arch/arch.h>
 #include <kickos/aspace.h>
 #include <kickos/bench.h>
@@ -658,7 +659,12 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EINVAL); // bad irq line
             }
-            arch_irq_inject(irq);
+            // The image-wide masked and pending words are read-modify-written here, and the
+            // backend's own bracket excludes this core's handler alone.
+            {
+                IrqLock lock;
+                arch_irq_inject(irq);
+            }
             return 0;
         }
         case KOS_SYS_GUARD_ADDR:
@@ -690,8 +696,9 @@ uint64_t syscall_body(uintptr_t nr,
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
         case KOS_SYS_SCHED_PROBE:
         {
-            // Test scaffolding for placement. Pure reads of the CALLER's own scheduling state,
-            // so not privilege-gated and no op takes an argument.
+            // Test scaffolding for placement. Pure reads, so not privilege-gated and no op
+            // takes an argument. Every op but KOS_SCHED_OP_PREEMPTED reads the CALLER's own
+            // scheduling state; that one is machine-wide.
             IrqLock lock;
             Thread const* const c = sched::current();
             switch (static_cast<kos_sched_op>(a0))
@@ -715,6 +722,10 @@ uint64_t syscall_body(uintptr_t nr,
                 case KOS_SCHED_OP_ISOLATED:
                 {
                     return static_cast<uint32_t>(KICKOS_ISOLATED_CORES);
+                }
+                case KOS_SCHED_OP_PREEMPTED:
+                {
+                    return ktime_slice_preempt_cores();
                 }
                 default:
                 {
@@ -837,7 +848,12 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EINVAL); // bad irq line
             }
-            arch_irq_unmask(irq);
+            // As the inject arm above: the image-wide masked word is read-modify-written
+            // here, and the backend's own bracket excludes this core's handler alone.
+            {
+                IrqLock lock;
+                irq_line_op(irq, LineOp::UNMASK);
+            }
             return 0;
         }
 #endif
@@ -883,7 +899,7 @@ uint64_t syscall_body(uintptr_t nr,
             // binding has no separate unmask syscall (tier-1 unmasks via register/irq_ack),
             // so attach must arm the line. In-kernel irq_attach (console) unmasks on its own
             // schedule.
-            arch_irq_unmask(irq);
+            irq_line_op(irq, LineOp::UNMASK);
             return 0;
         }
         case KOS_SYS_CLOCK_NOW:

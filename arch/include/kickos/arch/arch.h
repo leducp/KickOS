@@ -896,6 +896,13 @@ void arch_irq_clear_pending(int line);
 // fake-a-device-firing test scaffolding, privilege-gated.
 void arch_irq_inject(int irq);
 
+// The kernel core `line` is routed to (N3).
+//
+// The words above this seam that gate a logical line are image-wide, and are a sound record
+// only while the routed core is the only core that touches them.
+#define KICKOS_IRQ_LINE_CORE_NONE (-1)
+int arch_irq_line_core(int line);
+
 // --- Minimal debug console (bottom edge of the in-kernel console driver) ---
 // Write-only. Two edges:
 //   arch_console_write:      normal path. A chip with a buffered console makes
@@ -1017,6 +1024,19 @@ int kickos_kernel_core_resched_owed(void);
 // Consume the reschedules owed to the CALLING core, answering nonzero when any stood. The one
 // body that clears the cell.
 int kickos_kernel_core_resched_take(void);
+#endif
+
+#if KICKOS_KERNEL_CORES > 1
+// --- Provided by the kernel for a shared kernel's backend ------------------
+// This core's pending cross-core line-gating asks, for the backend to call from its doorbell
+// SERVICE BODY and nowhere else, AFTER that body has snapshotted the request sequences and
+// BEFORE it stores the answers. A drain merely before the answer stores can be overtaken by a
+// request published between the drain and the snapshot, and the body then answers work it never
+// did. kernel/irq/irq_route.cc states the protocol.
+//
+// Takes no kernel lock: it performs only mask, unmask and clear_pending, which this header
+// declares SELF-BRACKETED, so freeze N2's rule that the far side takes no kernel lock holds.
+void kickos_irq_route_service(void);
 #endif
 
 #if KICKOS_AMP_NODE

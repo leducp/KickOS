@@ -251,7 +251,7 @@ jobs:
           cmake --preset qemu-riscv-flat -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-flat
           ctest --preset qemu-riscv-flat --no-tests=error --output-on-failure
-      # -L host is the gate set that executes no image (tests/static/test_classes.txt).
+      # -L host is the gate set that executes no image.
       - name: build-only rv32 boards
         run: |
           cmake --preset esp32c6-wroom -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
@@ -313,6 +313,11 @@ jobs:
           cmake --preset esp32-wroom-st -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
           cmake --build --preset esp32-wroom-st
           ctest --test-dir build/esp32-wroom-st -L host --no-tests=error --output-on-failure
+      - name: xtensa lx6 on both cores
+        run: |
+          cmake --preset esp32-wroom-smp -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
+          cmake --build --preset esp32-wroom-smp
+          ctest --test-dir build/esp32-wroom-smp -L host --no-tests=error --output-on-failure
 
   # Build sweep of the remaining ARM boards (catches build/link/linker-script
   # regressions). The `host` label runs, which is every gate reading this board's own tree.
