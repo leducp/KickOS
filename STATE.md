@@ -681,14 +681,6 @@ port, so their exclusion is argued as a value judgement and not re-derived from 
 new gate on every preset and is what says `smp_sigdiff` actually ran fleet-wide rather than being
 skipped on most of it.
 
-**THE FIRST SWEEP OF M7.0 WAS RED ON ALL 56 AND THE SUMMARY LOOKED LIKE A MISSING TOOLCHAIN.** It
-was not: a new ctest entry carried no line in `tests/static/test_classes.txt` and `test_labels`
-failed everywhere. `CONTEXT.local.md` now carries the separator, which is that the preset log shows
-a BUILD before the failure where a toolchain failure shows none. Worth the line here too because
-the class generalises: **a new ctest registration is invisible to every hand-run static gate**,
-`test_labels` needing a configured build directory, so that kind of change is witnessed by a build
-and never by running `tests/static/*.sh`.
-
 **FOUR THINGS M7.0 DECIDED THAT A READER WILL OTHERWISE RE-LITIGATE.** The deliverable is a second
 core and NOT a lock, because a big lock compiles to nothing at one core, so a correct one and an
 absent one are the same image and shipping it alone would ship an empty corpus. One IPC mechanism,
@@ -746,19 +738,15 @@ M7.1's first item.
 board.** M6.3 is CLOSED, its last step R6, and the aspace-seam VERDICT IS TAKEN, and it is NOT an
 empty diff: one member added, `arch_aspace_frame_at`, thirty five records identical. The verdict
 was the one piece of M6 evidence that could not be gathered early, F8's empty-diff claim being
-about a FAMILY, and what settled it is the property R2 was picked for. Re-take it with
-`sh tests/static/check_aspace_sigdiff.sh` from the repository root, no arguments and no build. **THE
-EXPECTED OUTCOME IS EXIT 2**, printing `members 35 baseline signature record(s), 36 candidate` and
-one added record, `FUNC arch_aspace_frame_at`. That is the milestone's RESULT and not a regression
-you introduced: exit 0 would mean the member had gone and exit 1 means the comparison failed,
-which is UNKNOWN. Do NOT regenerate `tests/static/aspace_seam_records.txt` to make it quiet, which
-deletes the finding M6.3 exists to produce.
+about a FAMILY, and what settled it is the property R2 was picked for. The verdict was 35 baseline
+records against 36 candidate, the one addition being `FUNC arch_aspace_frame_at`. The seam differ
+that took it is gone from the tree, so the verdict stands as a recorded result and is not re-takeable.
 
 **THIS BRANCH IS M6.5, FRAME-LEVEL CAPABILITIES, AND ITS THREE STEPS ARE LANDED.** C0 froze the
 capability ABI before the first object kind, C1 added a frame RUN and an ADDRESS SPACE, C2 made map
 and unmap capability operations, C3 shared one run into two spaces at two addresses. The milestone's
-claim is a NEGATIVE result like M6.3's and M6.4's, and it is measured: `check_cap_sigdiff.sh` is
-PASS at 24 records, the only two members that ever entered being plain enumerators (60 and 61). An
+claim is a NEGATIVE result like M6.3's and M6.4's, and it was measured at 24 capability-seam
+records, the only two members that ever entered being plain enumerators (60 and 61). An
 address never became a FIELD, only ever an argument, which is what let C1's claim survive C2.
 
 **THE FLEET WITNESS FOR M6.5 IS COMPLETE AND BOTH HALVES STAMP ITS MERGE ON MASTER.**

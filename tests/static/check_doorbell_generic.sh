@@ -66,6 +66,20 @@ case "$arch" in
         BRX='^(j|jal|call|tail)$'
         CONDX='^(beq|bne|blt|bge|bltu|bgeu|beqz|bnez|blez|bgez|bltz|bgtz|bgt|ble|bgtu|bleu)$'
         ;;
+    lx6)
+        # NO RENDEZVOUS BODY on this part, and the empty RDV says so deliberately. The send is
+        # still asserted below, which is where the scheduling boundary lives.
+        RDV=
+        DISPATCH=kickos_lx6_dispatch_l1
+        RAISE=kickos_lx6_doorbell_send
+        # Xtensa names a windowed call by its window rotation, and `j` is the only direct
+        # unconditional branch that carries a symbol: callx*/jx are register-indirect and name
+        # none, so they contribute nothing either way.
+        BRX='^(j|call0|call4|call8|call12)$'
+        # Every conditional branch this ISA spells, INCLUDING the .n narrow forms: the guard is
+        # `beqz.n` at -Os, so a pattern without them reads a guarded dispatch as unguarded.
+        CONDX='^(beqz|bnez|beqz\\.n|bnez\\.n|beq|bne|blt|bge|bltu|bgeu|beqi|bnei|blti|bgei|bltui|bgeui|bgez|bltz|bbc|bbs|bbci|bbsi|bany|bnone|ball|bnall|bt|bf)$'
+        ;;
     *)
         fail "check_doorbell_generic.sh knows no backend '$arch'. The symbol names and the
   branch mnemonics are both per arch, so an unlisted one would read every body as a leaf and
@@ -184,15 +198,26 @@ body_guard() { # <listing> <symbol>
 # THE CONTROLS ARE PER ARCH TOO, and must be: a reader proven against a listing this
 # disassembler never prints is proven against nothing. The instruction COUNTS are the same on
 # both, so the ordinals the guard reader reports below are as well.
-if [ "$arch" = armv8a ]; then
-    B_CALL="bl 2000"; B_CALL2="bl 2100"; B_TAIL="b 2200"
-    B_FRAME="stp x29, x30, [sp, #-32]!"; B_POP="ldp x29, x30, [sp], #48"
-    B_COND="cbz w0, 1014 <planted_dispatch+0x14>"; B_RET="ret"
-else
-    B_CALL="jal 2000"; B_CALL2="jal 2100"; B_TAIL="j 2200"
-    B_FRAME="addi sp,sp,-32"; B_POP="ld ra,24(sp)"
-    B_COND="beqz a0, 1014 <planted_dispatch+0x14>"; B_RET="ret"
-fi
+case "$arch" in
+    armv8a)
+        B_CALL="bl 2000"; B_CALL2="bl 2100"; B_TAIL="b 2200"
+        B_FRAME="stp x29, x30, [sp, #-32]!"; B_POP="ldp x29, x30, [sp], #48"
+        B_COND="cbz w0, 1014 <planted_dispatch+0x14>"; B_RET="ret" ;;
+    rv64imac)
+        B_CALL="jal 2000"; B_CALL2="jal 2100"; B_TAIL="j 2200"
+        B_FRAME="addi sp,sp,-32"; B_POP="ld ra,24(sp)"
+        B_COND="beqz a0, 1014 <planted_dispatch+0x14>"; B_RET="ret" ;;
+    lx6)
+        # The narrow forms on purpose: they are what -Os emits, and a control built from the
+        # wide spellings alone would prove the reader against a listing this image never has.
+        B_CALL="call8 2000"; B_CALL2="call8 2100"; B_TAIL="j 2200"
+        B_FRAME="entry a1, 32"; B_POP="l32i.n a4, a3, 4"
+        B_COND="beqz.n a10, 1014 <planted_dispatch+0x14>"; B_RET="retw.n" ;;
+    *)
+        fail "check_doorbell_generic.sh plants no control listing for backend '$arch'. A reader
+  proven against another ISA's syntax is proven against nothing, so this refuses rather than
+  falling through to whichever arm was written last" ;;
+esac
 cat > "$TMP/ctl_send_clean" <<EOF
 0000000000001000 <planted_send>:
     1000: $B_FRAME

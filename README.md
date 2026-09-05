@@ -84,7 +84,7 @@ number alone, since what binds is the arena left after `.bss`.
 | **RXv3** | | |
 | `rx72m` | Renesas RX72M | RX-MPU |
 | **Xtensa LX6** | | |
-| `esp32-wroom` | ESP32-D0WD | none (no per-task unit) |
+| `esp32-wroom` | ESP32 | none (no per-task unit) |
 | **x86_64** | | |
 | `qemu-x86_64` | QEMU `q35` (ICH9) / UEFI | none (flat, adopted map) |
 | **host** | | |

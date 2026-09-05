@@ -26,6 +26,7 @@
 #include <mutex>
 #include <thread>
 
+#include <kickos/irq_route.h>
 #include <kickos/arch/arch.h>
 #include <kickos/cap.h>
 #include <kickos/instance.h>
@@ -100,6 +101,8 @@ namespace kickos
         }
 
         thread_local uint32_t g_core = 0;
+        int g_line_core = -1;
+        uint32_t g_pinned_mask = 0;
         unsigned g_probe_calls = 0;
         void* g_probe_arg = nullptr;
         void (*g_probe_action)() = nullptr;
@@ -111,6 +114,8 @@ namespace kickos
         {
             g_trace_n = 0;
             g_core = 0;
+            g_line_core = -1;
+            g_pinned_mask = 0;
             g_probe_calls = 0;
             g_probe_arg = nullptr;
             g_probe_action = nullptr;
@@ -243,6 +248,21 @@ namespace kickos
 
     void wq_confirm_resume(Thread*, uint32_t)
     {
+    }
+
+    // Enough of the placement layer for irq_claim's routed-core pin: the grant is the whole
+    // machine, and the pin is recorded, there being no run queue here to move a thread between.
+    uint32_t task_core_set(Task const*)
+    {
+        return ~0u;
+    }
+
+    namespace sched
+    {
+        void set_affinity(Thread*, uint32_t mask)
+        {
+            irqfix::g_pinned_mask = mask;
+        }
     }
 
     // Enough of the capability layer for irq_claim and its undo: one handle, resolving to the
@@ -411,6 +431,13 @@ void arch_irq_clear_pending(int line)
     kickos::irqfix::note(kickos::irqfix::OP_CLEAR, static_cast<uint32_t>(line));
 }
 
+// -1 is no constraint, so an arm that leaves kickos::irqfix::g_line_core alone sees irq_claim
+// place nothing.
+int arch_irq_line_core(int)
+{
+    return kickos::irqfix::g_line_core;
+}
+
 void arch_ipi_send(uint32_t cores)
 {
     kickos::irqfix::note(kickos::irqfix::OP_IPI_SEND, cores);
@@ -515,5 +542,37 @@ namespace kickos
                 }
             }
         }
+    }
+}
+
+namespace kickos
+{
+    // One core, so every line is local. Forwarded to the arch stubs in this file, which is
+    // what keeps each arm's recorded trace unchanged.
+    void irq_line_op(int line, LineOp op)
+    {
+        switch (op)
+        {
+            case LineOp::MASK:
+            {
+                arch_irq_mask(line);
+                break;
+            }
+            case LineOp::UNMASK:
+            {
+                arch_irq_unmask(line);
+                break;
+            }
+            case LineOp::CLEAR:
+            {
+                arch_irq_clear_pending(line);
+                break;
+            }
+        }
+    }
+
+    void irq_line_op_local(int line, LineOp op)
+    {
+        irq_line_op(line, op);
     }
 }

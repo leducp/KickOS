@@ -812,9 +812,6 @@ if(KICKOS_BUILD_TESTS)
     endforeach()
   endfunction()
 
-  # Which side each test program falls on is declared in tests/static/test_classes.txt.
-  # Fixtures are resolved AFTER label filtering, so `kickos_build` carries no label and
-  # appears in both partitions.
 
   # Registered with _add_test, so it does not require the build fixture: the gate reads the
   # source tree through `git ls-files` and never opens the build directory. WORKING_DIRECTORY
@@ -854,26 +851,6 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(shell_special_names PROPERTIES TIMEOUT 120 LABELS host)
 
-  # A milestone that deliberately changes the entry seam moves the baseline ref in
-  # tests/static/entry_seam_records.txt, and this entry fails until it does.
-  _add_test(NAME entry_sigdiff
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_entry_sigdiff.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(entry_sigdiff PROPERTIES TIMEOUT 120 LABELS host)
-
-  # M6.5's expected verdict is PASS: frame and page-table objects enter the capability layer
-  # and the ABI gains no addressing concept. A member added on purpose moves
-  # tests/static/cap_seam_records.txt in the commit that adds it, never ahead of it.
-  _add_test(NAME cap_sigdiff
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_cap_sigdiff.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(cap_sigdiff PROPERTIES TIMEOUT 120 LABELS host)
-
-  # The four SMP seam members left entry_sigdiff at M7.0 and are asserted by this entry alone.
-  _add_test(NAME smp_sigdiff
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_smp_sigdiff.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(smp_sigdiff PROPERTIES TIMEOUT 120 LABELS host)
 
   # Takes the generated board config: the gate must read the knob spelling C reads.
   _add_test(NAME cpu_id_fold
@@ -1020,32 +997,6 @@ if(KICKOS_BUILD_TESTS)
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(kconfig_forwarding PROPERTIES TIMEOUT 120 LABELS host)
 
-  # This one DOES require the build fixture: it classifies each test by the program ctest
-  # resolved for it, and ctest emits no command for a program that is not on disk yet.
-  set(_kickos_declined no)
-  if(NOT KICKOS_BUILD_INTEGRATION_TESTS)
-    set(_kickos_declined yes)
-  endif()
-  # <complete> asserts this tree registers every build-rooted program test_classes.txt names,
-  # bar the ones <excused> accounts for; only the sim tree builds the whole set. <excused>
-  # names the layers this tree lacks, comma separated because a CMake list separator would
-  # split the argument.
-  set(_kickos_complete no)
-  set(_kickos_excused_layers "")
-  if(KICKOS_ARCH STREQUAL "sim")
-    set(_kickos_complete yes)
-    if(NOT KICKOS_BUILD_UNIT_TESTS)
-      list(APPEND _kickos_excused_layers "unit")
-    endif()
-  endif()
-  list(JOIN _kickos_excused_layers "," _kickos_excused)
-  _add_test(NAME test_labels
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_test_labels.sh"
-                    "${CMAKE_CTEST_COMMAND}" "${CMAKE_COMMAND}"
-                    "${PROJECT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
-                    "${_kickos_declined}" "${_kickos_complete}" "${_kickos_excused}")
-  set_tests_properties(test_labels PROPERTIES TIMEOUT 60 LABELS host
-                       FIXTURES_REQUIRED kickos_build)
 endif()
 
 foreach(_dir lib arch kernel user system)

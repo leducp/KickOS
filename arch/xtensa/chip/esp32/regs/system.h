@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-D0WDQ6 SoC clock-generation constants that are NOT a single MMIO
+// ESP32 SoC clock-generation constants that are NOT a single MMIO
 // peripheral: the BBPLL analog register file (reached over the internal reg-I2C
 // bus, not memory-mapped), the ANA_CONFIG analog gate, and the fixed SoC clock
 // rates. Register/analog facts are clean-room from the ESP32 TRM (RTC_CNTL + DPORT

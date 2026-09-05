@@ -67,16 +67,19 @@
    ONLY on this preemptive path: the cooperative switch's caller-saved f-regs are
    spilled by the compiler, so xtensa_switch needs none. */
 #include <kickos/arch/xtensa_frame.h>
+#include <kickos/arch/lx6_switch_unlock.h>
+#include <kickos/arch/lx6_percpu.h>
 
     .text
 
 /* ------------------------------------------------------------------------- */
 /* Reset entry: the image's ELF entry point (ENTRY(_start)).                    */
 /* ------------------------------------------------------------------------- */
-    .align 4
-    .global _start
-    .type _start, @function
-_start:
+/* CORE_PROLOGUE: the state EVERY core seats for itself, out of reset, before it can make a
+ * windowed call. PS, WindowBase, WindowStart and VECBASE are per-core registers, and a core
+ * that skips this takes its first window overflow into the ROM vectors with no report.
+ * `stack_top` is this core's own boot stack (esp32.ld). */
+    .macro  CORE_PROLOGUE stack_top
     /* Setup mode: window machinery off so the window-state writes below cannot
        trap. */
     movi    a0, PS_SETUP
@@ -90,8 +93,9 @@ _start:
     movi    a0, 1
     wsr.windowstart a0
     rsync
-    /* Stack + relocated vectors. */
-    movi    a1, _estack
+    /* Stack + relocated vectors. BOTH CORES POINT AT ONE TABLE: the window vectors touch
+       nothing but EXCSAVE1 and the faulting thread's own stack. VECBASE is per core. */
+    movi    a1, \stack_top
     movi    a0, _kickos_vectors
     wsr.vecbase a0
     rsync
@@ -100,11 +104,34 @@ _start:
     movi    a0, PS_BOOT
     wsr.ps  a0
     rsync
+    .endm
+
+    .align 4
+    .global _start
+    .type _start, @function
+_start:
+    CORE_PROLOGUE _estack
     /* First WINDOWED call into C (call4 rotates the window; Reset_Handler's entry
        allocates its frame). Does not return. -mlongcalls relaxes the range. */
     call4   Reset_Handler
 1:  j       1b
     .size _start, .-_start
+
+#if KICKOS_NUM_CORES > 1
+/* ------------------------------------------------------------------------- */
+/* APP_CPU's reset entry. The ROM jumps here with the address the primary left in    */
+/* DPORT_APPCPU_CTRL_REG_D (kickos_esp32_release_secondaries, chip_esp32.cc), and    */
+/* the core enters on its OWN boot stack (esp32.ld).                                 */
+/* ------------------------------------------------------------------------- */
+    .align 4
+    .global _kickos_lx6_core1_entry
+    .type _kickos_lx6_core1_entry, @function
+_kickos_lx6_core1_entry:
+    CORE_PROLOGUE _estack_core1
+    call4   kickos_lx6_secondary_entry
+1:  j       1b
+    .size _kickos_lx6_core1_entry, .-_kickos_lx6_core1_entry
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* Common halt: mask everything (incl. NMI) and park. noreturn.                */
@@ -238,8 +265,8 @@ _kickos_int_level1:
     movi    a2, F_SIZE
     sub     a1, a1, a2            /* a1 = frame base (orig sp - F_SIZE) */
 
-    /* arch_in_isr() depth. */
-    movi    a2, g_isr_depth
+    /* arch_in_isr() depth, this core's cell. */
+    PERCPU_CELL a2, g_isr_depth, a3
     l32i    a3, a2, 0
     addi    a3, a3, 1
     s32i    a3, a2, 0
@@ -257,14 +284,14 @@ _kickos_int_level1:
        balanced call/retw). a1 = frame base. WindowStart is a single live frame
        (the entry spill + the dispatcher's balanced window use), so both resume
        tails below are legal here. */
-    movi    a2, g_isr_depth
+    PERCPU_CELL a2, g_isr_depth, a3
     l32i    a3, a2, 0
     addi    a3, a3, -1
     s32i    a3, a2, 0
 
     /* Preemption pending? (arch_switch set it from ISR context.) If not, resume the
        interruptee from its own frame through the shared rfe epilogue, a1 = frame. */
-    movi    a2, g_arch_switch_pending
+    PERCPU_CELL a2, g_arch_switch_pending, a4
     l32i    a3, a2, 0
     beqz    a3, _kickos_lx6_irq_restore
     movi    a3, 0
@@ -273,7 +300,7 @@ _kickos_int_level1:
     /* Save the preempted thread (= g_arch_current) in the interrupt-frame format:
        its full frame is at a1, F_PC/F_PS/... already populated. Record the frame
        base and mark it IRQ so its next resume takes the rfe path. */
-    movi    a2, g_arch_current
+    PERCPU_CELL a2, g_arch_current, a3
     l32i    a2, a2, 0             /* a2 = interruptee ctx* (seeded by arch_start) */
     s32i    a1, a2, CTX_SP        /* current->sp = frame base */
     movi    a3, RESUME_IRQ
@@ -281,16 +308,16 @@ _kickos_int_level1:
 #if KICKOS_TELEMETRY
     /* SWITCH record: a2 = from ctx*, g_arch_next = to ctx*. call4 is legal here
        (EXCM=0, WOE=1, single-frame window); a1/a2 survive it (below its window). */
-    movi    a3, g_arch_next
+    PERCPU_CELL a3, g_arch_next, a4
     l32i    a3, a3, 0
     l32i    a6, a2, CTX_TID       /* from_tid */
     l32i    a7, a3, CTX_TID       /* to_tid */
     call4   kickos_trace_switch_done
 #endif
     /* g_arch_current = g_arch_next; load the incoming ctx*. */
-    movi    a2, g_arch_next
+    PERCPU_CELL a2, g_arch_next, a4
     l32i    a3, a2, 0             /* a3 = incoming ctx* */
-    movi    a2, g_arch_current
+    PERCPU_CELL a2, g_arch_current, a4
     s32i    a3, a2, 0
 
     /* THE THIRD SEATING SITE. An interrupt that decides a switch never enters
@@ -305,6 +332,7 @@ _kickos_int_level1:
        does. The window file is a single frame, so WindowBase is irrelevant and the
        underflow rebuilds the incoming chain from incoming->sp. */
     l32i    a1, a3, CTX_SP        /* incoming->sp (switch frame) */
+    SWITCH_UNLOCK                 /* standing on the incoming frame; a3 survives call4 */
     l32i    a4, a3, CTX_PS
     l32i    a0, a3, CTX_PC        /* return addr, carries CALLINC */
     wsr.ps  a4
@@ -312,6 +340,7 @@ _kickos_int_level1:
     retw
 .Lint_resume_irq:
     l32i    a1, a3, CTX_SP        /* incoming frame base -> shared rfe epilogue */
+    SWITCH_UNLOCK
     .size _kickos_int_level1, .-_kickos_int_level1
 
 /* ------------------------------------------------------------------------- */

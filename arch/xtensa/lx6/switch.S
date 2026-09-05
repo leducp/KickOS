@@ -41,6 +41,8 @@
     .set RESUME_COOP,  0
 
 #include <kickos/arch/xtensa_frame.h>
+#include <kickos/arch/lx6_switch_unlock.h>
+#include <kickos/arch/lx6_percpu.h>
 
 
 /* SPILL_ALL_WINDOWS: XCHAL_NUM_AREGS == 64 on LX6, so rotate the window a full
@@ -133,6 +135,7 @@ xtensa_switch:
     l32i    a5, a3, CTX_KIND      /* to->resume_kind */
     bnez    a5, .Lsw_resume_irq
     l32i    a1, a3, CTX_SP        /* a1 = to->sp   (switch stacks) */
+    SWITCH_UNLOCK                 /* standing on the incoming frame; a3 survives call4 */
     l32i    a4, a3, CTX_PS        /* to->ps */
     l32i    a0, a3, CTX_PC        /* to->pc (return addr, carries CALLINC) */
 #if KICKOS_BENCH
@@ -151,6 +154,7 @@ xtensa_switch:
        base in a1 and let it reload the full context and rfe. jx (not j) so the
        cross-section reach to startup.S is range-independent. */
     l32i    a1, a3, CTX_SP        /* a1 = to->sp (interrupt frame base) */
+    SWITCH_UNLOCK
     movi    a2, _kickos_lx6_irq_restore
     jx      a2
     .size xtensa_switch, .-xtensa_switch
@@ -168,7 +172,7 @@ xtensa_switch:
     .type arch_start, @function
 arch_start:
     entry   a1, 32
-    movi    a4, g_arch_current
+    PERCPU_CELL a4, g_arch_current, a5
     s32i    a3, a4, 0
 #if KICKOS_TELEMETRY
     /* First SWITCH record: from = 0xFFFF (no outgoing thread). a3 (first) is below

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-D0WDQ6 Timer Group register map (ESP32 TRM ch.18 "Timer Group"). Offsets
+// ESP32 Timer Group register map (ESP32 TRM ch.18 "Timer Group"). Offsets
 // are from a group base (mmap::TIMG0_BASE or mmap::TIMG1_BASE); T0 owns
 // +0x00..+0x20, T1 +0x24..+0x44, WDT +0x48+. T0 is the kernel monotonic time base;
 // the two group MWDTs are disabled at bring-up.

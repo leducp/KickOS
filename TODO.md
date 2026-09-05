@@ -16,6 +16,24 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is
 `docs/archive/M1_state.md`; the board/console readiness matrix is `docs/m2-readiness.md`.
 
+## The file:line:column indirect-call binding is fragile, and replacing it is its own piece
+
+`tests/static/trap_redzone_indirect.txt` binds every indirect call site by
+`<basename>:<line>:<column>`, so any edit ABOVE a bound site invalidates it. Measured during
+M7.10: the `irq.cc` bindings were re-taken three times in one day, shifting 30, then 74, then 75
+lines, and the 630 `console_tx.cc` sites shifted by one when a single `#include` landed above
+them. No bound call was touched by any of those edits.
+
+**Not a cleanup.** A stabler key (an enclosing symbol plus an ordinal, for instance) has to keep
+the property the file exists for: an indirect site reachable from a root and NOT declared is a
+HARD FAILURE, and a declaration naming an absent callee is one too. A scheme that cannot
+distinguish "unbound site" from "key no longer resolves" converts that hard failure into a
+silent skip, which is worse than the churn it removes. Two gates read the file
+(`trap_redzone.py`, `console_reach.py`), so it is a change to how a class of gates binds
+evidence.
+
+Deliberately left for its own milestone.
+
 ## f302nucleo-st runs two threads to pay for the priority ceiling (parked for M8)
 
 - [ ] **THE BOARD LOST A THREAD SLOT AND THE CHASE IS PARKED, NOT ABANDONED.** The scheduling
@@ -5176,7 +5194,7 @@ reliably-readable, NON-debug free-running peripheral counter. Book ch.2.1 teache
 - [~] **F411/F302** TIM2(32b), **F103** TIM2->TIM3 chained, **SAM3X** TC0 ch0(32b) -- on master,
       reviewed+fixed (f103 tear-discriminator; per-timer overflow-IRQ wrap observer; f411 APB1LPENR).
       **BUILD-ONLY, SILICON PENDING.**
-- [~] **ESP32 (Xtensa)** 64-bit TIMG0 (UPDATE-latch) -- also fixes a latent CCOUNT WAITI-freeze.
+- [~] **ESP32 (Xtensa)** 64-bit TIMG0 (UPDATE-latch) -- also gives both CPUs one time base.
       **BUILD-ONLY, SILICON PENDING.**
 - RISC-V (CLINT mtime) + RX (CMTW): already sound, unchanged.
 

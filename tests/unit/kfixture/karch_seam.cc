@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <kickos/irq_route.h>
 #include <kickos/console_tx.h>
 #include <kickos/domain.h>
 #include <kickos/instance.h>
@@ -68,6 +69,14 @@ extern "C"
 
     void arch_irq_unmask(int)
     {
+    }
+
+    // The routed core the irq_claim pin admits against. -1 is no constraint, so a test that
+    // does not set it sees no placement.
+    int g_karch_irq_line_core = -1;
+    int arch_irq_line_core(int)
+    {
+        return g_karch_irq_line_core;
     }
 
     void arch_irq_clear_pending(int)
@@ -270,5 +279,37 @@ namespace kickos
     void ktime_deadline_cancel(Thread* t)
     {
         t->on_timer = false;
+    }
+}
+
+namespace kickos
+{
+    // One core, so every line is local. Forwarded to the arch stubs in this file, which is
+    // what keeps each arm's recorded trace unchanged.
+    void irq_line_op(int line, LineOp op)
+    {
+        switch (op)
+        {
+            case LineOp::MASK:
+            {
+                arch_irq_mask(line);
+                break;
+            }
+            case LineOp::UNMASK:
+            {
+                arch_irq_unmask(line);
+                break;
+            }
+            case LineOp::CLEAR:
+            {
+                arch_irq_clear_pending(line);
+                break;
+            }
+        }
+    }
+
+    void irq_line_op_local(int line, LineOp op)
+    {
+        irq_line_op(line, op);
     }
 }

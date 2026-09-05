@@ -3,6 +3,7 @@
 
 #include "publish_seam.h"
 
+#include <kickos/irq_route.h>
 #include <kickos/arch/arch.h>
 #include <kickos/console_tx.h>
 #include <kickos/irq.h>
@@ -206,6 +207,11 @@ extern "C"
         *size = 0x100u;
     }
 
+    // Reached only through the irq_line_op stub below; no arm here masks.
+    void arch_irq_mask(int)
+    {
+    }
+
     void arch_irq_unmask(int)
     {
     }
@@ -271,5 +277,37 @@ namespace kickos
 
     void irq_detach(int)
     {
+    }
+}
+
+namespace kickos
+{
+    // One core, so every line is local. Forwarded to the arch stubs in this file, which is
+    // what keeps each arm's recorded trace unchanged.
+    void irq_line_op(int line, LineOp op)
+    {
+        switch (op)
+        {
+            case LineOp::MASK:
+            {
+                arch_irq_mask(line);
+                break;
+            }
+            case LineOp::UNMASK:
+            {
+                arch_irq_unmask(line);
+                break;
+            }
+            case LineOp::CLEAR:
+            {
+                arch_irq_clear_pending(line);
+                break;
+            }
+        }
+    }
+
+    void irq_line_op_local(int line, LineOp op)
+    {
+        irq_line_op(line, op);
     }
 }

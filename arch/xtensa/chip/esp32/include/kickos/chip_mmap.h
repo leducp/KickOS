@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-D0WDQ6 (WROOM-32) peripheral base addresses (ESP32 TRM v5.8 Table 3.3-6,
+// ESP32 (WROOM-32) peripheral base addresses (ESP32 TRM v5.8 Table 3.3-6,
 // "Peripheral Address Mapping", chapter 3 System and Memory). Bases only; register
 // offsets + fields live in regs/<periph>.h. Hand-rolled, no ESP-IDF/HAL sources.
 

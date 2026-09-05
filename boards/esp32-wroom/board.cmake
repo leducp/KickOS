@@ -6,7 +6,7 @@
 # cross toolchain file pre-project(), which then includes the chip's own cpu.cmake for
 # the flags left unset here. Side-effect free: set only these.
 #
-# ESP32-WROOM-32 (ESP32-D0WDQ6, Xtensa LX6) is the first non-ARM board. Its Xtensa
+# ESP32-WROOM-32 (ESP32, Xtensa LX6) is the first non-ARM board. Its Xtensa
 # core config is baked into the xtensa-esp32-elf toolchain, so unlike ARM there is
 # no -mcpu selection here: the ABI baseline is fixed by the toolchain file. The
 # windowed ABI (the toolchain default) is used so the prebuilt esp32 libgcc/libc

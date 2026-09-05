@@ -3,7 +3,7 @@
 #
 # Every kickos_services_* provider in this tree, and ONE configure preset that compiles
 # it. tests/static/check_service_lists.sh reads this and refuses a provider that is not
-# here, exactly as test_classes.txt refuses an unclassified test program.
+# here.
 #
 #   <provider>  <preset>  <default|select>
 #

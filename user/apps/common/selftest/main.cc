@@ -1363,13 +1363,18 @@ namespace
     void od_owner(void*) // caps: mutex@1, holds@2
     {
         kos_mutex_lock(1);
-        kos_sem_post(2);              // holds: owner now owns it
+        // Twice: one token releases the waiter, one releases this arm's own body.
+        kos_sem_post(2);
+        kos_sem_post(2);
         kos_sleep_ns(g_mtx_unit * 3); // hold past the waiter's block, then exit owning
         kos_exit(0);                  // exits still owning -> force-unlock
     }
-    void od_waiter(void*) // caps: done@1, mutex@2
+    void od_waiter(void*) // caps: done@1, mutex@2, holds@3
     {
-        kos_sleep_ns(g_mtx_unit * 1);    // wake while the owner still holds it
+        // Gated on the owner's own post: above one core a sleep is no ordering, and a waiter
+        // that reached the mutex first measures the inverse scenario. The owner's hold stays a
+        // duration, a liveness margin for this thread to reach its blocking lock inside.
+        kos_sem_wait(3);
         g_od_result = kos_mutex_lock(2);
         // -KOS_EOWNERDEAD is a HELD acquire: unlock it too, or the robust mutex is stranded.
         // A plain `>= 0` test would skip this, since owner-died is a NEGATIVE code.
@@ -1389,9 +1394,9 @@ namespace
         int const hrc = kos_sem_create(0, &holds);
         TAP_CHECK(mrc == 0 and hrc == 0);
         kos_cap_grant ocaps[] = {{m, CH_MTX}, {holds, CH_FULL}};
-        kos_cap_grant wcaps[] = {{g_done, CH_FULL}, {m, CH_MTX}};
+        kos_cap_grant wcaps[] = {{g_done, CH_FULL}, {m, CH_MTX}, {holds, CH_FULL}};
         auto ow = kos::thread::create_caps(od_owner, nullptr, "odOwn", 8, ocaps, 2);
-        auto wt = kos::thread::create_caps(od_waiter, nullptr, "odWt", 12, wcaps, 2);
+        auto wt = kos::thread::create_caps(od_waiter, nullptr, "odWt", 12, wcaps, 3);
         TAP_CHECK(ow.valid() and wt.valid());
         kos_sem_wait(holds); // owner acquired the mutex (then sleeps, still holding)
         wait_n(1);           // only the waiter posts done (owner exited)
@@ -6231,6 +6236,9 @@ namespace
     // take OFF a core rather than one it can simply place at its next wake.
     void pl_spin_worker(void*)
     {
+        // Its own mask, once: an UNPINNED spinner can be placed on the core a pin would have
+        // named, so g_pl_core alone cannot tell a pin that took from one never made.
+        g_pl_aff = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_AFFINITY));
         while (g_pl_stop.load() == 0)
         {
             g_pl_core = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
@@ -6434,47 +6442,29 @@ namespace
         TAP_CHECK(good == 0);
     }
 
-    void t_migrate_running()
+    // --- Placement: a RUNNING thread is re-placed under an affinity change ---------------
+    // The move is driven by a PINNED CHILD: root holds no handle to itself, so it cannot be
+    // kept off the core the spinner is measured on. The spinner sits above root's priority and
+    // the driver above the spinner, which keeps the driver scheduled once the two share the
+    // destination.
+    constexpr uint32_t PL_HOME = 0; // the boot core, this arm's destination
+    // The driver spends BOTH deadlines before it exits, so root's wait on it covers them plus
+    // an ordinary join budget.
+    constexpr uint32_t PL_DRIVER_JOIN_US =
+        PLACE_JOIN_US
+        + 2u * static_cast<uint32_t>((PL_DEADLINE_STEPS * PLACE_STEP_NS) / 1000ull);
+    kos_thread_t g_pl_victim = KOS_THREAD_NONE;
+    Atomic<uint32_t, Order::RELAXED> g_pl_mig_first{0xffu};
+    Atomic<uint32_t, Order::RELAXED> g_pl_mig_last{0xffu};
+    Atomic<uint32_t, Order::RELAXED> g_pl_mig_arrived{0};
+    Atomic<uint32_t, Order::RELAXED> g_pl_mig_rc{0x7fffffffu};
+
+    void pl_migrate_driver(void*)
     {
-        uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
-        // Core 0 is excluded: root has to keep running to move the worker, and a spinner above
-        // its priority seated there would never give the core back.
-        uint32_t a = 0;
-        uint32_t b = 0;
-        unsigned found = 0;
-        for (uint32_t c = 1; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
-        {
-            if ((iso & (1u << c)) != 0)
-            {
-                continue;
-            }
-            if (found == 0)
-            {
-                a = c;
-                found = 1;
-                continue;
-            }
-            b = c;
-            found = 2;
-            break;
-        }
-        if (found < 2)
-        {
-            tap::skip("a migration needs two non-isolated cores beside the boot core");
-            return;
-        }
-        pl_reset();
-        auto w = kos::thread::create_caps(pl_spin_worker, nullptr, "migr", 12, nullptr, 0,
-                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
-                                          KOS_TASK_NONE, nullptr, 0, 1u << a);
-        if (not w.valid())
-        {
-            tap::skip("thread pool too small");
-            return;
-        }
-        // WAIT FOR THE WORKER TO PUBLISH AT ALL, and only then ask which core: it was pinned
-        // to `a` at creation, so any value it publishes must be `a`, and waiting for the value
-        // itself turns a slow start into a red precondition instead of a lost race.
+        pl_wait_go();
+        // Wait for the spinner to publish at all before moving it: it was pinned to the source
+        // at creation, so any value it publishes is that core, and waiting turns a slow start
+        // into a red precondition instead of a lost race.
         uint32_t first = 0xffu;
         for (unsigned i = 0; i < PL_DEADLINE_STEPS; i++)
         {
@@ -6485,30 +6475,93 @@ namespace
             }
             kos_sleep_ns(PLACE_STEP_NS);
         }
-        bool const on_a = (first == a);
-        int const rc = kos::thread::pin(w.id(), b);
-        bool on_b = false;
+        g_pl_mig_first = first;
+        int const rc = kos::thread::pin(g_pl_victim, PL_HOME);
+        g_pl_mig_rc = static_cast<uint32_t>(rc);
+        uint32_t arrived = 0;
         for (unsigned i = 0; i < PL_DEADLINE_STEPS; i++)
         {
-            if (g_pl_core.load() == b)
+            if (g_pl_core.load() == PL_HOME)
             {
-                on_b = true;
+                arrived = 1;
                 break;
             }
             kos_sleep_ns(PLACE_STEP_NS);
         }
-        uint32_t const last = g_pl_core;
+        g_pl_mig_last = g_pl_core.load();
+        g_pl_mig_arrived = arrived;
         g_pl_stop = 1;
+    }
+
+    void t_migrate_running()
+    {
+        uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
+        // The boot core is the DESTINATION: it can never be isolated, so a two-core part has
+        // one. The source is the lowest core above it the isolated mask does not name; a
+        // re-placement onto an isolated core is a different claim and no arm makes it.
+        uint32_t away = 0;
+        unsigned found = 0;
+        for (uint32_t c = 1; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
+        {
+            if ((iso & (1u << c)) != 0)
+            {
+                continue;
+            }
+            away = c;
+            found = 1;
+            break;
+        }
+        if (found == 0)
+        {
+            tap::skip("a migration needs a non-isolated core beside the boot core");
+            return;
+        }
+        pl_reset();
+        g_pl_mig_first = 0xffu;
+        g_pl_mig_last = 0xffu;
+        g_pl_mig_arrived = 0;
+        g_pl_mig_rc = 0x7fffffffu;
+        auto w = kos::thread::create_caps(pl_spin_worker, nullptr, "migr", 12, nullptr, 0,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          KOS_TASK_NONE, nullptr, 0, 1u << away);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        // Before the driver exists, so the relaxed cells owe no publication order.
+        g_pl_victim = w.id();
+        auto d = kos::thread::create(pl_migrate_driver, nullptr, "migrd", 13);
+        if (not d.valid())
+        {
+            g_pl_stop = 1;
+            (void)w.join(PLACE_JOIN_US);
+            tap::skip("thread pool too small");
+            return;
+        }
+        int const dpin = kos::thread::pin(d.id(), PL_HOME);
+        g_pl_go = 1;
+        int const djoined = d.join(PL_DRIVER_JOIN_US);
         int const joined = w.join(PLACE_JOIN_US);
-        tap::diag("spinner core %u -> %u: arrived %d, last read %u",
-                  static_cast<unsigned>(a), static_cast<unsigned>(b),
-                  static_cast<int>(on_b), static_cast<unsigned>(last));
+        uint32_t const first = g_pl_mig_first;
+        uint32_t const last = g_pl_mig_last;
+        uint32_t const aff = g_pl_aff;
+        int const rc = static_cast<int>(g_pl_mig_rc.load());
+        tap::diag("spinner core %u -> 0 under a driver pinned to 0: affinity 0x%x, first %u, "
+                  "arrived %u, last read %u", static_cast<unsigned>(away),
+                  static_cast<unsigned>(aff), static_cast<unsigned>(first),
+                  static_cast<unsigned>(g_pl_mig_arrived.load()),
+                  static_cast<unsigned>(last));
+        TAP_CHECK(dpin == 0);
+        TAP_CHECK(djoined == 0);
         TAP_CHECK(joined == 0);
-        TAP_CHECK(on_a);
+        // The precondition: a core running this thread and nothing else was made to give it up.
+        TAP_CHECK(aff == (1u << away));
+        TAP_CHECK(first == away);
         TAP_CHECK(rc == 0);
         // A DEADLINE and not a park: a worker that never arrives fails here instead of
         // hanging the suite.
-        TAP_CHECK(on_b);
+        TAP_CHECK(g_pl_mig_arrived.load() == 1u);
     }
 
     void t_pin_same_task_ok()
@@ -7048,6 +7101,225 @@ namespace
         TAP_CHECK(aff == mixed);
         TAP_CHECK(seen != 0);
         TAP_CHECK((seen & ~mixed) == 0);
+    }
+
+    // --- Preemption: every core's own slice timer takes a thread off it -------------------
+    // KOS_SCHED_OP_PREEMPTED is machine-wide, which is what a claim about a SECONDARY arming
+    // its own comparator needs.
+    //
+    // One thread MORE than the machine has cores, for both arms below: with a runnable thread
+    // per core and one over, a core that carries none was left idle beside work it could have
+    // taken.
+    constexpr unsigned PL_CROWD = KICKOS_KERNEL_CORES + 1u;
+
+    // Read-only to the burners, published before the first one is created.
+    uint64_t g_pl_burn_ns = 32000000ull;
+
+    // Spins, never yields or sleeps: the slice has to EXPIRE under this thread for the timer
+    // to be what takes the core away.
+    void pl_burn_worker(void*)
+    {
+        uint64_t const start = kos_clock_now();
+        while (kos_clock_now() - start < g_pl_burn_ns)
+        {
+        }
+    }
+
+    void t_slice_preempts_every_core()
+    {
+        uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
+        // An isolated core is held out of the default core set and these burners name no core,
+        // so it is outside the claim. Core 0 can never be isolated, so the target is never empty.
+        uint32_t const want = PL_ALL & ~iso;
+        // Asked before the baseline read below, so the probe's own threads contribute no bit
+        // to `after`.
+        if (not pool_can_host(static_cast<int>(PL_CROWD)))
+        {
+            tap::skip("pool too small (%u concurrent burners)", PL_CROWD);
+            return;
+        }
+        uint32_t const before = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_PREEMPTED));
+
+        // The quantum must be resolvable by the monotonic clock or no slice can expire under a
+        // burn at all, so it is measured: an emulated clock's granule is coarse. That also makes
+        // this the suite's most load-dependent arm, a contended host leaving the burners fewer
+        // rotations than the claim needs.
+        uint64_t e0 = kos_clock_now();
+        uint64_t e1 = e0;
+        while (e1 == e0)
+        {
+            e1 = kos_clock_now();
+        }
+        uint64_t e2 = e1;
+        while (e2 == e1)
+        {
+            e2 = kos_clock_now();
+        }
+        uint64_t const granule = e2 - e1;
+        uint64_t quantum = 1000000ull; // 1 ms on a fine clock (the shipped case)
+        if (quantum < granule * 4)
+        {
+            quantum = granule * 4;
+        }
+        // The burn spans several rotations of the WHOLE population: each core needs one expiry,
+        // and a core is handed a burner once per rotation.
+        g_pl_burn_ns = quantum * 8ull * PL_CROWD;
+
+        kos::thread::Handle w[PL_CROWD];
+        unsigned made = 0;
+        for (unsigned i = 0; i < PL_CROWD; i++)
+        {
+            w[i] = kos::thread::create(pl_burn_worker, nullptr, "burn", 12, KOS_POLICY_RR,
+                                       static_cast<uint32_t>(quantum));
+            if (not w[i].valid())
+            {
+                break;
+            }
+            made++;
+        }
+        for (unsigned i = 0; i < made; i++)
+        {
+            (void)w[i].join(PLACE_JOIN_US);
+        }
+        if (made < PL_CROWD)
+        {
+            // The probe above just held PL_CROWD slots and stacks, so a short crowd here is a
+            // pool bug and not a small board.
+            TAP_CHECK(made == PL_CROWD);
+            return;
+        }
+
+        uint32_t const after = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_PREEMPTED));
+        tap::diag("quantum %u ns over %u burner(s): slice preemptions 0x%x -> 0x%x, wanted 0x%x",
+                  static_cast<unsigned>(quantum), PL_CROWD, static_cast<unsigned>(before),
+                  static_cast<unsigned>(after), static_cast<unsigned>(want));
+        // Monotonic, so a bit that went away is a torn read of a cell with one writer.
+        TAP_CHECK((before & ~after) == 0u);
+        // Every core the burners could be placed on had a thread taken off it by its own
+        // comparator; equality, so preempting on the boot core alone is red.
+        TAP_CHECK((after & want) == want);
+    }
+
+    // --- Placement: a thread of this app is seen running on every core --------------------
+    // The union across an unpinned crowd has to NAME every core the crowd may run on, which no
+    // single-core placement satisfies. isolated_unpinned_never reads the same probe for an
+    // absence, which a scheduler that moves nobody also satisfies.
+    //
+    // One cell per worker: a shared mask is a cross-core read-modify-write, and a lost update
+    // erases a core from the very union being read.
+    Atomic<uint32_t, Order::RELAXED> g_pl_spread[PL_CROWD];
+    Atomic<uint32_t, Order::RELAXED> g_pl_spread_aff[PL_CROWD];
+    uint32_t g_pl_spread_want = 0; // published before the crowd is released
+
+    // A time budget, sampled until the union is complete: root holds core 0 until it blocks in
+    // the join below, so a crowd spending a fixed sample count can finish before core 0 is free
+    // and read as never having reached it.
+    constexpr uint64_t PL_SPREAD_BUDGET_NS = 200000000ull; // 200 ms
+
+    void pl_spread_worker(void* arg)
+    {
+        unsigned const me = static_cast<unsigned>(reinterpret_cast<uintptr_t>(arg));
+        pl_wait_go();
+        g_pl_spread_aff[me] = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_AFFINITY));
+        uint64_t const start = kos_clock_now();
+        uint32_t seen = 0;
+        while (true)
+        {
+            seen |= 1u << static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
+            // Published every pass: the stop condition is the union across the crowd.
+            g_pl_spread[me] = seen;
+            uint32_t all = 0;
+            for (unsigned j = 0; j < PL_CROWD; j++)
+            {
+                all |= g_pl_spread[j].load();
+            }
+            if ((all & g_pl_spread_want) == g_pl_spread_want)
+            {
+                break;
+            }
+            if (kos_clock_now() - start >= PL_SPREAD_BUDGET_NS)
+            {
+                break;
+            }
+            // Yield, never sleep: a sleeping worker is not part of the crowd that makes a core
+            // give one of them up.
+            kos_yield();
+        }
+        g_pl_spread[me] = seen;
+    }
+
+    void t_threads_reach_every_core()
+    {
+        uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
+        // An isolated core is held out of the default core set and this crowd names no core.
+        // Core 0 can never be isolated, so the target is never empty.
+        uint32_t const want = PL_ALL & ~iso;
+
+        pl_reset();
+        g_pl_spread_want = want;
+        for (unsigned i = 0; i < PL_CROWD; i++)
+        {
+            g_pl_spread[i] = 0;
+            g_pl_spread_aff[i] = 0;
+        }
+        // Asked before the first spawn, for the reason the shortfall check below states.
+        if (not pool_can_host(static_cast<int>(PL_CROWD)))
+        {
+            tap::skip("pool too small (%u concurrent workers)", PL_CROWD);
+            return;
+        }
+        kos::thread::Handle w[PL_CROWD];
+        unsigned made = 0;
+        for (unsigned i = 0; i < PL_CROWD; i++)
+        {
+            w[i] = kos::thread::create(pl_spread_worker,
+                                       reinterpret_cast<void*>(static_cast<uintptr_t>(i)),
+                                       "spread", 12);
+            if (not w[i].valid())
+            {
+                break;
+            }
+            made++;
+        }
+        // The whole crowd or nothing: below it, a core carrying no worker is a core the run had
+        // none to give it.
+        if (made < PL_CROWD)
+        {
+            for (unsigned i = 0; i < made; i++)
+            {
+                (void)w[i].kill();
+                (void)w[i].join(PLACE_JOIN_US);
+            }
+            // The probe above just held PL_CROWD slots and stacks, so a short crowd here is a
+            // pool bug and not a small board.
+            TAP_CHECK(made == PL_CROWD);
+            return;
+        }
+        // Last, once every worker exists: released one at a time, the first could finish its
+        // samples before anyone could crowd it off a core.
+        g_pl_go = 1;
+        int joined = 0;
+        for (unsigned i = 0; i < PL_CROWD; i++)
+        {
+            joined |= w[i].join(PLACE_JOIN_US);
+        }
+
+        uint32_t reached = 0;
+        uint32_t unpinned = 0;
+        for (unsigned i = 0; i < PL_CROWD; i++)
+        {
+            reached |= g_pl_spread[i].load();
+            if (g_pl_spread_aff[i].load() == want)
+            {
+                unpinned++;
+            }
+        }
+        tap::diag("%u unpinned worker(s) sampling to completion: cores reached 0x%x, wanted 0x%x",
+                  PL_CROWD, static_cast<unsigned>(reached), static_cast<unsigned>(want));
+        TAP_CHECK(joined == 0);
+        // A crowd the kernel had pinned would satisfy the union below with no choice made.
+        TAP_CHECK(unpinned == PL_CROWD);
+        TAP_CHECK((reached & want) == want);
     }
 #endif
 
@@ -11330,6 +11602,8 @@ int main(int, char**)
     TAP_ADD("isolated_unpin_excludes", t_isolated_unpin_excludes); // and an unpin restores that set
     TAP_ADD("isolated_takes_pinned", t_isolated_takes_pinned);     // and a pinned thread does run there
     TAP_ADD("isolated_mixed_mask_ok", t_isolated_mixed_mask_ok);   // named beside core 0, admitted whole
+    TAP_ADD("slice_preempts_every_core", t_slice_preempts_every_core); // each core's own timer takes a thread off it
+    TAP_ADD("threads_reach_every_core", t_threads_reach_every_core);   // and an unpinned crowd is SEEN on each
 #endif
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST) && KICKOS_FAULT_ISOLATION
     TAP_ADD("fault_kills_task", t_fault_kills_task); // a translation fault ends the TASK, root survives

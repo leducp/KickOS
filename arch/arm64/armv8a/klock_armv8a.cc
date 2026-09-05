@@ -267,6 +267,23 @@ extern "C"
 void kickos_arm64_doorbell_service(void)
 {
     uint32_t const me = arch_cpu_id();
+    // Observed once and answered from the observation, never re-read: the ISB below must
+    // attest to THIS snapshot, and a request raised after it is not one it covers.
+    uint32_t asked[KICKOS_NUM_CORES] = {};
+    bool owed = false;
+    for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
+    {
+        asked[from] = g_request[from].seq[me].load();
+        if (asked[from] != g_answer[me].seq[from].load())
+        {
+            owed = true;
+        }
+    }
+    if (not owed)
+    {
+        return;
+    }
+
     // A Context synchronization event on THIS PE: until a PE takes one, instructions it has
     // already fetched may be re-executed with no bound (DDI 0487 M.b section B2.7.4.2), and no
     // operation makes one PE synchronize another (Glossary, "Context Synchronization event").
@@ -275,17 +292,23 @@ void kickos_arm64_doorbell_service(void)
     // EXPLICIT: doorbell_poll runs this body from inside a spin, which enters no exception, and
     // whether exception entry is itself such an event rests on FEAT_ExS and SCTLR_EL1.EIS.
     //
-    // Before the answer stores, so an initiator that has seen an answer has seen this.
+    // After the snapshot and before the answer stores, so an initiator that has seen an
+    // answer has seen this.
     __asm volatile("isb" ::: "memory");
 #if defined(KICKOS_ENABLE_SELFTEST)
     g_served[me].seq[0] = g_served[me].seq[0].load() + 1u;
 #endif
+#if KICKOS_KERNEL_CORES > 1
+    // After the snapshot above and before the answer stores below; both halves are the
+    // contract (kernel/irq/irq_route.cc, line_op_ask).
+    kickos_irq_route_service();
+#endif
+
     for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
     {
-        uint32_t const asked = g_request[from].seq[me].load();
-        if (asked != g_answer[me].seq[from].load())
+        if (asked[from] != g_answer[me].seq[from].load())
         {
-            g_answer[me].seq[from] = asked;
+            g_answer[me].seq[from] = asked[from];
         }
     }
 #if KICKOS_AMP_NODE

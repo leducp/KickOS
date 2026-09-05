@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * Linker script for the ESP32-D0WDQ6 (WROOM-32), Xtensa LX6. The image links
+ * Linker script for the ESP32 (WROOM-32 module), Xtensa LX6. The image links
  * ENTIRELY into internal SRAM (no flash cache / XIP), so the ROM loader copies
  * every segment to its RAM load address and jumps: no second stage, no MMU
  * setup (see startup.S). Addresses are from the ESP32 TRM
@@ -31,8 +31,15 @@ MEMORY
     DRAM (rw)  : ORIGIN = 0x3FFB0000, LENGTH = 192K
 }
 
-_estack = ORIGIN(DRAM) + LENGTH(DRAM); /* initial stack: top of DRAM */
-_kernel_stack_size = 8K;               /* boot/interrupt stack reserve */
+_estack = ORIGIN(DRAM) + LENGTH(DRAM); /* core 0's boot stack top: top of DRAM */
+_kernel_stack_size = 8K;               /* boot/interrupt stack reserve, PER CORE */
+
+/* ONE BOOT STACK PER CORE, stacked downward from the top of DRAM. The reserve below
+ * __kickos_ram_end grows with the count, which makes __kickos_ram_start <= __kickos_ram_end
+ * the check that the second stack FITS. */
+#if KICKOS_NUM_CORES > 1
+_estack_core1 = _estack - _kernel_stack_size;
+#endif
 
 SECTIONS
 {
@@ -126,7 +133,7 @@ SECTIONS
     /* User-RAM pool (arch_ram_alloc) between static data and the reserved stack. */
     . = ALIGN(16);
     __kickos_ram_start = .;
-    __kickos_ram_end = _estack - _kernel_stack_size;
+    __kickos_ram_end = _estack - KICKOS_NUM_CORES * _kernel_stack_size;
 
     /* Chip memory extents read by the non-enforcing user-pointer admission
        (arch_ram_common.cc). Symbols only, no layout effect. */
@@ -167,3 +174,32 @@ ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
 ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
        "KickOS: heap below KICKOS_HEAP_MIN")
 #endif
+
+/* --- The coherency condition, as a refusal ---------------------------------------------
+ * Both CPUs reach embedded memory with no cache in the path: the two 32 KiB caches are
+ * carved out of SRAM0 and serve the external flash and PSRAM path alone, and the TRM
+ * documents no invalidate anywhere and no flush but a whole-cache one that DISCARDS dirty
+ * data. Shared kernel state is coherent across the two CPUs only while it is IN internal
+ * SRAM. Unconditional, not gated on the core count.
+ *
+ * The bounds are the SoC's, from TRM v5.8 Table 3.3-2, and NOT this script's own regions:
+ * an assert reading ORIGIN(DRAM) against LENGTH(DRAM) passes wherever the region is
+ * repointed.
+ *
+ * Data bus: SRAM2 opens at 0x3FFA_E000 and SRAM1 closes at 0x3FFF_FFFF, contiguous.
+ * Instruction bus: the low 64 KiB of SRAM0 IS the cache pool, so the floor is 0x4008_0000
+ * rather than SRAM0's own 0x4007_0000, and SRAM1's instruction alias closes at 0x400B_FFFF.
+ */
+#define KICKOS_ESP32_ISRAM_DATA_FLOOR  0x3FFAE000
+#define KICKOS_ESP32_ISRAM_DATA_CEIL   0x40000000
+#define KICKOS_ESP32_ISRAM_TEXT_FLOOR  0x40080000
+#define KICKOS_ESP32_ISRAM_TEXT_CEIL   0x400C0000
+
+ASSERT(ADDR(.rodata) >= KICKOS_ESP32_ISRAM_DATA_FLOOR && _estack <= KICKOS_ESP32_ISRAM_DATA_CEIL,
+       "KickOS: kernel data leaves internal SRAM. Run queues, control blocks, the capability table and the kernel lock word are coherent across the two CPUs only by there being no cache over them, and the caches sit on the external path; a shared kernel over this placement loses writes with no fault")
+
+ASSERT(__kickos_ram_end >= KICKOS_ESP32_ISRAM_DATA_FLOOR && _estack <= KICKOS_ESP32_ISRAM_DATA_CEIL,
+       "KickOS: a boot stack leaves internal SRAM. Every core's boot and interrupt stack is carved below _estack, and the level-1 entry spills the interruptee's register windows onto whichever stack it is standing on; behind a cache neither core can invalidate, that spill is lost rather than faulted")
+
+ASSERT(_kickos_vectors >= KICKOS_ESP32_ISRAM_TEXT_FLOOR && ADDR(.text) + SIZEOF(.text) <= KICKOS_ESP32_ISRAM_TEXT_CEIL,
+       "KickOS: kernel text leaves internal SRAM, or reaches into the SRAM0 cache pool. Both CPUs fetch it directly and neither can invalidate the other's copy; the only flush this part has discards dirty data")

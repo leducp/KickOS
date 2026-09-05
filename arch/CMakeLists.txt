@@ -36,6 +36,7 @@ set(KICKOS_SEAM_DEFAULTS_COMMON
   common/arch_cpu_clock_set_default.cc
   common/arch_diag_led_init_default.cc
   common/arch_diag_led_set_default.cc
+  common/arch_irq_line_core_default.cc
   common/arch_fault_is_user_thread_default.cc
   common/arch_fault_redirect_to_exit_default.cc
   common/arch_periph_clock_hz_default.cc
@@ -190,13 +191,18 @@ elseif(KICKOS_ARCH STREQUAL "rxv3")
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rx/rxv3/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "lx6")
-  # ESP32 Xtensa LX6.
+  # ESP32 Xtensa LX6. arch_xtensa.cc is the backend for arch_irq_line_core, so that fallback
+  # leaves the list: a fallback beside a backend in ONE archive resolves by member order.
+  set(_lx6_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
+  list(REMOVE_ITEM _lx6_defaults common/arch_irq_line_core_default.cc)
   add_library(kickos_arch_lx6 STATIC
     xtensa/lx6/arch_xtensa.cc
+    xtensa/lx6/klock_lx6.cc
     common/arch_ram_common.cc
     common/startup_ranges.cc
-    ${KICKOS_SEAM_DEFAULTS_COMMON}
+    ${_lx6_defaults}
     xtensa/lx6/arch_clock_now_default.cc
+    xtensa/lx6/arch_trace_now_default.cc
     xtensa/lx6/switch.S)
   kickos_apply_freestanding(kickos_arch_lx6)
   target_include_directories(kickos_arch_lx6 PUBLIC

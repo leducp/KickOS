@@ -458,6 +458,20 @@ case $BOARD in
     ;;
 esac
 
+# Every `KickOS: ` line the log holds, echoed before this script's own verdict: an image that
+# refuses by name says why it produced no plan line.
+#
+# UNANCHORED: a backend refusal goes out through arch_console_write_sync, a raw writer that
+# skips kconsole_write's CRLF cook, so these lines end in a bare LF where every other console
+# line ends CRLF.
+say_kickos_lines() {
+  _sk=$(grep -aF 'KickOS: ' "$LOG" | tail -5)
+  if [ -n "$_sk" ]; then
+    echo "the image refused by name:" >&2
+    printf '%s\n' "$_sk" | sed 's/^/  /' >&2
+  fi
+}
+
 # A capture that produced nothing must FAIL. An empty log and a board that printed
 # nothing are indistinguishable, and an exit code of 0 turns either into a pass.
 BYTES=$(wc -c < "$LOG")
@@ -545,16 +559,19 @@ if [ -z "$LAST" ]; then
     # ok count alone; reconcile the arm total by eye against the count
     # user/apps/common/selftest/CMakeLists.txt hands the gates.
     if [ "$OKC" -eq 0 ]; then
+      say_kickos_lines
       refuse "$LOG carries no plan line AND no ok lines: nothing of the suite arrived"
     fi
     echo "NOTE: no plan line; a USB CDC console loses the head of every capture, this one" >&2
     echo "  included. $OKC ok line(s) and the arms below the first one are NOT accounted for;" >&2
     echo "  derive the expected count and check it by hand." >&2
   elif [ "$WANT_TAP" -eq 1 ]; then
+    say_kickos_lines
     refuse "$LOG has no plan line at all: the suite never announced itself"
   else
     echo "note: $APP announces no TAP plan, so no arm counts are owed. Read the log." >&2
   fi
 elif [ "$OKC" -eq 0 ]; then
+  say_kickos_lines
   refuse "the last run in $LOG carries a plan line but no ok lines"
 fi

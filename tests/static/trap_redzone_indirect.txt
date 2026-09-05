@@ -20,9 +20,17 @@
 # Re-take the bindings in the same commit that moves the lines, mapping old line to new with
 # difflib over the two versions of the source; a column moves only under a reindent.
 #
+# THE file:line:column BINDING GOES STALE ON EDITS THAT TOUCH NO BOUND CALL: an #include landing
+# above a body shifts every site under it. Derive the basenames, re-take in the same commit, and
+# read the count.
+#
 # File format, one record per line, '#' starts a comment, a trailing '\' continues:
 #   site <arch> <scope> <basename>:<line>:<col> <callee>...
 #   site <arch> <scope> <basename>:<line>:<col> NONE
+#   site <arch> <scope> <caller>@indirect <callee>...
+# The third form is for a site gcc emitted with NO location at all: the key is the CALLER's
+# graph node and it stands for every unlocated site inside that node at once. Nothing about it
+# can go stale on a line move, so a body carrying one has to be re-read by hand when it changes.
 # <scope> is a configure-preset name, or '*' for every preset of the arch. A record out of
 # scope is not read at all. NONE declares a site with no reachable callee AT ALL; the tool
 # accepts it and charges 0.
@@ -128,100 +136,100 @@ site x86_64   * sched.cc:716:45  policy_fifo_rr.cc:policy_on_slice_expire
 #
 # qemu-riscv resolves the seam to the arch/common fallback, which returns nullptr, so
 # console_tx_init never arms the ring and no site can run.
-site rv32imac qemu-riscv console_tx.cc:69:37  NONE
-site rv32imac qemu-riscv console_tx.cc:91:28  NONE
-site rv32imac qemu-riscv console_tx.cc:141:30 NONE
-site rv32imac qemu-riscv console_tx.cc:155:63 NONE
-site rv32imac qemu-riscv console_tx.cc:157:28 NONE
-site rv32imac qemu-riscv console_tx.cc:259:35 NONE
-site rv32imac qemu-riscv console_tx.cc:267:32 NONE
-site rv32imac qemu-riscv console_tx.cc:284:49 NONE
-site rv32imac qemu-riscv console_tx.cc:286:24 NONE
-site rv32imac qemu-riscv console_tx.cc:294:31 NONE
-site rv32imac qemu-riscv console_tx.cc:310:27 NONE
-site rv32imac qemu-riscv console_tx.cc:356:27 NONE
+site rv32imac qemu-riscv console_tx.cc:70:37  NONE
+site rv32imac qemu-riscv console_tx.cc:92:28  NONE
+site rv32imac qemu-riscv console_tx.cc:142:30 NONE
+site rv32imac qemu-riscv console_tx.cc:156:63 NONE
+site rv32imac qemu-riscv console_tx.cc:158:28 NONE
+site rv32imac qemu-riscv console_tx.cc:260:35 NONE
+site rv32imac qemu-riscv console_tx.cc:268:32 NONE
+site rv32imac qemu-riscv console_tx.cc:285:49 NONE
+site rv32imac qemu-riscv console_tx.cc:287:24 NONE
+site rv32imac qemu-riscv console_tx.cc:295:31 NONE
+site rv32imac qemu-riscv console_tx.cc:311:27 NONE
+site rv32imac qemu-riscv console_tx.cc:357:27 NONE
 
-site rv32imac esp32c6-wroom-st console_tx.cc:69:37  chip_esp32c6.cc:c6_tx_slot_free
-site rv32imac esp32c6-wroom-st console_tx.cc:91:28  chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom-st console_tx.cc:141:30 chip_esp32c6.cc:c6_tx_irq_enable
-site rv32imac esp32c6-wroom-st console_tx.cc:155:63 chip_esp32c6.cc:c6_tx_slot_free
-site rv32imac esp32c6-wroom-st console_tx.cc:157:28 chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom-st console_tx.cc:259:35 chip_esp32c6.cc:c6_tx_irq_disable
-site rv32imac esp32c6-wroom-st console_tx.cc:267:32 chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom-st console_tx.cc:284:49 chip_esp32c6.cc:c6_tx_slot_free
-site rv32imac esp32c6-wroom-st console_tx.cc:286:24 chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom-st console_tx.cc:294:31 chip_esp32c6.cc:c6_tx_irq_disable
-site rv32imac esp32c6-wroom-st console_tx.cc:310:27 chip_esp32c6.cc:c6_tx_irq_disable
-site rv32imac esp32c6-wroom-st console_tx.cc:356:27 chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-st console_tx.cc:70:37  chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-st console_tx.cc:92:28  chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-st console_tx.cc:142:30 chip_esp32c6.cc:c6_tx_irq_enable
+site rv32imac esp32c6-wroom-st console_tx.cc:156:63 chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-st console_tx.cc:158:28 chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-st console_tx.cc:260:35 chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-st console_tx.cc:268:32 chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-st console_tx.cc:285:49 chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-st console_tx.cc:287:24 chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-st console_tx.cc:295:31 chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-st console_tx.cc:311:27 chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-st console_tx.cc:357:27 chip_esp32c6.cc:c6_tx_irq_disable
 
-site rxv3 rx72m-st console_tx.cc:69:37  chip_rx72m.cc:rx_tx_slot_free
-site rxv3 rx72m-st console_tx.cc:91:28  chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m-st console_tx.cc:141:30 chip_rx72m.cc:rx_tx_irq_enable
-site rxv3 rx72m-st console_tx.cc:155:63 chip_rx72m.cc:rx_tx_slot_free
-site rxv3 rx72m-st console_tx.cc:157:28 chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m-st console_tx.cc:259:35 chip_rx72m.cc:rx_tx_irq_disable
-site rxv3 rx72m-st console_tx.cc:267:32 chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m-st console_tx.cc:284:49 chip_rx72m.cc:rx_tx_slot_free
-site rxv3 rx72m-st console_tx.cc:286:24 chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m-st console_tx.cc:294:31 chip_rx72m.cc:rx_tx_irq_disable
-site rxv3 rx72m-st console_tx.cc:310:27 chip_rx72m.cc:rx_tx_irq_disable
-site rxv3 rx72m-st console_tx.cc:356:27 chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-st console_tx.cc:70:37  chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m-st console_tx.cc:92:28  chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-st console_tx.cc:142:30 chip_rx72m.cc:rx_tx_irq_enable
+site rxv3 rx72m-st console_tx.cc:156:63 chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m-st console_tx.cc:158:28 chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-st console_tx.cc:260:35 chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-st console_tx.cc:268:32 chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-st console_tx.cc:285:49 chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m-st console_tx.cc:287:24 chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-st console_tx.cc:295:31 chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-st console_tx.cc:311:27 chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-st console_tx.cc:357:27 chip_rx72m.cc:rx_tx_irq_disable
 
 # qemu-arm64, qemu-riscv64, qemu-riscv64-sv48 and qemu-x86_64 all resolve the seam to the
 # arch/common fallback, which returns nullptr, so no site can run. A real-hardware board on any
 # of these arches carries a backend of its own and needs its own preset scope here.
 
-site armv8a   qemu-arm64        console_tx.cc:69:37   NONE
-site armv8a   qemu-arm64        console_tx.cc:91:28   NONE
-site armv8a   qemu-arm64        console_tx.cc:141:30  NONE
-site armv8a   qemu-arm64        console_tx.cc:155:63  NONE
-site armv8a   qemu-arm64        console_tx.cc:157:28  NONE
-site armv8a   qemu-arm64        console_tx.cc:259:35  NONE
-site armv8a   qemu-arm64        console_tx.cc:267:32  NONE
-site armv8a   qemu-arm64        console_tx.cc:284:49  NONE
-site armv8a   qemu-arm64        console_tx.cc:286:24  NONE
-site armv8a   qemu-arm64        console_tx.cc:294:31  NONE
-site armv8a   qemu-arm64        console_tx.cc:310:27  NONE
-site armv8a   qemu-arm64        console_tx.cc:356:27  NONE
+site armv8a   qemu-arm64        console_tx.cc:70:37   NONE
+site armv8a   qemu-arm64        console_tx.cc:92:28   NONE
+site armv8a   qemu-arm64        console_tx.cc:142:30  NONE
+site armv8a   qemu-arm64        console_tx.cc:156:63  NONE
+site armv8a   qemu-arm64        console_tx.cc:158:28  NONE
+site armv8a   qemu-arm64        console_tx.cc:260:35  NONE
+site armv8a   qemu-arm64        console_tx.cc:268:32  NONE
+site armv8a   qemu-arm64        console_tx.cc:285:49  NONE
+site armv8a   qemu-arm64        console_tx.cc:287:24  NONE
+site armv8a   qemu-arm64        console_tx.cc:295:31  NONE
+site armv8a   qemu-arm64        console_tx.cc:311:27  NONE
+site armv8a   qemu-arm64        console_tx.cc:357:27  NONE
 
-site rv64imac qemu-riscv64      console_tx.cc:69:37   NONE
-site rv64imac qemu-riscv64      console_tx.cc:91:28   NONE
-site rv64imac qemu-riscv64      console_tx.cc:141:30  NONE
-site rv64imac qemu-riscv64      console_tx.cc:155:63  NONE
-site rv64imac qemu-riscv64      console_tx.cc:157:28  NONE
-site rv64imac qemu-riscv64      console_tx.cc:259:35  NONE
-site rv64imac qemu-riscv64      console_tx.cc:267:32  NONE
-site rv64imac qemu-riscv64      console_tx.cc:284:49  NONE
-site rv64imac qemu-riscv64      console_tx.cc:286:24  NONE
-site rv64imac qemu-riscv64      console_tx.cc:294:31  NONE
-site rv64imac qemu-riscv64      console_tx.cc:310:27  NONE
-site rv64imac qemu-riscv64      console_tx.cc:356:27  NONE
+site rv64imac qemu-riscv64      console_tx.cc:70:37   NONE
+site rv64imac qemu-riscv64      console_tx.cc:92:28   NONE
+site rv64imac qemu-riscv64      console_tx.cc:142:30  NONE
+site rv64imac qemu-riscv64      console_tx.cc:156:63  NONE
+site rv64imac qemu-riscv64      console_tx.cc:158:28  NONE
+site rv64imac qemu-riscv64      console_tx.cc:260:35  NONE
+site rv64imac qemu-riscv64      console_tx.cc:268:32  NONE
+site rv64imac qemu-riscv64      console_tx.cc:285:49  NONE
+site rv64imac qemu-riscv64      console_tx.cc:287:24  NONE
+site rv64imac qemu-riscv64      console_tx.cc:295:31  NONE
+site rv64imac qemu-riscv64      console_tx.cc:311:27  NONE
+site rv64imac qemu-riscv64      console_tx.cc:357:27  NONE
 
-site rv64imac qemu-riscv64-sv48 console_tx.cc:69:37   NONE
-site rv64imac qemu-riscv64-sv48 console_tx.cc:91:28   NONE
-site rv64imac qemu-riscv64-sv48 console_tx.cc:141:30  NONE
-site rv64imac qemu-riscv64-sv48 console_tx.cc:155:63  NONE
-site rv64imac qemu-riscv64-sv48 console_tx.cc:157:28  NONE
-site rv64imac qemu-riscv64-sv48 console_tx.cc:259:35  NONE
-site rv64imac qemu-riscv64-sv48 console_tx.cc:267:32  NONE
-site rv64imac qemu-riscv64-sv48 console_tx.cc:284:49  NONE
-site rv64imac qemu-riscv64-sv48 console_tx.cc:286:24  NONE
-site rv64imac qemu-riscv64-sv48 console_tx.cc:294:31  NONE
-site rv64imac qemu-riscv64-sv48 console_tx.cc:310:27  NONE
-site rv64imac qemu-riscv64-sv48 console_tx.cc:356:27  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:70:37   NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:92:28   NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:142:30  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:156:63  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:158:28  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:260:35  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:268:32  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:285:49  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:287:24  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:295:31  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:311:27  NONE
+site rv64imac qemu-riscv64-sv48 console_tx.cc:357:27  NONE
 
-site x86_64   qemu-x86_64       console_tx.cc:69:37   NONE
-site x86_64   qemu-x86_64       console_tx.cc:91:28   NONE
-site x86_64   qemu-x86_64       console_tx.cc:141:30  NONE
-site x86_64   qemu-x86_64       console_tx.cc:155:63  NONE
-site x86_64   qemu-x86_64       console_tx.cc:157:28  NONE
-site x86_64   qemu-x86_64       console_tx.cc:259:35  NONE
-site x86_64   qemu-x86_64       console_tx.cc:267:32  NONE
-site x86_64   qemu-x86_64       console_tx.cc:284:49  NONE
-site x86_64   qemu-x86_64       console_tx.cc:286:24  NONE
-site x86_64   qemu-x86_64       console_tx.cc:294:31  NONE
-site x86_64   qemu-x86_64       console_tx.cc:310:27  NONE
-site x86_64   qemu-x86_64       console_tx.cc:356:27  NONE
+site x86_64   qemu-x86_64       console_tx.cc:70:37   NONE
+site x86_64   qemu-x86_64       console_tx.cc:92:28   NONE
+site x86_64   qemu-x86_64       console_tx.cc:142:30  NONE
+site x86_64   qemu-x86_64       console_tx.cc:156:63  NONE
+site x86_64   qemu-x86_64       console_tx.cc:158:28  NONE
+site x86_64   qemu-x86_64       console_tx.cc:260:35  NONE
+site x86_64   qemu-x86_64       console_tx.cc:268:32  NONE
+site x86_64   qemu-x86_64       console_tx.cc:285:49  NONE
+site x86_64   qemu-x86_64       console_tx.cc:287:24  NONE
+site x86_64   qemu-x86_64       console_tx.cc:295:31  NONE
+site x86_64   qemu-x86_64       console_tx.cc:311:27  NONE
+site x86_64   qemu-x86_64       console_tx.cc:357:27  NONE
 # --- POINTER C: Kernel::irq_table[irq].handler, one site -----------------------
 # The table is TOTAL (irq_init seeds every slot with irq_default_handler) and the callee set is
 # CLOSED: user code cannot register a function pointer, and the kos_irq_attach syscall only ever
@@ -232,11 +240,11 @@ site x86_64   qemu-x86_64       console_tx.cc:356:27  NONE
 # reschedule -> switch_to -> arch_switch, and on rv32imac and rxv3 arch_switch only PENDS the
 # switch (msip / ICU.SWINTR) and returns, so the chain does not re-enter the scheduler on this
 # stack. An arch whose arch_switch swaps inline needs this binding changed with it.
-site rv32imac * irq.cc:742:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+site rv32imac * irq.cc:802:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                               syscall.cc:irq_sem_post \
                               console_tx.cc:console_tx_isr_trampoline \
                               ?bench.cc:bench_irq_handler
-site rxv3 * irq.cc:742:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+site rxv3 * irq.cc:802:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                           syscall.cc:irq_sem_post \
                           console_tx.cc:console_tx_isr_trampoline \
                           ?bench.cc:bench_irq_handler
@@ -261,7 +269,7 @@ site armv7m * syscall_ipc_fast.cc:173:50 policy_fifo_rr.cc:policy_pick_next
 
 # armv7m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
 # re-enter the scheduler on this stack.
-site armv7m * irq.cc:742:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+site armv7m * irq.cc:802:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                             syscall.cc:irq_sem_post \
                             console_tx.cc:console_tx_isr_trampoline \
                             ?bench.cc:bench_irq_handler
@@ -274,447 +282,447 @@ site armv7m * irq.cc:742:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
 # All twelve sites are declared whatever the posture: a flat variant reaches four of them where
 # an enforcing one reaches nine.
 
-site armv7m qemu                console_tx.cc:69:37    NONE
-site armv7m qemu                console_tx.cc:91:28    NONE
-site armv7m qemu                console_tx.cc:141:30   NONE
-site armv7m qemu                console_tx.cc:155:63   NONE
-site armv7m qemu                console_tx.cc:157:28   NONE
-site armv7m qemu                console_tx.cc:259:35   NONE
-site armv7m qemu                console_tx.cc:267:32   NONE
-site armv7m qemu                console_tx.cc:284:49   NONE
-site armv7m qemu                console_tx.cc:286:24   NONE
-site armv7m qemu                console_tx.cc:294:31   NONE
-site armv7m qemu                console_tx.cc:310:27   NONE
-site armv7m qemu                console_tx.cc:356:27   NONE
+site armv7m qemu                console_tx.cc:70:37    NONE
+site armv7m qemu                console_tx.cc:92:28    NONE
+site armv7m qemu                console_tx.cc:142:30   NONE
+site armv7m qemu                console_tx.cc:156:63   NONE
+site armv7m qemu                console_tx.cc:158:28   NONE
+site armv7m qemu                console_tx.cc:260:35   NONE
+site armv7m qemu                console_tx.cc:268:32   NONE
+site armv7m qemu                console_tx.cc:285:49   NONE
+site armv7m qemu                console_tx.cc:287:24   NONE
+site armv7m qemu                console_tx.cc:295:31   NONE
+site armv7m qemu                console_tx.cc:311:27   NONE
+site armv7m qemu                console_tx.cc:357:27   NONE
 
-site armv7m qemu-flat           console_tx.cc:69:37    NONE
-site armv7m qemu-flat           console_tx.cc:91:28    NONE
-site armv7m qemu-flat           console_tx.cc:141:30   NONE
-site armv7m qemu-flat           console_tx.cc:155:63   NONE
-site armv7m qemu-flat           console_tx.cc:157:28   NONE
-site armv7m qemu-flat           console_tx.cc:259:35   NONE
-site armv7m qemu-flat           console_tx.cc:267:32   NONE
-site armv7m qemu-flat           console_tx.cc:284:49   NONE
-site armv7m qemu-flat           console_tx.cc:286:24   NONE
-site armv7m qemu-flat           console_tx.cc:294:31   NONE
-site armv7m qemu-flat           console_tx.cc:310:27   NONE
-site armv7m qemu-flat           console_tx.cc:356:27   NONE
+site armv7m qemu-flat           console_tx.cc:70:37    NONE
+site armv7m qemu-flat           console_tx.cc:92:28    NONE
+site armv7m qemu-flat           console_tx.cc:142:30   NONE
+site armv7m qemu-flat           console_tx.cc:156:63   NONE
+site armv7m qemu-flat           console_tx.cc:158:28   NONE
+site armv7m qemu-flat           console_tx.cc:260:35   NONE
+site armv7m qemu-flat           console_tx.cc:268:32   NONE
+site armv7m qemu-flat           console_tx.cc:285:49   NONE
+site armv7m qemu-flat           console_tx.cc:287:24   NONE
+site armv7m qemu-flat           console_tx.cc:295:31   NONE
+site armv7m qemu-flat           console_tx.cc:311:27   NONE
+site armv7m qemu-flat           console_tx.cc:357:27   NONE
 
-site armv7m qemu-telem          console_tx.cc:69:37    NONE
-site armv7m qemu-telem          console_tx.cc:91:28    NONE
-site armv7m qemu-telem          console_tx.cc:141:30   NONE
-site armv7m qemu-telem          console_tx.cc:155:63   NONE
-site armv7m qemu-telem          console_tx.cc:157:28   NONE
-site armv7m qemu-telem          console_tx.cc:259:35   NONE
-site armv7m qemu-telem          console_tx.cc:267:32   NONE
-site armv7m qemu-telem          console_tx.cc:284:49   NONE
-site armv7m qemu-telem          console_tx.cc:286:24   NONE
-site armv7m qemu-telem          console_tx.cc:294:31   NONE
-site armv7m qemu-telem          console_tx.cc:310:27   NONE
-site armv7m qemu-telem          console_tx.cc:356:27   NONE
+site armv7m qemu-telem          console_tx.cc:70:37    NONE
+site armv7m qemu-telem          console_tx.cc:92:28    NONE
+site armv7m qemu-telem          console_tx.cc:142:30   NONE
+site armv7m qemu-telem          console_tx.cc:156:63   NONE
+site armv7m qemu-telem          console_tx.cc:158:28   NONE
+site armv7m qemu-telem          console_tx.cc:260:35   NONE
+site armv7m qemu-telem          console_tx.cc:268:32   NONE
+site armv7m qemu-telem          console_tx.cc:285:49   NONE
+site armv7m qemu-telem          console_tx.cc:287:24   NONE
+site armv7m qemu-telem          console_tx.cc:295:31   NONE
+site armv7m qemu-telem          console_tx.cc:311:27   NONE
+site armv7m qemu-telem          console_tx.cc:357:27   NONE
 
-site armv7m qemu-m3             console_tx.cc:69:37    NONE
-site armv7m qemu-m3             console_tx.cc:91:28    NONE
-site armv7m qemu-m3             console_tx.cc:141:30   NONE
-site armv7m qemu-m3             console_tx.cc:155:63   NONE
-site armv7m qemu-m3             console_tx.cc:157:28   NONE
-site armv7m qemu-m3             console_tx.cc:259:35   NONE
-site armv7m qemu-m3             console_tx.cc:267:32   NONE
-site armv7m qemu-m3             console_tx.cc:284:49   NONE
-site armv7m qemu-m3             console_tx.cc:286:24   NONE
-site armv7m qemu-m3             console_tx.cc:294:31   NONE
-site armv7m qemu-m3             console_tx.cc:310:27   NONE
-site armv7m qemu-m3             console_tx.cc:356:27   NONE
+site armv7m qemu-m3             console_tx.cc:70:37    NONE
+site armv7m qemu-m3             console_tx.cc:92:28    NONE
+site armv7m qemu-m3             console_tx.cc:142:30   NONE
+site armv7m qemu-m3             console_tx.cc:156:63   NONE
+site armv7m qemu-m3             console_tx.cc:158:28   NONE
+site armv7m qemu-m3             console_tx.cc:260:35   NONE
+site armv7m qemu-m3             console_tx.cc:268:32   NONE
+site armv7m qemu-m3             console_tx.cc:285:49   NONE
+site armv7m qemu-m3             console_tx.cc:287:24   NONE
+site armv7m qemu-m3             console_tx.cc:295:31   NONE
+site armv7m qemu-m3             console_tx.cc:311:27   NONE
+site armv7m qemu-m3             console_tx.cc:357:27   NONE
 
-site armv7m qemu-m3-flat        console_tx.cc:69:37    NONE
-site armv7m qemu-m3-flat        console_tx.cc:91:28    NONE
-site armv7m qemu-m3-flat        console_tx.cc:141:30   NONE
-site armv7m qemu-m3-flat        console_tx.cc:155:63   NONE
-site armv7m qemu-m3-flat        console_tx.cc:157:28   NONE
-site armv7m qemu-m3-flat        console_tx.cc:259:35   NONE
-site armv7m qemu-m3-flat        console_tx.cc:267:32   NONE
-site armv7m qemu-m3-flat        console_tx.cc:284:49   NONE
-site armv7m qemu-m3-flat        console_tx.cc:286:24   NONE
-site armv7m qemu-m3-flat        console_tx.cc:294:31   NONE
-site armv7m qemu-m3-flat        console_tx.cc:310:27   NONE
-site armv7m qemu-m3-flat        console_tx.cc:356:27   NONE
+site armv7m qemu-m3-flat        console_tx.cc:70:37    NONE
+site armv7m qemu-m3-flat        console_tx.cc:92:28    NONE
+site armv7m qemu-m3-flat        console_tx.cc:142:30   NONE
+site armv7m qemu-m3-flat        console_tx.cc:156:63   NONE
+site armv7m qemu-m3-flat        console_tx.cc:158:28   NONE
+site armv7m qemu-m3-flat        console_tx.cc:260:35   NONE
+site armv7m qemu-m3-flat        console_tx.cc:268:32   NONE
+site armv7m qemu-m3-flat        console_tx.cc:285:49   NONE
+site armv7m qemu-m3-flat        console_tx.cc:287:24   NONE
+site armv7m qemu-m3-flat        console_tx.cc:295:31   NONE
+site armv7m qemu-m3-flat        console_tx.cc:311:27   NONE
+site armv7m qemu-m3-flat        console_tx.cc:357:27   NONE
 
-site armv7m qemu-m7             console_tx.cc:69:37    NONE
-site armv7m qemu-m7             console_tx.cc:91:28    NONE
-site armv7m qemu-m7             console_tx.cc:141:30   NONE
-site armv7m qemu-m7             console_tx.cc:155:63   NONE
-site armv7m qemu-m7             console_tx.cc:157:28   NONE
-site armv7m qemu-m7             console_tx.cc:259:35   NONE
-site armv7m qemu-m7             console_tx.cc:267:32   NONE
-site armv7m qemu-m7             console_tx.cc:284:49   NONE
-site armv7m qemu-m7             console_tx.cc:286:24   NONE
-site armv7m qemu-m7             console_tx.cc:294:31   NONE
-site armv7m qemu-m7             console_tx.cc:310:27   NONE
-site armv7m qemu-m7             console_tx.cc:356:27   NONE
+site armv7m qemu-m7             console_tx.cc:70:37    NONE
+site armv7m qemu-m7             console_tx.cc:92:28    NONE
+site armv7m qemu-m7             console_tx.cc:142:30   NONE
+site armv7m qemu-m7             console_tx.cc:156:63   NONE
+site armv7m qemu-m7             console_tx.cc:158:28   NONE
+site armv7m qemu-m7             console_tx.cc:260:35   NONE
+site armv7m qemu-m7             console_tx.cc:268:32   NONE
+site armv7m qemu-m7             console_tx.cc:285:49   NONE
+site armv7m qemu-m7             console_tx.cc:287:24   NONE
+site armv7m qemu-m7             console_tx.cc:295:31   NONE
+site armv7m qemu-m7             console_tx.cc:311:27   NONE
+site armv7m qemu-m7             console_tx.cc:357:27   NONE
 
-site armv7m qemu-m7-flat        console_tx.cc:69:37    NONE
-site armv7m qemu-m7-flat        console_tx.cc:91:28    NONE
-site armv7m qemu-m7-flat        console_tx.cc:141:30   NONE
-site armv7m qemu-m7-flat        console_tx.cc:155:63   NONE
-site armv7m qemu-m7-flat        console_tx.cc:157:28   NONE
-site armv7m qemu-m7-flat        console_tx.cc:259:35   NONE
-site armv7m qemu-m7-flat        console_tx.cc:267:32   NONE
-site armv7m qemu-m7-flat        console_tx.cc:284:49   NONE
-site armv7m qemu-m7-flat        console_tx.cc:286:24   NONE
-site armv7m qemu-m7-flat        console_tx.cc:294:31   NONE
-site armv7m qemu-m7-flat        console_tx.cc:310:27   NONE
-site armv7m qemu-m7-flat        console_tx.cc:356:27   NONE
+site armv7m qemu-m7-flat        console_tx.cc:70:37    NONE
+site armv7m qemu-m7-flat        console_tx.cc:92:28    NONE
+site armv7m qemu-m7-flat        console_tx.cc:142:30   NONE
+site armv7m qemu-m7-flat        console_tx.cc:156:63   NONE
+site armv7m qemu-m7-flat        console_tx.cc:158:28   NONE
+site armv7m qemu-m7-flat        console_tx.cc:260:35   NONE
+site armv7m qemu-m7-flat        console_tx.cc:268:32   NONE
+site armv7m qemu-m7-flat        console_tx.cc:285:49   NONE
+site armv7m qemu-m7-flat        console_tx.cc:287:24   NONE
+site armv7m qemu-m7-flat        console_tx.cc:295:31   NONE
+site armv7m qemu-m7-flat        console_tx.cc:311:27   NONE
+site armv7m qemu-m7-flat        console_tx.cc:357:27   NONE
 
-site armv7m qemu-m33            console_tx.cc:69:37    NONE
-site armv7m qemu-m33            console_tx.cc:91:28    NONE
-site armv7m qemu-m33            console_tx.cc:141:30   NONE
-site armv7m qemu-m33            console_tx.cc:155:63   NONE
-site armv7m qemu-m33            console_tx.cc:157:28   NONE
-site armv7m qemu-m33            console_tx.cc:259:35   NONE
-site armv7m qemu-m33            console_tx.cc:267:32   NONE
-site armv7m qemu-m33            console_tx.cc:284:49   NONE
-site armv7m qemu-m33            console_tx.cc:286:24   NONE
-site armv7m qemu-m33            console_tx.cc:294:31   NONE
-site armv7m qemu-m33            console_tx.cc:310:27   NONE
-site armv7m qemu-m33            console_tx.cc:356:27   NONE
+site armv7m qemu-m33            console_tx.cc:70:37    NONE
+site armv7m qemu-m33            console_tx.cc:92:28    NONE
+site armv7m qemu-m33            console_tx.cc:142:30   NONE
+site armv7m qemu-m33            console_tx.cc:156:63   NONE
+site armv7m qemu-m33            console_tx.cc:158:28   NONE
+site armv7m qemu-m33            console_tx.cc:260:35   NONE
+site armv7m qemu-m33            console_tx.cc:268:32   NONE
+site armv7m qemu-m33            console_tx.cc:285:49   NONE
+site armv7m qemu-m33            console_tx.cc:287:24   NONE
+site armv7m qemu-m33            console_tx.cc:295:31   NONE
+site armv7m qemu-m33            console_tx.cc:311:27   NONE
+site armv7m qemu-m33            console_tx.cc:357:27   NONE
 
-site armv7m qemu-m33-flat       console_tx.cc:69:37    NONE
-site armv7m qemu-m33-flat       console_tx.cc:91:28    NONE
-site armv7m qemu-m33-flat       console_tx.cc:141:30   NONE
-site armv7m qemu-m33-flat       console_tx.cc:155:63   NONE
-site armv7m qemu-m33-flat       console_tx.cc:157:28   NONE
-site armv7m qemu-m33-flat       console_tx.cc:259:35   NONE
-site armv7m qemu-m33-flat       console_tx.cc:267:32   NONE
-site armv7m qemu-m33-flat       console_tx.cc:284:49   NONE
-site armv7m qemu-m33-flat       console_tx.cc:286:24   NONE
-site armv7m qemu-m33-flat       console_tx.cc:294:31   NONE
-site armv7m qemu-m33-flat       console_tx.cc:310:27   NONE
-site armv7m qemu-m33-flat       console_tx.cc:356:27   NONE
+site armv7m qemu-m33-flat       console_tx.cc:70:37    NONE
+site armv7m qemu-m33-flat       console_tx.cc:92:28    NONE
+site armv7m qemu-m33-flat       console_tx.cc:142:30   NONE
+site armv7m qemu-m33-flat       console_tx.cc:156:63   NONE
+site armv7m qemu-m33-flat       console_tx.cc:158:28   NONE
+site armv7m qemu-m33-flat       console_tx.cc:260:35   NONE
+site armv7m qemu-m33-flat       console_tx.cc:268:32   NONE
+site armv7m qemu-m33-flat       console_tx.cc:285:49   NONE
+site armv7m qemu-m33-flat       console_tx.cc:287:24   NONE
+site armv7m qemu-m33-flat       console_tx.cc:295:31   NONE
+site armv7m qemu-m33-flat       console_tx.cc:311:27   NONE
+site armv7m qemu-m33-flat       console_tx.cc:357:27   NONE
 
-site armv7m frdmk64f            console_tx.cc:69:37    chip_mk64f.cc:k64_tx_slot_free
-site armv7m frdmk64f            console_tx.cc:91:28    chip_mk64f.cc:k64_tx_push
-site armv7m frdmk64f            console_tx.cc:141:30   chip_mk64f.cc:k64_tx_irq_enable
-site armv7m frdmk64f            console_tx.cc:155:63   chip_mk64f.cc:k64_tx_slot_free
-site armv7m frdmk64f            console_tx.cc:157:28   chip_mk64f.cc:k64_tx_push
-site armv7m frdmk64f            console_tx.cc:259:35   chip_mk64f.cc:k64_tx_irq_disable
-site armv7m frdmk64f            console_tx.cc:267:32   chip_mk64f.cc:k64_tx_push
-site armv7m frdmk64f            console_tx.cc:284:49   chip_mk64f.cc:k64_tx_slot_free
-site armv7m frdmk64f            console_tx.cc:286:24   chip_mk64f.cc:k64_tx_push
-site armv7m frdmk64f            console_tx.cc:294:31   chip_mk64f.cc:k64_tx_irq_disable
-site armv7m frdmk64f            console_tx.cc:310:27   chip_mk64f.cc:k64_tx_irq_disable
-site armv7m frdmk64f            console_tx.cc:356:27   chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f            console_tx.cc:70:37    chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f            console_tx.cc:92:28    chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f            console_tx.cc:142:30   chip_mk64f.cc:k64_tx_irq_enable
+site armv7m frdmk64f            console_tx.cc:156:63   chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f            console_tx.cc:158:28   chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f            console_tx.cc:260:35   chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f            console_tx.cc:268:32   chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f            console_tx.cc:285:49   chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f            console_tx.cc:287:24   chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f            console_tx.cc:295:31   chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f            console_tx.cc:311:27   chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f            console_tx.cc:357:27   chip_mk64f.cc:k64_tx_irq_disable
 
-site armv7m frdmk64f-flat       console_tx.cc:69:37    chip_mk64f.cc:k64_tx_slot_free
-site armv7m frdmk64f-flat       console_tx.cc:91:28    chip_mk64f.cc:k64_tx_push
-site armv7m frdmk64f-flat       console_tx.cc:141:30   chip_mk64f.cc:k64_tx_irq_enable
-site armv7m frdmk64f-flat       console_tx.cc:155:63   chip_mk64f.cc:k64_tx_slot_free
-site armv7m frdmk64f-flat       console_tx.cc:157:28   chip_mk64f.cc:k64_tx_push
-site armv7m frdmk64f-flat       console_tx.cc:259:35   chip_mk64f.cc:k64_tx_irq_disable
-site armv7m frdmk64f-flat       console_tx.cc:267:32   chip_mk64f.cc:k64_tx_push
-site armv7m frdmk64f-flat       console_tx.cc:284:49   chip_mk64f.cc:k64_tx_slot_free
-site armv7m frdmk64f-flat       console_tx.cc:286:24   chip_mk64f.cc:k64_tx_push
-site armv7m frdmk64f-flat       console_tx.cc:294:31   chip_mk64f.cc:k64_tx_irq_disable
-site armv7m frdmk64f-flat       console_tx.cc:310:27   chip_mk64f.cc:k64_tx_irq_disable
-site armv7m frdmk64f-flat       console_tx.cc:356:27   chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-flat       console_tx.cc:70:37    chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f-flat       console_tx.cc:92:28    chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-flat       console_tx.cc:142:30   chip_mk64f.cc:k64_tx_irq_enable
+site armv7m frdmk64f-flat       console_tx.cc:156:63   chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f-flat       console_tx.cc:158:28   chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-flat       console_tx.cc:260:35   chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-flat       console_tx.cc:268:32   chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-flat       console_tx.cc:285:49   chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f-flat       console_tx.cc:287:24   chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-flat       console_tx.cc:295:31   chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-flat       console_tx.cc:311:27   chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-flat       console_tx.cc:357:27   chip_mk64f.cc:k64_tx_irq_disable
 
-site armv7m frdmk64f-st         console_tx.cc:69:37    chip_mk64f.cc:k64_tx_slot_free
-site armv7m frdmk64f-st         console_tx.cc:91:28    chip_mk64f.cc:k64_tx_push
-site armv7m frdmk64f-st         console_tx.cc:141:30   chip_mk64f.cc:k64_tx_irq_enable
-site armv7m frdmk64f-st         console_tx.cc:155:63   chip_mk64f.cc:k64_tx_slot_free
-site armv7m frdmk64f-st         console_tx.cc:157:28   chip_mk64f.cc:k64_tx_push
-site armv7m frdmk64f-st         console_tx.cc:259:35   chip_mk64f.cc:k64_tx_irq_disable
-site armv7m frdmk64f-st         console_tx.cc:267:32   chip_mk64f.cc:k64_tx_push
-site armv7m frdmk64f-st         console_tx.cc:284:49   chip_mk64f.cc:k64_tx_slot_free
-site armv7m frdmk64f-st         console_tx.cc:286:24   chip_mk64f.cc:k64_tx_push
-site armv7m frdmk64f-st         console_tx.cc:294:31   chip_mk64f.cc:k64_tx_irq_disable
-site armv7m frdmk64f-st         console_tx.cc:310:27   chip_mk64f.cc:k64_tx_irq_disable
-site armv7m frdmk64f-st         console_tx.cc:356:27   chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-st         console_tx.cc:70:37    chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f-st         console_tx.cc:92:28    chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-st         console_tx.cc:142:30   chip_mk64f.cc:k64_tx_irq_enable
+site armv7m frdmk64f-st         console_tx.cc:156:63   chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f-st         console_tx.cc:158:28   chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-st         console_tx.cc:260:35   chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-st         console_tx.cc:268:32   chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-st         console_tx.cc:285:49   chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f-st         console_tx.cc:287:24   chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-st         console_tx.cc:295:31   chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-st         console_tx.cc:311:27   chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-st         console_tx.cc:357:27   chip_mk64f.cc:k64_tx_irq_disable
 
-site armv7m teensy41            console_tx.cc:69:37    chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41            console_tx.cc:91:28    chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41            console_tx.cc:141:30   chip_imxrt1062.cc:lp6_tx_irq_enable
-site armv7m teensy41            console_tx.cc:155:63   chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41            console_tx.cc:157:28   chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41            console_tx.cc:259:35   chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41            console_tx.cc:267:32   chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41            console_tx.cc:284:49   chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41            console_tx.cc:286:24   chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41            console_tx.cc:294:31   chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41            console_tx.cc:310:27   chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41            console_tx.cc:356:27   chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41            console_tx.cc:70:37    chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41            console_tx.cc:92:28    chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41            console_tx.cc:142:30   chip_imxrt1062.cc:lp6_tx_irq_enable
+site armv7m teensy41            console_tx.cc:156:63   chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41            console_tx.cc:158:28   chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41            console_tx.cc:260:35   chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41            console_tx.cc:268:32   chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41            console_tx.cc:285:49   chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41            console_tx.cc:287:24   chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41            console_tx.cc:295:31   chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41            console_tx.cc:311:27   chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41            console_tx.cc:357:27   chip_imxrt1062.cc:lp6_tx_irq_disable
 
-site armv7m teensy41-flat       console_tx.cc:69:37    chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41-flat       console_tx.cc:91:28    chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41-flat       console_tx.cc:141:30   chip_imxrt1062.cc:lp6_tx_irq_enable
-site armv7m teensy41-flat       console_tx.cc:155:63   chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41-flat       console_tx.cc:157:28   chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41-flat       console_tx.cc:259:35   chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41-flat       console_tx.cc:267:32   chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41-flat       console_tx.cc:284:49   chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41-flat       console_tx.cc:286:24   chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41-flat       console_tx.cc:294:31   chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41-flat       console_tx.cc:310:27   chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41-flat       console_tx.cc:356:27   chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-flat       console_tx.cc:70:37    chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41-flat       console_tx.cc:92:28    chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-flat       console_tx.cc:142:30   chip_imxrt1062.cc:lp6_tx_irq_enable
+site armv7m teensy41-flat       console_tx.cc:156:63   chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41-flat       console_tx.cc:158:28   chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-flat       console_tx.cc:260:35   chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-flat       console_tx.cc:268:32   chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-flat       console_tx.cc:285:49   chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41-flat       console_tx.cc:287:24   chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-flat       console_tx.cc:295:31   chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-flat       console_tx.cc:311:27   chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-flat       console_tx.cc:357:27   chip_imxrt1062.cc:lp6_tx_irq_disable
 
-site armv7m teensy41-st         console_tx.cc:69:37    chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41-st         console_tx.cc:91:28    chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41-st         console_tx.cc:141:30   chip_imxrt1062.cc:lp6_tx_irq_enable
-site armv7m teensy41-st         console_tx.cc:155:63   chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41-st         console_tx.cc:157:28   chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41-st         console_tx.cc:259:35   chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41-st         console_tx.cc:267:32   chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41-st         console_tx.cc:284:49   chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41-st         console_tx.cc:286:24   chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41-st         console_tx.cc:294:31   chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41-st         console_tx.cc:310:27   chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41-st         console_tx.cc:356:27   chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-st         console_tx.cc:70:37    chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41-st         console_tx.cc:92:28    chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-st         console_tx.cc:142:30   chip_imxrt1062.cc:lp6_tx_irq_enable
+site armv7m teensy41-st         console_tx.cc:156:63   chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41-st         console_tx.cc:158:28   chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-st         console_tx.cc:260:35   chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-st         console_tx.cc:268:32   chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-st         console_tx.cc:285:49   chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41-st         console_tx.cc:287:24   chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-st         console_tx.cc:295:31   chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-st         console_tx.cc:311:27   chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-st         console_tx.cc:357:27   chip_imxrt1062.cc:lp6_tx_irq_disable
 
-site armv7m xmc4800-relax       console_tx.cc:69:37    usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax       console_tx.cc:91:28    usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax       console_tx.cc:141:30   usic_uart.cc:xmc_tx_irq_enable
-site armv7m xmc4800-relax       console_tx.cc:155:63   usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax       console_tx.cc:157:28   usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax       console_tx.cc:259:35   usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax       console_tx.cc:267:32   usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax       console_tx.cc:284:49   usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax       console_tx.cc:286:24   usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax       console_tx.cc:294:31   usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax       console_tx.cc:310:27   usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax       console_tx.cc:356:27   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax       console_tx.cc:70:37    usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax       console_tx.cc:92:28    usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax       console_tx.cc:142:30   usic_uart.cc:xmc_tx_irq_enable
+site armv7m xmc4800-relax       console_tx.cc:156:63   usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax       console_tx.cc:158:28   usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax       console_tx.cc:260:35   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax       console_tx.cc:268:32   usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax       console_tx.cc:285:49   usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax       console_tx.cc:287:24   usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax       console_tx.cc:295:31   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax       console_tx.cc:311:27   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax       console_tx.cc:357:27   usic_uart.cc:xmc_tx_irq_disable
 
-site armv7m xmc4800-relax-flat  console_tx.cc:69:37    usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax-flat  console_tx.cc:91:28    usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-flat  console_tx.cc:141:30   usic_uart.cc:xmc_tx_irq_enable
-site armv7m xmc4800-relax-flat  console_tx.cc:155:63   usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax-flat  console_tx.cc:157:28   usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-flat  console_tx.cc:259:35   usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax-flat  console_tx.cc:267:32   usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-flat  console_tx.cc:284:49   usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax-flat  console_tx.cc:286:24   usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-flat  console_tx.cc:294:31   usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax-flat  console_tx.cc:310:27   usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax-flat  console_tx.cc:356:27   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-flat  console_tx.cc:70:37    usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-flat  console_tx.cc:92:28    usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-flat  console_tx.cc:142:30   usic_uart.cc:xmc_tx_irq_enable
+site armv7m xmc4800-relax-flat  console_tx.cc:156:63   usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-flat  console_tx.cc:158:28   usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-flat  console_tx.cc:260:35   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-flat  console_tx.cc:268:32   usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-flat  console_tx.cc:285:49   usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-flat  console_tx.cc:287:24   usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-flat  console_tx.cc:295:31   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-flat  console_tx.cc:311:27   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-flat  console_tx.cc:357:27   usic_uart.cc:xmc_tx_irq_disable
 
-site armv7m xmc4800-relax-st    console_tx.cc:69:37    usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax-st    console_tx.cc:91:28    usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-st    console_tx.cc:141:30   usic_uart.cc:xmc_tx_irq_enable
-site armv7m xmc4800-relax-st    console_tx.cc:155:63   usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax-st    console_tx.cc:157:28   usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-st    console_tx.cc:259:35   usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax-st    console_tx.cc:267:32   usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-st    console_tx.cc:284:49   usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax-st    console_tx.cc:286:24   usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-st    console_tx.cc:294:31   usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax-st    console_tx.cc:310:27   usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax-st    console_tx.cc:356:27   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-st    console_tx.cc:70:37    usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-st    console_tx.cc:92:28    usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-st    console_tx.cc:142:30   usic_uart.cc:xmc_tx_irq_enable
+site armv7m xmc4800-relax-st    console_tx.cc:156:63   usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-st    console_tx.cc:158:28   usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-st    console_tx.cc:260:35   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-st    console_tx.cc:268:32   usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-st    console_tx.cc:285:49   usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-st    console_tx.cc:287:24   usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-st    console_tx.cc:295:31   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-st    console_tx.cc:311:27   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-st    console_tx.cc:357:27   usic_uart.cc:xmc_tx_irq_disable
 
-site armv7m xmc4800-relax-bench console_tx.cc:69:37    usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax-bench console_tx.cc:91:28    usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-bench console_tx.cc:141:30   usic_uart.cc:xmc_tx_irq_enable
-site armv7m xmc4800-relax-bench console_tx.cc:155:63   usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax-bench console_tx.cc:157:28   usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-bench console_tx.cc:259:35   usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax-bench console_tx.cc:267:32   usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-bench console_tx.cc:284:49   usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax-bench console_tx.cc:286:24   usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-bench console_tx.cc:294:31   usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax-bench console_tx.cc:310:27   usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax-bench console_tx.cc:356:27   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-bench console_tx.cc:70:37    usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-bench console_tx.cc:92:28    usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-bench console_tx.cc:142:30   usic_uart.cc:xmc_tx_irq_enable
+site armv7m xmc4800-relax-bench console_tx.cc:156:63   usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-bench console_tx.cc:158:28   usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-bench console_tx.cc:260:35   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-bench console_tx.cc:268:32   usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-bench console_tx.cc:285:49   usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-bench console_tx.cc:287:24   usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-bench console_tx.cc:295:31   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-bench console_tx.cc:311:27   usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-bench console_tx.cc:357:27   usic_uart.cc:xmc_tx_irq_disable
 
-site armv7m f411disco           console_tx.cc:69:37    chip_stm32f411.cc:f4_tx_slot_free
-site armv7m f411disco           console_tx.cc:91:28    chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco           console_tx.cc:141:30   chip_stm32f411.cc:f4_tx_irq_enable
-site armv7m f411disco           console_tx.cc:155:63   chip_stm32f411.cc:f4_tx_slot_free
-site armv7m f411disco           console_tx.cc:157:28   chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco           console_tx.cc:259:35   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m f411disco           console_tx.cc:267:32   chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco           console_tx.cc:284:49   chip_stm32f411.cc:f4_tx_slot_free
-site armv7m f411disco           console_tx.cc:286:24   chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco           console_tx.cc:294:31   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m f411disco           console_tx.cc:310:27   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m f411disco           console_tx.cc:356:27   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco           console_tx.cc:70:37    chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco           console_tx.cc:92:28    chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco           console_tx.cc:142:30   chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m f411disco           console_tx.cc:156:63   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco           console_tx.cc:158:28   chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco           console_tx.cc:260:35   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco           console_tx.cc:268:32   chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco           console_tx.cc:285:49   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco           console_tx.cc:287:24   chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco           console_tx.cc:295:31   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco           console_tx.cc:311:27   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco           console_tx.cc:357:27   chip_stm32f411.cc:f4_tx_irq_disable
 
-site armv7m f411disco-flat      console_tx.cc:69:37    chip_stm32f411.cc:f4_tx_slot_free
-site armv7m f411disco-flat      console_tx.cc:91:28    chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco-flat      console_tx.cc:141:30   chip_stm32f411.cc:f4_tx_irq_enable
-site armv7m f411disco-flat      console_tx.cc:155:63   chip_stm32f411.cc:f4_tx_slot_free
-site armv7m f411disco-flat      console_tx.cc:157:28   chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco-flat      console_tx.cc:259:35   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m f411disco-flat      console_tx.cc:267:32   chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco-flat      console_tx.cc:284:49   chip_stm32f411.cc:f4_tx_slot_free
-site armv7m f411disco-flat      console_tx.cc:286:24   chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco-flat      console_tx.cc:294:31   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m f411disco-flat      console_tx.cc:310:27   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m f411disco-flat      console_tx.cc:356:27   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-flat      console_tx.cc:70:37    chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-flat      console_tx.cc:92:28    chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-flat      console_tx.cc:142:30   chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m f411disco-flat      console_tx.cc:156:63   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-flat      console_tx.cc:158:28   chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-flat      console_tx.cc:260:35   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-flat      console_tx.cc:268:32   chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-flat      console_tx.cc:285:49   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-flat      console_tx.cc:287:24   chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-flat      console_tx.cc:295:31   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-flat      console_tx.cc:311:27   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-flat      console_tx.cc:357:27   chip_stm32f411.cc:f4_tx_irq_disable
 
-site armv7m f411disco-st        console_tx.cc:69:37    chip_stm32f411.cc:f4_tx_slot_free
-site armv7m f411disco-st        console_tx.cc:91:28    chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco-st        console_tx.cc:141:30   chip_stm32f411.cc:f4_tx_irq_enable
-site armv7m f411disco-st        console_tx.cc:155:63   chip_stm32f411.cc:f4_tx_slot_free
-site armv7m f411disco-st        console_tx.cc:157:28   chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco-st        console_tx.cc:259:35   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m f411disco-st        console_tx.cc:267:32   chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco-st        console_tx.cc:284:49   chip_stm32f411.cc:f4_tx_slot_free
-site armv7m f411disco-st        console_tx.cc:286:24   chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco-st        console_tx.cc:294:31   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m f411disco-st        console_tx.cc:310:27   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m f411disco-st        console_tx.cc:356:27   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-st        console_tx.cc:70:37    chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-st        console_tx.cc:92:28    chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-st        console_tx.cc:142:30   chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m f411disco-st        console_tx.cc:156:63   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-st        console_tx.cc:158:28   chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-st        console_tx.cc:260:35   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-st        console_tx.cc:268:32   chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-st        console_tx.cc:285:49   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-st        console_tx.cc:287:24   chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-st        console_tx.cc:295:31   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-st        console_tx.cc:311:27   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-st        console_tx.cc:357:27   chip_stm32f411.cc:f4_tx_irq_disable
 
-site armv7m blackpill           console_tx.cc:69:37    chip_stm32f411.cc:f4_tx_slot_free
-site armv7m blackpill           console_tx.cc:91:28    chip_stm32f411.cc:f4_tx_push
-site armv7m blackpill           console_tx.cc:141:30   chip_stm32f411.cc:f4_tx_irq_enable
-site armv7m blackpill           console_tx.cc:155:63   chip_stm32f411.cc:f4_tx_slot_free
-site armv7m blackpill           console_tx.cc:157:28   chip_stm32f411.cc:f4_tx_push
-site armv7m blackpill           console_tx.cc:259:35   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m blackpill           console_tx.cc:267:32   chip_stm32f411.cc:f4_tx_push
-site armv7m blackpill           console_tx.cc:284:49   chip_stm32f411.cc:f4_tx_slot_free
-site armv7m blackpill           console_tx.cc:286:24   chip_stm32f411.cc:f4_tx_push
-site armv7m blackpill           console_tx.cc:294:31   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m blackpill           console_tx.cc:310:27   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m blackpill           console_tx.cc:356:27   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill           console_tx.cc:70:37    chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill           console_tx.cc:92:28    chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill           console_tx.cc:142:30   chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m blackpill           console_tx.cc:156:63   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill           console_tx.cc:158:28   chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill           console_tx.cc:260:35   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill           console_tx.cc:268:32   chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill           console_tx.cc:285:49   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill           console_tx.cc:287:24   chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill           console_tx.cc:295:31   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill           console_tx.cc:311:27   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill           console_tx.cc:357:27   chip_stm32f411.cc:f4_tx_irq_disable
 
-site armv7m blackpill-flat      console_tx.cc:69:37    chip_stm32f411.cc:f4_tx_slot_free
-site armv7m blackpill-flat      console_tx.cc:91:28    chip_stm32f411.cc:f4_tx_push
-site armv7m blackpill-flat      console_tx.cc:141:30   chip_stm32f411.cc:f4_tx_irq_enable
-site armv7m blackpill-flat      console_tx.cc:155:63   chip_stm32f411.cc:f4_tx_slot_free
-site armv7m blackpill-flat      console_tx.cc:157:28   chip_stm32f411.cc:f4_tx_push
-site armv7m blackpill-flat      console_tx.cc:259:35   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m blackpill-flat      console_tx.cc:267:32   chip_stm32f411.cc:f4_tx_push
-site armv7m blackpill-flat      console_tx.cc:284:49   chip_stm32f411.cc:f4_tx_slot_free
-site armv7m blackpill-flat      console_tx.cc:286:24   chip_stm32f411.cc:f4_tx_push
-site armv7m blackpill-flat      console_tx.cc:294:31   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m blackpill-flat      console_tx.cc:310:27   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m blackpill-flat      console_tx.cc:356:27   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-flat      console_tx.cc:70:37    chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill-flat      console_tx.cc:92:28    chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-flat      console_tx.cc:142:30   chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m blackpill-flat      console_tx.cc:156:63   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill-flat      console_tx.cc:158:28   chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-flat      console_tx.cc:260:35   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-flat      console_tx.cc:268:32   chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-flat      console_tx.cc:285:49   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill-flat      console_tx.cc:287:24   chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-flat      console_tx.cc:295:31   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-flat      console_tx.cc:311:27   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-flat      console_tx.cc:357:27   chip_stm32f411.cc:f4_tx_irq_disable
 
-site armv7m blackpill-st        console_tx.cc:69:37    chip_stm32f411.cc:f4_tx_slot_free
-site armv7m blackpill-st        console_tx.cc:91:28    chip_stm32f411.cc:f4_tx_push
-site armv7m blackpill-st        console_tx.cc:141:30   chip_stm32f411.cc:f4_tx_irq_enable
-site armv7m blackpill-st        console_tx.cc:155:63   chip_stm32f411.cc:f4_tx_slot_free
-site armv7m blackpill-st        console_tx.cc:157:28   chip_stm32f411.cc:f4_tx_push
-site armv7m blackpill-st        console_tx.cc:259:35   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m blackpill-st        console_tx.cc:267:32   chip_stm32f411.cc:f4_tx_push
-site armv7m blackpill-st        console_tx.cc:284:49   chip_stm32f411.cc:f4_tx_slot_free
-site armv7m blackpill-st        console_tx.cc:286:24   chip_stm32f411.cc:f4_tx_push
-site armv7m blackpill-st        console_tx.cc:294:31   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m blackpill-st        console_tx.cc:310:27   chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m blackpill-st        console_tx.cc:356:27   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-st        console_tx.cc:70:37    chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill-st        console_tx.cc:92:28    chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-st        console_tx.cc:142:30   chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m blackpill-st        console_tx.cc:156:63   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill-st        console_tx.cc:158:28   chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-st        console_tx.cc:260:35   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-st        console_tx.cc:268:32   chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-st        console_tx.cc:285:49   chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill-st        console_tx.cc:287:24   chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-st        console_tx.cc:295:31   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-st        console_tx.cc:311:27   chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-st        console_tx.cc:357:27   chip_stm32f411.cc:f4_tx_irq_disable
 
-site armv7m due                 console_tx.cc:69:37    chip_sam3x8e.cc:sam_tx_slot_free
-site armv7m due                 console_tx.cc:91:28    chip_sam3x8e.cc:sam_tx_push
-site armv7m due                 console_tx.cc:141:30   chip_sam3x8e.cc:sam_tx_irq_enable
-site armv7m due                 console_tx.cc:155:63   chip_sam3x8e.cc:sam_tx_slot_free
-site armv7m due                 console_tx.cc:157:28   chip_sam3x8e.cc:sam_tx_push
-site armv7m due                 console_tx.cc:259:35   chip_sam3x8e.cc:sam_tx_irq_disable
-site armv7m due                 console_tx.cc:267:32   chip_sam3x8e.cc:sam_tx_push
-site armv7m due                 console_tx.cc:284:49   chip_sam3x8e.cc:sam_tx_slot_free
-site armv7m due                 console_tx.cc:286:24   chip_sam3x8e.cc:sam_tx_push
-site armv7m due                 console_tx.cc:294:31   chip_sam3x8e.cc:sam_tx_irq_disable
-site armv7m due                 console_tx.cc:310:27   chip_sam3x8e.cc:sam_tx_irq_disable
-site armv7m due                 console_tx.cc:356:27   chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due                 console_tx.cc:70:37    chip_sam3x8e.cc:sam_tx_slot_free
+site armv7m due                 console_tx.cc:92:28    chip_sam3x8e.cc:sam_tx_push
+site armv7m due                 console_tx.cc:142:30   chip_sam3x8e.cc:sam_tx_irq_enable
+site armv7m due                 console_tx.cc:156:63   chip_sam3x8e.cc:sam_tx_slot_free
+site armv7m due                 console_tx.cc:158:28   chip_sam3x8e.cc:sam_tx_push
+site armv7m due                 console_tx.cc:260:35   chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due                 console_tx.cc:268:32   chip_sam3x8e.cc:sam_tx_push
+site armv7m due                 console_tx.cc:285:49   chip_sam3x8e.cc:sam_tx_slot_free
+site armv7m due                 console_tx.cc:287:24   chip_sam3x8e.cc:sam_tx_push
+site armv7m due                 console_tx.cc:295:31   chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due                 console_tx.cc:311:27   chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due                 console_tx.cc:357:27   chip_sam3x8e.cc:sam_tx_irq_disable
 
-site armv7m due-st              console_tx.cc:69:37    chip_sam3x8e.cc:sam_tx_slot_free
-site armv7m due-st              console_tx.cc:91:28    chip_sam3x8e.cc:sam_tx_push
-site armv7m due-st              console_tx.cc:141:30   chip_sam3x8e.cc:sam_tx_irq_enable
-site armv7m due-st              console_tx.cc:155:63   chip_sam3x8e.cc:sam_tx_slot_free
-site armv7m due-st              console_tx.cc:157:28   chip_sam3x8e.cc:sam_tx_push
-site armv7m due-st              console_tx.cc:259:35   chip_sam3x8e.cc:sam_tx_irq_disable
-site armv7m due-st              console_tx.cc:267:32   chip_sam3x8e.cc:sam_tx_push
-site armv7m due-st              console_tx.cc:284:49   chip_sam3x8e.cc:sam_tx_slot_free
-site armv7m due-st              console_tx.cc:286:24   chip_sam3x8e.cc:sam_tx_push
-site armv7m due-st              console_tx.cc:294:31   chip_sam3x8e.cc:sam_tx_irq_disable
-site armv7m due-st              console_tx.cc:310:27   chip_sam3x8e.cc:sam_tx_irq_disable
-site armv7m due-st              console_tx.cc:356:27   chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due-st              console_tx.cc:70:37    chip_sam3x8e.cc:sam_tx_slot_free
+site armv7m due-st              console_tx.cc:92:28    chip_sam3x8e.cc:sam_tx_push
+site armv7m due-st              console_tx.cc:142:30   chip_sam3x8e.cc:sam_tx_irq_enable
+site armv7m due-st              console_tx.cc:156:63   chip_sam3x8e.cc:sam_tx_slot_free
+site armv7m due-st              console_tx.cc:158:28   chip_sam3x8e.cc:sam_tx_push
+site armv7m due-st              console_tx.cc:260:35   chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due-st              console_tx.cc:268:32   chip_sam3x8e.cc:sam_tx_push
+site armv7m due-st              console_tx.cc:285:49   chip_sam3x8e.cc:sam_tx_slot_free
+site armv7m due-st              console_tx.cc:287:24   chip_sam3x8e.cc:sam_tx_push
+site armv7m due-st              console_tx.cc:295:31   chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due-st              console_tx.cc:311:27   chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due-st              console_tx.cc:357:27   chip_sam3x8e.cc:sam_tx_irq_disable
 
-site armv7m pizero2350          console_tx.cc:69:37    chip_rp2350.cc:rp_tx_slot_free
-site armv7m pizero2350          console_tx.cc:91:28    chip_rp2350.cc:rp_tx_push
-site armv7m pizero2350          console_tx.cc:141:30   chip_rp2350.cc:rp_tx_irq_enable
-site armv7m pizero2350          console_tx.cc:155:63   chip_rp2350.cc:rp_tx_slot_free
-site armv7m pizero2350          console_tx.cc:157:28   chip_rp2350.cc:rp_tx_push
-site armv7m pizero2350          console_tx.cc:259:35   chip_rp2350.cc:rp_tx_irq_disable
-site armv7m pizero2350          console_tx.cc:267:32   chip_rp2350.cc:rp_tx_push
-site armv7m pizero2350          console_tx.cc:284:49   chip_rp2350.cc:rp_tx_slot_free
-site armv7m pizero2350          console_tx.cc:286:24   chip_rp2350.cc:rp_tx_push
-site armv7m pizero2350          console_tx.cc:294:31   chip_rp2350.cc:rp_tx_irq_disable
-site armv7m pizero2350          console_tx.cc:310:27   chip_rp2350.cc:rp_tx_irq_disable
-site armv7m pizero2350          console_tx.cc:356:27   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350          console_tx.cc:70:37    chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350          console_tx.cc:92:28    chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350          console_tx.cc:142:30   chip_rp2350.cc:rp_tx_irq_enable
+site armv7m pizero2350          console_tx.cc:156:63   chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350          console_tx.cc:158:28   chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350          console_tx.cc:260:35   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350          console_tx.cc:268:32   chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350          console_tx.cc:285:49   chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350          console_tx.cc:287:24   chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350          console_tx.cc:295:31   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350          console_tx.cc:311:27   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350          console_tx.cc:357:27   chip_rp2350.cc:rp_tx_irq_disable
 
-site armv7m pizero2350-flat     console_tx.cc:69:37    chip_rp2350.cc:rp_tx_slot_free
-site armv7m pizero2350-flat     console_tx.cc:91:28    chip_rp2350.cc:rp_tx_push
-site armv7m pizero2350-flat     console_tx.cc:141:30   chip_rp2350.cc:rp_tx_irq_enable
-site armv7m pizero2350-flat     console_tx.cc:155:63   chip_rp2350.cc:rp_tx_slot_free
-site armv7m pizero2350-flat     console_tx.cc:157:28   chip_rp2350.cc:rp_tx_push
-site armv7m pizero2350-flat     console_tx.cc:259:35   chip_rp2350.cc:rp_tx_irq_disable
-site armv7m pizero2350-flat     console_tx.cc:267:32   chip_rp2350.cc:rp_tx_push
-site armv7m pizero2350-flat     console_tx.cc:284:49   chip_rp2350.cc:rp_tx_slot_free
-site armv7m pizero2350-flat     console_tx.cc:286:24   chip_rp2350.cc:rp_tx_push
-site armv7m pizero2350-flat     console_tx.cc:294:31   chip_rp2350.cc:rp_tx_irq_disable
-site armv7m pizero2350-flat     console_tx.cc:310:27   chip_rp2350.cc:rp_tx_irq_disable
-site armv7m pizero2350-flat     console_tx.cc:356:27   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350-flat     console_tx.cc:70:37    chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350-flat     console_tx.cc:92:28    chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-flat     console_tx.cc:142:30   chip_rp2350.cc:rp_tx_irq_enable
+site armv7m pizero2350-flat     console_tx.cc:156:63   chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350-flat     console_tx.cc:158:28   chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-flat     console_tx.cc:260:35   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350-flat     console_tx.cc:268:32   chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-flat     console_tx.cc:285:49   chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350-flat     console_tx.cc:287:24   chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-flat     console_tx.cc:295:31   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350-flat     console_tx.cc:311:27   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350-flat     console_tx.cc:357:27   chip_rp2350.cc:rp_tx_irq_disable
 
-site armv7m pizero2350-st       console_tx.cc:69:37    chip_rp2350.cc:rp_tx_slot_free
-site armv7m pizero2350-st       console_tx.cc:91:28    chip_rp2350.cc:rp_tx_push
-site armv7m pizero2350-st       console_tx.cc:141:30   chip_rp2350.cc:rp_tx_irq_enable
-site armv7m pizero2350-st       console_tx.cc:155:63   chip_rp2350.cc:rp_tx_slot_free
-site armv7m pizero2350-st       console_tx.cc:157:28   chip_rp2350.cc:rp_tx_push
-site armv7m pizero2350-st       console_tx.cc:259:35   chip_rp2350.cc:rp_tx_irq_disable
-site armv7m pizero2350-st       console_tx.cc:267:32   chip_rp2350.cc:rp_tx_push
-site armv7m pizero2350-st       console_tx.cc:284:49   chip_rp2350.cc:rp_tx_slot_free
-site armv7m pizero2350-st       console_tx.cc:286:24   chip_rp2350.cc:rp_tx_push
-site armv7m pizero2350-st       console_tx.cc:294:31   chip_rp2350.cc:rp_tx_irq_disable
-site armv7m pizero2350-st       console_tx.cc:310:27   chip_rp2350.cc:rp_tx_irq_disable
-site armv7m pizero2350-st       console_tx.cc:356:27   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350-st       console_tx.cc:70:37    chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350-st       console_tx.cc:92:28    chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-st       console_tx.cc:142:30   chip_rp2350.cc:rp_tx_irq_enable
+site armv7m pizero2350-st       console_tx.cc:156:63   chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350-st       console_tx.cc:158:28   chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-st       console_tx.cc:260:35   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350-st       console_tx.cc:268:32   chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-st       console_tx.cc:285:49   chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350-st       console_tx.cc:287:24   chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-st       console_tx.cc:295:31   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350-st       console_tx.cc:311:27   chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350-st       console_tx.cc:357:27   chip_rp2350.cc:rp_tx_irq_disable
 
-site armv7m f302nucleo          console_tx.cc:69:37    chip_stm32f302.cc:f3_tx_slot_free
-site armv7m f302nucleo          console_tx.cc:91:28    chip_stm32f302.cc:f3_tx_push
-site armv7m f302nucleo          console_tx.cc:141:30   chip_stm32f302.cc:f3_tx_irq_enable
-site armv7m f302nucleo          console_tx.cc:155:63   chip_stm32f302.cc:f3_tx_slot_free
-site armv7m f302nucleo          console_tx.cc:157:28   chip_stm32f302.cc:f3_tx_push
-site armv7m f302nucleo          console_tx.cc:259:35   chip_stm32f302.cc:f3_tx_irq_disable
-site armv7m f302nucleo          console_tx.cc:267:32   chip_stm32f302.cc:f3_tx_push
-site armv7m f302nucleo          console_tx.cc:284:49   chip_stm32f302.cc:f3_tx_slot_free
-site armv7m f302nucleo          console_tx.cc:286:24   chip_stm32f302.cc:f3_tx_push
-site armv7m f302nucleo          console_tx.cc:294:31   chip_stm32f302.cc:f3_tx_irq_disable
-site armv7m f302nucleo          console_tx.cc:310:27   chip_stm32f302.cc:f3_tx_irq_disable
-site armv7m f302nucleo          console_tx.cc:356:27   chip_stm32f302.cc:f3_tx_irq_disable
+site armv7m f302nucleo          console_tx.cc:70:37    chip_stm32f302.cc:f3_tx_slot_free
+site armv7m f302nucleo          console_tx.cc:92:28    chip_stm32f302.cc:f3_tx_push
+site armv7m f302nucleo          console_tx.cc:142:30   chip_stm32f302.cc:f3_tx_irq_enable
+site armv7m f302nucleo          console_tx.cc:156:63   chip_stm32f302.cc:f3_tx_slot_free
+site armv7m f302nucleo          console_tx.cc:158:28   chip_stm32f302.cc:f3_tx_push
+site armv7m f302nucleo          console_tx.cc:260:35   chip_stm32f302.cc:f3_tx_irq_disable
+site armv7m f302nucleo          console_tx.cc:268:32   chip_stm32f302.cc:f3_tx_push
+site armv7m f302nucleo          console_tx.cc:285:49   chip_stm32f302.cc:f3_tx_slot_free
+site armv7m f302nucleo          console_tx.cc:287:24   chip_stm32f302.cc:f3_tx_push
+site armv7m f302nucleo          console_tx.cc:295:31   chip_stm32f302.cc:f3_tx_irq_disable
+site armv7m f302nucleo          console_tx.cc:311:27   chip_stm32f302.cc:f3_tx_irq_disable
+site armv7m f302nucleo          console_tx.cc:357:27   chip_stm32f302.cc:f3_tx_irq_disable
 
-site armv7m f302nucleo-st       console_tx.cc:69:37    chip_stm32f302.cc:f3_tx_slot_free
-site armv7m f302nucleo-st       console_tx.cc:91:28    chip_stm32f302.cc:f3_tx_push
-site armv7m f302nucleo-st       console_tx.cc:141:30   chip_stm32f302.cc:f3_tx_irq_enable
-site armv7m f302nucleo-st       console_tx.cc:155:63   chip_stm32f302.cc:f3_tx_slot_free
-site armv7m f302nucleo-st       console_tx.cc:157:28   chip_stm32f302.cc:f3_tx_push
-site armv7m f302nucleo-st       console_tx.cc:259:35   chip_stm32f302.cc:f3_tx_irq_disable
-site armv7m f302nucleo-st       console_tx.cc:267:32   chip_stm32f302.cc:f3_tx_push
-site armv7m f302nucleo-st       console_tx.cc:284:49   chip_stm32f302.cc:f3_tx_slot_free
-site armv7m f302nucleo-st       console_tx.cc:286:24   chip_stm32f302.cc:f3_tx_push
-site armv7m f302nucleo-st       console_tx.cc:294:31   chip_stm32f302.cc:f3_tx_irq_disable
-site armv7m f302nucleo-st       console_tx.cc:310:27   chip_stm32f302.cc:f3_tx_irq_disable
-site armv7m f302nucleo-st       console_tx.cc:356:27   chip_stm32f302.cc:f3_tx_irq_disable
+site armv7m f302nucleo-st       console_tx.cc:70:37    chip_stm32f302.cc:f3_tx_slot_free
+site armv7m f302nucleo-st       console_tx.cc:92:28    chip_stm32f302.cc:f3_tx_push
+site armv7m f302nucleo-st       console_tx.cc:142:30   chip_stm32f302.cc:f3_tx_irq_enable
+site armv7m f302nucleo-st       console_tx.cc:156:63   chip_stm32f302.cc:f3_tx_slot_free
+site armv7m f302nucleo-st       console_tx.cc:158:28   chip_stm32f302.cc:f3_tx_push
+site armv7m f302nucleo-st       console_tx.cc:260:35   chip_stm32f302.cc:f3_tx_irq_disable
+site armv7m f302nucleo-st       console_tx.cc:268:32   chip_stm32f302.cc:f3_tx_push
+site armv7m f302nucleo-st       console_tx.cc:285:49   chip_stm32f302.cc:f3_tx_slot_free
+site armv7m f302nucleo-st       console_tx.cc:287:24   chip_stm32f302.cc:f3_tx_push
+site armv7m f302nucleo-st       console_tx.cc:295:31   chip_stm32f302.cc:f3_tx_irq_disable
+site armv7m f302nucleo-st       console_tx.cc:311:27   chip_stm32f302.cc:f3_tx_irq_disable
+site armv7m f302nucleo-st       console_tx.cc:357:27   chip_stm32f302.cc:f3_tx_irq_disable
 
-site armv7m bluepill-c8         console_tx.cc:69:37    chip_stm32f103.cc:f1_tx_slot_free
-site armv7m bluepill-c8         console_tx.cc:91:28    chip_stm32f103.cc:f1_tx_push
-site armv7m bluepill-c8         console_tx.cc:141:30   chip_stm32f103.cc:f1_tx_irq_enable
-site armv7m bluepill-c8         console_tx.cc:155:63   chip_stm32f103.cc:f1_tx_slot_free
-site armv7m bluepill-c8         console_tx.cc:157:28   chip_stm32f103.cc:f1_tx_push
-site armv7m bluepill-c8         console_tx.cc:259:35   chip_stm32f103.cc:f1_tx_irq_disable
-site armv7m bluepill-c8         console_tx.cc:267:32   chip_stm32f103.cc:f1_tx_push
-site armv7m bluepill-c8         console_tx.cc:284:49   chip_stm32f103.cc:f1_tx_slot_free
-site armv7m bluepill-c8         console_tx.cc:286:24   chip_stm32f103.cc:f1_tx_push
-site armv7m bluepill-c8         console_tx.cc:294:31   chip_stm32f103.cc:f1_tx_irq_disable
-site armv7m bluepill-c8         console_tx.cc:310:27   chip_stm32f103.cc:f1_tx_irq_disable
-site armv7m bluepill-c8         console_tx.cc:356:27   chip_stm32f103.cc:f1_tx_irq_disable
+site armv7m bluepill-c8         console_tx.cc:70:37    chip_stm32f103.cc:f1_tx_slot_free
+site armv7m bluepill-c8         console_tx.cc:92:28    chip_stm32f103.cc:f1_tx_push
+site armv7m bluepill-c8         console_tx.cc:142:30   chip_stm32f103.cc:f1_tx_irq_enable
+site armv7m bluepill-c8         console_tx.cc:156:63   chip_stm32f103.cc:f1_tx_slot_free
+site armv7m bluepill-c8         console_tx.cc:158:28   chip_stm32f103.cc:f1_tx_push
+site armv7m bluepill-c8         console_tx.cc:260:35   chip_stm32f103.cc:f1_tx_irq_disable
+site armv7m bluepill-c8         console_tx.cc:268:32   chip_stm32f103.cc:f1_tx_push
+site armv7m bluepill-c8         console_tx.cc:285:49   chip_stm32f103.cc:f1_tx_slot_free
+site armv7m bluepill-c8         console_tx.cc:287:24   chip_stm32f103.cc:f1_tx_push
+site armv7m bluepill-c8         console_tx.cc:295:31   chip_stm32f103.cc:f1_tx_irq_disable
+site armv7m bluepill-c8         console_tx.cc:311:27   chip_stm32f103.cc:f1_tx_irq_disable
+site armv7m bluepill-c8         console_tx.cc:357:27   chip_stm32f103.cc:f1_tx_irq_disable
 
-site armv7m bluepill-c8-st      console_tx.cc:69:37    chip_stm32f103.cc:f1_tx_slot_free
-site armv7m bluepill-c8-st      console_tx.cc:91:28    chip_stm32f103.cc:f1_tx_push
-site armv7m bluepill-c8-st      console_tx.cc:141:30   chip_stm32f103.cc:f1_tx_irq_enable
-site armv7m bluepill-c8-st      console_tx.cc:155:63   chip_stm32f103.cc:f1_tx_slot_free
-site armv7m bluepill-c8-st      console_tx.cc:157:28   chip_stm32f103.cc:f1_tx_push
-site armv7m bluepill-c8-st      console_tx.cc:259:35   chip_stm32f103.cc:f1_tx_irq_disable
-site armv7m bluepill-c8-st      console_tx.cc:267:32   chip_stm32f103.cc:f1_tx_push
-site armv7m bluepill-c8-st      console_tx.cc:284:49   chip_stm32f103.cc:f1_tx_slot_free
-site armv7m bluepill-c8-st      console_tx.cc:286:24   chip_stm32f103.cc:f1_tx_push
-site armv7m bluepill-c8-st      console_tx.cc:294:31   chip_stm32f103.cc:f1_tx_irq_disable
-site armv7m bluepill-c8-st      console_tx.cc:310:27   chip_stm32f103.cc:f1_tx_irq_disable
-site armv7m bluepill-c8-st      console_tx.cc:356:27   chip_stm32f103.cc:f1_tx_irq_disable
+site armv7m bluepill-c8-st      console_tx.cc:70:37    chip_stm32f103.cc:f1_tx_slot_free
+site armv7m bluepill-c8-st      console_tx.cc:92:28    chip_stm32f103.cc:f1_tx_push
+site armv7m bluepill-c8-st      console_tx.cc:142:30   chip_stm32f103.cc:f1_tx_irq_enable
+site armv7m bluepill-c8-st      console_tx.cc:156:63   chip_stm32f103.cc:f1_tx_slot_free
+site armv7m bluepill-c8-st      console_tx.cc:158:28   chip_stm32f103.cc:f1_tx_push
+site armv7m bluepill-c8-st      console_tx.cc:260:35   chip_stm32f103.cc:f1_tx_irq_disable
+site armv7m bluepill-c8-st      console_tx.cc:268:32   chip_stm32f103.cc:f1_tx_push
+site armv7m bluepill-c8-st      console_tx.cc:285:49   chip_stm32f103.cc:f1_tx_slot_free
+site armv7m bluepill-c8-st      console_tx.cc:287:24   chip_stm32f103.cc:f1_tx_push
+site armv7m bluepill-c8-st      console_tx.cc:295:31   chip_stm32f103.cc:f1_tx_irq_disable
+site armv7m bluepill-c8-st      console_tx.cc:311:27   chip_stm32f103.cc:f1_tx_irq_disable
+site armv7m bluepill-c8-st      console_tx.cc:357:27   chip_stm32f103.cc:f1_tx_irq_disable
 
 # --- armv7m: the RP2350 bootrom entry, pizero2350 only --------------------------
 # arch_reboot reads two function pointers out of ROM and calls through them. No call graph can
@@ -746,7 +754,7 @@ site armv6m * syscall_ipc_fast.cc:173:50 policy_fifo_rr.cc:policy_pick_next
 
 # armv6m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
 # re-enter the scheduler on this stack.
-site armv6m * irq.cc:742:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+site armv6m * irq.cc:802:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                             syscall.cc:irq_sem_post \
                             console_tx.cc:console_tx_isr_trampoline \
                             ?bench.cc:bench_irq_handler
@@ -756,31 +764,31 @@ site armv6m * irq.cc:742:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
 # nullptr, so console_tx_init never arms the ring and no site can run. rp2040 has a real
 # PL011 backend, so picopi-st binds each site to the slot its line calls.
 
-site armv6m microbit         console_tx.cc:69:37   NONE
-site armv6m microbit         console_tx.cc:91:28   NONE
-site armv6m microbit         console_tx.cc:141:30  NONE
-site armv6m microbit         console_tx.cc:155:63  NONE
-site armv6m microbit         console_tx.cc:157:28  NONE
-site armv6m microbit         console_tx.cc:259:35  NONE
-site armv6m microbit         console_tx.cc:267:32  NONE
-site armv6m microbit         console_tx.cc:284:49  NONE
-site armv6m microbit         console_tx.cc:286:24  NONE
-site armv6m microbit         console_tx.cc:294:31  NONE
-site armv6m microbit         console_tx.cc:310:27  NONE
-site armv6m microbit         console_tx.cc:356:27  NONE
+site armv6m microbit         console_tx.cc:70:37   NONE
+site armv6m microbit         console_tx.cc:92:28   NONE
+site armv6m microbit         console_tx.cc:142:30  NONE
+site armv6m microbit         console_tx.cc:156:63  NONE
+site armv6m microbit         console_tx.cc:158:28  NONE
+site armv6m microbit         console_tx.cc:260:35  NONE
+site armv6m microbit         console_tx.cc:268:32  NONE
+site armv6m microbit         console_tx.cc:285:49  NONE
+site armv6m microbit         console_tx.cc:287:24  NONE
+site armv6m microbit         console_tx.cc:295:31  NONE
+site armv6m microbit         console_tx.cc:311:27  NONE
+site armv6m microbit         console_tx.cc:357:27  NONE
 
-site armv6m picopi-st        console_tx.cc:69:37   chip_rp2040.cc:rp_tx_slot_free
-site armv6m picopi-st        console_tx.cc:91:28   chip_rp2040.cc:rp_tx_push
-site armv6m picopi-st        console_tx.cc:141:30  chip_rp2040.cc:rp_tx_irq_enable
-site armv6m picopi-st        console_tx.cc:155:63  chip_rp2040.cc:rp_tx_slot_free
-site armv6m picopi-st        console_tx.cc:157:28  chip_rp2040.cc:rp_tx_push
-site armv6m picopi-st        console_tx.cc:259:35  chip_rp2040.cc:rp_tx_irq_disable
-site armv6m picopi-st        console_tx.cc:267:32  chip_rp2040.cc:rp_tx_push
-site armv6m picopi-st        console_tx.cc:284:49  chip_rp2040.cc:rp_tx_slot_free
-site armv6m picopi-st        console_tx.cc:286:24  chip_rp2040.cc:rp_tx_push
-site armv6m picopi-st        console_tx.cc:294:31  chip_rp2040.cc:rp_tx_irq_disable
-site armv6m picopi-st        console_tx.cc:310:27  chip_rp2040.cc:rp_tx_irq_disable
-site armv6m picopi-st        console_tx.cc:356:27  chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi-st        console_tx.cc:70:37   chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi-st        console_tx.cc:92:28   chip_rp2040.cc:rp_tx_push
+site armv6m picopi-st        console_tx.cc:142:30  chip_rp2040.cc:rp_tx_irq_enable
+site armv6m picopi-st        console_tx.cc:156:63  chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi-st        console_tx.cc:158:28  chip_rp2040.cc:rp_tx_push
+site armv6m picopi-st        console_tx.cc:260:35  chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi-st        console_tx.cc:268:32  chip_rp2040.cc:rp_tx_push
+site armv6m picopi-st        console_tx.cc:285:49  chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi-st        console_tx.cc:287:24  chip_rp2040.cc:rp_tx_push
+site armv6m picopi-st        console_tx.cc:295:31  chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi-st        console_tx.cc:311:27  chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi-st        console_tx.cc:357:27  chip_rp2040.cc:rp_tx_irq_disable
 
 # --- armv6m: the RP2040 bootrom entry, picopi only ------------------------------
 # arch_reboot reads two function pointers out of ROM and calls through them. No call graph can
@@ -793,127 +801,127 @@ site armv6m picopi-st        chip_rp2040.cc:530:13 NONE
 # arch_console_tx_backend to the arch/common fallback whatever the variant, and all four
 # esp32c6-wroom presets bind the C6 slots.
 
-site rv32imac qemu-riscv-flat    console_tx.cc:69:37    NONE
-site rv32imac qemu-riscv-flat    console_tx.cc:91:28    NONE
-site rv32imac qemu-riscv-flat    console_tx.cc:141:30   NONE
-site rv32imac qemu-riscv-flat    console_tx.cc:155:63   NONE
-site rv32imac qemu-riscv-flat    console_tx.cc:157:28   NONE
-site rv32imac qemu-riscv-flat    console_tx.cc:259:35   NONE
-site rv32imac qemu-riscv-flat    console_tx.cc:267:32   NONE
-site rv32imac qemu-riscv-flat    console_tx.cc:284:49   NONE
-site rv32imac qemu-riscv-flat    console_tx.cc:286:24   NONE
-site rv32imac qemu-riscv-flat    console_tx.cc:294:31   NONE
-site rv32imac qemu-riscv-flat    console_tx.cc:310:27   NONE
-site rv32imac qemu-riscv-flat    console_tx.cc:356:27   NONE
+site rv32imac qemu-riscv-flat    console_tx.cc:70:37    NONE
+site rv32imac qemu-riscv-flat    console_tx.cc:92:28    NONE
+site rv32imac qemu-riscv-flat    console_tx.cc:142:30   NONE
+site rv32imac qemu-riscv-flat    console_tx.cc:156:63   NONE
+site rv32imac qemu-riscv-flat    console_tx.cc:158:28   NONE
+site rv32imac qemu-riscv-flat    console_tx.cc:260:35   NONE
+site rv32imac qemu-riscv-flat    console_tx.cc:268:32   NONE
+site rv32imac qemu-riscv-flat    console_tx.cc:285:49   NONE
+site rv32imac qemu-riscv-flat    console_tx.cc:287:24   NONE
+site rv32imac qemu-riscv-flat    console_tx.cc:295:31   NONE
+site rv32imac qemu-riscv-flat    console_tx.cc:311:27   NONE
+site rv32imac qemu-riscv-flat    console_tx.cc:357:27   NONE
 
-site rv32imac qemu-riscv-bench   console_tx.cc:69:37    NONE
-site rv32imac qemu-riscv-bench   console_tx.cc:91:28    NONE
-site rv32imac qemu-riscv-bench   console_tx.cc:141:30   NONE
-site rv32imac qemu-riscv-bench   console_tx.cc:155:63   NONE
-site rv32imac qemu-riscv-bench   console_tx.cc:157:28   NONE
-site rv32imac qemu-riscv-bench   console_tx.cc:259:35   NONE
-site rv32imac qemu-riscv-bench   console_tx.cc:267:32   NONE
-site rv32imac qemu-riscv-bench   console_tx.cc:284:49   NONE
-site rv32imac qemu-riscv-bench   console_tx.cc:286:24   NONE
-site rv32imac qemu-riscv-bench   console_tx.cc:294:31   NONE
-site rv32imac qemu-riscv-bench   console_tx.cc:310:27   NONE
-site rv32imac qemu-riscv-bench   console_tx.cc:356:27   NONE
+site rv32imac qemu-riscv-bench   console_tx.cc:70:37    NONE
+site rv32imac qemu-riscv-bench   console_tx.cc:92:28    NONE
+site rv32imac qemu-riscv-bench   console_tx.cc:142:30   NONE
+site rv32imac qemu-riscv-bench   console_tx.cc:156:63   NONE
+site rv32imac qemu-riscv-bench   console_tx.cc:158:28   NONE
+site rv32imac qemu-riscv-bench   console_tx.cc:260:35   NONE
+site rv32imac qemu-riscv-bench   console_tx.cc:268:32   NONE
+site rv32imac qemu-riscv-bench   console_tx.cc:285:49   NONE
+site rv32imac qemu-riscv-bench   console_tx.cc:287:24   NONE
+site rv32imac qemu-riscv-bench   console_tx.cc:295:31   NONE
+site rv32imac qemu-riscv-bench   console_tx.cc:311:27   NONE
+site rv32imac qemu-riscv-bench   console_tx.cc:357:27   NONE
 
-site rv32imac esp32c6-wroom      console_tx.cc:69:37    chip_esp32c6.cc:c6_tx_slot_free
-site rv32imac esp32c6-wroom      console_tx.cc:91:28    chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom      console_tx.cc:141:30   chip_esp32c6.cc:c6_tx_irq_enable
-site rv32imac esp32c6-wroom      console_tx.cc:155:63   chip_esp32c6.cc:c6_tx_slot_free
-site rv32imac esp32c6-wroom      console_tx.cc:157:28   chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom      console_tx.cc:259:35   chip_esp32c6.cc:c6_tx_irq_disable
-site rv32imac esp32c6-wroom      console_tx.cc:267:32   chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom      console_tx.cc:284:49   chip_esp32c6.cc:c6_tx_slot_free
-site rv32imac esp32c6-wroom      console_tx.cc:286:24   chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom      console_tx.cc:294:31   chip_esp32c6.cc:c6_tx_irq_disable
-site rv32imac esp32c6-wroom      console_tx.cc:310:27   chip_esp32c6.cc:c6_tx_irq_disable
-site rv32imac esp32c6-wroom      console_tx.cc:356:27   chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom      console_tx.cc:70:37    chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom      console_tx.cc:92:28    chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom      console_tx.cc:142:30   chip_esp32c6.cc:c6_tx_irq_enable
+site rv32imac esp32c6-wroom      console_tx.cc:156:63   chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom      console_tx.cc:158:28   chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom      console_tx.cc:260:35   chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom      console_tx.cc:268:32   chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom      console_tx.cc:285:49   chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom      console_tx.cc:287:24   chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom      console_tx.cc:295:31   chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom      console_tx.cc:311:27   chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom      console_tx.cc:357:27   chip_esp32c6.cc:c6_tx_irq_disable
 
-site rv32imac esp32c6-wroom-flat console_tx.cc:69:37    chip_esp32c6.cc:c6_tx_slot_free
-site rv32imac esp32c6-wroom-flat console_tx.cc:91:28    chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom-flat console_tx.cc:141:30   chip_esp32c6.cc:c6_tx_irq_enable
-site rv32imac esp32c6-wroom-flat console_tx.cc:155:63   chip_esp32c6.cc:c6_tx_slot_free
-site rv32imac esp32c6-wroom-flat console_tx.cc:157:28   chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom-flat console_tx.cc:259:35   chip_esp32c6.cc:c6_tx_irq_disable
-site rv32imac esp32c6-wroom-flat console_tx.cc:267:32   chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom-flat console_tx.cc:284:49   chip_esp32c6.cc:c6_tx_slot_free
-site rv32imac esp32c6-wroom-flat console_tx.cc:286:24   chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom-flat console_tx.cc:294:31   chip_esp32c6.cc:c6_tx_irq_disable
-site rv32imac esp32c6-wroom-flat console_tx.cc:310:27   chip_esp32c6.cc:c6_tx_irq_disable
-site rv32imac esp32c6-wroom-flat console_tx.cc:356:27   chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-flat console_tx.cc:70:37    chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-flat console_tx.cc:92:28    chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-flat console_tx.cc:142:30   chip_esp32c6.cc:c6_tx_irq_enable
+site rv32imac esp32c6-wroom-flat console_tx.cc:156:63   chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-flat console_tx.cc:158:28   chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-flat console_tx.cc:260:35   chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-flat console_tx.cc:268:32   chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-flat console_tx.cc:285:49   chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-flat console_tx.cc:287:24   chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-flat console_tx.cc:295:31   chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-flat console_tx.cc:311:27   chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-flat console_tx.cc:357:27   chip_esp32c6.cc:c6_tx_irq_disable
 
-site rv32imac esp32c6-wroom-bench console_tx.cc:69:37    chip_esp32c6.cc:c6_tx_slot_free
-site rv32imac esp32c6-wroom-bench console_tx.cc:91:28    chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom-bench console_tx.cc:141:30   chip_esp32c6.cc:c6_tx_irq_enable
-site rv32imac esp32c6-wroom-bench console_tx.cc:155:63   chip_esp32c6.cc:c6_tx_slot_free
-site rv32imac esp32c6-wroom-bench console_tx.cc:157:28   chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom-bench console_tx.cc:259:35   chip_esp32c6.cc:c6_tx_irq_disable
-site rv32imac esp32c6-wroom-bench console_tx.cc:267:32   chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom-bench console_tx.cc:284:49   chip_esp32c6.cc:c6_tx_slot_free
-site rv32imac esp32c6-wroom-bench console_tx.cc:286:24   chip_esp32c6.cc:c6_tx_push
-site rv32imac esp32c6-wroom-bench console_tx.cc:294:31   chip_esp32c6.cc:c6_tx_irq_disable
-site rv32imac esp32c6-wroom-bench console_tx.cc:310:27   chip_esp32c6.cc:c6_tx_irq_disable
-site rv32imac esp32c6-wroom-bench console_tx.cc:356:27   chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-bench console_tx.cc:70:37    chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-bench console_tx.cc:92:28    chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-bench console_tx.cc:142:30   chip_esp32c6.cc:c6_tx_irq_enable
+site rv32imac esp32c6-wroom-bench console_tx.cc:156:63   chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-bench console_tx.cc:158:28   chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-bench console_tx.cc:260:35   chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-bench console_tx.cc:268:32   chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-bench console_tx.cc:285:49   chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-bench console_tx.cc:287:24   chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-bench console_tx.cc:295:31   chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-bench console_tx.cc:311:27   chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-bench console_tx.cc:357:27   chip_esp32c6.cc:c6_tx_irq_disable
 
 # The other two rx72m presets, same board and so the same SCI backend.
 
-site rxv3 rx72m              console_tx.cc:69:37    chip_rx72m.cc:rx_tx_slot_free
-site rxv3 rx72m              console_tx.cc:91:28    chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m              console_tx.cc:141:30   chip_rx72m.cc:rx_tx_irq_enable
-site rxv3 rx72m              console_tx.cc:155:63   chip_rx72m.cc:rx_tx_slot_free
-site rxv3 rx72m              console_tx.cc:157:28   chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m              console_tx.cc:259:35   chip_rx72m.cc:rx_tx_irq_disable
-site rxv3 rx72m              console_tx.cc:267:32   chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m              console_tx.cc:284:49   chip_rx72m.cc:rx_tx_slot_free
-site rxv3 rx72m              console_tx.cc:286:24   chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m              console_tx.cc:294:31   chip_rx72m.cc:rx_tx_irq_disable
-site rxv3 rx72m              console_tx.cc:310:27   chip_rx72m.cc:rx_tx_irq_disable
-site rxv3 rx72m              console_tx.cc:356:27   chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m              console_tx.cc:70:37    chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m              console_tx.cc:92:28    chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m              console_tx.cc:142:30   chip_rx72m.cc:rx_tx_irq_enable
+site rxv3 rx72m              console_tx.cc:156:63   chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m              console_tx.cc:158:28   chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m              console_tx.cc:260:35   chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m              console_tx.cc:268:32   chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m              console_tx.cc:285:49   chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m              console_tx.cc:287:24   chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m              console_tx.cc:295:31   chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m              console_tx.cc:311:27   chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m              console_tx.cc:357:27   chip_rx72m.cc:rx_tx_irq_disable
 
-site rxv3 rx72m-flat         console_tx.cc:69:37    chip_rx72m.cc:rx_tx_slot_free
-site rxv3 rx72m-flat         console_tx.cc:91:28    chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m-flat         console_tx.cc:141:30   chip_rx72m.cc:rx_tx_irq_enable
-site rxv3 rx72m-flat         console_tx.cc:155:63   chip_rx72m.cc:rx_tx_slot_free
-site rxv3 rx72m-flat         console_tx.cc:157:28   chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m-flat         console_tx.cc:259:35   chip_rx72m.cc:rx_tx_irq_disable
-site rxv3 rx72m-flat         console_tx.cc:267:32   chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m-flat         console_tx.cc:284:49   chip_rx72m.cc:rx_tx_slot_free
-site rxv3 rx72m-flat         console_tx.cc:286:24   chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m-flat         console_tx.cc:294:31   chip_rx72m.cc:rx_tx_irq_disable
-site rxv3 rx72m-flat         console_tx.cc:310:27   chip_rx72m.cc:rx_tx_irq_disable
-site rxv3 rx72m-flat         console_tx.cc:356:27   chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-flat         console_tx.cc:70:37    chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m-flat         console_tx.cc:92:28    chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-flat         console_tx.cc:142:30   chip_rx72m.cc:rx_tx_irq_enable
+site rxv3 rx72m-flat         console_tx.cc:156:63   chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m-flat         console_tx.cc:158:28   chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-flat         console_tx.cc:260:35   chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-flat         console_tx.cc:268:32   chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-flat         console_tx.cc:285:49   chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m-flat         console_tx.cc:287:24   chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-flat         console_tx.cc:295:31   chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-flat         console_tx.cc:311:27   chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-flat         console_tx.cc:357:27   chip_rx72m.cc:rx_tx_irq_disable
 
 # The other two picopi presets. arch_reboot sits under #if defined(KICKOS_ENABLE_SELFTEST)
 # (chip_rp2040.cc), so the two chip_rp2040 bootrom sites exist in the -st graph alone.
 
-site armv6m picopi             console_tx.cc:69:37    chip_rp2040.cc:rp_tx_slot_free
-site armv6m picopi             console_tx.cc:91:28    chip_rp2040.cc:rp_tx_push
-site armv6m picopi             console_tx.cc:141:30   chip_rp2040.cc:rp_tx_irq_enable
-site armv6m picopi             console_tx.cc:155:63   chip_rp2040.cc:rp_tx_slot_free
-site armv6m picopi             console_tx.cc:157:28   chip_rp2040.cc:rp_tx_push
-site armv6m picopi             console_tx.cc:259:35   chip_rp2040.cc:rp_tx_irq_disable
-site armv6m picopi             console_tx.cc:267:32   chip_rp2040.cc:rp_tx_push
-site armv6m picopi             console_tx.cc:284:49   chip_rp2040.cc:rp_tx_slot_free
-site armv6m picopi             console_tx.cc:286:24   chip_rp2040.cc:rp_tx_push
-site armv6m picopi             console_tx.cc:294:31   chip_rp2040.cc:rp_tx_irq_disable
-site armv6m picopi             console_tx.cc:310:27   chip_rp2040.cc:rp_tx_irq_disable
-site armv6m picopi             console_tx.cc:356:27   chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi             console_tx.cc:70:37    chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi             console_tx.cc:92:28    chip_rp2040.cc:rp_tx_push
+site armv6m picopi             console_tx.cc:142:30   chip_rp2040.cc:rp_tx_irq_enable
+site armv6m picopi             console_tx.cc:156:63   chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi             console_tx.cc:158:28   chip_rp2040.cc:rp_tx_push
+site armv6m picopi             console_tx.cc:260:35   chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi             console_tx.cc:268:32   chip_rp2040.cc:rp_tx_push
+site armv6m picopi             console_tx.cc:285:49   chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi             console_tx.cc:287:24   chip_rp2040.cc:rp_tx_push
+site armv6m picopi             console_tx.cc:295:31   chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi             console_tx.cc:311:27   chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi             console_tx.cc:357:27   chip_rp2040.cc:rp_tx_irq_disable
 
-site armv6m picopi-flat        console_tx.cc:69:37    chip_rp2040.cc:rp_tx_slot_free
-site armv6m picopi-flat        console_tx.cc:91:28    chip_rp2040.cc:rp_tx_push
-site armv6m picopi-flat        console_tx.cc:141:30   chip_rp2040.cc:rp_tx_irq_enable
-site armv6m picopi-flat        console_tx.cc:155:63   chip_rp2040.cc:rp_tx_slot_free
-site armv6m picopi-flat        console_tx.cc:157:28   chip_rp2040.cc:rp_tx_push
-site armv6m picopi-flat        console_tx.cc:259:35   chip_rp2040.cc:rp_tx_irq_disable
-site armv6m picopi-flat        console_tx.cc:267:32   chip_rp2040.cc:rp_tx_push
-site armv6m picopi-flat        console_tx.cc:284:49   chip_rp2040.cc:rp_tx_slot_free
-site armv6m picopi-flat        console_tx.cc:286:24   chip_rp2040.cc:rp_tx_push
-site armv6m picopi-flat        console_tx.cc:294:31   chip_rp2040.cc:rp_tx_irq_disable
-site armv6m picopi-flat        console_tx.cc:310:27   chip_rp2040.cc:rp_tx_irq_disable
-site armv6m picopi-flat        console_tx.cc:356:27   chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi-flat        console_tx.cc:70:37    chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi-flat        console_tx.cc:92:28    chip_rp2040.cc:rp_tx_push
+site armv6m picopi-flat        console_tx.cc:142:30   chip_rp2040.cc:rp_tx_irq_enable
+site armv6m picopi-flat        console_tx.cc:156:63   chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi-flat        console_tx.cc:158:28   chip_rp2040.cc:rp_tx_push
+site armv6m picopi-flat        console_tx.cc:260:35   chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi-flat        console_tx.cc:268:32   chip_rp2040.cc:rp_tx_push
+site armv6m picopi-flat        console_tx.cc:285:49   chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi-flat        console_tx.cc:287:24   chip_rp2040.cc:rp_tx_push
+site armv6m picopi-flat        console_tx.cc:295:31   chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi-flat        console_tx.cc:311:27   chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi-flat        console_tx.cc:357:27   chip_rp2040.cc:rp_tx_irq_disable
 
 # xtensa. The same six SchedPolicy sites every arch binds; the table is one static instance
 # (policy_fifo_rr.cc) and the site's pointer can hold nothing else.
@@ -925,11 +933,31 @@ site lx6 * sched.cc:712:56      policy_fifo_rr.cc:policy_next_timed_event
 site lx6 * sched.cc:716:45      policy_fifo_rr.cc:policy_on_slice_expire
 site lx6 * sched.cc:389:54      policy_fifo_rr.cc:policy_pick_next
 site lx6 * sched.cc:461:38      policy_fifo_rr.cc:policy_on_ready
-site lx6 * irq.cc:742:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+# kickos_isr_irq reads the published dispatch on two different lines of the same file, one per
+# core count, so these are PER PRESET: only one is in any given graph.
+site lx6 esp32-wroom irq.cc:802:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+                            syscall.cc:irq_sem_post \
+                            console_tx.cc:console_tx_isr_trampoline \
+                            ?bench.cc:bench_irq_handler
+site lx6 esp32-wroom-st irq.cc:802:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+                            syscall.cc:irq_sem_post \
+                            console_tx.cc:console_tx_isr_trampoline \
+                            ?bench.cc:bench_irq_handler
+site lx6 esp32-wroom-smp irq.cc:787:14 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                             syscall.cc:irq_sem_post \
                             console_tx.cc:console_tx_isr_trampoline \
                             ?bench.cc:bench_irq_handler
 # The console ring's TX backend, one static ConsoleTxBackend per chip (chip_esp32.cc:306).
-site lx6 * console_tx.cc:284:49 chip_esp32.cc:esp32_tx_slot_free
-site lx6 * console_tx.cc:286:24 chip_esp32.cc:esp32_tx_push
-site lx6 * console_tx.cc:294:31 chip_esp32.cc:esp32_tx_irq_disable
+site lx6 * console_tx.cc:285:49 chip_esp32.cc:esp32_tx_slot_free
+site lx6 * console_tx.cc:287:24 chip_esp32.cc:esp32_tx_push
+site lx6 * console_tx.cc:295:31 chip_esp32.cc:esp32_tx_irq_disable
+# The same backend through the SYNCHRONOUS drain and the panic flush. Reached from the trap
+# root only above one kernel core, yet declared for every preset: a record goes stale on its
+# SITE being absent from the graph, and these three compile at any core count.
+site lx6 * console_tx.cc:70:37  chip_esp32.cc:esp32_tx_slot_free
+site lx6 * console_tx.cc:92:28  chip_esp32.cc:esp32_tx_push
+site lx6 * console_tx.cc:311:27 chip_esp32.cc:esp32_tx_irq_disable
+# gcc emits ONE UNLOCATED __indirect_call edge out of this body while the emitted code holds no
+# indirect call at all, so NONE charges 0 for it. Re-take if this body ever gains a real
+# callback: the edge carries no line, so nothing here would go stale first.
+site lx6 esp32-wroom-smp kickos_lx6_doorbell_service@indirect NONE reason: an unlocated edge with no indirect call behind it in the emitted body

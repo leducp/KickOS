@@ -130,6 +130,60 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_NUM_CORES GRE
   set_tests_properties(doorbell_isb PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 
+# Where the route drain sits in every doorbell service body, read out of the SOURCE TREE. Keyed
+# on nothing: the ordering is a source property, so every build checks all three bodies.
+# It runs no image, so it carries the host label.
+if(KICKOS_BUILD_TESTS)
+  add_test(NAME route_service_order
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_route_service_order.sh"
+            "${PROJECT_SOURCE_DIR}")
+  set_tests_properties(route_service_order PROPERTIES TIMEOUT 120 LABELS host)
+endif()
+
+# The IrqLock bracket on the IRQ syscall arms that touch image-wide controller words, read out
+# of the SOURCE TREE. Keyed on nothing: IrqLock folds to the local mask at one kernel core, so
+# the shape a second core depends on is checked in every build.
+# It runs no image, so it carries the host label.
+if(KICKOS_BUILD_TESTS)
+  add_test(NAME irq_syscall_locked
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_irq_syscall_locked.sh"
+            "${PROJECT_SOURCE_DIR}")
+  set_tests_properties(irq_syscall_locked PROPERTIES TIMEOUT 120 LABELS host)
+endif()
+
+# The sole decider of a logical line's delivery gating, read out of the SOURCE TREE. Keyed on
+# nothing: the rule binds at one kernel core too.
+# It runs no image, so it carries the host label.
+if(KICKOS_BUILD_TESTS)
+  add_test(NAME irq_line_op_sole
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_irq_line_op_sole.sh"
+            "${PROJECT_SOURCE_DIR}")
+  set_tests_properties(irq_line_op_sole PROPERTIES TIMEOUT 120 LABELS host)
+endif()
+
+# The per-core ATOMCTL seat and the read-back beside it, read out of the linked image.
+# UNCONDITIONAL on the core count: ATOMCTL governs every S32C1I the image can execute, and a
+# single-core LX6 build reaches the register on the same boot path.
+# lx6 ONLY: Special Register 99 is Xtensa's.
+# It runs no image, so it carries the host label.
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "lx6")
+  add_test(NAME lx6_atomctl
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_lx6_atomctl.sh"
+            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
+  set_tests_properties(lx6_atomctl PROPERTIES TIMEOUT 120 LABELS host)
+endif()
+
+# The interrupt posture the LX6 secondary park holds across its sleep decision, read out of the
+# linked image. Keyed on the CORE count: the park is compiled only where the image drives more
+# than one core.
+# It runs no image, so it carries the host label.
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "lx6" AND KICKOS_NUM_CORES GREATER 1)
+  add_test(NAME lx6_park_mask
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_lx6_park_mask.sh"
+            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
+  set_tests_properties(lx6_park_mask PROPERTIES TIMEOUT 120 LABELS host)
+endif()
+
 # The store->load fence both sides of the rv64imac interrupt-controller handshake owe, read out
 # of the linked image. UNCONDITIONAL on the core count, as the fence is: the three words the
 # handshake turns on are image-wide rather than per hart, so a fence keyed on the count would
@@ -146,13 +200,32 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "rv64imac")
   set_tests_properties(rv64_irq_fence PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 
+# The one-cell-per-line invariant the lx6 interrupt-controller cells rest on, read out of the
+# linked image, plus the atomic declaration in the source that each access needs. A mask is a
+# store of 0 and an unmask a store of 1, whole values; an edit deriving a stored value from a
+# loaded one reintroduces the cross-core lost update with no local symptom and no failing arm.
+# UNCONDITIONAL on the core count, as the invariant is: the cells are image-wide rather than per
+# core.
+# lx6 ONLY: this reader's cell names occur in no other backend.
+# It runs no image, so it carries the host label.
+# Keyed on KICKOS_ENABLE_SELFTEST: arch_irq_inject, one of the four bodies read, is reached only
+# from the inject syscall arm and the bench, so --gc-sections drops it from an image built
+# without either, and this gate refuses an absence it cannot tell from a failure to read.
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "lx6" AND KICKOS_ENABLE_SELFTEST)
+  add_test(NAME lx6_irq_cells
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_lx6_irq_cells.sh"
+            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
+  set_tests_properties(lx6_irq_cells PROPERTIES TIMEOUT 120 LABELS host)
+endif()
+
 # The boundary between the doorbell's rendezvous half and its scheduling half, read out of the
 # linked image. Keyed on the KERNEL-core count: the reschedule cell and the dispatch's scheduler
 # entry exist only where one kernel schedules more than one core, and under AMP there is no
 # scheduling half to separate.
 # It runs no image, so it carries the host label.
 if(KICKOS_BUILD_TESTS AND KICKOS_KERNEL_CORES GREATER 1
-   AND (KICKOS_ARCH STREQUAL "armv8a" OR KICKOS_ARCH STREQUAL "rv64imac"))
+   AND (KICKOS_ARCH STREQUAL "armv8a" OR KICKOS_ARCH STREQUAL "rv64imac"
+        OR KICKOS_ARCH STREQUAL "lx6"))
   add_test(NAME doorbell_generic
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_doorbell_generic.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}" "${KICKOS_ARCH}")

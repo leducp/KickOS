@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-D0WDQ6 RTC_CNTL register map (ESP32 TRM RTC_CNTL + clock chapters):
+// ESP32 RTC_CNTL register map (ESP32 TRM RTC_CNTL + clock chapters):
 // core-voltage / analog power-down / CPU clock source select, and the RTC
 // watchdog. The classic ESP32 has NO RTC super-watchdog (SWD); that block is an
 // ESP32-S2+ addition.
@@ -20,6 +20,14 @@ namespace kickos::esp32::reg::rtc_cntl
     constexpr uintptr_t DBIAS_REG = mmap::RTC_CNTL_BASE + 0x7Cu; // core-voltage (dbias)
     constexpr uintptr_t WDTCONFIG0 = mmap::RTC_CNTL_BASE + 0x8Cu;
     constexpr uintptr_t WDTWPROTECT = mmap::RTC_CNTL_BASE + 0xA4u;
+    constexpr uintptr_t SW_CPU_STALL = mmap::RTC_CNTL_BASE + 0xACu;
+
+    // The APP_CPU software stall, split across two registers: OPTIONS0[1:0] (Register 9.1,
+    // p.196) and SW_CPU_STALL[25:20] (Register 9.34, p.219). ONLY THE STALLING VALUE IS
+    // DOCUMENTED: the manual gives the pair == 0x86 as the stall and never states what releases
+    // it, so clearing both fields is inferred from their reset value of 0.
+    constexpr uint32_t SW_STALL_APPCPU_C0_MASK = 0x3u << 0;
+    constexpr uint32_t SW_STALL_APPCPU_C1_MASK = 0x3Fu << 20;
 
     // OPTIONS0 analog force-power-down bits (clear to power the block up).
     constexpr uint32_t BB_I2C_FORCE_PD = 1u << 6;

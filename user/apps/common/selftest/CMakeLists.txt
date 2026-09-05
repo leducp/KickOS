@@ -116,10 +116,10 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND _selftest_isolat
     isolated_takes_pinned isolated_mixed_mask_ok)
 endif()
 
-# migrate_running moves a spinner between two cores and needs both of them, so it counts the
-# cores in [1, KICKOS_KERNEL_CORES) that the isolated mask does not name, core 0 excluded
-# because root has to keep running to do the moving. DERIVED and not a posture list: the arm
-# scans exactly this set, and a two-core part leaves one core in it.
+# migrate_running moves a spinner off a core above the boot core and onto the boot core, so it
+# counts the cores in [1, KICKOS_KERNEL_CORES) that the isolated mask does not name. DERIVED
+# and not a posture list: the arm scans exactly this set and takes the first it finds. Core 0,
+# the destination, is one no image may isolate.
 set(_selftest_movable 0)
 if(KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _selftest_top "${KICKOS_KERNEL_CORES} - 1")
@@ -130,8 +130,21 @@ if(KICKOS_KERNEL_CORES GREATER 1)
     endif()
   endforeach()
 endif()
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND _selftest_movable LESS 2)
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND _selftest_movable LESS 1)
   list(APPEND KICKOS_EXPECT_SKIPS migrate_running)
+endif()
+
+# slice_preempts_every_core and threads_reach_every_core each release one thread MORE than the
+# machine has kernel cores, and both ask pool_can_host for exactly that number before spawning.
+# DERIVED and not a posture list. KICKOS_MAX_THREADS is the whole bound visible here; slots a
+# service-list driver holds are NOT, which is why the arms ask at runtime too.
+set(_selftest_crowd 0)
+if(KICKOS_KERNEL_CORES GREATER 1)
+  math(EXPR _selftest_crowd "${KICKOS_KERNEL_CORES} + 1")
+endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1
+   AND KICKOS_MAX_THREADS LESS ${_selftest_crowd})
+  list(APPEND KICKOS_EXPECT_SKIPS slice_preempts_every_core threads_reach_every_core)
 endif()
 
 # The same for the arms that report PARTIAL. A PARTIAL reports `ok`, so neither the plan/case
@@ -228,7 +241,7 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_NUM_CORES GREATER 1
   math(EXPR _tap_arms "${_tap_arms} + 5") # amp_window, amp_far_call, amp_far_reply_guard, amp_probe_root_only, amp_far_slot_reuse
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
-  math(EXPR _tap_arms "${_tap_arms} + 19") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task
+  math(EXPR _tap_arms "${_tap_arms} + 21") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core
 endif()
 
 # The same count per region. The regions are separated by the `#undef TAP_ADD` lines in main.cc:
@@ -279,7 +292,7 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_NUM_CORES GREATER 1
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 5") # amp_window, amp_far_call, amp_far_reply_guard, amp_probe_root_only, amp_far_slot_reuse
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 19") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 21") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core
 endif()
 
 math(EXPR _tap_arms_split "${_tap_arms_p1} + ${_tap_arms_p2} + ${_tap_arms_p3}")

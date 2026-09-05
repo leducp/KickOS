@@ -263,7 +263,11 @@ enum kos_sched_op
     KOS_SCHED_OP_AFFINITY = 1,   // () -> the caller's own core mask
     KOS_SCHED_OP_TASK_CORES = 2, // () -> the caller's task's core set
     KOS_SCHED_OP_CEILING = 3,    // () -> the caller's task's priority ceiling
-    KOS_SCHED_OP_ISOLATED = 4    // () -> the cores this image isolates
+    KOS_SCHED_OP_ISOLATED = 4,   // () -> the cores this image isolates
+    // () -> one bit per core whose OWN slice timer has taken a thread off it since boot; a
+    // cross-core reschedule or a device wake sets nothing. Machine-wide and monotonic, so a
+    // caller reads a floor.
+    KOS_SCHED_OP_PREEMPTED = 5
 };
 
 // `op` selector for KOS_SYS_ASPACE_PROBE (self-test only). Values are a frozen contract:

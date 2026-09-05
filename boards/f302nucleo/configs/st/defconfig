@@ -4,7 +4,7 @@
 CONFIG_BOARD_F302NUCLEO=y
 
 # Adds the test-only self-test syscalls the TAP suite calls. On 64 KiB of flash and
-# 16 KiB of SRAM the suite is split over two images, the heap goes entirely, and the
+# 16 KiB of SRAM the suite is split over three images, the heap goes entirely, and the
 # pools buy back what the arms need.
 CONFIG_KICKOS_MAX_THREADS=2
 CONFIG_KICKOS_MAX_SEMAPHORES=6

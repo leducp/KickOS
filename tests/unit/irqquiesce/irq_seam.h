@@ -44,6 +44,11 @@ namespace kickos
         // once and klock keys its per-core row off this.
         extern thread_local uint32_t g_core;
 
+        // What arch_irq_line_core answers, and what irq_claim's pin asked for. -1 is no
+        // constraint, so an arm that leaves g_line_core alone pins nothing.
+        extern int g_line_core;
+        extern uint32_t g_pinned_mask;
+
         void reset();
 
         // The whole Kernel back to zero plus irq_init(), so an arm starts from a seeded
