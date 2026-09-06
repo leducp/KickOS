@@ -199,23 +199,34 @@ class Decl(object):
         return self.trap_stack | self.kernel_stack
 
 
+def check_site_shape(where, f):
+    """Everything about one `site` record that holds whatever arch or preset is being read."""
+    if f[0] != 'site':
+        die('%s: unknown record "%s"' % (where, f[0]))
+    if len(f) < 5:
+        die('%s: site wants <arch> <scope> <site> <callee>...' % where)
+    site = f[3]
+    if not site.endswith(UNLOCATED_SUFFIX) and site.count(':') != 2:
+        die('%s: site "%s" is not <basename>:<line>:<col> or <caller>%s'
+            % (where, site, UNLOCATED_SUFFIX))
+    if 'NONE' in f[4:] and f[4:] != ['NONE']:
+        die('%s: NONE cannot be mixed with a named callee' % where)
+
+
 def read_bindings(path, arch, preset):
     """site key -> [(callee spec, optional)], with [] for an explicit NONE."""
     out = collections.OrderedDict()
     for n, f, _reason in records(path):
         where = '%s:%d' % (path, n)
-        if f[0] != 'site':
-            die('%s: unknown record "%s"' % (where, f[0]))
-        if len(f) < 5:
-            die('%s: site wants <arch> <scope> <site> <callee>...' % where)
+        # Before the scope filter, so a record for an arch this run does not build is still
+        # shape-checked.
+        check_site_shape(where, f)
         if f[1] != arch:
             continue
         if f[2] != '*' and f[2] != preset:
             continue
         site = f[3]
-        if not site.endswith(UNLOCATED_SUFFIX) and site.count(':') != 2:
-            die('%s: site "%s" is not <basename>:<line>:<col> or <caller>%s'
-                % (where, site, UNLOCATED_SUFFIX))
+        # Scope-dependent, so it stays here: one site may be bound once per (arch, preset).
         if site in out:
             die('%s: site %s bound twice for %s/%s' % (where, site, arch, preset))
         if f[4:] == ['NONE']:
@@ -223,8 +234,6 @@ def read_bindings(path, arch, preset):
             continue
         callees = []
         for spec in f[4:]:
-            if spec == 'NONE':
-                die('%s: NONE cannot be mixed with a named callee' % where)
             callees.append((spec.lstrip('?'), spec.startswith('?')))
         out[site] = callees
     return out
@@ -408,6 +417,7 @@ class Graph(object):
                 if site not in bindings:
                     self.unbound.add(pseudo)
                     continue
+                resolved = 0
                 for spec, optional in bindings[site]:
                     key = self.resolve(spec)
                     if key is None:
@@ -416,6 +426,15 @@ class Graph(object):
                         die('binding for %s names callee "%s", which is not in the graph;'
                             ' a stale binding rots like a stale margin' % (site, spec))
                     self.edges[pseudo].add(key)
+                    resolved += 1
+                # An explicit NONE is [] and charges 0 by declaration; a non-empty list whose
+                # callees all turn out optional and absent would charge 0 silently.
+                if bindings[site] and resolved == 0:
+                    die('site %s declares %d callee(s) and every one is optional and absent'
+                        ' from this graph, so the site would charge 0 with nothing measured.'
+                        ' Declare it NONE with a reason if that is the honest answer, or bind'
+                        ' the callee this image really reaches'
+                        % (site, len(bindings[site])))
 
 
 # --- longest weighted path -----------------------------------------------------
@@ -508,8 +527,23 @@ def usage():
         'usage: trap_redzone.py --ci-dir <dir> --arch <arch> --preset <preset>\n'
         '                       --roots <file> --indirect <file>\n'
         '                       --enforced <CLASS>=<frame>,<depth> [--enforced ...]\n'
-        '                       [--not-compiled <CLASS>]...\n')
+        '                       [--not-compiled <CLASS>]...\n'
+        '       trap_redzone.py --check-file <indirect-file>\n')
     return 2
+
+
+def check_file(path):
+    """Shape-check every record in the bindings file. Builds nothing and reads no graph, so it
+    covers the arches no board on this box configures."""
+    n_records = 0
+    for n, f, _reason in records(path):
+        check_site_shape('%s:%d' % (path, n), f)
+        n_records += 1
+    if n_records == 0:
+        die('%s carries no site record; a shape check over nothing passes for the wrong'
+            ' reason' % path)
+    print('trap_redzone: %d site record(s) in %s are well formed' % (n_records, path))
+    return 0
 
 
 def parse_argv(argv):
@@ -786,6 +820,10 @@ def main():
     if len(sys.argv) < 2:
         return usage()
     try:
+        if sys.argv[1] == '--check-file':
+            if len(sys.argv) != 3:
+                return usage()
+            return check_file(sys.argv[2])
         return run(sys.argv[1:])
     except Bad as e:
         sys.stderr.write('FAIL: %s\n' % e)

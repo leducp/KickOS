@@ -26,6 +26,16 @@
 # the level of the 2 MiB block descriptor carrying the permission (DDI 0487 M.b, ESR_EL1).
 # Spelled out here rather than derived, so this gate asserts the encoding instead of
 # restating whatever the source happens to produce.
+#
+# ABOVE ONE CORE THE WIRE HAS NO PER-LINE ATOMICITY, arch_console_write being a byte-at-a-time
+# device loop under no lock, so a core printing a status line lands it INSIDE another's line
+# character by character. The MARKER is a presence, so it is matched byte-exact first and a
+# split is tolerated second, through require_on_wire, which reports the span it allowed.
+#
+# THE THREE READS THAT CARRY A VALUE STAY BYTE-EXACT, and that is not a gap: a bounded in-order
+# match answers whether a literal reached the wire and never which value it carried, so one
+# foreign digit inside a record would satisfy the named word with a longer address. All three
+# tell a split apart from an absence instead, because the two send a reader to different places.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -39,6 +49,9 @@ expect_status="${3:?$_usage}"
 need_qemu_machine
 run_image "$elf"
 
+# An absence, so weak by nature on a wire with more than one writer. Corroborated: a read that
+# quietly returned leaves no marker, no ADDR at the word the image named and no fault status,
+# and all three are asserted positively below.
 if has "ERROR:"; then
     printf '%s\n' "$OUT" | grep 'ERROR:'
     fail "the image reported a failure instead of faulting"
@@ -47,26 +60,21 @@ fi
 addr="$(printf '%s\n' "$OUT" | sed -n 's/.*\[kernelhalf\] reading 0x\([0-9a-f]*\).*/\1/p' | tail -n 1)"
 if [ -z "$addr" ]; then
     printf '%s\n' "$OUT"
+    if [ "$(wire_cores)" -gt 1 ] && wire_has "[kernelhalf] reading 0x"; then
+        fail "the image's reading line reached the wire across $WIRE_SPAN bytes with a peer's
+  line broken into it, so the word it names is UNREADABLE rather than unnamed. The address a
+  shuffled line was going to name cannot be recovered from it"
+    fi
     fail "the image named no address to read"
 fi
 
-banners="$(printf '%s\n' "$OUT" | grep -c "$marker")"
-if [ "$banners" -eq 0 ]; then
-    fail "fault-dump marker '$marker' missing: reading the kernel's half did not fault"
-fi
-if [ "$banners" -ne 1 ]; then
-    fail "fault-dump marker '$marker' appeared $banners times"
-fi
+require_single_marker "$marker" "reading the kernel's half did not fault"
 
-if ! has "ADDR=0x${addr}"; then
-    printf '%s\n' "$OUT" | grep -E 'ADDR=|ESR_EL1='
-    fail "the record faults somewhere other than 0x${addr}, the word the image named"
-fi
-
-if ! has "ESR_EL1=0x9200000e"; then
-    printf '%s\n' "$OUT" | grep -E 'ESR_EL1='
-    fail "the syndrome is not a level-2 permission fault on a read from the lower level"
-fi
+field_matcher_control
+require_field_on_wire ADDR "0x${addr}" 'ADDR=|ESR_EL1=' \
+    "the record faults somewhere other than 0x${addr}, the word the image named"
+require_field_on_wire ESR_EL1 0x9200000e 'ESR_EL1=' \
+    "the syndrome is not a level-2 permission fault on a read from the lower level"
 
 if [ "$RC" -ne "$expect_status" ]; then
     fail "expected exit $expect_status, got $RC"

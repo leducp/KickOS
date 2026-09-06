@@ -28,10 +28,37 @@
 
 ENTRY(Reset_Handler)
 
+/* Text executes from XIP flash and data lives in SRAM, so an own-image node takes a slice of
+   each: the same slice arithmetic over different bases and strides
+   (arch/common/amp_partition.ld.h). The region every node writes sits in SRAM and never in
+   flash, because LDREX/STREX succeed only over 0x2000_0000..0x2008_2000 (datasheet 2.1.6.2)
+   and the rendezvous cells are the one thing every node read-modify-writes.
+
+   Two nodes plus the shared region are sized to end at 0x2008_0000, the striped SRAM end,
+   leaving the two 4 KiB non-striped banks unclaimed for per-core stacks. */
+#if KICKOS_AMP_OWN_IMAGE
+#include <amp_partition.ld.h>
+#define KICKOS_RP2350_FLASH_BASE \
+    KICKOS_AMP_SLICE_BASE(KICKOS_AMP_TEXT_BASE, KICKOS_AMP_TEXT_SHARE)
+#define KICKOS_RP2350_FLASH_SIZE KICKOS_AMP_TEXT_SHARE
+#define KICKOS_RP2350_RAM_BASE \
+    KICKOS_AMP_SLICE_BASE(KICKOS_AMP_PARTITION_BASE, KICKOS_AMP_NODE_SHARE)
+#define KICKOS_RP2350_RAM_SIZE   KICKOS_AMP_NODE_SHARE
+#else
+#define KICKOS_RP2350_FLASH_BASE 0x10000000
+#define KICKOS_RP2350_FLASH_SIZE 16M
+#define KICKOS_RP2350_RAM_BASE   0x20000000
+#define KICKOS_RP2350_RAM_SIZE   512K
+#endif
+
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x10000000, LENGTH = 16M
-    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 512K
+    FLASH (rx)  : ORIGIN = KICKOS_RP2350_FLASH_BASE, LENGTH = KICKOS_RP2350_FLASH_SIZE
+    RAM   (rwx) : ORIGIN = KICKOS_RP2350_RAM_BASE,   LENGTH = KICKOS_RP2350_RAM_SIZE
+#if KICKOS_AMP_OWN_IMAGE
+    /* Above every node's SRAM slice, so no image's own allocations can reach it. */
+    SHARED (rw) : ORIGIN = KICKOS_AMP_SHARED_BASE, LENGTH = KICKOS_AMP_SHARED_SIZE
+#endif
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);
@@ -253,6 +280,50 @@ SECTIONS
     __kickos_code_start = ORIGIN(FLASH);
     __kickos_code_end = ORIGIN(FLASH) + LENGTH(FLASH);
 
+#if KICKOS_AMP_OWN_IMAGE
+    /* The region every node of the partition writes.
+
+       NOLOAD for correctness and not size: a region carrying bytes is written at load time,
+       which on this part is a flash program, and by then a peer may already have published
+       into it.
+
+       Outside .bss, so no image's C runtime clears it; arch_amp_shared_zero, from the primary's
+       Reset_Handler, does that once, before any peer is released.
+
+       The order below must match virt_arm64.ld's: it is a property of the partition, not of
+       the chip. */
+    .amp_shared (NOLOAD) : ALIGN(64)
+    {
+        __kickos_amp_shared_start = .;
+        __kickos_amp_cells_start = .;
+        KEEP(*(.amp_shared.cells.request))
+        KEEP(*(.amp_shared.cells.answer))
+        KEEP(*(.amp_shared.cells.served))
+        KEEP(*(.amp_shared.affinity))
+        KEEP(*(.amp_shared.affinity_seated))
+        __kickos_amp_cells_end = .;
+        . = ALIGN(64);
+        __kickos_amp_window_start = .;
+        KEEP(*(.amp_shared.window))
+        __kickos_amp_window_end = .;
+        . = ALIGN(64);
+        __kickos_amp_counts_start = .;
+        KEEP(*(.amp_shared.counts))
+        __kickos_amp_counts_end = .;
+        /* A chip backend's own partition-wide publication. This part makes one, so the
+           assert below requires it; a chip that publishes nothing places nothing here and
+           owes no such assert. */
+        __kickos_amp_chip_start = .;
+        KEEP(*(.amp_shared.chip))
+        __kickos_amp_chip_end = .;
+        /* Last, and with no ALIGN ahead of it: this section is empty unless
+           KICKOS_AMP_DIAG_REPORT is on, and anywhere else it would move every object
+           below it the moment a diagnostic is turned on. */
+        KEEP(*(.amp_shared.diag))
+        __kickos_amp_shared_end = .;
+    } > SHARED
+#endif
+
     /DISCARD/ : { *(.ARM.attributes) }
 
     KICKOS_NONALLOC_SECTIONS
@@ -296,5 +367,50 @@ ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
    flash image base, and the IMAGE_DEF block must be within the first 4 KiB. */
 ASSERT(ADDR(.text) == ORIGIN(FLASH),
        "KickOS: RP2350 vector table must be at the flash image base 0x1000_0000")
+#if KICKOS_AMP_OWN_IMAGE
+/* --- The placement contract, as a refusal ----------------------------------------------
+ * The bounds below are the partition's own constants and never this script's regions: an
+ * assert reading ORIGIN(SHARED) against LENGTH(SHARED) passes wherever the region is
+ * repointed, which is the one edit it exists to catch.
+ */
+ASSERT(ADDR(.amp_shared) == KICKOS_AMP_SHARED_BASE,
+       "KickOS: the AMP shared region is not at the address the partition derives. Every node's script computes KICKOS_AMP_PARTITION_BASE + KICKOS_AMP_NODES * KICKOS_AMP_NODE_SHARE, so a region elsewhere means this image was built against a different geometry than its peers")
+
+ASSERT(__kickos_amp_shared_end - __kickos_amp_shared_start <= KICKOS_AMP_SHARED_SIZE,
+       "KickOS: the AMP shared objects overflow KICKOS_AMP_SHARED_SIZE. Raise it in the partition's defconfig, in every node's, or narrow KICKOS_AMP_NODES / KICKOS_AMP_PARTITION_CORES")
+
+/* Two spans, and neither implies the other: a node's text and its data are sliced out of
+   different apertures with different strides. */
+ASSERT(ORIGIN(RAM) >= KICKOS_AMP_PARTITION_BASE && _estack <= KICKOS_AMP_SHARED_BASE,
+       "KickOS: this node's DATA is not inside its own SRAM share of the partition. It starts at KICKOS_AMP_PARTITION_BASE plus its node index times KICKOS_AMP_NODE_SHARE and must end below the region every node writes")
+
+ASSERT(ORIGIN(FLASH) >= KICKOS_AMP_TEXT_BASE
+       && ORIGIN(FLASH) + LENGTH(FLASH) <= KICKOS_AMP_TEXT_BASE + KICKOS_AMP_NODES * KICKOS_AMP_TEXT_SHARE,
+       "KickOS: this node's TEXT is not inside its own flash share of the partition. It starts at KICKOS_AMP_TEXT_BASE plus its node index times KICKOS_AMP_TEXT_SHARE")
+
+/* Two machine facts, refused here rather than in the shared header. The partition's SRAM must
+   end at or below the striped SRAM end (datasheet Table 11), the two 4 KiB banks above it being
+   non-striped, in a different power domain and left unclaimed for per-core stacks. And every
+   node's text must lie in the first 16 MiB: bootable content must (datasheet 5.1.2.1) and XIP
+   window 0 is 16 MiB per chip select (12.14). */
+ASSERT(KICKOS_AMP_PARTITION_END <= 0x20080000,
+       "KickOS: the AMP partition runs past the RP2350's striped SRAM end at 0x20080000. The two 4 KiB banks above it are non-striped, sit in the SRAM1 power domain, and are reserved for per-core stacks. Narrow KICKOS_AMP_NODE_SHARE or KICKOS_AMP_SHARED_SIZE")
+
+ASSERT(KICKOS_AMP_TEXT_BASE + KICKOS_AMP_NODES * KICKOS_AMP_TEXT_SHARE <= 0x11000000,
+       "KickOS: the AMP partition's text runs past the RP2350's first 16 MiB flash window. Bootable content must lie wholly inside it and XIP window 0 ends at 0x11000000. Narrow KICKOS_AMP_TEXT_SHARE")
+
+ASSERT(__kickos_amp_cells_end > __kickos_amp_cells_start,
+       "KickOS: .amp_shared.cells is empty: the doorbell backend's rendezvous cells are not placed in the shared region, so each node would rendezvous with itself")
+
+ASSERT(__kickos_amp_window_end > __kickos_amp_window_start,
+       "KickOS: .amp_shared.window is empty: kernel/amp/ampwindow.cc's window is not placed in the shared region, so each node would publish into a ring no peer reads")
+
+ASSERT(__kickos_amp_counts_end > __kickos_amp_counts_start,
+       "KickOS: .amp_shared.counts is empty: a node sweeping a peer's row would read its own")
+
+ASSERT(__kickos_amp_chip_end > __kickos_amp_chip_start,
+       "KickOS: .amp_shared.chip is empty: this chip's clock figure and console-claim owner are not placed in the shared region, so each node would read its own and the two would neither agree on the core clock nor serialise a line against each other")
+#endif
+
 ASSERT(g_image_def < ORIGIN(FLASH) + 0x1000,
        "KickOS: RP2350 IMAGE_DEF must be within the bootrom's first-4-KiB scan window")

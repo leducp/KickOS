@@ -6,7 +6,7 @@
 // on AHB at 0x4800_0000 (not 0x4002_0000), the RCC block is at 0x4002_1000, and
 // the USART is the NEWER model (ISR/TDR, not SR/DR).
 //
-// M1 scope: privilege + SVC, no MPU. The Nucleo-F302R8 carries no crystal, so
+// Scope: privilege + SVC, no MPU. The Nucleo-F302R8 carries no crystal, so
 // clock_init() runs the PLL from HSI/2 (no HSE and no MCO solder-bridge dependency,
 // so it is identical on every board): HSI/2 (4 MHz) x16 = 64 MHz
 // SYSCLK. HCLK=64, PCLK2=64, PCLK1=32 (its 36 MHz max). USART2 is on APB1, so its

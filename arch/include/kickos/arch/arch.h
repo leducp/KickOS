@@ -164,12 +164,16 @@ void arch_ipi_resched_self(void);
 #endif
 
 #if defined(KICKOS_ENABLE_SELFTEST)
+// What arch_ipi_seat_set answers where the backend carries no per-core publication at all:
+// neither seated nor unseated. Above the guard below because both of its arms spend it.
+#define ARCH_IPI_SEAT_NONE 2u
+
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 // What `core` has done with the doorbell: services performed in bits 31:0, instruction-side
 // rendezvous initiated in bits 63:32. A core outside the built range reads zero.
 //
 // Guarded with the two above and not against the count: a node whose doorbell is declared
 // owes the probe that reads it.
-#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 uint64_t arch_ipi_counts(uint32_t core);
 
 // Raises this core could not give `core` because that core's controller state was not yet
@@ -179,11 +183,15 @@ uint32_t arch_ipi_deferred(uint32_t core);
 // Answers what it REPLACED, so a caller puts back what was there rather than asserting a seat.
 // Seating a core whose controller state was never published names affinity zero, a real core
 // and not an absence: the raise would land on the sender itself.
+//
+// ARCH_IPI_SEAT_NONE where the backend has no such state, which is a different answer from
+// unseated and must not be read as one: a doorbell whose raise is a single register write
+// addresses every core from reset, so nothing there can be unseated or deferred.
 uint32_t arch_ipi_seat_set(uint32_t core, uint32_t seated);
 #else
 #define arch_ipi_counts(core) ((void)(core), 0ull)
 #define arch_ipi_deferred(core) ((void)(core), 0u)
-#define arch_ipi_seat_set(core, seated) ((void)(core), (void)(seated), 0u)
+#define arch_ipi_seat_set(core, seated) ((void)(core), (void)(seated), ARCH_IPI_SEAT_NONE)
 #endif
 #endif
 
@@ -930,6 +938,15 @@ void arch_irq_inject(int irq);
 // only while the routed core is the only core that touches them.
 #define KICKOS_IRQ_LINE_CORE_NONE (-1)
 int arch_irq_line_core(int line);
+
+// Whether the arch dispatches `line` to a kernel vector of its own, ahead of the first-level
+// ISR and never through kickos_isr_irq. Such a line holds no irq_table slot, so a capability
+// over it would bind a handler nothing reaches and closing that capability would mask the line
+// the kernel rings on. Both minting entries, irq_claim and irq_attach, refuse one.
+//
+// A predicate and not a line number: an arch may reserve more than one, and a backend that
+// reserves none takes the fallback answering false.
+bool arch_irq_line_kernel_owned(int line);
 
 // --- Minimal debug console (bottom edge of the in-kernel console driver) ---
 // Write-only. Two edges:

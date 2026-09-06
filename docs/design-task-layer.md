@@ -28,7 +28,7 @@ handover could kill it. **M4.8.1 has since retired that header and the tail now 
 which is the shape this section argues for; the convention it was forced into read:
 
 > `A default-constructed Handle means a single-thread driver, which released the window at its own
-> death.` (`driver_bringup.h:96`)
+> death.` (the retired `driver_bringup.h`)
 
 That argument is "the other thread in my task", passed manually. The kernel has no object that could
 have answered the question, so the driver answers it, per driver, by remembering.
@@ -132,7 +132,8 @@ domain nobody holds is reclaimed.
 That is right for threads that **happen** to share a domain. It is wrong for threads that **are**
 one unit. A driver whose IRQ thread died is not viable: its service thread keeps its endpoint, keeps
 draining a ring nobody fills, and keeps `recv_holders` above zero, which is precisely the state
-`driver_bringup.h:104` describes as "a hang on a dark console". The survivor continuing is the bug.
+the retired `driver_bringup.h` described as "a hang on a dark console". The survivor continuing is
+the bug.
 Today both cases are spelled the same way, so no rule can separate them.
 
 ### Which M4.7.9 rulings survive unchanged
@@ -391,7 +392,7 @@ through `kos_task_create`, which is the shape that makes containment observable 
 cancellation point, `kos_irq_wait` (`kernel/irq/irq.cc:209`). A thread parked anywhere else never
 dies. **This is new kernel work, not a refactor, and it is the single largest unknown in the
 proposal.** It is also the thing that would make `console_handover_finish`'s cooperative-cancel
-caveat (`driver_bringup.h:108-118`) go away rather than be documented.
+caveat (the retired `driver_bringup.h`) go away rather than be documented.
 
 ### 6.1 What 9.5 built, and the answer to open question 1
 

@@ -35,7 +35,7 @@ extern "C"
 
 namespace
 {
-    // Bump-allocated; freed only wholesale (matches the sim arena's M0 model).
+    // Bump-allocated; freed only wholesale (matches the sim arena's model).
     // Read-modify-written under arch_irq_save/restore in arch_ram_alloc.
     uint32_t g_ram_used = 0;
 

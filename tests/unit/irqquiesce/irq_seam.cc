@@ -102,6 +102,7 @@ namespace kickos
 
         thread_local uint32_t g_core = 0;
         int g_line_core = -1;
+        int g_kernel_owned_line = -1;
         uint32_t g_pinned_mask = 0;
         unsigned g_probe_calls = 0;
         void* g_probe_arg = nullptr;
@@ -115,6 +116,7 @@ namespace kickos
             g_trace_n = 0;
             g_core = 0;
             g_line_core = -1;
+            g_kernel_owned_line = -1;
             g_pinned_mask = 0;
             g_probe_calls = 0;
             g_probe_arg = nullptr;
@@ -436,6 +438,12 @@ void arch_irq_clear_pending(int line)
 int arch_irq_line_core(int)
 {
     return kickos::irqfix::g_line_core;
+}
+
+bool arch_irq_line_kernel_owned(int line)
+{
+    return kickos::irqfix::g_kernel_owned_line >= 0
+           and line == kickos::irqfix::g_kernel_owned_line;
 }
 
 void arch_ipi_send(uint32_t cores)

@@ -95,7 +95,7 @@ This is the half an inventory of the struct does not see. Classification as abov
 | `g_isr_depth` / `g_in_isr` | **per-core** | interrupt nesting is a per-CPU property |
 | `g_pend_regions`, `g_pend_count`, `g_fixed_count`, `mpu_ready`, `rgd0_ready` | **per-core** | the MPU/PMP is per-CPU hardware |
 | `g_armed_deadline_ns` / `g_rx_armed_ns`, and the conversion caches beside them | **per-core** | follows the per-core tickless timer |
-| `g_irq_masked`, `g_irq_pending`, `g_inject_line` | **per-core** | mirrors per-core interrupt-controller state. This, not `irq_table`, is the per-core half of interrupts (ruling 1) |
+| `g_irq_masked`, `g_irq_pending`, `g_inject_line` | global | a SOFTWARE interrupt controller, one per image: `arch/riscv/rv32imac/arch_rv32imac.cc` declares all three at file scope and nothing keys them. Per-core is the wrong answer here, and wrong in a way that hangs rather than reddens; see ruling 1 |
 | the clock-extender pairs (`g_cyc_high`/`g_cyc_last` and the ten chip variants) | global data, broken exclusion | see ruling 3 |
 | `SystemCoreClock`, `g_clint_msip`, the baud and clock-divider caches | global | set once at bring-up, read-mostly device facts |
 | `g_ram_used` (`arch/common/arch_ram_common.cc`) | global | one arena; it needs a lock, not replication |
@@ -112,7 +112,7 @@ scope for a `Kernel` inventory.
 
 ## 4. The three rulings
 
-### Ruling 1 -- `irq_table` is GLOBAL; the per-core half is the arch mask state
+### Ruling 1 -- `irq_table` is GLOBAL, and so is a software controller's mask state
 
 The tempting answer is per-core, because the NVIC on both RP parts is per-core hardware with its
 own enable and pending state. That confuses two different things.
@@ -120,13 +120,36 @@ own enable and pending state. That confuses two different things.
 - **Which handler serves line N is a logical fact**, and it is already cap-refcounted through a
   global `IrqBinding` pool. A per-core binding table would let one line have two different
   handlers, which is two answers to one question: the second truth the tiebreaker forbids.
-- **Whether line N is enabled on THIS core is hardware state**, and it already lives in the arch
-  layer (`g_irq_masked`, `g_irq_pending`), which this document classifies per-core.
+- **Whether line N is enabled is state the arch layer owns**, in `g_irq_masked` and
+  `g_irq_pending`, and whether THAT is per-core depends on what sits under it. A banked
+  controller register, an NVIC per core or a GIC's per-redistributor bank, is per-CPU hardware
+  and the arch cell mirroring it is per-core with it.
 
-So the decomposition already exists in the tree and needs no new split: the ISR on whichever core
-takes the interrupt indexes one global table, and the per-core part is below the seam. That also
-keeps the grant narrow, which is what the isolation principle asks for: a driver is granted a
-LINE, not a line-on-a-core.
+So the decomposition needs no new split: the ISR on whichever core takes the interrupt indexes
+one global table, and whatever mirrors per-CPU hardware stays below the seam. That also keeps the
+grant narrow, which is what the isolation principle asks for: a driver is granted a LINE, not a
+line-on-a-core.
+
+**WHERE THE ARCH CELL MIRRORS NO REGISTER IT IS IMAGE-WIDE, AND KEYING IT PER CORE HANGS THE
+SYSTEM.** Several backends implement the mask, pending and inject words as a software stand-in for
+a controller the board does not have: `arch/riscv/rv32imac/arch_rv32imac.cc` declares
+`g_irq_masked`, `g_irq_pending` and `g_inject_line` at file scope, and
+`arch/riscv/rv64imac/arch_rv64imac.cc` carries the same three as `g_irq_unmasked`,
+`g_irq_pending` and `g_irq_raised`. A line there is one logical resource: the kernel masks it on
+whichever core services it and unmasks it on whichever core its driver runs on. Keyed per core
+instead, those two cores never meet. The raise latches in the injector's own pending word and
+waits for an unmask only the driver's core will make, so the four-core selftest stops at the
+first arm that drives a line, and it stops by HANGING rather than by reddening. The question to
+ask of one of these cells is therefore not whether interrupt state is per-CPU in general but
+whether this cell mirrors a per-CPU register; where it mirrors nothing, replication manufactures
+one answer per core to a question that has one.
+
+Image-wide is necessary and not sufficient, and the trap is worth naming because this
+classification is where a reader stops. The kernel lock does not cover every caller: the ISR path
+brackets with an epoch instead, and masks a line from inside it, so a plain read-modify-write lets
+a mask on one core clobber a rearm's unmask on another and leave the line masked with nothing left
+to unmask it. The rv64 backend states the exclusion these words actually have at their
+declaration; read it before making a second backend image-wide.
 
 `irq_spurious_count` stays global for the same reason and is simply a shared counter under the
 lock.

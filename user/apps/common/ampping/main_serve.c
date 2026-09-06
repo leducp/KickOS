@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The SERVING node of a two-image AMP partition: an ordinary thread parked in an ordinary
-// receive, handed an ordinary reply capability. Nothing below can tell a far caller from a near
-// one, which is the transparency docs/design-multicore.md N6d requires.
+// A serving node of an AMP partition: an ordinary thread parked in an ordinary receive, handed
+// an ordinary reply capability. The port it binds is the partition's first entry naming THIS
+// image's node, so one build of this source is whichever peer its configure was given. Nothing
+// below can tell a far caller from a near one (docs/design-multicore.md N6d).
 //
-// It never returns: root returning ends the system, and on this partition that is one machine
-// both nodes run on, so a serving node's main parks instead (<kickos/sys/init.h>).
+// It never returns: root returning ends the system, and every node of this partition runs on
+// one machine (<kickos/sys/init.h>).
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -48,6 +49,24 @@ int main(int argc, char** argv)
         return 1;
     }
     printf("ampping: node %u serves port %u\n", (unsigned)KOS_AMP_SELF_NODE, (unsigned)port);
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // NODE 0 HAS NO OTHER WAY TO SEE THAT THIS APP RAN. Node 0's app calls the first peer the
+    // partition names and no other, so a node it never calls moves no window counter, and the
+    // line above is not evidence to anything: nothing serialises the console across two kernels
+    // and N6h rules the stream interleaves at byte granularity. So this app declares itself
+    // into its own row of the shared record, which node 0 reads and reports.
+    //
+    // The port travels as a CLAIM and is not what gets stored: the kernel checks it against the
+    // partition list and publishes its own derivation, so nothing this app says reaches the
+    // region two kernels share. A refusal means the two derivations disagree, which is worth a
+    // line to a human even though node 0's short count is what a gate reads.
+    if ((intptr_t)kos_amp_probe(KOS_AMP_OP_APP_ALIVE_SET, port) < 0)
+    {
+        printf("ampping: node %u could not publish the port it serves\n",
+               (unsigned)KOS_AMP_SELF_NODE);
+    }
+#endif
 
     while (true)
     {

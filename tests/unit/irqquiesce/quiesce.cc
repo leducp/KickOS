@@ -589,6 +589,60 @@ namespace
     }
 
     // =======================================================================================
+    // A LINE THE ARCH DISPATCHES ITSELF. Its vector reaches a kernel service directly and
+    // never kickos_isr_irq, so the line holds no irq_table slot: a capability over it would
+    // drive nothing, and the detach that closing the capability performs would mask the line
+    // the kernel rings on. The refusal belongs at claim time, a claim that succeeds and cannot
+    // be closed safely being worse than one that never happened.
+
+    TEST_F(IrqQuiesce, ClaimOfAnArchOwnedLineIsRefusedAndTouchesNothing)
+    {
+        kickos::irqfix::g_kernel_owned_line = LINE_FREE;
+        unsigned const free_before = free_bindings();
+        uint32_t cap = kickos::KCAP_INVALID;
+
+        EXPECT_EQ(kickos::irq_claim(&g_claim_thread, LINE_FREE, 0u, &cap), -KOS_EPERM);
+        EXPECT_EQ(cap, kickos::KCAP_INVALID) << "a refused claim handed back a capability";
+        EXPECT_EQ(free_bindings(), free_before) << "the refused claim kept a binding slot";
+        EXPECT_EQ(kickos::irq_published(LINE_FREE).arg,
+                  reinterpret_cast<void*>(static_cast<intptr_t>(LINE_FREE)))
+            << "the line names a driver, so the arch vector's service was displaced or a "
+               "detach is now owed on a line the kernel rings on";
+        EXPECT_EQ(kickos::irqfix::last_line_op(LINE_FREE), -1)
+            << "the refused claim reached the controller for a line it does not own";
+        EXPECT_FALSE(kickos::irq_attach(LINE_FREE, probe_handler, nullptr))
+            << "the other minting entry bound a handler the arch vector never reaches";
+    }
+
+    // THE CONTROL, on the SAME line and differing only in what the arch declares: the claim
+    // takes, the line dispatches to the binding it installed, and closing the capability gives
+    // the slot back. Without it the arm above passes on a tree that refuses every claim.
+    TEST_F(IrqQuiesce, TheSameLineClaimsAndClosesWhereTheArchReservesNothing)
+    {
+        kickos::irqfix::g_kernel_owned_line = -1;
+        unsigned const free_before = free_bindings();
+        uint32_t cap = kickos::KCAP_INVALID;
+
+        ASSERT_TRUE(kickos::irq_attach(LINE_FREE, probe_handler, nullptr));
+        kickos::irq_detach(LINE_FREE);
+        ASSERT_EQ(kickos::irq_claim(&g_claim_thread, LINE_FREE, 0u, &cap), 0);
+        EXPECT_NE(cap, kickos::KCAP_INVALID);
+        EXPECT_LT(free_bindings(), free_before) << "the claim took no binding slot";
+        EXPECT_NE(kickos::irq_published(LINE_FREE).arg,
+                  reinterpret_cast<void*>(static_cast<intptr_t>(LINE_FREE)))
+            << "the line still names the null object, so nothing was bound to fire";
+
+        // The detach above already masked the line once, so this is a DELTA and not a state.
+        unsigned const masks_before = kickos::irqfix::count_of(OP_MASK);
+        kickos_isr_irq(LINE_FREE);
+        EXPECT_EQ(kickos::irqfix::count_of(OP_MASK), masks_before + 1u)
+            << "the dispatch did not mask the line it woke a driver for";
+
+        kickos::handle_close(&g_claim_thread, cap);
+        EXPECT_EQ(free_bindings(), free_before) << "the closed capability kept its slot";
+    }
+
+    // =======================================================================================
     // THE RECORD POOL AS A POOL. There is one record per line, so "every record taken" and
     // "every line bound" are the same state and the boundary is read from the LINE side: a
     // record index is observable nowhere outside kernel/irq/irq.cc, and the refusal for want

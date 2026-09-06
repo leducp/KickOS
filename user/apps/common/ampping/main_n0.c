@@ -10,6 +10,7 @@
 // into root before main is entered. Locality never reaches the API
 // (docs/design-multicore.md N7): this is kos_call_timed.
 
+#include <iso646.h> // and / or / not are macros in C, not keywords
 #include <stdio.h>
 
 #include <kickos/amp.h>
@@ -40,6 +41,7 @@ static kos_cap_t ampping_peer(uint32_t* out_node, uint32_t* out_port)
     return KOS_CAP_NONE;
 }
 
+#if defined(KICKOS_ENABLE_SELFTEST)
 // The capability this image holds for a crossing at `node`: the first entry of the partition's
 // list naming it. KOS_CAP_NONE where the partition names that node no port at all.
 static kos_cap_t ampping_port_of(uint32_t node, uint32_t* out_port)
@@ -56,6 +58,23 @@ static kos_cap_t ampping_port_of(uint32_t node, uint32_t* out_port)
     }
     return KOS_CAP_NONE;
 }
+
+// The first port the partition names `node`, or KOS_AMP_NO_ENTRY where it names none. The
+// capability is not wanted here, only the port: this node holds none for a peer's own crossing
+// it was handed no entry for.
+static uint32_t ampping_first_port(uint32_t node)
+{
+    uint32_t i;
+    for (i = 0; i < KOS_AMP_PORT_COUNT; i++)
+    {
+        if (kos_amp_entry_node(i) == node)
+        {
+            return kos_amp_entry_port(i);
+        }
+    }
+    return KOS_AMP_NO_ENTRY;
+}
+#endif
 
 int main(int argc, char** argv)
 {
@@ -86,7 +105,7 @@ int main(int argc, char** argv)
         // Retry is the application's and not the kernel's (N6e): the peer is released after
         // this node and parks in its own time, so the first call can find no receiver.
         int tries = 1;
-        while (n < 0 && tries < AMPPING_TRIES)
+        while (n < 0 and tries < AMPPING_TRIES)
         {
             kos_sleep_ns(AMPPING_SETTLE_NS);
             n = kos_call_timed(ep, msg, sizeof(msg), sizeof(msg), AMPPING_CALL_US);
@@ -108,6 +127,66 @@ int main(int argc, char** argv)
     printf("ampping: node %u done, %d round(s) across the partition\n",
            (unsigned)KOS_AMP_SELF_NODE, AMPPING_ROUNDS);
 
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // --- Which nodes' APPS ran, reported by this node ---------------------------------------
+    // The rounds above witness the FIRST peer's app and nothing else: this app calls that one
+    // crossing and no other, so a wider partition holds nodes no crossing ever reaches and not
+    // one window counter moves for them. Each node's app declares itself into its own row of
+    // the shared record instead, and THIS node reports what it reads, because a line a quieter
+    // node prints is not evidence to a gate: nothing serialises the console across two kernels
+    // and N6h rules the stream interleaves at byte granularity.
+    //
+    // WHO MAY WRITE A ROW: the kernel alone, into the row of the node it is running on, at the
+    // request of that node's root. The node is derived in the kernel and is never a parameter,
+    // so one writer per row survives userspace being what asks.
+    //
+    // WHAT THIS READER VALIDATES: the mark is not a flag but the port the partition names that
+    // node, biased by one, so each row is checked against the port derived HERE from this
+    // node's own copy of the list. Node 0's own row is swept as the known-value control, the
+    // way the shared diagnostic record keeps cells whose values the reader already knows: a
+    // sweep that gets this node's own mark wrong is an artefact and not a peer failure. A row
+    // is a REPORT and is spent as neither an index nor a length. And the primary zeroed the
+    // shared region before any peer was released, so a nonzero mark cannot be an earlier boot's.
+    uint32_t const self_port = ampping_first_port((uint32_t)KOS_AMP_SELF_NODE);
+    (void)kos_amp_probe(KOS_AMP_OP_APP_ALIVE_SET, self_port);
+
+    unsigned alive = 0;
+    unsigned own_row = 0;
+    int settle;
+    for (settle = 0; settle < AMPPING_TRIES; settle++)
+    {
+        uint32_t seen;
+        alive = 0;
+        own_row = 0;
+        for (seen = 0; seen < (uint32_t)KICKOS_AMP_NODES; seen++)
+        {
+            uint32_t const want = ampping_first_port(seen);
+            intptr_t const mark = (intptr_t)kos_amp_probe(KOS_AMP_OP_APP_ALIVE, seen);
+            if (want == KOS_AMP_NO_ENTRY or mark < 0)
+            {
+                continue;
+            }
+            if ((uint32_t)mark != want + 1u)
+            {
+                continue;
+            }
+            alive++;
+            if (seen == (uint32_t)KOS_AMP_SELF_NODE)
+            {
+                own_row = 1;
+            }
+        }
+        if (alive == (unsigned)KICKOS_AMP_NODES)
+        {
+            break;
+        }
+        // A peer this app never calls reaches its own app in its own time, so an early sweep
+        // reads a node that is still booting rather than one that failed.
+        kos_sleep_ns(AMPPING_SETTLE_NS);
+    }
+    printf("ampping: %u of %u node app(s) alive on the port the partition names, own row %u\n",
+           alive, (unsigned)KICKOS_AMP_NODES, own_row);
+
     // The ring is the authority and a raise is a hint (docs/design-multicore.md N6f): a peer
     // that cannot yet be poked is published to anyway, and a skipped raise costs latency and
     // never a message. The peer's own counter, read out of the shared window, is what says the
@@ -120,9 +199,21 @@ int main(int argc, char** argv)
     uint32_t row;
     for (row = 0; row < (uint32_t)KICKOS_AMP_NODES; row++)
     {
-        took0[row] = (unsigned long)kos_aspace_probe(KOS_ASPACE_OP_AMP_TOOK, row);
+        took0[row] = (unsigned long)kos_amp_probe(KOS_AMP_OP_TOOK, row);
     }
-    uintptr_t const deferred = kos_aspace_probe(KOS_ASPACE_OP_AMP_DEFER, 0);
+    // A refusal and a packed answer come back through the SAME unsigned word, so the word is
+    // read as signed before anything is decoded out of it. A doorbell whose raise names its
+    // peer with one register write keeps no seat to clear and refuses this scenario ahead of
+    // the publication; decoded instead of read, that -KOS_ENOSYS is a count of 4294967295 at a
+    // node of 65498, and the app reports it as an ordinary partition it cannot carry a notice
+    // on.
+    uintptr_t const deferred = kos_amp_probe(KOS_AMP_OP_DEFER, 0);
+    if ((intptr_t)deferred < 0)
+    {
+        printf("ampping: the doorbell has no seat, so no raise of it can be deferred (rc %ld)\n",
+               (long)(intptr_t)deferred);
+        return 0;
+    }
     unsigned const skipped = (unsigned)(deferred >> 16);
     uint32_t const at = (uint32_t)(deferred & 0xFFFFu);
     // The notice goes to the node the publication went to, which only the kernel names. The
@@ -145,7 +236,7 @@ int main(int argc, char** argv)
     beat[3] = 0xE3u;
     int32_t const woke =
         kos_call_timed(at_ep, beat, sizeof(beat), sizeof(beat), AMPPING_CALL_US);
-    unsigned long const took1 = (unsigned long)kos_aspace_probe(KOS_ASPACE_OP_AMP_TOOK, at);
+    unsigned long const took1 = (unsigned long)kos_amp_probe(KOS_AMP_OP_TOOK, at);
     // The count is TWO: the publication whose raise was skipped, and the call that carried the
     // next notice. One would mean the deferred message was lost and only the call arrived.
     // Both nodes are printed so the gate can assert they are the same one.
@@ -153,5 +244,6 @@ int main(int argc, char** argv)
            "%lu message(s), call rc %ld\n",
            skipped, (unsigned)at, (unsigned)at, (unsigned)at_port, took1 - took0[at],
            (long)woke);
+#endif
     return 0;
 }

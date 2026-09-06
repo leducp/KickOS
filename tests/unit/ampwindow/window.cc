@@ -844,4 +844,60 @@ namespace
         EXPECT_EQ(1u, amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).head.v.load());
         EXPECT_EQ(1u, amp::ring_for(amp::Class::REPLY, NODE_A, NODE_B).head.v.load());
     }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // OWNERSHIP, not arithmetic: the arm above already covers the refusal. What is asserted
+    // here is that producing it costs the peer nothing, the ring the forge drives being the
+    // self-ring no node produces into and no service drains. A forged consumer index under a
+    // live consumer is what this arm exists to keep out.
+    TEST_F(AmpWindow, the_send_forge_leaves_the_peers_ring_and_its_held_record_alone)
+    {
+        // NODE_B holding a call from NODE_A: a record live on the slot, and BOTH indices off
+        // zero, which is what a reset to zero has to be told apart from. The first call is
+        // taken and released to move the tail, the second is held.
+        uint8_t const payload[4] = {0xC0u, 0xC1u, 0xC2u, 0xC3u};
+        uint8_t out[amp::SLOT_BYTES];
+        uint32_t len = 0;
+        uint32_t port = amp::PORT_MAX;
+        uint32_t slot = 0;
+        amp::ReplyTag tag = {};
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_A, NODE_B, amp::PORT_ECHO, payload, 4u));
+        ASSERT_EQ(amp::Verdict::TOOK, take_as(NODE_B, NODE_A, out, &len, &port));
+
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_A, NODE_B, amp::PORT_ECHO, payload, 4u));
+        fix::g_node = NODE_B;
+        ASSERT_EQ(amp::Verdict::TOOK,
+                  amp::take_call(NODE_A, out, &len, &port, &tag, &slot));
+        uint32_t const token = amp::inbound_seat(NODE_A, slot, TAG_CARRIED);
+        ASSERT_NE(amp::FAR_RECORD_NONE, token);
+
+        amp::Ring& peer = amp::ring_for(amp::Class::CALL, NODE_B, NODE_A);
+        uint32_t const head_was = peer.head.v.load();
+        uint32_t const tail_was = peer.tail.v.load();
+        ASSERT_NE(0u, head_was);
+        ASSERT_NE(0u, tail_was);
+
+        fix::g_node = NODE_A;
+        fix::g_sends = 0;
+        EXPECT_EQ(amp::Sent::DEPTH, amp::forge_tail_and_send(NODE_B, amp::RING_SLOTS + 1u));
+
+        EXPECT_EQ(head_was, peer.head.v.load())
+            << "the forge wrote the head of a ring a peer is reading";
+        EXPECT_EQ(tail_was, peer.tail.v.load())
+            << "the forge wrote the consumer's own index, which the consumer owns: a peer "
+               "observing it resynchronises or discards real traffic";
+        EXPECT_NE(nullptr, amp::inbound_at(token))
+            << "the forge dropped the record the peer is still serving that call on";
+        EXPECT_EQ(0u, fix::g_sends) << "a refused send rang the doorbell";
+
+        amp::Ring& own = amp::ring_for(amp::Class::CALL, NODE_A, NODE_A);
+        EXPECT_EQ(0u, own.head.v.load()) << "the forge left its own ring holding a publication";
+        EXPECT_EQ(0u, own.tail.v.load());
+
+        fix::g_node = NODE_B;
+        amp::inbound_forget(token);
+        amp::release_call(NODE_A, slot);
+        fix::g_node = NODE_A;
+    }
+#endif
 }

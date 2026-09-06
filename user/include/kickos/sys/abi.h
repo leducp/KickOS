@@ -75,12 +75,16 @@ enum kos_syscall_nr
                                 //   needs KOS_AUTH_SYSTEM for it and panics without.
     KOS_SYS_IRQ_INJECT = 9,     // (irq)                 -> 0, or -KOS_EINVAL (self-test only)
     KOS_SYS_GUARD_ADDR = 10,    // ()  -> protected probe addr (self-test only)
-    KOS_SYS_IRQ_ATTACH = 11,    // (irq, sem_handle)  -> 0, or -KOS_E* (EPERM/EINVAL/EBADF/EBUSY)
+    KOS_SYS_IRQ_ATTACH = 11,    // (irq, sem_handle)  -> 0, or -KOS_E* (EPERM/EINVAL/EBADF/EBUSY;
+                                //   EBUSY also for a line the arch dispatches to a kernel
+                                //   vector of its own, which reaches no binding)
     KOS_SYS_CLOCK_NOW = 12,     // ()  -> monotonic nanoseconds (u64, in registers; cannot fail)
     KOS_SYS_RAM_ALLOC = 13,     // (size)                -> user-RAM ptr, or 0/NULL on ANY failure
     KOS_SYS_IRQ_CLAIM = 14,     // (line, flags, kos_cap_t* out) -> 0, or -KOS_E*: EPERM (lacks
-                                //   KOS_AUTH_IRQ), EINVAL (line/flags/out-ptr), EFAULT (out-ptr),
-                                //   EBUSY (line owned), ENOMEM (binding pool), EMFILE (cap table)
+                                //   KOS_AUTH_IRQ, or the arch dispatches the line to a kernel
+                                //   vector of its own and no holder ever frees it), EINVAL
+                                //   (line/flags/out-ptr), EFAULT (out-ptr), EBUSY (line owned),
+                                //   ENOMEM (binding pool), EMFILE (cap table)
     KOS_SYS_IRQ_WAIT = 15,      // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
     KOS_SYS_IRQ_ACK = 16,       // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
     KOS_SYS_IRQ_SPURIOUS = 18,  // ()  -> count of IRQs on unbound lines (self-test only)
@@ -246,11 +250,46 @@ enum kos_syscall_nr
                                //   -KOS_EBUSY (the task already has a member).
                                //   NARROWING-ONLY, and 0 in either field leaves that half
                                //   alone.
-    KOS_SYS_SCHED_PROBE = 65   // (op) -> per-op (see enum kos_sched_op), or -KOS_EINVAL for a
+    KOS_SYS_SCHED_PROBE = 65,  // (op) -> per-op (see enum kos_sched_op), or -KOS_EINVAL for a
                                //   bad op (self-test only: the dispatch arm is compiled out
                                //   unless KICKOS_ENABLE_SELFTEST AND the kernel drives more
                                //   than one core, so every other image returns -KOS_EINVAL
                                //   for every op).
+    KOS_SYS_AMP_PROBE = 66,    // (op, a1) -> per-op (see enum kos_amp_op), or -KOS_EINVAL for a
+                               //   bad op (self-test only: the dispatch arm is compiled out
+                               //   unless KICKOS_ENABLE_SELFTEST AND the image is a node of a
+                               //   partition, so every other image returns -KOS_EINVAL for
+                               //   every op).
+    KOS_SYS_DOORBELL_PROBE = 67 // (op, a1) -> per-op (see enum kos_doorbell_op), or -KOS_EINVAL
+                               //   for a bad op (self-test only). Answers on every posture:
+                               //   an image whose doorbell folds out reads a real zero rather
+                               //   than a refusal.
+};
+
+// `op` selector for KOS_SYS_DOORBELL_PROBE (self-test only). Values are a frozen contract:
+// append, never reorder.
+enum kos_doorbell_op
+{
+    KOS_DOORBELL_OP_COUNTS = 0, // (core) -> what `core` has done with the cross-core doorbell,
+                                //   two fields in one word:
+                                //     63..32  instruction-side rendezvous it INITIATED
+                                //     31..0   doorbell services it PERFORMED, each of which
+                                //             takes a Context synchronization event
+                                //   A core outside the built range reads 0, so a caller may
+                                //   sweep a fixed width. EVERY service counts here, a
+                                //   cross-core wake included, so the low field is an upper
+                                //   bound on the pokes answered
+    KOS_DOORBELL_OP_WIDTH = 1,  // () -> how many cores the rendezvous matrix is indexed by,
+                                //   which is the MACHINE's core count and not the cores this
+                                //   image drives: a sweep bounded by the image's count reads
+                                //   one row of several and reports the rest as absent
+    KOS_DOORBELL_OP_SELF = 2,   // () -> which row of that matrix the CALLING core writes. Not
+                                //   derivable in userspace, and a caller assuming row 0 reads
+                                //   a peer's row on every node but the first
+    // (from) -> the lowest IRQ line at or above `from` that this arch dispatches to a kernel
+    // vector of its own, which no IRQ capability may name; -1 when the arch reserves none at
+    // or above it. READ IT SIGNED: the answer arrives in an unsigned word, where -1 is huge.
+    KOS_DOORBELL_OP_KERNEL_LINE = 3
 };
 
 // `op` selector for KOS_SYS_SCHED_PROBE (self-test only). Values are a frozen contract:
@@ -385,52 +424,60 @@ enum kos_aspace_op
                                  //             on, which is its ACTIVE-CORE SET counted
                                  //   The middle field equalling the high one is the invariant
                                  //   that no core holds a root it is not running
-    KOS_ASPACE_OP_AMP_ROUND = 32, // (node) -> drive ONE echo round at `node`: publish a
+    // 31 and 32 through 49 are SPENT and may not be reused: the shared window's and the
+    // doorbell's ops answered here before they were given syscalls of their own. See enum
+    // kos_amp_op and enum kos_doorbell_op.
+};
+
+// `op` selector for KOS_SYS_AMP_PROBE (self-test only). Values are a frozen contract:
+// append, never reorder.
+//
+// Every op answers -KOS_EINVAL as a negative value in a register the stub returns UNSIGNED, so
+// a caller comparing a counter against zero reads a refusal as a very large count. Read the
+// answer as signed before reading it as a number.
+enum kos_amp_op
+{
+    KOS_AMP_OP_ROUND = 0,        // (node) -> drive ONE echo round at `node`: publish a
                                  //   request on the echo port and ring that node's doorbell.
                                  //   Returns the send's own verdict, 0 for accepted; the
                                  //   REPLY arrives later, through this node's own doorbell,
-                                 //   so a caller reads KOS_ASPACE_OP_AMP_TOOK for it
-    KOS_ASPACE_OP_AMP_FORGE = 33, // (selector) -> write ONE publication into THIS node's
+                                 //   so a caller reads KOS_AMP_OP_TOOK for it
+    KOS_AMP_OP_FORGE = 1,        // (selector) -> write ONE publication into THIS node's
                                  //   inbox exactly as a far side would and report what the
                                  //   validation made of it, or drive the send side's own
                                  //   refusal. The KOS_AMP_FORGE_* selectors say which
                                  //   malformation, and the KOS_AMP_V_* codes are the answers
                                  // The counter family below: ONE OP PER FIELD of `node`'s
                                  //   window record, each (node) -> that one counter, whole.
-                                 //   A node outside the built range reads node 0's, so a
-                                 //   caller may sweep a fixed width
-    KOS_ASPACE_OP_AMP_TOOK = 34, // messages it took
-    KOS_ASPACE_OP_AMP_DEPTH = 35, // takes refused on the far HEAD's depth
-    KOS_ASPACE_OP_AMP_DEPTH_RESET = 36, // inboxes it resynchronised after DEPTH_STRIKES
+                                 //   A node outside the built range reads a ZERO row and not
+                                 //   node 0's, so a caller may sweep a fixed width without a
+                                 //   real peer's answer standing in for a node that has none
+    KOS_AMP_OP_TOOK = 2,         // messages it took
+    KOS_AMP_OP_DEPTH = 3,        // takes refused on the far HEAD's depth
+    KOS_AMP_OP_DEPTH_RESET = 4,  // inboxes it resynchronised after DEPTH_STRIKES
                                  //   consecutive refused depths, which is what bounds how
                                  //   long a far side may keep one of its rings dead
-    KOS_ASPACE_OP_AMP_LENGTH = 37, // slots refused on the far LENGTH
-    KOS_ASPACE_OP_AMP_PORT = 38, // slots refused on the far PORT
-    KOS_ASPACE_OP_AMP_SENT = 39, // messages it published
-    KOS_ASPACE_OP_AMP_SEND_REFUSED = 40, // sends it refused
-    KOS_ASPACE_OP_AMP_SERVICED = 41, // doorbell services that drained its inboxes
-    KOS_ASPACE_OP_AMP_REPLY_DROP = 42, // replies taken and then refused by the tag validation
-    KOS_ASPACE_OP_AMP_FAR_PARKED = 43, // () -> 1 while some thread is parked on a far reply,
+    KOS_AMP_OP_LENGTH = 5,       // slots refused on the far LENGTH
+    KOS_AMP_OP_PORT = 6,         // slots refused on the far PORT
+    KOS_AMP_OP_SENT = 7,         // messages it published
+    KOS_AMP_OP_SEND_REFUSED = 8, // sends it refused
+    KOS_AMP_OP_SERVICED = 9,     // doorbell services that drained its inboxes
+    KOS_AMP_OP_REPLY_DROP = 10,  // replies taken and then refused by the tag validation
+    KOS_AMP_OP_FAR_PARKED = 11,  // () -> 1 while some thread is parked on a far reply,
                                  //   which is what the hostile-reply forges need to exist
                                  //   before they mean anything
-    KOS_ASPACE_OP_AMP_BAND_RESOLVE = 45, // (record) -> 1 where a reply handle naming reply
+    KOS_AMP_OP_BAND_RESOLVE = 12, // (record) -> 1 where a reply handle naming reply
                                  //   record `record` RESOLVES to a local thread, which it
                                  //   must never do: the band sits above every index the pool
                                  //   can seat, so cap_reply_thread's first clause refuses it
-    KOS_ASPACE_OP_DOORBELL_SELF = 46, // () -> which row of that matrix the CALLING core writes.
-                                 //   Not derivable in userspace: under the shared image it is
-                                 //   a core register read on whichever core the kernel
-                                 //   scheduled the caller on, and under one image per node it
-                                 //   is that node's build constant. A caller assuming row 0
-                                 //   reads a peer's row on every node but the first
-    KOS_ASPACE_OP_AMP_DEFER = 47, // () -> drive ONE publication at a peer whose seat has been
+    KOS_AMP_OP_DEFER = 13,       // () -> drive ONE publication at a peer whose seat has been
                                  //   put back to unseated, so the raise is skipped, then seat
                                  //   it again and let it drain. Two fields in one word:
                                  //     15..0   the node it published to
                                  //     31..16  raises skipped at that node
                                  //   The node is reported because the caller cannot derive it:
                                  //   the peer is the kernel's own choice
-    KOS_ASPACE_OP_AMP_RESET_RECORD = 48, // () -> the four claims a ring resynchronisation
+    KOS_AMP_OP_RESET_RECORD = 14, // () -> the four claims a ring resynchronisation
                                  //   owes the inbound records it abandons, as a bit each:
                                  //   1 the reset freed the record whose slot it abandoned,
                                  //   2 the next call at that masked slot was granted one,
@@ -438,21 +485,21 @@ enum kos_aspace_op
                                  //   8 spending the abandoned token released no slot.
                                  //   Bit 16 says the scaffold ran to the end, so 0 is a forge
                                  //   that could not run rather than four failed claims.
-    KOS_ASPACE_OP_DOORBELL_WIDTH = 49, // () -> how many cores the doorbell's rendezvous matrix
-                                 //   is indexed by, which is the MACHINE's core count and not
-                                 //   the cores this image drives. An own-image AMP node drives
-                                 //   one and still reaches every core its partition spans, so
-                                 //   a sweep bounded by the image's count reads one row of
-                                 //   several and reports the rest as absent
-    KOS_ASPACE_OP_DOORBELL_COUNTS = 31 // (core) -> what `core` has done with the cross-core
-                                 //   doorbell, two fields in one word:
-                                 //     63..32  instruction-side rendezvous it INITIATED
-                                 //     31..0   doorbell services it PERFORMED, each of which
-                                 //             takes a Context synchronization event
-                                 //   A core outside the built range reads 0, so a caller may
-                                 //   sweep a fixed width. EVERY service counts here, a
-                                 //   cross-core wake included, so the low field is an upper
-                                 //   bound on the pokes answered
+    KOS_AMP_OP_APP_ALIVE = 15,   // (node) -> the port the partition names `node` biased by
+                                 //   one, where that node's APP has declared itself running,
+                                 //   and 0 where it has not. THE ONE READING A NODE THIS
+                                 //   PARTITION NEVER CALLS CAN BE WITNESSED BY: every counter
+                                 //   above needs a crossing. Read as the counter family is,
+                                 //   and a node outside the built range answers 0
+    KOS_AMP_OP_APP_ALIVE_SET = 16 // (port) -> declare the CALLING node's app running. Root
+                                 //   only, and it writes THIS node's own row alone: the node
+                                 //   is derived and is never a parameter, so no caller can
+                                 //   speak for a peer. `port` is a CLAIM checked against the
+                                 //   kernel's own copy of the partition list and refused with
+                                 //   -KOS_EINVAL where it is not the first port that list
+                                 //   names this node, so what reaches the shared region is the
+                                 //   kernel's derivation and never the caller's word.
+                                 //   Answers 0
 };
 
 /* Slots in ONE ring of an ordered pair. The reply-record band the thread pool reserves is sized
@@ -468,7 +515,7 @@ enum
     KOS_AMP_PORT_REPLY = 1 /* a reply, routed to whatever local caller its tag names */
 };
 
-/* KOS_ASPACE_OP_AMP_FORGE: which malformation to write, and what the validation answers with.
+/* KOS_AMP_OP_FORGE: which malformation to write, and what the validation answers with.
    A selector this build does not know reads back KOS_AMP_V_EMPTY. */
 enum
 {
@@ -478,7 +525,8 @@ enum
     KOS_AMP_FORGE_PORT = 3,        // the far port names nothing this node minted
     KOS_AMP_FORGE_PORT_WIDE = 4,   // the far port is outside the mint's own width
     KOS_AMP_FORGE_ZERO_LEN = 5,    // a zero-length message, which is one and not an empty ring
-    KOS_AMP_FORGE_TAIL_DEPTH = 6,  // the SEND side's half: the far tail is the malformed index
+    KOS_AMP_FORGE_TAIL_DEPTH = 6,  // the SEND side's half: the tail is the malformed index,
+                                   //   forged on the ring nothing drains
     KOS_AMP_FORGE_SELF_SEND = 7,   // a send to the LOCAL node, whose ring nothing drains
     KOS_AMP_FORGE_DEPTH_RESET = 8, // a depth left standing, then a well-formed publication:
                                    // the answer is whether the ring recovered

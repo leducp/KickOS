@@ -534,6 +534,9 @@ namespace kickos
     // changes hands: re-arming would erase the record of an overflow that had already happened.
     void kstack_arm(int index);
     bool kstack_canary_intact(int index);
+    // Bytes above the canary written since the arm. A measurement over what actually ran,
+    // never a bound on what could.
+    size_t kstack_high_water(int index);
 #endif
 
     struct ThreadPool

@@ -79,6 +79,7 @@ SYSCALL_NAME = {
     58: "nest_witness", 59: "aspace_probe", 60: "frame_map",
     61: "frame_unmap", 62: "amp_endpoint_create",
     63: "thread_set_affinity", 64: "task_sched_grant", 65: "sched_probe",
+    66: "amp_probe", 67: "doorbell_probe",
 }
 
 TRACE_MAGIC = 0x4B545243

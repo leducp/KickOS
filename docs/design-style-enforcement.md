@@ -2,7 +2,8 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Style enforcement across code, docs and build files
 
-> **Status: ACTIVE** -- because the M4.5.9 item asking for this pass is open and the mechanism is proposed for build.
+> **Status: EXPLORATORY** -- proposed, not built: nothing in the tree implements the mechanism,
+> and the M4.5.9 item asking for the pass is open.
 
 ## 1. The problem
 
@@ -100,7 +101,7 @@ authored file never gets one.
 
 All of bucket 3, unmechanised. Three things carry it: sweep-on-touch, the per-milestone review, and the
 standing rule that a comment which is an invariant's only guard is a **missing gate** -- write the test
-and the judgment call becomes a bucket-1 fact elsewhere (`virt.ld` is the model). Bucket 2 is human too
+and the judgment call becomes a bucket-1 fact elsewhere (`virt_rv32.ld` is the model). Bucket 2 is human too
 in the sense that matters: advisory output, never a red build.
 
 ## 6. Budget and false-positive policy

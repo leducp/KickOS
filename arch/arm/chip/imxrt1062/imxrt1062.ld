@@ -32,7 +32,7 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);   /* initial MSP: top of OCRAM2 */
 _kernel_stack_size = 8K;               /* boot/handler (MSP) stack */
 
-/* App-owned globals get their own MPU region (M2, KICKOS_HAVE_MPU). The ARMv7-M
+/* App-owned globals get their own MPU region (KICKOS_HAVE_MPU). The ARMv7-M
    PMSA needs a power-of-two region, base ALIGNED to its size (the encoder validates
    pow2 SIZE only; hardware snaps a mis-aligned base DOWN and would grant kernel RAM),
    so _appdata_size must be pow2 AND .appdata is ALIGN(_appdata_size) below. Inert at

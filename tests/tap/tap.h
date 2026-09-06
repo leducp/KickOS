@@ -63,6 +63,9 @@ namespace tap
 
 // Assert `cond`; on failure record "<file>:<line>: <expr>" and RETURN from the current test,
 // which the harness marks "not ok". Only valid inside a registered test function (void).
+//
+// The return is from the middle of the arm: an arm holding anything out of a shared pool must
+// release it on that path too.
 #define TAP_CHECK(cond)                                          \
     do                                                           \
     {                                                            \

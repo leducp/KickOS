@@ -37,6 +37,7 @@ set(KICKOS_SEAM_DEFAULTS_COMMON
   common/arch_diag_led_init_default.cc
   common/arch_diag_led_set_default.cc
   common/arch_irq_line_core_default.cc
+  common/arch_irq_line_kernel_owned_default.cc
   common/arch_fault_is_user_thread_default.cc
   common/arch_fault_redirect_to_exit_default.cc
   common/arch_periph_clock_hz_default.cc
@@ -236,6 +237,11 @@ elseif(KICKOS_ARCH STREQUAL "armv8a")
       "KICKOS_ARM64_GIC_VERSION is '${KICKOS_ARM64_GIC_VERSION}'; this arch implements "
       "2 and 3. The board states it through the Kconfig choice ARM64_GIC_V2 / ARM64_GIC_V3.")
   endif()
+  # The GIC backend is the backend for arch_irq_line_kernel_owned (the doorbell's SGI), so
+  # that fallback leaves the list: a fallback beside a backend in ONE archive resolves by
+  # member order.
+  set(_armv8a_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
+  list(REMOVE_ITEM _armv8a_defaults common/arch_irq_line_kernel_owned_default.cc)
   add_library(kickos_arch_armv8a STATIC
     arm64/armv8a/arch_armv8a.cc
     arm64/armv8a/aspace_armv8a.cc
@@ -251,7 +257,7 @@ elseif(KICKOS_ARCH STREQUAL "armv8a")
     ${_kos_gic_src}
     common/arch_ram_common.cc
     common/startup_ranges.cc
-    ${KICKOS_SEAM_DEFAULTS_COMMON})
+    ${_armv8a_defaults})
   kickos_apply_freestanding(kickos_arch_armv8a)
   target_include_directories(kickos_arch_armv8a PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
@@ -664,6 +670,11 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
         -DKICKOS_AMP_SHARED_SIZE=${KICKOS_AMP_SHARED_SIZE}
         -DKICKOS_AMP_NODES=${KICKOS_AMP_NODES}
         -DKICKOS_AMP_NODE_ID=${KICKOS_AMP_NODE_ID})
+      # The second span, for a part whose text does not live where its data does. Zero on
+      # every part that partitions one aperture, and its script never reads them.
+      list(APPEND _ld_defs
+        -DKICKOS_AMP_TEXT_BASE=${KICKOS_AMP_TEXT_BASE}
+        -DKICKOS_AMP_TEXT_SHARE=${KICKOS_AMP_TEXT_SHARE})
     endif()
     # KICKOS_TLS_FIT_ASSERT needs the knob, the stride and the arch's ABI bias. The bias is
     # scraped from the arch's context.h, the header the compiler reads being what owns it.

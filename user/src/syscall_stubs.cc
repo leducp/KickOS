@@ -401,6 +401,18 @@ uintptr_t kos_aspace_probe(uintptr_t op, uintptr_t a1)
 {
     return arch_syscall(KOS_SYS_ASPACE_PROBE, op, a1, 0, 0);
 }
+
+uintptr_t kos_amp_probe(uintptr_t op, uintptr_t a1)
+{
+    return arch_syscall(KOS_SYS_AMP_PROBE, op, a1, 0, 0);
+}
+
+// arch_syscall64 and not arch_syscall: KOS_DOORBELL_OP_COUNTS answers two 32-bit fields in one
+// word, and the register-width return drops the high one on a 32-bit target.
+uint64_t kos_doorbell_probe(uintptr_t op, uintptr_t a1)
+{
+    return arch_syscall64(KOS_SYS_DOORBELL_PROBE, op, a1, 0, 0);
+}
 #endif
 
 int kos_irq_attach(int irq, kos_cap_t sem_cap)

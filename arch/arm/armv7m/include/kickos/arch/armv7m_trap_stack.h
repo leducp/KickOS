@@ -173,8 +173,16 @@
  * reaches out-of-tree consumers through kickos_core's INTERFACE definitions, so with
  * -Wundef -Werror an image that lost it fails to build; a fallback would silently reserve the
  * smaller figure. */
+/* 1216 is a third posture and not a third board: a node of a partition compiles the window's
+ * self-test scaffolding, and one of its selectors drives the doorbell's REAL service body from
+ * inside the dispatch, so amp_probe reaches forge_reply_depth_recovery, node_service and
+ * endpoint_far_call_deliver on the caller's kernel block. Off that posture the same three are
+ * reached from the doorbell interrupt alone, a different root with no SVCK descent. Measured
+ * at pizero2350-amp2-n0 and -n1, both 1216, the only armv7m presets that are nodes. */
 #if KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 1240
+#elif KICKOS_AMP_NODE && defined(KICKOS_ENABLE_SELFTEST)
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 1216
 #else
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 768
 #endif

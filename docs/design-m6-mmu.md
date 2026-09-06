@@ -2,10 +2,10 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # M6 -- the MMU: a unicore A53 on QEMU `virt`
 
-> **Status: ACTIVE** -- the design contract for M6, written to be audited before code.
-> Section 1 is what it FREEZES, section 5 is the step plan with the expected result of each step.
-> An auditor is invited to add steps, split them, reorder them and correct the expected results;
-> the step identifiers exist so a finding can name one.
+> **Status: LANDED** -- the design contract for M6, audited before the code was written, and
+> M6.1 through M6.5 have all merged. Section 1 is what it FREEZES, section 5 is the step plan with
+> the expected result of each step and the result each one took; the step identifiers exist so a
+> finding can name one.
 
 This is the DESIGN CONTRACT for M6, not an exploration. `docs/design-mmu-era-exploration.md`
 is the exploration and stays one: it enumerates the five places the single-physical-address-space
@@ -2488,8 +2488,9 @@ Skips stay empty. The ctest total for the board went 32 to 33, the extra one bei
 `qemu_arm64_faultsurvive`: the fleet's own survive arm became available the moment the arch joined
 `KICKOS_FAULT_ISOLATION`, and registering it was a one-line board-list edit. (Both figures were
 recorded one low. Re-derived at this pass: the board reports 35, which is this line's 33 plus the
-two fleet-wide `host` gates registered since T8, `shell_special_names` at M6.3 and `entry_sigdiff`
-at X8. No board-specific arm was added in between, so the dated 33 still reads against 35.)
+two fleet-wide `host` gates registered since T8, `shell_special_names` at M6.3 and the entry seam
+differ at X8. No board-specific arm was added in between, so the dated 33 read against that 35. The
+differ was retired afterwards, so a re-derivation today answers one below it.)
 
 **No arm moved from partial to full, so enforcement is not what this stage bought** -- the split
 already held at T5, and T8 only witnessed it. What it bought instead shows up as a CHANGE OF
@@ -3815,7 +3816,7 @@ permissions key on.
 
     **RESULT. TAKEN, and the board carries 47 of 47 with the selftest at 132 of 132**, 0 skipped
     and the one declared partial (`periph_reg_write_unheld`) unchanged. The 47th is the new arm.
-    `check_aspace_sigdiff.sh` is untouched by this step and still reports DIFF with exit 2 over
+    The aspace seam differ was untouched by this step and still reported DIFF with exit 2 over
     one added record, 36 candidate against 35 baseline: nothing here reaches the seam.
 
     **ONE MORE LEVEL AND NO FINER GRANULE, AND THE BOUNDARY WAS ALREADY DRAWN.** The kernel
@@ -4064,8 +4065,8 @@ as the silicon witness accepts Sv39 alone.
 **RESULT. TAKEN, and BOTH postures are 48 of 48 with the selftest at 132 of 132**, 0 skipped and the
 one declared partial (`periph_reg_write_unheld`) unchanged, out of ONE tree with no source edit
 between them: `boards/qemu-riscv64/configs/{base,sv48}/defconfig` and a preset each.
-`check_aspace_sigdiff.sh` is untouched by this step and still reports DIFF with exit 2 over one added
-record, 36 candidate against 35 baseline, `arch.h` unmodified. `qemu-arm64` 33 of 33, `qemu` 58 of 58,
+The aspace seam differ was untouched by this step and still reported DIFF with exit 2 over one
+added record, 36 candidate against 35 baseline, `arch.h` unmodified. `qemu-arm64` 33 of 33, `qemu` 58 of 58,
 `qemu-riscv` 49 of 49 and `sim` 48 of 48, which the span arm below is why they were re-run.
 
 **THE SELECTOR IS A KCONFIG CHOICE, AND THE ARGUMENT FOR IT IS THE PRE-AUDIT'S OWN.** A constant is
@@ -4256,8 +4257,8 @@ as a MACHINE one.** Both postures carry 48 of 48 with the selftest at 132 of 132
 one declared partial (`periph_reg_write_unheld`) unchanged, out of one tree with no source edit
 between them; the model line reads `granules 0x1, 16 ASID bits, 56 PA bits, verdict 0x7` on both.
 `qemu-arm64` is 33 of 33, `qemu` 58 of 58, `qemu-riscv` 49 of 49 and `sim` 48 of 48.
-`check_aspace_sigdiff.sh` is untouched by this step and still reports DIFF with exit 2 over one added
-record, 36 candidate against 35 baseline, `arch.h` unmodified.
+The aspace seam differ was untouched by this step and still reported DIFF with exit 2 over one
+added record, 36 candidate against 35 baseline, `arch.h` unmodified.
 
 **THE THREE THINGS THE PRE-AUDIT SAID HAD LANDED WERE RE-READ AND ALL THREE HOLD.** The portable
 arm asserts `pa != 0 and grans != 0` and DIAGNOSES the identifier width beside them, so the vacuity
@@ -5048,8 +5049,9 @@ words, so nothing here is being disclosed late.
   exactly two ranges and leaves every other entry as firmware left it. x86 ANDs the permission down
   the whole walk (Intel SDM Vol 3 chapter 5), so an entry ungranted at any level is ungranted at its
   leaf, and that keeps DEVICE REGISTERS out of an unprivileged thread's reach: MEASURED, over a walk
-  of the whole live hierarchy, zero reachable leaves in the local APIC band and zero in the low
-  legacy range, with the same figures under `-bios` and under `-cpu max`. It also cannot execute a
+  of the whole live hierarchy, zero reachable leaves in the local APIC band, zero in the low
+  legacy range and zero outside the image and the arena, with the same figures under `-bios` and
+  under `-cpu max`. It also cannot execute a
   privileged instruction, touch a port or raise its own level, and it cannot write
   `IA32_KERNEL_GS_BASE`, which is where the entry takes its pointer from. X4's two denial arms and
   the swap invariant are what hold the last of those.
@@ -5075,7 +5077,8 @@ words, so nothing here is being disclosed late.
   grant WALKED, three of them against every table in the live tree, and it ran inside `ring3_init`, BEFORE
   `aspace_init` installs the table it would have found. Two blindnesses, either of them sufficient.
   The whole-hierarchy census in `arch/x86/x86_64/probe4_x86_64.cc` runs after `aspace_init` and
-  asserts the device clause while PINNING the two exposed pages by role, so a third reachable table
+  asserts all three clauses, the APIC band, the low legacy range and outside the image and the
+  arena, while PINNING the two exposed pages by role, so a third reachable table
   or an anchor that is not the per-core block reddens an arm and is named on its own line.
 - **WHY ONE FLAT LINK DECIDES IT.** At the granularity of the adopted regime the user bit follows
   the ADDRESS, so what ring 0 may touch and what ring 3 may touch can only be separated by
@@ -5709,7 +5712,7 @@ this branch (`git log --oneline` shows one linear stack, `480767f1 R2.2` below t
 "declared in the backend's own header" was wrong too. What follows from the corrected pair is the
 opposite reading of the instrument: the aspace seam differ run from THIS tree
 reported DIFF and exited 2, 36 candidate records against 35 baseline, the one added record being
-`FUNC arch_aspace_frame_at`. That exit 2 IS the result and the baseline does not move. This tree
+`FUNC arch_aspace_frame_at`. That exit 2 WAS the result and the baseline did not move. This tree
 holds both halves, so the figure it prints is the UNION's and it is M6.3's verdict arriving
 unchanged, not a contribution from this backend.
 
@@ -5990,8 +5993,8 @@ gives each backend one half of the seam to falsify: RV64 takes the ASPACE family
 the ENTRY AND BOOT paths, "a different seam from the one above". The aspace verdict is therefore
 M6.3's, it is already taken, and it is not empty: exactly one added member, `arch_aspace_frame_at`,
 forced by a windowed backend, which X5 measured fitting x86_64 with no signature change of its own.
-Running the aspace differ here and calling its answer this backend's verdict would report on a family
-this port contributed nothing to. So X6's subject is the entry and boot paths, and the expected
+Running the aspace differ here and calling its answer this backend's verdict would have reported on
+a family this port contributed nothing to. So X6's subject is the entry and boot paths, and the expected
 result above is corrected to that.
 
 *Landed at X6.* The entry seam differ with
@@ -6315,7 +6318,7 @@ ten was visible from the suite, and two of them were live wedges.
 *The other eight.*
 
 - **X6's OWN INSTRUMENT LOST ITS DISTINGUISHING FEATURE UNDER bash AND STILL EXITED PASS.** The group
-  table in `check_entry_sigdiff.sh` was held in a variable named `GROUPS`, which is a bash SPECIAL
+  table in the entry seam differ was held in a variable named `GROUPS`, which is a bash SPECIAL
   holding the caller's group ids: an assignment to it does not take, so under bash the table expanded
   to the single number `1000`, every per-group floor went empty, two integer comparisons errored into
   `/dev/null`'s neighbour and the script printed one bogus `group 1000 54/54 (floor )` line and
@@ -6326,14 +6329,14 @@ ten was visible from the suite, and two of them were live wedges.
   the text fails loudly. Verified under both shells with identical output, and mutation-tested: a copy
   with the variable renamed back to `GROUPS` passes under dash and fails under bash with
   `group table row "1000" is not <name> <name-regex> <floor>`.
-- **AND IT IS NOW REGISTERED, unlike its aspace sibling, because the two expect opposite outcomes.**
-  R5 deliberately left `check_aspace_sigdiff.sh` off the ladder: its job is to REPORT a diff for a
+- **AND IT WAS REGISTERED, unlike its aspace sibling, because the two expected opposite outcomes.**
+  R5 deliberately left the aspace seam differ off the ladder: its job was to REPORT a diff for a
   milestone that was changing the seam, so its exit 2 would have failed the ladder that reads the
-  report. This one asserts the entry seam did NOT move under a second backend, so PASS is its
-  expected verdict and a diff is a regression that must not land quietly. It reads the tree through
-  git, opens no build directory, and takes about a second, so it registers as a `host` gate on every
-  board. What retires it is a milestone that deliberately changes the entry seam, which has to move
-  the baseline ref anyway.
+  report. This one asserted the entry seam did NOT move under a second backend, so PASS was its
+  expected verdict and a diff a regression that must not land quietly. It read the tree through git,
+  opened no build directory and took about a second, so it registered as a `host` gate on every
+  board. What would have retired it was a milestone deliberately changing the entry seam, which
+  has to move the baseline ref anyway.
 - **THE TEN FAULT-CLASS IMAGES COULD SHIP STALE, which is the milestone's own documented hazard
   recurring in the one place it was not applied.** `cmake/x86_64_boot.cmake`'s per-class `DEPENDS`
   omitted `kickos_x86_64_nokernel`, which is on both that command's no-GOT line and its `ld` line,
@@ -6409,8 +6412,8 @@ ten was visible from the suite, and two of them were live wedges.
   RAM is writable, writing a table or `kernel_sp` grants nothing the scheduler state and the
   capability table in the same leaf did not already grant. What was wrong is two bounds that made
   the exposure describable. The instrument is `arch/x86/x86_64/probe4_x86_64.cc`'s whole-hierarchy
-  census, which runs after `aspace_init`, asserts the device clause and PINS the two exposed pages
-  by role.
+  census, which runs after `aspace_init`, asserts all three clauses, the APIC band, the low legacy
+  range and outside the image and the arena, and PINS the two exposed pages by role.
 - **THE KERNEL RAN FOREVER ON THE FIRMWARE'S STACK, and it now runs on its own.** Live RSP was inside
   `EfiBootServicesData`, exactly the 128 KiB UEFI 2.11 sets as the minimum, with type-7 Conventional
   memory directly below it. `landed_kernel_x86_64.cc` now switches to a 128 KiB `alignas(16)` array
@@ -6599,11 +6602,11 @@ that clause overstates by one.
 
 **C0. The baseline, before the first object kind. LANDED.** F8's verdict is a diff against a frozen
 API and 3.4b requires the API to exist before the falsifier starts; C1's expected result is a diff
-too, and it had nothing to diff against. The capability ABI differ declares the capability
-ABI family over `user/include/kickos/sys/abi.h` and `system/include/kickos/sys/cap_index.h`, and
-its frozen records hold it. Unlike the aspace differ it is ON the ctest ladder,
-because its expected verdict is PASS for the whole milestone: where the aspace differ reports a diff
-for a seam that was moving, this one asserts the capability ABI did not gain an addressing concept.
+too, and it had nothing to diff against. The capability ABI differ declared the capability
+ABI family over `user/include/kickos/sys/abi.h` and `system/include/kickos/sys/cap_index.h`, and its
+frozen records held it. Unlike the aspace differ it was ON the ctest ladder, because its expected
+verdict was PASS for the whole milestone: where the aspace differ reported a diff for a seam that was
+moving, this one asserted the capability ABI did not gain an addressing concept.
 *Expected, and observed at C0:* PASS, 22 records.
 
 Four findings, each of which the steps below cite rather than rediscover.

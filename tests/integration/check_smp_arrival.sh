@@ -86,6 +86,7 @@ esac
 for _m in "$BAD_ENTRY" "$BAD_EXTRA" "$SHORT_MARK" "$BANNER_HEAD" "$BANNER_TAIL"; do
     require_literal "$_m" "a release marker"
 done
+literal_matcher_control
 
 # The image's exit status on kfault_terminate (arch/common/fatal_status.ld.h). A literal, so
 # this gate asserts the number rather than restating whatever the tree computes.

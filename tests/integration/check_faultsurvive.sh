@@ -101,6 +101,11 @@ else
     run_image "$elf"
 fi
 
+# assert_no_panic ON THE survive ARM IS PAIRED WITH THE EXIT STATUS BELOW: a panic after the
+# survivor line leaves every clause here standing, and only the required clean exit 0 breaks.
+# Under FS_CAPTURE there is no status and that pairing is gone, which the capture path says.
+# Every other arm's absence clause runs on a one-core posture only, where the wire has one
+# writer and a grep for an absent literal means what it says.
 if has "\[fs\] ERROR"; then
     fail "the app reported its own failure"
 fi

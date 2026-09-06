@@ -75,6 +75,16 @@ iso_arg="${6:-0}"
 
 require_number "$want" "the expected core count"
 require_literal "$live" "the liveness pattern"
+# ABOVE ONE CORE THE APP'S OWN FIRST LINE CAN ARRIVE SPLIT, so the liveness pattern is needed as
+# a LITERAL too: a bounded subsequence match is defined over one, and the poll keeps the ERE. An
+# optional leading `^` is the anchor; anything else an ERE gives meaning to is refused rather
+# than matched as text.
+live_literal="${live#^}"
+require_literal "$live_literal" "the liveness literal"
+if printf '%s' "$live_literal" | grep -q '[][\\.*+?(){}|$^]'; then
+    fail "the liveness pattern [$live] carries an ERE metacharacter past its leading anchor, so
+  it cannot double as the literal a split is tolerated against"
+fi
 if [ "$want" -le 1 ]; then
     fail "expected core count is $want. At one core there is one vCPU index to find and the
   oracle is satisfied by any image at all, so this gate belongs only on a preset whose core
@@ -222,6 +232,7 @@ RUNNABLE="stress: runnable "
 for _m in "$SCHED_HEAD" "$SCHED_TAIL" "$PEER_STUCK" "$NO_SPREAD" "$RUNNABLE" "$STUB_SYM" "$CHAN_ITEMS"; do
     require_literal "$_m" "a gate marker"
 done
+literal_matcher_control
 
 # CAN THIS EMULATOR REPORT THE ORACLE AT ALL. Asked of the binary: an absent facility would
 # otherwise read as a core that ran no thread, which is the finding this gate exists to make.
@@ -420,7 +431,11 @@ fi
 QEMU_EXTRA="${QEMU_EXTRA:-} -d exec,nochain,$CHAN_ITEMS"
 QEMU_EXTRA="$QEMU_EXTRA -dfilter 0x$stub_hex+$STUB_WINDOW -D $LOG"
 KOS_POLL_UNTIL=kos_spread_seen
-poll_image "$elf" "$live"
+# THE SOAK'S OWN REPORT IS A STOP CONDITION AND NOT ONLY AN ASSERTION. The app's budget probe
+# creates and destroys threads before it sizes the soak, and those threads make syscalls on
+# peer cores, so both channels can be complete while the workload this gate rests on has not
+# started: the run is then stopped before the app has said how large that workload is.
+poll_image "$elf" "$live" "^${RUNNABLE}[0-9]"
 
 # HOW THE SAMPLING ENDED, for the refusals below. A bound that ran out and an image that
 # stopped before the channels were complete are different findings, and reporting either as the
@@ -455,6 +470,16 @@ fi
 runnable="$(printf '%s\n' "$OUT" \
     | sed -n "s/^${RUNNABLE}\([0-9][0-9]*\).*$/\1/p" | tail -n 1)"
 if [ -z "$runnable" ]; then
+    # THE ONE READ IN THIS GATE A SPLIT CANNOT BE TOLERATED FOR, because the assertion needs the
+    # VALUE. A bounded subsequence match answers whether a literal reached the wire and never
+    # which number it carried, `stress: runnable 1` being a subsequence of `stress: runnable 12`,
+    # so a recovered count would be a guess. The two cases are told apart and both refuse.
+    if [ "$(wire_cores)" -gt 1 ] && wire_has "$RUNNABLE"; then
+        fail "the image's '${RUNNABLE}<n>' line reached the wire across $WIRE_SPAN bytes with a
+  kernel status line broken into it, so the realized soak size is UNREADABLE rather than absent.
+  This gate rests on the app holding more runnable threads than the machine has cores, and that
+  count cannot be recovered from a shuffled line"
+    fi
     fail "the image printed no '${RUNNABLE}<n>' line, so the realized soak size is UNKNOWN
   rather than sufficient. This gate rests on the app holding more runnable threads than the
   machine has cores, and nothing here can check that without the app saying so"
@@ -570,15 +595,21 @@ if [ "$POLL_UNTIL_OK" -ne 1 ]; then
 fi
 
 # --- The image's own line, as a cross-check and never as the verdict ----------
+# A REPEAT IS STILL A REPEAT, and only the ABSENCE is a reading a split can explain: this line
+# lands while peers already run threads, which is exactly when the unlocked console has no
+# per-line atomicity, so a byte-exact count of it fails on a wire doing what it is allowed to do.
 count_literal "$SCHED_HEAD$want$SCHED_TAIL"
-if [ "$KOS_COUNT" -ne 1 ]; then
+if [ "$KOS_COUNT" -gt 1 ]; then
     printf '%s\n' "$OUT" | grep -F -e "$SCHED_HEAD"
-    fail "the image does not report $want core(s) in the scheduler exactly once. The oracle
-  above says threads ran on every core, so the two channels disagree and one of them is wrong"
+    fail "the image reports $want core(s) in the scheduler $KOS_COUNT times, so it reached its
+  scheduler announcement more than once"
 fi
+require_on_wire "$SCHED_HEAD$want$SCHED_TAIL" "the image does not report $want core(s) in the
+  scheduler. The oracle above says threads ran on every core, so the two channels disagree and
+  one of them is wrong"
 if [ "$POLL_OK" -ne 1 ]; then
-    fail "the per-core stub executions are on the wire but /$live/ is not: the app half never
-  reached its own first line inside ${QEMU_TIMEOUT}s"
+    require_on_wire "$live_literal" "the per-core stub executions are on the wire but /$live/ is
+  not: the app half never reached its own first line inside ${QEMU_TIMEOUT}s"
 fi
 
 _pass_iso=""

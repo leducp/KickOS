@@ -10,6 +10,7 @@
 
 #include <kickos/irq_route.h>
 #include <kickos/arch/arch.h>
+#include <kickos/arch/doorbell_cells.h> // arch_doorbell_core: which matrix row this core writes
 #include <kickos/aspace.h>
 #include <kickos/bench.h>
 #include <kickos/cap.h>
@@ -742,6 +743,54 @@ uint64_t syscall_body(uintptr_t nr,
             // a kernel-side scenario over a space of its own, and none of them takes a
             // caller-supplied address.
             return aspace_probe(a0, a1);
+        }
+#endif
+// Neither the address-space gate nor the partition's: the matrix is indexed by MACHINE core,
+// so every posture can answer. Where the doorbell folds out of the image the counters read a
+// real zero.
+#if defined(KICKOS_ENABLE_SELFTEST)
+        case KOS_SYS_DOORBELL_PROBE:
+        {
+            // Pure reads, so not privilege-gated.
+            switch (static_cast<kos_doorbell_op>(a0))
+            {
+                case KOS_DOORBELL_OP_COUNTS:
+                {
+                    return arch_ipi_counts(static_cast<uint32_t>(a1));
+                }
+                case KOS_DOORBELL_OP_WIDTH:
+                {
+                    return static_cast<uint64_t>(KICKOS_DOORBELL_CORES);
+                }
+                case KOS_DOORBELL_OP_SELF:
+                {
+                    return static_cast<uint64_t>(arch_doorbell_core());
+                }
+                case KOS_DOORBELL_OP_KERNEL_LINE:
+                {
+                    for (uintptr_t line = a1; line < static_cast<uintptr_t>(KICKOS_MAX_IRQ); line++)
+                    {
+                        if (arch_irq_line_kernel_owned(static_cast<int>(line)))
+                        {
+                            return static_cast<uint64_t>(line);
+                        }
+                    }
+                    return static_cast<uint64_t>(static_cast<int64_t>(-1));
+                }
+                default:
+                {
+                    break;
+                }
+            }
+            return static_cast<uint64_t>(-KOS_EINVAL);
+        }
+#endif
+#if KICKOS_AMP_NODE && defined(KICKOS_ENABLE_SELFTEST)
+        case KOS_SYS_AMP_PROBE:
+        {
+            // Not privilege-gated as a whole: the ops that forge a publication carry their
+            // own root-task gate, and the rest are counter reads.
+            return amp_probe(a0, a1);
         }
 #endif
 #if KICKOS_HAVE_MPU

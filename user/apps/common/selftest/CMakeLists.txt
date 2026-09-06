@@ -153,10 +153,26 @@ endif()
 # tests/integration/check_amp_peer_arms.sh asserts they are NOT skipped there. Under one image
 # the peers are this image's own cores and always answer.
 #
-# amp_far_reply_guard is node 0's alone: it parks a caller on a far port nobody answers, and a
-# partition of two leaves exactly one such port over, node 1 binding every port it is named.
+# amp_far_reply_guard parks a caller on a far port nobody answers, which is a port the partition
+# names a node MORE THAN ONCE: the node's kernel binds every port it is named and its app
+# receives on the first alone. That spare is a far entry for every other node, and a far entry
+# this node binds itself is not one it can park on, so the arm is reachable on every node but
+# the one holding the spare, at any width.
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_reply_guard)
+endif()
+
+# amp_deferred_doorbell needs a raise that can be WITHHELD, so it needs a doorbell that keeps a
+# per-core seat. The RP2350's raise is one write to SIO DOORBELL_OUT_SET naming the other core
+# of the pair, addressing it from reset with no publication behind it, so arch_ipi_seat_set
+# answers ARCH_IPI_SEAT_NONE, the probe refuses the scenario ahead of the publication and the
+# arm skips itself by name.
+#
+# NAMED BY CHIP because the seat is the chip backend's. This permission covers exactly the
+# parts whose backend answers ARCH_IPI_SEAT_NONE; a part whose doorbell does keep a seat runs
+# the arm and must not be added here, or the permission stops being evidence.
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_CHIP STREQUAL "rp2350")
+  list(APPEND KICKOS_EXPECT_SKIPS amp_deferred_doorbell)
 endif()
 
 # The same for the arms that report PARTIAL. A PARTIAL reports `ok`, so neither the plan/case
@@ -193,6 +209,16 @@ endif()
 if(KICKOS_CAP_TABLE_SUPPLY LESS_EQUAL KICKOS_CAP_CHUNK_TARGET)
   list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span cap_child_width)
 endif()
+# It also needs a free slot BELOW the granule, and root's own creates start above everything
+# seated at init: the reserved indices, one capability per partition crossing, and the two
+# main() holds for the run. Widening the table does not take that back, the width sum adding
+# slots at the top.
+set(_selftest_lifetime_caps 2) # g_lock and g_done, created in main() and never closed
+math(EXPR _selftest_cap_seated
+     "${KICKOS_CAP_FIRST_DYNAMIC} + ${KICKOS_AMP_PORT_COUNT} + ${_selftest_lifetime_caps}")
+if(NOT _selftest_cap_seated LESS KICKOS_CAP_CHUNK_TARGET)
+  list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span)
+endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   # The reserved-overlap matrix needs at least one arch_reserved_blocks entry, which the
   # qemu-riscv PMP port has and the host and mps2 parts do not.
@@ -225,7 +251,7 @@ set(_tap_arms 86) # unconditional, incl. readable_global, endpoint_send_timeout,
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
   math(EXPR _tap_arms "${_tap_arms} + 1") # call_reg_fastpath (region 2)
-  math(EXPR _tap_arms "${_tap_arms} + 2") # prio_ceiling_refused, prio_ceiling_narrow_only
+  math(EXPR _tap_arms "${_tap_arms} + 4") # doorbell_xpoke, irq_kernel_line_reserved, prio_ceiling_refused, prio_ceiling_narrow_only
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 3") # endpoint_bound, grant_reserved, dev_window_exclusive
@@ -243,7 +269,7 @@ if(KICKOS_ARCH STREQUAL "sim")
   math(EXPR _tap_arms "${_tap_arms} + 1") # periph_reg_write_mask
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms "${_tap_arms} + 45") # cap_objects, cap_map, cap_map_over_stack, stack_grant_refused, stack_guard_intact, stack_handoff_refused, stack_slot_returns, cap_map_pins_run, cap_share, aspace_seam, aspace_model, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_acquire_dup, aspace_balance, aspace_domain_balance, aspace_forced_unwind, aspace_churn, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, task_handoff_donor_exits, task_handoff_slice, self_grant_cross_task, reservation_teardown, frame_scrub_cross_task, 2 x spawn_refusal_frees_*, parked_frame_hostile, split_access, process_ipc_same_addr, process_call_reply, grant_kernel_word_refused, self_grant_retype, reent_seating, aspace_acquire_balance, map_tlbi_elided, aspace_active_cores, doorbell_xpoke, process_data_template
+  math(EXPR _tap_arms "${_tap_arms} + 44") # cap_objects, cap_map, cap_map_over_stack, stack_grant_refused, stack_guard_intact, stack_handoff_refused, stack_slot_returns, cap_map_pins_run, cap_share, aspace_seam, aspace_model, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_acquire_dup, aspace_balance, aspace_domain_balance, aspace_forced_unwind, aspace_churn, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, task_handoff_donor_exits, task_handoff_slice, self_grant_cross_task, reservation_teardown, frame_scrub_cross_task, 2 x spawn_refusal_frees_*, parked_frame_hostile, split_access, process_ipc_same_addr, process_call_reply, grant_kernel_word_refused, self_grant_retype, reent_seating, aspace_acquire_balance, map_tlbi_elided, aspace_active_cores, process_data_template
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms "${_tap_arms} + 1") # fault_kills_task
@@ -253,7 +279,7 @@ endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   # amp_far_call and amp_far_reply_guard are in this count on every posture: they skip by name
   # where no peer answers rather than being compiled out.
-  math(EXPR _tap_arms "${_tap_arms} + 14") # amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_service, amp_deferred_doorbell, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_probe_root_only, amp_far_slot_reuse
+  math(EXPR _tap_arms "${_tap_arms} + 15") # amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_service, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_probe_root_only, amp_far_slot_reuse
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _tap_arms "${_tap_arms} + 21") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core
@@ -279,7 +305,7 @@ endif()
 set(_tap_arms_p3 26) # region 3, unconditional, incl. console_publish_priv, shutdown_priv, writable_global, readable_global, authority_cap, periph_enable_unheld, periph_reg_write_unheld, privileged_spawn_refused, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*, caller_stack, mem_self_grant_nonpow2, domain_share, mmio_grant, confused_deputy, mem_self_grant
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 12") # reboot_priv, 11 x irq_*
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 2") # prio_ceiling_refused, prio_ceiling_narrow_only
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 4") # doorbell_xpoke, irq_kernel_line_reserved, prio_ceiling_refused, prio_ceiling_narrow_only
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 2") # grant_reserved, dev_window_exclusive
@@ -297,13 +323,13 @@ if(NOT KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # region_mode
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 45") # cap_objects + cap_map + cap_map_over_stack + 3 x stack_* refusals + stack_slot_returns + cap_map_pins_run + cap_share + 14 x aspace_* + stack_is_frames + process_private_data + process_data_template + task_siblings_share + task_handoff_readback + task_handoff_donor_exits + task_handoff_slice + self_grant_cross_task + self_grant_retype + reservation_teardown + frame_scrub_cross_task + 2 x spawn_refusal_frees_* + parked_frame_hostile + split_access + process_ipc_same_addr + process_call_reply + grant_kernel_word_refused + reent_seating + map_tlbi_elided + aspace_active_cores + doorbell_xpoke
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 44") # cap_objects + cap_map + cap_map_over_stack + 3 x stack_* refusals + stack_slot_returns + cap_map_pins_run + cap_share + 14 x aspace_* + stack_is_frames + process_private_data + process_data_template + task_siblings_share + task_handoff_readback + task_handoff_donor_exits + task_handoff_slice + self_grant_cross_task + self_grant_retype + reservation_teardown + frame_scrub_cross_task + 2 x spawn_refusal_frees_* + parked_frame_hostile + split_access + process_ipc_same_addr + process_call_reply + grant_kernel_word_refused + reent_seating + map_tlbi_elided + aspace_active_cores
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # fault_kills_task
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 14") # amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_service, amp_deferred_doorbell, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_probe_root_only, amp_far_slot_reuse
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 15") # amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_service, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_probe_root_only, amp_far_slot_reuse
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 21") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core

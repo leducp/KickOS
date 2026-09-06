@@ -331,6 +331,15 @@ SECTIONS
         __kickos_amp_counts_start = .;
         KEEP(*(.amp_shared.counts))
         __kickos_amp_counts_end = .;
+        /* A chip backend's own partition-wide publication. This chip makes none, so the
+           input section is empty here and carries no non-empty assert; rp2350.ld places its
+           clock figure and console-claim owner here and asserts them. The ORDER is the
+           partition's and must stay identical either way. */
+        KEEP(*(.amp_shared.chip))
+        /* Last, and with no ALIGN ahead of it: this section is empty unless
+           KICKOS_AMP_DIAG_REPORT is on, and anywhere else it would move every object
+           below it the moment a diagnostic is turned on. */
+        KEEP(*(.amp_shared.diag))
         __kickos_amp_shared_end = .;
     } > SHARED
 #endif

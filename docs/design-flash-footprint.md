@@ -26,10 +26,10 @@ direction.
 ## R3. The 64-bit division helper, 800 bytes. OPEN
 
 `libgcc.a(_udivmoddi4.o)` is the only toolchain passenger on the freestanding leaf, 4.2 percent of
-the `bluepill-c8` `hello` image and 860 bytes on `xmc4800-relax`. Three call sites, all reached by
-disassembly: `arch_init`, `arch_timer_arm` (twice) and `emit_uint` in `libkickos_lib.a(fmt.cc.obj)`.
-Recoverable only by changing those three to 32-bit arithmetic or shifts, so it is a code change and
-not a flag. Not scheduled here.
+the `bluepill-c8` `hello` image and 860 bytes on `xmc4800-relax`. It has three call sites, named
+in `archive/M4.5_footprint_meas.md` where the disassembly that found them is, and recovering it
+means moving each to 32-bit arithmetic or shifts, so it is a code change and not a flag. Not
+scheduled here.
 
 ## R4. The `.userheap` carve is a policy cost, not waste
 
@@ -55,8 +55,8 @@ lines of chip driver to every value-range null-page diagnostic. The pragma cover
 function bodies (the `-Warray-bounds` push/pop around `r8`/`r16` in
 `arch/arm/chip/rp2040/chip_rp2040.cc` and `arch/arm/chip/rp2350/chip_rp2350.cc`).
 
-Demonstrated rather than argued: a null-page dereference introduced elsewhere in the same TU is
-still caught with the pragma in place and is silently missed under the param.
+Demonstrated rather than argued, and the demonstration is in
+`archive/M4.5_footprint_meas.md`.
 
 ## LTO does not link. STANDS, no fix attempted
 

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# M4.3 per-thread stdout regression. newlib_stubs.cc (the _write under test) is
+# Per-thread stdout regression. newlib_stubs.cc (the _write under test) is
 # compiled ONLY for the cross toolchains, NOT the sim, so the sim gives zero
 # coverage. The QEMU mps2 images are the automatable armv7m gates: they run and exit,
 # and arch_shutdown forwards the exit status over semihosting. Registered for those

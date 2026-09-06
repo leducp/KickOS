@@ -72,7 +72,12 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
                 KICKOS_MAX_INSTANCES KICKOS_PANIC_DUMP KICKOS_DIAG_TERSE
                 KICKOS_AMP_NODES KICKOS_AMP_NODE_ID
                 KICKOS_AMP_PARTITION_BASE KICKOS_AMP_NODE_SHARE KICKOS_AMP_SHARED_SIZE
-                KICKOS_AMP_PARTITION_CORES KICKOS_ISOLATED_CORES)
+                KICKOS_AMP_TEXT_BASE KICKOS_AMP_TEXT_SHARE
+                KICKOS_AMP_PARTITION_CORES KICKOS_ISOLATED_CORES
+                KICKOS_AMP_DIAG_TAG)
+    # The AMP peer seed further down reads the SAME names back out of the resolved .config,
+    # so a knob added to the list above reaches a peer without a second edit.
+    list(APPEND _kcfg_int_names "${_knob}")
     if(DEFINED ${_knob})
       list(APPEND _kcfg_req "CONFIG_${_knob}=${${_knob}}")
     endif()
@@ -89,13 +94,16 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
   # overwrites.
   foreach(_str KICKOS_SERVICE_LIST KICKOS_BOARD_PINMAP KICKOS_AMP_NODE_CORES
                KICKOS_AMP_PORTS)
+    list(APPEND _kcfg_str_names "${_str}")
     if(DEFINED ${_str})
       list(APPEND _kcfg_req "CONFIG_${_str}=\"${${_str}}\"")
     endif()
   endforeach()
   foreach(_flag KICKOS_ENABLE_SELFTEST KICKOS_DEBUG KICKOS_BENCH
                 KICKOS_SHUTDOWN_TO_BOOTLOADER KICKOS_MULTI_INSTANCE KICKOS_TLS
+                KICKOS_AMP_DIAG_REPORT
                 CONFIG_SCHED_PERIODIC_TICK)
+    list(APPEND _kcfg_flag_names "${_flag}")
     if(DEFINED ${_flag})
       string(REGEX REPLACE "^CONFIG_" "" _sym "${_flag}")
       set(_val "n")
@@ -649,6 +657,12 @@ add_compile_definitions(KICKOS_ISOLATED_CORES=${KICKOS_ISOLATED_CORES})
 add_compile_definitions(KICKOS_AMP_NODE=${KICKOS_AMP_NODE})
 add_compile_definitions(KICKOS_AMP_NODES=${KICKOS_AMP_NODES})
 add_compile_definitions(KICKOS_AMP_OWN_IMAGE=${KICKOS_AMP_OWN_IMAGE})
+if(KICKOS_AMP_DIAG_REPORT)
+  add_compile_definitions(KICKOS_AMP_DIAG_REPORT=1
+                          KICKOS_AMP_DIAG_TAG=${KICKOS_AMP_DIAG_TAG})
+  message(STATUS "KickOS: AMP peer self-report ON (tag ${KICKOS_AMP_DIAG_TAG}): a peer writes "
+                 "its node index, its vector-table base and that tag into the shared region")
+endif()
 
 # --- The AMP partition's geometry -------------------------------------------------------
 # Under one image per node the region every node writes has to sit at one address two link
@@ -670,6 +684,39 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
         "three in boards/<board>/configs/<variant>/defconfig.")
     endif()
   endforeach()
+
+  # The second span is a pair or it is nothing. Half stated otherwise fails in the link, and
+  # obscurely: ld reports a FLASH overflow that names neither knob.
+  set(_amp_text_v "")
+  foreach(_geo KICKOS_AMP_TEXT_BASE KICKOS_AMP_TEXT_SHARE)
+    # Through math(), so every spelling of zero answers zero: a string test would pass 0x00.
+    set(_geo_v 0)
+    if(NOT "${${_geo}}" STREQUAL "")
+      math(EXPR _geo_v "${${_geo}}")
+    endif()
+    list(APPEND _amp_text_v "${_geo_v}")
+  endforeach()
+  list(GET _amp_text_v 0 _amp_text_base_v)
+  list(GET _amp_text_v 1 _amp_text_share_v)
+  if(_amp_text_base_v EQUAL 0 AND NOT _amp_text_share_v EQUAL 0)
+    message(FATAL_ERROR
+      "KickOS: the own-image AMP posture states KICKOS_AMP_TEXT_SHARE and no "
+      "KICKOS_AMP_TEXT_BASE. The two describe ONE aperture, the separate span a part executing "
+      "out of execute-in-place memory keeps its text in, and a node's text is linked at that "
+      "base plus its own index times that stride. A stride without a base puts every node's "
+      "text at zero. State both, or neither, in boards/<board>/configs/<variant>/defconfig: "
+      "neither means the part has one span and KICKOS_AMP_PARTITION_BASE describes all of it.")
+  endif()
+  if(_amp_text_share_v EQUAL 0 AND NOT _amp_text_base_v EQUAL 0)
+    message(FATAL_ERROR
+      "KickOS: the own-image AMP posture states KICKOS_AMP_TEXT_BASE and no "
+      "KICKOS_AMP_TEXT_SHARE. The two describe ONE aperture, the separate span a part executing "
+      "out of execute-in-place memory keeps its text in, and a node's text is linked at that "
+      "base plus its own index times that stride. A base without a stride links every node's "
+      "text at the same address and gives the region no length. State both, or neither, in "
+      "boards/<board>/configs/<variant>/defconfig: neither means the part has one span and "
+      "KICKOS_AMP_PARTITION_BASE describes all of it.")
+  endif()
 
   # amp::ring turns a node index into a doorbell target, and the two coincide only under the
   # shared-image posture, where a node's identity IS the core register. Under one image per
@@ -734,10 +781,75 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
     KICKOS_AMP_PARTITION_BASE=${KICKOS_AMP_PARTITION_BASE}
     KICKOS_AMP_NODE_SHARE=${KICKOS_AMP_NODE_SHARE}
     KICKOS_AMP_SHARED_SIZE=${KICKOS_AMP_SHARED_SIZE}
-    KICKOS_AMP_NODE_ID=${KICKOS_AMP_NODE_ID})
+    KICKOS_AMP_NODE_ID=${KICKOS_AMP_NODE_ID}
+    KICKOS_AMP_TEXT_BASE=${KICKOS_AMP_TEXT_BASE}
+    KICKOS_AMP_TEXT_SHARE=${KICKOS_AMP_TEXT_SHARE})
+  # --- What a peer node is configured from, and what proves two images agree ---------------
+  # The seed is this node's RESOLVED .config, because a knob forwarded under its Kconfig name
+  # rather than a KICKOS_ one reaches .config and no KICKOS_* cache entry. It is half of what a
+  # peer is configured from; build-partition.sh sweeps the cache beside it for the knobs that
+  # are no Kconfig symbol, and its header says why neither half covers the other.
+  #
+  # KICKOS_AMP_NODE_ID is the one symbol a node may differ in, so the seed omits it and
+  # build-partition.sh states it per node. Everything else is derived from that index, at build
+  # time or through KICKOS_AMP_NODE_CORES at run time.
+  file(STRINGS "${PROJECT_BINARY_DIR}/generated/.config" _amp_cfg_lines
+       REGEX "^CONFIG_[A-Z0-9_]+=")
+  foreach(_line IN LISTS _amp_cfg_lines)
+    string(REGEX REPLACE "^CONFIG_([A-Z0-9_]+)=.*$" "\\1" _amp_n "${_line}")
+    string(REGEX REPLACE "^CONFIG_[A-Z0-9_]+=" "" _amp_v "${_line}")
+    string(REGEX REPLACE "^\"(.*)\"$" "\\1" _amp_cfg_${_amp_n} "${_amp_v}")
+  endforeach()
+
+  # Written as an initial-cache script rather than as a list of switches, so a seeded value
+  # carrying a space or a semicolon reaches the peer whole.
+  set(_amp_seed "# Written by node ${KICKOS_AMP_NODE_ID}'s configure. Read by tools/amp/build-partition.sh.\n")
+  foreach(_amp_name IN LISTS _kcfg_int_names _kcfg_str_names
+                    ITEMS KICKOS_CONSOLE KICKOS_TELEMETRY)
+    if(_amp_name STREQUAL "KICKOS_AMP_NODE_ID")
+      continue()
+    endif()
+    if(DEFINED _amp_cfg_${_amp_name})
+      string(APPEND _amp_seed
+             "set(${_amp_name} \"${_amp_cfg_${_amp_name}}\" CACHE STRING \"\" FORCE)\n")
+    endif()
+  endforeach()
+  # Both directions: a knob resolved off must reach the peer as off, or the peer takes its
+  # Kconfig default instead.
+  foreach(_amp_name IN LISTS _kcfg_flag_names)
+    string(REGEX REPLACE "^CONFIG_" "" _amp_sym "${_amp_name}")
+    set(_amp_v "OFF")
+    if(DEFINED _amp_cfg_${_amp_sym} AND _amp_cfg_${_amp_sym} STREQUAL "y")
+      set(_amp_v "ON")
+    endif()
+    string(APPEND _amp_seed "set(${_amp_name} ${_amp_v} CACHE BOOL \"\" FORCE)\n")
+  endforeach()
+  file(WRITE "${PROJECT_BINARY_DIR}/generated/amp-peer-seed.cmake" "${_amp_seed}")
+
+  # The fingerprint the IMAGE carries, over that same resolved configuration with the one
+  # per-node symbol taken out, so a stale or foreign peer image is refused from the ARTEFACT and
+  # not from the tree that produced it. TWO absolute symbols of 32 bits: a 32-bit linker
+  # truncates one 64-bit --defsym without saying so.
+  #
+  # IT COVERS THE KCONFIG HALF ALONE, which is narrower than "two nodes agree". The hash is over
+  # .config, so two images differing only in an input that is a CMake cache entry and no Kconfig
+  # symbol carry the SAME fingerprint: KICKOS_APPDATA_SIZE=112K and =120K are indistinguishable
+  # here, and so are the toolchain and the build type. The cache half is carried by
+  # build-partition.sh instead, which configures every peer FROM node 0's own KICKOS_* cache
+  # entries and so cannot produce a peer that differs in one. Widening the hash to cover them
+  # would have to enumerate the cache at a point where the cache is complete, and this is not
+  # that point: KICKOS_INIT_PROVIDER is declared further down this file.
+  string(REGEX REPLACE "CONFIG_KICKOS_AMP_NODE_ID=[0-9]+" "" _amp_common "${_amp_cfg_lines}")
+  string(SHA256 _amp_fp "${_amp_common}")
+  string(SUBSTRING "${_amp_fp}" 0 8 _amp_fp_hi)
+  string(SUBSTRING "${_amp_fp}" 8 8 _amp_fp_lo)
+  add_link_options("LINKER:--defsym=kickos_amp_config_fp_hi=0x${_amp_fp_hi}"
+                   "LINKER:--defsym=kickos_amp_config_fp_lo=0x${_amp_fp_lo}")
+
   message(STATUS
     "KickOS: AMP node ${KICKOS_AMP_NODE_ID} of ${KICKOS_AMP_NODES} on core "
-    "${KICKOS_AMP_SELF_CORE}, map ${KICKOS_AMP_NODE_CORES}")
+    "${KICKOS_AMP_SELF_CORE}, map ${KICKOS_AMP_NODE_CORES}, kconfig "
+    "${_amp_fp_hi}${_amp_fp_lo}")
 endif()
 
 # --- The partition's port capabilities ---------------------------------------------------
@@ -1076,23 +1188,32 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(park_death_point PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  # --- The preset a per-preset gate registers under ------------------------------
+  # CMake names no preset, so a gate registered per preset REBUILDS the name: the base variant
+  # is the board name, every other variant is <board>-<variant>, and an own-image AMP node adds
+  # its index. The two gates below hand this to `cmake --preset`, so it has to be a preset name
+  # and not a label. tests/static/preset_boards.cmake rebuilds the same key from the preset
+  # files, and check_trap_redzone_decls.sh refuses a record that keys to no preset.
+  if(KICKOS_CONFIG_VARIANT STREQUAL "base")
+    set(_fs_preset_key "${KICKOS_BOARD}")
+  else()
+    set(_fs_preset_key "${KICKOS_BOARD}-${KICKOS_CONFIG_VARIANT}")
+  endif()
+  if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
+    set(_fs_preset_key "${_fs_preset_key}-n${KICKOS_AMP_NODE_ID}")
+  endif()
+
   # --- The trap red-zone gate --------------------------------------------------
-  # The preset name is derived here: the base variant is the board name, every other variant
-  # is <board>-<variant>. trap_redzone_roots.txt declares which pairs are measurable, and an
-  # undeclared one registers nothing.
+  # trap_redzone_roots.txt declares which pairs are measurable, and an undeclared one
+  # registers nothing.
   set(_fs_redzone_roots "${PROJECT_SOURCE_DIR}/tests/static/trap_redzone_roots.txt")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_fs_redzone_roots}")
-  if(KICKOS_CONFIG_VARIANT STREQUAL "base")
-    set(_fs_redzone_candidate "${KICKOS_BOARD}")
-  else()
-    set(_fs_redzone_candidate "${KICKOS_BOARD}-${KICKOS_CONFIG_VARIANT}")
-  endif()
   set(_fs_redzone_preset "")
   # The trailing anchor is required: `preset armv7m qemu` must not match qemu-flat.
   file(STRINGS "${_fs_redzone_roots}" _fs_redzone_decls
-       REGEX "^preset[ \t]+${KICKOS_ARCH}[ \t]+${_fs_redzone_candidate}[ \t]*$")
+       REGEX "^preset[ \t]+${KICKOS_ARCH}[ \t]+${_fs_preset_key}[ \t]*$")
   if(NOT _fs_redzone_decls STREQUAL "")
-    set(_fs_redzone_preset "${_fs_redzone_candidate}")
+    set(_fs_redzone_preset "${_fs_preset_key}")
   endif()
   if(NOT _fs_redzone_preset STREQUAL "")
     _add_test(NAME trap_redzone
@@ -1114,21 +1235,26 @@ if(KICKOS_BUILD_TESTS)
   # optimiser. console_reach_roots.txt declares which; one missing from it registers nothing.
   set(_fs_reach_decl "${PROJECT_SOURCE_DIR}/tests/static/console_reach_roots.txt")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_fs_reach_decl}")
-  if(KICKOS_CONFIG_VARIANT STREQUAL "base")
-    set(_fs_reach_candidate "${KICKOS_BOARD}")
-  else()
-    set(_fs_reach_candidate "${KICKOS_BOARD}-${KICKOS_CONFIG_VARIANT}")
-  endif()
   # The trailing anchor is required: `preset rv64imac qemu-riscv64` must not match
   # qemu-riscv64-sv48.
   file(STRINGS "${_fs_reach_decl}" _fs_reach_decls
-       REGEX "^preset[ \t]+${KICKOS_ARCH}[ \t]+${_fs_reach_candidate}[ \t]*$")
+       REGEX "^preset[ \t]+${KICKOS_ARCH}[ \t]+${_fs_preset_key}[ \t]*$")
   if(NOT _fs_reach_decls STREQUAL "")
     _add_test(NAME console_reach
               COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_console_reach.sh"
                       "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}"
-                      "${_fs_reach_candidate}" "${KICKOS_ARCH}")
+                      "${_fs_preset_key}" "${KICKOS_ARCH}")
     set_tests_properties(console_reach PROPERTIES TIMEOUT 1800 LABELS host)
+  endif()
+
+  # Cache-as-SRAM pinning under a partition whose nodes share one XIP cache. Registered on the
+  # CHIP; the POSTURE is decided by the script off the resolved configuration, the expectation
+  # not being allowed to derive from the knob it checks.
+  if(KICKOS_CHIP STREQUAL "rp2350")
+    _add_test(NAME amp_no_xip_pin
+              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_amp_no_xip_pin.sh"
+                      "${PROJECT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(amp_no_xip_pin PROPERTIES TIMEOUT 300 LABELS host)
   endif()
 
   _add_test(NAME atomic_rmw

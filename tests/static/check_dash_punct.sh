@@ -69,7 +69,7 @@ SCAN="$(dirname "$0")/dash_punct.awk"
 DASH_ERE='(^|[^-])[[:blank:]]--([[:blank:]"'\''\\\\]|$)'
 RUN_ERE='---'
 TICK_ERE='`[^`]*`'
-SEP_ERE='(^|[;&|(]|[$][(])[[:blank:]]*("[$][{][A-Za-z_][A-Za-z0-9_]*[[]@[]][}]"[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname)([[:blank:]]+--?[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
+SEP_ERE='(^|[;&|(]|[$][(])[[:blank:]]*("[$][{][A-Za-z_][A-Za-z0-9_]*[[]@[]][}]"[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname|set)([[:blank:]]+--?[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
 # A shell comment opener, so a `#` inside a word or a literal is not one. SEP is erased ahead
 # of the first match only.
 HASH_ERE='(^|[[:blank:]])#'
@@ -108,6 +108,8 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 sh -- "$@"
 git ls-tree -r --name-only -- "$_ref" arch/include/kickos/arch/
 grep -qF -- "$expect" "$f"  # a comment that opens AFTER the separator, never before it
+set --
+set -- "$@" "-D$kv"
 EOF
 cat > "$TMP/here.sh" <<'EOF'
 cat > "$TMP/corpus" <<'INNER'
@@ -138,7 +140,7 @@ while IFS= read -r line; do
     n="$(scan "$TMP/one.sh" 0 | wc -l | tr -d ' ')"
     [ "$n" -eq 0 ] || fail "negative control $i reports: $line"
 done < "$TMP/neg.sh"
-[ "$i" -eq 14 ] || fail "$i negative control(s) ran, expected 14"
+[ "$i" -eq 16 ] || fail "$i negative control(s) ran, expected 16"
 
 # The mutation the controls exist to survive: turn each exemption OFF and the count over the
 # control file must move, which is what proves the control was ever a near miss. Every arm
@@ -152,7 +154,7 @@ mutate() { # <what> <file> <run-ere> <sep-ere> <tick-ere> <hash-ere> <expect-cou
 # Disabled = an ERE that cannot match. The count is EXACT and differs per clause, so a
 # control kept quiet by the wrong clause shows up as the wrong number rather than as a pass.
 NEVER='KICKOS_THIS_ERE_MATCHES_NOTHING'
-mutate "separator" "$TMP/neg.sh" "$RUN_ERE" "$NEVER"   "$TICK_ERE" "$HASH_ERE" 9
+mutate "separator" "$TMP/neg.sh" "$RUN_ERE" "$NEVER"   "$TICK_ERE" "$HASH_ERE" 11
 mutate "banner"    "$TMP/neg.sh" "$NEVER"   "$SEP_ERE" "$TICK_ERE" "$HASH_ERE" 1
 mutate "backtick"  "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE" "$NEVER"    "$HASH_ERE" 1
 
@@ -161,16 +163,19 @@ mutate "backtick"  "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE" "$NEVER"    "$HASH_ERE" 1
 # recognised must not be confused with one quiet because the PREFIX in front of it is
 # tolerated, nor with one quiet because a LONG option was tolerated in the option run.
 # Self-test only; the corpus scan never sees these three.
-SEP_ERE_NOPREFIX='(^|[;&|(]|[$][(])[[:blank:]]*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname)([[:blank:]]+--?[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
+SEP_ERE_NOPREFIX='(^|[;&|(]|[$][(])[[:blank:]]*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname|set)([[:blank:]]+--?[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
 SEP_ERE_OLDWORDS='(^|[;&|(]|[$][(])[[:blank:]]*("[$][{][A-Za-z_][A-Za-z0-9_]*[[]@[]][}]"[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr)([[:blank:]]+--?[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
-SEP_ERE_OLDATOM='(^|[;&|(]|[$][(])[[:blank:]]*("[$][{][A-Za-z_][A-Za-z0-9_]*[[]@[]][}]"[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname)([[:blank:]]+-[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
+SEP_ERE_OLDATOM='(^|[;&|(]|[$][(])[[:blank:]]*("[$][{][A-Za-z_][A-Za-z0-9_]*[[]@[]][}]"[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname|set)([[:blank:]]+-[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
 # NOPREFIX keeps the new words but drops the VAR=/array tolerance: only the three lines that
 # actually need a prefix (CDPATH= cd, CDPATH= cd via $(dirname, and the ssh-array bash) must
 # newly report.
 mutate "sep-prefix"      "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE_NOPREFIX" "$TICK_ERE" "$HASH_ERE" 3
-# OLDWORDS keeps the prefix tolerance but drops kill/bash/sh/cd/dirname from the list: every
-# line that exists to prove one of those five words must newly report.
-mutate "sep-new-words"   "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE_OLDWORDS" "$TICK_ERE" "$HASH_ERE" 5
+# OLDWORDS keeps the prefix tolerance but drops kill/bash/sh/cd/dirname/set from the list:
+# every line that exists to prove one of those six words must newly report. `set --` is on the
+# list because `set` takes the separator like any other command, and a POSIX shell builds an
+# argument list with it: `set --` inside a function replaces that function's own positional
+# parameters and leaves the caller's alone.
+mutate "sep-new-words"   "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE_OLDWORDS" "$TICK_ERE" "$HASH_ERE" 7
 # OLDATOM keeps the words and the prefix tolerance but narrows the option run back to a
 # SINGLE leading dash: only the line whose option run holds a long option must newly
 # report, which is what proves the two-dash tolerance is a near miss and not slack.

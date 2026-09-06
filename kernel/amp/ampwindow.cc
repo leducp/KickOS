@@ -248,6 +248,58 @@ namespace kickos
             return g_counts[node];
         }
 
+#if defined(KICKOS_ENABLE_SELFTEST)
+        void app_alive_set(uint32_t mark)
+        {
+            g_counts[self()].app_alive.store(mark);
+        }
+#endif
+
+        namespace
+        {
+            // A send once the ring is chosen. The ring is a parameter so the selftest forge can
+            // run this arithmetic over a ring no node produces into and no service drains,
+            // rather than over a live peer's.
+            Sent send_on(Ring& r, uint32_t me, uint32_t to, uint32_t port, ReplyTag const& tag,
+                         void const* payload, uint32_t len)
+            {
+                uint32_t const head = r.head.v.load();
+                // FAR: the consumer owns this index. A producer that believed it would compute
+                // a free-slot count out of it and overwrite slots the consumer is still
+                // reading.
+                uint32_t const tail = r.tail.v.load();
+                uint32_t const used = outstanding(head, tail);
+                if (used > RING_SLOTS)
+                {
+                    count_up(g_counts[me].send_refused);
+                    return Sent::DEPTH;
+                }
+                if (used == RING_SLOTS)
+                {
+                    count_up(g_counts[me].send_refused);
+                    return Sent::FULL;
+                }
+
+                // The slot index comes from the producer's OWN head, never from the far tail.
+                Slot& s = r.slot[head & RING_MASK];
+                s.port = port;
+                s.tag = tag;
+                s.len = len;
+                if (len != 0u)
+                {
+                    kmemcpy(s.payload, payload, len);
+                }
+                // Every slot write above must stay above this store: nothing enforces that
+                // order, and a peer acquiring this index reads whatever the slot holds when it
+                // does.
+                r.head.v.store(head + 1u);
+                count_up(g_counts[me].sent);
+
+                ring(to);
+                return Sent::OK;
+            }
+        }
+
         Sent send(uint32_t to, uint32_t port, ReplyTag const& tag, void const* payload,
                   uint32_t len)
         {
@@ -270,39 +322,7 @@ namespace kickos
                 return Sent::LENGTH;
             }
 
-            Ring& r = ring_for(class_of(port), to, me);
-            uint32_t const head = r.head.v.load();
-            // FAR: the consumer owns this index. A producer that believed it would compute a
-            // free-slot count out of it and overwrite slots the consumer is still reading.
-            uint32_t const tail = r.tail.v.load();
-            uint32_t const used = outstanding(head, tail);
-            if (used > RING_SLOTS)
-            {
-                count_up(g_counts[me].send_refused);
-                return Sent::DEPTH;
-            }
-            if (used == RING_SLOTS)
-            {
-                count_up(g_counts[me].send_refused);
-                return Sent::FULL;
-            }
-
-            // The slot index comes from the producer's OWN head, never from the far tail.
-            Slot& s = r.slot[head & RING_MASK];
-            s.port = port;
-            s.tag = tag;
-            s.len = len;
-            if (len != 0u)
-            {
-                kmemcpy(s.payload, payload, len);
-            }
-            // Every slot write above must stay above this store: nothing enforces that order,
-            // and a peer acquiring this index reads whatever the slot holds when it does.
-            r.head.v.store(head + 1u);
-            count_up(g_counts[me].sent);
-
-            ring(to);
-            return Sent::OK;
+            return send_on(ring_for(class_of(port), to, me), me, to, port, tag, payload, len);
         }
 
         namespace
@@ -867,6 +887,15 @@ namespace kickos
             return answer | 16u;
         }
 
+        // THE SELF-RING, and no peer's. What is under test is this node's own producer
+        // arithmetic against a tail it did not write, so the ring only has to hold a garbage
+        // tail: ring [me][me] is the one no node produces into (send refuses `to == me`) and no
+        // service drains (node_service skips `from == me`), so nothing observes what is forged
+        // here. A peer's ring would put a forged consumer index under a live consumer, which
+        // could resynchronise it or make it discard real traffic.
+        //
+        // `to` still names the peer, so a refusal that stopped working would publish into the
+        // dead ring and ring that peer's doorbell, which is the verdict this arm reads.
         Sent forge_tail_and_send(uint32_t to, uint32_t tail_jump)
         {
             uint32_t const me = self();
@@ -874,18 +903,15 @@ namespace kickos
             {
                 return Sent::NODE;
             }
-            Ring& r = ring_for(Class::CALL, to, me);
-            uint32_t const head_was = r.head.v.load();
-            uint32_t const tail_was = r.tail.v.load();
+            Ring& r = ring_for(Class::CALL, me, me);
             r.head.v.store(0u);
             r.tail.v.store(0u - tail_jump);
 
             uint8_t pattern[8] = {};
             ReplyTag const tag = {};
-            Sent const rc = send(to, PORT_ECHO, tag, pattern, sizeof(pattern));
+            Sent const rc = send_on(r, me, to, PORT_ECHO, tag, pattern, sizeof(pattern));
 
-            r.head.v.store(head_was);
-            r.tail.v.store(tail_was);
+            forge_reset(Class::CALL, r, me, me);
             return rc;
         }
 #endif

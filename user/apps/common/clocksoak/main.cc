@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Clock-hardening SILICON soak harness (M3 clock off the debug domain -> wide
+// Clock-hardening SILICON soak harness (the clock off the debug domain -> wide
 // peripheral monotonic timer). Gated OFF by default (-DKICKOS_CLOCKSOAK_TEST=ON).
 // It answers the "silicon-test-later" checklist on real silicon:
 //   1. idle-wrap observer: idle past >1 counter wrap period -> clock still correct

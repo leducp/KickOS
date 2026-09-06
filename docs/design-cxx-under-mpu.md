@@ -214,10 +214,10 @@ newlib toolchain. The original throwaway app
 committed `cxxtest` (same spawn shape, now the standing `qemu_riscv_cxxtest` gate), so the
 U-mode-confined claim now rests on a running in-tree test, not this record. The changes below are
 all LANDED:
-- virt.ld: `_code_size`/`_appdata_size` = 128 K; colon-selectors routing app + libc/libgcc/
+- `virt_rv32.ld`: `_code_size`/`_appdata_size` = 128 K; colon-selectors routing app + libc/libgcc/
   libstdc++/libkickos_user `.data/.sdata/.bss/.sbss` into `.appdata`/`.appbss`; `__global_pointer$`
   anchored inside `.appdata`; `_appdata_lma` exported.
-- chip_virt.cc `Reset_Handler`: copy `.appdata` LMA->VMA before zeroing `.appbss`.
+- `chip_virt_rv32.cc` `Reset_Handler`: copy `.appdata` LMA->VMA before zeroing `.appbss`.
 - cmake: KickOS libs built `-msmall-data-limit=0`; app NOT (keep small-data for unwinding).
 
 Result:
@@ -236,7 +236,7 @@ unprivileged worker and `qemu_riscv_cxxtest` runs it to ALL PASS under PMP in CI
 
 ## Staged plan
 
-- **S1 -- RISC-V land (DONE).** The experiment's virt.ld + Reset_Handler copy + cmake changes are
+- **S1 -- RISC-V land (DONE).** The experiment's `virt_rv32.ld` + Reset_Handler copy + cmake changes are
   real (guarded by KICKOS_HAVE_MPU); the zero-match ASSERT is in; `cxxtest` is un-gated on
   qemu-riscv under MPU and runs as the `qemu_riscv_cxxtest` unprivileged-worker CI test (ALL PASS).
   Still open: decide the fleet-wide `-msmall-data-limit=0` on KickOS RISC-V libs (measure the

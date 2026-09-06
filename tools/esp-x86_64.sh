@@ -10,7 +10,10 @@
 # The image is recreated from scratch on every call: a stale BOOTX64.EFI left in a reused
 # image boots instead of the one just built, and prints the same banner.
 #
-# POSIX sh (dash-clean).
+# POSIX sh (dash-clean) and GNU dd. The image below is created with `bs=1M conv=sparse
+# status=none` and POSIX defines none of those three, so this script REQUIRES GNU dd (Debian:
+# coreutils) and says so rather than reading as portable. `conv=sparse` is the one that cannot
+# be dropped: without it a 48 MiB image is 48 MiB of real disk instead of a hole.
 
 set -u
 
@@ -26,6 +29,14 @@ IMG="$2"
 for t in dd mformat mmd mcopy; do
     command -v "$t" >/dev/null 2>&1 || fail "$t is not installed (Debian: mtools, coreutils)"
 done
+
+# The operands, not the vendor: a dd that does not know one of them refuses the WHOLE
+# invocation. Checked HERE rather than at the dd below, which runs after the `rm -f` and so
+# destroys an existing image before refusing. Probed against /dev/null, so this writes nothing.
+dd if=/dev/zero of=/dev/null bs=1M count=1 conv=sparse status=none 2>/dev/null \
+    || fail "this dd does not take 'bs=1M conv=sparse status=none', which the image below is
+      created with. GNU dd is required here (Debian: coreutils); busybox dd and a POSIX dd
+      refuse conv=sparse."
 
 # FAT32 needs the cluster count a 48 MiB volume gives; mformat picks FAT16 below that and
 # some firmware refuses it as an ESP.

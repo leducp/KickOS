@@ -270,7 +270,7 @@ jobs:
           # Posture pin, read from the RESOLVED partition and not from anything that derives
           # with it. A build that lost its AMP posture states no crossing, so the count is zero
           # and every arm below de-registers instead of failing.
-          . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp 0 shared
+          . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp 0 shared 4
           cmake --build --preset qemu-arm64-amp
           ctest --preset qemu-arm64-amp -LE tree --no-tests=error --output-on-failure
           # Naming them makes an EMPTY selection the failure, as the pins above do elsewhere.
@@ -279,22 +279,39 @@ jobs:
       - name: armv8a (virt) AMP, node 0 of a two-image partition
         run: |
           cmake --preset qemu-arm64-amp2-n0 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
-          . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp2-n0 0 own
+          . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp2-n0 0 own 2
           cmake --build --preset qemu-arm64-amp2-n0
           # The two vehicle gates build the PEER and merge the partition themselves, so this
           # covers the merged artefact, the two-ELF agreement check and the arms that need a
           # peer that is running.
           ctest --preset qemu-arm64-amp2-n0 -LE tree --no-tests=error --output-on-failure
           ctest --preset qemu-arm64-amp2-n0 --no-tests=error --output-on-failure \
-            -R 'amp_partition|amp_two_elf|amp_peer_arms|ipi_fence'
+            -R 'amp_partition|amp_elf_agree|amp_peer_arms|ipi_fence'
       - name: armv8a (virt) AMP, node 1 of a two-image partition
         run: |
           cmake --preset qemu-arm64-amp2-n1 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
           # Node ONE and not a second node zero: a pair built as two node zeros is N6c's
           # collapse, it links and boots, and every arm that runs on node 0 passes on it.
-          . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp2-n1 1 own
+          . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp2-n1 1 own 2
           cmake --build --preset qemu-arm64-amp2-n1
           ctest --preset qemu-arm64-amp2-n1 -LE tree --no-tests=error --output-on-failure
+      - name: armv8a (virt) AMP, a three-image partition, link geometry only
+        run: |
+          # The width's claim is a link-geometry claim, so this job boots nothing: the
+          # two-kernel conversation is pinned by the node 0 job above.
+          #
+          # Every "each peer against node 0" shortcut is correct at two nodes, so a third node
+          # is what separates a real bound from a collapse, and the comparator checks every
+          # PAIR.
+          for n in 0 1 2; do
+            cmake --preset "qemu-arm64-amp3-n$n" -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+            . ./.github/scripts/amp-pin.sh "build/qemu-arm64-amp3-n$n" "$n" own 3
+            cmake --build --preset "qemu-arm64-amp3-n$n"
+          done
+          # Node 0 owns the merge (N6h), so the comparator runs from its build and builds the
+          # peers itself. Naming it makes an EMPTY selection the failure.
+          ctest --preset qemu-arm64-amp3-n0 --no-tests=error --output-on-failure \
+            -R 'amp_elf_agree'
 
   # rv32imac (virt) under QEMU, plus build-only checks of three more rv32 presets,
   # on the pinned RISCstar toolchain (newlib, soft-float rv32imac/ilp32 multilib).
@@ -463,3 +480,50 @@ jobs:
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
       - run: ctest --test-dir build/${{ matrix.preset }} -LE tree --no-tests=error --output-on-failure
+
+  # The RP2350 own-image AMP partition, which nothing else in this file builds. The second step
+  # is the production posture: with the self-test off, the code the own-image paths call
+  # unconditionally must still compile.
+  pizero2350-amp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kconfiglib
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build curl xz-utils
+      - uses: ./.github/actions/arm-toolchain
+      - name: armv8-M own-image partition, both nodes, self-test on
+        run: |
+          for node in 0 1; do
+            cmake --preset pizero2350-amp2-n$node -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+            cmake --build --preset pizero2350-amp2-n$node
+            ctest --test-dir build/pizero2350-amp2-n$node -L host -LE tree --no-tests=error --output-on-failure
+          done
+      - name: armv8-M own-image partition, the PRODUCTION posture (self-test off)
+        run: |
+          # KICKOS_SHUTDOWN_TO_BOOTLOADER depends on the self-test, so with it off the amp2
+          # defconfig's own line is refused and the request has to withdraw that knob too.
+          #
+          # Its own build directory: option() writes the cache once, so -D...=OFF into a tree
+          # already configured with it ON changes nothing.
+          #
+          # Build only: a per-preset gate REBUILDS its preset name from board, variant and node
+          # index, which this posture spells identically to the step above, so running the
+          # gates here would measure that tree instead of this one.
+          for node in 0 1; do
+            cmake --preset pizero2350-amp2-n$node -B build/pizero2350-amp2-prod-n$node \
+              -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN" \
+              -DKICKOS_ENABLE_SELFTEST=OFF -DKICKOS_SHUTDOWN_TO_BOOTLOADER=OFF
+            cmake --build build/pizero2350-amp2-prod-n$node
+          done
+      - name: armv8-M own-image partition, the MERGED artefact
+        run: |
+          # The thing a user flashes, and it is no ALL target: the step above builds two node
+          # images and never the artefact that carries them, so nothing in CI linked the merge
+          # until here. build-partition.sh configures and builds the peer out of node 0's own
+          # tree, so this covers the peer configure, the Kconfig fingerprint agreement and the
+          # merge in one step.
+          cmake --build build/pizero2350-amp2-prod-n0 --target amp_partition
+          ls -l build/pizero2350-amp2-prod-n0/kickos-partition.elf

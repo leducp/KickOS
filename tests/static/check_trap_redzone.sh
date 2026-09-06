@@ -19,6 +19,9 @@
 # takes the longest weighted path from the declared roots. The scratch tree stays separate from
 # the caller's build dir: those flags change every object.
 #
+# That tree is named by PRESET alone, so concurrent runs of one preset must pass distinct
+# KICKOS_TRAP_REDZONE_DIR values or each corrupts the other's tree.
+#
 # The enforced numbers come out of the arch header and WHICH macros to read comes from
 # trap_redzone_roots.txt. A macro that cannot be read is a hard failure and never a default: a
 # gate that defaults its own reference compares a measurement against nothing.

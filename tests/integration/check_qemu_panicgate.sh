@@ -11,13 +11,21 @@
 # failure even when the expected line is also present: the panic must come from the
 # syscall, not from the kernel dereferencing the caller's pointer.
 #
-# ABOVE ONE CORE THE EXPECTED LINE CAN ARRIVE SPLIT, and that is permitted behaviour rather
+# ABOVE ONE CORE EVERY LINE HERE CAN ARRIVE SPLIT, and that is permitted behaviour rather
 # than a defect: arch_console_write is a byte-at-a-time device loop under no lock, so two harts
 # emit into one wire with no per-line atomicity anywhere in the kernel. A peer starting the app
-# while the boot hart prints its status lines therefore lands one of them INSIDE this line.
-# The strict match is tried first and a split is tolerated only by deleting the KNOWN kernel
-# status lines and rejoining; a line absent for any other reason still fails, and a tolerated
-# split is REPORTED so it never passes silently.
+# while the boot hart prints its status lines lands one of them INSIDE the app's line or inside
+# the panic line, and the collision is CHARACTER BY CHARACTER rather than a whole line inserted
+# at a line break, so deleting the known status lines and rejoining does not recover it. The
+# strict match is tried first; a split is tolerated only above one core and only through
+# wire_has, whose span bound is what one status line can contribute, so a literal absent for
+# any other reason still fails. Every tolerated split is REPORTED.
+#
+# THE THREE ABSENCE ASSERTIONS BELOW ARE NOT SHUFFLE-PROOF AND CANNOT BE: a shuffle hides text
+# from grep, so it can only make them pass. Each is corroborated by a positive assertion the
+# same defect also breaks. kos_panic returning to the caller, or the kernel faulting on the
+# message pointer, leaves no panic line for the expected-line check. A truncation that did not
+# happen leaves the dropped tail on the wire AND leaves the expected line without its marker.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -34,28 +42,11 @@ if has "\[panicgate\] ERROR"; then
 fi
 # The arm must have been reached, so a panic cannot be credited to an earlier trap
 # during ctors or bring-up.
-if ! has "\[panicgate\] case"; then
-    fail "the app never reached its kos_panic call"
-fi
+require_on_wire "[panicgate] case" "the app never reached its kos_panic call"
 if has_e "=== (HARD|MPU|BUS) FAULT|=== RISC-V TRAP|MPU FAULT: thread"; then
     fail "the kernel faulted instead of refusing the message pointer"
 fi
-if ! printf '%s\n' "$OUT" | grep -qF -- "$expect"; then
-    # The only concurrent writer here is the kernel's own boot reporting, whose lines are
-    # matched exactly rather than by a wildcard: anything else stays a split this will not
-    # paper over.
-    joined="$(printf '%s\n' "$OUT" \
-        | sed -e 's/# smp: [0-9]\{1,\} core(s) online//g' \
-              -e 's/# smp sched: [0-9]\{1,\} core(s) in the scheduler//g' \
-              -e 's/# doorbell: [0-9]\{1,\} core(s) answered, rounds 0x[0-9a-f]\{1,\}//g' \
-        | tr -d '\n')"
-    if printf '%s' "$joined" | grep -qF -- "$expect"; then
-        echo "   TOLERATED A SPLIT: the expected line reached the wire broken by a kernel
-   status line, which two harts on one unlocked device wire may do at any byte"
-    else
-        fail "expected panic line missing: $expect"
-    fi
-fi
+require_on_wire "$expect" "expected panic line missing: $expect"
 if [ -n "$absent" ] && printf '%s\n' "$OUT" | grep -qF -- "$absent"; then
     fail "text that must not reach the wire is present: $absent"
 fi

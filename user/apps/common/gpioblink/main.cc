@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// GPIO direct-MMIO demo (M4.3): userspace owns GPIO. A bring-up main (the root thread,
+// GPIO direct-MMIO demo: userspace owns GPIO. A bring-up main (the root thread,
 // unprivileged but seated with every authority) grants the LED port's block to an
 // UNPRIVILEGED worker as a spawn MMIO window; the worker toggles the pin by writing that
 // window DIRECTLY, with no syscall per edge. A syscall-per-toggle cannot serve a hot pin,

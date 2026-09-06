@@ -193,16 +193,19 @@ endif()
 # --gc-sections drops the symbol entirely. imx8mp-evk is the other half of the same key, being
 # GICv3 at one core and no AMP node, so it links no caller either.
 #
-# The rv64 clause has no multicore preset in the tree yet; it is written so it lights up with
-# the first one.
+# RV64 OWES IT FOR THE AMP WINDOW ALONE, AND NOT FOR A HART COUNT. Its raise names a dense hart
+# index rather than an affinity a peer must publish, so it defers no target and there is no
+# store-then-load pairing for a fence to serve; the publication it does owe is ordered inside
+# kickos_rv64_doorbell_send by a `fence rw, ow` of its own, the CLINT sitting in an I/O PMA. So
+# a multi-hart rv64 image links no caller, and a clause keyed on the hart count demands a symbol
+# the linker is entitled to drop. The clause lights up with the first rv64 AMP node instead.
 # It runs no image, so it carries the host label.
 set(_fence_owed FALSE)
-if(KICKOS_AMP_NODE OR KICKOS_NUM_CORES GREATER 1)
-  if(KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_ARM64_GIC_VERSION EQUAL 3)
-    set(_fence_owed TRUE)
-  elseif(KICKOS_ARCH STREQUAL "rv64imac")
-    set(_fence_owed TRUE)
-  endif()
+if(KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_ARM64_GIC_VERSION EQUAL 3
+   AND (KICKOS_AMP_NODE OR KICKOS_NUM_CORES GREATER 1))
+  set(_fence_owed TRUE)
+elseif(KICKOS_ARCH STREQUAL "rv64imac" AND KICKOS_AMP_NODE)
+  set(_fence_owed TRUE)
 endif()
 if(KICKOS_BUILD_TESTS AND _fence_owed)
   set(_fence_full "")

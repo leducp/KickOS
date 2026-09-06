@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RX72M I/O-port class-driver leaf (M4 Rule 6, decision R-A). A FREESTANDING, STATELESS
+// RX72M I/O-port class-driver leaf (driver-model rule 6). A FREESTANDING, STATELESS
 // register-logic core: free functions taking the PODR block base explicitly, no ctor/dtor,
 // no mutable static state. Built as its own kickos_class_rx72m static lib on a bare include
 // path (repo include/ + this chip's register dir ONLY, never kernel/include), so the SAME

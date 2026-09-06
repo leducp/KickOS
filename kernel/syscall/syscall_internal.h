@@ -192,6 +192,11 @@ namespace kickos
     // run entirely kernel-side, so no mapping primitive is exposed to a caller.
     uint64_t aspace_probe(uintptr_t op, uintptr_t a1);
 #endif
+
+#if KICKOS_AMP_NODE && defined(KICKOS_ENABLE_SELFTEST)
+    // Test scaffolding for the shared window (syscall_amp.cc).
+    uint64_t amp_probe(uintptr_t op, uintptr_t a1);
+#endif
 }
 
 #endif

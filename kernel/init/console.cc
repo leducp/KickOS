@@ -4,11 +4,13 @@
 // Minimal in-kernel debug console: write-only, routed to the arch console bottom edge
 // (sim: host stdout). Reserved for panic, early boot and fault reporting.
 
+#include <kickos/ampdiag.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/arch/arch.h>
 #include <kickos/cap.h> // cap_console_deliver (the fault record's route to a published console)
 #include <kickos/console_tx.h>
+#include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kruntime.h>
 #include <kickos/sys/atomic.h>
@@ -68,6 +70,7 @@ namespace
     // nothing increments after that flip, which is what chip_writer_enter enforces.
     constinit Atomic<int, Order::RELAXED> g_chip_writers = 0;
 
+#if KICKOS_CONSOLE_CHIP
     // The state read and the increment are ONE masked operation, or publish's drain is
     // blind to a writer that read a device-owning state just before the flip: the drain
     // sees 0, the driver starts, and the woken writer then bit-bangs a UART it no longer
@@ -86,6 +89,7 @@ namespace
         g_chip_writers = g_chip_writers + 1;
         return true;
     }
+#endif
 }
 
 extern "C" int console_owner_is_kernel(void)
@@ -338,12 +342,90 @@ namespace kickos
         va_end(ap);
     }
 
+#if KICKOS_KERNEL_STACKS && KICKOS_KSTACK_REPORT
+    // Decimal of the usable block, left-aligned in the buffer, built at compile time.
+    struct UsableText
+    {
+        char s[12];
+    };
+
+    constexpr UsableText usable_text()
+    {
+        UsableText t = {};
+        size_t v = KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t);
+        size_t n = sizeof(t.s) - 1;
+        do
+        {
+            n = n - 1;
+            t.s[n] = static_cast<char>('0' + (v % 10));
+            v = v / 10;
+        } while (v != 0 and n != 0);
+        size_t j = 0;
+        while (n < sizeof(t.s) - 1)
+        {
+            t.s[j] = t.s[n];
+            j++;
+            n++;
+        }
+        t.s[j] = '\0';
+        return t;
+    }
+
+    constexpr UsableText kUsableText = usable_text();
+
+    // Filled here and emitted by the panic tail. Nothing in this reporter may descend to the
+    // console: a frame between kpanic and kputs is charged to the trap red zone.
+    char g_kstack_report[96];
+
+    size_t report_append(size_t j, char const* src)
+    {
+        while (*src != '\0' and j < sizeof(g_kstack_report) - 1)
+        {
+            g_kstack_report[j] = *src;
+            j++;
+            src++;
+        }
+        return j;
+    }
+
+    // Called after the banner, so the fill boundary already carries the console tail this
+    // panic descended. Answers an empty string when no thread is current.
+    char const* kstack_report_text()
+    {
+        Thread const* const c = kernel().current[kickos_kernel_core()];
+        if (c == nullptr)
+        {
+            return "";
+        }
+        size_t used = kstack_high_water(kernel().threads.index_of(c));
+        char digits[12];
+        size_t n = sizeof(digits) - 1;
+        digits[n] = '\0';
+        do
+        {
+            n = n - 1;
+            digits[n] = static_cast<char>('0' + (used % 10));
+            used = used / 10;
+        } while (used != 0 and n != 0);
+        size_t j = report_append(0, "KSTACK HIGH WATER: ");
+        j = report_append(j, &digits[n]);
+        j = report_append(j, " of ");
+        j = report_append(j, kUsableText.s);
+        j = report_append(j, " bytes reached on this slot\n");
+        g_kstack_report[j] = '\0';
+        return g_kstack_report;
+    }
+#endif
+
     void kpanic(char const* msg)
     {
         kpanic_enter();
         kputs("\nKERNEL PANIC: ");
         kputs(msg);
         kputs("\n");
+#if KICKOS_KERNEL_STACKS && KICKOS_KSTACK_REPORT
+        kputs(kstack_report_text());
+#endif
         kfault_terminate(); // blink forever (real HW) or exit with a fault status (host/QEMU)
     }
 
@@ -369,6 +451,9 @@ namespace kickos
         } while (value != 0 and n != 0);
         kputs(&digits[n]);
         kputs("\n");
+#if KICKOS_KERNEL_STACKS
+        kputs(kstack_report_text());
+#endif
         kfault_terminate();
     }
 #endif
@@ -432,6 +517,11 @@ extern "C" void kickos_bootloader_handover(void)
 // order exists in exactly one place upstream of the per-chip arch_shutdown.
 extern "C" void kickos_terminate(int status)
 {
+#if KICKOS_AMP_NODE
+    // Here and not at boot: it reads the doorbell traffic of the whole run, and this is the
+    // one funnel every ordered terminal path reaches.
+    ::kickos::amp::diag_primary_doorbell_report();
+#endif
     console_tx_flush_sync();
     // The RING being empty is not the DEVICE being idle: arch_shutdown can stop the core with
     // a byte still in the UART FIFO or shift register, truncating the last line. It must NOT

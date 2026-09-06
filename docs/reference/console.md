@@ -250,6 +250,20 @@ Details specific to the sim:
    (`PRIO_DEVICE`), or the producer's publish+prime is no longer atomic against it.
 3. **The TX IRQ is enabled whenever the ring is non-empty.** The ISR disables it
    *only* on drain-to-empty; the producer *always* re-enables after publishing.
+   It is stated of ONE ring over one gate bit, so **a chip whose kernels are several
+   supplies no backend at all**: two rings behind one enable bit means the node that
+   drains first clears the bit the other's queued bytes wait on, and on a part
+   delivering the line to every core both drains run on every transmit event. The
+   own-image RP2350 posture therefore has no ring on any node and every node writes
+   through the polled path, which claims a hardware lock across the LINE, a line
+   reaching that writer in several chunks, so a cooked line is not cut by the peer's.
+   **Ownership is bounded by a DEADLINE taken when the claim is, never by what the
+   holder writes next**: a node that stops mid-line, or dies there, would otherwise
+   keep the lock for as long as it lives, and a peer that spins its budget out against
+   an expired deadline releases the register under the holder and takes it. That is
+   point 4 outranking this one -- the holder may be the node that is dying, so the
+   bound may not depend on it coming back. A caller that loses the claim writes anyway,
+   at the cost of a shredded line.
 4. **Panic output must not depend on the buffered path or on a debug probe.** It
    flushes the ring, forces the sync path, and -- once the eventual userspace driver
    owns the UART -- must *reclaim + reinit* the peripheral and polled-print,

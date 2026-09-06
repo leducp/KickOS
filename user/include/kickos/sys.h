@@ -338,6 +338,18 @@ uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size);
 // regions instead of translating, cast up through the uintptr_t return.
 uintptr_t kos_aspace_probe(uintptr_t op, uintptr_t a1);
 
+// Test-only: run one shared-window scenario in the kernel, or read one of its counters (see
+// enum kos_amp_op in sys/abi.h). -KOS_EINVAL for a bad op and on an image that is not a node
+// of a partition, cast up through the uintptr_t return: a caller reading a counter must read
+// the answer as SIGNED first, or a refusal arrives as a very large count.
+uintptr_t kos_amp_probe(uintptr_t op, uintptr_t a1);
+
+// Test-only: read one of the cross-core doorbell's per-core counts, or the shape of the matrix
+// they are indexed by (see enum kos_doorbell_op in sys/abi.h). -KOS_EINVAL for a bad op, cast
+// up through the return, so read the answer as SIGNED before reading it as a number. Total
+// over every posture: an image whose doorbell folds out answers a real zero, not a refusal.
+uint64_t kos_doorbell_probe(uintptr_t op, uintptr_t a1);
+
 // Test-only: read one item of the CALLER's own scheduling state (see enum kos_sched_op in
 // sys/abi.h). -KOS_EINVAL for a bad op and on an image built without KICKOS_ENABLE_SELFTEST,
 // cast up through the uintptr_t return.

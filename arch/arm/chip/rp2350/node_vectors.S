@@ -7,6 +7,11 @@
  * which reaches kernel() through kickos_instance_index(); node 1 runs no scheduler, and with
  * multi-instance off that Kernel is core 0's LIVE state. N5's launch hands core 1 its own
  * VTOR, so this table closes that path structurally.
+ *
+ * Guarded to one image driving several cores, where a node core runs no scheduler of its own.
+ * Under one image per node a peer runs a whole kernel, and a table parking every line but the
+ * doorbell would park its own SysTick, SVC and PendSV; that posture pins VTOR at each node's
+ * own g_isr_vector instead (chip_rp2350.cc).
  */
 
 #include <kickos/chip_limits.h>

@@ -27,10 +27,72 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # than loud, so only a run under dash shows it.
 TAB="$(printf '\t')"
 
+# ONE HANDLER FOR THE WHOLE LIBRARY, because a second `trap ... EXIT` REPLACES the first and
+# would drop whatever the earlier owner registered. Two owners register here: the scratch
+# directory and a polled image's child.
+#
+# THE SIGNALS ARE TRAPPED BESIDE EXIT. A ctest TIMEOUT signals the script, and under an
+# EXIT-only trap the emulator outlives it and holds the console the next test opens, which
+# surfaces as that test failing rather than as this one being killed. Each signal arm exits, and
+# the EXIT arm then runs the handler a second time, so the handler clears every record it acts
+# on.
+KOS_TRASH_DIR=""
+KOS_TRASH_FILE=""
+KOS_CHILD_PID=""
+
+kos_cleanup() {
+    kos_stop_child
+    if [ -n "$KOS_TRASH_FILE" ]; then
+        _kc_f="$KOS_TRASH_FILE"
+        KOS_TRASH_FILE=""
+        rm -f "$_kc_f"
+    fi
+    if [ -n "$KOS_TRASH_DIR" ]; then
+        _kc_d="$KOS_TRASH_DIR"
+        KOS_TRASH_DIR=""
+        rm -rf "$_kc_d"
+    fi
+}
+
+kos_trap() {
+    trap 'kos_cleanup' EXIT
+    trap 'kos_cleanup; exit 130' INT
+    trap 'kos_cleanup; exit 143' TERM
+    trap 'kos_cleanup; exit 129' HUP
+}
+
+# STOP THE RECORDED CHILD WITHIN A BOUND. `wait` on a child that ignores SIGTERM never returns,
+# so a plain kill-then-wait leaves the advertised timeout unenforced, which is worse than no
+# timeout at all because every caller trusts it. SIGTERM first, so the emulator flushes what it
+# has written; SIGKILL once the grace runs out, and that one cannot be ignored, so the `wait`
+# below it terminates. By RECORDED PID: `pgrep -f` matches this script's own command line, so a
+# pattern kill takes the gate down with the emulator.
+KOS_STOP_TICKS=15
+
+kos_stop_child() {
+    if [ -z "$KOS_CHILD_PID" ]; then
+        return
+    fi
+    _sc="$KOS_CHILD_PID"
+    KOS_CHILD_PID=""
+    kill "$_sc" 2>/dev/null
+    _sc_n=0
+    while [ "$_sc_n" -lt "$KOS_STOP_TICKS" ]; do
+        if ! kill -0 "$_sc" 2>/dev/null; then
+            break
+        fi
+        sleep 0.2
+        _sc_n=$((_sc_n + 1))
+    done
+    kill -9 "$_sc" 2>/dev/null
+    wait "$_sc" 2>/dev/null
+}
+
 # TMP: a fresh directory, removed on exit.
 scratch_dir() {
     TMP="$(mktemp -d)" || fail "mktemp -d failed"
-    trap 'rm -rf "$TMP"' EXIT
+    KOS_TRASH_DIR="$TMP"
+    kos_trap
 }
 
 # A tool that produced nothing leaves every grep below it vacuously satisfied.
@@ -222,9 +284,10 @@ run_image() {
 # For an app that never terminates on its own: boot it in the background and poll its
 # output until EVERY pattern has appeared, then stop it. POLL_OK is 1 when they all
 # landed, 0 when the poll ran out or the image died first; OUT carries the whole run
-# either way. QEMU_TIMEOUT bounds only the no-progress path. POLL_MS is how long the poll
-# ran for, at the resolution of its own tick, and POLL_ALIVE is 0 when the image ended before
-# the poll did: a bound that ran out and an image that stopped early are different findings.
+# either way. QEMU_TIMEOUT bounds only the no-progress path, and kos_stop_child bounds the
+# stop that follows it. POLL_MS is how long the poll ran for, at the resolution of its own
+# tick, and POLL_ALIVE is 0 when the image ended before the poll did: a bound that ran out and
+# an image that stopped early are different findings.
 #
 # KOS_POLL_UNTIL names a shell FUNCTION the poll re-evaluates on every tick beside the
 # patterns, satisfied when it returns 0; the poll stops when the patterns AND the function
@@ -240,6 +303,7 @@ poll_image() { # <elf> <ere>...
     _elf="$1"
     shift
     _log="$(mktemp)" || fail "mktemp failed"
+    KOS_TRASH_FILE="$_log"
     if [ -n "${QEMU_MACHINE:-}" ]; then
         need_qemu
         boot_args "$_elf"
@@ -251,6 +315,10 @@ poll_image() { # <elf> <ere>...
         "$_elf" >"$_log" 2>&1 &
     fi
     _qpid=$!
+    # Recorded and trapped BEFORE the poll runs: a caller's until-function, a signal or a
+    # fail() inside the loop all leave this shell without reaching the stop below.
+    KOS_CHILD_PID="$_qpid"
+    kos_trap
     _n=0
     POLL_ALIVE=1
     while [ "$_n" -lt $(( ${QEMU_TIMEOUT:-8} * 5 )) ]; do   # poll at 5 Hz
@@ -264,7 +332,7 @@ poll_image() { # <elf> <ere>...
         sleep 0.2
         _n=$((_n + 1))
     done
-    { kill "$_qpid"; wait "$_qpid"; } 2>/dev/null
+    kos_stop_child
     POLL_MS=$((_n * 200))
     # Judged on the FINAL log: an image that exited between the last poll and the
     # liveness check has everything on the wire and must not read as no-progress. Both
@@ -279,6 +347,7 @@ poll_image() { # <elf> <ere>...
         POLL_UNTIL_OK=1
     fi
     OUT="$(tr -d '\r' < "$_log")"
+    KOS_TRASH_FILE=""
     rm -f "$_log"
     printf '%s\n' "$OUT"
 }
@@ -305,6 +374,147 @@ _poll_until() {
 has() { printf '%s\n' "$OUT" | grep -q "$1"; }
 has_e() { printf '%s\n' "$OUT" | grep -qE "$1"; }
 
+# ABOVE ONE CORE THE WIRE HAS NO PER-LINE ATOMICITY: arch_console_write is a byte-at-a-time
+# device loop under no lock, so one core's line arrives shuffled INTO another's, character by
+# character, and a byte-exact grep stops meaning what its author expects. Measured over 1440
+# four-core captures of one image: a third of them carried such a collision.
+#
+# wire_has answers whether <literal> reached the wire with its own bytes in order, allowing
+# foreign bytes among them across a bounded span. The bound is what ONE status line can
+# contribute, so a match stitched out of bytes scattered over the capture is still refused.
+# WIRE_SPAN carries the span the match occupied, and equals the literal's length when nothing
+# was interleaved.
+#
+# POSITIVE ASSERTIONS ONLY. A literal that must be ABSENT is not made safe by this: a shuffle
+# hides it from grep, and answering the reverse question here would take the tolerance for a
+# sighting instead. Corroborate an absence against a positive assertion that the same defect
+# would also break.
+#
+# THE SLACK IS ONE FOREIGN LINE'S WORTH OF BYTES, AND WHICH WRITER CONTRIBUTES IT IS NOT FIXED:
+# a status line lands inside a thread's line as readily as the reverse, and an app's line is
+# routinely the wider of the two. So the slack is read off the capture rather than fixed, and
+# KOS_WIRE_SLACK is only the floor under it: the longest status line,
+# `# doorbell: <n> core(s) answered, rounds 0x<8 hex>` with its newline.
+#
+# THE SLACK COMES FROM THE WINDOW THE MATCH SITS IN AND NEVER FROM THE WIDEST LINE OF THE WHOLE
+# CAPTURE. One interleave leaves the literal across at most TWO ADJACENT physical lines, because
+# the foreign line brings its own newline in with it and that newline is what ends the first of
+# the two; a fragment that arrives without one keeps the literal on a single line. So a candidate
+# is searched inside a window of one line, or of two adjacent lines, and its bound is that
+# window's own widest line. The line that broke the literal is IN the window by construction,
+# which is why the tolerance survives; an unrelated wide line elsewhere in the capture no longer
+# widens the bound, which is the direction that let a presence check pass on bytes it stitched
+# together from somewhere else.
+KOS_WIRE_SLACK=64
+
+wire_has() { # <literal>; reads OUT, sets WIRE_SPAN
+    WIRE_SPAN="$(printf '%s\n' "$OUT" \
+        | KOS_WIRE_PAT="$1" awk -v slack="$KOS_WIRE_SLACK" '
+            # In order and nothing more, so a window that cannot carry the literal at all is
+            # rejected on the pattern length rather than on the window length.
+            function reaches(w, pat,    m, i, j, p) {
+                m = length(pat)
+                i = 1
+                for (j = 1; j <= m; j++) {
+                    p = index(substr(w, i), substr(pat, j, 1))
+                    if (p == 0) { return 0 }
+                    i = i + p
+                }
+                return 1
+            }
+            # The SHORTEST span in <w> holding <pat> in order, 0 for none. Each match found
+            # left to right is shrunk from its end back to its own latest possible start, so a
+            # span that fits the bound is not missed because an earlier start stretched it.
+            function minspan(w, pat,    L, m, i, j, k, e, s, best) {
+                L = length(w)
+                m = length(pat)
+                best = 0
+                i = 1
+                j = 1
+                while (i <= L) {
+                    if (substr(w, i, 1) == substr(pat, j, 1)) {
+                        j++
+                        if (j > m) {
+                            e = i
+                            k = m
+                            while (k >= 1) {
+                                if (substr(w, i, 1) == substr(pat, k, 1)) { k-- }
+                                i--
+                            }
+                            i++
+                            s = e - i + 1
+                            if (best == 0 || s < best) { best = s }
+                            j = 1
+                        }
+                    }
+                    i++
+                }
+                return best
+            }
+            { line[NR] = $0 }
+            END {
+                pat = ENVIRON["KOS_WIRE_PAT"]
+                m = length(pat)
+                for (k = 1; k <= NR; k++) {
+                    w = line[k]
+                    wide = length(line[k])
+                    if (k < NR) {
+                        w = w "\n" line[k + 1]
+                        if (length(line[k + 1]) > wide) { wide = length(line[k + 1]) }
+                    }
+                    lim = m + slack + 1
+                    if (m + wide + 1 > lim) { lim = m + wide + 1 }
+                    if (reaches(w, pat) == 0) { continue }
+                    s = minspan(w, pat)
+                    if (s > 0 && s <= lim) {
+                        print s
+                        exit
+                    }
+                }
+                print 0
+            }')"
+    # An awk that produced nothing would leave every caller vacuously satisfied.
+    if [ -z "$WIRE_SPAN" ]; then
+        fail "wire_has: no answer from awk for: $1"
+    fi
+    [ "$WIRE_SPAN" -gt 0 ]
+}
+
+# How many cores the image reported online, 1 when it reported none. Read from the FIRST
+# status line and not the last: the first lands before any peer runs a thread and was intact in
+# every one of those captures, where the last, emitted while peers already run, is the one that
+# collides.
+wire_cores() {
+    _wc="$(printf '%s\n' "$OUT" \
+        | sed -n 's/^# smp: \([0-9]\{1,\}\) core(s) online$/\1/p' | tail -n1)"
+    if [ -z "$_wc" ]; then
+        _wc=1
+    fi
+    printf '%s' "$_wc"
+}
+
+# A LITERAL A GATE REQUIRES ON THE WIRE. Strict first, so a one-writer capture stays byte-exact
+# and no split goes unreported; above one core a split is tolerated through wire_has alone, so a
+# literal absent for any other reason still fails. Every tolerated split is REPORTED.
+require_on_wire() { # <literal> <prose>
+    require_literal "$1" "the literal required on the wire"
+    if printf '%s\n' "$OUT" | grep -qF -- "$1"; then
+        return
+    fi
+    if [ "$(wire_cores)" -le 1 ]; then
+        fail "$2"
+    fi
+    if ! wire_has "$1"; then
+        fail "$2"
+    fi
+    echo "   TOLERATED A SPLIT: \"$1\" reached the wire across $WIRE_SPAN bytes, broken by a
+   kernel status line, which two harts on one unlocked device wire may do at any byte"
+}
+
+# A WEAK CHECK BY NATURE ABOVE ONE CORE, and it cannot be made otherwise: a shuffle hides text
+# from grep, so every way this can be wrong ends in a pass. A caller on a multi-writer posture
+# owes it a positive assertion the same panic would also break (an exit status, a line the run
+# only reaches by not panicking); one that has none says so in its own header.
 assert_no_panic() {
     if has_e "$KOS_PANIC_RE"; then
         fail "$1"
@@ -358,26 +568,52 @@ require_literal() { # <value> <what>
     fi
 }
 
-# KOS_COUNT: occurrences of a LITERAL in OUT. grep exits 1 for no match and above 1 for a
-# failure of its own, which prints no count at all; taking that for a zero is what lets a
-# broken invocation read as an absence the caller then judges.
-count_literal() { # <literal>
-    _cl_n="$(printf '%s\n' "$OUT" | grep -c -F -e "$1")"
-    _cl_rc=$?
-    if [ "$_cl_rc" -gt 1 ]; then
-        fail "exit $_cl_rc from grep -F -e '$1': the count is UNKNOWN and not zero"
-    fi
-    require_number "$_cl_n" "the count of '$1'"
-    KOS_COUNT="$_cl_n"
+# KOS_LITERAL_N: OCCURRENCES of a LITERAL in <text>, counted left to right and
+# non-overlapping. NOT `grep -c`, which counts the LINES that carry a match: above one core the
+# console has no per-line atomicity, so two markers reach the wire on one physical line and a
+# line count answers 1 where a reader tallies 2. Every exactly-once assertion built on this
+# then passes on a doubled fault, and an interleaved line is precisely how two markers come to
+# share one.
+#
+# An awk that produced nothing would leave the caller judging an empty count, so the answer
+# goes through require_number before it is believed.
+literal_count() { # <text> <literal>
+    require_literal "$2" "the literal to count"
+    _lc_n="$(printf '%s\n' "$1" | KOS_COUNT_PAT="$2" awk '
+        BEGIN { pat = ENVIRON["KOS_COUNT_PAT"]; m = length(pat); n = 0 }
+        {
+            s = $0
+            p = index(s, pat)
+            while (p > 0) {
+                n++
+                s = substr(s, p + m)
+                p = index(s, pat)
+            }
+        }
+        END { print n }')"
+    require_number "$_lc_n" "the count of '$2'"
+    KOS_LITERAL_N="$_lc_n"
 }
 
-# KOS_FIELD_N: occurrences of a record `<name>=<value>` in <text>, the value WHOLE. A
-# substring count reads `scause=0xdead` as a hit for `scause=0xd` and `ADDR=0x80201000` as a hit
-# for `ADDR=0x8020100`. The value ends at the first character that could not continue it, or at
-# end of line.
+# The same count over OUT.
+count_literal() { # <literal>
+    literal_count "$OUT" "$1"
+    KOS_COUNT="$KOS_LITERAL_N"
+}
+
+# KOS_FIELD_N: OCCURRENCES of a record `<name>=<value>` in <text>, the value WHOLE. A substring
+# count reads `scause=0xdead` as a hit for `scause=0xd` and `ADDR=0x80201000` as a hit for
+# `ADDR=0x8020100`. The value ends at the first character that could not continue it, or at end
+# of line.
+#
+# NOT `grep -c`, for the reason literal_count is not: it counts the LINES carrying a match, so
+# two records that reached the wire on one physical line are one hit, and an exactly-once
+# reading of a field passes on a doubled record. The boundary characters are TESTED and not
+# consumed, so two records sharing one separator are both counted.
 #
 # A name or value carrying anything but an identifier character REFUSES rather than being
-# escaped.
+# escaped, which is also what makes the record's single `=` the only one: two occurrences of the
+# record cannot overlap, so advancing past a hit cannot skip another.
 field_count() { # <text> <name> <value>
     require_literal "$2" "the field name"
     require_literal "$3" "the field value"
@@ -386,11 +622,31 @@ field_count() { # <text> <name> <value>
             fail "the field record '$2=$3' holds a character this matcher does not model, so
       its count is UNKNOWN and not zero" ;;
     esac
-    _fc_n="$(printf '%s\n' "$1" | grep -c -E "(^|[^0-9A-Za-z_])$2=$3([^0-9A-Za-z_]|\$)")"
-    _fc_rc=$?
-    if [ "$_fc_rc" -gt 1 ]; then
-        fail "exit $_fc_rc from grep while counting '$2=$3': the count is UNKNOWN and not zero"
-    fi
+    _fc_n="$(printf '%s\n' "$1" | KOS_FIELD_PAT="$2=$3" awk '
+        # index() over a spelled-out set, not a range compare: a range rests on the locale
+        # collation, where `_` can sort among the letters. An empty character is not a word
+        # character, and index() answers 1 for the empty string, so it is refused first.
+        function word(c) {
+            if (c == "") { return 0 }
+            return index("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_", c)
+        }
+        BEGIN { pat = ENVIRON["KOS_FIELD_PAT"]; m = length(pat); n = 0 }
+        {
+            L = length($0)
+            at = 1
+            p = index(substr($0, at), pat)
+            while (p > 0) {
+                b = at + p - 1
+                bc = ""
+                if (b > 1) { bc = substr($0, b - 1, 1) }
+                ac = ""
+                if (b + m - 1 < L) { ac = substr($0, b + m, 1) }
+                if (word(bc) == 0 && word(ac) == 0) { n++ }
+                at = b + m
+                p = index(substr($0, at), pat)
+            }
+        }
+        END { print n }')"
     require_number "$_fc_n" "the count of '$2=$3'"
     KOS_FIELD_N="$_fc_n"
 }
@@ -404,6 +660,25 @@ count_field() { # <name> <value>
 # The matcher, before it is asked to report an absence. Both directions, because only one of
 # them is the defect: a planted record must count ONCE for its own value and NOT AT ALL for a
 # value it merely begins with. A prefix matcher passes the first control and fails the second.
+# THE OCCURRENCE COUNTER, before an exactly-once refusal rests on it. THE CONTROL IS A
+# SAME-LINE DUPLICATE, because that is the reading a line counter gets wrong and an interleaved
+# wire is what produces it: three markers over two lines, two of them sharing one line, so a
+# counter that answers 2 is counting lines and every doubled fault below it reads as a single.
+# The absent marker is the other direction: a counter that reports one is unattributable.
+literal_matcher_control() {
+    _lmc="=== THREAD FAULT === thread 'a' killed=== THREAD FAULT === thread 'b' killed
+=== THREAD FAULT === thread 'c' killed"
+    literal_count "$_lmc" "=== THREAD FAULT ==="
+    [ "$KOS_LITERAL_N" -eq 3 ] \
+        || fail "the literal counter answers $KOS_LITERAL_N for a planted record carrying the
+      marker three times over two lines, two of them on ONE line: it counts lines and not
+      occurrences, so a doubled fault dump passes as a single one"
+    literal_count "$_lmc" "=== BUS FAULT ==="
+    [ "$KOS_LITERAL_N" -eq 0 ] \
+        || fail "the literal counter reports a marker the planted record does not carry, so
+      every count it takes is unattributable"
+}
+
 field_matcher_control() {
     _fmc="  PC=0x80001234 scause=0xdead
   ADDR=0x80201000"
@@ -426,23 +701,73 @@ field_matcher_control() {
     field_count "$_fmc" ADDR 0x80201001
     [ "$KOS_FIELD_N" -eq 0 ] \
         || fail "the field matcher reports an address the planted record does not carry"
+    # THE SAME-LINE DUPLICATE, and the arm above is the near miss it needs: the planted record
+    # there carries the address ONCE, so a matcher that answers 1 to both cannot be told from
+    # one that counts occurrences. Three records over two lines, two of them on ONE line, is
+    # what a wire with no per-line atomicity delivers and what a line count reads as two.
+    _fmc_dup="  ADDR=0x80201000 PC=0x1 ADDR=0x80201000
+  ADDR=0x80201000"
+    field_count "$_fmc_dup" ADDR 0x80201000
+    [ "$KOS_FIELD_N" -eq 3 ] \
+        || fail "the field matcher answers $KOS_FIELD_N for a planted record carrying the
+      address three times over two lines, two of them on ONE line: it counts lines and not
+      occurrences, so a doubled fault record passes as a single one"
+    field_count "$_fmc_dup" ADDR 0x8020100
+    [ "$KOS_FIELD_N" -eq 0 ] \
+        || fail "the field matcher counts a doubled ADDR=0x80201000 as a hit for
+      ADDR=0x8020100, so a fault at a longer address passes as the address asserted"
 }
 
 # Exactly ONE occurrence of a gate's fault-dump marker. The absence prose is the caller's,
-# because what a missing dump means is the whole of what that gate asserts; a second occurrence
-# is a repeated fault and says the same thing everywhere.
+# because what a missing dump means is the whole of what that gate asserts; a repeat prose is
+# given where a second dump means something more than a repeated fault.
+#
+# A REPEAT IS STILL A REPEAT, AND ONLY THE ABSENCE IS A READING A SPLIT EXPLAINS: an interleave
+# hides a marker from grep and can never manufacture a second one, so the count above one is
+# judged byte-exact and the zero goes through require_on_wire.
 #
 # Never a control marker: a control's absence and its repetition are two different findings.
 # check_aspace_ufault_rv64.sh asserts its control on its own lines.
-require_single_marker() { # <marker> <absence-prose>
+require_single_marker() { # <marker> <absence-prose> [repeat-prose]
     require_literal "$1" "the fault-dump marker"
+    literal_matcher_control
     count_literal "$1"
-    if [ "$KOS_COUNT" -eq 0 ]; then
-        fail "fault-dump marker '$1' missing: $2"
+    if [ "$KOS_COUNT" -gt 1 ]; then
+        fail "fault-dump marker '$1' appeared $KOS_COUNT times${3:+: $3}"
     fi
-    if [ "$KOS_COUNT" -ne 1 ]; then
-        fail "fault-dump marker '$1' appeared $KOS_COUNT times"
+    require_on_wire "$1" "fault-dump marker '$1' missing: $2"
+}
+
+# A FAULT RECORD'S FIELD, WHOLE, AND THE ONE READ ABOVE ONE CORE THAT MAY NOT BE TOLERATED.
+# require_on_wire answers whether a LITERAL reached the wire and never which VALUE it carried:
+# foreign bytes are permitted among the pattern's own, so one digit landing inside a record
+# satisfies a shorter value with a longer one, and `ADDR=0x8020100` is already a subsequence of
+# `ADDR=0x80201000` with nothing interleaved at all. Tolerating that would credit a fault at
+# another address, so the match stays byte-exact, through field_count, which pins the value's
+# END. Same reason the realized soak size in check_smp_threads.sh is read strictly.
+#
+# A LITERAL NOT ON THE WIRE AT ALL AND ONE ONLY A BOUNDED MATCH FINDS ARE REPORTED APART, since
+# they send a reader to different places, but the second is NOT resolved further: a record whose
+# value is longer and one a peer's line broke into satisfy the bounded match alike, and telling
+# those two apart is the very thing a subsequence cannot do. Both are refused, and the record
+# <context-ere> selects is printed above the refusal so the reader can see which it was.
+require_field_on_wire() { # <name> <value> <context-ere> <prose>
+    count_field "$1" "$2"
+    if [ "$KOS_COUNT" -gt 0 ]; then
+        return
     fi
+    if [ -n "$3" ]; then
+        printf '%s\n' "$OUT" | grep -E "$3" || :
+    fi
+    if [ "$(wire_cores)" -gt 1 ]; then
+        if wire_has "$1=$2"; then
+            fail "$4.
+  No record carries '$1=$2' byte-exact and a bounded in-order match finds it across $WIRE_SPAN
+  bytes, so either a record names a LONGER value or a peer's line broke into one and left it
+  UNREADABLE. A subsequence cannot separate those, and refuses both"
+        fi
+    fi
+    fail "$4"
 }
 
 # The three assertions an RV64 fault record carries: the address the caller computed, the cause
@@ -452,22 +777,19 @@ require_single_marker() { # <marker> <absence-prose>
 #
 # scause is the whole of what this architecture publishes about the access: no fault-status
 # field and no level field sits beside it (RISC-V Privileged ISA, Supervisor Cause Register).
+#
+# Both fields go through require_field_on_wire, so above one hart a record a peer's line broke
+# into is reported as UNREADABLE rather than as a fault at another address. Neither is tolerated:
+# they carry VALUES, and a bounded in-order match cannot say which value a record named.
 require_rv64_fault_at() { # <addr-hex> <addr-prose> <scause-hex> <cause-prose> <expect-status>
     require_literal "$1" "the faulting address"
     require_literal "$3" "the scause constant"
     require_number "$5" "the expected exit status"
     require_number "$RC" "the status the run reported"
     field_matcher_control
-    count_field ADDR "0x$1"
-    if [ "$KOS_COUNT" -eq 0 ]; then
-        printf '%s\n' "$OUT" | grep -E 'ADDR=|scause='
-        fail "the record faults somewhere other than 0x$1, $2"
-    fi
-    count_field scause "$3"
-    if [ "$KOS_COUNT" -eq 0 ]; then
-        printf '%s\n' "$OUT" | grep -E 'scause='
-        fail "the cause is not $4"
-    fi
+    require_field_on_wire ADDR "0x$1" 'ADDR=|scause=' \
+        "the record faults somewhere other than 0x$1, $2"
+    require_field_on_wire scause "$3" 'scause=' "the cause is not $4"
     if [ "$RC" -ne "$5" ]; then
         fail "expected exit $5, got $RC"
     fi
