@@ -20,21 +20,16 @@ weighted).
 ## The ruling
 
 **The class is the primitive; the service is a thin thread composed on top of it. Never the
-reverse.** The class is written first and defines the API; the service is a transport over that same
-API and is not allowed to invent its own. Full statement, both capability shapes, and the
-bus-versus-device split: `reference/architecture.md`, *Driver packaging: class versus service*.
+reverse.** Full statement, both capability shapes, and the bus-versus-device split:
+`reference/architecture.md`, *Driver packaging: class versus service*.
 
 ## Why this is the microkernel dividend
 
-Because drivers live in userspace, the CONSUMER -- not the kernel -- chooses the coupling and pays
-only for what it uses. A consumer that cannot afford an IPC round-trip links the class and calls it
-inline (lowest latency, single owner, zero kernel tax); a consumer that wants sharing talks to the
-service and pays the round-trip deliberately, in exchange for arbitration and isolation from the
-device. The kernel levies no driver tax at all -- it only routes capabilities -- so the same
-peripheral is a private inline class in one image and a shared service in another with no kernel
-change. A kernel-resident driver cannot offer that choice, which is why putting drivers in
-userspace is what makes the duality possible. This is the clearest single demonstration of the
-microkernel structure in KickOS, and it is the reason the ruling reads the way it does.
+Because drivers live in userspace, the coupling is the consumer's choice rather than the kernel's,
+which `reference/architecture.md` states concretely as the dividend. A kernel-resident driver
+cannot offer that choice, which is why putting drivers in userspace is what makes the duality
+possible. This is the clearest single demonstration of the microkernel structure in KickOS, and it
+is the reason the ruling reads the way it does.
 
 ## The 1:1 rule (what stops it rotting)
 
@@ -55,12 +50,9 @@ These are what make the same object usable both inline and behind a service.
 
 ## Watchdog: class by default
 
-A watchdog is single-owner liveness proof, so it is a class instantiated in the thread that must
-prove it is alive; the kick authority is the cap on its MMIO region. Routing the kick through a
-service would INVERT its purpose -- if the service thread wedged, every client would fail to kick,
-which is the exact failure a watchdog exists to catch. The one service case is a software-watchdog
-SUPERVISOR: N threads check in, the supervisor owns the watchdog class instance and kicks the
-hardware only if all checked in, handing out per-client check-in caps. Still built on the class.
+A watchdog is single-owner liveness proof, so it is a class, and the one service case is a
+software-watchdog SUPERVISOR handing out per-client check-in caps. Why each way round, and the
+kick authority: `reference/architecture.md`, *Driver packaging: class versus service*.
 
 ## Sensors: the same duality
 

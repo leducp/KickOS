@@ -5,6 +5,12 @@
 # QEMU smoke gate for the armv7m target: boot the `hello` image on a QEMU
 # Cortex-M4 (mps2-an386) via semihosting and assert the two userspace threads
 # ping-ponged.
+#
+# THE PLACEHOLDER CLAUSE AND assert_no_panic ARE WEAK ON A MULTI-WRITER POSTURE and neither can
+# be made positive here: the banner's core name is per board and this gate reaches boards it
+# carries no name for, so "not the placeholder" is all it can say, and a panic in a third thread
+# leaves the ping-pong rounds standing. Both are sound on the one-core boards, which is most of
+# what registers this gate; on qemu-arm64 above one core a shuffle can silence either.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"

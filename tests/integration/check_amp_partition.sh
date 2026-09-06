@@ -10,8 +10,18 @@
 #        and every count below is derived from it, so a literal 2 appears nowhere.
 #
 # The counts are keyed on the width, the round-trip clauses are not: node 0's app calls the
-# FIRST peer the partition names and no other. The banner and announcement counts also read
-# lines the quieter nodes printed, which N6h says a gate may not rest on.
+# FIRST peer the partition names and no other.
+#
+# NOT ONE CLAUSE BELOW READS A LINE A QUIETER NODE PRINTED, and none may be added: the nodes
+# share one console, no lock spans two kernels, and N6h rules the stream interleaves at byte
+# granularity, so any such line can arrive cut in half and an exact count of them fails on a
+# draw. The announcement count that used to sit here was measured failing 1 run in 10 on a
+# partition of three, and the rate rises with the width.
+#
+# What replaced it is a per-node mark each node's own app publishes into the shared record,
+# which NODE 0 reads and reports in one line of its own. `amp_window` witnesses each peer's
+# KERNEL servicing a doorbell and the round trip witnesses the first peer's app alone, so that
+# mark is the only witness a node this demo never calls has.
 #
 # A two-kernel gate draws fresh every run on the console interleaving, on which kernel reaches
 # its first publication first, and on which is inside a masked handler when the other rings, so
@@ -44,7 +54,6 @@ case "$NODES" in
     ''|*[!0-9]*) fail "the node count '$NODES' is not a number" ;;
 esac
 [ "$NODES" -ge 2 ] || fail "a partition of $NODES node(s) has no crossing to witness"
-PEERS=$((NODES - 1))
 
 need_qemu_machine
 
@@ -55,23 +64,37 @@ echo "== building the partition artefact =="
 
 run_image "$ART"
 
-# Every clause below reads a line only a live partition prints.
-banners="$(printf '%s\n' "$OUT" | grep -c 'microkernel RTOS' || true)"
-[ "$banners" -eq "$NODES" ] \
-    || fail "expected $NODES kernel banner(s) from the merged artefact, saw $banners"
-
-# Which index a peer carries is the partition's, so this counts rather than naming one.
-announced="$(printf '%s\n' "$OUT" | grep -c 'ampping: node [0-9][0-9]* serves port' || true)"
-[ "$announced" -eq "$PEERS" ] || fail "$announced of $PEERS peer(s) announced the port the
-  partition bound for them"
+# Every clause below reads a line only a live partition prints, and every one of them is a line
+# NODE 0 printed.
 printf '%s\n' "$OUT" | grep -qE 'ampping: node [0-9]+ calls node [0-9]+ port' \
     || fail "node 0 never announced the far port the partition handed it"
 
-served="$(printf '%s\n' "$OUT" | grep -c '^  serve ' || true)"
-[ "$served" -ge 1 ] || fail "no peer's service thread took a call: a far call reached no thread"
+# EVERY NODE'S APP RAN, on node 0's own reading of the shared record. Each node's app asks its
+# own kernel to publish the port the partition names it, biased by one; node 0 derives that port
+# from its own copy of the list and counts the rows that agree, its OWN row included as the
+# known-value control. Which index a node carries is the partition's, so this counts rather
+# than naming one, and the total is compared against the width the partition states.
+alive="$(printf '%s\n' "$OUT" \
+    | sed -n 's/^ampping: \([0-9]*\) of \([0-9]*\) node app(s) alive on the port the partition names, own row \([0-9]*\).*/\1 \2 \3/p' \
+    | tail -1)"
+[ -n "$alive" ] || fail "node 0 never reported which nodes' apps published their own port.
+  This line is node 0's own reading of the shared record and is the only witness that an app
+  ran on a node this demo never calls."
+alive_ok="$(echo "$alive" | cut -d' ' -f1)"
+alive_of="$(echo "$alive" | cut -d' ' -f2)"
+alive_own="$(echo "$alive" | cut -d' ' -f3)"
+[ "$alive_own" = "1" ] || fail "node 0 did not read back its OWN app mark, so this sweep is an
+  artefact rather than a report on the peers: the reader and the writer disagree about the row
+  or about the port the partition names this node."
+[ "$alive_of" -eq "$NODES" ] || fail "node 0 swept $alive_of node(s) where the partition states
+  $NODES: the app and this gate are reading different widths"
+[ "$alive_ok" -eq "$NODES" ] || fail "$alive_ok of $NODES node app(s) published the port the
+  partition names them. A node missing here reached no app at all, or reached one that bound a
+  port the partition does not name it."
+echo "== node apps: $alive_ok of $NODES published the port the partition names, own row read back"
 
-# The ANSWER and not merely a wake: a peer replies with the request byte plus one. The
-# answering node is left unnamed and only required not to be node 0.
+# The ANSWER and not merely a wake: a peer replies with the request byte plus one. The answering
+# node is left unnamed and only required not to be node 0.
 printf '%s\n' "$OUT" | grep -qE 'ping 1 -> pong 2 from node [1-9][0-9]*' \
     || fail "node 0's first round did not come back carrying a peer's own answer"
 
@@ -105,5 +128,5 @@ took="$(echo "$defer" | cut -d' ' -f4)"
 echo "== deferred delivery: $skipped raise(s) skipped at node $at, which took $took message(s)"
 
 rounds="$(printf '%s\n' "$OUT" | grep -c ' -> pong ' || true)"
-echo "PASS: one artefact, $banners kernel(s), $rounds round(s) answered by a thread in another
-  kernel"
+echo "PASS: one artefact of $NODES node(s), $alive_ok node app(s) alive, $rounds round(s)
+  answered by a thread in another kernel"

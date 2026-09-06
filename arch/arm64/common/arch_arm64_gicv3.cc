@@ -652,6 +652,19 @@ void arch_irq_clear_pending(int line)
     kickos_armv8a_gic_clear_pending(line);
 }
 
+// The doorbell's SGI is taken by the dispatch ahead of kickos_isr_irq, so it holds no
+// irq_table slot; INTID 0 is inside KICKOS_MAX_IRQ here, the banked SGI and PPI IDs sitting
+// below the SPIs rather than outside them.
+bool arch_irq_line_kernel_owned(int line)
+{
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
+    return line == GIC_SGI_DOORBELL;
+#else
+    (void)line;
+    return false;
+#endif
+}
+
 // Test scaffolding (arch.h). The set-pending registers pend in the controller, so delivery
 // takes the ordinary path and the latch-while-masked contract needs no software shadow.
 void arch_irq_inject(int irq)

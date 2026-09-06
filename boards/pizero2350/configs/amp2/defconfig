@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+CONFIG_BOARD_PIZERO2350=y
+
+# ONE image per node on the RP2350's two Cortex-M33 cores. This image drives one core and names
+# a peer it launches over the SIO FIFO; the node index is the only thing that differs between
+# the two builds, and the preset states it.
+CONFIG_KICKOS_CORES_ONE=y
+CONFIG_KICKOS_AMP_POSTURE_OWN_IMAGE=y
+CONFIG_MEMORY_MODEL_MPU=y
+
+CONFIG_KICKOS_AMP_NODES=2
+
+# This part has two spans to divide and not one: text runs from XIP flash, data lives in SRAM,
+# so the partition carries a base and a stride for each.
+#
+# Text: XIP flash at 0x1000_0000 (datasheet Table 10, section 2.2.2), a 16 MiB window per chip
+# select, and BOOTABLE CONTENT MUST LIE WHOLLY IN THE FIRST 16 MiB (section 5.1.2.1).
+CONFIG_KICKOS_AMP_TEXT_BASE=0x10000000
+CONFIG_KICKOS_AMP_TEXT_SHARE=0x100000
+
+# Data, and the region every node writes has to sit here rather than in flash: LDREX/STREX
+# succeed ONLY over 0x2000_0000 through 0x2008_2000 (section 2.1.6.2), and an exclusive loop
+# outside that range never completes. The reservation granule is 16 bytes (section 2.1.6.1),
+# which every .amp_shared sub-section clears by aligning to 64.
+#
+# SRAM is 520 KiB in ten banks: 512 KiB striped as two 256 KiB regions, word-striped four ways
+# on address bits 3:2, plus two 4 KiB banks outside the striped range (Tables 11 and 12,
+# section 2.2.3; section 4.2). The partition divides the striped 512 KiB only. Two nodes of
+# 240 KiB and a 32 KiB window end exactly at 0x2008_0000, the striped end. The two 4 KiB banks
+# are left out: each has its own AHB5 arbiter, so accesses to different banks proceed
+# simultaneously (section 2.1.1) and claiming them as ordinary partition memory would spend
+# that.
+CONFIG_KICKOS_AMP_PARTITION_BASE=0x20000000
+CONFIG_KICKOS_AMP_NODE_SHARE=0x3C000
+CONFIG_KICKOS_AMP_SHARED_SIZE=0x8000
+
+# A Ring is two 64-byte-aligned indices and four 264-byte slots, and a Window is one Ring per
+# ordered pair per class. The link refuses an overflow, so this figure is a supply with
+# headroom, not a measurement to keep in step.
+
+# The node-to-core map, in node order. Node 0 takes core 0, the core the bootrom enters an image
+# on (section 5.2), core 1 being parked until node 0 launches it.
+CONFIG_KICKOS_AMP_PARTITION_CORES=2
+CONFIG_KICKOS_AMP_NODE_CORES="0,1"
+
+# Node 0 serves port 2, node 1 serves 3 and 4. Node 1's second port is bound with NO RECEIVER,
+# which is what gives an arm a far port to park a caller on.
+CONFIG_KICKOS_AMP_PORTS="0:2,1:3,1:4"
+
+CONFIG_KICKOS_MAX_ENDPOINTS=9
+
+# A narrowed thread pool, by arithmetic: a node's share is 240 KiB, the arena floor is the
+# thread count times KICKOS_USER_STACK_SIZE, and the shared selftest wants about 116 KiB of
+# heap. 240 KiB cannot hold a 136 KiB floor and that heap at once. Every slot dropped frees
+# KICKOS_USER_STACK_SIZE from the arena floor plus its kernel stack, so this count and
+# KICKOS_APPDATA_SIZE trade against one span from opposite ends. An arm that cannot seat its
+# workers skips through the suite's own live probe, which spawns them and counts.
+CONFIG_KICKOS_MAX_THREADS=6
+
+CONFIG_KICKOS_USER_STACK_SIZE=8192
+CONFIG_KICKOS_IDLE_STACK_SIZE=512
+CONFIG_KICKOS_ROOT_STACK_SIZE=8192
+
+CONFIG_KICKOS_ENABLE_SELFTEST=y
+
+# Stated by the posture rather than passed at configure: the knob defaults to n, and a partition
+# is flashed by hand more often than any other posture here, the two gates that boot the
+# artefact not registering on this board. It returns the board on a CLEAN EXIT only, a completed
+# run, a refusal or a fault that reaches shutdown; a hard hang still costs a hand on the
+# hardware.
+CONFIG_KICKOS_SHUTDOWN_TO_BOOTLOADER=y

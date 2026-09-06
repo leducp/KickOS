@@ -41,8 +41,10 @@
 # BOARD, and the tail every printing chain ends in). A board's variants differ by exactly those
 # knobs.
 #
-# The top-level CMakeLists derives the preset name from the board and variant it is configuring
-# and asks THIS FILE whether that name is declared, so a new preset is declared once.
+# The top-level CMakeLists rebuilds the preset name from the board, the variant and, on an
+# own-image AMP node, the node index, and asks THIS FILE whether that name is declared, so a new
+# preset is declared once. tests/static/check_trap_redzone_decls.sh matches a record against that
+# same rebuild, so a record naming anything else is reported dead rather than read as declared.
 #
 # lx6 carries one class. CHIP_ESP32 selects no HAS_MPU, so nothing on that part isolates one
 # thread's memory from another's and the syscall classes have no one to protect. PREEMPT applies
@@ -298,6 +300,8 @@ preset  armv7m pizero2350
 preset  armv7m pizero2350-flat
 preset  armv7m pizero2350-st
 preset  armv7m pizero2350-amp
+preset  armv7m pizero2350-amp2-n0
+preset  armv7m pizero2350-amp2-n1
 # The two 64 KiB FLASH parts, whose OWN dispatch is smaller than the fleet worst case.
 preset  armv7m f302nucleo
 preset  armv7m f302nucleo-st

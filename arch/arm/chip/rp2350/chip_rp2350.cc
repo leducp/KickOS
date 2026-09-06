@@ -27,6 +27,7 @@
 //   - 52 NVIC lines; the console is on UART1 (UART1_IRQ = 34, 3.2). See the IO_BANK0
 //     block below for why the Pi-Zero header forces UART1, not UART0.
 
+#include <kickos/arch/amp_shared.h> // arch_amp_shared_zero: the partition primary's own clear
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
 #include <kickos/diag.h>
@@ -35,6 +36,9 @@
 
 #include <stdint.h>
 
+#include <fatal_status.ld.h>
+
+#include <kickos/chip_limits.h> // KICKOS_RP2350_SIO_IRQ_BELL: the doorbell's own NVIC line
 #include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/clocks.h"
@@ -55,9 +59,6 @@ namespace irq = kickos::rp2350::irq;
 namespace kickos
 {
     int kmain(int argc, char** argv);
-#if defined(KICKOS_ENABLE_SELFTEST)
-    void kpanic(char const* msg) __attribute__((noreturn)); // arch_reboot: the ROM call must not return
-#endif
 }
 
 extern "C"
@@ -72,6 +73,7 @@ void kickos_arm_pmsav8_init(void);
 
 extern void (*__init_array_start[])();
 extern void (*__init_array_end[])();
+extern uint32_t g_isr_vector[]; // startup.S: the vector table at this image's flash base
 
 // Pre-init value: clk_sys as the bootrom leaves it. clocks_init() overwrites this on
 // every path; SysTick (processor clock) reads it live.
@@ -84,15 +86,23 @@ namespace
     {
         return *reinterpret_cast<volatile uint32_t*>(a);
     }
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Bootrom header accessors (arch_reboot): its magic is bytes and its pointers are
-    // halfwords, so neither is reachable through r32.
+#if defined(KICKOS_ENABLE_SELFTEST) || KICKOS_AMP_OWN_IMAGE
+    // Bootrom header accessors: its magic is bytes and its pointers are halfwords, so neither
+    // is reachable through r32.
     // GCC assumes the first min-pagesize bytes are unmapped; 0x0 is the bootrom.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Warray-bounds"
     inline uint8_t r8(uintptr_t a) { return *reinterpret_cast<volatile uint8_t*>(a); }
     inline uint16_t r16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
 #pragma GCC diagnostic pop
+#endif
+
+#if KICKOS_AMP_OWN_IMAGE
+    // The clk_sys the primary resolved, published for every other node to install: a peer runs
+    // no clocks_init and would otherwise keep the bootrom's reset value while executing off a
+    // PLL three times faster. The dsb in arch_amp_release_peers orders this store ahead of any
+    // peer's boot.
+    KICKOS_AMP_SHARED("chip") volatile uint32_t g_amp_clk_sys_hz = 0;
 #endif
 
     // Chosen by clocks_init (which source clk_peri lands on), consumed by uart1_init.
@@ -308,6 +318,121 @@ namespace
         r32(reg::uart::CR) = reg::uart::CR_ENABLE;
     }
 
+#if KICKOS_AMP_OWN_IMAGE
+    // One UART and two kernels, so a chunk is claimed against the peer before its bytes are
+    // pushed. The claim is held to the LINE, not to the chunk: console_write_user copies a user
+    // buffer in 64-byte pieces and calls the writer once per piece, so a claim released at the
+    // end of a chunk would let the peer's whole line land inside one of this node's.
+    //
+    // Ownership is bounded by a DEADLINE taken when the claim is, never by what the holder
+    // writes next: a node that stops mid-line, or dies there, would otherwise keep the lock for
+    // as long as it lives and leave every later line unserialised. The holder drops the claim at
+    // its first release past the deadline, and a peer that spins its budget out against an
+    // expired one releases the register under the holder and takes it. So the bound holds with
+    // the holder gone, which is what the console's "always works, even while dying" guarantee
+    // needs.
+    //
+    // A stolen-from node must not then end the thief's claim, so the release is conditional on
+    // the published owner still naming this node. The test and the release are not one atomic
+    // act: a steal landing between them frees a claim one line early and the thief's own release
+    // is then refused by that same test rather than ending a third claim, so the window costs a
+    // shredded line and does not cascade.
+    //
+    // A caller that loses the claim writes anyway; the cost is a shredded line.
+    //
+    // Interrupts are NOT masked across it: console.cc requires that the chip transport never be
+    // held under IrqLock across a transmission.
+
+    // The wire time of the 512-byte run the claim is meant to cover: 512 bytes at 115200 8N1
+    // is 44.4 ms. A holder past this is stalled or dead, not writing a long line.
+    constexpr uint32_t CONSOLE_HOLD_MAX_US = 50000u;
+
+    // Read by a peer whose own claim failed, so they live where both nodes look. Zeroed by the
+    // partition primary before any peer runs (arch_amp_shared_zero).
+    KICKOS_AMP_SHARED("chip") volatile uint32_t g_console_owner = 0;    // 0 free, else node id + 1
+    KICKOS_AMP_SHARED("chip") volatile uint32_t g_console_deadline = 0; // TIMER0 us
+
+    constexpr uint32_t CONSOLE_OWNER_SELF = KICKOS_AMP_NODE_ID + 1u;
+
+    bool g_console_held = false;
+
+    bool console_hold_expired()
+    {
+        // Half-range difference: TIMER0's low half wraps every ~71 min and a hold is tens of ms.
+        return (r32(reg::timer::TIMERAWL) - g_console_deadline) < 0x80000000u;
+    }
+
+    void console_claim_taken()
+    {
+        g_console_held = true;
+        g_console_deadline = r32(reg::timer::TIMERAWL) + CONSOLE_HOLD_MAX_US;
+        __asm volatile("dsb" ::: "memory"); // a peer reading this owner must see its deadline
+        g_console_owner = CONSOLE_OWNER_SELF;
+    }
+
+    void console_acquire()
+    {
+        // A fault landing inside a run this node already holds writes into it rather than
+        // spinning its budget out against its own claim. One flag serves: this node drives one
+        // core.
+        if (g_console_held)
+        {
+            return;
+        }
+        // The wait and the grant it waits out are both TIMER0 microseconds. Counted in loop
+        // iterations instead, the wait grows with a degraded core clock while the grant does
+        // not, and a contender whose patience has outrun the grant takes a line its holder is
+        // still legitimately inside. One grant's length from here covers any claim taken
+        // before this call.
+        uint32_t const waited_from = r32(reg::timer::TIMERAWL);
+        // KICKOS_POLL_SPIN_MAX is the structural backstop and not the budget: a TIMER0 that has
+        // stopped must still leave this node able to emit.
+        for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
+        {
+            if (r32(reg::sio::SPINLOCK31) != 0)
+            {
+                console_claim_taken();
+                return;
+            }
+            if ((r32(reg::timer::TIMERAWL) - waited_from) >= CONSOLE_HOLD_MAX_US)
+            {
+                break;
+            }
+        }
+        // A claim past its bound, so its holder is stalled mid-line or gone. Any write to the
+        // register releases it, whichever core claimed it.
+        if (g_console_owner != 0 and console_hold_expired())
+        {
+            r32(reg::sio::SPINLOCK31) = 1u;
+            if (r32(reg::sio::SPINLOCK31) != 0)
+            {
+                console_claim_taken();
+            }
+        }
+    }
+
+    void console_release(bool ended_line)
+    {
+        if (not g_console_held)
+        {
+            return;
+        }
+        if (not ended_line and not console_hold_expired())
+        {
+            return;
+        }
+        g_console_held = false;
+        if (g_console_owner != CONSOLE_OWNER_SELF)
+        {
+            return;
+        }
+        g_console_owner = 0;
+        __asm volatile("dsb" ::: "memory"); // no peer may read this node as owner past the free
+        r32(reg::sio::SPINLOCK31) = 1u;
+    }
+#endif
+
+#if !KICKOS_AMP_OWN_IMAGE
     // --- Buffered console TX backend (console_tx.h). The ring drains via the PL011
     // transmit interrupt with the FIFO disabled (see LCR_H_8N1); the idle->busy prime
     // starts the transfer. slot_free/push touch one data register; irq_enable/disable
@@ -333,6 +458,7 @@ namespace
     char console_tx_buf[CONSOLE_TX_SIZE];
     console_tx_backend const rp_console_backend = {
         rp_tx_slot_free, rp_tx_push, rp_tx_irq_enable, rp_tx_irq_disable};
+#endif
 
     // The window arch_console_reclaim rewrites: UART1's whole APB slot (UART0 sits at
     // 0x40070000, UART1 at 0x40078000, DS 12.1.8), which is the register block plus the
@@ -374,17 +500,58 @@ void arch_init(void)
     // clk_sys/clk_ref (already live off the ROSC at reset), so release them now. UART1
     // is clocked by clk_peri, which is OFF until clocks_init: release it BEFORE that
     // and its RESET_DONE never asserts, hanging the boot.
-    unreset(reg::resets::IO_BANK0 | reg::resets::PADS_BANK0 | reg::resets::TIMER0);
-    clocks_init();
-    unreset(reg::resets::UART1);
-    uart1_init();
-#if defined(KICKOS_USB_CONSOLE)
-    usb_clock_init(); // after clocks_init: PLL_USB needs the crystal verdict
+    // The clock tree, the peripheral resets and the console UART are partition-wide, so only
+    // the PRIMARY brings them up. A peer re-entering clocks_init stops clk_sys under a primary
+    // executing off those PLLs, which the datasheet documents as an unrecoverable lock-up, and
+    // drives UART1 through a reset mid-transmission; both present as the primary wedging.
+    //
+    // A peer still owes its own SystemCoreClock, every delay, timeout and baud divisor being
+    // derived from it. It is installed from the primary's resolved answer, never re-derived.
+#if KICKOS_AMP_OWN_IMAGE
+    if (KICKOS_AMP_NODE_ID != 0)
+    {
+        uint32_t const hz = g_amp_clk_sys_hz;
+        if (hz != 0)
+        {
+            SystemCoreClock = hz;
+        }
+    }
+    else
 #endif
+    {
+        unreset(reg::resets::IO_BANK0 | reg::resets::PADS_BANK0 | reg::resets::TIMER0);
+        clocks_init();
+        unreset(reg::resets::UART1);
+        uart1_init();
+#if defined(KICKOS_USB_CONSOLE)
+        usb_clock_init(); // after clocks_init: PLL_USB needs the crystal verdict
+#endif
+#if KICKOS_AMP_OWN_IMAGE
+        g_amp_clk_sys_hz = SystemCoreClock;
+        // Before any peer exists, so the release cannot land on a claim in progress.
+        r32(reg::sio::SPINLOCK31) = 1u;
+#endif
+    }
 #if KICKOS_HAVE_MPU
     kickos_arm_pmsav8_init(); // MAIR + MemManage; first switch enables the MPU
 #endif
     kickos_armv7m_init();
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
+    // SIO_IRQ_BELL is CORE-LOCAL (datasheet 3.1.6), so every node opens its own. Through
+    // arch_irq_unmask for the priority: the NVIC IPR resets to 0, and a doorbell above the
+    // BASEPRI band runs its service inside a section holding IrqLock.
+    arch_irq_unmask(KICKOS_RP2350_SIO_IRQ_BELL);
+#endif
+}
+
+bool arch_irq_line_kernel_owned(int line)
+{
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
+    return line == KICKOS_RP2350_SIO_IRQ_BELL;
+#else
+    (void)line;
+    return false;
+#endif
 }
 
 void arch_console_write(char const* buf, size_t n)
@@ -394,6 +561,13 @@ void arch_console_write(char const* buf, size_t n)
 
 void arch_console_write_sync(char const* buf, size_t n)
 {
+    if (n == 0)
+    {
+        return;
+    }
+#if KICKOS_AMP_OWN_IMAGE
+    console_acquire();
+#endif
     for (size_t i = 0; i < n; i++)
     {
         uint32_t spin = 0;
@@ -401,19 +575,37 @@ void arch_console_write_sync(char const* buf, size_t n)
         {
             if (++spin > KICKOS_POLL_SPIN_MAX)
             {
+#if KICKOS_AMP_OWN_IMAGE
+                console_release(true); // a wedged channel keeps no claim
+#endif
                 return; // bounded: a wedged UART must not hang the panic path (drop)
             }
         }
         r32(reg::uart::DR) = static_cast<uint8_t>(buf[i]);
     }
+#if KICKOS_AMP_OWN_IMAGE
+    console_release(buf[n - 1] == '\n');
+#endif
 }
 
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
+#if KICKOS_AMP_OWN_IMAGE
+    // No buffered path on a partition: the console contract's "TX IRQ enabled whenever the ring
+    // is non-empty" is stated of ONE ring, and IMSC.TXIM is one bit over two. UART1_IRQ reaches
+    // both cores' controllers (datasheet 3.2), so whichever node's drain reaches empty first
+    // clears the bit the other's queued bytes are waiting on. With no ring nothing writes IMSC,
+    // TXIM stays 0, and the polled writer above is this node's one writer.
+    (void)storage;
+    (void)size;
+    (void)irq_line;
+    return nullptr;
+#else
     *storage = console_tx_buf;
     *size = CONSOLE_TX_SIZE;
     *irq_line = irq::UART1_IRQ;
     return &rp_console_backend;
+#endif
 }
 
 void arch_console_reclaim_window(uintptr_t* base, size_t* size)
@@ -582,11 +774,18 @@ int arch_reboot(void)
 
     constexpr uint32_t REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL = 0x0002u;
     constexpr uint32_t REBOOT2_FLAG_NO_RETURN_ON_SUCCESS = 0x0100u;
+    char const REBOOT_RETURNED_NL[] = "\n";
     // delay_ms must never be 0: the bootrom mishandles a zero timeout, which pico-sdk
     // works around by forcing 1. Not in the datasheet errata.
     rom_reboot(REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS,
                10u, 0u, 0u);
-    kickos::kpanic(kickos::diag::kRebootRp2350);
+    // NOT kpanic: this is reached from kfault_terminate, where kpanic itself ends, so
+    // panicking here re-enters a console kpanic_enter has already reclaimed. The polled writer
+    // is the one arch.h states is safe with interrupts down.
+    arch_console_write_sync(kickos::diag::kRebootRp2350,
+                            sizeof(kickos::diag::kRebootRp2350) - 1);
+    arch_console_write_sync(REBOOT_RETURNED_NL, sizeof(REBOOT_RETURNED_NL) - 1);
+    arch_shutdown(KICKOS_FATAL_STATUS);
 }
 #endif
 
@@ -617,12 +816,62 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 }
 #endif
 
+#if KICKOS_AMP_OWN_IMAGE
+// Restores the reset QMI address translation, an identity map over the whole 16 MiB (datasheet
+// Tables 1302-1305, pp.1247-1249; prose at 12.14.4, p.1234). Node 0 reads its peer's vector
+// table out of flash to launch it, and that address is the peer's only under an identity map.
+// The bootrom reprograms ATRANS when the booted image sits in a flash partition (12.14.4.1,
+// p.1235), and a ROLLING_WINDOW_DELTA item in node 0's IMAGE_DEF makes it do so too (5.9.3.5,
+// pp.424-425); this partition uses neither.
+//
+// BOTH CALLS MUST RUN BEFORE CORE 1 IS LAUNCHED. The flush "unpins pinned cache lines"
+// (5.4.8.8, p.386) across the ONE cache both nodes share, so the same call once a peer is
+// running would take that peer's cache-as-SRAM. Nothing is pinned yet: the bootrom invalidates
+// every line on entering flash boot (4.4.1.2, p.343).
+void kickos_rp2350_xip_identity(void)
+{
+    if (KICKOS_AMP_NODE_ID != 0)
+    {
+        return;
+    }
+    if (r8(0x10u) != 'M' or r8(0x11u) != 'u' or r8(0x12u) != 0x02u)
+    {
+        return; // no bootrom table here; the reset state is what it already is
+    }
+    using lookup_fn = void* (*)(uint32_t, uint32_t);
+    lookup_fn const lookup =
+        reinterpret_cast<lookup_fn>(static_cast<uintptr_t>(r16(0x16u)));
+    constexpr uint32_t RT_FLAG_FUNC_ARM_SEC = 0x0004u;
+    using void_fn = void (*)(void);
+
+    // rom_table_code(c1, c2) is (c2 << 8) | c1 (5.4.1, p.378). WHICH LISTED CHARACTER IS c1 is
+    // not stated anywhere in the datasheet, so the byte order here matches the 'R','B' spelling
+    // arch_reboot already uses.
+    void_fn const reset_trans =
+        reinterpret_cast<void_fn>(lookup(('A' << 8) | 'R', RT_FLAG_FUNC_ARM_SEC));
+    void_fn const flush_cache =
+        reinterpret_cast<void_fn>(lookup(('C' << 8) | 'F', RT_FLAG_FUNC_ARM_SEC));
+    if (reset_trans != nullptr)
+    {
+        reset_trans();
+    }
+    // Required after a translation change (Tables 1302-1305), and harmless when the call above
+    // changed nothing.
+    if (flush_cache != nullptr)
+    {
+        flush_cache();
+    }
+}
+#endif
+
 void Reset_Handler(void)
 {
     // The bootrom sets Secure VTOR before entry (datasheet 5.2.2), but pin it
     // explicitly to the image base for robustness (a warm reboot / debugger entry
     // may not have re-run the bootrom path). SCB->VTOR = 0xE000ED08.
-    r32(0xE000ED08) = 0x10000000u;
+    // From the SYMBOL and never a literal: a peer links at its own flash slice, and a
+    // literal base would point its table at node 0's handlers.
+    r32(0xE000ED08) = reinterpret_cast<uintptr_t>(g_isr_vector);
 
     // Enable the FPU (CP10/CP11 full access) before any code a hard-float ABI might
     // emit FP into; Cortex-M33 has an FPv5-SP FPU. SCB->CPACR = 0xE000ED88.
@@ -631,6 +880,12 @@ void Reset_Handler(void)
     __asm volatile("isb" ::: "memory");
 
     kickos_ranges_init(); // init .data; zero .bss
+#if KICKOS_AMP_OWN_IMAGE
+    kickos_rp2350_xip_identity();
+    // Ahead of arch_init, which publishes into that region; later would erase the primary's
+    // own publication. The region is outside .bss, so kickos_ranges_init does not reach it.
+    arch_amp_shared_zero();
+#endif
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {
         (*fn)();

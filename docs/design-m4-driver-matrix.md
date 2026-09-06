@@ -2,7 +2,9 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # M4 driver-coverage matrix -- per-board peripheral survey + complexity/gain backlog
 
-> **Status: ACTIVE** -- the live prioritized backlog for the milestone in flight (M4).
+> **Status: LANDED** -- the survey and the weighting that bounded M4's scope. M4 has closed and
+> the driver era returns at M9, so the backlog below is the record it was taken as rather than the
+> live one; `roadmap.md` says what is in flight.
 
 **NOT A CONTRACT.** The complement of `docs/design-driver-era-scope.md`
 (the WORK) and `roadmap.md` (the milestone): this doc is the SURVEY -- what each of the

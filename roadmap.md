@@ -701,12 +701,13 @@ pair coherent, so the two land together and every later row moves up. S4 is comp
 instruction-side poke included.
 
 **S5 IS COMPLETE AND ITS VERDICT IS THE STEP'S FINDING, WHICH IS WHAT THE CONTRACT ASKED FOR.** The
-differ exits 0: not one member of the seam frozen before either backend moved, over a real corpus of
-25 signature records with every group above its floor and a 47-record known-answer control answering
-as expected. A second backend went in whose identity is a published index rather than a register
-read, whose doorbell is a CLINT word lowered through a machine-mode trampoline rather than a GIC
-software interrupt, and whose lock is LR/SC; the seam absorbed all three unchanged. **That is a
-positive result about the seam rather than an absence of news.**
+differ exited 0: not one member of the seam frozen before either backend moved, over a real corpus
+of 25 signature records with every group above its floor and a 47-record known-answer control
+answering as expected. That is a recorded result and not a re-takeable one, the differ having since
+been removed from the tree. A second backend went in whose identity is a published index rather
+than a register read, whose doorbell is a CLINT word lowered through a machine-mode trampoline
+rather than a GIC software interrupt, and whose lock is LR/SC; the seam absorbed all three
+unchanged. **That is a positive result about the seam rather than an absence of news.**
 
 **WHAT S5 ADDED TO THE PLAN'S OWN ACCOUNT, because the RV64 lowering is not the A64 one.** The
 ruling that a peer's machine software interrupt cannot be delegated is measured here rather than

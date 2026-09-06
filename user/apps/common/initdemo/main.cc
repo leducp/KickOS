@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// M4.3 per-thread stdout regression. Proves that a root pre-publish printf (whose
+// Per-thread stdout regression. Proves that a root pre-publish printf (whose
 // cap index 0 is empty, so its send fails) does NOT poison a post-publish worker
 // whose cap 0 IS seated to the console endpoint. _write (user/src/newlib_stubs.cc)
 // self-classifies per invocation against the CALLING thread's own cap 0; a

@@ -4,7 +4,7 @@
 #
 # Posture pin for an AMP preset, read from the RESOLVED partition.
 #
-# usage: amp-pin.sh <build-dir> <expected node index> <shared|own>
+# usage: amp-pin.sh <build-dir> <expected node index> <shared|own> <expected node count>
 #
 # Every AMP gate is registered by a CMake clause keyed on the posture, so a preset that lost it
 # does not FAIL those gates, it stops registering them, and ctest passes on a run that covered
@@ -13,12 +13,17 @@
 # Non-circular by construction: the expected values are LITERALS the caller states, and the file
 # read is the partition's own generated description rather than anything that derives with the
 # posture.
+#
+# The width is pinned for the same reason: KICKOS_AMP_NODES defaults to the core count, so a
+# preset that lost its stated width fails nothing. It registers every gate and passes them all
+# over a NARROWER partition under the wider one's name.
 
 set -eu
 
-BUILD="${1:?usage: amp-pin.sh <build-dir> <node-index> <shared|own>}"
+BUILD="${1:?usage: amp-pin.sh <build-dir> <node-index> <shared|own> <node-count>}"
 WANT_NODE="${2:?}"
 WANT_POSTURE="${3:?}"
+WANT_NODES="${4:?}"
 
 PORTS="$BUILD/generated/include/kickos/config/amp_ports.h"
 [ -f "$PORTS" ] || { echo "amp-pin: $PORTS was not generated: this build has no partition"; exit 1; }
@@ -56,4 +61,12 @@ case "$WANT_POSTURE" in
         echo "amp-pin: unknown posture '$WANT_POSTURE'"; exit 1 ;;
 esac
 
-echo "amp-pin: $BUILD is node $SELF of a $WANT_POSTURE-image partition naming $COUNT crossing(s)"
+NODES="$(sed -n 's/^CONFIG_KICKOS_AMP_NODES=\(.*\)$/\1/p' "$CFG" | tail -1)"
+if [ -z "$NODES" ] || [ "$((NODES))" -ne "$((WANT_NODES))" ]; then
+    echo "amp-pin: $BUILD holds $NODES node(s) and this step needs $WANT_NODES."
+    echo "         KICKOS_AMP_NODES defaults to the core count, so a lost width registers every"
+    echo "         gate and passes it while covering a narrower partition under this name."
+    exit 1
+fi
+
+echo "amp-pin: $BUILD is node $SELF of $NODES in a $WANT_POSTURE-image partition naming $COUNT crossing(s)"

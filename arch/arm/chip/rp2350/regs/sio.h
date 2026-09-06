@@ -20,6 +20,12 @@ namespace kickos::rp2350::reg::sio
     constexpr uintptr_t GPIO_OUT_SET = BASE + 0x018u; // set 1s in GPIO_OUT (bank 0)
     constexpr uintptr_t GPIO_OUT_CLR = BASE + 0x020u; // clear 1s in GPIO_OUT (bank 0)
     constexpr uintptr_t GPIO_OE_SET = BASE + 0x038u;  // set 1s in GPIO_OE (output enable, bank 0)
+
+    // Hardware spinlock 31 (3.1.4; the register map is 3.1.11, SPINLOCK0 at +0x100 and one
+    // word each). A READ claims it and answers non-zero, or zero where it was already
+    // claimed; a write of any value releases it. The Secure and Non-secure banks carry
+    // SEPARATE locks, so this is the Secure one and no Non-secure code shares it.
+    constexpr uintptr_t SPINLOCK31 = BASE + 0x17Cu;
 }
 
 #endif

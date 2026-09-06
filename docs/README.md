@@ -15,9 +15,9 @@ into the Reference for detail; the Reference links back for context and cites th
 ## Where things live
 
 ### `../STATE.md` -- current state (start here)
-One screen: where the milestone stands, what is next in locked order, the board matrix, the open
-blockers. **The only file that changes every milestone**, which is what lets the rest of the docs
-be read once. It carries no history, no rationale and no task list; it links out instead.
+Read by section: where the milestone stands, what is next in locked order, the board matrix, the
+open blockers. **The only file that changes every milestone**, which is what lets the rest of the
+docs be read once. It carries no history, no rationale and no task list; it links out instead.
 
 ### `book/` -- The KickOS Book (how & why + teaching)
 The durable narrative: what KickOS is, why it is built this way, and a teach-how-a-microkernel-

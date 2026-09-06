@@ -116,8 +116,8 @@ descriptor field or a validator leg, not a special case.
 | A thread with NO ring grant and NO thread arg | `rxsci.cc:260,263` | a per-thread memory flag beside `arg`. **RETIRED IN M4.8.4**: under a task the block is the GROUP's region, so the flag could not deliver the opt-out it read as. It equalled `arg == KOS_DRV_ARG_BLOCK` in every descriptor and is deleted; the ruling is `docs/design-task-layer.md` open question 7 |
 | Which side of the readiness barrier a thread is spawned on | `rxsci.cc:242,260,278,296` | `barrier_after`, a count |
 | A relayed line must be EDGE | `rxsci.cc:103-105` | validator leg L5, at compile time |
-| The thread arg is the window base as a VALUE | `driver_bringup.h:52`, `k64dspi.cc:50` | `arg = KOS_DRV_ARG_WINDOW` |
-| No ring block at all | `driver_bringup.h:54` | `block_size = 0` |
+| The thread arg is the window base as a VALUE | `user/include/kickos/sys/driver_service.h`, `k64dspi.cc:50` | `arg = KOS_DRV_ARG_WINDOW` |
+| No ring block at all | `user/include/kickos/sys/driver_service.h` | `block_size = 0` |
 | Root KEEPS the endpoint, there is no tail | `k64dspi.cc:103`, `xmcssc.cc:135` | `ep_posture = RETAIN` |
 | Zero IRQ lines | `k64dspi.cc:52` | `line_count = 0` |
 | No window grant at all | `service_list_uart.cc:198` | per-thread `window_grant = false` |
@@ -1053,7 +1053,7 @@ grown to FOURTEEN with `f4uartirq` and `rt1062usb`. One descriptor per instance,
 ## 5. The tail, and the Task
 
 `console_handover_finish` takes one optional `Handle` today, and its doc makes a
-default-constructed handle mean "single-thread driver" (`driver_bringup.h:96,107-108`). Three
+default-constructed handle mean "single-thread driver" (the retired `driver_bringup.h`). Three
 multi-thread services therefore declare themselves single-thread by omission:
 `c6uart.cc:251`, `lx6uart.cc:251`, `rxsci.cc:328`. For `rxsci` **there is no correct call**:
 passing `irqt` fixes the reported failure, because `irqt` holds the register window and that is

@@ -10,7 +10,7 @@ cannot tell whether a document describes the current system, a plan, or a road n
 separate call for the maintainer to make; this index exists so they can be found by status without
 moving anything.
 
-**Coverage is total: 40 documents = 25 LANDED + 11 ACTIVE + 4 EXPLORATORY + 0 SUPERSEDED.** Every
+**Coverage is total: 41 documents = 28 LANDED + 8 ACTIVE + 5 EXPLORATORY + 0 SUPERSEDED.** Every
 `../design-*.md` appears in exactly one table, and no table names a file that does not exist.
 `ls ../design-*.md | wc -l` is the check; run it before trusting the number.
 
@@ -76,22 +76,22 @@ Two things follow from this that are easy to get wrong:
 | [`design-generic-driver-service.md`](../design-generic-driver-service.md) | One generic driver service, N chips: the descriptor ruling that M4.8.1 shipped |
 | [`design-task-layer.md`](../design-task-layer.md) | A task as a set of threads, with the address space on Domain rather than Task |
 | [`design-kill-and-slay.md`](../design-kill-and-slay.md) | The two-verb death ABI: kill stays cooperative, **slay** is forcible, and the victim runs its own teardown off a rebuilt context -- no reaper. Section 14 is what the design got WRONG; read it before section 3 |
+| [`design-m6-mmu.md`](../design-m6-mmu.md) | The M6 design contract: a unicore A53 on QEMU `virt`, with RV64 Sv39 as the litmus that falsifies the aspace seam and x86_64 falsifying the entry and boot paths, what it FREEZES (a high-half kernel, a domain becoming an address space so a task becomes a process, a 4 KiB granule, two backends before the seam is trusted), the seams below the arch boundary that are rewritten, and the step plan with the expected result of each step |
+| [`design-m4-driver-matrix.md`](../design-m4-driver-matrix.md) | The per-board peripheral survey and the complexity-vs-gain backlog that bounded M4's scope |
+| [`design-m4.6.2-usb-cdc.md`](../design-m4.6.2-usb-cdc.md) | USB CDC console driver, shipped as M4.9.1. The number in the filename is the superseded one; `../../roadmap.md`'s ledger assigns M4.9.1 |
 
 ## ACTIVE
 
 | Document | Subject |
 |---|---|
 | [`design-driver-era-scope.md`](../design-driver-era-scope.md) | The M4 gap list: what turns the M3 mechanisms into a fleet-wide capability. Section 4 records the milestone-ordering decision |
-| [`design-m4-driver-matrix.md`](../design-m4-driver-matrix.md) | The per-board peripheral survey and the complexity-vs-gain backlog that bounds M4's scope |
 | [`design-kickcat-k64f.md`](../design-kickcat-k64f.md) | Running the KickCAT EtherCAT slave on KickOS. The K64F hardware path is still the plan; the tree links no KickCAT app, so the Stage A sim slave the body calls landed is not in `user/apps/` |
-| [`design-style-enforcement.md`](../design-style-enforcement.md) | One mechanism enforcing house style across code, markdown and build files: the rule inventory bucketed by decidability, and why a formatter and a count gate both lose. Proposed, not built -- there is no `check_style.py` |
-| [`design-m4.6.2-usb-cdc.md`](../design-m4.6.2-usb-cdc.md) | USB CDC console driver, the current M4.9.1 work. The number in the filename is the superseded one; `../../roadmap.md`'s ledger assigns M4.9.1 |
 | [`design-m5-driver-set.md`](../design-m5-driver-set.md) | What "complete the driver set" owes, enumerated from the build system rather than from the plan: the per-chip capability matrix and the gaps it names. Header status: surveyed, scope not yet approved |
 | [`design-m5-i2c-seam.md`](../design-m5-i2c-seam.md) | The I2C class contract, judged against three unrelated controllers and nine parts before an engine existed. The class header and the RX72M RIICa backend came out of it; the proxy and the service have not |
 | [`design-m5-ipc-fastpath.md`](../design-m5-ipc-fastpath.md) | Bounding the IPC critical section: the measured call/reply baseline, which section 1 fixes as a measurement, and the fastpath judged against it |
 | [`design-m5-kickcat-reality-check.md`](../design-m5-kickcat-reality-check.md) | KickCAT brought back at the end of the driver era to JUDGE the driver APIs rather than consume them: the SPI-class collision, the ruling, and what writing the backend found. Header status: written and compiled, never linked, never run |
 | [`design-m7-state-inventory.md`](../design-m7-state-inventory.md) | Kernel state classified per-core versus genuinely global, and what the multi-instance sim corrected about that classification once part of it became executable. Read section 6 before the tables |
-| [`design-m6-mmu.md`](../design-m6-mmu.md) | The M6 design contract: a unicore A53 on QEMU `virt`, with RV64 Sv39 as the litmus that falsifies the aspace seam and x86_64 falsifying the entry and boot paths, what it FREEZES (a high-half kernel, a domain becoming an address space so a task becomes a process, a 4 KiB granule, two backends before the seam is trusted), the seams below the arch boundary that are rewritten, and the step plan with the expected result of each step |
+| [`design-multicore.md`](../design-multicore.md) | The multicore design contract: the hardware predicate that decides which parts get a shared kernel at all, AMP for the parts that fail it, what it FREEZES, and the step plan with the expected result of each step. It names no milestone on purpose, `../../roadmap.md` owning the schedule |
 
 ## EXPLORATORY
 
@@ -101,6 +101,7 @@ Two things follow from this that are easy to get wrong:
 | [`design-rp2350-hazard3.md`](../design-rp2350-hazard3.md) | Porting to the RP2350's RISC-V Hazard3 cores as a sibling of the M33 port |
 | [`design-riscv-switch-cost.md`](../design-riscv-switch-cost.md) | Whether the RISC-V switch gap is worth a cooperative fast-path and/or Zcmp |
 | [`design-mmu-era-exploration.md`](../design-mmu-era-exploration.md) | Growing from an MPU RTOS to real virtual address spaces. PARTLY ABSORBED: `design-m6-mmu.md` is the contract that came out of it and picked a different first target, so what stays live here is the platform exploration (x86_64 as a PC target, i.MX8MP heterogeneous AMP) |
+| [`design-style-enforcement.md`](../design-style-enforcement.md) | One mechanism enforcing house style across code, markdown and build files: the rule inventory bucketed by decidability, and why a formatter and a count gate both lose. Proposed, not built -- there is no `check_style.py` |
 
 ## SUPERSEDED
 

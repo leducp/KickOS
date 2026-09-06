@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The machine the five M6.4 x86_64 witnesses boot, and the serial capture their arms read.
+# The machine the five x86_64 witnesses boot, and the serial capture their arms read.
 # SOURCED (not run) by tools/run-qemu-x86_64.sh and every tools/run-qemu-x86_64-xN.sh.
 #
 # The sourcing script sets these before calling kos_boot, and keeps the environment knobs they

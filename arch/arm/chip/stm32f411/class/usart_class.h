@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// STM32F411 USART class-driver leaf (M4 Rule 6). A freestanding, stateless register-logic
+// STM32F411 USART class-driver leaf (driver-model rule 6). A freestanding, stateless register-logic
 // core: a free function taking the USART instance base explicitly, with no ctor/dtor and no
 // mutable static state. Built as the kickos_class_stm32f411 static lib on a bare include
 // path: repo include/ plus this chip's register dir, excluding kernel/include.

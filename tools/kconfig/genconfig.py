@@ -62,7 +62,17 @@ CMAKE_INT_KNOBS = [
     "KICKOS_AMP_PARTITION_BASE",
     "KICKOS_AMP_NODE_SHARE",
     "KICKOS_AMP_SHARED_SIZE",
+    # A symbol absent from this list resolves in .config and reaches CMake as EMPTY, silently.
+    # Where the value feeds a preprocessed linker script the symptom is a syntax error inside
+    # generated output naming neither the symbol nor this list, the expansion having collapsed
+    # to "ORIGIN = (() + 0 * ())". Add a symbol here in the same edit that adds it to Kconfig.
+    # The stackdepth gate registers exactly where the panic reporter prints the line it
+    # reads, so CMake refuses on this one.
+    "KICKOS_KSTACK_REPORT",
+    "KICKOS_AMP_TEXT_BASE",
+    "KICKOS_AMP_TEXT_SHARE",
     "KICKOS_AMP_PARTITION_CORES",
+    "KICKOS_AMP_DIAG_TAG",
     "KICKOS_DOORBELL_CORES",
     "KICKOS_HAVE_MPU",
     "KICKOS_HAVE_ASPACE",
@@ -321,6 +331,7 @@ def main(argv):
         # An override that is not CONFIG_<name>=<value> is dropped by the loader AND
         # by the read-back check, which together would make a typo'd knob look
         # honoured. Refuse the shape here, where it is the caller's own argument.
+        seen = {}
         for override in overrides:
             name = ""
             if override.startswith("CONFIG_") and "=" in override:
@@ -329,11 +340,29 @@ def main(argv):
                 sys.stderr.write("REFUSED override '" + override + "': not of the "
                                  "form CONFIG_<name>=<value>\n")
                 return 1
+            # The loader keeps the LAST assignment of a symbol, so a name given twice makes
+            # which request is honoured depend on argument order. The warning that would say
+            # so is turned off below; this replaces it.
+            if name in seen:
+                sys.stderr.write("REFUSED override '" + override + "': CONFIG_" + name
+                                 + " is requested twice, already as '" + seen[name]
+                                 + "'\n")
+                return 1
+            seen[name] = override
         os.makedirs(gendir, exist_ok=True)
         fragment = os.path.join(gendir, "override.config")
         with open(fragment, "w") as handle:
             handle.write("\n".join(overrides) + "\n")
-        print(kconf.load_config(fragment, replace=False))
+        # After the first configure the base is the live .config, in which every forwarded
+        # knob carries an explicit value, so a request repeating that value is redundant
+        # rather than a finding. CMakeLists escalates any warning from here to a CMake
+        # WARNING, which would put a spurious one on every re-configure. A request naming a
+        # DIFFERENT value still warns.
+        kconf.warn_assign_redun = False
+        try:
+            print(kconf.load_config(fragment, replace=False))
+        finally:
+            kconf.warn_assign_redun = True
         sources.append(fragment)
 
     refused = check_assignments(kconf, requested_assignments(sources))

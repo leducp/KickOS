@@ -35,9 +35,22 @@ g_isr_vector:
     KICKOS_CORE_VECTORS_V8M
 
     /* External interrupts 0..51 -> the generic IRQ-as-event entry. */
+#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
+    /* SIO_IRQ_BELL is dispatched here and never through kickos_isr_irq, so it occupies no
+       kernel irq_table slot. arch_irq_line_kernel_owned (chip_rp2350.cc) is what states that
+       to irq_claim, which refuses a capability over the line. */
+    .rept KICKOS_RP2350_SIO_IRQ_BELL
+    .word kickos_armv7m_default_irq
+    .endr
+    .word kickos_rp2350_doorbell_service
+    .rept KICKOS_MAX_IRQ - KICKOS_RP2350_SIO_IRQ_BELL - 1
+    .word kickos_armv7m_default_irq
+    .endr
+#else
     .rept KICKOS_MAX_IRQ
     .word kickos_armv7m_default_irq
     .endr
+#endif
 
     /* --- Boot IMAGE_DEF block (datasheet 5.9.5.1 "Minimum Arm IMAGE_DEF") ------
      * The verbatim 20-byte block the RP2350 bootrom accepts for an UNSIGNED image.

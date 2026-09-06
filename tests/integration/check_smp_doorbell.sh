@@ -78,6 +78,7 @@ for _m in "$UNANSWERED" "$EARLY_WAIT" "$NO_CONTEND" "$NO_SPIN" "$CHECK_HEAD" "$C
           "$BANNER_HEAD"; do
     require_literal "$_m" "a doorbell marker"
 done
+literal_matcher_control
 
 # WHAT THE EMULATOR CAN SEE OF THE DOORBELL, PER BACKEND, AND ONE BACKEND SEES LESS.
 #

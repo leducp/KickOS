@@ -14,7 +14,7 @@ if(NOT TARGET c6blink)
   return() # diagnostics off -> app not built
 endif()
 
-# Rule 6 (M4, decision R-A): the GPIO output-latch readback is shared register
+# Driver-model rule 6: the GPIO output-latch readback is shared register
 # logic, so it comes from the freestanding kickos_class_esp32c6 leaf.
 target_link_libraries(c6blink PRIVATE kickos_class_esp32c6)
 

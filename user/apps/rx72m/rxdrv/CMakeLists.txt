@@ -14,7 +14,7 @@ if(NOT TARGET rxdrv)
   return() # diagnostics off -> app not built
 endif()
 
-# Rule 6 (M4, decision R-A): the PORT output-latch readback is shared register
+# Driver-model rule 6: the PORT output-latch readback is shared register
 # logic, so it comes from the freestanding kickos_class_rx72m leaf.
 target_link_libraries(rxdrv PRIVATE kickos_class_rx72m)
 

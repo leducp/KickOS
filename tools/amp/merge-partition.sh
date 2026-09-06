@@ -79,7 +79,6 @@ done
 printf '}\nSECTIONS\n{\n' >> "$SCRIPT"
 
 node=0
-OBJS=""
 for elf in "$@"; do
     base="$(lowest_paddr "$elf")"
     [ -n "$base" ] || { echo "merge-partition.sh: $elf has no loadable segment" >&2; exit 1; }
@@ -93,15 +92,51 @@ for elf in "$@"; do
         "$WORK/n${node}.bin" "$WORK/n${node}.o"
     printf '  . = %s;\n  .knode%s : { *(.knode%s) } :knode%s\n' \
         "$base" "$node" "$node" "$node" >> "$SCRIPT"
-    OBJS="$OBJS $WORK/n${node}.o"
     node=$((node + 1))
 done
 
 # The blobs carry no symbols worth keeping and objcopy's own notes would land in the output.
 printf '  /DISCARD/ : { *(.note*) *(.comment) }\n}\n' >> "$SCRIPT"
 
-# shellcheck disable=SC2086
-"$LD" -T "$SCRIPT" -e "$(entry_of "$1")" -o "$OUT" $OBJS
+# The node objects reach `ld` as SEPARATE arguments and never as one flattened string: they
+# live under a mktemp directory, so a TMPDIR carrying whitespace re-splits a flattened list
+# into paths that do not exist. `set --` inside a function replaces the FUNCTION's positional
+# parameters, so the node ELFs the caller still holds in "$@" are untouched by it.
+link_nodes() { # <node count> <entry>; the objects are $WORK/n<i>.o, in node order
+    _count="$1"
+    _entry="$2"
+    _i=0
+    set --
+    while [ "$_i" -lt "$_count" ]; do
+        set -- "$@" "$WORK/n${_i}.o"
+        _i=$((_i + 1))
+    done
+    "$LD" -T "$SCRIPT" -e "$_entry" -o "$OUT" "$@"
+}
+
+link_nodes "$#" "$(entry_of "$1")"
+
+# The node blobs are wrapped with `objcopy -I binary`, which carries no ABI attributes, so `ld`
+# emits an identification byte and a flags word of its own and the merged artefact differs from
+# every node it contains. An emulator boots it regardless; picotool refuses such a file as
+# "Unrecognized ABI". Both are copied from node 0 rather than named here.
+#
+# ELF32 puts e_flags at 0x24 and ELF64 at 0x30; EI_CLASS at byte 4 says which, and EI_OSABI is
+# byte 7 in both.
+eclass="$(od -An -tu1 -j4 -N1 "$1" | tr -d ' ')"
+if [ "$eclass" = "1" ]; then
+    flags_off=36
+else
+    flags_off=48
+fi
+# POSIX dd has no `status` operand; it is a GNU extension, and a dd that does not know it
+# refuses the whole invocation. The transfer report is dropped by redirection instead, which
+# takes dd's own error message with it, so each failure is named here.
+dd if="$1" of="$OUT" bs=1 skip=7 seek=7 count=1 conv=notrunc 2>/dev/null \
+    || { echo "merge-partition.sh: could not copy EI_OSABI from $1 into $OUT" >&2; exit 1; }
+dd if="$1" of="$OUT" bs=1 skip="$flags_off" seek="$flags_off" count=4 conv=notrunc 2>/dev/null \
+    || { echo "merge-partition.sh: could not copy e_flags from $1 into $OUT" >&2; exit 1; }
+echo "== partition: ELF identification and flags taken from node 0's image =="
 
 echo "merged $# node image(s) into $OUT"
 LC_ALL=C "$READELF" -lW "$OUT" | awk '$1 == "LOAD" { printf "  node load %s size %s\n", $4, $6 }'

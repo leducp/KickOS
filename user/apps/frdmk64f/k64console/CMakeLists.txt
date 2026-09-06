@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# K64F console bring-up demo (M4.3): the DEFAULT INIT relinquishes UART0 to the
+# K64F console bring-up demo: the DEFAULT INIT relinquishes UART0 to the
 # unprivileged kickos_k64uart driver BEFORE this app's main, and a worker's printf()
 # reaches the wire through it with zero handover code in the app. A real user-facing app
 # (kickos_add_application), not a diagnostic. It uses only the production endpoint/

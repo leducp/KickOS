@@ -35,6 +35,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <fatal_status.ld.h>
+
 namespace mmap = kickos::imxrt1062::mmap;
 namespace reg = kickos::imxrt1062::reg;
 namespace irq = kickos::imxrt1062::irq;
@@ -43,9 +45,6 @@ namespace kickos
 {
     int kmain(int argc, char** argv);
     void kprintf(char const* fmt, ...);
-#if defined(KICKOS_ENABLE_SELFTEST)
-    void kpanic(char const* msg) __attribute__((noreturn)); // arch_reboot: the halt must not resume
-#endif
 }
 
 extern "C"
@@ -780,7 +779,14 @@ int arch_reboot(void)
 {
     __asm volatile("cpsid i" ::: "memory"); // dispatch runs in thread mode with IRQs live
     __asm volatile("bkpt #251");
-    kickos::kpanic(kickos::diag::kRebootImxrt);
+    // Reached from kfault_terminate, where kpanic itself ends, so a kpanic here would
+    // re-enter a console kpanic_enter has already reclaimed. arch_console_write_sync is the
+    // writer arch.h states is safe with interrupts down.
+    char const REBOOT_RETURNED_NL[] = "\n";
+    arch_console_write_sync(kickos::diag::kRebootImxrt,
+                            sizeof(kickos::diag::kRebootImxrt) - 1);
+    arch_console_write_sync(REBOOT_RETURNED_NL, sizeof(REBOOT_RETURNED_NL) - 1);
+    arch_shutdown(KICKOS_FATAL_STATUS);
 }
 #endif
 

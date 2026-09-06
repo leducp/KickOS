@@ -16,6 +16,44 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is
 `docs/archive/M1_state.md`; the board/console readiness matrix is `docs/m2-readiness.md`.
 
+## The console collision class closes at the EMITTER, and the gate side has run out of room
+
+- [ ] **ELEVEN OF THE TWELVE DAMAGING COLLISIONS LAND ON A VALUE, WHERE NO GATE-SIDE TOLERANCE
+      CAN EVER BE SOUND.** A bounded in-order match cannot separate a longer value from a broken
+      record: an intact `ADDR=0x403780009` satisfies a match for `ADDR=0x40378000` at span 15
+      with nothing interleaved between the characters, so the tolerance that recovers a shredded
+      record also accepts a wrong one. Presence can be matched loosely; a `NAME=VALUE` cannot.
+      Gate-side work has taken the residual to 0.76 percent and every remaining case refuses
+      rather than accepts, which is the safe direction and is also the end of that road. **The
+      remaining 0.76 percent is what an emitter-side fix retires**, and nothing on the gate side
+      retires it.
+      **The shape of the remedy**: `arch_console_write` in
+      `arch/arm64/chip/virt_arm64/chip_virt_arm64.cc` is an unlocked byte loop, so two kernels on
+      one PL011 interleave at byte granularity by construction. Give that path a per-line claim
+      against the peer, held across the whole record rather than across one writer call, so a
+      record reaches the wire whole and a gate reads a value it can trust.
+      **`arch/arm/chip/rp2350/chip_rp2350.cc` is the working precedent and the design is already
+      settled there**: the claim is held to the LINE and not to the chunk, because
+      `console_write_user` calls the writer once per 64-byte piece and a claim released per chunk
+      lets a peer's whole line land inside one of this node's; ownership is bounded at both ends,
+      by a deadline taken when the claim is taken and by a peer that spins its budget out against
+      an expired claim releasing it under the holder, so the bound holds with the holder gone; the
+      release is conditional on the published owner still naming this node, so a stolen-from node
+      does not end the thief's claim; and a caller that LOSES the claim writes anyway, the cost
+      being one shredded line. That last property is what keeps it inside
+      `docs/reference/console.md`'s "always works, even while dying" guarantee, and it is the
+      property any port of this must keep.
+      **It is a lock on the console path INCLUDING the fault path, so it is a cost decision and
+      not a bug fix.** Every panic, every fault dump and every dying write pays the claim, on a
+      path whose whole contract is that it works when the system does not. The RP2350 body prices
+      that with a spin budget, a 50 ms hold bound and no interrupt masking (`console.cc` forbids
+      holding the chip transport under `IrqLock` across a transmission), and a caller that cannot
+      get the claim in budget still writes. Whether `qemu-arm64` should pay the same on every
+      record is the decision this item is asking for, not something to land quietly.
+      **Not implemented on purpose.** Recorded with its precedent so the decision is taken on the
+      cost, and so the next reader does not spend another pass looking for a gate-side answer that
+      does not exist.
+
 ## The file:line:column indirect-call binding is fragile, and replacing it is its own piece
 
 `tests/static/trap_redzone_indirect.txt` binds every indirect call site by
@@ -2102,7 +2140,7 @@ duplicated.
       `_sidata` sat outside every loaded segment and `Reset_Handler` copied uninitialised SRAM over
       the `.data` the ROM had already placed correctly. `KICKOS_HAVE_MPU=1` only. Fixed by dropping
       the `AT` plus an `ASSERT(_sidata == _sdata)` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`);
-      `esp32.ld` carried the same latent construct and was cleaned image-neutrally. **`virt.ld`
+      `esp32.ld` carried the same latent construct and was cleaned image-neutrally. **`virt_rv32.ld`
       KEEPS its `AT` and must NOT gain the assert** -- QEMU honours PhysAddr there, so the LMA is
       real.
       **The 2026-07-28 `esp32c6` witness therefore passed BY LUCK.** The corrupting bytes are
@@ -4159,7 +4197,7 @@ cancellation are proven only by `sim_driver_death` case 3 and its four mutation 
       True in the only sense the sim can make it true (that block is the only DEV window the host
       admits), and it is what lets case 3 exist at all, but it is the softest part of the gate.
 - [ ] **`SIMCON_WIN_BASES` is a THIRD copy of `SIM_PVREG_BASES`** (`sim.cc`, the selftest, and now
-      `service_list_sim.cc`), each carrying a "must equal" comment and no check. Following the
+      `system/init/sim/service_list.cc`), each carrying a "must equal" comment and no check. Following the
       existing precedent rather than fixing it was the right call mid-change; fixing it is owed.
 
 ### Found by the adversarial review of the cleanup plan (2026-08-03)
@@ -4221,7 +4259,7 @@ never touched. What was FIXED is in the commit. What was found and NOT fixed:
 - [ ] **About 46 ` -- ` occurrences remain, nearly all inside string literals** (re-counted
       2026-08-16; the 72 this box carried had drifted): linker `ASSERT()`
       diagnostics, and the rest `kprintf`/`kos::print`/TAP text. They are user-visible output,
-      not comments, and some are grepped by gates (`service_list_sim.cc`'s banner), so they were
+      not comments, and some are grepped by gates (the sim service list's banner), so they were
       left alone. A separate output-text pass could take them.
 
 ### Recorded -- reported by an angle, NOT verified by me
@@ -5788,7 +5826,7 @@ Touches nearly every file, so it runs after M4.5.8 merges.
       Narration is not explanation: the reason a thing is so is one line and stays, the story of
       reaching it is history and git holds it.
       **A comment that turns out to be the only protection for something is a MISSING GATE.** Write
-      the test. `virt.ld` is the model: the `qemu-riscv` gate stops the esp32 assert being copied
+      the test. `virt_rv32.ld` is the model: the `qemu-riscv` gate stops the esp32 assert being copied
       there, not the comment saying so.
 - [ ] **Categorize the design tier.** 34 docs, 13,163 lines, against Book 27/7,613 and Reference
       10/7,484 (re-measured 2026-08-16; the earlier 29/10,797 figure had drifted): the tier authoritative for nothing is the largest, and most of it describes landed
@@ -6168,7 +6206,7 @@ supervisor cannot run on, which is the one failure it exists to prevent. **ALL T
 FIXED, and a fourth defect found while checking the first is fixed with them.** Held against the
 RISC-V Privileged specification rather than against the report, and one prescribed remedy is
 REFUSED as the weaker of the two options. `qemu-riscv64` and `qemu-riscv64-sv48` are 52 of 52 each
-after the pass, `console_reach` green on both, `check_aspace_sigdiff.sh` still exit 2 at 35 against
+after the pass, `console_reach` green on both, the aspace seam differ still exit 2 at 35 against
 36, and `trap_redzone` unmoved on the three presets that carry a zero-slack figure (`frdmk64f`
 EXITK 576, `rx72m` EXITK 620, `esp32c6-wroom` NESTED 768 and EXITK 720).
 
@@ -6924,9 +6962,9 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
 
 - [ ] **Decide what a per-core interrupt controller means for a backend that HAS one.** S5 ruled the
       rv64 software controller image-wide because nothing on that board implements a controller, so
-      a line is one logical resource. `docs/design-m7-state-inventory.md` still classifies
-      `g_irq_masked`, `g_irq_pending` and the inject line as per-core, which is right for a banked
-      bank and wrong for a stand-in. The document owes the distinction. **And the shape S5 had to
+      a line is one logical resource. `docs/design-m7-state-inventory.md` ruling 1 now draws the
+      distinction the classification owed: per-core where the cell mirrors a banked register,
+      image-wide where it mirrors none. **And the shape S5 had to
       replace is shared by five other backends**: rv32imac, esp32c6, lx6, rxv3 and x86_64 all carry
       a single `g_inject_line` identity plus plain read-modify-write on the mask and pending words.
       That is correct while local interrupt masking is the whole exclusion, which is true of every
@@ -8327,3 +8365,80 @@ follows is what survived that.
       The project's rule is that a review finding is FIXED or raised as a decision, never filed and
       merged; this one was both, which is the inversion, and the correction is to close it here and
       say so rather than to delete it. Closed 2026-08-28 at the M6.3 documentation audit.
+
+## The partition gate's announcement count is a measured 1-in-10 draw (2026-09-05)
+
+- [x] **THE CLAUSE COUNTS A LINE THE QUIETER NODES PRINT, WHICH N6h RULES A GATE MAY NOT REST
+      ON.** Nothing serialises the shared console across two kernels on `qemu-arm64`, and where
+      a chip does claim one the claim is bounded rather than absolute, so the stream interleaves
+      at byte granularity: `ampping: node N serves port` can arrive cut in half and an exact
+      count of `KICKOS_AMP_NODES - 1` of them fails on a draw. Measured at 1 run in
+      10 on `qemu-arm64-amp3`, and the rate rises with the partition's width. **This is the
+      remedy for a gate that reddens, not a nice-to-have.**
+
+      **IT IS KEPT BECAUSE NOTHING ELSE WITNESSES THAT A PEER'S APP RAN.** `amp_window` witnesses
+      each peer's KERNEL servicing a doorbell, and the round trip witnesses the first peer's app
+      alone. Deleting the clause trades a visible draw for a node whose app nothing checks.
+
+      **THE SHAPE THE REMEDY TAKES**: a per-node cell that the peer's own APP moves, which node 0
+      READS and PRINTS, so the gate counts a node-0-printed line. That is what N6h prescribes and
+      what the deferred-publication block in the same gate already does successfully.
+
+      **WHAT MAKES IT MORE THAN ADDING A CELL.** `ampwindow.h`'s `Counts` has no field that moves
+      without traffic, and node 0's app calls the FIRST peer the partition names and no other, so
+      a peer this demo never calls moves no existing counter and no reading of the window can
+      substitute. The cell has to be written by the peer's APP rather than by a crossing, which
+      makes userspace a writer of the shared region and owes its own answer to who may write it
+      and what the reader validates.
+
+      **CLOSED 2026-09-06, and the cell did NOT go into `.amp_shared.diag`.** That block is
+      gated on `CONFIG_KICKOS_AMP_DIAG_REPORT`, which is off on every qemu AMP preset, so a
+      cell placed there is in an EMPTY section on the only postures the gate runs on. It went
+      into `ampwindow.h`'s `Counts` row instead, which is already one row per node with exactly
+      one writer each, already asserted non-empty by both link scripts, and already carries the
+      rule that a row is a REPORT and never an input. So the diag block's known-cells property
+      is preserved by not touching it.
+
+      **WHO MAY WRITE IT**: the kernel alone, into the row of the node it is running on, at that
+      node's root's request; the node is derived in `KOS_AMP_OP_APP_ALIVE_SET` and is never a
+      parameter, and the value stored is the kernel's own derivation from the partition list, so
+      no word an app supplies crosses into the shared region.
+      **WHAT THE READER VALIDATES**: the row must equal the port the partition names that node
+      biased by one, derived by the reader from its OWN copy of the list, with the reader's own
+      row swept as the known-value control.
+
+- [x] **A CLAUSE ADDED TO `tests/integration/check_amp_partition.sh` MAY NOT READ A PEER-PRINTED
+      LINE.** Two of them existed at once: the kernel-banner count, deleted because `amp_window`
+      already makes that claim from counters node 0 reads, and the announcement count above, kept
+      for the reason stated. A third is a pattern rather than a coincidence. The gate's header
+      carries the rule and the measured rate. Closed 2026-09-06: no peer-printed clause is left,
+      and the header now states the rule as a prohibition rather than as one live exception.
+
+## No gate covers a shell tool's use of a non-POSIX utility operand (2026-09-06)
+
+- [ ] **A PORTABILITY DEFECT IN A SHELL TOOL IS INVISIBLE TO EVERY GATE IN THIS TREE, and the
+      one that looks like its owner cannot see it.** `tests/static/check_awk_portable.sh` is a
+      NAMED-SPELLING check: it holds a list of gawk-only function names and greps the awk
+      programs under `tools/` and `tests/` for a call to one. A utility OPERAND is not a name on
+      that list and never can be, so `dd status=none` sat in `tools/amp/merge-partition.sh`
+      through every green run this tree has ever had. The rest of the static set is no closer:
+      `check_shell_special_names.sh` reads shell-owned variable names, `check_dash_punct.sh`
+      punctuation, `check_ascii.sh` bytes.
+
+      **THE FAILURE MODE IS THE EXPENSIVE ONE: works here, refuses there.** A dd, sed, awk, grep
+      or find operand the GNU tool takes and a busybox or BSD one does not is invisible on this
+      box and on a CI image built from the same distro, and a dd that does not know an operand
+      refuses the WHOLE invocation rather than ignoring it. So the tool does not degrade on a
+      minimal image, it stops, and it stops in whatever the tool was doing at the time.
+
+      **`tools/esp-x86_64.sh` IS A DECLARED EXCEPTION AND NOT AN INSTANCE.** It requires GNU dd
+      (`bs=1M conv=sparse status=none`), its header says so, and it probes the operands and
+      refuses before it writes anything. A gate built later has to tolerate a script that states
+      its requirement, or it will report the one file in the tree that already did the right
+      thing.
+
+      **THIS IS RECORDED, NOT SCHEDULED.** A whole-tree lint is neither a unit test nor an
+      integration test, which is what this tree runs, so adding one is the owner's call and not
+      a reviewer's. What it would take: a list of operands per utility rather than per name, the
+      same both-directions self-test the awk gate carries, and an answer for the scripts that
+      legitimately require GNU tools.

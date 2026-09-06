@@ -103,9 +103,9 @@ code wins, then this file.
 | `microbit` | nRF51822 / M0, 32 KiB | -- | semihosting | `ctest --preset microbit` | [x] CI (armv6m run gate; the fleet's only measured expected-skip list -- see *microbit* below) |
 | `qemu-riscv` | QEMU virt / RV32IMAC | -- | semihosting | `ctest --preset qemu-riscv` | [x] CI (first RISC-V) |
 | `qemu-arm64` | QEMU virt / Cortex-A53 (AArch64) | -- | PL011 UART at `0x09000000` | `ctest --preset qemu-arm64` | [x] CI (first 64-bit ISA, and **emulator only** -- there is no A-profile silicon on this bench; see *Per-board caveats* below) |
-| `imx8mp-evk` | QEMU imx8mp-evk / NXP i.MX 8M Plus, quad Cortex-A53 | -- | i.MX UART1 at `0x30860000` | `ctest --preset imx8mp-evk` | (!) **emulated only, and not in CI**: 48 arms registered (`ctest -N` 2026-09-02), witnessed 2026-09-02 under `qemu-system-aarch64` 11.1.0 at 48 of 48. The SECOND armv8a part and the first whose interrupt controller is the die's rather than a machine option. **ONE CORE OF THE FOUR**: the machine models no way to release a secondary -- see *Per-board caveats* below |
-| `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and not in CI**: 52 arms registered (re-derived 2026-08-29 by `ctest -N`), witnessed 2026-08-29 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` at 52 of 52. This row read 50 under a 2026-08-28 stamp and BOTH halves of that were wrong: the fleet-wide `whitespace` gate took the total to 51 and `console_reach` to 52, and the SET had already changed on 2026-08-29, `qemu_riscv64_aspace_fault` being retired that day and `qemu_riscv64_aspace_ufault` registered in its place. **It then read 51 of 52 with `console_reach` red for part of the same day**, which was true at `517449e5` and stopped being true at `58b43d62` and `d4977780`, the two commits that closed the four panic doors that gate names. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
-| `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and not in CI**: 52 arms registered (re-derived 2026-08-29 by `ctest -N`), witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
+| `imx8mp-evk` | QEMU imx8mp-evk / NXP i.MX 8M Plus, quad Cortex-A53 | -- | i.MX UART1 at `0x30860000` | `ctest --preset imx8mp-evk` | (!) **emulated only, and not in CI**: witnessed 2026-09-02 under `qemu-system-aarch64` 11.1.0 at 48 of 48. The SECOND armv8a part and the first whose interrupt controller is the die's rather than a machine option. **ONE CORE OF THE FOUR**: the machine models no way to release a secondary -- see *Per-board caveats* below |
+| `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and not in CI**: witnessed 2026-08-29 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` at 52 of 52. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
+| `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and not in CI**: witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
 | `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and not in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip selects no memory family, so the map is flat. See *Per-board caveats* below |
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32 / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
@@ -210,8 +210,8 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
 - **`imx8mp-evk` IS THE FLEET'S FIRST MODEL OF A REAL PART RATHER THAN OF A BOARD, and every
   number below is emulator-grade.** There is no i.MX8MP on this bench; the witness is
   `qemu-system-aarch64 -M imx8mp-evk` (11.1.0) and nothing else. The board is `arch/arm64` /
-  arch `armv8a` / chip `imx8mp`, translating exactly as `qemu-arm64` is, and it registers 48
-  ctest arms of which 16 are image gates (`ctest -N` 2026-09-02, 48 of 48 green). Its selftest
+  arch `armv8a` / chip `imx8mp`, translating exactly as `qemu-arm64` is, and a full run read
+  48 of 48 on 2026-09-02. Its selftest
   is 143 arms with ONE partial and ZERO skips, the partial being `periph_reg_write_unheld` for
   the same reason it is one on `qemu-arm64`: the board mints no free DEV window, its map keeping
   the device gigabyte EL1-only. What separates it from `qemu-arm64` is three structural facts
@@ -319,18 +319,13 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   (`TTBR0_EL1` and `TTBR1_EL1`) where Sv39/Sv48 have `satp` alone and x86_64 has `cr3` alone, its
   app window is IDENTITY-linked where the RISC-V one links at `0x40000000`
   and loads at `0x80200000`, and it is the only one of the two with a CI gate. Its image gates are
-  FIFTEEN and this list has understated them twice, at six and then at ten:
+  FIFTEEN:
   `qemu_arm64_hello`, `qemu_arm64_selftest`, `qemu_arm64_fault_dump`, `qemu_arm64_aspace_fault`,
   `qemu_arm64_stack_guard`, `qemu_arm64_kernel_half`, `qemu_arm64_faultsurvive`,
   `qemu_arm64_tlsprobe`, `qemu_arm64_errnoprobe`, `qemu_arm64_fp_switch` and, since 2026-08-29,
   `qemu_arm64_panicgate1` through `qemu_arm64_panicgate5`; plus the `host`-labelled gates every
-  build tree registers, for **42 in total** (re-derived 2026-08-29 by `ctest -N` on the
-  `qemu-arm64` tree). The total read 35 until those five landed; the forty first is the fleet-wide
-  `whitespace` gate and the forty second is `console_reach`, which is registered on the
-  translating presets only. A full run reads 42 of 42 on this tree. **It read 41 of 42 with
-  `console_reach` red for part of 2026-08-29**, which was true at `517449e5` and stopped being
-  true at `58b43d62` and `d4977780`, the two commits that closed the four panic doors that gate
-  names.
+  build tree registers, one of which is the fleet-wide `whitespace` gate and one `console_reach`,
+  registered on the translating presets only. A full run read 42 of 42 on this tree on 2026-08-29.
 - **`qemu-arm64`'s selftest declares exactly one PARTIAL and zero skips**, over 134 arms
   (re-derived 2026-08-29, the plan line reading `1..134`). The partial is
   `periph_reg_write_unheld`: `virt_arm64` names no MMIO window a driver could be granted -- its
@@ -343,7 +338,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
 - **`qemu-riscv64` AND `qemu-riscv64-sv48` ARE EMULATED ONLY, and nothing on this bench can change
   that.** There is no rv64 silicon here, so every rv64 claim in this file is emulator-grade: both
   postures are witnessed by `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` under TCG and by
-  nothing else (2026-08-29, 52 arms registered each and 52 of 52 passing; selftest 134 arms,
+  nothing else (2026-08-29, 52 of 52 passing on each; selftest 134 arms,
   plan line `1..134`, with 0 skipped and 1 declared partial).
   **The whole `differs-on-hardware` class is therefore SPEC-ARGUED and not measured**: `ASIDLEN` is
   WARL and may be 0 on a real part where this emulator answers 16, `MXSTATUS.MAEE` on a T-Head C906
@@ -2467,7 +2462,7 @@ identical string, both being RISC-V PMP NAPOT, which forces a power of two by co
 re-witnesses the ARCH CLASS on real silicon and confirms the emulator is faithful for it; it is not a
 discriminating measurement the way `rx72m`'s `48` is against a pow2 backend.
 
-**`virt.ld` is the COUNTER-CASE, and it belongs here as a trap for the next reader.**
+**`virt_rv32.ld` is the COUNTER-CASE, and it belongs here as a trap for the next reader.**
 `arch/riscv/chip/virt_rv32/virt_rv32.ld` carries the SAME `> RAM AT > RAM` construct and shows the SAME
 divergence -- `_sidata=0x80010ce8` against `_sdata=0x80020000`, the segment reading
 `VirtAddr=0x80020000 PhysAddr=0x80010ce8` -- and **there it is CORRECT**. QEMU's ELF loader honours
@@ -2476,7 +2471,7 @@ green `qemu-riscv-mpu` run gate is the proof that it does -- a `.data` copy read
 there would take the suite down, not pass it. esptool `elf2image` builds from VMAs, which
 is why the identical construct broke the ESP boards and not this one. The rule is **"an `AT` clause
 is only valid if the loader honours LMA"** -- LOADER-dependent, not arch-dependent, and two RISC-V
-chip scripts on opposite sides of it are the demonstration. A comment in `virt.ld` around line 158
+chip scripts on opposite sides of it are the demonstration. A comment in `virt_rv32.ld`
 already says do NOT add the esptool assert there; the porting-guide home for the rule is
 `porting.md`, so read the guidance there rather than expecting it duplicated here.
 

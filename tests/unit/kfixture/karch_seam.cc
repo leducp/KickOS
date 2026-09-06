@@ -79,6 +79,12 @@ extern "C"
         return g_karch_irq_line_core;
     }
 
+    // No line here is dispatched around irq_table, so every line stays claimable.
+    bool arch_irq_line_kernel_owned(int)
+    {
+        return false;
+    }
+
     void arch_irq_clear_pending(int)
     {
     }

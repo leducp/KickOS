@@ -253,6 +253,15 @@ Otherwise an initiator holding the lock waits on a core spinning to acquire it. 
 design and may not be built as two**, and the risk is asymmetric: that deadlock is unavailable on A64
 and available on the other two, so it cannot be discovered by the first backend.
 
+**THE RELEASE ACROSS A SWITCH IS THE SEAM'S, AND EVERY SHARED-KERNEL BACKEND OWES THE CALL.** The
+release sits inside the swap rather than around it, for the reason section 4's third gap gives, so
+the call that performs it lives in each backend's own switch and nowhere above. A backend that does
+not make it carries the lock into its own idle wait: the holder sleeps, every peer spins on a word
+whose owner will not wake, and the image HANGS rather than reddening an arm. **No gate in the tree
+can report that**, because the obligation reads as discharged by whichever backends do call it, one
+caller looking exactly like a rule that is honoured. Measured: the tree held exactly one caller of
+`kickos_switch_unlock`, in the armv8a switch, at the point a second shared-kernel backend needed it.
+
 ### N3. One lock and not two, bought by interrupt affinity
 
 The reference kernel this lineage cites splits into a task lock and an interrupt lock precisely
@@ -291,6 +300,12 @@ debug guard's refusal is silent because its subject is the routed core. On `esp3
 one line is routed, the console's TX; every software-injected line, which is every selftest line,
 is unrouted. So the backend's image-wide gating cells are reached from more than one core there,
 and what carries them is NOT the pin.
+
+**WHETHER SUCH A CELL IS IMAGE-WIDE AT ALL is ruling 1 of `docs/design-m7-state-inventory.md`**,
+which owns that question for every backend standing a software controller in for one the board does
+not have: why a cell mirroring no register is image-wide, why keying one per core hangs rather than
+reddens, and why image-wide is necessary and not sufficient. What follows is the half that ruling
+leaves to this contract, given an image-wide cell: what serialises it.
 
 **WHAT CARRIES THEM, PER CELL, BECAUSE THE TWO ANSWERS ARE DIFFERENT.** The pending latch is
 serialised by the kernel lock: every one of its accesses is reached with that lock held, or is
@@ -388,6 +403,22 @@ contended kernel lock for a switch nobody asked for. Published by the caller tha
 nothing. The kernel is the only side that can name the publisher, which is what makes this
 structural rather than conventional.
 
+**A LOWERING THAT CLEARS THE CAUSE MUST SERVICE EVERY SOURCE RIDING IT.** Where one hardware cause
+carries several logical sources, which is the ordinary case on a part with a single software
+interrupt per core, the poll that clears the cause consumes all of them: what it leaves behind has
+no second edge to announce it, the cause having just been cleared on its behalf. The failure is a
+device line whose raise the poll absorbed, and its driver then sleeps for good with nothing
+reporting why. Servicing one source and clearing the cause is the same narrowing this freeze
+refuses, one layer down.
+
+**THE SEAM RESTS ON THE RAISE BEING LATCHED, AND THAT IS THE HARDWARE'S PROPERTY RATHER THAN THIS
+TREE'S.** A raise made while the target is inside a handler must survive to be taken after it,
+because nothing above the seam re-raises on a target's behalf and a publication carries no second
+notice of its own (N6f). A GIC pending bit and a CLINT `msip` word both hold it, so every backend
+on this bench satisfies it and no arm here can distinguish a part that does not. A part whose raise
+against a masked target is dropped does not implement this seam, and that is a porting refusal
+rather than a thing the window layer can work around.
+
 ### N5. Bring-up is an entry point and a reset release, and a load is a separate question
 
 Every part's start button has one shape: write an entry point, release a reset. The RP2040 sends
@@ -411,6 +442,16 @@ a core released from reset with its clock ungated does nothing whatever, which l
 a core that never started. The shape the freeze states is still right -- write an entry point,
 release a reset -- and what it understates is how many holds a part may keep the core under.
 Read the count off the port, never off this sentence.
+
+**AND WHERE NO FIRMWARE HOLDS THE CORE THE PARK IS OURS, WHICH MAKES THE RELEASE A WORD AND AN EDGE
+RATHER THAN A WORD.** On a part where every core enters the reset path, the secondaries reach the
+kernel's own park instead of a bootrom's, and a wait instruction gated on the interrupt-enable mask
+alone OBSERVES NO STORE: a core parked before anything enabled an interrupt can never leave, the
+released word being state nothing is watching for. So the release publishes the word AND rings the
+target's own doorbell as the edge, and the park drops that edge before it reads the state. The order
+is not free either way round: dropped after, a level-sensitive raise is left set and carries into
+the kernel as a doorbell no peer asked for. Measured on rv64imac, where `WFI` wakes on `mie` and not
+on `mstatus.MIE`.
 
 What differs is whether a LOAD precedes it. On the one-image parts the secondary's code is already
 resident and the primary supplies only an entry point. On the i.MX8MP the companion runs from
@@ -620,6 +661,14 @@ across nodes -- one node's driver serving another's threads -- is exactly this a
 further: the serving node publishes a port, the calling node holds a far endpoint for it, and the
 receiver is an ordinary thread parked in its own kernel.
 
+**THE RULE IS ABOUT ANY PER-KERNEL COORDINATE AND NOT ONLY ABOUT A CAPABILITY.** A thread slot
+number is a coordinate inside one kernel exactly as a pool slot is, so two co-resident kernels
+resolving the same slot number to the same object share that object rather than each owning one.
+The C library's reentrant state is where the tree meets this: its array is BANKED, one bank per
+instance, and a descriptor short of that is a boot PANIC and not a fallback, because the
+out-of-range answer is the process-wide state, which ALIASES rather than refuses. Any state the
+partition provisions per thread inherits the same shape.
+
 ### N6e. PRIORITY DOES NOT CROSS, AND THE TWO SCALES ARE NOT COMPARABLE
 
 Donation across nodes has no meaning: there is no thread on the far side to raise and no seam by
@@ -777,10 +826,22 @@ delay the rendezvous a shared kernel's callers wait on through the same body.
 
 **THE ONE OUTCOME THAT HOLDS A REPLY RING IS BOUNDED AND SELF-HEALING**, and it is named rather
 than left to be discovered. A depth verdict -- the far head naming more outstanding slots than the
-ring holds -- does not advance the tail, because no slot has been identified to drop. It is the
-only non-advancing outcome on a reply ring, it can only be produced by a malformed peer, and it
+ring holds -- does not advance the tail, because no slot has been identified to drop AND because
+advancing over an index this node has just refused to believe would carry the tail further into the
+far side's arithmetic, which is the one thing the validation exists to stop. It is the only
+non-advancing outcome on a reply ring, it can only be produced by a malformed peer, and it
 resolves itself: after the strike bound the tail is resynchronised to the far head and the ring
-runs again. A malformed length or an unminted port is dropped and the tail advances.
+runs again. A malformed length or an unminted port is dropped and the tail advances, and the
+advance is the deliberate half: leaving such a slot in place would let one bad publication wedge
+the ring for good, which is a denial the receiving node may not accept from the far side.
+
+**ONE RING PER ORDERED PAIR IS FORCED RATHER THAN PREFERRED, and the producer's arithmetic is why.**
+A single inbox per node would carry several producers on one head, and a producer computes its
+free-slot count from a tail the consumer owns: with the head shared, two producers would each
+believe the whole free run was theirs and overwrite slots the consumer is still reading. Per ordered
+pair the head has exactly one writer, which is what makes that count sound at all. The receiving
+side cannot check this half of it, the cell being the far node's, so the discipline sits here rather
+than in a validation clause.
 
 **WHAT THE SPLIT COSTS is the shared window, which is quadratic in the partition's width and now
 carries twice the constant.** A wide partition states a larger region for it, and the link refuses
@@ -869,6 +930,11 @@ contract already carries, reached in bounded time and counted at both ends.
 - **That a peer's memory is out of reach.** Every node maps the region every node writes, and on a
   part whose bus enforces nothing the boundary is DESCRIBED and not enforced. The validation here
   defends a node against a MALFORMED peer and never against a hostile one.
+  **AND THE REACH IS WIDER THAN THE WINDOW.** Every node maps the same writable kernel RAM, so
+  the state kept OUTSIDE the window is exposed with it: the port mint, the per-node counters, and
+  every other node's kernel data are rewritable by a compromised peer KERNEL whatever the window
+  validates. Placing a cell outside the window is therefore not a protection of it, and reading
+  the validation as a privilege boundary is the misreading these two bullets exist to stop.
 
 ### N6g. THE PARTITION HANDS A NODE ITS PORTS, AND A NODE DERIVES BOTH ITS SETS FROM ITS INDEX
 
@@ -940,7 +1006,7 @@ rather than closed: it is now answered statically, by configuration, for the end
 node holding a capability for a crossing is not a node whose peer is running: the list is a
 partition fact, and whether the far side exists is a deployment one.
 
-### N6h. A PARTITION IS DEPLOYED AS ONE ARTEFACT, AND THE TWO IMAGES ARE CHECKED AGAINST EACH OTHER
+### N6h. A PARTITION IS DEPLOYED AS ONE ARTEFACT, AND THE IMAGES ARE CHECKED AGAINST EACH OTHER
 
 N6b rules that deployment is a MERGE and not a second flash. This freeze is what that costs and
 what it buys, now that two kernels boot from one file.
@@ -959,19 +1025,23 @@ the merge step would be the second truth N6g refuses, one layer further out.
 **NODE 0 OWNS THE MERGE**, being the node that releases the others (N5), so one step in a node 0
 build produces the whole partition and a user flashes once.
 
-**AND THE TWO IMAGES ARE CHECKED AGAINST EACH OTHER, WHICH NO SINGLE LINK CAN DO.** Each node is
-linked from its own configure and every link succeeds whatever the other one did, so two images
-built from different partition descriptions BUILD CLEANLY AND BOOT. What they then disagree about
-is where the region every node writes sits and how wide it is, and N6b already records that this
-presents as a HANG rather than as an error. Four clauses, each a thing one link cannot see: the
-window at the same address and the same size in both; the window NOBITS in both, an image that
-LOADS it carrying initialised bytes into memory a peer may already be using; the two images'
-loaded spans disjoint; and node 1 not linked at node 0's base, a partition of two node zeros
-being the collapse N6c names and one that every arm on node 0 passes.
+**AND THE IMAGES ARE CHECKED AGAINST EACH OTHER, WHICH NO SINGLE LINK CAN DO.** Each node is
+linked from its own configure and every link succeeds whatever the others did, so images built
+from different partition descriptions BUILD CLEANLY AND BOOT. What they then disagree about is
+where the region every node writes sits and how wide it is, and N6b already records that this
+presents as a HANG rather than as an error. **Every clause below is quantified over the
+partition and not over a pair**, the partition's width being a knob and two its smallest useful
+value (N6c). Four clauses, each a thing one link cannot see: the window at the same address and
+the same size in EVERY node's image; the window NOBITS in every one of them, an image that LOADS
+it carrying initialised bytes into memory a peer may already be using; the loaded spans of every
+PAIR of nodes disjoint; and every node's base distinct, two nodes linked at one base being the
+collapse N6c names and one that every arm on the node owning that base passes.
 
 **A GATE MAY NOT READ THE QUIETER NODE'S CONSOLE LINE.** The nodes of a partition share one
-console and no lock spans two kernels, so the stream interleaves at byte granularity BY RULING
-and any single line from the quieter node can arrive cut in half. A gate that greps for such a
+console, and no claim a chip offers across two kernels may be unbounded, so the stream
+interleaves at byte granularity BY RULING and any single line from the quieter node can arrive
+cut in half. A part that claims nothing and a part whose claim a starving peer may take from a
+holder past its deadline differ in the RATE and not in the ruling. A gate that greps for such a
 line is measuring the console rather than the claim, and it fails on a draw: measured here at
 about one run in ten, on a gate whose only fault was reading the peer's own banner. **Witness a
 peer through a counter the OTHER node reads** -- the window's per-node rows exist for exactly
@@ -1173,11 +1243,15 @@ property of the lock this work writes rather than of that code.
 
 Step identifiers are local to this document. `roadmap.md` maps them to milestones.
 
-**S0 -- the contract and the instrument.** No runtime code. This document; the SMP seam differ with
-its baseline frozen now and its four members MOVED out of the entry family, so this work never
-reddens the entry-and-boot-path verdict the x86_64 port closed; the configure-time refusal of N10.
-*Expected:* the entry differ still passes, the SMP differ passes against its own baseline, the fleet
-is unmoved.
+**S0 -- the contract and the instrument.** No runtime code. This document; the SMP seam differ, its
+baseline frozen at a tree with no SMP backend in it and its four members moved out of the entry
+family, `arch_cpu_id`, `arch_ipi_send`, `arch_ipi_wait` and `KICKOS_NUM_CORES`, so this work could
+never redden the entry-and-boot-path verdict the x86_64 port closed; the configure-time refusal of
+N10.
+*Landed:* the entry differ passed against the family those four left, the SMP differ passed against
+its own ten-record baseline, and the fleet was unmoved. **Neither differ is in the tree any more, so
+both verdicts are recorded results and neither is re-takeable.** What the SMP one reported at its
+last run is S5's own finding, and `roadmap.md` carries the figures.
 
 **S1 -- per-core state, at one core.** Everything that must be keyed, landed while the count is one
 so it folds to nothing and every preset proves it: the current thread pointer, the fault record, and
@@ -1256,8 +1330,14 @@ Three things the work settled that the plan did not anticipate.
 
 **S5 -- the RV64 backend and the SMP-seam verdict.** The hart park first, since with no firmware
 every hart currently enters the reset path. Then the lock, the doorbell over the machine software
-interrupt, and the genuine software rendezvous that A64 receives from hardware. *Expected:* the
-differ's verdict, whatever it is, IS the step's finding, exactly as the address-space seam's was.
+interrupt, and the genuine software rendezvous that A64 receives from hardware.
+*Landed:* the differ's verdict WAS the step's finding, exactly as the address-space seam's was, and
+it came back positive rather than empty. It exited 0: not one member of the seam frozen before
+either backend moved had changed, so a second backend whose identity is a published index rather
+than a register read, whose doorbell is a CLINT word lowered through a machine-mode trampoline, and
+whose lock is LR/SC was absorbed by the seam rather than reshaping it. **The differ is no longer in
+the tree, so that verdict is a recorded result and not re-takeable**; `roadmap.md` carries the
+corpus and the control figures.
 
 **S6 -- the GICv3 posture, matching the silicon target.** Off the critical path deliberately: the
 doorbell's semantics are settled at S3 against one lowering, and the banked-register question the

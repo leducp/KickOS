@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# CI gate on the COMPLETENESS of the two static-callgraph declaration files. For
+# CI gate on the COMPLETENESS of the two static-callgraph declaration files, and on the SHAPE
+# of the bindings file both gates share. For
 # tests/static/trap_redzone_roots.txt: every arch that has a trap-stack header is declared,
 # every class that header prices is declared, and every configure preset of a declared arch is
 # registered. For tests/static/console_reach_roots.txt: every preset whose chip TRANSLATES is
@@ -15,6 +16,9 @@
 # board at all. This one is registered on EVERY board.
 #
 # It reads the tree through `git ls-files` plus the preset files and configures nothing.
+#
+# A `preset` record is matched against the REGISTRATION KEY and not against the configure
+# preset name; tests/static/preset_boards.cmake says what that is and why the two differ.
 #
 # The invariant behind clause 2: a header's DEPTH macros ARE its class list, so a depth
 # figure no class record names is either a deleted class or a figure nothing enforces.
@@ -130,36 +134,59 @@ require_nonempty "$TMP/preset.txt" "$ROOTS declares no preset record"
 awk '{ printf "%s\t%s\n", $2, $3 }' "$TMP/preset.txt" > "$TMP/presetmap"
 N_DECLARED="$(wc -l < "$TMP/presetmap" | tr -d ' ')"
 
-# <preset>\t<board>\t<arch>, the arch read from the board's own board.cmake the way the root
-# CMakeLists reads it. A preset with no board carries no arch and is out of scope.
+# <preset>\t<board>\t<arch>\t<registration key>, the arch read from the board's own
+# board.cmake the way the root CMakeLists reads it, and the key as the flattener rebuilds it.
+# A preset with no board carries no arch and is out of scope.
 : > "$TMP/presetarch"
-while IFS="$TAB" read -r p b; do
+while IFS="$TAB" read -r p b k; do
     pa=""
     if [ "$b" != "@none" ] && [ -f "boards/$b/board.cmake" ]; then
         pa="$(sed -n 's/^[[:space:]]*set([[:space:]]*KICKOS_ARCH[[:space:]]\{1,\}"\([^"]*\)".*/\1/p' \
               "boards/$b/board.cmake" | head -1)"
     fi
-    printf '%s\t%s\t%s\n' "$p" "$b" "$pa" >> "$TMP/presetarch"
+    printf '%s\t%s\t%s\t%s\n' "$p" "$b" "$pa" "$k" >> "$TMP/presetarch"
 done < "$TMP/presets"
+
+# --- the registration key, which every preset record below is matched against ---
+# A `preset` record does NOT name a configure preset: CMake names none, so the root
+# CMakeLists REBUILDS a name out of the board, the variant and, on an own-image AMP node, the
+# node index, and registers the gate under that. Two facts have to hold for the key to be
+# usable, and neither is visible from a record: it must key to exactly one preset, and it must
+# be a preset at all, both gates handing it to `cmake --preset`.
+cut -f1 "$TMP/presets" > "$TMP/presetnames"
+awk -F"$TAB" '$2 != "@none" { print $4 }' "$TMP/presetarch" | sort | uniq -d > "$TMP/keydup"
+while IFS= read -r k; do
+    [ -n "$k" ] || continue
+    who="$(awk -F"$TAB" -v K="$k" '$4 == K { printf "%s ", $1 }' "$TMP/presetarch")"
+    report "configure presets [ $who] all register under the name '$k'; a record naming it keys to more than one of them and measures whichever was configured"
+done < "$TMP/keydup"
+N_KEYS=0
+while IFS="$TAB" read -r p b pa k; do
+    [ "$b" != "@none" ] || continue
+    N_KEYS=$((N_KEYS + 1))
+    if ! grep -qxF "$k" "$TMP/presetnames"; then
+        report "configure preset $p registers under the name '$k', which is no configure preset; the gate registered there hands that name to cmake --preset and dies before it measures anything"
+    fi
+done < "$TMP/presetarch"
 
 cut -f1 "$TMP/archmap" > "$TMP/archnames"
 N_INSCOPE=0
-while IFS="$TAB" read -r p b pa; do
+while IFS="$TAB" read -r p b pa k; do
     # Only an arch this file gates is asked for; sim and lx6 have no trap-stack header. The
     # empty arch is tested FIRST: grep -xF "" matches every line and would put a board-less
     # preset in scope against the first declared arch.
     [ -n "$pa" ] || continue
     grep -qxF "$pa" "$TMP/archnames" || continue
     N_INSCOPE=$((N_INSCOPE + 1))
-    if ! awk -F"$TAB" -v A="$pa" -v P="$p" '$1 == A && $2 == P { found = 1 } END { exit !found }' "$TMP/presetmap"; then
-        report "configure preset $p (board $b, arch $pa) has no 'preset $pa $p' record in $ROOTS; its board registers no trap_redzone test at all"
+    if ! awk -F"$TAB" -v A="$pa" -v K="$k" '$1 == A && $2 == K { found = 1 } END { exit !found }' "$TMP/presetmap"; then
+        report "configure preset $p (board $b, arch $pa) registers under '$k' and $ROOTS has no 'preset $pa $k' record; its board registers no trap_redzone test at all"
     fi
 done < "$TMP/presetarch"
 
-# The other direction: a record naming a preset that is not a visible preset of that arch.
+# The other direction: a record naming a key no visible preset of that arch rebuilds.
 while IFS="$TAB" read -r a p; do
-    if ! awk -F"$TAB" -v A="$a" -v P="$p" '$1 == P && $3 == A { found = 1 } END { exit !found }' "$TMP/presetarch"; then
-        report "preset record '$a $p' names no visible configure preset of arch $a; the record is dead"
+    if ! awk -F"$TAB" -v A="$a" -v P="$p" '$4 == P && $3 == A { found = 1 } END { exit !found }' "$TMP/presetarch"; then
+        report "preset record '$a $p' names a registration key no visible configure preset of arch $a rebuilds; the record is dead"
     fi
 done < "$TMP/presetmap"
 
@@ -188,7 +215,7 @@ awk '{ sub(/#.*/, "") } $1 == "floor" { printf "%s\t%s\n", $2, $3 }' "$REACH" > 
 N_REACH_DECLARED="$(wc -l < "$TMP/reachmap" | tr -d ' ')"
 
 N_TRANSLATING=0
-while IFS="$TAB" read -r p b pa; do
+while IFS="$TAB" read -r p b pa k; do
     [ "$b" != "@none" ] || continue
     [ -f "boards/$b/board.cmake" ] || continue
     chip="$(sed -n 's/^[[:space:]]*set([[:space:]]*KICKOS_CHIP[[:space:]]\{1,\}"\([^"]*\)".*/\1/p' \
@@ -196,22 +223,36 @@ while IFS="$TAB" read -r p b pa; do
     [ -n "$chip" ] || continue
     grep -qxF "$chip" "$TMP/aspacechips" || continue
     N_TRANSLATING=$((N_TRANSLATING + 1))
-    if ! awk -F"$TAB" -v A="$pa" -v P="$p" '$1 == A && $2 == P { found = 1 } END { exit !found }' "$TMP/reachmap"; then
-        report "configure preset $p (board $b, chip $chip) selects HAS_ASPACE and $REACH has no 'preset $pa $p' record; its board registers no console_reach test at all"
+    if ! awk -F"$TAB" -v A="$pa" -v K="$k" '$1 == A && $2 == K { found = 1 } END { exit !found }' "$TMP/reachmap"; then
+        report "configure preset $p (board $b, chip $chip) selects HAS_ASPACE, registers under '$k' and $REACH has no 'preset $pa $k' record; its board registers no console_reach test at all"
     fi
 done < "$TMP/presetarch"
 
-# The other direction, and the floor beside it: a record naming no visible preset is dead, and
-# a preset declared with no floor record leaves that board's clause with no corpus floor.
+# The other direction, and the floor beside it: a record naming a key no visible preset
+# rebuilds is dead, and a preset declared with no floor record leaves that board's clause with
+# no corpus floor.
 while IFS="$TAB" read -r a p; do
-    if ! awk -F"$TAB" -v A="$a" -v P="$p" '$1 == P && $3 == A { found = 1 } END { exit !found }' "$TMP/presetarch"; then
-        report "preset record '$a $p' in $REACH names no visible configure preset of arch $a; the record is dead"
+    if ! awk -F"$TAB" -v A="$a" -v P="$p" '$4 == P && $3 == A { found = 1 } END { exit !found }' "$TMP/presetarch"; then
+        report "preset record '$a $p' in $REACH names a registration key no visible configure preset of arch $a rebuilds; the record is dead"
     fi
     if ! awk -F"$TAB" -v A="$a" -v P="$p" '$1 == A && $2 == P { found = 1 } END { exit !found }' "$TMP/reachfloor"; then
         report "$REACH declares preset $a $p and no floor record for it; that board's clause would report an absence over a corpus it never sized"
     fi
 done < "$TMP/reachmap"
 
+# --- clause 5: the shared bindings file is well formed, WHOLE ------------------
+# trap_redzone.py and console_reach.py each read only the records matching the one arch and
+# preset they were handed, so a malformed record for an arch no board on this box configures
+# reaches neither. This shape-checks every record in the file and builds nothing.
+INDIRECT="tests/static/trap_redzone_indirect.txt"
+[ -f "$INDIRECT" ] || fail "no bindings file at $SRC/$INDIRECT"
+if ! SHAPE="$(python3 tests/static/trap_redzone.py --check-file "$INDIRECT" 2>&1)"; then
+    printf '%s\n' "$SHAPE" >&2
+    fail "$INDIRECT has a malformed record"
+fi
+echo "== $SHAPE =="
+
+echo "== $N_KEYS of $N_PRESETS visible preset(s) rebuild a registration key that is a preset =="
 echo "== $N_HEADERS trap-stack header(s), $N_ARCHES declared arch(es), $N_CLASSES class record(s) over $N_DEPTHS depth figure(s), $N_INSCOPE of $N_PRESETS visible preset(s) in scope, $N_DECLARED registered =="
 echo "== $N_TRANSLATING translating preset(s), $N_REACH_DECLARED registered in $REACH =="
 

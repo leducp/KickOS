@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800 USIC class-driver leaf (M4 Rule 6, decision R-A). A FREESTANDING,
+// XMC4800 USIC class-driver leaf (driver-model rule 6). A FREESTANDING,
 // STATELESS register-logic core: POD + free functions taking the channel base
 // explicitly, no ctor/dtor, no mutable static state. It is built as its own
 // kickos_class_xmc4800 static lib on a bare include path (repo include/ + this

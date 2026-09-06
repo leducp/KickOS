@@ -249,6 +249,50 @@ config KICKOS_AMP_SHARED_SIZE
 	  cells and the per-node counts. Sized so a part whose protection unit can
 	  describe the partition has one region to name.
 
+# A second span, for a part that executes from an aperture separate from the one it
+# keeps data in. The pair below divides the TEXT span; the three above keep dividing
+# the span carrying the shared window, which is read-modify-written and so cannot sit
+# in execute-in-place memory. Left at zero they mean "one span".
+
+config KICKOS_AMP_TEXT_BASE
+	hex "Base of the separate aperture each node's TEXT is linked into"
+	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
+	default 0x0
+	help
+	  Where node 0's text starts, when that is not where its data starts. Zero means
+	  the part has one span and KICKOS_AMP_PARTITION_BASE describes all of it.
+	  CMakeLists.txt refuses this stated without KICKOS_AMP_TEXT_SHARE beside it.
+
+config KICKOS_AMP_TEXT_SHARE
+	hex "Bytes of that aperture one node's text owns"
+	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
+	default 0x0
+	help
+	  The stride between node images in the text aperture, so a node's text base is
+	  its index times this. No shared region sits above these; it lives in the span
+	  the three facts above describe.
+	  CMakeLists.txt refuses this stated without KICKOS_AMP_TEXT_BASE beside it.
+
+config KICKOS_AMP_DIAG_REPORT
+	bool "A peer node reports its own boot state into the shared region"
+	depends on KICKOS_AMP_POSTURE_SHARED_IMAGE || KICKOS_AMP_POSTURE_OWN_IMAGE
+	default n
+	help
+	  A diagnostic for a peer that drives no console: it writes four words into the
+	  region every node already shares and the primary prints them. Two of the four are
+	  values the primary already knows, which is what tells a real report from an
+	  artefact. Costs the primary a bounded spin at boot, and places a 16-byte object
+	  LAST in the shared region so nothing above it moves when this is turned on.
+
+config KICKOS_AMP_DIAG_TAG
+	int "A number of this build's own for a node to report back"
+	depends on KICKOS_AMP_DIAG_REPORT
+	default 0
+	help
+	  Reported back verbatim in the third cell. State a different one per image when
+	  comparing several peer builds against one primary; a report carrying the wrong
+	  tag is stale.
+
 config KICKOS_AMP_PARTITION_CORES
 	int "Machine cores the AMP partition spans"
 	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
@@ -630,6 +674,7 @@ config KICKOS_KERNEL_STACK_SIZE
 	default 4096 if ARCH_X86_64
 	default 1104 if ARCH_RXV3
 	default 1472 if ARCH_ARMV7M && TELEMETRY_RTT
+	default 1456 if ARCH_ARMV7M && KICKOS_ENABLE_SELFTEST && !KICKOS_AMP_POSTURE_NONE
 	default 1008 if ARCH_ARMV7M
 	default 896 if ARCH_ARMV6M
 	default 1024
@@ -887,6 +932,28 @@ config KICKOS_PANIC_DUMP
 	  Off keeps the fault banner and drops the register dump under it. Five
 	  tests read a named register out of that dump and fail by name when it is
 	  missing, so a board turning this off de-registers nothing and reports.
+
+config KICKOS_KSTACK_REPORT
+	int
+	default 1 if BOARD_QEMU_RISCV
+	default 1 if BOARD_QEMU
+	default 1 if BOARD_QEMU_M3
+	default 1 if BOARD_QEMU_M33
+	default 1 if BOARD_QEMU_M7
+	default 1 if BOARD_MICROBIT
+	default 0
+	range 0 1
+	help
+	  Whether kpanic prints the kernel block's high-water line. One reader,
+	  tests/integration/check_stackdepth.sh, which boots the two stackdepth images
+	  on the boards defaulted to 1 above and divides the two numbers the line
+	  carries; that gate registers on the same condition. Everywhere else the line
+	  only lengthens a capture every panic on every board already prints, so the
+	  default is off and a board that wants the figure joins the list above. Inert
+	  where KICKOS_KERNEL_STACKS is 0, there being no block to measure.
+
+	  Unprompted, like KICKOS_KERNEL_STACKS: it is a property of the board rather
+	  than a posture a build line selects.
 
 config KICKOS_DIAG_TERSE
 	int "Diagnostic messages as short codes (0/1)"

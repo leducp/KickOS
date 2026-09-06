@@ -5,7 +5,7 @@ CONFIG_BOARD_XMC4800_RELAX=y
 
 # The call/reply payload sweep, on the board its numbers were taken on. This mirrors the
 # `st` variant rather than the qemu-riscv `bench` one: the ENFORCING posture is where the
-# M4.7.7 figures were measured, and a posture change moves the rendezvous cost this
+# payload figures were measured, and a posture change moves the rendezvous cost this
 # variant exists to measure.
 CONFIG_MEMORY_MODEL_MPU=y
 CONFIG_KICKOS_MAX_THREADS=8

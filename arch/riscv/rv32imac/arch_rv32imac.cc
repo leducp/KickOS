@@ -129,6 +129,15 @@ static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
               "KICKOS_KERNEL_STACK_SIZE is below the rv32imac syscall kernel-stack "
               "requirement plus its canary word: raise the per-arch default in Kconfig, "
               "never the depth, which is a measurement");
+// The .Lintr arms and .Lfault land on that same block, and neither figure is ordered against
+// the syscall depth above, so the clause above does not imply either of these.
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                  >= KICKOS_RV_TRAP_FRAME + KICKOS_RV_TRAP_KERNEL_DEPTH,
+              "the kernel block cannot hold an interrupt's dispatch plus its canary word");
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                  >= KICKOS_RV_TRAP_FRAME + KICKOS_RV_TRAP_NESTED_DEPTH,
+              "the kernel block cannot hold an accepted U-mode fault's reporter plus its "
+              "canary word");
 
 extern "C"
 {

@@ -89,6 +89,28 @@ namespace kickos
     {
         return kstack_words(index)[0] == KSTACK_CANARY;
     }
+
+    // Scans upward from the canary to the lowest word that is no longer the fill, which is the
+    // deepest sp anything reached on this slot since it was armed. A run of written words that
+    // happen to equal KSTACK_FILL at that boundary reads shallow, so this under-reports and
+    // never over-reports.
+    size_t kstack_high_water(int index)
+    {
+        // Never through kstack_words: that asserts, an assert reaches kpanic, and kpanic
+        // reads this. An out-of-range slot answers 0 rather than recursing.
+        if (index < 0 or index >= KICKOS_THREAD_SLOTS)
+        {
+            return 0;
+        }
+        uint32_t const* const w =
+            reinterpret_cast<uint32_t const*>(g_kstacks.get().slot[index]);
+        size_t i = 1;
+        while (i < KSTACK_WORDS and w[i] == KSTACK_FILL)
+        {
+            i++;
+        }
+        return (KSTACK_WORDS - i) * sizeof(uint32_t);
+    }
 #endif
 
     // One holder per device window, matched on RANGES and not on region slots, so equal,

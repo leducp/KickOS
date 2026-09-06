@@ -168,7 +168,7 @@ moves to `.data`/`.bss` and the gp window holds NOTHING kernel-owned (evidence 1
 small-data (evidence 3+4) and is covered by the app grant. Keep the app compiled WITH small-data
 so unwinding still works.
 
-- Fixes both boards: yes. `esp32c6.ld` and `virt.ld` share the layout, so the edit is identical.
+- Fixes both boards: yes. `esp32c6.ld` and `virt_rv32.ld` share the layout, so the edit is identical.
 - PMP entries: **+0** where the gp window folds into the existing `.appdata` NAPOT region. The
   runtime small-data is well under 0x800, so `__global_pointer$` at the block's middle reaches all
   of it and the whole thing fits inside the current 4 KiB `_appdata_size`. A separate gp-window PMP
@@ -188,7 +188,7 @@ measured confirmation that step 1 is load-bearing.
 1. **cmake:** `-msmall-data-limit=0` on the four KickOS RISC-V libs (kernel, arch_rv32imac, chip,
    lib) under the same `rv32imac AND KICKOS_HAVE_MPU` guard that gates the app flag. NOT on the app.
 
-2. **linker (`esp32c6.ld` + `virt.ld`, KICKOS_HAVE_MPU path):** move the small-data catch-alls out
+2. **linker (`esp32c6.ld` + `virt_rv32.ld`, KICKOS_HAVE_MPU path):** move the small-data catch-alls out
    of the kernel `.data`/`.bss` into `.appdata`/`.appbss`, with `PROVIDE(__global_pointer$ = ...)`
    in the `.appdata` small-data sub-block. `arch_domain_static_regions`
    (`kernel/domain/domain.cc`) is UNCHANGED: the gp window is now inside the app-data region it

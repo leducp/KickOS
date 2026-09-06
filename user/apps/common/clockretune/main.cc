@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// PRIVILEGED runtime clock-retune silicon harness (M3 clock-select coherence tail).
+// PRIVILEGED runtime clock-retune silicon harness (the clock-select coherence tail).
 // Gated OFF by default (-DKICKOS_CLOCK_RETUNE_TEST=ON); XMC4800 / K64F only, both of
 // which strong-override arch_cpu_clock_set. It drives the privileged
 // mask/disarm/flush-to-shift-idle/re-anchor/baud/re-arm sequence on silicon

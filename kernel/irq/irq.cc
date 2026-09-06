@@ -484,6 +484,12 @@ namespace kickos
         {
             return false;
         }
+        // The arch takes this line ahead of kickos_isr_irq, so a binding here would drive
+        // nothing and its detach would mask the line the kernel rings on.
+        if (arch_irq_line_kernel_owned(irq))
+        {
+            return false;
+        }
         IrqLock lock;
 #if KICKOS_KERNEL_CORES > 1
         pub_drain();
@@ -535,6 +541,12 @@ namespace kickos
         if ((flags & ~static_cast<unsigned int>(KOS_IRQ_LEVEL)) != 0)
         {
             return -KOS_EINVAL;
+        }
+        // REFUSED HERE AND NOT AT DETACH: a capability that cannot be closed safely is worse
+        // than one that was never handed out. EPERM and not EBUSY, no holder ever freeing it.
+        if (arch_irq_line_kernel_owned(line))
+        {
+            return -KOS_EPERM;
         }
         Kernel& k = kernel();
 #if KICKOS_KERNEL_CORES > 1

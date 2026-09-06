@@ -551,14 +551,14 @@ namespace
         stage_release();
         wait_n(2);
         kos_handle_close(g_gate);
-        tap::diag("rr quantum %u ns, peer advanced %u during the burn",
+        tap::diag("rr quantum %u ns, the other RR thread advanced %u during the burn",
                   static_cast<unsigned>(quantum), static_cast<unsigned>(g_rr_advanced));
         // Neither worker ever resumed holding the other's stack. FIRST, because a worker that
         // sees this abandons its loop: the burner then never burns and the progress check
-        // below fails too, reporting a stack swap as "the peer never ran".
+        // below fails too, reporting a stack swap as "the other thread never ran".
         TAP_CHECK(g_rr_stack_swap == 0);
-        // The peer ran WHILE the burner burned. Sampled across the burn and not at the end,
-        // so a peer that ran only before the burner started does not satisfy it.
+        // The other RR thread ran WHILE the burner burned. Sampled across the burn and not
+        // at the end, so one that ran only before the burner started does not satisfy it.
         TAP_CHECK(g_rr_advanced > 0);
     }
 
@@ -5546,7 +5546,9 @@ namespace
         TAP_CHECK(cores_after == static_cast<unsigned>(KICKOS_KERNEL_CORES));
         TAP_CHECK(accounted_after == cores_after);
     }
+#endif
 
+#if defined(KICKOS_ENABLE_SELFTEST)
     // The doorbell's two per-core counts: services performed, each of which takes a Context
     // synchronization event, and instruction-side rendezvous initiated.
     //
@@ -5569,15 +5571,51 @@ namespace
 #endif
     }
 
+    // --- A line the arch dispatches to a kernel vector of its own --------------
+    // Its vector reaches a kernel service directly and never kickos_isr_irq, so it holds no
+    // irq_table slot: a capability over it would drive nothing, and closing that capability
+    // would detach and MASK the line the kernel rings its peers on. The kernel refuses the
+    // claim; the ordinary line below is what says the refusal is that line's and not every
+    // line's.
+    void t_irq_kernel_line_reserved()
+    {
+        int64_t const owned =
+            static_cast<int64_t>(kos_doorbell_probe(KOS_DOORBELL_OP_KERNEL_LINE, 0));
+        tap::diag("arch-owned irq line: %ld", static_cast<long>(owned));
+        if (owned >= 0)
+        {
+            kos_cap_t reserved = KOS_CAP_NONE;
+            TAP_CHECK(kos_irq_claim(static_cast<int>(owned), KOS_IRQ_EDGE, &reserved)
+                      == -KOS_EPERM);
+            TAP_CHECK(reserved == KOS_CAP_NONE);
+            // And no second line is reserved behind it, which a sweep from one past it says.
+            TAP_CHECK(static_cast<int64_t>(kos_doorbell_probe(KOS_DOORBELL_OP_KERNEL_LINE,
+                                                              static_cast<uintptr_t>(owned) + 1u))
+                      < 0);
+        }
+        else
+        {
+            tap::diag("this arch routes every line through the first-level ISR");
+        }
+        // CLAIM_GATE_LINE, free outside its own arm: claimed, armed, fired and closed here.
+        kos_cap_t line = KOS_CAP_NONE;
+        TAP_CHECK(kos_irq_claim(CLAIM_GATE_LINE, KOS_IRQ_EDGE, &line) == 0);
+        TAP_CHECK(kos_irq_ack(line) == 0); // a claim leaves the line masked
+        kos_irq_inject(CLAIM_GATE_LINE);
+        TAP_CHECK(kos_irq_wait(line) == 0);
+        TAP_CHECK(kos_irq_ack(line) == 0);
+        TAP_CHECK(kos_handle_close(line) == 0);
+    }
+
     void t_doorbell_xpoke()
     {
         // The matrix's own width and this core's own row, both asked of the kernel: the width
         // is the MACHINE's core count and not the cores this image drives, and row 0 is a
         // peer's row on every node but the first.
         unsigned const width =
-            static_cast<unsigned>(kos_aspace_probe(KOS_ASPACE_OP_DOORBELL_WIDTH, 0));
+            static_cast<unsigned>(kos_doorbell_probe(KOS_DOORBELL_OP_WIDTH, 0));
         unsigned const me =
-            static_cast<unsigned>(kos_aspace_probe(KOS_ASPACE_OP_DOORBELL_SELF, 0));
+            static_cast<unsigned>(kos_doorbell_probe(KOS_DOORBELL_OP_SELF, 0));
         TAP_CHECK(width >= static_cast<unsigned>(KICKOS_NUM_CORES));
         TAP_CHECK(me < width);
         // On the own-image posture the partition's map says which row is this node's. The
@@ -5593,7 +5631,7 @@ namespace
         uint32_t initiated = 0;
         for (unsigned c = 0; c < width; c++)
         {
-            uint64_t const w = kos_aspace_probe(KOS_ASPACE_OP_DOORBELL_COUNTS, c);
+            uint64_t const w = kos_doorbell_probe(KOS_DOORBELL_OP_COUNTS, c);
             served += static_cast<uint32_t>(w & 0xFFFFFFFFu);
             initiated += static_cast<uint32_t>(w >> 32);
         }
@@ -5617,7 +5655,7 @@ namespace
         unsigned silent = 0;
         for (unsigned c = 0; c < width; c++)
         {
-            uint64_t const w = kos_aspace_probe(KOS_ASPACE_OP_DOORBELL_COUNTS, c);
+            uint64_t const w = kos_doorbell_probe(KOS_DOORBELL_OP_COUNTS, c);
             uint32_t const s = static_cast<uint32_t>(w & 0xFFFFFFFFu);
             uint32_t const n = static_cast<uint32_t>(w >> 32);
             char const* whose = "peer";
@@ -5629,7 +5667,8 @@ namespace
             {
                 whose = "mine";
             }
-            tap::diag("core %u (%s): %u service(s), %u rendezvous initiated", c, whose, s, n);
+            tap::diag("core %u (%s): %u service(s), %u rendezvous initiated", c, whose,
+                      static_cast<unsigned>(s), static_cast<unsigned>(n));
             if (doorbell_core_is_mine(c, me))
             {
                 if (s == 0u)
@@ -5647,8 +5686,9 @@ namespace
         }
         tap::diag("doorbell matrix %u row(s), this core row %u: services %u -> %u, rendezvous "
                   "%u -> %u, mine %u, peers %u",
-                  width, me, served, served_after, initiated, initiated_after, mine_served,
-                  peer_served);
+                  width, me, static_cast<unsigned>(served), static_cast<unsigned>(served_after),
+                  static_cast<unsigned>(initiated), static_cast<unsigned>(initiated_after),
+                  static_cast<unsigned>(mine_served), static_cast<unsigned>(peer_served));
 
         // Monotonic: a counter that went backwards is a torn read of a cell with one writer.
         TAP_CHECK(served_after >= served);
@@ -5712,6 +5752,18 @@ namespace
     constexpr unsigned AMP_SELF_ROW = 0u;
 #endif
 
+    // One counter, or -1 for anything the probe REFUSED. The op answers through a uintptr_t, so
+    // a negative errno arrives as a count with its top bit set and every `> 0` on it holds.
+    int64_t amp_count(uint32_t op, uint32_t a1)
+    {
+        uintptr_t const raw = kos_amp_probe(op, a1);
+        if (static_cast<intptr_t>(raw) < 0)
+        {
+            return -1;
+        }
+        return static_cast<int64_t>(raw);
+    }
+
     // Whether a peer is running a kernel of its own, which is what the two arms below key on:
     // liveness and never which build this is. A kernel that has run drained its inboxes at
     // least once, at window_init, so its serviced count is nonzero. Zero is a peer that never
@@ -5722,7 +5774,7 @@ namespace
         {
             return false;
         }
-        return kos_aspace_probe(KOS_ASPACE_OP_AMP_SERVICED, node) > 0u;
+        return amp_count(KOS_AMP_OP_SERVICED, node) > 0;
     }
 
     // A record across a ring resynchronisation: the reset advances indices past a slot a record
@@ -5735,7 +5787,7 @@ namespace
     // from that peer is lost.
     void t_amp_reset_record()
     {
-        uintptr_t const bits = kos_aspace_probe(KOS_ASPACE_OP_AMP_RESET_RECORD, 0u);
+        uintptr_t const bits = kos_amp_probe(KOS_AMP_OP_RESET_RECORD, 0u);
         // Bit 16 first: a forge that could not run answers zero, which would otherwise read as
         // all four claims failing at once.
         TAP_CHECK((bits & 16u) != 0u);
@@ -5755,36 +5807,42 @@ namespace
 
     void t_amp_window()
     {
+        // The reading instrument on a known value, before any arm keys on it: one past the
+        // last op is one this dispatch does not carry, so amp_count must report -1.
+        TAP_CHECK(amp_count(KOS_AMP_OP_APP_ALIVE_SET + 1u, 0) == -1);
         // The order matters at the end and not the start: the last inbox forge must leave the
         // ring well formed, a refused depth deliberately not advancing the tail.
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_HEAD_DEPTH)
+        TAP_CHECK(kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_HEAD_DEPTH)
                   == KOS_AMP_V_DEPTH);
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_LENGTH)
+        TAP_CHECK(kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_LENGTH)
                   == KOS_AMP_V_LENGTH);
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_PORT)
+        TAP_CHECK(kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_PORT)
                   == KOS_AMP_V_PORT);
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_PORT_WIDE)
+        TAP_CHECK(kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_PORT_WIDE)
                   == KOS_AMP_V_PORT);
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_ZERO_LEN)
+        TAP_CHECK(kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_ZERO_LEN)
                   == KOS_AMP_V_TOOK);
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_WELL_FORMED)
+        TAP_CHECK(kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_WELL_FORMED)
                   == KOS_AMP_V_TOOK);
-        // The SEND side's own untrusted index, which no receive-side arm reaches.
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_TAIL_DEPTH)
+        // The SEND side's own untrusted index, which no receive-side arm reaches. Forged on
+        // the self-ring, so a live peer's consumer index is never written to run it.
+        TAP_CHECK(kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_TAIL_DEPTH)
                   == KOS_AMP_V_SEND_DEPTH);
         // The local node, refused by name: node_service skips its own self-ring, so four
         // accepted self-sends would fill it permanently.
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_SELF_SEND)
+        TAP_CHECK(kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_SELF_SEND)
                   == KOS_AMP_V_SEND_NODE);
         // A refused depth does not advance the tail, so the refusal is bounded: after
         // DEPTH_STRIKES the ring is resynchronised and the next well-formed publication is
         // taken. A ring left dead answers DEPTH here instead.
-        uintptr_t const resets = kos_aspace_probe(KOS_ASPACE_OP_AMP_DEPTH_RESET, AMP_SELF_ROW);
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_DEPTH_RESET)
+        int64_t const resets = amp_count(KOS_AMP_OP_DEPTH_RESET, AMP_SELF_ROW);
+        // A refusal is equal to itself, so `resets + 1` and `> 0` below both hold on one.
+        TAP_CHECK(resets >= 0);
+        TAP_CHECK(kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_DEPTH_RESET)
                   == KOS_AMP_V_TOOK);
         // Which mechanism recovered it: without this the arm passes on a build that simply
         // stopped refusing the depth.
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_DEPTH_RESET, AMP_SELF_ROW) == resets + 1u);
+        TAP_CHECK(amp_count(KOS_AMP_OP_DEPTH_RESET, AMP_SELF_ROW) == resets + 1);
 
         // The REPLY ring's own bound, which the assertion above does not cover. This selector
         // runs the doorbell's real service body between its strikes, so the call ring of the
@@ -5792,12 +5850,10 @@ namespace
         // by the ordered pair alone is cleared by each of those takes, the reply ring never
         // reaches DEPTH_STRIKES, and it stays dead for the life of the image. N6f states that
         // bound as the whole of that ring's recovery.
-        uintptr_t const reply_resets = kos_aspace_probe(KOS_ASPACE_OP_AMP_DEPTH_RESET,
-                                                        AMP_SELF_ROW);
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_REPLY_DEPTH_SERVICE)
+        int64_t const reply_resets = amp_count(KOS_AMP_OP_DEPTH_RESET, AMP_SELF_ROW);
+        TAP_CHECK(kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_REPLY_DEPTH_SERVICE)
                   == KOS_AMP_V_TOOK);
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_DEPTH_RESET, AMP_SELF_ROW)
-                  == reply_resets + 1u);
+        TAP_CHECK(amp_count(KOS_AMP_OP_DEPTH_RESET, AMP_SELF_ROW) == reply_resets + 1);
 
         // A row the partition does not hold answers zero, and the RESET counter is what makes
         // this non-vacuous: the assertion just above proves this node's own reset row moved, so
@@ -5807,9 +5863,9 @@ namespace
         //
         // Every counter op passes its index straight from userspace, which is why the accessor
         // owes an answer for every index rather than the nearest one it holds.
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_DEPTH_RESET, AMP_SELF_ROW) > 0u);
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_DEPTH_RESET, KICKOS_AMP_NODES) == 0u);
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_DEPTH_RESET, KICKOS_AMP_NODES + 7u) == 0u);
+        TAP_CHECK(amp_count(KOS_AMP_OP_DEPTH_RESET, AMP_SELF_ROW) > 0);
+        TAP_CHECK(amp_count(KOS_AMP_OP_DEPTH_RESET, KICKOS_AMP_NODES) == 0);
+        TAP_CHECK(amp_count(KOS_AMP_OP_DEPTH_RESET, KICKOS_AMP_NODES + 7u) == 0);
 
         // The half that needs a peer that is RUNNING, decided at runtime and not by posture:
         // under one image the peers are this image's own cores, and under one image per node
@@ -5837,11 +5893,12 @@ namespace
             {
                 continue;
             }
-            uintptr_t const mine_took0 = kos_aspace_probe(KOS_ASPACE_OP_AMP_TOOK, AMP_SELF_ROW);
-            uintptr_t const peer_took0 = kos_aspace_probe(KOS_ASPACE_OP_AMP_TOOK, n);
-            uintptr_t const peer_sent0 = kos_aspace_probe(KOS_ASPACE_OP_AMP_SENT, n);
-            uintptr_t const peer_svc0 = kos_aspace_probe(KOS_ASPACE_OP_AMP_SERVICED, n);
-            TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_ROUND, n) == 0u);
+            int64_t const mine_took0 = amp_count(KOS_AMP_OP_TOOK, AMP_SELF_ROW);
+            int64_t const peer_took0 = amp_count(KOS_AMP_OP_TOOK, n);
+            int64_t const peer_sent0 = amp_count(KOS_AMP_OP_SENT, n);
+            int64_t const peer_svc0 = amp_count(KOS_AMP_OP_SERVICED, n);
+            TAP_CHECK(mine_took0 >= 0);
+            TAP_CHECK(kos_amp_probe(KOS_AMP_OP_ROUND, n) == 0u);
             // The reply is taken by THIS node's own doorbell service, so this thread has to
             // leave the CPU with interrupts open: a syscall runs with them masked.
             //
@@ -5852,27 +5909,24 @@ namespace
             uint64_t const deadline = kos_clock_now() + AMP_REPLY_NS;
             while (kos_clock_now() < deadline)
             {
-                if (kos_aspace_probe(KOS_ASPACE_OP_AMP_TOOK, AMP_SELF_ROW) != mine_took0)
+                if (amp_count(KOS_AMP_OP_TOOK, AMP_SELF_ROW) != mine_took0)
                 {
                     break;
                 }
                 kos_sleep_ns(AMP_REPLY_TICK_NS);
             }
-            uintptr_t const mine_took1 = kos_aspace_probe(KOS_ASPACE_OP_AMP_TOOK, AMP_SELF_ROW);
-            uintptr_t const peer_took1 = kos_aspace_probe(KOS_ASPACE_OP_AMP_TOOK, n);
-            uintptr_t const peer_sent1 = kos_aspace_probe(KOS_ASPACE_OP_AMP_SENT, n);
-            uintptr_t const peer_svc1 = kos_aspace_probe(KOS_ASPACE_OP_AMP_SERVICED, n);
+            int64_t const mine_took1 = amp_count(KOS_AMP_OP_TOOK, AMP_SELF_ROW);
+            int64_t const peer_took1 = amp_count(KOS_AMP_OP_TOOK, n);
+            int64_t const peer_sent1 = amp_count(KOS_AMP_OP_SENT, n);
+            int64_t const peer_svc1 = amp_count(KOS_AMP_OP_SERVICED, n);
             // SERVICED is what separates the two ways this can go wrong: a peer that never
             // entered its handler, and one that entered and took nothing.
-            tap::diag("node %u: took %u->%u sent %u->%u serviced %u->%u; node 0 took %u->%u",
-                      n, static_cast<unsigned>(peer_took0),
-                      static_cast<unsigned>(peer_took1),
-                      static_cast<unsigned>(peer_sent0),
-                      static_cast<unsigned>(peer_sent1),
-                      static_cast<unsigned>(peer_svc0),
-                      static_cast<unsigned>(peer_svc1),
-                      static_cast<unsigned>(mine_took0),
-                      static_cast<unsigned>(mine_took1));
+            tap::diag("node %u: took %ld->%ld sent %ld->%ld serviced %ld->%ld; node 0 took "
+                      "%ld->%ld",
+                      n, static_cast<long>(peer_took0), static_cast<long>(peer_took1),
+                      static_cast<long>(peer_sent0), static_cast<long>(peer_sent1),
+                      static_cast<long>(peer_svc0), static_cast<long>(peer_svc1),
+                      static_cast<long>(mine_took0), static_cast<long>(mine_took1));
             if (mine_took1 == mine_took0)
             {
                 continue;
@@ -5890,7 +5944,7 @@ namespace
                   static_cast<unsigned>(KICKOS_AMP_NODES) - 1u, live);
         TAP_CHECK(answered == static_cast<unsigned>(KICKOS_AMP_NODES) - 1u);
         // Not vacuous: a node that never serviced a doorbell answered nothing.
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_SERVICED, AMP_SELF_ROW) > 0u);
+        TAP_CHECK(amp_count(KOS_AMP_OP_SERVICED, AMP_SELF_ROW) > 0);
         }
     }
 
@@ -6055,7 +6109,8 @@ namespace
             cbuf[i] = static_cast<char>(0x50u + i);
         }
         int32_t const n = kos_call_timed(ep, cbuf, sizeof(cbuf), sizeof(cbuf), AMP_FAR_US);
-        tap::diag("far call to node %u returned %ld", far_node, static_cast<long>(n));
+        tap::diag("far call to node %u returned %ld", static_cast<unsigned>(far_node),
+                  static_cast<long>(n));
         TAP_CHECK(n == static_cast<int32_t>(sizeof(cbuf)));
         bool same = (n == static_cast<int32_t>(sizeof(cbuf)));
         for (size_t i = 0; same and i < sizeof(cbuf); i++)
@@ -6106,7 +6161,7 @@ namespace
         uint64_t const deadline = kos_clock_now() + AMP_REPLY_NS;
         while (kos_clock_now() < deadline)
         {
-            if (kos_aspace_probe(KOS_ASPACE_OP_AMP_FAR_PARKED, AMP_SELF_ROW) != 0u)
+            if (kos_amp_probe(KOS_AMP_OP_FAR_PARKED, AMP_SELF_ROW) != 0u)
             {
                 g_amp_guard_parked = 1;
                 break;
@@ -6118,20 +6173,20 @@ namespace
             kos_sem_post(CH_DONE);
             return;
         }
-        uintptr_t const drops0 = kos_aspace_probe(KOS_ASPACE_OP_AMP_REPLY_DROP, AMP_SELF_ROW);
+        uintptr_t const drops0 = kos_amp_probe(KOS_AMP_OP_REPLY_DROP, AMP_SELF_ROW);
         g_amp_guard_unparked = static_cast<uint32_t>(
-            kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_REPLY_UNPARKED));
+            kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_REPLY_UNPARKED));
         g_amp_guard_wrong_ring = static_cast<uint32_t>(
-            kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_REPLY_WRONG_RING));
+            kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_REPLY_WRONG_RING));
         g_amp_guard_stale_seq = static_cast<uint32_t>(
-            kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_REPLY_STALE_SEQ));
+            kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_REPLY_STALE_SEQ));
         g_amp_guard_drops = static_cast<uint32_t>(
-            kos_aspace_probe(KOS_ASPACE_OP_AMP_REPLY_DROP, AMP_SELF_ROW) - drops0);
+            kos_amp_probe(KOS_AMP_OP_REPLY_DROP, AMP_SELF_ROW) - drops0);
         // Read BEFORE the control below: after it the caller is awake either way.
         g_amp_guard_still_parked =
-            static_cast<uint32_t>(kos_aspace_probe(KOS_ASPACE_OP_AMP_FAR_PARKED, AMP_SELF_ROW));
+            static_cast<uint32_t>(kos_amp_probe(KOS_AMP_OP_FAR_PARKED, AMP_SELF_ROW));
         g_amp_guard_good = static_cast<uint32_t>(
-            kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_REPLY_GOOD));
+            kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_REPLY_GOOD));
         kos_sem_post(CH_DONE);
     }
 
@@ -6193,7 +6248,8 @@ namespace
         // The control on that same caller: the right tag on the right ring completes it.
         TAP_CHECK(g_amp_guard_good == KOS_AMP_V_TOOK);
         tap::diag("far reply guard: %u hostile reply(ies) dropped of 3 forged, control "
-                  "returned %ld", g_amp_guard_drops.load(), static_cast<long>(n));
+                  "returned %ld", static_cast<unsigned>(g_amp_guard_drops.load()),
+                  static_cast<long>(n));
         TAP_CHECK(n > 0);
         TAP_CHECK(cbuf[0] == static_cast<char>(0xC0u));
     }
@@ -6220,14 +6276,14 @@ namespace
         // host schedules.
         kos_sleep_ns(AMP_REPLY_TICK_NS * 4u);
         g_amp_forged = static_cast<uint32_t>(
-            kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_PEER_CALL));
+            kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_PEER_CALL));
     }
 
     void amp_blind_caller(void*) // caps: none
     {
         kos_sleep_ns(AMP_REPLY_TICK_NS * 4u);
         g_amp_forged = static_cast<uint32_t>(
-            kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_PEER_CALL_BLIND));
+            kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_PEER_CALL_BLIND));
     }
 
     // Set once the info-less receiver is off its park, so the loop below stops publishing at
@@ -6250,7 +6306,7 @@ namespace
         {
             kos_sleep_ns(AMP_REPLY_TICK_NS * 4u);
             uint32_t const answer = static_cast<uint32_t>(
-                kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_PEER_CALL));
+                kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_PEER_CALL));
             g_amp_forged = g_amp_forged.load() | answer;
             tries++;
         }
@@ -6311,7 +6367,8 @@ namespace
         // answer this receiver's reply into a slot the ring has already handed on.
         TAP_CHECK((forged & KOS_AMP_PEER_CALL_HELD) != 0u);
         tap::diag("far service: %ld byte(s) from another kernel on port %u, answered through "
-                  "kos_reply", static_cast<long>(got), amp_local_port());
+                  "kos_reply", static_cast<long>(got),
+                  static_cast<unsigned>(amp_local_port()));
     }
 
     // --- A reply capability the receiver could not be told of -------------------------------
@@ -6408,6 +6465,11 @@ namespace
         TAP_CHECK(got == static_cast<int32_t>(AMP_FAR_SERVICE_LEN));
         TAP_CHECK(opts.info.reply_cap != KOS_CAP_NONE);
         TAP_CHECK(reply_rc == 0);
+        // The verdict FIRST, as every other reader of a forge does. The probe answers a refusal
+        // through the same unsigned word as the packed verdict, and -KOS_EPERM truncated to
+        // uint32_t carries KOS_AMP_PEER_CALL_HELD set, so the held check alone holds on a probe
+        // that dispatched nothing.
+        TAP_CHECK(KOS_AMP_PEER_CALL_VERDICT(forged) == KOS_AMP_V_TOOK);
         TAP_CHECK((forged & KOS_AMP_PEER_CALL_HELD) != 0u);
     }
 
@@ -6474,8 +6536,16 @@ namespace
     // it.
     void t_amp_deferred_doorbell()
     {
-        uintptr_t const sent0 = kos_aspace_probe(KOS_ASPACE_OP_AMP_SENT, AMP_SELF_ROW);
-        uintptr_t const answer = kos_aspace_probe(KOS_ASPACE_OP_AMP_DEFER, 0);
+        int64_t const sent0 = amp_count(KOS_AMP_OP_SENT, AMP_SELF_ROW);
+        int64_t const answer = amp_count(KOS_AMP_OP_DEFER, 0);
+        // A doorbell whose raise names its peer with one register write keeps no seat to
+        // clear, so the probe refuses this scenario ahead of the publication.
+        if (answer < 0)
+        {
+            tap::skip("this doorbell has no seat, so no raise of it can be deferred");
+            return;
+        }
+        TAP_CHECK(sent0 >= 0);
         unsigned const skipped = static_cast<unsigned>(answer >> 16);
         unsigned const at = static_cast<unsigned>(answer & 0xFFFFu);
         // The node is the kernel's own choice and not this arm's.
@@ -6485,9 +6555,56 @@ namespace
         TAP_CHECK(at < static_cast<unsigned>(KICKOS_AMP_NODES));
         TAP_CHECK(skipped == 1u);
         // The publication stands whatever happened to its raise.
-        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_AMP_SENT, AMP_SELF_ROW) == sent0 + 1u);
+        TAP_CHECK(amp_count(KOS_AMP_OP_SENT, AMP_SELF_ROW) == sent0 + 1);
         // The delivery itself is not witnessed here: the seated flag only ever goes unseated to
         // seated, so the window this reopens is one a running partition cannot re-enter.
+    }
+
+    // --- A node's own app declaring itself into the record every node shares ----------------
+    // The one field of a node's window row that moves without traffic, and therefore the only
+    // witness a node no crossing ever reaches has: every counter beside it needs a message.
+    //
+    // This is the WRITE side's contract, which is what makes userspace asking for it safe. The
+    // row is derived in the kernel from the core it is running on and is never a parameter, so
+    // no caller can speak for a peer; and the value stored is the kernel's own derivation from
+    // the partition list, so a claim naming any other port is refused rather than recorded.
+    void t_amp_app_alive()
+    {
+        uint32_t const port = amp_local_port();
+        if (port == KOS_AMP_NO_ENTRY)
+        {
+            tap::skip("the partition names this node no port to publish");
+            return;
+        }
+        // Every row ahead of the publication, so the claim that none but this node's moves is
+        // read across the write rather than asserted from one sample.
+        int64_t before[KICKOS_AMP_NODES];
+        for (uint32_t row = 0; row < (uint32_t)KICKOS_AMP_NODES; row++)
+        {
+            before[row] = amp_count(KOS_AMP_OP_APP_ALIVE, row);
+            TAP_CHECK(before[row] >= 0);
+        }
+        // A claim the partition's list does not bear this node is refused, and refused BEFORE
+        // the row moves: what lands in the shared region is never a word an app supplied.
+        TAP_CHECK(static_cast<intptr_t>(kos_amp_probe(KOS_AMP_OP_APP_ALIVE_SET, port + 1u)) < 0);
+        TAP_CHECK(amp_count(KOS_AMP_OP_APP_ALIVE, AMP_SELF_ROW) == before[AMP_SELF_ROW]);
+        // The accepted claim records the port the partition names this node, biased by one so
+        // that a node named port 0 is still distinguishable from one that never published.
+        TAP_CHECK(kos_amp_probe(KOS_AMP_OP_APP_ALIVE_SET, port) == 0);
+        TAP_CHECK(amp_count(KOS_AMP_OP_APP_ALIVE, AMP_SELF_ROW)
+                  == static_cast<int64_t>(port) + 1);
+        // And no other node's row moved under it.
+        for (uint32_t row = 0; row < (uint32_t)KICKOS_AMP_NODES; row++)
+        {
+            if (row == (uint32_t)AMP_SELF_ROW)
+            {
+                continue;
+            }
+            TAP_CHECK(amp_count(KOS_AMP_OP_APP_ALIVE, row) == before[row]);
+        }
+        // A row outside the built width answers zero rather than a real peer's, so a reader
+        // may sweep a fixed count.
+        TAP_CHECK(amp_count(KOS_AMP_OP_APP_ALIVE, KICKOS_AMP_NODES) == 0);
     }
 
     // --- A far caller answered through the ordinary reply call -----------------------------
@@ -6521,10 +6638,10 @@ namespace
             return;
         }
         // Spent before anything is asserted, for the reason amp_far_service gives.
-        uintptr_t const sent0 = kos_aspace_probe(KOS_ASPACE_OP_AMP_SENT, AMP_SELF_ROW);
+        uintptr_t const sent0 = kos_amp_probe(KOS_AMP_OP_SENT, AMP_SELF_ROW);
         char body[4] = {0x71, 0x72, 0x73, 0x74};
         int const first = kos_reply(opts.info.reply_cap, body, sizeof(body));
-        uintptr_t const sent1 = kos_aspace_probe(KOS_ASPACE_OP_AMP_SENT, AMP_SELF_ROW);
+        uintptr_t const sent1 = kos_amp_probe(KOS_AMP_OP_SENT, AMP_SELF_ROW);
         int const second = kos_reply(opts.info.reply_cap, body, sizeof(body));
         // The ordinary reply call, on a capability naming a caller in another kernel.
         TAP_CHECK(first == 0);
@@ -6619,7 +6736,7 @@ namespace
         TAP_CHECK(kos_send(KOS_CAP_NONE, body, sizeof(body)) == -KOS_EBADF);
         TAP_CHECK(kos_recv(KOS_CAP_NONE, body, sizeof(body), nullptr) == -KOS_EBADF);
         tap::diag("unnamed crossing: port %u is named for no node, and its capability is none",
-                  unnamed);
+                  static_cast<unsigned>(unnamed));
     }
 
     // --- The band a far caller's reply record is named through ------------------------------
@@ -6632,7 +6749,10 @@ namespace
         unsigned records = 0;
         for (unsigned r = 0; r < KOS_AMP_RING_SLOTS * KICKOS_AMP_NODES * KICKOS_AMP_NODES; r++)
         {
-            uintptr_t const answer = kos_aspace_probe(KOS_ASPACE_OP_AMP_BAND_RESOLVE, r);
+            int64_t const answer = amp_count(KOS_AMP_OP_BAND_RESOLVE, r);
+            // FIRST: a refusal carries a clear bit 0, a set bit 1 and an enormous margin, so
+            // every claim below holds on a probe that ran nothing.
+            TAP_CHECK(answer >= 0);
             // Bit 0 set would be a far reply capability resolving to a local thread.
             TAP_CHECK((answer & 1u) == 0u);
             // Bit 1 is WHICH clause refused it. Without it the arm passes on a draw: a handle
@@ -6658,7 +6778,7 @@ namespace
     // --- Whose table the partition seated, and whose the forge answers ---------------------
     // Two things that are root's and not ambient. The partition's capabilities live in ROOT's
     // table, so the index an app spells for one names something else entirely in a task of its
-    // own; and KOS_ASPACE_OP_AMP_FORGE answers root's TASK and no other.
+    // own; and KOS_AMP_OP_FORGE answers root's TASK and no other.
     //
     // Root's TASK is the forge's gate and not root's thread: the guard arm above runs it from a
     // worker of root's, and this arm holds the other side.
@@ -6675,8 +6795,10 @@ namespace
         char body[4] = {};
         out[AG_PORT_CAP] = static_cast<uint64_t>(
             static_cast<int64_t>(kos_send(KOS_AMP_PORT_CAP(0), body, sizeof(body))));
-        out[AG_FORGE] = static_cast<uint64_t>(
-            kos_aspace_probe(KOS_ASPACE_OP_AMP_FORGE, KOS_AMP_FORGE_WELL_FORMED));
+        // Through intptr_t, so the refusal is SIGN-extended into the report word: a plain
+        // widening of the uintptr_t puts -KOS_EPERM in as 0x00000000ffffffff on a 32-bit part.
+        out[AG_FORGE] = static_cast<uint64_t>(static_cast<int64_t>(static_cast<intptr_t>(
+            kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_WELL_FORMED))));
         out[AG_RAN] = 1u;
         kos_sem_post(CH_DONE);
     }
@@ -6721,7 +6843,7 @@ namespace
         // task's table is that task's own, so the constant an app spells for a crossing names
         // no endpoint there.
         TAP_CHECK(static_cast<int64_t>(out[AG_PORT_CAP]) == -KOS_EBADF);
-        TAP_CHECK(out[AG_FORGE] == static_cast<uint64_t>(-KOS_EPERM));
+        TAP_CHECK(static_cast<int64_t>(out[AG_FORGE]) == -KOS_EPERM);
     }
 
     // KICKOS_MAX_ENDPOINTS' Kconfig ceiling: the pool cannot be wider than this, so the fill
@@ -6781,21 +6903,23 @@ namespace
 
         // This node's own row: the claim is that THIS image published nothing, and any other
         // row answers a peer's traffic.
-        uintptr_t const sent0 = kos_aspace_probe(KOS_ASPACE_OP_AMP_SENT, AMP_SELF_ROW);
+        int64_t const sent0 = amp_count(KOS_AMP_OP_SENT, AMP_SELF_ROW);
         char buf[AMP_FAR_LEN];
         for (size_t i = 0; i < sizeof(buf); i++)
         {
             buf[i] = static_cast<char>(0x60u + i);
         }
         int32_t const r = kos_send_timed(reused, buf, sizeof(buf), AMP_REUSE_US);
-        uintptr_t const sent1 = kos_aspace_probe(KOS_ASPACE_OP_AMP_SENT, AMP_SELF_ROW);
+        int64_t const sent1 = amp_count(KOS_AMP_OP_SENT, AMP_SELF_ROW);
         kos_handle_close(reused);
         // A local endpoint with no receiver parks until its deadline; a slot still carrying
         // the far route publishes to the peer and answers the byte count instead.
-        tap::diag("far slot reuse: send returned %ld, node sent %lu->%lu",
-                  static_cast<long>(r), static_cast<unsigned long>(sent0),
-                  static_cast<unsigned long>(sent1));
+        tap::diag("far slot reuse: send returned %ld, node sent %ld->%ld",
+                  static_cast<long>(r), static_cast<long>(sent0), static_cast<long>(sent1));
         TAP_CHECK(r == -KOS_ETIMEDOUT);
+        // Before the equality: two refusals are equal to each other.
+        TAP_CHECK(sent0 >= 0);
+        TAP_CHECK(sent1 >= 0);
         // And the payload never crossed.
         TAP_CHECK(sent1 == sent0);
     }
@@ -10212,24 +10336,54 @@ namespace
     constexpr kos_cap_t CAP_IDX_MASK = 0xFFFFu;
     constexpr int CAP_GEN_SHIFT = 16;
 
-    // Own-creates until the table refuses. The caller owns every handle written to `held`.
-    int fill_table(kos_cap_t* held, bool* held_is_sem, int room)
+    // Own-creates until the table refuses, and closes on the way out whatever the arm did not
+    // close itself: a failing TAP_CHECK returns from the middle of an arm, and a table left
+    // full fails every later create for a reason that is not the one under test.
+    struct TableFill
     {
+        kos_cap_t held[KICKOS_MAX_HANDLES];
+        bool is_sem[KICKOS_MAX_HANDLES];
         int n = 0;
-        while (n < room)
+        int stop = 0; // -KOS_EMFILE ends it on the table, -KOS_ENOMEM on an object pool
+
+        TableFill()
         {
-            kos_cap_t h = KOS_CAP_NONE;
-            bool is_sem = false;
-            if (fill_one_cap_typed(&h, &is_sem) != 0)
+            while (n < static_cast<int>(KICKOS_MAX_HANDLES))
             {
-                break;
+                kos_cap_t h = KOS_CAP_NONE;
+                bool sem = false;
+                stop = fill_one_cap_typed(&h, &sem);
+                if (stop != 0)
+                {
+                    return;
+                }
+                held[n] = h;
+                is_sem[n] = sem;
+                n = n + 1;
             }
-            held[n] = h;
-            held_is_sem[n] = is_sem;
-            n = n + 1;
         }
-        return n;
-    }
+        TableFill(TableFill const&) = delete;
+        TableFill& operator=(TableFill const&) = delete;
+        ~TableFill()
+        {
+            for (int i = 0; i < n; i++)
+            {
+                if (held[i] != KOS_CAP_NONE)
+                {
+                    kos_handle_close(held[i]);
+                }
+            }
+        }
+
+        // Forgets the entry as well as closing it: the slot can be recycled onto a live object
+        // before this goes out of scope, and a second close of a staled handle is refused.
+        int close(int i)
+        {
+            int const rc = kos_handle_close(held[i]);
+            held[i] = KOS_CAP_NONE;
+            return rc;
+        }
+    };
 
     // --- B3: index 0 is the kernel stdout slot; an own create never lands there ---------
     void t_cap_index0()
@@ -10270,33 +10424,22 @@ namespace
         // Exhaustion: own-creates fill the remaining slots [FIRST_DYNAMIC .. MAX_HANDLES-1]
         // and then fail with -KOS_EMFILE and NOT the -KOS_ENOMEM of an exhausted pool: the
         // reserved range stays off-limits even at the LAST free slot.
-        kos_cap_t held[KICKOS_MAX_HANDLES];
-        int n = 0;
-        while (true)
+        TableFill fill;
+        TAP_CHECK(fill.n >= 1);
+        for (int i = 0; i < fill.n; i++)
         {
-            kos_cap_t h = KOS_CAP_NONE;
-            if (fill_one_cap(&h) != 0)
-            {
-                break;
-            }
-            TAP_CHECK((h & CAP_IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC); // never a reserved slot, not even the last free one
-            held[n] = h;
-            n = n + 1;
-            if (n >= static_cast<int>(sizeof(held) / sizeof(held[0])))
-            {
-                break;
-            }
+            // never a reserved slot, not even the last free one
+            TAP_CHECK((fill.held[i] & CAP_IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC);
         }
-        TAP_CHECK(n >= 1);
         kos_cap_t full = 0; // not KOS_CAP_NONE: the refusal must be what writes that word
         TAP_CHECK(fill_one_cap(&full) == -KOS_EMFILE // the TABLE names itself, not a pool
                   and full == KOS_CAP_NONE);
         full = 0;
         TAP_CHECK(fill_one_cap(&full) == -KOS_EMFILE // idempotent: still refused, no side effect
                   and full == KOS_CAP_NONE);
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < fill.n; i++)
         {
-            TAP_CHECK(kos_handle_close(held[i]) == 0);
+            TAP_CHECK(fill.close(i) == 0);
         }
         kos_cap_t again = KOS_CAP_NONE; // table recovers once slots are freed
         TAP_CHECK(kos_sem_create(0, &again) == 0 and (again & CAP_IDX_MASK) != 0);
@@ -10315,28 +10458,28 @@ namespace
         constexpr uint32_t CHUNK_SLOTS = KICKOS_CAP_CHUNK_SLOTS;
         constexpr uint32_t TABLE_SLOTS = KICKOS_MAX_HANDLES;
 
-        kos_cap_t held[KICKOS_MAX_HANDLES];
-        bool held_is_sem[KICKOS_MAX_HANDLES];
-        int const n = fill_table(held, held_is_sem, KICKOS_MAX_HANDLES);
+        TableFill fill;
+        int const n = fill.n;
         TAP_CHECK(n >= 1);
 
         int top = 0;
-        bool below_granule = false;
+        unsigned lowest = 0xffffu;
         for (int i = 0; i < n; i++)
         {
-            if ((held[i] & CAP_IDX_MASK) > (held[top] & CAP_IDX_MASK))
+            unsigned const idx = static_cast<unsigned>(fill.held[i] & CAP_IDX_MASK);
+            if (idx > static_cast<unsigned>(fill.held[top] & CAP_IDX_MASK))
             {
                 top = i;
             }
-            if ((held[i] & CAP_IDX_MASK) < CHUNK_SLOTS)
+            if (idx < lowest)
             {
-                below_granule = true;
+                lowest = idx;
             }
             for (int j = i + 1; j < n; j++)
             {
                 // A directory index that decoded to the wrong chunk would still report back
                 // the index the install asked for, so only distinctness catches it.
-                TAP_CHECK((held[i] & CAP_IDX_MASK) != (held[j] & CAP_IDX_MASK));
+                TAP_CHECK(idx != static_cast<unsigned>(fill.held[j] & CAP_IDX_MASK));
             }
         }
 
@@ -10346,29 +10489,43 @@ namespace
         {
             for (int i = 0; i < n; i++)
             {
-                TAP_CHECK(kos_handle_close(held[i]) == 0);
+                TAP_CHECK(fill.close(i) == 0);
             }
             tap::partial("table is %u slot(s): the flat decode, no index reaches the granule",
                          static_cast<unsigned>(TABLE_SLOTS));
             return;
         }
-        TAP_CHECK((held[top] & CAP_IDX_MASK) >= CHUNK_SLOTS);
-        TAP_CHECK(below_granule); // both sides of the boundary live at once
+        TAP_CHECK((fill.held[top] & CAP_IDX_MASK) >= CHUNK_SLOTS);
+        if (lowest >= CHUNK_SLOTS)
+        {
+            // The refusal that ended the fill is what licenses the reading: -KOS_EMFILE means
+            // it took every free slot, so nothing below the granule was free and the first
+            // chunk is entirely seated by capabilities held for the life of the image.
+            TAP_CHECK(fill.stop == -KOS_EMFILE);
+            for (int i = 0; i < n; i++)
+            {
+                TAP_CHECK(fill.close(i) == 0);
+            }
+            tap::partial("the first chunk of %u is seated whole; own creates start at %u",
+                         static_cast<unsigned>(CHUNK_SLOTS), lowest);
+            return;
+        }
 
         // USABLE, not merely numbered: reaching the object is the only proof the directory
         // index and the in-chunk offset recombined onto the entry the install wrote.
-        if (held_is_sem[top])
+        kos_cap_t const high = fill.held[top];
+        if (fill.is_sem[top])
         {
-            TAP_CHECK(kos_sem_post(held[top]) == 0);
-            TAP_CHECK(kos_sem_wait(held[top]) == 0);
+            TAP_CHECK(kos_sem_post(high) == 0);
+            TAP_CHECK(kos_sem_wait(high) == 0);
         }
         else
         {
-            TAP_CHECK(kos_mutex_lock(held[top]) == 0);
-            TAP_CHECK(kos_mutex_unlock(held[top]) == 0);
+            TAP_CHECK(kos_mutex_lock(high) == 0);
+            TAP_CHECK(kos_mutex_unlock(high) == 0);
         }
-        TAP_CHECK(kos_handle_close(held[top]) == 0);
-        TAP_CHECK(kos_handle_close(held[top]) == -KOS_EBADF); // the entry the close emptied
+        TAP_CHECK(fill.close(top) == 0);
+        TAP_CHECK(kos_handle_close(high) == -KOS_EBADF); // the entry the close emptied
         for (int i = 0; i < n; i++)
         {
             if (i == top)
@@ -10378,17 +10535,15 @@ namespace
             // Ordered after the close above on purpose: had the high slot's decode aliased
             // one of these, that close would have emptied this entry too and this would be
             // -KOS_EBADF.
-            TAP_CHECK(kos_handle_close(held[i]) == 0);
+            TAP_CHECK(fill.close(i) == 0);
         }
     }
 
     // --- the cap-gen half of the handle codec: a recycled slot stales the old handle -------
     void t_cap_gen_reuse()
     {
-        kos_cap_t held[KICKOS_MAX_HANDLES];
-        bool held_is_sem[KICKOS_MAX_HANDLES];
-        int n = fill_table(held, held_is_sem, KICKOS_MAX_HANDLES);
-        TAP_CHECK(n >= 1);
+        TableFill fill;
+        TAP_CHECK(fill.n >= 1);
         // The table has to be FULL, and -KOS_EMFILE is the only thing that says so. A close
         // then leaves the released slot as the free list's ONLY node, forcing the next install
         // back onto that index; with any slot still free the mint lands elsewhere (a release
@@ -10396,9 +10551,9 @@ namespace
         kos_cap_t refused = 0; // not KOS_CAP_NONE: the refusal must be what writes that word
         TAP_CHECK(fill_one_cap(&refused) == -KOS_EMFILE and refused == KOS_CAP_NONE);
 
-        kos_cap_t const stale = held[n - 1];
-        n = n - 1;
-        TAP_CHECK(kos_handle_close(stale) == 0);
+        int const last = fill.n - 1;
+        kos_cap_t const stale = fill.held[last];
+        TAP_CHECK(fill.close(last) == 0);
         kos_cap_t fresh = KOS_CAP_NONE;
         bool fresh_is_sem = false;
         TAP_CHECK(fill_one_cap_typed(&fresh, &fresh_is_sem) == 0);
@@ -10422,9 +10577,9 @@ namespace
         }
         TAP_CHECK(kos_handle_close(stale) == -KOS_EBADF);
         TAP_CHECK(kos_handle_close(fresh) == 0);
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < last; i++)
         {
-            TAP_CHECK(kos_handle_close(held[i]) == 0);
+            TAP_CHECK(fill.close(i) == 0);
         }
     }
 
@@ -12336,12 +12491,14 @@ int main(int, char**)
     TAP_ADD("aspace_acquire_balance", t_aspace_acquire_balance); // one release per acquire taken
     TAP_ADD("map_tlbi_elided", t_map_tlbi_elided); // an unpublished space caches nothing to drop
     TAP_ADD("aspace_active_cores", t_aspace_active_cores); // every core on a root it is running
-    TAP_ADD("doorbell_xpoke", t_doorbell_xpoke); // a rendezvous initiated has a service to show
     // LAST of the block: it drops the space holding the image's own data pages for good, and
     // every process created after it copies the snapshot instead.
     TAP_ADD("process_data_template", t_process_data_template); // the snapshot, once root is gone
 #endif
 #if defined(KICKOS_ENABLE_SELFTEST)
+    // Not under the address-space gate: the doorbell is a property of the machine's cores.
+    TAP_ADD("doorbell_xpoke", t_doorbell_xpoke); // a rendezvous initiated has a service to show
+    TAP_ADD("irq_kernel_line_reserved", t_irq_kernel_line_reserved); // no cap over a kernel vector
     TAP_ADD("prio_ceiling_refused", t_prio_ceiling_refused); // a spawn above the task's ceiling
     TAP_ADD("prio_ceiling_narrow_only", t_prio_ceiling_narrow_only); // and a grant above the caller's own
 #endif
@@ -12387,6 +12544,7 @@ int main(int, char**)
     TAP_ADD("amp_far_reply_guard", t_amp_far_reply_guard); // a hostile reply is dropped and counted
     TAP_ADD("amp_far_service", t_amp_far_service); // a far call reaches a parked THREAD
     TAP_ADD("amp_deferred_doorbell", t_amp_deferred_doorbell); // a skipped raise is not a lost message
+    TAP_ADD("amp_app_alive", t_amp_app_alive); // a node's own app publishes into the shared row
     TAP_ADD("amp_inbound_reply", t_amp_inbound_reply); // a far caller answered through kos_reply
     TAP_ADD("amp_far_undisclosed", t_amp_far_undisclosed); // an undisclosed cap holds no slot
     TAP_ADD("amp_far_infoless", t_amp_far_infoless); // an info-less receiver hosts no call

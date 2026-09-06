@@ -4,17 +4,25 @@
 # Flattens the CMakePresets tree into one TAB-separated line per VISIBLE configure
 # preset:
 #
-#   <preset> <TAB> <KICKOS_BOARD>
+#   <preset> <TAB> <KICKOS_BOARD> <TAB> <registration key>
 #
 # Run as: cmake -DSRC=<repo root> -DOUT=<file> -P tests/static/preset_boards.cmake
 #
 # KICKOS_BOARD is set on a handful of base presets and INHERITED by every -st, -flat,
 # -telem and -bench variant, so a line-shaped scan finds a board for a third of the file
-# and none for the rest. The inherit walk below is where a variant's board comes from.
+# and none for the rest. The inherit walk below is where a variant's board comes from,
+# and KICKOS_CONFIG_VARIANT and KICKOS_AMP_NODE_ID come the same way.
 #
 # A preset whose board never resolves is emitted as @none rather than dropped: the
 # caller has to tell "this preset names no board" from "this preset is not there at
 # all", and a dropped line makes those identical.
+#
+# The third field is the name a per-preset gate is REGISTERED under. CMake names no
+# preset, so the root CMakeLists rebuilds one out of the board, the variant and, on an
+# own-image AMP node, the node index; that is what a `preset` record in
+# trap_redzone_roots.txt and console_reach_roots.txt is matched against, and it is not
+# the preset name. The rebuild here restates the one in CMakeLists.txt so the two can be
+# compared, and reads the same defconfig CMakeLists resolves the posture from.
 
 cmake_minimum_required(VERSION 3.24)
 
@@ -51,6 +59,9 @@ while(_queue)
     endforeach()
   endif()
 endwhile()
+
+# The cache variables the registration key is built from, each resolved by the inherit walk.
+set(_cachevars KICKOS_BOARD KICKOS_CONFIG_VARIANT KICKOS_AMP_NODE_ID)
 
 set(_names "")
 foreach(_f IN LISTS _files)
@@ -90,11 +101,13 @@ foreach(_f IN LISTS _files)
       endforeach()
     endif()
 
-    set(_board_${_key} "")
-    string(JSON _b ERROR_VARIABLE _ignored GET "${_p}" cacheVariables KICKOS_BOARD)
-    if(NOT _ignored)
-      set(_board_${_key} "${_b}")
-    endif()
+    foreach(_cv IN LISTS _cachevars)
+      set(_cv_${_cv}_${_key} "")
+      string(JSON _b ERROR_VARIABLE _ignored GET "${_p}" cacheVariables ${_cv})
+      if(NOT _ignored)
+        set(_cv_${_cv}_${_key} "${_b}")
+      endif()
+    endforeach()
   endforeach()
 endforeach()
 
@@ -102,29 +115,31 @@ if(NOT _names)
   message(FATAL_ERROR "preset_boards.cmake: no configure preset in ${SRC}/CMakePresets.json")
 endif()
 
-# Fixpoint rather than recursion: one pass can only propagate a board one level, so
+# Fixpoint rather than recursion: one pass can only propagate a value one level, so
 # repeat until nothing moves. Bounded by the preset count, which also makes an
-# inherit CYCLE terminate (its members simply keep no board and come out @none).
+# inherit CYCLE terminate (its members simply keep no value and come out empty).
 list(LENGTH _names _rounds)
-foreach(_r RANGE 1 ${_rounds})
-  set(_moved 0)
-  foreach(_name IN LISTS _names)
-    string(MAKE_C_IDENTIFIER "${_name}" _key)
-    if(NOT "${_board_${_key}}" STREQUAL "")
-      continue()
-    endif()
-    foreach(_parent IN LISTS _inh_${_key})
-      string(MAKE_C_IDENTIFIER "${_parent}" _pkey)
-      if(NOT "${_board_${_pkey}}" STREQUAL "")
-        set(_board_${_key} "${_board_${_pkey}}")
-        set(_moved 1)
-        break()
+foreach(_cv IN LISTS _cachevars)
+  foreach(_r RANGE 1 ${_rounds})
+    set(_moved 0)
+    foreach(_name IN LISTS _names)
+      string(MAKE_C_IDENTIFIER "${_name}" _key)
+      if(NOT "${_cv_${_cv}_${_key}}" STREQUAL "")
+        continue()
       endif()
+      foreach(_parent IN LISTS _inh_${_key})
+        string(MAKE_C_IDENTIFIER "${_parent}" _pkey)
+        if(NOT "${_cv_${_cv}_${_pkey}}" STREQUAL "")
+          set(_cv_${_cv}_${_key} "${_cv_${_cv}_${_pkey}}")
+          set(_moved 1)
+          break()
+        endif()
+      endforeach()
     endforeach()
+    if(NOT _moved)
+      break()
+    endif()
   endforeach()
-  if(NOT _moved)
-    break()
-  endif()
 endforeach()
 
 set(_table "")
@@ -133,11 +148,35 @@ foreach(_name IN LISTS _names)
   if(_hidden_${_key})
     continue()
   endif()
-  set(_b "${_board_${_key}}")
+  set(_b "${_cv_KICKOS_BOARD_${_key}}")
   if("${_b}" STREQUAL "")
     set(_b "@none")
   endif()
-  string(APPEND _table "${_name}\t${_b}\n")
+  # "base" is the root CMakeLists' own default for an unstated variant.
+  set(_variant "${_cv_KICKOS_CONFIG_VARIANT_${_key}}")
+  if("${_variant}" STREQUAL "")
+    set(_variant "base")
+  endif()
+  set(_regkey "${_b}")
+  if(NOT _variant STREQUAL "base")
+    set(_regkey "${_b}-${_variant}")
+  endif()
+  # The node index enters the key on the own-image posture alone, which is where one
+  # partition has one preset per node. Keying on KICKOS_AMP_NODE_ID being set instead
+  # would suffix every AMP preset, the shared-image posture carrying a Kconfig default
+  # for it.
+  set(_dc "${SRC}/boards/${_b}/configs/${_variant}/defconfig")
+  if(EXISTS "${_dc}")
+    file(STRINGS "${_dc}" _own REGEX "^CONFIG_KICKOS_AMP_POSTURE_OWN_IMAGE=y$")
+    if(NOT "${_own}" STREQUAL "")
+      set(_nid "${_cv_KICKOS_AMP_NODE_ID_${_key}}")
+      if("${_nid}" STREQUAL "")
+        set(_nid "0")
+      endif()
+      set(_regkey "${_regkey}-n${_nid}")
+    endif()
+  endif()
+  string(APPEND _table "${_name}\t${_b}\t${_regkey}\n")
 endforeach()
 
 file(WRITE "${OUT}" "${_table}")

@@ -49,6 +49,10 @@ namespace kickos
         extern int g_line_core;
         extern uint32_t g_pinned_mask;
 
+        // The one line arch_irq_line_kernel_owned answers true for. -1 is a backend reserving
+        // nothing, which is what the fallback answers and where every other arm runs.
+        extern int g_kernel_owned_line;
+
         void reset();
 
         // The whole Kernel back to zero plus irq_init(), so an arm starts from a seeded

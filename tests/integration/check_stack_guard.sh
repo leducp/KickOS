@@ -25,6 +25,16 @@
 # instruction), WnR set (a write) and DFSC 0b000111 (translation fault, level 3)
 # (DDI 0487 M.b, ESR_EL1). Spelled out here rather than derived, so this gate asserts the
 # encoding instead of restating whatever the source happens to produce.
+#
+# ABOVE ONE CORE THE WIRE HAS NO PER-LINE ATOMICITY, arch_console_write being a byte-at-a-time
+# device loop under no lock, so a core printing a status line lands it INSIDE another's line
+# character by character. The MARKER is a presence, so it is matched byte-exact first and a
+# split is tolerated second, through require_on_wire, which reports the span it allowed.
+#
+# THE PROBE COUNT AND THE TWO FIELD READS STAY BYTE-EXACT, and that is not a gap: a bounded
+# in-order match answers whether a literal reached the wire and never how many times nor which
+# value it carried, so it can neither count the probes nor separate the page last named from a
+# longer address. Each refusal says which of the two readings applies where it can tell.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -38,6 +48,9 @@ expect_status="${3:?$_usage}"
 need_qemu_machine
 run_image "$elf"
 
+# An absence, so weak by nature on a wire with more than one writer. Corroborated: a write that
+# ran off the stack unpunished leaves no marker, no ADDR at the page last named and no fault
+# status, and all three are asserted positively below.
 if has "ERROR:"; then
     printf '%s\n' "$OUT" | grep 'ERROR:'
     fail "the image reported a failure instead of faulting"
@@ -47,27 +60,24 @@ probes="$(printf '%s\n' "$OUT" | sed -n 's/.*\[stackguard\] touching 0x\([0-9a-f
 count="$(printf '%s\n' "$probes" | grep -c '[0-9a-f]')"
 if [ "$count" -lt 2 ]; then
     printf '%s\n' "$OUT"
-    fail "only $count page(s) probed: the first probe faulted, so no page of the stack was ever written"
+    _split=""
+    if [ "$(wire_cores)" -gt 1 ]; then
+        _split=", or a probe line a peer's status line broke into, which leaves how many pages
+  were written UNREADABLE rather than short: this read is a COUNT, and a bounded in-order match
+  answers whether a literal reached the wire and never how many times"
+    fi
+    fail "only $count page(s) probed, so the first probe faulted and no page of the stack was
+  ever written$_split"
 fi
 last="$(printf '%s\n' "$probes" | tail -n 1)"
 
-banners="$(printf '%s\n' "$OUT" | grep -c "$marker")"
-if [ "$banners" -eq 0 ]; then
-    fail "fault-dump marker '$marker' missing: walking below the stack did not fault"
-fi
-if [ "$banners" -ne 1 ]; then
-    fail "fault-dump marker '$marker' appeared $banners times"
-fi
+require_single_marker "$marker" "walking below the stack did not fault"
 
-if ! has "ADDR=0x${last}"; then
-    printf '%s\n' "$OUT" | grep -E 'ADDR=|ESR_EL1='
-    fail "the record faults somewhere other than 0x${last}, the page the image last named"
-fi
-
-if ! has "ESR_EL1=0x92000047"; then
-    printf '%s\n' "$OUT" | grep -E 'ESR_EL1='
-    fail "the syndrome is not a level-3 translation fault on a write from the lower level"
-fi
+field_matcher_control
+require_field_on_wire ADDR "0x${last}" 'ADDR=|ESR_EL1=' \
+    "the record faults somewhere other than 0x${last}, the page the image last named"
+require_field_on_wire ESR_EL1 0x92000047 'ESR_EL1=' \
+    "the syndrome is not a level-3 translation fault on a write from the lower level"
 
 if [ "$RC" -ne "$expect_status" ]; then
     fail "expected exit $expect_status, got $RC"

@@ -114,5 +114,74 @@ and better motivated once there is something to share it with.
   `.ARM.exidx`/`.extab`/`.gcc_except_table` are already homed in flash by `rp2350.ld`, so
   libstdc++/libsupc++ over newlib links cleanly on the M33.
 - **UF2 emission**: `.bin` + `.hex` are emitted today; a `.uf2` needs the RP2350 family-id and the
-  picotool/uf2 packer.
+  picotool/uf2 packer. **AND THE REASON IT STAYS DEFERRED IS PROVENANCE RATHER THAN EFFORT.** The
+  datasheet gives the family ids (Table 455, section 5.5.3: `rp2350_arm_s` is `0xe48bff59`), the
+  256-byte `payload_size` and the target alignment, and it does NOT document the UF2 block
+  layout at all: no 512-byte block size, no 32-byte header, no field offsets. An emitter
+  therefore needs the Microsoft UF2 specification, which is a different provenance from the
+  clean-room fact source this port is written against. A container we cannot source is not a
+  stronger witness than one we can, and `picotool load -x -t elf` takes the ELF today, which is
+  what every other board in the fleet is flashed as.
 - **Second core (core1), the WS2812 LED, and a real peripheral IRQ receive**: driver-era.
+
+## The AMP partition on this part, and facts a port written blind would miss
+
+**EVERY NODE PINS `SCB->VTOR` FROM `g_isr_vector` AND NEVER FROM A LITERAL, and the literal cost
+a milestone.** `Reset_Handler` used to write `0x1000_0000`. Every node compiles that line and a
+peer links at its own flash slice, so a peer pointed its vector table at NODE 0's, and the launch
+handshake had already handed core 1 the right address for it to throw away. From its second
+instruction on, every exception the peer took vectored into node 0's image and ran node 0's
+handlers against node 0's SRAM: `switch.S` wrote the other core's PSP into a node 0 thread's
+`ctx.sp` -- `ctx` being `Thread`'s first member, so that store lands on the first word of a TCB --
+and both cores raced `g_arch_current` and `g_arch_next` with no lock, `kickos_kernel_core()`
+folding to `0u` on this posture. `VTOR` is core-local, so nothing outside the peer can read it;
+the peer must report its own.
+
+**AND THE FAULT THAT DEFECT PRESENTS AS NAMES AN ADDRESS THE TREE CANNOT PRODUCE.** Node 0 takes a
+bus fault at `PendSV_Handler` on the incoming context restore with `R0` and `BFAR` both reading
+`0xf000_0000`. That constant appears nowhere: no expression in the tree subtracts one partition
+base from another, no shift by 28 exists outside `1u << 28`, and `arch_context_init` cannot reach
+it, `boot_stack_alloc` asserting the block inside this node's own arena. It is simply whatever the
+other core last left in `g_arch_next->sp`, so it is a CONSEQUENCE and not a clue: a later reader
+should not go hunting for arithmetic that produces it. `0xf000_0000` is unmapped on this part,
+which is why the read faults with `BFARVALID` rather than returning rubbish.
+
+**THE SHARED REGION IS THE WAY TO READ A PEER, AND THE DEBUG WINDOW IS NOT.** Three sessions were
+spent trying to read a running peer from outside and none produced a believable value; a peer
+writing four words into the region both nodes already share worked on the first attempt.
+`CONFIG_KICKOS_AMP_DIAG_REPORT` is that instrument, off by default. Three of its five cells carry
+values the primary ALREADY KNOWS, and that is the whole design: with a peer that provably cannot
+write -- a three-instruction assembly park -- it reads `cell0=0x0`, and with a live peer it reads
+back the node index, the build's own tag and the core clock this node derives its timing from. A
+plausible reading is the trap here, not an implausible one, and an instrument with no known-value
+cells cannot tell you which it gave you.
+
+
+**THE TWO 4 KiB NON-STRIPED SRAM BANKS ARE A CONTENTION WIN AND NOT SPARE MEMORY.** SRAM is 520
+KiB in ten banks: 512 KiB striped as two 256 KiB regions, word-striped four ways on address bits
+3:2, plus `SRAM8` at `0x2008_0000` and `SRAM9` at `0x2008_1000` outside the striped range (Tables
+11 and 12, section 2.2.3; section 4.2). Each has its own AHB5 arbiter and accesses to different
+banks proceed simultaneously (section 2.1.1), so a bank per node is a core its peer cannot stall.
+The datasheet names that use itself, twice: "useful for hoisting high-bandwidth data structures
+like the processor stacks" (2.2.3) and "for per-core purposes (e.g. stack and frequently-executed
+code), guaranteeing that the processors never stall on these accesses" (4.2). The AMP partition
+therefore divides the striped 512 KiB ONLY and leaves both banks unclaimed. The emulated vehicle
+has no analogue, so claiming them as ordinary partition memory would have spent the win
+invisibly.
+
+**THE SIO FIFO DEPTH IS STATED TWICE AND THE TWO DISAGREE.** Section 3.1.5 and Figure 7 say each
+inter-processor FIFO is four entries deep; the `FIFO_ST` register description in section 3.1.11
+says eight words. Nothing in the tree sizes anything on it, and the core-1 launch handshake is
+push-one/echo-one so it is depth-independent by construction. **A later user of that FIFO may not
+be**, which is the only reason this is written down: measure it rather than taking either figure.
+
+**AND A READING RULE ABOUT GATE REGISTRATION, paid for twice in one milestone.** A gate keyed on
+the wrong predicate fails in whichever way its predicate happens to fail, and the two ways look
+nothing alike. `console_reach` registers only for a preset with a row in its declaration file and
+is SILENT without one, so adding a preset drops a gate its siblings run and nothing says so. The
+AMP vehicle gates were registered on any own-image board while `kickos_add_qemu_test` refuses a
+board it does not know, so a board with no emulator did not merely lack gates, it FAILED TO
+CONFIGURE. Same defect class, opposite symptoms, and the only difference was which predicate was
+wrong. **A reader who fixes one should look at the other**, and the check is per-gate rather than
+per-declaration-file: `trap_redzone` owes nothing on a board with no rows, and that is not
+symmetry to assume but a thing to verify per gate.

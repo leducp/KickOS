@@ -434,9 +434,24 @@ void arch_init(void)
     g_ns_per_tick = kickos::KICKOS_NS_PER_SEC / freq;
     SystemCoreClock = static_cast<uint32_t>(freq);
 
-    // The distributor is up before any CPU interface is, so a secondary released below finds
-    // the shared half already written.
-    kickos_armv8a_gic_dist_init();
+    // The distributor is the machine's and not the node's, so under one image per node the
+    // partition primary writes it and no peer does: GICD_CTLR and every register at or above
+    // GIC_BANKED_INTIDS answer the same for every CPU interface, and a peer re-entering this
+    // clears GICD_CTLR and sweeps every shared line back to masked while the primary is already
+    // delivering on them. The primary runs it before it releases any peer, so a peer reaches
+    // its per-core half below with the shared half already written.
+    //
+    // The test is the running core and not the node index: a peer's image booted ALONE, which
+    // every qemu-arm64-amp2-n1 boot gate does, is the only kernel on the machine and owns the
+    // distributor, where a node-index test would leave it forwarding nothing.
+#if KICKOS_AMP_OWN_IMAGE
+    uint64_t boot_mpidr = 0;
+    __asm volatile("mrs %0, mpidr_el1" : "=r"(boot_mpidr));
+    if ((boot_mpidr & MPIDR_AFFINITY) == 0)
+#endif
+    {
+        kickos_armv8a_gic_dist_init();
+    }
     kickos_armv8a_percore_init();
 
 #if KICKOS_NUM_CORES > 1

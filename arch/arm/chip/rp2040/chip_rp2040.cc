@@ -26,6 +26,8 @@
 
 #include <stdint.h>
 
+#include <fatal_status.ld.h>
+
 #include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/atomic.h"
@@ -47,9 +49,6 @@ namespace irq = kickos::rp2040::irq;
 namespace kickos
 {
     int kmain(int argc, char** argv);
-#if defined(KICKOS_ENABLE_SELFTEST)
-    void kpanic(char const* msg) __attribute__((noreturn)); // arch_reboot: the ROM call must not return
-#endif
 }
 
 extern "C"
@@ -528,7 +527,14 @@ int arch_reboot(void)
     // (0, 0): no activity-LED pin, and neither USB interface disabled, so both
     // PICOBOOT (picotool) and UF2 mass storage answer.
     usb_boot(0u, 0u);
-    kickos::kpanic(kickos::diag::kRebootRp2040);
+    // NOT kpanic: this is reached from kfault_terminate, where kpanic itself ends, so
+    // panicking here re-enters a console kpanic_enter has already reclaimed. The polled writer
+    // is the one arch.h states is safe with interrupts down.
+    char const REBOOT_RETURNED_NL[] = "\n";
+    arch_console_write_sync(kickos::diag::kRebootRp2040,
+                            sizeof(kickos::diag::kRebootRp2040) - 1);
+    arch_console_write_sync(REBOOT_RETURNED_NL, sizeof(REBOOT_RETURNED_NL) - 1);
+    arch_shutdown(KICKOS_FATAL_STATUS);
 }
 #endif
 

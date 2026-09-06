@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// K64F UART0 class-driver leaf (M4 Rule 6, decision R-A). A FREESTANDING,
+// K64F UART0 class-driver leaf (driver-model rule 6). A FREESTANDING,
 // STATELESS register-logic core: a free function taking the UART module base
 // explicitly, no ctor/dtor, no mutable static state. Built as part of the
 // kickos_class_mk64f static lib on a bare include path (repo include/ + this

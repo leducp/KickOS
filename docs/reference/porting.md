@@ -23,7 +23,8 @@ provides two halves:
 No KickOS seam is a weak symbol. An optional seam's fallback body lives ALONE in a
 translation unit named `<symbol>_default.cc` that defines EXACTLY ONE global symbol, and a
 backend's own definition must sit in an always-anchored archive member -- the rule is stated
-in `arch/CMakeLists.txt` (lines 11-71) and detailed under *Privileged register write* below.
+in `arch/CMakeLists.txt` ("Seam fallbacks: the lone-TU rule") and detailed under
+*Privileged register write* below.
 
 ### Fault-reporter contract (panic must survive console handover)
 
@@ -402,7 +403,7 @@ CORRECT case, and the trap: `arch/riscv/chip/virt_rv32/virt_rv32.ld` carries the
 `_sdata = 0x80020000`), and there it is RIGHT -- QEMU's ELF loader places each segment at
 its PhysAddr, so `.data`'s bytes really are at the LMA and the `Reset_Handler` copy does
 real work. The `qemu-riscv` `+MPU` 15/15 gate is the proof. **Do NOT add the
-`_sidata == _sdata` assert to `virt.ld`**; a comment in that file already says so.
+`_sidata == _sdata` assert to `virt_rv32.ld`**; a comment in that file already says so.
 
 So: decide which side your loader is on BEFORE writing an `AT` clause, and pin the decision
 with an `ASSERT` either way. `docs/reference/boards.md`, *M4.5.6*, holds the wire evidence.
@@ -838,10 +839,10 @@ without it, the whole word was refused.
 can reach it"* -- though no backend CHECKS it. A store into a clock-gated block faults
 INSIDE the privileged store, in the kernel's own frame, and that reaches
 `kfault_terminate`: whole-system death from one syscall, i.e. an unprivileged caller's
-one-syscall system-kill primitive. Not live today only because `kickos_xmc_usic_init()`
-runs unconditionally from `arch_init` so USIC0 is never gated; a `U1C0`/`U2C0` entry
-(gated at reset behind `CGATCLR1`) would arm it. A porter adding an entry for a block that
-can be gated must either ungate it at `arch_init` or have the backend check.
+one-syscall system-kill primitive. Why no entry in the tree arms it today, and which one
+would: `invariants.md`, `privileged-write-seam-possession-and-allowlist`. A porter adding
+an entry for a block that can be gated must either ungate it at `arch_init` or have the
+backend check.
 
 Returns 0, `-KOS_EPERM` (the possession gate above, decided in the syscall layer),
 `-KOS_EINVAL` (misaligned, wrapping, or not on the allowlist), or `-KOS_ENOSYS` (no

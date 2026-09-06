@@ -5,9 +5,10 @@
 // gives it with the caller's own bytes: a far call is witnessed by the payload coming back, so
 // the peer has to return it rather than transform it.
 //
-// The partition names this node TWO ports and the kernel binds both. This app receives on the
-// FIRST alone: the second is deliberately left with no receiver, so a caller parks on it and
-// stays parked, which is what the reply-guard arm needs (docs/design-multicore.md N6f).
+// The kernel binds every port the partition names this node, and this app receives on the
+// FIRST alone: the rest are deliberately left with no receiver, so a caller parks on one and
+// stays parked, which is what the reply-guard arm needs (docs/design-multicore.md N6f). The
+// app names no node index and no port count.
 //
 // It never returns, for the reason <kickos/amp.h> states: root returning ends the system, and
 // the nodes of a partition share one machine.

@@ -6,7 +6,7 @@
 # SPI_BACKEND is the proxy, so the client reaches the bus over the service endpoint the board
 # service list brought up. Diagnostic app: built only under KICKOS_ENABLE_SELFTEST (never a
 # production image). Registered only for the frdmk64f board (chip-specific DSPI/PORTD/AIPS
-# bring-up) AND enforcement builds (the MMIO-grant seam is an M2 construct).
+# bring-up) AND enforcement builds (the MMIO-grant seam exists only there).
 kickos_add_diagnostic_app(k64dspi
   SOURCES     main.cc
   BOARD       ${KICKOS_BOARD}

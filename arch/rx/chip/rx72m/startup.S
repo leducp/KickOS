@@ -75,7 +75,7 @@ _g_fvectors:
     .word _rx_trap
     .endr
     .word _rx_ex_priv                 /* 0x50 privileged instruction */
-    .word _rx_ex_access               /* 0x54 access exception (MPU: M2) */
+    .word _rx_ex_access               /* 0x54 access exception (MPU) */
     .word _rx_trap                    /* 0x58 reserved */
     .word _rx_ex_undef                /* 0x5C undefined instruction */
     .word _rx_ex_addr                 /* 0x60 address exception */

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# PRIVILEGED runtime clock-retune silicon harness (M3 clock-select coherence tail).
+# PRIVILEGED runtime clock-retune silicon harness (the clock-select coherence tail).
 # A deliberate HARDWARE test, OFF by default: it drives a real privileged retune
 # (mask/disarm/flush/re-anchor/baud/re-arm) that no emulator exercises, so PASS is
 # silicon-observable on the operator's console. Enable with

@@ -19,7 +19,7 @@
 #
 # Diagnostic app: built only under KICKOS_ENABLE_SELFTEST (never a production image).
 # Registered only for the xmc4800-relax board (chip-specific USIC bring-up) AND enforcement
-# builds (the MMIO-grant seam is an M2 construct).
+# builds (the MMIO-grant seam exists only there).
 
 option(XMCSSC_LOCAL "Build xmcssc against the local SSC engine instead of the service proxy" OFF)
 

@@ -317,7 +317,8 @@ namespace kickos
         // Per-node bookkeeping, one row per node, each row written by that node alone.
         //
         // A count is a REPORT and never an input: no field of a peer's row is spent as an index
-        // or a length anywhere, which is what lets it sit where a peer can write it.
+        // or a length anywhere, which is what lets it sit where a peer can write it. app_alive
+        // below is a mark rather than a count and carries the same rule.
         //
         // RELAXED ATOMICS BECAUSE THEY ARE READ ACROSS NODES: a syscall on node 0 sweeps every
         // node's row while a peer is inside its own doorbell handler writing its own. One
@@ -338,9 +339,27 @@ namespace kickos
             // A node running no kernel of its own counts EVERY reply here, its thread pool
             // refusing each at the first clause.
             Atomic<uint32_t, Order::RELAXED> reply_drop;
+            // THE ONE FIELD HERE THAT MOVES WITHOUT TRAFFIC, and the whole reason it exists:
+            // every count above needs a crossing, so a node this partition never calls is
+            // witnessed by nothing. It holds the port the partition names this node biased by
+            // one, zero being "this node's app has not published". Biased so that a node named
+            // port 0 is still distinguishable from a silent one.
+            //
+            // Written from app_alive_set below and from nowhere else, so what lands here is the
+            // kernel's own derivation from the partition list and never a word an app supplied.
+            // NOT gated on the selftest knob, unlike its writer: the shared region's layout is
+            // the partition's and must not move with a test option.
+            Atomic<uint32_t, Order::RELAXED> app_alive;
         };
 
         Counts const& counts(uint32_t node);
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+        // Publish THIS node's app_alive mark. The node is derived and never a parameter: one
+        // writer per row is the whole of why a row may sit where a peer reads it, and a caller
+        // that could name the row would be able to speak for a peer.
+        void app_alive_set(uint32_t mark);
+#endif
 
         // Drain every inbox of THIS node, echoing a PORT_ECHO message back to its sender's
         // PORT_REPLY and routing a PORT_REPLY to whatever local caller its tag names.
@@ -371,8 +390,10 @@ namespace kickos
         Verdict forge_and_take(uint32_t from, uint32_t port, ReplyTag const& tag, uint32_t len,
                                uint32_t head_jump);
 
-        // The send side's half: push the far TAIL of the ring this node produces to `to`, and
-        // report what the send made of it. The forged tail is put back afterwards.
+        // The send side's half: push a garbage TAIL under this node's own producer arithmetic
+        // and report what the send made of it. The ring forged is this node's SELF-RING, which
+        // no node produces into and no service drains, so no peer-owned index is written; `to`
+        // is only who the doorbell would reach had the send not been refused.
         Sent forge_tail_and_send(uint32_t to, uint32_t tail_jump);
 
         // Publish ONE PORT_REPLY into THIS node's inbox from `from` carrying `tag`, then take

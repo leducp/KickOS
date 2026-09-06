@@ -22,16 +22,10 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/rv64_paging.h>
-#include <kickos/diag.h>
 #include <kickos/extent.h>
 
 #include <stddef.h>
 #include <stdint.h>
-
-namespace kickos
-{
-    void kpanic(char const* msg) __attribute__((noreturn)); // a mispaired release refuses
-}
 
 #if KICKOS_KERNEL_CORES > 1
 // klock_rv64imac.cc: one poke and one wait over `peers`, whose whole effect is the fence every
