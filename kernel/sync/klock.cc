@@ -108,6 +108,14 @@ namespace kickos
     extern "C" void kickos_switch_unlock(void)
     {
         klock_drop();
+        // THE OTHER HALF OF klock_leave'S ARM, AND NOT A DUPLICATE OF IT: a swap BOOKED from
+        // an interrupt runs at the exception exit, so klock_detach left `owed` set and the
+        // klock_leave that follows the booking releases nothing and raises nothing. This is
+        // the release that ends that span, so it is the only one a deferred backend reaches.
+        if (::kickos_kernel_core_resched_owed() != 0)
+        {
+            arch_ipi_resched_self();
+        }
     }
 
     // THE ONE BODY THAT GIVES A CROSS-CORE RAISE SCHEDULING MEANING: a second publisher of
@@ -118,6 +126,14 @@ namespace kickos
         // poll may absorb instead of the vector, and the cell is what outlives it.
         ::kickos_kernel_core_resched_owe(cores & ~(1u << kickos_kernel_core()));
         arch_ipi_send(cores);
+    }
+
+    // NO RAISE HERE. The release that ends this core's lock span carries it: klock_leave's
+    // depth-zero arm, or kickos_switch_unlock where a booked swap left the lock owed to it.
+    // A raise from inside the bracket would be taken against a core that still holds it.
+    void klock_resched_self(void)
+    {
+        ::kickos_kernel_core_resched_owe(1u << kickos_kernel_core());
     }
 
     // The reschedule a raise carries, held as state rather than as the raise itself

@@ -22,6 +22,12 @@ in. **What follows is only the causes, measurements, traps and declines that a g
 say and no command re-derives.** The two M7.11 and three M7.12 sections at the bottom of this file
 carry the AMP window and the RP2350 port.
 
+**EVERY M7 SUB-MILESTONE HAS MERGED AND M8 IS OPEN, BUT M7'S REVIEW HANDED DEFECTS FORWARD RATHER
+THAN CLOSING CLEAN**, which is why M8 is cut to run fixes first, then de-duplication, then
+optimisation, across eleven sub-milestones. `roadmap.md`'s `### M8` section is the ledger and the
+only place those numbers are assigned; the M8 section at the bottom of this file carries what
+opening it established and no command answers.
+
 **THE PREDICATE OPENS ON HARDWARE PROPERTIES RATHER THAN AN ARCHITECTURE FAMILY, because a family
 name is a proxy that dates the first time a part violates it.** The MMU is NOT one of the six and
 per-line interrupt targeting IS, which is what puts the RP parts in the AMP column: the RP2040
@@ -924,8 +930,8 @@ The whole point of this file. A green fleet pass says none of the following.
   It fires when the ABI is ready, which is a state and not a position, so a number would assert a
   readiness nobody has. `roadmap.md` states that and owns it. What had drifted: four design
   documents and `TODO.md` said "the ABI-freeze milestone (M8, the last one)" -- wrong twice over,
-  M8 being IPC/IRQ optimisation and the list running to M10 -- and `docs/README.md` listed the
-  freeze as M8's second half while omitting M10 entirely. The number is stripped everywhere. Do
+  M8 being IPC/IRQ optimisation and the list running to M11 -- and `docs/README.md` listed the
+  freeze as M8's second half while omitting M11 entirely. The number is stripped everywhere. Do
   not re-add one, and do not read the absence as an omission to fix.
 - **The fleet shipped `-O0` until M4.5.2, at roughly 2x footprint**, so every silicon witness
   taken before it is invalid. On the K64F, `-Os` then dropped a PIT clock-gate-race write that
@@ -1626,6 +1632,100 @@ instrument was in the tree.
   posture already draws on, and no draw since has shown it. **A concurrency arm that pointed two
   runners at ONE build tree is not evidence either way**: ninja raced itself there and the arm never
   ran, so every draw of it measured the harness.
+
+## M8 opened: what the cut established and a green run will not say
+
+- **THE AUDIT M8 WAS CUT FROM IS NOT IN THE TREE, AND THAT IS WHY `TODO.md` NOW CARRIES ITS
+  FINDINGS.** The verified audit of M7.10 through M7.12 was an external canvas, outside the
+  repository and outside git (its location is in `CONTEXT.local.md`, this file shipping no personal
+  path), so a citation to it carries no content and a session without that file cannot act on a
+  reference to `SM-2` or `AMP-1`. Every finding was itemised into `TODO.md` with its own evidence
+  for exactly that reason. **Do not go looking for the canvas, and do not read its absence as work
+  having been lost**: the tree is the record now, and the canvas is a superseded input rather than
+  a missing one.
+- **EVERY STANDING SPEEDUP ESTIMATE FOR THIS MILESTONE RESTS ON A TERM THAT SHRANK BY 4.7x, SO NONE
+  OF THEM IS A PLANNING INPUT.** `docs/design-m5-ipc-fastpath.md` section 3.0.4 measured
+  `MPU_APPLY` at 443 cycles a switch, 886 of a 3651-cycle locked round trip, and priced removing
+  protection at `f = 0.457` and 1.37x. Section 8.5 of the same page measures the same board after
+  the PMP precompute at 19 for `MPU_APPLY` plus 75 for `MPU_COMMIT`, **94 a switch and 188 a round
+  trip**: the 443 was the pre-split phase carrying the commit work, and the phase NAME does not say
+  so, which is how the stale figure kept being quoted as current. M7's own Amdahl figures (two
+  cores at 1.31x, four at 1.55x) rest on the same 53 percent hold. `roadmap.md` is corrected;
+  `docs/design-m7-smp.md` 215-217 still carries the old pair and M8.4 owns it. **No replacement
+  multiplier has been computed on purpose** -- P0 owns it, and the whole phase table shares the
+  defect, every figure predating trusted stacks, the MMU, the big kernel lock and word-wise
+  `memcpy`, with the A53, rv64 and x86 carrying no cycle figure at all.
+- **A MILESTONE TAG IN `TODO.md` CAN PREDATE A RENUMBERING, AND ONE CLASS OF THEM DID.** Three items
+  there carried an `M8` tag from the era when four design documents and `TODO.md` had settled on
+  "M8, the last one", which `roadmap.md` had already ruled against. Only one of the three, the
+  RISC-V context-switch cost, belongs to IPC and IRQ optimisation on its merits; the other two are a
+  kernel-confinement ladder and stay in `Later`. Retagged this pass. **The trap generalises**: a
+  bare `M8` in a document is not evidence of an assignment, and `roadmap.md` is the only file that
+  makes one.
+- **A CI JOB CAN BE NAMED FOR A PRESET IT DOES NOT BUILD, AND ONE IS.** The job at
+  `.github/workflows/ci.yml` 487 is called `pizero2350-amp` and its body configures
+  `pizero2350-amp2-n$node`, the TWO-image posture. The shared-image `pizero2350-amp` preset is
+  therefore uncovered behind a job bearing its own name, and **checking the matrix by job name
+  concludes the opposite of the truth**. `gicv3` and `riscv64` are the honest half of the same gap:
+  each appears zero times in that file, CI's `qemu-riscv` being rv32, so rv64 has five dedicated
+  gates, a QEMU machine, a toolchain CI already fetches and no job at all. Derive coverage by
+  grepping the preset name in `ci.yml`, never by reading the job list.
+
+- **THE FIX PHASE WILL NOT BE WITNESSABLE ON HARDWARE FOR THE TWO DEFECTS THAT MATTER MOST.** SM-2
+  is a kernel crash reachable only with two members of one task dying on two harts, which wants
+  `qemu-riscv64` with four harts and has no board; AMP-1 needs a node with more callers than
+  `RING_SLOTS` and a peer that has not drained its reply ring, which is a unit arm rather than a
+  silicon draw. Both are emulator or unit work by nature, not a bench booking, and neither absence
+  is a reason to defer them.
+
+## M8.1: what the four lifecycle fixes established, and what they do NOT witness
+
+- **`klock_leave` CANNOT FIRE THE SELF-RAISE AFTER A BOOKED SWAP, AND READING THAT ARM ALONE SAYS
+  THE OPPOSITE.** Its guard is `r.depth == 0 and r.owed == 0`, and `klock_detach` sets `owed` when
+  a swap is merely BOOKED, which is what armv8a and rv64imac do from an interrupt: the swap lands
+  at the exception exit, `klock_attach` skips the re-acquire while `owed` stands, and the
+  `klock_leave` that follows the booking therefore releases nothing and raises nothing. The release
+  that ends that span is `kickos_switch_unlock`, and that is where a resched cell owed to THIS core
+  is now raised. **This was got wrong in direction during M8.1** -- the fix was briefed as "let the
+  existing depth-0 arm carry it", which is unreachable on exactly the backends the change targets,
+  and the symptom was a cross-core slay timing out at `-KOS_ETIMEDOUT` with the victim keeping its
+  core, indistinguishable from the unfixed tree. `klock_resched_ask` still strips self, so the cell
+  remains the only publisher and `switch_book` sends nothing.
+- **SM-4'S WIRING IS WITNESSED ON THE HOST, AND THE CLAIM THAT IT COULD NOT BE WAS WRONG.** It
+  first landed unwitnessed on the reasoning that `arch/arm64/armv8a/aspace_armv8a.cc` is not
+  host-buildable and that the only live-fire arm needs a caller mapping `R|X` over one VA from two
+  cores, which the map editor refuses. **Half of that was cost dressed as impossibility**: the
+  file's system operations now live one-per-instruction in `sysops_armv8a.h`, and
+  `tests/unit/mapexec` compiles the editor itself at two cores against a seam, the same technique
+  `tests/unit/deathspace` already used for `KICKOS_HAVE_ASPACE` code the host has not got. What was
+  genuinely refusable stays refused: no arm fabricates an `R|X` caller, every pre-state is built by
+  calling `arch_aspace_map`, and the architectural EFFECT (a PE re-executing already-fetched
+  instructions) is unobservable under QEMU, so this reads the wiring and not the hardware.
+  **Do not test `removal_owes_rendezvous` alone** -- it pre-existed the fix with one correct
+  caller in `arch_aspace_unmap`, so a predicate arm covers the half that was never broken; the
+  defect was that `map_into` never consulted it.
+- **A NEW SYSTEM OPERATION IN THE ARM64 MAP EDITOR GOES IN `sysops_armv8a.h`, AND ITS
+  SHAREABILITY IS THE CALLER'S TO PICK.** `check_tlbi_shareability.sh` decodes CRm out of the
+  LINKED IMAGE rather than reading the mnemonic, so the header composes no form and each call site
+  spends the one its posture owes. An `__asm` added back into `aspace_armv8a.cc` is invisible to
+  the host gate that now compiles that file, and a maintenance op named without its shareability
+  is a gate failure that reads as a codegen change.
+- **`taskleave` IS A CRASH DETECTOR FIRST, AND WHAT IT IS BLIND TO IS NARROWER THAN ONE MUTATION
+  SUGGESTS.** Reverting the `exit_current` CALL SITE alone leaves it printing `release peer hits: 0`
+  and PASSING: the race wants the last member's release to land inside a peer's `cap_teardown`, an
+  image cannot observe when a peer is inside its own sweep, so that shape is biased but not forced
+  from userspace. **But no-opping `aspace_install_boot` ITSELF does redden it** (`release peer
+  hits: 8` on `qemu-riscv64-smp`), so it is not blind to every revert of the mechanism, and an
+  earlier note in this file that said so without qualification was too absolute. It also now
+  carries `space destroys: N` against `ROUNDS`, so `hits == 0` can no longer be satisfied by a run
+  where no destroy happened at all. The deterministic ordering control remains the host arm, which
+  samples inside the sweep through the fixture's chunk gap.
+- **M8.10 CAN SILENTLY UNDO SM-2, AND IT IS THE ONLY PLACE IN M8 THAT CAN.** Installing the boot
+  root before the last member's release elides TLB maintenance for anything that edits the space
+  afterwards, because a space installed nowhere makes `invalidate_page_if` skip. That is sound only
+  while `arch_aspace_activate` is a full non-tagged flush on both translating backends, which it is
+  today. **ASIDs make it false**, and ASIDs are M8.10's. Re-read SM-2's argument then rather than
+  trusting that it once held.
 
 ## Where to go next
 

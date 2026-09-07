@@ -53,6 +53,12 @@ namespace kickos
         size_t g_acq_unpaired = 0;
 
         size_t g_unseated_switch_ins = 0;
+
+        // Peer cores aspace_release found still holding the space it is destroying. A death
+        // that vacates its space before dropping its reference leaves this at 0 forever.
+        size_t g_release_peer_hits = 0;
+
+        size_t g_release_runs = 0;
 #endif
 
         // Every acquire in this file goes through these two, or the pairing count escapes.
@@ -575,6 +581,9 @@ namespace kickos
         {
             return;
         }
+#if defined(KICKOS_ENABLE_SELFTEST)
+        g_release_runs++;
+#endif
         // The space being destroyed can be the running one, so the tables about to go back to
         // the pool are still what the walker reads. Every core's cell is cleared: a root left
         // cached on another core is a switch that core would skip, into freed tables.
@@ -585,6 +594,12 @@ namespace kickos
             {
                 continue;
             }
+#if defined(KICKOS_ENABLE_SELFTEST)
+            if (c != cpu)
+            {
+                g_release_peer_hits++;
+            }
+#endif
             g_current[c] = nullptr;
             if (c == cpu)
             {
@@ -651,14 +666,11 @@ namespace kickos
 #if KICKOS_KERNEL_CORES > 1
             // A core's translation base names the running thread's space or the boot root: an
             // outgoing space left installed here would have this core walking tables the
-            // release path frees and the pool reissues.
-            struct arch_aspace* const boot = arch_aspace_boot();
-            uint32_t const here = arch_cpu_id();
-            if (g_current[here] != boot)
-            {
-                g_current[here] = boot;
-                arch_aspace_activate(boot);
-            }
+            // release path frees and the pool reissues. KEPT UNDER THE GUARD: at one core the
+            // only reader of these tables is this core, and aspace_release activates the boot
+            // root itself before it frees them, so the arm would buy nothing and spend a
+            // non-tagged flush on every spaceless switch-in.
+            aspace_install_boot();
 #endif
             return;
         }
@@ -686,6 +698,18 @@ namespace kickos
         return space == g_current[cpu];
     }
 
+    void aspace_install_boot(void)
+    {
+        struct arch_aspace* const boot = arch_aspace_boot();
+        uint32_t const cpu = arch_cpu_id();
+        if (g_current[cpu] == boot)
+        {
+            return;
+        }
+        g_current[cpu] = boot;
+        arch_aspace_activate(boot);
+    }
+
     void aspace_forget_current(void)
     {
         uint32_t const cpu = arch_cpu_id();
@@ -703,6 +727,18 @@ namespace kickos
     {
         IrqLock lock;
         return g_unseated_switch_ins;
+    }
+
+    uint64_t aspace_release_peer_hits(void)
+    {
+        IrqLock lock;
+        return g_release_peer_hits;
+    }
+
+    uint64_t aspace_release_runs(void)
+    {
+        IrqLock lock;
+        return g_release_runs;
     }
 
     void aspace_data_home_forget(void)

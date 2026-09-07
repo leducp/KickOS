@@ -864,28 +864,183 @@ an AMP node taking its instance index from its core identity, which is N6's rule
 to stand on there.
 
 ### M8 -- IPC and IRQ optimisation, on measured evidence
-Rebaseline FIRST: per-thread kernel stacks and the MMU both change trap and continuation costs, so
-no percentage measured before them is a planning input. Then, in order of structural value rather
-than micro-cost: an end-to-end instrument (physical IRQ assertion through first userspace MMIO, plus
+**The rebaseline is the first thing the optimisation phase does, and the phase is not first**:
+per-thread kernel stacks and the MMU both change trap and continuation costs, so no percentage
+measured before them is a planning input, and by the same argument no percentage measured before
+this milestone's own fixes and de-duplication is one either. The ordering ruling is below; what
+follows here is the phase's content, in order of structural value rather than micro-cost: an
+end-to-end instrument (physical IRQ assertion through first userspace MMIO, plus
 the outermost lock-hold distribution, reporting p50/p99/max and not minima); `kos_reply_recv` fusing
 reply and receive under one kernel entry; donation to the already-blocked receiver on the rendezvous
 fastpath; a sticky IRQ notification with overflow accounting instead of a saturating counting
 semaphore; binding an IRQ notification to the endpoint receive wait so ONE driver thread waits on
 both; and edge-only persistent arming under a kernel-held storm budget.
 
-**Protection is not assumed cheap here.** `MPU_APPLY` measures 443 cycles per switch on
-`esp32c6-wroom` and both switches are inside the lock, which is 886 of a 3651-cycle locked round
-trip; `docs/design-m5-ipc-fastpath.md` section 3.0.4 prices its removal at `f = 0.457`, **1.37x**.
+**THE MILESTONE OPENS ON FIXES, PASSES THROUGH DRY, AND ONLY THEN OPTIMISES, AND THAT ORDER IS THE
+RULING RATHER THAN A CONVENIENCE.** Optimising a hot path that is about to be rewritten for
+correctness spends the work twice, and a de-duplication pass moves the very code an optimisation
+would have been measured against. So the three phases are strictly ordered, and each one's exit
+is the next one's baseline.
+
+| sub-milestone | what it lands |
+| --- | --- |
+| M8.1 | task lifecycle and address-space teardown: root's death policy, the dying sibling's space, the forcible slay |
+| M8.2 | the AMP window and far IPC: the slot snapshot, reply-ring admission, the refusal shape |
+| M8.3 | isolation and syscall robustness: region-board grant ownership, the copy that may fail, per-task object budgets |
+| M8.4 | the gates, the CI matrix, and the instrument's own arithmetic |
+| M8.5 | DRY in the kernel and the arch backends |
+| M8.6 | DRY in the build, the gate library and userspace |
+| M8.7 | P0: the rebaseline campaign, and the end-to-end instrument |
+| M8.8 | the per-switch and per-wake plumbing |
+| M8.9 | the IPC structure: the reserved reply slot, and the fused reply-receive |
+| M8.10 | translating boards and SMP: the reent seat, ASIDs |
+| M8.11 | what only a measurement can justify |
+| M8.12 | the M8 exit measurement, frozen |
+
+**THE FIX PHASE IS CUT BY SEAM AND NOT BY SEVERITY**, so that each sub-milestone is one review gate
+over one surface whose invariants can be stated together. Cutting it by severity instead would have
+put the root-death policy, an AMP ring protocol change and a region-allocator ownership rule in one
+pass with nothing in common but their rank, and would have left each of the three surfaces reopened
+by a later pass. The consequence to accept is that M8.1 through M8.3 each carry Low items that a
+severity cut would have deferred: finishing a surface is worth more than ranking its defects.
+
+**THE GATES COME BEFORE THE DE-DUPLICATION, AND THE BENCH IS REPAIRED IN M8.4 RATHER THAN M8.7.**
+Both follow from what the two later phases rest on. A DRY pass is exactly the change class a static
+gate is supposed to catch, and seventeen `tests/static` gates have no positive control -- no
+planted violation the detector must fire on every run -- so they cannot be shown to fire at all.
+Those controls are worth more before the refactor than after it, and the seventeen are named in
+`TODO.md` rather than counted here, a denominator moving every time a gate lands. And P0 is a
+measurement campaign rather than a repair: the rv32 bracket excludes the save and restore that the
+switch column claims to contain, and the phase table's composite correction is arithmetic on the
+instrument rather than on the kernel. Repairing the instrument inside the campaign would make the
+campaign's own numbers the first thing it invalidates.
+
+**`MIN` STOPS BEING THE STATISTIC, AND THE REASON IT WAS ONE HAS TO BE ANSWERED PER BOARD.**
+`kernel/bench/bench.cc` reads the minimum because the XMC4800's DWT is documented unreliable on
+that silicon, and a glitched read can only inflate a delta. That argument is sound for that part and
+is not a fleet-wide licence: a minimum hides the tail this milestone exists to shorten, which is why
+the instrument above is specified at p50/p99/max. The board whose counter is untrustworthy keeps a
+recorded exception; every other board reports a distribution.
+
+**NINE DECISIONS WERE TAKEN BEFORE THE CUT, AND THEY ARE WHAT MAKE THE SUB-MILESTONES SIZEABLE.**
+Root may die, and root's slot is retired rather than freed: `ThreadPool::alloc` never reclaims
+`ROOT_INDEX`, so `is_root` stays the slot compare and no successor can ever answer it. A far call
+refused after its slot was taken publishes an empty `PORT_REPLY`, which is the wire's only refusal
+shape and what the contract already promised. Reply-ring space becomes the admission test for
+TAKING a call, which is a consumer-side change and leaves the producer's arithmetic intact. Grant
+ownership on region boards is recorded per allocated block, so `abi.h`'s unconditional promise
+becomes true as written instead of being narrowed to the weaker of two backends. The far arm
+validates the full 16-bit sequence. Per-task object budgets land at the creators rather than being
+recorded as an accepted assumption. Every `KICKOS_*` symbol reaches CMake by rule instead of
+through an allowlist that is a second authority. The uncovered presets get a CI job each:
+`qemu-arm64-gicv3` under the emulator whose toolchain CI already fetches, and the shared-image
+`pizero2350-amp`, which is silicon and so earns a build rather than a run; the rv64 job goes to
+M8.1 by the rule below rather than to M8.4. And the fastpath is refused by name above one kernel
+core, today held only by the incidental absence of an `smp.cmake` on the four arches that have it.
+
+**M8 OPTIMISES THE COARSE-LOCK DESIGN AND DOES NOT BREAK IT, WHICH IS WHY PER-CORE READY QUEUES
+ARE NOT IN M8.10.** Under one kernel lock they replace a filtered scan with a pop and permit no
+concurrent scheduling at all, while their real shape needs a thread home, a remote-wake protocol, a
+migration rule, a priority and donation behaviour, and a rule forbidding two core-queue locks. Those
+are the lock-partition design, so landing the queues first is building them twice. They move to M9.
+**If M8.7's A53 numbers show the filtered scan is itself material, M8 may land a
+behaviour-preserving preparatory layout under the lock and nothing more**, labelled for M9.
+
+**THE MILESTONE HAS TWO FROZEN MEASUREMENTS AND THEY ARE NOT INTERCHANGEABLE.** M8.7 is the
+PRE-OPTIMISATION baseline that decides what M8.8 through M8.11 are worth attempting; M8.12 is the
+M8-EXIT measurement taken after them. **M9 is judged against M8.12 and never against M8.7**, and no
+figure predating M8.7 is a planning input for either: the whole phase table predates trusted
+stacks, the MMU, the big kernel lock and word-wise `memcpy`.
+
+**A SUB-MILESTONE IS THE JOB PLUS ITS TESTS, SO IT CARRIES THE CI THAT RUNS THEM.** Where a fix's
+witness needs infrastructure the tree lacks -- a CI job, a preset, an emulator arm -- building it
+belongs to the sub-milestone that needs the witness, never to M8.4 because M8.4 is where the word
+CI appears. SM-2's arm wants a 4-hart `qemu-riscv64` run and there is no rv64 job in
+`.github/workflows/ci.yml` at all, so that job is M8.1's; M8.4 keeps only the coverage no
+sub-milestone needs for a witness of its own. **A fix witnessed locally with a CI gap recorded
+beside it is not finished work**, and if a claim genuinely cannot be witnessed in CI then that is a
+refusal to state with its reason rather than a debt to file.
+
+**WHAT M8 IS NOT, BECAUSE `TODO.md` SAID OTHERWISE.** Three items there carry an `M8` tag from the
+era when four design documents and `TODO.md` had settled on "M8, the last one", the reading this
+file rules against above. One of them, the RISC-V context-switch cost, belongs here on its merits
+and is M8.11. The other two are a confinement ladder and share nothing with this milestone but the
+word MPU: "Option B", which drops each backend's permissive privileged background so a kernel wild
+pointer faults instead of riding it, and the ARMv8-M TrustZone backend layered on top of it. Both
+are hardening and debuggability rather than performance, Option B forks the "privileged is the
+background" contract every board rests on, and neither is a bug fix anywhere, the M7 speculation
+stall being closed already by Option A. They stay in `Later`. The footprint chase that `TODO.md`
+points at "the M8 footprint work" has no row here either, and gets its home when one is assigned.
+
+**Protection is not assumed cheap here, and the figure that said so has moved by 4.7x.** This
+section quoted `MPU_APPLY` at 443 cycles a switch, 886 of a 3651-cycle locked round trip, from the
+phase table of `docs/design-m5-ipc-fastpath.md` section 3.0.4. Section 8.5 measures the same board
+after the PMP precompute at **19 for `MPU_APPLY` and 75 for `MPU_COMMIT`, 94 a switch and 188 a
+round trip**: the 443 was the pre-split phase carrying the commit work, and the name alone does not
+say so. What this invalidates is not a detail but the milestone's own headline: 3.0.4 priced the
+removal of protection at `f = 0.457` and **1.37x** on a term that is now a quarter of the size, so
+that multiplier is superseded and no replacement is stated here. P0 owns it, which is what makes
+the rebaseline a precondition rather than a formality -- and the whole phase table shares the
+defect, every figure in it predating trusted stacks, the MMU, the big kernel lock and word-wise
+`memcpy`, with the A53, rv64 and x86 carrying no cycle figure at all.
 Bulk transfer is a SEPARATE object from the endpoint, and its wire format is
 **`{region-cap, offset, len}`, never a raw address** -- the M4 review's finding 10, which stays
 one paragraph only until the first large-transfer path lands.
 
-### M9 -- back to the driver era
+### M9 -- kernel concurrency, and what the big kernel lock actually costs
+**KickOS is a research project, and the lock is the research; drivers are a final step.** That is
+why this milestone takes the slot ahead of the driver era rather than following it, and the position
+is a maintainer's judgement rather than a consequence of anything else in this file. **The axis is
+solved against open**: the driver model is already proven in this tree by working implementations
+against the expected model, so what M10 holds is BREADTH of a settled pattern and can be scheduled
+whenever; how a kernel this size should be locked above one core has no answer here yet.
+
+**THE MILESTONE IS NAMED FOR A QUESTION AND ITS ANSWER MAY BE THAT THE LOCK STAYS.** What it owes is
+per-core scheduler ownership and ready queues, remote-work inboxes instead of a core reaching into a
+peer's queue, and only then an evidence-gated escape from the global lock. Capability
+resolve-to-use stays globally protected until a lifetime replacement is designed, because the
+partition that makes scheduling concurrent does not make object teardown safe. **A measured verdict
+that the coarse lock survives is a successful outcome of this milestone, not a failure of it.**
+
+**NO SPEEDUP FIGURE IS STATED HERE, AND THAT IS DELIBERATE.** The scenario arithmetic that sizes
+this work rests on a DERIVED locked fraction rather than an SMP measurement, and this file has just
+finished repairing the last figure of exactly that kind: `MPU_APPLY` was quoted fleet-wide at 443
+cycles a switch, and section 8.5 of `docs/design-m5-ipc-fastpath.md` measures the same board at 94
+once the PMP precompute landed, which left every derived multiplier resting on a term a quarter of
+its assumed size. So the envelope belongs to the audit that computed it. **M8.12 is what this
+milestone is sized from, and every value is recomputed there before M9 is approved.**
+
+**IT CARRIES A STOP CONDITION, WHICH IS THE POINT OF THE ENTRY METRICS.** The entry metrics are the
+M8.12 locked fraction, the lock-wait cycles under contention, and p50/p99/max for both IRQ-to-user
+and the IPC round trip. The stop condition is that a partition whose measured overhead exceeds its
+measured benefit is REFUSED and recorded as refused. Two shapes are already known to lose: a
+single-flow IPC call is a serial dependency chain no second core shortens, so same-core handoff
+stays the latency posture and a regression budget guards it; and extra atomics can cost more than a
+bounced global line saves. `docs/design-multicore.md` section 9 owns the open questions and this
+file owns only the number.
+
+| sub-milestone | what it lands |
+| --- | --- |
+| M9.0 | the reference-kernel survey, and the lock-domain questions it is allowed to answer |
+
+**M9.0 READS KERNELS THIS PROJECT ADMIRES, AND IT MAY NOT COPY THEM.** seL4, Fiasco.OC, NuttX,
+RIOT, Zephyr, ThreadX, RTEMS, RT-Thread, ChibiOS and FreeRTOS are each remarkable in their own way,
+and clean revision-pinned checkouts of them sit on the development box (`CONTEXT.local.md` names
+them and their revisions; it is gitignored, so no personal path ships here). What the survey
+extracts is DESIGN: lock domains, acquisition order, remote wake, migration, whether the lock is
+released inside the switch, and what benchmark evidence each project publishes. **Cite by path and
+never copy**, because kernel lock code read under one licence and then written into this tree is
+the licence and clean-room angle of the review rather than a stylistic worry. The output enumerates
+the design space and says where KickOS sits in it; it does not rank, and no shipped document in this
+tree grades another project. A majority among them is not an argument, and a single-core kernel is
+not an SMP precedent.
+
+### M10 -- back to the driver era
 Remaining drivers and breadth, plus the SPI class work of `deferred-after-pr-train.md` -- the
 validation hoist and the nine divergences. This sits after the foundation on purpose: it improves
 support on a base that is no longer moving under it.
 
-### M10 -- KickCAT as the reality check
+### M11 -- KickCAT as the reality check
 **After** the driver era, not inside it. KickCAT has been deferred through the whole driver era, and
 porting it to the driver APIs as they then stand is what judges them: if it asks for an API change,
 that is the most valuable output, and the answer is to change the API rather than bend KickCAT.

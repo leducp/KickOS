@@ -89,6 +89,14 @@ namespace kickos
         {
             if (t == kernel().current[core])
             {
+                // A slain thread must LOSE the core: the claim is a switch INTO it (sched.cc,
+                // switch_book), and a core re-picking its own running victim never takes one.
+                // `dying` declines, or a victim preempted mid-teardown would be displaced for
+                // a claim that already fired.
+                if (thread_slay_claim_pending(t))
+                {
+                    return false;
+                }
                 // THE PLACEMENT CHECK AND NOT A BARE TRUE, WHICH IS THE WHOLE OF MIGRATION:
                 // re-masking a running thread is what stops its own core picking it again, so
                 // reschedule() switches away instead of the thread being yanked off.

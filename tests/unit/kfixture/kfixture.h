@@ -102,6 +102,11 @@ namespace kickos
         extern uintptr_t g_redirect_stack_top;
         extern uint32_t g_redirects;
         void note_park();
+#if KICKOS_HAVE_ASPACE
+        // Defined by the ONE gate that compiles these sources with a translating backend
+        // (tests/unit/deathspace): the domain release task_release performs, traced.
+        void note_member_release();
+#endif
         void note_irq_save();
         void note_irq_restore();
 
@@ -142,6 +147,8 @@ namespace kickos
 
         extern uint32_t g_ipi_sends;
         extern uint32_t g_ipi_send_mask;
+        // The raise a core owes ITSELF, fired by klock_leave as the last lock level drops.
+        extern uint32_t g_ipi_self_raises;
 #endif
 
         // --- the waker a real park needs -----------------------------------------------

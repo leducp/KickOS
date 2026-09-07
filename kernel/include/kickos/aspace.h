@@ -97,8 +97,9 @@ namespace kickos
                        VirtualRanges* ranges, uintptr_t base, size_t size,
                        enum arch_map_memtype type);
 
-    // Install the incoming thread's task space, or leave the running one where the thread holds
-    // none. Skips the root write when the space is already current.
+    // Install the incoming thread's task space. Where the thread holds none, above one core the
+    // boot root goes in instead (aspace_install_boot) and below it the running space is left.
+    // Skips the root write when the wanted root is already current.
     void aspace_activate_for(Thread const* t);
 
     // Whether the translation root this core holds is `t`'s own space, which is the condition
@@ -106,6 +107,10 @@ namespace kickos
     // holds no space, where a kernel write to an app-half address lands in another process's
     // memory, so the switch path asks this before it seats libc's reentrant state.
     bool aspace_seated_for(Thread const* t);
+
+    // Install the boot root on THIS core and record it. For a caller about to stop being a
+    // member of the space it is running in: the last member's release frees these tables.
+    void aspace_install_boot(void);
 
     void aspace_forget_current(void);
 
@@ -116,6 +121,14 @@ namespace kickos
 
     uint64_t aspace_unseated_switch_ins(void);
 
+    // Peer cores a destroy found still holding the space. Must stay 0: a dying member vacates
+    // its space before its reference drops.
+    uint64_t aspace_release_peer_hits(void);
+
+    // Destroys run since boot. The counter above reads 0 for a sweep that found nothing and
+    // for a destroy that never ran, so a caller asserting the 0 needs this beside it.
+    uint64_t aspace_release_runs(void);
+
     // Drop the space holding the image's own data pages, as its release would.
     void aspace_data_home_forget(void);
 #endif
@@ -124,6 +137,7 @@ namespace kickos
 
     inline void aspace_activate_for(Thread const*) {}
     inline bool aspace_seated_for(Thread const*) { return true; }
+    inline void aspace_install_boot(void) {}
 
 #endif
 }

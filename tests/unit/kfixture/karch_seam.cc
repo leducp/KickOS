@@ -117,6 +117,7 @@ extern "C"
     // The raise a release restores an owed reschedule with.
     void arch_ipi_resched_self(void)
     {
+        kickos::testfix::g_ipi_self_raises++;
     }
 
     void arch_ipi_send(uint32_t cores)
@@ -271,6 +272,11 @@ namespace kickos
         {
             testfix::g_domain_live[i] = false;
         }
+#if KICKOS_HAVE_ASPACE
+        // task_release drops the members' hold through here, so this is the trace position of
+        // the call past which a thread is no longer a member of the space it was running in.
+        testfix::note_member_release();
+#endif
     }
 
     uint64_t ktime_now()

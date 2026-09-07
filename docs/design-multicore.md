@@ -1885,8 +1885,10 @@ other than its mask, nothing in it argues against the next.
 
 ## 9. Deliberately NOT frozen
 
-- **Per-core run queues and any finer locking.** The spike's stage 2, and the lock-hold shortening
-  that moves the bound belongs to the IPC optimisation work.
+- **Per-core run queues and any finer locking.** The spike's stage 2. `roadmap.md`'s M9 section
+  now owns this question, named for the question itself rather than for a lock/no-lock split --
+  a measured verdict that the coarse lock survives is a successful outcome of that milestone, not
+  a failure of it. The entry metrics and the stop condition live there, not here.
 - **The MCU dual-core parts' MODEL is settled and their port was never in question.** This entry
   used to ask whether they were "worth an AMP port at all", which was badly worded and invited
   the wrong reading: the only question was ever SMP versus AMP, and requirement 6 answers it.

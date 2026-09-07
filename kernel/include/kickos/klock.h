@@ -35,6 +35,12 @@ namespace kickos
     // THE RAISE THAT CARRIES IT, so a consumer absorbing that raise without entering a
     // scheduler leaves the ask standing for the next release or dispatch.
     void klock_resched_ask(uint32_t cores);
+
+    // The ask a core owes ITSELF. klock_resched_ask strips the caller's bit, so a core cannot
+    // reach its own cell through it. THE CELL ONLY: the raise is fired by whichever release
+    // ends this core's lock span, and a second publisher here would put the ask ahead of a
+    // raise nothing ordered it against.
+    void klock_resched_self(void);
 #else
     inline void klock_enter(void)
     {
@@ -53,6 +59,9 @@ namespace kickos
     {
     }
     inline void klock_resched_ask(uint32_t)
+    {
+    }
+    inline void klock_resched_self(void)
     {
     }
 #endif

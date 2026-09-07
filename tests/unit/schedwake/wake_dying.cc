@@ -265,7 +265,9 @@ TEST_F(SchedWake, a_wake_before_the_first_pick_does_not_switch)
 TEST_F(SchedWake, an_exited_thread_is_not_woken_and_its_slot_stays_free)
 {
     Thread* c = running_thread();
-    Thread* dead = seat_pool(0, PRIO_DYING + 1);
+    // NOT ROOT_INDEX: alloc retires root's slot, so a claim can never name slot 0 and the
+    // free-marker claim below would be about the retirement instead.
+    Thread* dead = seat_pool(1, PRIO_DYING + 1);
     kernel().policy->on_remove(dead);
     dead->state = ThreadState::EXITED;
 
@@ -275,7 +277,7 @@ TEST_F(SchedWake, an_exited_thread_is_not_woken_and_its_slot_stays_free)
     EXPECT_EQ(kernel().ready_bitmap & (1u << dead->prio), 0u) << "and no ready list holds it";
     EXPECT_EQ(g_switches, 0u) << "nothing switched to it";
     EXPECT_EQ(kernel().current[kickos_kernel_core()], c) << "current is unchanged";
-    EXPECT_EQ(kernel().threads.alloc(), 0) << "the pool still reads the slot as free";
+    EXPECT_EQ(kernel().threads.alloc(), 1) << "the pool still reads the slot as free";
 }
 
 // The guard compares the EFFECTIVE priority: a dying thread routinely carries a

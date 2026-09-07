@@ -99,6 +99,13 @@ namespace kickos
                 {
                     migrated = prev;
                 }
+                // A slain thread switched out UNCLAIMED: the claim is a switch INTO it, so
+                // this core owes itself the pass that takes it. THE CELL ALONE: a release of
+                // the kernel lock is what fires the raise, this being inside the bracket.
+                if (thread_slay_claim_pending(prev))
+                {
+                    klock_resched_self();
+                }
 #endif
             }
             kernel().current[kickos_kernel_core()] = next;
@@ -144,7 +151,7 @@ namespace kickos
             // over prev->ctx. `dying` is the restart guard: cap_teardown releases IrqLock
             // between chunks, so re-entering the stub from the top would restart a
             // partly-done sweep.
-            if (next->cancel_kind == CANCEL_SLAY and not next->dying)
+            if (thread_slay_claim_pending(next))
             {
                 arch_ctx_redirect(&next->ctx, kickos_thread_slay_exit, next->stack_base,
                                   next->stack_size);
@@ -206,7 +213,7 @@ namespace kickos
             // ctx.sp still describes a frame from some earlier switch; what makes that
             // harmless is switch_book rebuilding the context on the way back in, which it
             // does only for a thread the slay actually claimed.
-            if (bad->cancel_kind != CANCEL_SLAY or bad->dying)
+            if (not thread_slay_claim_pending(bad))
             {
                 return nullptr;
             }
@@ -580,6 +587,10 @@ namespace kickos
                     // the free list.
                     c->kstack_owned = false;
                 }
+#if KICKOS_KERNEL_CORES > 1
+                // AFTER ustack_free, which needs the space, and BEFORE task_release frees it.
+                aspace_install_boot();
+#endif
 #endif
                 // Before the sweep: its endpoint arm EPIPE-wakes a supervisor that may
                 // respawn immediately, and the DEV-window exclusivity check (kernel.h)
@@ -610,6 +621,14 @@ namespace kickos
                 // reclaimable to ThreadPool::alloc, and nothing between here and the swap may
                 // release the kernel lock before kickos_switch_unlock parks this frame.
                 c->state = ThreadState::EXITED;
+                // ThreadPool::alloc is the only caller of thread_cap_release, and it never
+                // reclaims root's slot, so root's directory would never go back to the slab.
+                // Safe here and not earlier: cap_teardown above emptied every entry, and
+                // nothing between this store and the swap reads the dying thread's caps.
+                if (k.threads.is_root(c))
+                {
+                    thread_cap_release(c);
+                }
                 // The retry, and the only site that needs one: the reclaim already ran at
                 // the note (cap.cc), and a refusal there means a live thread still held the
                 // register window. Deferred while a concurrent sweep is in flight; the note

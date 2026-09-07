@@ -1426,6 +1426,9 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/wildstack/CMakeLists.txt")
     add_subdirectory(tests/unit/wildstack)
   endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/rootslot/CMakeLists.txt")
+    add_subdirectory(tests/unit/rootslot)
+  endif()
 endif()
 
 # Outside the K-seam block above: it compiles kernel/init/console_tx.cc with its own arch
@@ -1451,6 +1454,27 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/migrateask/CMakeLists.txt")
     add_subdirectory(tests/unit/migrateask)
   endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/slaypeer/CMakeLists.txt")
+    add_subdirectory(tests/unit/slaypeer)
+  endif()
+endif()
+
+# The K-seam sources a THIRD time, at two kernel cores AND with a translating backend: no
+# board the host arch answers for selects HAS_ASPACE, so the exit path's whole address-space
+# arm is compiled out of both libraries above.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/deathspace/CMakeLists.txt")
+  add_subdirectory(tests/unit/deathspace)
+endif()
+
+# The ARM64 stage-1 map editor itself, compiled for the host: the instruction-side debt a
+# break-before-make over an executable leaf owes is wiring in that backend, and no image gate
+# can read it (QEMU re-executes nothing it has already fetched). Registered from the host arch
+# alone, whose toolchain is the only one that compiles the backend's system operations as
+# declarations rather than instructions.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/mapexec/CMakeLists.txt")
+  add_subdirectory(tests/unit/mapexec)
 endif()
 
 # Header-only, and outside the K-seam block because it needs an ISOLATION MASK no preset
