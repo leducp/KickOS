@@ -203,7 +203,8 @@ namespace kickos
         bool kstack_owned = false;
         // Cancellation request (KOS_SYS_THREAD_KILL), a CancelKind. One-way: set by the
         // killer, never cleared, honoured at the target's own death point, its next syscall
-        // ENTRY. A thread that never re-enters the kernel keeps running.
+        // ENTRY. CANCEL_SLAY is the exception: its claim is a switch INTO the target, so it
+        // reaches a thread that never re-enters the kernel (thread_slay_claim_pending).
         uint8_t cancel_kind = CANCEL_NONE;
         // Who may cancel this thread: the KILL TAG of the thread that spawned it, or
         // KILL_TAG_NONE, which is 0 (ThreadPool is declared below this struct). It is the whole
@@ -463,6 +464,16 @@ namespace kickos
 #endif
     }
 
+    // Whether `t`'s slay claim is still OUTSTANDING: it has been slain, and the claim, which is
+    // a switch INTO it (kernel/sched/sched.cc, switch_book), has not fired. `dying` is what
+    // declines, being set once the victim is inside its own teardown. THE ONE COPY, and it must
+    // stay the one: the placement answer, the switch that owes the pass and the redirect that
+    // takes it have to agree, and a second spelling beside them is the copy that goes stale.
+    inline bool thread_slay_claim_pending(Thread const* t)
+    {
+        return t->cancel_kind == CANCEL_SLAY and not t->dying;
+    }
+
     // Recover the TCB owning a ready/wait list node (nullptr-safe).
     inline Thread* thread_of(ListNode* n)
     {
@@ -661,6 +672,16 @@ namespace kickos
         {
             for (int s = 0; s < next; s++)
             {
+                // ROOT'S SLOT IS RETIRED, NOT FREE. Reclaiming it would hand root's
+                // index-derived kill tag and its is_root identity to a stranger, and would push
+                // root's KICKOS_ROOT_STACK_SIZE block onto a free list whose one size class is
+                // KICKOS_USER_STACK_SIZE. Every action below is a reclaim-point action root
+                // will never reach here: a fourth one added there owes this slot an answer of
+                // its own, somewhere else.
+                if (s == ROOT_INDEX)
+                {
+                    continue;
+                }
                 if (slots[s].state == ThreadState::EXITED)
                 {
                     // Harvest at the RECLAIM point: only by now is the thread provably off-CPU,
@@ -740,9 +761,10 @@ namespace kickos
         }
 
         // Root's slot: kmain claims it before any spawn can run, so it is index 0 on every
-        // board and every boot (kmain asserts it). Do NOT identify root by
-        // spawner_tag == KILL_TAG_NONE instead: alloc's sweep above clears a reclaimed slot's
-        // children to NONE, so that test names every orphan too.
+        // board and every boot (kmain asserts it). Root MAY reach EXITED, and the slot is
+        // still root's afterwards: alloc skips it, so no successor can answer this compare.
+        // Do NOT identify root by spawner_tag == KILL_TAG_NONE instead: alloc's sweep above
+        // clears a reclaimed slot's children to NONE, so that test names every orphan too.
         static constexpr int ROOT_INDEX = 0;
 
         bool is_root(Thread const* t) const

@@ -664,6 +664,15 @@ that architecture cannot have. Where a port DOES need the far side to execute, i
 no kernel lock and the lock's own acquire loop services a pending doorbell, or an initiator
 holding the lock waits on a core spinning to take it.
 
+**The INSTRUCTION half of that maintenance does go through the pair, and a MAP owes it too.** A
+peer may keep executing instructions it has already fetched until it takes a context
+synchronization event of its own, and no A64 operation causes one on another PE. So the barrier
+sits in the far side's service body, and it is owed wherever an EXECUTABLE mapping in a space a
+peer has installed is removed OR NARROWED -- which includes the removal inside a map:
+break-before-make clears the old leaf before it writes the new one, so replacing an executable
+leaf is a removal that happens to be followed by a write. The peer set is sampled BEFORE the
+edits, being derived from the space's identity, exactly as `arch_aspace_destroy` samples it.
+
 ### Data-cache maintenance (`arch_dcache_flush`, `arch_dcache_invalidate`)
 
 Make this core's writes over a range visible to an observer that does not snoop, and such an
@@ -1441,8 +1450,10 @@ exists. Eight of `f302nucleo`'s nine pre-`124b68c` skips were arena starvation l
 "pool too small"; see *The 5 skips on a 16 KiB part*.
 
 `KICKOS_MAX_THREADS` counts **spawnable** threads only. The pool is one slot wider than the
-knob (`KICKOS_THREAD_SLOTS`, `kernel/include/kickos/config/system.h`): root holds one for the
-life of the system and never reaches `EXITED`, so a spawn still draws the full stated count.
+knob (`KICKOS_THREAD_SLOTS`, `kernel/include/kickos/config/system.h`): root claims one at boot
+and that slot is RETIRED for the life of the system -- `ThreadPool::alloc` skips `ROOT_INDEX`,
+so root's death does not give the slot back -- and a spawn therefore draws the full stated
+count whether root is alive or not.
 That is why `f302nucleo` runs a two-thread app at `KICKOS_MAX_THREADS 2`. Idle is the one
 thread the pool does not seat; it runs on `Kernel::idle_tcb`
 (`kernel/include/kickos/instance.h`), handed to `thread_create` by pointer. The knob dominates static RAM: on `f302nucleo` `selftest` at

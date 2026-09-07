@@ -4,7 +4,7 @@
 # SMP candidates and the staged model (M7)
 
 > **Status: EXPLORATORY** -- a spike, not a contract. Nothing here is implemented. M7 is the
-> milestone after the MMU, which is M6; the M4/M5 driver era returns at M9.
+> milestone after the MMU, which is M6; the M4/M5 driver era returns at M10.
 
 Status: DESIGN SPIKE. Forward-looking. This is M7. No build/runtime code change
 here -- it ranks the multi-core parts in hand by the gate that decides whether a

@@ -2602,6 +2602,22 @@ is which was measured by removing each one and running the board.
     of the high half while the low root is invalid; what makes it fragile is that the window is not
     interrupt-masked, and a preemption returning to EL0 inside it would walk a freed root.
 
+**A DYING MEMBER VACATES ITS SPACE BEFORE IT DROPS THE REFERENCE THAT CAN DESTROY IT.** The bullet
+above is about the release's OWN core; the harder half is a PEER. `aspace_release` clears every
+core's cached cell but re-activates the boot root only on the core it runs on, and it has no way to
+write another core's translation register, so above one core the sweep is unable to repair what it
+records. `sched::exit_current` therefore installs the boot root on the dying thread's own core --
+`aspace_install_boot`, in the same locked bracket, AFTER `ustack_free`, whose page maintenance is
+paid against the space that is still installed, and BEFORE `task_release`, past which the last
+member's departure is free to reach `arch_aspace_destroy`. The window that ordering closes is not
+the switch away but the capability sweep: `cap_teardown` releases the kernel lock between chunks, so
+a thread that has already left its group is still running, and on rv64 the kernel's own top-level
+entries live in the space's ROOT page, which the destroy frees and the frame pool reissues. What
+holds afterwards is that a space installed anywhere implies a live member, so the peer loop is
+bookkeeping. It rests on `arch_aspace_activate` being a full untagged flush on both translating
+backends: the moment translations carry an identifier, an edit performed after the install stops
+being covered by it and this has to be re-read.
+
 Identifier reuse is VACUOUS here rather than witnessed: nothing in the tree allocates an
 address-space identifier, section 3.1 having said so, and `write_ttbr0` sweeps the whole local TLB on
 every root change precisely because no translation is tagged.

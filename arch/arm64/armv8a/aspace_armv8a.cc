@@ -11,6 +11,8 @@
 #include <kickos/arch/arch.h>
 #include <kickos/extent.h>
 
+#include "sysops_armv8a.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -64,8 +66,7 @@ namespace
     // T0SZ is read back from TCR_EL1; startup.S is what programmed it.
     unsigned va_bits()
     {
-        uint64_t tcr = 0;
-        __asm volatile("mrs %0, tcr_el1" : "=r"(tcr));
+        uint64_t const tcr = kickos_armv8a_read_tcr_el1();
         return 64u - static_cast<unsigned>(tcr & 0x3Fu);
     }
 
@@ -93,10 +94,8 @@ namespace
     // truncated by map_into's mask. Zero where either encoding is reserved.
     unsigned oa_bits()
     {
-        uint64_t mmfr0 = 0;
-        __asm volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(mmfr0));
-        uint64_t tcr = 0;
-        __asm volatile("mrs %0, tcr_el1" : "=r"(tcr));
+        uint64_t const mmfr0 = kickos_armv8a_read_mmfr0_el1();
+        uint64_t const tcr = kickos_armv8a_read_tcr_el1();
         unsigned bits = pa_bits_of(static_cast<unsigned>(mmfr0 & 0xFu));
         unsigned const ips = pa_bits_of(static_cast<unsigned>((tcr >> 32) & 0x7u));
         if (ips < bits)
@@ -159,18 +158,17 @@ namespace
 #if defined(KICKOS_ENABLE_SELFTEST)
         g_tlbi_issued++;
 #endif
-        __asm volatile("dsb ishst" ::: "memory");
-        // VAAE1 and not VAE1: nothing here tags a translation, so an entry must be dropped
-        // whatever ASID it was cached under. The IS form applies to every PE in the Inner
-        // Shareable domain and the bare form only to the PE executing it (DDI 0487 M.b
-        // section D8.17.5); DSB ISH completes either (section B2.6.9.1).
+        kickos_armv8a_dsb_ishst();
+        // The IS form applies to every PE in the Inner Shareable domain and the bare form only
+        // to the PE executing it (DDI 0487 M.b section D8.17.5); DSB ISH completes either
+        // (section B2.6.9.1).
 #if KICKOS_KERNEL_CORES > 1
-        __asm volatile("tlbi vaae1is, %0" ::"r"(va >> GRANULE_SHIFT) : "memory");
+        kickos_armv8a_tlbi_page_is(va >> GRANULE_SHIFT);
 #else
-        __asm volatile("tlbi vaae1, %0" ::"r"(va >> GRANULE_SHIFT) : "memory");
+        kickos_armv8a_tlbi_page_local(va >> GRANULE_SHIFT);
 #endif
-        __asm volatile("dsb ish" ::: "memory");
-        __asm volatile("isb" ::: "memory");
+        kickos_armv8a_dsb_ish();
+        kickos_armv8a_isb();
     }
 
     // Whether this core's TTBR0 names `space`. The register holds nothing but the root's
@@ -178,8 +176,7 @@ namespace
     // covers every field write_ttbr0 sets.
     bool installed_here(struct arch_aspace* space)
     {
-        uint64_t ttbr = 0;
-        __asm volatile("mrs %0, ttbr0_el1" : "=r"(ttbr));
+        uint64_t const ttbr = kickos_armv8a_read_ttbr0_el1();
         return (ttbr & DESC_OA_MASK) == static_cast<uint64_t>(phys_of(root_of(space)));
     }
 
@@ -267,7 +264,7 @@ namespace
     void publish_edits()
     {
 #if KICKOS_KERNEL_CORES > 1
-        __asm volatile("dsb ishst" ::: "memory");
+        kickos_armv8a_dsb_ishst();
 #endif
     }
 
@@ -275,14 +272,14 @@ namespace
     // invalidate covers.
     void invalidate_all()
     {
-        __asm volatile("dsb ishst" ::: "memory");
+        kickos_armv8a_dsb_ishst();
 #if KICKOS_KERNEL_CORES > 1
-        __asm volatile("tlbi vmalle1is" ::: "memory");
+        kickos_armv8a_tlbi_all_is();
 #else
-        __asm volatile("tlbi vmalle1" ::: "memory");
+        kickos_armv8a_tlbi_all_local();
 #endif
-        __asm volatile("dsb ish" ::: "memory");
-        __asm volatile("isb" ::: "memory");
+        kickos_armv8a_dsb_ish();
+        kickos_armv8a_isb();
     }
 
     // The root the boot path installed, put back by the fault reporter: every device this
@@ -294,7 +291,7 @@ namespace
     {
         if (g_boot_ttbr0 == 0)
         {
-            __asm volatile("mrs %0, ttbr0_el1" : "=r"(g_boot_ttbr0));
+            g_boot_ttbr0 = kickos_armv8a_read_ttbr0_el1();
         }
     }
 
@@ -305,11 +302,11 @@ namespace
     // invalidate, under-reporting loses one this core needs.
     void write_ttbr0(uint64_t ttbr)
     {
-        __asm volatile("msr ttbr0_el1, %0" ::"r"(ttbr) : "memory");
-        __asm volatile("isb" ::: "memory");
-        __asm volatile("tlbi vmalle1" ::: "memory");
-        __asm volatile("dsb ish" ::: "memory");
-        __asm volatile("isb" ::: "memory");
+        kickos_armv8a_write_ttbr0_el1(ttbr);
+        kickos_armv8a_isb();
+        kickos_armv8a_tlbi_all_local();
+        kickos_armv8a_dsb_ish();
+        kickos_armv8a_isb();
 #if KICKOS_KERNEL_CORES > 1
         g_installed_root[arch_cpu_id()] = ttbr & DESC_OA_MASK;
 #endif
@@ -433,7 +430,8 @@ namespace
 
     // Recursion is bounded by the level count.
     enum arch_aspace_result map_into(uint64_t* table, int level, uintptr_t va, size_t pages,
-                                     arch_phys_addr_t pa, uint64_t leaf, bool installed)
+                                     arch_phys_addr_t pa, uint64_t leaf, bool installed,
+                                     bool* broke_executable)
     {
         while (pages != 0)
         {
@@ -442,6 +440,13 @@ namespace
             {
                 if ((table[idx] & DESC_VALID) != 0)
                 {
+                    // BEFORE THE CLEAR: the execute permission lives in the entry. The same
+                    // debt an unmap of this leaf owes: a PE may keep executing instructions
+                    // already fetched from it until its own ISB.
+                    if (removal_owes_rendezvous(table[idx]))
+                    {
+                        *broke_executable = true;
+                    }
                     // Break-before-make: the invalidate belongs BETWEEN the two writes, or
                     // both descriptors are live at once and a walk may take fields from
                     // each.
@@ -469,7 +474,7 @@ namespace
                 }
                 zero_table(table_at(frame));
                 desc = static_cast<uint64_t>(frame) | DESC_VALID | DESC_BIT1;
-                __asm volatile("dsb ishst" ::: "memory");
+                kickos_armv8a_dsb_ishst();
                 table[idx] = desc;
                 // No invalidate for the table entry itself: an invalidate by address drops the
                 // cached intermediate entries for that address too, so the per-leaf one below
@@ -486,7 +491,8 @@ namespace
             }
             arch_phys_addr_t const child_pa = static_cast<arch_phys_addr_t>(desc & DESC_OA_MASK);
             enum arch_aspace_result const rc =
-                map_into(table_at(child_pa), level + 1, va, here, pa, leaf, installed);
+                map_into(table_at(child_pa), level + 1, va, here, pa, leaf, installed,
+                         broke_executable);
             if (rc != ARCH_ASPACE_OK)
             {
                 return rc;
@@ -601,10 +607,8 @@ size_t arch_aspace_granule(void)
 
 uint64_t arch_aspace_model(void)
 {
-    uint64_t mmfr0 = 0;
-    __asm volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(mmfr0));
-    uint64_t tcr = 0;
-    __asm volatile("mrs %0, tcr_el1" : "=r"(tcr));
+    uint64_t const mmfr0 = kickos_armv8a_read_mmfr0_el1();
+    uint64_t const tcr = kickos_armv8a_read_tcr_el1();
     // TGran4 at 31:28, TGran64 at 27:24, TGran16 at 23:20, ASIDBits at 7:4, PARange at 3:0.
     //
     // TGran16 states the sense of its answer the opposite way round from the other two: 0b0000
@@ -668,7 +672,7 @@ struct arch_aspace* arch_aspace_create(void)
     }
     uint64_t* const table = table_at(root);
     zero_table(table);
-    __asm volatile("dsb ishst" ::: "memory");
+    kickos_armv8a_dsb_ishst();
     // No kernel half is copied in: this architecture selects the table from the top bits of the
     // address, so the kernel window is TTBR1's. The handle is the root table's address.
     return reinterpret_cast<struct arch_aspace*>(table);
@@ -709,11 +713,30 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     {
         return ARCH_ASPACE_EINVAL;
     }
+    // The unwind below clears every leaf from `va` up, whichever call installed it, so a range
+    // holding SOME of its leaves would lose those on a later page's failure. A wholly mapped
+    // range is a remap and passes (arch.h).
+    size_t mapped = 0;
+    for (size_t i = 0; i < pages; i++)
+    {
+        if (leaf_entry(root_of(space), va + static_cast<uintptr_t>(i) * GRANULE) != nullptr)
+        {
+            mapped++;
+        }
+    }
+    if (mapped != 0 and mapped != pages)
+    {
+        return ARCH_ASPACE_EINVAL; // partially mapped, and nothing has been edited
+    }
     // A space installed on no core has no cached entry and no cached absence, so its whole
     // seeding costs no maintenance; the running space's own widening still pays.
     bool const installed = installed_anywhere(space);
+    // BEFORE THE EDITS, for the reason arch_aspace_destroy states: the set is derived from the
+    // space's identity.
+    uint32_t const peers = peer_cores(space);
+    bool broke_executable = false;
     enum arch_aspace_result const rc =
-        map_into(root_of(space), LEVEL_ROOT, va, pages, pa, leaf, installed);
+        map_into(root_of(space), LEVEL_ROOT, va, pages, pa, leaf, installed, &broke_executable);
     publish_edits();
     if (rc != ARCH_ASPACE_OK)
     {
@@ -732,6 +755,13 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
             {
                 break;
             }
+            // THE ROLLBACK IS A REMOVAL and owes what a removal owes: an executable leaf this
+            // call installed over an EMPTY slot raised no debt going in, and a peer may have
+            // fetched from it before the failure.
+            if (removal_owes_rendezvous(*entry))
+            {
+                broke_executable = true;
+            }
             *entry = 0;
         }
         // One sweep each side of the frees.
@@ -739,6 +769,12 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
         (void)prune_empty(root_of(space), LEVEL_ROOT);
         invalidate_all();
         arch_irq_restore(s);
+    }
+    // AFTER THE UNWIND, and outside its mask: the debt covers the leaves the rollback removed
+    // as well as the ones map_into replaced, and the far side runs its own barrier.
+    if (broke_executable)
+    {
+        instruction_side_rendezvous(peers);
     }
     return rc;
 }

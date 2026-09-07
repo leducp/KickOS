@@ -32,10 +32,15 @@ namespace
     // The dying thread, current and RUNNING, in a POOL slot so a reclaim can reach it, with a
     // peer live so the last-thread-out path does not end the arm. The setup switch is dropped
     // from the counters.
+    // NOT ROOT_INDEX: ThreadPool::alloc retires root's slot rather than reclaiming it, so an
+    // arm about the reclaim has to seat its dying thread somewhere a reclaim can reach.
+    constexpr int SLOT_DYING = 1;
+    constexpr int SLOT_PEER = 4;
+
     Thread* dying_in_pool()
     {
-        Thread* c = seat_pool(0, PRIO_DYING);
-        seat_pool(1, PRIO_DYING - 1);
+        Thread* c = seat_pool(SLOT_DYING, PRIO_DYING);
+        seat_pool(SLOT_PEER, PRIO_DYING - 1);
         sched::reschedule();
         EXPECT_EQ(kernel().current[kickos_kernel_core()], c) << "fixture: the seated thread is current";
         g_switches = 0;
@@ -112,10 +117,10 @@ TEST_F(ExitQuiesce, a_reclaim_takes_the_slot_the_span_published)
     run_exit(0);
 
     ASSERT_EQ(c->state, ThreadState::EXITED);
-    uint16_t const gen_before = kernel().threads.gen[0];
+    uint16_t const gen_before = kernel().threads.gen[SLOT_DYING];
     int const claimed = kernel().threads.alloc();
-    EXPECT_EQ(claimed, 0) << "the published slot is the one a spawn reclaims";
-    EXPECT_EQ(kernel().threads.gen[0], static_cast<uint16_t>(gen_before + 1))
+    EXPECT_EQ(claimed, SLOT_DYING) << "the published slot is the one a spawn reclaims";
+    EXPECT_EQ(kernel().threads.gen[SLOT_DYING], static_cast<uint16_t>(gen_before + 1))
         << "the reclaim burned a generation, which is what kills a stale handle";
 }
 
@@ -127,9 +132,9 @@ TEST_F(ExitQuiesce, a_reclaim_refuses_a_slot_the_span_has_not_published)
     Thread* c = dying_in_pool();
     c->dying = true;
 
-    uint16_t const gen_before = kernel().threads.gen[0];
+    uint16_t const gen_before = kernel().threads.gen[SLOT_DYING];
     int const claimed = kernel().threads.alloc();
-    EXPECT_NE(claimed, 0) << "a thread still on the CPU may not have its slot handed out";
-    EXPECT_EQ(kernel().threads.gen[0], gen_before) << "the refused slot kept its generation";
+    EXPECT_NE(claimed, SLOT_DYING) << "a thread still on the CPU may not have its slot handed out";
+    EXPECT_EQ(kernel().threads.gen[SLOT_DYING], gen_before) << "the refused slot kept its generation";
     EXPECT_EQ(c->state, ThreadState::RUNNING) << "fixture: the arm never published the store";
 }

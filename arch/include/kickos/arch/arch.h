@@ -123,7 +123,8 @@ uint32_t arch_cpu_id(void);
 // The INSTRUCTION half is a peer's already-fetched instructions, and it is the doorbell's to
 // carry: on A64 an invalidation is broadcast where a Context synchronization event is not, so
 // the barrier belongs in the far side's service body. It is owed when an EXECUTABLE mapping is
-// removed or narrowed in a space a peer has installed.
+// removed or narrowed in a space a peer has installed, INCLUDING the removal inside a MAP:
+// a break-before-make replacement clearing the old leaf before it writes the new one.
 //
 // The far side must not take the kernel lock, and that lock's own acquire loop services a
 // pending doorbell: otherwise an initiator holding the lock waits on a core spinning to
@@ -692,9 +693,18 @@ void arch_aspace_destroy(struct arch_aspace* space);
 //
 // A map may target the space this core is RUNNING on: the self-grant widens it mid-syscall.
 //
+// A map that REPLACES a valid EXECUTABLE leaf owes the instruction-side rendezvous an unmap of
+// that leaf owes, break-before-make making it a removal, and samples the peer set BEFORE its
+// edits: the set is derived from the space's identity. A backend whose ISA baseline carries no
+// instruction-side operation at all owes the translation half alone and says so in its own body
+// (rv64imac, where that operation is FENCE.I and Zifencei is absent).
+//
 // A failed map leaves its range unmapped: the rollback clears every leaf from `va` up
 // to the first page that has none, whichever call installed it. Do NOT map over a
-// partially mapped range: this rollback owes a narrower form before that is sound.
+// partially mapped range: this rollback owes a narrower form before that is sound. A backend
+// is free to refuse one with ARCH_ASPACE_EINVAL rather than assume it.
+// THE ROLLBACK IS A REMOVAL and so owes the instruction-side rendezvous on the same terms,
+// including for an executable leaf the failed call had installed over an empty slot.
 enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
                                         arch_phys_addr_t pa, size_t pages,
                                         uint32_t rights, enum arch_map_memtype type);
@@ -1032,6 +1042,10 @@ void kickos_isr_fault(uintptr_t addr, int is_write);
 // Release the kernel lock the switch carries. CALL FROM INSIDE THE SWAP, once the outgoing
 // frame is parked and this core stands on the incoming one: the lock spans the swap so a peer
 // cannot pick a thread whose saved frame still describes an earlier run.
+//
+// IT ALSO CARRIES arch_ipi_resched_self FOR A RESCHEDULE THE CELL STILL OWES, and for a swap
+// BOOKED from an interrupt it is the only release that can: the booking left the lock owed to
+// this call, so the bracket that made the booking releases nothing and raises nothing.
 void kickos_switch_unlock(void);
 
 // Whether the kernel has finished building the control block for the CALLING core. The load is

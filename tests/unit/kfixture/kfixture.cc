@@ -73,6 +73,7 @@ namespace kickos
         ThreadState g_park_from_state = ThreadState::INACTIVE;
         uint32_t g_ipi_sends = 0;
         uint32_t g_ipi_send_mask = 0;
+        uint32_t g_ipi_self_raises = 0;
 #endif
 
         Fixture g_fx;
@@ -349,6 +350,7 @@ namespace kickos
             g_park_from_state = ThreadState::INACTIVE;
             g_ipi_sends = 0;
             g_ipi_send_mask = 0;
+            g_ipi_self_raises = 0;
 #endif
             if (cap_teardown_active())
             {

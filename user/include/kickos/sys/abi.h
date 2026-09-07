@@ -427,6 +427,15 @@ enum kos_aspace_op
     // 31 and 32 through 49 are SPENT and may not be reused: the shared window's and the
     // doorbell's ops answered here before they were given syscalls of their own. See enum
     // kos_amp_op and enum kos_doorbell_op.
+    KOS_ASPACE_OP_RELEASE_PEER_HITS = 50, // () -> peer cores a space destroy has found still
+                                 //   holding the space it was destroying, since boot. 0 is the
+                                 //   only right answer: a dying member vacates its space
+                                 //   before dropping the reference that can destroy it, so the
+                                 //   destroy's peer sweep is bookkeeping and never a repair
+    KOS_ASPACE_OP_RELEASE_RUNS = 51 // () -> address-space destroys run since boot. The
+                                 //   denominator under the counter above, which reads 0 both
+                                 //   for a sweep that found nothing and for a destroy that
+                                 //   never ran
 };
 
 // `op` selector for KOS_SYS_AMP_PROBE (self-test only). Values are a frozen contract:

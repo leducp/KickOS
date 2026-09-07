@@ -1285,6 +1285,14 @@ namespace kickos
                 aspace_data_home_forget();
                 return 0;
             }
+            case KOS_ASPACE_OP_RELEASE_PEER_HITS:
+            {
+                return aspace_release_peer_hits();
+            }
+            case KOS_ASPACE_OP_RELEASE_RUNS:
+            {
+                return aspace_release_runs();
+            }
             case KOS_ASPACE_OP_MAP_TLBI:
             {
                 return arch_aspace_tlbi_counts();

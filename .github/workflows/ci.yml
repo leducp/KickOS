@@ -100,7 +100,7 @@ jobs:
     env:
       QEMU_TIMEOUT: "30"
       # The gates whose image never exits, so they go through poll_image (tests/lib/gate.sh).
-      POLLED: "hello|fp_switch|mpu_fault|rootfault|reclaimwit_park"
+      POLLED: "hello|fp_switch|mpu_fault|rootfault|rootgone|reclaimwit_park"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -227,7 +227,7 @@ jobs:
           # Posture pin, as in qemu-arm: the core count is a line in this variant's defconfig,
           # and dropping it de-registers these three instead of failing them.
           ctest --preset qemu-arm64-smp --no-tests=error --output-on-failure \
-            -R 'qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads'
+            -R 'qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer'
       - name: armv8a (virt) four cores, core 3 isolated
         run: |
           cmake --preset qemu-arm64-smpiso -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
@@ -373,7 +373,52 @@ jobs:
           ctest --preset qemu-riscv -LE tree --no-tests=error --output-on-failure
           # Posture pin, as in qemu-arm: PMP enforcement is a line in this board's base
           # defconfig, and dropping it de-registers these gates instead of failing them.
-          ctest --preset qemu-riscv -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure
+          ctest --preset qemu-riscv -R 'mpu_fault|rootfault|rootgone' --no-tests=error --output-on-failure
+
+  # rv64imac (virt) under QEMU: the base and sv48 postures, plus the FOUR-HART shared kernel.
+  # No rv64 preset ran in CI before this job, while cmake/presets/riscv.json has carried all
+  # three since the port landed, so what was missing was the job and not the coverage.
+  # Same pinned RISCstar toolchain as the two rv32 jobs, whose multilib set includes the rv64
+  # one; qemu-system-misc provides qemu-system-riscv64.
+  #
+  # The four-hart variant is where a shared kernel's address-space teardown is exposed: rv64
+  # keeps the kernel's own top-level entries in each space's ROOT page, so a hart still
+  # holding a destroyed space's root walks a frame the pool has reissued.
+  qemu-riscv64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      # Above the rv32 jobs' 30: the four-hart gates sample until both channels complete
+      # rather than waiting a fixed span, so this is headroom on a loaded runner.
+      QEMU_TIMEOUT: "60"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kconfiglib
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build qemu-system-misc curl xz-utils
+      - uses: ./.github/actions/riscv-toolchain
+      - name: rv64imac (virt) sv39 gate
+        run: |
+          cmake --preset qemu-riscv64 -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --build --preset qemu-riscv64
+          ctest --preset qemu-riscv64 -LE tree --no-tests=error --output-on-failure
+          # Posture pin: both are registered only where this board's base defconfig resolves
+          # enforcement on, so naming them makes an empty selection the failure.
+          ctest --preset qemu-riscv64 -R 'rootfault|rootgone' --no-tests=error --output-on-failure
+      - name: rv64imac (virt) sv48 gate
+        run: |
+          cmake --preset qemu-riscv64-sv48 -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --build --preset qemu-riscv64-sv48
+          ctest --preset qemu-riscv64-sv48 -LE tree --no-tests=error --output-on-failure
+      - name: rv64imac (virt) four harts
+        run: |
+          cmake --preset qemu-riscv64-smp -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --build --preset qemu-riscv64-smp
+          ctest --preset qemu-riscv64-smp -LE tree --no-tests=error --output-on-failure
+          # Posture pin: the hart count and the selftest line are this variant's defconfig,
+          # and dropping either de-registers these arms instead of failing them.
+          ctest --preset qemu-riscv64-smp -R 'smp_threads|taskleave|slaypeer' --no-tests=error --output-on-failure
 
   # Xtensa LX6 (esp32-wroom) gate: proves build/link/linker-script + windowed-ABI asm. It runs
   # the `host` label less the tree gates, which leaves the checks whose verdict is per-link or

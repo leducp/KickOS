@@ -8,6 +8,7 @@
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
+#include <kickos/klock.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 #include <kickos/task.h>
@@ -170,6 +171,24 @@ namespace kickos
         {
             return; // it is inside the kernel already and will see this on its way out
         }
+#if KICKOS_KERNEL_CORES > 1
+        // A RUNNING target is on a PEER core, `t == current` having returned above. Nothing
+        // this core does reaches it: the claim is a switch INTO the victim (sched.cc,
+        // switch_book), so only that core's own pass can take it. State published against the
+        // target and then the raise, never a raise carrying scheduling meaning of its own.
+        if (kind == CANCEL_SLAY and t->state == ThreadState::RUNNING)
+        {
+            for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
+            {
+                if (kernel().current[core] == t)
+                {
+                    klock_resched_ask(1u << core);
+                    break;
+                }
+            }
+            return;
+        }
+#endif
         if (t->state != ThreadState::BLOCKED)
         {
             return;

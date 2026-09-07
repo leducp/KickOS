@@ -609,9 +609,12 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_EXIT:
         {
             Thread* c = sched::current();
-            // Root's exit ends the SYSTEM. Root's slot must not reach EXITED on THIS path: the
-            // pool, the domain table and the boot arena are sized for root holding it for the
-            // whole run, and the reclaim sweep would strip the spawner_tag off every child.
+            // Root's exit ends the SYSTEM, this being the image's completion and its status
+            // the image's own: hence the shutdown authority gate below. Not
+            // sched::exit_current, which would report that status to nobody and leave root's
+            // slot EXITED but unreclaimable (ThreadPool::alloc retires ROOT_INDEX). A
+            // kernel-internal death of root, a fault or a group cancel, deliberately does
+            // leave the system running (user/apps/common/rootgone).
             if (kernel().threads.is_root(c))
             {
                 if (not cap_check_authority(c, AUTH_SYSTEM))

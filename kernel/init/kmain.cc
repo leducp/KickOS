@@ -360,6 +360,11 @@ namespace kickos
         }
         void* const root_stack = reinterpret_cast<void*>(root_us.base);
         size_t const root_stack_size = root_us.bytes;
+        // Root's run is the kernel's to give back: exit_current's ustack_free arm reads this,
+        // and root's death is a permitted route (a fault, a group cancel, wild-stack
+        // containment). Safe only because ThreadPool::alloc never reclaims root's slot, so the
+        // reclaim-point harvest cannot push this block onto the KICKOS_USER_STACK_SIZE list.
+        root_attr.kstack_owned = true;
 #endif
         if (not cap_slab_attach(&root_attr.cap_run, KICKOS_MAX_HANDLES,
                                 &root_attr.cap_free_head, &root_attr.cap_width))
@@ -382,9 +387,15 @@ namespace kickos
                       root_stack, root_stack_size, root_attr);
         // Root's unkillability rests entirely on this default, which nothing above states.
         KICKOS_ASSERT(root_tcb->spawner_tag == ThreadPool::KILL_TAG_NONE);
-        // True would push a KICKOS_ROOT_STACK_SIZE block onto a free list whose one size class
-        // is KICKOS_USER_STACK_SIZE.
+#if KICKOS_HAVE_ASPACE
+        // ustack_free is root's run's only route back; the reclaim-point harvest never runs
+        // for this slot.
+        KICKOS_ASSERT(root_tcb->kstack_owned);
+#else
+        // True would push a KICKOS_ROOT_STACK_SIZE boot-arena block onto a free list whose one
+        // size class is KICKOS_USER_STACK_SIZE, and there is no ustack_free on these boards.
         KICKOS_ASSERT(not root_tcb->kstack_owned);
+#endif
         // Ordering matters twice: after thread_create, which zeroes the cap table and would
         // wipe the seat; before sched::start(), so the seat is in place before root's first
         // instruction. IrqLock is cap_seat_authority's documented precondition.

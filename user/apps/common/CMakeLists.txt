@@ -18,6 +18,7 @@ add_subdirectory(hello)
 add_subdirectory(hello_c)
 add_subdirectory(mpu_fault)
 add_subdirectory(rootfault)
+add_subdirectory(rootgone)
 add_subdirectory(rootauth)
 add_subdirectory(ringpriv)
 add_subdirectory(panicgate)
@@ -35,6 +36,8 @@ add_subdirectory(selftest)
 # exist before another directory can name it.
 add_subdirectory(ampping)
 add_subdirectory(stress)
+add_subdirectory(taskleave)
+add_subdirectory(slaypeer)
 
 add_subdirectory(gpioblink)
 
