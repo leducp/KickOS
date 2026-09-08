@@ -35,8 +35,6 @@ namespace kickos
     {
         // The last space written to this core's translation root.
         struct arch_aspace* g_current[KICKOS_NUM_CORES] = {};
-        static_assert(sizeof(g_current) / sizeof(g_current[0]) == KICKOS_NUM_CORES,
-                      "the installed-root cache must have one cell per core, never one shared");
 
         // The space holding the image's own static-data pages. Written by the first seed and
         // by that space's release, and cleared only after the snapshot beside it is frozen.

@@ -2,18 +2,18 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # find_package(KickOS) entry point: exposes the KickOS component libraries and
-# the kickos_add_application() dependency-inversion helper to a consumer.
+# the dependency-inversion targets to a consumer.
 
 @PACKAGE_INIT@
 
-# kickos_add_application() links via $<LINK_GROUP:RESCAN>, which needs CMake 3.24
+# The exported `kickos` target links via $<LINK_GROUP:RESCAN>, which needs CMake 3.24
 # at the consumer; fail clearly rather than with an opaque genex error.
 if(CMAKE_VERSION VERSION_LESS 3.24)
   message(FATAL_ERROR "KickOS requires CMake >= 3.24 (found ${CMAKE_VERSION})")
 endif()
 
 # The board/arch this package was built for; lets a consumer omit BOARD in
-# kickos_add_application() and get the packaged target. A KickOS package is
+# an app target and get the packaged target. A KickOS package is
 # single-board (exactly one arch/chip/linker), so a consumer who selected a
 # different board (e.g. -DKICKOS_BOARD before find_package, using their own
 # toolchain) must fail clearly rather than have that name silently map to the
@@ -66,6 +66,14 @@ else()
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/kickos.cmake")
+
 include("${CMAKE_CURRENT_LIST_DIR}/KickOSTargets.cmake")
+
+# The DRIVER-CLASS backends this package was built to answer with, replayed so an out-of-tree
+# app naming a class (CLASSES on kickos_add_app_target) links the same one an in-tree app does.
+# Frozen at KickOS build time like the init provider: every backend of one class defines the
+# same public symbols, so the selection belongs to the image posture the package was built for.
+# After KickOSTargets, so each name is an imported target rather than a bare -l.
+@KICKOS_CLASS_BACKEND_DECLS@
 
 check_required_components(KickOS)

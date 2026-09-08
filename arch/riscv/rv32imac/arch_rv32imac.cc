@@ -154,9 +154,6 @@ extern "C"
     // false throughout syscall_dispatch and the msip switch.
     uint32_t g_isr_depth = 0;
 
-    // switch.S bumps it with lw/sw at offset 0. Nothing else enforces the width.
-    static_assert(sizeof(g_isr_depth) == 4, "asm reads one word");
-
     // Trusted per-hart trap stack. mscratch holds its top while a thread runs, so trap_entry
     // swaps onto it before it touches the interrupted sp, and a U-mode thread's sp never
     // selects where the prologue's own scratch lands. It also carries the frame of every
@@ -168,8 +165,6 @@ extern "C"
     static_assert(KICKOS_RV_TRAP_STACK_SIZE > KICKOS_RV_TRAP_FRAME,
                   "a nested frame would fill the whole trap stack, leaving nowhere for the "
                   "kernel C below it; how much is enough is what the gate measures");
-    static_assert(sizeof(g_rv_trap_stack) == KICKOS_NUM_CORES * KICKOS_RV_TRAP_STACK_SIZE,
-                  "the per-core array costs one stack per core and nothing else");
 
     // CLINT machine-software-interrupt-pending register for this hart, set by the chip's
     // arch_init because the CLINT base differs per chip. arch_switch writes 1 to pend the

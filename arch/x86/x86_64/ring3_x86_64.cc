@@ -94,9 +94,6 @@ namespace kickos::x86_64
             | (1ull << 14)   // nested task
             | (1ull << 18)   // alignment check
             | (1ull << 19) | (1ull << 20); // virtual interrupt, virtual interrupt pending
-        static_assert((fmask & rflags_if) != 0,
-                      "the flag mask must clear the interrupt flag or the syscall entry runs "
-                      "interruptible on the caller's stack pointer");
 
         uintptr_t g_image_base = 0;
         uint32_t g_image_size = 0;

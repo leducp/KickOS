@@ -14,8 +14,6 @@
 #     as a -T driver option alone does not create that edge, and the failure is
 #     silent: a stale image gets flashed;
 #   - kickos_emit_image() gives the plain path its .bin/.hex;
-#   - the optional kickos_add_application() wrapper produces the SAME image, so
-#     the sugar never becomes the path that works while the plain one does not;
 #   - no warning flag reaches the consumer's own TUs on either path (our hygiene
 #     policy is not part of the interface);
 #   - the single-board guard rejects a cross-board request at find_package time.
@@ -89,7 +87,6 @@ echo "== configuring out-of-tree MCU app with the shipped toolchain (no -DKICKOS
 echo "== building out-of-tree MCU app =="
 "$CMAKE" --build "$TMP/build" >/dev/null || fail "out-of-tree MCU build failed"
 
-# The _sugar target is the same source through kickos_add_application().
 APP="$TMP/build/oot_mcu_app"
 [ -f "$APP" ] || fail "plain add_executable target produced no ELF"
 "$READELF" -h "$APP" | grep -q 'Machine:.*ARM' \
@@ -98,20 +95,6 @@ APP="$TMP/build/oot_mcu_app"
 echo "== the plain path emits a flashable image =="
 [ -f "$TMP/build/oot_mcu_app.bin" ] || fail "kickos_emit_image produced no .bin"
 [ -f "$TMP/build/oot_mcu_app.hex" ] || fail "kickos_emit_image produced no .hex"
-
-echo "== the optional wrapper produces the same image, not a better one =="
-[ -f "$TMP/build/oot_mcu_app_sugar.bin" ] \
-  || fail "kickos_add_application() target produced no .bin"
-# Compared by size, not byte-for-byte: app.h bakes __DATE__/__TIME__ into every app TU, so
-# two targets whose compiles straddle a second boundary differ in those fixed-width bytes.
-# The length still catches the wrapper linking in something, or with something, that the
-# plain path does not get.
-SZ_PLAIN=$(wc -c < "$TMP/build/oot_mcu_app.bin")
-SZ_SUGAR=$(wc -c < "$TMP/build/oot_mcu_app_sugar.bin")
-[ "$SZ_PLAIN" = "$SZ_SUGAR" ] \
-  || fail "plain add_executable ($SZ_PLAIN B) and kickos_add_application() \
-($SZ_SUGAR B) images differ in size; the plain path is missing something the \
-wrapper supplies"
 
 echo "== our warning policy must not reach the consumer's TUs =="
 CDB="$TMP/build/compile_commands.json"

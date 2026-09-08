@@ -104,8 +104,8 @@ must be **registered at runtime** by calling `__register_frame(&__eh_frame_start
 mallocs a `struct object` node and links it onto the FDE registry. On a hosted system the
 C runtime's `crtbegin`/`frame_dummy` does this before `main`; a freestanding KickOS image
 linked `-nostartfiles` has no `frame_dummy`, so **KickOS registers the frame itself, at
-boot, in the privileged reset path** (a weak `__register_frame` called only in a
-`FULL_CXX` link -- see
+boot, in the privileged reset path** (a weak `__register_frame` resolved only when the
+app links `kickos_cxx` -- see
 [`arch/riscv/chip/esp32c6/chip_esp32c6.cc`](../../arch/riscv/chip/esp32c6/chip_esp32c6.cc)
 and the `.eh_frame` homing in
 [`arch/riscv/chip/esp32c6/esp32c6.ld`](../../arch/riscv/chip/esp32c6/esp32c6.ld), which

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // K64F/DSPI0 silicon validation through the SPI class <kickos/driver/spi.h>. A CLIENT of the
-// DSPI0 service the board service list brings up before main: SPI_BACKEND is
+// DSPI0 service the board service list brings up before main: the linked backend is
 // kickos_spi_proxy, so this app touches no MMIO, no CS and no grant.
 //
 // Two build modes over the SAME service:

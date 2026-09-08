@@ -38,7 +38,7 @@ extern "C"
     // references no _Unwind_*, so __register_frame's libgcc object (unwind-dw2-fde) is
     // never pulled, the ref stays null and the call is skipped, which keeps the FDE
     // machinery, newlib malloc and its 64 KB heap arena OUT of freestanding images. A
-    // FULL_CXX app pulls _Unwind_Find_FDE from the same object, defining
+    // kickos_cxx app pulls _Unwind_Find_FDE from the same object, defining
     // __register_frame, so the ref resolves and registration runs.
     extern uint32_t __eh_frame_start;
     void __register_frame(void*) __attribute__((weak));

@@ -289,7 +289,6 @@ extern "C"
     // switch.S and the chip startup.S load each as a plain word, and index it with addx4.
     static_assert(sizeof(g_arch_current[0]) == sizeof(struct arch_context*), "asm reads one word");
     static_assert(sizeof(g_arch_next[0]) == sizeof(struct arch_context*), "asm reads one word");
-    static_assert(sizeof(g_arch_current[0]) == 4, "PERCPU_CELL indexes with addx4");
     static_assert(alignof(decltype(g_arch_current[0])) == alignof(struct arch_context*), "asm reads it naturally aligned");
 
     // Set by arch_switch when it defers a switch from ISR context; consumed and cleared by

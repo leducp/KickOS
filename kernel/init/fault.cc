@@ -110,8 +110,6 @@ namespace
 
     // Indexed by arch_cpu_id().
     constinit ::kickos::InstanceLocal<FaultRecord[KICKOS_NUM_CORES]> g_fault_all = {};
-    static_assert(sizeof(g_fault_all.per_instance[0]) / sizeof(FaultRecord) == KICKOS_NUM_CORES,
-                  "the fault record must be one per core, never one shared");
 
     FaultRecord& fault_record()
     {

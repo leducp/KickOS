@@ -146,7 +146,7 @@ power-manager service (G7, sections 3 and 6).
 The driver-lib + demo split is under way, not finished. `system/driver/<chip>/{xmcuart, xmcssc,
 k64uart, k64dspi}` are LIBS (`add_library`) with a demo app linking them, while
 `user/apps/<board>/{xmcspi, f411spi, k64drv, rxdrv}` are still monolithic DIAGNOSTIC apps
-(`kickos_add_diagnostic_app`) with driver and demo fused.
+(`kickos_add_diagnostic_apps`) with driver and demo fused.
 
 **The open question is build layering, not packaging.** A chip driver lib lives under `system/`
 because it is board support a consumer links on top of the OS rather than an app, even though it

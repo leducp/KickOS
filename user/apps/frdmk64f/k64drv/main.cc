@@ -12,7 +12,7 @@
 // outside the SYSMPU window and is EXPECTED to succeed; that success is the
 // demonstration.
 //
-// Diagnostic app (kickos_add_diagnostic_app): the operator flashes and validates on
+// Diagnostic app (kickos_add_diagnostic_apps): the operator flashes and validates on
 // silicon.
 
 #include <kickos/kos.h>

@@ -230,10 +230,10 @@ declarations ever disagree -- rather than becoming a silent no-op.
 8. **Dependency inversion -- the app consumes the kernel.** The application owns the top-level
    build; KickOS is a prebuilt package (libraries + headers + startup + board linker script +
    flags) consumed as a plain `add_executable` linked against the exported `kickos` target -- or
-   `kickos_cxx` for a full-C++ (exceptions/STL/RTTI) app (with `kickos_add_application()` as
-   optional sugar). The kernel's root thread calls one init seam `kickos_init_entry(argc, argv)`
-   (`<kickos/sys/init.h>`) after kernel init; the CMake cache var `KICKOS_INIT_PROVIDER` selects
-   the target that supplies it (default `kickos_default_init`, a thin passthrough
+   `kickos_cxx` for a full-C++ (exceptions/STL/RTTI) app. The kernel's root thread calls one
+   init seam `kickos_init_entry(argc, argv)` (`<kickos/sys/init.h>`) after kernel init; the CMake
+   cache var `KICKOS_INIT_PROVIDER` selects the target that supplies it (default
+   `kickos_default_init`, a thin passthrough
    `kickos_init_entry -> kickos_default_init_run -> kickos_app_main`), so a plain app still writes
    only `int main` and no manifest. App/libstdc++ global ctors run in the root thread BEFORE the
    seam; RETURNING from the seam is a single-shot shutdown with that status -- through the
@@ -970,9 +970,16 @@ feeds the slave app.
   build-system dependency on that script all ride the exported target, so an edited `.ld` relinks
   instead of leaving a stale image to flash. Bare metal adds exactly one optional line,
   `kickos_emit_image(<target>)`, because turning the ELF into `.bin`/`.hex`/`.uf2` is a `POST_BUILD`
-  action and no usage requirement can carry an action. `kickos_add_application(<name> SOURCES...
-  BOARD...)` remains **optional sugar** with no powers the plain path lacks; the in-tree fleet uses
-  it, downstream projects need not. Switching sim<->MCU is a one-word `BOARD`/toolchain change.
+  action and no usage requirement can carry an action. In tree, `kickos_add_app_target(<name>
+  <sources>... [CLASSES <class>...])` is a positional convenience for three things that are not an
+  app's to state: on x86_64 the app target is an object library rather than an executable, this
+  tree's `-Werror` plus `C_STANDARD 11` posture, and WHICH backend answers each driver class the
+  app calls. An app names the class (it is already in its `#include` list); the backend and its
+  position ahead of the rescan group come from `kickos_select_class_backend`, called by
+  `system/CMakeLists.txt` because the choice is the image posture's -- every backend of one class
+  defines the same public symbols, so exactly one links and the ORDER, not the selection, would
+  otherwise decide the engine. It has no powers the plain path above lacks; downstream projects
+  use that plain path instead. Switching sim<->MCU is a one-word `BOARD`/toolchain change.
   First-class acceptance criterion, gated both ways (`tests/integration/check_oot_export{,_mcu}.sh`).
   KickOS's own warning flags are **never** part of that interface -- they are this project's
   hygiene policy, applied `PRIVATE` to targets we own, and a consumer's diagnostics stay theirs.
@@ -1016,9 +1023,10 @@ hold is `domain_ref` and its ceiling is refused at `obj_ref_inc`. The contract b
   the sum below, every spawned thread gets `KICKOS_CAP_CHILD_WIDTH`, and the slab is carved from both
   classes rather than from the widest. Root's width is a configure-time SUM of
   four declarations -- the kernel's reserved range, the chosen service list's `RETAINED_CAPS`, the
-  app's declared `CAPABILITIES` peak, and the peak concurrent INBOUND reply capabilities a thread's
-  table must hold (`INBOUND_REPLY_CAPS` on the service list, `CAPABILITIES_INBOUND_REPLY` on the
-  app, combined as the widest, and **0 by default** -- nothing in tree declares it). A client mints
+  app's declared peak (`kickos_declare_app_capabilities`'s `peak` argument), and the peak
+  concurrent INBOUND reply capabilities a thread's table must hold (`INBOUND_REPLY_CAPS` on
+  `kickos_add_board_provider`, the `reply` argument to `kickos_declare_app_capabilities`,
+  combined as the widest, and **0 by default** -- nothing in tree declares it). A client mints
   into the SERVER's table, so without that fourth term the sum is not a bound on when a thread's own
   mint can fail. Beneath the sum sits a floor that is nobody's declaration, the grant-list floor
   `KICKOS_MAX_SPAWN_GRANTS + 1`: it RAISES a width that falls below it rather than refusing it, so

@@ -22,7 +22,7 @@
 // NOT trap (TRM 16.5: read returns 0 / write dropped plus a separate HP_APM
 // interrupt), so only PMP gives the load/store fault.
 //
-// Diagnostic app (kickos_add_diagnostic_app): the operator flashes a RAM-only image
+// Diagnostic app (kickos_add_diagnostic_apps): the operator flashes a RAM-only image
 // and observes GPIO10 and the console.
 
 #include <kickos/kos.h>

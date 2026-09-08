@@ -22,8 +22,7 @@
 foreach(_case span empty)
   kickos_add_unit_test(NAME tls_carve_${_case}
     SOURCES tlscarve_shim.cc tlscarve_${_case}.cc
-    INCLUDES $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>
-    DEFINITIONS $<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS>)
+    KERNEL)
 endforeach()
 
 # A THIRD, and it differs from the two above in ONE clause: TLSCARVE_FROM_SP 0, the arch that
@@ -33,5 +32,5 @@ endforeach()
 # and one binary can only carry one answer.
 kickos_add_unit_test(NAME tls_carve_seat
   SOURCES tlscarve_shim.cc tlscarve_seat.cc
-  INCLUDES $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>
-  DEFINITIONS $<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS> TLSCARVE_FROM_SP=0)
+  KERNEL
+  DEFINITIONS TLSCARVE_FROM_SP=0)

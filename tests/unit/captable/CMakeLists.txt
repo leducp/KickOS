@@ -23,26 +23,16 @@
 #
 # All four binaries define the SAME gtest suite and case names, so TEST_PREFIX puts the
 # geometry on each ctest entry (flat.CapTable.geometry); without it four different geometries
-# would register under one name. kickos_add_unit_test does not expose TEST_PREFIX, so the
-# executable and the discovery are spelled out here with the PROPERTIES
-# kickos_discover_unit_tests uses.
+# would register under one name.
 foreach(_case flat:7:1:7 segmented:10:2:7 deep:20:3:20 deeptail:20:3:7)
   string(REPLACE ":" ";" _parts "${_case}")
   list(GET _parts 0 _name)
   list(GET _parts 1 _width)
   list(GET _parts 2 _chunks)
   list(GET _parts 3 _child)
-  add_executable(captable_${_name} captable_policy.cc)
-  target_link_libraries(captable_${_name} PRIVATE GTest::gtest_main)
-  target_compile_features(captable_${_name} PRIVATE ${KICKOS_CXX_STANDARD})
-  target_include_directories(captable_${_name} PRIVATE
-    "${PROJECT_SOURCE_DIR}/kernel/include" "${PROJECT_SOURCE_DIR}/system/include")
-  target_compile_definitions(captable_${_name} PRIVATE
-    CAPTABLE_GATE_WIDTH=${_width} CAPTABLE_GATE_CHUNKS=${_chunks}
-    CAPTABLE_GATE_CHILD=${_child})
-  target_compile_options(captable_${_name} PRIVATE ${KICKOS_WARN_FLAGS})
-  gtest_discover_tests(captable_${_name}
-    TEST_PREFIX ${_name}.
-    PROPERTIES TIMEOUT 30 LABELS host FIXTURES_REQUIRED kickos_build
-    DISCOVERY_TIMEOUT 60)
+  kickos_add_unit_test(NAME captable_${_name} SOURCES captable_policy.cc
+    TEST_PREFIX "${_name}."
+    INCLUDES "${PROJECT_SOURCE_DIR}/kernel/include" "${PROJECT_SOURCE_DIR}/system/include"
+    DEFINITIONS CAPTABLE_GATE_WIDTH=${_width} CAPTABLE_GATE_CHUNKS=${_chunks}
+                CAPTABLE_GATE_CHILD=${_child})
 endforeach()

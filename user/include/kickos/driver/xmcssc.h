@@ -3,7 +3,7 @@
 //
 // The XMC4800 USIC0-CH1 SSC (SPI) bus SERVICE, the XMC sibling of the K64F DSPI0 service
 // (<kickos/driver/k64dspi.h>). A client reaches it through the SPI class
-// <kickos/driver/spi.h> with kickos_spi_proxy as its SPI_BACKEND. Device slots are tracked by
+// <kickos/driver/spi.h> with kickos_spi_proxy linked as its backend. Device slots are tracked by
 // the caller's own request byte, so several devices behind ONE client are supported and
 // several mutually-untrusting clients are not.
 //

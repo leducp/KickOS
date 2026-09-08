@@ -25,7 +25,7 @@
 // LED6 (P80, active-low, board UM r12uz0098ej0110 Table 5-9) is the CPU Card's only user
 // LED; the console (SCI6, 115200 8N1) is the authoritative oracle.
 //
-// Diagnostic app (kickos_add_diagnostic_app): the operator flashes a RAM image and
+// Diagnostic app (kickos_add_diagnostic_apps): the operator flashes a RAM image and
 // observes LED6 and the console.
 
 #include <kickos/kos.h>

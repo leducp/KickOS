@@ -32,7 +32,7 @@
 // Reference Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. "RM p.NN"
 // citations are the manual's printed page numbers.
 //
-// Diagnostic app (kickos_add_diagnostic_app): build-only, never a production image.
+// Diagnostic app (kickos_add_diagnostic_apps): build-only, never a production image.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

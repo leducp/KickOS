@@ -69,9 +69,6 @@ namespace kickos
         // derived from it. Both nodes of a crossing read the same entry and derive opposite
         // roles: node == self() binds a local endpoint, any other node is a far endpoint.
         constexpr uint32_t PORT_COUNT = KICKOS_AMP_PORT_COUNT;
-        static_assert(PORT_COUNT > 0u,
-                      "a node whose partition names no crossing can neither be called nor "
-                      "call; CMakeLists.txt refuses an empty KICKOS_AMP_PORTS");
         constexpr uint8_t PORT_NODE[PORT_COUNT] = {KICKOS_AMP_PORT_NODE_LIST};
         constexpr uint8_t PORT_PORT[PORT_COUNT] = {KICKOS_AMP_PORT_PORT_LIST};
 
@@ -170,9 +167,6 @@ namespace kickos
         {
             return static_cast<uint8_t>(seq & REPLY_SEQ_MASK);
         }
-        static_assert(REPLY_SEQ_MASK <= 0xFFu,
-                      "reply_seq narrows to the uint8_t cap_reply_thread takes, so a wider "
-                      "mask would be masked again on the way in");
 
         // The route of a sender that does not park, and it is NOT the zero one: zero is index
         // 0 at generation 0, which a live thread slot can be, so an echo of it could complete

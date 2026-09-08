@@ -20,8 +20,7 @@
 kickos_add_unit_test(NAME console_ownership
   SOURCES console_ownership.cc "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
-  INCLUDES $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>
-  DEFINITIONS $<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS>)
+  KERNEL)
 
 # Both console translation units compiled together: kernel/init/console.cc (ownership) and
 # kernel/init/console_tx.cc (the ring), so the publish sequence and the ring producer race
@@ -34,5 +33,4 @@ kickos_add_unit_test(NAME console_publish_handoff
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
-  INCLUDES $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>
-  DEFINITIONS $<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS>)
+  KERNEL)

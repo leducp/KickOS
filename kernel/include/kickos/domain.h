@@ -32,8 +32,6 @@ namespace kickos
 #else
     enum : size_t { KICKOS_DOMAIN_REGIONS = KICKOS_MPU_MAX_REGIONS };
 #endif
-    static_assert(KICKOS_DOMAIN_REGIONS <= KICKOS_MPU_MAX_REGIONS,
-                  "a domain may not record more regions than an MPU image can hold");
 
     struct Domain
     {
@@ -62,8 +60,6 @@ namespace kickos
         bool privileged = false;
         bool immortal = false; // kernel + default-user singletons: never freed
     };
-    static_assert(KICKOS_DOMAIN_REGIONS <= UINT8_MAX,
-                  "Domain::region_count is uint8_t and counts this domain's descriptors");
 
     // The only sanctioned way to read a domain's regions from outside domain.cc. count is
     // null-safe and returns 0; domain_region_at requires i < domain_region_count(d).

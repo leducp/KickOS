@@ -209,6 +209,43 @@ if(KICKOS_ARCH STREQUAL "sim")
     "${PROJECT_SOURCE_DIR}/user/include")
 endif()
 
+# ---------------------------------------------------------------------------
+# The SPI class backend for this image, which is the image posture's decision and not any
+# app's: every backend defines the same four kos_spi_* symbols, so exactly one links.
+#
+# DEFAULT, the PROXY: the board service list brings the bus service up before main and a
+# client reaches the block over its endpoint. One library for every chip, because it speaks
+# the chip-agnostic wire protocol (docs/reference/bus-service.md).
+#
+# KICKOS_SPI_LOCAL_ENGINE=ON, the VALIDATION posture: the client owns the peripheral's window
+# and its interrupt line and clocks the bus inline, with no service and no IPC. It needs a
+# service list that does NOT start the bus service, or the driver thread would already hold
+# the window and the grant would be refused (one owner per block):
+#   cmake -B <dir> --preset xmc4800-relax-st -DKICKOS_SPI_LOCAL_ENGINE=ON \
+#         -DKICKOS_SERVICE_LIST=kickos_services_xmc4800relax_console
+# The app source must carry a local arm; where it does not, the endpoint call it keeps making
+# is undefined at link time rather than silently absent at run time.
+option(KICKOS_SPI_LOCAL_ENGINE
+  "Answer the SPI class with the chip's LOCAL engine (the client owns the block) instead of the bus-service proxy"
+  OFF)
+
+set(_kickos_spi_local "")
+if(KICKOS_CHIP STREQUAL "mk64f")
+  set(_kickos_spi_local kickos_spi_k64dspi)
+elseif(KICKOS_CHIP STREQUAL "xmc4800")
+  set(_kickos_spi_local kickos_spi_xmcssc)
+endif()
+
+if(KICKOS_SPI_LOCAL_ENGINE)
+  if(NOT _kickos_spi_local)
+    message(FATAL_ERROR "KICKOS_SPI_LOCAL_ENGINE=ON, but chip '${KICKOS_CHIP}' ships no local "
+      "SPI engine. Unset it to answer the SPI class with the bus-service proxy.")
+  endif()
+  kickos_select_class_backend(spi ${_kickos_spi_local})
+elseif(TARGET kickos_spi_proxy)
+  kickos_select_class_backend(spi kickos_spi_proxy)
+endif()
+
 # The header home + the init framework lib are not board providers, so they keep an
 # explicit install here (kickos_system is INTERFACE: no archive, exported for headers).
 install(TARGETS kickos_system kickos_default_init

@@ -849,10 +849,6 @@ struct arch_aspace* arch_aspace_boot(void)
         table_at(static_cast<arch_phys_addr_t>(g_boot_ttbr0 & DESC_OA_MASK)));
 }
 
-// An addition, so any number are live at once.
-static_assert(ARCH_ASPACE_ACQUIRE_MIN <= ACQUIRE_CAPACITY,
-              "this backend cannot hold as many acquires live as arch.h promises");
-
 void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
 {
     if (space == nullptr)

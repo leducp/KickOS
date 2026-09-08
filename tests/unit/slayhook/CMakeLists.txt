@@ -6,4 +6,5 @@
 # context is resumed, and a resumed context is exactly what this seam cannot produce, so the
 # arguments and the ordering are all there is to gate here. The death point itself is
 # witnessed on qemu, qemu-riscv and the fleet.
-kickos_add_kseam_gate(NAME slay_hook SOURCES hook.cc)
+kickos_add_unit_test(NAME slay_hook SOURCES hook.cc
+  LIBRARIES kickos_kseam)

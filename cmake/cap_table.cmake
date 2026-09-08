@@ -6,10 +6,10 @@
 #
 #   reserved indices      the kernel        KICKOS_CAP_FIRST_DYNAMIC (sys/cap_index.h)
 #   retained for life     the service list  RETAINED_CAPS (kickos_add_board_provider)
-#   peak concurrent       the app           CAPABILITIES (kickos_add_application)
+#   peak concurrent       the app           kickos_declare_app_capabilities, peak
 #   peak inbound replies  whoever knows the protocol's fan-in, service list or app:
 #                                           INBOUND_REPLY_CAPS (kickos_add_board_provider)
-#                                           CAPABILITIES_INBOUND_REPLY (kickos_add_application)
+#                                           kickos_declare_app_capabilities, reply
 #   partition ports       the partition     CONFIG_KICKOS_AMP_PORTS (one per listed crossing)
 #
 # The summed width is what ROOT gets, and root alone. Every spawned child gets
@@ -291,9 +291,9 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
       "${_supply}; short by ${_short}.\n" ${_terms}
       "The grant list and the reserved plane are most of this floor and no app declaration "
       "moves them; the inbound-reply term IS an app or service-list declaration, and it is "
-      "${_reply} here. Lower KICKOS_MAX_SPAWN_GRANTS, lower the declared INBOUND_REPLY_CAPS / "
-      "CAPABILITIES_INBOUND_REPLY, or raise the board's KICKOS_CAP_TABLE_SUPPLY if its RAM "
-      "really can back it.")
+      "${_reply} here. Lower KICKOS_MAX_SPAWN_GRANTS, lower the declared INBOUND_REPLY_CAPS or "
+      "the reply argument to kickos_declare_app_capabilities, or raise the board's "
+      "KICKOS_CAP_TABLE_SUPPLY if its RAM really can back it.")
   endif()
 
   # Supply is checked against DEMAND, not against the chunk-rounded reservation: rounding the
@@ -377,7 +377,8 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
       "reply capabilities are accounted: child width ${_floor} - ${_reserved} reserved - "
       "${_reply_max} inbound reply. Peers could then fill its table on their own, which is "
       "what KICKOS_CAP_REPLY_MAX exists to prevent. Raise KICKOS_MAX_SPAWN_GRANTS, or lower "
-      "the declared INBOUND_REPLY_CAPS / CAPABILITIES_INBOUND_REPLY.")
+      "the declared INBOUND_REPLY_CAPS, or the reply argument to "
+      "kickos_declare_app_capabilities.")
   endif()
 
   set_property(GLOBAL PROPERTY KICKOS_CAP_TABLE_RESOLVED TRUE)
