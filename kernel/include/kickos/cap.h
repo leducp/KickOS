@@ -83,6 +83,10 @@ namespace kickos
     static constexpr int KCAP_REPLY_SEQ_HI_BITS = 3; // spare beside CapRights' 3
     static_assert(KCAP_REPLY_SEQ_LO_BITS + KCAP_REPLY_SEQ_HI_BITS == KCAP_REPLY_SEQ_BITS,
                   "the two halves of the packed call sequence must exhaust it");
+    // What a LOCAL arm may ask cap_reply_thread to compare, which is narrower than the whole
+    // of Thread::call_seq: the entry carries no more than this. A far node's tag carries the
+    // field whole and asks for amp::REPLY_SEQ_MASK instead.
+    static constexpr uint32_t KCAP_REPLY_SEQ_MASK = (1u << KCAP_REPLY_SEQ_BITS) - 1u;
 
     static constexpr int KCAP_TYPE_BITS = 3;
     static constexpr int KCAP_RIGHTS_BITS = 3;
@@ -698,15 +702,21 @@ namespace kickos
 
     // Resolve a generational thread handle plus a call sequence to the parked caller thread,
     // or nullptr if it is stale. The full one-shot guard: index in range, thread-gen match,
-    // state == BLOCKED, call_state == REPLY_WAIT, and seq8 matching the caller's live
-    // call_seq. THE ONE BODY OF THAT GUARD: a CAP_REPLY entry carries the pair, and so does a
-    // far node's reply tag, and a second copy of these clauses is a second answer to whether
-    // a reply may land. Caller holds IrqLock. Decodes through UNSIGNED shifts: a fully aged
-    // thread generation sets bit 31, and an arithmetic shift would corrupt it.
+    // state == BLOCKED, call_state == REPLY_WAIT, and `seq` matching the caller's live
+    // call_seq under `seq_mask`. THE ONE BODY OF THAT GUARD: a CAP_REPLY entry carries the
+    // pair, and so does a far node's reply tag, and a second copy of these clauses is a
+    // second answer to whether a reply may land. Caller holds IrqLock. Decodes through
+    // UNSIGNED shifts: a fully aged thread generation sets bit 31, and an arithmetic shift
+    // would corrupt it.
+    //
+    // `seq_mask` IS THE WIDTH THE ARM'S OWN STORAGE CARRIES and not a policy knob: a CAP_REPLY
+    // holds KCAP_REPLY_SEQ_BITS of it in its spare bits and asks for KCAP_REPLY_SEQ_MASK, a
+    // far reply tag carries the field whole and asks for amp::REPLY_SEQ_MASK. A mask of zero
+    // drops the clause, which is what an arm asserting that an earlier clause refused wants.
     //
     // TOTAL OVER A ZEROED ThreadPool, which is what a node running no kernel of its own has:
     // `next` is 0 there, so the first clause refuses every index.
-    Thread* cap_reply_thread(uint32_t handle, uint8_t seq8);
+    Thread* cap_reply_thread(uint32_t handle, uint32_t seq, uint32_t seq_mask);
 
     // The guard above over what a CAP_REPLY entry carries. Used by kos_reply and the
     // reply-cap death arm.

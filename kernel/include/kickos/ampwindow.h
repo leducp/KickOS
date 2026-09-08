@@ -122,7 +122,9 @@ namespace kickos
             CLASS_MAX
         };
 
-        // What one receive found. A refusal names WHICH untrusted field was malformed.
+        // What one receive found. Every refusal but RESERVE names WHICH untrusted field was
+        // malformed; RESERVE names this node's own reply ring and no field at all, and is
+        // separate from EMPTY because a ring holding unread calls is not an empty one.
         enum class Verdict : uint8_t
         {
             EMPTY = 0, // the producer has published nothing this node has not taken
@@ -130,7 +132,8 @@ namespace kickos
             DEPTH,     // the far head names more outstanding slots than the ring holds
             LENGTH,    // the far length exceeds one slot
             PORT,      // the far port names nothing this node minted
-            CLASS      // a message of the other class: a reply on the call ring, or the reverse
+            CLASS,     // a message of the other class: a reply on the call ring, or the reverse
+            RESERVE    // no slot is free in the reply ring this call's reply would have to use
         };
 
         // Why one send was refused.
@@ -157,15 +160,20 @@ namespace kickos
         // the validator and the selftest forge all take their sequence from here, so the
         // width cannot be changed at one site and left standing at another.
         //
-        // `seq` carries 32 bits and only these are validated, so a caller that RETAINS a tag
-        // aliases the same long-lived caller after 256 calls to that node. The validation
-        // defends a node against a MALFORMED peer and not a hostile one, and a peer that
-        // replays a tag it kept is the hostile case. Widening this widens the wire.
-        constexpr uint32_t REPLY_SEQ_MASK = 0xFFu;
+        // This is the WHOLE of Thread::call_seq, so no retry count aliases a live call: the
+        // sequence comes round again only once the caller has wrapped its own field. A peer
+        // that REPLAYS a tag it kept still aliases, and always will: the validation defends a
+        // node against a MALFORMED peer and not a hostile one.
+        //
+        // NOT the width the local arm validates. A CAP_REPLY carries its sequence in the
+        // spare bits beside CapType and CapRights, which hold 8 (KCAP_REPLY_SEQ_BITS), so
+        // cap_reply_thread takes the width it must compare as an argument and both arms run
+        // the one body.
+        constexpr uint32_t REPLY_SEQ_MASK = 0xFFFFu;
 
-        constexpr uint8_t reply_seq(uint32_t seq)
+        constexpr uint16_t reply_seq(uint32_t seq)
         {
-            return static_cast<uint8_t>(seq & REPLY_SEQ_MASK);
+            return static_cast<uint16_t>(seq & REPLY_SEQ_MASK);
         }
 
         // The route of a sender that does not park, and it is NOT the zero one: zero is index
@@ -174,11 +182,20 @@ namespace kickos
         // pool reserves and never seats, so no generation resolves it.
         constexpr ReplyTag REPLY_TAG_NONE = {KOS_THREAD_NONE, 0u};
 
+        // ATOMIC BECAUSE A TAKE VALIDATES THEM AND THEN SPENDS THEM, and a producer that
+        // rewrites a slot it wrongly believes free may land between the two: a plain field lets
+        // the compiler re-load one, so the length that bounds the copy need not be the length
+        // that was bounded. RELAXED: the ordering that publishes a slot is the head index's
+        // release, not these. A take loads each ONCE
+        // (tests/static/check_amp_slot_snapshot.sh) and spends only that snapshot.
+        //
+        // `tag` is two words and cannot be one atomic; it is spent by nothing here, so a torn
+        // one is handed back torn and refused at the calling node's own clause.
         struct Slot
         {
-            uint32_t len;  // far: payload bytes, bounded against SLOT_BYTES before any copy
-            uint32_t port; // far: the receiving node's port, bounded against its own mint
-            ReplyTag tag;  // far: handed back to the taker, spent by nothing in this file
+            Atomic<uint32_t, Order::RELAXED> len;  // far: payload bytes, bounded before any copy
+            Atomic<uint32_t, Order::RELAXED> port; // far: bounded against this node's own mint
+            ReplyTag tag; // far: handed back to the taker, spent by nothing in this file
             uint8_t payload[SLOT_BYTES];
         };
 
@@ -231,6 +248,8 @@ namespace kickos
         void ring(uint32_t to);
 
         // Which machine core carries `node`. The partition states the map; nothing derives it.
+        // TOTAL: a node the partition does not hold answers KICKOS_DOORBELL_CORES, which every
+        // core-indexed backend refuses, so no caller owes a range check beside this one.
         uint32_t core_of(uint32_t node);
 
         // Publish `len` bytes into `to`'s inbox from THIS node and ring its doorbell.
@@ -245,20 +264,34 @@ namespace kickos
         // SLOT_BYTES, `*out_len` the bytes taken, `*out_port` the port and `*out_tag` the
         // reply route; none of the four is touched on any verdict but TOOK.
         //
-        // THE PORT AND THE TAG ARE HANDED BACK RATHER THAN LEFT TO BE RE-READ. Their slot is
-        // free the instant the tail advances, so a caller reading either field again reads
-        // whatever the producer has since put there.
+        // THE WHOLE SLOT HEADER IS HANDED BACK RATHER THAN LEFT TO BE RE-READ, inside this
+        // call as much as after it. The slot is free the instant the tail advances, and a
+        // producer with a stale tail may rewrite it earlier still, so a length re-read after it
+        // was bounded is a length nothing bounded.
         //
         // A MALFORMED SLOT IS DROPPED AND THE TAIL ADVANCES. Leaving it would let one bad
         // publication wedge the ring for good; the verdict is counted, so the drop is visible.
+        //
+        // AN ADVANCE OF THE TAIL RINGS `from`, AND THAT RAISE IS NOT A HINT. This tail is what
+        // `from` measures its room to answer against, so the advance is the only event that can
+        // admit a call `from` left unread at RESERVE, and `from` has no publication of its own
+        // pending to ring it. Nothing rescans for it either: the reservation is read inside
+        // take_call, which runs from the doorbell alone.
         Verdict take_reply(uint32_t from, void* out, uint32_t* out_len, uint32_t* out_port,
                            ReplyTag* out_tag);
 
         // Take one CALL and HOLD its slot: on TOOK the slot is this node's record of the caller
         // until release_call frees it, so outstanding inbound calls from one peer are RING_SLOTS
         // by construction. `*out_slot` names the held slot, masked to the ring, and is what
-        // release_call takes back. The tag is copied OUT rather than re-read from the held slot,
-        // which a malformed producer may have touched.
+        // release_call takes back. The header is copied OUT rather than re-read from the held
+        // slot, which a malformed producer may have touched.
+        //
+        // A CALL IS ADMITTED ONLY WHERE ITS REPLY ALREADY HAS A SLOT: the reply ring toward
+        // `from` must hold room for one more than the replies this node still owes it, or the
+        // slot is left unread and the verdict is RESERVE. Without it a peer with more callers
+        // than RING_SLOTS gets a reply refused at publish, which no path can retry. THE RESERVE
+        // IS OWED BY A TOOK ALONE: a malformed slot owes no reply, so it is dropped and the tail
+        // advances whatever the reply ring holds.
         Verdict take_call(uint32_t from, void* out, uint32_t* out_len, uint32_t* out_port,
                           ReplyTag* out_tag, uint32_t* out_slot);
 
@@ -299,6 +332,11 @@ namespace kickos
         // free the record. Total over a token naming nothing, which includes a record a ring
         // resynchronisation freed under its holder: that slot belongs to a later wrap's call
         // by then and its caller is gone, so nothing is sent and nothing is released.
+        //
+        // A REFUSED PUBLICATION IS COUNTED IN reply_unsent AND THE SLOT IS STILL RELEASED. The
+        // answer cannot be remade from here, the reply capability being spent, and a slot held
+        // back would stop the whole run behind it being reclaimed without making the answer
+        // arrive.
         void inbound_reply(uint32_t token, void const* payload, uint32_t len);
 
         // Release a held call slot. The tail advances over released slots from the oldest, so
@@ -318,6 +356,12 @@ namespace kickos
         // node's row while a peer is inside its own doorbell handler writing its own. One
         // writer per row, so the load/store pair below carries no lost update, and there is no
         // read-modify-write above the seam (tests/static/check_atomic_rmw.sh).
+        //
+        // THIS STRUCT'S WIDTH IS SHARED-REGION BUDGET. It is placed as g_counts[NODE_MAX]
+        // (kernel/amp/ampwindow.cc) inside KICKOS_AMP_SHARED_SIZE, and a chip script's ASSERT
+        // on __kickos_amp_shared_end is the whole of the check: a field added here costs its
+        // width once per node and grows with nothing else, growth per ordered pair being
+        // Window's alone.
         struct Counts
         {
             Atomic<uint32_t, Order::RELAXED> took;
@@ -328,11 +372,22 @@ namespace kickos
             Atomic<uint32_t, Order::RELAXED> wrong_class; // a reply on the call ring, or the reverse
             Atomic<uint32_t, Order::RELAXED> sent;
             Atomic<uint32_t, Order::RELAXED> send_refused;
+            // Calls left unread because the reply ring toward that sender had no slot to
+            // reserve. APART FROM send_refused: this is the consumer declining to take, and the
+            // producer's arithmetic that send_refused reports is untouched.
+            Atomic<uint32_t, Order::RELAXED> reply_reserve;
             Atomic<uint32_t, Order::RELAXED> serviced; // times its doorbell drained its inboxes
             // Replies taken and then refused by the endpoint layer's validation of the tag.
             // A node running no kernel of its own counts EVERY reply here, its thread pool
             // refusing each at the first clause.
             Atomic<uint32_t, Order::RELAXED> reply_drop;
+            // Answers whose publication the reply ring refused, from inbound_reply. Held apart
+            // from send_refused, which the same refusal also counts: that field mixes a
+            // caller's own declined call, which its syscall is told about, with an ANSWER that
+            // is lost where nothing holds the capability to remake it. The take's reservation
+            // makes this unreachable in a live partition, so a non-zero row names a peer whose
+            // reply tail regressed under a reservation it had already granted.
+            Atomic<uint32_t, Order::RELAXED> reply_unsent;
             // THE ONE FIELD HERE THAT MOVES WITHOUT TRAFFIC, and the whole reason it exists:
             // every count above needs a crossing, so a node this partition never calls is
             // witnessed by nothing. It holds the port the partition names this node biased by
@@ -355,8 +410,10 @@ namespace kickos
         void app_alive_set(uint32_t mark);
 #endif
 
-        // Drain every inbox of THIS node, echoing a PORT_ECHO message back to its sender's
-        // PORT_REPLY and routing a PORT_REPLY to whatever local caller its tag names.
+        // Drain every inbox of THIS node, routing a PORT_REPLY to whatever local caller its tag
+        // names and answering every taken CALL on the sender's PORT_REPLY: a PORT_ECHO with its
+        // own payload, and anything the endpoint layer did not take as a record with a
+        // ZERO-LENGTH reply carrying the same tag.
         //
         // Reached from the backend's doorbell service, so it runs with this core's interrupts
         // masked, which is the whole of a one-core kernel's exclusion.
@@ -390,12 +447,19 @@ namespace kickos
         // is only who the doorbell would reach had the send not been refused.
         Sent forge_tail_and_send(uint32_t to, uint32_t tail_jump);
 
-        // Publish ONE PORT_REPLY into THIS node's inbox from `from` carrying `tag`, then take
-        // it and route it exactly as node_service does, so a HOSTILE reply is playable at a
-        // caller that is genuinely parked. True where it reached one.
+        // Publish ONE PORT_REPLY of `len` bytes into THIS node's inbox from `from` carrying
+        // `tag`, then take it and route it exactly as node_service does, so a HOSTILE reply is
+        // playable at a caller that is genuinely parked. True where it reached one. A `len` of
+        // zero is the answer a serving node publishes for a call refused past the take.
         //
         // BOTH INDICES ARE RESET FIRST, as forge_and_take does.
-        bool forge_reply(uint32_t from, ReplyTag const& tag);
+        bool forge_reply(uint32_t from, ReplyTag const& tag, uint32_t len);
+
+        // Publish a REPLY-class port into the CALL ring and take it. Both untrusted fields are
+        // well-formed, so only the class clause can refuse this.
+        //
+        // BOTH INDICES ARE RESET FIRST, as the other forges do.
+        Verdict forge_class_take(uint32_t from);
 
         // Scaffolding: publish ONE well-formed call from `from` on `port` into THIS node's
         // ring and take it no further, so the doorbell's own service body is what drains it.
@@ -407,6 +471,24 @@ namespace kickos
         // "the receiver holds this slot until it replies" and a moved one the whole of "the
         // taker released it".
         bool forge_drain_held(uint32_t from);
+
+        // Take one well-formed CALL while the reply ring this node would answer it into holds no
+        // free slot, then take the SAME call again with room. The verdict of the FIRST take is
+        // the answer; `*out_bits` carries the KOS_AMP_RESERVE_* claims beside it.
+        //
+        // DECLINES against a node that has serviced: the state it holds is one such a node
+        // drains, so it answers EMPTY with no RAN bit rather than a wrong verdict.
+        constexpr uint32_t FORGE_RESERVE_RAN = 0x100u;
+        constexpr uint32_t FORGE_RESERVE_CURSOR_HELD = 0x200u;
+        constexpr uint32_t FORGE_RESERVE_THEN_TOOK = 0x400u;
+        Verdict forge_reserve_take(uint32_t from, uint32_t* out_bits);
+
+        // Free slots in the reply ring THIS node answers `to`'s calls into, having first drained
+        // it where `to` runs no kernel of its own. An arm that forges a call and expects it
+        // TAKEN owes this: every take reserves a slot here, and on a node booted alone nothing
+        // else will ever move that tail, so a preceding arm's answers wedge every later take at
+        // RESERVE. Zero means the ring is full and the take will be refused.
+        uint32_t forge_reply_room(uint32_t to);
 
         // Publish a depth this node cannot believe, take DEPTH_STRIKES times so the strike
         // bound resynchronises the ring, then publish one WELL-FORMED message and take it.

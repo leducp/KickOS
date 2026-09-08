@@ -185,6 +185,12 @@ uint32_t arch_cpu_id(void)
 
 // The far side of the doorbell, on the calling core. Reached from the node vector table
 // (node_vectors.S) and from a poll inside a spin, and MASKED either way.
+//
+// ITS STACK DEPTH IS UNMEASURED. Entered from the vector table this body runs in handler mode,
+// where ARMv7-M forces SP_main, and tests/static/trap_redzone_roots.txt roots no armv7m class
+// on the MSP: the descent through kickos_amp_node_service is gated by nothing. What would
+// bound it is a root set over every handler-mode entry, measured against the _kernel_stack_size
+// the chip's linker script reserves, 8 KiB in rp2350.ld.
 void kickos_rp2350_doorbell_service(void)
 {
     uint32_t const me = arch_doorbell_core();
@@ -234,9 +240,9 @@ void arch_ipi_send(uint32_t cores)
     {
 #if KICKOS_AMP_OWN_IMAGE
         // Raised in hardware, never serviced inline: an inline call would put
-        // kickos_amp_node_service under amp::send, which reaches here, and no red-zone figure
-        // can price a recursion (tests/static/check_trap_redzone.sh). These are this core's own
-        // IN bits, so its doorbell interrupt carries the service once it unmasks.
+        // kickos_amp_node_service under amp::send, which reaches here, and no stack figure can
+        // price a recursion. These are this core's own IN bits, so its doorbell interrupt
+        // carries the service once it unmasks.
         r32(reg::sio::DOORBELL_IN_SET) = DOORBELL_BIT;
 #else
         doorbell_poll();
@@ -264,6 +270,12 @@ void arch_ipi_fence(void)
 // Spins on the answer cells alone, the calling core's own bit excepted: the send answered that
 // one synchronously. SERVICES ITS OWN DOORBELL WHILE IT SPINS: two cores can each be an
 // initiator waiting on the other.
+//
+// A THREAD-MODE DESCENT INTO THE SERVICE BODY: under KICKOS_AMP_NODE the poll below reaches
+// kickos_amp_node_service on the CALLER'S per-thread kernel block, not on SP_main. Its one
+// kernel caller, line_op_ask, is compiled out at KICKOS_KERNEL_CORES == 1, which every AMP
+// posture is (Kconfig, the multicore-model choice); one that appears is priced under class
+// SVCK by tests/static/check_trap_redzone.sh, which walks the callgraph and fails by name.
 void arch_ipi_wait(uint32_t cores)
 {
     uint32_t const me = arch_doorbell_core();

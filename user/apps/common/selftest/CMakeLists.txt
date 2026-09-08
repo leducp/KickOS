@@ -125,7 +125,7 @@ endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   # amp_far_call and amp_far_reply_guard are in this count on every posture: they skip by name
   # where no peer answers rather than being compiled out.
-  math(EXPR _tap_arms "${_tap_arms} + 15") # amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_service, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_probe_root_only, amp_far_slot_reuse
+  math(EXPR _tap_arms "${_tap_arms} + 20") # amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _tap_arms "${_tap_arms} + 21") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core
@@ -175,7 +175,7 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 1") # fault_kills_task
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 15") # amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_service, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_probe_root_only, amp_far_slot_reuse
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 20") # amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 21") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core

@@ -50,8 +50,8 @@ namespace kickos
                     r.tail.v.store(0u);
                     for (uint32_t i = 0; i < amp::RING_SLOTS; i++)
                     {
-                        r.slot[i].len = 0u;
-                        r.slot[i].port = amp::PORT_MAX;
+                        r.slot[i].len.store(0u);
+                        r.slot[i].port.store(amp::PORT_MAX);
                         r.slot[i].tag = amp::ReplyTag{};
                         for (uint32_t b = 0; b < amp::SLOT_BYTES; b++)
                         {

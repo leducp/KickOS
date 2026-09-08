@@ -159,14 +159,90 @@ namespace
         amp::Ring& r = amp::ring_for(amp::Class::CALL, to, from);
         uint32_t const head = r.head.v.load();
         amp::Slot& s = r.slot[head % amp::RING_SLOTS];
-        s.len = len;
-        s.port = port;
+        s.len.store(len);
+        s.port.store(port);
         s.tag = TAG_FORGED;
         for (uint32_t i = 0; i < amp::SLOT_BYTES; i++)
         {
             s.payload[i] = fill;
         }
         r.head.v.store(head + 1u);
+    }
+
+    // The port the four-node posture names NODE_A (KICKOS_AMP_PORT_NODE_LIST=0,1 beside
+    // KICKOS_AMP_PORT_PORT_LIST=2,3), so window_init mints it on NODE_A's row alone.
+    constexpr uint32_t PORT_SERVED_A = 2u;
+
+    // A bind for the length of one arm. window_init does NOT reseat the port table, so a bind
+    // left standing decides the verdict of every arm that runs after it.
+    struct BoundPort
+    {
+        uint32_t node;
+        uint32_t port;
+
+        BoundPort(uint32_t n, uint32_t p, uint16_t endpoint) : node(n), port(p)
+        {
+            uint32_t const was = fix::g_node;
+            fix::g_node = node;
+            amp::port_bind(port, endpoint);
+            fix::g_node = was;
+        }
+
+        ~BoundPort()
+        {
+            uint32_t const was = fix::g_node;
+            fix::g_node = node;
+            amp::port_bind(port, amp::EP_BOUND_NONE);
+            fix::g_node = was;
+        }
+    };
+
+    void service_as(uint32_t me)
+    {
+        uint32_t const was = fix::g_node;
+        fix::g_node = me;
+        amp::node_service();
+        fix::g_node = was;
+    }
+
+    // THE DOORBELL ITSELF, so an arm can run the passes a raise really produces and no others.
+    // The seam records every raise as a core mask and a node index IS its core bit under this
+    // fixture's posture, so the pending mask names nodes directly. `defer_mask` leaves a
+    // node's latched bell pending, which is the whole of "the peer drains its replies late".
+    //
+    // BOUNDED, and the bound is the point: a mechanism that never rings makes an arm read a
+    // failed claim rather than hang, and one that rings forever reads as the bound reached.
+    constexpr uint32_t PUMP_PASSES_MAX = 64u;
+
+    template <typename Handler>
+    uint32_t pump_doorbells(uint32_t defer_mask, Handler handle)
+    {
+        uint32_t passes = 0;
+        while (passes < PUMP_PASSES_MAX)
+        {
+            uint32_t const pending = fix::g_sent_mask & ~defer_mask;
+            if (pending == 0u)
+            {
+                break;
+            }
+            fix::g_sent_mask = fix::g_sent_mask & ~pending;
+            for (uint32_t n = 0; n < amp::NODE_MAX; n++)
+            {
+                if ((pending & (1u << n)) == 0u)
+                {
+                    continue;
+                }
+                handle(n);
+                passes++;
+            }
+        }
+        return passes;
+    }
+
+    uint32_t reply_ring_used(uint32_t to, uint32_t from)
+    {
+        amp::Ring const& r = amp::ring_for(amp::Class::REPLY, to, from);
+        return r.head.v.load() - r.tail.v.load();
     }
 
     struct AmpWindow : public ::testing::Test
@@ -271,8 +347,8 @@ namespace
         uint8_t const payload[4] = {1u, 2u, 3u, 4u};
         EXPECT_EQ(amp::Sent::DEPTH, send_as(NODE_B, NODE_A, amp::PORT_ECHO, payload, 4u));
         EXPECT_EQ(0u, r.head.v.load());
-        EXPECT_EQ(0u, r.slot[0].len);
-        EXPECT_EQ(amp::PORT_MAX, r.slot[0].port);
+        EXPECT_EQ(0u, r.slot[0].len.load());
+        EXPECT_EQ(amp::PORT_MAX, r.slot[0].port.load());
         EXPECT_EQ(0x5Cu, r.slot[0].payload[0]);
         EXPECT_EQ(was_refused + 1u, amp::counts(NODE_B).send_refused);
         EXPECT_EQ(was_sent, amp::counts(NODE_B).sent);
@@ -796,26 +872,27 @@ namespace
         uint8_t const payload[1] = {0x44u};
         amp::Ring& r = amp::ring_for(amp::Class::CALL, NODE_A, NODE_B);
         amp::Slot& s = r.slot[0];
-        s.port = amp::PORT_REPLY;
+        s.port.store(amp::PORT_REPLY);
         s.tag = TAG_CARRIED;
-        s.len = 1u;
+        s.len.store(1u);
         s.payload[0] = payload[0];
         r.head.v.store(1u);
 
+        uint32_t const was_class = amp::counts(NODE_A).wrong_class;
         uint32_t held = 0xFFFFFFFFu;
         EXPECT_EQ(amp::Verdict::CLASS, take_held_as(NODE_A, NODE_B, &held));
         // Dropped rather than held: its slot is back and the ring is not one short for good.
         EXPECT_EQ(1u, r.tail.v.load());
-        EXPECT_EQ(1u, amp::counts(NODE_A).wrong_class);
+        EXPECT_EQ(was_class + 1u, amp::counts(NODE_A).wrong_class);
     }
 
     TEST_F(AmpWindow, a_call_published_on_the_reply_ring_is_refused_and_dropped)
     {
         amp::Ring& r = amp::ring_for(amp::Class::REPLY, NODE_A, NODE_B);
         amp::Slot& s = r.slot[0];
-        s.port = amp::PORT_ECHO;
+        s.port.store(amp::PORT_ECHO);
         s.tag = TAG_CARRIED;
-        s.len = 1u;
+        s.len.store(1u);
         s.payload[0] = 0x55u;
         r.head.v.store(1u);
 
@@ -823,9 +900,10 @@ namespace
         uint32_t len = 0;
         uint32_t port = amp::PORT_MAX;
         amp::ReplyTag tag = {};
+        uint32_t const was_class = amp::counts(NODE_A).wrong_class;
         EXPECT_EQ(amp::Verdict::CLASS, take_reply_as(NODE_A, NODE_B, buf, &len, &port, &tag));
         EXPECT_EQ(1u, r.tail.v.load());
-        EXPECT_EQ(1u, amp::counts(NODE_A).wrong_class);
+        EXPECT_EQ(was_class + 1u, amp::counts(NODE_A).wrong_class);
     }
 
     TEST_F(AmpWindow, a_send_lands_on_the_ring_its_port_names)
@@ -838,6 +916,118 @@ namespace
         ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_REPLY, payload, 1u));
         EXPECT_EQ(1u, amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).head.v.load());
         EXPECT_EQ(1u, amp::ring_for(amp::Class::REPLY, NODE_A, NODE_B).head.v.load());
+    }
+
+    // A CALL THE ENDPOINT LAYER REFUSED IS ANSWERED, not merely dropped. The seam's
+    // endpoint_far_call_deliver answers false for every call, which is what every refusal arm
+    // past the receiver's pop looks like from here; the far caller is parked on this answer and
+    // under KOS_TIMEOUT_NONE nothing else can wake it.
+    TEST_F(AmpWindow, a_call_the_endpoint_layer_refuses_is_answered_with_an_empty_reply)
+    {
+        BoundPort bound(NODE_A, PORT_SERVED_A, 0u);
+        uint8_t const payload[4] = {0x91u, 0x92u, 0x93u, 0x94u};
+        ASSERT_EQ(amp::Sent::OK,
+                  send_tagged_as(NODE_B, NODE_A, PORT_SERVED_A, TAG_CARRIED, payload, 4u));
+
+        amp::Ring& back = amp::ring_for(amp::Class::REPLY, NODE_B, NODE_A);
+        ASSERT_EQ(0u, back.head.v.load());
+        fix::g_sent_mask = 0;
+        service_as(NODE_A);
+
+        ASSERT_EQ(1u, back.head.v.load()) << "the refusal published no answer at all";
+        amp::Slot const& answered = back.slot[0];
+        EXPECT_EQ(0u, answered.len) << "a refusal answers zero bytes, never the request back";
+        EXPECT_EQ(static_cast<uint32_t>(amp::PORT_REPLY), answered.port);
+        EXPECT_EQ(TAG_CARRIED.thread, answered.tag.thread);
+        EXPECT_EQ(TAG_CARRIED.seq, answered.tag.seq);
+        // The caller's own doorbell, or the answer sits in a ring with no notice coming.
+        EXPECT_EQ(1u << NODE_B, fix::g_sent_mask & (1u << NODE_B));
+        // And the call slot came back, so the ring does not fill behind the refusal.
+        amp::Ring const& in = amp::ring_for(amp::Class::CALL, NODE_A, NODE_B);
+        EXPECT_EQ(in.head.v.load(), in.tail.v.load());
+    }
+
+    // EVERY refusal and not the first: the answer belongs to the one exit that decides the
+    // slot did not become a record, so a ring's worth of calls owes a ring's worth of answers.
+    TEST_F(AmpWindow, every_refused_call_of_a_full_ring_is_answered)
+    {
+        BoundPort bound(NODE_A, PORT_SERVED_A, 0u);
+        for (uint32_t i = 0; i < amp::RING_SLOTS; i++)
+        {
+            uint8_t const payload[1] = {static_cast<uint8_t>(0xA0u + i)};
+            amp::ReplyTag const tag = {0x2000u + i, 0x30000u + i};
+            ASSERT_EQ(amp::Sent::OK,
+                      send_tagged_as(NODE_B, NODE_A, PORT_SERVED_A, tag, payload, 1u))
+                << "call " << i;
+        }
+        service_as(NODE_A);
+
+        amp::Ring& back = amp::ring_for(amp::Class::REPLY, NODE_B, NODE_A);
+        ASSERT_EQ(amp::RING_SLOTS, back.head.v.load());
+        for (uint32_t i = 0; i < amp::RING_SLOTS; i++)
+        {
+            EXPECT_EQ(0u, back.slot[i].len) << "answer " << i;
+            EXPECT_EQ(0x2000u + i, back.slot[i].tag.thread) << "answer " << i;
+            EXPECT_EQ(0x30000u + i, back.slot[i].tag.seq) << "answer " << i;
+        }
+        amp::Ring const& in = amp::ring_for(amp::Class::CALL, NODE_A, NODE_B);
+        EXPECT_EQ(in.head.v.load(), in.tail.v.load());
+    }
+
+    // A MINTED PORT BOUND TO NOTHING is the same wedge and gets the same answer: holding the
+    // slot for a service that may arrive fills the ring behind it.
+    TEST_F(AmpWindow, a_call_on_a_minted_port_bound_to_nothing_is_answered)
+    {
+        ASSERT_EQ(amp::EP_BOUND_NONE, amp::port_endpoint(PORT_SERVED_A));
+        uint8_t const payload[2] = {0x95u, 0x96u};
+        ASSERT_EQ(amp::Sent::OK,
+                  send_tagged_as(NODE_B, NODE_A, PORT_SERVED_A, TAG_CARRIED, payload, 2u));
+        service_as(NODE_A);
+
+        amp::Ring& back = amp::ring_for(amp::Class::REPLY, NODE_B, NODE_A);
+        ASSERT_EQ(1u, back.head.v.load());
+        EXPECT_EQ(0u, back.slot[0].len);
+        EXPECT_EQ(TAG_CARRIED.thread, back.slot[0].tag.thread);
+        EXPECT_EQ(TAG_CARRIED.seq, back.slot[0].tag.seq);
+    }
+
+    // The control on the arms above: the one class of taken call that answers its own payload
+    // still does, so the single answering exit did not turn every service into a refusal.
+    TEST_F(AmpWindow, an_echo_answered_through_the_service_still_carries_its_payload)
+    {
+        uint8_t const payload[3] = {0x97u, 0x98u, 0x99u};
+        ASSERT_EQ(amp::Sent::OK,
+                  send_tagged_as(NODE_B, NODE_A, amp::PORT_ECHO, TAG_CARRIED, payload, 3u));
+        service_as(NODE_A);
+
+        amp::Ring& back = amp::ring_for(amp::Class::REPLY, NODE_B, NODE_A);
+        ASSERT_EQ(1u, back.head.v.load());
+        EXPECT_EQ(3u, back.slot[0].len);
+        EXPECT_EQ(0x97u, back.slot[0].payload[0]);
+        EXPECT_EQ(0x99u, back.slot[0].payload[2]);
+        EXPECT_EQ(TAG_CARRIED.seq, back.slot[0].tag.seq);
+    }
+
+    // THE VALIDATED REPLY SEQUENCE IS THE WHOLE OF Thread::call_seq. Narrower and a caller's
+    // 256th retry brings the sequence round again while it still holds the tag, so a late
+    // reply lands on a call the caller has already given up on.
+    TEST_F(AmpWindow, a_reply_sequence_carries_the_whole_callers_field)
+    {
+        EXPECT_EQ(0xFFFFu, amp::REPLY_SEQ_MASK);
+        EXPECT_EQ(0x1234u, amp::reply_seq(0xABCD1234u));
+        // The bits a narrower width would drop, which is what makes two calls alias.
+        EXPECT_NE(amp::reply_seq(0x0034u), amp::reply_seq(0x1234u));
+    }
+
+    // A NODE THE PARTITION DOES NOT HOLD HAS NO CORE, and the answer says so rather than
+    // naming the primary: every core-indexed backend refuses an index at this width, so the
+    // refusal travels and no caller owes a range check of its own.
+    TEST_F(AmpWindow, a_node_outside_the_partition_maps_to_no_core)
+    {
+        EXPECT_EQ(static_cast<uint32_t>(KICKOS_DOORBELL_CORES), amp::core_of(amp::NODE_MAX));
+        EXPECT_EQ(static_cast<uint32_t>(KICKOS_DOORBELL_CORES), amp::core_of(0xFFFFFFFFu));
+        EXPECT_NE(amp::core_of(NODE_A), amp::core_of(amp::NODE_MAX))
+            << "a node the partition does not hold answered the primary's core";
     }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -895,4 +1085,493 @@ namespace
         fix::g_node = NODE_A;
     }
 #endif
+
+    // --- A far head that moved BACKWARD -----------------------------------------------------
+    // The unread test is modular, so a head that regressed to between the tail and `taken`,
+    // a peer restarting its ring, reads as a huge unread count. What the node would then
+    // hand out is a slot the producer never wrote: zeroed, that is a well-formed zero-length
+    // echo carrying tag 0,0.
+
+    TEST_F(AmpWindow, a_far_head_behind_taken_is_refused_and_the_real_message_still_arrives)
+    {
+        uint8_t const payload[1] = {0x61u};
+        for (uint32_t i = 0; i < 2u; i++)
+        {
+            ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, payload, 1u));
+        }
+        uint32_t slot[2] = {};
+        for (uint32_t i = 0; i < 2u; i++)
+        {
+            ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &slot[i]));
+        }
+
+        amp::Ring& r = amp::ring_for(amp::Class::CALL, NODE_A, NODE_B);
+        ASSERT_EQ(2u, r.head.v.load());
+        // BETWEEN the tail and `taken`, which is the shape head - tail cannot see.
+        r.head.v.store(1u);
+
+        uint32_t const was_depth = amp::counts(NODE_A).depth;
+        uint32_t const was_took = amp::counts(NODE_A).took;
+        Taken t;
+        EXPECT_EQ(amp::Verdict::DEPTH,
+                  take_tagged_as(NODE_A, NODE_B, t.buf, &t.len, &t.port, &t.tag));
+        EXPECT_TRUE(t.untouched());
+        EXPECT_EQ(was_depth + 1u, amp::counts(NODE_A).depth);
+        EXPECT_EQ(was_took, amp::counts(NODE_A).took);
+        EXPECT_EQ(0u, r.tail.v.load());
+
+        // `taken` did not run past the head: the peer back at the index it left, the message it
+        // publishes there is the one delivered. A cursor that had advanced would skip it.
+        r.head.v.store(2u);
+        uint8_t const third[1] = {0x62u};
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, third, 1u));
+        uint32_t got = 0xFFFFFFFFu;
+        uint8_t buf[amp::SLOT_BYTES];
+        uint32_t len = 0;
+        uint32_t port = amp::PORT_MAX;
+        amp::ReplyTag tag = {};
+        fix::g_node = NODE_A;
+        ASSERT_EQ(amp::Verdict::TOOK, amp::take_call(NODE_B, buf, &len, &port, &tag, &got));
+        fix::g_node = 0;
+        EXPECT_EQ(2u % amp::RING_SLOTS, got);
+        EXPECT_EQ(1u, len);
+        EXPECT_EQ(amp::PORT_ECHO, port);
+        EXPECT_EQ(third[0], buf[0]);
+    }
+
+    TEST_F(AmpWindow, a_regressed_head_resynchronises_and_kills_every_held_record)
+    {
+        uint8_t const payload[1] = {0x63u};
+        for (uint32_t i = 0; i < 2u; i++)
+        {
+            ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, payload, 1u));
+        }
+        uint32_t token[2] = {};
+        for (uint32_t i = 0; i < 2u; i++)
+        {
+            uint32_t slot = 0;
+            ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &slot));
+            fix::g_node = NODE_A;
+            token[i] = amp::inbound_seat(NODE_B, slot, TAG_CARRIED);
+            fix::g_node = 0;
+            ASSERT_NE(amp::FAR_RECORD_NONE, token[i]);
+        }
+
+        amp::Ring& r = amp::ring_for(amp::Class::CALL, NODE_A, NODE_B);
+        r.head.v.store(1u);
+        uint32_t const was_reset = amp::counts(NODE_A).depth_reset;
+        Taken t;
+        for (uint32_t i = 0; i < amp::DEPTH_STRIKES; i++)
+        {
+            EXPECT_EQ(amp::Verdict::DEPTH,
+                      take_tagged_as(NODE_A, NODE_B, t.buf, &t.len, &t.port, &t.tag))
+                << "strike " << i;
+        }
+        EXPECT_EQ(was_reset + 1u, amp::counts(NODE_A).depth_reset);
+        EXPECT_EQ(1u, r.tail.v.load());
+
+        // EVERY RECORD THE RESYNCHRONISATION ABANDONED IS DEAD, and its generation moved: a
+        // record left standing would answer the next call landing on the same masked slot.
+        EXPECT_EQ(nullptr, amp::inbound_at(token[0]));
+        EXPECT_EQ(nullptr, amp::inbound_at(token[1]));
+
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, payload, 1u));
+        uint32_t fresh_slot = 0;
+        ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &fresh_slot));
+        EXPECT_EQ(1u % amp::RING_SLOTS, fresh_slot);
+        fix::g_node = NODE_A;
+        uint32_t const fresh = amp::inbound_seat(NODE_B, fresh_slot, TAG_CARRIED);
+        fix::g_node = 0;
+        ASSERT_NE(amp::FAR_RECORD_NONE, fresh);
+        // The same masked slot, so the same table row: only the generation tells them apart.
+        EXPECT_NE(token[1], fresh);
+        EXPECT_NE(nullptr, amp::inbound_at(fresh));
+        // FORGOTTEN, or this record outlives the arm: fix::reset does not reseat the record
+        // table, so a live one left here refuses the seat every later arm asks for at the same
+        // masked slot and its verdict then depends on the order GoogleTest ran them in.
+        fix::g_node = NODE_A;
+        amp::inbound_forget(fresh);
+        fix::g_node = 0;
+        release_as(NODE_A, NODE_B, fresh_slot);
+    }
+
+    // --- A reply slot is reserved before a call is taken -------------------------------------
+    // A call slot is freed at reply PUBLISH, not at reply take, so the reply ring's occupancy
+    // is NOT bounded by the call slots this node holds. Without an admission test a peer with
+    // more callers than RING_SLOTS gets a reply refused at publish, and a refused reply is a
+    // loss no path can retry.
+
+    TEST_F(AmpWindow, a_call_is_left_unread_while_its_reply_has_no_slot)
+    {
+        // The reply ring toward NODE_B full of replies NODE_B has not drained.
+        uint8_t const answer[1] = {0x70u};
+        for (uint32_t i = 0; i < amp::RING_SLOTS; i++)
+        {
+            ASSERT_EQ(amp::Sent::OK,
+                      send_as(NODE_A, NODE_B, amp::PORT_REPLY, answer, 1u)) << "reply " << i;
+        }
+        uint8_t const call[2] = {0x71u, 0x72u};
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, call, 2u));
+
+        uint32_t const was_reserve = amp::counts(NODE_A).reply_reserve;
+        uint32_t const was_took = amp::counts(NODE_A).took;
+        Taken t;
+        EXPECT_EQ(amp::Verdict::RESERVE,
+                  take_tagged_as(NODE_A, NODE_B, t.buf, &t.len, &t.port, &t.tag));
+        EXPECT_TRUE(t.untouched());
+        EXPECT_EQ(was_reserve + 1u, amp::counts(NODE_A).reply_reserve);
+        EXPECT_EQ(was_took, amp::counts(NODE_A).took);
+        // LEFT UNREAD rather than dropped: the tail did not move and neither did the cursor.
+        EXPECT_EQ(0u, amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).tail.v.load());
+
+        // One reply drained at the peer, and the call is admitted with its payload intact.
+        uint8_t rbuf[amp::SLOT_BYTES];
+        uint32_t rlen = 0;
+        uint32_t rport = amp::PORT_MAX;
+        amp::ReplyTag rtag = {};
+        ASSERT_EQ(amp::Verdict::TOOK,
+                  take_reply_as(NODE_B, NODE_A, rbuf, &rlen, &rport, &rtag));
+
+        Taken good;
+        ASSERT_EQ(amp::Verdict::TOOK,
+                  take_tagged_as(NODE_A, NODE_B, good.buf, &good.len, &good.port, &good.tag));
+        EXPECT_EQ(2u, good.len);
+        EXPECT_EQ(amp::PORT_ECHO, good.port);
+        EXPECT_EQ(call[0], good.buf[0]);
+        EXPECT_EQ(call[1], good.buf[1]);
+    }
+
+    // THE POSITIVE FORM OF THE SAME CLAIM, and the one the defect was found by: every call the
+    // peer published is ANSWERED. A peer that drains its reply ring late used to lose the reply
+    // to the call it published after the ring filled, and then to strand that call instead.
+    //
+    // NOT ONE SERVICE PASS IS TAKEN BY HAND. Every pass below is one pump_doorbells found a
+    // raise for, so an arm that passes says a real doorbell would have carried it. An earlier
+    // form of this arm called node_service after the drain and supplied the very edge the tree
+    // had no source for, which is what hid the strand.
+    TEST_F(AmpWindow, every_call_is_answered_even_when_the_peer_drains_its_replies_late)
+    {
+        constexpr uint32_t CALLS = amp::RING_SLOTS + 1u;
+        uint8_t const body[1] = {0x80u};
+
+        // NODE_B's own doorbell handler: its callers are what a reply wakes, and this fixture
+        // has no endpoint layer to wake, so the drain is spelled out and the tag recorded.
+        uint32_t seen = 0;
+        uint32_t got[CALLS + 1u] = {};
+        auto drain_b = [&]() {
+            while (seen <= CALLS)
+            {
+                uint8_t buf[amp::SLOT_BYTES];
+                uint32_t len = 0;
+                uint32_t port = amp::PORT_MAX;
+                amp::ReplyTag tag = {};
+                if (take_reply_as(NODE_B, NODE_A, buf, &len, &port, &tag) != amp::Verdict::TOOK)
+                {
+                    return;
+                }
+                got[seen] = tag.seq;
+                seen++;
+            }
+        };
+        auto handle = [&](uint32_t n) {
+            if (n == NODE_B)
+            {
+                drain_b();
+                return;
+            }
+            service_as(n);
+        };
+
+        // NODE_B's bell LEFT PENDING for the whole publishing phase: that is the peer draining
+        // late, and it is what fills the reply ring NODE_A must answer into.
+        uint32_t passes = 0;
+        uint32_t published = 0;
+        uint32_t spins = 0;
+        while (published < CALLS and spins < 4u * CALLS)
+        {
+            spins++;
+            amp::ReplyTag const tag = {0x900u + published, 0xA00u + published};
+            if (send_tagged_as(NODE_B, NODE_A, amp::PORT_ECHO, tag, body, 1u) == amp::Sent::OK)
+            {
+                published++;
+            }
+            passes += pump_doorbells(1u << NODE_B, handle);
+        }
+        ASSERT_EQ(CALLS, published) << "the call ring never took the last publication";
+        ASSERT_EQ(0u, seen) << "the peer drained early, so no call was ever held at RESERVE";
+        // The state the strand needs: a call left unread and no raise pending for NODE_A.
+        ASSERT_EQ(0u, fix::g_sent_mask & (1u << NODE_A));
+        ASSERT_NE(amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).head.v.load(),
+                  amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).tail.v.load());
+
+        // The peer's latched bell answered at last. NOTHING ELSE IS DRIVEN: the raise the drain
+        // makes is the only thing that can bring NODE_A back to the call it refused.
+        passes += pump_doorbells(0u, handle);
+        ASSERT_LT(passes, PUMP_PASSES_MAX) << "the doorbells never settled";
+
+        ASSERT_EQ(CALLS, seen) << "a call refused at RESERVE was never serviced again";
+        for (uint32_t i = 0; i < CALLS; i++)
+        {
+            EXPECT_EQ(0xA00u + i, got[i]) << "reply " << i << " carries another call's tag";
+        }
+    }
+
+    // THE MECHANISM, on its own. Taking a reply advances the tail the PUBLISHER measures its
+    // room to answer against, so the take owes that publisher a raise.
+    TEST_F(AmpWindow, a_reply_taken_rings_the_node_whose_answers_the_slot_belonged_to)
+    {
+        uint8_t const answer[1] = {0x76u};
+        for (uint32_t i = 0; i < amp::RING_SLOTS; i++)
+        {
+            ASSERT_EQ(amp::Sent::OK,
+                      send_as(NODE_A, NODE_B, amp::PORT_REPLY, answer, 1u)) << "reply " << i;
+        }
+        uint8_t const call[1] = {0x77u};
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, call, 1u));
+        Taken t;
+        ASSERT_EQ(amp::Verdict::RESERVE,
+                  take_tagged_as(NODE_A, NODE_B, t.buf, &t.len, &t.port, &t.tag));
+
+        uint8_t rbuf[amp::SLOT_BYTES];
+        uint32_t rlen = 0;
+        uint32_t rport = amp::PORT_MAX;
+        amp::ReplyTag rtag = {};
+
+        // AN EMPTY TAKE MOVES NO TAIL AND MUST RING NOBODY, or two nodes ping-pong on rings
+        // that hold nothing.
+        fix::g_sends = 0;
+        fix::g_sent_mask = 0;
+        ASSERT_EQ(amp::Verdict::EMPTY,
+                  take_reply_as(NODE_A, NODE_B, rbuf, &rlen, &rport, &rtag));
+        EXPECT_EQ(0u, fix::g_sends);
+
+        // And the take that DOES free a slot rings the node that owes the answer.
+        ASSERT_EQ(amp::Verdict::TOOK,
+                  take_reply_as(NODE_B, NODE_A, rbuf, &rlen, &rport, &rtag));
+        EXPECT_EQ(1u, fix::g_sends);
+        EXPECT_EQ(1u << NODE_A, fix::g_sent_mask);
+    }
+
+    // WHY THE RAISE CANNOT BE GATED ON THE RING GOING FROM FULL TO NOT FULL. The admission test
+    // is `used + owed >= RING_SLOTS`, and `owed` is the SERVING node's own state, which the
+    // draining node cannot see. So a drain that admits a refused call need never have left a
+    // ring the taker saw as full: here the reply ring holds two and the taker owes two, the
+    // take is refused, and one drain admits it with the ring's own occupancy never above two.
+    TEST_F(AmpWindow, a_drain_admits_a_refused_call_without_the_reply_ring_ever_being_full)
+    {
+        static_assert(amp::RING_SLOTS >= 4u,
+                      "the shape needs two answers published and two owed beside them");
+        uint8_t const body[1] = {0x78u};
+        uint8_t const answer[2] = {0x79u, 0x7Au};
+
+        // Two calls answered, so two replies sit in the ring and both call slots are back.
+        // The answer is published and the slot released by hand, which is what inbound_reply
+        // does, so the arm needs no record and cannot be refused a seat by a live one.
+        for (uint32_t i = 0; i < 2u; i++)
+        {
+            ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, body, 1u))
+                << "answered call " << i;
+            uint32_t slot = 0;
+            ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &slot))
+                << "answered call " << i;
+            ASSERT_EQ(amp::Sent::OK,
+                      send_as(NODE_A, NODE_B, amp::PORT_REPLY, answer, sizeof(answer)))
+                << "answered call " << i;
+            release_as(NODE_A, NODE_B, slot);
+        }
+        ASSERT_EQ(2u, reply_ring_used(NODE_B, NODE_A));
+        ASSERT_EQ(amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).head.v.load(),
+                  amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).tail.v.load());
+
+        // Two more taken and HELD, so the taker owes two answers it has not published.
+        uint32_t held[2] = {0u, 0u};
+        for (uint32_t i = 0; i < 2u; i++)
+        {
+            ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, body, 1u))
+                << "held call " << i;
+            ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &held[i]))
+                << "held call " << i;
+        }
+
+        // The fifth call, refused with the reply ring holding two of four.
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, body, 1u));
+        uint32_t const was_reserve = amp::counts(NODE_A).reply_reserve;
+        Taken t;
+        ASSERT_EQ(amp::Verdict::RESERVE,
+                  take_tagged_as(NODE_A, NODE_B, t.buf, &t.len, &t.port, &t.tag));
+        EXPECT_EQ(was_reserve + 1u, amp::counts(NODE_A).reply_reserve);
+        // THE WHOLE CLAIM: the ring a full-to-not-full gate would watch was never full.
+        EXPECT_EQ(2u, reply_ring_used(NODE_B, NODE_A));
+
+        // One drain, and it rings NODE_A even though it left the ring no emptier than
+        // not-full.
+        uint8_t rbuf[amp::SLOT_BYTES];
+        uint32_t rlen = 0;
+        uint32_t rport = amp::PORT_MAX;
+        amp::ReplyTag rtag = {};
+        fix::g_sends = 0;
+        fix::g_sent_mask = 0;
+        ASSERT_EQ(amp::Verdict::TOOK,
+                  take_reply_as(NODE_B, NODE_A, rbuf, &rlen, &rport, &rtag));
+        EXPECT_EQ(1u << NODE_A, fix::g_sent_mask);
+
+        Taken good;
+        EXPECT_EQ(amp::Verdict::TOOK,
+                  take_tagged_as(NODE_A, NODE_B, good.buf, &good.len, &good.port, &good.tag));
+        release_as(NODE_A, NODE_B, held[0]);
+        release_as(NODE_A, NODE_B, held[1]);
+    }
+
+    // A REFUSED ANSWER IS COUNTED, and apart from the caller's own refused call. The take
+    // reserved a slot for this answer, so nothing but a peer that regressed its reply tail
+    // under the reservation reaches this; the ring is held full by hand here because no
+    // well-behaved producer can present that state.
+    TEST_F(AmpWindow, an_answer_the_reply_ring_refuses_is_counted_and_its_slot_is_still_freed)
+    {
+        uint8_t const body[1] = {0x7Bu};
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, body, 1u));
+        uint32_t slot = 0;
+        ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &slot));
+        fix::g_node = NODE_A;
+        uint32_t const token = amp::inbound_seat(NODE_B, slot, TAG_CARRIED);
+        fix::g_node = 0;
+        ASSERT_NE(amp::FAR_RECORD_NONE, token);
+
+        // The reservation withdrawn behind the take: the ring the answer is owed to, full.
+        uint8_t const filler[1] = {0x7Cu};
+        for (uint32_t i = 0; i < amp::RING_SLOTS; i++)
+        {
+            ASSERT_EQ(amp::Sent::OK,
+                      send_as(NODE_A, NODE_B, amp::PORT_REPLY, filler, 1u)) << "filler " << i;
+        }
+
+        uint32_t const was_unsent = amp::counts(NODE_A).reply_unsent;
+        uint8_t const answer[2] = {0x7Du, 0x7Eu};
+        fix::g_node = NODE_A;
+        amp::inbound_reply(token, answer, sizeof(answer));
+        fix::g_node = 0;
+        EXPECT_EQ(was_unsent + 1u, amp::counts(NODE_A).reply_unsent);
+        // The slot is back: held, it would stop the run behind it being reclaimed without
+        // making the answer arrive.
+        EXPECT_EQ(amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).head.v.load(),
+                  amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).tail.v.load());
+        EXPECT_EQ(nullptr, amp::inbound_at(token));
+    }
+
+    // A MALFORMED SLOT OWES NO REPLY, so the reserve may not hold one in place: leaving it
+    // would let one bad publication wedge the ring for as long as the peer does not drain its
+    // replies, which is a denial the receiving node may not accept from the far side.
+    TEST_F(AmpWindow, a_malformed_slot_is_dropped_even_when_the_reply_ring_is_full)
+    {
+        uint8_t const answer[1] = {0x74u};
+        for (uint32_t i = 0; i < amp::RING_SLOTS; i++)
+        {
+            ASSERT_EQ(amp::Sent::OK,
+                      send_as(NODE_A, NODE_B, amp::PORT_REPLY, answer, 1u)) << "reply " << i;
+        }
+        publish_raw(NODE_A, NODE_B, 4u, PORT_UNMINTED, 0x7Au);
+
+        uint32_t const was_port = amp::counts(NODE_A).port;
+        uint32_t const was_reserve = amp::counts(NODE_A).reply_reserve;
+        Taken t;
+        EXPECT_EQ(amp::Verdict::PORT,
+                  take_tagged_as(NODE_A, NODE_B, t.buf, &t.len, &t.port, &t.tag));
+        EXPECT_TRUE(t.untouched());
+        EXPECT_EQ(was_port + 1u, amp::counts(NODE_A).port);
+        EXPECT_EQ(was_reserve, amp::counts(NODE_A).reply_reserve);
+        // THE ADVANCE IS THE DELIBERATE HALF: the slot is back and the ring is not one short.
+        EXPECT_EQ(1u, amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).tail.v.load());
+    }
+
+    // And the reserve was not skipped along with the drop: the well-formed call BEHIND the
+    // malformed one is still refused, and is still there to be taken once a reply drains.
+    TEST_F(AmpWindow, a_well_formed_call_behind_a_dropped_one_still_meets_the_reserve)
+    {
+        uint8_t const answer[1] = {0x75u};
+        for (uint32_t i = 0; i < amp::RING_SLOTS; i++)
+        {
+            ASSERT_EQ(amp::Sent::OK,
+                      send_as(NODE_A, NODE_B, amp::PORT_REPLY, answer, 1u)) << "reply " << i;
+        }
+        publish_raw(NODE_A, NODE_B, amp::SLOT_BYTES + 1u, amp::PORT_ECHO, 0x7Bu);
+        uint8_t const call[2] = {0x7Cu, 0x7Du};
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, call, 2u));
+
+        uint32_t const was_length = amp::counts(NODE_A).length;
+        Taken bad;
+        EXPECT_EQ(amp::Verdict::LENGTH,
+                  take_tagged_as(NODE_A, NODE_B, bad.buf, &bad.len, &bad.port, &bad.tag));
+        EXPECT_EQ(was_length + 1u, amp::counts(NODE_A).length);
+        EXPECT_EQ(1u, amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).tail.v.load());
+
+        uint32_t const was_reserve = amp::counts(NODE_A).reply_reserve;
+        Taken held;
+        EXPECT_EQ(amp::Verdict::RESERVE,
+                  take_tagged_as(NODE_A, NODE_B, held.buf, &held.len, &held.port, &held.tag));
+        EXPECT_TRUE(held.untouched());
+        EXPECT_EQ(was_reserve + 1u, amp::counts(NODE_A).reply_reserve);
+        EXPECT_EQ(1u, amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).tail.v.load());
+
+        // THE CURSOR DID NOT MOVE: one reply drained at the peer and the same call is taken
+        // with its payload, rather than skipped for good.
+        uint8_t rbuf[amp::SLOT_BYTES];
+        uint32_t rlen = 0;
+        uint32_t rport = amp::PORT_MAX;
+        amp::ReplyTag rtag = {};
+        ASSERT_EQ(amp::Verdict::TOOK,
+                  take_reply_as(NODE_B, NODE_A, rbuf, &rlen, &rport, &rtag));
+        Taken good;
+        ASSERT_EQ(amp::Verdict::TOOK,
+                  take_tagged_as(NODE_A, NODE_B, good.buf, &good.len, &good.port, &good.tag));
+        EXPECT_EQ(2u, good.len);
+        EXPECT_EQ(amp::PORT_ECHO, good.port);
+        EXPECT_EQ(call[0], good.buf[0]);
+        EXPECT_EQ(call[1], good.buf[1]);
+    }
+
+    // --- The slot header is spent as it was validated ---------------------------------------
+    // Every field of a slot is the far side's writing, and a producer with a stale tail may
+    // rewrite one it wrongly believes free. A take loads the length and the port ONCE
+    // (tests/static/check_amp_slot_snapshot.sh holds that) and hands them back, so what the
+    // copy is bounded by is what was bounded.
+
+    TEST_F(AmpWindow, the_slot_header_handed_back_survives_the_producer_rewriting_the_slot)
+    {
+        uint8_t const call[3] = {0x91u, 0x92u, 0x93u};
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, call, 3u));
+
+        uint8_t buf[amp::SLOT_BYTES];
+        for (uint32_t i = 0; i < amp::SLOT_BYTES; i++)
+        {
+            buf[i] = OUT_FILL;
+        }
+        uint32_t len = 0;
+        uint32_t port = amp::PORT_MAX;
+        uint32_t slot = 0;
+        amp::ReplyTag tag = {};
+        fix::g_node = NODE_A;
+        ASSERT_EQ(amp::Verdict::TOOK, amp::take_call(NODE_B, buf, &len, &port, &tag, &slot));
+        fix::g_node = 0;
+
+        // The malformed producer, on the slot this node is holding: a length no slot can hold
+        // and a port nothing minted.
+        amp::Slot& s = amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).slot[slot];
+        s.len.store(amp::SLOT_BYTES * 4u);
+        s.port.store(PORT_UNMINTED);
+
+        EXPECT_EQ(3u, len);
+        EXPECT_EQ(amp::PORT_ECHO, port);
+        EXPECT_EQ(TAG_CARRIED.thread, tag.thread);
+        EXPECT_EQ(TAG_CARRIED.seq, tag.seq);
+        for (uint32_t i = 0; i < 3u; i++)
+        {
+            EXPECT_EQ(call[i], buf[i]) << "payload byte " << i;
+        }
+        // Nothing past the validated length was ever copied.
+        for (uint32_t i = 3u; i < amp::SLOT_BYTES; i++)
+        {
+            ASSERT_EQ(OUT_FILL, buf[i]) << "byte " << i << " past the message";
+        }
+        release_as(NODE_A, NODE_B, slot);
+    }
 }

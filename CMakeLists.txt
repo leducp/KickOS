@@ -1262,6 +1262,13 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(atomic_rmw PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  # A take validates a slot header and then spends it, and nothing the host fixture can
+  # interpose lies between the two, so the one-snapshot rule has no runtime witness.
+  _add_test(NAME amp_slot_snapshot
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_amp_slot_snapshot.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(amp_slot_snapshot PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   # No gawk-only extension in an awk program this tree runs: a non-gawk awk REFUSES such a
   # program, which leaves the calling gate reporting its own clause instead of the awk.
   _add_test(NAME awk_portable

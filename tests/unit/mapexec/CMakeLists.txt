@@ -7,11 +7,12 @@
 # that stood before its edits, and whether a failed map's rollback pays the same debt for the
 # leaves it removes.
 #
-# THE ARM64 BACKEND'S OWN TRANSLATION UNIT, compiled for the host. Its system operations are
-# declared rather than emitted off AArch64 (arch/arm64/armv8a/sysops_armv8a.h), and
-# aspace_sysops_seam.cc answers those plus the frame pool, the physical window and the
-# rendezvous itself. The private header is reached through the source directory, which the
-# quoted include in the backend resolves without help.
+# THE ARM64 BACKEND'S OWN TRANSLATION UNIT, compiled for the host. KICKOS_ARMV8A_SYSOPS_FROM_SEAM
+# is what makes that possible: it turns arch/arm64/armv8a/sysops_armv8a.h from eleven inline
+# instructions into eleven declarations, and aspace_sysops_seam.cc answers those plus the frame
+# pool, the physical window and the rendezvous itself. Drop it and the header's asm reaches the
+# host compiler. The private header is reached through the source directory, which the quoted
+# include in the backend resolves without help.
 #
 # AT TWO KERNEL CORES: removal_owes_rendezvous, peer_cores and instruction_side_rendezvous are
 # each split on KICKOS_KERNEL_CORES > 1 with a no-op #else, so at the preset's one core the
@@ -29,6 +30,6 @@ kickos_add_kernel_host_lib(kickos_aspace_armv8a_host
   SOURCES "${_mapexec_backend}" aspace_sysops_seam.cc
   INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}"
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1
-          KICKOS_HAVE_ASPACE=1)
+          KICKOS_HAVE_ASPACE=1 KICKOS_ARMV8A_SYSOPS_FROM_SEAM=1)
 kickos_add_unit_test(NAME map_exec SOURCES map_exec.cc
   LIBRARIES kickos_aspace_armv8a_host)

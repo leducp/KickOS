@@ -1018,7 +1018,7 @@ namespace kickos
         return cap_reply_live(c) < KICKOS_CAP_REPLY_MAX;
     }
 
-    Thread* cap_reply_thread(uint32_t handle, uint8_t seq8)
+    Thread* cap_reply_thread(uint32_t handle, uint32_t seq, uint32_t seq_mask)
     {
         uint32_t const index = handle & ((1u << ThreadPool::INDEX_BITS) - 1u);
         // The FULL high bits, not truncated to the generation's storage width: a handle
@@ -1039,7 +1039,10 @@ namespace kickos
         {
             return nullptr; // not parked in a call anymore (replied / aborted)
         }
-        if (static_cast<uint8_t>(t->call_seq & 0xFF) != seq8)
+        // The WIDTH IS THE ARM'S, so the narrow local entry and the whole-field far tag run
+        // this one clause: an arm comparing more bits than its storage carries would refuse
+        // every live call.
+        if (((static_cast<uint32_t>(t->call_seq) ^ seq) & seq_mask) != 0u)
         {
             return nullptr; // a newer call rolled the seq (late-reply ABA guard)
         }
@@ -1048,7 +1051,7 @@ namespace kickos
 
     Thread* cap_reply_caller(CapEntry const& e)
     {
-        return cap_reply_thread(cap_reply_handle(e), cap_reply_seq(e));
+        return cap_reply_thread(cap_reply_handle(e), cap_reply_seq(e), KCAP_REPLY_SEQ_MASK);
     }
 
     namespace

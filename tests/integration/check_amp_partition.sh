@@ -110,7 +110,8 @@ printf '%s\n' "$OUT" | grep -q 'ampping: node 0 done' \
 defer="$(printf '%s\n' "$OUT" | sed -n 's/^ampping: deferred \([0-9]*\) raise(s) skipped at node \([0-9]*\), notice to node \([0-9]*\) port [0-9]*, took \([0-9]*\) message(s).*/\1 \2 \3 \4/p' | tail -1)"
 [ -n "$defer" ] || fail "node 0 never reported the deferred publication.
   A node the partition names no port refuses this clause by name instead; that is a partition
-  this demo cannot carry a notice on, not a lost message."
+  this demo cannot carry a notice on, not a lost message. The app also asserts the notice call
+  itself before printing this line, so its own refusal line above stands in place of it."
 skipped="$(echo "$defer" | cut -d' ' -f1)"
 at="$(echo "$defer" | cut -d' ' -f2)"
 notice="$(echo "$defer" | cut -d' ' -f3)"

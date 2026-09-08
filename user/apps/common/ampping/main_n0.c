@@ -104,14 +104,19 @@ int main(int argc, char** argv)
         int32_t n = kos_call_timed(ep, msg, sizeof(msg), sizeof(msg), AMPPING_CALL_US);
         // Retry is the application's and not the kernel's (N6e): the peer is released after
         // this node and parks in its own time, so the first call can find no receiver.
+        //
+        // ZERO IS A REFUSAL HERE AND NOT AN ANSWER. A serving node that refuses a call past
+        // the point it took the slot publishes an EMPTY reply carrying the tag, which is the
+        // only thing that can wake a caller its receiver never served; this app asked for four
+        // bytes back, so a reply of none is that refusal and not a peer with nothing to say.
         int tries = 1;
-        while (n < 0 and tries < AMPPING_TRIES)
+        while (n <= 0 and tries < AMPPING_TRIES)
         {
             kos_sleep_ns(AMPPING_SETTLE_NS);
             n = kos_call_timed(ep, msg, sizeof(msg), sizeof(msg), AMPPING_CALL_US);
             tries++;
         }
-        if (n < 0)
+        if (n <= 0)
         {
             printf("ampping: round %d refused after %d attempt(s), rc %ld\n", round, tries,
                    (long)n);
@@ -237,6 +242,28 @@ int main(int argc, char** argv)
     int32_t const woke =
         kos_call_timed(at_ep, beat, sizeof(beat), sizeof(beat), AMPPING_CALL_US);
     unsigned long const took1 = (unsigned long)kos_amp_probe(KOS_AMP_OP_TOOK, at);
+    // ASSERTED AND NOT ONLY PRINTED, and ahead of the line below so a bad answer costs the
+    // gate the report it parses rather than only changing a field of it. A refusal is not an
+    // error: n == 0 is the empty reply a serving node publishes when it refuses past the take,
+    // so the notice was taken (the count below still moves) and nothing served it. Retry is
+    // not open here as it is in the rounds, since every further call moves that same count.
+    if (woke < 0)
+    {
+        printf("ampping: the notice call to node %u failed, rc %ld\n", (unsigned)at,
+               (long)woke);
+        return 1;
+    }
+    if (woke == 0)
+    {
+        printf("ampping: node %u refused the notice call past its take\n", (unsigned)at);
+        return 1;
+    }
+    if ((size_t)woke != sizeof(beat))
+    {
+        printf("ampping: node %u answered the notice with %ld of %u byte(s)\n", (unsigned)at,
+               (long)woke, (unsigned)sizeof(beat));
+        return 1;
+    }
     // The count is TWO: the publication whose raise was skipped, and the call that carried the
     // next notice. One would mean the deferred message was lost and only the call arrived.
     // Both nodes are printed so the gate can assert they are the same one.

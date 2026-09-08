@@ -207,7 +207,7 @@ fires when the ABI is ready to freeze, which is a state and not a position in a 
 would assert a readiness nobody has yet. It is the last milestone on this roadmap and it is named,
 never numbered. No other document may assign it one -- four design documents and `TODO.md` had
 settled on "M8, the last one", which by 2026-08-31 was wrong twice over, M8 being IPC/IRQ
-optimisation and the list running to M10.
+optimisation and the list running to M11 then, and to M12 now.
 
 **M4.7.4 exists because compatibility work keeps appearing on its own.** KickOS is not released and
 will not be before that milestone, so **there is no legacy to manage** and every mechanism that
@@ -905,6 +905,61 @@ pass with nothing in common but their rank, and would have left each of the thre
 by a later pass. The consequence to accept is that M8.1 through M8.3 each carry Low items that a
 severity cut would have deferred: finishing a surface is worth more than ranking its defects.
 
+**THE BY-RULE DECISION IS CARRIED IN BOTH DIRECTIONS, AND THAT IS WHAT COLLAPSES SIX LISTS TO ONE.**
+M8.4 already rules that every `KICKOS_*` symbol reaches CMake by rule rather than through an
+allowlist that is a second authority. Measured: SIX hand-maintained lists decide membership today,
+88 entries between them, with no cross-check between the two directions -- three in the root file
+turning a `-D` into a request, three in the generator turning a resolved `.config` into CMake, and a
+seventh hard-coding five booleans inside the gate that checks the sixth. **The gate covers the
+opposite direction from the live bug**: it asserts every prompted symbol CAN be requested, and
+nothing asserts a resolved symbol REACHES CMake, which is why two symbols are invisible to CMake
+today while a defconfig appears to set them. So the outbound half emits every symbol into the
+fragment by the rule the generated header already uses, which retires the three generator lists and
+those two defects as a CLASS rather than one at a time; the inbound half derives the request syntax
+from the prompted set and the symbol type, which kconfiglib exposes and the forwarding gate already
+computes, retiring the three root lists and the gate itself. What survives is ONE list, the two
+bespoke console and telemetry inversions that project a value back onto a choice.
+
+**AND THE END OF THAT ROAD IS THAT THE BUILD DECIDES NO KNOB AT ALL, WHICH IS A DECISION M8 SHOULD
+TAKE RATHER THAN DRIFT INTO.** The precedents all do it: one generates a make include so every
+symbol is a make variable, another imports every `CONFIG_*` line into CMake variables in one loop
+and only ever tests them. What CMake irreducibly keeps is the board-and-variant selector, the
+toolchain pick that must happen before `project()`, the build-graph switches that are not
+configuration, and the mapping from values to sources -- reading, never deciding. What goes is the
+`-D` route entirely: a knob is then set by a defconfig, by `menuconfig` or by `setconfig`, and the
+root lists, the forwarding gate, the `option()` calls for Kconfig knobs and the CMP0077 dependence
+go with it. **Two questions it forces, and neither is answered here.** Nine presets pass a knob on
+the command line, seven for the AMP node id and two for the appdata size, so either fragments merge
+over a defconfig -- which bends the rule that a variant is a complete statement -- or those become
+per-node defconfigs. And arch and chip are stated in BOTH `board.cmake` and Kconfig only because the
+toolchain reads the board before `project()`; running Kconfig before `project()` retires that
+duplication and the four agree checks with it, and it is an optional second step the by-rule import
+does not need. **One behaviour is kept deliberately against the precedent**: the generator's
+read-back refusal, where a value the declarations do not permit fails the configure instead of
+falling back quietly.
+
+**M8.6 HAS A MEASURED LEDGER RATHER THAN AN AMBITION, AND THE TREE ALREADY OWNS THE IDIOM THAT
+REMOVES MOST OF IT.** The build corpus is 11925 lines over 272 files and the root file alone is 16
+percent of it. No function in the shared module is dead and the heavy helpers are correctly placed:
+the weight is concentrated in three places, each with an existing in-tree pattern to move into --
+the per-chip opt-in fragments that already work, and the `foreach ... include()` loop the
+integration directory already uses. The seven toolchain files share 253 lines drawn from one set of
+47; one nine-branch arch ladder is the same five commands per branch with a different source list;
+and the root holds a 310-line AMP arithmetic block whose job is identical to two files that are
+already modules. Net about 870 lines, the root from 1875 to roughly 1300, and the first four moves
+are independent of each other and carry no semantic risk. One ordering constraint is real: the AMP
+block must keep running before the capability-table sizing, whose width depends on the port count.
+
+**WHAT M8.1.1 DID NOT FINISH IS M8.6's, AND IT IS THE SAME SHAPE M8.1.1 REMOVED FROM THE APPS.**
+Three of the four arrows turned. What kept the old pattern is the root file itself -- 22 flat copies
+of one four-condition guard around 34 unit-test descents, of which ordering explains only 12 -- plus
+70 `EXISTS` guards on paths that are all in `git ls-files`, which is exactly the "guard against a
+declaration that cannot decline" class the apps were cleaned of. And the 36 new gate files now
+repeat what the app files used to: 49 raw test registrations across 22 of them, 18 sharing an
+identical tail, 12 hand-written board ladders over the same fleet subsets while two board-set
+helpers have no caller, and an inclusion list of 36 names that silently does not pick up a new gate
+file. Four apps still decline for themselves on a value the parent already holds.
+
 **THE GATES COME BEFORE THE DE-DUPLICATION, AND THE BENCH IS REPAIRED IN M8.4 RATHER THAN M8.7.**
 Both follow from what the two later phases rest on. A DRY pass is exactly the change class a static
 gate is supposed to catch, and seventeen `tests/static` gates have no positive control -- no
@@ -1026,7 +1081,7 @@ one paragraph only until the first large-transfer path lands.
 why this milestone takes the slot ahead of the driver era rather than following it, and the position
 is a maintainer's judgement rather than a consequence of anything else in this file. **The axis is
 solved against open**: the driver model is already proven in this tree by working implementations
-against the expected model, so what M10 holds is BREADTH of a settled pattern and can be scheduled
+against the expected model, so what the driver era holds is BREADTH of a settled pattern and can be scheduled
 whenever; how a kernel this size should be locked above one core has no answer here yet.
 
 **THE MILESTONE IS NAMED FOR A QUESTION AND ITS ANSWER MAY BE THAT THE LOCK STAYS.** What it owes is
@@ -1056,6 +1111,165 @@ file owns only the number.
 | sub-milestone | what it lands |
 | --- | --- |
 | M9.0 | the reference-kernel survey, and the lock-domain questions it is allowed to answer |
+| M9.1 | the lock's own bound: fair arbitration per backend, the doorbell poll kept |
+| M9.2 | ownership under the lock: a home derived from the mask, per-core ready queues, the wait-edge rule |
+| M9.3 | the per-pair rings: the kinds, the depth that cannot fill, the drain budget |
+| M9.4 | the local scheduler leaves the lock, under the stop condition |
+| M9.5 | same-owner IPC leaves the lock, blocked on the lifetime question |
+| M9.6 | the write-up, the contract changes, and the M9 exit measurement |
+
+**EVERY ROW AFTER M9.0 IS ASSIGNED AND NOT YET APPROVED, and the distinction is the point of
+assigning them.** A number here fixes what a stage IS, so that the evidence gate can refuse the
+stage without the argument moving to a different number afterwards. M9.0 can start whenever, being
+read-only. **AND THE LADDER IS NOT A COMMITMENT TO ITS OWN SHAPE.** These seven rows are the plan as
+it reads today, and this file has renumbered and re-cut worse than this when the work found
+something: a discovery moves the roadmap rather than the roadmap constraining the discovery, so a
+stage that turns out to be two, or to be already answered by the one before it, is re-cut on the
+spot and no argument is owed to its number.
+
+**THE STAGES THAT BUILD OWNERSHIP LAND UNDER THE LOCK IN EVERY OUTCOME, AND ONLY THE ESCAPE IS
+EVIDENCE-GATED.** The opposite staging was proposed and is refused: bound the lock first, then build
+ownership only if the bound fails. It is refused because this milestone OWES per-core scheduler
+ownership, ready queues and remote-work inboxes whatever the measurement says -- they are what makes
+"local" a measurable thing at all -- and because a protocol built after the verdict is a protocol
+tested under the conditions that produced the verdict. So M9.2 and M9.3 land with one lock still
+held, which is also the cheapest way to test a publication protocol: without concurrency there is no
+race to chase while the shape is still moving. M9.4 and M9.5 are the ones the stop condition can
+refuse.
+
+**TWO OUTCOMES ARE VALID AND BOTH ARE STATED BEFORE THE WORK, so that neither reads as a
+disappointment.** The first is that the lock stays and now has a bound: fair arbitration per backend
+plus M8.8's one acquisition per syscall entry and M8.8 through M8.11's shorter hold, with a worst
+wait DERIVED per backend or the backend recording that it cannot be. The second is an owner-local
+hot plane behind the same control lock: home-owned scheduler state and ready queues, wakes and asks
+as per-pair publications, the local scheduler and then same-owner IPC leaving the lock, while
+capability topology, lifetime and migration stay behind the fair global lock. **The first outcome is
+reached by the stop condition firing, and it is a success.** What it may NOT rest on is the register
+fastpath: that path exists on armv6m, armv7m, rv32imac and rxv3, holds no lock, and none of the
+three shared-kernel arches has it. Porting it above one core is a separate item nobody has costed,
+and `TODO.md`'s G-06 -- decided, not yet
+landed -- is the configure refusal that makes that unreachability stated rather than incidental.
+Today it is unreachable only because no fastpath arch has an SMP build file.
+
+**M9.1 COMES FIRST BECAUSE BOTH OUTCOMES NEED IT: the control plane keeps a global lock either
+way.** Today's lock is a bare test-and-set retry loop on every shared-kernel backend and has no
+fairness bound at all, and `klock.h` takes it AFTER the interrupt mask, so a core spinning for it is
+interrupt-masked and the lock wait is inside every core's interrupt-latency bound. The per-backend
+shape follows the ISA and is not one design: rv64 has a fetch-and-add and a ticket there retries
+never; ARMv8.2 with the large-system extensions has the same property, which is what an RK3588 would
+show; the A53 that the emulator models is ARMv8.0 with no such extension, so a ticket counter is
+ITSELF a load-linked retry loop and its ceiling is a measured axiom rather than a derivation; and
+the LX6 has a compare-and-swap alone, so it records that no bound is derivable there. Opening the
+interrupt mask between spin attempts, so that the wait leaves the masked window, is evaluated here
+and not assumed.
+
+**THE INBOX IS THE AMP RING WITH A POINTER WHERE THE MESSAGE WAS, AND IT IS ONE RING PER ORDERED
+PAIR RATHER THAN ONE INBOX PER CORE.** `docs/design-multicore.md` already forces that shape and
+already states the ordering: a shared head would need a read-modify-write and N9 forbids one above
+the seam, publication precedes the raise, the barrier is a full one on both sides and not an
+acquire/release pair, and the ring is the authority while a raise is only a hint. The cost is
+storage quadratic in the core count, sized in the stage. **AND A WAKE OR A REPLY IS NEVER REFUSED ON
+FULL**, which is a ruling and not a sizing preference: the tree's own cross-core wake is an
+idempotent single-writer publication with no full case, and a refused reply is a loss nobody can
+retry. So the wake and reply kinds are sized so they cannot fill -- a parked thread has exactly one
+waker, so a depth at least the threads homed at the target is enough -- and only control-plane
+kinds, which carry no deadline, may refuse. A core never waits on a peer's scheduler lock while
+holding local state; it publishes.
+
+**A HOME IS THE OWNER OF A THREAD'S SCHEDULER STATE AND IS DERIVED FROM THE MASK, NEVER A FIELD
+BESIDE IT.** `docs/design-multicore.md` section 8 already froze one mask with no flag, one pick rule
+and migration as an ask rather than a yank, and M9.2 adds ownership without adding a placement field
+a caller writes: a single-bit mask fixes the home, a wider one lets it move, and a move is ownership
+transfer over the ask that already exists. The wait-edge rule is the write discipline that makes it
+sound: a READY or RUNNING control block is written by its home core, a PARKED one by its waker, and
+the wait edge is what confers the write. That is today's waker-cleared discipline promoted to a
+rule.
+
+**AN ENDPOINT'S OWNER IS THE HOME OF ITS FIRST RECEIVER, STICKY, AND CLEARED WHEN NO HOLDER IS
+LEFT.** The alternative was an owner named at the mint, and it is refused because it would put a
+placement argument on a creation call and make locality an ABI fact. A request that lands at a stale
+owner COMPLETES under the global lock and is never refused. A hard-real-time composition gets static
+owners by pinning its servers, which the grant already supports, and the default profile stays
+usable with the default init and no composition at all. N7 is untouched at both ends: locality
+reaches neither the mint nor the call.
+
+**CROSS-CORE PRIORITY INHERITANCE IS A RING KIND, AND A CEILING IS AN ADMISSION RULE RATHER THAN A
+MECHANISM.** Same-core donation is unchanged. Across cores today's boost already reaches a running
+peer only at its next scheduling pass, so the change is from loose to stated: the recompute becomes
+a published request with the delivery delay priced, and the sealed profile adds a ceiling as an
+admission rule so that a server's response time is bounded by provisioning. Helping by migration is
+refused: it moves a thread to break an inversion, which is a yank. **The server's own response time
+on its own core is the largest term in every cross-owner bound and is written down as such** rather
+than left out, which is how the first version of this arithmetic came to look better than it was.
+
+**A LINE FOLLOWS ITS CLAIMER AND A WAITER FOLLOWS ITS LINE, and this lands whole with M9.2 rather
+than as an interim pin in M8.9.** Two rules. A CLAIM says "I serve this line from here" and routes
+the line to the claimer's core; a WAIT re-homes the waiter to the line's core. Admission does not
+change: a task whose grant cannot reach that core is REFUSED and never clamped. The claimer is the
+server by contract, so a provider that wants a driver on a line delegates the authority and lets the
+driver claim rather than claiming on its behalf. **The kernel never rewrites a thread's own mask**,
+which is what today's pin-to-the-line's-core does and what goes away: placement becomes an internal
+home, and that is precisely why the rule cannot land as a pin first. The long work may be PUSHED
+from the home core to an idle core inside the mask, at a wake the home is too busy to take or at a
+preemption, consumed by the target through a ring -- never a pull, so no core steals and the
+single-writer rule holds. A single-bit mask never pays for it and a wide mask pays at most one
+transfer per wake. Every controller touch executes on the line's core, by re-home or by the routed
+touch that already exists. The consequence is that interrupt-to-userspace is core-local in both
+profiles with no declaration from anybody: the kernel provides locality and balance stays userspace
+policy, exactly as section 8's anti-work-conserving placement already puts it. M8.9's sticky
+notification and its bind-to-the-receive-wait are designed against this now, so that the wait surface
+moves once.
+
+**THE ROUTED MASK TOUCH IS NOT PART OF THIS AND WAS WITHDRAWN AS A DECISION.** `irq_route.cc`
+publishes a mask, unmask or clear of a line owned by another core to that core and waits for
+completion; it is the tree's one blocking cross-core wait. It is reachable on the LX6 alone, the two
+shared-kernel backends answering that no line has an owning core and performing the touch locally,
+so on both of M9's targets the ask cannot be reached. It is a control-plane touch of a controller
+mask, not an interrupt handover, and no thread moves. It stays as it is, and it becomes reachable
+everywhere once routing is kernel state on every backend. **What it must never become is a
+precedent**: on a deadline path the shape is a publication plus a completion cell, never a wait, and
+a blocking cross-core wait spends the asker's core interrupt-masked on a peer that may be spinning
+for the very lock the asker holds.
+
+**CAPABILITY LIFETIME IS THE NAMED PRECONDITION OF M9.5 AND IS NOT DECIDED HERE.** Resolve-to-use is
+one continuous lock today and generations are a detector rather than a guarantee, and this file
+already rules that the protection stays until a lifetime replacement is DESIGNED. Three candidates
+stand: keep the lock on the resolve, in which case M9.5 buys hold length alone; freeze the topology,
+which is a mechanism M10 owns; or timestamp quiescence, which is the answer that survives
+translation. **An epoch or a quiescence flag beside the existing release point is refused as a
+second answer**, per section 4 of the multicore contract. The plan assumes the lock is kept on the
+resolve, quiescence runs as a spike, and the question is reopened before M9.5 with M8.12's split of
+the locked span into resolve, handoff and scheduling in hand.
+
+**EIGHT CORES IS A SCENARIO AND NOT A TARGET.** No preset configures more than four, no shared
+kernel has ever run on silicon, and an emulator's timing model cannot witness cost at any width, so
+an eight-core run answers questions about ring storage, drain work and arrays that assumed four --
+never about latency, and never the choice between the two outcomes. **So M9's verdict is provisional
+on emulation by construction**, and the silicon re-check is the RK3588-class part, which belongs to
+the driver era rather than to this milestone. Its feasibility spike may run at any time; the
+requirement-5 ruling for a part whose clusters share an ISA but not a performance class, and the
+per-cluster constants, belong to that port.
+
+**WHAT MAY NOT BE USED AS A BOUND, stated because each has been offered as one.** An observed
+maximum is a sample and establishes nothing: the distribution validates an analytical bound and does
+not replace it. A retry loop above the ISA's own primitives is refused; the load-linked and
+compare-and-swap loops inside a lock primitive are the floor and are stated as measured axioms.
+Every doorbell service drains a fixed budget and the remainder stays published and retriggers, so no
+drain is unbounded. And the paths that are unbounded TODAY are an inventory this milestone owes a
+capping mechanism for, each one already named in `TODO.md`: the lock acquire itself, the
+effective-priority recompute over an unbounded donor set, the linear ready pick, the linear waiter
+pop, and the untimed wait that no cycle detection covers.
+
+**M8.7'S INSTRUMENT IS SIZED FOR THIS MILESTONE AND NOT ONLY FOR M8.** The bench refuses more than
+one kernel core outright today and reports a minimum, an average and a maximum with no percentile
+and no lock metric at all, so M9's bounds would have no inputs. What M8.7 owes beyond its own
+purpose is one accumulator per core aggregated at report time, the lock HOLD and lock WAIT
+distributions rather than the hold alone, the doorbell round trip, the longest interrupt-masked
+window, and, for the interrupt-to-userspace span, whether the wake was local or cross-core so that
+M8.12 can price what a line following its claimer buys. **The argument for specifying it there is
+cost and not urgency**: it instruments spans M8.7 is already opening, so it is nearly free in that
+pass and a separate campaign later. Nothing here is unrecoverable if it is missed -- a measurement
+can be re-run, and re-running one is a cost rather than a wall.
 
 **M9.0 READS KERNELS THIS PROJECT ADMIRES, AND IT MAY NOT COPY THEM.** seL4, Fiasco.OC, NuttX,
 RIOT, Zephyr, ThreadX, RTEMS, RT-Thread, ChibiOS and FreeRTOS are each remarkable in their own way,
@@ -1067,14 +1281,71 @@ never copy**, because kernel lock code read under one licence and then written i
 the licence and clean-room angle of the review rather than a stylistic worry. The output enumerates
 the design space and says where KickOS sits in it; it does not rank, and no shipped document in this
 tree grades another project. A majority among them is not an argument, and a single-core kernel is
-not an SMP precedent.
+not an SMP precedent. **Its per-project row carries a licence**, because the clean-room rule is only
+checkable against one. **And the survey's own scope grew**: the tree's AMP window is a row, so is
+its routed mask touch, and so are a lock-free capability kernel and a production remote-wake inbox
+that both sit on the box already; a multikernel with a published crossover between shared memory
+with locks and message passing, a capability kernel binding every context to a core, a scheduling
+context and budget design inside a project already surveyed, and a message-passing system with
+inheritance across the message path are named as references that are NOT on the box, so that their
+absence is a known gap rather than an implied verdict.
 
-### M10 -- back to the driver era
+### M10 -- static composition, and an init provider that stays
+**THE DRIVER ERA MOVES DOWN ONE PLACE AND THIS TAKES THE SLOT.** The reason is the same one that put
+M9 ahead of the drivers: the driver model is a settled pattern whose remaining work is breadth,
+while how a system of this shape is COMPOSED has no answer in this tree at all. What exists today is
+a default root that creates a graph and returns, and a seam that already permits an init which never
+does. What does not exist is a way to state a whole system outside the code that builds it, check
+that statement before the target ever boots, and refuse a configuration the machine cannot meet.
+
+**THE DELIVERABLE IS A STATIC SYSTEM DATABASE, AN OFFLINE ADMISSION PASS, AND A RESIDENT PROVIDER
+THAT CONSUMES BOTH.** The database declares tasks, entry points, homes, priorities, stacks, MMIO
+windows, capabilities, endpoints, interrupt lines, capacities and a restart policy, and optionally a
+period, a deadline and a worst-case execution time. Admission runs on the HOST: it cross-checks the
+declared graph against the configured pools, the linker's memory, the capability-table supply, the
+ring sizes and the temporal equations, and emits target tables. **No parser runs on the target**, and
+the provider walks the emitted tables in dependency order, delegates capabilities, binds lines,
+gates the start, and stays resident to serve health. A provisioning library carries the validation,
+the dependency walk and the syscall adapters.
+
+**WHERE THE DATABASE LIVES IS OPEN AND IT MAY NOT BECOME A SECOND TRUTH.** This file already routed
+configuration to Kconfig, so the database is either a generated VIEW of that or a new authority that
+Kconfig then derives from -- and one of the two has to be chosen before anything is written, because
+two hand-maintained descriptions of one system is the failure this milestone exists to remove rather
+than to add.
+
+**THE KERNEL'S SHARE IS SMALL AND MOSTLY ALREADY OWED.** A per-task object budget at the three
+creators and at the line claim is M8.3's, and once it lands as decided a SEAL is very nearly "the
+budget goes to zero": what a seal still needs is an authority holder, an errno, a scope and a rule
+about whether it can be undone. A deferred start works as a userspace gate today; a create-suspended
+posture is cleaner and is an alpha-ABI change made once. Release timers, an execution budget and an
+overrun action are the temporal half, and **the scheduling-context design inside a project the M9.0
+survey already reads is required reading before any of it is proposed** -- that residue is that
+design, and proposing another before reading it would be inventing a solved thing.
+
+**TWO THINGS ARE CONDITIONAL AND THE TABLE SAYS SO PER ROW.** A seal buys nothing for concurrency
+while the lock is kept on the capability resolve, so its concurrency value is M9's second outcome
+alone; and a bounded restart mutates capability topology that another core may be resolving, which
+is incompatible with a lock-free resolve unless the restarted domain's objects are reachable only
+from that domain and its supervisor. That is open, and it is the same lifetime question M9.5 is
+blocked on rather than a second one.
+
+**AND THE AUTHORITY QUESTIONS ARE NOT SETTLED EITHER.** Root is unprivileged on every board by
+construction and the multicore contract puts configuration-time authority at configuration, while
+placing a thread of another task, minting dynamically and starting a core are all left open there.
+So this milestone either names the authority object per operation or records that it cannot yet; what
+it may not do is assume root.
+
+### M11 -- back to the driver era
 Remaining drivers and breadth, plus the SPI class work of `deferred-after-pr-train.md` -- the
 validation hoist and the nine divergences. This sits after the foundation on purpose: it improves
-support on a base that is no longer moving under it.
+support on a base that is no longer moving under it. **The RK3588-class port is a row here**, and it
+carries M9's silicon re-check with it: a part with eight cores, the large-system atomic extensions
+and a GICv3 is the first thing that could answer on silicon what M9 answers on an emulator, and the
+requirement-5 ruling for clusters that share an ISA without sharing a performance class is this
+port's to make.
 
-### M11 -- KickCAT as the reality check
+### M12 -- KickCAT as the reality check
 **After** the driver era, not inside it. KickCAT has been deferred through the whole driver era, and
 porting it to the driver APIs as they then stand is what judges them: if it asks for an API change,
 that is the most valuable output, and the answer is to change the API rather than bend KickCAT.
