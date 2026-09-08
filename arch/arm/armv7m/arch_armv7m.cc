@@ -157,10 +157,8 @@ static_assert(KICKOS_MIN_STACK_SIZE
 static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_ARMV7M_CTX_OFF_TRACE_TID,
               "switch.S telemetry hook reads ctx.trace_tid at F_CTX_TRACE_TID");
 #endif
-#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
 static_assert(kickos::armv7m::PRIO_LOCK_BASEPRI == 0x20,
               "SVC_Handler's fastpath raises this level as a literal");
-#endif
 
 namespace
 {
@@ -249,7 +247,6 @@ void arch_context_init(struct arch_context* ctx,
     // refusal path keys on; clearing it here would wipe the block off every fresh thread.
 }
 
-#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
 // The result has to be seated where the restore reloads r4 from: ctx->sp is the base of the
 // {r4-r11, EXC_RETURN} block. r4, not the AAPCS r0, is the register the trap's own ABI
 // answers in (arch_syscall_reg in switch.S).
@@ -257,7 +254,6 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 {
     reinterpret_cast<uint32_t*>(ctx->sp)[0] = result;
 }
-#endif
 
 // The fabricated frame carries EXC_RETURN 0xFFFFFFFD (thread mode, PSP, NON-FP frame), so
 // the rebuild also RESETS the frame format: a thread that had an extended FP frame stacked

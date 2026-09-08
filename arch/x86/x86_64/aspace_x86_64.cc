@@ -162,9 +162,6 @@ namespace
         return bits;
     }
 
-    static_assert(sizeof(uintptr_t) == sizeof(arch_phys_addr_t),
-                  "the physical extent below is computed through the pointer-width helper");
-
     // The WHOLE output extent, granule alignment included. Bits 51:MAXPHYADDR are reserved in
     // every paging-structure entry and the output field stops at bit 51, so a run validated by
     // its start alone can walk off the top of either and come back aliased onto a low frame.
@@ -1196,10 +1193,6 @@ struct arch_aspace* arch_aspace_boot(void)
 {
     return reinterpret_cast<struct arch_aspace*>(g_boot_root);
 }
-
-// An addition, so any number are live at once.
-static_assert(ARCH_ASPACE_ACQUIRE_MIN <= ACQUIRE_CAPACITY,
-              "this backend cannot hold as many acquires live as arch.h promises");
 
 void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
 {

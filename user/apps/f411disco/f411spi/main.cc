@@ -15,7 +15,7 @@
 // jumper on the board; the final poke at an UNGRANTED peripheral (GPIOB) MUST fault
 // MemManage.
 //
-// Diagnostic app (kickos_add_diagnostic_app): the operator flashes and validates on
+// Diagnostic app (kickos_add_diagnostic_apps): the operator flashes and validates on
 // silicon.
 
 #include <kickos/kos.h>

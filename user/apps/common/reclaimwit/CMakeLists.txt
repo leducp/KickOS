@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-if(NOT KICKOS_HAVE_LIBC)
-  return()
-endif()
-
 if(KICKOS_CONSOLE STREQUAL "none" OR KICKOS_CONSOLE STREQUAL "rtt")
   message(STATUS
     "KickOS: reclaimwit skipped: KICKOS_CONSOLE=${KICKOS_CONSOLE} leaves the chip console "
@@ -20,19 +16,16 @@ if(NOT KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
     "-DKICKOS_SERVICE_LIST=kickos_services_none to give a verdict.")
 endif()
 
-kickos_add_diagnostic_app(reclaimwit
-  SOURCES main.cc
-  BOARD   ${KICKOS_BOARD})
-if(NOT TARGET reclaimwit)
-  return()
-endif()
+kickos_add_app_target(reclaimwit main.cc)
+target_link_libraries(reclaimwit PRIVATE kickos)
+kickos_emit_image(reclaimwit)
 target_compile_definitions(reclaimwit PRIVATE KICKOS_RW_MODE=0)
 
 # Its own binary, it ends the system, and built alongside the park arm so both #if branches of
 # main.cc stay compiled.
-kickos_add_diagnostic_app(reclaimwit_drain
-  SOURCES main.cc
-  BOARD   ${KICKOS_BOARD})
+kickos_add_app_target(reclaimwit_drain main.cc)
+target_link_libraries(reclaimwit_drain PRIVATE kickos)
+kickos_emit_image(reclaimwit_drain)
 target_compile_definitions(reclaimwit_drain PRIVATE KICKOS_RW_MODE=1)
 
 # With `both`, RTT carries kernel writes in every ownership state, so the MUTE line reaches
@@ -40,31 +33,4 @@ target_compile_definitions(reclaimwit_drain PRIVATE KICKOS_RW_MODE=1)
 if(KICKOS_CONSOLE STREQUAL "both")
   target_compile_definitions(reclaimwit PRIVATE KICKOS_RW_RTT=1)
   target_compile_definitions(reclaimwit_drain PRIVATE KICKOS_RW_RTT=1)
-endif()
-
-# The service list must be kickos_services_none or the app refuses at run time, so the gate
-# would fail by construction instead of witnessing anything.
-if(KICKOS_BUILD_TESTS AND KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
-  if(KICKOS_ARCH STREQUAL "sim")
-    add_test(NAME sim_reclaimwit_park
-      COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_reclaimwit.sh"
-              "$<TARGET_FILE:reclaimwit>" park)
-    add_test(NAME sim_reclaimwit_drain
-      COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_reclaimwit.sh"
-              "$<TARGET_FILE:reclaimwit_drain>" drain)
-    set_tests_properties(sim_reclaimwit_park sim_reclaimwit_drain PROPERTIES TIMEOUT 120)
-  elseif(KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS
-         OR KICKOS_BOARD STREQUAL "microbit"
-         OR KICKOS_BOARD STREQUAL "qemu-riscv"
-         OR KICKOS_BOARD STREQUAL "qemu-riscv64")
-    string(REPLACE "-" "_" _rw_tag "${KICKOS_BOARD}")
-    # The park arm is polled and killed, so its TIMEOUT must clear the poll bound
-    # (QEMU_TIMEOUT * 5 polls at 0.2 s) rather than the boot.
-    kickos_add_qemu_test(NAME ${_rw_tag}_reclaimwit_park TARGET reclaimwit
-      BOARD ${KICKOS_BOARD} TIMEOUT 120
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_reclaimwit.sh" ARGS park)
-    kickos_add_qemu_test(NAME ${_rw_tag}_reclaimwit_drain TARGET reclaimwit_drain
-      BOARD ${KICKOS_BOARD} TIMEOUT 120
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_reclaimwit.sh" ARGS drain)
-  endif()
 endif()

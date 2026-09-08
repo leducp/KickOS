@@ -312,9 +312,9 @@ message(STATUS "KickOS: x86_64 libraries plus the X1 through X5 images; `ninja x
 # board, linked here rather than through the compiler driver, which cannot select the PE+
 # emulation.
 #
-# kickos_add_application makes the app target an OBJECT library on this arch and calls the
-# function below, which writes the image and records its path on the target as
-# KICKOS_IMAGE_FILE (cmake/kickos.cmake).
+# kickos_add_app_target makes the app target an OBJECT library on this arch, and
+# kickos_emit_image calls the function below, which writes the image and records its path on
+# the target as KICKOS_IMAGE_FILE (cmake/kickos.cmake).
 # ---------------------------------------------------------------------------
 
 # The boot tail of an image that carries the kernel: RAM publish, the kernel-owned ctor

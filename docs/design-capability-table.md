@@ -405,12 +405,12 @@ declarations, each made by whoever knows the fact:**
   target. This is *not* a board property: `KICKOS_SERVICE_LIST` is a `CACHE STRING` with a per-board
   default (root `CMakeLists.txt`), so it is a per-image choice, and one board has several service
   lists that retain different amounts;
-- **the app's peak concurrent capabilities**, declared by the app, via a macro mirroring the
-  existing `KICKOS_APP_AUTHORITY` (`system/include/kickos/sys/init.h`);
+- **the app's peak concurrent capabilities**, declared by the app's build, via
+  `kickos_declare_app_capabilities` (`cmake/cap_table.cmake`);
 - **the peak concurrent INBOUND reply capabilities** a task's table must hold, declared by whoever
-  owns the protocol's fan-in: `INBOUND_REPLY_CAPS` on the service list, `CAPABILITIES_INBOUND_REPLY`
-  on the app, combined as the widest. A client mints into the SERVER's table, so without this term
-  the sum is not a bound on when a task's own mint can fail.
+  owns the protocol's fan-in: `INBOUND_REPLY_CAPS` on the service list, the reply argument to
+  `kickos_declare_app_capabilities` on the app, combined as the widest. A client mints into the
+  SERVER's table, so without this term the sum is not a bound on when a task's own mint can fail.
 
 Beneath the sum sits a floor that is nobody's declaration: a table too narrow to seat a full spawn
 grant list is unsound whatever any app asked for, since delegated cap *i* lands at child index

@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The OS-agnostic application entry contract (dependency inversion, invariant #8). The app writes
-// a plain `int main(int argc, char** argv)`; kickos_add_application() compiles it with
-// -Dmain=kickos_app_main, and the kernel's boot path calls kickos_app_main after init. Its int
-// return becomes the process exit status on the sim.
+// a plain `int main(int argc, char** argv)`; linking the exported `kickos` (or `kickos_cxx`)
+// target compiles it with -Dmain=kickos_app_main, and the kernel's boot path calls
+// kickos_app_main after init. Its int return becomes the process exit status on the sim.
 //
 // App and library C++ global ctors run on MCU targets from the kernel's root thread just before
 // kickos_app_main, on ONE thread in sequence. An app global ctor MUST NOT block (sleep/wait), or

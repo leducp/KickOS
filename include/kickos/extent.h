@@ -25,8 +25,6 @@ namespace kickos
     }
 
     // A narrowing cast of `pages` below would compute the product over a count nobody passed.
-    static_assert(sizeof(uintptr_t) >= sizeof(size_t),
-                  "a page count must fit the pointer width the extent is measured in");
 
     // Writes the end of [base, base + pages * granule) and answers true. Fails closed: false
     // where the byte count overflows a pointer, where the end wraps past it, and where

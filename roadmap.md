@@ -318,7 +318,7 @@ like any pool size -- and what the summing used to guarantee is replaced by an a
 `static_assert` against the installed generated header plus the runtime refusal that already exists.
 
 **That deletion has NOT happened, and what landed keeps the summing in CMake deliberately.** Its
-terms are target properties -- the widest app `CAPABILITIES` and the service list's `RETAINED_CAPS`
+terms are target properties -- the widest app `KICKOS_CAP_PEAK` and the service list's `RETAINED_CAPS`
 -- so the sum is build-graph arithmetic over numbers CMake already holds, which is what CMake is
 for. What made it a hazard was never the arithmetic: it was that its INPUTS were read back out of C
 through a preprocessor probe, and that is what is gone. Deleting the sum outright is a separate
@@ -885,6 +885,7 @@ is the next one's baseline.
 | sub-milestone | what it lands |
 | --- | --- |
 | M8.1 | task lifecycle and address-space teardown: root's death policy, the dying sibling's space, the forcible slay |
+| M8.1.1 | the build files: the parent selects, an app declares, a test names its subject, and a seam gate stops hand-rolling |
 | M8.2 | the AMP window and far IPC: the slot snapshot, reply-ring admission, the refusal shape |
 | M8.3 | isolation and syscall robustness: region-board grant ownership, the copy that may fail, per-task object budgets |
 | M8.4 | the gates, the CI matrix, and the instrument's own arithmetic |
@@ -937,6 +938,39 @@ through an allowlist that is a second authority. The uncovered presets get a CI 
 `pizero2350-amp`, which is silicon and so earns a build rather than a run; the rv64 job goes to
 M8.1 by the rule below rather than to M8.4. And the fastpath is refused by name above one kernel
 core, today held only by the incidental absence of an `smp.cmake` on the four arches that have it.
+
+**M8.1.1 EXISTS BECAUSE THE APP-TO-TEST DEPENDENCY POINTS THE WRONG WAY, AND EVERY OTHER SYMPTOM IN
+THE BUILD FILES FOLLOWS FROM IT.** An application is not a test, yet 36 of 67 app `CMakeLists.txt`
+register tests, 161 registrations between them, and the two biggest apps carry gates that are not
+theirs at all: `hello` is the smallest image that boots a chip, so barrier, doorbell and entry-order
+gates ride it; `selftest` is the richest, so every gate that inspects a linked ELF rides that. Above
+them the parent descends unconditionally into 45 directories and selects nothing, so 47 of the 67
+children bail out themselves and 35 then re-check `NOT TARGET` in case the declaration they just
+asked for declined. Two wrappers declare an app (`kickos_add_diagnostic_app` 47 uses,
+`kickos_add_application` 29), and the keyword DSL one of them parses, with the validation its own
+keywords make necessary, serves FIVE apps.
+
+**The target shape is `hello_c`, and it is reachable rather than aspirational**: 62 of the 67 apps
+need nothing but a declaration, a link and an image, which is what
+`examples/oot-mcu-app/CMakeLists.txt` already calls the supported path and the reference shape. So
+in-tree apps currently diverge from the surface the package documents for its own consumers. Four
+arrows get turned around, and they are one change: **the parent selects** on the posture it already
+holds, **an app declares** itself and stops, **a test names the subject it rides** from the test
+side, and **an authority is total** rather than fatal-or-silent with a sentinel at every call site.
+
+**THE UNIT FILES CARRY THE MIRROR IMAGE OF THE SAME FAULT: THREE HELPERS FOR THE EASY CASE AND NONE
+FOR THE RECURRING HARD ONE.** `kickos_add_unit_test`, `kickos_add_kseam_gate` and
+`kickos_discover_unit_tests` are called 18, 10 and 8 times, and yet seven gates still hand-roll a
+`$<FILTER:>` source genex and four stand up their own object library, the largest at 93 lines.
+What they are all re-implementing is one thing: COMPILE THESE KERNEL SOURCES AT A CHOSEN POSTURE
+AGAINST A SEAM. That is the abstraction the directory needs and does not have, and the filtering the
+gates hand-roll is the symptom of its absence rather than the defect itself. So the same pass that
+turns the arrows around gives that pattern one name and collapses the three helpers that cover the
+case which was never hard.
+
+**IT IS SEPARATED FROM M8.1 AND NOT FOLDED INTO IT**, because M8.1 merged before this was
+understood and a merged milestone does not reopen. What M8.1 did contribute is three new app files
+that reproduced the pattern while the audit was flagging it in the old ones.
 
 **M8 OPTIMISES THE COARSE-LOCK DESIGN AND DOES NOT BREAK IT, WHICH IS WHY PER-CORE READY QUEUES
 ARE NOT IN M8.10.** Under one kernel lock they replace a filtered scan with a pop and permit no

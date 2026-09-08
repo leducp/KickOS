@@ -4,7 +4,7 @@
 // Full-C++ opt-in smoke test: proves the toolchain's libstdc++/libsupc++
 // over newlib actually EXECUTES on the MCU: exceptions (throw/catch, EH
 // unwind), STL (std::vector, std::string over the heap), and RTTI
-// (dynamic_cast + typeid). Built ONLY under the FULL_CXX opt-in (see
+// (dynamic_cast + typeid). Built ONLY under the kickos_cxx opt-in (see
 // CMakeLists.txt). Prints one PASS/FAIL line per check then returns (clean
 // exit -> QEMU SYS_EXIT).
 //

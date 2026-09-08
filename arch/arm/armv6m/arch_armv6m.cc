@@ -185,7 +185,6 @@ void arch_context_init(struct arch_context* ctx,
     // refusal path keys on; clearing it here would wipe the block off every fresh thread.
 }
 
-#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
 // The result has to be seated where the restore reloads r4 from: ctx->sp is the base of
 // the {r4-r11} block. r4, not the AAPCS r0, is the register the trap's own ABI answers in
 // (arch_syscall_reg in switch.S).
@@ -193,7 +192,6 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 {
     reinterpret_cast<uint32_t*>(ctx->sp)[0] = result;
 }
-#endif
 
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)

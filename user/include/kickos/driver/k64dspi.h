@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The K64F/DSPI0 SPI bus SERVICE. A client reaches it through the SPI class
-// <kickos/driver/spi.h> with kickos_spi_proxy as its SPI_BACKEND. Device slots are tracked by
-// the caller's own request byte, so several devices behind ONE client are supported and
+// <kickos/driver/spi.h> with kickos_spi_proxy linked as its backend. Device slots are tracked
+// by the caller's own request byte, so several devices behind ONE client are supported and
 // several mutually-untrusting clients are not.
 //
 // Chip select is a SOFTWARE GPIO on PTC4 (Arduino D9 = LAN9252 SCS), NOT hardware PCS0: DSPI's

@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-
 # A list: on the split parts these have to reach EVERY target, or the halves get different
 # suites.
 set(_selftest_defs "")
@@ -36,9 +35,6 @@ if(KICKOS_CHIP STREQUAL "stm32f103" OR KICKOS_CHIP STREQUAL "stm32f302"
   set(_selftest_split 1)
 endif()
 
-# PEAK concurrently held capabilities, not a sum over the run. CAPABILITIES is main's 2 permanent
-# caps (g_lock, g_done) plus the widest mandatory arm's 3; CAPABILITIES_OPTIONAL is 3 more for
-# t_mutex_deadlock, which SKIPS when it cannot allocate them.
 set(_selftest_srcs main.cc "${PROJECT_SOURCE_DIR}/tests/tap/tap.cc")
 # spi_mock.cc is a stand-in SPI backend under t_bus_device_slots, gated exactly like that arm. It
 # DEFINES the public kos_spi_* names while the image may also carry a chip driver, which is
@@ -47,34 +43,40 @@ set(_selftest_srcs main.cc "${PROJECT_SOURCE_DIR}/tests/tap/tap.cc")
 if(KICKOS_ENABLE_SELFTEST)
   list(APPEND _selftest_srcs spi_mock.cc)
 endif()
-kickos_add_application(selftest SOURCES ${_selftest_srcs} BOARD ${KICKOS_BOARD}
-  CAPABILITIES 5 CAPABILITIES_OPTIONAL 3)
+
 set(_selftest_images selftest)
 if(_selftest_split)
-  kickos_add_application(selftest_p2 SOURCES ${_selftest_srcs} BOARD ${KICKOS_BOARD}
-    CAPABILITIES 5 CAPABILITIES_OPTIONAL 3)
-  kickos_add_application(selftest_p3 SOURCES ${_selftest_srcs} BOARD ${KICKOS_BOARD}
-    CAPABILITIES 5 CAPABILITIES_OPTIONAL 3)
   list(APPEND _selftest_images selftest_p2 selftest_p3)
+endif()
+foreach(_img IN LISTS _selftest_images)
+  kickos_add_app_target(${_img} ${_selftest_srcs})
+  target_link_libraries(${_img} PRIVATE kickos)
+  kickos_emit_image(${_img})
+  # PEAK concurrently held capabilities, not a sum over the run. The peak is main's 2 permanent
+  # caps (g_lock, g_done) plus the widest mandatory arm's 3; the optional 3 more are
+  # t_mutex_deadlock's, which SKIPS when it cannot allocate them.
+  kickos_declare_app_capabilities(${_img} 5 3 ${KICKOS_CAP_REPLY_DEFAULT})
+  target_include_directories(${_img} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
+  target_compile_definitions(${_img} PRIVATE ${_selftest_defs})
+  # At the fleet Debug default this app's .text overflows the 64K-flash parts.
+  if(NOT KICKOS_ARCH STREQUAL "sim")
+    target_compile_options(${_img} PRIVATE -Os)
+  endif()
+endforeach()
+if(_selftest_split)
   target_compile_definitions(selftest    PRIVATE KICKOS_SELFTEST_PART=1)
   target_compile_definitions(selftest_p2 PRIVATE KICKOS_SELFTEST_PART=2)
   target_compile_definitions(selftest_p3 PRIVATE KICKOS_SELFTEST_PART=3)
 endif()
 
-foreach(_img IN LISTS _selftest_images)
-  target_include_directories(${_img} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
-  target_compile_definitions(${_img} PRIVATE ${_selftest_defs})
-  # At the fleet Debug default this app's .text overflows the 64K-flash parts.
-  if(NOT (KICKOS_ARCH STREQUAL "sim"))
-    target_compile_options(${_img} PRIVATE -Os)
-  endif()
-endforeach()
-
-# The linked image and its map, for the two host gates below. On x86_64 the app target is an
-# OBJECT library and the image is a PE32+ UEFI application a custom command writes, so
+# The linked image and its map, for the host gates that read them. On x86_64 the app target is
+# an OBJECT library and the image is a PE32+ UEFI application a custom command writes, so
 # $<TARGET_FILE:> names nothing and the -Map rides that ld line instead
 # (cmake/x86_64_boot.cmake). Only the map names the archive MEMBER each symbol was resolved
 # from, which is what proves a backend's definition beat its fallback.
+#
+# Recorded ON THE TARGET: the gates that read the map live on the test side, and a path
+# restated there would be a second truth that drifts from the -Map this link actually passed.
 if(KICKOS_ARCH STREQUAL "x86_64")
   get_target_property(_selftest_elf selftest KICKOS_IMAGE_FILE)
   set(_selftest_map "${_selftest_elf}.map")
@@ -84,164 +86,8 @@ else()
   target_link_options(selftest PRIVATE "-Wl,-Map=${_selftest_map}")
   set_property(TARGET selftest APPEND PROPERTY ADDITIONAL_CLEAN_FILES "${_selftest_map}")
 endif()
-
-# The expected-skip list every gate below carries; checked by name in
-# tests/integration/check_tap_stream.sh.
-set(KICKOS_EXPECT_SKIPS "")
-# Every arm whose pass rests on two threads' relative progress, or on one thread being denied
-# the CPU by another. The claim is a single-core one (main.cc, TAP_SKIP_ONE_CORE_ORDER) and the
-# invariants behind these arms are still checked on every one-core preset in the fleet.
-if(KICKOS_KERNEL_CORES GREATER 1)
-  list(APPEND KICKOS_EXPECT_SKIPS
-    fifo_order preempt_on_ready irq_thread_ctx sleep_order
-    mutex_pi_donation mutex_chain_boost mutex_multi_held mutex_deadlock
-    reply_abandoned_cap call_timeout_revert call_infoless_revert call_close_reply
-    call_donation call_donation_hold call_donation_slow call_donation_pending
-    cap_reply_bound_fast cap_reply_bound_slow thread_slay_timeout
-    mutex_owner_died_nowaiter aspace_two_spaces_same_grant
-    parked_frame_hostile)
-endif()
-
-# The isolated-core mask, normalised: the knob is hex text, which `if(... EQUAL 0)` does not
-# read as a number.
-set(_selftest_isolated 0)
-if(DEFINED KICKOS_ISOLATED_CORES AND NOT KICKOS_ISOLATED_CORES STREQUAL "")
-  math(EXPR _selftest_isolated "${KICKOS_ISOLATED_CORES} | 0")
-endif()
-# Five placement arms assert something about an ISOLATED core, and a posture that isolates
-# none has no such core to assert it of. They run on qemu-arm64's smpiso variant.
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND _selftest_isolated EQUAL 0)
-  list(APPEND KICKOS_EXPECT_SKIPS
-    isolated_single_grant_ok isolated_unpinned_never isolated_unpin_excludes
-    isolated_takes_pinned isolated_mixed_mask_ok)
-endif()
-
-# migrate_running moves a spinner off a core above the boot core and onto the boot core, so it
-# counts the cores in [1, KICKOS_KERNEL_CORES) that the isolated mask does not name. DERIVED
-# and not a posture list: the arm scans exactly this set and takes the first it finds. Core 0,
-# the destination, is one no image may isolate.
-set(_selftest_movable 0)
-if(KICKOS_KERNEL_CORES GREATER 1)
-  math(EXPR _selftest_top "${KICKOS_KERNEL_CORES} - 1")
-  foreach(_c RANGE 1 ${_selftest_top})
-    math(EXPR _selftest_c_iso "(${_selftest_isolated} >> ${_c}) & 1")
-    if(_selftest_c_iso EQUAL 0)
-      math(EXPR _selftest_movable "${_selftest_movable} + 1")
-    endif()
-  endforeach()
-endif()
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND _selftest_movable LESS 1)
-  list(APPEND KICKOS_EXPECT_SKIPS migrate_running)
-endif()
-
-# slice_preempts_every_core and threads_reach_every_core each release one thread MORE than the
-# machine has kernel cores, and both ask pool_can_host for exactly that number before spawning.
-# DERIVED and not a posture list. KICKOS_MAX_THREADS is the whole bound visible here; slots a
-# service-list driver holds are NOT, which is why the arms ask at runtime too.
-set(_selftest_crowd 0)
-if(KICKOS_KERNEL_CORES GREATER 1)
-  math(EXPR _selftest_crowd "${KICKOS_KERNEL_CORES} + 1")
-endif()
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1
-   AND KICKOS_MAX_THREADS LESS ${_selftest_crowd})
-  list(APPEND KICKOS_EXPECT_SKIPS slice_preempts_every_core threads_reach_every_core)
-endif()
-
-# The two arms that need a peer running a kernel of its own. They are compiled on every AMP
-# posture and decide at RUNTIME off the peer's own serviced count, so this permission covers the
-# image run STANDALONE: the same binary in a merged partition finds a peer and reports ok, and
-# tests/integration/check_amp_peer_arms.sh asserts they are NOT skipped there. Under one image
-# the peers are this image's own cores and always answer.
-#
-# amp_far_reply_guard parks a caller on a far port nobody answers, which is a port the partition
-# names a node MORE THAN ONCE: the node's kernel binds every port it is named and its app
-# receives on the first alone. That spare is a far entry for every other node, and a far entry
-# this node binds itself is not one it can park on, so the arm is reachable on every node but
-# the one holding the spare, at any width.
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
-  list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_reply_guard)
-endif()
-
-# amp_deferred_doorbell needs a raise that can be WITHHELD, so it needs a doorbell that keeps a
-# per-core seat. The RP2350's raise is one write to SIO DOORBELL_OUT_SET naming the other core
-# of the pair, addressing it from reset with no publication behind it, so arch_ipi_seat_set
-# answers ARCH_IPI_SEAT_NONE, the probe refuses the scenario ahead of the publication and the
-# arm skips itself by name.
-#
-# NAMED BY CHIP because the seat is the chip backend's. This permission covers exactly the
-# parts whose backend answers ARCH_IPI_SEAT_NONE; a part whose doorbell does keep a seat runs
-# the arm and must not be added here, or the permission stops being evidence.
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_CHIP STREQUAL "rp2350")
-  list(APPEND KICKOS_EXPECT_SKIPS amp_deferred_doorbell)
-endif()
-
-# The same for the arms that report PARTIAL. A PARTIAL reports `ok`, so neither the plan/case
-# reconciliation nor the skip bookkeeping can see one and this by-name set is the only thing
-# that can. It is NOT derivable from _tap_arms: the conditions below name the postures.
-set(KICKOS_EXPECT_PARTIALS "")
-# Above one kernel core, five arms can each reach a half they cannot judge, for two different
-# reasons. FOUR tier-1 IRQ arms carry a claim about an event that must NOT happen (a service,
-# a redelivery or a wake), and a non-event raises nothing to order a later read after, so
-# there is no closed interval to read the result in. thread_slay_window is the other reason:
-# its control leg needs the victim to reach a park before the kill lands, and that race is the
-# machine's to grant. Each arm names its own in main.cc, and the one-core fleet checks them
-# all. thread_slay_window partials only when its restage budget is spent, so the name is
-# listed here rather than reported every run.
-if(KICKOS_KERNEL_CORES GREATER 1)
-  list(APPEND KICKOS_EXPECT_PARTIALS irq_spurious irq_mask_coalesce irq_discard
-                                     irq_stale_register thread_slay_window)
-endif()
-if(KICKOS_ARCH STREQUAL "sim")
-  list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
-endif()
-if(KICKOS_ARCH STREQUAL "armv8a")
-  list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
-endif()
-if(KICKOS_ARCH STREQUAL "rv64imac")
-  list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
-endif()
-if(KICKOS_ARCH STREQUAL "x86_64")
-  list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
-endif()
-# cap_chunk_span needs a table WIDER than the chunk granule (KICKOS_CAP_CHUNK_TARGET) to reach a
-# segmented index. The summed width is not readable here, cmake/cap_table.cmake resolving it
-# after this directory is added, but the SUPPLY is. cap_child_width is on the same condition.
-if(KICKOS_CAP_TABLE_SUPPLY LESS_EQUAL KICKOS_CAP_CHUNK_TARGET)
-  list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span cap_child_width)
-endif()
-# It also needs a free slot BELOW the granule, and root's own creates start above everything
-# seated at init: the reserved indices, one capability per partition crossing, and the two
-# main() holds for the run. Widening the table does not take that back, the width sum adding
-# slots at the top.
-set(_selftest_lifetime_caps 2) # g_lock and g_done, created in main() and never closed
-math(EXPR _selftest_cap_seated
-     "${KICKOS_CAP_FIRST_DYNAMIC} + ${KICKOS_AMP_PORT_COUNT} + ${_selftest_lifetime_caps}")
-if(NOT _selftest_cap_seated LESS KICKOS_CAP_CHUNK_TARGET)
-  list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span)
-endif()
-if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
-  # The reserved-overlap matrix needs at least one arch_reserved_blocks entry, which the
-  # qemu-riscv PMP port has and the host and mps2 parts do not.
-  if(NOT KICKOS_BOARD STREQUAL "qemu-riscv")
-    list(APPEND KICKOS_EXPECT_PARTIALS grant_reserved)
-  endif()
-  if(KICKOS_ARCH STREQUAL "sim")
-    list(APPEND KICKOS_EXPECT_PARTIALS dev_window_exclusive)
-  endif()
-endif()
-# The threads permitted to fault, by NAME. Every other thread-fault record in the stream is an
-# arm dying the wrong way, and a contained fault reconciles the plan and the case count, so this
-# set is the only thing that can tell the two apart (tests/integration/check_tap_stream.sh).
-set(KICKOS_EXPECT_FAULTS "")
-if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
-  list(APPEND KICKOS_EXPECT_FAULTS fvic)
-endif()
-
-# Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a raw list
-# deref would split the value into further bogus environment entries.
-list(JOIN KICKOS_EXPECT_SKIPS "," KICKOS_EXPECT_SKIPS)
-list(JOIN KICKOS_EXPECT_PARTIALS "," KICKOS_EXPECT_PARTIALS)
-list(JOIN KICKOS_EXPECT_FAULTS "," KICKOS_EXPECT_FAULTS)
+set_target_properties(selftest PROPERTIES
+  KICKOS_IMAGE_ELF "${_selftest_elf}" KICKOS_IMAGE_MAP "${_selftest_map}")
 
 # The EXACT number of tap::add calls main.cc reaches in this posture. tap.cc plans `1..N` from the
 # RUNTIME registry, so plan and case count shrink together when an arm is deleted and only an
@@ -353,266 +199,21 @@ if(_selftest_split)
     "(${_tap_arms} together)")
 endif()
 
-# tap.cc sizes its registry from this. Per IMAGE and not per board, so it cannot go through
-# _selftest_defs, which applies one list to both parts. An arm added without its clause overflows
-# the registry and run_all() reports tap_registry_overflow.
+# tap.cc sizes its registry from KICKOS_TAP_MAX_TESTS. Per IMAGE and not per board, so it cannot
+# go through _selftest_defs, which applies one list to both parts. An arm added without its
+# clause overflows the registry and run_all() reports tap_registry_overflow.
+#
+# The SAME number is what a gate outside the image expects the run to plan, so each image
+# records its own on itself and the gate reads it off the image it boots: a gate that picked
+# p1/p2/p3 by hand would be a second statement of which part is which.
 if(_selftest_split)
-  target_compile_definitions(selftest    PRIVATE KICKOS_TAP_MAX_TESTS=${_tap_arms_p1})
-  target_compile_definitions(selftest_p2 PRIVATE KICKOS_TAP_MAX_TESTS=${_tap_arms_p2})
-  target_compile_definitions(selftest_p3 PRIVATE KICKOS_TAP_MAX_TESTS=${_tap_arms_p3})
+  set(_selftest_arms selftest ${_tap_arms_p1} selftest_p2 ${_tap_arms_p2}
+                     selftest_p3 ${_tap_arms_p3})
 else()
-  target_compile_definitions(selftest PRIVATE KICKOS_TAP_MAX_TESTS=${_tap_arms})
+  set(_selftest_arms selftest ${_tap_arms})
 endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
-  add_test(NAME selftest
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_selftest.sh" "$<TARGET_FILE:selftest>"
-            ${_tap_arms})
-  set_tests_properties(selftest PROPERTIES TIMEOUT 30)
-  set_property(TEST selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
-    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
-
-  # The sim's only coverage of the published console route. One provider links per image, so the
-  # script makes its own build tree, and every input the arm count depends on has to travel with
-  # it: a fresh build otherwise takes the board's base variant and every knob default.
-  add_test(
-    NAME    sim_published_console
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_published.sh"
-            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" ${_tap_arms}
-            "${KICKOS_CONFIG_VARIANT}")
-  set_tests_properties(sim_published_console PROPERTIES TIMEOUT 300)
-  set_property(TEST sim_published_console APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
-    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
-
-  add_test(
-    NAME    oot_export
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_export.sh"
-            "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
-            "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
-  set_tests_properties(oot_export PROPERTIES TIMEOUT 120)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
-  kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_selftest TARGET selftest BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
-  set_property(TEST ${KICKOS_QEMU_MPS2_TAG}_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
-    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
-endif()
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
-  # The sets below are partitioned BY REGION, NOT BY NAME: an arm belongs to the part whose
-  # region holds its TAP_ADD line in main.cc. check_tap_stream.sh reports a name declared in
-  # the wrong part as a NOTE and not a failure, so only that rule catches one.
-  kickos_add_qemu_test(NAME microbit_selftest TARGET selftest BOARD microbit
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p1})
-  set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS="
-    "EXPECT_PARTIALS="
-    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
-  # Both lists are a MEASUREMENT and not slack: a listed arm that did NOT skip is only a NOTE, so
-  # a stale list quietly permits a regression.
-  kickos_add_qemu_test(NAME microbit_selftest_p2 TARGET selftest_p2 BOARD microbit
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p2})
-  set_property(TEST microbit_selftest_p2 APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=uart_service"
-    "EXPECT_PARTIALS="
-    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
-  kickos_add_qemu_test(NAME microbit_selftest_p3 TARGET selftest_p3 BOARD microbit
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms_p3})
-  set_property(TEST microbit_selftest_p3 APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=domain_share,confused_deputy,mem_self_grant"
-    "EXPECT_PARTIALS=caller_stack,mmio_grant"
-    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
-endif()
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
-  kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
-  set_property(TEST qemu_riscv_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
-    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv64")
-  kickos_add_qemu_test(NAME qemu_riscv64_selftest TARGET selftest BOARD qemu-riscv64
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
-  set_property(TEST qemu_riscv64_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
-    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_ARM64_BOARDS)
-  string(REPLACE "-" "_" _tag "${KICKOS_BOARD}")
-  kickos_add_qemu_test(NAME ${_tag}_selftest TARGET selftest BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
-  set_property(TEST ${_tag}_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
-    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-x86_64")
-  kickos_add_qemu_test(NAME qemu_x86_64_selftest TARGET selftest BOARD qemu-x86_64
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
-  set_property(TEST qemu_x86_64_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
-    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
-  add_test(
-    NAME    oot_export_mcu
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_export_mcu.sh"
-            "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
-            "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
-  # FIXTURES_REQUIRED is named explicitly: without it ctest -j runs cmake --install on the
-  # build dir concurrently with kickos_build and fails about one run in ten.
-  set_tests_properties(oot_export_mcu PROPERTIES TIMEOUT 120
-                       FIXTURES_REQUIRED kickos_build LABELS host)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")
-  add_test(
-    NAME    kernel_ctor_placement
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_kernel_ctor_placement.sh"
-            "$<TARGET_FILE:selftest>" "${CMAKE_NM}" "${CMAKE_OBJCOPY}"
-            "$<TARGET_FILE:kickos_kernel>"
-            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
-            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
-            "$<TARGET_FILE:kickos_lib>")
-  set_tests_properties(kernel_ctor_placement PROPERTIES TIMEOUT 60 LABELS host)
-endif()
-
-if(KICKOS_BUILD_TESTS AND TARGET selftest)
-  # Every archive of the rescan group, so the gate sees the WHOLE set of definitions the link had
-  # to choose from; a partial list reads a backend as absent. add_test does NOT split a
-  # $<TARGET_OBJECTS:> expansion, so they arrive as one semicolon-joined argument.
-  set(_seam_archives "$<TARGET_FILE:kickos_kernel>" "$<TARGET_FILE:kickos_lib>"
-                     "$<TARGET_FILE:kickos_user>"
-                     "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>")
-  if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
-    list(APPEND _seam_archives "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
-  endif()
-  foreach(_lib ${KICKOS_INIT_PROVIDER} ${KICKOS_SERVICE_LIST_LIBS} ${KICKOS_BOARD_PINMAP_LIBS})
-    if(TARGET ${_lib})
-      get_target_property(_lib_type ${_lib} TYPE)
-      if(_lib_type STREQUAL "STATIC_LIBRARY")
-        list(APPEND _seam_archives "$<TARGET_FILE:${_lib}>")
-      endif()
-    endif()
-  endforeach()
-  list(APPEND _seam_archives "$<TARGET_OBJECTS:selftest>")
-  add_test(
-    NAME    seam_defaults
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_seam_defaults.sh"
-            "${CMAKE_NM}" "${CMAKE_READELF}"
-            "${_selftest_elf}" "${_selftest_map}"
-            "${PROJECT_SOURCE_DIR}/tests/static/weak_allowlist.txt"
-            ${_seam_archives})
-  set_tests_properties(seam_defaults PROPERTIES TIMEOUT 120 LABELS host)
-
-  # Driver-class shadowing gate, on the SAME inventory. The last argument before the inventory is
-  # 1 when this image compiles the mocks, which is the gate's positive control: it must SEE a
-  # class definition on the link line.
-  set(_class_expect_app 0)
-  if(KICKOS_ENABLE_SELFTEST)
-    set(_class_expect_app 1)
-  endif()
-  add_test(
-    NAME    class_backend
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_class_backend.sh"
-            "${CMAKE_NM}"
-            # Escaped, because CMake splits an unescaped `;` in a COMMAND argument into
-            # separate arguments and the positional ones after it would shift.
-            "${PROJECT_SOURCE_DIR}/user/include/kickos/driver\;${PROJECT_SOURCE_DIR}/user/include/kickos\;${PROJECT_SOURCE_DIR}/user/include/kickos/sys"
-            "${_selftest_map}" "${_class_expect_app}"
-            ${_seam_archives})
-  set_tests_properties(class_backend PROPERTIES TIMEOUT 120 LABELS host)
-endif()
-
-# RISC-V small-data guard: the KickOS libs (built -msmall-data-limit=0) must emit ZERO
-# .sdata/.sbss, so gp anchors the app's window and nothing of the kernel's. NECESSARY AND NOT
-# SUFFICIENT on the translating board, which is why riscv_kernel_gp is registered beside it: gp
-# addressing is MADE BY THE LINKER, so an archive with no .sdata at all can still end up with
-# gp-relative kernel accesses in the linked image.
-if(KICKOS_BUILD_TESTS
-   AND ((KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "rv32imac")
-        OR (KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")))
-  add_test(
-    NAME    riscv_no_smalldata
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_riscv_no_smalldata.sh"
-            "${CMAKE_OBJDUMP}"
-            "$<TARGET_FILE:kickos_kernel>"
-            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
-            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
-            "$<TARGET_FILE:kickos_lib>")
-  set_tests_properties(riscv_no_smalldata PROPERTIES TIMEOUT 60 LABELS host)
-endif()
-
-# And the LINKED image, which is the only place gp addressing exists: the linker MAKES a
-# gp-relative access out of an ordinary upper/lower pair whose target lands inside gp +/- 0x800,
-# so a kernel reference to an app-half symbol links silently through the app's own anchor. Three
-# images, so a reference the optimiser only emits in one of them is still in the corpus.
-if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
-  add_test(
-    NAME    riscv_kernel_gp
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_riscv_kernel_gp.sh"
-            "${CMAKE_OBJDUMP}" ".text"
-            "$<TARGET_FILE:selftest>"
-            "$<TARGET_FILE:hello>"
-            "$<TARGET_FILE:cxxtest>")
-  set_tests_properties(riscv_kernel_gp PROPERTIES TIMEOUT 120 LABELS host)
-endif()
-
-# The same hazard in its larger form: the app window is at 0x40000000, inside medlow's absolute
-# reach, so the linker relaxes such a reference to lui+addi and the link succeeds whether or not
-# gp is involved. This one reads the kernel archives' relocations, which name the symbol an
-# instruction operand resolves to whatever the linker did to the encoding.
-if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
-  add_test(
-    NAME    riscv_kernel_apphalf
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_riscv_kernel_apphalf.sh"
-            "${CMAKE_READELF}"
-            "${PROJECT_SOURCE_DIR}/tests/static/riscv_apphalf_allowlist.txt"
-            "$<TARGET_FILE:selftest>"
-            "$<TARGET_FILE:hello>"
-            "$<TARGET_FILE:cxxtest>"
-            "--"
-            "$<TARGET_FILE:kickos_kernel>"
-            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
-            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
-  set_tests_properties(riscv_kernel_apphalf PROPERTIES TIMEOUT 120 LABELS host)
-endif()
-
-# And the kernel window's own leaves, out of the same three images. The boundary they are held
-# against is the image's own section table, so a layout that moved a fetched or a stored section
-# across it fails here rather than at the first access.
-if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
-  add_test(
-    NAME    riscv_kernel_wx
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/riscv_kernel_wx.py"
-            "${CMAKE_READELF}"
-            "$<TARGET_FILE:selftest>"
-            "$<TARGET_FILE:hello>"
-            "$<TARGET_FILE:cxxtest>")
-  set_tests_properties(riscv_kernel_wx PROPERTIES TIMEOUT 120 LABELS host)
-endif()
-
-# App-window leak guard for the inverted .appdata scheme: the enforcing linker scripts name the
-# CLOSED privileged set (kernel/arch/chip/lib) and .appdata/.appbss catch everything else, so ONE
-# renamed selector drops a whole archive into a window domain.cc grants R+W to every
-# unprivileged thread, with the script's own ASSERT(_ebss > _sbss) still true. The gate refuses
-# an image with no __kickos_appdata_start, which is why sim is out.
-if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND NOT KICKOS_ARCH STREQUAL "sim")
-  add_test(
-    NAME    appdata_no_kernel
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_appdata_no_kernel.sh"
-            "${CMAKE_NM}"
-            "$<TARGET_FILE:selftest>"
-            "${_selftest_map}"
-            "$<TARGET_FILE:kickos_kernel>"
-            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
-            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
-            "$<TARGET_FILE:kickos_lib>")
-  set_tests_properties(appdata_no_kernel PROPERTIES TIMEOUT 60 LABELS host)
-endif()
+while(_selftest_arms)
+  list(POP_FRONT _selftest_arms _img _arms)
+  target_compile_definitions(${_img} PRIVATE KICKOS_TAP_MAX_TESTS=${_arms})
+  set_target_properties(${_img} PROPERTIES KICKOS_TAP_ARMS "${_arms}")
+endwhile()

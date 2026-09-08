@@ -4,13 +4,9 @@
 # A bring-up main grants the LED port's register block to an UNPRIVILEGED worker as a spawn
 # MMIO window; the worker toggles the pin by writing that window directly. The demo prints
 # through the C library.
-if(NOT KICKOS_HAVE_LIBC)
-  return()
-endif()
-
-kickos_add_application(gpioblink
-  SOURCES main.cc
-  BOARD   ${KICKOS_BOARD})
+kickos_add_app_target(gpioblink main.cc)
+target_link_libraries(gpioblink PRIVATE kickos)
+kickos_emit_image(gpioblink)
 
 # Demo pin per board (matches system/init/<board>/pinmap.cc); 5,8 is harmless where no layout
 # is known.

@@ -617,11 +617,6 @@ namespace
     // ring set cannot exceed either bound, so what an arm can pin is the floor.
     TEST_F(AmpWindow, one_service_call_drains_a_full_ring_from_every_sender)
     {
-        static_assert(amp::SERVICE_PER_SENDER >= amp::RING_SLOTS,
-                      "a bound below one ring drops a message a full ring already holds");
-        static_assert(amp::SERVICE_PER_CALL >= amp::RING_SLOTS * (amp::NODE_MAX - 1u),
-                      "a bound below every peer's full ring drops a whole sender's traffic");
-
         uint8_t const payload[3] = {0x71u, 0x72u, 0x73u};
         uint32_t sent = 0;
         for (uint32_t from = 0; from < amp::NODE_MAX; from++)

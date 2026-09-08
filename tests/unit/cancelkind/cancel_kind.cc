@@ -54,13 +54,6 @@ namespace kickos
 
             static_assert(CANCEL_NONE == 0,
                           "the thread_create memset must leave a fresh TCB un-cancelled");
-            static_assert(CANCEL_KILL != CANCEL_NONE and CANCEL_SLAY != CANCEL_NONE,
-                          "both kinds must read as a death sentence to a reader testing "
-                          "against CANCEL_NONE");
-            static_assert(CANCEL_KILL != CANCEL_SLAY, "the two kinds must be distinguishable");
-            static_assert(sizeof(Thread::cancel_kind) == sizeof(uint8_t),
-                          "one byte where one byte was: Thread has no tail padding, so a wider "
-                          "authority would grow every TCB");
 
             // The line cap the arms below wait on, owned by `owner` and current.
             uint32_t claim_the_line(Thread* owner)

@@ -131,7 +131,7 @@ libstdc++ ships WITH the pinned vendor toolchain (no apt package, no separate in
 `#include <vector>` compiles out of the box. The Stage-B gate is therefore just the
 `-fexceptions`/`-frtti` opt-in plumbing in the `kickos` package, not a libc/libstdc++ install.
 
-**Boundary discipline (why the mixed link is sound).** A FULL_CXX app is `-fexceptions`; the
+**Boundary discipline (why the mixed link is sound).** A `kickos_cxx` app is `-fexceptions`; the
 kernel/lib/arch/libc are `-fno-exceptions` (no unwind tables). This is safe by *how it fails*, not
 by luck: the only kernel->app entries are `kickos_app_main` and the thread trampoline, and the IRQ
 model is wait-on-semaphore (no kernel-invoked app callbacks), so there is no throw path through an
@@ -143,7 +143,8 @@ own exceptions; an escape from a *worker* thread terminates the whole image (not
 static dtors / `atexit` handlers never run (returning from `kickos_app_main` goes
 `root_entry -> arch_shutdown`, never `exit()`); a throwing ctor before the scheduler may wedge
 rather than exit. On RISC-V the `.eh_frame` table is registered at boot via a *weak*
-`__register_frame` (freestanding images never pull the FDE machinery + heap; a FULL_CXX link does).
+`__register_frame` (freestanding images never pull the FDE machinery + heap; linking
+`kickos_cxx` does).
 Full-C++ *under enforcement* is DONE on K64F: `mk64f.ld` routes `libkickos_user.a`'s heap arena +
 the libstdc++ writable state into `.appdata`/`.appbss` via `archive:member` colon-inclusion of the
 closed kernel set (a bare `*user*` selector missed the archive members), and the EHABI `.exidx`
@@ -159,11 +160,11 @@ granted `.appdata` window after the app's statics, so the one per-board knob is 
 pow2 window for its actual heap need is truly gated. On RISC-V/PMP the DWARF FDE
 registry + libc globals are a further, distinct concern. See `docs/m2-review-followups.md`.
 
-**The verbose-terminate handler (a ~63 KB reclaim on the FULL_CXX path).** libstdc++'s default
+**The verbose-terminate handler (a ~63 KB reclaim on the `kickos_cxx` path).** libstdc++'s default
 `std::terminate` handler, `__gnu_cxx::__verbose_terminate_handler`, demangles the thrown type
 before aborting and so drags in `__cxa_demangle` + newlib float `dtoa` (~63 KB) that a freestanding
 image never otherwise touches. KickOS ships its OWN lean `__verbose_terminate_handler` on the
-FULL_CXX link path (the `kickos_cxx_rt` object): a strong definition satisfies the symbol before
+`kickos_cxx` link path (the `kickos_cxx_rt` object): a strong definition satisfies the symbol before
 `libstdc++.a` is scanned, so `vterminate.o` is never extracted and the demangler/`dtoa` tail stays
 out of the link (the archive-extraction lever, taught in the Book chapter
 `book/whats-under-include-libc-and-the-cxx-runtime.md`). The terse handler prints the *mangled*

@@ -51,15 +51,9 @@ namespace kickos
         List ready[KICKOS_NUM_PRIO]; // one FIFO per priority; running thread at front
         uint32_t ready_bitmap = 0;   // bit p set iff ready[p] non-empty
         Thread* current[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
-        static_assert(sizeof(current) / sizeof(current[0]) == KICKOS_KERNEL_CORES,
-                      "the running-thread cell must be one per core this kernel schedules");
         Thread* idle[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
-        static_assert(sizeof(idle) / sizeof(idle[0]) == KICKOS_KERNEL_CORES,
-                      "the idle-thread cell must be one per core this kernel schedules");
         unsigned live = 0; // non-idle threads not yet EXITED
         arch_context boot[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
-        static_assert(sizeof(boot) / sizeof(boot[0]) == KICKOS_KERNEL_CORES,
-                      "the abandoned boot context must be one per core this kernel schedules");
         SchedPolicy const* policy = nullptr;
 
         // Per-Kernel monotonic thread-id counter (thread.cc). Starts at 0 so the

@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# KickOS build helpers: per-component flag posture, kickos_add_application() and the image
-# emitter kickos_emit_image().
+# KickOS build helpers: per-component flag posture, the app target kind
+# (kickos_add_app_target) and the image emitter kickos_emit_image().
 #
 # The application owns the final link: the link recipe lives on the exported `kickos` /
-# `kickos_cxx` usage targets, never in these helpers.
+# `kickos_cxx` usage targets, never in these helpers. An app is three lines,
+# examples/oot-mcu-app being the reference shape.
 
 # ---------------------------------------------------------------------------
 # Board -> {arch, chip} resolution.
@@ -213,10 +214,17 @@ function(kickos_emit_image target)
   if(KICKOS_ARCH STREQUAL "sim")
     return()
   endif()
-  # x86_64: the deliverable IS the image. cmake/x86_64_boot.cmake writes the PE32+ UEFI
-  # application from the app's objects, so there is no ELF here to turn into one, and the
-  # target is an OBJECT library that $<TARGET_FILE:> may not name at all.
+  # x86_64: the deliverable IS the image, and writing it is this step. CMake cannot drive
+  # `ld -m i386pep` as a linker for a target, so cmake/x86_64_boot.cmake writes the PE32+ UEFI
+  # application from the app's objects with a custom command; there is no ELF here to objcopy,
+  # and the target is an OBJECT library that $<TARGET_FILE:> may not name at all.
   if(KICKOS_ARCH STREQUAL "x86_64")
+    if(NOT COMMAND kickos_x86_64_link_image)
+      message(FATAL_ERROR "kickos_emit_image(${target}): x86_64 needs "
+        "kickos_x86_64_link_image, which cmake/x86_64_boot.cmake defines. Include that "
+        "fragment before add_subdirectory(user/apps).")
+    endif()
+    kickos_x86_64_link_image(${target})
     return()
   endif()
   add_custom_command(TARGET ${target} POST_BUILD
@@ -270,103 +278,92 @@ function(kickos_emit_image target)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# kickos_add_application(<name> SOURCES <src...> BOARD <board> [FULL_CXX]
-#                        [CAPABILITIES <n>] [CAPABILITIES_OPTIONAL <m>]
-#                        [CAPABILITIES_INBOUND_REPLY <r>]
-#                        [SPI_BACKEND <target>])
-#   Links the app against the KickOS component libraries and emits the image. On the sim the
-#   entry (host main) lives in the sim arch backend; the app must define kickos_app_main().
+# kickos_select_class_backend(<class> <target>)
+#   Which backend answers a DRIVER CLASS (<kickos/driver/*.h>) in this image. Every backend of
+#   one class defines the same public kos_<class>_* symbols, so an image has exactly one, and
+#   which one is a property of the IMAGE POSTURE the board and its service list chose, never of
+#   an application: a client body is identical over a proxy and over a local engine, which is
+#   the substitution property the class exists for.
 #
-#   CAPABILITIES is this app's PEAK of concurrently held capabilities, one of the four
-#   terms root's table width is summed from (cmake/cap_table.cmake). Omitted, the app
-#   gets KICKOS_CAP_APP_PEAK_DEFAULT.
-#   CAPABILITIES_OPTIONAL is further peak granted only where supply covers it: its holders
-#   reclaim and self-skip when they cannot allocate.
-#   CAPABILITIES_INBOUND_REPLY is how many CAP_REPLY capabilities one of this app's tasks
-#   holds at once as the SERVER side of kos_call, a client minting into the server's table
-#   (kernel/syscall/syscall_ipc.cc). It is the peak of CONCURRENTLY parked callers. Omitted,
-#   the app gets KICKOS_CAP_REPLY_DEFAULT (0).
-#   All three size ROOT's table; every spawned child is seated at KICKOS_CAP_CHILD_WIDTH.
-#   Out of tree all three are recorded, warned about and not acted on: the width is fixed by
-#   the installed package the app links.
+#   The selection is a GLOBAL property rather than a variable because the deciding site
+#   (system/CMakeLists.txt in tree, KickOSConfig.cmake in a package) is in a different
+#   directory scope from the apps that consume it.
 #
-#   SPI_BACKEND names the target providing this executable's implementation of the SPI class
-#   <kickos/driver/spi.h>: a per-chip engine (kickos_spi_xmcssc, kickos_spi_k64dspi) or the
-#   chip-agnostic kickos_spi_proxy. Per consumer TARGET, so two executables in one tree may
-#   differ. Exactly ONE backend per executable: they define the same four symbols.
-#
-#   FULL_CXX (opt-in): compile this app's C++ TUs with -fexceptions/-frtti and link the
-#   toolchain's libstdc++/libsupc++ over newlib.
-#   Off by default; no effect on the sim, already hosted against host libstdc++.
+#   The BACKEND MUST PRECEDE `kickos` ON THE LINK LINE: the toolchains link the component
+#   archives with a --start-group rescan, so a group member that ever referenced a class symbol
+#   would otherwise pull a second definer out of the group and the ORDER, not the selection,
+#   would decide the engine. That ordering is kickos_add_app_target's to hold, which is why no
+#   app states it.
+function(kickos_select_class_backend class target)
+  string(TOUPPER "${class}" _cls)
+  set_property(GLOBAL PROPERTY KICKOS_CLASS_BACKEND_${_cls} "${target}")
+  set_property(GLOBAL APPEND PROPERTY KICKOS_CLASS_BACKEND_CLASSES "${class}")
+endfunction()
+
+# kickos_class_backend(<class> <out>)
+#   The selected backend, or the empty string where the class has none in this image. TOTAL:
+#   a caller asks and reads the answer, and a board with no such class is not a special case.
+function(kickos_class_backend class out)
+  string(TOUPPER "${class}" _cls)
+  get_property(_sel GLOBAL PROPERTY KICKOS_CLASS_BACKEND_${_cls})
+  set(${out} "${_sel}" PARENT_SCOPE)
+endfunction()
+
 # ---------------------------------------------------------------------------
-function(kickos_add_application name)
-  cmake_parse_arguments(APP "FULL_CXX"
-    "BOARD;CAPABILITIES;CAPABILITIES_OPTIONAL;CAPABILITIES_INBOUND_REPLY;SPI_BACKEND"
-    "SOURCES" ${ARGN})
-  # A misspelled keyword would otherwise fall through the DEFINED guards below and silently
-  # leave the app on the undeclared default.
-  if(APP_UNPARSED_ARGUMENTS)
-    message(FATAL_ERROR "kickos_add_application(${name}): unrecognised argument(s) "
-      "'${APP_UNPARSED_ARGUMENTS}'. Keywords are FULL_CXX, BOARD, SOURCES, CAPABILITIES, "
-      "CAPABILITIES_OPTIONAL, CAPABILITIES_INBOUND_REPLY, SPI_BACKEND.")
+# kickos_add_app_target(<name> <source>...)
+#   The app target itself, and nothing else about the app: an executable everywhere but
+#   x86_64, where what firmware loads is a PE32+ UEFI application CMake cannot drive a linker
+#   for, so the target is an OBJECT library and cmake/x86_64_boot.cmake writes the image out of
+#   its objects (kickos_emit_image). An OBJECT library, so the target_compile_definitions and
+#   friends a call site applies still bind.
+#
+#   CLASSES names the DRIVER CLASSES the app's own sources call (spi, i2c, ...), which is the
+#   one thing about a class an application knows: it is in its #include list. WHICH backend
+#   answers each, and its position on the link line, are the image posture's and are read here
+#   from kickos_select_class_backend. An app that names no class links no backend, which is
+#   what keeps a mock-carrying image (the selftest) free of a second definer.
+#
+#   The remaining two lines of an app are the consumer's own and are NOT done here:
+#
+#     kickos_add_app_target(foo main.cc)
+#     target_link_libraries(foo PRIVATE kickos)   # or kickos_cxx for a full-C++ app
+#     kickos_emit_image(foo)
+#
+#   The in-tree warning and C-standard posture applied below belongs to this tree and not to
+#   the app, which is why it is here rather than repeated in every app file; out of tree the
+#   application target belongs to the consumer and gets neither.
+# ---------------------------------------------------------------------------
+function(kickos_add_app_target name)
+  cmake_parse_arguments(APP "" "" "CLASSES" ${ARGN})
+  if(NOT APP_UNPARSED_ARGUMENTS)
+    message(FATAL_ERROR "kickos_add_app_target(${name}): no sources")
   endif()
-  # cmake_parse_arguments leaves the variable UNDEFINED for a keyword given no value, and the
-  # unquoted ${ARGN} above drops an empty value to the same shape, so the DEFINED guards below
-  # would silently record the default instead.
-  if(APP_KEYWORDS_MISSING_VALUES)
-    message(FATAL_ERROR "kickos_add_application(${name}): keyword(s) "
-      "'${APP_KEYWORDS_MISSING_VALUES}' given with no value. Give each a non-negative "
-      "integer, or omit the keyword to take the default.")
+  set(_app_sources ${APP_UNPARSED_ARGUMENTS})
+  # Without this a missing arch leaf degrades to a bare -lkickos_arch_<arch> link error.
+  if(NOT TARGET kickos_arch_${KICKOS_ARCH})
+    message(FATAL_ERROR "kickos_add_app_target(${name}): board '${KICKOS_BOARD}' needs arch "
+      "'${KICKOS_ARCH}', but this KickOS package provides no kickos_arch_${KICKOS_ARCH} (it "
+      "was built for a different board)")
   endif()
-  if(NOT APP_SOURCES)
-    message(FATAL_ERROR "kickos_add_application(${name}): SOURCES required")
-  endif()
-  if(NOT APP_BOARD)
-    set(APP_BOARD "${KICKOS_BOARD}")
-  endif()
-  if(NOT APP_BOARD)
-    message(FATAL_ERROR "kickos_add_application(${name}): no BOARD given and the "
-      "KickOS package records no default board")
-  endif()
-  kickos_load_board_descriptor("${APP_BOARD}" _arch _chip _family)
-
-  # Without this a missing target degrades to a bare -lkickos_arch_<arch> link error.
-  if(NOT TARGET kickos_arch_${_arch})
-    message(FATAL_ERROR "kickos_add_application(${name}): BOARD '${APP_BOARD}' "
-      "needs arch '${_arch}', but this KickOS package provides no "
-      "kickos_arch_${_arch} (it was built for a different board)")
-  endif()
-
-  # The app target is an OBJECT library on x86_64 and an executable everywhere else: what
-  # firmware loads there is a PE32+ UEFI application, and CMake cannot drive `ld -m i386pep`
-  # as a linker for a target, so the link is a custom command over these objects
-  # (kickos_x86_64_link_image, cmake/x86_64_boot.cmake). An OBJECT library, so the
-  # target_compile_definitions and friends a call site applies still bind. The image path is
-  # recorded on the target as KICKOS_IMAGE_FILE.
   if(KICKOS_ARCH STREQUAL "x86_64")
-    add_library(${name} OBJECT ${APP_SOURCES})
+    add_library(${name} OBJECT ${_app_sources})
   else()
-    add_executable(${name} ${APP_SOURCES})
+    add_executable(${name} ${_app_sources})
   endif()
-  # Only an EXPLICIT declaration is recorded, so the sum's diagnostics can name the app that
-  # set the width rather than the default.
-  if(DEFINED APP_CAPABILITIES OR DEFINED APP_CAPABILITIES_OPTIONAL
-     OR DEFINED APP_CAPABILITIES_INBOUND_REPLY)
-    if(NOT DEFINED APP_CAPABILITIES)
-      set(APP_CAPABILITIES "${KICKOS_CAP_APP_PEAK_DEFAULT}")
+  # Linked HERE, before the app's own `kickos` line, which is what puts the backend archive
+  # ahead of the rescan group; see kickos_select_class_backend.
+  foreach(_class IN LISTS APP_CLASSES)
+    kickos_class_backend("${_class}" _backend)
+    if(NOT _backend)
+      message(FATAL_ERROR "kickos_add_app_target(${name}): no backend of the '${_class}' class "
+        "is selected for board '${KICKOS_BOARD}'. A board whose chip has no such block cannot "
+        "host this app; kickos_select_class_backend names the backend where it can.")
     endif()
-    if(NOT DEFINED APP_CAPABILITIES_OPTIONAL)
-      set(APP_CAPABILITIES_OPTIONAL 0)
-    endif()
-    if(NOT DEFINED APP_CAPABILITIES_INBOUND_REPLY)
-      set(APP_CAPABILITIES_INBOUND_REPLY "${KICKOS_CAP_REPLY_DEFAULT}")
-    endif()
-    kickos_declare_app_capabilities(${name}
-      "${APP_CAPABILITIES}" "${APP_CAPABILITIES_OPTIONAL}"
-      "${APP_CAPABILITIES_INBOUND_REPLY}")
-  endif()
-  # Warning policy only on our own code: out of tree the application target belongs to the
-  # consumer.
+    target_link_libraries(${name} PRIVATE ${_backend})
+    # Recorded so a gate reading this image's definitions can inventory the backend it
+    # really linked; tests/integration/gates/selftest.cmake reads it.
+    set_property(TARGET ${name} APPEND PROPERTY KICKOS_APP_CLASS_BACKENDS "${_backend}")
+  endforeach()
   if(KICKOS_IN_TREE)
     target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS})
     # gcc 15 defaults to gnu23, which accepts bool, static_assert, alignas and nullptr, so
@@ -376,51 +373,6 @@ function(kickos_add_application name)
       C_STANDARD_REQUIRED ON
       C_EXTENSIONS OFF)
   endif()
-  # The backend goes ahead of the posture leaf, so its archive precedes the rescan group on
-  # the link line and a group member that ever referenced a class symbol resolves against
-  # this executable's own choice rather than pulling a second one.
-  if(APP_SPI_BACKEND)
-    if(NOT TARGET ${APP_SPI_BACKEND})
-      message(FATAL_ERROR "kickos_add_application(${name}): SPI_BACKEND='${APP_SPI_BACKEND}' "
-        "is not a CMake target. Name a target defining the <kickos/driver/spi.h> class: a "
-        "per-chip engine (kickos_spi_xmcssc, kickos_spi_k64dspi) or kickos_spi_proxy.")
-    endif()
-    target_link_libraries(${name} PRIVATE ${APP_SPI_BACKEND})
-  endif()
-  if(APP_FULL_CXX)
-    if(KICKOS_ARCH STREQUAL "x86_64")
-      message(FATAL_ERROR "kickos_add_application(${name}): FULL_CXX on x86_64. This "
-        "toolchain links no C library and no libstdc++ (cmake/toolchain-x86_64-uefi.cmake), "
-        "so there is no exceptions/STL/RTTI runtime to link over.")
-    endif()
-    target_link_libraries(${name} PRIVATE kickos_cxx)
-  else()
-    target_link_libraries(${name} PRIVATE kickos)
-  endif()
-  # On x86_64 this carries the compile posture only; the link itself is below.
-  if(KICKOS_ARCH STREQUAL "x86_64")
-    if(NOT COMMAND kickos_x86_64_link_image)
-      message(FATAL_ERROR "kickos_add_application(${name}): x86_64 needs "
-        "kickos_x86_64_link_image, which cmake/x86_64_boot.cmake defines. Include that "
-        "fragment before add_subdirectory(user/apps).")
-    endif()
-    kickos_x86_64_link_image(${name})
-  endif()
-  kickos_emit_image(${name})
-endfunction()
-
-# ---------------------------------------------------------------------------
-# kickos_add_diagnostic_app(<name> SOURCES <src...> BOARD <board>)
-#   A DIAGNOSTIC (test/bring-up) app, built ONLY when KICKOS_ENABLE_SELFTEST is on: it
-#   depends on the test-only syscall surface kept out of the production ABI, and/or
-#   deliberately faults. It returns SILENTLY, so a caller that wants the operator told
-#   states the requirement itself.
-# ---------------------------------------------------------------------------
-function(kickos_add_diagnostic_app name)
-  if(NOT KICKOS_ENABLE_SELFTEST)
-    return()
-  endif()
-  kickos_add_application(${name} ${ARGN})
 endfunction()
 
 # ---------------------------------------------------------------------------
@@ -453,10 +405,26 @@ function(kickos_add_driver name)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# kickos_add_qemu_test(NAME <n> TARGET <app> BOARD <b> SCRIPT <sh>
-#                      [MACHINE <m>] [TIMEOUT <s>] [ARGS <arg...>])
-#   Register a QEMU boot gate: run SCRIPT against the app's ELF and treat exit 77 as SKIP (a
-#   missing qemu-system is a skip, not a failure). This is the ONE board -> machine map:
+# kickos_is_board(<board> <out>)
+#   Whether the name names a board at all, which is a different question from whether that
+#   board has an emulator. In tree the descriptor is the authority; an installed package ships
+#   no boards/ tree, so the one board it was built for is the only name it can vouch for.
+# ---------------------------------------------------------------------------
+function(kickos_is_board board out)
+  if(EXISTS "${KICKOS_BOARDS_DIR}/${board}/board.cmake")
+    set(${out} TRUE PARENT_SCOPE)
+  elseif(NOT KICKOS_IN_TREE AND board STREQUAL "${KICKOS_BOARD}")
+    set(${out} TRUE PARENT_SCOPE)
+  else()
+    set(${out} FALSE PARENT_SCOPE)
+  endif()
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_qemu_machine(<board> <out_env> <out_machine>)
+#   This is the ONE board -> machine map, and the sole answer to "can this board be booted in
+#   this environment": out_machine comes back EMPTY for a board with no emulator, and the
+#   configure stops for a name that is no board.
 #     qemu       -> mps2-an386  (Cortex-M4F)
 #     qemu-m33   -> mps2-an505  (Cortex-M33, PMSAv8)
 #     qemu-m7    -> mps2-an500  (Cortex-M7)
@@ -472,24 +440,16 @@ endfunction()
 #                   what makes gate.sh build an EFI system partition and boot OVMF instead
 #                   of passing -kernel (the image is a PE32+ application, which -kernel
 #                   cannot start at all).
-#   QEMU_MACHINE is always passed: check_fault_dump.sh reads an UNSET QEMU_MACHINE as "this
-#   is the sim, run natively", and most boards would otherwise take the mps2-an386 fallback.
-#   MACHINE overrides the board default. ARGS are extra script arguments after the ELF.
-#   TIMEOUT defaults to 60s.
-#   TARGET names an app target; the image is $<TARGET_FILE:> unless that target records a
-#   KICKOS_IMAGE_FILE, which the x86_64 OBJECT-library app does.
-#   Keep the per-test `if(KICKOS_BUILD_TESTS AND ...)` guard AT THE CALL SITE: the HAVE_MPU
-#   and arch conditions vary per test.
-function(kickos_add_qemu_test)
-  cmake_parse_arguments(QT "" "NAME;TARGET;BOARD;SCRIPT;MACHINE;TIMEOUT" "ARGS" ${ARGN})
-  if(NOT QT_NAME OR NOT QT_TARGET OR NOT QT_BOARD OR NOT QT_SCRIPT)
-    message(FATAL_ERROR "kickos_add_qemu_test: NAME, TARGET, BOARD and SCRIPT are required")
-  endif()
+#
+#   A caller that has something to SAY about the absence (an operator told to flash and
+#   capture instead) reads the same answer here rather than keeping a board list of its own.
+# ---------------------------------------------------------------------------
+function(kickos_qemu_machine board out_env out_machine)
   set(_env "")
-  if(QT_BOARD STREQUAL "qemu-riscv")
+  if(board STREQUAL "qemu-riscv")
     set(_env QEMU=qemu-system-riscv32 "QEMU_EXTRA=-bios none")
     set(_machine virt)
-  elseif(QT_BOARD STREQUAL "qemu-riscv64")
+  elseif(board STREQUAL "qemu-riscv64")
     # No -cpu: qemu-system-riscv64 -M virt defaults to the `rv64` generic core.
     # -smp is what MAKES the harts exist, and with no firmware every one of them enters _start:
     # the park in startup.S is what holds all but the boot hart there.
@@ -499,7 +459,7 @@ function(kickos_add_qemu_test)
     endif()
     set(_env QEMU=qemu-system-riscv64 "QEMU_EXTRA=-bios none${_smp}")
     set(_machine virt)
-  elseif(QT_BOARD STREQUAL "qemu-arm64")
+  elseif(board STREQUAL "qemu-arm64")
     # -cpu is required: qemu-system-aarch64 -M virt comes up as a cortex-a15 and REFUSES an
     # A64 image. `-bios none` errors here, there being no firmware to suppress. -nic none
     # drops the default virtio-net-pci, whose option ROM ships in a separate distro package
@@ -527,35 +487,90 @@ function(kickos_add_qemu_test)
     if(KICKOS_ARM64_GIC_VERSION EQUAL 3)
       set(_machine "virt,gic-version=3")
     endif()
-  elseif(QT_BOARD STREQUAL "imx8mp-evk")
+  elseif(board STREQUAL "imx8mp-evk")
     # No -cpu and no gic-version: the machine fixes both, being a model of a die rather than a
     # configurable board.
     # -m bounds the machine's DDR window, which defaults to the EVK's 6 GiB and is mapped
     # lazily; the linker script carves 64 MiB of it, so this is headroom rather than a fit.
     set(_env QEMU=qemu-system-aarch64 QEMU_EXTRA=-m\ 512M)
     set(_machine imx8mp-evk)
-  elseif(QT_BOARD STREQUAL "microbit")
+  elseif(board STREQUAL "microbit")
     # 32 KiB: QEMU's nRF51 SoC exposes the size as a QOM property and -m is ignored by a
     # fixed-SoC machine, so an image linked for 32 KiB without this locks up on its first
     # push, before any vector table is live, as "can't escalate 3 to HardFault".
     set(_env QEMU_EXTRA=-global\ nrf51-soc.sram-size=32768)
     set(_machine microbit)
-  elseif(QT_BOARD STREQUAL "qemu")
+  elseif(board STREQUAL "qemu")
     set(_machine mps2-an386)
-  elseif(QT_BOARD STREQUAL "qemu-m33")
+  elseif(board STREQUAL "qemu-m33")
     set(_machine mps2-an505)
-  elseif(QT_BOARD STREQUAL "qemu-m7")
+  elseif(board STREQUAL "qemu-m7")
     set(_machine mps2-an500)
-  elseif(QT_BOARD STREQUAL "qemu-m3")
+  elseif(board STREQUAL "qemu-m3")
     set(_machine mps2-an385)
-  elseif(QT_BOARD STREQUAL "qemu-x86_64")
+  elseif(board STREQUAL "qemu-x86_64")
     # tests/lib/gate.sh builds the firmware, the writable variable store and the EFI system
     # partition per run: the shipped OVMF variable store is root-owned, and an ESP has to be
     # made from the image under test or a stale BOOTX64.EFI boots and prints the same banner.
     set(_env QEMU=qemu-system-x86_64 KICKOS_BOOT=uefi-pe)
     set(_machine q35)
   else()
-    message(FATAL_ERROR "kickos_add_qemu_test(${QT_NAME}): unknown BOARD '${QT_BOARD}'")
+    # No emulator for this board. NOT the caller's problem, so the answer is an empty machine
+    # rather than a refusal: an app gate reads as "this gate rides this target" with no board
+    # predicate wrapped round it. A name that is no board AT ALL still stops the configure,
+    # so a typo cannot vanish into that silence.
+    kickos_is_board("${board}" _known)
+    if(NOT _known)
+      message(FATAL_ERROR "kickos_qemu_machine: '${board}' names no board (no "
+        "${KICKOS_BOARDS_DIR}/${board}/board.cmake, and it is not the board this package was "
+        "built for)")
+    endif()
+    # BOTH out-parameters, or a caller looping over boards keeps the previous board's answer.
+    set(${out_env} "" PARENT_SCOPE)
+    set(${out_machine} "" PARENT_SCOPE)
+    return()
+  endif()
+  set(${out_env} "${_env}" PARENT_SCOPE)
+  set(${out_machine} "${_machine}" PARENT_SCOPE)
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_add_qemu_test([NAME <n>] TARGET <app> [BOARD <b>] SCRIPT <sh>
+#                      [MACHINE <m>] [TIMEOUT <s>] [ARGS <arg...>])
+#   Register a QEMU boot gate: run SCRIPT against the app's ELF and treat exit 77 as SKIP (a
+#   missing qemu-system is a skip, not a failure).
+#
+#   TOTAL over the fleet: a board with no emulator registers nothing and says nothing, so a
+#   call site owes no board predicate. What a call site still owes is any condition that is
+#   about the CLAIM rather than about the emulator: an arch, an MPU posture, a core count, or
+#   the existence of the target this gate rides.
+#
+#   BOARD defaults to KICKOS_BOARD, which is the board every in-tree gate means.
+#   NAME defaults to <board tag>_<target>, the board name with `-` turned into `_`; state it
+#   explicitly where the ctest name is not that (one target carrying several gates, or one
+#   gate whose name is the claim rather than the image).
+#   QEMU_MACHINE is always passed: check_fault_dump.sh reads an UNSET QEMU_MACHINE as "this
+#   is the sim, run natively", and most boards would otherwise take the mps2-an386 fallback.
+#   MACHINE overrides the board default. ARGS are extra script arguments after the ELF.
+#   TIMEOUT defaults to 60s.
+#   TARGET names an app target; the image is $<TARGET_FILE:> unless that target records a
+#   KICKOS_IMAGE_FILE, which the x86_64 OBJECT-library app does.
+# ---------------------------------------------------------------------------
+function(kickos_add_qemu_test)
+  cmake_parse_arguments(QT "" "NAME;TARGET;BOARD;SCRIPT;MACHINE;TIMEOUT" "ARGS" ${ARGN})
+  if(NOT QT_TARGET OR NOT QT_SCRIPT)
+    message(FATAL_ERROR "kickos_add_qemu_test: TARGET and SCRIPT are required")
+  endif()
+  if(NOT QT_BOARD)
+    set(QT_BOARD "${KICKOS_BOARD}")
+  endif()
+  if(NOT QT_NAME)
+    string(REPLACE "-" "_" _tag "${QT_BOARD}")
+    set(QT_NAME "${_tag}_${QT_TARGET}")
+  endif()
+  kickos_qemu_machine("${QT_BOARD}" _env _machine)
+  if(_machine STREQUAL "")
+    return()
   endif()
   if(QT_MACHINE)
     set(_machine "${QT_MACHINE}")
@@ -579,35 +594,131 @@ function(kickos_add_qemu_test)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# The host gate seam: real kernel translation units compiled for the build host at a
+# POSTURE the running preset does not carry.
+#
+# A posture is a set of KICKOS_* macros whose value decides which arms of a kernel source
+# exist at all. Overriding one is not a matter of appending a -D: the value reaches every
+# in-tree TU through the root's add_compile_definitions, and TWO -D of one macro with
+# different values is a redefinition -Werror refuses. It arrives by two separate routes that
+# both have to be cut, and cutting one silently leaves the preset's value in force:
+#   the DIRECTORY property a test directory inherits from the root, and
+#   kickos_kernel's own COMPILE_DEFINITIONS, which the gate reads to compile the same
+#   translation unit that ships.
+# kickos_posture_scrub does the cutting; nothing else in the tree may spell the filter.
+#
+# kickos_posture_scrub(<out> <MACRO=VALUE>...)
+#   Drops exactly the macros named here from the CALLER'S directory property (a function
+#   shares its caller's directory scope), and returns in <out> the definition list a host
+#   target compiling kernel sources wants: kickos_kernel's own definitions with those same
+#   macros filtered out, then the given values.
+function(kickos_posture_scrub out)
+  set(_names "")
+  foreach(_d IN LISTS ARGN)
+    if(NOT _d MATCHES "^([A-Za-z_][A-Za-z0-9_]*)=")
+      message(FATAL_ERROR "kickos_posture_scrub: '${_d}' is not <MACRO>=<VALUE>")
+    endif()
+    list(APPEND _names "${CMAKE_MATCH_1}")
+  endforeach()
+  set(_kernel_defs "$<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS>")
+  if(_names)
+    list(REMOVE_DUPLICATES _names)
+    string(REPLACE ";" "|" _alt "${_names}")
+    set(_re "^(${_alt})=")
+    get_directory_property(_dirdefs COMPILE_DEFINITIONS)
+    list(FILTER _dirdefs EXCLUDE REGEX "${_re}")
+    set_directory_properties(PROPERTIES COMPILE_DEFINITIONS "${_dirdefs}")
+    set(_kernel_defs "$<FILTER:${_kernel_defs},EXCLUDE,${_re}>")
+  endif()
+  set(${out} "${_kernel_defs}" ${ARGN} PARENT_SCOPE)
+endfunction()
+
+# kickos_add_kernel_host_lib(<name> SOURCES <cc...> [INCLUDES <dirs...>]
+#                            [POSTURE <MACRO=VALUE>...])
+#   Kernel sources compiled for the host at a posture, as an OBJECT library SEVERAL gates
+#   link. It carries its include path, definitions and C++ standard PUBLIC, so a gate that
+#   links it inherits the whole posture and its own TU is compiled the same way.
+#
+#   The kernel's COMPILE_OPTIONS are deliberately NOT inherited: -ffreestanding, -fno-common
+#   and -fno-use-cxa-atexit describe an image with no host libc, and a gate is a hosted
+#   program that needs stdio, setjmp and atexit. The three LANGUAGE flags below are the ones
+#   that change what a translation unit MEANS, so they are carried by hand.
+#
+#   The posture is recorded on the target: kickos_add_unit_test scrubs a linking gate's
+#   directory for it, so a consumer states nothing.
+function(kickos_add_kernel_host_lib name)
+  cmake_parse_arguments(KHL "" "" "SOURCES;INCLUDES;POSTURE" ${ARGN})
+  if(NOT KHL_SOURCES)
+    message(FATAL_ERROR "kickos_add_kernel_host_lib(${name}): SOURCES is required")
+  endif()
+  kickos_posture_scrub(_khl_defs ${KHL_POSTURE})
+  add_library(${name} OBJECT ${KHL_SOURCES})
+  target_compile_features(${name} PUBLIC ${KICKOS_CXX_STANDARD})
+  target_include_directories(${name} PUBLIC
+    $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES> ${KHL_INCLUDES})
+  target_compile_definitions(${name} PUBLIC ${_khl_defs})
+  target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS}
+    -fno-exceptions -fno-rtti -fno-threadsafe-statics)
+  set_property(TARGET ${name} PROPERTY KICKOS_POSTURE "${KHL_POSTURE}")
+endfunction()
+
+# ---------------------------------------------------------------------------
 # kickos_add_unit_test(NAME <target> SOURCES <cc...> [INCLUDES <dirs...>]
-#                     [DEFINITIONS <defs...>] [LIBRARIES <libs...>])
+#                     [DEFINITIONS <defs...>] [LIBRARIES <libs...>]
+#                     [KERNEL] [POSTURE <MACRO=VALUE>...] [TEST_PREFIX <p>])
 #   One host unit-test executable on GoogleTest, with PER-CASE ctest entries.
+#
+#   KERNEL adds kickos_kernel's include path and its definitions VERBATIM, for a gate that
+#   compiles a kernel translation unit or includes a kernel header: a divergent config would
+#   gate a different translation unit than the one that ships. POSTURE is the same with the
+#   named macros replaced, and implies KERNEL.
+#
+#   TEST_PREFIX is for a gate built SEVERAL times from one source: every binary defines the
+#   same gtest suite and case names, and without a prefix they would register under one
+#   ctest name and only one geometry would be checked.
 #
 #   gtest_discover_tests writes its add_test calls at BUILD time, so the root CMakeLists
 #   wrapper that appends the build fixture never sees them: the `host` label and
 #   FIXTURES_REQUIRED have to be passed through PROPERTIES here.
 function(kickos_add_unit_test)
-  cmake_parse_arguments(UT "" "NAME" "SOURCES;INCLUDES;DEFINITIONS;LIBRARIES" ${ARGN})
+  cmake_parse_arguments(UT "KERNEL" "NAME;TEST_PREFIX"
+    "SOURCES;INCLUDES;DEFINITIONS;LIBRARIES;POSTURE" ${ARGN})
   if(NOT UT_NAME OR NOT UT_SOURCES)
     message(FATAL_ERROR "kickos_add_unit_test: NAME and SOURCES are required")
+  endif()
+  # A linked posture library carries its macros PUBLIC, so this directory's inherited copy
+  # of them collides exactly as an own POSTURE would.
+  set(_posture ${UT_POSTURE})
+  foreach(_lib IN LISTS UT_LIBRARIES)
+    if(TARGET ${_lib})
+      get_target_property(_lib_posture ${_lib} KICKOS_POSTURE)
+      if(_lib_posture)
+        list(APPEND _posture ${_lib_posture})
+      endif()
+    endif()
+  endforeach()
+  if(_posture OR UT_KERNEL)
+    kickos_posture_scrub(_ut_kernel_defs ${_posture})
   endif()
   add_executable(${UT_NAME} ${UT_SOURCES})
   target_link_libraries(${UT_NAME} PRIVATE ${UT_LIBRARIES} GTest::gtest_main)
   target_compile_features(${UT_NAME} PRIVATE ${KICKOS_CXX_STANDARD})
   target_compile_options(${UT_NAME} PRIVATE ${KICKOS_WARN_FLAGS})
+  if(UT_KERNEL OR UT_POSTURE)
+    target_include_directories(${UT_NAME} PRIVATE
+      $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>)
+  endif()
   if(UT_INCLUDES)
     target_include_directories(${UT_NAME} PRIVATE ${UT_INCLUDES})
+  endif()
+  if(UT_KERNEL OR UT_POSTURE)
+    target_compile_definitions(${UT_NAME} PRIVATE ${_ut_kernel_defs})
   endif()
   if(UT_DEFINITIONS)
     target_compile_definitions(${UT_NAME} PRIVATE ${UT_DEFINITIONS})
   endif()
-  kickos_discover_unit_tests(${UT_NAME})
-endfunction()
-
-# kickos_discover_unit_tests(<target>)
-#   The registration half alone, for a gate that builds its own executable.
-function(kickos_discover_unit_tests target)
-  gtest_discover_tests(${target}
+  gtest_discover_tests(${UT_NAME}
+    TEST_PREFIX "${UT_TEST_PREFIX}"
     PROPERTIES TIMEOUT 30 LABELS host FIXTURES_REQUIRED kickos_build
     DISCOVERY_TIMEOUT 60)
 endfunction()

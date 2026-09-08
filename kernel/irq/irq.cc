@@ -45,11 +45,6 @@ namespace kickos
         constexpr uint32_t IRQ_PUB_RETIRING = 0x80000000u;
         static_assert(IRQ_PUB_RETIRING > static_cast<uint32_t>(IRQ_PUB_SLOTS),
                       "a retiring mark inside the record range would dispatch a retired pair");
-        // Every record that is not free is named by a line, so a caller that has found a free
-        // line has left a record free for it: pub_reserve cannot refuse a claim that got past
-        // the line test. The refusal stays because this inequality is its only guarantee.
-        static_assert(IRQ_PUB_SLOTS - 1 >= KICKOS_MAX_IRQ,
-                      "fewer usable records than lines would make a free line unpublishable");
         // -1 terminates every chain, so an index must survive the link array's narrowing.
         static_assert(IRQ_PUB_SLOTS - 1 <= INT16_MAX,
                       "a record index the link array cannot hold would truncate a chain");

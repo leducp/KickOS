@@ -145,7 +145,7 @@ board gets identical behaviour. Non-M2 work that improves coherence is done HERE
 
 Every board has a `<board>-st` preset (base + `KICKOS_ENABLE_SELFTEST=ON`) so the
 full 15-test suite is a first-class, per-board config -- not an ad-hoc `-D`. The
-selftest/fault/mpu_fault apps are **diagnostic** (`kickos_add_diagnostic_app`, built
+selftest/fault/mpu_fault apps are **diagnostic** (`kickos_add_diagnostic_apps`, built
 only under that flag: they use the test-only syscall surface / deliberately fault, so
 they never enter a production image). Flash an `-st` build with
 `FLASH_BUILD=build/<board>-st tools/flash.sh <board> selftest`.

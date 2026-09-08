@@ -247,7 +247,6 @@ SVC_Handler:
     cmp     r3, #0
     beq     .Lsvc_nothread          /* out of line below, and it does not return */
     PSP_GUARD KICKOS_ARMV6M_TRAP_NEED_SVC, .Lpsp_wild_svc
-#if KICKOS_ARCH_HAS_IPC_FASTPATH
     /* THE SEAM. KOS_SYS_CALL_REG completes here, ahead of the exception return that lands
        in svc_trampoline for the generic dispatch. The leaf decides before it mutates, so a
        null return means nothing was committed and the fall-through carries the whole call. */
@@ -347,7 +346,6 @@ SVC_Handler:
     cpsie   i
     mrs     r0, psp                 /* PSP never moved; the redirect below wants it back */
 .Lsvc_slow:
-#endif
     ldr     r1, =svc_trampoline
     movs    r2, #1
     bics    r1, r2                  /* stacked PC must be halfword-aligned (bit0=0;
@@ -484,7 +482,6 @@ arch_syscall:
     svc     #0
     bx      lr
 
-#if KICKOS_ARCH_HAS_IPC_FASTPATH
 /* ------------------------------------------------------------------------- */
 /* int32_t arch_syscall_reg(uint32_t* io): the register-carrying IPC trap.    */
 /* The hardware frame holds only five words, so the payload rides the CALLEE  */
@@ -537,6 +534,5 @@ arch_syscall_reg:
     pop     {r4-r7}
     pop     {r1}
     bx      r1
-#endif
 
     .end

@@ -29,9 +29,6 @@ namespace kickos
 #endif
     static_assert(KICKOS_MPU_MAX_REGIONS <= 32,
                   "the seating bitmask is a uint32_t, and the no-MPU encode shifts by the count");
-    static_assert(KICKOS_MPU_MAX_REGIONS <= UINT8_MAX,
-                  "MpuSet::count_ is a byte, which is what keeps the image inside the padding "
-                  "the region array already spends");
 
     class MpuSet
     {

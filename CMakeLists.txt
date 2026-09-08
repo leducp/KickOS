@@ -1549,7 +1549,11 @@ if(TARGET kickos_kernel)
     KICKOS_LIBC_REENT=${KICKOS_LIBC_REENT}
     KICKOS_LINKER_WEAK_UNDEF=${KICKOS_LINKER_WEAK_UNDEF}
     KICKOS_MULTI_INSTANCE=$<BOOL:${KICKOS_MULTI_INSTANCE}>
-    KICKOS_DEBUG=$<BOOL:${KICKOS_DEBUG}>)
+    KICKOS_DEBUG=$<BOOL:${KICKOS_DEBUG}>
+    # Which shape answers the SPI class here (system/CMakeLists.txt picks the backend).
+    # ALWAYS defined, never merely absent: an app is built -Wundef -Werror, so an #if on an
+    # undefined name is a build failure rather than a silent false arm.
+    KICKOS_SPI_LOCAL=$<BOOL:${KICKOS_SPI_LOCAL_ENGINE}>)
   target_compile_options(kickos_core INTERFACE -include kickos/app.h)
   # Force-include the seam header so an app-TU-defined kickos_init_entry gets C linkage.
   # SHELL: keeps this second -include from being de-duplicated against the app.h one above.
@@ -1649,7 +1653,7 @@ if(TARGET kickos_kernel)
 endif()
 
 # Before the apps: it links the OBJECTS of the arch and chip targets add_subdirectory(arch)
-# created, and defines the kickos_x86_64_link_image that kickos_add_application calls.
+# created, and defines the kickos_x86_64_link_image that kickos_emit_image calls.
 if(KICKOS_ARCH STREQUAL "x86_64")
   include(cmake/x86_64_boot.cmake)
 endif()
@@ -1660,6 +1664,14 @@ if(KICKOS_BUILD_APPS
    AND ((KICKOS_ARCH STREQUAL "sim") OR (KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP}))
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/user/apps/CMakeLists.txt")
   add_subdirectory(user/apps)
+endif()
+
+# AFTER user/apps, which is what makes it the test side rather than a second app tree: every
+# app target a gate rides already exists there, so `if(TARGET <app>)` inside it is the real
+# answer and no gate restates the posture the app's parent already decided on.
+if(KICKOS_BUILD_TESTS
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/CMakeLists.txt")
+  add_subdirectory(tests/integration)
 endif()
 
 # Validated LATE: a provider defined in user/apps or a superproject is not a target yet at
@@ -1772,11 +1784,25 @@ if(KICKOS_BOARD_INCLUDE_DIR)
           DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 endif()
 
-# No NAMESPACE: kickos_add_application() links and asserts the bare target names
+# No NAMESPACE: an app links and kickos_add_app_target asserts the bare target names
 # (kickos_arch_<arch>, ...), identically in-tree and installed. Do not add one.
 install(EXPORT KickOSTargets
         FILE KickOSTargets.cmake
         DESTINATION "${KICKOS_CMAKE_DIR}")
+
+# The class-backend selections, replayed verbatim into the package so an out-of-tree app
+# naming a class links the same backend an in-tree one does. Frozen at build time like the
+# init provider: the choice belongs to the image posture the package was built for.
+get_property(_kos_classes GLOBAL PROPERTY KICKOS_CLASS_BACKEND_CLASSES)
+set(KICKOS_CLASS_BACKEND_DECLS "")
+if(_kos_classes)
+  list(REMOVE_DUPLICATES _kos_classes)
+  foreach(_kos_class IN LISTS _kos_classes)
+    kickos_class_backend("${_kos_class}" _kos_backend)
+    string(APPEND KICKOS_CLASS_BACKEND_DECLS
+      "kickos_select_class_backend(${_kos_class} ${_kos_backend})\n")
+  endforeach()
+endif()
 
 configure_package_config_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/KickOSConfig.cmake.in"

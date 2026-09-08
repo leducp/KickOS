@@ -9,8 +9,8 @@
 # needed.
 #
 # NOT in any board's service-list closure and NOT in the kickos link group: it defines the same
-# four symbols a local engine does, so which one an executable gets is that executable's own
-# SPI_BACKEND (cmake/kickos.cmake).
+# four symbols a local engine does, so the selected one must precede that group on the link
+# line, and a group member cannot. system/CMakeLists.txt does the selecting.
 add_library(kickos_spi_proxy STATIC spi_proxy.cc)
 kickos_apply_freestanding(kickos_spi_proxy)
 target_link_libraries(kickos_spi_proxy PUBLIC kickos_user)

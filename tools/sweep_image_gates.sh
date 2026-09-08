@@ -59,8 +59,9 @@
 # THE EMULATOR IS NAMED. A missing qemu-system is SKIP_RETURN_CODE 77 at the test, so ctest
 # reports Skipped and exits 0: an emulator-less box would green this sweep while booting
 # nothing. Presets whose board needs an emulator are checked against the binary BEFORE the
-# build and skipped BY NAME. The board set comes from KICKOS_QEMU_MPS2_BOARDS in
-# user/apps/common/CMakeLists.txt; `microbit` and `qemu-riscv` are named below. Any skip the
+# build and skipped BY NAME. The board-to-emulator map is derived from kickos_qemu_machine
+# through tests/static/board_emulators.cmake, so it cannot disagree with what a registration
+# spends. Any skip the
 # run reports anyway is counted and shown.
 #
 # The GTest prefix is inert on this half, every GoogleTest case carrying `LABELS host`. The
@@ -97,9 +98,6 @@ SENTINEL="$OUT/DONE"
 LOCK="$OUT/RUNNING"
 FIXTURE=kickos_build
 
-# KICKOS_QEMU_MPS2_BOARDS is read from its declaration; the other two emulator boards are
-# spelled at their kickos_add_qemu_test call sites and have no list to read.
-MPS2_SRC="$ROOT/user/apps/common/CMakeLists.txt"
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -147,7 +145,6 @@ done
 command -v cmake >/dev/null 2>&1 || die "cmake not found"
 command -v ctest >/dev/null 2>&1 || die "ctest not found"
 [ -f "$ROOT/CMakePresets.json" ] || die "no CMakePresets.json under $ROOT"
-[ -f "$MPS2_SRC" ] || die "no $MPS2_SRC to read the MPS2 board set from"
 
 # Seven sim image gates re-configure THIS tree in a child cmake, which needs an interpreter
 # that can import kconfiglib, resolved the way cmake/kconfig.cmake resolves it. Without one
@@ -214,37 +211,23 @@ cmake "-DSRC=$ROOT" "-DOUT=$PRESETS_TSV" -P "$ROOT/tests/static/preset_boards.cm
     || die "could not read the configure presets"
 [ -s "$PRESETS_TSV" ] || die "the preset flattener produced no table"
 
-MPS2_BOARDS="$(sed -n 's/^set(KICKOS_QEMU_MPS2_BOARDS \([^)]*\))$/\1/p' "$MPS2_SRC")"
-[ -n "$MPS2_BOARDS" ] || die "could not read KICKOS_QEMU_MPS2_BOARDS from $MPS2_SRC; the
-      emulator map would silently claim no board needs qemu-system-arm"
+EMU_TSV="$OUT/board_emulators.tsv"
+EMU_BOARDS="$(awk -F'\t' 'NF > 1 { print $2 }' "$PRESETS_TSV" | sort -u | paste -sd';')"
+[ -n "$EMU_BOARDS" ] || die "the preset table named no board"
+cmake "-DSRC=$ROOT" "-DBOARDS=$EMU_BOARDS" "-DOUT=$EMU_TSV" \
+    -P "$ROOT/tests/static/board_emulators.cmake" >/dev/null \
+    || die "could not derive the board-to-emulator map from kickos_qemu_machine"
+[ -s "$EMU_TSV" ] || die "the emulator map is empty; it would claim the fleet boots natively"
 
-# Echoes the emulator binary a board needs, or nothing when the board boots natively.
+# Echoes the emulator binary a board needs, or nothing when the board boots natively. The map
+# is DERIVED from kickos_qemu_machine, so this tool cannot disagree with what a registration
+# spends. Do not re-scrape it out of a CMakeLists: the app-side board lists it used to read
+# are gone, and a regex over a source file went stale silently.
 emulator_for() {
-    for _b in $MPS2_BOARDS microbit; do
-        if [ "$1" = "$_b" ]; then
-            echo qemu-system-arm
-            return 0
-        fi
-    done
-    if [ "$1" = qemu-riscv ]; then
-        echo qemu-system-riscv32
-    fi
-    if [ "$1" = qemu-riscv64 ]; then
-        echo qemu-system-riscv64
-    fi
-    if [ "$1" = qemu-arm64 ]; then
-        echo qemu-system-aarch64
-    fi
-    if [ "$1" = imx8mp-evk ]; then
-        echo qemu-system-aarch64
-    fi
-    # Without this row the board falls to the no-emulator branch below and is reported as
-    # needing SILICON, which files it beside the boards that really do and hides every image
-    # gate it declares.
-    if [ "$1" = qemu-x86_64 ]; then
-        echo qemu-system-x86_64
-    fi
+    awk -F'\t' -v b="$1" '$1 == b { print $2; found = 1 } END { exit !found }' "$EMU_TSV"
+    return 0
 }
+
 
 # census <preset> <tree> <tag>
 # Sets C_SEL, C_IMAGE, C_DISABLED, C_PLACE, C_FIXTURE from `ctest -LE host` on that tree, or

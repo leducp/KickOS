@@ -3,4 +3,5 @@
 
 # Host-only: the free list and the reply count are invisible from userspace, and the mint is
 # driven on a peer's table.
-kickos_add_kseam_gate(NAME cap_probe SOURCES reply_probe.cc)
+kickos_add_unit_test(NAME cap_probe SOURCES reply_probe.cc
+  LIBRARIES kickos_kseam)

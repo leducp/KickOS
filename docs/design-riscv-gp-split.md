@@ -64,9 +64,11 @@ inside the kernel `.data`/`.bss` and `PROVIDE(__global_pointer$ = . + 0x800)`: `
 below `__global_pointer$` = 0x40820800, kernel-side and outside the app window
 [0x40828000,0x40830000). A U-mode throw read and wrote them, and faulted under PMP.
 
-The app's OWN objects already dodged this: `kickos_add_application` passes `-msmall-data-limit=0`
-to the app TUs, so their globals leave the gp window and land in the app-side `.appdata`/`.appbss`
-catch-all. The PREBUILT vendor libs are not compiled that way.
+The app's OWN objects dodge this by construction, not by opting in: KickOS's own libs (kernel,
+arch, lib, user) are compiled `-msmall-data-limit=0` (`kickos_apply_freestanding`), so THEIR
+globals leave the gp window; the app keeps the default small-data threshold, and the linker
+script's `.sdata`/`.sbss` catch-all lands its globals in the app-side `.appdata`/`.appbss`
+region instead. The PREBUILT vendor libs are not compiled that way.
 
 ## Evidence gathered (qemu-riscv, RISCStar rv32imac/ilp32 multilib, this tree)
 

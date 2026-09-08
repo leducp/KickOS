@@ -361,7 +361,6 @@ void arch_context_init(struct arch_context* ctx,
     // refusal path keys on; clearing it here would wipe the block off every fresh thread.
 }
 
-#if defined(KICKOS_ARCH_HAS_IPC_FASTPATH) && KICKOS_ARCH_HAS_IPC_FASTPATH
 // The result has to be seated where the restore reloads R1 from. R1 is the register the RX
 // psABI answers in, and its slot sits above the DPFPU bank and the accumulators; switch.S
 // spells the same offset as FRAME_R1_OFF.
@@ -375,7 +374,6 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 {
     reinterpret_cast<uint32_t*>(ctx->sp + FRAME_R1_OFF)[0] = result;
 }
-#endif
 
 // The fabricated frame's PSW word is PSW_THREAD_KERNEL, which the RTE pops. The MPU_MPECLR
 // latch arch_fault_redirect_to_exit clears is global and belongs to a fault, so a rebuild

@@ -472,12 +472,35 @@ External audit, itemised into `roadmap.md` M8.6.
       `objdump` reader into `gate.sh` itself, one authority instead of twenty-one copies; bring the
       five sim scripts under it too.
 
-- [ ] **DRY-10: TEN 12-LINE `cpu.cmake` FILES DIFFER BY THREE LINES EACH, AND ONE APP'S
-      `CMakeLists.txt` IS 291 LINES FOR A SINGLE SOURCE FILE.** `arch/arm/chip/*/cpu.cmake` (10
-      files); 64 app `CMakeLists.txt` files with 102 `kickos_add_qemu_test` calls between them; the
-      `hello` app's file is 291 lines because every board gets its own `if()` block. Direction: a
-      `kickos_arm_cpu()` helper for the ten `cpu.cmake` files, and a `kickos_add_qemu_tests(BOARDS
-      ...)` iterator to replace the per-board `if()` blocks.
+- [ ] **DRY-10a: THE APP-TO-TEST DEPENDENCY IS INVERTED, AND THE 291-LINE `hello` FILE IS THE
+      SYMPTOM RATHER THAN THE DEFECT.** An application is not a test, yet
+      `user/apps/common/hello/CMakeLists.txt` registers 21 ctest entries invoking 17 different
+      scripts, of which only five are hello tests: the rest are kernel gates that merely need the
+      smallest image that boots a chip (`tlbi_shareability`, `ipi_fence`, `rv64_irq_fence`,
+      `arm64_entry_order`, `doorbell_generic`, `doorbell_isb`, `lx6_atomctl`, `lx6_irq_cells`,
+      `lx6_park_mask`, `irq_line_op_sole`, `irq_syscall_locked`, `route_service_order`,
+      `rp_node_vectors`, and the two SMP arrival and doorbell pairs). So the app knows its
+      consumers, six lines of application carry 285 lines of other people's registrations, and
+      editing `hello/main.cc` silently changes what a barrier gate decodes. **Direction: invert the
+      arrow.** A gate names the target it rides from the test side; the app declares itself and
+      stops. Fleet-wide this is 64 app files and 102 `kickos_add_qemu_test` calls. Note for M8.4:
+      its gate work must not entrench the present direction by adding more registrations to app
+      files. `hello_c/CMakeLists.txt` is 8 lines and shows what an application file should be.
+
+- [ ] **DRY-10b: EVERY APP GUARDS A HELPER THAT ALREADY KNOWS THE ANSWER.** The per-board `if()`
+      ladders around `kickos_add_qemu_test` re-ask a question the function itself decides:
+      `cmake/kickos.cmake` (`kickos_add_qemu_test`) dispatches on `BOARD` across all ten emulatable
+      boards to choose the emulator and its flags. The guards exist only because the helper's final
+      `else()` is a `FATAL_ERROR` on an unknown board, so a bare call would fail the configure of
+      every board without an emulator: **the sentinel protects the caller from the authority's own
+      strictness**, which is what the no-second-truth rule forbids. Direction: make the authority
+      total, distinguishing a board that is unknown (still fatal, so a typo is caught) from one that
+      simply has no emulator (return without registering), then delete the guards and let `BOARD`
+      default to `KICKOS_BOARD` and `NAME` derive from the tag and target, which the app files
+      currently hand-derive with `string(REPLACE "-" "_" ...)`.
+
+- [ ] **DRY-10c: TEN 12-LINE `cpu.cmake` FILES DIFFER BY THREE LINES EACH.**
+      `arch/arm/chip/*/cpu.cmake`. Direction: a `kickos_arm_cpu()` helper.
 
 - [ ] **EIGHT SYSTEM/DRIVER ADAPTER TRANSLATION UNITS (46-108 LINES EACH) SHARE 0.5+
       CONTAINMENT.** Each is one `drv::Descriptor` literal plus two 3-line thunks, retyped per
@@ -724,6 +747,117 @@ below, not duplicated in this section.
       Low. Direction: lazy FP/SIMD save via `CPACR_EL1.FPEN` trapping instead of an unconditional
       save; rank this after M8.7's A53 baseline exists, since its payoff is a fraction of a currently
       unmeasured trip.
+
+## M8.1.1: two guard sweeps, with the negative results recorded so they are not re-run
+
+- [ ] **ELEVEN `KICKOS_ARCH_HAS_IPC_FASTPATH` GUARDS ARE TAUTOLOGICAL AND DEAD.**
+      `arch/arm/armv6m/arch_armv6m.cc` 188; `arch/arm/armv7m/arch_armv7m.cc` 160, 252;
+      `arch/rx/rxv3/arch_rxv3.cc` 364; and six `switch.S` sites (`armv6m` 250, 487, `armv7m` 344,
+      596, `rxv3` 76, 380, 629). Each arch's `ipc_fastpath.cmake` sets the knob to 1
+      unconditionally, the top-level `CMakeLists.txt` fixes it before any chip or board cmake runs,
+      nothing overrides it per chip, and there is no `#else`. **The internal proof is rv32imac**:
+      it defines the same `arch_ctx_set_syscall_result` and `arch_syscall_reg` with no guard at all,
+      so the guard is structurally unnecessary once the opt-in file exists. No unit seam consumes a
+      missing arm, so this is not the `sysops_armv8a.h` class. Deleting all eleven changes no build.
+
+- [ ] **26 `static_assert`s CANNOT FIRE AND ARE NOISE**, out of 498 invocations; roughly 450 are
+      keepers and 22 want a second look. The verifiable-in-one-read ones:
+      `arch/x86/x86_64/aspace_x86_64.cc` 1201 and `arch/arm64/armv8a/aspace_armv8a.cc` 853 both read
+      `6u <= SIZE_MAX` because `ACQUIRE_CAPACITY` is `SIZE_MAX` in the same file;
+      `arch/riscv/rv64imac/aspace_rv64imac.cc` 98 restates its own definition (98 only, since 96 is
+      a real keeper); `arch/x86/x86_64/ring3_x86_64.cc` 97 tests a bit the literal two lines above
+      sets; `kernel/include/kickos/ampwindow.h` 173 reads `0xFF <= 0xFF`;
+      `kernel/include/kickos/instance.h` 54, 57, 61 and `kernel/mem/aspace.cc` 38 and
+      `arch/riscv/rv32imac/arch_rv32imac.cc` 171 restate an array width declared one line above;
+      `kernel/irq/irq.cc` 51, `kernel/include/kickos/mpuset.h` 32, `kernel/include/kickos/domain.h`
+      35 and 65, `kernel/init/fault.cc` 113, `include/kickos/extent.h` 28,
+      `arch/xtensa/lx6/arch_xtensa.cc` 292, `arch/riscv/rv32imac/arch_rv32imac.cc` 158,
+      `tests/unit/ampwindow/window.cc` 620, 622, `tests/unit/cancelkind/cancel_kind.cc` 57, 60, 61.
+      **`kernel/include/kickos/ampwindow.h` 72 is the one that duplicates a configure refusal** and
+      says so in its own message: `CMakeLists.txt` 872-883 already fatals on an empty
+      `KICKOS_AMP_PORTS`, and the count it guards is generated by that same block.
+      **Do not sweep `kernel/include/kickos/cap.h` 27, 32, 38 with it.** They look like the same
+      duplication of `cmake/cap_table.cmake` 24-28 and 254-260, and they are saved by two paths that
+      never run it: `tests/unit/captable/captable_policy.cc` 23-28 `#undef`s both width macros to
+      inject synthetic geometries, and `examples/oot-app/main.cc` 13 re-asserts against the
+      INSTALLED header, which is the consumer path.
+
+- [ ] **THE KEEPERS THAT ARE THE ONLY ENFORCEMENT OF THEIR RULE, recorded so a later sweep does not
+      delete them.** `arch/riscv/rv32imac/arch_rv32imac.cc` 103: a privileged `ecall` arrives with
+      `MPP=M` and runs dispatch on that thread's own stack, and `rv_trap_stack.h` 14-21 states that
+      no runtime bound refuses an M-mode sp. `kernel/include/kickos/thread.h` 562 and 565: the
+      strict inequality is what keeps `KOS_THREAD_NONE` unmintable at any generation. `thread.h` 584:
+      a pool grown into the far-reply band stops discriminating on the one path that completes a
+      stranger's call. `thread.h` 644 and `cap.h` 61. `kernel/syscall/syscall_ipc_fast.cc` 53: the
+      arch prologues branch on the literal 56 in assembly. `arch/rx/rxv3/arch_rxv3.cc` 32 pins
+      `-mdfpu`; 123 and `arch/arm/armv7m/arch_armv7m.cc` 161 pin an immediate the asm spells
+      independently. `arch/include/kickos/arch/doorbell_cells.h` 39:
+      **`KICKOS_DOORBELL_CORES` is a plain Kconfig int with no `range` and no CMake refusal**, so a
+      defconfig can set it to 1 on a two-core board and index the matrix past its end.
+      `kernel/amp/ampmap.cc` 25 counts a list with no declared bound.
+      `system/init/sim/service_list_uart.cc` 133 pins a byte offset a descriptor hands the kernel.
+
+- [ ] **NEGATIVE RESULTS, so neither sweep is repeated.** The ISA-macro-in-an-ISA-directory shape
+      (`__aarch64__`, `__riscv`, `__XTENSA__`, `__RX__`, `__x86_64__`) occurs in exactly ONE place
+      fleet-wide, `arch/arm64/armv8a/sysops_armv8a.h`, already recorded under M8.2; it is not a
+      pattern. No chip `.cmake` re-tests its own chip, and no per-arch `CMakeLists.txt` re-tests its
+      own arch. And **no call site anywhere wraps a call to an already-totalized function in a
+      matching `#if`**: every caller of `aspace_activate_for`, `aspace_seated_for` and
+      `aspace_install_boot` already calls unconditionally, and the ~65 other `KICKOS_HAVE_ASPACE`
+      regions name types and fields with no disabled arm, so a no-op cannot erase them. The one
+      exception worth doing: `aspace_image_alias` is a single `return nullptr` away from letting
+      `kernel/init/kmain.cc` 124 and 247 and `kernel/thread/reent.cc` around 55 drop their guards.
+      `KICKOS_TLS` is the model to copy, fully total with every caller unconditional.
+
+## M8.1.1: weak linkage goes, and the build chooses the symbol
+
+- [ ] **WEAK UNDEFINED SYMBOLS ARE NOT PORTABLE AND THEY HIDE ABSENCE, WHICH THIS TREE HAS ALREADY
+      BEEN BITTEN BY ONCE.** `docs/reference/invariants.md`'s `ctors-run-before-init-entry` records
+      the failure in its own words: `__kickos_app_init_array_{start,end}` "were once WEAK, which
+      collapsed absent into a null the walk skipped", so a monolithic `.init_array` could run every
+      app constructor privileged from the reset handler AND skip the late walk with no diagnostic.
+      The fix there was a STRONG reference plus a deliberately EMPTY window per script, which makes
+      empty and absent distinct at link time and fails a script that omits the bucket. **That fix
+      was never carried to the rest.** Convert them: the build selects the provider, every board's
+      linker script defines the bound (empty if empty), the reference is strong, and a missing
+      symbol is a link error rather than a zero nobody notices.
+      Present state, all of it linker-script bounds:
+        * `kernel/include/kickos/klink.h` defines `KICKOS_LINK_OPTIONAL` as `weak` or, where a
+          target cannot take a weak undef, `visibility("hidden")`. Seven users:
+          `kernel/domain/domain.cc` (`__kickos_code_start`/`_end`, `__kickos_appdata_start`/`_end`)
+          and `kernel/init/kmain.cc` (`kickos_app_build_time`, `_kickos_heap_start`,
+          `_kickos_heap_limit`).
+        * **Eight raw `__attribute__((weak))` bypass that macro**, so the decision it centralises is
+          not actually central: `arch/common/arch_ram_common.cc` and `kernel/mem/aspace.cc` each
+          declare the SAME four symbols (`__kickos_app_rom_start`/`_end`,
+          `__kickos_app_sram_start`/`_end`) independently of it.
+        * `KICKOS_LINKER_WEAK_UNDEF` (`CMakeLists.txt` 176-191) exists only to serve the macro and
+          goes with it.
+      **One case is genuinely different and must not be swept in:** `__register_frame` in
+      `chip_esp32c6.cc` and `chip_virt_rv32.cc` is libgcc's, not ours, and optional by its own
+      contract rather than by ours.
+      **Open question to answer while converting:** `klink.h`'s comment says the PE32+ target
+      reaches a weak undef GOT-indirect, links clean and faults later at a plausible address, which
+      is why `tools/check-x86_64-no-got.sh` exists. The eight raw declarations do not take the
+      hidden arm, so either x86_64 never compiles those two files or that gate is what stands
+      between the tree and the failure the comment describes. Establish which before deleting
+      anything.
+
+## M8.2 pickups
+
+- [ ] **`sysops_armv8a.h` GUARDS ON THE COMPILER'S TARGET WHERE IT MEANS "A SEAM SUPPLIES THESE".**
+      `arch/arm64/armv8a/sysops_armv8a.h` splits on `#if defined(__aarch64__)`, inlining the
+      instructions on one arm and declaring eleven functions on the other. The `#else` is DEAD in
+      every shipped build: the only includer is `arch/arm64/armv8a/aspace_armv8a.cc`, which is
+      compiled for aarch64 and nothing else. It exists solely because `tests/unit/mapexec` compiles
+      that same file on the host, where `aspace_sysops_seam.cc` answers the declarations. So the
+      condition INFERS the intent from the compiler's target instead of stating it, which is the
+      shape `docs/reference/invariants.md` rules against for `ARCH_TLS_FROM_SP` ("the select states
+      it rather than the ISA implying it"). Direction: predicate the split on the seam, so
+      production reads as unconditional and the test opts in with one definition. It also improves
+      the failure: including the header from a non-arm64 production TU today gives eleven undefined
+      symbols at link, where a seam predicate gives an immediate compile error on the asm. Not a
+      defect and deliberately not fixed in M8.1, which was merge-ready when it was raised.
 
 ## M8 second-pass audit residue, assigned rather than filed
 
@@ -1056,19 +1190,12 @@ What is left here is what the step deliberately did not close.
       sized, and this branch is meant to merge. The evidence for it is that the audit's own timer
       finding had to be fixed in both files, as did the boot stack ordering beside it, and the
       comment trim before them.
-- [ ] **`KICKOS_QEMU_MPS2_TAG` AND THE ARM64 BLOCKS' LOCAL TAG COMPUTE THE SAME THING.** The
-      board-name-to-CTest-prefix derivation is now spelled in two places, the MPS2 global and a
-      local in each arm64 registration, both being `KICKOS_BOARD` with dashes swapped. Converging
-      them means renaming the MPS2 global to a family-neutral name across its call sites; not done
-      on this branch because a rename of shared app registrations conflicts with work running in
-      parallel, and it is a cleanup rather than a defect.
-
-## M7.3 -- the GICv3 posture
-
-S6 is landed: `qemu-arm64` ships a GICv3 posture beside its GICv2 one, selected by a Kconfig choice
-and a derived version that reaches CMake as well as C. What is left here is what the step
-deliberately did not close.
-
+- [x] **THE MPS2 TAG GLOBAL AND THE ARM64 BLOCKS' LOCAL TAG COMPUTED THE SAME THING.**
+      **RESOLVED by M8.1.1:** the derivation has one home. `kickos_add_qemu_test` derives the ctest
+      name as the board tag plus the target, so no caller spells it, and the two board lists it
+      keyed off dissolved into facts that were already global everywhere: the MPS2 set is
+      `KICKOS_CHIP STREQUAL "mps2"` and the arm64 set is `KICKOS_ARCH STREQUAL "armv8a"`, checked
+      against every board descriptor.
 - [x] **A ONE-CORE-KERNEL GICv3 PRESET: CLOSED BY M7.6, FOR A REASON THIS ITEM DID NOT ANTICIPATE.**
       The reasoning below is that the only configuration where one kernel core meets a live GICv3 is
       an AMP image. `imx8mp-evk` is that configuration for a different reason entirely: the part
@@ -1163,12 +1290,13 @@ survives is below; everything else was re-verified fixed against tree `82fa51f`.
       `KCAP_RUN_COUNT` is unchanged.
 - [ ] **The out-of-tree capability WARNING has no gate.** `kickos_declare_app_capabilities` warns
       when a declaration cannot be honoured (`cmake/cap_table.cmake:137-144`), but neither
-      `examples/oot-app/CMakeLists.txt` nor `examples/oot-mcu-app/CMakeLists.txt` passes any
-      capability keyword, so `tests/integration/check_oot_export.sh` and `check_oot_export_mcu.sh` never
-      invoke it. Nothing would catch a regression in its text, in the `KICKOS_IN_TREE` detection,
-      or in `_kickos_cap_installed_width`. Wants a small OOT app that declares `CAPABILITIES` and
-      greps stderr. Proportionate: the warning is a diagnostic, so a regression costs a missing
-      warning rather than corruption, and the two OOT gates are delicate.
+      `examples/oot-app/CMakeLists.txt` nor `examples/oot-mcu-app/CMakeLists.txt` calls it, so
+      `tests/integration/check_oot_export.sh` and `check_oot_export_mcu.sh` never invoke it.
+      Nothing would catch a regression in its text, in the `KICKOS_IN_TREE` detection, or in
+      `_kickos_cap_installed_width`. Wants a small OOT app that calls
+      `kickos_declare_app_capabilities` and greps stderr. Proportionate: the warning is a
+      diagnostic, so a regression costs a missing warning rather than corruption, and the two OOT
+      gates are delicate.
 - [ ] **`grant_reserved` has three `tap::partial` exits the bench cannot tell apart.**
       `user/apps/common/selftest/main.cc:2014` partials at `:2037` (granule alloc failed), `:2064`
       (board reserves nothing) and `:2190` (board mints no DEV window), while
@@ -1642,9 +1770,9 @@ Every symbol, ctest case name, doc path and preset name it references resolves.
       `kickos_arch_mpu_commit` it became. `boards.md` said `arch_sim`; the target is
       `kickos_arch_sim`.
       **One of the four claims was itself false and is withdrawn: `qemu_reboot_declined` IS
-      registered.** `user/apps/common/rebootdemo/CMakeLists.txt` builds the name from
-      `KICKOS_QEMU_MPS2_TAG`, which is `KICKOS_BOARD` with dashes swapped for underscores, so on the
-      `qemu` preset it resolves and `ctest -N` lists it as Test #17. Verified by running it, not by
+      registered.** the name is DERIVED rather than written, so it appears
+      as a literal nowhere: `kickos_add_qemu_test` composes it from the board tag and the target, so
+      on the `qemu` preset it resolves and `ctest -N` lists it. Verified by running it, not by
       grepping for the literal -- the reason the audit missed it is that the name never appears as a
       string anywhere.
 - [x] **Class 3, and the test for it is NOT "does the MPU gate this chip's peripherals".** It is
@@ -4802,8 +4930,8 @@ was read or measured.
       forbids a board from stating the table's width at all ("A board must NOT state the width...
       Kconfig declares no such symbol, so an attempt to set it is refused by name"): the width is
       summed at CONFIGURE time from the kernel's reserved-index count, the service list's retained
-      caps (`RETAINED_CAPS`), and the app's declared peak (`CAPABILITIES`), each stated by whoever
-      owns the fact. Whatever open question this pointed at -- an unjustified `mk64f` figure --
+      caps (`RETAINED_CAPS`), and the app's declared peak (`kickos_declare_app_capabilities`),
+      each stated by whoever owns the fact. Whatever open question this pointed at -- an unjustified `mk64f` figure --
       needs to be re-derived against that configure-time sum; there is no board-stated constant
       left to cite a line number against.
 
@@ -5639,8 +5767,9 @@ here because they are pre-existing isolation facts, not things that pass created
       Statement of record: `docs/design-m4.6-irq-driver.md` sections 2.1 and 3.6.
 - [ ] **FOUR in-tree apps grant a DEV window a live board-service driver already holds, so the
       M4.5.2 one-holder-per-window check (`domain_for` -> `-KOS_EBUSY`) now refuses their spawn.
-      Silicon-only: no in-env gate covers any of them** (all are `kickos_add_diagnostic_app` or a
-      hardware-observable demo, none has a CTest gate), so nothing goes red until the next bench run.
+      Silicon-only: no in-env gate covers any of them** (all are registered under
+      `kickos_add_diagnostic_apps` or a hardware-observable demo, none has a CTest gate), so
+      nothing goes red until the next bench run.
       The same gap covers the suite itself: `dev_window_exclusive` and `bus_device_slots` postdate
       every silicon capture, so the case totals stamped in `docs/reference/boards.md` are right for
       their commits and neither new case has ever run on a chip.
@@ -5700,8 +5829,9 @@ here because they are pre-existing isolation facts, not things that pass created
       unprivileged driver that holds the 32 B SPI1 grant. Same shape as `c6blink` and `rxdrv` before
       their windows were reworked: the escalation surfaces (RCC clock-enable, GPIOA/GPIOE mux) are
       deliberately kept out of the driver's window, which is exactly why they need kernel mediation
-      instead of a wider grant. NOT a flip blocker -- it is a `kickos_add_diagnostic_app`, never a
-      production image, and the stage-2 gate is `selftest` + `rootfault`, both green on that board.
+      instead of a wider grant. NOT a flip blocker -- it is registered under
+      `kickos_add_diagnostic_apps`, never a production image, and the stage-2 gate is `selftest` +
+      `rootfault`, both green on that board.
       Its loopback arm is also still unwitnessed in the default posture (needs the PA7->PA6 jumper),
       so the chip's peripheral-window proof stays open either way.
 

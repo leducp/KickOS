@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 
-// Replaces libstdc++'s vterminate.o on the FULL_CXX link path, so the linker never
+// Replaces libstdc++'s vterminate.o on the kickos_cxx link path, so the linker never
 // extracts it. Demangling t->name() here would pull __cxa_demangle back in, and the
 // newlib float dtoa with it (~65K flash); the name stays mangled.
 

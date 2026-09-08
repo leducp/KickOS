@@ -173,8 +173,8 @@ deliberate cost decision.
   that need a runtime. No `.eh_frame`, no unwind tables, no libsupc++, no libstdc++.
   The freestanding subset of the headers (`<type_traits>`, `<utility>`, `<array>`, ...)
   is still available because it needs no runtime.
-- **Full C++ is a per-app opt-in, and it is not free.** An app built `FULL_CXX` compiles
-  its C++ TUs `-fexceptions -frtti` and *drops* the `-nostdlib++`, so the toolchain's
+- **Full C++ is a per-app opt-in, and it is not free.** An app that links `kickos_cxx`
+  compiles its C++ TUs `-fexceptions -frtti` and *drops* the `-nostdlib++`, so the toolchain's
   own `libstdc++`/`libsupc++` join the link. Now you have exceptions, RTTI, and the STL
   -- and you pay for them: the EH/unwind tables (`.eh_frame` and `.gcc_except_table` on
   DWARF arches, `.ARM.exidx`/`.ARM.extab` on ARM) run **~10-15 KiB** of read-only data,
@@ -188,7 +188,7 @@ package ships three interface targets over a posture-neutral `kickos_core`: an a
 `kickos_cxx` for full C++ (`-fexceptions -frtti`, `libstdc++`/`libsupc++` kept). A
 misspelled leaf is a hard link error, not a silent freestanding downgrade. The kernel and
 libs are clamped freestanding directly via `kickos_apply_freestanding()` and are never
-consumers. (`kickos_add_application(... FULL_CXX)` remains as sugar and just selects the leaf.)
+consumers.
 
 ## The cross-libc trap: never host toolchain C++ on your own libc
 

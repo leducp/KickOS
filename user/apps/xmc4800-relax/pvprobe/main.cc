@@ -21,7 +21,7 @@
 // UART, and garbling it destroys the only output channel at the bench.
 //
 // Register addresses / bit fields are clean-room from the Reference Manual; no
-// XMCLib/DAVE/CMSIS vendor source. Diagnostic app (kickos_add_diagnostic_app): never a
+// XMCLib/DAVE/CMSIS vendor source. Diagnostic app (kickos_add_diagnostic_apps): never a
 // production image.
 
 #include <kickos/kos.h>

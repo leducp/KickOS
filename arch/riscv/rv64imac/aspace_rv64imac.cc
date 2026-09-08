@@ -95,8 +95,6 @@ namespace
     constexpr size_t ACQUIRE_CAPACITY = ARCH_ASPACE_ACQUIRE_MIN;
     static_assert(ACQUIRE_CAPACITY * KICKOS_NUM_CORES <= PTES,
                   "the transient window outgrows the one level-0 table the chip provides");
-    static_assert(ARCH_ASPACE_ACQUIRE_MIN <= ACQUIRE_CAPACITY,
-                  "this backend cannot hold as many acquires live as arch.h promises");
 
     // Chip<->arch contract, handed over by arch_init before the first space exists
     // (arch/riscv/chip/virt_rv64/chip_virt_rv64.cc). Zero until then, which is what makes a

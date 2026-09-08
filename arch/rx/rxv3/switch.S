@@ -73,7 +73,6 @@
    1096 bytes. */
     .equ BLOCK_USP_MAX_DROP, \
         KICKOS_KERNEL_STACK_SIZE - KICKOS_RX_TRAP_REDZONE_PENDSW - 4
-#if KICKOS_ARCH_HAS_IPC_FASTPATH
 /* Byte offset of the R1 slot from the frame base: the leaf's args, and the slot
    arch_ctx_set_syscall_result writes. arch_rxv3.cc asserts the same value. */
 #if defined(__RX_DFPU_INSNS__)
@@ -86,7 +85,6 @@
     .endif
 #else
     .equ FRAME_R1_OFF, 28
-#endif
 #endif
 #if KICKOS_BENCH
     .equ CMTW1_CMWCNT, 0x00094290  /* free-running 7.5 MHz counter (bench time base) */
@@ -377,7 +375,6 @@ _kickos_rx_syscall_trap:
     sub     r14, r15                /* r15 = writable bytes below the USP */
     cmp     #KICKOS_RX_TRAP_REDZONE_SYS, r15
     bltu    .Lsys_bad_usp           /* the arms' own extents would run off the bottom */
-#if KICKOS_ARCH_HAS_IPC_FASTPATH
     /* THE SEAM. KOS_SYS_CALL_REG completes here, before the RTE that would otherwise land in
        svc_trampoline and run the generic dispatch. INT stacks only PC and PSW, on the ISP,
        and leaves every GPR live, so this arm BUILDS the switch frame on the caller's own USP
@@ -504,7 +501,6 @@ _kickos_rx_syscall_trap:
 .Lfp_isp_refused:
     pop     r15
 .Lsys_generic:
-#endif
     mvfc    usp, r15
     sub     #SYS_HEAD, r15     /* new USP top: room for [userPC][userPSW] */
     mov.l   [r0], r14          /* userPC */
@@ -626,7 +622,6 @@ _arch_syscall64:
     int     #1                 /* SYSCALL_VECTOR (regs.h) */
     rts                        /* return to caller, R1:R2 = result */
 
-#if KICKOS_ARCH_HAS_IPC_FASTPATH
 /* int32_t arch_syscall_reg(uint32_t* io): R1 = io. INT preserves every GPR, so  */
 /* the payload rides R4-R8 straight into the trap and the trap's own frame build */
 /* is what stores it. R6-R8 are callee-saved and are banked here. RTE lands after */
@@ -656,4 +651,3 @@ _arch_syscall_reg:
     add     #4, r0
     popm    r6-r8
     rts
-#endif

@@ -27,7 +27,7 @@
 //
 // Register addresses / bit fields are clean-room from the XMC4700/XMC4800 Reference
 // Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. Diagnostic app
-// (kickos_add_diagnostic_app): never a production image.
+// (kickos_add_diagnostic_apps): never a production image.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
