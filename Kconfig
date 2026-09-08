@@ -324,8 +324,10 @@ config KICKOS_AMP_PORTS
 	  same entries, so a second list would be a second truth.
 
 	  CMakeLists.txt refuses a malformed entry, a node the partition does not hold,
-	  a port outside the mint's 32-bit width, a repeated crossing, and ports 0 and
-	  1, which are the window layer's own echo and reply protocol.
+	  a port outside the mint's 32-bit width, a repeated crossing, and port 1, which
+	  is the port every reply travels on and which no node can therefore serve.
+	  PORT 0 IS NOT REFUSED: it is the window layer's echo, answered with no thread
+	  involved, so naming it for a PEER is legal and an in-tree partition does it.
 
 config KICKOS_DOORBELL_CORES
 	int

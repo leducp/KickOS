@@ -126,6 +126,11 @@ namespace kickos
                   "a node index plus one must fit Endpoint::far_node, whose 0 is the local "
                   "sentinel");
     static_assert(amp::PORT_MAX <= 0xFFu, "a port must fit Endpoint::far_port");
+    // The far arm validates the WHOLE caller sequence, so no count of retries can bring a
+    // sequence round again while the caller still holds it. Widen call_seq and the wire width
+    // must follow it here.
+    static_assert(amp::REPLY_SEQ_MASK == (1u << (8u * sizeof(Thread::call_seq))) - 1u,
+                  "the reply tag's validated width must be the whole of Thread::call_seq");
 #endif
 
 #if KICKOS_AMP_NODE
@@ -134,7 +139,9 @@ namespace kickos
     {
         *out_cap = KCAP_INVALID;
         // port_minted is total over BOTH arguments, so it is the whole range check too.
-        if (not amp::port_minted(node, port) or node == amp::self())
+        // PORT_REPLY names a CLASS and never a service: a call published on it lands in the
+        // peer's reply ring, where a take answers CLASS and drops it.
+        if (not amp::port_minted(node, port) or node == amp::self() or port == amp::PORT_REPLY)
         {
             return -KOS_EINVAL;
         }
@@ -880,7 +887,8 @@ namespace kickos
     bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, void const* payload,
                                     uint32_t len)
     {
-        Thread* caller = cap_reply_thread(tag.thread, amp::reply_seq(tag.seq));
+        Thread* caller =
+            cap_reply_thread(tag.thread, amp::reply_seq(tag.seq), amp::REPLY_SEQ_MASK);
         if (caller == nullptr)
         {
             return false;
@@ -917,14 +925,19 @@ namespace kickos
     // TRUE where a receiver took it and the call slot is now this node's record of the caller,
     // released when the reply is sent. FALSE where nothing took it, and the slot is released at
     // once so the ring does not fill behind a service that is not there.
+    //
+    // EVERY FALSE HERE IS ANSWERED BY dispatch_call, which publishes a zero-length reply
+    // carrying the tag: a refusal past the pop leaves a far caller parked, and under
+    // KOS_TIMEOUT_NONE nothing would ever wake it. So no arm below may grow an answer of its
+    // own, and none may return without reaching this bool.
     bool endpoint_far_call_deliver(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
                                    void const* payload, uint32_t len, uint32_t slot)
     {
+        // THE CALLER OWES THE PORT BEING BOUND: dispatch_call reaches this only where
+        // port_endpoint already answered a bound endpoint and is its one caller
+        // (kernel/amp/ampwindow.cc). SlotPool::at range-checks nothing, so a second caller
+        // that skipped that lookup would index the pool at EP_BOUND_NONE.
         uint16_t const bound = amp::port_endpoint(port);
-        if (bound == amp::EP_BOUND_NONE)
-        {
-            return false;
-        }
         // By index and not by handle: the bind's own reference holds the slot live, so there
         // is no generation for it to have lost.
         Endpoint* const e = kernel().endpoints.at(static_cast<int>(bound));
@@ -1006,7 +1019,9 @@ namespace kickos
     int amp_port_bind_local(Thread* c, uint32_t port, uint32_t* out_cap)
     {
         *out_cap = KCAP_INVALID;
-        if (not amp::port_minted(amp::self(), port))
+        // PORT_REPLY names a CLASS and never a service, refused here as at the mint: a call
+        // published on it lands in the reply ring, where a take answers CLASS and drops it.
+        if (not amp::port_minted(amp::self(), port) or port == amp::PORT_REPLY)
         {
             return -KOS_EINVAL;
         }
@@ -1018,7 +1033,13 @@ namespace kickos
         }
         // A LOCAL endpoint: far_node stays 0. What makes it a service for a peer is the port
         // bound to it.
-        kernel().endpoint_refs[i] = 1;
+        //
+        // TWO REFERENCES: the installed capability's, and THE BIND'S OWN. port_bind stores a
+        // slot INDEX with no generation beside it, and endpoint_far_call_deliver spends that
+        // index directly, so the bind must hold the slot live: closing the seated cap
+        // otherwise frees the slot while g_port_ep1 still names it, and the next
+        // endpoint_create from any task lands there and answers a peer's callers.
+        kernel().endpoint_refs[i] = 2;
         int const obj = kernel().endpoints.handle_for(i);
         int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, CAP_WAIT | CAP_SIGNAL, out_cap);
         if (rc != 0)

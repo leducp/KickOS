@@ -177,12 +177,14 @@
  * self-test scaffolding, and one of its selectors drives the doorbell's REAL service body from
  * inside the dispatch, so amp_probe reaches forge_reply_depth_recovery, node_service and
  * endpoint_far_call_deliver on the caller's kernel block. Off that posture the same three are
- * reached from the doorbell interrupt alone, a different root with no SVCK descent. Measured
- * at pizero2350-amp2-n0 and -n1, both 1216, the only armv7m presets that are nodes. */
+ * reached from the doorbell interrupt alone, which no armv7m class roots: that descent lands in
+ * handler mode on SP_main and is UNMEASURED, per the PENDSV reason in
+ * tests/static/trap_redzone_roots.txt. So off this posture nothing here bounds those three.
+ * Measured at pizero2350-amp2-n0 and -n1, both 1224, the only armv7m presets that are nodes. */
 #if KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 1240
 #elif KICKOS_AMP_NODE && defined(KICKOS_ENABLE_SELFTEST)
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 1216
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 1224
 #else
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 768
 #endif
@@ -266,10 +268,11 @@
 
 /* What one kernel block has to hold: a requirement on KICKOS_KERNEL_STACK_SIZE, not a bound
  * anything refuses at run time, every byte of it being written by privileged code through a
- * pointer the kernel seated. It resolves per KICKOS_TELEMETRY so that the Kconfig ceiling,
- * arch_armv7m.cc's static_assert and check_trap_redzone.sh all price the same posture:
- * 224 + 768 is 992 off, 224 + 1240 is 1464 on, and Kconfig adds the canary word and rounds
- * to 16. */
+ * pointer the kernel seated. It resolves per POSTURE, of which there are three, so that the
+ * Kconfig ceiling, arch_armv7m.cc's static_assert and check_trap_redzone.sh all price the same
+ * one: 224 + 768 is 992 with telemetry off, 224 + 1240 is 1464 on, and 224 + 1224 is 1448 for
+ * an AMP node, which lands on the same 1456 that posture's Kconfig default already states.
+ * Kconfig adds the canary word and rounds to 16. */
 #define KICKOS_ARMV7M_TRAP_NEED_SVCK \
     (KICKOS_ARMV7M_TRAP_NEST_SVCK + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK)
 

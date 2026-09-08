@@ -13,10 +13,19 @@
 
 #include <stdint.h>
 
+// The seam posture, and the ONLY reason this header has an arm at all: tests/unit/mapexec
+// compiles aspace_armv8a.cc for the build host and aspace_sysops_seam.cc defines these eleven
+// symbols. Off that posture the instructions below are emitted, so including this header in a
+// translation unit that is not AArch64 is a compile error here rather than eleven undefined
+// symbols at link.
+#ifndef KICKOS_ARMV8A_SYSOPS_FROM_SEAM
+#define KICKOS_ARMV8A_SYSOPS_FROM_SEAM 0
+#endif
+
 extern "C"
 {
 
-#if defined(__aarch64__)
+#if !KICKOS_ARMV8A_SYSOPS_FROM_SEAM
 
     inline uint64_t kickos_armv8a_read_tcr_el1(void)
     {

@@ -49,8 +49,14 @@ parked TCB is the reply object.
 
 **Stale-resolve (`cap_reply_thread`, `cap.cc`).** Decoding the obj word to a live caller
 requires, under one `IrqLock`: index in range, thread-slot gen match, `state == BLOCKED`,
-`call_state == CALL_REPLY_WAIT`, and `call_seq & 0xFF == seq8`. ANY mismatch resolves to
-`nullptr` (a stale caller). This is the late-reply ABA guard (see limits).
+`call_state == CALL_REPLY_WAIT`, and `((call_seq ^ seq) & seq_mask) == 0`. ANY mismatch resolves
+to `nullptr` (a stale caller). This is the late-reply ABA guard (see limits).
+**`seq_mask` is the width the CALLING ARM's own storage carries and not a policy knob**: a
+`CAP_REPLY` entry holds `KCAP_REPLY_SEQ_BITS` of the sequence in its spare bitfields and asks for
+those 8 bits, a far node's reply tag carries `call_seq` whole and asks for all 16
+(`amp::REPLY_SEQ_MASK`). An arm comparing more bits than its storage carries would refuse every
+live call, so the width travels with the arm and the body does not branch on it. A mask of zero
+drops the clause, which is what an arm asserting that an EARLIER clause refused wants.
 `cap_reply_caller` is that body over what a `CAP_REPLY` entry carries; the far-call section
 below runs the SAME body over a peer node's reply token, which is why the clauses have one
 home and not two.
@@ -323,7 +329,10 @@ which is the whole of why an unvalidated one may cross.
 
 - `tag.thread` -- the caller's generational thread handle, `ThreadPool::handle_for`,
   whole and unshifted, exactly as a `CAP_REPLY` entry's `obj` carries it.
-- `tag.seq` -- the low byte of the caller's `call_seq`, the same late-reply ABA guard.
+- `tag.seq` -- the caller's `call_seq` WHOLE, all 16 bits of it, through `amp::reply_seq`, the
+  ONE conversion to the wire width (`amp::REPLY_SEQ_MASK`). The same late-reply ABA guard as the
+  local arm's, over the whole field rather than a byte of it, so no retry count aliases a live
+  call: the sequence comes round only once the caller has wrapped its own field.
 - `amp::REPLY_TAG_NONE` -- the route of a sender that does not park. It is NOT the zero
   tag: zero is index 0 at generation 0, which a live slot can be, so it carries
   `KOS_THREAD_NONE`, whose all-ones index the thread pool reserves and never seats.
@@ -337,11 +346,12 @@ from inside the doorbell service body, so this core's interrupts are masked and 
 is the exclusion; no `IrqLock` is taken. FIVE clauses, and any failure counts
 `amp::Counts::reply_drop` and drops:
 
-1-4. `cap_reply_thread(tag.thread, tag.seq)`, which is the same body `cap_reply_caller`
-   runs over a `CAP_REPLY` entry: index in range, thread-slot gen match, `state ==
-   BLOCKED` with `call_state == CALL_REPLY_WAIT`, and the seq8 match. One body and not a
-   copy -- a second set of these clauses would be a second answer to whether a reply may
-   land. A node whose `ThreadPool` is zeroed has `next == 0` and refuses every index at
+1-4. `cap_reply_thread(tag.thread, amp::reply_seq(tag.seq), amp::REPLY_SEQ_MASK)`, which is the
+   same body `cap_reply_caller` runs over a `CAP_REPLY` entry: index in range, thread-slot gen
+   match, `state == BLOCKED` with `call_state == CALL_REPLY_WAIT`, and the sequence match under
+   the mask this arm's storage carries -- all 16 bits here, the 8 a `CAP_REPLY` entry can hold
+   there. One body and not a copy -- a second set of these clauses would be a second answer to
+   whether a reply may land. A node whose `ThreadPool` is zeroed has `next == 0` and refuses every index at
    the first clause, which is what makes the same call inert on a peer that runs no kernel
    of its own.
 5. **The cross-node clause**, which the four above cannot carry: the resolved caller must
@@ -359,17 +369,36 @@ arrived rather than panicking inside one. Then `wait_result`, `call_state = CALL
 **The park.** `WAIT_EP_FAR_REPLY`, `wait_obj` the far `Endpoint`, queue-less on no list at
 all. `endpoint_wait_abort` unwinds it with no donor list to unlink and no server to deflate,
 and it MUST bump `call_seq` for the same reason the local `WAIT_EP_REPLY` arm does: a reply
-still in flight names the call by the low 8 bits alone, so a sequence left standing resolves
-to this thread again after exactly 256 further calls.
+still in flight names the call by its sequence alone, so a sequence left standing resolves to
+this thread again once the caller's `call_seq` has come round -- after exactly 65536 further
+calls on this arm, which carries the field whole, and after exactly 256 on the local
+`CAP_REPLY`, whose spare bitfields carry 8 bits of it.
 
-**What DIVERGES from a local call, and it is one thing.** Back-pressure. A local caller
-parks on `send_waiters` until a receiver takes its request; a far caller cannot, the ring
+**What DIVERGES from a local call is back-pressure, and it acts in BOTH directions.** A local
+caller parks on `send_waiters` until a receiver takes its request; a far caller cannot, the ring
 being finite and the far scheduler not this kernel's. So a full peer ring answers
 `-KOS_EBUSY` immediately, with nothing mutated. Per `../design-multicore.md` N6e that
 refusal IS the contract: named, counted, spending no time, with no queue and no retry
 behind it, because how stale a dropped record may be is the workload's property and not the
 kernel's. The rest of the window's refusals map to `-KOS_EPIPE` (a far index this node
 cannot believe) and `-KOS_EINVAL`.
+
+**Back-pressure also exists on the RECEIVING side, and it is not an errno and not a loss.** A
+serving node admits a call only where the reply ring toward that sender has room for one more
+reply than it already owes that sender (`../design-multicore.md` N6f). A peer that has not
+drained its replies therefore has its calls left UNREAD rather than taken and answered into a
+ring with no slot: nothing is published, the consumer's cursor does not move, and the call is
+taken by the service pass THE PEER'S OWN DRAIN RAISES. That raise is what makes the refusal a
+delay rather than a strand: a take that advances a reply ring's tail rings the node whose answers
+that slot belonged to, because a credit return is not a publication anybody rescans
+(`../design-multicore.md` N6f). The caller sees only the latency; the refusal is
+the serving node's own and reaches userspace as the probe verdict `KOS_AMP_V_RESERVE`, counted in
+`amp::Counts::reply_reserve` apart from the producer-side `send_refused` so that a take declined
+and a publication refused are never read as one number. **An answer the reply ring refuses anyway**
+-- reachable only where a peer regressed a tail under a reservation it had already granted -- counts
+`amp::Counts::reply_unsent` and still frees its call slot: the answer is unrecoverable either way,
+the reply capability being spent, and holding the slot would stall the whole held run behind it and
+turn a reply-ring fault into a dead call ring.
 
 **Donation does not cross.** There is no thread on the far side to raise and no seam by
 which this node's priority reaches a peer's scheduler, so D1 and D2 have no far arm and D3
@@ -379,11 +408,57 @@ which is exactly what N7 forbids. The sharper half is that the two priority scal
 unrelated number lines, so meeting a deadline across nodes is a system-integration act
 across two configurations and neither kernel can check the result.
 
-**No reply capability exists.** Nothing is minted into a far server's table -- it has none
-this kernel can name (N6d) -- so there is no one-shot cap to consume, no `reply_waiters`
-membership, and `kos_reply` is not part of this path. What makes the delivery one-shot is
-`call_state`: the wake sets `CALL_NONE`, and clause 3 refuses every later reply carrying the
-same tag.
+**The CALLING node holds no reply capability.** Its whole route is the tag, so there is no
+one-shot cap to consume and no `reply_waiters` membership on this side; what makes the delivery
+one-shot is `call_state`, the wake setting `CALL_NONE` so that clause 3 refuses every later reply
+carrying the same tag. **The SERVING node's receiver holds an ordinary `CAP_REPLY`.** What N6d
+forbids is naming a far kernel's own handle table, and nothing here does: the record lives in the
+SERVING node's table (`amp::inbound_seat`), and the capability `cap_install_far_reply` seats into
+the receiver's own run carries a handle in the thread pool's RESERVED BAND
+(`ThreadPool::far_reply_handle`) rather than a thread handle. That band is how a far reply
+capability exists without a far table being named, and `cap_reply_thread`'s first clause is what
+keeps a band handle from resolving to a local thread -- the pool's `next` never reaches
+`FAR_REPLY_BASE`, asserted at compile time. So `kos_reply` IS on this path, on the serving side.
+
+**The serving side (`endpoint_far_call_deliver`, `kernel/syscall/syscall_ipc.cc`).** The doorbell
+service takes one CALL and HOLDS its ring slot: that slot IS this node's record of the far caller
+until the reply is published, which is what bounds outstanding inbound calls from one peer at
+`KOS_AMP_RING_SLOTS` (`../design-multicore.md` N6f). **The reply slot is reserved UP FRONT**: the
+take is admitted only where the reply ring toward that sender has room for the answer, and the
+answer consumes that reserve whether the receiver SERVED the call or the take was refused past it
+-- an empty reply is a reply. So `-KOS_EBUSY` at the caller and `RESERVE` at the taker are the two
+ends of ONE bound and not two unrelated refusals: the caller meets a full call ring toward the
+serving node, and the taker declines because the reply ring back toward that caller is full. Then,
+in order:
+
+1. the port's bound endpoint is resolved BY INDEX (`amp::port_endpoint`), the bind itself holding
+   a second endpoint reference so the slot cannot be freed under a `g_port_ep1` entry that still
+   names it. A port bound to nothing, or an endpoint with no `recv_holders`, refuses here.
+2. `wq_pop_highest(e->recv_waiters)` takes the receiver, and a call finding nothing parked is
+   refused ON THE SPOT rather than held for a service that may arrive. Once popped, that receiver
+   is COMPLETED whatever follows: it is off its queue, so an early return would park it on nothing.
+3. a record is seated for the held slot (`amp::inbound_seat`) and a `CAP_REPLY` installed for it
+   (`cap_install_far_reply`), gated on the receiver's `kos_recv` having asked for info -- an
+   info-less recv has nowhere to be handed a capability, so the seat is never taken rather than
+   taken and undone. A seat or an install that fails FORGETS the record (`amp::inbound_forget`)
+   and the slot stays the taker's to release.
+4. the payload is copied with `kaccess_to_user`, truncated to the receiver's `ipc.len` as any
+   datagram is, and `kos_recv_info` carries `KOS_BADGE_NONE` -- a far sender holds no badge this
+   kernel minted -- beside the reply handle. A refused copy or a refused info write answers zero bytes and undoes the mint.
+
+The receiver then answers with an ordinary `kos_reply`. The record routes it to
+`amp::inbound_reply`, which publishes it on the sender's `amp::PORT_REPLY` with the tag verbatim,
+releases the held call slot, and frees the record. Reclamation of the call ring is by a released
+mask, so replies may complete OUT OF ORDER while the tail still advances in order.
+
+**EVERY REFUSAL PAST THE TAKE PUBLISHES AN EMPTY `PORT_REPLY` CARRYING THE TAG, and that is the
+wire's only refusal shape.** No refusal message and no errno crosses the window: a far caller
+under `KOS_TIMEOUT_NONE` has no deadline, so a refusal that answered nothing would leave that
+thread parked for the life of the image. Every refusing arm above therefore funnels through ONE
+bool whose single caller publishes the answer and releases the slot (`dispatch_call`,
+`kernel/amp/ampwindow.cc`); an answer written per arm would be a new leak for each arm added. A
+caller cannot distinguish a refusal from an empty answer, and `amp::PORT_ECHO` is the one port the
+window layer answers with the payload rather than with nothing.
 
 **The register fastpath refuses a far endpoint** as a fall-through returning null, never an
 errno, so `endpoint_call` produces the answer. It folds to nothing on every part that links

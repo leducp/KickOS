@@ -95,7 +95,7 @@ a post-take far refusal publishes an empty `PORT_REPLY` carrying the tag (`amppi
 consumer side only, with a ring-refused reply counted apart from `send_refused`; the far arm
 validates the full 16-bit `call_seq` while the local arm keeps passing a mask.
 
-- [ ] **AMP-2: `Slot::len` IS VALIDATED AND THEN RE-LOADED FROM THE SHARED WINDOW BEFORE THE
+- [x] **AMP-2: `Slot::len` IS VALIDATED AND THEN RE-LOADED FROM THE SHARED WINDOW BEFORE THE
       COPY, SO A RACING PEER CAN MAKE THE CONSUMER OVERRUN ITS OWN ISR STACK BUFFER.**
       `ampwindow.cc` (`slot_ok`) 370; (`take_reply`) 424-427; (`take_call`) 499-502. A peer that
       rewrites a slot it wrongly believes free (a stale tail read -- its own arithmetic bug, exactly
@@ -108,7 +108,7 @@ validates the full 16-bit `call_seq` while the local arm keeps passing a mask.
       `slot_ok`, spend only the snapshot; add a unit arm that mutates a slot between the check and
       the copy.
 
-- [ ] **AMP-1 (upgrades C3): A REPLY CAN BE LOST WHENEVER A WELL-FORMED PEER HAS MORE CALLERS
+- [x] **AMP-1 (upgrades C3): A REPLY CAN BE LOST WHENEVER A WELL-FORMED PEER HAS MORE CALLERS
       THAN RING SLOTS, BECAUSE THE CALL SLOT IS FREED AT REPLY *PUBLISH*, NOT AT TAKE.**
       `ampwindow.cc` (`inbound_reply`) 964-971; (`dispatch_call`) 191-194; (`release_call`) 437-462.
       With five or more threads on node B calling node A: T1..T4 park, A replies to all four and
@@ -123,7 +123,7 @@ validates the full 16-bit `call_seq` while the local arm keeps passing a mask.
       call has a reserved reply slot; count a ring-refused reply separately from `send_refused`; add
       a unit arm that fills the reply ring before a reply.
 
-- [ ] **C5: A FAR CALL THE SERVING NODE REFUSES AFTER TAKING THE SLOT IS ANSWERED WITH SILENCE,
+- [x] **C5: A FAR CALL THE SERVING NODE REFUSES AFTER TAKING THE SLOT IS ANSWERED WITH SILENCE,
       SO AN UNTIMED FAR CALL IS A PERMANENT THREAD LEAK.** `syscall_ipc.cc`
       (`endpoint_far_call_deliver`) 920-1002, refusal arms at 942-1000. Unbound port, no receiver,
       `recv_holders == 0`, mint refused, info refused, an info-less receiver: each releases the slot
@@ -134,7 +134,7 @@ validates the full 16-bit `call_seq` while the local arm keeps passing a mask.
       `ampping` learns to treat `n == 0` as a refusal. The untimed leak must not survive this
       sub-milestone.
 
-- [ ] **AMP-3: THE FAR PORT BIND HOLDS NO REFERENCE OF ITS OWN, SO CLOSING THE SEATING CAP CAN
+- [x] **AMP-3: THE FAR PORT BIND HOLDS NO REFERENCE OF ITS OWN, SO CLOSING THE SEATING CAP CAN
       HAND A STRANGER'S ENDPOINT THE NEXT `kos_endpoint_create` LANDS INTO.** `syscall_ipc.cc`
       (`amp_port_bind_local`) 1006-1033, (`endpoint_far_call_deliver`) 923-934; `cap.cc`
       (`endpoint_ref_drop`) 206-233. `endpoint_refs[i] = 1` is the installed capability's own
@@ -148,7 +148,7 @@ validates the full 16-bit `call_seq` while the local arm keeps passing a mask.
       for the bind (which also makes the doc sentence true), or clear the bind in
       `endpoint_ref_drop`.
 
-- [ ] **AMP-4: `depth_ok` ONLY BOUNDS `head - tail`, SO A FAR HEAD THAT MOVES BACKWARD WRAPS TO
+- [x] **AMP-4: `depth_ok` ONLY BOUNDS `head - tail`, SO A FAR HEAD THAT MOVES BACKWARD WRAPS TO
       A HUGE UNREAD COUNT INSTEAD OF BEING REFUSED.** `ampwindow.cc` (`take_call`) 476-491. The
       unread test is `outstanding(head, taken) == 0`, modular; a head that moves backward to between
       `tail` and `taken` -- a peer restarting its ring, exactly the malformed producer this layer
@@ -160,7 +160,7 @@ validates the full 16-bit `call_seq` while the local arm keeps passing a mask.
       regressed head into the existing strike path; the unit arm today only covers head too far
       ahead, add head behind taken.
 
-- [ ] **S2 (carried): THE FAR REPLYTAG SEQUENCE IS VALIDATED AT 8 BITS WHILE THE WIRE CARRIES
+- [x] **S2 (carried): THE FAR REPLYTAG SEQUENCE IS VALIDATED AT 8 BITS WHILE THE WIRE CARRIES
       32, ALIASING A SLOW FAR SERVICE AGAINST A RETRYING CALLER.** `ampwindow.h` 159-175;
       `cap_reply_thread(handle, uint8_t)`. The check body is shared with the local `CapEntry` spare
       bits, which is why the validated width is 8 rather than the wire's 32. A non-hostile alias
@@ -168,7 +168,7 @@ validates the full 16-bit `call_seq` while the local arm keeps passing a mask.
       wrong call. Severity Medium. Direction, decided: validate the full 16-bit `call_seq` on the
       far arm; the local arm keeps passing a mask so the one-body rule holds. Zero wire or ABI cost.
 
-- [ ] **AMP-5, AMP-6, AMP-7, S5: FOUR SMALL AMP-LAYER GAPS, EACH LOW SEVERITY, EACH WITH A
+- [x] **AMP-5, AMP-6, AMP-7, S5: FOUR SMALL AMP-LAYER GAPS, EACH LOW SEVERITY, EACH WITH A
       ONE-LINE FIX.** `syscall_amp.cc` 302-306, (`verdict_code`) 44-63; `syscall_ipc.cc`
       (`amp_endpoint_mint`) 133-140; `ampmap.cc` (`core_of`) 30-41. AMP-5: `KOS_AMP_OP_ROUND` has no
       root gate under a selftest image, so any task can flood a peer's doorbell budget, contradicting
@@ -180,7 +180,7 @@ validates the full 16-bit `call_seq` while the local arm keeps passing a mask.
       `KICKOS_DOORBELL_CORES` from `core_of` (`ring()` already refuses; all current callers pass
       bounded nodes, so this is defense-in-depth).
 
-- [ ] **S3 ADDITION: THE RP2350 DOORBELL BODY IS NOT A `trap_redzone` ROOT ON ARMV7M, SO THE
+- [x] **S3 ADDITION: THE RP2350 DOORBELL BODY IS NOT A `trap_redzone` ROOT ON ARMV7M, SO THE
       DELIVER CHAIN'S ISR STACK DEPTH READS AS BOUNDED WHILE IT IS UNMEASURED.**
       `tests/static/trap_redzone_roots.txt` 337; `doorbell_rp2350.cc` 237; `ampwindow.cc`
       (`node_service`) 512-584. `SERVICE_PER_CALL = RING_SLOTS x (NODE_MAX - 1)`, two loops so up to
@@ -194,6 +194,48 @@ validates the full 16-bit `call_seq` while the local arm keeps passing a mask.
 
 External audit, itemised into `roadmap.md` M8.3. SEC-1's owner-tag decision is taken and recorded
 below as the decided shape, not reopened.
+
+- [ ] **A CALL-DEPTH RESYNCHRONISATION DROPS HELD RECORDS WITHOUT ANSWERING THEIR CALLERS, AND
+      `reply_unsent` IS DIAGNOSABLE ONLY FROM INSIDE THE KERNEL.** `kernel/amp/ampwindow.cc` 355-379
+      and 1174-1182; `kernel/include/kickos/ampwindow.h` 383-390. The resynchronisation bumps each
+      record's generation so no reply can answer a stranger, which is what makes it memory-safe, but
+      the callers those records named are left waiting: it predates M8.2's credit return and needs a
+      malformed or regressed far head to reach, so a transient regression can strand live far
+      callers. Belongs with the producer-tail resilience item above, since both are the same
+      question -- what a node owes a caller whose route it has stopped believing. And expose
+      `reply_unsent` through a probe op in the same pass: it is the only signal that an answer was
+      lost, and today nothing outside the kernel can read it, so the exceptional loss the item above
+      counts is invisible exactly where it would be diagnosed.
+- [ ] **THE FAR REPLY PUBLICATION HAS NO PRODUCER-SIDE STRIKE BOUND, SO A PEER THAT REGRESSES ITS
+      REPLY TAIL WEDGES THIS NODE'S ANSWERS FOR THE LIFE OF THE IMAGE.** `kernel/amp/ampwindow.cc`
+      (`reply_reserved`) 417-444 and (`inbound_reply`) 1173-1204. The CONSUMER side has
+      `DEPTH_STRIKES` and resynchronises a ring it has stopped believing; the PRODUCER side has
+      nothing of the kind. A reservation granted against a far-owned tail can be made permanently
+      false by a peer that regresses or restarts that tail, and every later answer then counts
+      `Counts::reply_unsent` and is dropped, visibly but unrecoverably. **M8.2 fixed the narrow
+      half** -- a refused answer is counted apart and still frees its call slot rather than being
+      dropped silently -- and declined the rest as a resilience question rather than a defect in the
+      reservation. Two pieces are owed. The RETRY needs the payload retained past a failed send, a
+      staging buffer per `Inbound` record plus a re-drive pass, which the credit return now makes
+      possible where it was not before. And the RECOVERY needs coordinated-restart or epoch
+      semantics for a far tail, which is the same question a regressed tail raises for the consumer
+      and which `DEPTH_STRIKES` answers only on that side. Direction: decide whether a producer
+      strike bound is the symmetric answer, and note that an epoch is refused elsewhere in this tree
+      as a second answer beside a real release point -- so it must be argued, not assumed.
+
+- [ ] **`SlotPool::at` TAKES AN INDEX AND BOUNDS NOTHING, AND M8.2 REMOVED THE ONE CALLER WHOSE
+      DEAD REFUSAL WAS ALSO ITS RANGE CHECK.** `kernel/include/kickos/slotpool.h` (`at`) 112 is
+      `return &slots_[index];`, and its own comment says "the slot at a KNOWN-LIVE index", so the
+      bound is a caller obligation with nothing holding it. This is assigned here rather than filed:
+      it is a syscall-robustness question and M8.3 is that surface, and M8.2 declined it as outside
+      its own. **What made it visible**: `endpoint_far_call_deliver` carried an
+      `if (bound == EP_BOUND_NONE) return false;` whose arm was unreachable, `dispatch_call` being
+      its only caller and calling it only inside the same test -- but that dead arm was also the only
+      thing standing between a `port_endpoint` miss and `at(0xFFFF)`. Deleting it is correct and the
+      constraint is now stated at the call site, which is exactly the shape this item exists to
+      replace. Direction: decide whether `at` refuses (returning a null object, so the authority is
+      TOTAL rather than sentinelled at each call site) or whether the obligation is enforced at the
+      seam it is documented as; do not add a per-caller bound check, which is the second-truth shape.
 
 - [ ] **SEC-1: ON A REGION BOARD, A SPAWN-TIME RAM GRANT OR A CALLER-SUPPLIED STACK IS ADMITTED
       OVER ANY IN-ARENA, DESCRIPTOR-ENCODABLE RANGE -- INCLUDING ANOTHER TASK'S DATA OR A
@@ -248,7 +290,7 @@ below as the decided shape, not reopened.
       Low, selftest images only. Direction: root-gate both, or record in writing that a selftest
       image has no privilege boundary at all.
 
-- [ ] **SEC-7: `genconfig.py` WRITES STRING KNOBS AND PATHS INTO GENERATED CMAKE UNESCAPED.**
+- [ ] **SEC-7: `tools/kconfig/genconfig.py` WRITES STRING KNOBS AND PATHS INTO GENERATED CMAKE UNESCAPED.**
       `tools/kconfig/genconfig.py` (`write_cmake_fragment`) ~173-197. A quote or semicolon in a
       `KICKOS_AMP_PORTS` value or a build path breaks or silently extends the generated
       `set(... "...")` line. Inputs are the repo's own defconfigs and the operator's own paths today,
@@ -271,6 +313,43 @@ External audit, itemised into `roadmap.md` M8.4. Two decisions already taken and
 every `KICKOS_*` symbol reaches CMake by rule, replacing the bool allowlist; CI gains
 `qemu-arm64-gicv3`, `pizero2350-amp` and one `qemu-riscv64` job, their toolchains already fetched.
 G-06 lands as a named configure refusal of the fastpath above one kernel core.
+
+- [ ] **THE FORWARDING GATE CHECKS THE DIRECTION THE LIVE BUG IS NOT IN, AND SIX HAND LISTS DECIDE
+      MEMBERSHIP WITH NO CROSS-CHECK.** `CMakeLists.txt` 66-84, 95-100, 102-115 (27, 4 and 8 entries,
+      inbound); `tools/kconfig/genconfig.py` 35-46, 53-96, 97-105 (10, 32 and 7, outbound);
+      `tests/static/check_kconfig_gen.sh` 110-113 hard-codes five booleans, which is a seventh list
+      inside the gate that checks the sixth. 88 entries, and `check_kconfig_forwarding.sh` asserts
+      only that a prompted symbol CAN be requested -- nothing asserts a RESOLVED symbol reaches
+      CMake, which is why G-01 and G-02 below are live. `tools/kconfig/genconfig.py`'s own comment says a symbol
+      absent from its list reaches CMake as EMPTY, silently. Direction, per `roadmap.md`'s M8.4
+      ruling now carried in both directions: emit every symbol into the fragment by the rule the
+      generated header already uses, and derive the request syntax from the prompted set and the
+      symbol type that kconfiglib exposes and this gate already computes. That retires the six lists
+      down to one, retires G-01 and G-02 as a CLASS instead of one at a time, and retires the
+      forwarding gate and its five-bool assert entirely.
+
+- [ ] **`docs/reference/porting.md` STATES TWO THINGS THAT ARE FALSE OR PARTIAL ABOUT HOW A KNOB
+      REACHES THE BUILD.** Line 352, "nothing about a board's provisioning is stated in CMake", is
+      false for `KICKOS_APPDATA_SIZE`. Lines 372-374 say a `-D` becomes a request the generator can
+      refuse without saying that this holds only for the names in the forwarding lists, every other
+      `-DKICKOS_X=` being dropped with a non-fatal unused-variable notice. Neither the generator
+      lists, nor the two routes a knob takes to C, nor which route wins is mentioned at all. The page
+      is code-synced, so this is a defect. Also: `tests/integration/gates/`, now the home of every
+      integration registration, is named nowhere under `docs/`.
+
+- [ ] **`KICKOS_DOORBELL_CORES` IS A PLAIN Kconfig INT WITH NO `range` AND NO CMAKE REFUSAL, so a
+      defconfig can set it BELOW the board's core count and index the doorbell matrix past its end.**
+      `arch/include/kickos/arch/doorbell_cells.h` 39 sizes the cell matrix from it, and
+      `kernel/amp/ampmap.cc` 25 counts a list with no declared bound against it. Nothing refuses the
+      mismatch at configure, so the failure is an out-of-bounds index in cross-core wake delivery
+      rather than a build error. **Lifted out of the M8.1.1 guard-sweep record**, where it had been
+      filed among assertions worth keeping; it is a missing refusal, not a keeper. It belongs here
+      because M8.4 owns the configure-time rule that every `KICKOS_*` symbol reaches CMake by rule
+      rather than through a second authority. Direction: a Kconfig `range` is not enough on its own,
+      the bound being another symbol -- refuse the pair at configure the way the AMP port list is
+      refused, and state which symbol is authoritative. Note M8.2 made `amp::core_of` return
+      `KICKOS_DOORBELL_CORES` for an out-of-range node, so the kernel side now refuses; this is the
+      build side of the same bound.
 
 - [ ] **G-01, G-02: A KCONFIG SYMBOL CAN REACH `.config` AND STOP THERE, COMPILING A FEATURE OUT
       SILENTLY.** `tools/kconfig/genconfig.py` (`CMAKE_BOOL_KNOBS`) 97; `CMakeLists.txt` 104,
@@ -403,6 +482,14 @@ brace and include lines dropped). "Containment" below is shared shingles over th
 shingle set. The arm64 chip pair (DRY-1) extends the existing item below under M7.6, "THE TWO arm64
 CHIP PORTS ARE NEAR-CLONES", rather than duplicating it.
 
+- [ ] **`aspace_image_alias` IS ONE `return nullptr` FROM LETTING THREE CALL SITES DROP THEIR
+      `KICKOS_HAVE_ASPACE` GUARDS.** `kernel/init/kmain.cc` 124 and 247, `kernel/thread/reent.cc`
+      around 55. `KICKOS_TLS` is the model to copy: fully total, every caller unconditional. **Lifted
+      out of the M8.1.1 guard-sweep NEGATIVE RESULTS record**, which established that no call site
+      anywhere wraps an already-total function in a matching `#if` -- this is the single exception,
+      so it is the one actionable item that sweep produced rather than part of its negative finding.
+      Direction: make the authority total and delete the guards; do not add a sentinel beside it.
+
 - [ ] **DRY-2: THE ARMV8A AND RV64IMAC DOORBELL BACKENDS ARE THE HIGHEST-CONTAINMENT PAIR IN
       KERNEL+ARCH, AT 0.75.** `klock_armv8a.cc` / `klock_rv64imac.cc`. `doorbell_round`, `hex1`,
       `arch_ipi_wait`, `await_peers_*` (4 lines differ) and `arch_ipi_send` are identical to within
@@ -463,6 +550,51 @@ CHIP PORTS ARE NEAR-CLONES", rather than duplicating it.
 ## M8.6 -- DRY in build, test and userspace
 
 External audit, itemised into `roadmap.md` M8.6.
+
+- [ ] **THE ROOT FILE KEPT THE SHAPE M8.1.1 REMOVED FROM THE APPS, IN 22 COPIES AND 70 DEAD
+      GUARDS.** `CMakeLists.txt` 1339-1507 holds 22 flat copies of one four-condition `if` around 34
+      `add_subdirectory(tests/unit/...)`, and ordering explains only 12 of the 34 (ten nest under
+      kfixture, two under exitquiesce); the other 22 are an orderless list, and no CMakeLists.txt
+      exists under tests/unit or tests to hold a loop. Separately, 70 `EXISTS` guards test paths that are
+      all in `git ls-files`: 34 on `tests/unit/<x>/CMakeLists.txt`, 25 on literal `kernel/*.cc` in
+      one foreach at `kernel/CMakeLists.txt` 23, 5 on a fixed directory list at `CMakeLists.txt`
+      1333, 4 in `system/driver/CMakeLists.txt` 15-25 whose own comment says to drop them, and 2 at
+      1672 and 1680. That is the "guard against a declaration that cannot decline" class the apps
+      were cleaned of. Direction: one guard plus a foreach, and delete the guards; the tree already
+      uses this idiom for the per-chip fragments and for the gate includes.
+
+- [ ] **THE 36 GATE FILES NOW REPEAT WHAT THE APP FILES USED TO, AND A NEW ONE IS PICKED UP BY
+      NOTHING.** `tests/integration/gates/` is 1837 lines: 49 raw `add_test` across 22 files with 18
+      sharing an identical `TIMEOUT 120 LABELS host` tail while `kickos_add_qemu_test` covers the 60
+      emulator registrations and nothing covers these; 12 hand-written board ladders over the same
+      fleet subsets, with one four-board set spelled out three times, while the two board-set helpers
+      at `cmake/kickos.cmake` 821 and 839 have no caller at all; and inclusion is an explicit
+      36-name list at `tests/integration/CMakeLists.txt` 30-35, so a gate file added without editing
+      it is silently not registered. Direction: a host-gate helper for the identical tail, use the
+      existing board-set helpers, and glob-or-rule the inclusion so a new gate cannot be silently
+      absent -- the same "an authority is total" arrow M8.1.1 turned everywhere else.
+
+- [ ] **THE THREE CMAKE CONCENTRATIONS, WITH THE MOVE EACH ONE WANTS.** Corpus 11925 lines over 272
+      files; the root is 16 percent of it and no function in `cmake/kickos.cmake` is dead, so this is
+      unfactored rather than over-engineered. (1) Seven `cmake/toolchain-*.cmake` total 818 lines of
+      which 253 match a shared set of 47 normalised lines -- compiler search, find-root modes, the
+      rescan loop and the board-descriptor chain, verbatim across the six real toolchains: a
+      `toolchain-common.cmake` takes each to 25-55 lines, about -400. (2) `arch/CMakeLists.txt`
+      83-357 is nine `KICKOS_ARCH STREQUAL` branches of the same five commands with a different
+      source list: a per-arch `sources.cmake` in the existing opt-in idiom plus a 30-line driver,
+      about -135. (3) The root's 667-976 AMP block is 310 lines of arithmetic and refusal with no
+      target and no test, the same job `boot_arena.cmake` and `cap_table.cmake` already do as
+      modules. **ORDERING CONSTRAINT**: the AMP block must keep running before `cap_table.cmake` at
+      root 1709, whose width depends on the port count. Also `toolchain-cxx-runtime-check.cmake` is
+      not a toolchain file -- it defines one probe function and is misfiled by name.
+
+- [ ] **NOTHING ENFORCES THE PRESET-TO-DEFCONFIG BIJECTION, THOUGH IT HOLDS TODAY WITH ZERO
+      EXCEPTIONS.** 76 configure presets over seven JSON files, 69 of them pure board-plus-variant
+      pairs; 68 defconfigs, 67 with a preset, the gap being a gate fixture consumed by path. The
+      naming rule is mechanical. But `tests/static/preset_boards.cmake` 168-178 tolerates a missing
+      defconfig, and `check_kconfig_gen.sh` walks defconfigs and never reads presets, so neither
+      direction is checked. Direction: one set-equality gate, roughly +15 lines, which is the cheapest
+      item in this section and the only one that adds rather than removes.
 
 - [ ] **DRY-8: `tests/lib/gate.sh` IS SOURCED BY 96 OF 101 GATE SCRIPTS BUT LACKS THE CORPUS
       HALF, SO A CORPUS-FILTER FIX GETS MADE TWENTY-ONE TIMES.** `tests/lib/gate.sh` (796 lines).
@@ -578,6 +710,21 @@ one.
       Direction: build the end-to-end span on top of the existing IRQ-entry probe, and add a hold-time
       sample around the outermost lock acquire/release in `klock.cc`; report p50/p99/max per board,
       per the MIN-vs-distribution change M8.4 makes to the instrument's headline statistic.
+
+- [ ] **THE INSTRUMENT OWES M9 FIVE CONSTANTS IT DOES NOT PRODUCE, AND THE BENCH REFUSES MORE THAN
+      ONE KERNEL CORE OUTRIGHT.** `CMakeLists.txt` 962-975 makes `KICKOS_BENCH` above one kernel
+      core a configure `FATAL_ERROR`, and `kernel/bench/bench.cc` reports min, average and maximum
+      with no percentile, no lock-wait metric and no per-core accumulator -- so nothing measured
+      here can size a multicore bound at all. `roadmap.md`'s M9 section now names what it needs and
+      why specifying it here is cheap: one accumulator PER CORE aggregated at report time (which is
+      exactly what that `FATAL_ERROR` says is missing), the lock WAIT distribution beside the hold
+      one, the doorbell round trip (the existing `doorbell_round` self-check is its seed), the
+      longest interrupt-masked window per core, and, for the IRQ-to-userspace span, whether the wake
+      was LOCAL or CROSS-CORE. Direction: fold these into the two items above rather than adding a
+      pass, since they instrument the same spans. **The reason it is here and not in M9 is cost, not
+      urgency**: these instrument spans M8.7 is already opening, so they are nearly free in that pass
+      and a campaign of their own afterwards. A constant missed here is re-measured later, which
+      costs a run and settles nothing else.
 
 ## M8.8 -- per-switch and per-wake plumbing
 
@@ -748,9 +895,24 @@ below, not duplicated in this section.
       save; rank this after M8.7's A53 baseline exists, since its payoff is a fraction of a currently
       unmeasured trip.
 
-## M8.1.1: two guard sweeps, with the negative results recorded so they are not re-run
+## M8.1.1-era guard sweeps: the findings assigned forward, and the records kept
 
-- [ ] **ELEVEN `KICKOS_ARCH_HAS_IPC_FASTPATH` GUARDS ARE TAUTOLOGICAL AND DEAD.**
+M8.1.1 has merged. What the two sweeps found is below, each actionable item naming the
+sub-milestone that owns it, and the two RECORDS carrying no checkbox because there is nothing
+to do with them -- they exist so a later sweep does not repeat the work or delete a keeper.
+
+**AND TWO OF THEM WERE ALREADY DONE WHEN THEY WERE ASSIGNED FORWARD, WHICH IS THE TRAP THIS
+SECTION NOW EXISTS TO WARN ABOUT.** The fastpath guards and the dead assertions were assigned to
+M8.5 in this file's own reassignment pass, and both had been deleted by M8.1.1 itself: `git show`
+on that commit removes exactly eleven `KICKOS_ARCH_HAS_IPC_FASTPATH` occurrences and twenty-five
+`static_assert`s. An M8.5 session would have gone looking for work that does not exist. **A sweep
+that RECORDS what it found and a sweep that FIXES it read identically in a task list once the
+milestone that ran it has merged**, so a finding carried forward has to be re-checked against the
+tree, not against the note. The one guard that remains, `arch/include/kickos/arch/arch.h` 894, is
+NOT of that class and must stay: that header is shared by every arch, so the knob really is 0 on
+the three that have no fastpath and the declaration really is conditional.
+
+- [x] **DONE BY M8.1.1, NOT M8.5's: ELEVEN `KICKOS_ARCH_HAS_IPC_FASTPATH` GUARDS WERE TAUTOLOGICAL AND DEAD.**
       `arch/arm/armv6m/arch_armv6m.cc` 188; `arch/arm/armv7m/arch_armv7m.cc` 160, 252;
       `arch/rx/rxv3/arch_rxv3.cc` 364; and six `switch.S` sites (`armv6m` 250, 487, `armv7m` 344,
       596, `rxv3` 76, 380, 629). Each arch's `ipc_fastpath.cmake` sets the knob to 1
@@ -760,7 +922,7 @@ below, not duplicated in this section.
       so the guard is structurally unnecessary once the opt-in file exists. No unit seam consumes a
       missing arm, so this is not the `sysops_armv8a.h` class. Deleting all eleven changes no build.
 
-- [ ] **26 `static_assert`s CANNOT FIRE AND ARE NOISE**, out of 498 invocations; roughly 450 are
+- [x] **DONE BY M8.1.1, NOT M8.5's: 26 `static_assert`s COULD NOT FIRE AND WERE NOISE**, out of 498 invocations; roughly 450 are
       keepers and 22 want a second look. The verifiable-in-one-read ones:
       `arch/x86/x86_64/aspace_x86_64.cc` 1201 and `arch/arm64/armv8a/aspace_armv8a.cc` 853 both read
       `6u <= SIZE_MAX` because `ACQUIRE_CAPACITY` is `SIZE_MAX` in the same file;
@@ -782,8 +944,8 @@ below, not duplicated in this section.
       inject synthetic geometries, and `examples/oot-app/main.cc` 13 re-asserts against the
       INSTALLED header, which is the consumer path.
 
-- [ ] **THE KEEPERS THAT ARE THE ONLY ENFORCEMENT OF THEIR RULE, recorded so a later sweep does not
-      delete them.** `arch/riscv/rv32imac/arch_rv32imac.cc` 103: a privileged `ecall` arrives with
+- **RECORD, not a task: THE KEEPERS THAT ARE THE ONLY ENFORCEMENT OF THEIR RULE, so a later sweep
+      does not delete them.** `arch/riscv/rv32imac/arch_rv32imac.cc` 103: a privileged `ecall` arrives with
       `MPP=M` and runs dispatch on that thread's own stack, and `rv_trap_stack.h` 14-21 states that
       no runtime bound refuses an M-mode sp. `kernel/include/kickos/thread.h` 562 and 565: the
       strict inequality is what keeps `KOS_THREAD_NONE` unmintable at any generation. `thread.h` 584:
@@ -791,27 +953,30 @@ below, not duplicated in this section.
       stranger's call. `thread.h` 644 and `cap.h` 61. `kernel/syscall/syscall_ipc_fast.cc` 53: the
       arch prologues branch on the literal 56 in assembly. `arch/rx/rxv3/arch_rxv3.cc` 32 pins
       `-mdfpu`; 123 and `arch/arm/armv7m/arch_armv7m.cc` 161 pin an immediate the asm spells
-      independently. `arch/include/kickos/arch/doorbell_cells.h` 39:
-      **`KICKOS_DOORBELL_CORES` is a plain Kconfig int with no `range` and no CMake refusal**, so a
-      defconfig can set it to 1 on a two-core board and index the matrix past its end.
-      `kernel/amp/ampmap.cc` 25 counts a list with no declared bound.
+      independently. `arch/include/kickos/arch/doorbell_cells.h` 39.
+      `kernel/amp/ampmap.cc` 25 counts a list with no declared bound. **One entry of this sweep was
+      NOT a keeper and is lifted out of this record into M8.4**: `KICKOS_DOORBELL_CORES` refusing
+      nothing at configure is a defect, not an assertion worth preserving.
       `system/init/sim/service_list_uart.cc` 133 pins a byte offset a descriptor hands the kernel.
 
-- [ ] **NEGATIVE RESULTS, so neither sweep is repeated.** The ISA-macro-in-an-ISA-directory shape
-      (`__aarch64__`, `__riscv`, `__XTENSA__`, `__RX__`, `__x86_64__`) occurs in exactly ONE place
-      fleet-wide, `arch/arm64/armv8a/sysops_armv8a.h`, already recorded under M8.2; it is not a
-      pattern. No chip `.cmake` re-tests its own chip, and no per-arch `CMakeLists.txt` re-tests its
+- **RECORD, not a task: NEGATIVE RESULTS, so neither sweep is repeated.** The
+      ISA-macro-in-an-ISA-directory shape (`__aarch64__`, `__riscv`, `__XTENSA__`, `__RX__`,
+      `__x86_64__`) occurred in exactly ONE place fleet-wide, `arch/arm64/armv8a/sysops_armv8a.h`,
+      and M8.2 replaced it with a seam predicate: **the shape is now absent from the tree**, and it
+      was never a pattern. No chip `.cmake` re-tests its own chip, and no per-arch `CMakeLists.txt` re-tests its
       own arch. And **no call site anywhere wraps a call to an already-totalized function in a
       matching `#if`**: every caller of `aspace_activate_for`, `aspace_seated_for` and
       `aspace_install_boot` already calls unconditionally, and the ~65 other `KICKOS_HAVE_ASPACE`
       regions name types and fields with no disabled arm, so a no-op cannot erase them. The one
-      exception worth doing: `aspace_image_alias` is a single `return nullptr` away from letting
-      `kernel/init/kmain.cc` 124 and 247 and `kernel/thread/reent.cc` around 55 drop their guards.
-      `KICKOS_TLS` is the model to copy, fully total with every caller unconditional.
+      exception worth doing is NOT a negative result and is lifted into M8.5: `aspace_image_alias`
+      is a single `return nullptr` from letting `kernel/init/kmain.cc` 124 and 247 and
+      `kernel/thread/reent.cc` around 55 drop their guards, `KICKOS_TLS` being the model to copy,
+      fully total with every caller unconditional.
 
-## M8.1.1: weak linkage goes, and the build chooses the symbol
+## M8.1.1-era finding, assigned to M8.6: weak linkage goes, and the build chooses the symbol
 
-- [ ] **WEAK UNDEFINED SYMBOLS ARE NOT PORTABLE AND THEY HIDE ABSENCE, WHICH THIS TREE HAS ALREADY
+- [ ] **(M8.6, and the count is NINE not eight: `kernel/mem/aspace.cc` 26 is a ninth raw site the
+      original sweep missed) WEAK UNDEFINED SYMBOLS ARE NOT PORTABLE AND THEY HIDE ABSENCE, WHICH THIS TREE HAS ALREADY
       BEEN BITTEN BY ONCE.** `docs/reference/invariants.md`'s `ctors-run-before-init-entry` records
       the failure in its own words: `__kickos_app_init_array_{start,end}` "were once WEAK, which
       collapsed absent into a null the walk skipped", so a monolithic `.init_array` could run every
@@ -845,7 +1010,7 @@ below, not duplicated in this section.
 
 ## M8.2 pickups
 
-- [ ] **`sysops_armv8a.h` GUARDS ON THE COMPILER'S TARGET WHERE IT MEANS "A SEAM SUPPLIES THESE".**
+- [x] **`sysops_armv8a.h` GUARDS ON THE COMPILER'S TARGET WHERE IT MEANS "A SEAM SUPPLIES THESE".**
       `arch/arm64/armv8a/sysops_armv8a.h` splits on `#if defined(__aarch64__)`, inlining the
       instructions on one arm and declaring eleven functions on the other. The `#else` is DEAD in
       every shipped build: the only includer is `arch/arm64/armv8a/aspace_armv8a.cc`, which is
@@ -901,6 +1066,23 @@ M8.12 is the M8-EXIT measurement, taken after them, and it is the one M9 is judg
 verdict that the coarse lock survives is a successful outcome, not a failure. It is sized from
 M8.12, never from M8.7 or earlier.
 
+**THE LEDGER GAINED SIX ROWS ON 2026-09-08 AND ONLY M9.0 IS STARTABLE.** `roadmap.md` now assigns
+M9.1 (the lock's own bound, per backend), M9.2 (ownership under the lock: a home derived from the
+mask, per-core ready queues, the wait-edge rule), M9.3 (the per-pair rings), M9.4 (the local
+scheduler leaves the lock), M9.5 (same-owner IPC leaves the lock) and M9.6 (write-up and exit
+measurement), and it carries each stage's content, its evidence gate and the rulings behind it --
+including the ones a session might otherwise reopen: ownership and the rings land UNDER the lock in
+both outcomes, an endpoint's owner is the home of its first receiver, cross-core inheritance is a
+ring kind with a ceiling as an admission rule, a line follows its claimer and a waiter follows its
+line, eight cores is a scenario and not a target, and capability lifetime is a named precondition of
+M9.5 rather than a decision anyone has taken. **Granular items are not written here for those
+stages yet, deliberately**: they are sized from measurement, and an item written against today's
+figures would carry a number the rebaseline replaces. What IS actionable now is M9.0, plus the
+instrument constants M8.7 owes this milestone (see that section) and G-06. **The ladder itself
+adapts as the work lands**, the same way every milestone in this file has: `roadmap.md` says so at
+the ledger, and a stage found to be two stages, or already answered by the one before it, is re-cut
+rather than defended.
+
 - [ ] **M9.0: THE REFERENCE-KERNEL SURVEY, CITE BY PATH AND NEVER COPY.** `roadmap.md`'s M9.0 row
       names seL4, Fiasco.OC, NuttX, RIOT, Zephyr, ThreadX, RTEMS, RT-Thread, ChibiOS and FreeRTOS;
       revision-pinned checkouts sit on the development box (`CONTEXT.local.md` names them and their
@@ -912,8 +1094,23 @@ M8.12, never from M8.7 or earlier.
       forbids. The output enumerates the design space and says where KickOS sits in it; it does not
       rank the projects against each other, and a majority among them is not by itself an argument
       for a KickOS design choice.
+      **THE SCOPE GREW ON 2026-09-08 AND EACH ADDITION IS A GAP THE FIRST PASS LEFT.** Every row
+      carries a LICENCE, because the clean-room rule is only checkable against one. Four rows are
+      added that the named ten do not cover: a lock-free capability kernel whose reclamation is
+      timestamp quiescence and a production kernel whose remote wakes queue on the target's own list
+      and flush after an inter-processor interrupt, both of which are checked out on this box
+      already; the tree's OWN AMP window, whose per-pair rings and publication rules M9.3 reuses as
+      written; and the tree's own routed controller-mask touch, which is the one blocking cross-core
+      wait that exists here. And four are named as references that are NOT on the box, so that their
+      absence is a recorded gap rather than an implied verdict: a multikernel with a published
+      crossover between shared memory with locks and message passing, a capability kernel that binds
+      every execution context to a core, a scheduling-context and budget design that lives inside a
+      project already on the list, and a message-passing system with priority inheritance across the
+      message path. **Two claims must be checked before either is cited**: whether the most-cited
+      precedent's IPC fastpath takes its queue lock on the same acquisition, and what that project's
+      own documents say the verification envelope excludes.
 
-- [ ] **P5: PER-CORE READY QUEUES, MOVED HERE FROM M8.10 -- THEIR REAL SHAPE IS THE
+- [ ] **P5 (= M9.2): PER-CORE READY QUEUES, MOVED HERE FROM M8.10 -- THEIR REAL SHAPE IS THE
       LOCK-PARTITION DESIGN, AND BUILDING THEM UNDER ONE LOCK FIRST BUILDS THEM TWICE.** Under
       today's single lock, `pick_next` would only shrink from a filtered scan to a pop and
       `poke_peers_below` would only lose its walk (`sched.cc`) -- tens of cycles inside a
@@ -1319,7 +1516,7 @@ to all 20.
       lists; nothing compares the two. A knob in the fragment but not the translation is one the
       fragment SILENTLY OVERWRITES -- that shape has now bitten three times (the posture, the five
       booleans, and `KICKOS_SERVICE_LIST`/`KICKOS_BOARD_PINMAP`, whose omission reddened four sim
-      gates). `tests/static/check_kconfig_gen.sh:51` drives `genconfig.py` DIRECTLY, so the CMake
+      gates). `tests/static/check_kconfig_gen.sh:51` drives `tools/kconfig/genconfig.py` DIRECTLY, so the CMake
       translation never executes under any gate; its only round-trip leg is `KICKOS_SERVICE_LIST`
       (`:149-152`), there is none for `KICKOS_BOARD_PINMAP`, and no leg tests a provisioning
       integer accepted as an override or a boolean forced to `n` against a defconfig that sets it

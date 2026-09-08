@@ -84,13 +84,21 @@ endif()
 # tests/integration/check_amp_peer_arms.sh asserts they are NOT skipped there. Under one image
 # the peers are this image's own cores and always answer.
 #
-# amp_far_reply_guard parks a caller on a far port nobody answers, which is a port the partition
-# names a node MORE THAN ONCE: the node's kernel binds every port it is named and its app
-# receives on the first alone. That spare is a far entry for every other node, and a far entry
-# this node binds itself is not one it can park on, so the arm is reachable on every node but
-# the one holding the spare, at any width.
+# amp_far_reply_guard and amp_far_reply_empty both park a caller on a far port nobody answers,
+# which is a port the partition names a node MORE THAN ONCE: the node's kernel binds every port
+# it is named and its app receives on the first alone. That spare is a far entry for every other
+# node, and a far entry this node binds itself is not one it can park on, so the arms are
+# reachable on every node but the one holding the spare, at any width.
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
-  list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_reply_guard)
+  list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_reply_guard amp_far_reply_empty)
+endif()
+
+# amp_reply_reserve skips on the OPPOSITE posture to the three above, which is why it is its own
+# predicate rather than another name on that list. It holds the reply ring toward a peer full so a
+# take has no slot to reserve; under one image the peers are this image's own cores and drain
+# their own rings, so the forge DECLINES rather than fabricating a state they would act on.
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND NOT KICKOS_AMP_OWN_IMAGE)
+  list(APPEND KICKOS_EXPECT_SKIPS amp_reply_reserve)
 endif()
 
 # amp_deferred_doorbell needs a raise that can be WITHHELD, so it needs a doorbell that keeps a

@@ -31,7 +31,10 @@ namespace kickos
         {
             if (node >= NODE_MAX)
             {
-                return 0u;
+                // NO CORE, and not the primary's index: every backend indexed by this refuses
+                // a core at or above the doorbell's width, so the refusal travels rather than
+                // needing a flag of its own beside the answer.
+                return KICKOS_DOORBELL_CORES;
             }
 #if KICKOS_AMP_OWN_IMAGE
             return NODE_CORE[node];

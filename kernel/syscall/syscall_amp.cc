@@ -41,23 +41,41 @@ namespace kickos
                 amp::send(node, amp::PORT_ECHO, PROBE_TAG, payload, ROUND_LEN)));
         }
 
+        // NO `default`, deliberately: -Wswitch under -Werror is what makes this mapping
+        // exhaustive, so a Verdict added without a code here fails the build instead of
+        // reaching userspace as EMPTY. The trailing return exists for flow analysis only.
         uint64_t verdict_code(amp::Verdict v)
         {
-            if (v == amp::Verdict::TOOK)
+            switch (v)
             {
-                return KOS_AMP_V_TOOK;
-            }
-            if (v == amp::Verdict::DEPTH)
-            {
-                return KOS_AMP_V_DEPTH;
-            }
-            if (v == amp::Verdict::LENGTH)
-            {
-                return KOS_AMP_V_LENGTH;
-            }
-            if (v == amp::Verdict::PORT)
-            {
-                return KOS_AMP_V_PORT;
+                case amp::Verdict::EMPTY:
+                {
+                    return KOS_AMP_V_EMPTY;
+                }
+                case amp::Verdict::TOOK:
+                {
+                    return KOS_AMP_V_TOOK;
+                }
+                case amp::Verdict::DEPTH:
+                {
+                    return KOS_AMP_V_DEPTH;
+                }
+                case amp::Verdict::LENGTH:
+                {
+                    return KOS_AMP_V_LENGTH;
+                }
+                case amp::Verdict::PORT:
+                {
+                    return KOS_AMP_V_PORT;
+                }
+                case amp::Verdict::CLASS:
+                {
+                    return KOS_AMP_V_CLASS;
+                }
+                case amp::Verdict::RESERVE:
+                {
+                    return KOS_AMP_V_RESERVE;
+                }
             }
             return KOS_AMP_V_EMPTY;
         }
@@ -125,6 +143,10 @@ namespace kickos
             }
             return c->task == root;
         }
+
+        // What a HOLD took off the peer. Put back rather than cleared: an unpublished affinity
+        // reads as affinity zero, which is a real core.
+        uint32_t g_peer_seat_was = ARCH_IPI_SEAT_NONE;
 
         uint64_t send_code(amp::Sent rc)
         {
@@ -194,8 +216,19 @@ namespace kickos
                 {
                     tag.seq = amp::reply_seq(tag.seq + 1u);
                 }
+                else if (selector == KOS_AMP_FORGE_REPLY_ALIAS_SEQ)
+                {
+                    // The low byte left standing, so an arm validating that byte alone takes
+                    // this as the caller's own tag.
+                    tag.seq = amp::reply_seq(tag.seq + 0x100u);
+                }
             }
-            if (amp::forge_reply(node, tag))
+            uint32_t len = 8u;
+            if (selector == KOS_AMP_FORGE_REPLY_EMPTY)
+            {
+                len = 0u;
+            }
+            if (amp::forge_reply(node, tag, len))
             {
                 return KOS_AMP_V_TOOK;
             }
@@ -204,10 +237,29 @@ namespace kickos
 
         uint64_t amp_forge(uint32_t selector)
         {
-            if (selector >= KOS_AMP_FORGE_REPLY_UNPARKED
-                and selector <= KOS_AMP_FORGE_REPLY_GOOD)
+            if ((selector >= KOS_AMP_FORGE_REPLY_UNPARKED
+                 and selector <= KOS_AMP_FORGE_REPLY_GOOD)
+                or selector == KOS_AMP_FORGE_REPLY_EMPTY
+                or selector == KOS_AMP_FORGE_REPLY_ALIAS_SEQ)
             {
                 return amp_forge_reply(selector);
+            }
+            if (selector == KOS_AMP_FORGE_CLASS)
+            {
+                return verdict_code(amp::forge_class_take(amp_peer_node()));
+            }
+            if (selector == KOS_AMP_FORGE_RESERVE)
+            {
+                uint32_t bits = 0u;
+                // Through verdict_code as every other forge is: the ABI code is what the arm
+                // asserts, so it may not be spelled a second time here.
+                uint64_t const code =
+                    verdict_code(amp::forge_reserve_take(amp_peer_node(), &bits));
+                static_assert(amp::FORGE_RESERVE_RAN == KOS_AMP_RESERVE_RAN
+                                  and amp::FORGE_RESERVE_CURSOR_HELD == KOS_AMP_RESERVE_CURSOR_HELD
+                                  and amp::FORGE_RESERVE_THEN_TOOK == KOS_AMP_RESERVE_THEN_TOOK,
+                              "the reserve forge's claim bits are one encoding, not two");
+                return code | static_cast<uint64_t>(bits);
             }
             if (selector == KOS_AMP_FORGE_TAIL_DEPTH)
             {
@@ -302,6 +354,12 @@ namespace kickos
             case KOS_AMP_OP_ROUND:
             {
                 IrqLock lock;
+                // GATED LIKE FORGE: this publishes into a peer's ring and rings its doorbell,
+                // so an ungated one lets any task spend a peer's doorbell budget.
+                if (not amp_probe_caller_ok(sched::current()))
+                {
+                    return static_cast<uint64_t>(-KOS_EPERM);
+                }
                 return amp_round(static_cast<uint32_t>(a1));
             }
             case KOS_AMP_OP_FORGE:
@@ -344,6 +402,19 @@ namespace kickos
             case KOS_AMP_OP_SERVICED:
             {
                 return amp::counts(static_cast<uint32_t>(a1)).serviced.load();
+            }
+            case KOS_AMP_OP_REPLY_RESERVE:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).reply_reserve.load();
+            }
+            case KOS_AMP_OP_REPLY_ROOM:
+            {
+                IrqLock lock;
+                if (not amp_probe_caller_ok(sched::current()))
+                {
+                    return static_cast<uint64_t>(-KOS_EPERM);
+                }
+                return amp::forge_reply_room(amp_peer_node());
             }
             case KOS_AMP_OP_REPLY_DROP:
             {
@@ -392,9 +463,10 @@ namespace kickos
                 uint32_t const handle =
                     ThreadPool::far_reply_handle(static_cast<uint32_t>(a1));
                 // A band handle must resolve to no thread, whatever generation or sequence
-                // accompanies it.
+                // accompanies it: the zero mask drops the sequence clause, so only an earlier
+                // one can be what refuses.
                 uint32_t resolved = 0u;
-                if (cap_reply_thread(handle, 0u) != nullptr)
+                if (cap_reply_thread(handle, 0u, 0u) != nullptr)
                 {
                     resolved = 1u;
                 }
@@ -451,6 +523,53 @@ namespace kickos
                 }
                 amp::app_alive_set(port + 1u);
                 return 0;
+            }
+            case KOS_AMP_OP_PEER_HOLD:
+            {
+                IrqLock lock;
+                if (not amp_probe_caller_ok(sched::current()))
+                {
+                    return static_cast<uint64_t>(-KOS_EPERM);
+                }
+                // The doorbell's cells are indexed by CORE and this names a NODE; the two
+                // coincide for node 0 alone.
+                uint32_t const peer_core = amp::core_of(amp_peer_node());
+                if (a1 != 0)
+                {
+                    uint32_t const was = arch_ipi_seat_set(peer_core, 0u);
+                    if (was == ARCH_IPI_SEAT_NONE)
+                    {
+                        return 0; // a backend keeping no seat cannot withhold a raise
+                    }
+                    g_peer_seat_was = was;
+                    return 1;
+                }
+                if (g_peer_seat_was == ARCH_IPI_SEAT_NONE)
+                {
+                    return 0; // nothing was ever held, so nothing may be put back
+                }
+                (void)arch_ipi_seat_set(peer_core, g_peer_seat_was);
+                g_peer_seat_was = ARCH_IPI_SEAT_NONE;
+                return 1;
+            }
+            case KOS_AMP_OP_MINT:
+            {
+                IrqLock lock;
+                Thread* const c = sched::current();
+                if (not amp_probe_caller_ok(c))
+                {
+                    return static_cast<uint64_t>(-KOS_EPERM);
+                }
+                uint32_t cap = KCAP_INVALID;
+                int const rc =
+                    amp_endpoint_mint(c, amp_peer_node(), static_cast<uint32_t>(a1), &cap);
+                if (rc == 0)
+                {
+                    // The table is as it was whatever the answer: this reads the mint's own
+                    // refusal and is not a way to acquire a crossing the partition withheld.
+                    (void)handle_close(c, cap);
+                }
+                return static_cast<uint64_t>(static_cast<int64_t>(rc));
             }
             case KOS_AMP_OP_FAR_PARKED:
             {

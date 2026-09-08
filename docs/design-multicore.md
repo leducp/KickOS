@@ -755,10 +755,12 @@ but that one.
 **THE COUNT IS 16 BITS WIDE AND WRAPS, and the bound is stated here because the other one is.**
 `Inbound::gen` is a `uint16_t` and the token carries all sixteen of them, so a reply capability
 that outlives 65536 deaths of the SAME record slot resolves again against the seating current
-when it was minted. That is the record's counterpart to the 8-bit `ReplyTag` sequence, which
-aliases a long-lived caller after 256 calls to a node. Neither bound defends against a holder
-that retains a token deliberately; each says how far a holder may drift behind before its token
-stops being refused.
+when it was minted. The `ReplyTag` sequence is the same width and wraps the same way, so a far
+caller aliases after 65536 calls to a node rather than after 256: the far arm validates the whole
+sequence, and only the LOCAL `CAP_REPLY` still checks eight bits, that being all its spare
+bitfields beside the type and the rights can carry. Neither bound defends against a holder that
+retains a token deliberately; each says how far a holder may drift behind before its token stops
+being refused.
 
 **TWO QUESTIONS, ONE AUTHORITY EACH, NEITHER REDUNDANT.** The serving node's capability answers
 whether a reply may be SENT. The calling node's sequence, carried in the token and checked when
@@ -779,18 +781,38 @@ as it copies, so a slot freed at take bounds nothing -- a peer with more threads
 slots publishes, is drained, and publishes again, and the serving node's live records grow with
 the CALLER'S thread count rather than with the ring. Holding the slot until the reply makes
 "outstanding inbound calls at a node are RING_SLOTS per peer" true by construction rather than by
-assertion, and turns exhaustion into the refusal the producer already understands.
+assertion, and turns exhaustion into the refusal the producer already understands. Reclaiming at
+the reply's SEND and not at the peer's TAKE is also what leaves the reply ring's occupancy
+unbounded by the slots this node holds, so the consumer owes an admission test of its own rather
+than inheriting one from the call ring's depth.
 
 Reclamation is separate from the take: a released mask per pair, with the tail advancing over the
 leading run of released slots. Replies may complete out of order; only reclamation is ordered, so
 a slow slot delays reclaiming the slots behind it and delays serving none of them.
 
-**THE CONSUMER NEVER REFUSES FOR WANT OF A RECORD, and a verdict for it would be unreachable.**
-Held plus unread is the far head over this node's tail, which the depth clause already bounds at
-the ring's depth, so a ring with every slot held has nothing unread in it and the take reads
-empty. The producer meeting a full ring is the whole of the back-pressure, and it is a refusal
-that already exists. Recorded because the opposite was frozen here first and an arm falsified it:
-a mechanism that cannot be reached is one no run can witness.
+**THE CONSUMER NEVER REFUSES FOR WANT OF A RECORD, AND DOES REFUSE FOR WANT OF A REPLY SLOT.**
+There is one record per slot, so no verdict is owed for the record. The verdict that is owed is
+for the slot the reply will need: a take is refused with RESERVE, which leaves the call unread and
+the consumer's cursor UNMOVED. The arithmetic that made such a refusal look unreachable bounds the
+CALL ring alone -- held plus unread is the far head over this node's tail, which the depth clause
+bounds at the ring's depth -- and it says nothing about the reply ring, whose occupancy the release
+of a call slot does not bound: the slot frees when the reply is PUBLISHED and the peer decides when
+that reply drains. The reachable shape, witnessed by an arm at RING_SLOTS = 4: B
+publishes 4, A takes 2 and replies to both, B has not drained so the reply ring holds 2, B
+publishes 2 more, and the call ring now holds unread slots while the reply ring cannot take a
+third reply. The take does not read empty.
+Recorded twice over, and the second time against the correction: the opposite was frozen here
+first and an arm falsified it, then the unreachability was frozen in its place and
+`every_call_is_answered_even_when_the_peer_drains_its_replies_late` falsified that. A mechanism
+that cannot be reached is one no run can witness, and an argument that it cannot be reached is
+itself something an arm can refute.
+
+**AND RESERVE IS THE FIRST VERDICT THAT NAMES THIS NODE'S OWN STATE.** Every other one answers
+WHICH untrusted field the peer malformed, and names it. This one names no far field at all: it
+answers "I have no room to answer you", and the ring it speaks for is this node's. That is what
+justifies a verdict of its own rather than folding it into EMPTY, which is the cheaper shape and
+the wrong one -- a ring holding unread calls is not an empty ring, and a consumer reporting EMPTY
+for it would report a peer's waiting traffic as absent.
 
 **A REPLY RING SLOT IS RECLAIMED AT TAKE.** Delivering a reply wakes a parked caller inside the
 doorbell handler: it resolves the token, copies into the caller's buffer, and wakes it. No service
@@ -805,11 +827,15 @@ retry forever, and no depth removes the cycle -- a larger ring only moves the th
 which it bites. **Refusal is the caller's problem for a refused CALL; it is not an answer for a
 system that cannot make progress.**
 
-**WITH THE SPLIT, A REPLY IS ALWAYS SENDABLE, and the bound is arithmetic rather than hopeful.**
-Replies in flight from one node to another are at most the call slots that node holds for it,
-which is at most the call ring's depth, which is the reply ring's depth. Exactly one reply leaves
-each held slot and that reply releases it. So a reply ring cannot be full when a reply is
-published, and the send cannot refuse one.
+**WITH THE SPLIT, A REPLY IS ALWAYS SENDABLE, and what bounds it is the consumer's admission test
+and not the slot the reply releases.** "One reply leaves each held slot and that reply releases
+it" bounds nothing, because the reply's occupancy OUTLIVES the slot its publication released: the
+peer drains the reply ring, not this node. The bound is taken at the take instead. A call is
+admitted only where the replies this node still owes that sender, plus the replies already sitting
+in the ring toward it, stay under the ring's depth, so used + owed <= RING_SLOTS holds at every
+instant; at the instant a reply is published owed >= 1, hence used <= RING_SLOTS - 1 and a slot is
+free. Decided, and the alternative is what forces it: a reply refused at publish is a loss no path
+can retry, the reply capability having been consumed to reach the publication at all.
 
 **A RING NOW CARRIES ONE CLASS, AND A MESSAGE OF THE OTHER CLASS ON IT IS MALFORMED.** The call
 ring accepts only a port the receiving node has minted; the reply ring accepts only a reply. That
@@ -822,18 +848,29 @@ tail advances, which is what a malformed length and an unminted port already do.
 both ways, so an order exists whether or not one is chosen, and the wrong one makes a burst of
 inbound calls delay every reply behind it -- a caller parked on a node that is busy being called.
 This is the rule the doorbell already carries one layer down, where the payload drain may not
-delay the rendezvous a shared kernel's callers wait on through the same body.
+delay the rendezvous a shared kernel's callers wait on through the same body. With the admission
+test above the order is LIVENESS and not only latency: draining a reply is what releases the
+reserve that admits the next call, so a service that took the call ring first would refuse calls
+it already holds the room to answer.
 
 **THE ONE OUTCOME THAT HOLDS A REPLY RING IS BOUNDED AND SELF-HEALING**, and it is named rather
-than left to be discovered. A depth verdict -- the far head naming more outstanding slots than the
-ring holds -- does not advance the tail, because no slot has been identified to drop AND because
-advancing over an index this node has just refused to believe would carry the tail further into the
-far side's arithmetic, which is the one thing the validation exists to stop. It is the only
-non-advancing outcome on a reply ring, it can only be produced by a malformed peer, and it
+than left to be discovered. A depth verdict does not advance the tail, because no slot has been
+identified to drop AND because advancing over an index this node has just refused to believe would
+carry the tail further into the far side's arithmetic, which is the one thing the validation exists
+to stop. What it judges is the DEEPEST outstanding count any of this node's cursors reads out of
+the far head, and not the tail's alone: a head that has moved BACKWARD behind the held run reads
+as a small count from the tail while handing out slots the producer never wrote, and a zeroed slot
+reads as a well-formed zero-length echo. It is the only non-advancing outcome ON A REPLY RING --
+the call ring has two, this and the reserve -- it can only be produced by a malformed peer, and it
 resolves itself: after the strike bound the tail is resynchronised to the far head and the ring
-runs again. A malformed length or an unminted port is dropped and the tail advances, and the
-advance is the deliberate half: leaving such a slot in place would let one bad publication wedge
-the ring for good, which is a denial the receiving node may not accept from the far side.
+runs again. A malformed length, an unminted port or a message of the wrong class is dropped and the
+tail advances, and the advance is the deliberate half: leaving such a slot in place would let one
+bad publication wedge the ring for good, which is a denial the receiving node may not accept from
+the far side. That advance is UNCONDITIONAL and is taken AHEAD of the reserve, which is the half a
+reader would otherwise get backwards: the reserve is owed by a TOOK alone, a malformed slot
+answering nobody and so never having been owed a reply slot at all. Reserve first, and a peer that
+publishes one bad slot and then stops draining its replies wedges the ring exactly as this clause
+refuses to let it.
 
 **ONE RING PER ORDERED PAIR IS FORCED RATHER THAN PREFERRED, and the producer's arithmetic is why.**
 A single inbox per node would carry several producers on one head, and a producer computes its
@@ -854,6 +891,11 @@ left it there would park it on nothing. A record it cannot be handed a capabilit
 FORGOTTEN rather than answered, and the call slot stays the taker's to release, so the far
 caller gets an empty reply instead of waiting on one nobody can send.
 
+**AND THAT ANSWER IS PUBLISHED AT ONE SITE AND NEVER PER ARM.** Every refusal past the pop reaches
+one bool whose single caller publishes the empty reply, because a far caller under
+KOS_TIMEOUT_NONE has no deadline: an answer written into each refusing arm is one more thread
+leaked for the life of the image every time an arm is added.
+
 **NOTHING PARKED ON THE PORT IS REFUSED ON THE SPOT rather than held for a service that may
 arrive.** Holding a slot for an absence fills the ring behind it, and a ring full of calls
 nobody will ever take is the same wedge a malformed peer would have made.
@@ -865,14 +907,23 @@ a moment the sender does not control. An arm counting dropped replies over a win
 counts somebody else's traffic unless nothing of its own is still in flight. The general form:
 where a counter is fed by every node, an arm reading a DELTA of it owes an empty partition for
 the length of that delta, and the way to get one is to leave nothing outstanding rather than to
-widen the tolerance.
+widen the tolerance. The contributor set widened once every post-take refusal began publishing an
+answer: a far SEND parks nobody and carries the no-route tag, so the answer its service publishes
+lands at the SENDER as a dropped reply, and a node now feeds that counter with the consequences of
+its own sends as well as with a peer thread's replies.
 
 **A PEER THAT IS A WINDOW LAYER IS A WEAKER ENVIRONMENT THAN A PEER THAT IS A THREAD, and that
-is the half worth writing down.** The window layer answers only the echo port and generates no
-reply for anything else, so it produces no stray at all. An arm written against it is sound and
-STAYS sound for as long as no real service exists on the other side; it breaks on the first run
-against a peer that is a kernel. So an arm that will one day face a thread is not validated by
-passing against a body, and the two-kernel vehicle is where such an arm is first believed.
+is the half worth writing down.** It is weaker in what it HOLDS and not in whether it answers: the
+window layer answers the echo port with the payload and every other taken call with a zero-length
+reply carrying the tag, so it is a stray source of its own. What it does not do is occupy a
+receiver, keep state between calls, or choose the moment it answers. So the conclusion stands and
+its reason narrows: an arm that will one day face a thread is not validated by passing against a
+body, and what it is not validated against is WHEN the answer comes and WHOM it names, never
+whether one comes at all. `amp_far_reply_guard` is the standing evidence, and the third time this
+example has been hit: it counts dropped replies over a window, and a peer that can be poked
+completes the arm's own caller before the first forged reply is published, so the arm has to
+withhold that peer's doorbell seat and wait for it to fall quiet before it publishes anything. The
+two-kernel vehicle is where such an arm is first believed.
 
 **THE BINDING RESOLVES ITS ENDPOINT BY INDEX AND NOT BY HANDLE**, because it names a slot of
 this node's own pool held live by the bind's own reference: there is no generation for it to
@@ -894,6 +945,19 @@ passed all three.
 not yet published cannot be targeted. Its message is published anyway and only its NOTICE is
 deferred: that peer reads its rings once it can be poked, before it waits on a doorbell of any
 kind. A skipped raise costs latency and never a message.
+
+**WITH ONE EXCEPTION, AND IT IS THE ONE RAISE WHOSE OMISSION COSTS LIVENESS.** The clause above
+holds for a PUBLICATION, because a publication sits in a ring its peer rescans before it waits on
+any doorbell. A CREDIT RETURN is not a publication: what it changes is a far-owned reply TAIL, and
+the only code that reads that tail is the reservation inside a take, which runs only from the
+service body, which runs only from a doorbell. A node whose call was declined for want of a reply
+slot has nothing of its own to publish and so nothing to ring itself with, and no rescan reaches
+it. So the take that advances a reply ring's tail RAISES THE NODE WHOSE ANSWERS THAT SLOT BELONGED
+TO, unconditionally, and that raise is a mechanism rather than a hint. **This was got wrong first
+and the arm that should have caught it supplied the missing pass itself**: a unit control called
+the service body by hand after the drain, which is exactly the edge production has no source for,
+so it asserted a positive outcome over a stimulus no doorbell would ever produce. An arm for a
+mechanism reached only by a raise has to take the passes a real raise produces and no others.
 
 **THE REPLY PATH IS WHAT MAKES THIS PRINCIPLED RATHER THAN PREFERRED.** A refusal is the obvious
 alternative and it is wrong here for a reason that is not taste: a reply is published from a path
@@ -919,6 +983,21 @@ strand a publication, so that decision alone is made behind the barrier.
 **AND A PEER THAT NEVER STARTS IS BOUNDED RATHER THAN SILENT.** Its ring fills at the call
 ring's own depth and every further publication is refused FULL, which is the back-pressure this
 contract already carries, reached in bounded time and counted at both ends.
+
+**AND THAT BOUND HAS A SECOND END, WHICH IS REACHED BY REFUSALS AND NOT ONLY BY SERVICE.** A peer
+that publishes and never drains its replies is bounded at the TAKE rather than at the send: every
+taken call reserves the slot its answer will need, and a refusal past the take consumes that
+reserve exactly as a served call's reply does, an empty PORT_REPLY carrying the tag being the only
+answer the wire has. So the wall stands at RING_SLOTS ANSWERS and not at RING_SLOTS served calls,
+and a node whose every call is refused reaches it as fast as one whose every call is served; past
+it the take declines with RESERVE and the calls stay unread until that peer drains AND ITS DRAIN
+RINGS THIS NODE, which is the credit return the section above makes unconditional: the drain alone
+is not enough, and without the raise a well-formed caller past the wall is stranded rather than
+delayed. Measured, and
+implied by neither clause alone: admission was argued over the calls a receiver serves and the
+empty answer over what a refusal owes its caller. Both ends are named as well as counted -- FULL
+to the producer, and RESERVE surfaced to userspace as a probe verdict of its own
+(docs/reference/ipc-call-reply.md).
 
 #### What this does NOT guarantee
 

@@ -500,7 +500,7 @@ enum kos_amp_op
                                  //   PARTITION NEVER CALLS CAN BE WITNESSED BY: every counter
                                  //   above needs a crossing. Read as the counter family is,
                                  //   and a node outside the built range answers 0
-    KOS_AMP_OP_APP_ALIVE_SET = 16 // (port) -> declare the CALLING node's app running. Root
+    KOS_AMP_OP_APP_ALIVE_SET = 16, // (port) -> declare the CALLING node's app running. Root
                                  //   only, and it writes THIS node's own row alone: the node
                                  //   is derived and is never a parameter, so no caller can
                                  //   speak for a peer. `port` is a CLAIM checked against the
@@ -509,6 +509,39 @@ enum kos_amp_op
                                  //   names this node, so what reaches the shared region is the
                                  //   kernel's derivation and never the caller's word.
                                  //   Answers 0
+    KOS_AMP_OP_PEER_HOLD = 17,   // (hold) -> withhold the FIRST peer's doorbell seat where
+                                 //   `hold` is non-zero, or put back what was there where it
+                                 //   is zero. A publication made while the seat is withheld
+                                 //   reaches the peer's ring with NO raise behind it, so the
+                                 //   peer never services it and a far caller stays parked for
+                                 //   as long as the hold lasts: the one way an arm gets a
+                                 //   parked far caller now that a serving node answers every
+                                 //   call it takes. Root only. Answers 1 where the seat moved
+                                 //   and 0 where the backend keeps none, which is a scenario
+                                 //   the arm must skip rather than a failure
+    KOS_AMP_OP_MINT = 18,        // (port) -> what the privileged far-endpoint mint answers for
+                                 //   the FIRST peer at `port`, as a signed rc. The reachable
+                                 //   route to that refusal: KOS_SYS_AMP_ENDPOINT_CREATE gates
+                                 //   on the caller being privileged and root is unprivileged
+                                 //   from its first instruction, so no user thread ever reaches
+                                 //   the mint's own argument checks through it. A capability
+                                 //   this DOES install is closed here, so the caller's table is
+                                 //   as it was whatever the answer. Root only
+    KOS_AMP_OP_REPLY_RESERVE = 19, // (node) -> takes `node` refused because its reply ring had
+                                 //   no slot to answer with. Apart from send_refused: nothing
+                                 //   was published and the call is still unread, so this is
+                                 //   back-pressure and not a loss
+    KOS_AMP_OP_REPLY_ROOM = 20,  // () -> free slots in the reply ring THIS node answers the
+                                 //   first peer's calls into, having first DRAINED it where
+                                 //   that peer runs no kernel of its own. An arm that forges a
+                                 //   call and expects it taken owes this: every take reserves
+                                 //   a slot there, and on a node booted alone nothing else ever
+                                 //   moves that tail, so an earlier arm's answers wedge every
+                                 //   later take at KOS_AMP_V_RESERVE. Zero means full. Root only
+    /* NEVER PASSED: the width of the set. An arm proving its reading instrument on an op the
+       dispatch does not carry names THIS and not the last op plus one, so adding an op above
+       does not silently make that arm assert a real op. STAYS LAST. */
+    KOS_AMP_OP_MAX
 };
 
 /* Slots in ONE ring of an ordered pair. The reply-record band the thread pool reserves is sized
@@ -567,7 +600,28 @@ enum
        presents it. Answers as KOS_AMP_FORGE_PEER_CALL does, and KOS_AMP_PEER_CALL_HELD must
        be CLEAR: a capability nobody was told of holds the caller's slot for the life of the
        image. */
-    KOS_AMP_FORGE_PEER_CALL_BLIND = 15
+    KOS_AMP_FORGE_PEER_CALL_BLIND = 15,
+
+    /* A REPLY-class port published into the CALL ring: the one malformation neither the length
+       clause nor the port clause can see, since both fields are well-formed. Answers
+       KOS_AMP_V_CLASS. */
+    KOS_AMP_FORGE_CLASS = 16,
+
+    /* KOS_AMP_FORGE_REPLY_GOOD's tag and ring, carrying NO payload, which is the answer a
+       serving node publishes for a call it refused past the take. Answers KOS_AMP_V_TOOK
+       where it reached the parked caller, who must wake with a zero-length reply. */
+    KOS_AMP_FORGE_REPLY_EMPTY = 17,
+
+    /* The parked caller's tag with its sequence moved ABOVE the low byte alone, which is the
+       alias a caller reaches by retrying: 256 short calls bring the low byte round again while
+       the caller still holds the tag. Answers KOS_AMP_V_EMPTY, the whole 16-bit sequence being
+       what the far arm compares. */
+    KOS_AMP_FORGE_REPLY_ALIAS_SEQ = 18,
+
+    /* A well-formed CALL left unread while the reply ring this node would answer it into holds
+       no free slot, which is the one refusal naming this node's OWN state rather than an
+       untrusted far field. Answers KOS_AMP_V_RESERVE with the KOS_AMP_RESERVE_* bits above. */
+    KOS_AMP_FORGE_RESERVE = 19
 };
 
 /* KOS_AMP_FORGE_PEER_CALL rides its answer above the verdict: SET where the call's ring slot
@@ -575,6 +629,17 @@ enum
    the spot. A receiver that cannot be handed a reply capability must read CLEAR, or its
    caller's slot is held by a capability nobody can spend. Every verdict below is under 0x100,
    so KOS_AMP_PEER_CALL_VERDICT is the whole of the split. */
+/* KOS_AMP_FORGE_RESERVE rides three claims above its verdict. RAN separates a forge that
+   DECLINED from one whose refusal is the answer: the scenario holds the reply ring toward a peer
+   full, which a peer running a kernel of its own would drain out from under the take, so against
+   one this forge declines and sets NOTHING rather than answering wrongly. CURSOR_HELD is the
+   property that separates RESERVE from every other refusal on that ring, a malformed slot being
+   dropped with its cursor advanced where this one is left to be taken. THEN_TOOK is that same
+   call taken once the ring had room, so a refusal that LOST the call cannot pass. */
+#define KOS_AMP_RESERVE_RAN         0x100u
+#define KOS_AMP_RESERVE_CURSOR_HELD 0x200u
+#define KOS_AMP_RESERVE_THEN_TOOK   0x400u
+
 #define KOS_AMP_PEER_CALL_HELD 0x100u
 #define KOS_AMP_PEER_CALL_VERDICT(x) ((x) & 0xFFu)
 
@@ -585,6 +650,8 @@ enum
     KOS_AMP_V_DEPTH = 2,
     KOS_AMP_V_LENGTH = 3,
     KOS_AMP_V_PORT = 4,
+    KOS_AMP_V_CLASS = 5,   /* a reply on the call ring, or the reverse */
+    KOS_AMP_V_RESERVE = 6, /* the call ring holds work the reply ring has no slot to answer */
     KOS_AMP_V_SEND_OK = 16,
     KOS_AMP_V_SEND_DEPTH = 17,
     KOS_AMP_V_SEND_REFUSED = 18,

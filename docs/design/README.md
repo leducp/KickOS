@@ -40,7 +40,8 @@ Two things follow from this that are easy to get wrong:
   renumbered three times, and the LAST one SWAPPED TWO NUMBERS rather than shifting them. The driver
   era holds **M4** and **M5**; the **MMU is M6** and **multicore is M7** (they were the other way
   round until 2026-08-21); IPC and IRQ optimisation is **M8**, kernel concurrency and the cost of
-  the big kernel lock is **M9**, the driver era returns at **M10**, and KickCAT closes at **M11**.
+  the big kernel lock is **M9**, static composition is **M10**, the driver era returns at **M11**,
+  and KickCAT closes at **M12**.
   The first of those decisions is recorded in `../design-driver-era-scope.md` section 4 and the
   swap in `../../roadmap.md`, which is authoritative. So a document written before the swap may say
   "M6 = SMP" or "M7 = MMU" and mean the opposite of what it now reads as -- `../design-m7-smp.md`

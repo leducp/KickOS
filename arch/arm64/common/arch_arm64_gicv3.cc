@@ -475,6 +475,9 @@ void kickos_armv8a_gic_doorbell_send(uint32_t cores)
     // cannot be targeted, so its publication stands and only its notice is deferred, that peer
     // draining what it was sent before it waits on a doorbell of any kind.
     //
+    // A credit return is NOT a hint. Deferring one is safe only because window_init services
+    // unconditionally before that peer waits.
+    //
     // The seating flag is MONOTONIC, only ever going unseated to seated, so a load reading
     // seated is never stale and needs no barrier. A load reading unseated may be, and skipping
     // on a stale one strands a publication with no notice and no later scan, so that decision

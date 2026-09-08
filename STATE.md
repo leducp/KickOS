@@ -930,8 +930,8 @@ The whole point of this file. A green fleet pass says none of the following.
   It fires when the ABI is ready, which is a state and not a position, so a number would assert a
   readiness nobody has. `roadmap.md` states that and owns it. What had drifted: four design
   documents and `TODO.md` said "the ABI-freeze milestone (M8, the last one)" -- wrong twice over,
-  M8 being IPC/IRQ optimisation and the list running to M11 -- and `docs/README.md` listed the
-  freeze as M8's second half while omitting M11 entirely. The number is stripped everywhere. Do
+  M8 being IPC/IRQ optimisation and the list running well past it -- and `docs/README.md` listed
+  the freeze as M8's second half while omitting the last numbered milestone entirely. The number is stripped everywhere. Do
   not re-add one, and do not read the absence as an omission to fix.
 - **The fleet shipped `-O0` until M4.5.2, at roughly 2x footprint**, so every silicon witness
   taken before it is invalid. On the K64F, `-Os` then dropped a PIT clock-gate-race write that
@@ -1726,6 +1726,109 @@ instrument was in the tree.
   while `arch_aspace_activate` is a full non-tagged flush on both translating backends, which it is
   today. **ASIDs make it false**, and ASIDs are M8.10's. Re-read SM-2's argument then rather than
   trusting that it once held.
+
+## M8.2: the AMP window and far IPC, and what these green runs do NOT say
+
+- **C5 AND AMP-1 ARE ONE FIX IN TWO HALVES, AND EACH HALF IS GREEN ALONE WHILE THE PAIR IS NOT.**
+  The refusal answer publishes through `send`, which can answer FULL, so answering every post-take
+  refusal only closes the untimed leak once reply-ring space is the admission for TAKING a call;
+  and the admission only holds the ring's arithmetic once every taken call answers exactly once,
+  refusals included. **What no single-fix run says**: each half passed its own presets, and the
+  interaction surfaced only as two selftest arms failing on a merged tree
+  (`amp_far_undisclosed`, `amp_far_infoless` on `qemu-arm64-amp2-n0`). The consequence that neither
+  half's argument contains: **the reserve wall stands at RING_SLOTS ANSWERS, not at RING_SLOTS
+  SERVED CALLS**, so a node whose every call is refused reaches it exactly as fast as one whose
+  every call is served.
+- **RESERVING A REPLY SLOT TURNED A LOST REPLY INTO A STRANDED CALL, AND THE ARM THAT SHOULD HAVE
+  CAUGHT IT SUPPLIED THE MISSING PASS ITSELF.** A call declined for want of a reply slot is retried
+  only from a service pass, and a service pass comes only from a doorbell: the peer's drain frees
+  the slot but rang nobody, so a well-formed caller past the wall parked forever under
+  `KOS_TIMEOUT_NONE` -- the very leak C5 said must not survive this sub-milestone, reintroduced by
+  its own remedy. **The unit control called the service body by hand after the drain**, so it
+  asserted the right positive outcome over a stimulus production has no source for. **THE
+  GENERALISATION**: an arm for a mechanism reachable only by a raise must take the passes a real
+  raise produces and no others, and a harness that can synthesise a pass will hide exactly this
+  class. An external audit found it; two green fleet sweeps and 512 passing tests did not.
+- **AND THE FIX BREAKS A FREEZE THAT READS AS UNIVERSAL, WHICH IS WHY IT IS WRITTEN DOWN RATHER THAN
+  JUST DONE.** "A skipped raise costs latency and never a message" is true of a PUBLICATION, which
+  sits in a ring the peer rescans before waiting. A credit return is not one: it changes a far-owned
+  tail that only a reservation reads. **The obvious cheap gate is unsound and was nearly shipped**:
+  raising only when the ring goes full to not-full misses the real shape, because the admission test
+  is `used + owed` and `owed` is invisible to the peer that drains -- two answers published with two
+  more owed refuses at four slots while `used` is only two. The credit-request alternative was
+  refused on a stronger ground than cost: one cell has two writers and a clear can land on a set,
+  which is a lost update and a permanent park, and the RMW-free form needs two cells and a full
+  barrier on both sides because a credit request has no monotonic counterpart to the seated flag.
+- **A SHIPPED ARM WAS STANDING ON THE C5 LEAK, WHICH IS THE STRONGEST EVIDENCE IT WAS REACHABLE.**
+  `amp_far_reply_guard` parked on a port the peer's kernel BINDS and its app never receives on.
+  Before the fix that shape was answered with silence, and the arm was built on the silence; the
+  fix made it answer, and the arm broke. It now withholds the peer's doorbell seat deliberately to
+  construct the old state. **The general form, and it is the third instance the invariants page
+  records**: an arm written against a weaker environment is not validated by passing there, and
+  what the stronger environment changes is not only WHETHER an answer comes but WHEN it comes and
+  WHOM it names.
+- **A NODE BOOTED ALONE IS A DIFFERENT ENVIRONMENT FROM A PARTITION, AND ONE ARM CANNOT WITNESS
+  C5 THERE AT ALL.** Nothing drains the me-to-peer reply ring on a node with no peer, so a suite
+  of forging arms fills it at `RING_SLOTS` and the admission then correctly refuses every further
+  take. Arms therefore own their own reply-ring precondition rather than relying on registration
+  order, which was a latent trap the milestone removed rather than re-sorted around. And
+  `amp_far_reply_empty` is **C5-insensitive on a node booted alone by construction**: standalone it
+  exercises the forge wake and not the publication, so the merged partition is the only place that
+  arm witnesses C5.
+- **THE VERDICT REACHING USERSPACE IS NOT THE SAME THING AS THE VERDICT BEING WITNESSED.** Giving a
+  refusal its own code is what M8.2 did for both `CLASS` and `RESERVE`, and the reason is that a
+  verdict folded into `EMPTY` cannot have a hardware arm: an arm asserting `EMPTY` passes whether
+  the mechanism fired or the ring was genuinely empty. A code with no forge selector behind it is
+  the same defect one step later, so the code and the arm land together or the code is decoration.
+- **`RESERVE` IS THE FIRST VERDICT THAT NAMES THIS NODE'S OWN STATE** rather than which field a
+  peer malformed, which is why it could not fold into `EMPTY`: a ring holding unread calls is not
+  an empty ring, and reporting one as the other reports a peer's waiting traffic as absent.
+- **THE RP2350 DOORBELL DESCENT IS UNMEASURED AND THAT IS NOW STATED RATHER THAN IMPLIED, and
+  rooting it was tried and refused on evidence.** The body runs in handler mode on SP_main and no
+  armv7m class is rooted there. Rooting it under `PENDSV` reports **524** bytes where the descent
+  measures **740**, because a thread-stack class applies the panic-tail exclusions: the class
+  choice alone moves the figure, so that root would compare a number against the wrong budget. What
+  would bound it is a root set over every handler-mode entry measured against `_kernel_stack_size`,
+  and the blocker is that the figure is a per-chip LINKER constant the gate cannot scrape.
+- **A THREAD-MODE CALLER OF THE SAME DESCENT IS ALREADY REFUSED, BY THE CALLGRAPH AND NOT BY A
+  CONFIG PREDICATE.** `arch_ipi_wait` reaches the node service through `doorbell_poll`, and the
+  red-zone gate walks the callgraph from its declared roots, so a caller reachable from
+  `syscall_dispatch` fails the build: a probe takes SVCK to **1276** against the reserved 1216. **A
+  `static_assert` on the config pair was refused as a second truth and a weaker one** -- it refuses
+  a posture, so a thread-mode caller arriving from AMP code at one kernel core walks past it, where
+  the gate catches any caller from any root.
+- **`pizero2350-amp2-n0` AND `-n1` SIT AT SVCK EXACTLY 1224 OF 1224, so the enforced figure has
+  ZERO slack**, and the block has 8 bytes above the 1448 it needs. **This milestone already spent
+  that headroom once**: the far-call work grew the deliver chain by 8 bytes and took the figure from
+  1216 to 1224, which no per-preset check caught -- the red-zone pass ran before the far-call work
+  existed, and the far-call pass verified on qemu presets, which do not enforce this class. Only the
+  host fleet sweep crosses that boundary, and it is the reason to run it rather than trust the parts.
+  The block did not have to grow, the posture's Kconfig default already standing at 1456, but the
+  next 8 bytes on that chain do force it.
+- **`pizero2350-amp` SELECTS NO AMP POSTURE, SO IT IS NOT A NODE**, whatever its name says. Its own
+  defconfig claimed the posture derives from the core count, which the option's help text refuses
+  as an N6c defect. Reading that preset as the shared-image node it is named for concludes the
+  opposite of the truth, exactly as the CI job named `pizero2350-amp` does for the two-image one.
+- **THE `PORT_REPLY` RULE IS NOW TOTAL ON BOTH SIDES AND UNREACHABLE BY CONSTRUCTION, so neither
+  half can be witnessed without lifting a build gate.** The mint and the bind both refuse it, which
+  is the asymmetry M8.2 closed, but `CMakeLists.txt` refuses port 1 for EVERY node at configure
+  time, so no buildable partition reaches either. Witnessing it took lifting that CMake guard,
+  naming port 1 in a partition and removing the mint's refusal so only the bind was in play: with
+  the bind's refusal the node dies at boot on the port-seating panic, without it the node silently
+  binds the reply port and runs. **`amp_port_bind_local` has no syscall route at all**, kernel init
+  only, so no selftest arm can reach it the way `KOS_AMP_OP_MINT` reaches the mint.
+- **AND THE HELP TEXT FOR THAT CONFIG CLAIMED A REFUSAL THE BUILD DOES NOT MAKE.** It said ports 0
+  and 1 are refused; only port 1 is, and an in-tree partition names port 0 for a peer deliberately,
+  that being the echo the window layer answers with no thread. A reader trusting the help would have
+  concluded an existing config could not exist.
+- **AMP-2 HAS NO RUNTIME WITNESS AND ONE COULD NOT BE MANUFACTURED HONESTLY.** The window between
+  the validating load and the copy contains no call the seam can interpose, and `kmemcpy` folds to
+  `memcpy` with its length already evaluated, so a racing mutator would redden only
+  probabilistically and would be a flake by construction. The instrument is a STATIC gate,
+  `check_amp_slot_snapshot.sh`, which self-tests planted twins before reading the tree; the runtime
+  half asserts only that a producer rewriting a held slot's header cannot change what the taker
+  already took. **No production-side test hook was added, and that was the constraint that made the
+  static gate the answer.**
 
 ## Where to go next
 

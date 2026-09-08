@@ -45,10 +45,12 @@ for; nothing below is a prerequisite for reading the Reference.
    Milestones are keyed to **theme, not sequence**: M2 = MPU/memory-protection enforcement;
    M3 = capabilities + user clock; M4 and M5 = the driver era; M5.2.1 = trusted execution context
    and TLS; M6 = the MMU (unicore A53); M7 = multicore, SMP and AMP; M8 = IPC/IRQ optimisation;
-   M9 = kernel concurrency, what the big kernel lock actually costs; M10 = back to the driver
-   era; M11 = KickCAT as the reality check. The ABI-freeze milestone is the last one and carries
-   NO number, deliberately -- the roadmap says why. Resequenced 2026-08-21: the MMU now precedes
-   multicore, and optimisation follows it. Work with no MPU/caps/driver/multicore dependency is
+   M9 = kernel concurrency, what the big kernel lock actually costs; M10 = static composition
+   and a resident init provider; M11 = back to the driver era; M12 = KickCAT as the reality
+   check. The ABI-freeze milestone is the last one and carries NO number, deliberately -- the
+   roadmap says why. Resequenced 2026-08-21: the MMU now precedes multicore, and optimisation
+   follows it. Resequenced again 2026-09-08: static composition takes M10, which moved the
+   driver era and KickCAT down one each. Work with no MPU/caps/driver/multicore dependency is
    "anytime coherence".
 
 Per-board wiring and validation status is `reference/boards.md`, not any of the above.

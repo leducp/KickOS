@@ -7,8 +7,10 @@ CONFIG_BOARD_PIZERO2350=y
 # identity and its node vector table configure and build. Do not tune anything here.
 #
 # One kernel per core over disjoint memory: KICKOS_NUM_CORES rises to 2 while
-# KICKOS_KERNEL_CORES stays 1. KICKOS_MULTI_INSTANCE is spelled in neither direction, since
-# KICKOS_AMP_NODE derives from the count and the model alone.
+# KICKOS_KERNEL_CORES stays 1. NO AMP POSTURE IS SELECTED HERE, so KICKOS_AMP_NODE resolves to
+# 0 and this preset is not a node: the window, its rings and the node service are absent, and
+# SVCK takes the non-node arm. A posture is STATED and never derived from the count, per
+# KICKOS_AMP_NODE's own help text.
 CONFIG_KICKOS_CORES_TWO=y
 CONFIG_KICKOS_MULTICORE_AMP=y
 CONFIG_MEMORY_MODEL_MPU=y

@@ -73,8 +73,9 @@ namespace kickos
                 t->clear_wait_edge();
                 t->call_state = CALL_NONE;
                 // For the same reason the local arm above bumps it: a reply still in flight
-                // names this call by the low 8 bits of call_seq alone, so a seq left standing
-                // resolves to this thread again after exactly 256 further calls.
+                // names this call by call_seq, so a seq left standing resolves to this thread
+                // again after the sequence wraps. The far arm validates all 16 bits, so that is
+                // 65536 calls here where the local arm's masked 8 make it 256.
                 t->call_seq++;
                 break;
             }

@@ -181,17 +181,30 @@ namespace kickos
             // One taken CALL. Its slot is held until this returns, and the caller releases it.
             // TRUE where the slot is now a record and the reply releases it; false where the
             // taker still owns the slot and releases it itself.
+            //
+            // EVERY PATH THAT DID NOT BECOME A RECORD PUBLISHES AN ANSWER, AT THIS ONE SITE.
+            // The far caller parks until its deadline, and under KOS_TIMEOUT_NONE there is no
+            // deadline, so an arm that returned false without publishing leaks that thread for
+            // the life of the image. endpoint_far_call_deliver refuses through several arms
+            // past the point where its receiver came off recv_waiters and every one of them
+            // reaches this bool; an answer written per arm would be a new leak for each arm
+            // added.
             bool dispatch_call(uint32_t from, uint32_t port, ReplyTag const& tag,
                                void const* buf, uint32_t len, uint32_t slot)
             {
+                uint32_t answer_len = 0u;
                 if (port_endpoint(port) != EP_BOUND_NONE)
                 {
-                    return endpoint_far_call_deliver(from, port, tag, buf, len, slot);
+                    if (endpoint_far_call_deliver(from, port, tag, buf, len, slot))
+                    {
+                        return true;
+                    }
                 }
-                if (port == PORT_ECHO)
+                else if (port == PORT_ECHO)
                 {
-                    (void)send(from, PORT_REPLY, tag, buf, len);
+                    answer_len = len; // the window layer's own service: the payload comes back
                 }
+                (void)send(from, PORT_REPLY, tag, buf, answer_len);
                 return false;
             }
         }
@@ -282,9 +295,9 @@ namespace kickos
 
                 // The slot index comes from the producer's OWN head, never from the far tail.
                 Slot& s = r.slot[head & RING_MASK];
-                s.port = port;
+                s.port.store(port);
                 s.tag = tag;
-                s.len = len;
+                s.len.store(len);
                 if (len != 0u)
                 {
                     kmemcpy(s.payload, payload, len);
@@ -335,11 +348,15 @@ namespace kickos
             // masked slot, and its holder's release would land one wrap later on a DIFFERENT
             // call whose reply is still owed. The generation is what makes the death visible to
             // a holder this cannot reach.
-            bool depth_ok(Class cls, uint32_t me, uint32_t from, Ring& r, uint32_t tail,
-                          uint32_t head)
+            // `deepest` is the largest outstanding count any of this node's cursors reads out
+            // of the far head. A head that regressed BEHIND `taken` wraps to a huge count there
+            // while head - tail is still small, and the slots it would hand out were never
+            // written: a zeroed one reads as a well-formed zero-length echo.
+            bool depth_ok(Class cls, uint32_t me, uint32_t from, Ring& r, uint32_t head,
+                          uint32_t deepest)
             {
                 uint32_t& strikes = strikes_of(cls, me, from);
-                if (outstanding(head, tail) <= RING_SLOTS)
+                if (deepest <= RING_SLOTS)
                 {
                     strikes = 0;
                     return true;
@@ -363,16 +380,17 @@ namespace kickos
                 return false;
             }
 
-            // Bounds every field of a slot that this node will spend. The tag is bounded by
-            // nothing: no arm of this file spends it.
-            Verdict slot_ok(Class cls, uint32_t me, Slot const& s)
+            // Bounds the SNAPSHOT of a slot header, never the slot: what is validated here and
+            // what the caller spends must be the same words. The tag is bounded by nothing: no
+            // arm of this file spends it.
+            Verdict slot_ok(Class cls, uint32_t me, uint32_t len, uint32_t port)
             {
-                if (s.len > SLOT_BYTES)
+                if (len > SLOT_BYTES)
                 {
                     count_up(g_counts[me].length);
                     return Verdict::LENGTH;
                 }
-                if (not port_minted(me, s.port))
+                if (not port_minted(me, port))
                 {
                     count_up(g_counts[me].port);
                     return Verdict::PORT;
@@ -380,12 +398,49 @@ namespace kickos
                 // A ring carries ONE class. Without this a peer publishing replies into the
                 // call ring takes a record for each, and nothing ever replies to a reply, so
                 // those slots are held for the life of the image.
-                if (class_of(s.port) != cls)
+                if (class_of(port) != cls)
                 {
                     count_up(g_counts[me].wrong_class);
                     return Verdict::CLASS;
                 }
                 return Verdict::TOOK;
+            }
+        }
+
+        namespace
+        {
+            // TRUE WHERE ONE MORE CALL MAY BE TAKEN. Every taken call owes exactly one reply
+            // and the reply ring toward that sender is the only place it can go, so a take
+            // that leaves no slot for its own reply publishes one the send must refuse, a
+            // loss no path can retry, the reply capability being consumed by then.
+            //
+            // `held` is tail..taken, of which the slots already flagged in `released` have had
+            // their reply sent and are counted in the ring's own occupancy instead.
+            bool reply_reserved(uint32_t me, uint32_t from, uint32_t held, uint32_t released)
+            {
+                uint32_t replied = 0;
+                for (uint32_t i = 0; i < RING_SLOTS; i++)
+                {
+                    if ((released & (1u << i)) != 0u)
+                    {
+                        replied = replied + 1u;
+                    }
+                }
+                uint32_t owed = 0;
+                if (held > replied)
+                {
+                    owed = held - replied;
+                }
+                Ring const& rr = ring_for(Class::REPLY, from, me);
+                // FAR: the peer owns this tail, so a regressed one reads as a full ring and is
+                // refused here as it already is at the send. Subtracted rather than added to
+                // `owed`, which a modular count near the top of the range would carry past.
+                uint32_t const used = outstanding(rr.head.v.load(), rr.tail.v.load());
+                if (used >= RING_SLOTS)
+                {
+                    return false;
+                }
+                return (RING_SLOTS - used) > owed;
             }
         }
 
@@ -408,30 +463,48 @@ namespace kickos
             {
                 return Verdict::EMPTY;
             }
-            if (not depth_ok(Class::REPLY, me, from, r, tail, head))
+
+            // ONE EXIT PAST THIS POINT, so the credit raise below cannot be reached around.
+            Verdict v = Verdict::DEPTH;
+            if (depth_ok(Class::REPLY, me, from, r, head, outstanding(head, tail)))
             {
-                return Verdict::DEPTH;
+                // The slot index comes from this node's OWN tail.
+                Slot const& s = r.slot[tail & RING_MASK];
+                // ONE LOAD EACH, and every clause below spends the snapshot: a re-load may
+                // answer a producer's later writing, so a length re-read after it was bounded
+                // is a length nothing bounded.
+                uint32_t const len = s.len.load();
+                uint32_t const port = s.port.load();
+                v = slot_ok(Class::REPLY, me, len, port);
+                if (v == Verdict::TOOK)
+                {
+                    if (len != 0u)
+                    {
+                        kmemcpy(out, s.payload, len);
+                    }
+                    *out_len = len;
+                    *out_port = port;
+                    *out_tag = s.tag;
+                    count_up(g_counts[me].took);
+                }
+                // The copy stays ABOVE this store: the slot is the producer's again the
+                // instant it lands.
+                r.tail.v.store(tail + 1u);
             }
 
-            // The slot index comes from this node's OWN tail.
-            Slot const& s = r.slot[tail & RING_MASK];
-            Verdict const v = slot_ok(Class::REPLY, me, s);
-            if (v != Verdict::TOOK)
+            // CREDIT RETURN, AND THE ONE RAISE IN THIS FILE WHOSE OMISSION WOULD COST
+            // LIVENESS RATHER THAN LATENCY. `from` measures its room to answer against THIS
+            // tail (reply_reserved), so an advance here is the only event that can admit a
+            // call `from` left unread at RESERVE, and no publication of its own follows to
+            // ring it. Every path that advances a reply tail in a live partition runs through
+            // here, the depth resynchronisation included.
+            //
+            // The tail is re-read rather than derived: depth_ok may have adopted the far head.
+            if (r.tail.v.load() != tail)
             {
-                r.tail.v.store(tail + 1u);
-                return v;
+                ring(from);
             }
-            uint32_t const len = s.len;
-            if (len != 0u)
-            {
-                kmemcpy(out, s.payload, len);
-            }
-            *out_len = len;
-            *out_port = s.port;
-            *out_tag = s.tag;
-            r.tail.v.store(tail + 1u);
-            count_up(g_counts[me].took);
-            return Verdict::TOOK;
+            return v;
         }
 
         void release_call(uint32_t from, uint32_t slot)
@@ -471,38 +544,58 @@ namespace kickos
             }
 
             Ring& r = ring_for(Class::CALL, me, from);
+            Inbox& ib = g_inbox[me][from];
             uint32_t const tail = r.tail.v.load();
             uint32_t const head = r.head.v.load();
-            if (not depth_ok(Class::CALL, me, from, r, tail, head))
+            // BOTH CURSORS, because they fail in different directions: head - tail catches a
+            // head too far ahead, head - taken a head that moved backward into the held run.
+            uint32_t deepest = outstanding(head, tail);
+            uint32_t const unread = outstanding(head, ib.taken);
+            if (unread > deepest)
+            {
+                deepest = unread;
+            }
+            if (not depth_ok(Class::CALL, me, from, r, head, deepest))
             {
                 return Verdict::DEPTH;
             }
 
             // Held plus unread is the far head over this node's tail, which the depth clause
             // above bounds at RING_SLOTS: a ring with every slot held has nothing unread.
-            Inbox& ib = g_inbox[me][from];
-            if (outstanding(head, ib.taken) == 0u)
+            if (unread == 0u)
             {
                 return Verdict::EMPTY;
             }
             uint32_t const at = ib.taken;
             Slot const& s = r.slot[at & RING_MASK];
-            Verdict const v = slot_ok(Class::CALL, me, s);
-            ib.taken = at + 1u;
+            // ONE LOAD EACH, as take_reply does and for the same reason.
+            uint32_t const len = s.len.load();
+            uint32_t const port = s.port.load();
+            Verdict const v = slot_ok(Class::CALL, me, len, port);
             if (v != Verdict::TOOK)
             {
                 // Dropped, and its slot released at once: a malformed publication may not hold
-                // a record, having no reply to release it.
+                // a record, having no reply to release it. UNCONDITIONALLY, and ahead of the
+                // reserve below: a malformed slot owes no reply, and leaving one in place would
+                // let one bad publication wedge the ring for as long as the peer does not drain.
+                ib.taken = at + 1u;
                 release_call(from, at & RING_MASK);
                 return v;
             }
-            uint32_t const len = s.len;
+            // AFTER the verdict, because only a TOOK owes a reply. The cursor has NOT moved and
+            // must not: a refusal that advanced it would skip this call for good.
+            if (not reply_reserved(me, from, outstanding(at, tail), ib.released))
+            {
+                count_up(g_counts[me].reply_reserve);
+                return Verdict::RESERVE;
+            }
+            ib.taken = at + 1u;
             if (len != 0u)
             {
                 kmemcpy(out, s.payload, len);
             }
             *out_len = len;
-            *out_port = s.port;
+            *out_port = port;
             *out_tag = s.tag;
             *out_slot = at & RING_MASK;
             count_up(g_counts[me].took);
@@ -566,7 +659,7 @@ namespace kickos
                     uint32_t slot = 0;
                     ReplyTag tag = {};
                     Verdict const v = take_call(from, buf, &len, &port, &tag, &slot);
-                    if (v == Verdict::EMPTY or v == Verdict::DEPTH)
+                    if (v == Verdict::EMPTY or v == Verdict::DEPTH or v == Verdict::RESERVE)
                     {
                         break;
                     }
@@ -614,9 +707,9 @@ namespace kickos
             forge_reset(class_of(port), r, me, from);
 
             Slot& s = r.slot[0];
-            s.port = port;
+            s.port.store(port);
             s.tag = tag;
-            s.len = len;
+            s.len.store(len);
             for (uint32_t i = 0; i < SLOT_BYTES; i++)
             {
                 s.payload[i] = static_cast<uint8_t>(i);
@@ -640,22 +733,21 @@ namespace kickos
             return v;
         }
 
-        bool forge_reply(uint32_t from, ReplyTag const& tag)
+        bool forge_reply(uint32_t from, ReplyTag const& tag, uint32_t len)
         {
             uint32_t const me = self();
-            if (from >= NODE_MAX or from == me)
+            if (from >= NODE_MAX or from == me or len > SLOT_BYTES)
             {
                 return false;
             }
             Ring& r = ring_for(Class::REPLY, me, from);
             forge_reset(Class::REPLY, r, me, from);
 
-            constexpr uint32_t REPLY_LEN = 8u;
             Slot& s = r.slot[0];
-            s.port = PORT_REPLY;
+            s.port.store(PORT_REPLY);
             s.tag = tag;
-            s.len = REPLY_LEN;
-            for (uint32_t i = 0; i < REPLY_LEN; i++)
+            s.len.store(len);
+            for (uint32_t i = 0; i < len; i++)
             {
                 s.payload[i] = static_cast<uint8_t>(0xC0u + i);
             }
@@ -672,6 +764,38 @@ namespace kickos
             return dispatch_reply(from, got_tag, buf, got_len);
         }
 
+        Verdict forge_class_take(uint32_t from)
+        {
+            uint32_t const me = self();
+            if (from >= NODE_MAX or from == me)
+            {
+                return Verdict::EMPTY;
+            }
+            // The port and the length are both well-formed, so neither of their clauses can
+            // see this: what is wrong is the RING the publication landed in.
+            Ring& r = ring_for(Class::CALL, me, from);
+            forge_reset(Class::CALL, r, me, from);
+
+            Slot& s = r.slot[0];
+            s.port.store(PORT_REPLY);
+            s.tag = REPLY_TAG_NONE;
+            s.len.store(1u);
+            s.payload[0] = 0x5Au;
+            r.head.v.store(1u);
+
+            uint8_t buf[SLOT_BYTES];
+            uint32_t got_len = 0;
+            uint32_t got_port = PORT_MAX;
+            uint32_t got_slot = 0;
+            ReplyTag got_tag = {};
+            Verdict const v = take_call(from, buf, &got_len, &got_port, &got_tag, &got_slot);
+            if (v == Verdict::TOOK)
+            {
+                release_call(from, got_slot);
+            }
+            return v;
+        }
+
         bool forge_publish(uint32_t from, uint32_t port, ReplyTag const& tag)
         {
             uint32_t const me = self();
@@ -684,15 +808,110 @@ namespace kickos
 
             constexpr uint32_t CALL_LEN = 8u;
             Slot& s = r.slot[0];
-            s.port = port;
+            s.port.store(port);
             s.tag = tag;
-            s.len = CALL_LEN;
+            s.len.store(CALL_LEN);
             for (uint32_t i = 0; i < CALL_LEN; i++)
             {
                 s.payload[i] = static_cast<uint8_t>(0xB0u + i);
             }
             r.head.v.store(1u);
             return true;
+        }
+
+        // The VERDICT is returned raw and mapped to its ABI code by the one caller, so an arm
+        // reading this reads it through verdict_code as every other forge does.
+        Verdict forge_reserve_take(uint32_t from, uint32_t* out_bits)
+        {
+            *out_bits = 0u;
+            uint32_t const me = self();
+            if (from >= NODE_MAX or from == me)
+            {
+                return Verdict::EMPTY;
+            }
+            // DECLINED RATHER THAN FORGED against a node that runs a kernel of its own: this
+            // holds the reply ring toward `from` FULL, which that node would drain out from
+            // under the take, and the slots it would then route are this forge's and not a
+            // caller's. A wrong answer is worse than no answer, so it says which it is.
+            if (g_counts[from].serviced.load() != 0u)
+            {
+                return Verdict::EMPTY;
+            }
+            *out_bits = FORGE_RESERVE_RAN;
+
+            // One well-formed call, unread. Nothing about it is malformed, so only the reserve
+            // clause can refuse it.
+            Ring& call = ring_for(Class::CALL, me, from);
+            forge_reset(Class::CALL, call, me, from);
+            Slot& s = call.slot[0];
+            s.port.store(PORT_ECHO);
+            s.tag = REPLY_TAG_NONE;
+            s.len.store(1u);
+            s.payload[0] = 0x5Au;
+            call.head.v.store(1u);
+
+            // The reply ring toward `from` with no slot free. THIS NODE'S OWN head is what
+            // moves: the tail is `from`'s and is read but never written, so no far-owned index
+            // is forged even here.
+            Ring& reply = ring_for(Class::REPLY, from, me);
+            uint32_t const tail_was = reply.tail.v.load();
+            reply.head.v.store(tail_was + RING_SLOTS);
+
+            uint8_t buf[SLOT_BYTES];
+            uint32_t got_len = 0;
+            uint32_t got_port = PORT_MAX;
+            uint32_t got_slot = 0;
+            ReplyTag got_tag = {};
+            uint32_t const cursor_was = g_inbox[me][from].taken;
+            Verdict const refused =
+                take_call(from, buf, &got_len, &got_port, &got_tag, &got_slot);
+            // THE PROPERTY THAT SEPARATES RESERVE FROM EVERY OTHER REFUSAL ON THIS RING: a
+            // malformed slot is dropped and its cursor advances, this one is left to be taken.
+            bool const cursor_held = g_inbox[me][from].taken == cursor_was;
+
+            // ROOM, and the SAME call taken: a refusal that lost the call would satisfy the
+            // refusal claim on its own.
+            reply.head.v.store(tail_was);
+            Verdict const then =
+                take_call(from, buf, &got_len, &got_port, &got_tag, &got_slot);
+            if (then == Verdict::TOOK)
+            {
+                release_call(from, got_slot);
+            }
+
+            if (cursor_held)
+            {
+                *out_bits = *out_bits | FORGE_RESERVE_CURSOR_HELD;
+            }
+            if (then == Verdict::TOOK)
+            {
+                *out_bits = *out_bits | FORGE_RESERVE_THEN_TOOK;
+            }
+            return refused;
+        }
+
+        uint32_t forge_reply_room(uint32_t to)
+        {
+            uint32_t const me = self();
+            if (to >= NODE_MAX or to == me)
+            {
+                return 0u;
+            }
+            Ring& r = ring_for(Class::REPLY, to, me);
+            // THE TAIL IS `to`'S AND THIS MOVES IT, which is licensed by that node running no
+            // kernel of its own: nothing there will ever drain this ring, so an arm answering
+            // one more call into it would be refused RESERVE for the life of the image. A node
+            // that HAS serviced drains its own, and this only reports what it left.
+            if (g_counts[to].serviced.load() == 0u)
+            {
+                r.tail.v.store(r.head.v.load());
+            }
+            uint32_t const used = outstanding(r.head.v.load(), r.tail.v.load());
+            if (used >= RING_SLOTS)
+            {
+                return 0u;
+            }
+            return RING_SLOTS - used;
         }
 
         bool forge_drain_held(uint32_t from)
@@ -734,9 +953,9 @@ namespace kickos
             // left the tail on. A ring still wedged answers DEPTH here.
             uint32_t const head = r.head.v.load();
             Slot& s = r.slot[head & RING_MASK];
-            s.port = PORT_ECHO;
+            s.port.store(PORT_ECHO);
             s.tag = ReplyTag{};
-            s.len = 1u;
+            s.len.store(1u);
             s.payload[0] = 0x5Au;
             r.head.v.store(head + 1u);
             Verdict const v = take_call(from, buf, &got_len, &got_port, &got_tag, &got_slot);
@@ -771,9 +990,9 @@ namespace kickos
             // left the tail on. A ring still wedged answers DEPTH here.
             uint32_t const head = r.head.v.load();
             Slot& s = r.slot[head & RING_MASK];
-            s.port = PORT_REPLY;
+            s.port.store(PORT_REPLY);
             s.tag = REPLY_TAG_NONE;
-            s.len = 1u;
+            s.len.store(1u);
             s.payload[0] = 0x5Au;
             r.head.v.store(head + 1u);
 
@@ -792,9 +1011,9 @@ namespace kickos
             {
                 constexpr uint32_t BODY = 4u;
                 Slot& s = r.slot[at & RING_MASK];
-                s.port = port;
+                s.port.store(port);
                 s.tag = ReplyTag{};
-                s.len = BODY;
+                s.len.store(BODY);
                 for (uint32_t i = 0; i < BODY; i++)
                 {
                     s.payload[i] = static_cast<uint8_t>(fill + i);
@@ -967,7 +1186,20 @@ namespace kickos
             // Freed before the send, so a send that refuses cannot leave the record standing
             // with its slot already gone.
             record_drop(*r);
-            (void)send(from, PORT_REPLY, tag, payload, len);
+            if (send(from, PORT_REPLY, tag, payload, len) != Sent::OK)
+            {
+                // NOT REACHABLE IN A LIVE PARTITION: the take reserved a slot in this very
+                // ring for this answer and every reply since has spent one reservation for
+                // one slot, so the room cannot have gone. What reaches this is a peer whose
+                // reply tail regressed under the reservation. The answer is then lost with no
+                // path holding the capability to remake it, and this is what tells that loss
+                // apart from a caller's own refused call in send_refused.
+                count_up(g_counts[self()].reply_unsent);
+            }
+            // RELEASED WHATEVER THE SEND ANSWERED. Holding the slot would not make the answer
+            // arrive, and the held run behind it would stop being reclaimed too; releasing
+            // leaves the reply ring full and the reserve refusing, which is back-pressure the
+            // peer already reads.
             release_call(from, slot);
         }
 

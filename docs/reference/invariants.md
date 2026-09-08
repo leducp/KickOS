@@ -391,13 +391,17 @@
   the replacement before it is believed, and an arm held because its environment does not exist yet
   is a debt rather than a pass.
   - *worked example, and where the rule came from:* the AMP peer. While a peer was a WINDOW LAYER
-    it answered one port, produced no reply for anything else, and never occupied a receiver, so
-    `amp_far_reply_guard` could count dropped replies over a window it did not own and
-    `amp_far_call` could send before it called. Both were correct for as long as they were held
-    under a posture with no live peer. Both broke on the first run against a peer that is a KERNEL,
-    one on a stray reply the peer's service thread generated and one on N6f's rule that a call
-    finding nothing parked is refused on the spot. Neither is a test-writing slip; each is the
-    stronger environment doing something the weaker one could not.
+    it never occupied a receiver and generated no traffic of its own, so `amp_far_reply_guard`
+    could count dropped replies over a window it did not own and `amp_far_call` could send before
+    it called. Both were correct for as long as they were held under a posture with no live peer.
+    Both broke on the first run against a peer that is a KERNEL, one on a stray reply the peer's
+    service thread generated and one on N6f's rule that a call finding nothing parked is refused
+    on the spot. `amp_far_reply_guard` broke a THIRD time on the same shape: a peer that answers
+    every call it takes, an empty reply for a delivery it refused past the take included,
+    completes that arm's own caller before the first forged reply is published, so the arm must
+    withhold the peer's doorbell seat and wait for it to fall quiet before publishing at all.
+    None of the three is a test-writing slip; each is the stronger environment doing something the
+    weaker one could not.
   - *applies:* every arm whose counterpart is stubbed, forged, looped back or simulated, which is
     not only AMP: a forged publication, a host seam standing in for a backend, and a loopback
     console are the same shape.
