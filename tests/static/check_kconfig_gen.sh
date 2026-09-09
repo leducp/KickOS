@@ -115,12 +115,6 @@ for want in "$SRC/Kconfig" "$SRC/boards/Kconfig" "$SRC/boards/xmc4800-relax/Kcon
         *) fail "KICKOS_KCONFIG_SOURCES does not name $want, so editing it would not reconfigure" ;;
     esac
 done
-# These five reach C from CMake rather than through the header, so a missing line here
-# lets option() supply its own default and .config stops describing the build.
-for flag in KICKOS_DEBUG KICKOS_ENABLE_SELFTEST KICKOS_BENCH \
-            KICKOS_SHUTDOWN_TO_BOOTLOADER CONFIG_SCHED_PERIODIC_TICK; do
-    grep -q "^set($flag \(ON\|OFF\))$" "$F" || fail "fragment does not carry $flag"
-done
 
 # --- Leg 2: every requested value is read back, and a refusal is a refusal ---
 refuse() {
@@ -275,5 +269,29 @@ for raw, want in cases:
         sys.exit(1)
 PYEOF
 
-echo "PASS: kconfig generation, 7 refusals, $ACCEPTED accepted overrides, $n defconfigs resolved," \
+# --- Leg 9: the stale-directory repair rides the LIVE base and nothing else ---------------
+REPAIR='delete that .config to reload from'
+GONE='CONFIG_KICKOS_GONE_SYMBOL=y'
+gen "$TMP/stale" || fail "generation failed: $(cat "$TMP/stale.err")"
+echo "$GONE" >> "$TMP/stale/.config"
+if gen "$TMP/stale"; then
+    fail "a live .config naming an undeclared symbol was accepted"
+fi
+grep -q "REFUSED $GONE: no such symbol" "$TMP/stale.err" \
+    || fail "the stale live .config refused for the wrong reason: $(cat "$TMP/stale.err")"
+grep -q "$REPAIR" "$TMP/stale.err" \
+    || fail "the refusal does not say how to repair the build directory: $(cat "$TMP/stale.err")"
+
+# The same undeclared symbol from a DEFCONFIG, into a directory that holds no live state.
+cp "$DEFCONFIG" "$TMP/gone-defconfig" || fail "cannot copy $DEFCONFIG"
+echo "$GONE" >> "$TMP/gone-defconfig"
+if gen_with "$TMP/gone-defconfig" "$TMP/gonedc"; then
+    fail "a defconfig naming an undeclared symbol was accepted"
+fi
+grep -q "REFUSED $GONE: no such symbol" "$TMP/gonedc.err" \
+    || fail "the defconfig refused for the wrong reason: $(cat "$TMP/gonedc.err")"
+grep -q "$REPAIR" "$TMP/gonedc.err" \
+    && fail "a defconfig edit was reported as a stale build directory: $(cat "$TMP/gonedc.err")"
+
+echo "PASS: kconfig generation, 9 refusals, $ACCEPTED accepted overrides, $n defconfigs resolved," \
      "string-knob escaping verified through CMake and unit cases"

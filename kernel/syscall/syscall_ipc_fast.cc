@@ -41,6 +41,13 @@ namespace kickos
 
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
 
+// The root CMakeLists refuses this combination at configure; this catches a translation unit
+// compiled outside that block, a tests/unit posture library setting both macros itself.
+static_assert(KICKOS_KERNEL_CORES == 1,
+              "the fastpath holds no lock object: it mutates a peer's thread control block, "
+              "its endpoint and its capability table under the local interrupt mask the trap "
+              "took, which is exclusion on one core and nothing on another");
+
 namespace kickos
 {
     namespace

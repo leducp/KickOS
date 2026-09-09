@@ -398,7 +398,12 @@ awk '/^[0-9a-f]+ <.*>:$/ { name = $2; gsub(/[<>:]/, "", name); next }
          sub(/\+0x[0-9a-f]+$/, "", tgt)
          if (tgt != owe || name == owe) { next }
          print name
-     }' owe="$OWE" brx="$BRX" "$TMP/dis" | sort -u > "$TMP/publishers" || true
+     }' owe="$OWE" brx="$BRX" "$TMP/dis" > "$TMP/publishers.raw" \
+    || fail "awk could not scan the disassembly of $elf for callers of '$OWE'"
+# Not piped straight from the awk above: a crashing awk would leave sort succeeding on empty
+# input, and the vacuity check below would blame an unreachable publisher rather than the awk.
+sort -u "$TMP/publishers.raw" > "$TMP/publishers" \
+    || fail "sort could not sort the callers of '$OWE' found in $elf"
 publishers="$(wc -l < "$TMP/publishers" | tr -d ' ')"
 require_number "$publishers" "the caller count of $OWE"
 if [ "$publishers" -eq 0 ]; then

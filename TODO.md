@@ -436,8 +436,14 @@ Both were found during M8.3 and are recorded here rather than closed, which is w
       than creates; both are past the shape M8.3's decided direction covers, and the second wants
       a per-(task, slot) record rather than one owner byte. `tests/unit/taskbudget` asserts the
       COMPLEMENT (that a recycled slot regains its ceiling) and so stays green over this.
+      **ASSIGNED TO M8.5** (2026-09-09), `roadmap.md` carrying the number. M8.4 found a THIRD route
+      past the bound while gating the syscall table: `amp_endpoint_mint` and `amp_port_bind_local`
+      both spend an endpoint-pool slot with no `task_object_admit` at all. Neither is reachable
+      from an unprivileged task, so `invariants.md` states the bound as one on what an unprivileged
+      task can take rather than widening the charge; whether an AMP endpoint SHOULD sit on a
+      ceiling is part of this item now.
 
-- [ ] **THE SYSCALL TABLE'S DOCUMENTED CODE LISTS ARE READ BY NO GATE, WHICH IS WHY A REFUSAL CODE
+- [x] **THE SYSCALL TABLE'S DOCUMENTED CODE LISTS ARE READ BY NO GATE, WHICH IS WHY A REFUSAL CODE
       LANDED IN ONE HEADER AND NOT THE OTHER.** `user/include/kickos/sys/abi.h` (the
       `KOS_SYS_*` table) against `user/include/kickos/sys.h` and the dispatch. M8.3's budget
       refusal reached the API header and none of the four creator entries beside it, and nothing
@@ -463,7 +469,8 @@ Both were found during M8.3 and are recorded here rather than closed, which is w
       measured stacks is a milestone rather than a fix, and it has no home yet. Direction: price a
       reporter that runs on a stack of its own, and note that the red-zone gate's own exclusion
       mechanism already models "which chains are walked", so the question is where the reporter
-      lives and not how it is measured.
+      lives and not how it is measured. **ASSIGNED TO M8.5** (2026-09-09), `roadmap.md` carrying
+      the number.
 
 - [x] **THE rxv3 SYSK POSTURE LADDER IS PRICED AND DECLINED, NOT DEFERRED.** `rx72m` and
       `rx72m-flat` measure SYSK 700 where `rx72m-st` measures 796, and the whole 96-byte gap is gcc
@@ -484,7 +491,9 @@ Both were found during M8.3 and are recorded here rather than closed, which is w
       which is why it is the preset that reaches zero pool headroom under a wider code window. No
       assert reads this distance today. Direction: an assert on the `.bss`-to-boundary gap in the
       chip script, the way the arena asserts already replay the allocations, so a crossing is a
-      link failure naming the cliff rather than a quiet 32 KiB loss.
+      link failure naming the cliff rather than a quiet 32 KiB loss. **ASSIGNED TO M8.5**
+      (2026-09-09) with the reporter item above. Note the assert cannot simply be added:
+      `esp32c6-wroom-bench` has ALREADY crossed, so it lands with whatever fixes that preset.
 
 ## M8.4 -- gates, CI and the instrument's arithmetic
 
@@ -493,7 +502,7 @@ every `KICKOS_*` symbol reaches CMake by rule, replacing the bool allowlist; CI 
 `qemu-arm64-gicv3`, `pizero2350-amp` and one `qemu-riscv64` job, their toolchains already fetched.
 G-06 lands as a named configure refusal of the fastpath above one kernel core.
 
-- [ ] **THE FORWARDING GATE CHECKS THE DIRECTION THE LIVE BUG IS NOT IN, AND SIX HAND LISTS DECIDE
+- [x] **THE FORWARDING GATE CHECKS THE DIRECTION THE LIVE BUG IS NOT IN, AND SIX HAND LISTS DECIDE
       MEMBERSHIP WITH NO CROSS-CHECK.** `CMakeLists.txt` 66-84, 95-100, 102-115 (27, 4 and 8 entries,
       inbound); `tools/kconfig/genconfig.py` 35-46, 53-96, 97-105 (10, 32 and 7, outbound);
       `tests/static/check_kconfig_gen.sh` 110-113 hard-codes five booleans, which is a seventh list
@@ -507,7 +516,7 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       down to one, retires G-01 and G-02 as a CLASS instead of one at a time, and retires the
       forwarding gate and its five-bool assert entirely.
 
-- [ ] **`docs/reference/porting.md` STATES TWO THINGS THAT ARE FALSE OR PARTIAL ABOUT HOW A KNOB
+- [x] **`docs/reference/porting.md` STATES TWO THINGS THAT ARE FALSE OR PARTIAL ABOUT HOW A KNOB
       REACHES THE BUILD.** Line 352, "nothing about a board's provisioning is stated in CMake", is
       false for `KICKOS_APPDATA_SIZE`. Lines 372-374 say a `-D` becomes a request the generator can
       refuse without saying that this holds only for the names in the forwarding lists, every other
@@ -516,7 +525,7 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       is code-synced, so this is a defect. Also: `tests/integration/gates/`, now the home of every
       integration registration, is named nowhere under `docs/`.
 
-- [ ] **`KICKOS_DOORBELL_CORES` IS A PLAIN Kconfig INT WITH NO `range` AND NO CMAKE REFUSAL, so a
+- [x] **`KICKOS_DOORBELL_CORES` IS A PLAIN Kconfig INT WITH NO `range` AND NO CMAKE REFUSAL, so a
       defconfig can set it BELOW the board's core count and index the doorbell matrix past its end.**
       `arch/include/kickos/arch/doorbell_cells.h` 39 sizes the cell matrix from it, and
       `kernel/amp/ampmap.cc` 25 counts a list with no declared bound against it. Nothing refuses the
@@ -530,7 +539,7 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       `KICKOS_DOORBELL_CORES` for an out-of-range node, so the kernel side now refuses; this is the
       build side of the same bound.
 
-- [ ] **G-01, G-02: A KCONFIG SYMBOL CAN REACH `.config` AND STOP THERE, COMPILING A FEATURE OUT
+- [x] **G-01, G-02: A KCONFIG SYMBOL CAN REACH `.config` AND STOP THERE, COMPILING A FEATURE OUT
       SILENTLY.** `tools/kconfig/genconfig.py` (`CMAKE_BOOL_KNOBS`) 97; `CMakeLists.txt` 104,
       660-663. `KICKOS_AMP_DIAG_REPORT` is forwarded `-D` to Kconfig but absent from the CMake bool
       allowlist, so `CONFIG_KICKOS_AMP_DIAG_REPORT=y` in a defconfig resolves in `.config`, reaches
@@ -542,7 +551,7 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       `KICKOS_*` symbol into the CMake fragment by rule, the way `board_config.h` already does, so
       there is one authority instead of two.
 
-- [ ] **G-03: SEVENTEEN OF FIFTY-SEVEN `tests/static` GATES HAVE NO POSITIVE CONTROL.** No
+- [x] **G-03: SEVENTEEN OF FIFTY-SEVEN `tests/static` GATES HAVE NO POSITIVE CONTROL.** No
       planted violation exists for `appdata_no_kernel`, `arm_read_tp`, `class_backend`,
       `cpu_id_fold`, `include_guards`, `kconfig_forwarding`, `kernel_ctor_placement`, `kernel_got`,
       `kernel_runtime`, `panic_banners`, `riscv_kernel_apphalf`, `riscv_no_smalldata`,
@@ -553,7 +562,7 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       scratch dir, the way `check_dash_punct` already does, starting with `include_guards` and
       `spdx` since a style.md-gated rule with no control is the sharper defect.
 
-- [ ] **G-04: TWENTY-FOUR EMULATOR PRESETS ARE OUTSIDE CI, THREE OF THEM RECORDED NOWHERE.**
+- [x] **G-04: TWENTY-FOUR EMULATOR PRESETS ARE OUTSIDE CI, THREE OF THEM RECORDED NOWHERE.**
       `.github/workflows/ci.yml` vs `CMakePresets.json` (71 visible presets, 47 in CI). Uncovered and
       RECORDED: `rx72m` x3, `qemu-x86_64`, `imx8mp-evk`, `sim-telem` (`boards.md` 705-760, `STATE.md`
       790). Uncovered and recorded NOWHERE: `qemu-arm64-gicv3`, `pizero2350-amp` (shared-image
@@ -566,14 +575,14 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       an arm is never a later milestone's errand. This item keeps only the presets no sub-milestone
       needs for a witness of its own.
 
-- [ ] **G-05: THE FASTPATH'S DECIDE-BEFORE-MUTATE RULE IS HELD BY REVIEW ALONE, NOT BY A TEST.**
+- [x] **G-05: THE FASTPATH'S DECIDE-BEFORE-MUTATE RULE IS HELD BY REVIEW ALONE, NOT BY A TEST.**
       `kernel/syscall/syscall_ipc_fast.cc` 4-10. No host test compiles the TU (the sim build reports
       `KICKOS_ARCH_HAS_IPC_FASTPATH=0`), and `t_call_reg_fastpath` checks the counter and equal
       staging, not that a refusal left state untouched. Severity Medium. Direction: a `kseam` unit
       test that forces the macro to 1 the way `check_smp_trace_builds` forces its own dead arm, and
       snapshots thread and endpoint state around each refusal path.
 
-- [ ] **G-06 (= S4), DECIDED: THE FASTPATH IS UNREACHABLE ABOVE ONE KERNEL CORE ONLY BY
+- [x] **G-06 (= S4), DECIDED: THE FASTPATH IS UNREACHABLE ABOVE ONE KERNEL CORE ONLY BY
       ACCIDENT, AND M8 MUST NOT LEAVE THAT ACCIDENTAL.** `CMakeLists.txt` 603-618;
       `arch/*/*/ipc_fastpath.cmake`. Nothing refuses the fastpath at `KERNEL_CORES > 1`; the
       combination is unreachable today only because none of the four fastpath arches (armv6m,
@@ -583,7 +592,7 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       `FATAL_ERROR` in the opt-in CMake block, so the combination is refused by name rather than by
       absence.
 
-- [ ] **MASKED SCANNERS: FIVE STATIC GATES LOSE A TOOL DEATH INSIDE A PIPE AND MISATTRIBUTE THE
+- [x] **MASKED SCANNERS: FIVE STATIC GATES LOSE A TOOL DEATH INSIDE A PIPE AND MISATTRIBUTE THE
       FAILURE.** `check_ipi_fence.sh` 132; `check_doorbell_generic.sh` 401; `check_irq_line_op_sole.sh`
       150; `check_amp_no_xip_pin.sh` 101, 110; `check_trap_redzone_decls.sh` (eleven `awk` calls).
       Each pipes a reader through `wc -l` or `|| true`, so a tool crash is read as a small corpus
@@ -591,7 +600,7 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       currently vacuous, but each reports the wrong cause when it fires. Severity Low. Direction: set
       `pipefail` (or capture the reader's own exit status) ahead of the `wc -l`, in all five.
 
-- [ ] **G-07, G-08: FOUR GATES ENFORCE A RULE WRITTEN ONLY IN THEIR OWN HEADER, AND ONE ENFORCES
+- [x] **G-07, G-08: FOUR GATES ENFORCE A RULE WRITTEN ONLY IN THEIR OWN HEADER, AND ONE ENFORCES
       A RULE `style.md` DOES NOT MARK GATED.** `docs/reference/style.md` 134; the four gate
       headers themselves. G-07: `check_whitespace` enforces a rule the reference page states but does
       not mark GATED. G-08: `amp_no_xip_pin` (XIP cache pinning under own-image AMP is in no doc),
@@ -602,7 +611,7 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       same drift class DRY-4 names below, folded in here since both are style.md/gate-coverage
       accuracy rather than kernel code.
 
-- [ ] **G-09, G-10: A SWEEP TOOL NOBODY CALLS, A FIGURE STATED TWICE WITH NOTHING TYING THE
+- [x] **G-09, G-10: A SWEEP TOOL NOBODY CALLS, A FIGURE STATED TWICE WITH NOTHING TYING THE
       COPIES, AND A CONTEXT FILE THAT NAMES ONE FLEET-WIDE DOC GATE OF FIVE.**
       `tools/sweep_service_lists.sh`; `nrf51.ld` 26 vs `cmake/kickos.cmake` 541;
       `CONTEXT.local.md`. `sweep_service_lists.sh` is referenced by nothing in the tree. The nrf51
@@ -612,13 +621,13 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       Severity Low. Direction: delete or wire in the sweep tool, tie the two SRAM figures to one
       symbol or a gate that reads both, and list all five doc gates in `CONTEXT.local.md`.
 
-- [ ] **DRY-3 / SM-7: FOUR TERNARIES IN KERNEL CODE, AGAINST THE PROJECT'S OWN STYLE RULE, AND
+- [x] **DRY-3 / SM-7: FOUR TERNARIES IN KERNEL CODE, AGAINST THE PROJECT'S OWN STYLE RULE, AND
       NO GATE CATCHES ONE.** `kernel/syscall/syscall.cc` 1032, 1045; `syscall_aspace.cc` 391, 438.
       `style.md` forbids the ternary operator and no gate exists to enforce it. Direction: rewrite
       all four as `if`/`else`, and add `check_ternary.sh` over `strip_comments.awk`'s output so a
       fifth cannot land unnoticed.
 
-- [ ] **THE BENCH INSTRUMENT'S OWN ARITHMETIC IS WRONG IN TWO PLACES, AND MUST BE FIXED BEFORE
+- [x] **THE BENCH INSTRUMENT'S OWN ARITHMETIC IS WRONG IN TWO PLACES, AND MUST BE FIXED BEFORE
       M8.7 TAKES THE REBASELINE ON IT.** `kernel/bench/bench.cc` header comment lines 4-7 states
       the SWITCH accumulator's window "is the register + FP + CONTROL save/restore" on every arch;
       on rv32 it is not: `arch/riscv/rv32imac/switch.S` 327-357 stamps the switch window AFTER
@@ -632,7 +641,7 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       P0's rebaseline (M8.7) runs against a corrected instrument rather than invalidating its own
       first numbers.
 
-- [ ] **MIN STOPS BEING THE STATISTIC THE INSTRUMENT PRINTS AS ITS HEADLINE, AND THE REASON WAS
+- [x] **MIN STOPS BEING THE STATISTIC THE INSTRUMENT PRINTS AS ITS HEADLINE, AND THE REASON WAS
       NEVER FLEET-WIDE.** `kernel/bench/bench.cc` 10-12 states "MIN is the statistic to read"
       because the XMC4800's DWT is documented unreliable on that silicon and a glitched read can
       only inflate a delta; the switch/phase printers already compute min, avg and max (lines
@@ -643,7 +652,7 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       its headline figure per board to match -- distribution everywhere else, MIN kept as a recorded
       exception on the XMC4800 alone.
 
-- [ ] **DOC DRIFT (leftover, assigned here): `roadmap.md` 876-878 AND `design-m7-smp.md` 215-217
+- [x] **DOC DRIFT (leftover, assigned here): `roadmap.md` 876-878 AND `design-m7-smp.md` 215-217
       STILL QUOTE `MPU_APPLY` AT 443/886 CYCLES; THE FIGURE HAS MOVED 4.7x.** Section 8.5 of
       `docs/design-m5-ipc-fastpath.md` measured the same board after the PMP precompute at 19 cycles
       for `MPU_APPLY` and 75 for `MPU_COMMIT`, 94 a switch and 188 a round trip: the 443 was the
@@ -652,6 +661,184 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       figure in prose; `design-m7-smp.md` 215-217 has not been updated and still carries the stale
       886. Direction: update `design-m7-smp.md` 215-217 to the measured 94/188 figures, citing
       section 8.5, in the same change that lands the P2 two-line MPU skip (M8.8).
+
+## Found landing M8.4's gates, CI and instrument (2026-09-09)
+
+Every item below was found by doing M8.4's own work, and each carries its evidence so it resolves
+inside the tree.
+
+- [ ] **A U-MODE THREAD CAN STEER AN M-MODE STORE ON rv32imac, AND THE FIX IS IN WHILE rv64imac IS
+      UNCHECKED.** `gp` is x3, U-mode writable and deliberately not saved in the trap frame, and
+      `trap_entry` computed `&g_arch_current` through it before re-anchoring: the ctx it then read
+      was the thread's to forge, its `stack_hi`/`stack_lo` defeated the bounds test that backs the
+      trusted-trap-stack swap, and its `kernel_sp` aimed two M-mode frame stores past PMP. So the
+      gp hole DEFEATED the sp defence `trap_entry` is built around. Fixed by anchoring gp under
+      `.option norelax` ahead of the first gp-relative load, at 2 instructions, no frame and a
+      byte-identical red zone on all three rv32 presets. **What is owed: rv64imac's equivalent path
+      was never re-verified.** It loads its anchor from a link-time word and may be immune, and
+      "may" is not a verdict. Direction: read the rv64 trap entry the same way, from the LINKED
+      image, and either state it immune with the disassembly or fix it.
+      **REFUTED (2026-09-09): rv64imac does not have the hole, and the reason is image geometry
+      rather than the anchor's shape.** Its kernel `.text` names `gp` in nothing but its own anchor
+      pairs, across all three images of all three rv64 presets, so the instruction the rv32 attack
+      needs does not exist rather than merely running late: 51 instructions execute on the U-mode
+      ecall leg with the thread's `gp` live and not one of them reads through it, the entry reaching
+      its per-CPU cell PC-relative instead. `__global_pointer$` anchors the APP half while every
+      kernel datum sits a half-space away, so relaxation has nothing in range to fold, which a
+      second plant confirmed: `la t2, __global_pointer$` from kernel text with relaxation ENABLED
+      linked as `lui`/`addi`, not gp-relative. Three positive controls prove the scan can fire (the
+      app half of the same image at 830 hits, the rv32 flat image at 203, and a planted
+      `addi t2,gp,-1976` in the U-mode leg that both the scan and the registered gate caught). And
+      unlike rv32, **`check_riscv_kernel_gp.sh` IS registered on all three rv64 presets and
+      passes**, so what is foreclosed there is the hole's whole CLASS and not one instance. Two
+      live vectors were established on the way, `stvec` and a `mtvec` a U-mode thread can also
+      reach through a machine interrupt or an undelegated exception; the image-wide zero covers
+      both.
+
+- [ ] **`check_riscv_kernel_gp.sh` DOES NOT TRANSFER TO rv32 AND ADDING AN `lw` SPELLING IS NOT THE
+      FIX.** It bans gp-relative kernel access image-wide, which holds on the rv64 SPLIT image and
+      is false on the flat rv32 one: rv32 has no address space, so one `.text` carries kernel and
+      app with about 69 legitimate gp accesses under a single anchor, and the rv64 anchor shape
+      (`auipc gp,0x0; ld gp,N(gp)`, a relocated runtime word) is not the shape a flat image emits
+      (`la gp, __global_pointer$`). Registering it on rv32 would redden the fleet while asserting
+      something untrue there. Direction: the narrow trap-vector gate, which is what M8.4 landed
+      instead; this item records why the obvious extension was refused.
+
+- [ ] **G-02'S PLUMBING IS FIXED AND ITS MASK IS NOT.** `KICKOS_DIAG_TERSE` now reaches CMake on
+      `bluepill-c8` and `f302nucleo`, so `panicgate.cmake` reads a real value there, but no
+      `panicgate` case is REGISTERED on either board: `kickos_add_qemu_test` registers only where
+      there is an emulator and both are silicon. The wrong-expected-string symptom therefore still
+      has no test, and what witnesses the fix is `kconfig_reach` asserting the value arrives.
+      Direction: either a posture that reaches an emulator carries the same expectation, or state
+      that this symptom is unwitnessable off silicon and why that is acceptable.
+
+- [ ] **THE CONSOLE TEARS AT CHARACTER LEVEL ACROSS CORES, AND THE TWO FIXES ARE NOT EQUIVALENT.**
+      Under load on `qemu-riscv64-smp` a fault banner arrives inside another line's bytes
+      (`... mapped in no spac` then `=== THREAD FAULT =e`), which drops a TAP plan line in 10 of
+      320 runs. On that preset stdout is unpublished, so a TAP line is ONE `kos_kconsole_write`
+      call: the tear is in the kernel console write path, not in tap's chunking. Two producers, one
+      of them the kernel fault path. Direction, and it is a decision rather than a patch: console
+      line atomicity across cores, or the fault dump through the same lock as an ordinary write,
+      the second carrying the hazard that a faulting thread already holding that lock deadlocks its
+      own dump. **AND IT REACHES FURTHER THAN THE ONE ARM**: on `qemu-riscv64-smp` under `ctest
+      -j2`, `qemu_riscv64_aspace_ufault` and `qemu_riscv64_stack_guard` both drop out and both pass
+      alone and serially, so the count of arms this costs is at least four across two arches.
+      **LEFT AS IT IS AND KEPT AS A QUESTION FOR M9** (owner, 2026-09-09), and the reason
+      bounds who can ever see it: a real AMP deployment gives each node its own console, so two
+      producers on one console is an SMP-only shape, and there the interleaved print is a DEBUG aid
+      rather than a product surface. So the tear costs a flaky arm and nothing a shipped image
+      owes. It stays a question because M9 owns the locking, and the answer there may fall out of
+      the console emitter question rather than needing one of its own.
+
+- [ ] **`join_stale_gen` ASSUMES A JOINED THREAD'S SLOT IS RECLAIMED, AND RECLAMATION IS LAZY AT
+      THE NEXT SPAWN.** `user/apps/common/selftest/main.cc` (`join_stale_gen`), 5 runs in 320 at
+      16-way and 2 in 60 serial under load. Same class as the `cap_share` arm M8.4 fixed: an arm
+      asserting a synchronous property of something the kernel does not promise synchronously.
+      Direction: no app-visible probe makes "that slot is reclaimed" a fact today, so this is
+      either a restaging against something the arm CAN observe, or a new probe, which is an API
+      surface decision and not a test fix. **LEFT FOR NOW** (owner, 2026-09-09): the probe is a
+      real API question and is not to be settled by a flaky arm.
+
+- [ ] **A POPULATION OF SELFTEST ARMS IS PROGRESS-DEPENDENT AND REDDENS ONLY ABOVE ANY REAL
+      `ctest -j`.** `slice_preempts_every_core`, `threads_reach_every_core`, two IPC arms and
+      `mem_self_grant` declining its own precondition, observed at 16 concurrent gate copies or
+      under 16 CPU hogs. Flagged as a population rather than attributed one by one: each asserts
+      that scheduling PROGRESS happened within a window the host can starve. Direction: decide
+      whether such an arm belongs in a suite at all, since the alternative to a window is an
+      oracle the image does not supply.
+
+- [ ] **`qemu-riscv`'s NANOSECOND COLUMN IS VOID, AND IT DECIDES WHETHER M8.7 MAY QUOTE THAT BOARD
+      AT ALL.** `arch/riscv/chip/virt_rv32/chip_virt_rv32.cc` publishes `SystemCoreClock` as the
+      CLINT **mtime** rate, 10 MHz, and `kernel/bench/bench.cc` scales `rdcycle` samples by it. Its
+      own arithmetic refutes it: an average bracket of 1041 units at 100 ns a unit over 40000
+      switches is 4.16 s inside a 617 ms window, so the counter runs at 67.5 MHz or more.
+      **CLOSED (2026-09-09) BY PUBLISHING 0, AND THE MEASUREMENT IS WHY THE OTHER BRANCH WAS
+      UNAVAILABLE.** `rdcycle` on `qemu-system-riscv32 -M virt` is answered from the HOST tick
+      source, not from any guest quantity, and two tells need no load to see: `rdinstret` equals
+      `rdcycle` to within the reads between them, which two architecturally distinct counters
+      cannot, and neither equals the true instruction count. Held against WALL time its rate is
+      stable to 0.03 percent and equals the host's own TSC frequency; held against guest WORK it
+      spreads 6.2x under load. So it measures emulation effort, and "is the rate stable" was the
+      wrong question. Only `-icount shift=0` makes it a guest quantity, which is not a posture the
+      tree runs in. The instrument now scales by a chip fact, `KICKOS_CHIP_CYCCNT_HZ`, which is 0
+      on this chip and suppresses the nanosecond column while keeping the cycle column; the 16 ns
+      figures that survive come from `kos::clock_now` over CLINT mtime, a genuine guest clock. The
+      seam that reads the core clock is `arch_cpu_clock_hz` and `SystemCoreClock` stays where it
+      was, so nothing moved under its callers.
+
+- [x] **AND THE SAME QUESTION ONE LEVEL OUT, `SystemCoreClock` ITSELF, IS ANSWERED: BOTH virt CHIPS
+      PUBLISH 0.** A QEMU `virt` machine has no core clock, so the CLINT mtime rate that used to sit
+      there was a real number describing a different thing. Both chips answer 0 now and both keep
+      that rate under its own name (`MTIME_HZ` on rv32, `TIME_HZ` on rv64), so nothing needed a new
+      fact and no timer rate was ever derived from the seam. **The rv64 half was already dead**: its
+      `arch_cpu_clock_hz` returns 0 in the body and never reads the symbol, which `--gc-sections`
+      then collects out of every linked image, so that value had reached nothing for as long as it
+      had been wrong. Nothing computes with the seam either: the retune's refusal path returns it
+      unmodified, the dispatch arm casts it, `ampdiag` prints it, and the two clock apps print it.
+      `t_cpu_clock_hz` already accepted 0 for the host sim and passes unchanged on a board now
+      answering it. `esp32c6` is untouched at a real 160 MHz, its counter reading a CLINT MTIME that
+      IS core-clocked, so its two rates legitimately agree.
+
+- [ ] **THE BENCH CALIBRATION PAIR INFLATES WHAT IT CALIBRATES.** `PH_NULL` and `PH_NEST` sit
+      inside `bm_locked`/`bm_total` (`kernel/syscall/syscall_ipc.cc`), so every `CALL_TOTAL` sample
+      carries `2*(NEST-NULL)`. Moving them to an `IrqLock` of their own fixes it and costs the
+      argument that they run under the same interrupt mask as the brackets they calibrate.
+      Direction: M8.7's, with the rebaseline that consumes both figures. **ASSIGNED TO M8.7**
+      (owner, 2026-09-09).
+
+- [ ] **NOTHING PRINTS `k`, SO A READER CAN STILL APPLY THE WRONG COMPOSITE CORRECTION.** M8.4
+      fixed the correction and established that `k` belongs to a SAMPLE and not to a row
+      (`CALL_TOTAL` 21 to 22, `REPLY_WAKE` 2 to 7, `RECV_SCAN` unbounded). The table still reports
+      no `k`, so the corrected rule cannot be applied by hand from the output alone. Direction:
+      print the count beside the composite, or state in the header that a composite is not
+      hand-correctable.
+
+- [ ] **BRACKETS THAT NEVER CLOSE ON AN ERROR ARM LEAVE A COUNTER READ WITH NO ACCUMULATOR CALL
+      INSIDE THE ENCLOSING SPAN, WHICH NEITHER CORRECTION DESCRIBES.** The AMP far-call arm marks
+      `bm_total`/`bm_locked` and never spans them while running a `reschedule()` inside that dead
+      region; `PH_WAKE_UNPARK`, `PH_CALL_COPY`, `PH_CALL_MINT` and every served `RECV_*` arm do the
+      same. And **`PH_CALL_RESUME` is not a leaf**: its mark sits after the lock drops and its body
+      spins until the pended switch fired, so its delta covers the server's whole processing.
+      Direction: both are M8.7's to price before its numbers are called comparable.
+
+- [ ] **rxv3 AND THE LX6 STILL BRACKET A DIFFERENT SWITCH SPAN, AND NO PRESET BUILDS EITHER
+      BRACKET.** `arch/rx/rxv3/switch.S` closes before its restore and `arch/xtensa/lx6/switch.S`
+      stamps before the `retw`, so both reload ZERO words inside the window where rv32imac and
+      armv7m reload their full frame. Neither arch has a bench preset in the tree, so nothing
+      compiles those brackets and no figure exists to compare. Direction: the same deferred-bank
+      mechanism M8.4 wrote for rv32imac, and rxv3 needs its `popm` split so two registers survive
+      the stamp. A bench preset per arch is the precondition.
+
+- [ ] **rxv3 IS IN NO CI JOB AT ALL**, so one of the four arches the new fastpath refusal names is
+      witnessed locally only. `grep -c rx72m .github/workflows/ci.yml` is 0, and so is `rxv3` and
+      `RX_TOOLCHAIN`. Unlike x86_64, whose runner is itself the target, this needs a Renesas
+      toolchain fetched in CI. **NOTHING TO DO FOR NOW** (owner, 2026-09-09): a BUILD job is
+      reachable once the toolchain is fetched, and there is no rxv3 emulator at all, so no run gate
+      exists to add. A build-only job would witness the link surface and nothing about behaviour,
+      which the fleet's own bench pass already covers on silicon. Revisit if an rxv3 emulator
+      appears or if the arch gains a gate a build alone can hold.
+
+- [ ] **THE FASTPATH REFUSAL SUITE CANNOT REACH THE FAR-ENDPOINT FALL-THROUGH, AND THE CLAIM NOW
+      SAYS SO RATHER THAN THE COVERAGE GROWING.** `tests/unit/fastrefuse`;
+      `kernel/syscall/syscall_ipc_fast.cc`. The library compiles at `KICKOS_AMP_NODE=0`, where
+      `endpoint_is_far` is `return false` by definition, so an arm there would refuse on the shared
+      staging and pass whichever way the clause went. Reaching it needs a second posture library,
+      which would define the entry point twice, and therefore a second executable duplicating the
+      byte-image oracle; and the ORDER that clause's comment justifies, far ahead of dead-endpoint,
+      is unobservable in that TU anyway, both operands being the same `nullptr` fall-through. The
+      external audit accepted the boundary once the suite's header stated it, the production check
+      being correctly ordered and simple. Direction: if an AMP posture library ever exists for
+      another reason, the arm costs almost nothing on top of it; standing one up for this alone buys
+      the claim "a far endpoint is refused at all" and no ordering.
+
+- [ ] **CI COVERS 53 OF 71 PRESETS AND THE RESIDUE IS EVERY `-bench` AND EVERY ARM `-st`.** Still
+      uncovered after M8.4: `imx8mp-evk`, `sim-telem`, `rx72m` x3, `esp32c6-wroom-st`/`-bench`,
+      `xmc4800-relax-st`/`-bench` and the nine remaining ARM `-st` presets. **And deriving that
+      count by grepping the preset NAME is lossy in BOTH directions**: a job name matched with no
+      build behind it (the `pizero2350-amp` case M8.4 fixed), while eight presets reached through a
+      shell variable (`qemu-arm64-amp3-n$n`, `pizero2350-amp2-n$node`, `"$b-flat"`) match nothing
+      at all. Direction: an instrument that enumerates what each job CONFIGURES, since no grep of
+      that file answers the question it is asked.
 
 ## M8.5 -- DRY in kernel and arch
 
@@ -727,6 +914,16 @@ CHIP PORTS ARE NEAR-CLONES", rather than duplicating it.
       stops it, or annotate each surviving `volatile` with the specific style.md exception it invokes.
 
 ## M8.6 -- DRY in build, test and userspace
+
+**AND THE GATE-LIBRARY EXTRACTION WAITS FOR A REASON THE M8.4 AUDIT STATED RATHER THAN FOR
+SEQUENCING.** M8.4 added positive controls to sixteen gates and per-reader status capture to eight,
+so the static corpus now repeats corpus construction and reader scaffolding heavily and is the
+obvious candidate for the shared helper this milestone owns. Doing it inside M8.4 would have
+reopened the very instrument its evidence had just validated, which is the same argument the
+milestone used against optimising a hot path about to be rewritten. So the duplication is real, it
+is measured, and it is deliberately still here.
+
+
 
 External audit, itemised into `roadmap.md` M8.6.
 

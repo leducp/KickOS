@@ -58,32 +58,42 @@ set(KICKOS_DEFCONFIG
     "${CMAKE_CURRENT_SOURCE_DIR}/boards/${KICKOS_BOARD}/configs/${KICKOS_CONFIG_VARIANT}/defconfig")
 if(EXISTS "${KICKOS_DEFCONFIG}")
 
-  # Every arm must translate in BOTH directions: sending only the positive one lets a
-  # defconfig that enables something outrank a command line asking to turn it off.
+  # A `-D` BECOMES A REQUEST BY RULE, not by membership of a list. CMake cannot tell a knob
+  # from its own variables, so it OFFERS every KICKOS_* name it holds and the generator,
+  # which owns the declarations, turns each into a properly typed request or drops it. A name
+  # only a command line or a preset can have created carries `assert:` instead, so one
+  # naming a symbol no request can reach is refused by name rather than dropped.
+  #
+  # A candidate's value is read through the cache VALUE property and NEVER dereferenced: a
+  # deref marks the entry used and would silence CMake's own "manually-specified variables
+  # were not used" notice across the whole namespace. The generated fragment's own set()
+  # marks every real knob used, so what the notice still reports is a name that is neither a
+  # knob nor a switch this build declares.
   set(_kcfg_req "")
-  # A name not in this list never becomes a request; CMake merely reports it unused.
-  # KICKOS_MAX_HANDLES is computed by the sum in cmake/cap_table.cmake.
-  foreach(_knob KICKOS_MAX_THREADS KICKOS_USER_STACK_SIZE KICKOS_IDLE_STACK_SIZE
-                KICKOS_ROOT_STACK_SIZE KICKOS_MAX_SEMAPHORES KICKOS_MAX_MUTEXES
-                KICKOS_MAX_ENDPOINTS KICKOS_CAP_TABLE_SUPPLY KICKOS_MAX_SPAWN_GRANTS
-                KICKOS_MAX_IRQ_HANDLES KICKOS_MAX_FRAME_RUNS KICKOS_ASPACE_RANGES
-                KICKOS_RAM_OWNER_SLOTS
-                KICKOS_TASK_OBJECT_BUDGET
-                KICKOS_RTT_CH1_SIZE
-                KICKOS_USER_HEAP_SIZE
-                KICKOS_MAX_INSTANCES KICKOS_PANIC_DUMP KICKOS_DIAG_TERSE
-                KICKOS_AMP_NODES KICKOS_AMP_NODE_ID
-                KICKOS_AMP_PARTITION_BASE KICKOS_AMP_NODE_SHARE KICKOS_AMP_SHARED_SIZE
-                KICKOS_AMP_TEXT_BASE KICKOS_AMP_TEXT_SHARE
-                KICKOS_AMP_PARTITION_CORES KICKOS_ISOLATED_CORES
-                KICKOS_AMP_DIAG_TAG)
-    # The AMP peer seed further down reads the SAME names back out of the resolved .config,
-    # so a knob added to the list above reaches a peer without a second edit.
-    list(APPEND _kcfg_int_names "${_knob}")
-    if(DEFINED ${_knob})
-      list(APPEND _kcfg_req "CONFIG_${_knob}=${${_knob}}")
+  get_cmake_property(_kcfg_vars VARIABLES)
+  foreach(_kcfg_v IN LISTS _kcfg_vars)
+    if(NOT _kcfg_v MATCHES "^KICKOS_[A-Z0-9_]+$")
+      continue()
     endif()
+    unset(_kcfg_type)
+    get_property(_kcfg_type CACHE "${_kcfg_v}" PROPERTY TYPE)
+    set(_kcfg_shape "offer")
+    if(NOT DEFINED _kcfg_type)
+      set(_kcfg_val "${${_kcfg_v}}")
+    else()
+      get_property(_kcfg_val CACHE "${_kcfg_v}" PROPERTY VALUE)
+      if(_kcfg_type STREQUAL "UNINITIALIZED")
+        set(_kcfg_shape "assert")
+      endif()
+    endif()
+    # A raw semicolon would split one candidate into several arguments, and the tail of a
+    # service list then reaches the generator as a request of its own.
+    string(REPLACE ";" "\\;" _kcfg_val "${_kcfg_val}")
+    list(APPEND _kcfg_req "${_kcfg_shape}:${_kcfg_v}=${_kcfg_val}")
   endforeach()
+  # THE ONE SURVIVING LIST: two projections of a value back onto a choice, which is the one
+  # shape the rule above cannot derive. Both symbols are promptless, so the sweep drops the
+  # candidate and this states what the value means.
   if(DEFINED KICKOS_CONSOLE)
     string(TOUPPER "${KICKOS_CONSOLE}" _kcfg_console)
     list(APPEND _kcfg_req "CONFIG_CONSOLE_${_kcfg_console}=y")
@@ -92,29 +102,6 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
     string(TOUPPER "${KICKOS_TELEMETRY}" _kcfg_telem)
     list(APPEND _kcfg_req "CONFIG_TELEMETRY_${_kcfg_telem}=y")
   endif()
-  # A knob the fragment sets but this translation omits is one the fragment silently
-  # overwrites.
-  foreach(_str KICKOS_SERVICE_LIST KICKOS_BOARD_PINMAP KICKOS_AMP_NODE_CORES
-               KICKOS_AMP_PORTS)
-    list(APPEND _kcfg_str_names "${_str}")
-    if(DEFINED ${_str})
-      list(APPEND _kcfg_req "CONFIG_${_str}=\"${${_str}}\"")
-    endif()
-  endforeach()
-  foreach(_flag KICKOS_ENABLE_SELFTEST KICKOS_DEBUG KICKOS_BENCH
-                KICKOS_SHUTDOWN_TO_BOOTLOADER KICKOS_MULTI_INSTANCE KICKOS_TLS
-                KICKOS_AMP_DIAG_REPORT
-                CONFIG_SCHED_PERIODIC_TICK)
-    list(APPEND _kcfg_flag_names "${_flag}")
-    if(DEFINED ${_flag})
-      string(REGEX REPLACE "^CONFIG_" "" _sym "${_flag}")
-      set(_val "n")
-      if(${_flag})
-        set(_val "y")
-      endif()
-      list(APPEND _kcfg_req "CONFIG_${_sym}=${_val}")
-    endif()
-  endforeach()
 
   kickos_kconfig_generate("${CMAKE_CURRENT_SOURCE_DIR}" "${KICKOS_DEFCONFIG}"
                           "${PROJECT_BINARY_DIR}/generated" "${_kcfg_req}")
@@ -195,7 +182,7 @@ add_compile_definitions(KICKOS_LIBC_REENT=${KICKOS_LIBC_REENT}
 # --- Config knobs ----------------------------------------------------------
 # Every knob below that becomes a compile definition is defined 0 or 1, never left
 # undefined, so each `#if` site is -Wundef-clean.
-option(CONFIG_SCHED_PERIODIC_TICK "Force a classic periodic scheduler tick" OFF)
+option(KICKOS_SCHED_PERIODIC_TICK "Force a classic periodic scheduler tick" OFF)
 option(KICKOS_BUILD_APPS          "Build in-tree demo applications"          ON)
 option(KICKOS_BUILD_TESTS         "Register CTest cases"                     ON)
 option(KICKOS_BUILD_INTEGRATION_TESTS
@@ -630,6 +617,26 @@ kickos_smp_predicate(
   NUM_CORES    "${KICKOS_NUM_CORES}"
   MODEL_SHARED "${KICKOS_MULTICORE_MODEL_SHARED}")
 
+# --- The fastpath is a ONE-KERNEL-CORE capability ----------------------------
+# AFTER the predicate above, so an arch that declares none of the six is told that first;
+# what reaches here has passed it. The refusal is by NAME rather than by the absence of an
+# smp.cmake on the four arches that carry the opt-in.
+#
+# kernel/syscall/syscall_ipc_fast.cc carries the same clause as a static_assert, for a
+# translation unit compiled outside this block (a tests/unit posture library sets both
+# macros itself).
+if(KICKOS_ARCH_HAS_IPC_FASTPATH AND KICKOS_KERNEL_CORES GREATER 1)
+  message(FATAL_ERROR
+    "KickOS: arch '${KICKOS_ARCH}' opts into the trap-handler IPC fastpath in "
+    "${_ipc_fastpath_optin}, and KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES} puts one kernel "
+    "on more than one core. The fastpath holds NO lock object: it is entered with the local "
+    "interrupt mask the trap took and mutates a peer's thread control block, its endpoint "
+    "and its capability table under that mask alone, which is exclusion on one core and "
+    "nothing on another (docs/design-multicore.md section 4 gap 1, ruled on by N10). Either "
+    "delete ${_ipc_fastpath_optin}, or select one kernel core: the AMP model runs a kernel "
+    "per core over disjoint memory and keeps the fastpath on each of them.")
+endif()
+
 # The generated header guards its own define with #ifndef, so this wins where both are seen.
 add_compile_definitions(KICKOS_NUM_CORES=${KICKOS_NUM_CORES})
 # Beside the count, so an APP TU can ask how many cores one kernel schedules on: a claim about
@@ -638,6 +645,31 @@ add_compile_definitions(KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES})
 
 # Beside them again, for an app TU that has to ask which MODEL it runs under.
 add_compile_definitions(KICKOS_MULTICORE_MODEL_SHARED=${KICKOS_MULTICORE_MODEL_SHARED})
+
+# --- The doorbell's rendezvous matrix ----------------------------------------------------
+# KICKOS_DOORBELL_CORES states its width and is DERIVED, never stated: from
+# KICKOS_AMP_PARTITION_CORES under the own-image posture and from KICKOS_NUM_CORES everywhere
+# else, those two being the authorities on the machine's core count. What a defconfig can still
+# state is a NODE count above it, and under the shared image a node's identity is its core
+# register, so amp::core_of answers the node index itself and a partition wider than the matrix
+# indexes past its end in cross-core wake delivery rather than failing the build.
+if(KICKOS_DOORBELL_CORES LESS KICKOS_NUM_CORES)
+  message(FATAL_ERROR
+    "KickOS: KICKOS_DOORBELL_CORES resolves ${KICKOS_DOORBELL_CORES} and this image drives "
+    "${KICKOS_NUM_CORES} cores. The matrix is indexed by machine core and cannot be narrower "
+    "than the cores the image drives. KICKOS_NUM_CORES is the authority and the width derives "
+    "from it in Kconfig, so this says the derivation is broken rather than a defconfig.")
+endif()
+if(KICKOS_AMP_NODE AND NOT KICKOS_AMP_OWN_IMAGE
+   AND KICKOS_AMP_NODES GREATER KICKOS_DOORBELL_CORES)
+  message(FATAL_ERROR
+    "KickOS: KICKOS_AMP_NODES is ${KICKOS_AMP_NODES} and the doorbell's matrix is "
+    "${KICKOS_DOORBELL_CORES} cores wide. Under the shared image a node's identity IS its core "
+    "register, so amp::core_of answers the node index itself and a node above the matrix's last "
+    "row is rung on a core that has none. KICKOS_NUM_CORES is the authority on the width: state "
+    "at most that many nodes, or raise the core count, in "
+    "boards/${KICKOS_BOARD}/configs/${KICKOS_CONFIG_VARIANT}/defconfig.")
+endif()
 
 # --- Isolated cores ----------------------------------------------------------
 # The knob depends on the shared model, so it is absent from the generated header on every
@@ -806,7 +838,7 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   # Written as an initial-cache script rather than as a list of switches, so a seeded value
   # carrying a space or a semicolon reaches the peer whole.
   set(_amp_seed "# Written by node ${KICKOS_AMP_NODE_ID}'s configure. Read by tools/amp/build-partition.sh.\n")
-  foreach(_amp_name IN LISTS _kcfg_int_names _kcfg_str_names
+  foreach(_amp_name IN LISTS KICKOS_KCONFIG_PROMPTED_VALUE
                     ITEMS KICKOS_CONSOLE KICKOS_TELEMETRY)
     if(_amp_name STREQUAL "KICKOS_AMP_NODE_ID")
       continue()
@@ -816,12 +848,12 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
              "set(${_amp_name} \"${_amp_cfg_${_amp_name}}\" CACHE STRING \"\" FORCE)\n")
     endif()
   endforeach()
-  # Both directions: a knob resolved off must reach the peer as off, or the peer takes its
-  # Kconfig default instead.
-  foreach(_amp_name IN LISTS _kcfg_flag_names)
-    string(REGEX REPLACE "^CONFIG_" "" _amp_sym "${_amp_name}")
+  # Both directions, and unconditionally: kconfiglib writes an off bool as a COMMENT rather
+  # than as `=n`, so absent from the resolved .config is off and not unstated. Seeded as
+  # unstated the peer would take its Kconfig default instead.
+  foreach(_amp_name IN LISTS KICKOS_KCONFIG_PROMPTED_FLAG)
     set(_amp_v "OFF")
-    if(DEFINED _amp_cfg_${_amp_sym} AND _amp_cfg_${_amp_sym} STREQUAL "y")
+    if(DEFINED _amp_cfg_${_amp_name} AND _amp_cfg_${_amp_name} STREQUAL "y")
       set(_amp_v "ON")
     endif()
     string(APPEND _amp_seed "set(${_amp_name} ${_amp_v} CACHE BOOL \"\" FORCE)\n")
@@ -1175,10 +1207,20 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(dash_punct PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME ternary
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_ternary.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(ternary PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   _add_test(NAME panic_banners
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_panic_banners.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(panic_banners PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
+  _add_test(NAME syscall_return_codes
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_syscall_return_codes.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(syscall_return_codes PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   _add_test(NAME death_stack_seating
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_death_stack_seating.sh"
@@ -1259,6 +1301,28 @@ if(KICKOS_BUILD_TESTS)
     set_tests_properties(amp_no_xip_pin PROPERTIES TIMEOUT 300 LABELS host)
   endif()
 
+  # Every mtvec target seats gp before its first gp-relative access, and no seat is relaxable.
+  # Registered on the ISA and not on a board or a chip: one switch.S carries the vector table
+  # and the entry it jumps to for both rv32 chips, so every rv32imac preset makes the claim.
+  # NOT on rv64imac, whose kernel half seats gp out of a link-time word instead.
+  #
+  # Two corpora, because neither property exists in one place: the ORDER out of the linked
+  # images, gp addressing being made by the linker and absent from an object; the RELAXABILITY
+  # out of the arch archive, a relocation annotation surviving nowhere else. Two images, so a
+  # body the optimiser leaves in only one of them is still in the corpus. The slot count comes
+  # from the chip's own KICKOS_MAX_IRQ rather than from a number kept here. It runs no image, so
+  # it carries the host label and never `tree`: what it reads is a preset's own output.
+  if(KICKOS_ARCH STREQUAL "rv32imac")
+    add_test(NAME rv32_trap_gp_anchor
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_rv32_trap_gp_anchor.sh"
+              "${CMAKE_OBJDUMP}"
+              "${KICKOS_CHIP_INCLUDE_DIR}/kickos/chip_limits.h"
+              "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+              "$<TARGET_FILE:hello>"
+              "$<TARGET_FILE:selftest>")
+    set_tests_properties(rv32_trap_gp_anchor PROPERTIES TIMEOUT 120 LABELS host)
+  endif()
+
   _add_test(NAME atomic_rmw
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_atomic_rmw.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1322,12 +1386,13 @@ if(KICKOS_BUILD_TESTS)
                     "${CMAKE_BINARY_DIR}/compile_commands.json")
   set_tests_properties(smp_trace_builds PROPERTIES TIMEOUT 180 LABELS host)
 
-  # Reads the forwarding lists above out of this very file, so it is registered from every
-  # board and never from a generated copy.
-  _add_test(NAME kconfig_forwarding
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_forwarding.sh"
+  # The rule that carries a knob both ways: every declared KICKOS_* symbol reaches the CMake
+  # fragment, and a candidate's request syntax comes from its declared type. Corpus is every
+  # defconfig in the tree, so it is registered from every board and opens no build directory.
+  _add_test(NAME kconfig_reach
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_reach.sh"
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(kconfig_forwarding PROPERTIES TIMEOUT 120 LABELS "host;tree")
+  set_tests_properties(kconfig_reach PROPERTIES TIMEOUT 300 LABELS "host;tree")
 
 endif()
 
@@ -1487,6 +1552,16 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/taskbudget/CMakeLists.txt")
   add_subdirectory(tests/unit/taskbudget)
+endif()
+
+# The K-seam sources with KICKOS_ARCH_HAS_IPC_FASTPATH forced to 1: the knob is an arch
+# backend's own declaration, no board the host arch answers for ships one, and so the
+# fastpath's whole translation unit compiles to nothing at every preset's posture. Outside
+# the K-seam block because it also compiles kernel/syscall/syscall_mem.cc with its own arch
+# seam, and at a posture the preset cannot state.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/fastrefuse/CMakeLists.txt")
+  add_subdirectory(tests/unit/fastrefuse)
 endif()
 
 # The ARM64 stage-1 map editor itself, compiled for the host: the instruction-side debt a

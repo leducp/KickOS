@@ -407,8 +407,12 @@ namespace kickos
         {
             IrqLock lock;
             Thread* self = sched::current();
-            Domain* const mine = (self == nullptr) ? nullptr : task_domain(self->task);
-            if (self == nullptr or mine == nullptr)
+            if (self == nullptr)
+            {
+                return 0;
+            }
+            Domain* const mine = task_domain(self->task);
+            if (mine == nullptr)
             {
                 return 0;
             }
@@ -454,8 +458,12 @@ namespace kickos
         {
             IrqLock lock;
             Thread* self = sched::current();
-            Domain* const mine = (self == nullptr) ? nullptr : task_domain(self->task);
-            if (self == nullptr or mine == nullptr)
+            if (self == nullptr)
+            {
+                return 0;
+            }
+            Domain* const mine = task_domain(self->task);
+            if (mine == nullptr)
             {
                 return 0;
             }

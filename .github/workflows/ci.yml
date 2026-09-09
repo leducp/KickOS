@@ -108,6 +108,13 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/arm-toolchain
+      # A SKIP IS NOT A PASS. Every image gate in this job boots through need_qemu, which
+      # exits 77 on a missing emulator; ctest reports that as Skipped and still exits 0, so an
+      # absent qemu-system-arm greens a job that booted nothing.
+      - name: the emulator every image gate in this job boots on
+        run: |
+          command -v qemu-system-arm >/dev/null 2>&1 \
+            || { echo "qemu-system-arm is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       # --repeat until-pass:2 rides the POLLED gates and NOTHING else. The mps2/nrf51
       # clock is the ~100 Hz semihosting SYS_CLOCK (chip_mps2.cc arch_clock_now, DWT
       # frozen), so every timed sleep before an awaited line is stretched to a 10 ms
@@ -149,6 +156,11 @@ jobs:
           ctest --preset qemu-m3 -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
           # Posture pin, as on the an386: this board carries its own base defconfig.
           ctest --preset qemu-m3 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:2
+          # Pins the REGISTRATION, not just the result. The terse-column arm is keyed on this
+          # board AND on this tree resolving KICKOS_DIAG_TERSE off, the arm itself forcing the
+          # knob on in a tree of its own, so a variant that turned it on here would leave the
+          # suite one test shorter and still green.
+          ctest --preset qemu-m3 -R '^qemu_m3_diag_terse$' --no-tests=error --output-on-failure
       # The ring-only posture of the same four boards, which is what ringpriv and
       # ringppb assert against: the privilege ring holds on its own.
       - name: ARM ring-only run gates (no PMSA enforcement)
@@ -158,6 +170,12 @@ jobs:
             cmake --build --preset "$b-flat"
             ctest --preset "$b-flat" -E "$POLLED" -LE tree --no-tests=error --output-on-failure
             ctest --preset "$b-flat" -R "$POLLED" --no-tests=error --output-on-failure --repeat until-pass:2
+            # The terse-column arm is keyed on the BOARD and the knob and not on the variant,
+            # so this posture carries a registration of its own, which the pin in the step
+            # above does not reach. qemu-m3 is the only one of the four that registers it.
+            if [ "$b" = qemu-m3 ]; then
+              ctest --preset "$b-flat" -R '^qemu_m3_diag_terse$' --no-tests=error --output-on-failure
+            fi
           done
       - name: armv6m (microbit)
         run: |
@@ -187,6 +205,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/aarch64-toolchain
+      - name: the emulator every image gate in this job boots on
+        run: |
+          command -v qemu-system-aarch64 >/dev/null 2>&1 \
+            || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       - name: armv8a (virt, Cortex-A53)
         run: |
           cmake --preset qemu-arm64 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
@@ -219,6 +241,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/aarch64-toolchain
+      - name: the emulator every image gate in this job boots on
+        run: |
+          command -v qemu-system-aarch64 >/dev/null 2>&1 \
+            || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       - name: armv8a (virt) four cores
         run: |
           cmake --preset qemu-arm64-smp -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
@@ -244,6 +270,45 @@ jobs:
           ctest --preset qemu-arm64-smpiso --no-tests=error --output-on-failure \
             -R 'isolated_cores|qemu_arm64_selftest'
 
+  # armv8a (virt) at FOUR KERNEL CORES under a GICv3, which is the controller the i.MX8MP A53
+  # cluster wires. The qemu-arm64-smp job drives the same four cores on the machine's default
+  # GICv2, and every AMP variant below builds a GICv3 with KICKOS_KERNEL_CORES at 1, so the
+  # shared-kernel doorbell over ICC_SGI1R_EL1 is reached by neither.
+  qemu-arm64-gicv3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      QEMU_TIMEOUT: "30"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kconfiglib
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build qemu-system-arm curl xz-utils
+      - uses: ./.github/actions/aarch64-toolchain
+      - name: the emulator every image gate in this job boots on
+        run: |
+          command -v qemu-system-aarch64 >/dev/null 2>&1 \
+            || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
+      - name: armv8a (virt) four cores under a GICv3
+        run: |
+          cmake --preset qemu-arm64-gicv3 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          # Posture pin, read from the RESOLVED configuration. The controller is one line in
+          # this variant's defconfig, and at version 2 the machine keeps its default GICv2 and
+          # this step is the qemu-arm64-smp job again under another name.
+          gic=$(sed -n 's/^#define KICKOS_ARM64_GIC_VERSION //p' \
+                build/qemu-arm64-gicv3/generated/include/kickos/board_config.h)
+          if [ -z "$gic" ] || [ "$((gic))" -ne 3 ]; then
+            echo "gicv3 resolved KICKOS_ARM64_GIC_VERSION='$gic': this step would re-run the GICv2 posture"
+            exit 1
+          fi
+          cmake --build --preset qemu-arm64-gicv3
+          ctest --preset qemu-arm64-gicv3 -LE tree --no-tests=error --output-on-failure
+          # Posture pin, as in qemu-arm64-smp: the kernel-core count is this variant's
+          # defconfig, and dropping it de-registers these four instead of failing them.
+          ctest --preset qemu-arm64-gicv3 --no-tests=error --output-on-failure \
+            -R 'qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer'
+
   # armv8a (virt) as an AMP PARTITION, in BOTH halves of the instrument.
   # docs/design-multicore.md N6c states the three clauses: the shared image catches a keying
   # COLLAPSE, an own-image node catches a BOUND, and two kernels running at once catches what
@@ -264,6 +329,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/aarch64-toolchain
+      - name: the emulator every image gate in this job boots on
+        run: |
+          command -v qemu-system-aarch64 >/dev/null 2>&1 \
+            || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       - name: armv8a (virt) AMP, one image over four cores
         run: |
           cmake --preset qemu-arm64-amp -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
@@ -329,6 +398,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-misc curl xz-utils
       - uses: ./.github/actions/riscv-toolchain
+      - name: the emulator every image gate in this job boots on
+        run: |
+          command -v qemu-system-riscv32 >/dev/null 2>&1 \
+            || { echo "qemu-system-riscv32 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       # The ring-only posture: this board's flat variant is what the freestanding
       # PMP-less hello and cxxtest gates are registered on.
       - name: rv32imac (virt) run gate, no PMP enforcement
@@ -366,6 +439,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-misc curl xz-utils
       - uses: ./.github/actions/riscv-toolchain
+      - name: the emulator every image gate in this job boots on
+        run: |
+          command -v qemu-system-riscv32 >/dev/null 2>&1 \
+            || { echo "qemu-system-riscv32 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       - name: rv32imac (virt) enforcement gate
         run: |
           cmake --preset qemu-riscv -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
@@ -398,6 +475,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-misc curl xz-utils
       - uses: ./.github/actions/riscv-toolchain
+      - name: the emulator every image gate in this job boots on
+        run: |
+          command -v qemu-system-riscv64 >/dev/null 2>&1 \
+            || { echo "qemu-system-riscv64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       - name: rv64imac (virt) sv39 gate
         run: |
           cmake --preset qemu-riscv64 -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
@@ -419,6 +500,83 @@ jobs:
           # Posture pin: the hart count and the selftest line are this variant's defconfig,
           # and dropping either de-registers these arms instead of failing them.
           ctest --preset qemu-riscv64-smp -R 'smp_threads|taskleave|slaypeer' --no-tests=error --output-on-failure
+
+  # x86_64 (q35) under QEMU, over a UEFI handover. The ONE job with no toolchain action:
+  # cmake/toolchain-x86_64-uefi.cmake finds the HOST gcc, ubuntu-latest being x86_64 itself, and
+  # refuses the configure outright if ld carries no i386pep emulation for the PE32+ link.
+  #
+  # The firmware is not optional and no -kernel substitutes for it: the image is a PE32+
+  # application -kernel cannot start at all, so gate.sh builds an EFI system partition and boots
+  # OVMF. The pair is RESOLVED below rather than named: the ovmf package chooses those
+  # filenames and the spelling differs across releases.
+  #
+  # gate.sh SKIPS every image gate when it finds no firmware, and skips them again when mtools
+  # is absent, so both would report success. Resolving the pair here turns the first into a
+  # named refusal, mtools is in the package list for the second, and the skip guard below is
+  # what makes either of them red rather than green.
+  #
+  # Neither ovmf nor mtools ships a command of its own name, so build-tools cannot see either
+  # as already present and apts both on every run of this job.
+  qemu-x86_64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      QEMU_TIMEOUT: "30"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kconfiglib
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build g++ qemu-system-x86 ovmf mtools
+      - name: x86_64 (q35) UEFI handover gate
+        run: |
+          command -v qemu-system-x86_64 >/dev/null 2>&1 \
+            || { echo "qemu-system-x86_64 is absent: every image gate below would SKIP and ctest would still exit 0"; exit 1; }
+          # The variable store must be the CODE file's OWN spelling: a 4M image paired with a
+          # store of another size is not a working pair, so the match is what selects both.
+          ovmf_dirs="/usr/share/OVMF /usr/share/ovmf /usr/share/edk2/x64 /usr/share/edk2-ovmf/x64 /usr/share/qemu"
+          ovmf_code=""
+          ovmf_vars=""
+          for d in $ovmf_dirs; do
+            for c in "$d"/OVMF_CODE*.fd; do
+              [ -f "$c" ] || continue
+              v=$(printf '%s' "$c" | sed 's/OVMF_CODE/OVMF_VARS/')
+              [ -f "$v" ] || continue
+              # The SHORTEST match wins, which is the unqualified spelling: a .secboot or .ms
+              # firmware refuses an unsigned image, and every such qualifier lengthens the
+              # name. Glob order happens to deliver the same file and is not relied on.
+              if [ -z "$ovmf_code" ] || [ "${#c}" -lt "${#ovmf_code}" ]; then
+                ovmf_code="$c"
+                ovmf_vars="$v"
+              fi
+            done
+            [ -z "$ovmf_code" ] || break
+          done
+          if [ -z "$ovmf_code" ]; then
+            echo "no OVMF_CODE*.fd beside a matching OVMF_VARS store under: $ovmf_dirs"
+            echo "the ovmf package names those files, so a release that spells them otherwise"
+            echo "needs its directory added above rather than a path corrected"
+            exit 1
+          fi
+          echo "resolved firmware: $ovmf_code with $ovmf_vars"
+          export KICKOS_OVMF_CODE="$ovmf_code"
+          export KICKOS_OVMF_VARS="$ovmf_vars"
+          cmake --preset qemu-x86_64
+          cmake --build --preset qemu-x86_64
+          out=$(ctest --preset qemu-x86_64 -LE tree --no-tests=error --output-on-failure 2>&1) \
+            || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          # A SKIP IS NOT A PASS, and nothing in this selection is expected to skip: this board
+          # is single-core, so cpu_id_fold takes its fold arm here and passes. This is the only
+          # thing standing between a firmware or mtools gap and a green job that booted nothing.
+          case "$out" in
+            *Skipped*) echo "a gate SKIPPED, which ctest reports as success"; exit 1 ;;
+          esac
+          # Naming them makes an EMPTY selection the failure. All three are registered from
+          # cmake/x86_64_boot.cmake, which CMakeLists.txt includes for this arch alone, so a
+          # lost include de-registers them instead of failing them.
+          ctest --preset qemu-x86_64 --no-tests=error --output-on-failure \
+            -R 'x86_64_no_vector|x86_64_entry_cld|x86_64_no_got_selftest'
 
   # Xtensa LX6 (esp32-wroom) gate: proves build/link/linker-script + windowed-ABI asm. It runs
   # the `host` label less the tree gates, which leaves the checks whose verdict is per-link or
@@ -526,9 +684,9 @@ jobs:
       - run: cmake --build --preset ${{ matrix.preset }}
       - run: ctest --test-dir build/${{ matrix.preset }} -LE tree --no-tests=error --output-on-failure
 
-  # The RP2350 own-image AMP partition, which nothing else in this file builds. The second step
-  # is the production posture: with the self-test off, the code the own-image paths call
-  # unconditionally must still compile.
+  # The RP2350 AMP presets, which nothing else in this file builds: the shared-image
+  # scaffolding, then the own-image partition. The production step is that partition with the
+  # self-test off, where the code the own-image paths call unconditionally must still compile.
   pizero2350-amp:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -539,6 +697,19 @@ jobs:
         with:
           packages: cmake ninja-build curl xz-utils
       - uses: ./.github/actions/arm-toolchain
+      - name: armv8-M shared-image AMP, the provisional scaffolding
+        run: |
+          # The tree's only rp2350 preset above one core, so rp_node_vectors is registered here
+          # and nowhere else: each own-image node below is a one-core image.
+          #
+          # NO amp-pin.sh here. This variant states no AMP posture, so it names zero crossings
+          # and the pin refuses it by design.
+          cmake --preset pizero2350-amp -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --build --preset pizero2350-amp
+          ctest --test-dir build/pizero2350-amp -L host -LE tree --no-tests=error --output-on-failure
+          # Naming it makes an EMPTY selection the failure: the gate is keyed on the core count,
+          # which a lost CORES_TWO de-registers instead of failing.
+          ctest --test-dir build/pizero2350-amp -R '^rp_node_vectors$' --no-tests=error --output-on-failure
       - name: armv8-M own-image partition, both nodes, self-test on
         run: |
           for node in 0 1; do

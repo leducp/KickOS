@@ -495,10 +495,25 @@ function(kickos_qemu_machine board out_env out_machine)
     set(_env QEMU=qemu-system-aarch64 QEMU_EXTRA=-m\ 512M)
     set(_machine imx8mp-evk)
   elseif(board STREQUAL "microbit")
-    # 32 KiB: QEMU's nRF51 SoC exposes the size as a QOM property and -m is ignored by a
-    # fixed-SoC machine, so an image linked for 32 KiB without this locks up on its first
-    # push, before any vector table is live, as "can't escalate 3 to HardFault".
-    set(_env QEMU_EXTRA=-global\ nrf51-soc.sram-size=32768)
+    # QEMU's nRF51 SoC exposes SRAM size as a QOM property and -m is ignored by a fixed-SoC
+    # machine, so an image linked for the chip's real SRAM without this locks up on its first
+    # push, before any vector table is live, as "can't escalate 3 to HardFault". The figure is
+    # scraped from nrf51.ld's own RAM LENGTH, in bytes, so it cannot drift from what the image
+    # was linked for.
+    set(_nrf51_ld "${CMAKE_SOURCE_DIR}/arch/arm/chip/nrf51/nrf51.ld")
+    file(STRINGS "${_nrf51_ld}" _nrf51_ram_line REGEX "^[ \t]*RAM[ \t]*\\(rwx\\)")
+    if(_nrf51_ram_line STREQUAL "")
+      message(FATAL_ERROR "kickos_qemu_machine: ${_nrf51_ld} names no 'RAM (rwx)' region to "
+        "scrape the microbit QEMU sram-size from")
+    endif()
+    # The trailing anchor requires LENGTH's value to be the last thing on the line, so a K/M
+    # suffix fails this match rather than being read as its digits alone ("32K" as 32 bytes).
+    if(NOT _nrf51_ram_line MATCHES "LENGTH[ \t]*=[ \t]*[0-9]+[ \t]*$")
+      message(FATAL_ERROR "kickos_qemu_machine: could not read a trailing plain decimal RAM "
+        "LENGTH (no K/M suffix) out of '${_nrf51_ram_line}' in ${_nrf51_ld}")
+    endif()
+    string(REGEX REPLACE ".*LENGTH[ \t]*=[ \t]*([0-9]+)[ \t]*$" "\\1" _nrf51_sram_bytes "${_nrf51_ram_line}")
+    set(_env QEMU_EXTRA=-global\ nrf51-soc.sram-size=${_nrf51_sram_bytes})
     set(_machine microbit)
   elseif(board STREQUAL "qemu")
     set(_machine mps2-an386)

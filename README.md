@@ -107,11 +107,14 @@ cmake --preset sim && cmake --build --preset sim && ctest --preset sim --output-
 cmake --preset picopi && cmake --build --preset picopi
 ```
 
-Emulator run gates: `ctest --preset qemu` (Cortex-M4), `qemu-m7`, `qemu-m3`, `qemu-m33`,
-`microbit` (Cortex-M0), `qemu-riscv` (RV32IMAC), `qemu-arm64` (Cortex-A53). Three more run
-locally and are in no CI job, `qemu-riscv64` and `qemu-riscv64-sv48` (RV64IMAC, one preset per
-paging mode) and `qemu-x86_64` (q35 under UEFI firmware); see *What CI gates* below. Flashing a
-real board is per board:
+Emulator run gates, one preset per machine: `ctest --preset qemu` (Cortex-M4), `qemu-m7`,
+`qemu-m3`, `qemu-m33`, `microbit` (Cortex-M0), `qemu-riscv` (RV32IMAC), `qemu-arm64`
+(Cortex-A53), `qemu-riscv64` (RV64IMAC) and `qemu-x86_64` (q35 under UEFI firmware). Every one of
+those runs in CI as well, and most carry further run-gate variants beside them -- a ring-only
+`-flat` posture, a second paging mode, a core count, an isolated core, a GICv3, an AMP partition
+-- which `cmake --list-presets` names and the CI table below states per instruction set.
+`imx8mp-evk` (quad Cortex-A53) is the one emulator run gate that exists locally and in no CI job
+(see *What CI gates* below). Flashing a real board is per board:
 [`docs/flashing.md`](docs/flashing.md) for the tool backends,
 [`docs/reference/boards.md`](docs/reference/boards.md) for the wiring.
 
@@ -123,13 +126,14 @@ cmake --preset frdmk64f-st     # + the self-test (TAP) suite
 cmake --preset frdmk64f-flat   # the non-enforcing posture, on a board that can enforce
 ```
 
-56 presets over 23 boards, defined in [`cmake/presets/`](cmake/presets/) and each building into
-its own directory under `build/`. The memory posture is part of the variant, so there is no
+Presets are defined in [`cmake/presets/`](cmake/presets/), one per board and variant, each
+building into its own directory under `build/`; `cmake --list-presets` names the fleet. The
+memory posture is part of the variant, so there is no
 `-D` for it: the 14 enforcing boards state enforcement in their base defconfig and carry a
 `<board>-flat` preset beside it, which is what the ring-only gates build. `sim` has no flat
 variant, because host `mprotect` is the only posture it has. Boards whose base variant is
 already a test image (`sim`, the four `qemu` machines, `qemu-arm64`, `qemu-riscv`,
-`qemu-riscv64`, `qemu-x86_64`, `microbit`) have no `-st`.
+`qemu-riscv64`, `qemu-x86_64`, `imx8mp-evk`, `microbit`) have no `-st`.
 
 ### Configuration
 
@@ -179,23 +183,25 @@ of [`.github/workflows/ci.yml`](.github/workflows/ci.yml) states each job's reas
 | Target | Gate | Confinement exercised |
 |---|---|---|
 | host `sim` | the full `ctest` suite -- the authoritative gate -- plus a UBSan build | `mprotect`, at runtime |
-| armv7m / armv8-m | four QEMU MPS2 run gates (an386, an500, an385, an505), each in both postures | PMSAv7 and PMSAv8, at runtime |
+| armv7m / armv8-m | eight QEMU MPS2 run gates: four machines (an386, an500, an385, an505), each in both postures | PMSAv7 and PMSAv8, at runtime |
 | armv6m | QEMU run gate (`microbit`, an nRF51822 provisioned at 32 KiB and not a BBC micro:bit v1) | none: the nRF51 has no unit |
 | rv32imac | QEMU `virt` run gate, both postures | PMP, at runtime |
-| armv8a | QEMU `virt` run gate (`qemu-arm64`), the only witness this ISA has | VMSAv8 page tables, at runtime |
-| rv64imac | **none**: no CI job exists, so both paging postures are local `ctest` only | Sv39 and Sv48 page tables, at runtime, locally |
-| x86_64 | **none**: no CI job exists, so `qemu-x86_64` is local `ctest` only | none: the chip selects no memory family, so the adopted map is flat |
+| armv8a | QEMU `virt` run gates at one kernel core, at four, at four with one isolated, at four under a GICv3, and as an AMP partition of one, two and three images; `imx8mp-evk` is a run gate in no CI job | VMSAv8 page tables, at runtime |
+| rv64imac | QEMU `virt` run gates: Sv39, Sv48, and a four-hart shared kernel | Sv39 and Sv48 page tables, at runtime |
+| x86_64 | QEMU `q35` run gate over a UEFI handover, on firmware the job resolves rather than names | none: the chip selects no memory family, so the adopted map is flat |
 | Xtensa LX6 | build gate: no upstream QEMU ESP32 machine model | none: the LX6 has no per-task unit |
 | Renesas RX | none | -- |
-| the remaining ARM boards | build sweep, plus the one gate that needs neither silicon nor an emulator | link surface only |
+| the remaining ARM boards | build sweep, the enforcement-only link surface, the RP2350 AMP partitions, plus the one gate that needs neither silicon nor an emulator | link surface only |
 
-**The two newest translating backends have no job, and the reason is not the toolchain.** Both run
-under an emulator this project already uses, and both carry a full run gate locally: `rv64imac`
-builds from the same RISC-V toolchain `rv32imac` does, and `x86_64` needs no cross toolchain at all.
-What they need is runner provisioning, and only the second needs anything unusual: OVMF firmware and
-`mtools` to build a boot partition. `docs/reference/boards.md` carries the per-board detail. Until a
-job exists, every claim about either is bench-grade, and a gate that skips a missing dependency
-would green-light the board rather than report it.
+**A SKIP IS NOT A PASS, and what a run job buys turns on that.** An image gate boots through a
+guard that exits 77 when its emulator is absent; CTest reports that as Skipped and still exits 0,
+so an unprovisioned runner would green-light a job that booted nothing. Every run job therefore
+refuses outright on a missing emulator instead of skipping. The x86_64 job carries the widest
+version of the problem: its image is a PE32+ UEFI application that `-kernel` cannot start at all,
+so the gates boot OVMF off an EFI system partition and need `mtools` to build one, and the job
+resolves the firmware pair by matching spellings -- the package names those files and a
+`.secboot` or `.ms` firmware refuses an unsigned image -- then fails on a skip.
+`docs/reference/boards.md` carries the per-board detail.
 
 The backends QEMU carries no model for -- SYSMPU, the Cortex-M7 anti-speculation wrap, PMSAv6
 -- get their link surface built in CI and their traps proven on silicon. RX has no gate at all:

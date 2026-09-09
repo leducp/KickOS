@@ -345,7 +345,7 @@ namespace
     {
         uint32_t hz = kos_cpu_clock_hz();
         TAP_CHECK(hz == kos_cpu_clock_hz());
-        // 0 == the backend has no silicon core clock (host sim); a real core
+        // 0 == the backend has no silicon core clock (host sim, QEMU virt); a real core
         // reports a plausible rate (>= 1 MHz, below every board's post-init clock).
         TAP_CHECK(hz == 0u or hz >= 1000000u);
     }
@@ -3251,11 +3251,31 @@ namespace
         TAP_CHECK(kos_task_kill(ok) == 0);
     }
 
+    // Death is ASYNCHRONOUS to the caller that asked for it, on every verb: kos_task_kill is
+    // acceptance, and even kos_task_slay's 0 answers for the group and its slot and never for the
+    // address space or the frames of it. A count read before the victim's space has gone reports
+    // a leak that is not one, and the kernel publishes no quiescence of its own to wait on. So
+    // the wait is the arm's, and it is a wait on something OTHER than the count being asserted:
+    // an early free reddens the assertion instead of arriving late at it.
+    constexpr int DEATH_SETTLE_SPINS = 200000;
+    bool probe_settles(uintptr_t op, uintptr_t want)
+    {
+        for (int i = 0; i < DEATH_SETTLE_SPINS; i++)
+        {
+            if (kos_aspace_probe(op, 0) == want)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // A MAPPING IS A HOLDER. Without that the last capability's drop frees frames a live leaf
     // still points at, and reading the page does not say so.
     void t_cap_map_pins_run()
     {
         uint64_t const free0 = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+        uintptr_t const spaces0 = kos_aspace_probe(KOS_ASPACE_OP_SPACES_HELD, 0);
         uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 0);
         if (seed == 0)
         {
@@ -3300,6 +3320,7 @@ namespace
         // The space dies, its teardown unmaps and surrenders that last reference, and only
         // THEN do the frames come back, the child's own space frames with them.
         (void)kos_task_kill(t);
+        TAP_CHECK(probe_settles(KOS_ASPACE_OP_SPACES_HELD, spaces0));
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_CAP_RUN_REFS, 0) == 0u);
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0) == free0);
     }
@@ -3307,6 +3328,7 @@ namespace
     void t_cap_share()
     {
         uint64_t const free0 = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+        uintptr_t const spaces0 = kos_aspace_probe(KOS_ASPACE_OP_SPACES_HELD, 0);
         uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 0);
         if (seed == 0)
         {
@@ -3358,6 +3380,7 @@ namespace
         // The borrower dies while root still maps the run: the run belongs to the CAPABILITY,
         // so the space that mapped it owned nothing to free.
         (void)kos_task_kill(t);
+        TAP_CHECK(probe_settles(KOS_ASPACE_OP_SPACES_HELD, spaces0));
         // Reading the page does NOT test this: a freed frame stays readable through a leaf
         // nobody tore down. The pool does. One capability is gone and one remains.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0) == free0 - 1u);
@@ -3380,12 +3403,14 @@ namespace
                 TAP_CHECK(mine[2] == 0); // it reached the map and was refused
             }
             (void)kos_task_kill(t2);
+            TAP_CHECK(probe_settles(KOS_ASPACE_OP_SPACES_HELD, spaces0));
         }
 
         TAP_CHECK(kos_frame_unmap(fcap, acap, va) == 0);
         kos_handle_close(fcap);
         kos_handle_close(acap);
         // The frames come back only once the LAST capability naming the run is gone.
+        TAP_CHECK(probe_settles(KOS_ASPACE_OP_CAP_RUN_REFS, 0));
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0) == free0);
     }
 

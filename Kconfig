@@ -274,9 +274,10 @@ config KICKOS_AMP_TEXT_SHARE
 	  CMakeLists.txt refuses this stated without KICKOS_AMP_TEXT_BASE beside it.
 
 config KICKOS_AMP_DIAG_REPORT
-	bool "A peer node reports its own boot state into the shared region"
+	int "A peer node reports its own boot state into the shared region (0/1)"
 	depends on KICKOS_AMP_POSTURE_SHARED_IMAGE || KICKOS_AMP_POSTURE_OWN_IMAGE
-	default n
+	range 0 1
+	default 0
 	help
 	  A diagnostic for a peer that drives no console: it writes four words into the
 	  region every node already shares and the primary prints them. Two of the four are
@@ -286,7 +287,7 @@ config KICKOS_AMP_DIAG_REPORT
 
 config KICKOS_AMP_DIAG_TAG
 	int "A number of this build's own for a node to report back"
-	depends on KICKOS_AMP_DIAG_REPORT
+	depends on KICKOS_AMP_DIAG_REPORT != 0
 	default 0
 	help
 	  Reported back verbatim in the third cell. State a different one per image when
@@ -981,7 +982,7 @@ config KICKOS_BENCH
 	  not arch_trace_now, so this knob does not answer to HAS_TRACE_CLOCK; the
 	  brackets live in each switch.S that carries them.
 
-config SCHED_PERIODIC_TICK
+config KICKOS_SCHED_PERIODIC_TICK
 	bool "Force a classic periodic scheduler tick"
 	default n
 

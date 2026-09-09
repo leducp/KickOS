@@ -1061,7 +1061,11 @@ uint64_t syscall_body(uintptr_t nr,
                 cap_resolve_e(c, static_cast<uint32_t>(a0), CapType::CAP_FRAME, 0, &ferr));
             if (run == nullptr)
             {
-                return static_cast<uint64_t>(-(ferr == 0 ? KOS_EBADF : ferr));
+                if (ferr == 0)
+                {
+                    ferr = KOS_EBADF;
+                }
+                return static_cast<uint64_t>(-ferr);
             }
             CapEntry const* const fe = cap_lookup(c, static_cast<uint32_t>(a0));
             if (fe == nullptr)
@@ -1074,7 +1078,11 @@ uint64_t syscall_body(uintptr_t nr,
                 cap_resolve_e(c, static_cast<uint32_t>(a1), CapType::CAP_ASPACE, 0, &aerr));
             if (target == nullptr)
             {
-                return static_cast<uint64_t>(-(aerr == 0 ? KOS_EBADF : aerr));
+                if (aerr == 0)
+                {
+                    aerr = KOS_EBADF;
+                }
+                return static_cast<uint64_t>(-aerr);
             }
             struct arch_aspace* const sp = domain_space(target);
             VirtualRanges* const vr = domain_ranges_mut(target);
@@ -1317,9 +1325,9 @@ uint64_t syscall_body(uintptr_t nr,
                     bench_reset();
                     return 0;
                 }
-                case KOS_BENCH_OP_CORE_HZ:
+                case KOS_BENCH_OP_CYCCNT_HZ:
                 {
-                    return bench_core_hz();
+                    return bench_cyccnt_hz();
                 }
                 case KOS_BENCH_OP_SWITCH_PRINT:
                 {

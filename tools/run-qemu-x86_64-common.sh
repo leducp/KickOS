@@ -26,9 +26,12 @@
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-KOS_OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd
-KOS_OVMF_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd
-KOS_OVMF_COMBINED=/usr/share/ovmf/OVMF.fd
+# CODE and VARS are the names tests/lib/gate.sh reads; COMBINED is this script's own, no gate
+# having a bios path. The ovmf package's own filenames differ across releases, so the defaults
+# below are a fallback and not the authority.
+KOS_OVMF_CODE="${KICKOS_OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
+KOS_OVMF_VARS="${KICKOS_OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
+KOS_OVMF_COMBINED="${KICKOS_OVMF_COMBINED:-/usr/share/ovmf/OVMF.fd}"
 
 QEMU_RC=0
 KOS_QEMU_PID=""

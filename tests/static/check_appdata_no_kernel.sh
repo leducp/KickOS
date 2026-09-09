@@ -43,35 +43,37 @@ command -v "$NM" >/dev/null 2>&1 || fail "nm not found: $NM"
 
 scratch_dir
 
-# A symbol SHAPE and not a name: the identifier prefix is per-target (below).
-tool_out "$TMP/sym" '^[0-9a-fA-F]+[[:space:]]+[A-Za-z][[:space:]]' "$NM" "$ELF"
-
+# The four EREs the two scanners key on, defined once and handed in, so the self-test below
+# and the real scan cannot disagree about what the rule is.
+#
 # The RX ABI prefixes every C identifier with an underscore, so rx72m.ld spells the window
-# bounds ___kickos_appdata_start/_end with THREE. Nothing looser than the two exact
-# spellings: a substring match would also take __kickos_appdata_load_end.
-win_sym() { # <name> -> the one hex address on stdout, non-zero exit if 0 or >1 found
-    awk -v n="$1" '$3 == n || $3 == "_" n { seen[$1] = 1 }
-                   END { c = 0; for (a in seen) { c++; last = a }
-                         if (c != 1) { exit 1 }
-                         print last }' "$TMP/sym"
+# bounds ___kickos_appdata_start/_end with THREE. BOTH ENDS ARE ANCHORED, which is what keeps
+# the lookup exact: a prefix match would also take __kickos_appdata_start_hi, and a substring
+# match __kickos_appdata_load_end.
+win_ere() { # <name> -> the ERE matching that name and its RX spelling, and nothing else
+    printf '^_?%s$' "$1"
 }
+MAP_HEADING='^Linker script and memory map'
+# EVERY BACKSLASH BELOW IS DOUBLED. awk processes escape sequences in a -v assignment, so a
+# single `\.` reaches the program as a plain `.` and matches any byte: the leading dot of a
+# section name stops being literal, and the anchored attributes test starts accepting
+# .ARM_attributes.
+#
+# A non-allocated section carries a 0-BASED file offset, not a load address, so on a chip
+# whose RAM base is 0 (rx72m) those offsets fall numerically inside the window and every
+# .debug_* record reads as a leak. Only allocated bytes can be in the grant.
+NONALLOC_ERE='^\\.(debug|comment|note|stab|line)'
+# ANCHORED AT BOTH ENDS: an unanchored /attributes$/ also takes an allocated writable global
+# whose -fdata-sections name ends that way (.bss.g_attributes).
+ATTR_ERE='^\\.(ARM|riscv)\\.attributes$'
+WRITABLE_ERE='^\\.(data|bss|sdata|sbss)'
 
-# REFUSE, not skip: registration is limited to boards whose linker script carves the window,
-# so a missing bound means the registration guard drifted.
-WIN_START="$(win_sym __kickos_appdata_start)" \
-    || fail "$ELF defines no __kickos_appdata_start: not an enforcing image, gate would be vacuous"
-WIN_END="$(win_sym __kickos_appdata_end)" \
-    || fail "$ELF defines no __kickos_appdata_end: not an enforcing image, gate would be vacuous"
-WIN_START="0x$WIN_START"
-WIN_END="0x$WIN_END"
-
-# ld records the path it was given, so only the basename is stable between the link line
-# and this argv.
-NAMES=""
-for A in "$@"; do
-    [ -f "$A" ] || fail "archive not found: $A"
-    NAMES="$NAMES $(basename "$A")"
-done
+win_sym() { # <symfile> <name-ere> -> the one hex address on stdout, non-zero if 0 or >1 found
+    awk -v pat="$2" '$3 ~ pat { seen[$1] = 1 }
+                     END { c = 0; for (a in seen) { c++; last = a }
+                           if (c != 1) { exit 1 }
+                           print last }' "$1"
+}
 
 # Field shape in the memory-map region, both forms ld emits:
 #   " .data.SystemCoreClock            0x1fff0038  0x4 arch/libkickos_chip_mk64f.a(x.obj)"
@@ -80,7 +82,9 @@ done
 # the same line or the bare name line above it. Only the memory-map region is read: the
 # "Discarded input sections" and "Archive member included" blocks name the same archives
 # with addresses that are not placements.
-awk -v names="$NAMES" -v win_start="$WIN_START" -v win_end="$WIN_END" '
+map_scan() { # <map> <basenames> <win-start> <win-end> <heading> <nonalloc> <attr> <writable>
+    awk -v names="$2" -v win_start="$3" -v win_end="$4" -v heading="$5" \
+        -v nonalloc="$6" -v attrsec="$7" -v writ="$8" '
 function h2n(s,   i, c, d, v) {
     sub(/^0[xX]/, "", s)
     v = 0
@@ -102,7 +106,9 @@ BEGIN {
         exit
     }
 }
-/^Linker script and memory map/ { inmap = 1; next }
+# Guarded on inmap so the heading clause can be turned OFF by a heading that matches every
+# line; without the guard such a heading would consume every record instead.
+!inmap && $0 ~ heading { inmap = 1; next }
 !inmap { next }
 NF == 1 && $1 ~ /^([.*]|COMMON$)/ { sec = $1; next }
 NF >= 3 && $(NF - 2) ~ /^0x/ && $(NF - 1) ~ /^0x/ && $NF ~ /\.a\(/ {
@@ -113,19 +119,16 @@ NF >= 3 && $(NF - 2) ~ /^0x/ && $(NF - 1) ~ /^0x/ && $NF ~ /\.a\(/ {
     k = split(path, q, "/")
     base = q[k]
     if (!(base in want)) { next }
-    # A non-allocated section carries a 0-BASED file offset, not a load address, so on a
-    # chip whose RAM base is 0 (rx72m) those offsets fall numerically inside the window and
-    # every .debug_* record reads as a leak. Only allocated bytes can be in the grant.
-    if (sec ~ /^\.(debug|comment|note|stab|line)/) { next }
-    # NAMED, not a shape: an unanchored /attributes$/ also takes an allocated writable
-    # global whose -fdata-sections name ends that way (.bss.g_attributes).
-    if (sec == ".ARM.attributes" || sec == ".riscv.attributes") { next }
+    if (sec ~ nonalloc) { next }
+    if (sec ~ attrsec) { next }
     total[base]++
-    if (sec ~ /^\.(data|bss|sdata|sbss)/ || sec == "COMMON") { writable[base]++ }
+    if (sec ~ writ || sec == "COMMON") { writable[base]++ }
     start = h2n($(NF - 2))
     size = h2n($(NF - 1))
     if (start < 0 || size < 0) { next }
-    if (start < hi && start + size > lo) {
+    # size > 0 first: the overlap test is half-open, so a zero-length placement satisfies
+    # `start + size > lo` on its own and reports as a leak of nothing.
+    if (size > 0 && start < hi && start + size > lo) {
         printf "LEAK %s %s %s %s\n", member, sec, $(NF - 2), $(NF - 1)
         leaks++
     }
@@ -134,7 +137,195 @@ NF >= 3 && $(NF - 2) ~ /^0x/ && $(NF - 1) ~ /^0x/ && $NF ~ /\.a\(/ {
 END {
     for (b in want) { printf "SEEN %s %d %d\n", b, total[b] + 0, writable[b] + 0 }
     printf "TOTAL %d %d\n", grand + 0, leaks + 0
-}' "$MAP" > "$TMP/verdict"
+}' "$1"
+}
+
+# --- self-test: prove every clause of the rule, one control per clause ---------
+# Each control below is a MINIMAL PAIR: the positive and the negative differ in one property
+# only, and every expected count is exact.
+CTL_LO=0x2000
+CTL_HI=0x3000
+CTL_NAMES=' libkickos_kernel.a libkickos_arch_ctl.a'
+CTL_HEADING='Linker script and memory map'
+
+ctl_scan() { # <map> [heading] [nonalloc] [attr]
+    _h="$MAP_HEADING"
+    _n="$NONALLOC_ERE"
+    _a="$ATTR_ERE"
+    if [ "$#" -ge 2 ]; then _h="$2"; fi
+    if [ "$#" -ge 3 ]; then _n="$3"; fi
+    if [ "$#" -ge 4 ]; then _a="$4"; fi
+    map_scan "$1" "$CTL_NAMES" "$CTL_LO" "$CTL_HI" "$_h" "$_n" "$_a" "$WRITABLE_ERE"
+}
+ctl_leaks() { # <map> [heading] [nonalloc] [attr] -> LEAK line count
+    ctl_scan "$@" | grep -c '^LEAK ' || :
+}
+
+# One leak per shape and per boundary. The pre-heading record is the SAME shape as the
+# same-line positive and differs only in sitting above the heading.
+cat > "$TMP/ctl.pos.map" <<'EOF'
+Archive member included to satisfy reference by file (symbol)
+
+ .data.pre_heading
+                0x00002100       0x10 kernel/libkickos_kernel.a(discarded.cc.obj)
+Linker script and memory map
+
+ .data.same_line 0x00002000      0x10 kernel/libkickos_kernel.a(same.cc.obj)
+ .bss._ZN6kickos7wrappedE
+                0x00002200       0x20 kernel/libkickos_kernel.a(wrap.cc.obj)
+COMMON
+                0x00002300        0x8 kernel/libkickos_kernel.a(common.cc.obj)
+ .bss.g_attributes
+                0x00002400        0x4 kernel/libkickos_kernel.a(attr.cc.obj)
+ .data.ends_past_lo 0x00001000  0x1001 kernel/libkickos_kernel.a(edge.cc.obj)
+ .data.starts_below_hi
+                0x00002fff        0x1 kernel/libkickos_kernel.a(edge.cc.obj)
+EOF
+
+# Every line here is the same-line shape, so the per-control loop below can read one at a
+# time. Each differs from a positive above in exactly one property.
+cat > "$TMP/ctl.neg.map" <<'EOF'
+ .debug_info    0x00002100       0x10 kernel/libkickos_kernel.a(dbg.cc.obj)
+ .comment       0x00002110        0x8 kernel/libkickos_kernel.a(dbg.cc.obj)
+ .ARM.attributes 0x00002120       0x4 kernel/libkickos_kernel.a(attr.cc.obj)
+ .riscv.attributes 0x00002130      0x4 kernel/libkickos_kernel.a(attr.cc.obj)
+ .data.stranger 0x00002140       0x10 other/libkickos_other.a(x.cc.obj)
+ .data.ends_at_lo 0x00001000    0x1000 kernel/libkickos_kernel.a(edge.cc.obj)
+ .data.starts_at_hi 0x00003000     0x10 kernel/libkickos_kernel.a(edge.cc.obj)
+ .data.badaddr  0xzzzz0000       0x10 kernel/libkickos_kernel.a(edge.cc.obj)
+ .data.below_window 0x00000100     0x10 kernel/libkickos_kernel.a(edge.cc.obj)
+ .data.empty_inside 0x00002500      0x0 kernel/libkickos_kernel.a(edge.cc.obj)
+EOF
+
+# ctl.neg.map carries no heading, so that the per-control loop below reads records only. A
+# scan of it MUST be given one, or every control is silent because nothing was read at all.
+printf '%s\n' "$CTL_HEADING" > "$TMP/ctl.neg.full.map"
+cat "$TMP/ctl.neg.map" >> "$TMP/ctl.neg.full.map"
+
+POS="$(ctl_leaks "$TMP/ctl.pos.map")"
+[ "$POS" -eq 6 ] || fail "the map scan found $POS of 6 planted leaks; it would miss a real one"
+
+# The SECTION NAME of each leak, not just the count. A scan that stopped reading the bare
+# name line above a wrapped placement still reports the leak, carrying the PREVIOUS record's
+# section name, so the count alone cannot see that clause break.
+ctl_scan "$TMP/ctl.pos.map" | awk '/^LEAK /{ print $3 }' | sort > "$TMP/ctl.secs"
+cat > "$TMP/ctl.secs.want" <<'EOF'
+.bss._ZN6kickos7wrappedE
+.bss.g_attributes
+.data.ends_past_lo
+.data.same_line
+.data.starts_below_hi
+COMMON
+EOF
+sort "$TMP/ctl.secs.want" -o "$TMP/ctl.secs.want"
+if ! cmp -s "$TMP/ctl.secs" "$TMP/ctl.secs.want"; then
+    fail "the planted leaks resolved section names $(tr '\n' ' ' < "$TMP/ctl.secs"), expected
+      $(tr '\n' ' ' < "$TMP/ctl.secs.want"); a wrapped placement is being read against the
+      section name of the record above it"
+fi
+
+if [ "$(ctl_leaks "$TMP/ctl.neg.full.map" | tr -d ' ')" != 0 ]; then
+    ctl_scan "$TMP/ctl.neg.full.map" | sed 's/^/      /' >&2
+    fail "the map scan reported a non-allocated section, an attributes section, an unlisted
+      archive or a placement outside the window; the gate would cry wolf and be switched off"
+fi
+
+# Each control is re-read on its own, so a control silent for the WRONG reason is visible. A
+# whole-file zero cannot tell "every clause works" from "one clause swallowed the file".
+i=0
+while IFS= read -r line; do
+    i=$((i + 1))
+    printf '%s\n%s\n' "$CTL_HEADING" "$line" > "$TMP/ctl.one.map"
+    n="$(ctl_leaks "$TMP/ctl.one.map" | tr -d ' ')"
+    [ "$n" -eq 0 ] || fail "negative control $i reports a leak: $line"
+done < "$TMP/ctl.neg.map"
+[ "$i" -eq 10 ] || fail "$i negative control(s) ran, expected 10"
+
+# Turn each clause OFF and the count over the control corpus must MOVE by an EXACT amount:
+# a control kept quiet by the wrong clause then shows up as the wrong number.
+NEVER='KICKOS_THIS_ERE_MATCHES_NOTHING'
+mutate() { # <what> <expect> <map> [heading] [nonalloc] [attr]
+    _what="$1"; _want="$2"; shift 2
+    _got="$(ctl_leaks "$@" | tr -d ' ')"
+    [ "$_got" -eq "$_want" ] || fail "with the $_what clause disabled the map scan reported
+      $_got leak(s) of $1, expected $_want; the controls for it are not near misses and prove nothing"
+}
+# A heading matching every line puts the scan inside the map region from line 1, so the
+# pre-heading record joins the six.
+mutate "heading"  7 "$TMP/ctl.pos.map" '^'
+mutate "nonalloc" 2 "$TMP/ctl.neg.full.map" "$MAP_HEADING" "$NEVER"
+mutate "attr"     2 "$TMP/ctl.neg.full.map" "$MAP_HEADING" "$NONALLOC_ERE" "$NEVER"
+# With the attributes test UNANCHORED the planted .bss.g_attributes leak is exempted, so the
+# count drops instead of rising.
+mutate "attr-anchor" 5 "$TMP/ctl.pos.map" "$MAP_HEADING" "$NONALLOC_ERE" 'attributes$'
+
+# The tallies the verdict is read off, and the two refusals that keep an unusable window or
+# an unmatched archive from reading clean.
+CTL_V="$(ctl_scan "$TMP/ctl.pos.map")"
+printf '%s\n' "$CTL_V" | grep -qxF 'SEEN libkickos_kernel.a 6 6' \
+    || fail "the placement tally miscounted the control corpus: $(printf '%s\n' "$CTL_V" | grep '^SEEN ')"
+printf '%s\n' "$CTL_V" | grep -qxF 'SEEN libkickos_arch_ctl.a 0 0' \
+    || fail "an archive with no placement did not report a zero tally, so a basename mismatch would read clean"
+printf '%s\n' "$CTL_V" | grep -qxF 'TOTAL 6 6' \
+    || fail "the grand tally miscounted the control corpus: $(printf '%s\n' "$CTL_V" | grep '^TOTAL ')"
+map_scan "$TMP/ctl.pos.map" "$CTL_NAMES" 0x3000 0x2000 "$MAP_HEADING" "$NONALLOC_ERE" \
+    "$ATTR_ERE" "$WRITABLE_ERE" | grep -q '^BADWIN ' \
+    || fail "an inverted window was not refused, so every placement would read as outside it"
+map_scan "$TMP/ctl.pos.map" "$CTL_NAMES" 0xnothex 0x3000 "$MAP_HEADING" "$NONALLOC_ERE" \
+    "$ATTR_ERE" "$WRITABLE_ERE" | grep -q '^BADWIN ' \
+    || fail "an unparsable window bound was not refused"
+
+# The window lookup, on a symbol table holding both near misses the anchors exist for.
+cat > "$TMP/ctl.sym" <<'EOF'
+1fff45a0 D __kickos_appdata_start
+1fff4600 D __kickos_appdata_start_hi
+200145a0 D __kickos_appdata_end
+20014600 D __kickos_appdata_load_end
+2001a000 D ___kickos_appdata_rxbound
+2001b000 D __kickos_appdata_twice
+2001c000 D __kickos_appdata_twice
+EOF
+ctl_win() { # <name> -> the address, or nothing on refusal
+    win_sym "$TMP/ctl.sym" "$(win_ere "$1")" || :
+}
+[ "$(ctl_win __kickos_appdata_start)" = 1fff45a0 ] \
+    || fail "the window lookup did not resolve the exact start symbol"
+[ "$(ctl_win __kickos_appdata_end)" = 200145a0 ] \
+    || fail "the window lookup did not resolve the exact end symbol"
+[ "$(ctl_win __kickos_appdata_rxbound)" = 2001a000 ] \
+    || fail "the window lookup does not accept the RX spelling, so the gate is vacuous on that board"
+[ -z "$(ctl_win __kickos_appdata_absent)" ] \
+    || fail "the window lookup resolved a symbol the table does not define"
+[ -z "$(ctl_win __kickos_appdata_twice)" ] \
+    || fail "the window lookup accepted a symbol at two addresses, so the window would be one of them by table order"
+# Unanchored, the start lookup also takes __kickos_appdata_start_hi and so resolves two
+# addresses, which is what proves the anchors are load-bearing and not decoration.
+win_sym "$TMP/ctl.sym" '^_?__kickos_appdata_start' >/dev/null 2>&1 \
+    && fail "an unanchored window lookup still resolved one address; the near-miss symbol proves nothing"
+
+# --- the image and the map ----------------------------------------------------
+# A symbol SHAPE and not a name: the identifier prefix is per-target (below).
+tool_out "$TMP/sym" '^[0-9a-fA-F]+[[:space:]]+[A-Za-z][[:space:]]' "$NM" "$ELF"
+
+# REFUSE, not skip: registration is limited to boards whose linker script carves the window,
+# so a missing bound means the registration guard drifted.
+WIN_START="$(win_sym "$TMP/sym" "$(win_ere __kickos_appdata_start)")" \
+    || fail "$ELF defines no __kickos_appdata_start: not an enforcing image, gate would be vacuous"
+WIN_END="$(win_sym "$TMP/sym" "$(win_ere __kickos_appdata_end)")" \
+    || fail "$ELF defines no __kickos_appdata_end: not an enforcing image, gate would be vacuous"
+WIN_START="0x$WIN_START"
+WIN_END="0x$WIN_END"
+
+# ld records the path it was given, so only the basename is stable between the link line
+# and this argv.
+NAMES=""
+for A in "$@"; do
+    [ -f "$A" ] || fail "archive not found: $A"
+    NAMES="$NAMES $(basename "$A")"
+done
+
+map_scan "$MAP" "$NAMES" "$WIN_START" "$WIN_END" "$MAP_HEADING" "$NONALLOC_ERE" \
+    "$ATTR_ERE" "$WRITABLE_ERE" > "$TMP/verdict"
 
 if grep -q '^BADWIN ' "$TMP/verdict"; then
     fail "unusable app window from $ELF: $(sed -n 's/^BADWIN //p' "$TMP/verdict")"

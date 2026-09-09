@@ -145,6 +145,6 @@ endif()
 install(TARGETS kickos_kernel EXPORT KickOSTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 
-if(CONFIG_SCHED_PERIODIC_TICK)
+if(KICKOS_SCHED_PERIODIC_TICK)
   target_compile_definitions(kickos_kernel PUBLIC KICKOS_SCHED_PERIODIC_TICK=1)
 endif()

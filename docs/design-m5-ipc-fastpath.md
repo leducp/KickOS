@@ -433,10 +433,16 @@ A two-core big lock is Amdahl-bounded at `1 / (f + (1 - f) / 2)`:
 The denominator's own 1.6 percent spread moves either figure by under 0.01x, so an exact
 uninstrumented capture would not change the decision and is not worth a second knob.
 
-**This is an ENFORCING board, and that is not what carries the result.** `MPU_APPLY` is 443 cycles
-per switch and both switches are inside the lock, so the PMP reprogram alone is 886 of the 3651.
-Removing it entirely gives 2765 locked of 6050, `f = 0.457`, and **1.37x**. So no posture of this
-board reaches the "about 2x" `design-m7-smp.md` assumes.
+**This is an ENFORCING board, and that is not what carries the result.** The `MPU_APPLY` leaf above
+reads 443 cycles a switch because this capture predates the apply/commit split: the phase NAME does
+not say so, but the 443 is the pre-split phase, commit work included. Section 8.5 measures the same
+board after the PMP precompute with the phases separated: **19 for `MPU_APPLY` and 75 for
+`MPU_COMMIT`, 94 a switch, 188 a round trip** -- that is the current pair. The `f = 0.457` and
+**1.37x** this section derived from removing 886 of the 3651 locked cycles are SUPERSEDED and no
+replacement is stated here: the term they removed is now a quarter of the size, and re-deriving the
+bound is P0's. What survives is the direct and floor bounds above (1.31x, 1.40x), neither of which
+this term feeds, and by those alone no posture of this board reaches the "about 2x"
+`design-m7-smp.md` assumes.
 
 **What this replaces, and by how much.** Section 3.0.1's floor was 31 percent bounding 1.45x. The
 new floor is 43 percent bounding 1.40x, and the direct number is 53 percent giving 1.31x. The

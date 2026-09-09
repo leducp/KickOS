@@ -45,8 +45,8 @@ shift 14
 # other.
 #
 # The resolved .config, through the seed file node 0's own configure writes: it carries every
-# knob whatever its spelling, including one CMake forwards under its Kconfig name
-# (SCHED_PERIODIC_TICK is one), which a sweep for KICKOS_* cache entries does not see.
+# knob including one this build never made a cache entry of, which a sweep for KICKOS_* cache
+# entries does not see.
 #
 # And node 0's KICKOS_* cache entries: a knob that is no Kconfig symbol at all reaches the build
 # as a cache variable and appears in no .config. KICKOS_APPDATA_SIZE is one, stated in a preset

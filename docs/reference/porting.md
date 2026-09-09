@@ -349,10 +349,36 @@ under `include/kickos/`, and a `kickos_config.cmake` fragment that the root
 include directory precedes the board's, and both headers carry the same include guard,
 and there is no source `board_config.h` for it to shadow.
 
-Nothing about a board's provisioning is stated in CMake. The knobs are declared in
+Almost nothing about a board's provisioning is stated in CMake. The knobs are declared in
 `Kconfig` with a `range` and a `default`, the arch and chip facts in `arch/Kconfig`, the
 board stanzas in `boards/Kconfig`, and the board's own values in its defconfig, which
-states only what differs from the declared defaults.
+states only what differs from the declared defaults. The exception is
+`KICKOS_APPDATA_SIZE`: it is a CMake cache variable that no Kconfig symbol declares, read
+by the chip linker scripts alone, which state a per-chip `#ifndef` default and take a
+preset's value over it. So it appears in no `.config` and the AMP configuration
+fingerprint cannot see it.
+
+**A KNOB TAKES ONE OF TWO ROUTES TO C, AND BOTH CARRY THE SAME VALUE.** A numeric symbol
+(`int` or `hex`) reaches C through `board_config.h`, which the generator writes with an
+`#ifndef` guard around every define. A knob an APPLICATION translation unit reads, or one
+whose value CMake needs for the build graph, additionally reaches C as an
+`add_compile_definitions` in the root `CMakeLists.txt`, taken from the same fragment: an
+app does not include the generated board config, and a `.S` file compiled outside it
+does not either. Where both are seen the `-D` wins, the header's guard going inert, and
+the two cannot disagree because the `-D` is derived from the fragment. A `bool` symbol has
+only the second route, which is why a knob C reads with `#if` is declared `int` with
+`range 0 1` rather than `bool`: every `#if` site is then `-Wundef`-clean, and a bool
+defined only when it is on would turn an `#if defined(...)` site on for the wrong reason.
+
+**WHICH SYMBOLS CROSS EACH BOUNDARY IS A RULE AND NOT A LIST.** Every symbol named
+`KICKOS_*` is emitted into `kickos_config.cmake`, typed from its Kconfig type: a string
+quoted, an `int` or `hex` as a decimal number, a `bool` as `ON` or `OFF`. A numeric one
+whose dependencies are unmet reaches the header not at all, so C keeps its own default,
+and reaches CMake as `0`, CMake having no `#ifndef` fallback and no way to tell an unset
+variable from an empty one. `tests/static/check_kconfig_reach.sh` (ctest `kconfig_reach`,
+registered on every board) drives every defconfig in the tree and asserts each declared
+symbol arrives with the value and the type its declaration gives it, deriving the
+expectation from kconfiglib rather than from a list.
 
 **A preset selects a board and a variant and nothing else**, in NuttX's
 `<board>:<variant>` spirit, and the memory-protection posture is part of what a variant
@@ -369,9 +395,42 @@ kconfiglib warns on an out-of-range integer and falls back on the symbol's own d
 which is the fleet value rather than the one asked for, so a board could otherwise be
 handed a LARGER pool than its defconfig specified. The generator reads every requested
 value back after resolution and exits non-zero on a mismatch, naming the symbol, the
-range or the unmet dependency, and what it actually resolved to. The same applies to a
-`-D` on the CMake line: on a crossed board it becomes a request the generator can refuse,
-including one that names no symbol at all.
+range or the unmet dependency, and what it actually resolved to.
+
+**A `-D` ON THE CMAKE LINE BECOMES A REQUEST BY RULE.** CMake offers the generator every
+`KICKOS_*` variable it holds as a CANDIDATE, and the generator, which owns the
+declarations, turns one into a request of the right syntax when the name is a prompted
+symbol that is not a member of a choice. The `KICKOS_` namespace is wider than Kconfig,
+so what happens to the rest depends on who put the name there:
+
+- A promptless symbol or a choice member never becomes a request: it is REFUSED BY NAME
+  when only the command line or a preset can have created the cache entry, and dropped when
+  CMake declared the name itself. `KICKOS_BOARD`, `KICKOS_ARCH`, `KICKOS_ARCH_FAMILY` and
+  `KICKOS_CHIP` are all promptless, and that is the whole protection on the four
+  `kickos_kconfig_agree()` checks: `-DKICKOS_BOARD=<board>` still selects the board, being
+  CMake's own cache variable, but it cannot also tell Kconfig a different answer, so the two
+  sides still have two independent sources to compare. `-DKICKOS_HAVE_MPU=1` fails the
+  configure naming the symbol rather than being ignored, the posture being a variant's to
+  state.
+- A name Kconfig does not declare at all is DROPPED, because the same namespace carries
+  the build-graph switches (`KICKOS_BUILD_TESTS`, `KICKOS_BUILD_APPS`, `KICKOS_SMP_TRACE`),
+  the interpreter and toolchain locations, and `KICKOS_APPDATA_SIZE` above. CMake's own
+  non-fatal "manually-specified variables were not used" notice is what still reports one
+  that is neither a knob nor a switch, so a typo is visible but not fatal. A candidate's
+  value is read through its cache `VALUE` property for exactly that reason: dereferencing
+  it would mark the entry used and silence that notice across the whole namespace.
+
+Where the gates that read all this live: the tree-wide source checks are
+`tests/static/check_*.sh`, registered by the root `CMakeLists.txt` and run on every board;
+the scripts that boot an image are `tests/integration/check_*.sh`, and the ctest
+registration for each is a fragment of its own under `tests/integration/gates/`, included
+by name from `tests/integration/CMakeLists.txt`. A new integration gate is a new fragment
+there PLUS its name in that list, the inclusion being by name and not a glob.
+
+`KICKOS_CONSOLE` and `KICKOS_TELEMETRY` are the one hand-written translation left. Both
+are promptless projections of a choice, so the rule above drops the candidate and the root
+`CMakeLists.txt` states what the value means (`-DKICKOS_CONSOLE=rtt` becomes
+`CONFIG_CONSOLE_RTT=y`).
 
 `kconfiglib` is then required. It is build-time only, one pure-Python file, ISC, and
 never reaches a shipped artefact. Put it in a venv of its own and name the interpreter
@@ -443,13 +502,13 @@ silicon-proven unless the row says otherwise:
 
 | Chip | Board | Core | MPU | Validation |
 |------|-------|------|-----|------------|
-| `mps2` | qemu / qemu-m33 / qemu-m7 / qemu-m3 | M4F / M33 / M7 / M3 | PMSAv7 + PMSAv8 | QEMU (four runnable CI gates, **plus runtime enforcement gates** on both PMSA revisions) |
+| `mps2` | qemu / qemu-m33 / qemu-m7 / qemu-m3 | M4F / M33 / M7 / M3 | PMSAv7 + PMSAv8 | QEMU (eight runnable CI gates, the four machines each in both postures, **plus runtime enforcement gates** on both PMSA revisions) |
 | `nrf51` | microbit | M0 | -- | QEMU (runnable CI gate) |
 | `virt` | qemu-riscv | RV32IMAC | PMP | QEMU (runnable CI gate, **plus a runtime enforcement gate**) |
-| `virt_rv64` | qemu-riscv64 / qemu-riscv64-sv48 | RV64IMAC | **Sv39 + Sv48 MMU** | QEMU, **NOT IN CI**: `.github/workflows/ci.yml` carries no rv64 job, so both postures are LOCAL `ctest` only (`--preset qemu-riscv64` and `--preset qemu-riscv64-sv48`), 52 arms each (re-derived 2026-08-29 by `ctest -N`), **plus runtime translation-enforcement gates**: an UNPRIVILEGED read of an unmapped page (`qemu_riscv64_aspace_ufault`, which replaced a kernel-side `aspace_fault` arm on 2026-08-29 that faulted before it reached the unmap), a stack guard, a kernel-half denial and a surviving fault. The gap is a decision nobody has taken, not a toolchain gap (`../reference/boards.md`, *CI coverage*) |
-| `virt_arm64` | qemu-arm64 | Cortex-A53 | **VMSAv8 MMU** | QEMU (runnable CI gate, the `qemu-arm64` job, 42 ctest arms re-derived 2026-08-29 by `ctest -N`, **plus runtime translation-enforcement gates**) |
+| `virt_rv64` | qemu-riscv64 / qemu-riscv64-sv48 / qemu-riscv64-smp | RV64IMAC | **Sv39 + Sv48 MMU** | QEMU (three runnable CI gates in one job: both paging postures at 52 arms each, re-derived 2026-08-29 by `ctest -N`, and a four-hart shared kernel), **plus runtime translation-enforcement gates**: an UNPRIVILEGED read of an unmapped page (`qemu_riscv64_aspace_ufault`, which replaced a kernel-side `aspace_fault` arm on 2026-08-29 that faulted before it reached the unmap), a stack guard, a kernel-half denial and a surviving fault. Both paging postures run because a level-count bug shows in only one (`../reference/boards.md`, *CI coverage*) |
+| `virt_arm64` | qemu-arm64 (+ `-smp`, `-smpiso`, `-gicv3`, the `-amp` family) | Cortex-A53 | **VMSAv8 MMU** | QEMU (runnable CI gates at one kernel core -- the `qemu-arm64` job, 42 ctest arms re-derived 2026-08-29 by `ctest -N` -- at four cores, at four cores with one isolated, at four cores under a GICv3, and as an AMP partition of one, two and three images, **plus runtime translation-enforcement gates**) |
 | `imx8mp` | imx8mp-evk | quad Cortex-A53 (one brought up) | **VMSAv8 MMU** | QEMU, **NOT IN CI**: `.github/workflows/ci.yml` carries no job for it, so the board is LOCAL `ctest` only (`--preset imx8mp-evk`), 48 arms (`ctest -N` 2026-09-02), **plus runtime translation-enforcement gates**. The second armv8a chip, and what moved the shared-kernel predicate's per-part half out of the arch. Hands over at EL3 with no firmware, wires a GIC-500, and brings up ONE core because the machine models no secondary release (`../reference/boards.md`, *Per-board caveats*) |
-| `q35` | qemu-x86_64 | x86_64 | -- | QEMU, **NOT IN CI**: `.github/workflows/ci.yml` carries no x86_64 job, so the board is LOCAL `ctest` only (`--preset qemu-x86_64`), booted as a PE32+ UEFI application under OVMF. The chip selects no memory family, so the map is flat and there is no enforcement gate to run (`../reference/boards.md`, *CI coverage*) |
+| `q35` | qemu-x86_64 | x86_64 | -- | QEMU (runnable CI gate, the `qemu-x86_64` job), booted as a PE32+ UEFI application under OVMF firmware the job resolves rather than names, because `-kernel` cannot start such an image at all. The chip selects no memory family, so the map is flat and there is no enforcement gate to run (`../reference/boards.md`, *CI coverage*) |
 | `xmc4800` | xmc4800-relax | M4F | PMSAv7 | **hardware** (LED + USIC VCOM console over the buffered ring; enforcement + the canonical per-thread peripheral-isolation proof) |
 | `stm32f411` | f411disco / blackpill | M4F | PMSAv7 | **hardware** (LED + UART + ping-pong; enforcement selftest + `mpu_fault` MemManage denial + an unprivileged root, all on `f411disco` 2026-07-29). Witnessed on one of the two boards; `blackpill` shares this backend and was not re-run |
 | `stm32f302` | f302nucleo | M4 | -- | **hardware** (LED PB13 + console; the full suite at the `f302nucleo-st` provisioning -- 63 ok / 0 not ok / 5 skipped on 16 KiB SRAM, measured at `124b68c`). Not an enforcement target: the F302R8 line has no MPU, so `arch_mpu_min_region()` returns 0 (`arch/arm/chip/stm32f302/chip_stm32f302.cc:321`) |
@@ -470,8 +529,9 @@ test available on every board with a known LED.
 **What CI does and does not re-check.** Not every row above is defended by a green CI run, and a
 porter needs to know which. Enforcement is gated at RUNTIME on the sim (`mprotect`), `virt` (PMP)
 and the four `mps2` images (full TAP suite as unprivileged threads plus a real MemManage denial;
-PMSAv7 on the M4/M7/M3, PMSAv8 on the M33). The silicon boards get an enforcement **build** sweep
-instead, and it is worth having on its own -- it compiles their enforcement-only link surface,
+PMSAv7 on the M4/M7/M3, PMSAv8 on the M33). Translation enforcement is gated at RUNTIME too, on
+`virt_arm64` and on both `virt_rv64` paging postures. The silicon boards get an enforcement
+**build** sweep instead, and it is worth having on its own -- it compiles their enforcement-only link surface,
 including `arch_reserved_blocks`, which has **no fallback TU on purpose**, so an enforcing port
 that forgets to declare its reserved set fails to LINK rather than leaving a silent open hole --
 but their chip-specific trapping (SYSMPU, the M7 anti-speculation wrap, PMSAv6) stays
@@ -2101,7 +2161,7 @@ things make it the most involved chip bring-up so far:
   asserts, hanging the boot with no sign of life. (This exact bug bit the first
   bring-up; the LED-bisection diagnostic localized it to the reset poll.)
 
-No RP2040 model ships in mainline QEMU, so there is no CI gate; the image is
+No RP2040 model ships in mainline QEMU, so there is no CI run gate; the image is
 build-verified (boot2 CRC recomputed, `.boot2` at 0x1000_0000, vectors at
 0x1000_0100) and confirmed by flashing a Pico (BOOTSEL + `picotool load -x`).
 The board is always BOOTSEL-recoverable, so a wrong boot2/clock config cannot

@@ -17,13 +17,16 @@ ENTRY(Reset_Handler)
    ships in a 32 KiB variant (QFAC), so this is a real part, just not the one on a micro:bit.
 
    QEMU HAS TO BE TOLD. Its microbit machine defaults to 16 KiB and ignores -m; the size is a
-   QOM property, so every invocation passes -global nrf51-soc.sram-size=32768
-   (cmake/kickos.cmake, kickos_add_qemu_test). Without it an image linked here locks up on
-   its first push, before any vector table is live, as "can't escalate 3 to HardFault". */
+   QOM property, so every invocation passes -global nrf51-soc.sram-size=<the RAM LENGTH below>,
+   which cmake/kickos.cmake's kickos_qemu_machine scrapes out of the MEMORY block. Without it
+   an image linked here locks up on its first push, before any vector table is live, as "can't
+   escalate 3 to HardFault". */
 MEMORY
 {
     FLASH (rx)  : ORIGIN = 0x00000000, LENGTH = 256K
-    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 32K
+    /* Plain decimal bytes, not a K suffix: kickos_qemu_machine regex-scrapes this LENGTH
+       verbatim for the QEMU sram-size QOM property. */
+    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 32768
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);

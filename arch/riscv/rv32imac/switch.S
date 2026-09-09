@@ -88,6 +88,23 @@
     .equ F_CTX_STACK_HI, KICKOS_RV_CTX_OFF_STACK_HI
     .equ F_CTX_KERNEL_SP, KICKOS_RV_CTX_OFF_KERNEL_SP
 
+#if KICKOS_BENCH
+/* One cycle sample into \rd, using \rtmp as scratch. A non-zero g_bench_cycle_src selects
+   that MMIO counter, for a core whose rdcycle traps. Every caller wraps this in
+   `.option norelax`: a relaxed `la` resolves through gp, and gp belongs to the interrupted
+   thread until .Lrestore anchors it. */
+    .macro  BENCH_CYC rd, rtmp
+    la      \rtmp, g_bench_cycle_src
+    lw      \rtmp, 0(\rtmp)
+    beqz    \rtmp, 1000f
+    lw      \rd, 0(\rtmp)
+    j       1001f
+1000:
+    rdcycle \rd
+1001:
+    .endm
+#endif
+
     .text
 
 /* Vectored mtvec table. The ESP32-C6 core supports ONLY vectored mtvec (TRM: "Only  */
@@ -116,6 +133,25 @@ trap_entry:
     csrrw   sp, mscratch, sp
     sw      t0, -4(sp)              /* stash two scratch regs on the trusted stack */
     sw      t1, -8(sp)
+    /* Anchor gp to its link-time value BEFORE any gp-relative kernel access below. gp is x3,
+       U-mode writable, and never saved in the frame; the demux's `la g_arch_current` reads the
+       running ctx* THROUGH it, so an unanchored gp lets the interrupted thread choose the ctx
+       whose bounds and whose kernel_sp the frame store obeys, in M-mode, past PMP. norelax is
+       load-bearing: a relaxed la becomes `addi gp, gp, off`, which reads the gp under attack. */
+    .option push
+    .option norelax
+    la      gp, __global_pointer$
+    .option pop
+#if KICKOS_BENCH
+    /* The switch window opens HERE, above the register save. The mcause demux sits below the
+       save, so every trap pays this stamp and only .Lswitch reads it. */
+    .option push
+    .option norelax
+    BENCH_CYC t0, t1
+    la      t1, g_bench_sw_start
+    sw      t0, 0(t1)
+    .option pop
+#endif
     csrr    t0, mstatus
     srli    t1, t0, 11             /* MPP is mstatus[12:11]; 0x1800 exceeds andi's imm */
     andi    t1, t1, 3
@@ -324,17 +360,6 @@ trap_entry:
 /* first switch going through arch_start. s0/s1 are free scratch, the outgoing    */
 /* thread's copies being already in its frame.                                    */
 .Lswitch:
-#if KICKOS_BENCH
-    /* g_bench_cycle_src != 0 selects that MMIO counter, for a core whose rdcycle traps. */
-    la      t0, g_bench_cycle_src
-    lw      t0, 0(t0)
-    beqz    t0, 6f
-    lw      t0, 0(t0)
-    j       7f
-6:  rdcycle t0
-7:  la      t1, g_bench_sw_start
-    sw      t0, 0(t1)
-#endif
     la      t0, g_clint_msip
     lw      t0, 0(t0)
     sw      zero, 0(t0)             /* clear msip (else it re-fires immediately) */
@@ -352,16 +377,23 @@ trap_entry:
     lw      s1, 4(t3)               /* to_tid = incoming->trace_tid */
 #endif
 #if KICKOS_BENCH
-    la      t0, g_bench_cycle_src   /* delta = now - entry -> bench (before telemetry) */
-    lw      t0, 0(t0)
-    beqz    t0, 8f
-    lw      t0, 0(t0)
-    j       9f
-8:  rdcycle t0
-9:  la      t1, g_bench_sw_start
+    .option push
+    .option norelax
+    BENCH_CYC t0, t1
+    la      t1, g_bench_sw_start
     lw      t1, 0(t1)
-    sub     a0, t0, t1
+    sub     t0, t0, t1
+    la      t1, g_bench_sw_half
+    sw      t0, 0(t1)               /* save + swap; .Lrestore's tail adds the restore */
+    /* Bank the PREVIOUS switch here and not this one: this one's window is still open and a
+       call inside it would be charged to it. */
+    la      t1, g_bench_sw_pend
+    lw      a0, 0(t1)
+    beqz    a0, 10f
+    sw      zero, 0(t1)
     call    kickos_bench_switch_done
+10:
+    .option pop
 #endif
 #if KICKOS_TELEMETRY
     mv      a0, s0
@@ -446,6 +478,15 @@ svc_trampoline:
 
 /* --- Shared restore epilogue: pop the frame at sp, mret.                       */
 .Lrestore:
+#if KICKOS_BENCH
+    /* Every register but sp is dead here, the frame reloading each one below. */
+    .option push
+    .option norelax
+    BENCH_CYC t0, t1
+    la      t1, g_bench_sw_rstart
+    sw      t0, 0(t1)
+    .option pop
+#endif
     /* Force gp to its canonical link-time value. __global_pointer$ is anchored inside
        the LIVE app small-data window, so a U-mode thread can write gp arbitrarily and
        the next thread's gp-relative loads would resolve at addresses it chose. Every
@@ -486,9 +527,6 @@ svc_trampoline:
     lw      t0, F_MEPC(sp)
     csrw    mepc, t0
     lw      ra,  F_RA(sp)
-    lw      t0,  F_T0(sp)
-    lw      t1,  F_T1(sp)
-    lw      t2,  F_T2(sp)
     lw      s0,  F_S0(sp)
     lw      s1,  F_S1(sp)
     lw      a0,  F_A0(sp)
@@ -513,6 +551,29 @@ svc_trampoline:
     lw      t4,  F_T4(sp)
     lw      t5,  F_T5(sp)
     lw      t6,  F_T6(sp)
+#if KICKOS_BENCH
+    /* The switch window CLOSES here. t0/t1/t2 are reloaded below this block and nowhere
+       above it, which is what leaves three registers free at the end of the restore; the
+       mret has none, so the delta is left for .Lswitch to bank. */
+    .option push
+    .option norelax
+    BENCH_CYC t0, t1
+    la      t1, g_bench_sw_half
+    lw      t2, 0(t1)
+    beqz    t2, 11f
+    sw      zero, 0(t1)
+    la      t1, g_bench_sw_rstart
+    lw      t1, 0(t1)
+    sub     t0, t0, t1              /* the restore half */
+    add     t0, t0, t2              /* plus the save and swap half */
+    la      t1, g_bench_sw_pend
+    sw      t0, 0(t1)
+11:
+    .option pop
+#endif
+    lw      t0,  F_T0(sp)
+    lw      t1,  F_T1(sp)
+    lw      t2,  F_T2(sp)
     /* The frame names the sp to leave on. Last, because every load above reads through the
        frame base. */
     lw      sp,  F_SP(sp)

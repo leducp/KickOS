@@ -938,6 +938,20 @@ does not need. **One behaviour is kept deliberately against the precedent**: the
 read-back refusal, where a value the declarations do not permit fails the configure instead of
 falling back quietly.
 
+**M8.5 ALSO CARRIES TWO ITEMS THAT HAD NO HOME, ASSIGNED HERE RATHER THAN LEFT OWED.** Neither is
+de-duplication and the row's subject is not widened by accident: they are assigned because a
+milestone is where an item gets decided, and these two had been recorded as owed with a direction
+and no number. The first is the per-task object budget bounding CREATES rather than HOLDS, so a task
+at its ceiling can delegate its objects and die and one live task ends up holding a whole pool; the
+direction is charging on delegation or counting holds, and the second wants a per-(task, slot)
+record rather than one owner byte. The second is the panic reporter's tail, which is most of what a
+red-zone figure measures on rv32imac and rxv3, where eight figures now sit at exactly their reserve
+so the next assert on any dispatch chain fails a gate on a board nobody named; the direction is
+pricing a reporter that runs on a stack of its own. Its sibling is the `esp32c6-wroom-st` kernel
+`.bss` ending 68 bytes short of the `.appdata` boundary, where a crossing costs 32 KiB of arena and
+fails nothing, and **that one cannot simply be asserted**: `esp32c6-wroom-bench` has already
+crossed, so the assert lands with whatever fixes that preset.
+
 **M8.6 HAS A MEASURED LEDGER RATHER THAN AN AMBITION, AND THE TREE ALREADY OWNS THE IDIOM THAT
 REMOVES MOST OF IT.** The build corpus is 11925 lines over 272 files and the root file alone is 16
 percent of it. No function in the shared module is dead and the heavy helpers are correctly placed:

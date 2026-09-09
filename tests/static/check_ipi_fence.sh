@@ -129,7 +129,10 @@ echo "== control: the reader reports a full barrier, a deleted one, a foreign sy
 echo "   each of the one-directional operands this arch refuses"
 
 # --- the image ----------------------------------------------------------------
-defined="$("$nm" --defined-only "$elf" | wc -l)"
+# Through tool_out, not a bare pipe into wc -l: piped, a crashing nm would leave wc -l
+# reporting 0 with exit 0, and the floor check below would blame a small image rather than nm.
+tool_out "$TMP/nm_defined" "^[0-9a-fA-F]+ [A-Za-z] " "$nm" --defined-only "$elf"
+defined="$(wc -l < "$TMP/nm_defined" | tr -d ' ')"
 [ "$defined" -ge "$SYM_FLOOR" ] || fail "nm reported only $defined defined symbol(s) in $elf,
   below the floor of $SYM_FLOOR: the symbol table was not read, whatever it printed"
 

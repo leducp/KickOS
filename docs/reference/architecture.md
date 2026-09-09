@@ -469,7 +469,7 @@ posts may run direct (scheduler-locked) or, later, deferred to a handler task.
 deadlines (ChibiOS `TIMEDELTA` model). Arm the one-shot timer for
 `min(nearest deadline, running-RR slice expiry)` with a **minimum-delta guard** (never program a
 compare that may already be in the past). Pure-FIFO with nothing time-pending => timer disarmed,
-zero timer interrupts. `CONFIG_SCHED_PERIODIC_TICK` (opt-in) forces a classic periodic tick.
+zero timer interrupts. `CONFIG_KICKOS_SCHED_PERIODIC_TICK` (opt-in) forces a classic periodic tick.
 Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
 
 **Thread lifecycle past the exit -- cancel, join, wait-until-last.** `KOS_SYS_THREAD_KILL` is a
@@ -1002,6 +1002,12 @@ feeds the slave app.
   board list are **derived from globs** over `boards/*/board.cmake`, so neither goes stale against
   the fleet.
 - **CTest** runs the sim ELF natively in CI.
+- **`KICKOS_SMP_TRACE`** (CMake `option()`, default `OFF`, selected by no preset) compiles the
+  per-core park/wake event ring (`kickos/smptrace.h`) into `smptrace.cc`, `sync.cc` and `sched.cc`;
+  it is a diagnostic knob for an SMP park that never woke, never a posture, and the guarded code
+  compiles to nothing when it is off. `tests/static/check_smp_trace_builds.sh` compiles its enabled
+  arm alone, with the preset's own flags, so it cannot rot unnoticed while every preset ships it
+  off.
 
 ---
 
