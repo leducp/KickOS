@@ -51,9 +51,8 @@ extern "C"
         __kickos_appdata_end;
 #endif
 
-    // Nominal core clock (Hz). QEMU's rdcycle is not cycle-accurate, so this only feeds
-    // the bench's cycles->ns print. Matches the `virt` mtime rate.
-    uint32_t SystemCoreClock = 10000000u;
+    // No core clock on this machine: MTIME_HZ below is the CLINT rate, not a core rate.
+    uint32_t SystemCoreClock = 0;
 }
 
 namespace

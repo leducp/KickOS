@@ -1981,6 +1981,177 @@ the change, not the ceremony after it.
   zero pool headroom, and halves the thread ceiling that board ships. Splitting the selftest image
   the way every other tight board is split leaves the fattest part with room to spare.
 
+## M8.4: the gates, the CI matrix and the instrument, and what these green runs do NOT say
+
+**THE MILESTONE'S SHARPEST FINDING CAME OUT OF THE INSTRUMENT WORK AND NOT OUT OF THE GATES, AND IT
+IS A PRIVILEGE ESCALATION THAT DEFEATED AN EXISTING DEFENCE.** On rv32imac `gp` is U-mode writable
+and deliberately not saved in the trap frame, and `trap_entry` computed `&g_arch_current` THROUGH it
+before re-anchoring. `trap_entry`'s own comment documents this threat for `sp` and answers it with
+the swap onto the trusted trap stack; the bounds test that backs that swap reads `stack_hi` and
+`stack_lo` out of a ctx located through `gp`, so a forged ctx passes it and the `kernel_sp` beside it
+aims two M-mode frame stores past PMP. **The hazard was seen for one register and solved, and the
+identical shape one register over was not.** `mtvec` is vectored over 32 slots that all jump to that
+one entry, so the anchor there covers every route in.
+
+**AND WHETHER IT REPRODUCES DEPENDS ON THE IMAGE, WHICH IS WHAT MAKES IT THE WORST KIND OF LATENT
+DEFECT.** The access is gp-relative only where the linker's relaxation finds that global inside gp's
+psABI window of plus or minus 2048 bytes, and the distance is a property of one IMAGE's data layout
+rather than of the board: on the bench image `g_arch_current` sat 1976 bytes from
+`__global_pointer$`, inside, so the pair relaxed and three gp-relative reads stood inside
+`trap_entry`; on another image the same global lands 2840 bytes out, no relaxation happens, and the
+entry path is clean. **So reading one image proves nothing about another**, reading the source
+proves nothing at all, and the defect appears and disappears as unrelated data moves. It was live on
+a shipped preset's image, so the anchor is a fix rather than a guard against drift, and the gate's
+order clause is worth having on the images where it currently passes trivially.
+
+**THE GATE THAT NAMES THAT THREAT RAN ON NO rv32 PRESET, AND EXTENDING IT WAS THE WRONG ANSWER.**
+`check_riscv_kernel_gp.sh` states it in its own header and bans gp-relative kernel access
+image-wide, which is true of the rv64 SPLIT image and false of the flat rv32 one: rv32 has no
+address space, so one `.text` carries kernel and app with about 69 legitimate gp accesses under a
+single anchor. So a whole-image ban would have reddened the fleet while asserting something untrue.
+What the threat needed was a narrow gate over the trap vectors, and the relaxable-anchor case is the
+member a source reading misses: the `la` looks right and only the LINKED image shows the linker
+turned it into `addi gp,gp,off`, which reads the gp under attack.
+
+**A DISMISSAL NEEDS A POSITIVE CONTROL AS MUCH AS A FINDING DOES.** That escalation was first
+measured as NOT reproducing, by an `awk` scan spelled `/\bgp\b/`, where `\b` is not a word
+boundary at all: it matched nothing over a corpus full of hits, and the zero agreed with the
+expectation that produced it. An instrument that refutes a claim is exactly as capable of being
+vacuous as one that reports it, and neither says so in its output.
+
+**THE SEVENTEEN-GATE ITEM WAS SIXTEEN PLUS EIGHT, AND WRITING THE CONTROLS IS WHAT FOUND THE REST.**
+One of the seventeen was retired rather than controlled. The other sixteen surfaced FIVE gates that
+passed over their whole corpus when a reader died, three of them outside the masked-scanner item's
+own list, and FIVE real gate defects: a scanner truncating its own findings file so only the last
+offending file in the tree could ever be reported, a relocation listing never checked for being the
+wide one so half the aarch64 GOT types went unseen, a gate that could not tell a refused column
+width from a dead scanner, a vacuous pre-filter, and a reporter file's death invisible to the leg
+that read it. **A gate with no control is not merely unproven; it is where the defects are.**
+
+**THE PLAUSIBLE WRONG FIX FOR A MASKED SCANNER IS INERT, AND THAT WAS MEASURED RATHER THAN
+ARGUED.** `|| fail` at the END of a pipeline reads the last command's status and never the reader's:
+under a killed reader its message appeared ZERO times in three of the gates, and each run went red
+only on a planted in-script control reporting the wrong cause. Over a corpus with no control it
+would have been silent. `pipefail` is not available either, every gate being `#!/bin/sh` over dash.
+
+**A NUMERIC FLOOR PER ROOT DOES NOT CLOSE A DROPPED-ROOT HOLE, because dropping the root removes its
+floor with it.** The banner gate stayed green at 347 files with two roots deleted. What closes it is
+a TOTAL classification of every top-level directory that tracks source, so an unknown directory is a
+named failure rather than a silence: the same move as making an authority total instead of guarding
+its absence.
+
+**THE INSTRUMENT'S COMPOSITE CORRECTION WAS WRONG, AND THE SHAPE OF THE ERROR NEEDS NO COUNTER.**
+`PH_NEST` is the empty bracket sited INSIDE an enclosing span, so `NEST = NULL + one nested
+bracket`, and subtracting `k*NEST` removes the composite's single `NULL` residue k times: exact only
+at k=1, nothing at k=0, over-subtracting above. Measured over a synthetic depth sweep whose every
+composite is empty and so reads 0 on a perfect instrument, the documented rule gave 240, -140, -400,
+-680, -1300 at k = 0 to 4. **k belongs to a SAMPLE and not to a row**, and nothing prints it.
+
+**THE rv32 SWITCH FIGURES MOVED AND THAT IS NOT A CYCLE COST.** The window now spans the register
+save and restore every other arch's does, so before and after measure two different brackets. `n`
+drops by exactly one per report, which is the deferred bank showing itself: the `mret` leaves no
+register for a call, so the halves are banked at the next switch, and the sample dropped before each
+print is the switch INTO the reporting thread, a preemption rather than a ping-pong handoff. **No
+runtime cross-arch bracket comparison exists on this box** to check it against, mps2's DWT being
+dead under QEMU and the bus empty, so the comparison is static, by what each window encloses.
+
+**PERCENTILES LAND ON THE SWITCH ACCUMULATOR AND DELIBERATELY NOT ON THE PHASE TABLE.** A
+log-linear histogram costs 672 bytes of `.bss` for SWITCH; forty phase rows would cost 26.9 KiB, a
+fifth of the XMC4800's RAM, and worse, a phase histogram runs inside the accumulator call whose cost
+every enclosing composite carries k times, so it would degrade the table to buy a percentile of a
+mixture. p50 and p99 are bucket LOW EDGES at an eighth of an octave, so both are floors, and the
+histogram was never validated against a known distribution. **The board that keeps MIN is the
+tightest board**, so the histogram compiles out exactly where the RAM is scarce.
+
+**MIN IS NOW A CHIP FACT RATHER THAN A FLEET RULE**, declared where facts of the part belong and
+knobs do not, and witnessed at byte level: the XMC bench image carries the string `min/avg/max`
+while the non-XMC armv7m image carries `p50/p99/max`.
+
+**`cap_share` WAS THE INSTRUMENT AND THE KERNEL IS SOUND, AND THE CONTRACT SETTLES IT RATHER THAN
+THE COUNT.** The arm asserted a synchronous property of an explicitly asynchronous operation: a kill
+returning 0 means the request was accepted, never that the thread is gone, which the tree states in
+three places. Instrumented, the shortfall converges to exactly the expected value, the victim's own
+frames still out at the instant the call returned. **No frame-conservation invariant exists anywhere
+in `docs/reference/`.** Load is the trigger and not the mechanism: it reddens SERIALLY on a
+contended box, so `ctest -j` was never the cause, and `RUN_SERIAL TRUE` was refused with that
+measurement rather than applied as a calming patch. Had the answer been a kernel race, that fix
+would have hidden it permanently.
+
+**A SLAY RETURNING 0 ANSWERS FOR THE GROUP AND ITS SLOT AND NOT FOR THE ADDRESS SPACE.** Measured
+while trying it as that gate's fix: the first site went exact and the closing read still failed,
+the space settling only after hundreds of probe spins.
+
+**GICv3 WAS ALREADY WITNESSED AND GICv3 UNDER A SHARED KERNEL WAS NOT**, the AMP variants that set
+it holding `KICKOS_KERNEL_CORES` at 1. And the RP2350 shared-image preset registers the tree's ONLY
+`rp_node_vectors` case while the job bearing its name configured the two-image posture, so
+**checking that matrix by job name concluded the opposite of the truth**. Deriving coverage by
+grepping the preset NAME is lossy in both directions: that name matched with no build behind it,
+while presets reached through a shell variable match nothing at all.
+
+**AN x86_64 CI JOB WOULD HAVE BEEN A SILENT GREEN.** `tests/lib/gate.sh` SKIPs every image gate when
+it finds no UEFI firmware and again when `mtools` is absent, and ctest reports success on a skip, so
+the first draft of that job would have booted nothing on every run and passed. The firmware pair is
+RESOLVED rather than named, shortest match winning because every qualifier lengthens the name and a
+`.secboot` or `.ms` firmware refuses an unsigned image; this box ships five code files, so the
+multi-spelling case is not hypothetical.
+
+**TWO AMP MINTERS SPEND AN ENDPOINT SLOT WITHOUT CHARGING IT**, so the object budget's four charged
+creators are not every route into that pool. Neither is reachable from an unprivileged task and
+repeating one crossing is not refused, so what bounds them is the caller and never a count;
+`invariants.md` says so now rather than promising more than the code does.
+
+**THE FILE:LINE:COLUMN INDIRECT-CALL PIN IS AS FRAGILE AS `TODO.md` SAYS.** A seven-line insertion
+moved four of its records with ZERO codegen change, and the red-zone gate correctly reddened on two
+presets first.
+
+**WHAT THE BY-RULE CONFIGURE CHANGE DOES NOT WITNESS.** A `-D` naming no Kconfig symbol is still
+DROPPED rather than refused, CMake's own non-fatal notice being the only report: refusing that class
+needs the road where the build decides no knob at all, which is not assigned. A `-D` naming a
+PROMPTLESS symbol is now refused BY NAME where it used to do nothing at all. And the reach gate
+gates the OUTCOME rather than the mechanism, so a hand list that happened to name every symbol
+declared today would still pass; what it catches is the next symbol added without the list edit.
+
+**THE AUDIT HELD TWICE, BOTH TIMES ON THE ACCEPTANCE SURFACE AND NEITHER TIME ON THE
+IMPLEMENTATION.** No critical or high finding, no open kernel correctness or security defect, and
+every blocker a claim that outran what backed it. First pass: a code-synced coverage table still
+saying rv64imac and x86_64 had no CI job, months after one landed and hours after the other; the
+new terse-diagnostic arm riding a broad selection with nothing naming it, so losing its
+registration would have shrunk the job silently; and a design record telling readers the corrected
+instrument was invalid. **Second pass caught the remediation's own overclaim**, which is the one
+worth keeping: the sentence added to say a missing emulator can never green a job was itself
+unbacked, three prechecks existing where it promised all of them. A claim about vacuity that is
+vacuous is the same defect the milestone spent the day removing, and it was written while removing
+it.
+
+**DERIVING CI COVERAGE BY PRESET NAME IS WRONG FOUR WAYS, NOT TWO.** Seventeen jobs configure 53 of
+the visible presets, and a name grep misses in both directions for four distinct reasons: a job name
+that is not a preset name at all (one job configures nine presets and no preset carries its name;
+another configures a preset into a second build directory under a name of its own), a preset named
+only inside a matrix list, a preset built through a shell variable, and mis-attribution even where a
+name does match, two jobs each configuring a preset beyond the one they are named for. The instrument
+is to enumerate what each job CONFIGURES, expanding the loops and matrices by hand. The same file
+answers which emulator each job needs: `tests/static/board_emulators.cmake` reads the same
+`kickos_qemu_machine` body a test registration reads, so the binary is derivable rather than
+assumable, and no job spans two.
+
+**A STALE PROSE RECORD IS DELETED, AND THAT RULE HAS A PRECONDITION NOBODY HAD WRITTEN DOWN.**
+`docs/design-riscv-switch-cost.md` was the candidate, and deleting it fails `doc_names` on three
+unresolved references, two of them in records. So the delete-regenerable-prose rule holds only where
+nothing cites the page: otherwise the page stays and loses its regenerable half, which is what
+happened here. An unattributed `~3.5x` ratio went with it, a figure repeated without ever naming the
+span it covered, which is exactly the class the milestone's own MPU correction removed.
+
+**A PIN THAT CANNOT BE SHOWN TO FIRE IS DECORATION, AND THIS ONE WAS SHOWN.** With the arm's
+registration disabled, the pinned line reports no tests found and exits non-zero WHILE the step's own
+broad selection stays green one test lighter. That difference is the whole argument for naming a test
+in CI rather than trusting a label filter, and it is worth more than the pin.
+
+**THE FLEET IS THE WITNESS AND IT WAS TAKEN AS THE ACCEPTANCE TEST RATHER THAN THE CEREMONY.** A
+whole-fleet host sweep over every visible preset passed with **zero reused**, which is the only tell
+that separates a real sweep from a reprint of an older run's status files. That is what M8.3's
+review said was missing, and the by-rule configure change is exactly the class that needed it: it
+moves every preset's configure and a hand-picked sample cannot speak for it.
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).

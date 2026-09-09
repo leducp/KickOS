@@ -37,7 +37,7 @@ namespace kos
     {
         return kos_clock_now();
     }
-    // Running core clock in Hz (0 on the host sim); read-only, see kos_cpu_clock_hz.
+    // Running core clock in Hz (0 where the backend has none); read-only, see kos_cpu_clock_hz.
     inline uint32_t cpu_clock_hz()
     {
         return kos_cpu_clock_hz();

@@ -124,7 +124,7 @@ But as the *free-running now* a tickless kernel wants, it is a poor fit: it is
 periodic by construction (fighting the tickless goal), and it is narrow -- 24
 bits on Cortex-M -- so it cannot serve as a wide monotonic counter without the
 same software-extension fragility. SysTick earns its keep as the opt-in periodic
-tick (`CONFIG_SCHED_PERIODIC_TICK`), not as the default clock.
+tick (`CONFIG_KICKOS_SCHED_PERIODIC_TICK`), not as the default clock.
 
 ### 3. A memory-mapped peripheral timer
 

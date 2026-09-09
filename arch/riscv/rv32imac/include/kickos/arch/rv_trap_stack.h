@@ -63,8 +63,8 @@
  * KICKOS_KERNEL_STACK_SIZE is 1184 here: 12 bytes of slack above the canary word.
  *
  * The TRAP chain WITHOUT the tail runs through an INDIRECT call, the SchedPolicy hook table;
- * tests/static/trap_redzone_indirect.txt binds each such site to the one slot its source line
- * calls, and the gate refuses to answer at all while a reachable site is unbound. */
+ * tests/static/trap_redzone_indirect.txt binds each such site to the one slot that call
+ * reaches, and the gate refuses to answer at all while a reachable site is unbound. */
 #define KICKOS_RV_TRAP_KERNEL_DEPTH 480
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_SYS 912
 

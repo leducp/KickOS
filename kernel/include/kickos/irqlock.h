@@ -20,25 +20,20 @@ namespace kickos
     class IrqLock
     {
     public:
-        // ALWAYS INLINE ABOVE ONE CORE: an out-of-line copy is a callgraph node with no
+        // ALWAYS INLINE, AT ONE CORE TOO: an out-of-line copy is a callgraph node with no
         // definition in the referencing translation unit, and the reachability gates then
-        // carry no out-edge for anything a critical section reaches.
-#if KICKOS_KERNEL_CORES > 1
-#define KICKOS_IRQLOCK_INLINE __attribute__((always_inline))
-#else
-#define KICKOS_IRQLOCK_INLINE
-#endif
-        KICKOS_IRQLOCK_INLINE IrqLock()
+        // carry no out-edge for anything a critical section reaches. Whether a compiler
+        // inlines these unasked varies by version, which makes the gates vary with it.
+        __attribute__((always_inline)) IrqLock()
             : state_(arch_irq_save())
         {
             klock_enter();
         }
-        KICKOS_IRQLOCK_INLINE ~IrqLock()
+        __attribute__((always_inline)) ~IrqLock()
         {
             klock_leave();
             arch_irq_restore(state_);
         }
-#undef KICKOS_IRQLOCK_INLINE
 
         IrqLock(IrqLock const&) = delete;
         IrqLock& operator=(IrqLock const&) = delete;

@@ -391,7 +391,9 @@ int kos_irq_attach(int irq, kos_cap_t sem_cap);
 // caller's cap table) or -KOS_EOVERFLOW (this TASK's ceiling of bindings, the pool still
 // having slots); the cap lands in *out_cap.
 int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap);
-int kos_irq_wait(kos_cap_t irq_cap);   // block until the line fires; 0, or -KOS_EBADF/-KOS_EPERM
+// Block until the line fires. 0, or -KOS_EBADF/-KOS_EPERM, or -KOS_ECANCELED where the caller
+// was cancelled before or during the park.
+int kos_irq_wait(kos_cap_t irq_cap);
 int kos_irq_ack(kos_cap_t irq_cap);    // unmask the line; 0, or -KOS_EBADF/-KOS_EPERM
 // Post the binding WITHOUT touching the controller: the doorbell a service thread rings so
 // the IRQ thread, sole owner of the peripheral registers, primes a transfer. The woken
@@ -405,7 +407,7 @@ int kos_irq_notify(kos_cap_t irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
 int kos_irq_discard(kos_cap_t irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
 uint64_t kos_clock_now(void);   // monotonic nanoseconds
 
-// Running core clock in Hz. 0 if the backend has no silicon core clock (the host sim).
+// Running core clock in Hz. 0 if the backend has no silicon core clock (host sim, QEMU virt).
 uint32_t kos_cpu_clock_hz(void);
 
 // The branch (peripheral) clock in Hz feeding the register block at `base`, which is the

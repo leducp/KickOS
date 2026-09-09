@@ -147,7 +147,9 @@ if [ "$planted" != "3" ]; then
 fi
 
 # --- the corpus ---------------------------------------------------------------
-( cd "$ROOT" && git ls-files 'kernel/*.cc' 'kernel/*.h' ) > "$TMP/files" 2>/dev/null || true
+# Through tool_out, not `... || true`: a `|| true` swallows git's own exit status, so a git
+# failure (not a git repo, a bad pathspec) reads as an empty corpus rather than a tool failure.
+tool_out "$TMP/files" "" git -C "$ROOT" ls-files 'kernel/*.cc' 'kernel/*.h'
 require_nonempty "$TMP/files" "git ls-files printed no kernel source at all under $ROOT, so the
   corpus is UNKNOWN rather than empty and every verdict below it would be vacuous"
 nfiles="$(wc -l < "$TMP/files" | tr -d ' ')"

@@ -91,7 +91,9 @@ enum kos_syscall_nr
                                 //   (line/flags/out-ptr), EFAULT (out-ptr), EBUSY (line owned),
                                 //   ENOMEM (binding pool), EMFILE (cap table),
                                 //   EOVERFLOW (task's binding budget)
-    KOS_SYS_IRQ_WAIT = 15,      // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
+    KOS_SYS_IRQ_WAIT = 15,      // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT),
+                                //   or -KOS_ECANCELED where the caller was cancelled before or
+                                //   during the park
     KOS_SYS_IRQ_ACK = 16,       // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
     KOS_SYS_IRQ_SPURIOUS = 18,  // ()  -> count of IRQs on unbound lines (self-test only)
     KOS_SYS_DIAG_LED_SET = 19,  // (on)                  -> 0 (kernel diagnostic LED)
@@ -107,10 +109,15 @@ enum kos_syscall_nr
     KOS_SYS_ENDPOINT_CREATE = 26, // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM endpoint pool,
                                   //   EMFILE caller's cap table, EOVERFLOW task's endpoint
                                   //   budget, EINVAL/EFAULT)
-    KOS_SYS_SEND = 27,          // (cap, buf, len) -> bytes transferred, or -KOS_E*, parking
-                                //   indefinitely. EFAULT also answers a rendezvous copy
-                                //   refused at either end (sys.h)
-    KOS_SYS_RECV = 28,          // (cap, buf, cap_len, kos_recv_info* out) -> bytes received, or -KOS_E*.
+    KOS_SYS_SEND = 27,          // (cap, buf, len) -> bytes transferred, or -KOS_E*: EINVAL (len
+                                //   above KOS_EP_MSG_MAX, rejected and never clamped), EFAULT
+                                //   (bad buffer), EBADF/EPERM (bad cap / no SIGNAL right),
+                                //   EPIPE (dead endpoint, or the last receiver left while
+                                //   parked). Parks indefinitely otherwise. EFAULT also answers
+                                //   a rendezvous copy refused at either end (sys.h)
+    KOS_SYS_RECV = 28,          // (cap, buf, cap_len, kos_recv_info* out) -> bytes received, or
+                                //   -KOS_E*: EINVAL (misaligned out-ptr), EFAULT (bad buffer or
+                                //   out-ptr), EBADF/EPERM (bad cap / no WAIT right).
                                 //   A parked receiver is WOKEN -KOS_EFAULT where the copy
                                 //   into its buffer was refused, never with a count of 0
     KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (no KOS_AUTH_CONSOLE),
@@ -222,8 +229,9 @@ enum kos_syscall_nr
     KOS_SYS_NEST_WITNESS = 58, // (which) -> one nested-trap counter (self-test only), or
                                //   KOS_NEST_UNSET for a figure nothing recorded.
     KOS_SYS_ASPACE_PROBE = 59, // (op, a1) -> per-op (see enum kos_aspace_op), or -KOS_EINVAL
-                               //   for a bad op and -KOS_ENOSYS on a board that describes
-                               //   regions instead of translating (self-test only). A
+                               //   for a bad op, -KOS_EPERM for an op that mints from a caller
+                               //   the mint gate refuses, and -KOS_ENOSYS on a board that
+                               //   describes regions instead of translating (self-test only). A
                                //   PRODUCTION image answers -KOS_EINVAL from the unknown-number
                                //   arm, so a caller reading the refusal to learn whether the
                                //   board translates must tell ENOSYS from EINVAL.
@@ -236,8 +244,9 @@ enum kos_syscall_nr
                                //   here carries one, which is what keeps it out of the
                                //   capability ABI's own records.
     KOS_SYS_FRAME_UNMAP = 61,  // (frame cap, address-space cap, virtual address) -> 0, or
-                               //   -KOS_EBADF on a cap that does not resolve, -KOS_EPERM for
-                               //   a range this space did not take through
+                               //   -KOS_EBADF on a cap that does not resolve, -KOS_EINVAL on an
+                               //   address-space cap whose domain translates nothing,
+                               //   -KOS_EPERM for a range this space did not take through
                                //   KOS_SYS_FRAME_MAP, which is what stops one holder
                                //   revoking another's mapping. It asks nothing about what
                                //   NAMES the range: a thread parked in KOS_SYS_RECV with its
@@ -245,8 +254,10 @@ enum kos_syscall_nr
     KOS_SYS_AMP_ENDPOINT_CREATE = 62, // (node, port, kos_cap_t* out) -> 0, or -KOS_ENOSYS on an
                                //   image running one kernel, -KOS_EPERM for an unprivileged
                                //   caller, -KOS_EINVAL for the caller's own node or a port
-                               //   that node did not mint, plus the mint refusals every
-                               //   creator carries. The cap it grants is SIGNAL-only.
+                               //   that node did not mint, -KOS_EFAULT for an out-pointer the
+                               //   caller does not own, -KOS_ENOMEM (endpoint pool) and
+                               //   -KOS_EMFILE (the caller's cap table). The cap it grants is
+                               //   SIGNAL-only.
     KOS_SYS_THREAD_SET_AFFINITY = 63, // (kos_thread_t, core mask) -> 0, or -KOS_EPERM (the
                                //   mask meets the thread's task's core set nowhere, or the
                                //   target is in another task and the caller is unprivileged),
@@ -274,7 +285,9 @@ enum kos_syscall_nr
                                //   than one core, so every other image returns -KOS_EINVAL
                                //   for every op).
     KOS_SYS_AMP_PROBE = 66,    // (op, a1) -> per-op (see enum kos_amp_op), or -KOS_EINVAL for a
-                               //   bad op (self-test only: the dispatch arm is compiled out
+                               //   bad op, -KOS_EPERM on an op that publishes into a peer from
+                               //   an unprivileged caller, -KOS_ENOSYS where the backend seats
+                               //   no IPI (self-test only: the dispatch arm is compiled out
                                //   unless KICKOS_ENABLE_SELFTEST AND the image is a node of a
                                //   partition, so every other image returns -KOS_EINVAL for
                                //   every op).
@@ -860,7 +873,9 @@ enum kos_mem_flags
 enum kos_bench_op
 {
     KOS_BENCH_OP_RESET = 0,       // ()          -> 0. Switch AND phase accumulators.
-    KOS_BENCH_OP_CORE_HZ = 1,     // ()          -> SystemCoreClock in Hz, 0 if unknown
+    KOS_BENCH_OP_CYCCNT_HZ = 1,   // ()          -> rate of the counter the cycle ops read,
+                                  //   which is not always the core clock. 0 = no rate
+                                  //   converts a reading, so report cycles alone.
     KOS_BENCH_OP_SWITCH_PRINT = 2, // ()         -> switch sample count (kernel prints the line)
     KOS_BENCH_OP_IRQ_SETUP = 3,   // (line)      -> 0
     KOS_BENCH_OP_IRQ_ONCE = 4,    // (line)      -> best-case inject->entry cycles, 0 = did

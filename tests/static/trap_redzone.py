@@ -18,6 +18,15 @@
 # into one node, and the same static seen from two .ci files does. A node with no
 # "bytes (static)" is defined outside the C/C++ the compiler saw (assembly, libgcc) and must
 # be declared in the unsized-allowance list or the run fails.
+#
+# SITE KEYS. An indirect call is named by its CALLER and an ordinal, `<caller>@<n>/<count>`,
+# ranking that caller's located sites by (basename, line, column) out of <count> it makes.
+# THREE FAILURES HAVE TO STAY APART: a reachable site no record names is UNBOUND, a record
+# naming a callee this graph does not hold is an ABSENT CALLEE, and a record whose caller is
+# gone, names two nodes, or no longer makes <count> indirect calls is a KEY THAT DOES NOT
+# RESOLVE. Never answer the last by re-pointing the ordinal at whatever now sits there: a
+# moved count means every ordinal in that body moved, and the re-bind would charge a measured
+# callee to a call that does not make it.
 
 import collections
 import glob
@@ -33,6 +42,7 @@ INDIRECT = '__indirect_call'
 # Appended to a CALLER key to stand for every unlocated indirect site inside it.
 UNLOCATED_SUFFIX = '@indirect'
 SITE_PREFIX = '!site '
+ORDINAL_SEP = '@'
 
 
 class Bad(Exception):
@@ -199,22 +209,42 @@ class Decl(object):
         return self.trap_stack | self.kernel_stack
 
 
+def split_site_key(key):
+    """(caller spec, ordinal, count), the ordinal None for the unlocated aggregate, or None."""
+    at = key.rfind(ORDINAL_SEP)
+    if at < 1:
+        return None
+    spec = key[:at]
+    rest = key[at + 1:]
+    if ORDINAL_SEP + rest == UNLOCATED_SUFFIX:
+        return (spec, None, None)
+    if rest.count('/') != 1:
+        return None
+    ordinal, count = rest.split('/', 1)
+    if not ordinal.isdigit() or not count.isdigit():
+        return None
+    ordinal = int(ordinal)
+    count = int(count)
+    if ordinal < 1 or count < 1 or ordinal > count:
+        return None
+    return (spec, ordinal, count)
+
+
 def check_site_shape(where, f):
     """Everything about one `site` record that holds whatever arch or preset is being read."""
     if f[0] != 'site':
         die('%s: unknown record "%s"' % (where, f[0]))
     if len(f) < 5:
         die('%s: site wants <arch> <scope> <site> <callee>...' % where)
-    site = f[3]
-    if not site.endswith(UNLOCATED_SUFFIX) and site.count(':') != 2:
-        die('%s: site "%s" is not <basename>:<line>:<col> or <caller>%s'
-            % (where, site, UNLOCATED_SUFFIX))
+    if split_site_key(f[3]) is None:
+        die('%s: site "%s" is not <caller>%s<ordinal>/<count> or <caller>%s'
+            % (where, f[3], ORDINAL_SEP, UNLOCATED_SUFFIX))
     if 'NONE' in f[4:] and f[4:] != ['NONE']:
         die('%s: NONE cannot be mixed with a named callee' % where)
 
 
 def read_bindings(path, arch, preset):
-    """site key -> [(callee spec, optional)], with [] for an explicit NONE."""
+    """site key as written -> ([(callee spec, optional)], where), [] for an explicit NONE."""
     out = collections.OrderedDict()
     for n, f, _reason in records(path):
         where = '%s:%d' % (path, n)
@@ -227,15 +257,61 @@ def read_bindings(path, arch, preset):
             continue
         site = f[3]
         # Scope-dependent, so it stays here: one site may be bound once per (arch, preset).
+        # Two records naming ONE site through different specs are caught after resolution.
         if site in out:
             die('%s: site %s bound twice for %s/%s' % (where, site, arch, preset))
         if f[4:] == ['NONE']:
-            out[site] = []
+            out[site] = ([], where)
             continue
         callees = []
         for spec in f[4:]:
             callees.append((spec.lstrip('?'), spec.startswith('?')))
-        out[site] = callees
+        out[site] = (callees, where)
+    return out
+
+
+def resolve_bindings(graph, raw):
+    """Canonical site key -> [(callee spec, optional)], every record's key resolved first.
+
+    Refuses a key whose caller is absent, ambiguous, or no longer makes the declared number of
+    indirect calls, and says so in those words: none of the three leaves the record describing
+    the site it was written for, and re-pointing the ordinal would bind silently.
+    """
+    out = collections.OrderedDict()
+    seen = {}
+    for key, (callees, where) in raw.items():
+        spec, ordinal, count = split_site_key(key)
+        hits = graph.match(spec)
+        if not hits:
+            die('%s: KEY DOES NOT RESOLVE: site %s names the caller "%s", which is no node in'
+                ' this graph. It was renamed, compiled out or inlined away, so the call this'
+                ' record measures is not the one the key now points at'
+                % (where, key, spec))
+        if len(hits) > 1:
+            die('%s: KEY DOES NOT RESOLVE: site %s names the caller "%s", which is %d graph'
+                ' nodes (%s). One record cannot bind a site in more than one of them; make'
+                ' the caller exact' % (where, key, spec, len(hits), ', '.join(hits[:4])))
+        src = hits[0]
+        canon = graph.caller_spec(src)
+        if ordinal is None:
+            if not graph.has_unlocated(src):
+                die('%s: KEY DOES NOT RESOLVE: site %s asks for the unlocated aggregate of'
+                    ' "%s" and gcc gave every indirect call in it a location here, so the'
+                    ' aggregate stands for nothing' % (where, key, spec))
+            canon += UNLOCATED_SUFFIX
+        else:
+            have = len(graph.located(src))
+            if have != count:
+                die('%s: KEY DOES NOT RESOLVE: site %s is one of %d indirect calls in "%s"'
+                    ' and this graph has %d. The ordinals in that body have all moved:'
+                    ' re-read it and re-declare its %d site(s) rather than renumbering this'
+                    ' one' % (where, key, count, spec, have, have))
+            canon += '%s%d/%d' % (ORDINAL_SEP, ordinal, count)
+        if canon in seen:
+            die('%s: site %s is the same call as the record at %s; one site is bound once'
+                % (where, canon, seen[canon]))
+        seen[canon] = where
+        out[canon] = callees
     return out
 
 
@@ -257,6 +333,41 @@ def site_key(loc):
     return os.path.basename(parts[0]) + ':' + parts[1] + ':' + parts[2]
 
 
+def site_order(loc):
+    """Orders one caller's sites: by basename, then line, then column."""
+    parts = loc.rsplit(':', 2)
+    if len(parts) == 3:
+        try:
+            return (0, parts[0], int(parts[1]), int(parts[2]), '')
+        except ValueError:
+            pass
+    return (1, '', 0, 0, loc)
+
+
+def pretty_name(label):
+    """A node label's demangled name, return type and parameter list dropped."""
+    head = label.split('\\n')[0]
+    depth = 0
+    cut = len(head)
+    for i, ch in enumerate(head):
+        if ch == '<':
+            depth += 1
+        elif ch == '>':
+            depth -= 1
+        elif ch == '(' and depth == 0:
+            cut = i
+            break
+    words = head[:cut].split()
+    if not words:
+        return ''
+    return words[-1]
+
+
+def pretty_leaf(name):
+    """A demangled name's own identifier, its namespace and class qualifiers dropped."""
+    return name.rsplit('::', 1)[-1]
+
+
 class Graph(object):
     """Every .ci under the build dir, merged, MINUS the ones the link threw away.
 
@@ -274,12 +385,15 @@ class Graph(object):
         self.size = {}
         self.dynobj = {}
         self.label = {}
+        self.pretty = {}
         self.edges = collections.defaultdict(set)
-        self.sites = collections.defaultdict(set)     # source key -> {site key}
+        self.sites = collections.defaultdict(set)     # source key -> {location key}
         self.definers = collections.defaultdict(set)  # global key -> {defining TU path}
         self.unbound = set()
         self.dropped = []
         self.files = 0
+        self._spec = {}
+        self._located = {}
         found = sorted(glob.glob(os.path.join(ci_dir, '**', '*.ci'), recursive=True))
         if not found:
             die('no .ci file under %s; -fcallgraph-info did not reach this build' % ci_dir)
@@ -317,6 +431,7 @@ class Graph(object):
             self.dropped.append(tu)
             for key in defined[tu]:
                 self.definers[key].discard(tu)
+        self._index_sites()
 
     def dropped_tus(self, defined):
         """The seam fallbacks the link cannot have extracted.
@@ -348,6 +463,7 @@ class Graph(object):
                 key = node_key(m.group(1))
                 label = m.group(2)
                 self.label[key] = label.split('\\n')[0]
+                self.pretty[key] = pretty_name(label)
                 s = re.search(r'(\d+) bytes \(static\)', label)
                 if s:
                     self.size[key] = max(self.size.get(key, 0), int(s.group(1)))
@@ -379,24 +495,108 @@ class Graph(object):
         keys.update(self.size)
         return keys
 
+    def located(self, src):
+        """One caller's located sites, in the order the ordinals rank them."""
+        if src not in self._located:
+            aggregate = src + UNLOCATED_SUFFIX
+            out = [s for s in self.sites.get(src, ()) if s != aggregate]
+            out.sort(key=site_order)
+            self._located[src] = out
+        return self._located[src]
+
+    def has_unlocated(self, src):
+        return (src + UNLOCATED_SUFFIX) in self.sites.get(src, ())
+
+    def caller_spec(self, src):
+        """The shortest spec that names this node and nothing else.
+
+        A MANGLED TAIL IS NOT PORTABLE ENOUGH TO PREFER: the toolchains spell internal linkage
+        differently, so a demangled name is tried before it.
+        """
+        if src in self._spec:
+            return self._spec[src]
+        pretty = self.pretty.get(src, '')
+        cands = []
+        if ':' in src:
+            base, tail = src.split(':', 1)
+            leaf = pretty_leaf(pretty)
+            if leaf:
+                cands.append(base + ':' + leaf)
+            cands.append(base + ':' + tail)
+        else:
+            if not src.startswith('_Z'):
+                cands.append(src)
+            if pretty:
+                cands.append(pretty)
+            cands.append(src)
+        pick = src
+        for c in cands:
+            if self.match(c) == [src]:
+                pick = c
+                break
+        self._spec[src] = pick
+        return pick
+
+    def _index_sites(self):
+        """Canonical site key -> (caller node, location), the location None when unlocated.
+
+        ONE LOCATION CAN SIT UNDER SEVERAL CALLERS, an inlined body carrying the call into each
+        of them, and those are different calls: keying by caller keeps them apart where one
+        file:line:column would merge them into a single charge.
+        """
+        self.site_at = collections.OrderedDict()
+        for src in sorted(self.sites):
+            spec = self.caller_spec(src)
+            loc = self.located(src)
+            for i, s in enumerate(loc, 1):
+                self.site_at['%s%s%d/%d' % (spec, ORDINAL_SEP, i, len(loc))] = (src, s)
+            if self.has_unlocated(src):
+                self.site_at[spec + UNLOCATED_SUFFIX] = (src, None)
+
     def all_sites(self):
-        out = set()
-        for s in self.sites.values():
-            out |= s
-        return out
+        return set(self.site_at)
+
+    def where(self, key):
+        """A site key with the source location beside it."""
+        src, loc = self.site_at[key]
+        if loc is None:
+            return '%s (gcc emitted no location for it)' % key
+        return '%s (%s)' % (key, loc)
+
+    def match(self, spec):
+        """Every graph node one declaration spec names.
+
+        A spec carrying '::' is a demangled name, matched whole; <basename>:<name> is a
+        file-scoped node of that file whose own identifier, or whose whole mangled tail, is
+        exactly <name>; a bare spec is a symbol, a file-scoped node whose tail is exactly
+        that, or a demangled name.
+
+        EVERY MATCH IS EXACT, NEVER A SUBSTRING. A substring would let a rename that merely
+        extends a name keep resolving, and the record would then bind a call in a body nobody
+        checked instead of being refused.
+        """
+        keys = self.universe()
+        if '::' in spec:
+            return sorted(k for k in keys if self.pretty.get(k) == spec)
+        if ':' in spec:
+            base, name = spec.rsplit(':', 1)
+            hits = []
+            for k in keys:
+                if not k.startswith(base + ':'):
+                    continue
+                tail = k.split(':', 1)[1]
+                if name == tail or name == pretty_leaf(self.pretty.get(k, '')):
+                    hits.append(k)
+            return sorted(hits)
+        return sorted(k for k in keys
+                      if k == spec or k.endswith(':' + spec) or self.pretty.get(k) == spec)
 
     def resolve(self, spec):
         """One graph key, or None. Ambiguity is refused, never guessed at."""
-        keys = self.universe()
-        if ':' in spec:
-            base, needle = spec.rsplit(':', 1)
-            hits = [k for k in keys
-                    if k.startswith(base + ':') and needle in k.split(':', 1)[1]]
-        else:
-            hits = [k for k in keys if k == spec or k.endswith(':' + spec)]
+        hits = self.match(spec)
         if len(hits) > 1:
             die('"%s" matches %d graph nodes (%s); make the declaration exact'
-                % (spec, len(hits), ', '.join(sorted(hits)[:4])))
+                % (spec, len(hits), ', '.join(hits[:4])))
         if not hits:
             return None
         return hits[0]
@@ -408,33 +608,33 @@ class Graph(object):
         site. An unbound site becomes a pseudo-node with no out-edge, recorded in
         self.unbound, so the reachability walk can still see it and refuse it.
         """
-        for src in sorted(self.sites):
-            for site in sorted(self.sites[src]):
-                pseudo = SITE_PREFIX + site
-                self.size[pseudo] = 0
-                self.label[pseudo] = 'indirect call at ' + site
-                self.edges[src].add(pseudo)
-                if site not in bindings:
-                    self.unbound.add(pseudo)
-                    continue
-                resolved = 0
-                for spec, optional in bindings[site]:
-                    key = self.resolve(spec)
-                    if key is None:
-                        if optional:
-                            continue
-                        die('binding for %s names callee "%s", which is not in the graph;'
-                            ' a stale binding rots like a stale margin' % (site, spec))
-                    self.edges[pseudo].add(key)
-                    resolved += 1
-                # An explicit NONE is [] and charges 0 by declaration; a non-empty list whose
-                # callees all turn out optional and absent would charge 0 silently.
-                if bindings[site] and resolved == 0:
-                    die('site %s declares %d callee(s) and every one is optional and absent'
-                        ' from this graph, so the site would charge 0 with nothing measured.'
-                        ' Declare it NONE with a reason if that is the honest answer, or bind'
-                        ' the callee this image really reaches'
-                        % (site, len(bindings[site])))
+        for key, (src, _loc) in self.site_at.items():
+            pseudo = SITE_PREFIX + key
+            self.size[pseudo] = 0
+            self.label[pseudo] = 'indirect call at ' + self.where(key)
+            self.edges[src].add(pseudo)
+            if key not in bindings:
+                self.unbound.add(pseudo)
+                continue
+            resolved = 0
+            for spec, optional in bindings[key]:
+                target = self.resolve(spec)
+                if target is None:
+                    if optional:
+                        continue
+                    die('ABSENT CALLEE: the binding for %s names callee "%s", which is not in'
+                        ' the graph; a stale binding rots like a stale margin'
+                        % (self.where(key), spec))
+                self.edges[pseudo].add(target)
+                resolved += 1
+            # An explicit NONE is [] and charges 0 by declaration; a non-empty list whose
+            # callees all turn out optional and absent would charge 0 silently.
+            if bindings[key] and resolved == 0:
+                die('site %s declares %d callee(s) and every one is optional and absent'
+                    ' from this graph, so the site would charge 0 with nothing measured.'
+                    ' Declare it NONE with a reason if that is the honest answer, or bind'
+                    ' the callee this image really reaches'
+                    % (self.where(key), len(bindings[key])))
 
 
 # --- longest weighted path -----------------------------------------------------
@@ -616,12 +816,8 @@ def run(argv):
                 % (cls, opt['roots'], arch))
 
     graph = Graph(opt['ci-dir'])
-    bindings = read_bindings(opt['indirect'], arch, preset)
     present = graph.all_sites()
-    for site in bindings:
-        if site not in present:
-            die('binding for site %s is stale: no __indirect_call edge in the graph'
-                ' carries that file:line:col' % site)
+    bindings = resolve_bindings(graph, read_bindings(opt['indirect'], arch, preset))
     graph.bind_indirect(bindings)
 
     report = []
@@ -757,7 +953,7 @@ def run(argv):
         fails.append(
             'UNBOUND INDIRECT SITE: %s is reachable from a trap root and is not in %s.'
             ' Until it is bound, every figure above is a lower bound and not a bound.'
-            % (site, opt['indirect']))
+            % (graph.where(site), opt['indirect']))
 
     for key in sorted(k for k in graph.dynobj if k in reach):
         fails.append(

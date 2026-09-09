@@ -278,7 +278,7 @@ void arch_timer_arm(uint64_t deadline_ns);
 void arch_timer_disarm(void);
 
 // Running core clock in Hz (the CMSIS SystemCoreClock the chip tracks at PLL bring-up). 0 where
-// the backend has no silicon core clock (the host sim).
+// the backend has no silicon core clock (the host sim, a QEMU virt guest).
 uint32_t arch_cpu_clock_hz(void);
 
 // Read-only branch-clock oracle: the peripheral branch clock in Hz feeding the register block

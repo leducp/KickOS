@@ -103,8 +103,8 @@
    not missing a per-level 4.
 
    The winning chain runs through an INDIRECT call, the SchedPolicy hook table:
-   tests/static/trap_redzone_indirect.txt binds each such site to the one slot its source line
-   calls, and the gate refuses to answer while a reachable site is unbound.
+   tests/static/trap_redzone_indirect.txt binds each such site to the one slot that call
+   reaches, and the gate refuses to answer while a reachable site is unbound.
 
    ONE RESIDUAL, picopi's alone: arch_reboot calls the RP2040 bootrom through two pointers
    read out of ROM, which no call graph can follow and the datasheet gives no stack figure

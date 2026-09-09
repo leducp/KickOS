@@ -21,88 +21,18 @@ import sys
 
 import kconfiglib
 
-# Which knobs reach C is a RULE, not a list: every numeric symbol named KICKOS_*, in
-# declaration order. With a hand-maintained list a knob can be declared, set in a
-# defconfig, resolved into .config, and then silently never reach the compile.
-# Over-emitting is harmless while a knob still arrives as a -D, since the header's define
-# is #ifndef-guarded and the -D wins; under-emitting is a defect. The names are the ones
-# the tree uses, not CONFIG_-prefixed.
-C_KNOB_PREFIX = "KICKOS_"
+# Which knobs cross either boundary is a RULE, not a list: every symbol named KICKOS_*, in
+# declaration order. The names are the ones the tree uses, not CONFIG_-prefixed.
+#
+# The HEADER takes the numeric ones only. A bool emitted there as 0/1 would turn on every
+# `#if defined(KICKOS_ENABLE_SELFTEST)` site, that knob being defined only when it is on,
+# so a knob C reads with `#if` is declared `int` with `range 0 1`.
+KNOB_PREFIX = "KICKOS_"
 C_KNOB_TYPES = (kconfiglib.INT, kconfiglib.HEX)
 
-# What CMake reads. A value CMake can derive for itself (the console 0/1 pair from the
-# console string) is deliberately absent, so no fact is computed twice.
-CMAKE_STRING_KNOBS = [
-    "KICKOS_BOARD",
-    "KICKOS_ARCH",
-    "KICKOS_ARCH_FAMILY",
-    "KICKOS_CHIP",
-    "KICKOS_CONSOLE",
-    "KICKOS_TELEMETRY",
-    "KICKOS_SERVICE_LIST",
-    "KICKOS_BOARD_PINMAP",
-    "KICKOS_AMP_NODE_CORES",
-    "KICKOS_AMP_PORTS",
-]
-# The provisioning integers CMake itself has to do arithmetic on: the capability-table
-# sum (cmake/cap_table.cmake) and the boot-arena model (cmake/boot_arena.cmake). A knob
-# CMake computes with belongs here, and so does one CMake REFUSES on: the core count and the
-# multicore model gate the shared-kernel predicate in CMakeLists.txt, which cannot read a knob
-# that stops at the generated header, and the AMP posture reaches an APP TU through an
-# add_compile_definitions there. A knob only C reads does not.
-CMAKE_INT_KNOBS = [
-    "KICKOS_NUM_CORES",
-    "KICKOS_MULTICORE_MODEL_SHARED",
-    "KICKOS_KERNEL_CORES",
-    "KICKOS_ISOLATED_CORES",
-    "KICKOS_AMP_NODE",
-    "KICKOS_AMP_OWN_IMAGE",
-    "KICKOS_AMP_NODES",
-    "KICKOS_AMP_NODE_ID",
-    "KICKOS_AMP_PARTITION_BASE",
-    "KICKOS_AMP_NODE_SHARE",
-    "KICKOS_AMP_SHARED_SIZE",
-    # A symbol absent from this list resolves in .config and reaches CMake as EMPTY, silently.
-    # Where the value feeds a preprocessed linker script the symptom is a syntax error inside
-    # generated output naming neither the symbol nor this list, the expansion having collapsed
-    # to "ORIGIN = (() + 0 * ())". Add a symbol here in the same edit that adds it to Kconfig.
-    # The stackdepth gate registers exactly where the panic reporter prints the line it
-    # reads, so CMake refuses on this one.
-    "KICKOS_KSTACK_REPORT",
-    "KICKOS_AMP_TEXT_BASE",
-    "KICKOS_AMP_TEXT_SHARE",
-    "KICKOS_AMP_PARTITION_CORES",
-    "KICKOS_AMP_DIAG_TAG",
-    "KICKOS_DOORBELL_CORES",
-    "KICKOS_HAVE_MPU",
-    "KICKOS_HAVE_ASPACE",
-    "KICKOS_KERNEL_STACKS",
-    "KICKOS_TLS_FROM_SP",
-    "KICKOS_ARM64_GIC_VERSION",
-    "KICKOS_TRACE_CLOCK_DECLARED",
-    "KICKOS_MIN_STACK_SIZE",
-    "KICKOS_USER_HEAP_SIZE",
-    "KICKOS_MAX_THREADS",
-    "KICKOS_MAX_SPAWN_GRANTS",
-    "KICKOS_CAP_TABLE_SUPPLY",
-    "KICKOS_MAX_ENDPOINTS",
-    "KICKOS_IDLE_STACK_SIZE",
-    "KICKOS_ROOT_STACK_SIZE",
-    "KICKOS_USER_STACK_SIZE",
-]
-# CMake variable name -> Kconfig symbol. These reach C through an unconditional
-# add_compile_definitions rather than through the #ifndef header, so CMake must take
-# them from here: option() would otherwise win and a defconfig setting one would be
-# describing a build nobody made.
-CMAKE_BOOL_KNOBS = {
-    "KICKOS_DEBUG": "KICKOS_DEBUG",
-    "KICKOS_ENABLE_SELFTEST": "KICKOS_ENABLE_SELFTEST",
-    "KICKOS_BENCH": "KICKOS_BENCH",
-    "KICKOS_SHUTDOWN_TO_BOOTLOADER": "KICKOS_SHUTDOWN_TO_BOOTLOADER",
-    "KICKOS_MULTI_INSTANCE": "KICKOS_MULTI_INSTANCE",
-    "KICKOS_TLS": "KICKOS_TLS",
-    "CONFIG_SCHED_PERIODIC_TICK": "SCHED_PERIODIC_TICK",
-}
+# CMake's own false constants, matching `if(<variable>)`: anything else is true, an arbitrary
+# word included. This is how a candidate's value becomes y or n for a bool symbol.
+CMAKE_FALSE = ("", "0", "OFF", "NO", "FALSE", "N", "IGNORE", "NOTFOUND")
 
 
 def sym_int(kconf, name):
@@ -113,13 +43,6 @@ def sym_int(kconf, name):
     if value == "":
         return None
     return int(value, 0)
-
-
-def sym_bool(kconf, name):
-    sym = kconf.syms.get(name)
-    if sym is None:
-        return False
-    return sym.str_value == "y"
 
 
 def sym_str(kconf, name):
@@ -150,7 +73,7 @@ def write_board_config(path, kconf):
     # would otherwise be a -Werror redefinition. The guard goes inert when that -D
     # is deleted, which must happen in the same step the knob lands here.
     for sym in kconf.unique_defined_syms:
-        if not sym.name.startswith(C_KNOB_PREFIX):
+        if not sym.name.startswith(KNOB_PREFIX):
             continue
         if sym.type not in C_KNOB_TYPES:
             continue
@@ -181,23 +104,54 @@ def cmake_escape(value):
     return value
 
 
+def cmake_knob(sym):
+    if sym.type == kconfiglib.STRING:
+        return '"' + cmake_escape(sym.str_value) + '"'
+    if sym.type in C_KNOB_TYPES:
+        # Empty when the dependencies are unmet, and CMake has no #ifndef fallback for it
+        # the way the header has: an unset variable and an empty one read alike in if(),
+        # math() refuses an empty expression, and add_compile_definitions(X=${X}) would
+        # emit a bare `X=` that satisfies #if defined at every site. Zero is what every
+        # reader here already spells "not on this board".
+        if sym.str_value == "":
+            return "0"
+        # Decimal even for a hex knob, so a value CMake compares with EQUAL or feeds to
+        # math() carries no base prefix.
+        return str(int(sym.str_value, 0))
+    if sym.str_value == "y":
+        return "ON"
+    return "OFF"
+
+
+def prompted(sym):
+    for node in sym.nodes:
+        if node.prompt:
+            return True
+    return False
+
+
 def write_cmake_fragment(path, kconf, sources, base):
     lines = ["# GENERATED by tools/kconfig/genconfig.py. Edits are overwritten.",
              # Which file this resolution was based on: a live .config outranks the
              # defconfig, so an in-place defconfig edit does not reach an existing build.
              'set(KICKOS_KCONFIG_BASE "' + cmake_escape(base) + '")']
-    for name in CMAKE_STRING_KNOBS:
-        lines.append('set(' + name + ' "' + cmake_escape(sym_str(kconf, name)) + '")')
-    for name in CMAKE_INT_KNOBS:
-        value = sym_int(kconf, name)
-        if value is None:
-            value = 0
-        lines.append("set(" + name + " " + str(value) + ")")
-    for name in sorted(CMAKE_BOOL_KNOBS):
-        value = "OFF"
-        if sym_bool(kconf, CMAKE_BOOL_KNOBS[name]):
-            value = "ON"
-        lines.append("set(" + name + " " + value + ")")
+    # Beside the values, which of the names a -D can move, split by request syntax. The AMP
+    # peer seed reads both: it hands a peer every knob this node resolved, and a bool ABSENT
+    # from a .config is off rather than unstated, so one loop cannot seed both.
+    values = []
+    flags = []
+    for sym in kconf.unique_defined_syms:
+        if not sym.name.startswith(KNOB_PREFIX):
+            continue
+        lines.append("set(" + sym.name + " " + cmake_knob(sym) + ")")
+        if not prompted(sym) or sym.choice is not None:
+            continue
+        if sym.type in (kconfiglib.BOOL, kconfiglib.TRISTATE):
+            flags.append(sym.name)
+        else:
+            values.append(sym.name)
+    lines.append('set(KICKOS_KCONFIG_PROMPTED_VALUE "' + ";".join(values) + '")')
+    lines.append('set(KICKOS_KCONFIG_PROMPTED_FLAG "' + ";".join(flags) + '")')
     # Every declaration file that was read, absolute. CMake re-runs configure when one
     # changes and takes the list from here, so it never learns which Kconfig files
     # exist. The override fragment is excluded: it lives in the build tree and is
@@ -223,6 +177,33 @@ def requested_assignments(paths):
                 name, value = line[len("CONFIG_"):].split("=", 1)
                 wanted.append((name, value))
     return wanted
+
+
+def candidate_request(kconf, name, value):
+    # One of the two is empty: a CONFIG_ line the loader can take, or why no request could
+    # be built from this name.
+    sym = kconf.syms.get(name)
+    if sym is None:
+        return ("", "no such symbol")
+    if not prompted(sym):
+        return ("", "no prompt, so nothing can set it: it is derived, not configuration")
+    if sym.choice is not None:
+        return ("", "a member of a choice: a variant defconfig selects one, and no -D of a "
+                    "member's own name reaches it")
+    if sym.type == kconfiglib.STRING:
+        # kconfiglib's own quoting, which cares about a backslash and a quote and nothing
+        # else. check_assignments strips the quotes back off to compare.
+        quoted = value.replace("\\", "\\\\").replace('"', '\\"')
+        return ("CONFIG_" + name + '="' + quoted + '"', "")
+    if sym.type in C_KNOB_TYPES:
+        return ("CONFIG_" + name + "=" + value, "")
+    # BOTH DIRECTIONS: a candidate resolved off must travel as `n`, or a defconfig that
+    # enables something outranks a command line asking to turn it off.
+    flag = "y"
+    upper = value.upper()
+    if upper in CMAKE_FALSE or upper.endswith("-NOTFOUND"):
+        flag = "n"
+    return ("CONFIG_" + name + "=" + flag, "")
 
 
 def check_assignments(kconf, wanted):
@@ -256,11 +237,7 @@ def check_assignments(kconf, wanted):
         got = sym.str_value
         if got == value.strip('"'):
             continue
-        prompted = False
-        for node in sym.nodes:
-            if node.prompt:
-                prompted = True
-        if not prompted:
+        if not prompted(sym):
             # kconfiglib drops a user value on a promptless symbol and says nothing, so
             # without this arm the refusal below would blame the symbol's dependency,
             # which for every promptless symbol in this tree is `y`.
@@ -283,10 +260,10 @@ def check_assignments(kconf, wanted):
 def main(argv):
     if len(argv) < 4:
         sys.stderr.write("usage: genconfig.py <srcdir> <defconfig> <gendir> "
-                         "[CONFIG_X=y ...]\n")
+                         "[CONFIG_X=y | offer:X=v | assert:X=v ...]\n")
         return 2
     srcdir, defconfig, gendir = argv[1], argv[2], argv[3]
-    overrides = argv[4:]
+    requests = argv[4:]
 
     defconfig = os.path.abspath(defconfig)
     gendir = os.path.abspath(gendir)
@@ -321,16 +298,75 @@ def main(argv):
                 "delete that .config to reload from the new variant.\n")
             return 1
     kconf = kconfiglib.Kconfig("Kconfig", warn_to_stderr=True)
+
+    # THREE REQUEST SHAPES, and only the first is stated in Kconfig's own syntax:
+    #
+    #   CONFIG_<name>=<value>   a request, honoured or refused as written
+    #   offer:<NAME>=<value>    a CMake variable whose name MIGHT be a knob
+    #   assert:<NAME>=<value>   the same, and only a command line or a preset can have
+    #                           made it: it is an UNINITIALIZED cache entry, so no
+    #                           declaration in the build owns the name
+    #
+    # CMake cannot tell a knob from its own variables, the KICKOS_* space also carrying the
+    # board identity, the build-graph switches and the per-board link knobs, so it offers
+    # every one of them and the declarations decide here. An offer the declarations cannot
+    # take is DROPPED, so a promptless symbol stays unreachable by any -D. An ASSERTED one
+    # naming a symbol no request can reach is refused instead, since nothing but the request
+    # itself put that name there.
+    overrides = []
+    for request in requests:
+        # The shape FIRST, and a nameless one is refused rather than dropped: a request the
+        # loader and the read-back check both skip would otherwise look honoured.
+        shape = ""
+        for prefix in ("CONFIG_", "offer:", "assert:"):
+            if request.startswith(prefix) and "=" in request:
+                shape = prefix
+        name = ""
+        value = ""
+        if shape != "":
+            name, value = request[len(shape):].split("=", 1)
+        if name == "":
+            sys.stderr.write("REFUSED request '" + request + "': not of the form "
+                             "CONFIG_<name>=<value>, offer:<NAME>=<value> or "
+                             "assert:<NAME>=<value>\n")
+            return 1
+        if shape == "CONFIG_":
+            overrides.append(request)
+            continue
+        built, why = candidate_request(kconf, name, value)
+        if built != "":
+            overrides.append(built)
+            continue
+        if shape == "offer:":
+            continue
+        if why == "no such symbol":
+            # The KICKOS_ namespace is wider than Kconfig: a build-graph switch or a
+            # per-board link knob is declared in CMake alone and appears in no .config.
+            # Dropping it here leaves CMake's own "manually-specified variables were not
+            # used" notice to report a name that is neither.
+            continue
+        sys.stderr.write("REFUSED -D" + name + "=" + value + ": " + why + "\n")
+        return 1
+
     print(kconf.load_config(base))
 
-    # Every symbol a defconfig or an override NAMED that the tree does not declare.
-    # kconfiglib does not warn on one by default (warn_assign_undef is off), and a
-    # hand-edited live .config is not read back as a set of requests, so a typo there
-    # would otherwise land nowhere at all and say nothing.
+    # Every symbol the loaded BASE named that the tree does not declare; the override
+    # fragment is loaded further down, so nothing here came from a -D. kconfiglib does not
+    # warn on one by default (warn_assign_undef is off), and a hand-edited live .config is
+    # not read back as a set of requests, so a typo there would otherwise land nowhere at
+    # all and say nothing.
     if kconf.missing_syms:
         for name, value in kconf.missing_syms:
             sys.stderr.write("REFUSED CONFIG_" + name + "=" + value
                              + ": no such symbol\n")
+        # ONLY where the base was the live state: a defconfig naming a symbol the tree does
+        # not declare is an edit to fix, while a .config carrying one is a directory the tree
+        # moved past.
+        if base != defconfig:
+            sys.stderr.write(
+                "The live " + live + " is the state this build is based on, and the tree "
+                "no longer declares that symbol. Use a fresh build directory, or delete "
+                "that .config to reload from " + defconfig + ".\n")
         return 1
 
     # Only the DEFCONFIG's lines are read back as requests. A live .config is state, not
@@ -340,21 +376,12 @@ def main(argv):
     if base == defconfig:
         sources.append(defconfig)
     if overrides:
-        # An override that is not CONFIG_<name>=<value> is dropped by the loader AND
-        # by the read-back check, which together would make a typo'd knob look
-        # honoured. Refuse the shape here, where it is the caller's own argument.
+        # The loader keeps the LAST assignment of a symbol, so a name given twice makes
+        # which request is honoured depend on argument order. The warning that would say so
+        # is turned off below; this replaces it.
         seen = {}
         for override in overrides:
-            name = ""
-            if override.startswith("CONFIG_") and "=" in override:
-                name = override[len("CONFIG_"):].split("=", 1)[0]
-            if name == "":
-                sys.stderr.write("REFUSED override '" + override + "': not of the "
-                                 "form CONFIG_<name>=<value>\n")
-                return 1
-            # The loader keeps the LAST assignment of a symbol, so a name given twice makes
-            # which request is honoured depend on argument order. The warning that would say
-            # so is turned off below; this replaces it.
+            name = override[len("CONFIG_"):].split("=", 1)[0]
             if name in seen:
                 sys.stderr.write("REFUSED override '" + override + "': CONFIG_" + name
                                  + " is requested twice, already as '" + seen[name]

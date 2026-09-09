@@ -268,12 +268,7 @@ def run(argv):
               % (sym, key, len(callers)))
 
     # --- indirect edges ---------------------------------------------------------
-    bindings = tz.read_bindings(opt['indirect'], arch, preset)
-    present = graph.all_sites()
-    for site in bindings:
-        if site not in present:
-            die('binding for site %s is stale: no __indirect_call edge in the graph carries'
-                ' that file:line:column' % site)
+    bindings = tz.resolve_bindings(graph, tz.read_bindings(opt['indirect'], arch, preset))
     graph.bind_indirect(bindings)
 
     walk = Reach(graph, root_keys)
@@ -356,7 +351,7 @@ def run(argv):
         fails.append(
             'UNBOUND INDIRECT SITE: %s is reachable from the console route and is not in %s.'
             ' Until it is bound, the walk stops there and the answer is a lower bound and not'
-            ' a bound.' % (site, opt['indirect']))
+            ' a bound.' % (graph.where(site), opt['indirect']))
 
     reached_opaque = []
     for key in sorted(reach):

@@ -11,4 +11,8 @@
 /* XMC4800: IRQ0..IRQ111 */
 #define KICKOS_MAX_IRQ 112
 
+/* DWT CYCCNT is unreliable on this part (chip_xmc4800.cc), and a glitched read can only
+ * inflate a delta. The bench reads MIN here where every other part reports a distribution. */
+#define KICKOS_CHIP_CYCCNT_GLITCHES 1
+
 #endif /* KICKOS_CHIP_LIMITS_H */

@@ -148,8 +148,8 @@
  * already terminating.
  *
  * The winning chain runs through an INDIRECT call, the SchedPolicy hook table:
- * tests/static/trap_redzone_indirect.txt binds each such site to the one slot its source line
- * calls, and the gate refuses to answer while a reachable site is unbound. */
+ * tests/static/trap_redzone_indirect.txt binds each such site to the one slot that call
+ * reaches, and the gate refuses to answer while a reachable site is unbound. */
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV 0
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC 448
 

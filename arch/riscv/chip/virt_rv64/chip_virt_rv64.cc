@@ -64,8 +64,8 @@ extern "C"
     // through the kernel's own alias of the same frames instead.
     extern uintptr_t __kickos_appbss_start[], __kickos_appbss_end[];
 
-    // Nominal core clock (Hz). Matches the `virt` mtime rate.
-    uint32_t SystemCoreClock = 10000000u;
+    // No core clock on this machine: TIME_HZ below is the CLINT rate, not a core rate.
+    uint32_t SystemCoreClock = 0;
 }
 
 namespace

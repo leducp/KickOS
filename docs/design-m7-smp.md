@@ -212,9 +212,13 @@ handoff cost is counted.
 
 Three things about that number bear on the choices here rather than merely sizing them:
 
-- **It is not an MPU artifact.** The PMP reprogram is 443 cycles per switch and both
-  switches are inside the lock, so it is 886 of the 3651 locked cycles. Delete it
-  entirely and the fraction is still 46 percent, bounding 1.37x.
+- **It is not an MPU artifact.** Per-switch protection is 94 cycles (`MPU_APPLY` 19 plus
+  `MPU_COMMIT` 75, the same board after the PMP precompute, `design-m5-ipc-fastpath.md`
+  section 8.5), 188 of the round trip's locked cycles across both switches: too small a share
+  to be what carries the locked fraction, so deleting it entirely would not rescue that
+  fraction either. Section 3.0.4's own removal arithmetic priced this term at 443 a switch
+  and derived `f = 0.457` and 1.37x from it; both are superseded and no replacement is stated
+  here, the same as `roadmap.md` rules for this figure. Re-deriving the bound is P0's.
 - **The round trip has THREE locked legs**, not the two a call-and-reply reading
   suggests: the server's own `kos_recv` park holds `IrqLock` across a context switch and
   is one of the two switches per trip. A big lock serialises that leg too.

@@ -598,8 +598,10 @@ a declared root that resolves to nothing and would therefore measure zero and al
 Any of them and the gate fails, naming what it could not see. On this fleet the winning
 chain genuinely runs through an indirect call -- a scheduler policy hook table -- and the
 fix is not to ignore it: `tests/static/trap_redzone_indirect.txt` binds each such site to
-the slot its source line actually calls, and the gate stays refusing while any reachable
-site is unbound, or while a binding names a callee the graph no longer contains. A static
+the slot that call actually reaches, naming the site by its enclosing function and an
+ordinal within it, and the gate stays refusing while any reachable site is unbound, while
+a binding names a callee the graph no longer contains, or while a key no longer resolves
+to a call at all. Those three are different failures and it says which. A static
 bound checker that produces a plausible number when it cannot see the whole graph is worse
 than no checker, because it launders a guess into a guarantee. That is also why the gate
 scrapes the reserved figures out of the arch header as plain integers rather than

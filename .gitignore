@@ -5,6 +5,11 @@
 /install/
 cmake-build-*/
 
+# Conan's GTest generator output, for the host unit layer. Kept in the project rather than under
+# /var/tmp: a missing generator turns every unit test OFF and the sim suite still reports 100%,
+# so losing it to a tmp sweep is a silent loss of most of the corpus.
+/kickos-conan/
+
 # CMake artifacts
 CMakeCache.txt
 CMakeFiles/

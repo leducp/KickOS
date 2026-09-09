@@ -30,8 +30,17 @@ because they are written here and read in review.
 
 ## Language
 
+**These are the C and C++ rules.** A tracked file in another language follows that language's own
+conventions rather than these, so the ternary ban below reads on the C family and the gate that
+holds it reads the C family only. What does not vary by language is the **Comments** discipline
+further down: it binds every tracked file.
+
 - **No ternary `?:`.** Use `if`/`else`, an early return, or a variable set in a branch. This holds
-  for plural selection too: set a `char const*` in an `if`.
+  for plural selection too: set a `char const*` in an `if`. **gated**
+  `tests/static/check_ternary.sh` reads the residue of `tests/lib/strip_comments.awk` and reports
+  a `?` in it, which is what catches a ternary split over several lines and what leaves `::`, a
+  label and a bitfield unreachable rather than merely unlisted. Its header names what a scan of
+  source text cannot reach.
 - **Spelled logical operators**: `and`, `or`, `not`. `!=` stays, and a `#if` directive keeps `&&`.
   The rule holds in a header that must also compile as C, which puts `#include <iso646.h>` in its
   include block, **unconditionally**: the three are C++ keywords but only macros from that header
@@ -131,7 +140,7 @@ because they are written here and read in review.
 - **ASCII only**, in every tracked file. A comma or a single `-` for an em dash, `->` not an arrow,
   straight quotes, "section" spelled out. **gated**
 - **SPDX header** within the first five lines, with the copyright line beside it. **gated**
-- No trailing whitespace, no CRLF, a final newline.
+- No trailing whitespace, no CRLF, a final newline. **gated**
 - `set -u` in a gate script.
 
 ## Comments
@@ -139,6 +148,9 @@ because they are written here and read in review.
 A comment earns its place by warning of something a reader would otherwise undo: a hidden
 constraint, a subtle invariant, a specific workaround, behaviour that would surprise. It does not
 restate the code, explain a naming or wrapper choice, or recount how the code came to be that way.
+
+**This section binds every tracked language**, unlike the Layout and Language rules above, which are
+the C family's. A Python tool or a shell gate writes its comments under exactly these rules.
 
 - **No narration.** No dates, no "measured on", no "this used to", no war stories. Git holds that.
 - **No ` -- ` in software**, in a comment, in a string literal a user reads, or in a commit

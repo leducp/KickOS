@@ -18,10 +18,16 @@ namespace kickos
     // A bracket's accumulator call runs after its own closing read: invisible to itself, but
     // charged to any enclosing span. Hence two corrections, and neither is optional.
     //   PH_NULL is an empty bracket pricing the two counter reads: a LEAF is (leaf - PH_NULL).
-    //   PH_NEST is that bracket inside an enclosing span, pricing one complete nested bracket
-    //   including its accumulator call: a COMPOSITE over k brackets nested at any depth is
-    //   (composite - k * PH_NEST). PH_NULL there understates the charge by a whole accumulator
-    //   call, 1 cycle against about 57 on esp32-wroom.
+    //   PH_NEST is that SAME empty bracket sited inside an enclosing span, so it carries two
+    //   things: one complete nested bracket, accumulator call included, which PH_NULL
+    //   understates by that whole call (1 cycle against about 57 on esp32-wroom), AND the
+    //   enclosing span's own PH_NULL residue. So one nested bracket costs
+    //   (PH_NEST - PH_NULL), and a COMPOSITE over k of them at any depth is
+    //   (composite - PH_NULL - k * (PH_NEST - PH_NULL)). Subtracting k * PH_NEST instead
+    //   removes the composite's single residue k times.
+    //   k IS PER SAMPLE, NOT PER ROW: a conditional arm adds or drops a bracket, an early
+    //   return skips its own SPAN and every SPAN under it, and where arch_switch swaps inline
+    //   k is unbounded. One row's min and its max can carry different k.
     enum BenchPhase : uint32_t
     {
         PH_NULL = 0,
@@ -146,7 +152,10 @@ namespace kickos
     uint32_t bench_switch_print(); // returns the switch sample count
     void bench_phase_print();
 
-    uint32_t bench_core_hz();
+    // Rate of the counter bench_cyccnt() reads, which is NOT always the core clock: a part
+    // whose counter runs off something else states KICKOS_CHIP_CYCCNT_HZ. 0 means no rate
+    // converts a reading into time, and a caller must then report cycles alone.
+    uint32_t bench_cyccnt_hz();
     void bench_irq_setup(int line);
     uint32_t bench_irq_once(int line);
     uint32_t bench_irq_masked_once(int line, uint32_t span_bytes);

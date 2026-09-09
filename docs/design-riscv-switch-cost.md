@@ -2,13 +2,13 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # RISC-V context-switch cost: Zcmp vs the cooperative fast-path
 
-> **Status: EXPLORATORY** -- an analysis spike; no `switch.S` or kernel change. Both levers are
-> M8 and unscheduled (`../roadmap.md`).
+> **Status: EXPLORATORY** -- an analysis spike. Neither lever is implemented and both are
+> unscheduled (`../roadmap.md`); the bench prerequisite the measurement needs is in the tree.
 
-The verdict, the ~3.5x ratio and the soak evidence behind it are in `../roadmap.md` ("RISC-V
-context-switch cost") and `../TODO.md` (M8 optimizations): Option A, the software
+The verdict and the soak evidence behind it are in `../roadmap.md` ("RISC-V
+context-switch cost") and `../TODO.md` (the optimisation items): Option A, the software
 cooperative fast-path, is the real and portable win; Option B, Zcmp, is a small Hazard3-only
-follow-on. What only lives here is the Zcmp availability fact and the bench-bracket defect.
+follow-on. What only lives here is the Zcmp availability fact.
 
 ## Extension availability (verified)
 
@@ -27,16 +27,25 @@ all. They fit exactly one thing, a cooperative switch frame, which does not exis
 lands. The mnemonics also fault on silicon without Zcmp, so the gate must be a board/CPU
 knob reflecting the silicon, not a toolchain capability.
 
-## Prerequisite: fix the bench bracket, then measure
+## The bench bracket spans the save and restore
 
-Any go/no-go number needs a bracket that spans the register save+restore. Today the
-rv32 `KICKOS_BENCH` bracket stamps `g_bench_sw_start` at the TOP of `.Lswitch` (after
-`trap_entry` already did the 30 stores) and ends BEFORE `.Lrestore` does the 30 loads
-(switch.S bench blocks; kernel/bench/bench.cc). So it excludes the entire save/restore
--- the dominant RISC-V cost -- and is not comparable to the armv7m bracket, which does
-span its `stmdb`/`ldmia`. Fix: move the rv32 start stamp to the first instruction of
-the save path and the end stamp to the end of the restore. Until that lands, no measured
-A-vs-A+B delta means anything.
+The instrument a go/no-go number needs is in place. The rv32 `KICKOS_BENCH` SWITCH window opens
+in `trap_entry` above the register save and closes at the end of the restore, so it prices the
+same software save and restore the armv7m window does around its `stmdb`/`ldmia`
+(`arch/riscv/rv32imac/switch.S` bench blocks, `kernel/bench/bench.cc`). The deferred MPU commit
+and the telemetry hook sit between the two halves and stay outside the window, as they do on
+armv7m; the MPU commit owns a phase row of its own instead.
+
+**A figure is comparable only against another taken on the same bracket.** An rv32 switch figure
+that priced a narrower span is not a baseline this one can be subtracted from, because the two
+measure different spans and a difference between them is not a cost. Both sides of any A-vs-A+B
+comparison have to be taken on this bracket, and a number quoted anywhere has to name the span it
+covers.
+
+The window closes a few instructions before `mret`, where no register is left to host a call, so
+the two halves are banked at the NEXT switch. A report therefore names one sample fewer than the
+switches it observed, and the un-banked one is dropped at reset rather than leaking into the next
+measurement window.
 
 ## Where the exact contracts live
 

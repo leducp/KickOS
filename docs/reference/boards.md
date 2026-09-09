@@ -104,9 +104,9 @@ code wins, then this file.
 | `qemu-riscv` | QEMU virt / RV32IMAC | -- | semihosting | `ctest --preset qemu-riscv` | [x] CI (first RISC-V) |
 | `qemu-arm64` | QEMU virt / Cortex-A53 (AArch64) | -- | PL011 UART at `0x09000000` | `ctest --preset qemu-arm64` | [x] CI (first 64-bit ISA, and **emulator only** -- there is no A-profile silicon on this bench; see *Per-board caveats* below) |
 | `imx8mp-evk` | QEMU imx8mp-evk / NXP i.MX 8M Plus, quad Cortex-A53 | -- | i.MX UART1 at `0x30860000` | `ctest --preset imx8mp-evk` | (!) **emulated only, and not in CI**: witnessed 2026-09-02 under `qemu-system-aarch64` 11.1.0 at 48 of 48. The SECOND armv8a part and the first whose interrupt controller is the die's rather than a machine option. **ONE CORE OF THE FOUR**: the machine models no way to release a secondary -- see *Per-board caveats* below |
-| `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and not in CI**: witnessed 2026-08-29 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` at 52 of 52. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
-| `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and not in CI**: witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
-| `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and not in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip selects no memory family, so the map is flat. See *Per-board caveats* below |
+| `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` at 52 of 52. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
+| `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
+| `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip selects no memory family, so the map is flat. See *Per-board caveats* below |
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] **the selftest is THREE images on the enforcing variants** (see *Four boards run the selftest as THREE images*), full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32 / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
 | `rx72m` | RX72M / RXv3 @240 MHz | P80 (LED6, active-low) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **Fourth board with an UNPRIVILEGED root, and the only one on the RX MPU** (2026-07-28) -- see *Unprivileged root* below. Re-witnessed 2026-07-30 at a clean `270b6fa`, closing the owed stage-4 `rxdrv` mux-write arm and the M4.5.5 granular-shaping debt in one visit -- see *M4.5.6* below. **No CI gate** -- see *CI coverage* below |
@@ -318,7 +318,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   where `qemu-riscv64` selects Sv39 or Sv48 by config variant, it has TWO root registers
   (`TTBR0_EL1` and `TTBR1_EL1`) where Sv39/Sv48 have `satp` alone and x86_64 has `cr3` alone, its
   app window is IDENTITY-linked where the RISC-V one links at `0x40000000`
-  and loads at `0x80200000`, and it is the only one of the two with a CI gate. Its image gates are
+  and loads at `0x80200000`. Its image gates are
   FIFTEEN:
   `qemu_arm64_hello`, `qemu_arm64_selftest`, `qemu_arm64_fault_dump`, `qemu_arm64_aspace_fault`,
   `qemu_arm64_stack_guard`, `qemu_arm64_kernel_half`, `qemu_arm64_faultsurvive`,
@@ -371,8 +371,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   no x86 silicon here, so every x86_64 claim in this file is emulator-grade: the port is witnessed
   by `qemu-system-x86_64 -M q35` under **TCG** with OVMF (EDK II) firmware and by nothing else, and
   `/dev/kvm` on this box belongs to a group the invoking user is not in, so the
-  hardware-virtualisation path is closed as well. It is also, with `rx72m` and both `rv64imac`
-  postures, one of the boards with **no CI gate of any kind** (see *CI coverage* below). Four properties separate it from the rest of the fleet, and each
+  hardware-virtualisation path is closed as well. Four properties separate it from the rest of the fleet, and each
   one costs coverage somewhere:
   - **The image is not an ELF.** The toolchain links host `gcc` objects into a PE32+ UEFI
     application through `ld -m i386pep` (`../../cmake/toolchain-x86_64-uefi.cmake`), firmware loads
@@ -620,6 +619,17 @@ one fact. The console line is **`UART1_IRQ = 34`** (only `TXIM` armed; the drain
 source), because the console is UART1 on GP4/GP5 -- UART0's pins are not brought out on the
 Pi-Zero header.
 
+**XIP cache-as-SRAM pinning is refused under the own-image AMP posture** (`CONFIG_KICKOS_AMP_OWN_IMAGE=1`).
+The XIP cache is one logically single 16 KiB structure (datasheet 4.4, p.340); its two 8 KiB banks
+split odd and even lines for bandwidth and are not a per-core partition, so there is no half to
+grant a node. `flash_flush_cache` (5.4.8.8, p.386) unpins every pinned line whole-cache and is
+global, so one node's flush silently destroys the other node's cache-as-SRAM with no error and no
+local symptom. The maintenance window is the only way to issue a PIN (4.4.1.1, p.342), so
+`tests/static/check_amp_no_xip_pin.sh` holds the refusal by confirming the linked image, under that
+posture, names no reference to it; a single-image kernel on this chip may still pin freely, there
+being no peer kernel to lose a line. Lifted only by per-core cache partitioning or a documented
+pin-ownership mechanism; this part has neither.
+
 ### `teensy41` (i.MX RT1062) -- the three ROM-consumed structures and the console
 
 **The boot ROM enters via `IVT.entry`, not the reset vector**, and hardware does NOT load MSP from
@@ -714,14 +724,21 @@ the board".
 |---|---|---|---|
 | host | `sim` | full `ctest` -- the authoritative deterministic gate | **runtime** (host `mprotect`) |
 | rv32imac | `qemu-riscv`, `esp32c6-wroom` | `qemu-riscv` run gate; C6 + bench build-only | **runtime** (PMP, the `qemu-riscv-mpu` job) |
-| armv7m | `qemu`, `qemu-m33`, `qemu-m7`, `qemu-m3`, and the board sweep | four MPS2 run gates (an386/an505/an500/an385) + build sweep | **runtime** (PMSAv7 on M4/M7/M3, **PMSAv8** on the M33) |
+| armv7m | `qemu`, `qemu-m33`, `qemu-m7`, `qemu-m3`, the board sweep, and the `pizero2350-amp` family | eight MPS2 run gates, the four machines (an386/an505/an500/an385) each in both postures, + build sweep + the RP2350 AMP partitions, build-only | **runtime** (PMSAv7 on M4/M7/M3, **PMSAv8** on the M33) |
 | armv6m | `microbit`, `picopi` | `microbit` run gate + `picopi` build | **build only** |
-| armv8a | `qemu-arm64`, `imx8mp-evk` | `qemu-arm64` run gate -- the only CI witness this ISA has; `imx8mp-evk` is a LOCAL run gate in no CI job | -- (no region MPU; enforcement is VMSAv8 page tables and it is LIVE in both gates) |
-| rv64imac | `qemu-riscv64`, `qemu-riscv64-sv48` | **none** | -- (no region MPU; enforcement is Sv39/Sv48 page tables, live in both LOCAL postures and in no CI job) |
+| armv8a | `qemu-arm64`, `qemu-arm64-smp`, `qemu-arm64-smpiso`, `qemu-arm64-gicv3`, the `qemu-arm64-amp` family, `imx8mp-evk` | run gates at one kernel core, at four cores, at four cores with one isolated and at four cores under a GICv3, plus the AMP partition at one, two and three images; `imx8mp-evk` is a LOCAL run gate in no CI job | -- (no region MPU; enforcement is VMSAv8 page tables and it is LIVE in every one of them) |
+| rv64imac | `qemu-riscv64`, `qemu-riscv64-sv48`, `qemu-riscv64-smp` | one job, three run gates: Sv39, Sv48 and the four-hart shared kernel | -- (no region MPU; enforcement is Sv39/Sv48 page tables, live in both paging postures) |
 | Xtensa LX6 | `esp32-wroom` | build only, plain, `-st` and `-smp` | -- (no per-domain unit) |
 | RXv3 | `rx72m` | **none** | -- |
-| x86_64 | `qemu-x86_64` | **none** | -- (no memory family selected; the map is flat) |
+| x86_64 | `qemu-x86_64` | run gate over a UEFI handover, on firmware the job resolves rather than names | -- (no memory family selected; the map is flat) |
 
+- **The `KICKOS_SERVICE_LIST` axis is COMPILE-checked in CI and never LINK-checked there.**
+  `tests/static/check_service_lists.sh` pins that every provider is declared against a preset
+  that compiles it, but a `select` row (no board defaults to it) reaches an image only under an
+  explicit `-DKICKOS_SERVICE_LIST=<provider>`, so an ordinary fleet build compiles it and links
+  none. `tools/sweep_service_lists.sh` is the operator tool that closes that gap: it configures
+  each declared row against its own preset with that override and confirms at least one image
+  links. Cross toolchains and minutes per entry keep it a manual bench step, never a CI job.
 - **ARM enforcement is now a run gate too, on both PMSA revisions.** It was build-only for a
   long time, and the reason was real: every enforcing ARM port was a silicon part, and the one
   runnable armv7m target shipped no enforcement block, so `--preset qemu -DKICKOS_HAVE_MPU=1`
@@ -741,21 +758,23 @@ the board".
   **chip-specific** trapping: SYSMPU (K64F), the M7 anti-speculation wrap (i.MX RT1062) and
   PMSAv6 (M0+) have no QEMU model, and stay silicon-proven (see the matrix above and
   `../m2-readiness.md`).
-- **`rv64imac` has no CI gate, and the reason is not the toolchain.** Nothing needs fetching that is
-  not already fetched: the `riscv-toolchain` composite action supplies the compiler both RISC-V ports
-  use, and the SAME `riscv32-none-elf` multilib builds RV64 with `-march=rv64imac_zicsr -mabi=lp64`
-  (`../../cmake/toolchain-riscv-none-elf.cmake`). The emulator is the same package the `qemu-riscv`
-  job already installs. So a job would be two postures of an existing toolchain against an existing
-  emulator, and its absence is **a decision nobody has taken** rather than a gap in the environment.
-  Until somebody takes it, a change to the arch seam is *not* covered for `rv64imac` by a green CI
-  run: run `ctest --preset qemu-riscv64` and `--preset qemu-riscv64-sv48` locally, BOTH, because the
-  two differ in table depth and a level-count bug shows in only one.
-- **`qemu-x86_64` has no CI gate either, and the reason is not the toolchain.** Unlike RX, nothing
-  needs fetching: the compiler and linker are the host's own (`gcc` plus `ld -m i386pep`), so a
-  hosted runner already has them. What the RUN gates need is OVMF and `mtools`, and without either
-  they exit 77, which CTest reports as SKIP, so an unprovisioned runner would green-light the board
-  rather than fail it. That is a provisioning decision nobody has taken yet. Locally the board runs
-  its own full `ctest`, image arms included.
+- **`rv64imac` costs no toolchain of its own, and it takes three run gates rather than one.** The
+  `riscv-toolchain` composite action supplies the compiler both RISC-V ports use, and the SAME
+  `riscv32-none-elf` multilib builds RV64 with `-march=rv64imac_zicsr -mabi=lp64`
+  (`../../cmake/toolchain-riscv-none-elf.cmake`); the emulator is the same package the `qemu-riscv`
+  job installs. Both paging postures run because they differ in table depth and a level-count bug
+  shows in only one. The four-hart posture runs because a shared kernel's address-space teardown is
+  exposed nowhere else: rv64 keeps the kernel's own top-level entries in each space's ROOT page, so
+  a hart still holding a destroyed space's root walks a frame the pool has reissued.
+- **`qemu-x86_64` needs no cross toolchain, and its run gates need firmware.** The compiler and
+  linker are the host's own (`gcc` plus `ld -m i386pep`), so a hosted runner already has them. The
+  image is a PE32+ UEFI application that `-kernel` cannot start, so the gates boot OVMF off an EFI
+  system partition and need `mtools` to build one; without either they exit 77, which CTest reports
+  as SKIP and CTest still exits 0, so an unprovisioned runner would green-light the board rather
+  than fail it. The job therefore RESOLVES the code/vars firmware pair by matching spellings rather
+  than naming a path -- the package chooses those filenames, the two must be the same size, and a
+  `.secboot` or `.ms` firmware refuses an unsigned image -- and treats any skipped gate as a
+  failure.
 
 - **Renesas RX has no CI gate at all.** RX72M needs `-misa=v3` and `-mdfpu`
   (`boards/rx72m/board.cmake`), and both exist only in the registration-gated Renesas GNURX

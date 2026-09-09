@@ -409,7 +409,9 @@ static struct arch_mpu_encoded const* g_pend_image = nullptr;
 // Declared rather than included: this TU is below <kickos/bench.h>.
 extern "C" void kickos_bench_mpu_commit(uint32_t delta);
 
-static uint32_t mpu_bench_cyc(void)
+// always_inline: an out-of-line copy charges two call/ret pairs to a delta PH_NULL prices as
+// two bare counter reads.
+static __attribute__((always_inline)) inline uint32_t mpu_bench_cyc(void)
 {
     if (::g_bench_cycle_src != nullptr)
     {

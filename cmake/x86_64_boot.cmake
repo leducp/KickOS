@@ -66,9 +66,14 @@ target_include_directories(kickos_x86_64_probe3 PRIVATE ${KICKOS_X86_64_INCLUDES
 # --no-insert-timestamp keeps the image byte-identical across builds of one tree.
 # -T is required: the emulation's internal script names no wildcard for the data sections this
 # arch compiles, and past about seventy PE sections firmware refuses to load the image at all.
+# -b names the INPUT format, and binutils 2.42 needs it: under this emulation that ld reads an
+# ELF archive's symbol index and still extracts no member for an undefined symbol, so every
+# image linking the arch and chip archives fails undefined while the object-only images link.
+# It is byte-identical on 2.47, which extracts either way, so only a CI runner catches its loss.
 set(KICKOS_X86_64_PE_SCRIPT "${KICKOS_X86_64_DIR}/pe_image.ld")
 set(KICKOS_X86_64_LDFLAGS -m i386pep --subsystem=10 --image-base=0x400000
                           -e efi_main --no-insert-timestamp
+                          -b elf64-x86-64
                           -T "${KICKOS_X86_64_PE_SCRIPT}")
 
 # ONE IMAGE PER FAULT CLASS. The report ends the image, so a run witnesses exactly one class;

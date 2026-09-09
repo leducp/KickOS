@@ -44,24 +44,35 @@ command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be buil
 
 scratch_dir
 
-# --- leg 1: no `#pragma once`, over every tracked C/C++ file ------------------
-git ls-files -- '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp' '*.S' '*.inc' '*.h.in' \
-    > "$TMP/sources" || fail "git ls-files failed"
-require_nonempty "$TMP/sources" "git ls-files matched no C/C++ file; the pragma scan would pass vacuously"
-SOURCES="$(wc -l < "$TMP/sources" | tr -d ' ')"
+# --- the rule, handed to the scanners, so the self-test and the corpus cannot disagree ---
+# Both patterns are BRE: `grep` below is invoked without -E.
+PRAGMA_ERE='^[[:space:]]*#[[:space:]]*pragma[[:space:]][[:space:]]*once'
+ENDIF_ERE='^#endif'
+ADJACENT=1
+FIRST_DIRECTIVE=1
 
-: > "$TMP/pragma"
-while IFS= read -r f; do
-    [ -f "$f" ] || fail "tracked file is missing from the worktree: $f"
-    grep -an '^[[:space:]]*#[[:space:]]*pragma[[:space:]][[:space:]]*once' "$f" \
-        | awk -v F="$f" '{ print F ":" $0 }' >> "$TMP/pragma"
-done < "$TMP/sources"
+pragma_hits() { # <file> <pragma-bre> -> one `<file>:<line>:<text>` record per hit
+    grep -an "$2" "$1" | awk -v F="$1" '{ print F ":" $0 }'
+}
 
-# --- leg 2: the headers, their guards, and the spelling the path dictates -----
-git ls-files -- '*.h' '*.hh' '*.hpp' '*.inc' '*.h.in' > "$TMP/headers" \
-    || fail "git ls-files failed"
-require_nonempty "$TMP/headers" "git ls-files matched no header; every check below would pass vacuously"
-HEADERS="$(wc -l < "$TMP/headers" | tr -d ' ')"
+# One awk pass, so the directive and the line after it cannot come from different places.
+# ADJ and FIRST are 1 everywhere but in the self-test's mutation arms.
+read_guard() { # <file> <adjacent 0|1> <first-directive 0|1> -> the guard macro, or nothing
+    awk -v ADJ="$2" -v FIRST="$3" '
+        /^[[:space:]]*#/ {
+            if ($1 != "#ifndef" || NF != 2) {
+                if (FIRST) { exit 0 }
+                next
+            }
+            g = $2
+            do {
+                if ((getline) <= 0) { exit 0 }
+            } while (!ADJ && NF == 0)
+            if ($1 != "#define" || NF != 2 || $2 != g) { exit 0 }
+            print g
+            exit 0
+        }' "$1"
+}
 
 expected_guard() { # <tracked path> -> the macro the rule dictates
     _p="${1%.in}"
@@ -85,6 +96,31 @@ expected_guard() { # <tracked path> -> the macro the rule dictates
     printf '%s' "$_rel" | LC_ALL=C tr 'abcdefghijklmnopqrstuvwxyz/.-' 'ABCDEFGHIJKLMNOPQRSTUVWXYZ___'
 }
 
+# `ok`, `refused`, or `guard <found> <dictated>`. The content and the path arrive separately,
+# so a planted control can be read against a path it does not live at.
+header_verdict() { # <content file> <path> <adjacent 0|1> <first-directive 0|1> <endif-bre>
+    _hv_guard="$(read_guard "$1" "$3" "$4")"
+    if [ -z "$_hv_guard" ]; then
+        printf 'refused\n'
+        return
+    fi
+    _hv_last="$(grep -v '^[[:space:]]*$' "$1" | tail -n1)"
+    if ! printf '%s\n' "$_hv_last" | grep -q "$5"; then
+        printf 'refused\n'
+        return
+    fi
+    _hv_want="$(expected_guard "$2")"
+    if [ "$_hv_guard" != "$_hv_want" ]; then
+        printf 'guard %s %s\n' "$_hv_guard" "$_hv_want"
+        return
+    fi
+    printf 'ok\n'
+}
+
+# --- self-test: prove every clause of the rule, one control per clause ---------
+# Each control is a MINIMAL PAIR against its opposite number, differing in one property only,
+# and the counts below are exact and differ per clause.
+
 # A derivation returning the empty string reports every header in the tree, one returning its
 # argument unchanged reports none, so it is proven on known paths first.
 [ "$(expected_guard user/include/kickos/sys/abi.h)" = "KICKOS_SYS_ABI_H" ] \
@@ -102,35 +138,206 @@ expected_guard() { # <tracked path> -> the macro the rule dictates
 [ "$(expected_guard system/driver/rx72m/rxsci/regs/sci.h)" = "KICKOS_SYSTEM_DRIVER_RX72M_RXSCI_REGS_SCI_H" ] \
     || fail "the guard derivation applies rule 3 below the flat driver shape"
 
+# Leg 1. The three positives differ from the negative beneath them in one property each: the
+# `#` being the line's first non-blank, a blank separating `pragma` from `once`, and the
+# pragma's own name.
+cat > "$TMP/pragma_pos.h" <<'EOF'
+#pragma once
+   #  pragma   once
+#pragma once  /* and a trailing comment */
+EOF
+cat > "$TMP/pragma_neg.h" <<'EOF'
+// #pragma once
+ * #pragma once, named in a block comment
+#pragma pack(push, 1)
+#pragmaonce
+#ifndef KICKOS_SYS_ABI_H
+EOF
+
+PPOS="$(pragma_hits "$TMP/pragma_pos.h" "$PRAGMA_ERE" | wc -l | tr -d ' ')"
+[ "$PPOS" -eq 3 ] || fail "the pragma scan found $PPOS of 3 planted spellings; it would miss real ones"
+
+# EACH negative on its own, so one that is silent for the WRONG reason is visible. A
+# whole-file zero cannot tell "three clauses hold" from "one clause swallowed the file".
+i=0
+while IFS= read -r line; do
+    i=$((i + 1))
+    printf '%s\n' "$line" > "$TMP/one.h"
+    n="$(pragma_hits "$TMP/one.h" "$PRAGMA_ERE" | wc -l | tr -d ' ')"
+    [ "$n" -eq 0 ] || fail "pragma negative control $i reports: $line"
+done < "$TMP/pragma_neg.h"
+[ "$i" -eq 5 ] || fail "$i pragma negative control(s) ran, expected 5"
+
+# Leg 2. One control per clause of the parse, each read against a path whose dictated guard is
+# known, so a verdict of `guard` names both spellings.
+: > "$TMP/controls"
+control() { # <name> <path the derivation reads> <expected verdict>; the body arrives on stdin
+    cat > "$TMP/ctl_$1"
+    printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$TMP/controls"
+}
+ABI=user/include/kickos/sys/abi.h
+control p_first_directive "$ABI" refused <<'EOF'
+#include <stdint.h>
+#ifndef KICKOS_SYS_ABI_H
+#define KICKOS_SYS_ABI_H
+#endif
+EOF
+control p_adjacent "$ABI" refused <<'EOF'
+#ifndef KICKOS_SYS_ABI_H
+
+#define KICKOS_SYS_ABI_H
+#endif
+EOF
+control p_same_name "$ABI" refused <<'EOF'
+#ifndef KICKOS_SYS_ABI_H
+#define KICKOS_SYS_ABI_X
+#endif
+EOF
+control p_two_fields "$ABI" refused <<'EOF'
+#ifndef KICKOS_SYS_ABI_H
+#define KICKOS_SYS_ABI_H 1
+#endif
+EOF
+control p_hash_space "$ABI" refused <<'EOF'
+# ifndef KICKOS_SYS_ABI_H
+# define KICKOS_SYS_ABI_H
+#endif
+EOF
+control p_pragma_guard "$ABI" refused <<'EOF'
+#pragma once
+int kos_abi_version;
+EOF
+control p_endif_last "$ABI" refused <<'EOF'
+#ifndef KICKOS_SYS_ABI_H
+#define KICKOS_SYS_ABI_H
+#endif
+int kos_after_the_guard;
+EOF
+control p_endif_indent "$ABI" refused <<'EOF'
+#ifndef KICKOS_SYS_ABI_H
+#define KICKOS_SYS_ABI_H
+  #endif
+EOF
+control p_derivation "$ABI" "guard KICKOS_ABI_H KICKOS_SYS_ABI_H" <<'EOF'
+#ifndef KICKOS_ABI_H
+#define KICKOS_ABI_H
+#endif
+EOF
+control n_canonical "$ABI" ok <<'EOF'
+#ifndef KICKOS_SYS_ABI_H
+#define KICKOS_SYS_ABI_H
+#endif
+EOF
+control n_prologue "$ABI" ok <<'EOF'
+// Copyright (c) 2026 Philippe Leduc
+
+#ifndef KICKOS_SYS_ABI_H
+#define KICKOS_SYS_ABI_H
+#endif
+EOF
+control n_guard_indent "$ABI" ok <<'EOF'
+  #ifndef KICKOS_SYS_ABI_H
+  #define KICKOS_SYS_ABI_H
+#endif
+EOF
+control n_endif_comment "$ABI" ok <<'EOF'
+#ifndef KICKOS_SYS_ABI_H
+#define KICKOS_SYS_ABI_H
+#endif // KICKOS_SYS_ABI_H
+EOF
+control n_endif_blanks "$ABI" ok <<'EOF'
+#ifndef KICKOS_SYS_ABI_H
+#define KICKOS_SYS_ABI_H
+#endif
+
+EOF
+control n_template kernel/include/kickos/config/cap_width.h.in ok <<'EOF'
+#ifndef KICKOS_CONFIG_CAP_WIDTH_H
+#define KICKOS_CONFIG_CAP_WIDTH_H
+#endif
+EOF
+
+NREF=0
+NGUARD=0
+NOK=0
+i=0
+while IFS="$TAB" read -r name path want; do
+    i=$((i + 1))
+    got="$(header_verdict "$TMP/ctl_$name" "$path" "$ADJACENT" "$FIRST_DIRECTIVE" "$ENDIF_ERE")"
+    [ "$got" = "$want" ] || fail "control $name: the guard scan says '$got', expected '$want'"
+    case "$got" in
+        refused) NREF=$((NREF + 1)) ;;
+        ok)      NOK=$((NOK + 1)) ;;
+        *)       NGUARD=$((NGUARD + 1)) ;;
+    esac
+done < "$TMP/controls"
+[ "$i" -eq 15 ] || fail "$i guard control(s) ran, expected 15"
+[ "$NREF" -eq 8 ] || fail "the guard scan refused $NREF of 8 unreadable controls; a header it cannot parse would read clean"
+[ "$NGUARD" -eq 1 ] || fail "the guard scan reported $NGUARD of 1 planted misnamed guard"
+[ "$NOK" -eq 6 ] || fail "the guard scan read $NOK of 6 conforming controls clean; the gate would cry wolf"
+
+# Relax one clause and the count over the control corpus must move to an EXACT number: that
+# is what proves the control was a near miss and not slack. Every relaxed spelling below is
+# self-test only; the corpus scan never sees one.
+NEVER='KICKOS_THIS_PATTERN_MATCHES_NOTHING'
+PRAGMA_ERE_NOBLANK='^[[:space:]]*#[[:space:]]*pragma[[:space:]]*once'
+PRAGMA_ERE_FLOATING='#[[:space:]]*pragma[[:space:]][[:space:]]*once'
+ENDIF_ERE_ANY='^'
+
+pragma_mutation() { # <clause> <file> <pragma-bre> <expected hits>
+    _pm="$(pragma_hits "$2" "$3" | wc -l | tr -d ' ')"
+    [ "$_pm" -eq "$4" ] || fail "with the $1 clause relaxed the pragma scan found $_pm hit(s) in $2, expected $4;
+      the controls for it are not near misses and prove nothing"
+}
+pragma_mutation whole-pattern   "$TMP/pragma_pos.h" "$NEVER"                0
+pragma_mutation mandatory-blank "$TMP/pragma_neg.h" "$PRAGMA_ERE_NOBLANK"   1
+pragma_mutation leading-hash    "$TMP/pragma_neg.h" "$PRAGMA_ERE_FLOATING"  2
+
+guard_mutation() { # <clause> <adjacent> <first-directive> <endif-bre> <expected refusals>
+    _gm=0
+    while IFS="$TAB" read -r name path want; do
+        case "$(header_verdict "$TMP/ctl_$name" "$path" "$2" "$3" "$4")" in
+            refused) _gm=$((_gm + 1)) ;;
+        esac
+    done < "$TMP/controls"
+    [ "$_gm" -eq "$5" ] || fail "with the $1 clause relaxed the guard scan refused $_gm control(s), expected $5;
+      the controls for it are not near misses and prove nothing"
+}
+guard_mutation adjacency       0 1 "$ENDIF_ERE"     7
+guard_mutation first-directive 1 0 "$ENDIF_ERE"     7
+guard_mutation endif-last      1 1 "$ENDIF_ERE_ANY" 6
+
+# --- leg 1: no `#pragma once`, over every tracked C/C++ file ------------------
+git ls-files -- '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp' '*.S' '*.inc' '*.h.in' \
+    > "$TMP/sources" || fail "git ls-files failed"
+require_nonempty "$TMP/sources" "git ls-files matched no C/C++ file; the pragma scan would pass vacuously"
+SOURCES="$(wc -l < "$TMP/sources" | tr -d ' ')"
+
+: > "$TMP/pragma"
+while IFS= read -r f; do
+    [ -f "$f" ] || fail "tracked file is missing from the worktree: $f"
+    pragma_hits "$f" "$PRAGMA_ERE" >> "$TMP/pragma"
+done < "$TMP/sources"
+
+# --- leg 2: the headers, their guards, and the spelling the path dictates -----
+git ls-files -- '*.h' '*.hh' '*.hpp' '*.inc' '*.h.in' > "$TMP/headers" \
+    || fail "git ls-files failed"
+require_nonempty "$TMP/headers" "git ls-files matched no header; every check below would pass vacuously"
+HEADERS="$(wc -l < "$TMP/headers" | tr -d ' ')"
+
 : > "$TMP/findings"
 : > "$TMP/refused"
 while IFS= read -r f; do
     [ -f "$f" ] || fail "tracked file is missing from the worktree: $f"
-
-    # One awk pass, so the directive and the line after it cannot come from different places.
-    GUARD="$(awk '
-        /^[[:space:]]*#/ {
-            if ($1 != "#ifndef" || NF != 2) { exit 0 }
-            g = $2
-            if ((getline) <= 0) { exit 0 }
-            if ($1 != "#define" || NF != 2 || $2 != g) { exit 0 }
-            print g
-            exit 0
-        }' "$f")"
-    if [ -z "$GUARD" ]; then
-        printf '%s\n' "$f" >> "$TMP/refused"
-        continue
-    fi
-    LAST="$(grep -v '^[[:space:]]*$' "$f" | tail -n1)"
-    case "$LAST" in
-        '#endif'*) ;;
-        *) printf '%s\n' "$f" >> "$TMP/refused"; continue ;;
+    V="$(header_verdict "$f" "$f" "$ADJACENT" "$FIRST_DIRECTIVE" "$ENDIF_ERE")"
+    case "$V" in
+        ok) ;;
+        refused) printf '%s\n' "$f" >> "$TMP/refused" ;;
+        *)
+            _pair="${V#guard }"
+            printf '%s: guard is %s, the path dictates %s\n' \
+                "$f" "${_pair%% *}" "${_pair#* }" >> "$TMP/findings" ;;
     esac
-
-    WANT="$(expected_guard "$f")"
-    if [ "$GUARD" != "$WANT" ]; then
-        printf '%s: guard is %s, the path dictates %s\n' "$f" "$GUARD" "$WANT" >> "$TMP/findings"
-    fi
 done < "$TMP/headers"
 
 echo "== checked $HEADERS tracked header(s) for a path-derived guard, $SOURCES tracked C/C++ file(s) for #pragma once =="

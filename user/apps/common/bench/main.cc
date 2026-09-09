@@ -5,7 +5,8 @@
 // threads ping-pong via semaphores; the reporter prints throughput (ctx-switches/s via
 // kos::clock_now, works on every arch) plus per-switch cost + IRQ-entry latency (cycles,
 // where switch.S brackets the swap with a counter: armv7m DWT, rxv3 CMTW1, rv32imac
-// rdcycle/MTIME, xtensa CCOUNT).
+// rdcycle/MTIME, xtensa CCOUNT). Whether such a cycle converts to time is a separate fact,
+// KOS_BENCH_OP_CYCCNT_HZ, and a 0 from it leaves every ns column off.
 //
 // The call/reply sweep times the endpoint copy under the kernel's own IrqLock. The phase
 // table printed after it breaks that round trip's FIXED cost down by kernel phase
@@ -92,6 +93,7 @@ namespace
         }
     }
 
+    // Reached only past a non-zero hz; the guard is the divisor's own.
     uint32_t to_ns(uint32_t cyc, uint32_t hz)
     {
         if (hz == 0)
@@ -175,11 +177,21 @@ namespace
                 imin = 0;
             }
 
-            ksnprintf(s, sizeof(s), "  irq:    %u/%u/%u cyc  %u/%u/%u ns  (min/avg/max, n=%u)\n",
-                      static_cast<unsigned>(imin), static_cast<unsigned>(iavg),
-                      static_cast<unsigned>(imax), static_cast<unsigned>(to_ns(imin, hz)),
-                      static_cast<unsigned>(to_ns(iavg, hz)),
-                      static_cast<unsigned>(to_ns(imax, hz)), static_cast<unsigned>(icnt));
+            if (hz == 0)
+            {
+                ksnprintf(s, sizeof(s), "  irq:    %u/%u/%u cyc  (min/avg/max, n=%u)\n",
+                          static_cast<unsigned>(imin), static_cast<unsigned>(iavg),
+                          static_cast<unsigned>(imax), static_cast<unsigned>(icnt));
+            }
+            else
+            {
+                ksnprintf(s, sizeof(s),
+                          "  irq:    %u/%u/%u cyc  %u/%u/%u ns  (min/avg/max, n=%u)\n",
+                          static_cast<unsigned>(imin), static_cast<unsigned>(iavg),
+                          static_cast<unsigned>(imax), static_cast<unsigned>(to_ns(imin, hz)),
+                          static_cast<unsigned>(to_ns(iavg, hz)),
+                          static_cast<unsigned>(to_ns(imax, hz)), static_cast<unsigned>(icnt));
+            }
             kickos::emit(s);
 
             // Worst-case inject->entry: the line is raised at the START of a masked span
@@ -207,13 +219,25 @@ namespace
                     continue;
                 }
                 uint32_t wavg = static_cast<uint32_t>(wsum / wcnt);
-                ksnprintf(s, sizeof(s),
-                          "  wcase-irq[%uB]: %u/%u/%u cyc  %u/%u/%u ns  (inject->entry, n=%u)\n",
-                          static_cast<unsigned>(wspans[si]), static_cast<unsigned>(wmin),
-                          static_cast<unsigned>(wavg), static_cast<unsigned>(wmax),
-                          static_cast<unsigned>(to_ns(wmin, hz)),
-                          static_cast<unsigned>(to_ns(wavg, hz)),
-                          static_cast<unsigned>(to_ns(wmax, hz)), static_cast<unsigned>(wcnt));
+                if (hz == 0)
+                {
+                    ksnprintf(s, sizeof(s),
+                              "  wcase-irq[%uB]: %u/%u/%u cyc  (inject->entry, n=%u)\n",
+                              static_cast<unsigned>(wspans[si]), static_cast<unsigned>(wmin),
+                              static_cast<unsigned>(wavg), static_cast<unsigned>(wmax),
+                              static_cast<unsigned>(wcnt));
+                }
+                else
+                {
+                    ksnprintf(s, sizeof(s),
+                              "  wcase-irq[%uB]: %u/%u/%u cyc  %u/%u/%u ns"
+                              "  (inject->entry, n=%u)\n",
+                              static_cast<unsigned>(wspans[si]), static_cast<unsigned>(wmin),
+                              static_cast<unsigned>(wavg), static_cast<unsigned>(wmax),
+                              static_cast<unsigned>(to_ns(wmin, hz)),
+                              static_cast<unsigned>(to_ns(wavg, hz)),
+                              static_cast<unsigned>(to_ns(wmax, hz)), static_cast<unsigned>(wcnt));
+                }
                 kickos::emit(s);
             }
 
@@ -392,9 +416,10 @@ int main(int, char**)
     kickos::emit("+ IRQ-entry latency where a cycle counter exists. Reporter woken by the\n");
     kickos::emit("workload, not a timer. Telemetry OFF for clean numbers.\n");
 
-    uint32_t const hz = bench_u32(KOS_BENCH_OP_CORE_HZ, 0, 0);
-    char hzline[80];
-    ksnprintf(hzline, sizeof(hzline), "core clock: %u Hz (0 = the chip backend does not say)\n\n",
+    uint32_t const hz = bench_u32(KOS_BENCH_OP_CYCCNT_HZ, 0, 0);
+    char hzline[96];
+    ksnprintf(hzline, sizeof(hzline),
+              "cycle counter: %u Hz (0 = no rate converts a reading; cycles only)\n\n",
               static_cast<unsigned>(hz));
     kickos::emit(hzline);
 

@@ -2,14 +2,22 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Cycle-accurate microbenchmark state (KICKOS_BENCH builds only). The SWITCH accumulator is
-// fed from the arch switch handler (switch.S): the measured window is the register + FP +
-// CONTROL save/restore, NOT the hardware exception entry, which is IRQ-entry latency. The
-// PHASE accumulator is fed by the brackets in the syscall/scheduler/timer paths
-// (<kickos/bench.h>).
+// fed from the arch switch handler (switch.S). Its window is the SOFTWARE register save, the
+// swap and the software register restore; what the hardware stacks and unstacks on its own is
+// outside it, that being IRQ-entry latency, and so is the deferred MPU commit, which owns a
+// phase row. THE THREE BACKENDS DO NOT ALL BRACKET ALL THREE PARTS: armv7m and rv32imac do,
+// rxv3 stops at the swap, and the LX6 stamps its end before the windowed exit reloads the
+// incoming caller. The PHASE accumulator is fed by the brackets in the syscall/scheduler/
+// timer paths (<kickos/bench.h>).
 //
-// MIN is the statistic to read: the XMC4800's DWT is documented unreliable on that silicon
-// (chip_xmc4800.cc), and a glitched counter read can only inflate a delta, never push it
-// below the true minimum.
+// A part whose cycle counter glitches declares KICKOS_CHIP_CYCCNT_GLITCHES (its
+// chip_limits.h; today the XMC4800's DWT alone, chip_xmc4800.cc). There MIN is the statistic,
+// a glitched read being able only to inflate a delta and never push one below the true
+// minimum. Everywhere else a minimum hides the tail, and the headline is p50/p99/max.
+//
+// The counter's RATE is a chip fact of its own, KICKOS_CHIP_CYCCNT_HZ, falling back on
+// SystemCoreClock. A 0 there says nothing converts a reading into time, and the nanosecond
+// columns are then not printed.
 //
 // The KERNEL prints both tables, from thread context and outside any IrqLock.
 
@@ -22,6 +30,21 @@
 #include <kickos/sys/atomic.h>
 
 #include <stdint.h>
+
+// The sim has no chip, so this header need not exist.
+#if defined(__has_include) && __has_include(<kickos/chip_limits.h>)
+#include <kickos/chip_limits.h>
+#endif
+
+#if defined(KICKOS_CHIP_CYCCNT_GLITCHES) && KICKOS_CHIP_CYCCNT_GLITCHES
+#define BENCH_SWITCH_HEADLINE_MIN 1
+#define BENCH_SWITCH_FMT "  switch: %u/%u/%u cyc  %u/%u/%u ns  (min/avg/max, n=%u)\n"
+#define BENCH_SWITCH_FMT_CYC "  switch: %u/%u/%u cyc  (min/avg/max, n=%u)\n"
+#else
+#define BENCH_SWITCH_HEADLINE_MIN 0
+#define BENCH_SWITCH_FMT "  switch: %u/%u/%u cyc  %u/%u/%u ns  (p50/p99/max, n=%u)\n"
+#define BENCH_SWITCH_FMT_CYC "  switch: %u/%u/%u cyc  (p50/p99/max, n=%u)\n"
+#endif
 
 namespace
 {
@@ -67,6 +90,98 @@ namespace
     constinit uint32_t g_sw_count = 0;
     constinit uint64_t g_sw_sum = 0;
 
+#if !BENCH_SWITCH_HEADLINE_MIN
+    // Log-linear buckets for the switch percentiles: the three bits under the value's most
+    // significant one, so a bucket spans at most an eighth of its own octave. A reported
+    // percentile is its bucket's LOW edge and therefore a FLOOR, and two runs are comparable
+    // only to that resolution. 168 buckets reach 2^23; a bigger delta saturates the last one.
+    // No phase histogram: it would have to run inside bench_phase_add, whose cost every
+    // enclosing composite is charged for k times over.
+    constexpr uint32_t SW_HIST = 168;
+    constinit uint32_t g_sw_hist[SW_HIST] = {};
+
+    // No __builtin_clz: rv32imac has no clz instruction, so it would resolve to a libgcc
+    // call, and this runs from a trap-path root the stack-descent gate measures.
+    constexpr uint32_t sw_bucket(uint32_t v)
+    {
+        if (v < 8u)
+        {
+            return v;
+        }
+        uint32_t e = 3u;
+        while ((v >> (e + 1u)) != 0u)
+        {
+            e++;
+        }
+        uint32_t const idx = 8u + (e - 3u) * 8u + ((v >> (e - 3u)) & 7u);
+        if (idx >= SW_HIST)
+        {
+            return SW_HIST - 1u;
+        }
+        return idx;
+    }
+
+    constexpr uint32_t sw_bucket_low(uint32_t idx)
+    {
+        if (idx < 8u)
+        {
+            return idx;
+        }
+        uint32_t const e = 3u + (idx - 8u) / 8u;
+        return (8u + ((idx - 8u) % 8u)) << (e - 3u);
+    }
+
+    // A wrong edge moves every percentile and no run would say so, hence a compile-time
+    // control: an edge never above its own sample, within an eighth of it, and monotone.
+    constexpr bool sw_hist_sane()
+    {
+        uint32_t prev = 0;
+        for (uint32_t v = 0; v < 200000u; v += 13u)
+        {
+            uint32_t const b = sw_bucket(v);
+            if (b < prev)
+            {
+                return false;
+            }
+            prev = b;
+            uint32_t const lo = sw_bucket_low(b);
+            if (lo > v)
+            {
+                return false;
+            }
+            if ((v - lo) > ((lo / 8u) + 1u))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    static_assert(sw_hist_sane(), "a switch-percentile bucket must contain its own sample");
+    static_assert(sw_bucket(1u << 23) == SW_HIST - 1u,
+                  "a delta past the last bucket edge saturates rather than wrapping");
+
+    // The lowest bucket edge at or above the num/den-th sample.
+    uint32_t sw_percentile(uint32_t num, uint32_t den)
+    {
+        if (g_sw_count == 0)
+        {
+            return 0;
+        }
+        uint64_t const target =
+            (static_cast<uint64_t>(g_sw_count) * num + den - 1ull) / den;
+        uint64_t seen = 0;
+        for (uint32_t i = 0; i < SW_HIST; i++)
+        {
+            seen += g_sw_hist[i];
+            if (seen >= target)
+            {
+                return sw_bucket_low(i);
+            }
+        }
+        return g_sw_max;
+    }
+#endif
+
     // --- Phase accumulators ---------------------------------------------------
     struct PhaseAcc
     {
@@ -108,6 +223,14 @@ extern "C"
     // Xtensa only: the windowed exit can't host a call, so switch.S stamps the switch
     // END here and accumulates (end-start) at the NEXT switch entry (a safe call site).
     constinit uint32_t g_bench_sw_end = 0;
+    // rv32imac only. Its window spans a trap entry and a trap exit, and the exit leaves no
+    // register free at the mret, so switch.S banks the halves: g_bench_sw_half carries the
+    // save and swap (non-zero means a switch opened the window), g_bench_sw_rstart stamps
+    // the restore, and g_bench_sw_pend holds the completed delta until the NEXT switch,
+    // which is the next site that can host a call.
+    constinit uint32_t g_bench_sw_half = 0;
+    constinit uint32_t g_bench_sw_rstart = 0;
+    constinit uint32_t g_bench_sw_pend = 0;
 
     // The arch's deferred MPU commit runs from the switch epilogue, below the kernel
     // headers, so it reaches the accumulator through this the way switch.S reaches
@@ -129,20 +252,32 @@ extern "C"
         }
         g_sw_sum += delta;
         g_sw_count++;
+#if !BENCH_SWITCH_HEADLINE_MIN
+        g_sw_hist[sw_bucket(delta)]++;
+#endif
     }
 }
 
 namespace
 {
-    // 0 where the chip backend publishes no clock (the sim), which prints as 0 ns.
+    uint32_t cyccnt_hz()
+    {
+#if defined(KICKOS_CHIP_CYCCNT_HZ)
+        return KICKOS_CHIP_CYCCNT_HZ;
+#else
+        return SystemCoreClock;
+#endif
+    }
+
+    // Callers reach this only past a non-zero cyccnt_hz(); the guard is the divisor's own.
     uint32_t cyc_to_ns(uint32_t cyc)
     {
-        if (SystemCoreClock == 0)
+        uint32_t const hz = cyccnt_hz();
+        if (hz == 0)
         {
             return 0;
         }
-        return static_cast<uint32_t>((static_cast<uint64_t>(cyc) * 1000000000ull)
-                                     / SystemCoreClock);
+        return static_cast<uint32_t>((static_cast<uint64_t>(cyc) * 1000000000ull) / hz);
     }
 }
 
@@ -176,9 +311,17 @@ namespace kickos
         g_sw_max = 0;
         g_sw_sum = 0;
         g_sw_count = 0;
-        // Drop any un-banked xtensa sample, which is banked one switch late: else the previous
-        // window's last switch leaks into this window's min/max.
+        // Drop any un-banked sample, banked one switch late on the xtensa and the rv32: else
+        // the previous window's last switch leaks into this window's min/max.
         g_bench_sw_end = 0;
+        g_bench_sw_half = 0;
+        g_bench_sw_pend = 0;
+#if !BENCH_SWITCH_HEADLINE_MIN
+        for (uint32_t i = 0; i < SW_HIST; i++)
+        {
+            g_sw_hist[i] = 0;
+        }
+#endif
         for (uint32_t i = 0; i < PH_COUNT; i++)
         {
             g_phase[i] = PhaseAcc{};
@@ -188,24 +331,38 @@ namespace kickos
     uint32_t bench_switch_print()
     {
         uint32_t const c = g_sw_count;
-        uint32_t min = 0;
-        uint32_t avg = 0;
+#if BENCH_SWITCH_HEADLINE_MIN
+        uint32_t lo = 0;
+        uint32_t mid = 0;
         if (c != 0)
         {
-            min = g_sw_min;
-            avg = static_cast<uint32_t>(g_sw_sum / c);
+            lo = g_sw_min;
+            mid = static_cast<uint32_t>(g_sw_sum / c);
         }
-        kprintf("  switch: %u/%u/%u cyc  %u/%u/%u ns  (min/avg/max, n=%u)\n",
-                static_cast<unsigned>(min), static_cast<unsigned>(avg),
-                static_cast<unsigned>(g_sw_max), static_cast<unsigned>(cyc_to_ns(min)),
-                static_cast<unsigned>(cyc_to_ns(avg)), static_cast<unsigned>(cyc_to_ns(g_sw_max)),
+#else
+        uint32_t const lo = sw_percentile(1, 2);
+        uint32_t const mid = sw_percentile(99, 100);
+#endif
+        // The statistic names go in the LITERAL and not in a %s argument: a ninth argument
+        // spills to the outgoing stack area, and this frame is on the SYSPRIV chain the
+        // stack-descent gate measures against a red zone.
+        if (cyccnt_hz() == 0)
+        {
+            kprintf(BENCH_SWITCH_FMT_CYC, static_cast<unsigned>(lo), static_cast<unsigned>(mid),
+                    static_cast<unsigned>(g_sw_max), static_cast<unsigned>(c));
+            return c;
+        }
+        kprintf(BENCH_SWITCH_FMT, static_cast<unsigned>(lo), static_cast<unsigned>(mid),
+                static_cast<unsigned>(g_sw_max), static_cast<unsigned>(cyc_to_ns(lo)),
+                static_cast<unsigned>(cyc_to_ns(mid)), static_cast<unsigned>(cyc_to_ns(g_sw_max)),
                 static_cast<unsigned>(c));
         return c;
     }
 
     void bench_phase_print()
     {
-        kprintf("  phase table (cycles; leaf -= NULL, composite -= k*NEST for k nested):\n");
+        kprintf("  phase table (cyc avg/max, min last and a floor; leaf -= NULL,"
+                " composite -= NULL + k*(NEST-NULL)):\n");
         for (uint32_t i = 0; i < PH_COUNT; i++)
         {
             PhaseAcc const& a = g_phase[i];
@@ -216,13 +373,13 @@ namespace kickos
                 min = a.min;
                 avg = static_cast<uint32_t>(a.sum / a.count);
             }
-            kprintf("    %s %u/%u/%u  n=%u\n", PHASE_NAME[i], static_cast<unsigned>(min),
-                    static_cast<unsigned>(avg), static_cast<unsigned>(a.max),
+            kprintf("    %s %u/%u  min=%u  n=%u\n", PHASE_NAME[i], static_cast<unsigned>(avg),
+                    static_cast<unsigned>(a.max), static_cast<unsigned>(min),
                     static_cast<unsigned>(a.count));
         }
     }
 
-    uint32_t bench_core_hz() { return SystemCoreClock; }
+    uint32_t bench_cyccnt_hz() { return cyccnt_hz(); }
 
     // Attach the bench handler to a spare line and unmask it. Call once.
     void bench_irq_setup(int line)
