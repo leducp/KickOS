@@ -1830,6 +1830,157 @@ instrument was in the tree.
   already took. **No production-side test hook was added, and that was the constraint that made the
   static gate the answer.**
 
+## M8.3: isolation and syscall robustness, and what these green runs do NOT say
+
+**THE TEN-ANGLE GATE RETURNED FOUR CRITICALS AND EVERY ONE WAS OUTSIDE THE PRESET SAMPLE THE WORK
+HAD BEEN VERIFIED ON.** That is the finding this section exists for, and it outranks everything
+below it. Five reviewers over ten angles found: a selftest gate RED on a multicore preset, an
+`esp32c6-wroom-st` link that no longer completed, five presets failing a red zone they passed at
+the merge base, and an AMP protocol state a live node could never leave. The work had been checked
+on a hand-picked set that covered none of them, while the instrument that answers the whole fleet
+was being held for the end. **The rule this confirms was already written down** -- a three-board
+sample is not a sufficient sample, and anything on the syscall path needs the full sweep -- so the
+lesson is not the rule but that having it is not enough: the sweep has to be the acceptance test of
+the change, not the ceremony after it.
+
+- **THE AUDIT PRICED THE COPY-SITE ITEM ON A PREMISE THAT WAS TRUE AND IRRELEVANT.** It was filed
+  Medium and "latent in production while `CAP_FRAME` is minted only by the selftest probe", which is
+  a correct statement about the unmap route and says nothing about the other one: `ep_copy` refuses
+  a copy whose two ends are the same memory under one owner, and on a region backend both owners are
+  null, so ANY overlapping sender and receiver satisfies it. Two threads of one task naming one
+  static array as both ends of a rendezvous reached the assert with no capability, no `AUTH_MEMORY`,
+  no MMU and no selftest build. **That fact is also what settled the item's two open directions**:
+  refusing the unmap while a thread is parked with its buffer inside the range closes the route the
+  audit described and leaves this one standing. The generalisation: a severity resting on which
+  capability is mintable is a severity resting on one route, and the cheap check is to ask what the
+  same predicate answers where the enforcement is absent.
+- **THE FRAME BUDGET WAS MEASURED ON armv7m AND armv6m ONLY, AND THE TWO ARCHES NOBODY MEASURED BOTH
+  BROKE.** The zero-delta claim holds where it was taken -- the `KICKOS_KERNEL_STACKS=0` presets and
+  the RP2350 AMP nodes are unmoved, and armv6m improved -- and rxv3 and rv32imac were never in the
+  sample. Both regressed, and **neither regressed at the site the first attribution named**: on
+  rv32imac a funnel helper gained a `kpanic` EDGE it had not had before, so the whole console tail
+  interposed into its frame; on rxv3 a slot accessor gained a null test worth two instructions and
+  `-Os` stopped inlining it, which `objdump` settled by showing an inlined divide at the base and a
+  call at the tip. **An attribution handed down is a hypothesis**, and the disassembly is what
+  decides it.
+- **THE PANIC TAIL IS MOST OF WHAT A RED-ZONE FIGURE MEASURES ON THOSE TWO ARCHES**, so a new assert
+  anywhere on a dispatch chain drags the whole console with it. Eight figures across rxv3 and
+  rv32imac now sit at exactly their reserve, which means the next one fails a gate on a board nobody
+  named. `TODO.md` carries it as owed with a direction; it has no milestone home.
+- **A GREEN RED-ZONE GATE IS ONLY A WITNESS IF ITS DURATION IS READ.** That gate keeps one scratch
+  tree per preset and reuses it, and a reused tree does not re-derive generated Kconfig state, so it
+  fails OPEN. A pass that returns in a fraction of a second measured nothing; a real run takes
+  seconds. Same family as the reuse traps `CONTEXT.local.md` records, and the only member whose
+  false outcome is a PASS.
+- **THE PRODUCER'S BOUND DID NOT COVER THE STATE IT WAS BUILT FOR, AND THE REVERSAL IT JUSTIFIED WAS
+  THEREFORE WORSE THAN WHAT IT REPLACED.** The reply-tail bound believed any outstanding count the
+  ring can legally hold, and ZEROED its strike count on that path, while a publication into an
+  exactly-full ring is refused as FULL. So in the one state that needs a recovery, no strike ever
+  accumulated: the node could not move its own head and the only other index was the peer's. The
+  earlier rule released the slot there and stayed clean; holding it pending wedged the crossing for
+  the life of the image. **The fix bounds the OBLIGATION and not the index**, because striking the
+  tail would resynchronise a legitimately full ring and destroy a slow peer's unread answers -- a
+  stalled peer and a dead one are indistinguishable without a timeout. Expiry gives the slot back
+  and abandons one answer whose bytes were already counted lost. What it costs a slow peer is that
+  one refusal; what it costs above two nodes is that any doorbell spends the budget, so an
+  unrelated peer's traffic can expire an obligation early.
+- **AND THE ARM THAT PROVES THAT FIX HAD TO REFUSE THE PLAUSIBLE FIX TOO.** Striking the tail in the
+  full state is the obvious answer and it is wrong; the negative control applies it and reddens two
+  arms. An arm that only distinguishes broken from fixed would have accepted it.
+- **A COMMENT ASSERTING TOTALITY WAS HIDING A DEFECT, AND IT WAS FOUND BY DISBELIEVING THE COMMENT.**
+  The discharge's release was documented as total over a slot whose run a resynchronisation had
+  abandoned -- "this releases nothing". It masks its index against the run standing NOW, so once
+  later calls have been taken it moves the tail over one of THEM, whose reply is still owed. The
+  record carries the fact now, because a masked slot cannot tell an abandoned record from a later
+  wrap's call: they share one.
+- **THE OWNERSHIP RECORD IS A WHOLE-IMAGE LIFETIME BUDGET AND ITS EXHAUSTION HAS NO BOARD WITNESS.**
+  Nothing frees a record, as the bump allocator never takes a block back. A full table answers NULL
+  and spends no arena doing it, which is indistinguishable at the ABI from an exhausted arena BY
+  CONSTRUCTION -- that call returns a pointer and has no errno route. Only the host arm drives the
+  table dry, and its first version could not tell its two subjects apart either, since an
+  arena-exhausted refusal answers NULL and spends no arena as well.
+- **THE OWNERSHIP PROMISE IS TRUE WHEREVER PROTECTION EXISTS AND NOWHERE ELSE.** A board with no
+  region descriptors and no translation admits every in-arena range to every caller, deliberately,
+  in the same posture the grant module already takes. The region and translating backends answer ONE
+  question through two records, and the region side wraps the arena seam rather than joining it,
+  because two callers of that seam are not user allocations at all and a seam-level owner argument
+  would have had to invent an owner for them.
+- **THE OBJECT BUDGET IS CHARGED TO THE POOL SLOT AND NOT COUNTED ON THE TASK, AND THE REASON IS A
+  BUG A COUNTER WOULD HAVE.** The task that releases an object is often not the one that created it,
+  and an exiting thread's task pointer is cleared before the capability sweep runs, so a credit
+  could land on a RECYCLED task slot and grant it capacity it never earned. Deriving the count by
+  scanning removes that class rather than guarding it.
+- **WHAT THE BUDGET BOUNDS IS CREATES, NOT HOLDS, AND THAT IS WEAKER THAN THE DENIAL THE ITEM
+  DESCRIBES.** A task at its ceiling can delegate its objects into a second task and die; the
+  disown that stops a recycled slot inheriting a charge also clears the charge from an object that
+  is still live on somebody else's capability, so one live task can end up holding a whole pool
+  while its own charge reads one. Two tasks at their ceilings empty a pool between them anyway.
+  Charging on delegation, or counting holds, is the direction; both are past what this milestone's
+  decided shape covers, and `TODO.md` carries it.
+- **NOTHING WRITES THE BUDGET AFTER THE SEED, AND THAT IS THE WHOLE OF THIS MILESTONE'S SHARE.**
+  There is no route to lower it and no authority for one. It holds no count, so no release can lift
+  a ceiling something has lowered, which is what makes a zero stay zero once that route exists.
+- **THE SELFTEST GATES COULD NOT BE PRIVILEGE GATES, AND READING "ROOT-GATE BOTH" AS ONE WOULD HAVE
+  REFUSED ROOT.** Root is unprivileged from its first instruction, so a privilege test on the
+  capability mint refuses the only thread that calls it and breaks four already-shipped arms. The
+  mint asks an AUTHORITY; the injection is gated on the LINE rather than the caller, because a line
+  the kernel dispatches itself is not a device a caller could be standing in for, and an authority
+  gate there would have hung two existing injectors that hold none.
+- **THAT ITEM'S SCOPE WAS UNDERSTATED AND A GREP SAYS SO.** Every AMP node variant enables the
+  selftest knob in its own defconfig, so "selftest images only" is "every AMP node this tree can
+  build".
+- **AN ARM THAT REPORTS PLAIN `ok` WHERE ITS SUBJECT IS ABSENT IS INVISIBLE TO BOTH BOOKKEEPING
+  MECHANISMS.** The injection refusal is witnessable only where a controller reserves a line, and
+  its arm took an else-branch that fell through to a control -- no skip, no partial, so neither the
+  skip permissions nor the partial list could see that the claim went unexercised. It reports a
+  partial now. The general form: a permission set catches an unlisted skip, and nothing catches an
+  arm that never says it could not run.
+- **AND A GUARD CAN BE DEAD BECAUSE OF A CAST.** The same arm tested a probe's refusal for absence,
+  but widening a 32-bit negative errno into a 64-bit signed value makes it POSITIVE, so the guard
+  was dead on exactly the 32-bit region boards it existed for. Read a refusal at pointer width.
+- **THERE IS NO GAP-FREE USERSPACE READING OF A PARKED RECEIVER.** Every reading this kernel offers
+  comes out of a COMPLETED rendezvous and describes the sender's side. So an arm needing a receiver
+  parked before a peer acts cannot poll for it; the two that needed it pin both parties to the one
+  core no image may isolate and rank them by priority, which makes the order a property of the
+  scheduler rather than of a sleep. **The skip that had excused them from multicore was itself the
+  defect**: both assert a POSITIVE outcome, so neither was ever in the non-event class that skip is
+  for, and excusing them cost the copy-refusal route its only witness above one core.
+- **A PRIORITY RACE CANNOT BE REDDENED ON THIS BENCH, SO THE MUTATION THAT PROVES THAT PINNING IS
+  NOT THE ONE IT LOOKS LIKE.** Unpinning the two parties passed five runs out of five, the emulator
+  dispatching the high-priority thread to its park before the low one's first instruction. What
+  proves the arm refuses a wrong order is SWAPPING the priorities, not removing the pinning.
+- **THE SYSCALL TABLE'S DOCUMENTED CODE LISTS ARE READ BY NO GATE**, which is why a refusal code
+  landed in the API header and in none of the four creator entries beside it. Proven by stripping
+  three codes from one entry and watching every static gate pass. A gate over that surface is
+  `TODO.md`'s and belongs to the milestone that owns the gates.
+- **THE ITEM ON THE GENERATOR NAMED TWO CHARACTERS AND THE REAL SET IS FOUR, ONE OF WHICH IS NOT A
+  SYNTAX BREAK.** A quote ends the argument and a semicolon splits it into a list, as filed; a
+  backslash must be escaped first or it consumes the others; and a DOLLAR is EXPANDED inside a
+  quoted assignment, so a knob value could pull in an unrelated variable that happened to be in
+  scope where the fragment is included. That one is a substitution, not a broken line.
+- **THE MERGE HAZARD THAT BIT WAS THE SELFTEST ARM COUNT, AND A CLEAN THREE-WAY MERGE GOT IT WRONG
+  BY ONE.** Two items edited one arm-count clause in opposite directions -- one added an arm to it,
+  the other moved an arm out -- and neither hunk conflicted, so the union is neither side's number.
+  Nothing but the image's own plan check catches it, and it catches it as a failed run. Re-derive
+  such an invariant from the registrations after a merge, never from arithmetic on the two diffs.
+- **A BOARD THAT LOOKS LIKE THE TIGHT ONE IS NOT ALWAYS THE TIGHT ONE, AND "TIGHTEST" WAS NOT
+  ESTABLISHED.** The board this file's caveats name as having no arena slack has room and an
+  alignment run-up that absorbs movement; another board's fattest image has far less. Only three of
+  the fleet's presets were priced, and on raw headroom the ranking differs from the one on
+  survivable growth, so the honest statement is per-board and not superlative. Related: an arena
+  cost quoted for one image can be wrong for the image the link assert actually BINDS, which is the
+  fattest one, and a claimed hard-failure threshold was off because the assert is an inequality
+  rather than a strict one.
+- **AN ARENA CLIFF CAN COST 32 KiB WITHOUT FAILING A LINK.** On the esp32c6 split-image posture the
+  app window is aligned, so kernel `.bss` crossing its boundary does not fail anything -- the arena
+  simply starts a window later. One preset is 68 bytes from it and one has already fallen off, which
+  is why that one reaches zero pool headroom under a wider code window. No assert reads that
+  distance. `TODO.md` carries it.
+- **AND WIDENING THE CODE WINDOW WOULD HAVE BEEN THE WRONG ANSWER TO THE ONE IMAGE THAT OVERFLOWED
+  IT.** It costs the whole reserve on every enforcing preset of that chip, drives one to exactly
+  zero pool headroom, and halves the thread ceiling that board ships. Splitting the selftest image
+  the way every other tight board is split leaves the fattest part with room to spare.
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).

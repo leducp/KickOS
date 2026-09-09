@@ -91,12 +91,36 @@ namespace kickos
         constexpr uint32_t SERVICE_PER_SENDER = RING_SLOTS;
         constexpr uint32_t SERVICE_PER_CALL = RING_SLOTS * (NODE_MAX - 1u);
 
-        // Consecutive DEPTH verdicts from one sender before its tail is resynchronised to the
-        // far head. A refused depth does not advance the tail, so without a bound the ring
-        // stays dead for the life of the image; the resynchronisation loses whatever the ring
-        // held and is counted, and the far index it takes is still only ever spent modulo
+        // Consecutive incredible far indices on ONE ring before the index THIS NODE OWNS is
+        // resynchronised to it: the far HEAD at a consumer, the far TAIL at the producer of a
+        // reply ring. Neither refusal advances anything, so without a bound the ring stays
+        // dead for the life of the image; the resynchronisation loses whatever that ring held
+        // and is counted, and the far index it takes is still only ever spent modulo
         // RING_SLOTS.
+        //
+        // THE PRODUCER'S HALF IS THE REPLY RING'S ALONE. A refused CALL reaches an application
+        // that can act on it, so a wedged call ring costs no caller its answer; discarding an
+        // outstanding call would strand a caller nothing on this node can then answer.
         constexpr uint32_t DEPTH_STRIKES = 4u;
+
+        // Service passes ONE DEFERRED ANSWER may hold its call slot for before the obligation
+        // is abandoned: the slot goes back to the peer and the record dies (answer_deferred).
+        // AN EXACTLY FULL REPLY RING REACHES NO STRIKE ABOVE, that outstanding count being one
+        // a well-formed consumer presents, so a node holding an answer for such a ring can
+        // move neither index and the pair is dead for the life of the image without this.
+        //
+        // Distinct from DEPTH_STRIKES and not its value by inheritance: that one destroys a
+        // ring's contents, so it may only fire on a reading no well-formed side could have
+        // produced; this touches no far index and abandons one obligation of this node's own.
+        //
+        // FOUR BECAUSE A LIVE PEER NEEDS ONE: its own drain empties a reply ring whole
+        // (SERVICE_PER_SENDER is RING_SLOTS) and the raise for that drain is latched by the
+        // publications that filled the ring, so the rest is margin for a peer whose doorbell
+        // sits behind a masked region of its own. A pass is any doorbell THIS node takes, so
+        // above two nodes an unrelated peer's traffic spends the budget too.
+        //
+        // PER RECORD, so the held run is back within RING_SLOTS * DEFER_PASSES passes at worst.
+        constexpr uint32_t DEFER_PASSES = 4u;
 
         // A53 line size (DDI 0500J section 2.1). Too low costs sharing: the two indices below
         // have one writer each and different owners.
@@ -310,6 +334,20 @@ namespace kickos
             uint8_t from;
             uint8_t slot;
             uint8_t live;
+            // An answer the reply ring refused: the TOKEN is dead and the obligation is not.
+            // The call slot may not go back to the peer while it stands. It keeps a later call
+            // off this record's masked slot only while the held run still covers that slot: a
+            // resynchronisation has already set taken = tail = head, so a call landing there
+            // afterwards is taken and then refused at inbound_seat.
+            uint8_t pending;
+            // Service passes this obligation has been carried over, against DEFER_PASSES.
+            // Meaningless unless `pending`, and record_defer is the one writer that arms it.
+            uint8_t defers;
+            // The held run that named this record's slot has been abandoned: `slot` may no
+            // longer be spent as a release and no length of run accounts for what this record
+            // owes. The MASKED index cannot say either, an abandoned record and a later wrap's
+            // call sharing one.
+            uint8_t run_gone;
         };
 
         // Seat a record for a held call and answer a TOKEN for it, or FAR_RECORD_NONE where the
@@ -333,10 +371,16 @@ namespace kickos
         // resynchronisation freed under its holder: that slot belongs to a later wrap's call
         // by then and its caller is gone, so nothing is sent and nothing is released.
         //
-        // A REFUSED PUBLICATION IS COUNTED IN reply_unsent AND THE SLOT IS STILL RELEASED. The
-        // answer cannot be remade from here, the reply capability being spent, and a slot held
-        // back would stop the whole run behind it being reclaimed without making the answer
-        // arrive.
+        // A REFUSED PUBLICATION IS COUNTED IN reply_unsent AND ITS CALLER IS STILL ANSWERED.
+        // The answer's BYTES cannot be remade from here, the reply capability being spent, so
+        // what outlives the refusal is the obligation alone: the record is left pending with
+        // its call slot held, and node_service publishes the wire's own refusal shape for it
+        // once that ring is believable again. The payload is NOT retained: that would make the
+        // kernel the keeper of an answer's staleness, which is the workload's property
+        // (docs/design-multicore.md N6e).
+        //
+        // The obligation is itself bounded, at DEFER_PASSES: nothing this node owns can make a
+        // peer read a ring it has stopped reading.
         void inbound_reply(uint32_t token, void const* payload, uint32_t len);
 
         // Release a held call slot. The tail advances over released slots from the oldest, so
@@ -367,6 +411,11 @@ namespace kickos
             Atomic<uint32_t, Order::RELAXED> took;
             Atomic<uint32_t, Order::RELAXED> depth;
             Atomic<uint32_t, Order::RELAXED> depth_reset; // rings resynchronised after DEPTH_STRIKES
+            // The producer's half of that count: reply rings whose far TAIL this node stopped
+            // believing, its own head resynchronised to it after DEPTH_STRIKES. Apart from
+            // depth_reset because the loss is the other side's: a depth reset abandons a peer's
+            // unread publications, this abandons this node's own unread answers.
+            Atomic<uint32_t, Order::RELAXED> tail_reset;
             Atomic<uint32_t, Order::RELAXED> length;
             Atomic<uint32_t, Order::RELAXED> port;
             Atomic<uint32_t, Order::RELAXED> wrong_class; // a reply on the call ring, or the reverse
@@ -381,13 +430,22 @@ namespace kickos
             // A node running no kernel of its own counts EVERY reply here, its thread pool
             // refusing each at the first clause.
             Atomic<uint32_t, Order::RELAXED> reply_drop;
-            // Answers whose publication the reply ring refused, from inbound_reply. Held apart
-            // from send_refused, which the same refusal also counts: that field mixes a
-            // caller's own declined call, which its syscall is told about, with an ANSWER that
-            // is lost where nothing holds the capability to remake it. The take's reservation
-            // makes this unreachable in a live partition, so a non-zero row names a peer whose
-            // reply tail regressed under a reservation it had already granted.
+            // ANSWERS WHOSE BYTES WERE LOST, and the only signal that one was: a publication
+            // the reply ring refused (inbound_reply), and a record a call-ring resynchronisation
+            // abandoned before its service had replied. Held apart from send_refused, which the
+            // first of those also counts: that field mixes a caller's own declined call, which
+            // its syscall is told about, with an ANSWER nothing holds the capability to remake.
+            // ONE COUNT PER LOST ANSWER and never one per attempt to publish its refusal, so
+            // neither the discharge that succeeds nor the expiry at DEFER_PASSES counts. Both
+            // causes need a malformed or regressed peer, so a non-zero row names one.
             Atomic<uint32_t, Order::RELAXED> reply_unsent;
+            // ARRIVALS THIS NODE COULD NOT PUT IN A LOCAL THREAD'S BUFFER, and answered
+            // -KOS_EFAULT instead of a byte count: a reply's payload, a call's payload, or the
+            // kos_recv_info a call's receiver named. APART FROM reply_unsent, which must keep
+            // naming a malformed or regressed PEER: every cause here is this node's own buffer
+            // fault on a message that arrived intact. One count per arrival, so a copy and an
+            // info write both refused counts once.
+            Atomic<uint32_t, Order::RELAXED> deliver_fault;
             // THE ONE FIELD HERE THAT MOVES WITHOUT TRAFFIC, and the whole reason it exists:
             // every count above needs a crossing, so a node this partition never calls is
             // witnessed by nothing. It holds the port the partition names this node biased by
@@ -403,6 +461,10 @@ namespace kickos
 
         Counts const& counts(uint32_t node);
 
+        // Count one Counts::deliver_fault on THIS node. Callable only from this node's own
+        // doorbell body, one writer per row being why a row may sit where a peer reads it.
+        void count_deliver_fault(void);
+
 #if defined(KICKOS_ENABLE_SELFTEST)
         // Publish THIS node's app_alive mark. The node is derived and never a parameter: one
         // writer per row is the whole of why a row may sit where a peer reads it, and a caller
@@ -414,6 +476,10 @@ namespace kickos
         // names and answering every taken CALL on the sender's PORT_REPLY: a PORT_ECHO with its
         // own payload, and anything the endpoint layer did not take as a record with a
         // ZERO-LENGTH reply carrying the same tag.
+        //
+        // AND DISCHARGE EVERY ANSWER A REFUSED PUBLICATION DEFERRED, between the two drains:
+        // after the replies, whose drain makes the deferred answer sendable, and before the
+        // calls, which the slots it frees admit. One carried DEFER_PASSES times is abandoned.
         //
         // Reached from the backend's doorbell service, so it runs with this core's interrupts
         // masked, which is the whole of a one-core kernel's exclusion.
@@ -515,6 +581,60 @@ namespace kickos
         // run rather than four failed claims.
         constexpr uint32_t RESET_RECORD_OK = 0x1Fu;
         uint32_t forge_reset_record(uint32_t from);
+
+        // The PRODUCER's strike bound, driven over THIS NODE'S SELF REPLY RING for the reason
+        // forge_tail_and_send gives: what is under test is this node's own arithmetic against a
+        // tail it did not write, and a peer's ring would put a forged consumer index under a
+        // live consumer. `to` only names whose doorbell a send that stopped refusing would ring.
+        //
+        // Answers a bit per claim:
+        //   1  the first publication against an incredible tail was refused DEPTH
+        //   2  the publication at the strike bound was taken
+        //   4  the head it published at is the far tail this node adopted
+        //   8  tail_reset moved by exactly one
+        // Bit 16 says the scaffold reached the end.
+        constexpr uint32_t TAIL_RECOVERY_OK = 0x1Fu;
+        uint32_t forge_tail_recovery(uint32_t to);
+
+        // A refused ANSWER, and what it leaves behind. One call taken and seated through the
+        // real path, the reply ring toward `from` then held with no slot free by THIS NODE'S OWN
+        // head, and the record's reply spent into it.
+        //
+        // Answers a bit per claim:
+        //   1  the publication was refused, so reply_unsent moved by exactly one
+        //   2  the call slot was NOT released: the caller is still owed an answer
+        //   4  the token no longer resolves, the reply capability having been spent
+        // Bit 8 says the scaffold reached the end, and 16 that it DECLINED against a node that
+        // runs a kernel of its own, which would be moving both of those indices under it. The
+        // ring is given back with room, so forge_answer_discharge alone finishes the pair.
+        constexpr uint32_t ANSWER_DEFER_OK = 0x7u;
+        constexpr uint32_t ANSWER_DEFER_DECLINED = 0x10u;
+        uint32_t forge_answer_defer(uint32_t from);
+
+        // The other half: one service pass, and whether it discharged what the refusal deferred.
+        //
+        // Answers a bit per claim:
+        //   1  a ZERO-LENGTH PORT_REPLY carrying the deferred record's tag reached `from`
+        //   2  the call slot it held is back with the peer
+        //   4  no record of that pair is left pending
+        // Bit 8 says the scaffold reached the end.
+        constexpr uint32_t ANSWER_DISCHARGE_OK = 0x7u;
+        uint32_t forge_answer_discharge(uint32_t from);
+
+        // What a CALL-ring resynchronisation owes the callers it abandons. One held call seated
+        // through the real path, an incredible far head left standing for the whole strike
+        // bound, and the reply ring toward `from` watched across it.
+        //
+        // Answers a bit per claim:
+        //   1  the resynchronisation ran, so depth_reset moved
+        //   2  the record it abandoned is dead
+        //   4  a ZERO-LENGTH PORT_REPLY carrying that record's tag was published toward `from`
+        //   8  reply_unsent moved by exactly one, the answer's own bytes being lost
+        // Bit 16 says the scaffold reached the end, and 32 that it DECLINED for want of a free
+        // reply slot to answer into, which is a precondition and not a failed claim.
+        constexpr uint32_t RESET_ANSWERS_OK = 0x1Fu;
+        constexpr uint32_t RESET_ANSWERS_DECLINED = 0x20u;
+        uint32_t forge_reset_answers(uint32_t from);
 #endif
     }
 }

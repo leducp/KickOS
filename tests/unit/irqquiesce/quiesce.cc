@@ -87,12 +87,7 @@ namespace
     int index_of(int obj_handle)
     {
         kickos::Kernel& k = kickos::kernel();
-        kickos::IrqBinding* b = k.irq_bindings.resolve(obj_handle);
-        if (b == nullptr)
-        {
-            return -1;
-        }
-        return static_cast<int>(b - k.irq_bindings.at(0));
+        return k.irq_bindings.index_of(k.irq_bindings.resolve(obj_handle));
     }
 
     struct IrqQuiesce : public ::testing::Test
@@ -119,6 +114,7 @@ namespace
             ASSERT_GE(index, 0);
             handle = k.irq_bindings.handle_for(index);
             kickos::IrqBinding* b = k.irq_bindings.at(index);
+            ASSERT_NE(b, nullptr);
             *b = kickos::IrqBinding();
             b->line = LINE_TARGET;
             k.irq_refs[index] = 1;
@@ -145,6 +141,7 @@ namespace
     {
         seat_binding();
         kickos::IrqBinding* b = kickos::kernel().irq_bindings.at(index);
+        ASSERT_NE(b, nullptr);
 
         kickos_isr_irq(LINE_TARGET);
         EXPECT_EQ(kickos::irqfix::g_probe_calls, 1u);
@@ -157,6 +154,7 @@ namespace
     {
         seat_binding();
         kickos::IrqBinding* b = kickos::kernel().irq_bindings.at(index);
+        ASSERT_NE(b, nullptr);
 
         kickos::IrqDispatch const bound = kickos::irq_published(LINE_TARGET);
         EXPECT_EQ(bound.handler, static_cast<kickos::IrqHandler>(probe_handler));

@@ -23,7 +23,8 @@ extern "C"
 // Debug console: unbuffered, polling, straight at the kernel console, so it works in boot
 // and panic. NOT stdout: ordinary output is libc stdio over a userspace console driver.
 // Returns bytes written (a len-0 write is a legitimate 0), or -KOS_EFAULT for a buffer the
-// caller cannot read. kos_print discards both.
+// caller cannot read. THE COUNT CAN BE SHORT: the buffer is streamed in chunks with no lock
+// spanning them, so a page unmapped mid-write stops the walk. kos_print discards both.
 int32_t kos_kconsole_write(void const* buf, size_t len);
 void kos_print(char const* s);
 
@@ -38,11 +39,14 @@ void kos_sleep_ns(uint64_t ns);
 // THIS thread's table): it is not an array index, and it does NOT name the same object in
 // another thread, so a child gets it by delegation through kos_thread_params.caps (see
 // kos_cap_grant). Create grants WAIT|SIGNAL|TRANSFER.
-// The two exhaustion codes are NOT interchangeable: -KOS_ENOMEM is the object's own shared
-// pool (here KICKOS_MAX_SEMAPHORES), -KOS_EMFILE is THIS thread's capability table. Every
-// create below can return either.
-// -> 0; -KOS_ENOMEM; -KOS_EMFILE; -KOS_EINVAL (`initial` outside [0, KOS_SEM_COUNT_MAX], or a
-// null/misaligned out_cap); -KOS_EFAULT (out_cap is not writable by the caller).
+// THE THREE EXHAUSTION CODES ARE NOT INTERCHANGEABLE, and every create below can return any
+// of them: -KOS_ENOMEM is the object's own shared pool (here KICKOS_MAX_SEMAPHORES) with no
+// slot left, -KOS_EMFILE is THIS thread's capability table with no slot left, and
+// -KOS_EOVERFLOW is THIS TASK at its ceiling for that pool while the pool still has slots
+// (KICKOS_TASK_OBJECT_BUDGET, and one slot of every pool that no single task can reach).
+// -> 0; -KOS_ENOMEM; -KOS_EMFILE; -KOS_EOVERFLOW; -KOS_EINVAL (`initial` outside
+// [0, KOS_SEM_COUNT_MAX], or a null/misaligned out_cap); -KOS_EFAULT (out_cap is not writable
+// by the caller).
 int kos_sem_create(int initial, kos_cap_t* out_cap);
 // 0, or -KOS_EBADF (bad/stale/closed cap) / -KOS_EPERM (cap lacks WAIT/SIGNAL).
 int kos_sem_wait(kos_cap_t sem);
@@ -55,7 +59,7 @@ int kos_sem_post(kos_cap_t sem);
 // CAP_TRANSFER-only cap. A lower-priority holder contended by a higher-priority waiter is
 // boosted to the waiter's priority until it unlocks. Not recursive: locking a mutex you
 // already hold returns -KOS_EDEADLK.
-int kos_mutex_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EINVAL/-KOS_EFAULT
+int kos_mutex_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EOVERFLOW/-KOS_EINVAL/-KOS_EFAULT
 // Acquire (ALL error-shaped codes are negative: see <kickos/sys/errno.h>):
 //   0               acquired, protected state consistent
 //   -KOS_EOWNERDEAD acquired and the lock IS HELD, but the previous owner died holding it and
@@ -72,7 +76,7 @@ int kos_mutex_unlock(kos_cap_t mtx);
 // above. Create grants a full-rights cap (send needs SIGNAL, recv needs WAIT). send and recv block until the peer arrives; the kernel copies
 // min(sent, capacity) bytes and receiver-side truncation is NOT an error. A send above
 // KOS_EP_MSG_MAX is rejected (-KOS_EINVAL); recv clamps its capacity.
-int kos_endpoint_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EINVAL/-KOS_EFAULT
+int kos_endpoint_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EOVERFLOW/-KOS_EINVAL/-KOS_EFAULT
 // The same endpoint, with its receiver in the kernel running on `node`: locality is settled
 // at the mint and never reaches a caller of kos_send. Privileged, and the cap it grants
 // carries SIGNAL alone, so a far endpoint is never received on or served locally.
@@ -90,6 +94,14 @@ int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeo
 // -> bytes transferred (>= 0), or a negative -KOS_E*: EINVAL (len > KOS_EP_MSG_MAX), EFAULT
 // (bad buffer), EBADF/EPERM (bad cap / no SIGNAL right), EPIPE (dead endpoint, or the last
 // receiver went away while parked). n == 0 is a valid zero-length signal, not an error.
+//
+// EFAULT ALSO COVERS THE PEER'S BUFFER, on send, recv, call and reply alike: the bound-check
+// runs at the call and the copy at the rendezvous, so a parked receiver's page can be
+// unmapped in between, and the two ends may be the same memory (one static array named by two
+// threads of one task). Both parties are answered EFAULT, a receiver already off its queue
+// WOKEN with it rather than with a byte count. AND THE TRANSFER IS NOT UNDONE: the copy stops
+// at the granule refused, so a buffer answered EFAULT may hold a head of the new bytes over a
+// tail of the old, up to KOS_EP_MSG_MAX (docs/reference/ipc-call-reply.md).
 int32_t kos_send(kos_cap_t ep, void const* buf, size_t len);
 // Receive up to `cap_len` bytes into buf; `info` (if non-null) receives the sender badge
 // and reply cap (kos_recv_info: reply_cap == KOS_CAP_NONE for a plain kos_send, a real
@@ -301,7 +313,11 @@ int kos_shutdown(int status);
 // byte by byte, so an unreadable pointer costs the text, not the panic.
 void kos_panic(char const* msg) __attribute__((noreturn));
 
-void kos_irq_inject(int irq);
+// Raise `irq` at the controller, standing in for a device that fired. Self-test only, and
+// gated on the LINE and not on the caller: -KOS_EINVAL for a number out of range,
+// -KOS_EPERM for a line the kernel dispatches to a vector of its own (the tick, console TX,
+// the doorbell), which is not a device a caller could be standing in for.
+int kos_irq_inject(int irq);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
 // Reboot into the chip's bootloader (firmware-download mode). Needs KOS_AUTH_SYSTEM, so like
@@ -371,8 +387,9 @@ int kos_irq_attach(int irq, kos_cap_t sem_cap);
 // the line and posts the bound notification; the holder waits in thread context and unmasks
 // once serviced. Possession of the cap, not an authority bit, authorises wait/ack/notify.
 // `flags` is a kos_irq_claim_flags set; the trigger type is fixed for the line's life.
-// -> 0, or -KOS_EPERM/EINVAL/EBUSY/EFAULT, -KOS_ENOMEM (binding pool) or -KOS_EMFILE (the
-// caller's cap table); the cap lands in *out_cap.
+// -> 0, or -KOS_EPERM/EINVAL/EBUSY/EFAULT, -KOS_ENOMEM (binding pool), -KOS_EMFILE (the
+// caller's cap table) or -KOS_EOVERFLOW (this TASK's ceiling of bindings, the pool still
+// having slots); the cap lands in *out_cap.
 int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap);
 int kos_irq_wait(kos_cap_t irq_cap);   // block until the line fires; 0, or -KOS_EBADF/-KOS_EPERM
 int kos_irq_ack(kos_cap_t irq_cap);    // unmask the line; 0, or -KOS_EBADF/-KOS_EPERM
@@ -456,32 +473,35 @@ void kos_clock_set_realtime(uint64_t unix_ns);
 // Allocating RESERVES memory and grants nothing: reachability comes from handing the block
 // to a spawn or a task create, or from asking for it explicitly with kos_mem_self_grant.
 //
-// THE NUMBER IS AN ADDRESS IN THE CALLING TASK'S OWN NAMESPACE. Where a backend translates,
-// it names a range reserved in that task's address space and mapped nowhere until the
-// self-grant maps it; a reservation another task made is not nameable here at all. Handing
-// the block over maps it in the receiving task at the SAME address, so a pointer written
-// into the block still means the same thing on the far side.
+// THE NUMBER IS AN ADDRESS IN THE CALLING TASK'S OWN NAMESPACE, and a reservation another
+// task made is nameable by this one nowhere: not here, not as a spawn's mem_base, not as a
+// caller-owned stack_base, not as a self-grant. Under translation it is an address in that
+// task's space, mapped nowhere until the self-grant maps it; on a region backend it is an
+// arena address the kernel records the reserving task against. Handing the block over reaches
+// the receiving task at the SAME address, so a pointer inside it still means the same thing.
 //
-// EXHAUSTION HAS TWO SOURCES on a translating backend and NULL is both: the memory itself,
-// and the number of distinct blocks one task may hold, a reservation costing a slot of a
-// bounded per-space list that nothing frees.
+// EXHAUSTION HAS TWO SOURCES ON EITHER ENFORCING BACKEND and NULL is both: the memory itself,
+// and how many distinct blocks may be reserved at all, a reservation costing a slot of a
+// bounded list that nothing frees (per address space under translation, per image over the
+// arena's ownership record). NOTHING TELLS THEM APART: this call answers a pointer.
 void* kos_ram_alloc(size_t size);
 
 // Make [base, base+size) reachable by the CALLER: kos_ram_alloc reserves, this grants, and
 // nothing grants implicitly.
 //
 // Requires AUTH_MEMORY. `base` must name a block the CALLING TASK reserved with
-// kos_ram_alloc; the whole reservation is what becomes reachable, and an address some other
-// task reserved is refused. Under an MPU the reachability is one region of the calling
-// THREAD's set, run through the same Rule 7 admission predicate as a spawn-time grant and
-// rounded up to what the MPU can describe (arch_ram_region_size); under translation it is a
-// mapping in the calling task's address space, which every thread of that task then reaches
-// (a grant guarantees access to its HOLDER, never denial to a peer).
+// kos_ram_alloc, and an address some other task reserved is refused. Under an MPU the
+// reachability is one region of the calling THREAD's set, run through the same Rule 7
+// admission predicate as a spawn-time grant and rounded up to what the MPU can describe
+// (arch_ram_region_size), and THAT ROUNDED WINDOW must lie inside one block this task
+// reserved; under translation the whole reservation becomes a mapping in the calling task's
+// space, which every thread of that task then reaches (a grant guarantees access to its
+// HOLDER, never denial to a peer).
 //
 // BOUNDED, and by a different budget on each: the hardware region budget under an MPU, where
 // a thread already spends up to 5 of KICKOS_MPU_MAX_REGIONS on code, static data, its domain
-// and its stack; the reservation list under translation, which the allocation above is what
-// spends.
+// and its stack; the reservation list under translation. Either way the ALLOCATION above
+// spends the second budget, and not this call.
 //
 // `flags` is kos_mem_flags: the memory TYPE to commit the region with. Where the chip
 // PROGRAMS that type, asking for it spends a descriptor even on a block the caller can
@@ -525,7 +545,9 @@ int32_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1);
 // memory. Returns 0 or a negative KOS_E*.
 int kos_frame_map(kos_cap_t frame, kos_cap_t space, uintptr_t va, uint32_t flags);
 
-// The inverse, and only for a range that arrived through kos_frame_map.
+// The inverse, and only for a range that arrived through kos_frame_map. IT DOES NOT ASK
+// WHAT NAMES THE RANGE: a thread of that space parked in kos_recv with its buffer inside it
+// is woken -KOS_EFAULT, and so is whoever was sending to it.
 int kos_frame_unmap(kos_cap_t frame, kos_cap_t space, uintptr_t va);
 
 #endif

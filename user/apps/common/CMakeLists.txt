@@ -28,7 +28,8 @@ kickos_add_diagnostic_apps(fault panicgate specfault)
 if(KICKOS_HAVE_LIBC)
   add_subdirectory(gpioblink)
   add_subdirectory(libc_exit)
-  kickos_add_diagnostic_apps(mpu_fault rootfault rootgone rootauth rebootdemo reclaimwit)
+  kickos_add_diagnostic_apps(mpu_fault rootfault rootgone rootauth rebootdemo reclaimwit
+                             objbudget)
 endif()
 
 # --- Fault isolation, translation, and the host sim --------------------------------------

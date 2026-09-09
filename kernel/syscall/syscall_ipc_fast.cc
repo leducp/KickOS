@@ -121,9 +121,6 @@ namespace kickos
             return nullptr; // the RECEIVER's table or its reply bound, and no side effect yet
         }
 
-        // Every refusal is behind us. From here the call completes.
-        g_ipc_fast_taken++;
-        (void)wq_pop_highest(e->recv_waiters); // == w, nothing mutates under this mask
         size_t n = send_len;
         if (w->ipc.len < n)
         {
@@ -131,10 +128,21 @@ namespace kickos
         }
         // The request end is the caller's SAVED TRAP FRAME and so kernel storage, which
         // is what a null owner names; the receiver's end is its own space.
-        bool const copied = ep_copy(ipc_buf_space(w), w->ipc.buf, nullptr,
-                                    reinterpret_cast<uintptr_t>(&args[3]), n);
-        KICKOS_ASSERT(copied);
-        (void)copied;
+        //
+        // AHEAD of the commit below, unlike the copy in every other IPC path: this file
+        // compiles on non-translating arches ONLY, where access_copy is a bare kmemcpy and
+        // the one refusal ep_copy has left is the same-owner overlap test, which moves no
+        // byte. A receiver that named a range inside this caller's saved frame, reachable
+        // through a task-mate's regions, is that case, and it must not be a panic.
+        if (not ep_copy(ipc_buf_space(w), w->ipc.buf, nullptr,
+                        reinterpret_cast<uintptr_t>(&args[3]), n))
+        {
+            return nullptr; // a fall-through, so endpoint_call answers it
+        }
+
+        // Every refusal is behind us. From here the call completes.
+        g_ipc_fast_taken++;
+        (void)wq_pop_highest(e->recv_waiters); // == w, nothing mutates under this mask
         c->call_seq++; // new epoch BEFORE the mint: the reply cap rides this seq
         uint32_t rcap = KCAP_INVALID;
         int const minted = cap_install_reply(w, c, &rcap);

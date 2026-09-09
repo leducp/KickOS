@@ -25,9 +25,9 @@ namespace kos
     {
         kos_sleep_ns(ns);
     }
-    inline void irq_inject(int irq)
+    inline int irq_inject(int irq)
     {
-        kos_irq_inject(irq);
+        return kos_irq_inject(irq);
     }
     inline int irq_attach(int irq, kos_cap_t sem_cap)
     {

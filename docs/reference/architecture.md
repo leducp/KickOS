@@ -575,8 +575,10 @@ the kernel is unreachable without preemption. `docs/design-task-layer.md` is the
   a cross-domain pointer raises `SIGSEGV`, translated into the same fault path. **Per-domain data
   isolation has been enforced in the sim since M0.** Grant *geometry* is validated (page-aligned
   arena sub-range), and grant *ownership* is no longer taken on the spawner's word: it is
-  authenticated (M3), and Rule 7 (`grant-refuses-kernel-reserved-blocks`) mechanically refuses an
-  inadmissible region for **every** granter, privileged ones included. What the sim still cannot
+  authenticated in two halves, the arena bound since M3 and WHICH TASK inside the arena reserved
+  the block since M8.3 (`arena-block-owner-is-the-reserving-task`), and Rule 7
+  (`grant-refuses-kernel-reserved-blocks`) mechanically refuses an inadmissible region for
+  **every** granter, privileged ones included. What the sim still cannot
   reproduce is the user<->kernel boundary itself -- a Linux process has no CPU privilege level --
   so a reserved arena page stands in for it, and that one boundary is hardware-only.
 
@@ -731,9 +733,10 @@ carries a memory-type field (ARM PMSA: device + XN); it is a silent no-op on PMP
 only real if the kernel can *refuse* a grant overlapping a block it owns for life (timebase, IRQ
 controller, MPU, clock/reset gates). The refusal is **mechanical and binds every granter,
 privileged ones included** -- it is not "trust the granter". `grant_region_admissible(base, size,
-attr, caller_privileged)` (`kernel/grant`) is the single-region policy: refuse size-0/wrap, refuse
-ANY reserved-block overlap, then for a **device** grant require privileged + exactly one MPU
-descriptor (no rounding) + not a bit-band alias, or for a **RAM** grant require
+attr, caller_authorized)` (`kernel/grant`) is the single-region policy, its fourth argument
+AUTH_MEMORY on the caller's authority cap and never `Thread::privileged`: refuse size-0/wrap,
+refuse ANY reserved-block overlap, then for a **device** grant require that authority + exactly
+one MPU descriptor (no rounding) + not a bit-band alias, or for a **RAM** grant require
 `arch_ram_region_admissible` AND confinement to the user arena **for every caller** (no
 privileged waiver) -- power-of-two size plus natural alignment on a pow2-mode backend
 (PMSAv7, PMP NAPOT), a granule multiple on a base+limit one (PMSAv8, SYSMPU, RX). `domain_for` (`kernel/domain`) runs it at the **region-commit chokepoint** on the
@@ -749,6 +752,12 @@ either alias window is refused. `grant_reserved_validate` asserts once at boot (
 arena + app extents are reserved-disjoint. Under no enforcement (`KICKOS_HAVE_MPU=0`) the whole
 module is inline no-op stubs, so the call sites pay zero flash. (Design + worked K64F PIT case:
 `../design-m4-driver-model.md` sec.7.)
+
+**Arena confinement is all this predicate says about a RAM range's provenance.** WHICH task
+inside the arena reserved a block is a second authority, `ram_owner_nameable` (`kernel/include/kickos/ramown.h`),
+asked BESIDE Rule 7 at each of the three paths that let a caller name a block and deliberately not
+inside it: the grant module then stays arch-seam-only, and its host gate needs no task pool to
+compile. See `arena-block-owner-is-the-reserving-task`.
 
 **Domains vs kernel instances (complementary, not competing).** The KickCAT whole-bus sim runs
 many slaves, and **each slave is its own MCU -> its own KickOS kernel instance**; several
@@ -1120,8 +1129,10 @@ hold is `domain_ref` and its ceiling is refused at `obj_ref_inc`. The contract b
   GLOBAL object handle in the binding, which `irq_sem_post` re-resolves from the pool per fire
   (an ISR runs on a random interrupted thread's table, so `cap_resolve` from ISR context is
   meaningless). Capabilities are an arm-path concern only.
-- **Authenticated grant ownership** is the memory-side twin: a domain may grant/share only a
-  region it owns. Same problem as handles, applied to RAM instead of objects; designed together.
+- **Authenticated grant ownership** is the memory-side twin: a task may grant/share only a
+  block it reserved. Same problem as handles, applied to RAM instead of objects; designed
+  together, and the reservation carries the owning task's generation for the same reason a
+  handle does.
 - **Low-barrier is a hard constraint.** A plain app never writes a capability manifest: the
   runtime/root task wires the default cap set (`cap_install_defaults`), which seats the stdout cap
   at reserved index 0 once the console is published and nothing before -- `write`/`printf` stays a

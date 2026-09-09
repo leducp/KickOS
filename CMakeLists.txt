@@ -67,6 +67,8 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
                 KICKOS_ROOT_STACK_SIZE KICKOS_MAX_SEMAPHORES KICKOS_MAX_MUTEXES
                 KICKOS_MAX_ENDPOINTS KICKOS_CAP_TABLE_SUPPLY KICKOS_MAX_SPAWN_GRANTS
                 KICKOS_MAX_IRQ_HANDLES KICKOS_MAX_FRAME_RUNS KICKOS_ASPACE_RANGES
+                KICKOS_RAM_OWNER_SLOTS
+                KICKOS_TASK_OBJECT_BUDGET
                 KICKOS_RTT_CH1_SIZE
                 KICKOS_USER_HEAP_SIZE
                 KICKOS_MAX_INSTANCES KICKOS_PANIC_DUMP KICKOS_DIAG_TERSE
@@ -1291,7 +1293,7 @@ if(KICKOS_BUILD_TESTS)
   kickos_find_kconfig(_kconfig_py _kconfig_found)
   _add_test(NAME kconfig_gen
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_gen.sh"
-                    "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
+                    "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_COMMAND}")
   set_tests_properties(kconfig_gen PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   # The shared-kernel hardware predicate above, driven on a board whose arch declares no
@@ -1392,6 +1394,11 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
 endif()
 
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/ramowner/CMakeLists.txt")
+  add_subdirectory(tests/unit/ramowner)
+endif()
+
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/drvbringup/CMakeLists.txt")
   add_subdirectory(tests/unit/drvbringup)
 endif()
@@ -1472,6 +1479,14 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/deathspace/CMakeLists.txt")
   add_subdirectory(tests/unit/deathspace)
+endif()
+
+# The K-seam sources again with two object pools resized and the per-task object budget below
+# one of them, plus syscall_obj.cc: no preset can state that geometry, and at the preset's own
+# the budget refusal is unreachable from a pool the table fills first.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/taskbudget/CMakeLists.txt")
+  add_subdirectory(tests/unit/taskbudget)
 endif()
 
 # The ARM64 stage-1 map editor itself, compiled for the host: the instruction-side debt a

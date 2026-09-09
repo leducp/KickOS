@@ -488,14 +488,19 @@ void kickos_armv8a_doorbell_park(void)
     // This core's own interface enabled the timer PPI, so masking its bank down to the doorbell
     // is what keeps kickos_isr_timer out of a core that reaches no scheduler.
     kickos_armv8a_gic_doorbell_only();
-    __asm volatile("msr daifclr, #2" ::: "memory");
 #if KICKOS_AMP_NODE
     // What was sent to this core before it could be poked: a sender that found it unseatable
     // published anyway and skipped the raise. Read once here, behind the barrier pairing with
     // the sender's, before this core waits for a doorbell it may already have missed.
+    //
+    // AHEAD OF THE UNMASK: the service body's only exclusion is this core's mask and the
+    // vector reaches the same body, so a doorbell landing inside this call would re-enter
+    // take_call or release_call. An SGI raised while it runs stays pending, so waiting
+    // misses nothing.
     arch_ipi_fence();
     kickos_amp_node_service();
 #endif
+    __asm volatile("msr daifclr, #2" ::: "memory");
     uint32_t const me = arch_cpu_id();
     while (true)
     {

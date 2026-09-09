@@ -108,25 +108,37 @@ namespace kickos
             return &slots_[index];
         }
 
-        // The slot at a known-live index (for the caller to initialize after alloc()).
-        T* at(int index) { return &slots_[index]; }
+        // The slot at `index`, or nullptr where `index` is outside [0, N). THE BOUND ALONE:
+        // a freed slot still hands back its last occupant's fields, so live() is what makes a
+        // sweep over indices legal. Takes an INDEX and never a handle, so `at(alloc())` needs
+        // no test of its own.
+        T* at(int index)
+        {
+            if (static_cast<uint32_t>(index) >= static_cast<uint32_t>(N))
+            {
+                return nullptr;
+            }
+            return &slots_[index];
+        }
 
-        // For a sweep keyed on OBJECT state rather than on a handle. A freed slot keeps its
-        // last contents, so at() on one hands back stale fields: live() is what makes such
-        // a sweep legal, not optional decoration.
+        // For a sweep wanting liveness alone, with no slot to dereference.
         static constexpr int capacity() { return N; }
-        bool live(int index) const { return used_[index]; }
+        bool live(int index) const
+        {
+            return static_cast<uint32_t>(index) < static_cast<uint32_t>(N) and used_[index];
+        }
 
         // Slot index of an object this pool handed out, for a caller holding the object but
-        // not its handle; -1 if `p` is not one of our slot bases. Compares addresses as
-        // integers, because subtracting pointers that may not point into slots_ is UB.
+        // not its handle; -1 if `p` is not one of our slot bases, WHICH INCLUDES nullptr, so
+        // index_of(resolve(h)) is one refusal and not two. Compares addresses as integers,
+        // because subtracting pointers that may not point into slots_ is UB.
         // sizeof(T) is rarely a power of two, so a core with no divide instruction calls a
         // libgcc helper here; keep it off any per-message path.
         int index_of(T const* p) const
         {
             uintptr_t const base = reinterpret_cast<uintptr_t>(&slots_[0]);
             uintptr_t const q = reinterpret_cast<uintptr_t>(p);
-            if (q < base)
+            if (p == nullptr or q < base)
             {
                 return -1;
             }
@@ -142,9 +154,15 @@ namespace kickos
             return static_cast<int>(off / sizeof(T));
         }
 
-        // The opaque handle for a live slot index, carrying its current generation.
+        // The opaque handle for a live slot index, carrying its current generation; -1 for an
+        // index outside [0, N). That -1 needs no sentinel test at a consumer: its low half is
+        // the reserved all-ones index, so resolve() and free() already answer nothing for it.
         int handle_for(int index) const
         {
+            if (static_cast<uint32_t>(index) >= static_cast<uint32_t>(N))
+            {
+                return -1;
+            }
             return static_cast<int>((static_cast<uint32_t>(gen_[index]) << INDEX_BITS) |
                                     static_cast<uint32_t>(index));
         }

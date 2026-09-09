@@ -544,6 +544,12 @@ namespace kickos
             return -KOS_EPERM;
         }
         Kernel& k = kernel();
+        // Before the binding pool and before the publication record, as at the three object
+        // creators: a task at its ceiling is refused without spending either.
+        if (not task_object_admit(k.irq_owner, KICKOS_MAX_IRQ_HANDLES, c->task))
+        {
+            return -KOS_EOVERFLOW; // this task holds its ceiling of bindings already
+        }
 #if KICKOS_KERNEL_CORES > 1
         // BEFORE THE ALLOCATION BELOW: a retirement may still owe the pool the slot this claim
         // is about to ask for.
@@ -573,14 +579,14 @@ namespace kickos
         }
 #endif
         int const i = k.irq_bindings.alloc();
-        if (i < 0)
+        IrqBinding* b = k.irq_bindings.at(i); // total over alloc()'s -1: one refusal, below
+        if (b == nullptr)
         {
 #if KICKOS_KERNEL_CORES > 1
             pub_unreserve(pub);
 #endif
             return -KOS_ENOMEM;
         }
-        IrqBinding* b = k.irq_bindings.at(i);
         sem_init(&b->sem, 0);
         b->line = line;
         // The first irq_wait arms the line: a claim leaves it masked, so there is no window
@@ -593,6 +599,7 @@ namespace kickos
             b->trigger = IRQ_LEVEL;
         }
         k.irq_refs[i] = 1; // the claimer's cap is the first reference
+        k.irq_owner[i] = task_owner_tag(c->task);
         int const obj = k.irq_bindings.handle_for(i);
         // Install BEFORE attaching: a failure path must never leave a line bound to a slot
         // that is about to be freed.
@@ -602,6 +609,7 @@ namespace kickos
         if (rc != 0)
         {
             k.irq_refs[i] = 0;
+            k.irq_owner[i] = TASK_OWNER_NONE;
             k.irq_bindings.free(obj);
 #if KICKOS_KERNEL_CORES > 1
             pub_unreserve(pub);
@@ -734,11 +742,11 @@ namespace kickos
     {
         Kernel& k = kernel();
         IrqBinding* b = k.irq_bindings.resolve(obj_handle);
-        if (b == nullptr)
+        int const idx = k.irq_bindings.index_of(b);
+        if (idx < 0)
         {
             return;
         }
-        int const idx = static_cast<int>(b - k.irq_bindings.at(0));
         uint8_t& r = k.irq_refs[idx];
         if (r > 0)
         {
@@ -752,6 +760,11 @@ namespace kickos
                 r = 1; // leak, never strand
                 return;
             }
+            // The budget comes back HERE and not at the pool free below, which above one
+            // kernel core happens later, from a reclamation: the binding is unreachable from
+            // this instant and holding its owner until the slot returns would keep charging a
+            // task for a line it no longer has.
+            k.irq_owner[idx] = TASK_OWNER_NONE;
 #if KICKOS_KERNEL_CORES > 1
             // The slot returns with the record's grace period: a dispatch still reading that
             // record is one still holding this slot's address as its pre-bound argument.

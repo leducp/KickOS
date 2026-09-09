@@ -24,6 +24,7 @@
 #include <kickos/irq.h>
 #include <kickos/irqlock.h>
 #include <kickos/ktrace.h>
+#include <kickos/ramown.h>
 #include <kickos/console_tx.h>
 #include <kickos/domain.h>
 #include <kickos/task.h>
@@ -81,14 +82,17 @@ namespace kickos
 
         // Nothing is written on failure: the stub seated its codec's NONE before trapping,
         // so the sys.h "always written" guarantee already holds.
+        //
+        // cap_out_check proved this word writable and 4-aligned, so one granule holds all of
+        // it and a refusal here moves NO byte: the mapping went away since that check. The
+        // capability stays installed and unnameable until its holder dies.
         uint64_t cap_out_deliver(uintptr_t out, int rc, uint32_t handle)
         {
-            if (rc == 0)
+            if (rc == 0
+                and not kaccess_to_user(user_space_of(sched::current()), out, &handle,
+                                        sizeof(handle)))
             {
-                bool const ok = kaccess_to_user(user_space_of(sched::current()), out, &handle,
-                                                sizeof(handle));
-                KICKOS_ASSERT(ok);
-                (void)ok;
+                rc = -KOS_EFAULT;
             }
             return static_cast<uint64_t>(rc);
         }
@@ -97,9 +101,13 @@ namespace kickos
         // kconsole_write streams privileged whatever it is handed, so a user pointer
         // reaching it names whatever the RUNNING process holds at that address.
         //
+        // Answers the bytes that REACHED the console. No lock spans the chunks, so a granule
+        // the entry proved readable can be unmapped before a later chunk reaches it, and the
+        // walk stops there.
+        //
         // noinline is load-bearing for user_panic's reason below: the chunk must not widen
         // syscall_dispatch's frame.
-        __attribute__((noinline)) void console_write_user(uintptr_t buf, size_t len)
+        __attribute__((noinline)) size_t console_write_user(uintptr_t buf, size_t len)
         {
             char chunk[64];
             struct arch_aspace* const space = user_space_of(sched::current());
@@ -111,12 +119,14 @@ namespace kickos
                 {
                     n = sizeof(chunk);
                 }
-                bool const ok = kaccess_from_user(chunk, space, buf + done, n);
-                KICKOS_ASSERT(ok);
-                (void)ok;
+                if (not kaccess_from_user(chunk, space, buf + done, n))
+                {
+                    break;
+                }
                 kconsole_write(chunk, n); // fan-out (chip + RTT), not the raw transport
                 done += n;
             }
+            return done;
         }
 
         // noinline is load-bearing: the message buffer must not widen syscall_dispatch's
@@ -142,9 +152,10 @@ namespace kickos
                     {
                         break;
                     }
-                    bool const ok = kaccess_from_user(&buf[i], space, msg + i, 1);
-                    KICKOS_ASSERT(ok);
-                    (void)ok;
+                    if (not kaccess_from_user(&buf[i], space, msg + i, 1))
+                    {
+                        break; // readable a moment ago, gone now: truncate here
+                    }
                     if (buf[i] == '\0')
                     {
                         break;
@@ -166,10 +177,9 @@ namespace kickos
                 if (i + 1 == sizeof(buf) and user_readable_ok(msg + i, 1))
                 {
                     char probe = '\0';
-                    bool const ok = kaccess_from_user(&probe, space, msg + i, 1);
-                    KICKOS_ASSERT(ok);
-                    (void)ok;
-                    if (probe != '\0')
+                    // A refused probe leaves it NUL, so no marker is written: the kernel
+                    // cannot claim a truncation it could not read.
+                    if (kaccess_from_user(&probe, space, msg + i, 1) and probe != '\0')
                     {
                         buf[i - 3] = '.';
                         buf[i - 2] = '.';
@@ -272,8 +282,8 @@ uint64_t syscall_body(uintptr_t nr,
                 // len-0 write legitimately returns 0, so 0 must not double as reject.
                 return static_cast<uint64_t>(-KOS_EFAULT);
             }
-            console_write_user(a0, len);
-            return len;
+            // A short count where a granule went away mid-stream.
+            return console_write_user(a0, len);
         }
         case KOS_SYS_YIELD:
         {
@@ -656,12 +666,21 @@ uint64_t syscall_body(uintptr_t nr,
         {
             // Test scaffolding, compiled out of the production ABI. Never
             // KICKOS_UNREACHABLE a user-supplied number: that would let a user halt the
-            // kernel. Ungated: this simulates a DEVICE firing, and selftest injects it from
-            // an unprivileged thread.
+            // kernel. Not gated on the CALLER: this simulates a DEVICE firing, and selftest
+            // injects it from an unprivileged thread at authority 0. The gate is on the LINE
+            // instead, the narrower unit.
             int irq = static_cast<int>(a0);
             if (irq < 0 or irq >= KICKOS_MAX_IRQ)
             {
                 return static_cast<uint64_t>(-KOS_EINVAL); // bad irq line
+            }
+            // THE SAME REFUSAL irq_claim MAKES: a line the kernel drives (the tick, console
+            // TX, the doorbell) is not a device a caller could stand in for, and raising one
+            // reaches kernel state no capability named. Unconditional, as at the claim: every
+            // in-tree injector uses a soft-only or a selftest-base line.
+            if (arch_irq_line_kernel_owned(irq))
+            {
+                return static_cast<uint64_t>(-KOS_EPERM);
             }
             // The image-wide masked and pending words are read-modify-written here, and the
             // backend's own bracket excludes this core's handler alone.
@@ -742,10 +761,19 @@ uint64_t syscall_body(uintptr_t nr,
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
         case KOS_SYS_ASPACE_PROBE:
         {
-            // Test scaffolding for the address-space seam. Not privilege-gated: every op is
-            // a kernel-side scenario over a space of its own, and none of them takes a
-            // caller-supplied address.
+            // Test scaffolding for the address-space seam. Gated PER OP and not here: three
+            // ops take a caller-supplied address (FRAME_AT, MEMTYPE_AT, UNMAP_HERE) and two
+            // name pool frames with a capability in the caller's table, which
+            // syscall_aspace.cc refuses without AUTH_MEMORY.
             return aspace_probe(a0, a1);
+        }
+#elif defined(KICKOS_ENABLE_SELFTEST)
+        case KOS_SYS_ASPACE_PROBE:
+        {
+            // A REGION BOARD DECLINES BY NAME rather than falling to the unknown-number arm:
+            // an arm that reads this refusal to decide whether the board translates cannot
+            // use -KOS_EINVAL, which also means "bad op".
+            return static_cast<uint64_t>(-KOS_ENOSYS);
         }
 #endif
 // Neither the address-space gate nor the partition's: the matrix is indexed by MACHINE core,
@@ -1010,8 +1038,9 @@ uint64_t syscall_body(uintptr_t nr,
             return aspace_reserve(domain_ranges_mut(task_domain(c->task)),
                                   static_cast<size_t>(a0));
 #else
+            // The block AND the record of who reserved it (ramown.h).
             return reinterpret_cast<uintptr_t>(
-                arch_ram_alloc(static_cast<size_t>(a0)));
+                ram_owner_alloc(c->task, static_cast<size_t>(a0)));
 #endif
         }
 #if KICKOS_HAVE_ASPACE
@@ -1155,6 +1184,14 @@ uint64_t syscall_body(uintptr_t nr,
                                             cap_check_authority(c, AUTH_MEMORY)))
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
+            }
+            // Rule 7 answers for the arena's BOUNDS and not for who inside it reserved what:
+            // without this a caller could make a sibling task's block reachable to itself.
+            // Only a NEW window: the already-reachable short circuit above is what a
+            // privileged caller's whole-arena background map answers on.
+            if (not ram_owner_nameable(c->task, base, size))
+            {
+                return static_cast<uint64_t>(-KOS_EPERM); // never reserved by this task
             }
             // Full budget, or a region this backend seats no descriptor for, is a returned
             // error: truncating the set or carrying the grant unenforced would fault the thread

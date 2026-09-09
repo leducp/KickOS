@@ -4,6 +4,11 @@
 // Test scaffolding for the address-space seam (KOS_SYS_ASPACE_PROBE). Each op runs a whole
 // scenario and answers a number; nothing hands userspace a mapping primitive. The addresses are
 // not the frame's, so no arm can pass on an identity map alone.
+//
+// TWO OPS ARE NOT MEASUREMENTS: CAP_OBJECTS and CAP_SEED take frames out of the pool and name
+// them with a capability in the caller's own table, so they carry AUTH_MEMORY
+// (cap_mint_authorised below). Everything else is ungated; see docs/reference/invariants.md,
+// `selftest-scaffolding-is-gated-like-its-production-counterpart`.
 
 #include <kickos/arch/arch.h>
 
@@ -253,6 +258,19 @@ namespace kickos
             return bits;
         }
 
+        // The gate on the two ops that take FRAMES OUT OF THE POOL and name them with a
+        // capability in the caller's own table. AUTH_MEMORY, the gate ram_alloc and
+        // mem_self_grant already carry: without it the scaffolding hands an unprivileged
+        // thread at authority 0 the physical allocation the production path refuses it.
+        //
+        // KOS_ASPACE_OP_CAP_SELF_SPACE IS DELIBERATELY NOT GATED WITH THEM: it allocates
+        // nothing and names the space the caller's own threads already execute in, and every
+        // act a CAP_ASPACE enables is gated at its own syscall.
+        bool cap_mint_authorised()
+        {
+            return cap_check_authority(sched::current(), AUTH_MEMORY);
+        }
+
         // Every frame a whole cycle took must come back, tables included.
         // The two kinds resolve through the same chokepoint every other kind does.
         // Nothing here composes an address; only yes/no bits cross back.
@@ -279,7 +297,8 @@ namespace kickos
             if (run != 0)
             {
                 fobj = frame_run_create(run, 2);
-                if (fobj >= 0)
+                // A HANDLE, so never a sign test: an aged generation sets bit 31.
+                if (fobj != FRAME_RUN_NONE)
                 {
                     if (cap_install(self, fobj, CapType::CAP_FRAME, CAP_TRANSFER, &fcap) == 0)
                     {
@@ -382,7 +401,7 @@ namespace kickos
         // stay inside the window this checked.
         constexpr size_t VA_SEED_PAGES = 16u;
 
-        int g_seed_obj = -1;
+        int g_seed_obj = FRAME_RUN_NONE;
 
         uint64_t op_cap_seed()
         {
@@ -401,7 +420,7 @@ namespace kickos
                 return 0;
             }
             int const fobj = frame_run_create(run, 1);
-            if (fobj < 0)
+            if (fobj == FRAME_RUN_NONE) // a handle, so never a sign test
             {
                 frame_pool_free_run(run, 1, arch_aspace_granule());
                 return 0;
@@ -1184,10 +1203,18 @@ namespace kickos
             }
             case KOS_ASPACE_OP_CAP_OBJECTS:
             {
+                if (not cap_mint_authorised())
+                {
+                    return static_cast<uint64_t>(-KOS_EPERM);
+                }
                 return op_cap_objects();
             }
             case KOS_ASPACE_OP_CAP_SEED:
             {
+                if (not cap_mint_authorised())
+                {
+                    return static_cast<uint64_t>(-KOS_EPERM);
+                }
                 return op_cap_seed();
             }
             case KOS_ASPACE_OP_CAP_SEED_VA:

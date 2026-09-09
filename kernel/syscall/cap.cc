@@ -68,12 +68,7 @@ namespace kickos
         // the SlotPool handle codec is never assumed here). -1 if it does not resolve.
         int sem_index_of(int obj_handle)
         {
-            Semaphore* s = kernel().sems.resolve(obj_handle);
-            if (s == nullptr)
-            {
-                return -1;
-            }
-            return static_cast<int>(s - kernel().sems.at(0));
+            return kernel().sems.index_of(kernel().sems.resolve(obj_handle));
         }
 
         // Drop one reference to semaphore `obj_handle`; free it at refs -> 0. `teardown` is
@@ -101,6 +96,9 @@ namespace kickos
                     r = 1;                   // leak, never strand
                     return;
                 }
+                // The owner array IS the count (instance.h): clearing the tag is the refund,
+                // and there is no counter to decrement.
+                kernel().sem_owner[idx] = TASK_OWNER_NONE;
                 kernel().sems.free(obj_handle);
             }
         }
@@ -109,12 +107,7 @@ namespace kickos
         // Slot index of the frame run a global handle names, via the live object as above.
         int frame_run_index_of(int obj_handle)
         {
-            FrameRun* f = kernel().frame_runs.resolve(obj_handle);
-            if (f == nullptr)
-            {
-                return -1;
-            }
-            return static_cast<int>(f - kernel().frame_runs.at(0));
+            return kernel().frame_runs.index_of(kernel().frame_runs.resolve(obj_handle));
         }
 
         // At refs -> 0 the FRAMES go back and then the slot does. Freeing the slot first would
@@ -148,12 +141,7 @@ namespace kickos
         // sems). -1 if it does not resolve.
         int mutex_index_of(int obj_handle)
         {
-            Mutex* m = kernel().mutexes.resolve(obj_handle);
-            if (m == nullptr)
-            {
-                return -1;
-            }
-            return static_cast<int>(m - kernel().mutexes.at(0));
+            return kernel().mutexes.index_of(kernel().mutexes.resolve(obj_handle));
         }
 
         // Drop one reference to mutex `obj_handle`; free at refs -> 0. Same leak-don't-strand
@@ -183,6 +171,7 @@ namespace kickos
                     return;
                 }
                 KICKOS_ASSERT(m == nullptr or m->owner == nullptr); // never free a locked, reachable mutex
+                kernel().mutex_owner[idx] = TASK_OWNER_NONE;
                 kernel().mutexes.free(obj_handle);
             }
         }
@@ -191,12 +180,7 @@ namespace kickos
         // with sems/mutexes). -1 if it does not resolve.
         int endpoint_index_of(int obj_handle)
         {
-            Endpoint* e = kernel().endpoints.resolve(obj_handle);
-            if (e == nullptr)
-            {
-                return -1;
-            }
-            return static_cast<int>(e - kernel().endpoints.at(0));
+            return kernel().endpoints.index_of(kernel().endpoints.resolve(obj_handle));
         }
 
         // Drop one reference to endpoint `obj_handle`; free at refs -> 0. The
@@ -228,6 +212,7 @@ namespace kickos
                 // endpoint_refs can reach 0 while the field is set. A slot freed with it set
                 // would leave a chain entry pointing into a reused endpoint.
                 KICKOS_ASSERT(e == nullptr or e->server == nullptr);
+                kernel().endpoint_owner[idx] = TASK_OWNER_NONE;
                 kernel().endpoints.free(obj_handle);
             }
         }
@@ -403,10 +388,10 @@ namespace kickos
                 // happens at the shared close/teardown site after this returns. A dying
                 // closer skips its recompute: it has only the rest of its own sweep left.
 #if KICKOS_AMP_NODE
-                // A caller in ANOTHER kernel. Its record is freed and its call slot released
-                // here, or the peer holds that slot for the life of the image. The wire carries
-                // no errno, so a service that died and a service that answered nothing both
-                // reach the caller as an empty reply.
+                // A caller in ANOTHER kernel, answered the empty reply here or never: the wire
+                // carries no errno, so a service that died and a service that answered nothing
+                // both reach that caller the same way. Where the reply ring refuses the
+                // publication the obligation is left pending on this node's own bound.
                 if (ThreadPool::far_reply_is(static_cast<uint32_t>(cap_reply_handle(e))))
                 {
                     amp::inbound_reply(
@@ -490,7 +475,8 @@ namespace kickos
             }
             case CapType::CAP_ENDPOINT:
             {
-                int const idx = endpoint_index_of(obj_handle);
+                Endpoint* const ep = kernel().endpoints.resolve(obj_handle);
+                int const idx = kernel().endpoints.index_of(ep);
                 if (idx < 0)
                 {
                     return false;
@@ -499,18 +485,19 @@ namespace kickos
                 // A cap COPY carrying CAP_WAIT adds a receiver holder.
                 if ((rights & CAP_WAIT) != 0)
                 {
-                    *holders = &kernel().endpoints.at(idx)->recv_holders;
+                    *holders = &ep->recv_holders;
                 }
                 return true;
             }
             case CapType::CAP_IRQ:
             {
-                IrqBinding* b = kernel().irq_bindings.resolve(obj_handle);
-                if (b == nullptr)
+                IrqBinding* const b = kernel().irq_bindings.resolve(obj_handle);
+                int const idx = kernel().irq_bindings.index_of(b);
+                if (idx < 0)
                 {
                     return false;
                 }
-                *refs = &kernel().irq_refs[static_cast<int>(b - kernel().irq_bindings.at(0))];
+                *refs = &kernel().irq_refs[idx];
                 return true;
             }
 #if KICKOS_HAVE_ASPACE
@@ -568,10 +555,8 @@ namespace kickos
 
     void frame_run_release_by_slot(int slot)
     {
-        if (slot < 0 or slot >= static_cast<int>(kernel().frame_runs.capacity()))
-        {
-            return;
-        }
+        // at() is the bound: a non-null answer is what makes the parallel array below and
+        // handle_for() legal on this index.
         FrameRun const* const f = kernel().frame_runs.at(slot);
         if (f == nullptr or f->pages == 0 or kernel().frame_run_refs[slot] == 0)
         {
@@ -597,17 +582,18 @@ namespace kickos
 
     int frame_run_create(arch_phys_addr_t base, uint32_t pages)
     {
-        int const obj = kernel().frame_runs.alloc();
-        if (obj < 0)
+        // Answers a HANDLE, FRAME_RUN_NONE when there is none: every consumer resolves it, so
+        // an index must not leave here.
+        int const i = kernel().frame_runs.alloc();
+        FrameRun* const f = kernel().frame_runs.at(i); // total over alloc()'s -1
+        if (f == nullptr)
         {
             return -1;
         }
-        FrameRun* f = kernel().frame_runs.resolve(obj);
         f->base = base;
         f->pages = pages;
-        kernel().frame_run_refs[frame_run_index_of(obj)] = 1; // the creator's own
-
-        return obj;
+        kernel().frame_run_refs[i] = 1; // the creator's own
+        return kernel().frame_runs.handle_for(i);
     }
 #endif
 
@@ -927,6 +913,36 @@ namespace kickos
         c->cap_reply_live++;
 #endif
         return 0;
+    }
+
+    bool cap_uninstall_reply(Thread* c, uint32_t cap, Thread* caller)
+    {
+        CapEntry* const e = cap_lookup(c, cap);
+        if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_REPLY))
+        {
+            return false;
+        }
+        // The stored HANDLE and not cap_reply_caller, whose guard also requires the caller to
+        // be BLOCKED in CALL_REPLY_WAIT: neither call site has seated that state yet when it
+        // retracts, so resolving through it would refuse every legitimate undo. The handle
+        // carries the thread's generation, which is the whole of the identity question here.
+        int const idx = kernel().threads.index_of(caller);
+        if (idx < 0)
+        {
+            return false;
+        }
+        if (cap_reply_handle(*e) != static_cast<uint32_t>(kernel().threads.handle_for(idx)))
+        {
+            return false; // not the reply this caller's mint seated
+        }
+        // cap_run_free_release writes the free-list links over `obj`, so it must follow the
+        // read above. CAP_REPLY holds no object reference, so nothing is dropped.
+        e->gen++;
+        e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
+        e->rights = 0;
+        cap_run_free_release(c->caps, cap & KCAP_INDEX_MASK, &c->cap_free_head);
+        cap_reply_released(c);
+        return true;
     }
 
 #if KICKOS_AMP_NODE

@@ -22,16 +22,18 @@ namespace kickos
     //
     // False is not "nothing happened": the move stops at the first granule the owning space
     // refuses, so the destination holds a head of the source over a tail of what it held.
-    // Callers on a syscall path assert on false. Two report instead and must stay that way:
-    // cap_console_deliver's payload copy and write_recv_info, that route being the fault
-    // reporter's way to a published console, where an assert re-enters the record it is writing.
+    // NO CALLER MAY PANIC ON FALSE: every one answers its caller a negative code, so the party
+    // holding the partial prefix is the party told the copy failed. That prefix is bounded by
+    // KOS_EP_MSG_MAX on the IPC paths and by one aligned word on the scalar reads.
     [[nodiscard]] bool kaccess_from_user(void* kdst, struct arch_aspace* sspace, uintptr_t usrc,
                                          size_t n);
     [[nodiscard]] bool kaccess_to_user(struct arch_aspace* dspace, uintptr_t udst,
                                        void const* ksrc, size_t n);
 
     // The peer with BOTH ends in user memory, one of them possibly a PARKED thread's in a space
-    // the running translation does not name. One space requires the two ranges be disjoint.
+    // the running translation does not name. One space requires the two ranges be disjoint, a
+    // refusal PLAIN USERSPACE reaches on every board: two threads of one task share a space,
+    // so one static array is one address for both ends of a rendezvous.
     [[nodiscard]] bool ep_copy(struct arch_aspace* dspace, uintptr_t dst,
                                struct arch_aspace* sspace, uintptr_t src, size_t n);
 

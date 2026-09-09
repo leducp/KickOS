@@ -458,13 +458,12 @@ namespace kickos
         // the defect the funnel exists to prevent.
         Endpoint* endpoint()
         {
-            int const i = kernel().endpoints.alloc();
-            if (i < 0)
+            Endpoint* ep = kernel().endpoints.at(kernel().endpoints.alloc());
+            if (ep == nullptr)
             {
                 printf("FIXTURE FAIL: endpoint pool exhausted\n");
                 exit(1);
             }
-            Endpoint* ep = kernel().endpoints.at(i);
             *ep = Endpoint{};
             return ep;
         }
@@ -498,12 +497,12 @@ namespace kickos
         Mutex* own_mutex(Thread* owner, int* out_handle)
         {
             int const i = kernel().mutexes.alloc();
-            if (i < 0)
+            Mutex* m = kernel().mutexes.at(i);
+            if (m == nullptr)
             {
                 printf("FIXTURE FAIL: mutex pool exhausted\n");
                 exit(1);
             }
-            Mutex* m = kernel().mutexes.at(i);
             *m = Mutex{};
             m->owner = owner;
             m->next_held = owner->held_list;
@@ -546,12 +545,12 @@ namespace kickos
         Semaphore* semaphore(int* out_handle)
         {
             int const i = kernel().sems.alloc();
-            if (i < 0)
+            Semaphore* s = kernel().sems.at(i);
+            if (s == nullptr)
             {
                 printf("FIXTURE FAIL: semaphore pool exhausted\n");
                 exit(1);
             }
-            Semaphore* s = kernel().sems.at(i);
             sem_init(s, 0);
             kernel().sem_refs[i] = 1;
             if (out_handle != nullptr)

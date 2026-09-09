@@ -872,6 +872,78 @@ answering nobody and so never having been owed a reply slot at all. Reserve firs
 publishes one bad slot and then stops draining its replies wedges the ring exactly as this clause
 refuses to let it.
 
+**AND THE PRODUCER HAS THE SAME BOUND, ON THE REPLY RING AND NOT ON THE CALL RING.** The clause
+above bounds how long a far HEAD this node cannot believe may keep a ring dead. The mirror is a far
+TAIL: a reservation granted against it can be made permanently false by a peer that regresses or
+restarts that tail, and every answer this node then owes that peer is refused, while the admission
+test reading the same cell refuses every further take. Both ends dead, for the life of the image,
+with each individual refusal correct. So after the same strike count the index THIS NODE OWNS is
+resynchronised to the far tail, the publication that reached the bound is taken rather than refused
+once more, and the reset is counted apart from the consumer's. Nothing new crosses the window: the
+count is this node's private state, so this is not an epoch and it duplicates no release point. The
+evidence is stronger here than on the consumer side, and the bound is still taken: a well-formed
+consumer's tail only advances and this node publishes nothing past the ring's depth beyond the tail
+it last read, so an outstanding count above that depth cannot arise from one however the two
+interleave; the bound hedges the same cost the consumer's does, a ring's contents destroyed on a
+reading that might not have persisted. What it abandons is this node's own unread answers, which
+the peer's regression had already declared it would not read.
+
+**THE CALL RING IS EXCLUDED, AND THAT IS THE RULING RATHER THAN AN OMISSION.** A refused CALL is
+answered to an application that can act on it, which is exactly what N6e says the kernel owes and
+all it owes, so a call ring this node has stopped believing costs no caller its answer. Discarding
+an outstanding call would be worse than the wedge: the caller parks only once its publication is
+taken, so a head moved back under it strands a thread nothing on this node can then answer.
+Recovering a regressed call-ring tail needs the two nodes to agree that a run is abandoned, which
+is a coordinated restart and a mechanism this layer does not have. It is owed and named, not
+silently absent.
+
+**AND A RESYNCHRONISATION ANSWERS THE CALLERS IT ABANDONS, which is the same question one step
+earlier.** The clause above abandons a sender's whole held run, and the record generation makes
+that memory-safe; what it does not do by itself is discharge what those records were FOR. Every
+live one names a far caller parked on an answer, and under KOS_TIMEOUT_NONE that caller has no
+deadline, so a record dropped in silence is a thread parked for the life of the image. Each is
+published the wire's only refusal shape, an empty PORT_REPLY carrying its own tag, taken out of the
+record while it can still be named: nothing else on this node knows those routes once the records
+are gone. The answers' own bytes are lost either way and are counted as such. **The two items were
+one question and are answered as one**: what a node owes a caller whose route it has stopped
+believing is an answer, and making the route believable again is what lets it give one.
+
+**THE EMPTY REPLY CARRIES NO REASON, AND ADDING MEANINGS TO IT DOES NOT EARN ONE.** The zero-length
+PORT_REPLY is now a genuine empty answer, a call refused past its take, a caller whose route was
+abandoned, and a deferred answer. There is a spare half-word on the wire to distinguish them with,
+ReplyTag::seq being 32 bits around a 16-bit sequence, and it is refused: writing it would make the
+serving node an author of the calling node's own route word, and spending neither field is the whole
+of why an unvalidated tag may cross at all. A reason the serving node can compose is one a malformed
+peer can compose, so the calling node would owe it validation for a value no caller can act on
+differently, every one of these being unretryable from inside the kernel and the policy being the
+workload's by the clause above. A partial distinction is also worse than none here: a genuine empty
+answer stays folded in whatever code is added, so a receiver told "refused" over-trusts a signal
+silent on the case it most needs. **The distinction belongs at the node that caused it, as a count**,
+which is where the resynchronisation's answers and the deferred ones now sit, apart from a refusal
+past a take, which counts nothing of the kind. A payload copy the CALLING node refuses is not on
+this wire at all: it reaches its own parked thread through wait_result, so a code can be delivered
+there without the window learning anything, and that is a decision on the delivery arm rather than
+on the transport.
+
+**WHAT IS RETAINED ACROSS A REFUSED ANSWER IS THE OBLIGATION AND NEVER THE PAYLOAD, AND THAT IS
+WHERE N6e BINDS.** N6e refuses a kernel-side queue because retry, drop and buffer are the
+workload's policy, and how stale a dropped record may be is its property. A retained PAYLOAD is
+exactly such a thing: holding an answer's bytes until a peer recovers is the kernel choosing that
+staleness for every workload at once. An empty reply carries no policy, saying "no answer", which
+is as true a tick later as it was at the refusal, and the thing it answers is not a caller with a
+choice: the service has spent its capability and returned, and the caller is parked, so the
+alternative is not "the application decides" but "a far thread is destroyed". Nor is it a queue in
+the shape N6e refuses: one obligation per held slot is the bound the take's own reservation already
+establishes, expressed one step later, and it adds no depth to size. The sharper argument is that
+the payload would be delivered to nobody: a peer that restarted the tail restarted its thread pool
+too, so the tag resolves to nothing at the far end, or past a 65536 wrap to a stranger. What the
+obligation costs is a couple of bytes per record and the call slot held until it is discharged OR
+until its own bound expires. That bound is required rather than prudent: an EXACTLY FULL reply ring
+is a reading a well-formed consumer presents, so the producer's strike clause deliberately believes
+it, and a node holding an answer for one owns neither index. Expiry gives the slot back and leaves
+that one caller unanswered; it writes no far index and destroys none of the peer's unread answers,
+which is what separates it from resynchronising that tail.
+
 **ONE RING PER ORDERED PAIR IS FORCED RATHER THAN PREFERRED, and the producer's arithmetic is why.**
 A single inbox per node would carry several producers on one head, and a producer computes its
 free-slot count from a tail the consumer owns: with the head shared, two producers would each

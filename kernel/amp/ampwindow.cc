@@ -42,6 +42,17 @@ namespace kickos
                 return g_depth_strikes[static_cast<unsigned>(cls)][me][from];
             }
 
+            // Consecutive incredible far TAILs on the reply ring this node produces into, keyed
+            // [receiver][sender]. NOT a cell of g_depth_strikes: under the shared image the cell
+            // keyed [REPLY][to][me] is the one node `to` spends as that ring's consumer, so the
+            // two sides would clear each other's count.
+            uint32_t g_tail_strikes[NODE_MAX][NODE_MAX];
+
+            uint32_t& tail_strikes_of(uint32_t to, uint32_t from)
+            {
+                return g_tail_strikes[to][from];
+            }
+
             // This node's own view of each sender's CALL ring, and not in the window: a far
             // side able to write it would decide when its own slots are reclaimed.
             //
@@ -126,20 +137,19 @@ namespace kickos
             void record_drop(Inbound& r)
             {
                 r.live = 0u;
+                r.pending = 0u;
+                r.run_gone = 0u;
                 r.gen = static_cast<uint16_t>(r.gen + 1u);
             }
 
-            // For the one event that destroys slots without replying to them: a record exists
-            // only for a slot inside the held run, and a resynchronisation abandons all of it.
-            void record_drop_pair(uint32_t me, uint32_t from)
+            // A record whose answer the reply ring refused. The TOKEN dies as it does in any
+            // other death; the record stays live so the call slot it names is not handed back
+            // under an answer still owed on it, and so no later call seats on its masked slot.
+            void record_defer(Inbound& r)
             {
-                for (uint32_t i = 0; i < RING_SLOTS; i++)
-                {
-                    if (g_inbound[me][from][i].live != 0u)
-                    {
-                        record_drop(g_inbound[me][from][i]);
-                    }
-                }
+                r.pending = 1u;
+                r.defers = 0u;
+                r.gen = static_cast<uint16_t>(r.gen + 1u);
             }
 
             // One writer per row, so a load and a store rather than an increment
@@ -155,6 +165,79 @@ namespace kickos
             uint32_t outstanding(uint32_t head, uint32_t tail)
             {
                 return head - tail;
+            }
+
+            // TRUE where the far tail may be believed, on the reply ring toward `to`. Its two
+            // readers are the publication of an answer and the admission test that reserves the
+            // slot for one, and they must stop believing it on the same evidence.
+            //
+            // No well-formed peer can present an outstanding count above the ring's depth: its
+            // tail only advances and this node never publishes more than RING_SLOTS past the
+            // tail it last read. Adopting a far tail destroys this ring's unread answers, which
+            // is what the strike bound is for.
+            //
+            // Only the index THIS NODE OWNS is written here; the far one it adopts is spent
+            // modulo RING_SLOTS alone.
+            bool tail_believed(uint32_t me, uint32_t to, Ring& r, uint32_t& head, uint32_t tail)
+            {
+                uint32_t& strikes = tail_strikes_of(to, me);
+                if (outstanding(head, tail) <= RING_SLOTS)
+                {
+                    strikes = 0;
+                    return true;
+                }
+                strikes = strikes + 1u;
+                if (strikes < DEPTH_STRIKES)
+                {
+                    return false;
+                }
+                strikes = 0;
+                head = tail;
+                r.head.v.store(head);
+                count_up(g_counts[me].tail_reset);
+                return true;
+            }
+
+            // WHAT A NODE OWES A CALLER WHOSE ROUTE IT HAS STOPPED BELIEVING. Every live record
+            // names a far caller parked on an answer this node is about to destroy, and under
+            // KOS_TIMEOUT_NONE that caller has no deadline; the answer owed is the wire's only
+            // refusal shape, an empty PORT_REPLY carrying its tag.
+            //
+            // MUST RUN BEFORE THE INDICES MOVE: the tag comes out of the record, and nothing
+            // else on this node can name those callers once the records are gone.
+            //
+            // A RECORD ALREADY PENDING IS PASSED OVER, answer_deferred owning it from there:
+            // answering it here would count one lost answer twice and bump its generation a
+            // second time, halving the distance a stale token travels to collide.
+            //
+            // AND EVERY LIVE RECORD IS MARKED run_gone FIRST, whatever is then decided about
+            // it: the caller has ALREADY cleared the run (see Inbound::run_gone).
+            void record_answer_pair(uint32_t me, uint32_t from)
+            {
+                for (uint32_t i = 0; i < RING_SLOTS; i++)
+                {
+                    Inbound& r = g_inbound[me][from][i];
+                    if (r.live == 0u)
+                    {
+                        continue;
+                    }
+                    r.run_gone = 1u;
+                    if (r.pending != 0u)
+                    {
+                        continue;
+                    }
+                    ReplyTag const tag = r.tag;
+                    count_up(g_counts[me].reply_unsent);
+                    if (send(from, PORT_REPLY, tag, nullptr, 0u) == Sent::OK)
+                    {
+                        record_drop(r);
+                        continue;
+                    }
+                    // The reply ring toward this caller is unbelievable too. The obligation
+                    // outlives the record's token exactly as a refused answer's does, and the
+                    // producer's own strike bound is what will make it sendable.
+                    record_defer(r);
+                }
             }
 
             // The class is a property of the PORT and never of a flag beside it.
@@ -261,6 +344,11 @@ namespace kickos
             return g_counts[node];
         }
 
+        void count_deliver_fault(void)
+        {
+            count_up(g_counts[self()].deliver_fault);
+        }
+
 #if defined(KICKOS_ENABLE_SELFTEST)
         void app_alive_set(uint32_t mark)
         {
@@ -276,11 +364,20 @@ namespace kickos
             Sent send_on(Ring& r, uint32_t me, uint32_t to, uint32_t port, ReplyTag const& tag,
                          void const* payload, uint32_t len)
             {
-                uint32_t const head = r.head.v.load();
+                uint32_t head = r.head.v.load();
                 // FAR: the consumer owns this index. A producer that believed it would compute
                 // a free-slot count out of it and overwrite slots the consumer is still
                 // reading.
                 uint32_t const tail = r.tail.v.load();
+                // THE BOUND IS THE REPLY RING'S ALONE (ampwindow.h, DEPTH_STRIKES): a refused
+                // call is answered to an application that can act on it, where discarding an
+                // outstanding one would strand a caller already parked on its publication.
+                if (class_of(port) == Class::REPLY
+                    and not tail_believed(me, to, r, head, tail))
+                {
+                    count_up(g_counts[me].send_refused);
+                    return Sent::DEPTH;
+                }
                 uint32_t const used = outstanding(head, tail);
                 if (used > RING_SLOTS)
                 {
@@ -343,11 +440,11 @@ namespace kickos
             // The shared half of both takes: the far head believed or refused, with the strike
             // bound that keeps a refusal from owning the ring for the life of the image.
             //
-            // A resynchronisation loses every held record of that sender and owns their death.
-            // Left standing, such a record refuses a seat to every later call landing on its
-            // masked slot, and its holder's release would land one wrap later on a DIFFERENT
-            // call whose reply is still owed. The generation is what makes the death visible to
-            // a holder this cannot reach.
+            // A resynchronisation loses every held record of that sender and owns their death,
+            // answering each caller first (record_answer_pair). Left standing, such a record
+            // refuses a seat to every later call landing on its masked slot, and its holder's
+            // release would land one wrap later on a DIFFERENT call whose reply is still owed.
+            // The generation is what makes the death visible to a holder this cannot reach.
             // `deepest` is the largest outstanding count any of this node's cursors reads out
             // of the far head. A head that regressed BEHIND `taken` wraps to a huge count there
             // while head - tail is still small, and the slots it would hand out were never
@@ -373,7 +470,7 @@ namespace kickos
                     {
                         g_inbox[me][from].taken = head;
                         g_inbox[me][from].released = 0;
-                        record_drop_pair(me, from);
+                        record_answer_pair(me, from);
                     }
                     count_up(g_counts[me].depth_reset);
                 }
@@ -411,31 +508,50 @@ namespace kickos
         {
             // TRUE WHERE ONE MORE CALL MAY BE TAKEN. Every taken call owes exactly one reply
             // and the reply ring toward that sender is the only place it can go, so a take
-            // that leaves no slot for its own reply publishes one the send must refuse, a
-            // loss no path can retry, the reply capability being consumed by then.
+            // that leaves no slot for its own reply publishes one the send must refuse, and
+            // the answer's own bytes are then lost, the reply capability being consumed by
+            // then. What survives such a refusal is the obligation alone (inbound_reply).
             //
             // `held` is tail..taken, of which the slots already flagged in `released` have had
             // their reply sent and are counted in the ring's own occupancy instead.
+            //
+            // AND THE HELD RUN IS NOT THE WHOLE OF WHAT IS OWED. A `run_gone` record is counted
+            // beside the run, no length of run accounting for it; a pending record still INSIDE
+            // the run is left to the arithmetic below, its slot not released while it stands.
             bool reply_reserved(uint32_t me, uint32_t from, uint32_t held, uint32_t released)
             {
+                uint32_t owed = 0;
                 uint32_t replied = 0;
                 for (uint32_t i = 0; i < RING_SLOTS; i++)
                 {
+                    Inbound const& r = g_inbound[me][from][i];
+                    if (r.pending != 0u and r.run_gone != 0u)
+                    {
+                        owed = owed + 1u;
+                    }
                     if ((released & (1u << i)) != 0u)
                     {
                         replied = replied + 1u;
                     }
                 }
-                uint32_t owed = 0;
                 if (held > replied)
                 {
-                    owed = held - replied;
+                    owed = owed + (held - replied);
                 }
-                Ring const& rr = ring_for(Class::REPLY, from, me);
-                // FAR: the peer owns this tail, so a regressed one reads as a full ring and is
-                // refused here as it already is at the send. Subtracted rather than added to
-                // `owed`, which a modular count near the top of the range would carry past.
-                uint32_t const used = outstanding(rr.head.v.load(), rr.tail.v.load());
+                Ring& rr = ring_for(Class::REPLY, from, me);
+                uint32_t head = rr.head.v.load();
+                // FAR: the peer owns this tail. THE SECOND READER OF IT, and the one that makes
+                // the producer's recovery reachable with no answer pending: a node whose every
+                // take is refused here has nothing of its own to publish, so a bound taken only
+                // at the publication would never be reached.
+                uint32_t const tail = rr.tail.v.load();
+                if (not tail_believed(me, from, rr, head, tail))
+                {
+                    return false;
+                }
+                // Subtracted rather than added to `owed`, which a modular count near the top of
+                // the range would carry past.
+                uint32_t const used = outstanding(head, tail);
                 if (used >= RING_SLOTS)
                 {
                     return false;
@@ -602,6 +718,52 @@ namespace kickos
             return Verdict::TOOK;
         }
 
+        namespace
+        {
+            // THE ANSWERS A REFUSED PUBLICATION DEFERRED. What is retained is the obligation and
+            // never the payload: an empty PORT_REPLY says "no answer", as true now as at the
+            // refusal (docs/design-multicore.md N6e).
+            //
+            // A refusal here is not counted again: the answer's bytes were counted lost once.
+            //
+            // AND THE OBLIGATION EXPIRES AT DEFER_PASSES (ampwindow.h): at the bound the slot
+            // goes back and the record dies UNANSWERED, which writes no far index and leaves
+            // the peer's own unread answers alone.
+            void answer_deferred(uint32_t me, uint32_t from)
+            {
+                for (uint32_t i = 0; i < RING_SLOTS; i++)
+                {
+                    Inbound& r = g_inbound[me][from][i];
+                    if (r.pending == 0u)
+                    {
+                        continue;
+                    }
+                    if (send(from, PORT_REPLY, r.tag, nullptr, 0u) != Sent::OK)
+                    {
+                        r.defers = static_cast<uint8_t>(r.defers + 1u);
+                        if (r.defers < DEFER_PASSES)
+                        {
+                            // RETURN AND NOT CONTINUE: every record of this pair publishes into
+                            // the one ring ring_for(REPLY, from, me) names, so a refusal here
+                            // refuses the rest this pass too and walking on would spend their
+                            // strikes on a verdict already known.
+                            return;
+                        }
+                    }
+                    uint32_t const slot = r.slot;
+                    bool const gone = r.run_gone != 0u;
+                    record_drop(r);
+                    // NO RELEASE FOR AN ABANDONED RUN. release_call spends a MASKED index
+                    // against the run that stands NOW, so once a resynchronisation has moved
+                    // the run, that index names a later wrap's call whose own reply is owed.
+                    if (not gone)
+                    {
+                        release_call(from, slot);
+                    }
+                }
+            }
+        }
+
         void node_service(void)
         {
             uint32_t const me = self();
@@ -644,6 +806,17 @@ namespace kickos
                 }
             }
 
+            // BETWEEN THE TWO DRAINS. After the replies, whose drain frees the slot a deferred
+            // answer needs; before the calls, whose admission the call slot it gives back pays.
+            for (uint32_t from = 0; from < NODE_MAX; from++)
+            {
+                if (from == me)
+                {
+                    continue;
+                }
+                answer_deferred(me, from);
+            }
+
             done = 0;
             for (uint32_t from = 0; from < NODE_MAX and done < SERVICE_PER_CALL; from++)
             {
@@ -679,6 +852,19 @@ namespace kickos
 #if defined(KICKOS_ENABLE_SELFTEST)
         namespace
         {
+            // forge_reset is the only caller, so this stays inside the selftest guard: an
+            // unguarded twin fails -Wunused-function on any AMP node built without the knob.
+            void record_drop_pair(uint32_t me, uint32_t from)
+            {
+                for (uint32_t i = 0; i < RING_SLOTS; i++)
+                {
+                    if (g_inbound[me][from][i].live != 0u)
+                    {
+                        record_drop(g_inbound[me][from][i]);
+                    }
+                }
+            }
+
             // Both indices and this node's own view, so a forge starts from a ring holding
             // nothing. The records go with the run: this abandons the slots they are.
             void forge_reset(Class cls, Ring& r, uint32_t me, uint32_t from)
@@ -686,6 +872,9 @@ namespace kickos
                 r.head.v.store(0u);
                 r.tail.v.store(0u);
                 strikes_of(cls, me, from) = 0;
+                // The producer's count for the SAME ring, or a forge run four times finds the
+                // bound already reached and reads a recovery as a refusal.
+                tail_strikes_of(me, from) = 0;
                 if (cls == Class::CALL)
                 {
                     g_inbox[me][from].taken = 0u;
@@ -1133,6 +1322,279 @@ namespace kickos
             forge_reset(Class::CALL, r, me, me);
             return rc;
         }
+
+        // THE SELF REPLY RING and no peer's, for the reason forge_tail_and_send gives: what is
+        // forged here is a CONSUMER's index, and a peer's ring would put one under a live
+        // consumer. `to` only names whose doorbell a publication that stopped being refused
+        // would ring; the strike cell send_on spends is keyed off that node rather than off the
+        // ring, so it is cleared on both sides of this and never left carrying a forge's count.
+        uint32_t forge_tail_recovery(uint32_t to)
+        {
+            uint32_t const me = self();
+            if (to >= NODE_MAX or to == me)
+            {
+                return 0u;
+            }
+            Ring& r = ring_for(Class::REPLY, me, me);
+            uint32_t& strikes = tail_strikes_of(to, me);
+            strikes = 0u;
+            r.head.v.store(0u);
+            // An outstanding count no ring can hold, which is a tail no well-formed consumer
+            // stores: it only ever advances, and this node publishes nothing past the ring's
+            // depth beyond the tail it last read.
+            uint32_t const forged = 0u - (RING_SLOTS + 2u);
+            r.tail.v.store(forged);
+
+            uint8_t pattern[8] = {};
+            ReplyTag const tag = REPLY_TAG_NONE;
+            uint32_t answer = 0u;
+            if (send_on(r, me, to, PORT_REPLY, tag, pattern, sizeof(pattern)) == Sent::DEPTH)
+            {
+                answer = answer | 1u;
+            }
+            // Strikes two through the bound's own, so the publication below is the one that
+            // reaches it.
+            for (uint32_t i = 2u; i < DEPTH_STRIKES; i++)
+            {
+                (void)send_on(r, me, to, PORT_REPLY, tag, pattern, sizeof(pattern));
+            }
+            uint32_t const reset_was = g_counts[me].tail_reset.load();
+            if (send_on(r, me, to, PORT_REPLY, tag, pattern, sizeof(pattern)) == Sent::OK)
+            {
+                answer = answer | 2u;
+            }
+            // Published AT the far tail this node adopted, and one past it now: a recovery that
+            // kept its own head would have written a slot the consumer reads as past.
+            if (r.head.v.load() == forged + 1u)
+            {
+                answer = answer | 4u;
+            }
+            if (g_counts[me].tail_reset.load() == reset_was + 1u)
+            {
+                answer = answer | 8u;
+            }
+
+            strikes = 0u;
+            forge_reset(Class::REPLY, r, me, me);
+            return answer | 16u;
+        }
+
+        namespace
+        {
+            bool forge_pending_any(uint32_t me, uint32_t from)
+            {
+                for (uint32_t i = 0; i < RING_SLOTS; i++)
+                {
+                    if (g_inbound[me][from][i].pending != 0u)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            // The publication a discharge or a resynchronisation owes: one slot on from where
+            // the head stood, zero length, on the reply port, carrying `tag` verbatim.
+            bool forge_answer_at(Ring const& reply, uint32_t head_was, ReplyTag const& tag)
+            {
+                if (reply.head.v.load() != head_was + 1u)
+                {
+                    return false;
+                }
+                Slot const& s = reply.slot[head_was & RING_MASK];
+                if (s.len.load() != 0u or s.port.load() != PORT_REPLY)
+                {
+                    return false;
+                }
+                return s.tag.thread == tag.thread and s.tag.seq == tag.seq;
+            }
+
+            constexpr ReplyTag FORGE_ANSWER_TAG = {0xC1C2C3C4u, 0x0000C5C6u};
+        }
+
+        uint32_t forge_answer_defer(uint32_t from)
+        {
+            uint32_t const me = self();
+            if (from >= NODE_MAX or from == me)
+            {
+                return 0u;
+            }
+            // DECLINED against a node that runs a kernel of its own: this holds the reply ring
+            // toward `from` full and then gives it back, and that node drains it out from under
+            // both stores.
+            if (g_counts[from].serviced.load() != 0u)
+            {
+                return ANSWER_DEFER_DECLINED;
+            }
+            // A take reserves the slot this answer is then refused, so the ring must have room
+            // BEFORE the take and none after it. On a node booted alone nothing else ever moves
+            // this tail, so a preceding arm's answers would refuse the take outright.
+            if (forge_reply_room(from) == 0u)
+            {
+                return ANSWER_DEFER_DECLINED;
+            }
+            Ring& r = ring_for(Class::CALL, me, from);
+            forge_reset(Class::CALL, r, me, from);
+            Ring& reply = ring_for(Class::REPLY, from, me);
+
+            uint8_t buf[SLOT_BYTES];
+            uint32_t got_len = 0;
+            uint32_t got_port = PORT_MAX;
+            uint32_t got_slot = 0;
+            ReplyTag got_tag = {};
+
+            publish_one(r, 0u, PORT_ECHO, 0xD0u);
+            if (take_call(from, buf, &got_len, &got_port, &got_tag, &got_slot) != Verdict::TOOK)
+            {
+                return 0u;
+            }
+            uint32_t const token = inbound_seat(from, got_slot, FORGE_ANSWER_TAG);
+            if (token == FAR_RECORD_NONE)
+            {
+                release_call(from, got_slot);
+                return 0u;
+            }
+
+            // THE RESERVATION WITHDRAWN BEHIND THE TAKE, by THIS NODE'S OWN head alone: the
+            // tail is `from`'s and is read but never written here, so the ring reads full with
+            // no far-owned index forged.
+            uint32_t const reply_head_was = reply.head.v.load();
+            reply.head.v.store(reply.tail.v.load() + RING_SLOTS);
+
+            uint32_t const tail_was = r.tail.v.load();
+            uint32_t const unsent_was = g_counts[me].reply_unsent.load();
+            uint8_t const body[4] = {0xD8u, 0xD9u, 0xDAu, 0xDBu};
+            inbound_reply(token, body, sizeof(body));
+
+            uint32_t answer = 0u;
+            if (g_counts[me].reply_unsent.load() == unsent_was + 1u)
+            {
+                answer = answer | 1u;
+            }
+            // WHAT SEPARATES A DEFERRAL FROM THE LOSS IT REPLACES: the slot is still this
+            // node's, so the caller it names is still owed an answer and no later call can
+            // land on it.
+            if (r.tail.v.load() == tail_was)
+            {
+                answer = answer | 2u;
+            }
+            if (inbound_at(token) == nullptr)
+            {
+                answer = answer | 4u;
+            }
+
+            // The ring given back with room, so one service pass is all the other half needs.
+            reply.head.v.store(reply_head_was);
+            return answer | 8u;
+        }
+
+        uint32_t forge_answer_discharge(uint32_t from)
+        {
+            uint32_t const me = self();
+            if (from >= NODE_MAX or from == me)
+            {
+                return 0u;
+            }
+            Ring& call = ring_for(Class::CALL, me, from);
+            Ring const& reply = ring_for(Class::REPLY, from, me);
+            uint32_t const call_tail_was = call.tail.v.load();
+            uint32_t const reply_head_was = reply.head.v.load();
+
+            // THE DOORBELL'S OWN BODY, which is the only thing that discharges one in
+            // production. It stands in for the raise a peer's drain or its next publication
+            // carries, and for nothing this node owes itself: the discharge runs on every
+            // service pass, so any doorbell reaches it.
+            node_service();
+
+            uint32_t answer = 0u;
+            if (forge_answer_at(reply, reply_head_was, FORGE_ANSWER_TAG))
+            {
+                answer = answer | 1u;
+            }
+            if (call.tail.v.load() != call_tail_was)
+            {
+                answer = answer | 2u;
+            }
+            if (not forge_pending_any(me, from))
+            {
+                answer = answer | 4u;
+            }
+            return answer | 8u;
+        }
+
+        uint32_t forge_reset_answers(uint32_t from)
+        {
+            uint32_t const me = self();
+            if (from >= NODE_MAX or from == me)
+            {
+                return 0u;
+            }
+            // DECLINED against a node that runs a kernel of its own, for the reason
+            // forge_answer_defer gives and one more: that node produces into the call ring this
+            // pushes an incredible head onto.
+            if (g_counts[from].serviced.load() != 0u)
+            {
+                return RESET_ANSWERS_DECLINED;
+            }
+            if (forge_reply_room(from) == 0u)
+            {
+                return RESET_ANSWERS_DECLINED;
+            }
+            Ring& r = ring_for(Class::CALL, me, from);
+            forge_reset(Class::CALL, r, me, from);
+            Ring const& reply = ring_for(Class::REPLY, from, me);
+
+            uint8_t buf[SLOT_BYTES];
+            uint32_t got_len = 0;
+            uint32_t got_port = PORT_MAX;
+            uint32_t got_slot = 0;
+            ReplyTag got_tag = {};
+
+            publish_one(r, 0u, PORT_ECHO, 0xC0u);
+            if (take_call(from, buf, &got_len, &got_port, &got_tag, &got_slot) != Verdict::TOOK)
+            {
+                return 0u;
+            }
+            uint32_t const token = inbound_seat(from, got_slot, FORGE_ANSWER_TAG);
+            if (token == FAR_RECORD_NONE)
+            {
+                release_call(from, got_slot);
+                return 0u;
+            }
+
+            uint32_t const reply_head_was = reply.head.v.load();
+            uint32_t const reset_was = g_counts[me].depth_reset.load();
+            uint32_t const unsent_was = g_counts[me].reply_unsent.load();
+
+            // A depth the ring cannot hold, left standing for the whole strike bound. THE HEAD
+            // JUMP IS A WHOLE MULTIPLE OF RING_SLOTS for the reason forge_reset_record states.
+            r.head.v.store(2u * RING_SLOTS);
+            for (uint32_t i = 0; i < DEPTH_STRIKES; i++)
+            {
+                (void)take_call(from, buf, &got_len, &got_port, &got_tag, &got_slot);
+            }
+
+            uint32_t answer = 0u;
+            if (g_counts[me].depth_reset.load() == reset_was + 1u)
+            {
+                answer = answer | 1u;
+            }
+            if (inbound_at(token) == nullptr)
+            {
+                answer = answer | 2u;
+            }
+            if (forge_answer_at(reply, reply_head_was, FORGE_ANSWER_TAG))
+            {
+                answer = answer | 4u;
+            }
+            if (g_counts[me].reply_unsent.load() == unsent_was + 1u)
+            {
+                answer = answer | 8u;
+            }
+
+            forge_reset(Class::CALL, r, me, from);
+            return answer | 16u;
+        }
 #endif
 
         uint32_t inbound_seat(uint32_t from, uint32_t slot, ReplyTag const& tag)
@@ -1183,24 +1645,25 @@ namespace kickos
             uint32_t const from = r->from;
             uint32_t const slot = r->slot;
             ReplyTag const tag = r->tag;
-            // Freed before the send, so a send that refuses cannot leave the record standing
-            // with its slot already gone.
-            record_drop(*r);
-            if (send(from, PORT_REPLY, tag, payload, len) != Sent::OK)
+            if (send(from, PORT_REPLY, tag, payload, len) == Sent::OK)
             {
-                // NOT REACHABLE IN A LIVE PARTITION: the take reserved a slot in this very
-                // ring for this answer and every reply since has spent one reservation for
-                // one slot, so the room cannot have gone. What reaches this is a peer whose
-                // reply tail regressed under the reservation. The answer is then lost with no
-                // path holding the capability to remake it, and this is what tells that loss
-                // apart from a caller's own refused call in send_refused.
-                count_up(g_counts[self()].reply_unsent);
+                record_drop(*r);
+                release_call(from, slot);
+                return;
             }
-            // RELEASED WHATEVER THE SEND ANSWERED. Holding the slot would not make the answer
-            // arrive, and the held run behind it would stop being reclaimed too; releasing
-            // leaves the reply ring full and the reserve refusing, which is back-pressure the
-            // peer already reads.
-            release_call(from, slot);
+            // NOT REACHABLE IN A LIVE PARTITION: the take reserved a slot in this very ring
+            // for this answer and every reply since has spent one reservation for one slot, so
+            // the room cannot have gone. What reaches this is a peer whose reply tail regressed
+            // under the reservation. The answer's BYTES are lost with no path holding the
+            // capability to remake them, and this is what tells that loss apart from a caller's
+            // own refused call in send_refused.
+            count_up(g_counts[self()].reply_unsent);
+            // THE OBLIGATION OUTLIVES THE ANSWER. The token dies here as on the sent path, so
+            // no holder answers twice; the record stays live and pending, which holds its call
+            // slot back and keeps a later call off the same masked slot, and node_service
+            // publishes the wire's refusal shape for it once the producer's own strike bound
+            // has made that ring believable.
+            record_defer(*r);
         }
 
         void window_init(void)

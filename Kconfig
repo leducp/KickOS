@@ -541,6 +541,38 @@ config KICKOS_ASPACE_RANGES
 	  Only a translating board keeps a range list at all, so no region board pays for
 	  this.
 
+config KICKOS_RAM_OWNER_SLOTS
+	int "Arena blocks whose owner the kernel records"
+	range 4 256
+	default 48
+	help
+	  Slots in the region backend's arena-ownership table (ramown.h): one per block
+	  kos_ram_alloc has handed out, carrying the task that reserved it. The admission
+	  paths that let a caller name a block (a spawn's mem_base, a caller-owned
+	  stack_base, kos_mem_self_grant) read it, so a range the calling task never
+	  reserved is refused instead of admitted on arena confinement alone.
+
+	  A LIFETIME COST, and the only kind here. Nothing frees a record, exactly as the
+	  bump allocator never takes a block back, so this is how many distinct blocks the
+	  WHOLE IMAGE may reserve over its life and not a live-set figure. A dead task's
+	  records stay spent, and are nameable by nobody: the task handle they carry
+	  includes the slot's generation.
+
+	  When it is full kos_ram_alloc answers NULL, which is what an exhausted arena
+	  answers too, that call returning a pointer with no route out for an errno. The
+	  arena is left untouched by the refusal, so a caller that keeps asking loses
+	  nothing more.
+
+	  23 IS THE DEMAND, not this default: that is what the fleet's own selftest reserves
+	  on the sim, whose arena is the roomiest region board's, bisected on the `selftest`
+	  gate, where 23 passes and 22 turns mem_self_grant into an unexpected SKIP. The rest
+	  of the 48 is margin for an app that reserves more, and an app reserving fewer
+	  blocks can go down to the floor. Sized as a knob because the table is kernel .bss and
+	  every byte of it is a byte of arena on a board whose arena base follows .bss.
+
+	  Only a board with live REGION descriptors builds the table, so neither a
+	  translating board nor a board with no protection pays for this.
+
 config KICKOS_MAX_FRAME_RUNS
 	int "Frame-run capability objects"
 	range 0 32
@@ -555,6 +587,33 @@ config KICKOS_MAX_IRQ_HANDLES
 	int "Tier-1 IRQ-as-event handles"
 	range 0 32
 	default 8
+
+config KICKOS_TASK_OBJECT_BUDGET
+	int "Objects of one kind one task may hold"
+	range 1 255
+	default 255
+	help
+	  The most semaphores, or mutexes, or endpoints, or tier-1 IRQ bindings ONE TASK may
+	  hold live at once. Refused with -KOS_EOVERFLOW at the creator, which is neither
+	  -KOS_ENOMEM (the pool had a slot) nor -KOS_EMFILE (the caller's table had one).
+
+	  WHAT IT IS FOR: without it a task's own-creates are bounded only by its threads'
+	  capability tables, and a thread can spawn siblings to widen that bound, so one
+	  unprivileged task can empty a pool and deny every other task's creator, including a
+	  supervisor respawning a driver, whose own endpoint_create then fails.
+
+	  THE DEFAULT DOES NOT BIND, AND THAT IS DELIBERATE. instance.h keeps
+	  TASK_OBJECT_RESERVE slots of every pool out of any one task's reach structurally, and
+	  the smaller of the two ceilings applies; 255 is above every pool this bounds, so the
+	  reserve is the whole ceiling until a board lowers this. A board CANNOT go much
+	  lower on a selftest image: the suite fills one task's capability table with
+	  own-creates and its deadlock arm needs six objects live at once, so a budget under
+	  that turns those into budget refusals instead. Measured by bisection on qemu, a
+	  default-supply board with ten table slots: 8 and 6 clean, 5 short, and what 5
+	  costs is the mutex_deadlock arm, which then skips for want of a sixth object.
+
+	  Neither ceiling stops N COLLUDING tasks from emptying a pool between them. Bounding
+	  that is a quota on the capability slab the caps live in, not on the pools.
 
 config KICKOS_MAX_SPAWN_GRANTS
 	int "Caps one spawn may delegate"
@@ -674,7 +733,7 @@ config KICKOS_KERNEL_STACK_SIZE
 	# PROVISIONAL: taken from armv8a, not measured on this arch. The backend asserts a
 	# structural floor of 368.
 	default 4096 if ARCH_X86_64
-	default 1104 if ARCH_RXV3
+	default 1120 if ARCH_RXV3
 	default 1472 if ARCH_ARMV7M && TELEMETRY_RTT
 	default 1456 if ARCH_ARMV7M && KICKOS_ENABLE_SELFTEST && !KICKOS_AMP_POSTURE_NONE
 	default 1008 if ARCH_ARMV7M

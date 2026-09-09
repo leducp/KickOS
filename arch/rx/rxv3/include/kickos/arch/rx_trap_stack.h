@@ -99,17 +99,23 @@
  *   _SYS          0  svc_trampoline moves R0 to ctx.kernel_sp before it calls anything.
  *   _SYS_FAST    32  the same epilogue and so the same chain as _PENDSW. It stays a macro of
  *                    its own because it is a distinct SITE with its own guard.
- *   _SYSK       788  the deeper of the two roots on the kernel block, with the panic tail
+ *   _SYSK       796  the deeper of the two roots on the kernel block, with the panic tail
  *                    COUNTED, trap_redzone_roots.txt declaring SYSK stack=kernel and a
  *                    stack=kernel class being measured with no exclusion. kickos_ipc_fastpath
- *                    measures 456 there and is dominated; syscall_dispatch sets it:
- *                    syscall_dispatch[36] -> syscall_body[108] -> thread_create_call[244]
+ *                    is the other root and is dominated; syscall_dispatch sets it, read on
+ *                    rx72m-st:
+ *                    syscall_dispatch[36] -> syscall_body[108] -> thread_create_call[248]
  *                    -> cap_install_defaults[4] -> cap_seat_stdout[40] -> obj_ref_inc[20]
- *                    -> ref_counters[28] -> kpanic[8] -> kputs[8] -> kconsole_write[4]
+ *                    -> ref_counters[32] -> kpanic[8] -> kputs[8] -> kconsole_write[4]
  *                    -> kconsole_write_impl[152] -> console_emit[32]
  *                    -> arch_console_write[4] -> console_tx_write[48] -> drain_sync[28]
- *                    -> wait_slot[20] -> the indirect call at console_tx.cc:69:37
+ *                    -> wait_slot[20] -> the indirect call at console_tx.cc:70:37
  *                    -> rx_tx_slot_free[4].
+ *                    rx72m and rx72m-flat read 700 over the same chain: with the self-test
+ *                    syscalls out of the image gcc inlines syscall_body into
+ *                    syscall_dispatch, one 48-byte frame instead of 36 + 108. ONE FIGURE
+ *                    COVERS BOTH POSTURES, as rv32imac's _SYS does for the same inlining, so
+ *                    the non-self-test boards carry the worse reading and not their own.
  *
  * ENFORCED figures are those measurements rounded up, 32 -> 64. _SYSK is NOT rounded, a kernel
  * block being sized to it directly, so a byte of slack there costs KICKOS_THREAD_SLOTS bytes.
@@ -122,10 +128,11 @@
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW 64
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS 0
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST 64
-/* 792 and not the 788 the chain above sums to: kos_thread_create validates a CALLER-SUPPLIED
- * stack against the TLS stride, and that inlined check grows thread_create_call's own frame, the
- * deepest on the chain, to 248. The zone becomes 1100 against a 1104-byte block. */
-#define KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK 792
+/* THE MEASUREMENT EXACTLY, with no margin, the block being sized to it directly. The zone is
+ * 308 + 796 = 1104, which needs 1108 bytes of block once the canary word below it is counted,
+ * and thread.cc rounds the block to KICKOS_STACK_ALIGN: 1120. So 12 of that block's apparent
+ * slack is alignment fill and NOT room a depth may grow into. */
+#define KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK 796
 
 /* THE EXIT CLASS, structural half: what a preemption puts below the deepest byte the DEATH
  * PATH uses. One whole PENDSW zone, 236 of save plus the 64 restore descent below it, which
@@ -155,8 +162,20 @@
 
 /* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
  * and no redirect, so it runs at whatever depth the entry returned from on the thread's own
- * stack. 476, identical on all three registered presets. */
-#define KICKOS_RX_TRAP_KERNEL_DEPTH_RET 476
+ * stack. 480, identical on all three registered presets. 308 + 480 = 788 against a 1024-byte
+ * KICKOS_MIN_STACK_SIZE, so this figure buys nothing until it reaches 716: it is the one the
+ * floor HOLDS, not the one the floor is cut to.
+ *
+ * TWO SUB-CHAINS UNDER cap_teardown SIT 4 BYTES APART, so which one wins is a register
+ * allocation away and either can move this figure:
+ *     teardown_entry[44] -> obj_close_protocol[32] -> endpoint_server_clear[20]   96
+ *     teardown_entry[44] -> obj_ref_drop[24] -> endpoint_ref_drop[24]             92
+ * below kickos_thread_return[4] -> exit_current[40] -> cap_teardown[32], and above the same
+ * panic tail the other classes here walk: kpanic[8] -> kputs[8] -> kconsole_write[4]
+ * -> kconsole_write_impl[152] -> console_emit[32] -> arch_console_write[4]
+ * -> console_tx_write[48] -> drain_sync[28] -> wait_slot[20] -> the indirect call at
+ * console_tx.cc:70:37 -> rx_tx_slot_free[4]. */
+#define KICKOS_RX_TRAP_KERNEL_DEPTH_RET 480
 
 /* What each guard enforces: room below the USP, in bytes.
  *

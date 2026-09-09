@@ -265,21 +265,27 @@ namespace kickos
             return;
         }
         int const index = kernel().endpoints.index_of(ep);
-        KICKOS_ASSERT(index >= 0); // a biased -1 is the sentinel and would silently cut a chain
+        // A biased -1 IS the sentinel, and the walk below stops on a match: a zero `self` would
+        // match the sentinel and write ep->next_served over the last link field.
+        KICKOS_ASSERT(index >= 0);
         uint16_t const self = ep_served_ref(index);
+        // ONE bound ends this walk: EP_SERVED_NONE decodes out of range (endpoint.h), and so
+        // does a ref naming no slot. Do not add a sentinel test beside it, because this frame
+        // is measured on the rxv3 RET red zone and that zone has no slack.
         uint16_t* pp = &prior->served_head;
-        while (*pp != EP_SERVED_NONE)
+        while (*pp != self)
         {
-            if (*pp == self)
+            Endpoint* const link = kernel().endpoints.at(ep_served_index(*pp));
+            if (link == nullptr)
             {
-                *pp = ep->next_served;
-                ep->next_served = EP_SERVED_NONE;
-                ep->server = nullptr;
+                KICKOS_ASSERT(false); // server set, yet absent from that server's chain
                 return;
             }
-            pp = &kernel().endpoints.at(ep_served_index(*pp))->next_served;
+            pp = &link->next_served;
         }
-        KICKOS_ASSERT(false); // server set, yet absent from that server's chain
+        *pp = ep->next_served;
+        ep->next_served = EP_SERVED_NONE;
+        ep->server = nullptr;
     }
 
     void endpoint_server_set(Endpoint* ep, Thread* t)
@@ -323,10 +329,15 @@ namespace kickos
         // the endpoint pool either: at a large KICKOS_MAX_ENDPOINTS that sweep is the masked
         // window. A chain member is always a live slot: server is cleared before recv_holders
         // can reach 0, and the slot is freed only at zero refs.
-        uint16_t r = t->served_head;
-        while (r != EP_SERVED_NONE)
+        //
+        // Ends on at()'s null, EP_SERVED_NONE decoding out of range (endpoint.h). NOTHING HERE
+        // MAY REACH kpanic: this funnel runs below the timer trap, and a panic door in it puts
+        // the whole console tail on that trap's measured descent, 16 bytes over rv32imac's TRAP
+        // red zone. The KICKOS_DEBUG_ASSERT below IS such a door at KICKOS_DEBUG=1, a posture
+        // no preset builds and so one check_trap_redzone.sh never measures.
+        for (Endpoint* ep = kernel().endpoints.at(ep_served_index(t->served_head)); ep != nullptr;
+             ep = kernel().endpoints.at(ep_served_index(ep->next_served)))
         {
-            Endpoint* ep = kernel().endpoints.at(ep_served_index(r));
             KICKOS_DEBUG_ASSERT(ep->server == t);
             for (ListNode* n = ep->send_waiters.head; n != nullptr; n = n->next)
             {
@@ -336,7 +347,6 @@ namespace kickos
                     p = s->prio;
                 }
             }
-            r = ep->next_served;
         }
         return p;
     }

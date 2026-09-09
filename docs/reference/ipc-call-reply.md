@@ -98,7 +98,7 @@ the reply is safe. A client wanting split tx/rx copies locally.
 |---|---|
 | `>= 0` | reply byte count (post-truncation into `recv_cap`) |
 | `-KOS_EINVAL` | `send_len` exceeds `KOS_EP_MSG_MAX` |
-| `-KOS_EFAULT` | `buf` not readable (`send_len`) or not writable (`recv_cap`) by the caller |
+| `-KOS_EFAULT` | `buf` not readable (`send_len`) or not writable (`recv_cap`) by the caller, or the rendezvous copy was refused (see **A copy the boundary check cannot promise** below) |
 | `-KOS_EBADF` | bad endpoint cap |
 | `-KOS_EPERM` | missing `CAP_SIGNAL`, or no caller context |
 | `-KOS_EPIPE` | dead endpoint (`recv_holders == 0`), or the server died mid-transaction |
@@ -198,7 +198,7 @@ consumed on EVERY exit (one-shot). `len > KOS_EP_MSG_MAX` is clamped (the caller
 |---|---|
 | `0` | reply delivered, caller woken |
 | `-KOS_EBADF` | the handle is not a live `CAP_REPLY` cap |
-| `-KOS_EFAULT` | `buf` not readable by the server for `len` |
+| `-KOS_EFAULT` | `buf` not readable by the server for `len`, or the reply copy was refused (see below). The cap is consumed either way |
 | `-KOS_ESRCH` | the caller is gone/aborted/reused (stale resolve); the cap is still consumed |
 
 `ESRCH` is REACHABLE, by exactly one route: `kos_call_timed`. A caller whose deadline
@@ -211,7 +211,7 @@ test, and a rolled `call_seq`) before anything is consumed.
 
 ## `KOS_SYS_RECV = 28` -- widened out-pointer
 
-The recv out-pointer is now a `struct kos_recv_info` (was a bare `uint32_t` badge):
+The recv out-pointer is a `struct kos_recv_info`:
 
     struct kos_recv_info { uint32_t badge; kos_cap_t reply_cap; };   // 8 bytes, 4-aligned
 
@@ -224,7 +224,7 @@ own `kos_recv_timed_opts`, which nests this one (see `KOS_SYS_RECV_TIMED` above)
   against `KOS_CAP_NONE`: a handle fills all 32 bits, so no sign test works.
 - **Info-less recv** (`out == NULL`, i.e. `badge_out == 0`, or `KOS_RECV_NO_INFO` on the
   timed form): the receiver is NOT minted a reply cap and REJECTS calls -- the caller's
-  `kos_call` fails `-KOS_ENOSYS`. Plain sends behave exactly as before. `endpoint_recv`
+  `kos_call` fails `-KOS_ENOSYS`. Plain sends are unaffected. `endpoint_recv`
   validates 8 writable bytes at a 4-aligned out-ptr (misalignment `-KOS_EINVAL`, unowned
   `-KOS_EFAULT`); alignment is load-bearing for the privileged store.
 
@@ -232,6 +232,69 @@ This is a deliberate DoS closure: a service that must not have its handle table 
 untrusted callers (the console, which every task holds a `SIGNAL` cap on) uses a plain
 info-less recv, so hostile `kos_call`s bounce with `ENOSYS` instead of burning cap slots
 and pinning the server's priority.
+
+## A copy the boundary check cannot promise
+
+Both buffer bound-checks run at the syscall boundary, once. The COPY happens later -- for a
+receiver, arbitrarily later, because it parked in between -- and two things can refuse it
+then. `access_copy` reaches every granule through its own `arch_aspace_acquire`, which
+answers null once that page is unmapped, so a sibling holding `AUTH_MEMORY` + `CAP_FRAME` +
+`CAP_ASPACE` can `KOS_SYS_FRAME_UNMAP` the page under a thread parked in `kos_recv`. And
+`ep_copy` refuses a copy whose two ends are the same memory under one owner, the primitive
+under it being the ascending-only `kmemcpy`; two threads of ONE task share a space, so one
+static array is one address for both ends of a rendezvous, and that route needs no
+capability at all.
+
+**Both ends are answered `-KOS_EFAULT`, and neither is a panic.** The rendezvous is the unit:
+a sender whose copy into a parked receiver is refused answers `-KOS_EFAULT`, and that
+receiver is WOKEN with `-KOS_EFAULT` rather than a byte count, because it is already off
+`recv_waiters` and nothing else would ever wake it. The same holds in the other direction
+(a receiver's scan over parked senders), for the fastpath call, and for `kos_reply`, whose
+cap is consumed regardless. `endpoint_recv`'s scan STOPS at the refusal instead of
+continuing to the next sender, unlike the `ENOSYS`/`EMFILE` bounces: a bool does not say
+which end went away, so a scan that continued could pop and fault every queued sender on the
+receiver's own lost buffer.
+
+**A refused `kos_recv_info` write RETRACTS the reply capability it was about to disclose.** A call
+arm mints the one-shot `CAP_REPLY` into the receiver's table and only then writes the handle out,
+so a refused `write_recv_info` would leave a capability installed whose holder was never told the
+number of it: nothing can ever spend it, and the caller it names parks to its deadline or, untimed,
+forever. `endpoint_recv`'s `CALL_SEND_WAIT` arm and `endpoint_call`'s fastpath each undo the mint
+with `cap_uninstall_reply` and then answer both ends `-KOS_EFAULT`. That retraction is SILENT,
+unlike `handle_close`'s `CAP_REPLY` arm, which answers the parked caller as a
+close-instead-of-reply: here the minter is itself the one answering that caller, and a second
+answer would be a second wake. The scan stops here as it stops at a refused copy, and with less
+ambiguity than there: the out-pointer is the RECEIVER's own, so every sender queued behind this one
+would meet the same fault.
+
+An info-less receive has nothing to retract. `write_recv_info` answers true for `out == 0` and
+moves no byte, and `endpoint_recv` bounces a `CALL_SEND_WAIT` sender `-KOS_ENOSYS` ahead of any
+mint, so the retraction above is reached only where a real out-pointer was named.
+
+**A refusal is not a no-op.** The copy stops at the first granule refused, so a prefix has
+already landed: a buffer the kernel answers `EFAULT` about holds a head of the new bytes over
+a tail of what it held, bounded by `KOS_EP_MSG_MAX`. That is why `0` is the wrong answer for
+a receiver -- `n == 0` is a valid zero-length signal, and it would describe an indeterminate
+buffer as an empty arrival. The residue is documented rather than engineered away, on
+`KOS_ETIMEDOUT`'s precedent (`invariants.md`, `syscall-return-abi`): the promise is that no
+party is told a transfer succeeded over a buffer in that state, not that the transaction was
+undone.
+
+The `kos_recv_timed` deadline and flag reads are outside this: each is one 4-aligned word,
+which cannot straddle a granule, and both happen before anything is committed, so a refusal
+there is a plain `-KOS_EFAULT` with nothing moved and nothing to unwind.
+
+On a board that describes regions instead of translating, `access_copy` is a bare `kmemcpy`
+and cannot fail -- the unmap route does not exist there, the frame syscalls being
+`KICKOS_HAVE_ASPACE`-only. The overlap refusal is reachable on every board.
+
+**Which is why `kernel/syscall/syscall_ipc_fast.cc` discards its `write_recv_info` answer, and is
+not a third undisclosed mint.** A reader counting the sites that mint a reply cap and then disclose
+its handle finds three, and only two carry the retraction above. That file compiles under
+`KICKOS_ARCH_HAS_IPC_FASTPATH` alone, which is set by the armv6m, armv7m, rxv3 and rv32imac
+`ipc_fastpath.cmake` ladders and by no translating arch, the two capability families being
+exclusive. So `write_recv_info` there reduces to that `kmemcpy` and cannot refuse, and a retraction arm
+beside it would be code no board can enter.
 
 ## Priority donation
 
@@ -301,8 +364,8 @@ partition does not name. No syscall is involved and nothing is minted at run tim
 **A NODE THAT SERVES MUST NOT RETURN FROM `main`.** Root returning ends the system
 (`<kickos/sys/init.h>`), and the nodes of an AMP partition share one machine, so a serving
 node's main taking the exit halts its callers too. It is the same rule any persisting init
-already lives by and not a new burden the partition invents; what the partition changes is that
-somebody else is now affected by breaking it. A node that only CALLS may return as any app does.
+already lives by and not a new burden the partition invents; what the partition adds is that
+somebody else is affected by breaking it. A node that only CALLS may return as any app does.
 
 **Which capability a node gets is its own reading of the same entry.** An entry naming this node
 is a LOCAL endpoint carrying `CAP_WAIT | CAP_SIGNAL`, with the port bound to it, so a call
@@ -383,7 +446,7 @@ behind it, because how stale a dropped record may be is the workload's property 
 kernel's. The rest of the window's refusals map to `-KOS_EPIPE` (a far index this node
 cannot believe) and `-KOS_EINVAL`.
 
-**Back-pressure also exists on the RECEIVING side, and it is not an errno and not a loss.** A
+**Back-pressure also exists on the RECEIVING side, and it is not an errno and not a loss.**  A
 serving node admits a call only where the reply ring toward that sender has room for one more
 reply than it already owes that sender (`../design-multicore.md` N6f). A peer that has not
 drained its replies therefore has its calls left UNREAD rather than taken and answered into a
@@ -394,11 +457,130 @@ that slot belonged to, because a credit return is not a publication anybody resc
 (`../design-multicore.md` N6f). The caller sees only the latency; the refusal is
 the serving node's own and reaches userspace as the probe verdict `KOS_AMP_V_RESERVE`, counted in
 `amp::Counts::reply_reserve` apart from the producer-side `send_refused` so that a take declined
-and a publication refused are never read as one number. **An answer the reply ring refuses anyway**
--- reachable only where a peer regressed a tail under a reservation it had already granted -- counts
-`amp::Counts::reply_unsent` and still frees its call slot: the answer is unrecoverable either way,
-the reply capability being spent, and holding the slot would stall the whole held run behind it and
-turn a reply-ring fault into a dead call ring.
+and a publication refused are never read as one number.
+
+**AND WHAT IT OWES IS NOT DERIVED FROM THE HELD RUN ALONE.** A CALL-ring resynchronisation sets
+`taken = tail = head` with the released mask clear, so a run of length zero can still owe a reply
+slot: the record the clause left pending (`amp::Inbound::run_gone`) is counted beside the run
+rather than out of it. The masked slot cannot say which is which -- an abandoned record and a
+later wrap's call share one -- so the record carries the fact. Counting the run alone admits one
+call too many per such record, and the answer to each of those is a publication the reply ring
+then refuses, which is how a GENERIC malformed peer reaches the full-ring state above rather than
+only a targeted one. `run_gone` also decides that such a record's slot is never spent as a
+release again: `release_call` masks its index against the run that stands NOW, so releasing it
+would hand the peer back a slot this node is still being served on.
+
+**AN ANSWER THE REPLY RING REFUSES ANYWAY LOSES ITS BYTES AND NOT AT ONCE ITS CALLER**, and the two
+halves of that are separate mechanisms. It is reachable only where a peer regressed a tail under a
+reservation it had already granted. The BYTES are gone: the reply capability was spent to reach the
+publication, so nothing holds what would remake them, and `amp::Counts::reply_unsent` counts one,
+readable from userspace through the `KOS_AMP_OP_REPLY_UNSENT` probe op. That op is the only signal
+outside the kernel that an answer was lost, which is why the counter and it land together: the
+exceptional loss would otherwise be invisible exactly where it would be diagnosed.
+The OBLIGATION is not: the record is left pending with its call slot still held, and a later
+service pass publishes an empty `PORT_REPLY` carrying its tag once that ring is believable again
+(`amp::inbound_reply` defers, `amp::node_service` discharges, between the reply drain and the call
+drain). **THE SLOT IS HELD BACK ON PURPOSE, AND THAT COSTS A BOUNDED DELAY OF THE RUN BEHIND IT
+RATHER THAN A DEAD CALL RING**: what it buys is that no later call lands on a slot whose caller is
+still owed an answer, which releasing it at the refusal gave up.
+
+**AND THE OBLIGATION CARRIES A BOUND OF ITS OWN, `amp::DEFER_PASSES` SERVICE PASSES, BECAUSE THE
+PRODUCER'S STRIKE BOUND CANNOT REACH THE STATE THAT NEEDS ONE.** An EXACTLY FULL reply ring is an
+outstanding count of `KOS_AMP_RING_SLOTS`, which is what a well-formed consumer presents while it
+has read nothing, so `tail_believed` believes it and no strike accrues -- deliberately, since
+resynchronising a legitimately full ring would destroy a slow peer's unread answers, which is data
+loss where there was none. A node holding an answer for such a ring owns neither index and can
+publish nothing, so an unbounded obligation there is the whole held run behind it pinned for the
+life of the image, every later call meeting a masked slot the standing record refuses, and
+`send_refused` climbing once per doorbell any other peer raises. At the bound the call slot goes
+back and the record dies UNANSWERED: no far index is written, the peer's own unread answers stand,
+and what is given up is this answer's wire refusal alone -- which is the state that held before
+the slot was ever held back. **The bound is PER RECORD**, so a peer that drains at the last pass
+keeps every obligation behind the one that expired, and the run is back within
+`RING_SLOTS * DEFER_PASSES` passes at worst. A pass is any doorbell this node takes: on a
+partition wider than two nodes an unrelated peer's traffic spends the budget too, which is the
+price of measuring in passes rather than in a time this path has no clock for.
+
+**AND THE PAYLOAD IS DELIBERATELY NOT RETAINED.** A staging buffer per record would make the kernel
+the keeper of an answer's staleness, which is the workload's property and nobody else's
+(`../design-multicore.md` N6e); an empty reply carries no such policy, saying "no answer", which is
+as true a tick later as it was at the refusal. And in the case that motivates the retry at all, a
+peer that regressed or restarted that tail, the caller the payload would be delivered to may no
+longer exist: the tag then resolves to nothing at the far end, or past a 65536 wrap to a stranger.
+The obligation-only shape is correct in both sub-cases and costs one byte per record.
+
+**THE PRODUCER HAS THE SAME STRIKE BOUND THE CONSUMER HAS, AND IT IS THE REPLY RING'S ALONE.** A
+far tail whose outstanding count exceeds the ring's depth cannot come from a well-formed consumer
+at all: that tail only advances, and this node publishes nothing past `KOS_AMP_RING_SLOTS` beyond
+the tail it last read. After `amp::DEPTH_STRIKES` consecutive such readings on one reply ring the
+index THIS NODE OWNS is resynchronised to the far tail, the publication that reached the bound is
+taken rather than refused once more, and `amp::Counts::tail_reset` counts one
+(`KOS_AMP_OP_TAIL_RESET`, the producer's counterpart of `KOS_AMP_OP_DEPTH_RESET`). What it abandons is
+this node's own answers the peer's regression had already declared it would not read, and the far
+index it adopts is still spent modulo the ring's depth alone. Both readers of that tail run it: the
+publication in `amp::send` and the admission test in `take_call`, the second being what makes the
+recovery reachable on a node whose every take is refused and which therefore has nothing of its own
+to publish. It introduces nothing on the wire: the strike count is this node's private state, so no
+epoch and no second index sits beside the ring's own release point.
+
+**THE CALL RING HAS NO SUCH BOUND, AND THAT ASYMMETRY IS THE ARGUMENT AND NOT AN OMISSION.** A
+refused CALL is answered to an application that can act on it, so a call ring this node has stopped
+believing costs no caller its answer, only its own sends. Discarding an outstanding call would
+strand a caller already parked on that publication, and nothing on this node could then answer it.
+The recovery a regressed call-ring tail needs is a coordinated restart, which is a mechanism this
+layer does not have.
+
+**A ZERO-LENGTH `PORT_REPLY` CARRIES SEVERAL MEANINGS AND CARRIES NO REASON, AND THAT IS
+RULED RATHER THAN INHERITED.** On the wire it is a genuine empty answer, a call refused after its
+slot was taken, a caller whose route the resynchronisation stopped believing, and a deferred answer
+whose bytes were lost. A receiver cannot tell them apart, which the contract already said of the
+first two, and the two added here do not change what a caller may do about any of them.
+
+*Why no reason code rides it.* Not for want of a bit: `ReplyTag::seq` is a 32-bit field carrying a
+16-bit `Thread::call_seq`, so half of it is structurally spare. It is refused because writing it
+would make the SERVING node an author of the CALLING node's own route word, and the whole of why an
+unvalidated tag may cross is that the serving node spends neither field and hands both back exactly
+as they arrived (`../design-multicore.md` N6f). A reason composed there is a reason a malformed peer
+can compose too, so the calling node would owe it validation, on the reply path, for a value no
+caller can act on differently: none of these outcomes is retryable from inside the kernel, and
+whether to retry, drop or escalate is the workload's (N6e). And a partial distinction would be worse
+than none, since a genuine zero-length answer would stay folded in with the refusals whatever code
+were added, so a receiver told "refused" would over-trust a signal silent on the one case it most
+needs to see.
+
+*Where the distinction does live.* At the node that caused it, as a count, which is what makes it
+diagnosable at all: the resynchronisation's answers and the deferred ones each count
+`amp::Counts::reply_unsent` (`KOS_AMP_OP_REPLY_UNSENT`), where a call refused past its take counts
+nothing of the kind, and the producer's recovery counts `amp::Counts::tail_reset`. So the added
+meanings are one wire shape with a per-node name, not an extra unnamed one.
+
+*And a payload copy this kernel refuses is NOT one of them, because it does not need the wire.*
+`endpoint_far_reply_deliver` answers `-KOS_EFAULT` on a refused `kaccess_to_user`, handing it
+through `Thread::wait_result` to its own parked thread. That is the calling node writing to its own
+TCB, not a message crossing a window, so the code reaches that caller by exactly the channel the
+local rendezvous uses, with nothing on the wire changing and nothing in `kernel/amp/` involved.
+`endpoint_far_call_deliver` answers the same way and on the same channel -- for its receiver's
+payload copy and for a refused `write_recv_info` alike -- that receiver being a parked local thread
+already off `recv_waiters`. So no far arm is an end of the wire that describes a lost buffer
+differently. A masked doorbell body having no syscall return is not what stands in the way
+of a code: neither arm needs one, each having a parked TCB to write instead.
+
+*The count is held apart from `reply_unsent`, and holding it apart is the point of both fields.*
+`amp::Counts::deliver_fault` (`KOS_AMP_OP_DELIVER_FAULT`) counts an arrival this node could not put
+into a local thread's buffer, once per arrival however many of its copies were refused. Folding it
+into `reply_unsent` was refused: a non-zero row there must keep naming a malformed or regressed
+PEER, where a refused copy is this node's own buffer fault on a message that arrived intact.
+`reply_drop` is not its home either, that field naming a reply the tag validation turned away,
+which is a reply that reached no caller at all -- where this one resolved a live parked caller, woke
+it, and could not fill its buffer.
+
+**AND A RESYNCHRONISATION ANSWERS THE CALLERS IT ABANDONS.** The depth clause on a CALL ring
+abandons a sender's whole held run at once, which is what makes it memory-safe (`amp::Inbound`'s
+generation), and every live record in that run names a far caller parked on an answer. Each is
+published an empty `PORT_REPLY` carrying its own tag before its record dies, read out of the record
+while it can still be named; each counts `amp::Counts::reply_unsent`, the service holding that
+capability being about to find its token dead. A publication refused there defers exactly as
+`amp::inbound_reply`'s does.
 
 **Donation does not cross.** There is no thread on the far side to raise and no seam by
 which this node's priority reaches a peer's scheduler, so D1 and D2 have no far arm and D3
@@ -444,7 +626,14 @@ in order:
    and the slot stays the taker's to release.
 4. the payload is copied with `kaccess_to_user`, truncated to the receiver's `ipc.len` as any
    datagram is, and `kos_recv_info` carries `KOS_BADGE_NONE` -- a far sender holds no badge this
-   kernel minted -- beside the reply handle. A refused copy or a refused info write answers zero bytes and undoes the mint.
+   kernel minted -- beside the reply handle. **A refused copy and a refused info write are ONE
+   fault with ONE answer**: the receiver is woken `-KOS_EFAULT` with `reply_cap` reading
+   `KOS_CAP_NONE`, the mint is undone (`cap_uninstall_far_reply` + `amp::inbound_forget`), and
+   the far caller is answered by the ONE publish site every refusal past the take funnels
+   through (`dispatch_call`, below). A capability is
+   disclosed only BESIDE THE BYTES IT ANSWERS FOR, which is the rule the local rendezvous keeps
+   by minting only after its own copy: a receiver that never saw the request is handed no
+   obligation, and one told nothing of a handle could never spend it.
 
 The receiver then answers with an ordinary `kos_reply`. The record routes it to
 `amp::inbound_reply`, which publishes it on the sender's `amp::PORT_REPLY` with the tag verbatim,
@@ -486,7 +675,7 @@ The cap is consumed exactly once per unpark:
 | server closes / loses its `WAIT` cap while `ep->server == it` | close arm clears `ep->server` + recomputes | any lingering D2 donation dropped |
 
 The `CAP_REPLY` close arm runs the SAME full stale-resolve as `kos_reply` before waking,
-which is load-bearing now that a timed call can leave a stale cap behind. A teardown wake runs with
+which is load-bearing because a timed call can leave a stale cap behind. A teardown wake runs with
 the closer `dying` and still `RUNNING`: `EXITED` is set only after `cap_teardown` returns.
 `sched::wake` defers the switch for a woken caller that does not outrank the closer and ADMITS one
 that does, so what makes this safe is that the sweep is RESUMABLE, not that it is uninterrupted. The
@@ -525,6 +714,17 @@ walks a shorter chain and never a torn one.
   timed call would bound that wedge, not detect it: the cycle stays invisible, the caller
   learns only that time ran out, and the service stays blocked until the caller releases the
   mutex of its own accord.
+- **`cap_console_deliver` is the one route left answering a lost buffer with `0`.** Every IPC
+  path answers `-KOS_EFAULT`, the far arms included: see "A copy the boundary check cannot
+  promise" for the local rendezvous and the far-window section above for
+  `endpoint_far_reply_deliver` and `endpoint_far_call_deliver`. The console route keeps `n = 0`
+  for both of its refusals. Half of that is structural: its producer is the fault reporter
+  descending through `kconsole_write`, so there is no caller to answer and the byte count is
+  the whole of what it returns. The other half is not -- its parked receiver is woken through
+  the same `Thread::wait_result` the far arms carry a code on, so nothing stops a code
+  reaching it. What is missing is a ruling on what a console consumer should be told about a
+  record it holds a prefix of, which is that route's contract and not this one's. Until then
+  `0` cannot be told from a zero-length line on that route, and on no other.
 - **No cross-call state hold.** A reply cap lives across exactly one transaction; there is
   no bus-claim/session that spans multiple calls (a coherent multi-phase transaction is
   expressed as one call with multiple segments -- see `bus-service.md`).

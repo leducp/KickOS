@@ -113,9 +113,10 @@ namespace kickos
     // binding, and installs a full-rights CAP_IRQ into `c`'s table. The line is left
     // MASKED with needs_rearm set, so the first irq_wait arms it in the thread that
     // will consume the event. -> 0 with the cap in *out_cap, or -KOS_E*: the exhaustion cases
-    // are distinct, -KOS_ENOMEM for the binding pool or a publication record and -KOS_EMFILE
-    // for the caller's own table. Above one kernel core -KOS_EBUSY also covers a line whose
-    // previous binding is still retiring, which a later claim of the same line takes.
+    // are distinct: -KOS_ENOMEM the binding pool or a publication record, -KOS_EMFILE the
+    // caller's own table, -KOS_EOVERFLOW the calling TASK's ceiling with the pool still holding
+    // slots (task.h). Above one kernel core -KOS_EBUSY also covers a line whose previous
+    // binding is still retiring, which a later claim of the same line takes.
     int irq_claim(Thread* c, int line, unsigned int flags, uint32_t* out_cap);
     // Block until the line fires; 0, or -KOS_E*. Auto-rearms the previously-consumed line
     // on entry, so `wait; service` alone keeps receiving IRQs and an explicit irq_ack is
