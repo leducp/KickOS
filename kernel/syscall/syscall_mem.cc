@@ -333,7 +333,8 @@ namespace kickos
     // Disjointness is a (space, range) question, addresses comparing only under one owner.
     // An overlap is refused and MUST NOT become an assert again: this runs on the switch
     // path, which the fault reporter descends into through cap_console_deliver, so a panic
-    // here re-enters kputs -> kconsole_write from inside the record it was writing.
+    // here re-enters kputs -> kconsole_write from inside the record it was writing. And it is
+    // reachable: two threads of ONE task naming one static array reach it with no capability.
     bool ep_copy(struct arch_aspace* dspace, uintptr_t dst, struct arch_aspace* sspace,
                  uintptr_t src, size_t n)
     {

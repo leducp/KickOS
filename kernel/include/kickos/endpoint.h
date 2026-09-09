@@ -25,6 +25,11 @@ namespace kickos
     // A served-endpoint chain entry (Thread::served_head, next_served below): an endpoint
     // pool index biased by one, so the sentinel is 0 and a zeroed TCB or slot is already
     // unlinked with nothing to seat.
+    //
+    // THE BIAS IS WHAT MAKES SlotPool::at THE WHOLE WALK CONDITION: the sentinel decodes to -1,
+    // which at() answers nullptr for, so a served-chain walk carries no sentinel test of its
+    // own. One testing both pays a frame on a chain that reaches kpanic, and that descent is
+    // measured (tests/static/check_trap_redzone.sh).
     constexpr uint16_t EP_SERVED_NONE = 0;
     static_assert(KICKOS_MAX_ENDPOINTS < UINT16_MAX,
                   "an endpoint's served-chain ref would collide with EP_SERVED_NONE");
@@ -37,6 +42,11 @@ namespace kickos
     {
         return static_cast<int>(ref) - 1;
     }
+
+    static_assert(ep_served_index(EP_SERVED_NONE) < 0,
+                  "EP_SERVED_NONE must decode outside [0, KICKOS_MAX_ENDPOINTS): the "
+                  "served-chain walks in kernel/sync/sync.cc end on SlotPool::at's refusal "
+                  "and carry no sentinel test of their own");
 
     // A cap-named synchronous rendezvous point. There is NO kernel payload storage: the
     // parked side's own user buffer is the storage, stable because that side is BLOCKED,
@@ -104,6 +114,10 @@ namespace kickos
     // SYSCALL REACHES THAT STATE: endpoint_recv proves the out-ptr writable and aligned before
     // the park, so only a buffer that went away under a parked receiver presents it, and the
     // scaffolding is what an arm has instead. Consumed by the next delivery, armed or not.
+    //
+    // THE PAYLOAD COPIES NEED NO SUCH ARM: a sibling holding the frame capability unmaps the
+    // page under the parked thread, which is the real route and what amp_far_deliver_fault
+    // drives.
     void endpoint_far_blind_arm(void);
     bool endpoint_far_blind_take(void);
 #else

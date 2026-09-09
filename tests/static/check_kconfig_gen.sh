@@ -15,16 +15,18 @@ set -u
 
 . "$(dirname "$0")/../lib/gate.sh"
 
-if [ "$#" -ne 2 ]; then
-    fail "usage: check_kconfig_gen.sh <python> <srcdir>"
+if [ "$#" -ne 3 ]; then
+    fail "usage: check_kconfig_gen.sh <python> <srcdir> <cmake>"
 fi
 PY="$1"
 # Absolute, because the paths the fragment reports are and leg 1 compares them literally.
 SRC="$(cd "$2" && pwd)" || fail "no source tree at $2"
+CMK="$3"
 GEN="$SRC/tools/kconfig/genconfig.py"
 DEFCONFIG="$SRC/boards/xmc4800-relax/configs/base/defconfig"
 
 [ -x "$PY" ] || fail "no python interpreter at $PY"
+[ -x "$CMK" ] || fail "no cmake at $CMK"
 [ -f "$GEN" ] || fail "no generator at $GEN"
 [ -f "$DEFCONFIG" ] || fail "no defconfig at $DEFCONFIG"
 
@@ -41,11 +43,19 @@ gen() {
     gen_with "$DEFCONFIG" "$out" "$@"
 }
 
+# The accepted-override tally the PASS line reports, counted here rather than written out
+# beside it, so an override leg added or dropped cannot leave the number behind. A caller
+# that drove gen in a pipeline or `$(...)` would increment a copy of it instead.
+ACCEPTED=0
+
 gen_with() {
     dc="$1"
     out="$2"
     shift 2
-    "$PY" "$GEN" "$SRC" "$dc" "$out" "$@" >"$out.log" 2>"$out.err"
+    "$PY" "$GEN" "$SRC" "$dc" "$out" "$@" >"$out.log" 2>"$out.err" || return 1
+    if [ "$#" -gt 0 ]; then
+        ACCEPTED=$((ACCEPTED + 1))
+    fi
 }
 
 # --- Leg 1: it generates, and a default flows from the selected arch --------
@@ -205,4 +215,65 @@ done
 # reporting success over zero work.
 [ "$n" -gt 0 ] || fail "no defconfig under $SRC/boards/*/configs/"
 
-echo "PASS: kconfig generation, 7 refusals, 4 accepted overrides, $n defconfigs resolved"
+# --- Leg 7: a string knob's semicolon or dollar reaches the fragment inert ---------
+# Neither character needs escaping at the .config level itself (kconfiglib's own quoting
+# only cares about a bare backslash or quote), so this value round-trips through
+# check_assignments unchanged and the fragment is the only place left to prove it: a
+# raw semicolon is CMake's list separator regardless of quoting, and a raw $ expands
+# ${...}/$ENV{...} even inside a quoted set() argument.
+gen "$TMP/esc" 'CONFIG_KICKOS_SERVICE_LIST="kickos_services_sim;two$LEAK_ME"' \
+    || fail "a service-list value carrying ';' and '\$' was refused: $(cat "$TMP/esc.err")"
+ESCF="$TMP/esc/kickos_config.cmake"
+grep -Fq 'set(KICKOS_SERVICE_LIST "kickos_services_sim\;two\$LEAK_ME")' "$ESCF" \
+    || fail "the fragment did not backslash-escape the ';' and '\$' in KICKOS_SERVICE_LIST"
+
+# Read the escaped line back through CMake itself, with a decoy variable in scope, rather
+# than trusting the text of the generated line: an unescaped \$ would pull LEAK_ME's value
+# in instead of the operator's own, and an unescaped ; would split the value in two.
+cat > "$TMP/verify.cmake" <<VEOF
+set(LEAK_ME "PWNED")
+include("$ESCF")
+list(LENGTH KICKOS_SERVICE_LIST _len)
+if(NOT _len EQUAL 1)
+  message(FATAL_ERROR "KICKOS_SERVICE_LIST split into \${_len} list element(s)")
+endif()
+list(GET KICKOS_SERVICE_LIST 0 _elem)
+file(WRITE "$TMP/esc.got" "\${_elem}")
+VEOF
+"$CMK" -P "$TMP/verify.cmake" >"$TMP/verify.log" 2>"$TMP/verify.err" \
+    || fail "the escaped fragment does not parse back as one CMake string: $(cat "$TMP/verify.err")"
+printf '%s' 'kickos_services_sim;two$LEAK_ME' > "$TMP/esc.want"
+cmp -s "$TMP/esc.got" "$TMP/esc.want" \
+    || fail "KICKOS_SERVICE_LIST round-tripped to '$(cat "$TMP/esc.got")', not \
+'kickos_services_sim;two\$LEAK_ME'"
+
+# --- Leg 8: the escaping function itself, for the characters a defconfig cannot carry ---
+# A literal quote or backslash needs kconfiglib's OWN backslash to reach sym.str_value at
+# all, which then also satisfies check_assignments' plain '"'-stripping read-back, so leg 7's
+# route cannot tell an unescaped quote from an escaped one. Checked directly instead. '@' is
+# included as a negative case: this fragment is include()'d, never configure_file()'d, so
+# CMake never expands @VAR@ here and escaping it would only add noise.
+"$PY" - "$SRC" <<'PYEOF' >"$TMP/escape_unit.log" 2>"$TMP/escape_unit.err" \
+    || fail "cmake_escape unit cases failed: $(cat "$TMP/escape_unit.err")"
+import sys
+
+sys.path.insert(0, sys.argv[1] + "/tools/kconfig")
+import genconfig
+
+cases = [
+    ("plain", "plain"),
+    ('a"b', 'a\\"b'),
+    ("a;b", "a\\;b"),
+    ("a$b", "a\\$b"),
+    ("a\\b", "a\\\\b"),
+    ("a@b", "a@b"),
+]
+for raw, want in cases:
+    got = genconfig.cmake_escape(raw)
+    if got != want:
+        sys.stderr.write("cmake_escape(%r) = %r, want %r\n" % (raw, got, want))
+        sys.exit(1)
+PYEOF
+
+echo "PASS: kconfig generation, 7 refusals, $ACCEPTED accepted overrides, $n defconfigs resolved," \
+     "string-knob escaping verified through CMake and unit cases"

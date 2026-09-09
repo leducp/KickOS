@@ -45,7 +45,7 @@ binding image of the three by about 350 bytes -- each link prints its own `size`
 is read there rather than quoted here.
 
 At 64 KiB of flash the self-test does not fit as one image and is built as `selftest` +
-`selftest_p2` + `selftest_p3` -- see *Three boards run the selftest as THREE images* below.
+`selftest_p2` + `selftest_p3` -- see *Four boards run the selftest as THREE images* below.
 
 ### Recommended: `microbit` is exactly this tier
 
@@ -107,7 +107,7 @@ code wins, then this file.
 | `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and not in CI**: witnessed 2026-08-29 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` at 52 of 52. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
 | `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and not in CI**: witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
 | `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and not in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip selects no memory family, so the map is flat. See *Per-board caveats* below |
-| `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
+| `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] **the selftest is THREE images on the enforcing variants** (see *Four boards run the selftest as THREE images*), full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32 / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
 | `rx72m` | RX72M / RXv3 @240 MHz | P80 (LED6, active-low) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **Fourth board with an UNPRIVILEGED root, and the only one on the RX MPU** (2026-07-28) -- see *Unprivileged root* below. Re-witnessed 2026-07-30 at a clean `270b6fa`, closing the owed stage-4 `rxdrv` mux-write arm and the M4.5.5 granular-shaping debt in one visit -- see *M4.5.6* below. **No CI gate** -- see *CI coverage* below |
 | `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + `HARD FAULT` dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed. **First board with an UNPRIVILEGED root** (2026-07-27) -- see *Unprivileged root* below |
@@ -894,14 +894,22 @@ Every recipe -- ST-Link, external SWD, USB-DFU, picotool/BOOTSEL, esptool, bossa
 `rfp-cli`, and the J-Link / RTT deep-dive -- lives in [flashing.md](../flashing.md). Nothing
 operational belongs in this file.
 
-### Three boards run the selftest as THREE images
+### Four boards run the selftest as THREE images
 
-`bluepill-c8`, `f302nucleo` and `microbit` only. The condition is the CHIP -- `stm32f103`,
-`stm32f302`, `nrf51` -- in `user/apps/common/selftest/CMakeLists.txt`, and those three boards are
-the only ones carrying them. Every other board still produces one `selftest`, unchanged. The suite
-outgrew a 64 KiB part (`f302nucleo-st` was at 4 free bytes of 65536), so it is built as three
-self-contained images that partition the arms between them. **`microbit` split for the
-opposite resource, and no longer needs to**: its FLASH is 256 KiB and never binding, but
+`bluepill-c8`, `f302nucleo`, `microbit` and the ENFORCING `esp32c6-wroom` variants. The condition
+is in `user/apps/common/selftest/CMakeLists.txt`: the CHIP for the first three -- `stm32f103`,
+`stm32f302`, `nrf51` -- and the chip plus `KICKOS_HAVE_MPU` for `esp32c6`, whose flat variant
+carves no code window and stays one image. Every other board still produces one `selftest`,
+unchanged. The suite outgrew a 64 KiB part (`f302nucleo-st` was at 4 free bytes of 65536), so it is
+built as three self-contained images that partition the arms between them.
+**FOUR BOARDS, THREE DIFFERENT RESOURCES.** `esp32c6` split for a third one, neither FLASH nor
+arena: its unprivileged code+rodata is ONE pow2 PMP NAPOT window, `_code_size` in
+`arch/riscv/chip/esp32c6/esp32c6.ld`, 128 KiB, and the whole suite in one image overflowed it. The
+next pow2 step is 256 KiB and would take 128 KiB straight off the thread arena, which is why the
+split is what pays for it: at 128 KiB the fattest part, `selftest_p3` on `esp32c6-wroom-st`,
+carries 76,612 B of 131,072 and leaves 54,460 free where the single image had 2,060 free before it
+overflowed. And **`microbit` split for the opposite resource, and no longer needs to**: its FLASH
+is 256 KiB and never binding, but
 `__kickos_ram_start` follows `.bss` on `nrf51`, so eliding a region's test bodies took their statics
 out of `.bss` and handed the difference to the arena. At 16 KiB that was what made the arena probes
 fit; at the 32 KiB provisioning it is a RESIDUAL, and `user/apps/common/selftest/CMakeLists.txt`

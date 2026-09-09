@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Cap-object creator syscalls: sem_create / mutex_create. Each allocates from a
-// global generational pool and installs the owning cap in the creator's table.
+// Cap-object creator syscalls: sem_create / mutex_create. Each admits the calling task
+// against its object ceiling, allocates from a global generational pool and installs the
+// owning cap in the creator's table.
 // Split out of syscall.cc; the endpoint creator lives with the rest of the IPC
 // path in syscall_ipc.cc. External linkage; declared in syscall_internal.h.
 
@@ -40,13 +41,24 @@ namespace kickos
         {
             return -KOS_EINVAL; // initial count outside [0, KOS_SEM_COUNT_MAX]
         }
+        // ASKED BEFORE THE POOL, so the answer does not depend on how full the pool happens
+        // to be. -KOS_EOVERFLOW is unambiguous here: cap_install returns only 0 or
+        // -KOS_EMFILE, so the budget is this call's only source of it.
+        if (not task_object_admit(kernel().sem_owner, KICKOS_MAX_SEMAPHORES, c->task))
+        {
+            return -KOS_EOVERFLOW; // this task holds its ceiling of semaphores already
+        }
         int const i = kernel().sems.alloc();
-        if (i < 0)
+        Semaphore* const s = kernel().sems.at(i); // total over alloc()'s -1
+        if (s == nullptr)
         {
             return -KOS_ENOMEM; // sem pool exhausted
         }
-        sem_init(kernel().sems.at(i), initial);
+        sem_init(s, initial);
         kernel().sem_refs[i] = 1; // this creator's cap is the first reference
+        // A pooled slot keeps its last occupant's tag, so leaving this unset would charge
+        // the new sem to whoever held the slot before.
+        kernel().sem_owner[i] = task_owner_tag(c->task);
         int const obj = kernel().sems.handle_for(i);
         // Install the owning cap with full rights (WAIT|SIGNAL|TRANSFER) in the
         // creator's table; that CAP handle is what userspace sees. A full table is a
@@ -57,6 +69,7 @@ namespace kickos
         if (rc != 0)
         {
             kernel().sem_refs[i] = 0;
+            kernel().sem_owner[i] = TASK_OWNER_NONE;
             kernel().sems.free(obj);
             return rc;
         }
@@ -77,18 +90,25 @@ namespace kickos
         {
             return -KOS_EPERM; // no caller context (defensive)
         }
+        if (not task_object_admit(kernel().mutex_owner, KICKOS_MAX_MUTEXES, c->task))
+        {
+            return -KOS_EOVERFLOW; // this task holds its ceiling of mutexes already
+        }
         int const i = kernel().mutexes.alloc();
-        if (i < 0)
+        Mutex* const m = kernel().mutexes.at(i); // total over alloc()'s -1
+        if (m == nullptr)
         {
             return -KOS_ENOMEM; // mutex pool exhausted
         }
-        mutex_init(kernel().mutexes.at(i));
+        mutex_init(m);
         kernel().mutex_refs[i] = 1;
+        kernel().mutex_owner[i] = task_owner_tag(c->task);
         int const obj = kernel().mutexes.handle_for(i);
         int const rc = cap_install(c, obj, CapType::CAP_MUTEX, CAP_TRANSFER, out_cap);
         if (rc != 0)
         {
             kernel().mutex_refs[i] = 0;
+            kernel().mutex_owner[i] = TASK_OWNER_NONE;
             kernel().mutexes.free(obj);
             return rc;
         }

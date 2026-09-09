@@ -25,6 +25,10 @@ namespace kickos
         uint32_t pages = 0;
     };
 
+    // What frame_run_create answers when it could not make one, and what a caller holding no
+    // run stores. A HANDLE, so compare against it and never test the sign (slotpool.h).
+    constexpr int FRAME_RUN_NONE = -1;
+
     // Seat a frame RUN and take the creator's reference over frames the caller already holds.
     // -1 when the pool is full. NOT in cap.h: the base is an arch_phys_addr_t and that header
     // must not learn an address width.

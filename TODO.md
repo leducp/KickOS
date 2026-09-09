@@ -195,7 +195,7 @@ validates the full 16-bit `call_seq` while the local arm keeps passing a mask.
 External audit, itemised into `roadmap.md` M8.3. SEC-1's owner-tag decision is taken and recorded
 below as the decided shape, not reopened.
 
-- [ ] **A CALL-DEPTH RESYNCHRONISATION DROPS HELD RECORDS WITHOUT ANSWERING THEIR CALLERS, AND
+- [x] **A CALL-DEPTH RESYNCHRONISATION DROPS HELD RECORDS WITHOUT ANSWERING THEIR CALLERS, AND
       `reply_unsent` IS DIAGNOSABLE ONLY FROM INSIDE THE KERNEL.** `kernel/amp/ampwindow.cc` 355-379
       and 1174-1182; `kernel/include/kickos/ampwindow.h` 383-390. The resynchronisation bumps each
       record's generation so no reply can answer a stranger, which is what makes it memory-safe, but
@@ -206,7 +206,7 @@ below as the decided shape, not reopened.
       `reply_unsent` through a probe op in the same pass: it is the only signal that an answer was
       lost, and today nothing outside the kernel can read it, so the exceptional loss the item above
       counts is invisible exactly where it would be diagnosed.
-- [ ] **THE FAR REPLY PUBLICATION HAS NO PRODUCER-SIDE STRIKE BOUND, SO A PEER THAT REGRESSES ITS
+- [x] **THE FAR REPLY PUBLICATION HAS NO PRODUCER-SIDE STRIKE BOUND, SO A PEER THAT REGRESSES ITS
       REPLY TAIL WEDGES THIS NODE'S ANSWERS FOR THE LIFE OF THE IMAGE.** `kernel/amp/ampwindow.cc`
       (`reply_reserved`) 417-444 and (`inbound_reply`) 1173-1204. The CONSUMER side has
       `DEPTH_STRIKES` and resynchronises a ring it has stopped believing; the PRODUCER side has
@@ -222,8 +222,69 @@ below as the decided shape, not reopened.
       and which `DEPTH_STRIKES` answers only on that side. Direction: decide whether a producer
       strike bound is the symmetric answer, and note that an epoch is refused elsewhere in this tree
       as a second answer beside a real release point -- so it must be argued, not assumed.
+      DONE, both items together. `record_answer_pair` publishes an empty `PORT_REPLY` per live
+      record before the resynchronisation kills it; `inbound_reply` defers the obligation rather
+      than releasing the slot, and `answer_deferred` discharges it from `node_service` between the
+      two drains; `tail_believed` is the producer's strike bound, read by `send_on` and by
+      `reply_reserved`, and `Counts::tail_reset` counts it. THE PRODUCER BOUND IS THE REPLY RING'S
+      ALONE and the argument is in `docs/design-multicore.md` N6f: a refused CALL reaches an
+      application that can act on it, and discarding an outstanding one strands a caller already
+      parked on its publication. THE PAYLOAD IS NOT STAGED, also argued there: an obligation
+      carries no staleness policy where an answer's bytes do, and the caller a staged payload
+      would reach may not exist in the case that motivates it. `reply_unsent` and `tail_reset` are
+      readable through `KOS_AMP_OP_REPLY_UNSENT` and `KOS_AMP_OP_TAIL_RESET`, each moved by an arm
+      over a real stimulus. **WHAT IS STILL OWED, and it is a DECISION rather than a finding**: a
+      regressed or restarted far CALL-ring tail. This node's sends are refused and its callers
+      told, which is N6e's whole contract, so nothing is stranded and nothing is silent, but the
+      crossing stays dead in that direction until the image restarts. Recovering it needs the two
+      nodes to agree that a run is abandoned, which is a coordinated restart and belongs with the
+      partition lifecycle rather than with the window layer: nothing in `ampwindow.cc` can decide
+      that a peer has restarted, and the epoch that would say so is the second answer beside a
+      real release point this tree refuses.
 
-- [ ] **`SlotPool::at` TAKES AN INDEX AND BOUNDS NOTHING, AND M8.2 REMOVED THE ONE CALLER WHOSE
+- [x] **A PAYLOAD COPY THE CALLING NODE REFUSES WAKES ITS FAR CALLER AS A ZERO-LENGTH ARRIVAL,
+      WHICH IS A LIE THAT NODE CAN TELL AND DOES NOT.** `kernel/syscall/syscall_ipc.cc`
+      (`endpoint_far_reply_deliver`), the `kaccess_to_user` arm that sets `n = 0`. Raised as a
+      DECISION rather than filed: it is the far half of SEC-2's local/far asymmetry, and the reason
+      SEC-2 recorded as a limit was that a masked doorbell body has no syscall return to carry a
+      code. **That reason does not hold for this arm.** The refusal happens at the CALLING node, to
+      its own parked thread, and that arm already hands a value to it through `Thread::wait_result`
+      as an `intptr_t` -- which is exactly where the local paths now put `-KOS_EFAULT`. So no
+      message, no wire field and nothing in `kernel/amp/` is involved, and the asymmetry is
+      closable in the direction the local paths already chose. Ruled OUT of the window layer's own
+      pass (`docs/reference/ipc-call-reply.md`, and `docs/design-multicore.md` N6f): the wire
+      deliberately carries no reason on a zero-length reply, and this event does not need it.
+      **Also uncounted, which is the sharper half**: that arm returns true after a refused copy, so
+      it counts neither `amp::Counts::reply_drop` nor anything else. A reply that resolved a live
+      parked caller, woke it and gave it nothing is invisible to every counter and to the
+      `reply_unsent` op. Folding it into `reply_unsent` was refused on the ground that a non-zero
+      row there must keep naming a malformed or regressed PEER. Direction: answer `-KOS_EFAULT`
+      through `wait_result` where the copy is refused, and count it beside `reply_drop` or in a
+      field of its own; both belong to the delivery arm's surface and neither to the transport.
+      DONE, and widened to the whole of that surface rather than the one arm. Both far delivery
+      arms answer `-KOS_EFAULT` on `Thread::wait_result`: `endpoint_far_reply_deliver` for its own
+      parked caller's payload copy, and `endpoint_far_call_deliver` for BOTH of its refusals, the
+      receiver's payload copy and a refused `write_recv_info`. Leaving the second arm at 0 would
+      have made one body describe two faults of one kind two ways, which is the asymmetry this
+      item exists to remove rather than to move. The reason once recorded for the asymmetry, that
+      a masked doorbell body has no syscall return to carry a code, is dropped rather than
+      narrowed: neither arm ever needed a syscall return, each having a parked TCB to write.
+      THE COUNT IS ITS OWN FIELD, `amp::Counts::deliver_fault`, readable as
+      `KOS_AMP_OP_DELIVER_FAULT` and moved once per arrival however many of its copies were
+      refused. Not `reply_unsent`, on the ground this item already took; and not `reply_drop`
+      either, which names a reply the tag validation turned away and so one that reached no
+      caller at all, where this one resolved a live parked caller and could not fill its buffer.
+      THE TWO LOCAL UNDISCLOSED MINTS WENT WITH IT, being the same defect on the near side:
+      `endpoint_recv`'s `CALL_SEND_WAIT` arm and `endpoint_call`'s fastpath discarded
+      `write_recv_info`'s answer, so a refusal left a `CAP_REPLY` minted and undisclosed with its
+      caller parked on a handle nothing was ever told. Each now retracts with `cap_uninstall_reply`
+      and answers both ends `-KOS_EFAULT`, which is what the far path's
+      `cap_uninstall_far_reply` arm already did. `kernel/syscall/syscall_ipc_fast.cc` is the third
+      such site and is NOT a gap: it compiles under `KICKOS_ARCH_HAS_IPC_FASTPATH` alone, where
+      `access_copy` is a bare `kmemcpy`, so its `write_recv_info` cannot refuse and a retraction
+      beside it would be unreachable code.
+
+- [x] **`SlotPool::at` TAKES AN INDEX AND BOUNDS NOTHING, AND M8.2 REMOVED THE ONE CALLER WHOSE
       DEAD REFUSAL WAS ALSO ITS RANGE CHECK.** `kernel/include/kickos/slotpool.h` (`at`) 112 is
       `return &slots_[index];`, and its own comment says "the slot at a KNOWN-LIVE index", so the
       bound is a caller obligation with nothing holding it. This is assigned here rather than filed:
@@ -236,8 +297,56 @@ below as the decided shape, not reopened.
       replace. Direction: decide whether `at` refuses (returning a null object, so the authority is
       TOTAL rather than sentinelled at each call site) or whether the obligation is enforced at the
       seam it is documented as; do not add a per-caller bound check, which is the second-truth shape.
+      DONE: `at` BOUNDS ITS INDEX and answers `nullptr` outside [0, N). The index is compared as
+      UNSIGNED, which is not the sign test `free()` and `resolve()` forbid: those take a handle
+      spending the whole word, this takes an INDEX where -1 is `alloc()`'s pool-full answer, so
+      `at(alloc())` is legal and the pool-full refusal is that one null. What it buys is visible at
+      the site that raised the item: `endpoint_far_call_deliver` already tested `e == nullptr` on
+      the result, a test nothing could make true, and a `port_endpoint` miss hands it
+      `EP_BOUND_NONE`, so the bound made an existing check LIVE instead of adding one and the
+      caller-obligation comment stating the constraint is gone. `live()` and `handle_for` were
+      bounded with it, or each would have become the new outlier; `handle_for` answers -1, which is
+      safe rather than a second sentinel because its low half is the reserved all-ones index that
+      `resolve()` and `free()` already refuse. `index_of` was made total over `nullptr`, which is
+      what lets `index_of(resolve(h))` be one refusal at the four `cap.cc` helpers. The
+      `at(0)`-as-array-base sites had to change and were not optional: with `at` bounded,
+      `x - pool.at(0)` subtracts from a null wherever the argument is out of range. Each is now
+      `index_of`, the pool's own answer to their question and a hand-rolled second truth beside it.
 
-- [ ] **SEC-1: ON A REGION BOARD, A SPAWN-TIME RAM GRANT OR A CALLER-SUPPLIED STACK IS ADMITTED
+      **THE LIVENESS HALF WAS PRICED AND DECLINED, and the figure is the record.** Refusing a slot
+      no `alloc()` holds -- the `VirtualRanges::at` form -- costs `endpoint_far_call_deliver`'s frame
+      exactly 8 bytes at -Os on armv7m (32 to 40), which puts `pizero2350-amp2-n0` and `-n1` at SVCK
+      1232 against a bound of 1224. Bisected to that one predicate against a pristine tree on the
+      same scratch build directory, and not buyable: two separate ifs, an unsigned local, the
+      pointer computed first, the answer carried in the callee's TCB field, and one scaffold call
+      instead of two all measured 40. Paying it means SVCK 1232, whose zone of 1456 exceeds the 1452
+      usable, so `KICKOS_KERNEL_STACK_SIZE` grows 1456 to 1464 -- 8 bytes across 6 kernel stacks on
+      every node of that posture. THE POSTURE IS WHAT DECIDES IT: the winning chain is rooted in
+      `amp_probe`, which is selftest scaffolding, and off that posture the arch header states these
+      three are reached from the doorbell in handler mode where no class bounds them. So the cost
+      would buy a bound on a chain no production caller walks. `SlotPool`'s kernel callers all pass
+      an `alloc()` result or a resolved index, so no site can present a freed slot; `live()` remains
+      the liveness question and `at`'s own comment says what it does not answer.
+
+- [x] **`frame_run_create` SPENDS `alloc()`'s INDEX WHERE EVERY CONSUMER RESOLVES A HANDLE, WHICH
+      PANICS THE KERNEL ON THE SECOND OCCUPANT OF ANY SLOT.** `kernel/syscall/cap.cc`
+      (`frame_run_create`). Found while adding an arm for the item above, and fixed in the same pass
+      rather than filed: it is an index passed where a handle is expected, which is exactly the
+      confusion that item exists to make impossible, and it has a route from userspace.
+      `resolve(index)` answers only while that slot's generation is still 0, so the create that
+      takes a RECYCLED slot resolved to nothing and stored the run's base through the null. MEASURED
+      as an armv8a data abort, `ESR=0x96000046 FAR=0x0`, with the faulting store immediately after
+      the `resolve` call. The selftest sat at exactly `KICKOS_MAX_FRAME_RUNS` seed cycles, so the
+      ninth was the first to reach it and nothing before this pass did.
+      DONE, both halves: the run is initialised through `at(i)`, which is total over `alloc()`'s -1,
+      and the function returns `handle_for(i)`. The two callers tested the SIGN of what is now a
+      handle, which an aged generation makes negative, so both compare against the named
+      `FRAME_RUN_NONE` instead and `frame_pool.h` says why a caller may not test the sign. The arm
+      MEASURES the wall rather than naming it, `KICKOS_MAX_FRAME_RUNS` being kernel-side: it holds
+      seeds until one is refused, then runs more create/close cycles than it could hold at once, and
+      asserts those two numbers against each other so it cannot go vacuous on a wider pool.
+
+- [x] **SEC-1: ON A REGION BOARD, A SPAWN-TIME RAM GRANT OR A CALLER-SUPPLIED STACK IS ADMITTED
       OVER ANY IN-ARENA, DESCRIPTOR-ENCODABLE RANGE -- INCLUDING ANOTHER TASK'S DATA OR A
       SIBLING'S STACK.** `grant.cc` (`grant_region_admissible`) RAM arm ~118-134; `domain.cc`
       (`domain_for`) non-ASPACE arm; `task.cc` 111-173; `arch_ram_common.cc` (`arch_ram_alloc`)
@@ -257,7 +366,7 @@ below as the decided shape, not reopened.
       block the caller's task owns. `abi.h` 921 and `architecture.md` 577-578 then become true as
       written on every board -- do not narrow either sentence to the translating backend.
 
-- [ ] **SEC-2 (generalises C8, C7): TWELVE SITES VALIDATE A USER RANGE AT ENTRY AND THEN
+- [x] **SEC-2 (generalises C8, C7): TWELVE SITES VALIDATE A USER RANGE AT ENTRY AND THEN
       `KICKOS_ASSERT` A LATER COPY THAT A SIBLING CAN MAKE FAIL BETWEEN THE TWO.** `syscall.cc`
       90, 115, 146, 170; `syscall_ipc.cc` 244, 357, 364, 470, 499, 667, 840; `syscall_thread.cc` 46;
       `syscall_ipc_fast.cc` 136. On region boards `access_copy` cannot fail; on MMU boards
@@ -271,7 +380,7 @@ below as the decided shape, not reopened.
       `-KOS_EFAULT` at every site (the far sites are the model), or refuse `aspace_cap_unmap` while a
       thread of the target task is parked with `ipc.buf` inside the unmapped range.
 
-- [ ] **SEC-3: SEMAPHORES, MUTEXES, ENDPOINTS, IRQ BINDINGS AND FRAME RUNS ARE ONE GLOBAL
+- [x] **SEC-3: SEMAPHORES, MUTEXES, ENDPOINTS, IRQ BINDINGS AND FRAME RUNS ARE ONE GLOBAL
       `SlotPool` EACH WITH NO PER-TASK QUOTA.** `instance.h` 91-139; `KOS_SYS_SEM_CREATE` /
       `MUTEX_CREATE` / `ENDPOINT_CREATE` (ungated). One unprivileged task looping on create until
       `-KOS_ENOMEM` denies every other task in the system, including a supervisor's respawn of a
@@ -281,7 +390,7 @@ below as the decided shape, not reopened.
       Medium. Direction, decided: a per-task object budget checked at the three creators and at
       `irq_claim`.
 
-- [ ] **SEC-6: `KOS_SYS_IRQ_INJECT` AND `ASPACE_PROBE` HAVE NO PRIVILEGE GATE UNDER
+- [x] **SEC-6: `KOS_SYS_IRQ_INJECT` AND `ASPACE_PROBE` HAVE NO PRIVILEGE GATE UNDER
       `KICKOS_ENABLE_SELFTEST`.** `syscall.cc` (`KOS_SYS_IRQ_INJECT`) 641-660; `syscall_aspace.cc`
       284-449 (`ASPACE_PROBE` mints `CAP_FRAME` / `CAP_ASPACE`). Under the selftest build, any
       unprivileged thread can inject any IRQ line including kernel-owned ones (timer, console TX,
@@ -290,7 +399,7 @@ below as the decided shape, not reopened.
       Low, selftest images only. Direction: root-gate both, or record in writing that a selftest
       image has no privilege boundary at all.
 
-- [ ] **SEC-7: `tools/kconfig/genconfig.py` WRITES STRING KNOBS AND PATHS INTO GENERATED CMAKE UNESCAPED.**
+- [x] **SEC-7: `tools/kconfig/genconfig.py` WRITES STRING KNOBS AND PATHS INTO GENERATED CMAKE UNESCAPED.**
       `tools/kconfig/genconfig.py` (`write_cmake_fragment`) ~173-197. A quote or semicolon in a
       `KICKOS_AMP_PORTS` value or a build path breaks or silently extends the generated
       `set(... "...")` line. Inputs are the repo's own defconfigs and the operator's own paths today,
@@ -298,7 +407,7 @@ below as the decided shape, not reopened.
       by contrast (no `eval`, lists unflattened, hex filters). Severity Low. Direction: escape the
       two characters, or refuse them at generation time.
 
-- [ ] **DOC DRIFT (assigned here): `architecture.md` 577-578 AND `abi.h` 921 BOTH STATE SEC-1'S
+- [x] **DOC DRIFT (assigned here): `architecture.md` 577-578 AND `abi.h` 921 BOTH STATE SEC-1'S
       OWNERSHIP PROMISE AS UNCONDITIONAL, WHICH IS TRUE ONLY UNDER TRANSLATION TODAY.**
       `architecture.md` 577-578 says grant ownership "is authenticated (M3)"; `abi.h` 921 says "a
       range the caller never reserved is refused" with no qualifier; `sys.h` 459-463 already states
@@ -306,6 +415,76 @@ below as the decided shape, not reopened.
       board and need no further edit; if SEC-1 is ever narrowed instead, both sentences need the
       translating-board qualifier `sys.h` already carries. Fix in the same change as SEC-1, not
       before it.
+
+## M8.3 residues the external audit accepted, and the gate hole behind one of them
+
+Both were found during M8.3 and are recorded here rather than closed, which is what the audit's
+`Medium - accepted` and its own reading of `STATE`/`TODO` rest on.
+
+- [ ] **THE OBJECT BUDGET BOUNDS CREATES CHARGED TO A LIVING CREATOR, NOT DELEGATED HOLDS.**
+      `kernel/include/kickos/instance.h` (`task_object_admit`, `task_object_held`);
+      `kernel/task/task.cc` (`task_object_disown`). The charge sits on the pool slot and names the
+      creating task, so `task_object_disown` -- which exists to stop a recycled task slot
+      inheriting a charge -- also clears the charge from an object that is STILL LIVE on another
+      task's capability. A task at its ceiling can therefore delegate its objects into a second
+      task and die, after which one live task holds a whole pool while its own charge reads one.
+      Two tasks at their ceilings empty a pool between them regardless. So the invariant
+      `object-pool-keeps-a-slot-from-any-one-task` is true of CREATES and the denial the item was
+      opened for is reachable by a longer route. **What the reserve does still buy** is that the
+      simple loop the item describes -- one task creating until `-KOS_ENOMEM` -- cannot take a
+      pool's last slot. Direction: charge on delegation as well as creation, or count holds rather
+      than creates; both are past the shape M8.3's decided direction covers, and the second wants
+      a per-(task, slot) record rather than one owner byte. `tests/unit/taskbudget` asserts the
+      COMPLEMENT (that a recycled slot regains its ceiling) and so stays green over this.
+
+- [ ] **THE SYSCALL TABLE'S DOCUMENTED CODE LISTS ARE READ BY NO GATE, WHICH IS WHY A REFUSAL CODE
+      LANDED IN ONE HEADER AND NOT THE OTHER.** `user/include/kickos/sys/abi.h` (the
+      `KOS_SYS_*` table) against `user/include/kickos/sys.h` and the dispatch. M8.3's budget
+      refusal reached the API header and none of the four creator entries beside it, and nothing
+      caught it: proven by stripping three codes from one entry and watching every static gate
+      pass. `docs/reference/invariants.md`'s `syscall-return-abi` names `abi.h` in its own
+      `source:` list and calls those exhaustion answers ones that must not be collapsed, so the
+      header the invariant cites is the one that can drift from it silently. Direction: a gate
+      that reads each table entry's documented codes against the codes its dispatch arm can
+      actually return. Belongs with the milestone that owns the gates, not with this one -- and
+      note it is the same shape as the four `EXISTS`-guard and forwarding-gate items already
+      recorded there: a list nothing cross-checks is a second authority.
+
+## Found fixing the M8.3 review's red-zone breaks (2026-09-08)
+
+- [ ] **THE PANIC TAIL IS 384 BYTES OF EVERY rv32imac RED-ZONE FIGURE AND 308 OF EVERY rxv3 ONE, SO
+      ANY NEW ASSERT ON A DISPATCH CHAIN DRAGS THE WHOLE CONSOLE.** Both of M8.3's red-zone breaks
+      were one `KICKOS_ASSERT` reaching `kpanic -> ... -> console_tx`, and neither was the site the
+      first attribution named. That is why these figures keep breaking on the arches with no slack:
+      the measured depth of a syscall chain is mostly the reporter it can reach, not the work it
+      does. **Eight figures on those two arches now sit at EXACTLY their reserve** (rv32imac TRAP,
+      SYS, SYSPRIV, EXITK, RET; rxv3 SYSK, EXITK, RET), so the next assert added anywhere on a
+      dispatch chain fails a gate on a board nobody named. Moving the panic reporter off the
+      measured stacks is a milestone rather than a fix, and it has no home yet. Direction: price a
+      reporter that runs on a stack of its own, and note that the red-zone gate's own exclusion
+      mechanism already models "which chains are walked", so the question is where the reporter
+      lives and not how it is measured.
+
+- [x] **THE rxv3 SYSK POSTURE LADDER IS PRICED AND DECLINED, NOT DEFERRED.** `rx72m` and
+      `rx72m-flat` measure SYSK 700 where `rx72m-st` measures 796, and the whole 96-byte gap is gcc
+      inlining `syscall_body` into `syscall_dispatch` when the self-test syscalls are absent. A
+      `KICKOS_ENABLE_SELFTEST` ladder on `KICKOS_KERNEL_STACK_SIZE` (for which armv7m already has a
+      precedent) would take the non-self-test rxv3 block to 1024 and recover 80 x 17 = **1360
+      bytes**. Declined on the ground `stub-is-a-weaker-environment-than-the-real-thing` already
+      states: it would leave the self-test image exercising a stack geometry no shipped image has,
+      so the posture that gets tested would stop being the posture that ships. The secondary reasons
+      are that rv32imac carries ONE figure across the identical inlining difference, and that an
+      inlining decision is a fragile thing to pin a shipped figure to. Recorded so the 1360 is not
+      re-derived as a new opportunity.
+
+- [ ] **`esp32c6-wroom-st` KERNEL `.bss` ENDS 68 BYTES SHORT OF THE `.appdata` BOUNDARY, AND FALLING
+      OFF IT COSTS 32 KiB OF ARENA SILENTLY.** The window is 32 KiB-aligned, so `.bss` crossing it
+      does not fail a link -- the arena simply starts a whole window later and loses 32,768 bytes.
+      `esp32c6-wroom` has 104 bytes of margin and **`esp32c6-wroom-bench` has already fallen off**,
+      which is why it is the preset that reaches zero pool headroom under a wider code window. No
+      assert reads this distance today. Direction: an assert on the `.bss`-to-boundary gap in the
+      chip script, the way the arena asserts already replay the allocations, so a crossing is a
+      link failure naming the cliff rather than a quiet 32 KiB loss.
 
 ## M8.4 -- gates, CI and the instrument's arithmetic
 

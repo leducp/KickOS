@@ -38,6 +38,8 @@ namespace kickos
         // still naming this task from resolving onto its successor.
         void free_task(Task* t)
         {
+            // BEFORE the slot is reusable, or a surviving tag charges its successor.
+            task_object_disown(t);
             domain_release(t->domain);
             // Nulling makes the debris FAIL-CLOSED: task_domain answers null, which every
             // reader already handles, rather than a Domain* the pool may have re-handed.
@@ -132,6 +134,7 @@ namespace kickos
         *t = Task{};
         t->gen = gen;
         t->domain = d;
+        task_object_seed(t);
         return t;
     }
 
@@ -163,6 +166,7 @@ namespace kickos
         *t = Task{};
         t->gen = gen;
         t->domain = d;
+        task_object_seed(t);
         // The hold, taken before the reservation is visible: an explicit task sits at
         // refcount 0 between create and its first spawn, and only this reference stops the
         // domain pool re-handing the slot underneath it.
@@ -298,6 +302,44 @@ namespace kickos
             return KICKOS_PRIO_MAX;
         }
         return t->prio_ceiling;
+    }
+
+    void task_object_disown(Task const* t)
+    {
+        uint8_t const mine = task_owner_tag(t);
+        if (mine == TASK_OWNER_NONE)
+        {
+            return;
+        }
+        Kernel& k = kernel();
+        for (int i = 0; i < KICKOS_MAX_SEMAPHORES; i++)
+        {
+            if (k.sem_owner[i] == mine)
+            {
+                k.sem_owner[i] = TASK_OWNER_NONE;
+            }
+        }
+        for (int i = 0; i < KICKOS_MAX_MUTEXES; i++)
+        {
+            if (k.mutex_owner[i] == mine)
+            {
+                k.mutex_owner[i] = TASK_OWNER_NONE;
+            }
+        }
+        for (int i = 0; i < KICKOS_MAX_ENDPOINTS; i++)
+        {
+            if (k.endpoint_owner[i] == mine)
+            {
+                k.endpoint_owner[i] = TASK_OWNER_NONE;
+            }
+        }
+        for (int i = 0; i < KICKOS_MAX_IRQ_HANDLES; i++)
+        {
+            if (k.irq_owner[i] == mine)
+            {
+                k.irq_owner[i] = TASK_OWNER_NONE;
+            }
+        }
     }
 
 #if KICKOS_KERNEL_CORES > 1

@@ -120,6 +120,10 @@ namespace kickos
     // Every minting call has one shape: a status return plus a handle out-parameter,
     // which is written on EVERY path (KCAP_INVALID on failure). A handle spends all 32
     // bits, so it cannot share the return value with an errno.
+    //
+    // THREE EXHAUSTION ANSWERS, and each of the three creators here and irq_claim can give
+    // any of them: -KOS_ENOMEM the pool, -KOS_EMFILE the caller's table, -KOS_EOVERFLOW the
+    // calling TASK's ceiling for that pool while the pool still holds slots (task.h).
     int sem_create(int initial, uint32_t* out_cap);
     int mutex_create(uint32_t* out_cap);
 

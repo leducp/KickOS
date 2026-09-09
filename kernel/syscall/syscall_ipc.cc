@@ -45,12 +45,15 @@ namespace kickos
         [[nodiscard]] int endpoint_slot_claim(Endpoint** out)
         {
             int const i = kernel().endpoints.alloc();
-            if (i < 0)
+            Endpoint* const ep = kernel().endpoints.at(i); // total over alloc()'s -1
+            if (ep == nullptr)
             {
                 return -1;
             }
-            Endpoint* const ep = kernel().endpoints.at(i);
             *ep = Endpoint{};
+            // The slot keeps its last occupant's owner tag, and this claim's two privileged
+            // callers charge nobody; endpoint_create overwrites it with its own.
+            kernel().endpoint_owner[i] = TASK_OWNER_NONE;
             *out = ep;
             return i;
         }
@@ -101,6 +104,12 @@ namespace kickos
         {
             return -KOS_EPERM;
         }
+        // Before the slot, as at the other three creators. The endpoint pool is the fleet's
+        // smallest at four slots, so this is the ceiling that binds first.
+        if (not task_object_admit(kernel().endpoint_owner, KICKOS_MAX_ENDPOINTS, c->task))
+        {
+            return -KOS_EOVERFLOW; // this task holds its ceiling of endpoints already
+        }
         Endpoint* ep = nullptr;
         int const i = endpoint_slot_claim(&ep);
         if (i < 0)
@@ -109,12 +118,14 @@ namespace kickos
         }
         ep->recv_holders = 1; // creator holds a WAIT-bearing cap
         kernel().endpoint_refs[i] = 1;
+        kernel().endpoint_owner[i] = task_owner_tag(c->task);
         int const obj = kernel().endpoints.handle_for(i);
         int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT,
                                    CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER, out_cap);
         if (rc != 0)
         {
             kernel().endpoint_refs[i] = 0;
+            kernel().endpoint_owner[i] = TASK_OWNER_NONE;
             kernel().endpoints.free(obj);
             return rc;
         }
@@ -247,9 +258,15 @@ namespace kickos
                 {
                     n = w->ipc.len; // datagram truncation, not an error
                 }
-                bool const ok = ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n);
-                KICKOS_ASSERT(ok);
-                (void)ok;
+                if (not ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n))
+                {
+                    // The receiver is answered and not dropped, being already off
+                    // recv_waiters. EFAULT and not a zero-length arrival: a prefix may have
+                    // landed in its buffer, so 0 would misdescribe those bytes.
+                    w->wait_result = -KOS_EFAULT;
+                    sched::wake(w);
+                    return -KOS_EFAULT;
+                }
                 (void)write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE,
                                       KCAP_INVALID);
                 w->wait_result = static_cast<intptr_t>(n);
@@ -357,19 +374,21 @@ namespace kickos
             }
             // Copied ONCE, before anything can park: the struct stays user-writable, so a
             // re-read after the park would see whatever the caller has since put there.
-            bool const ok = kaccess_from_user(&timeout_us, user_space_of(c),
-                                              badge_out
-                                                  + offsetof(kos_recv_timed_opts, timeout_us),
-                                              sizeof(timeout_us));
-            KICKOS_ASSERT(ok);
-            (void)ok;
+            // Both are aligned words inside one granule and nothing is committed yet, so a
+            // refusal moves no byte and leaves no state to unwind.
+            if (not kaccess_from_user(&timeout_us, user_space_of(c),
+                                      badge_out + offsetof(kos_recv_timed_opts, timeout_us),
+                                      sizeof(timeout_us)))
+            {
+                return -KOS_EFAULT;
+            }
             uint32_t flags = 0;
-            bool const flags_ok = kaccess_from_user(&flags, user_space_of(c),
-                                                    badge_out
-                                                        + offsetof(kos_recv_timed_opts, flags),
-                                                    sizeof(flags));
-            KICKOS_ASSERT(flags_ok);
-            (void)flags_ok;
+            if (not kaccess_from_user(&flags, user_space_of(c),
+                                      badge_out + offsetof(kos_recv_timed_opts, flags),
+                                      sizeof(flags)))
+            {
+                return -KOS_EFAULT;
+            }
             if ((flags & ~KOS_RECV_NO_INFO) != 0)
             {
                 return -KOS_EINVAL;
@@ -472,15 +491,47 @@ namespace kickos
                     {
                         n = cap_len; // truncate the request into our capacity
                     }
-                    bool const ok = ep_copy(user_space_of(c), buf, ipc_buf_space(s),
-                                            s->ipc.buf, n);
-                    KICKOS_ASSERT(ok);
-                    (void)ok;
-                    uint32_t rcap = KCAP_INVALID;
-                    // Not inside the assert: a compiled-out condition would drop the mint.
-                    int const minted = cap_install_reply(c, s, &rcap);
-                    KICKOS_ASSERT(minted == 0);
-                    (void)write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, rcap);
+                    bool ok = ep_copy(user_space_of(c), buf, ipc_buf_space(s), s->ipc.buf, n);
+                    if (ok)
+                    {
+                        uint32_t rcap = KCAP_INVALID;
+                        // Not inside the assert: a compiled-out condition would drop the mint.
+                        int const minted = cap_install_reply(c, s, &rcap);
+                        KICKOS_ASSERT(minted == 0);
+                        ok = write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, rcap);
+                        if (not ok)
+                        {
+                            // An undisclosed mint is one nothing can ever spend, and this
+                            // caller would park on a handle we were never told.
+                            bool const undone = cap_uninstall_reply(c, rcap, s);
+                            KICKOS_ASSERT(undone);
+                            (void)undone;
+                        }
+                    }
+                    if (not ok)
+                    {
+                        // NOT a `continue` like the two bounces above: the refusal does not
+                        // say WHICH end went away, and if it was OUR buffer then every
+                        // remaining sender would be popped and faulted in turn. One popped
+                        // caller is the narrower loss.
+                        s->call_state = CALL_NONE; // B1: clear before waking
+                        s->wait_result = -KOS_EFAULT;
+                        uint8_t const np = thread_effective_prio(c);
+                        if (np != c->prio)
+                        {
+                            sched::set_prio(c, np);
+                        }
+                        if (sched::wake_no_resched(s)
+                            and (woke_top == nullptr or s->prio > woke_top->prio))
+                        {
+                            woke_top = s;
+                        }
+                        if (woke_top != nullptr)
+                        {
+                            sched::resched_after_wake(woke_top);
+                        }
+                        return -KOS_EFAULT;
+                    }
                     s->ipc.len = s->call_rx_cap;
                     s->ipc.badge_out = 0;
                     s->call_state = CALL_REPLY_WAIT;
@@ -502,9 +553,23 @@ namespace kickos
                 {
                     n = cap_len; // truncate into the receiver's capacity
                 }
-                bool const ok = ep_copy(user_space_of(c), buf, ipc_buf_space(s), s->ipc.buf, n);
-                KICKOS_ASSERT(ok);
-                (void)ok;
+                if (not ep_copy(user_space_of(c), buf, ipc_buf_space(s), s->ipc.buf, n))
+                {
+                    // Both ends are answered and the scan stops, for the reason the call arm
+                    // above gives: a refusal names no end, so continuing could fault the
+                    // whole queue on our own lost buffer.
+                    s->wait_result = -KOS_EFAULT;
+                    if (sched::wake_no_resched(s)
+                        and (woke_top == nullptr or s->prio > woke_top->prio))
+                    {
+                        woke_top = s;
+                    }
+                    if (woke_top != nullptr)
+                    {
+                        sched::resched_after_wake(woke_top);
+                    }
+                    return -KOS_EFAULT;
+                }
                 (void)write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, KCAP_INVALID);
                 s->wait_result = static_cast<intptr_t>(n);
                 if (sched::wake_no_resched(s) and (woke_top == nullptr or s->prio > woke_top->prio))
@@ -670,9 +735,15 @@ namespace kickos
                     n = w->ipc.len; // receiver-side request truncation
                 }
                 KICKOS_BENCH_MARK(bm_copy);
-                bool const ok = ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n);
-                KICKOS_ASSERT(ok);
-                (void)ok;
+                if (not ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n))
+                {
+                    // Ahead of the mint and of every mutation of `c`, so this caller has
+                    // nothing to unwind; the receiver is answered because the pop already
+                    // took it off recv_waiters.
+                    w->wait_result = -KOS_EFAULT;
+                    sched::wake(w);
+                    return -KOS_EFAULT;
+                }
                 KICKOS_BENCH_SPAN(PH_CALL_COPY, bm_copy);
                 c->call_seq++; // new epoch BEFORE packing (the reply cap rides this seq)
                 uint32_t rcap = KCAP_INVALID;
@@ -683,7 +754,19 @@ namespace kickos
                 KICKOS_BENCH_SPAN(PH_CALL_MINT_CAP, bm_mint_cap);
                 KICKOS_ASSERT(minted == 0);
                 KICKOS_BENCH_MARK(bm_mint_info);
-                (void)write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, rcap);
+                if (not write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, rcap))
+                {
+                    // An undisclosed mint is one nothing can ever spend, and this caller would
+                    // park on a handle the receiver was never told. Both ends are answered as
+                    // the ep_copy refusal above answers them: `c` has not parked yet, and the
+                    // pop already took `w` off recv_waiters.
+                    bool const undone = cap_uninstall_reply(w, rcap, c);
+                    KICKOS_ASSERT(undone);
+                    (void)undone;
+                    w->wait_result = -KOS_EFAULT;
+                    sched::wake(w);
+                    return -KOS_EFAULT;
+                }
                 KICKOS_BENCH_SPAN(PH_CALL_MINT_INFO, bm_mint_info);
                 KICKOS_BENCH_SPAN(PH_CALL_MINT, bm_mint);
                 w->wait_result = static_cast<intptr_t>(n);
@@ -844,10 +927,15 @@ namespace kickos
         }
         KICKOS_BENCH_MARK(bm_copy);
         bool const ok = ep_copy(ipc_buf_space(caller), caller->ipc.buf, user_space_of(c), buf, n);
-        KICKOS_ASSERT(ok);
-        (void)ok;
         KICKOS_BENCH_SPAN(PH_REPLY_COPY, bm_copy);
+        // Refused past the point of no return, the cap being consumed and the donor unparked,
+        // so the answer is never an early return: the caller is off its queue and this is the
+        // last thing that can wake it.
         caller->wait_result = static_cast<intptr_t>(n);
+        if (not ok)
+        {
+            caller->wait_result = -KOS_EFAULT;
+        }
         caller->call_state = CALL_NONE;
         KICKOS_BENCH_MARK(bm_funnel);
         // D3: revert our donation through the single funnel.
@@ -859,6 +947,10 @@ namespace kickos
         // Both close before the return, where `lock` releases and a pended switch fires.
         KICKOS_BENCH_SPAN(PH_REPLY_LOCKED, bm_locked);
         KICKOS_BENCH_SPAN(PH_REPLY_TOTAL, bm_total);
+        if (not ok)
+        {
+            return -KOS_EFAULT;
+        }
         return 0;
     }
 
@@ -906,13 +998,16 @@ namespace kickos
         {
             n = caller->call_rx_cap; // reply truncation into the caller's capacity
         }
-        // NOT ASSERTED: this copies into a parked thread from a masked handler, so the
-        // caller is told nothing arrived instead.
-        if (not kaccess_to_user(ipc_buf_space(caller), caller->ipc.buf, payload, n))
+        intptr_t result = static_cast<intptr_t>(n);
+        bool const copy_ok = kaccess_to_user(ipc_buf_space(caller), caller->ipc.buf, payload, n);
+        // NOT ASSERTED: this copies into a parked thread from a masked handler. The code
+        // travels on wait_result and not on the wire, THIS node writing its own TCB.
+        if (not copy_ok)
         {
-            n = 0;
+            result = -KOS_EFAULT;
+            amp::count_deliver_fault();
         }
-        caller->wait_result = static_cast<intptr_t>(n);
+        caller->wait_result = result;
         caller->call_state = CALL_NONE;
         caller->clear_wait_edge();
         sched::wake(caller);
@@ -933,10 +1028,6 @@ namespace kickos
     bool endpoint_far_call_deliver(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
                                    void const* payload, uint32_t len, uint32_t slot)
     {
-        // THE CALLER OWES THE PORT BEING BOUND: dispatch_call reaches this only where
-        // port_endpoint already answered a bound endpoint and is its one caller
-        // (kernel/amp/ampwindow.cc). SlotPool::at range-checks nothing, so a second caller
-        // that skipped that lookup would index the pool at EP_BOUND_NONE.
         uint16_t const bound = amp::port_endpoint(port);
         // By index and not by handle: the bind's own reference holds the slot live, so there
         // is no generation for it to have lost.
@@ -981,35 +1072,41 @@ namespace kickos
         {
             n = w->ipc.len; // datagram truncation, as for any sender
         }
-        // Not asserted: this copies into a parked thread from a masked handler, so a receiver
-        // whose buffer went away is told nothing arrived rather than killing the handler.
-        if (not kaccess_to_user(ipc_buf_space(w), w->ipc.buf, payload, n))
+        intptr_t result = static_cast<intptr_t>(n);
+        bool const copy_ok = kaccess_to_user(ipc_buf_space(w), w->ipc.buf, payload, n);
+        // A CAPABILITY IS DISCLOSED ONLY BESIDE THE BYTES IT ANSWERS FOR. A receiver whose
+        // buffer refused the payload never saw the request, so it is handed no obligation and
+        // no handle to spend; endpoint_call keeps the same rule by minting after its copy.
+        uint32_t disclose = rcap;
+        if (not copy_ok)
         {
-            n = 0;
+            disclose = KCAP_INVALID;
         }
-        bool info_ok = not endpoint_far_blind_take();
-        if (info_ok)
+        bool const info_ok =
+            not endpoint_far_blind_take()
+            and write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, disclose);
+        // ONE FAULT, ONE ANSWER, and never an early return: the waiter is already off
+        // recv_waiters, so returning here would leave it parked with nothing to wake it. Both
+        // refusals are this node's own buffer fault on a message that arrived intact, so both
+        // retract the mint and leave the far caller to dispatch_call's single publish site;
+        // keeping the record instead would park that caller on a receiver holding an
+        // obligation it was answered -KOS_EFAULT about. NOT ASSERTED, this being a masked
+        // handler copying into a parked thread.
+        if (not copy_ok or not info_ok)
         {
-            info_ok = write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, rcap);
-        }
-        // Refused the same way and never by an early return: the waiter is already off
-        // recv_waiters, so returning here would leave it parked with nothing to wake it.
-        if (not info_ok)
-        {
-            n = 0;
+            result = -KOS_EFAULT;
             if (held)
             {
-                // The capability was installed and never disclosed, so nothing will ever
-                // spend it: the same forgetting the mint refusal above takes.
                 bool const undone = cap_uninstall_far_reply(w, rcap, record);
                 KICKOS_ASSERT(undone);
                 (void)undone;
                 amp::inbound_forget(record);
-                rcap = KCAP_INVALID;
                 held = false;
             }
+            // One arrival owes ONE count however many of its copies were refused.
+            amp::count_deliver_fault();
         }
-        w->wait_result = static_cast<intptr_t>(n);
+        w->wait_result = result;
         sched::wake(w);
         return held;
     }

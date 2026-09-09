@@ -353,9 +353,10 @@ void kickos_user_thread_return(void)
     __builtin_unreachable();
 }
 
-void kos_irq_inject(int irq)
+int kos_irq_inject(int irq)
 {
-    arch_syscall(KOS_SYS_IRQ_INJECT, static_cast<uintptr_t>(irq), 0, 0, 0);
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_IRQ_INJECT, static_cast<uintptr_t>(irq), 0, 0, 0));
 }
 
 #if defined(KICKOS_ENABLE_SELFTEST)

@@ -14,6 +14,7 @@
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/kruntime.h> // kmemset
+#include <kickos/ramown.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h> // wq_confirm_resume
 #include <kickos/task.h>
@@ -31,22 +32,6 @@ namespace kickos
 {
     namespace
     {
-        // kaccess_from_user with its answer acted on. All four users below have already proved
-        // the range with user_readable_ok, so a refusal is the granted-range record and the
-        // page tables disagreeing rather than anything the caller did (kickos/aspace.h).
-        //
-        // noinline is load-bearing, for syscall.cc's reason at console_write_user: the branch
-        // must not widen thread_create_call's frame, which is on the SYSPRIV chain the trap
-        // red zone measures against KICKOS_MIN_STACK_SIZE.
-        __attribute__((noinline)) void kaccess_from_user_whole(void* kdst,
-                                                               struct arch_aspace* sspace,
-                                                               uintptr_t usrc, size_t n)
-        {
-            bool const ok = kaccess_from_user(kdst, sspace, usrc, n);
-            KICKOS_ASSERT(ok);
-            (void)ok;
-        }
-
         // Give back everything a spawn took before thread_create committed: the
         // DEMAND-ALLOCATED stack, the thread slot, and the task task_for built that nothing
         // holds. One helper, noinline: its frame lands on the armv7m SVC chain the trap red
@@ -142,7 +127,12 @@ namespace kickos
             return -KOS_EFAULT;
         }
         kos_thread_params params;
-        kaccess_from_user_whole(&params, user_space_of(sched::current()), pu, sizeof(params));
+        // The range is already proved with user_readable_ok, so a refusal is the granted-range
+        // record and the page tables disagreeing (kickos/aspace.h). Nothing is committed yet.
+        if (not kaccess_from_user(&params, user_space_of(sched::current()), pu, sizeof(params)))
+        {
+            return -KOS_EFAULT;
+        }
         p = &params;
         // prio indexes the ready lists and drives a 1u<<prio bitmap shift, so an
         // out-of-range value is an OOB write and UB. Priority 0 is idle's alone.
@@ -233,6 +223,13 @@ namespace kickos
                 {
                     return -KOS_EPERM; // stack outside the arena / hits a reserved block
                 }
+                // In the arena is not the same as the caller's: a sibling's block is in-arena
+                // and descriptor-encodable too, so the stack has to name one THIS TASK
+                // reserved. Ownership is per task, so a task-mate's block still passes.
+                if (not ram_owner_nameable(sched::current()->task, base, p->stack_size))
+                {
+                    return -KOS_EPERM; // a stack block this task never reserved
+                }
 #endif
             }
 #endif
@@ -248,6 +245,20 @@ namespace kickos
             {
                 return -KOS_EINVAL;
             }
+#if KICKOS_MEMORY_ENFORCED
+            // GUARDED and not left to the inline stub: the stub folds the branch away but not
+            // the sched::current() the argument costs, and the spawn path is measured.
+            //
+            // Asked only where this field becomes a region of something, domain_for's two
+            // short circuits taking the rest: a privileged child resolves the kernel domain,
+            // and a member's memory is the GROUP's, refused -KOS_EINVAL further down.
+            // Widening it past them would answer EPERM where the tree answers EINVAL.
+            if (p->privileged == 0 and p->task == KOS_TASK_NONE
+                and not ram_owner_nameable(sched::current()->task, dbase, p->mem_size))
+            {
+                return -KOS_EPERM; // a block this task never reserved
+            }
+#endif
         }
         // THE admission boundary for a DEV window, which is the asking THREAD's own region
         // and is carried by no task or domain. This and the commit, thread_create composing
@@ -337,9 +348,12 @@ namespace kickos
             kos_cap_grant gbuf[KICKOS_MAX_SPAWN_GRANTS];
             for (int ci = 0; ci < ncaps; ci++)
             {
-                kaccess_from_user_whole(&gbuf[ci], user_space_of(spawner),
-                                        cu + static_cast<size_t>(ci) * sizeof(kos_cap_grant),
-                                        sizeof(kos_cap_grant));
+                if (not kaccess_from_user(&gbuf[ci], user_space_of(spawner),
+                                          cu + static_cast<size_t>(ci) * sizeof(kos_cap_grant),
+                                          sizeof(kos_cap_grant)))
+                {
+                    return -KOS_EFAULT; // still ahead of every grant, so nothing to unwind
+                }
             }
             // The optional destination array, snapshotted the same way and for the same
             // double-fetch reason. Absent => every entry defaults.
@@ -360,9 +374,12 @@ namespace kickos
                 }
                 for (int ci = 0; ci < ncaps; ci++)
                 {
-                    kaccess_from_user_whole(&dbuf[ci], user_space_of(spawner),
-                                            du + static_cast<size_t>(ci) * sizeof(uint16_t),
-                                            sizeof(uint16_t));
+                    if (not kaccess_from_user(&dbuf[ci], user_space_of(spawner),
+                                              du + static_cast<size_t>(ci) * sizeof(uint16_t),
+                                              sizeof(uint16_t)))
+                    {
+                        return -KOS_EFAULT;
+                    }
                 }
             }
             for (int ci = 0; ci < ncaps; ci++)
@@ -526,8 +543,11 @@ namespace kickos
                 {
                     break;
                 }
-                kaccess_from_user_whole(&namebuf[ni], user_space_of(sched::current()),
-                                        np + ni, 1);
+                if (not kaccess_from_user(&namebuf[ni], user_space_of(sched::current()),
+                                          np + ni, 1))
+                {
+                    break; // readable a moment ago, gone now: the name stops here
+                }
                 if (namebuf[ni] == '\0')
                 {
                     name_ok = true;
@@ -900,6 +920,13 @@ namespace kickos
             if (base + mem_size < base)
             {
                 return -KOS_EINVAL; // the shared window wraps the address space
+            }
+            // UNCONDITIONAL, unlike the spawn's arm: task_create drops
+            // DOM_CALLER_PRIVILEGED, so this grant becomes an unprivileged domain's region
+            // whatever the caller is.
+            if (not ram_owner_nameable(c->task, base, mem_size))
+            {
+                return -KOS_EPERM; // a block this task never reserved
             }
         }
         int derr = 0;

@@ -93,12 +93,25 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_reply_guard amp_far_reply_empty)
 endif()
 
+# amp_far_deliver_fault copies a far arrival into a LOCAL thread's buffer and takes that page
+# away under the parked thread, so it needs a backend that translates: a region board's
+# access_copy is an unconditional kmemcpy and refuses nothing, which leaves the overlap arm as
+# that board's only reachable refusal. DERIVED from the backend and not a posture list.
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND NOT KICKOS_HAVE_ASPACE)
+  list(APPEND KICKOS_EXPECT_SKIPS amp_far_deliver_fault)
+endif()
+
 # amp_reply_reserve skips on the OPPOSITE posture to the three above, which is why it is its own
 # predicate rather than another name on that list. It holds the reply ring toward a peer full so a
 # take has no slot to reserve; under one image the peers are this image's own cores and drain
 # their own rings, so the forge DECLINES rather than fabricating a state they would act on.
+# amp_far_reset_answers and amp_far_answer_deferred decline on the same posture and for the same
+# reason: each stomps a peer's call ring and holds the reply ring toward it, and under one image
+# those peers are this image's own cores, draining both underneath. amp_far_tail_recovery is NOT
+# here, driving the self ring no node produces into, so it runs on every posture.
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND NOT KICKOS_AMP_OWN_IMAGE)
-  list(APPEND KICKOS_EXPECT_SKIPS amp_reply_reserve)
+  list(APPEND KICKOS_EXPECT_SKIPS amp_reply_reserve amp_far_reset_answers
+       amp_far_answer_deferred)
 endif()
 
 # amp_deferred_doorbell needs a raise that can be WITHHELD, so it needs a doorbell that keeps a
@@ -129,6 +142,23 @@ set(KICKOS_EXPECT_PARTIALS "")
 if(KICKOS_KERNEL_CORES GREATER 1)
   list(APPEND KICKOS_EXPECT_PARTIALS irq_spurious irq_mask_coalesce irq_discard
                                irq_stale_register thread_slay_window)
+endif()
+# irq_kernel_line_reserved refuses a capability AND an inject over a line the arch dispatches to
+# a kernel vector of its own, and its ordinary-line control runs everywhere. A controller that
+# reserves NO line leaves that first leg no subject, so the arm reports PARTIAL there rather
+# than an unqualified ok.
+#
+# The doorbell's SGI or bell is the only such line in the tree, so the postures that CAN witness
+# it are those whose controller keeps one (the GIC backends, the RP2350's SIO bell) AND whose
+# image has a doorbell at all. Keyed on KICKOS_NUM_CORES and NOT on the kernel-core count: the
+# AMP posture drives four cores on one kernel and links the doorbell all the same.
+if(KICKOS_ENABLE_SELFTEST
+   AND NOT ((KICKOS_ARCH STREQUAL "armv8a" OR KICKOS_CHIP STREQUAL "rp2350")
+            AND (KICKOS_NUM_CORES GREATER 1 OR KICKOS_AMP_NODE)))
+  list(APPEND KICKOS_EXPECT_PARTIALS irq_kernel_line_reserved)
+  # The partitioned board's sets are literals further down and cannot read this list, which
+  # is JOINed into one string below. Carry the decision, not the membership.
+  set(_selftest_kernel_line_partial 1)
 endif()
 # periph_reg_write_unheld on every backend whose peripheral model cannot witness the refusal.
 if(KICKOS_ARCH STREQUAL "sim" OR KICKOS_ARCH STREQUAL "armv8a"
@@ -230,6 +260,14 @@ if(KICKOS_BOARD STREQUAL "microbit")
   set(_mb_partials_selftest_p2 "")
   set(_mb_skips_selftest_p3 "domain_share,confused_deputy,mem_self_grant")
   set(_mb_partials_selftest_p3 "caller_stack,mmio_grant")
+  # DERIVED from the decision above rather than restated: these three sets are literals, so a
+  # permission appended to the whole-suite list reached every other board and not this one,
+  # and a partitioned board's gate reported that as a failure. Region 3 holds the arm's
+  # TAP_ADD line, so this is the part that carries it.
+  if(_selftest_kernel_line_partial)
+    set(_mb_partials_selftest_p3
+        "${_mb_partials_selftest_p3},irq_kernel_line_reserved")
+  endif()
   foreach(_img selftest selftest_p2 selftest_p3)
     get_target_property(_mb_arms ${_img} KICKOS_TAP_ARMS)
     kickos_add_qemu_test(TARGET ${_img}

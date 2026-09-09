@@ -148,19 +148,34 @@ namespace kickos
         // reads as affinity zero, which is a real core.
         uint32_t g_peer_seat_was = ARCH_IPI_SEAT_NONE;
 
+        // NO `default`, as at verdict_code above: -Wswitch under -Werror is what makes this
+        // mapping exhaustive. FULL is its own code and not folded in with LENGTH and PORT: it
+        // clears when the peer drains, where a caller's own bad argument never does.
         uint64_t send_code(amp::Sent rc)
         {
-            if (rc == amp::Sent::OK)
+            switch (rc)
             {
-                return KOS_AMP_V_SEND_OK;
-            }
-            if (rc == amp::Sent::DEPTH)
-            {
-                return KOS_AMP_V_SEND_DEPTH;
-            }
-            if (rc == amp::Sent::NODE)
-            {
-                return KOS_AMP_V_SEND_NODE;
+                case amp::Sent::OK:
+                {
+                    return KOS_AMP_V_SEND_OK;
+                }
+                case amp::Sent::FULL:
+                {
+                    return KOS_AMP_V_SEND_FULL;
+                }
+                case amp::Sent::DEPTH:
+                {
+                    return KOS_AMP_V_SEND_DEPTH;
+                }
+                case amp::Sent::NODE:
+                {
+                    return KOS_AMP_V_SEND_NODE;
+                }
+                case amp::Sent::LENGTH:
+                case amp::Sent::PORT:
+                {
+                    return KOS_AMP_V_SEND_REFUSED;
+                }
             }
             return KOS_AMP_V_SEND_REFUSED;
         }
@@ -419,6 +434,60 @@ namespace kickos
             case KOS_AMP_OP_REPLY_DROP:
             {
                 return amp::counts(static_cast<uint32_t>(a1)).reply_drop.load();
+            }
+            case KOS_AMP_OP_REPLY_UNSENT:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).reply_unsent.load();
+            }
+            case KOS_AMP_OP_TAIL_RESET:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).tail_reset.load();
+            }
+            case KOS_AMP_OP_DELIVER_FAULT:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).deliver_fault.load();
+            }
+            case KOS_AMP_OP_TAIL_RECOVERY:
+            {
+                IrqLock lock;
+                if (not amp_probe_caller_ok(sched::current()))
+                {
+                    return 0;
+                }
+                // The SELF reply ring, so no peer-owned index is forged even here.
+                return amp::forge_tail_recovery(amp_peer_node());
+            }
+            case KOS_AMP_OP_ANSWER_DEFER:
+            {
+                IrqLock lock;
+                if (not amp_probe_caller_ok(sched::current()))
+                {
+                    return 0;
+                }
+                // Leaves a record PENDING with its call slot held, which the discharge op
+                // below clears. Split so neither frame carries both a slot-sized buffer and
+                // the doorbell's own body.
+                return amp::forge_answer_defer(amp_peer_node());
+            }
+            case KOS_AMP_OP_ANSWER_DISCHARGE:
+            {
+                IrqLock lock;
+                if (not amp_probe_caller_ok(sched::current()))
+                {
+                    return 0;
+                }
+                return amp::forge_answer_discharge(amp_peer_node());
+            }
+            case KOS_AMP_OP_RESET_ANSWERS:
+            {
+                IrqLock lock;
+                if (not amp_probe_caller_ok(sched::current()))
+                {
+                    return 0;
+                }
+                // Stomps the peer's call ring as KOS_AMP_OP_RESET_RECORD does, and declines
+                // against a node that runs a kernel of its own for that reason.
+                return amp::forge_reset_answers(amp_peer_node());
             }
             case KOS_AMP_OP_DEFER:
             {

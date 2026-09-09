@@ -51,9 +51,22 @@ int main(int argc, char** argv)
     {
         unsigned char msg[KOS_EP_MSG_MAX];
         struct kos_recv_info info = {0};
-        int32_t const got = kos_recv(ep, msg, sizeof(msg), &info);
+        int32_t got;
+        // NOT the zero the initialiser leaves: KOS_CAP_NONE is all-ones and zero is a real
+        // capability index, KOS_CAP_STDOUT. A path where the kernel never reaches the info
+        // write leaves exactly what is here.
+        info.reply_cap = KOS_CAP_NONE;
+        got = kos_recv(ep, msg, sizeof(msg), &info);
         if (got < 0)
         {
+            // A REPLY CAPABILITY CAN OUTLIVE A REFUSED ARRIVAL, and <kickos/sys.h> asks this
+            // loop to answer or close on EVERY path: a far caller under KOS_TIMEOUT_NONE has
+            // no deadline to fall back on. Tested against KOS_CAP_NONE and never for a sign,
+            // per struct kos_recv_info.
+            if (info.reply_cap != KOS_CAP_NONE)
+            {
+                (void)kos_reply(info.reply_cap, msg, 0);
+            }
             continue;
         }
         if (info.reply_cap == KOS_CAP_NONE)

@@ -564,6 +564,13 @@ namespace kickos
     // is: idle is the one TCB outside the pool and it issues none. Caller holds IrqLock.
     [[nodiscard]] int cap_install_reply(Thread* c, Thread* caller, uint32_t* out_cap);
 
+    // Undo that mint where the handle was never disclosed to `c`, so nothing can ever spend
+    // it. NOT handle_close, whose CAP_REPLY arm answers the parked caller: here the minter
+    // answers `caller` itself, with the fault that stopped the disclosure. False where `cap`
+    // no longer names the reply for `caller`, which nothing between the mint and the undo can
+    // cause. Caller holds IrqLock.
+    bool cap_uninstall_reply(Thread* c, uint32_t cap, Thread* caller);
+
     // Live inbound CAP_REPLY entries in c's table. O(1) where the counter is stored; on the
     // flat path a scan bounded by KCAP_CHUNK_TARGET. Caller holds IrqLock: the flat path
     // reads a PEER's whole table, and the segmented one a counter a peer increments.

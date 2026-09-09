@@ -55,6 +55,13 @@ namespace kickos
         // unprivileged thread take the top of the run queue, which is a starvation hole on a
         // one-core board too.
         uint8_t prio_ceiling = 0;
+        // THE OBJECT BUDGET: the most semaphores, mutexes, endpoints or tier-1 IRQ bindings
+        // this task may hold LIVE in any ONE of those pools. Seeded from
+        // KICKOS_TASK_OBJECT_BUDGET at both creation sites and read only through
+        // task_object_admit, which takes the SMALLER of it and the pool's own
+        // slots-minus-reserve; the default seed is above every pool, so the reserve is what
+        // binds until a board lowers this.
+        uint8_t object_budget = 0;
 #if KICKOS_KERNEL_CORES > 1
         uint32_t core_set = 0;
 #endif
@@ -66,7 +73,8 @@ namespace kickos
     constexpr size_t task_scalar_bytes()
     {
         size_t raw = sizeof(Domain*) + sizeof(Task::refcount) + sizeof(Task::creator_tag)
-                     + sizeof(Task::gen) + sizeof(Task::prio_ceiling);
+                     + sizeof(Task::gen) + sizeof(Task::prio_ceiling)
+                     + sizeof(Task::object_budget);
 #if KICKOS_KERNEL_CORES > 1
         raw = raw + sizeof(Task::core_set);
 #endif
@@ -165,6 +173,23 @@ namespace kickos
     // so this is never empty where the grant is not.
     uint32_t task_default_cores(Task const* t);
 #endif
+
+    static_assert(KICKOS_TASK_OBJECT_BUDGET <= 0xFF,
+                  "KICKOS_TASK_OBJECT_BUDGET must fit Task::object_budget");
+
+    // Seed a fresh slot's ceiling. Both task creation sites owe this call: an unseeded slot
+    // carries budget 0, and a task that reached a creator on one would be refused every
+    // object rather than granted the default.
+    inline void task_object_seed(Task* t)
+    {
+        t->object_budget = static_cast<uint8_t>(KICKOS_TASK_OBJECT_BUDGET);
+    }
+
+    // Strike `t` out of every object it created. Those objects can outlive it on somebody
+    // else's capability, and a surviving tag would charge them to whichever task the slot is
+    // re-handed to. Called from the one place a task slot goes free: a masked sweep of
+    // KICKOS_MAX_SEMAPHORES + MUTEXES + ENDPOINTS + IRQ_HANDLES byte compares.
+    void task_object_disown(Task const* t);
 
     // Narrow `t`'s grant. `ceiling` 0 and `cores` 0 each mean "leave that half alone", which is
     // what a caller naming only one of them passes. Returns 0, -KOS_EPERM for a request wider

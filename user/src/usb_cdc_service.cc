@@ -129,7 +129,10 @@ void console_serve_loop(Shared* sh)
     uint8_t msg[KOS_EP_MSG_MAX];
     while (true)
     {
+        // reply_cap SEATED: the kernel writes it only where the copy out succeeds, and a
+        // ZEROED one is stdout's reserved index rather than the empty capability.
         struct kos_recv_info info;
+        info.reply_cap = KOS_CAP_NONE;
         int32_t const n = kos_recv(KOS_USB_CAP_EP, msg, sizeof(msg), &info);
         if (n < 0)
         {

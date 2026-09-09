@@ -60,7 +60,7 @@ site rv32imac * sched.cc:640:36  policy_fifo_rr.cc:policy_on_remove
 site rv32imac * sched.cc:719:53  policy_fifo_rr.cc:policy_next_timed_event
 site rv32imac * sched.cc:731:56  policy_fifo_rr.cc:policy_next_timed_event
 site rv32imac * sched.cc:735:45  policy_fifo_rr.cc:policy_on_slice_expire
-site rv32imac * syscall_ipc_fast.cc:173:50 policy_fifo_rr.cc:policy_pick_next
+site rv32imac * syscall_ipc_fast.cc:181:50 policy_fifo_rr.cc:policy_pick_next
 
 site rxv3 * sched.cc:115:42   policy_fifo_rr.cc:policy_on_switch_in
 site rxv3 * sched.cc:277:38  policy_fifo_rr.cc:policy_on_ready
@@ -77,7 +77,7 @@ site rxv3 * sched.cc:640:36  policy_fifo_rr.cc:policy_on_remove
 site rxv3 * sched.cc:719:53  policy_fifo_rr.cc:policy_next_timed_event
 site rxv3 * sched.cc:731:56  policy_fifo_rr.cc:policy_next_timed_event
 site rxv3 * sched.cc:735:45  policy_fifo_rr.cc:policy_on_slice_expire
-site rxv3 * syscall_ipc_fast.cc:173:50 policy_fifo_rr.cc:policy_pick_next
+site rxv3 * syscall_ipc_fast.cc:181:50 policy_fifo_rr.cc:policy_pick_next
 
 # None of the three TRANSLATING arches compiles the IPC fastpath, so the syscall_ipc_fast.cc
 # site above has no twin here.
@@ -240,11 +240,11 @@ site x86_64   qemu-x86_64       console_tx.cc:357:27  NONE
 # reschedule -> switch_to -> arch_switch, and on rv32imac and rxv3 arch_switch only PENDS the
 # switch (msip / ICU.SWINTR) and returns, so the chain does not re-enter the scheduler on this
 # stack. An arch whose arch_switch swaps inline needs this binding changed with it.
-site rv32imac * irq.cc:809:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+site rv32imac * irq.cc:822:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                               syscall.cc:irq_sem_post \
                               console_tx.cc:console_tx_isr_trampoline \
                               ?bench.cc:bench_irq_handler
-site rxv3 * irq.cc:809:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+site rxv3 * irq.cc:822:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                           syscall.cc:irq_sem_post \
                           console_tx.cc:console_tx_isr_trampoline \
                           ?bench.cc:bench_irq_handler
@@ -265,11 +265,11 @@ site armv7m * sched.cc:640:36      policy_fifo_rr.cc:policy_on_remove
 site armv7m * sched.cc:719:53      policy_fifo_rr.cc:policy_next_timed_event
 site armv7m * sched.cc:731:56      policy_fifo_rr.cc:policy_next_timed_event
 site armv7m * sched.cc:735:45      policy_fifo_rr.cc:policy_on_slice_expire
-site armv7m * syscall_ipc_fast.cc:173:50 policy_fifo_rr.cc:policy_pick_next
+site armv7m * syscall_ipc_fast.cc:181:50 policy_fifo_rr.cc:policy_pick_next
 
 # armv7m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
 # re-enter the scheduler on this stack.
-site armv7m * irq.cc:809:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+site armv7m * irq.cc:822:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                             syscall.cc:irq_sem_post \
                             console_tx.cc:console_tx_isr_trampoline \
                             ?bench.cc:bench_irq_handler
@@ -798,11 +798,11 @@ site armv6m * sched.cc:640:36      policy_fifo_rr.cc:policy_on_remove
 site armv6m * sched.cc:719:53      policy_fifo_rr.cc:policy_next_timed_event
 site armv6m * sched.cc:731:56      policy_fifo_rr.cc:policy_next_timed_event
 site armv6m * sched.cc:735:45      policy_fifo_rr.cc:policy_on_slice_expire
-site armv6m * syscall_ipc_fast.cc:173:50 policy_fifo_rr.cc:policy_pick_next
+site armv6m * syscall_ipc_fast.cc:181:50 policy_fifo_rr.cc:policy_pick_next
 
 # armv6m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
 # re-enter the scheduler on this stack.
-site armv6m * irq.cc:809:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+site armv6m * irq.cc:822:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                             syscall.cc:irq_sem_post \
                             console_tx.cc:console_tx_isr_trampoline \
                             ?bench.cc:bench_irq_handler
@@ -983,15 +983,15 @@ site lx6 * sched.cc:396:54      policy_fifo_rr.cc:policy_pick_next
 site lx6 * sched.cc:468:38      policy_fifo_rr.cc:policy_on_ready
 # kickos_isr_irq reads the published dispatch on two different lines of the same file, one per
 # core count, so these are PER PRESET: only one is in any given graph.
-site lx6 esp32-wroom irq.cc:809:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+site lx6 esp32-wroom irq.cc:822:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                             syscall.cc:irq_sem_post \
                             console_tx.cc:console_tx_isr_trampoline \
                             ?bench.cc:bench_irq_handler
-site lx6 esp32-wroom-st irq.cc:809:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+site lx6 esp32-wroom-st irq.cc:822:29 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                             syscall.cc:irq_sem_post \
                             console_tx.cc:console_tx_isr_trampoline \
                             ?bench.cc:bench_irq_handler
-site lx6 esp32-wroom-smp irq.cc:794:14 irq.cc:irq_default_handler irq.cc:irq_event_isr \
+site lx6 esp32-wroom-smp irq.cc:807:14 irq.cc:irq_default_handler irq.cc:irq_event_isr \
                             syscall.cc:irq_sem_post \
                             console_tx.cc:console_tx_isr_trampoline \
                             ?bench.cc:bench_irq_handler

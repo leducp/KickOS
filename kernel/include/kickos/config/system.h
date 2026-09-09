@@ -78,6 +78,18 @@
 #ifndef KICKOS_ASPACE_RANGES
 #define KICKOS_ASPACE_RANGES 40
 #endif
+// Arena blocks whose owner the kernel records (see ramown.h): one per block kos_ram_alloc
+// has handed out, so a caller naming a block is checked against what it reserved and not
+// only against the arena's bounds.
+//
+// A LIFETIME bound: nothing frees a record, so this is how many distinct blocks the WHOLE
+// IMAGE may reserve over its life. A full table answers NULL from kos_ram_alloc, which is
+// what an exhausted arena answers too, that call carrying no route out for an errno.
+//
+// Only a board with live REGION descriptors builds the table.
+#ifndef KICKOS_RAM_OWNER_SLOTS
+#define KICKOS_RAM_OWNER_SLOTS 48
+#endif
 // Task pool (see task.h). One task per LIVE THREAD, since grouping is implicit today, so
 // the bound is every TCB that can exist at once: KICKOS_THREAD_SLOTS (root + the threads
 // a spawn may seat) plus idle, which holds a TCB outside the pool. There is no immortal
@@ -147,6 +159,15 @@
 // Frame RUNS a capability may name at once. Built only where a frame pool exists.
 #ifndef KICKOS_MAX_FRAME_RUNS
 #define KICKOS_MAX_FRAME_RUNS 8
+#endif
+
+// The most objects of ONE charged kind (semaphores, mutexes, endpoints, tier-1 IRQ bindings)
+// a single TASK may hold live. TASK_OBJECT_RESERVE in instance.h keeps a slot of every pool
+// out of any one task's reach whatever this says, and the smaller of the two binds; this
+// default is above every pool, so the reserve is what binds until a board lowers this. A
+// task's own-creates are otherwise bounded only by its threads' capability tables.
+#ifndef KICKOS_TASK_OBJECT_BUDGET
+#define KICKOS_TASK_OBJECT_BUDGET 255
 #endif
 
 namespace kickos

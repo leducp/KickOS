@@ -60,20 +60,25 @@ typedef uint32_t kos_task_t;
 
 enum kos_syscall_nr
 {
-    KOS_SYS_KCONSOLE_WRITE = 1, // (buf, len)            -> bytes written, or -KOS_EFAULT (bad buffer)
+    KOS_SYS_KCONSOLE_WRITE = 1, // (buf, len)            -> bytes written, WHICH CAN BE SHORT
+                                //   where a page went away mid-stream, or -KOS_EFAULT
+                                //   (bad buffer)
     KOS_SYS_YIELD = 2,          // ()                    -> 0
     KOS_SYS_SLEEP_NS = 3,       // (ns_lo, ns_hi)        -> 0
     KOS_SYS_SEM_CREATE = 4,     // (initial, kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM sem pool,
-                                //   EMFILE caller's cap table, EINVAL/EFAULT)
+                                //   EMFILE caller's cap table, EOVERFLOW task's sem budget,
+                                //   EINVAL/EFAULT)
     KOS_SYS_SEM_WAIT = 5,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EPERM
-    KOS_SYS_SEM_POST = 6,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EPERM
+    KOS_SYS_SEM_POST = 6,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EPERM, or -KOS_EOVERFLOW
+                                //   with no waiter and the count at KOS_SEM_COUNT_MAX
     KOS_SYS_HANDLE_CLOSE = 17,  // (cap)   -> 0, -KOS_EBADF (bad cap), -KOS_EBUSY (own a held mutex)
     KOS_SYS_THREAD_CREATE = 7,   // (kos_thread_params*, kos_thread_t* out) -> 0, or -KOS_E*
                                 //   (EINVAL/EFAULT/EPERM/EBADF/EBUSY/ENOMEM/EOVERFLOW)
     KOS_SYS_EXIT = 8,           // (code)                -> does not return. Ends the calling
                                 //   thread, or the SYSTEM when the caller is root, which
                                 //   needs KOS_AUTH_SYSTEM for it and panics without.
-    KOS_SYS_IRQ_INJECT = 9,     // (irq)                 -> 0, or -KOS_EINVAL (self-test only)
+    KOS_SYS_IRQ_INJECT = 9,     // (irq)                 -> 0, -KOS_EINVAL, or -KOS_EPERM
+                                //   for a line the kernel dispatches itself (self-test only)
     KOS_SYS_GUARD_ADDR = 10,    // ()  -> protected probe addr (self-test only)
     KOS_SYS_IRQ_ATTACH = 11,    // (irq, sem_handle)  -> 0, or -KOS_E* (EPERM/EINVAL/EBADF/EBUSY;
                                 //   EBUSY also for a line the arch dispatches to a kernel
@@ -84,7 +89,8 @@ enum kos_syscall_nr
                                 //   KOS_AUTH_IRQ, or the arch dispatches the line to a kernel
                                 //   vector of its own and no holder ever frees it), EINVAL
                                 //   (line/flags/out-ptr), EFAULT (out-ptr), EBUSY (line owned),
-                                //   ENOMEM (binding pool), EMFILE (cap table)
+                                //   ENOMEM (binding pool), EMFILE (cap table),
+                                //   EOVERFLOW (task's binding budget)
     KOS_SYS_IRQ_WAIT = 15,      // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
     KOS_SYS_IRQ_ACK = 16,       // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
     KOS_SYS_IRQ_SPURIOUS = 18,  // ()  -> count of IRQs on unbound lines (self-test only)
@@ -93,15 +99,20 @@ enum kos_syscall_nr
     KOS_SYS_IRQ_UNMASK = 21,    // (irq)  -> 0, or -KOS_E* (EPERM/EINVAL; self-test only)
     KOS_SYS_CPU_CLOCK_HZ = 22,  // ()  -> running core clock in Hz (u32), 0 if unknown (NO KOS_E*)
     KOS_SYS_MUTEX_CREATE = 23,  // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM mutex pool, EMFILE
-                                //   caller's cap table, EINVAL/EFAULT)
+                                //   caller's cap table, EOVERFLOW task's mutex budget,
+                                //   EINVAL/EFAULT)
     KOS_SYS_MUTEX_LOCK = 24,    // (cap)  -> 0 held; -KOS_EOWNERDEAD held-but-owner-died; -KOS_EBADF
                                 //   / -KOS_EDEADLK NOT held (see the wrapper decl for the caveat)
     KOS_SYS_MUTEX_UNLOCK = 25,  // (cap)  -> 0, -KOS_EBADF (bad cap), -KOS_EPERM (caller not owner)
     KOS_SYS_ENDPOINT_CREATE = 26, // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM endpoint pool,
-                                  //   EMFILE caller's cap table, EINVAL/EFAULT)
+                                  //   EMFILE caller's cap table, EOVERFLOW task's endpoint
+                                  //   budget, EINVAL/EFAULT)
     KOS_SYS_SEND = 27,          // (cap, buf, len) -> bytes transferred, or -KOS_E*, parking
-                                //   indefinitely
-    KOS_SYS_RECV = 28,          // (cap, buf, cap_len, kos_recv_info* out) -> bytes received, or -KOS_E*
+                                //   indefinitely. EFAULT also answers a rendezvous copy
+                                //   refused at either end (sys.h)
+    KOS_SYS_RECV = 28,          // (cap, buf, cap_len, kos_recv_info* out) -> bytes received, or -KOS_E*.
+                                //   A parked receiver is WOKEN -KOS_EFAULT where the copy
+                                //   into its buffer was refused, never with a count of 0
     KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (no KOS_AUTH_CONSOLE),
                                   //   -KOS_EBADF (bad cap), -KOS_EOVERFLOW (endpoint
                                   //   refcount at its ceiling)
@@ -212,18 +223,25 @@ enum kos_syscall_nr
                                //   KOS_NEST_UNSET for a figure nothing recorded.
     KOS_SYS_ASPACE_PROBE = 59, // (op, a1) -> per-op (see enum kos_aspace_op), or -KOS_EINVAL
                                //   for a bad op and -KOS_ENOSYS on a board that describes
-                               //   regions instead of translating (self-test only).
+                               //   regions instead of translating (self-test only). A
+                               //   PRODUCTION image answers -KOS_EINVAL from the unknown-number
+                               //   arm, so a caller reading the refusal to learn whether the
+                               //   board translates must tell ENOSYS from EINVAL.
     KOS_SYS_FRAME_MAP = 60,    // (frame cap, address-space cap, virtual address, KOS_MEM_*)
-                               //   -> 0, or -KOS_EPERM without AUTH_MEMORY or on a cap that
-                               //   does not resolve, -KOS_EINVAL on a misaligned address,
-                               //   -KOS_ENOMEM when the space cannot take the range there.
+                               //   -> 0, or -KOS_EPERM without AUTH_MEMORY, -KOS_EBADF on a
+                               //   cap that does not resolve, -KOS_EINVAL on a misaligned
+                               //   address, -KOS_ENOMEM when the space cannot take the range
+                               //   there.
                                //   The ADDRESS is an argument and never a field: no struct
                                //   here carries one, which is what keeps it out of the
                                //   capability ABI's own records.
     KOS_SYS_FRAME_UNMAP = 61,  // (frame cap, address-space cap, virtual address) -> 0, or
-                               //   -KOS_EPERM for a range this space did not take through
+                               //   -KOS_EBADF on a cap that does not resolve, -KOS_EPERM for
+                               //   a range this space did not take through
                                //   KOS_SYS_FRAME_MAP, which is what stops one holder
-                               //   revoking another's mapping.
+                               //   revoking another's mapping. It asks nothing about what
+                               //   NAMES the range: a thread parked in KOS_SYS_RECV with its
+                               //   buffer inside it is woken -KOS_EFAULT.
     KOS_SYS_AMP_ENDPOINT_CREATE = 62, // (node, port, kos_cap_t* out) -> 0, or -KOS_ENOSYS on an
                                //   image running one kernel, -KOS_EPERM for an unprivileged
                                //   caller, -KOS_EINVAL for the caller's own node or a port
@@ -538,6 +556,48 @@ enum kos_amp_op
                                  //   a slot there, and on a node booted alone nothing else ever
                                  //   moves that tail, so an earlier arm's answers wedge every
                                  //   later take at KOS_AMP_V_RESERVE. Zero means full. Root only
+    KOS_AMP_OP_REPLY_UNSENT = 21, // (node) -> answers whose BYTES `node` lost: a publication
+                                 //   its reply ring refused, and a record a call-ring
+                                 //   resynchronisation abandoned before its service replied.
+                                 //   ONE COUNT PER LOST ANSWER and never one per attempt at
+                                 //   its refusal, so this counts lost CONTENT: the caller is
+                                 //   answered an empty reply unless that obligation outlived
+                                 //   its own bound too. Both causes need a malformed or
+                                 //   regressed peer, so a non-zero answer names one
+    KOS_AMP_OP_TAIL_RESET = 22,  // (node) -> reply rings whose far TAIL `node` stopped
+                                 //   believing, its own head resynchronised to that tail after
+                                 //   the strike bound. The producer's counterpart of
+                                 //   KOS_AMP_OP_DEPTH_RESET, and what says a peer that
+                                 //   regressed its reply tail no longer wedges these answers
+    KOS_AMP_OP_TAIL_RECOVERY = 23, // () -> drives that bound over this node's SELF reply ring,
+                                 //   which no node produces into and no service drains, and
+                                 //   answers a bit per claim: 1 the first publication against
+                                 //   an incredible tail was refused, 2 the one at the bound was
+                                 //   taken, 4 it published AT the adopted tail, 8 tail_reset
+                                 //   moved by one; 16 the scaffold ran. Root only
+    KOS_AMP_OP_ANSWER_DEFER = 24, // () -> takes and seats one call, withdraws the reservation
+                                 //   behind it, and spends the record's reply into a ring with
+                                 //   no room. Bits: 1 reply_unsent moved by one, 2 the call
+                                 //   slot was NOT released, 4 the token no longer resolves;
+                                 //   8 the scaffold ran, 16 it DECLINED against a live peer.
+                                 //   Root only, and KOS_AMP_OP_ANSWER_DISCHARGE finishes it
+    KOS_AMP_OP_ANSWER_DISCHARGE = 25, // () -> one service pass over what the op above deferred.
+                                 //   Bits: 1 an empty reply carrying that record's tag was
+                                 //   published, 2 the call slot is back with the peer, 4 no
+                                 //   record of the pair is left pending; 8 the scaffold ran.
+                                 //   Root only
+    KOS_AMP_OP_RESET_ANSWERS = 26, // () -> what a CALL-ring resynchronisation owes the callers
+                                 //   it abandons. Bits: 1 the resynchronisation ran, 2 the
+                                 //   record it abandoned is dead, 4 an empty reply carrying
+                                 //   that record's tag was published, 8 reply_unsent moved by
+                                 //   one; 16 the scaffold ran, 32 it DECLINED. Root only
+    KOS_AMP_OP_DELIVER_FAULT = 27, // (node) -> arrivals `node` could not copy into a local
+                                 //   thread's buffer and answered -KOS_EFAULT for: a reply
+                                 //   payload, a call payload, or a call receiver's
+                                 //   kos_recv_info. APART from KOS_AMP_OP_REPLY_UNSENT, which
+                                 //   names a malformed peer; every cause here is this node's
+                                 //   own buffer fault on a message that arrived intact. One
+                                 //   count per arrival
     /* NEVER PASSED: the width of the set. An arm proving its reading instrument on an op the
        dispatch does not carry names THIS and not the last op plus one, so adding an op above
        does not silently make that arm assert a real op. STAYS LAST. */
@@ -654,8 +714,13 @@ enum
     KOS_AMP_V_RESERVE = 6, /* the call ring holds work the reply ring has no slot to answer */
     KOS_AMP_V_SEND_OK = 16,
     KOS_AMP_V_SEND_DEPTH = 17,
+    /* A MALFORMED ARGUMENT of the send itself: a length past one slot, or a port outside the
+       mint width. Apart from KOS_AMP_V_SEND_FULL below, which the peer's drain clears. */
     KOS_AMP_V_SEND_REFUSED = 18,
-    KOS_AMP_V_SEND_NODE = 19
+    KOS_AMP_V_SEND_NODE = 19,
+    /* BACK-PRESSURE: every slot of that ring is outstanding, and the peer's own drain is
+       what clears it. */
+    KOS_AMP_V_SEND_FULL = 20
 };
 
 // KOS_ASPACE_OP_SPLIT_ACCESS: one bit per property of an access split at a page boundary.
@@ -993,17 +1058,17 @@ struct kos_thread_params
     uint8_t privileged;  // 0 => unprivileged user thread
     uint32_t quantum_ns; // RR slice; 0 => none
     void* mem_base;      // domain data region granted to the thread (0 => none). A block
-                         // kos_ram_alloc handed the CALLER; the child's task maps it at the
-                         // same address, and a range the caller never reserved is refused.
+                         // kos_ram_alloc handed the CALLER, a sibling task's block included;
+                         // the child's task reaches it at the same address.
     uint32_t mem_size;   // size of that region (bytes)
     void* mmio_base;     // device/MMIO region granted to the thread (0 => none); attr implied R|W|DEV
                          // EXCLUSIVE for an unprivileged child: overlapping a window a live
                          // thread holds -> -KOS_EBUSY
     uint32_t mmio_size;  // size of that region (bytes)
     void* stack_base;    // caller-owned thread stack; 0 => kernel default (KICKOS_USER_STACK_SIZE).
-                         // Must be memory the space the CHILD runs in already reaches: an
-                         // in-arena block under an MPU, a kos_ram_alloc block made reachable
-                         // in that task under translation. App static data is neither.
+                         // Must be a block the CALLER'S TASK reserved with kos_ram_alloc, a
+                         // sibling task's included. Under translation it must ALSO be
+                         // reachable in the task the child joins. App static data is neither.
     uint32_t stack_size; // size of the caller stack (bytes); ignored when stack_base == 0
     struct kos_cap_grant const* caps; // optional caps to delegate to the child (0 => none)
     // OPTIONAL per-grant destination indices, cap_count entries parallel to caps[], or null

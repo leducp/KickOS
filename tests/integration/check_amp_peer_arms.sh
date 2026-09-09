@@ -2,17 +2,24 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Runs the three arms that need a peer that is running against one: amp_far_call,
-# amp_far_reply_guard, and the ring half of amp_window. Each decides at RUNTIME off the peer's
-# own serviced count.
+# Runs the arms that need a peer that is running against one: amp_far_call,
+# amp_far_reply_guard, amp_far_reply_empty, the ring half of amp_window, and
+# amp_far_deliver_fault. Each decides at RUNTIME off the peer's own serviced count, or off
+# whether the ring toward that peer has room.
+#
+# THIS NAMED SET IS THE WHOLE ENFORCEMENT, and that is a residue rather than a design: the gate
+# does not read the run's own final verdict, so an arm failing OUTSIDE this list leaves the gate
+# green. An arm whose claim only holds in a merged partition therefore has to be added here, or
+# nothing enforces it anywhere.
 #
 # usage: check_amp_peer_arms.sh <unused.elf> <cmake> <build-dir> <artefact>
 #
-# The own-image posture is ALLOWED to skip amp_far_call and amp_far_reply_guard
-# (KICKOS_EXPECT_SKIPS), because the same image runs standalone and inside a merged partition
-# and only the second has a peer. This gate is what bounds that permission: here the arms must
-# report `ok` and must NOT be skipped, since a runtime skip that never stops skipping is a
-# lapsed arm wearing a permission.
+# The own-image posture is ALLOWED to skip THREE arms, amp_far_call, amp_far_reply_guard and
+# amp_far_reply_empty (KICKOS_EXPECT_SKIPS in tests/integration/gates/selftest.cmake), because
+# the same image runs standalone and inside a merged partition and only the second has a peer.
+# This gate is what bounds that permission: here the arms must report `ok` and must NOT be
+# skipped, since a runtime skip that never stops skipping is a lapsed arm wearing a permission.
+# Every name that permission grants is therefore in the enforced set below.
 #
 # A two-kernel gate draws fresh every run on the console interleaving, on which kernel reaches
 # its first publication first, and on which is inside a masked handler when the other rings, so
@@ -65,7 +72,17 @@ skipped() { # <arm>
     printf '%s\n' "$OUT" | grep -E "^ok [0-9]+ - $1 # SKIP" >/dev/null
 }
 
-for arm in amp_far_call amp_far_reply_guard amp_window; do
+# amp_far_deliver_fault is here for a reason of its own: its reply half parks a caller on a far
+# port and a publication into a ring no peer drains is spent for the life of the image, so in a
+# standalone run that half DECLINES for want of room. This artefact is where the peer drains,
+# and so the only place that half is ever exercised.
+#
+# The count in the PASS line is DERIVED from this list: a name added above and a literal left
+# below would report a set narrower than the one enforced.
+n_arms=0
+for arm in amp_far_call amp_far_reply_guard amp_far_reply_empty amp_window \
+           amp_far_deliver_fault; do
+    n_arms=$((n_arms + 1))
     if skipped "$arm"; then
         fail "$arm SKIPPED against a live peer.
   This artefact exists to give it one, so a skip here means the arm cannot see the peer and the
@@ -75,4 +92,4 @@ for arm in amp_far_call amp_far_reply_guard amp_window; do
     echo "== $arm: ok, not skipped"
 done
 
-echo "PASS: 3 arm(s) that needed a running peer ran against one and none of them skipped"
+echo "PASS: $n_arms arm(s) that needed a running peer ran against one and none of them skipped"

@@ -1054,9 +1054,11 @@ Configure prints only the needed side:
 Worst-image margin against `KICKOS_POOL_ARENA_ASSERT`, tightest first (re-measured
 2026-09-04): `bluepill-c8` **0 B**, `f302nucleo` 96 B, `f302nucleo-st` 1,952 B,
 `bluepill-c8-st` 2,048 B, `microbit` 4,096 B, `frdmk64f{,-st} +MPU` 24,576 B. The binding
-image is `selftest_p3` on every split board; on `frdmk64f{,-st}` every image reports the
-same figure, so there is no binding image to name there. The tightest BOOT margin is
-`f302nucleo`'s 2,144 B, and no board measured is below zero on either assert.
+image is `selftest_p3` on every split board whose arena base follows `.bss`; on
+`frdmk64f{,-st}` and on `esp32c6-wroom{,-st}` every image reports the same figure instead, an
+alignment window pinning the base, so there is no binding image to name on those. The
+tightest BOOT margin is `f302nucleo`'s 2,144 B, and no board measured is below zero on either
+assert.
 
 **The margin QUANTIZES to `KICKOS_POOL_STACK_ALIGN` wherever that exceeds the stack size**,
 which is what `KICKOS_TLS` does to every block: the pool base is aligned up, so static
@@ -1195,6 +1197,28 @@ The arena is a pure bump allocator (`arch/common/arch_ram_common.cc:42`) and **n
 takes a block back**. An exited thread's default stack returns to a single-size-class
 free list on the thread pool instead (`kernel/include/kickos/thread.h:203-207`), which
 is why N is a peak-concurrency figure while every `kos_ram_alloc` is permanent.
+
+**A SECOND LIFETIME BUDGET RUNS OUT WITH IT on a region board**, and a port has to provision
+both. Every block `kos_ram_alloc` hands out also spends a slot of the arena-ownership table
+(`kernel/include/kickos/ramown.h`, sized by `KICKOS_RAM_OWNER_SLOTS`), which records the task
+that reserved it so that a caller naming a block is checked against what it reserved and not
+only against the arena's bounds (`invariants.md`,
+`arena-block-owner-is-the-reserving-task`). Nothing frees a slot either: a dead task's records
+stay spent, and are nameable by nobody, the handle they carry including the task slot's
+generation. So the figure is how many distinct blocks the WHOLE IMAGE may reserve over its
+life, not a live-set count, and a port whose app churns tasks that each reserve a block has to
+budget for the sum.
+
+**A full table answers NULL from `kos_ram_alloc`, exactly as a spent arena does**, that call
+returning a pointer with no route out for an errno (`invariants.md`, `syscall-return-abi`). The
+refusal spends NO arena, the slot being found before the allocation, so a caller that keeps
+asking loses nothing more; but the two causes are indistinguishable from userspace, so a board
+whose probes start reporting NULL has to be checked against BOTH figures. The table is kernel
+`.bss` and therefore below `__kickos_ram_start` on every board whose arena base follows `.bss`:
+each slot is one `uintptr_t` plus two 32-bit words, so raising the knob shrinks the arena it is
+protecting. Only a board with live REGION descriptors builds it; a translating board records
+ownership in its per-space range list (`KICKOS_ASPACE_RANGES`) and a board with no protection
+records none.
 
 **The idle + root terms AND the thread-stack pool are checked at link time on every
 board.** `KICKOS_BOOT_ARENA_ASSERT` (`arch/common/boot_arena.ld.h`, fed by
@@ -1358,7 +1382,7 @@ Four readings, and they are the point of the section:
   part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways,
   measured at `124b68c`. That reading predates `9da898e`, which split this board's suite; it is
   THREE images today, so the board emits no single `1..63` plan; read the plan sizes off the
-  configure line (see `boards.md`, *Three boards run the selftest as THREE images*).
+  configure line (see `boards.md`, *Four boards run the selftest as THREE images*).
 - **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than `f302nucleo`
   and used to host *fewer* threads, missing `hello`'s second stack by 96 bytes, purely
   because its heap carve was 8K against f302's 2K. That 8K was the `CHIP_STM32F103`

@@ -29,8 +29,8 @@ string(REPLACE "-" "_" _tag "${KICKOS_BOARD}")
 
 foreach(_gate
     ampping aspacefault aspaceufault cxxtest drvdeath errnoprobe fault faultsurvive
-    fp_switch hello initdemo kernelhalf libc_exit mpu_fault panicgate pspguard pubpanic
-    rebootdemo reclaimwit ringpriv rootauth rootfault rootgone sched_exit selftest
+    fp_switch hello initdemo kernelhalf libc_exit mpu_fault objbudget panicgate pspguard
+    pubpanic rebootdemo reclaimwit ringpriv rootauth rootfault rootgone sched_exit selftest
     simconabi slaypeer stackdepth stackguard stress taskleave tele_flood tele_pingpong
     tlsprobe trapnest uartloop)
   include("${CMAKE_CURRENT_LIST_DIR}/gates/${_gate}.cmake")
