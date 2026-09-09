@@ -3,7 +3,7 @@
 //
 // RP2040 RESETS register map (RP2040 datasheet, RP-008371-DS, 2.14). Peripherals
 // are held in reset at power-up; clear a RESET bit (via the atomic CLR alias,
-// regs/atomic.h) then poll the matching RESET_DONE bit. A block's RESET_DONE only
+// chip_mmap.h) then poll the matching RESET_DONE bit. A block's RESET_DONE only
 // asserts once it has a running clock.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_RP2040_REGS_RESETS_H

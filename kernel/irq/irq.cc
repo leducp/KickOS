@@ -546,7 +546,7 @@ namespace kickos
         Kernel& k = kernel();
         // Before the binding pool and before the publication record, as at the three object
         // creators: a task at its ceiling is refused without spending either.
-        if (not task_object_admit(k.irq_owner, KICKOS_MAX_IRQ_HANDLES, c->task))
+        if (not task_object_admit(CapType::CAP_IRQ, c->task))
         {
             return -KOS_EOVERFLOW; // this task holds its ceiling of bindings already
         }
@@ -599,7 +599,6 @@ namespace kickos
             b->trigger = IRQ_LEVEL;
         }
         k.irq_refs[i] = 1; // the claimer's cap is the first reference
-        k.irq_owner[i] = task_owner_tag(c->task);
         int const obj = k.irq_bindings.handle_for(i);
         // Install BEFORE attaching: a failure path must never leave a line bound to a slot
         // that is about to be freed.
@@ -609,7 +608,6 @@ namespace kickos
         if (rc != 0)
         {
             k.irq_refs[i] = 0;
-            k.irq_owner[i] = TASK_OWNER_NONE;
             k.irq_bindings.free(obj);
 #if KICKOS_KERNEL_CORES > 1
             pub_unreserve(pub);
@@ -764,7 +762,6 @@ namespace kickos
             // kernel core happens later, from a reclamation: the binding is unreachable from
             // this instant and holding its owner until the slot returns would keep charging a
             // task for a line it no longer has.
-            k.irq_owner[idx] = TASK_OWNER_NONE;
 #if KICKOS_KERNEL_CORES > 1
             // The slot returns with the record's grace period: a dispatch still reading that
             // record is one still holding this slot's address as its pre-bound argument.

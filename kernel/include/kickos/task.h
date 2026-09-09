@@ -56,9 +56,10 @@ namespace kickos
         // one-core board too.
         uint8_t prio_ceiling = 0;
         // THE OBJECT BUDGET: the most semaphores, mutexes, endpoints or tier-1 IRQ bindings
-        // this task may hold LIVE in any ONE of those pools. Seeded from
+        // this task may hold LIVE in any ONE of those pools, HOLD counting a delegated and a
+        // kernel-seated capability alongside an own-create. Seeded from
         // KICKOS_TASK_OBJECT_BUDGET at both creation sites and read only through
-        // task_object_admit, which takes the SMALLER of it and the pool's own
+        // task_object_ceiling, which takes the SMALLER of it and the pool's own
         // slots-minus-reserve; the default seed is above every pool, so the reserve is what
         // binds until a board lowers this.
         uint8_t object_budget = 0;
@@ -184,12 +185,6 @@ namespace kickos
     {
         t->object_budget = static_cast<uint8_t>(KICKOS_TASK_OBJECT_BUDGET);
     }
-
-    // Strike `t` out of every object it created. Those objects can outlive it on somebody
-    // else's capability, and a surviving tag would charge them to whichever task the slot is
-    // re-handed to. Called from the one place a task slot goes free: a masked sweep of
-    // KICKOS_MAX_SEMAPHORES + MUTEXES + ENDPOINTS + IRQ_HANDLES byte compares.
-    void task_object_disown(Task const* t);
 
     // Narrow `t`'s grant. `ceiling` 0 and `cores` 0 each mean "leave that half alone", which is
     // what a caller naming only one of them passes. Returns 0, -KOS_EPERM for a request wider

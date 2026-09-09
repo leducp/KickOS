@@ -54,4 +54,22 @@
 #define KICKOS_LX6_TRAP_DEPTH 432
 #endif
 
+/* THE PANIC REPORTER'S OWN STACK, which kickos_panic_stack_enter (switch.S) moves to before a
+ * banner is printed, so PREEMPT measures no console at all and this class is where the
+ * console is priced instead.
+ *
+ * FRAME IS ONE TRAP FRAME. The entry raises INTLEVEL to 15 before the move, so no interrupt
+ * lands here, but a window exception is not maskable and an ISA exception is not either, and
+ * both build their frame on the stack in a1. A plain integer because check_trap_redzone.sh
+ * scrapes it as an immediate; arch_xtensa.cc asserts it against KICKOS_LX6_TRAP_FRAME.
+ *
+ * 736 MEASURED on esp32-wroom-smp and 464 on the two one-core presets; 768 is the next
+ * multiple of 64 strictly above that, which is the rule every arch's PANIC figure follows.
+ *
+ * THIS ARCH IS THE ONE WHERE THE ENTRY IS NOT FREE. The windowed ABI gives it no way to write
+ * the incoming a1 without opening a frame first, so kickos_panic_stack_enter spends 32 bytes on
+ * the stack it is leaving; trap_redzone_roots.txt declares that as its unsized cost. */
+#define KICKOS_LX6_PANIC_FRAME 256
+#define KICKOS_LX6_PANIC_DEPTH 768
+
 #endif

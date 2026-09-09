@@ -14,6 +14,7 @@
 
 namespace kickos::rp2350::reg::uart
 {
+    constexpr uintptr_t BASE = mmap::UART1_BASE;
     constexpr uintptr_t DR = mmap::UART1_BASE + 0x00u;
     constexpr uintptr_t FR = mmap::UART1_BASE + 0x18u;
     constexpr uintptr_t IBRD = mmap::UART1_BASE + 0x24u;
@@ -38,8 +39,8 @@ namespace kickos::rp2350::reg::uart
     // (actual 115207 baud, +0.006%).
     constexpr uint32_t IBRD_115200 = 6u;
     constexpr uint32_t FBRD_115200 = 33u;
-    constexpr uint32_t IBRD_150MHZ = 81u;
-    constexpr uint32_t FBRD_150MHZ = 24u;
+    constexpr uint32_t IBRD_PLL = 81u;
+    constexpr uint32_t FBRD_PLL = 24u;
 
     // WLEN=8, no parity, one stop. FEN is deliberately LEFT OFF so the ring's
     // idle->busy prime starts the transfer regardless of level-vs-transition trigger.

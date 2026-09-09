@@ -226,3 +226,32 @@ _thread_trampoline:
     callx8  a2                    /* entry(arg) */
     call8   kickos_thread_return  /* noreturn */
     .size _thread_trampoline, .-_thread_trampoline
+
+/* ------------------------------------------------------------------------- */
+/* kickos_panic_stack_enter(msg, file, line, top): leave the interrupted stack for   */
+/* the reporter's own (arch.h). After `entry` the arguments are a2-a5 whatever call   */
+/* size the caller used, so a5 is the seat and a2-a4 are the three the reporter takes.*/
+/* The scratch is a6, an argument slot this seam does not use: a3 would be the file   */
+/* pointer. INTLEVEL 15 before the move, or an interrupt taken between the two lands  */
+/* on the stack this exists to leave; a window exception is not maskable and still    */
+/* runs, which is what the reporter's own `entry` needs.                              */
+/*                                                                                    */
+/* THE `entry` HERE IS MANDATORY AND SO IS THE call8 BELOW IT. A windowed callee that  */
+/* skipped `entry` would see no argument at all and would write a rotated a1 the       */
+/* reporter's own `entry` then overwrites from the CALLER's window. So this one        */
+/* backend pays a 32-byte frame on the stack it is leaving, which                      */
+/* trap_redzone_roots.txt declares as this symbol's unsized cost. It is still a        */
+/* BRANCH as far as the callgraph goes: no .ci file describes assembly.                */
+/* ------------------------------------------------------------------------- */
+    .align 4
+    .global kickos_panic_stack_enter
+    .type kickos_panic_stack_enter, @function
+kickos_panic_stack_enter:
+    entry   a1, 32
+    rsil    a6, 15
+    mov     a10, a2               /* msg */
+    mov     a11, a3               /* file */
+    mov     a12, a4               /* line */
+    mov     a1, a5                /* the reporter's stack; this frame is abandoned */
+    call8   kickos_panic_report
+    .size kickos_panic_stack_enter, .-kickos_panic_stack_enter

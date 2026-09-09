@@ -44,7 +44,7 @@ namespace kickos
         // ASKED BEFORE THE POOL, so the answer does not depend on how full the pool happens
         // to be. -KOS_EOVERFLOW is unambiguous here: cap_install returns only 0 or
         // -KOS_EMFILE, so the budget is this call's only source of it.
-        if (not task_object_admit(kernel().sem_owner, KICKOS_MAX_SEMAPHORES, c->task))
+        if (not task_object_admit(CapType::CAP_SEM, c->task))
         {
             return -KOS_EOVERFLOW; // this task holds its ceiling of semaphores already
         }
@@ -56,9 +56,6 @@ namespace kickos
         }
         sem_init(s, initial);
         kernel().sem_refs[i] = 1; // this creator's cap is the first reference
-        // A pooled slot keeps its last occupant's tag, so leaving this unset would charge
-        // the new sem to whoever held the slot before.
-        kernel().sem_owner[i] = task_owner_tag(c->task);
         int const obj = kernel().sems.handle_for(i);
         // Install the owning cap with full rights (WAIT|SIGNAL|TRANSFER) in the
         // creator's table; that CAP handle is what userspace sees. A full table is a
@@ -69,7 +66,6 @@ namespace kickos
         if (rc != 0)
         {
             kernel().sem_refs[i] = 0;
-            kernel().sem_owner[i] = TASK_OWNER_NONE;
             kernel().sems.free(obj);
             return rc;
         }
@@ -90,7 +86,7 @@ namespace kickos
         {
             return -KOS_EPERM; // no caller context (defensive)
         }
-        if (not task_object_admit(kernel().mutex_owner, KICKOS_MAX_MUTEXES, c->task))
+        if (not task_object_admit(CapType::CAP_MUTEX, c->task))
         {
             return -KOS_EOVERFLOW; // this task holds its ceiling of mutexes already
         }
@@ -102,13 +98,11 @@ namespace kickos
         }
         mutex_init(m);
         kernel().mutex_refs[i] = 1;
-        kernel().mutex_owner[i] = task_owner_tag(c->task);
         int const obj = kernel().mutexes.handle_for(i);
         int const rc = cap_install(c, obj, CapType::CAP_MUTEX, CAP_TRANSFER, out_cap);
         if (rc != 0)
         {
             kernel().mutex_refs[i] = 0;
-            kernel().mutex_owner[i] = TASK_OWNER_NONE;
             kernel().mutexes.free(obj);
             return rc;
         }

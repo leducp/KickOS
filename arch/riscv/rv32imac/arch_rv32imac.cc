@@ -77,6 +77,11 @@ static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_RV_CTX_OFF_STACK
 static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_RV_CTX_OFF_KERNEL_SP,
               "a trusted entry loads ctx.kernel_sp at F_CTX_KERNEL_SP");
 // The alignment the trap prologue requires of any stack pointer it builds on.
+// The reporter's own array (kernel/init/console.cc), cut to the Kconfig figure and measured
+// against the header's by check_trap_redzone.sh. A board may only RAISE it.
+static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_RV_PANIC_FRAME + KICKOS_RV_PANIC_DEPTH,
+              "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
+
 static_assert(KICKOS_KERNEL_STACK_SIZE % KICKOS_RV_TRAP_SP_ALIGN == 0,
               "KICKOS_KERNEL_STACK_SIZE must be a multiple of KICKOS_RV_TRAP_SP_ALIGN, "
               "or a kernel stack's top does not land on the alignment the prologue "
@@ -95,7 +100,7 @@ static_assert(KICKOS_RV_TRAP_FRAME_SYS == 2 * KICKOS_RV_TRAP_FRAME,
 // SYSPRIV is the SYS chain with a subtree removed, so it cannot be the larger. The gate
 // scrapes both as plain immediates, so a swap between them is not a typo the compiler
 // catches.
-static_assert(KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC <= KICKOS_RV_TRAP_KERNEL_DEPTH_SYS,
+static_assert(KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV <= KICKOS_RV_TRAP_KERNEL_DEPTH_SYS,
               "the tail-excluded syscall depth exceeds the tail-included one");
 // A privileged thread still spends its OWN stack: its ecall arrives with mstatus.MPP=M, so
 // .Ltrap_from_m_ctx keeps frame and dispatch on the sp it interrupted. No bound refuses an

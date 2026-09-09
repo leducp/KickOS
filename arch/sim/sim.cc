@@ -820,6 +820,16 @@ void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 }
 #endif
 
+// THE ONE BACKEND THAT DOES NOT SWITCH STACKS (arch.h). KICKOS_PANIC_STACK_SIZE is 0 here, so
+// there is no array to move to, and there is nothing to move away from either: a host thread
+// stack is megabytes, no red-zone class measures one, and a hand-switched stack would only put
+// the reporter somewhere the host's own signal and coroutine machinery does not expect it.
+void kickos_panic_stack_enter(char const* msg, char const* file, unsigned line, uintptr_t top)
+{
+    (void)top;
+    kickos_panic_report(msg, file, line);
+}
+
 // The host sim must EXIT on a fault/panic so CTest sees the status: there is no LED
 // and the blink terminal fallback (kernel.h) would spin forever.
 void kfault_terminate(void)

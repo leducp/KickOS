@@ -227,7 +227,7 @@ PendSV_Handler:
     movw    r1, #KICKOS_ARMV7M_TRAP_NEED_SVC
     movs    r2, #0
     movs    r3, #0
-    b       kickos_armv7m_bad_psp   /* (r0=PSP, r1=need, r2=0, r3=0) */
+    b       kickos_arm_bad_psp   /* (r0=PSP, r1=need, r2=0, r3=0) */
 
 /* The PendSV entry alone, because .Lpsp_wild below is shared with the SVC site, which makes
    no such push and whose telemetry tail is not the one that would pop it. */
@@ -262,9 +262,9 @@ PendSV_Handler:
     /* No block to rebuild the exit stub on, so the reporter cannot contain and never returns
        (arch_armv7m.cc says why). A tail branch rather than a call, so no fallthrough into the
        restore below exists to be reached. */
-    b       kickos_armv7m_bad_psp   /* (r0=PSP, r1=need, r2=stack_lo, r3=stack_hi) */
+    b       kickos_arm_bad_psp   /* (r0=PSP, r1=need, r2=stack_lo, r3=stack_hi) */
 #else
-    bl      kickos_armv7m_bad_psp   /* (r0=PSP, r1=need, r2=stack_lo, r3=stack_hi) */
+    bl      kickos_arm_bad_psp   /* (r0=PSP, r1=need, r2=stack_lo, r3=stack_hi) */
     /* Returns only when the offending thread was contained: it is slain and its next resume
        is claimed, and g_arch_next is the thread to run instead. Falls into the restore
        below. */
@@ -532,7 +532,7 @@ svc_trampoline:
     bic     r1, r1, #2              /* CONTROL.SPSEL = 0: SP is the MSP from here */
     msr     control, r1
     isb
-    b       kickos_armv7m_no_kernel_stack
+    b       kickos_arm_no_kernel_stack
 #else
 /* THE UNCONVERTED DESIGN, for the armv7m chips with no MPU that keep their red zone
    (armv7m_trap_stack.h names them). syscall_dispatch runs on the calling thread's own PSP,
@@ -621,5 +621,22 @@ arch_syscall_reg:
     mov     r0, r4
 .Lreg_declined:                     /* r0 = the generic dispatch's KOS_CALL_REG_FALLBACK */
     pop     {r3-r11, pc}
+
+/* kickos_panic_stack_enter(msg, file, line, top): leave the interrupted stack for the
+   reporter's own (arch.h). r0-r2 pass through untouched; r3 is the seat.
+   PRIMASK before the move, or an exception taken between the two stacks on the stack this
+   exists to leave; it is stronger than the BASEPRI arch_irq_save uses and this path does not
+   return. `b` and not `bl`: the -fcallgraph-info walk check_trap_redzone.sh runs stops at a
+   body with no call edge, which is what takes the console tail out of every red zone. Thread
+   mode does not change SPSEL, so this writes whichever of MSP and PSP was live. */
+#if KICKOS_KERNEL_CORES > 1
+#error "one kernel over several armv7m cores has no per-core panic seat here"
+#endif
+    .thumb_func
+    .global kickos_panic_stack_enter
+kickos_panic_stack_enter:
+    cpsid   i
+    mov     sp, r3
+    b       kickos_panic_report
 
     .end

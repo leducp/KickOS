@@ -52,14 +52,12 @@ namespace kickos
         // Through the kernel's own alias where the image is split: the descriptor is app-side
         // storage read before any address space exists.
         KickosReentSeam const* src = s_seam_home;
-#if KICKOS_HAVE_ASPACE
         KickosReentSeam const* const alias =
             static_cast<KickosReentSeam const*>(aspace_image_alias(s_seam_home));
         if (alias != nullptr)
         {
             src = alias;
         }
-#endif
         s_seam = *src;
 
         // REFUSED AT BOOT, because the fallback below is an ALIAS and not an error: a

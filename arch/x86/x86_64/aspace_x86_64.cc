@@ -18,6 +18,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/aspace.h>
+#include <kickos/arch/aspace_table.h>
 #include <kickos/arch/regs.h>
 #include <kickos/chip_com1.h>
 #include <kickos/extent.h>
@@ -308,26 +309,6 @@ namespace
         invalidate_page(va);
     }
 
-    void zero_table(uint64_t* table)
-    {
-        for (size_t i = 0; i < PTES; i++)
-        {
-            table[i] = 0;
-        }
-    }
-
-    bool table_empty(uint64_t const* table)
-    {
-        for (size_t i = 0; i < PTES; i++)
-        {
-            if (table[i] != 0)
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
     // The memory type of a GRANULE leaf as entry bits. The only place that supplies
     // kickos::x86_64::aspace_memtype_bits with the LIVE attribute table.
     bool memtype_bits(enum arch_map_memtype type, uint64_t* out)
@@ -518,7 +499,7 @@ namespace
                 {
                     return ARCH_ASPACE_ENOMEM;
                 }
-                zero_table(table_at(frame));
+                kickos::aspace::zero_table(table_at(frame), PTES);
                 desc = table_desc_user(frame);
                 table[idx] = desc;
             }
@@ -556,7 +537,7 @@ namespace
     {
         if (level == LEVEL_LEAF)
         {
-            return table_empty(table);
+            return kickos::aspace::table_empty(table, PTES);
         }
         for (size_t i = 0; i < PTES; i++)
         {
@@ -580,7 +561,7 @@ namespace
                 kickos_frame_free(child);
             }
         }
-        return table_empty(table);
+        return kickos::aspace::table_empty(table, PTES);
     }
 
     // A top-level slot the boot root left ABSENT is one a space may map; one it has is the

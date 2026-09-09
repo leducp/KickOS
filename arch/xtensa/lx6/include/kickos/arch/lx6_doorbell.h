@@ -49,13 +49,9 @@ int kickos_lx6_doorbell_pending(void);
 // core, publishes its arrival, and parks it on the doorbell. Never returns to the caller.
 void kickos_lx6_secondary_entry(void);
 
-// The park the line above ends in, and the primary's check of the mechanism over it, both in
-// klock_lx6.cc. The CHIP calls the check once every secondary has published arrival: it needs
-// every peer's route live before the first raise.
-//
-// The park OPENS THIS CORE'S INTERRUPTS ITSELF, so the caller must have seated the route first.
+// Where the line above ends. It OPENS THIS CORE'S INTERRUPTS ITSELF, so the caller must have
+// seated the route first.
 void kickos_lx6_doorbell_park(void);
-void kickos_lx6_doorbell_selfcheck(void);
 
 // The arrival byte. The arriving core sets its own once it is ready to TAKE a doorbell, and the
 // primary's release reads it: released is not arrived.

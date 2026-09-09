@@ -14,6 +14,7 @@
 
 namespace kickos::rp2040::reg::uart
 {
+    constexpr uintptr_t BASE = mmap::UART0_BASE;
     constexpr uintptr_t DR = mmap::UART0_BASE + 0x00u;
     constexpr uintptr_t FR = mmap::UART0_BASE + 0x18u;
     constexpr uintptr_t IBRD = mmap::UART0_BASE + 0x24u;
@@ -44,8 +45,8 @@ namespace kickos::rp2040::reg::uart
     // 67, FBRD 52 (actual 115207 baud, +0.006%).
     constexpr uint32_t IBRD_115200 = 6u;
     constexpr uint32_t FBRD_115200 = 33u;
-    constexpr uint32_t IBRD_125MHZ = 67u;
-    constexpr uint32_t FBRD_125MHZ = 52u;
+    constexpr uint32_t IBRD_PLL = 67u;
+    constexpr uint32_t FBRD_PLL = 52u;
 }
 
 #endif

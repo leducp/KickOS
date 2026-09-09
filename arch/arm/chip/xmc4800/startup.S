@@ -3,7 +3,7 @@
  *
  * Infineon XMC4800 (Cortex-M4F) startup: reset vector table (16 core + 112
  * interrupt nodes, IRQ0..IRQ111). SVC/PendSV/SysTick come from the armv7m arch
- * layer; every external line routes to kickos_armv7m_default_irq (line=IPSR-16).
+ * layer; every external line routes to kickos_arm_default_irq (line=IPSR-16).
  * Linked at the cached flash alias 0x0800_0000; chip_xmc4800 sets VTOR to it.
  */
 
@@ -21,7 +21,7 @@ g_isr_vector:
 
     /* Interrupt nodes IRQ0..IRQ111 -> the generic IRQ-as-event entry. */
     .rept KICKOS_MAX_IRQ
-    .word kickos_armv7m_default_irq
+    .word kickos_arm_default_irq
     .endr
 
     .text

@@ -40,6 +40,14 @@ inline void emit(char const* s)
         // r == 0 (a receiver with no buffer) would spin forever: fall back, don't retry.
         if (r <= 0)
         {
+            // THE PEER CLOSING DOES NOT FREE THIS SIDE. -KOS_EPIPE means the driver died and
+            // this cap is now the only thing pinning its endpoint slot, so close it or the
+            // slot is stranded for this task's whole life. -KOS_EBADF is pre-publish: index 0
+            // is empty and there is nothing to close.
+            if (r == -KOS_EPIPE)
+            {
+                (void)kos_handle_close(KOS_CAP_STDOUT);
+            }
             // Remainder only: resending from the start duplicates the chunks the driver
             // already took.
             kos_kconsole_write(s + sent, total - sent);

@@ -4,7 +4,7 @@
  * MK64FN1M0 (FRDM-K64F) startup: reset vector table (16 core + 86 NVIC lines,
  * K64 has IRQ0..85) and the Flash Configuration Field. The kernel exception
  * handlers (SVC/PendSV/SysTick) come from the armv7m arch layer; every external
- * line routes to the generic kickos_armv7m_default_irq (line = IPSR-16).
+ * line routes to the generic kickos_arm_default_irq (line = IPSR-16).
  */
 
 #include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
@@ -21,7 +21,7 @@ g_isr_vector:
 
     /* External interrupts 0..85 -> the generic IRQ-as-event entry. */
     .rept KICKOS_MAX_IRQ
-    .word kickos_armv7m_default_irq
+    .word kickos_arm_default_irq
     .endr
 
     /* Flash Configuration Field @ 0x400 (placed by mk64f.ld .fcf). All-ones

@@ -890,6 +890,7 @@ is the next one's baseline.
 | M8.3 | isolation and syscall robustness: region-board grant ownership, the copy that may fail, per-task object budgets |
 | M8.4 | the gates, the CI matrix, and the instrument's own arithmetic |
 | M8.5 | DRY in the kernel and the arch backends |
+| M8.5.1 | what M8.5 measured and left: the budget that never binds, the window that is too coarse, the reporter that is still on the chain |
 | M8.6 | DRY in the build, the gate library and userspace |
 | M8.7 | P0: the rebaseline campaign, and the end-to-end instrument |
 | M8.8 | the per-switch and per-wake plumbing |
@@ -951,6 +952,59 @@ pricing a reporter that runs on a stack of its own. Its sibling is the `esp32c6-
 `.bss` ending 68 bytes short of the `.appdata` boundary, where a crossing costs 32 KiB of arena and
 fails nothing, and **that one cannot simply be asserted**: `esp32c6-wroom-bench` has already
 crossed, so the assert lands with whatever fixes that preset.
+
+**M8.5.1 EXISTS BECAUSE M8.5's MEASUREMENTS OUTRAN ITS SCOPE, AND EVERY ITEM IN IT IS A FIGURE
+RATHER THAN AN INTENTION.** It is not a spillover row: each item below was measured while doing
+M8.5's own work, recorded with its evidence, and deliberately not acted on because acting would
+have widened a de-duplication milestone into a design one.
+
+**THE OBJECT BUDGET NEVER BINDS, SO THE RESERVE IS THE WHOLE BOUND WEARING THE BUDGET'S NAME.**
+`KICKOS_TASK_OBJECT_BUDGET` defaults to 255 and no board overrides it, against pools of four to
+eight slots, so `min(budget, slots - reserve)` is `slots - reserve` on every board in the fleet.
+A task therefore cannot spend a budget it was granted, and the thing that actually stops it is
+named nowhere in the grant. That is the second-truth shape the tree refuses elsewhere. The
+direction is to make the budget the real bound, per board, and to retire `TASK_OBJECT_RESERVE`
+in favour of a BUILD-TIME check that the budget fits the pool, which is the make-it-unrepresentable
+move rather than a runtime clamp. **It also settles the supervisor-respawn question by dissolving
+it**: with a budget that binds, the denial is a sizing property of the pool and not a reserve
+carved out of somebody's allowance.
+
+**THE APP WINDOW IS QUANTISED TOO COARSELY ON THE ONE PART THAT CANNOT AFFORD IT.** `f411disco`
+has 128 KiB of SRAM, a 16 KiB `_appdata_size` and kernel data overshooting one window by 1,104
+bytes, so it declares two and wastes 15,280 bytes, twelve percent of the part. The direction is
+NOT cutting thread slots: it is pricing a smaller `_appdata_size` on that board, which makes the
+reserve finer-grained and the overshoot cheap, against what it costs in MPU regions. `rx72m` and
+`esp32c6-wroom` sit in the same shape at six percent of 512 KiB each, which is rounding on a big
+part rather than a capability decision, so they are revisited only if the f411 measurement says
+the granularity rule is wrong everywhere.
+
+**THE FAULT REPORTER IS THE NEXT ITEM OF THE PANIC REPORTER'S SHAPE AND CANNOT REUSE ITS
+MECHANISM.** `kickos_thread_fault_exit -> kprintf_fault -> kvprintf_route -> the console` sets
+rv32imac and rxv3 EXITK, and armv7m and armv6m carry the same chain, so it is four arches. It
+cannot share the panic array: that array is one per core entered once because a panic is terminal,
+while a thread fault leaves the system running and a second thread can fault mid-print. The
+direction is one per core with a claim that refuses the second entrant, priced against simply
+narrowing what the fault reporter may call.
+
+**AND AN APP IS BUILT OUT OF TREE FOR EVERY ARCH, WHICH RETIRES A COVERAGE HOLE RATHER THAN
+DOCUMENTING IT.** `oot_export` registers on the host preset and its MCU sibling on one armv7m
+board, so the only thing in the tree that reads the installed package from outside covers two of
+seventy-one presets. Two Xtensa assembler sources carrying a `.h` extension have failed that
+compile for as long as they have existed and nothing reports them. Building the package per arch
+family makes both fall out as build failures and needs neither a rename nor a content-sniffing
+skip.
+
+**THE REST ARE RECORDED IN `TODO.md` WITH THEIR EVIDENCE AND BELONG HERE BY SIZE RATHER THAN BY
+THEME**: the banner gate that asks only whether a listed file yields a banner and not whether the
+set is whole; the kernel-data-reserve class closed across nine scripts with no control in `tests/`
+keeping it closed; `appdata_no_kernel` not registering on the three arches that gained
+archive-selected `.bss`; the hold walk's masked time, estimated statically and never measured; the
+intra-archive resolution rule stated five times in `arch/CMakeLists.txt` and wrong in both
+directions; a divisor computed from a frequency literal, which no arm in the tree can catch; the
+fourth cross-node `volatile` word outside DRY-5's chip-side sweep; `qemu-x86_64` green over two
+page-table helpers no arm of it distinguishes from broken; the doorbell send whose dropped
+request-cell store leaves the cross-core gate announcing that every core answered; and the ninety
+lines the RP2350 doorbell still duplicates.
 
 **M8.6 HAS A MEASURED LEDGER RATHER THAN AN AMBITION, AND THE TREE ALREADY OWNS THE IDIOM THAT
 REMOVES MOST OF IT.** The build corpus is 11925 lines over 272 files and the root file alone is 16

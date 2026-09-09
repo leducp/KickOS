@@ -498,12 +498,12 @@ config KICKOS_MAX_THREADS
 
 config KICKOS_MAX_SEMAPHORES
 	int "CAP_SEM pool"
-	range 0 64
+	range 0 32
 	default 16
 
 config KICKOS_MAX_MUTEXES
 	int "CAP_MUTEX pool"
-	range 0 64
+	range 0 32
 	default 8
 
 config KICKOS_MAX_ENDPOINTS
@@ -599,9 +599,12 @@ config KICKOS_TASK_OBJECT_BUDGET
 	  -KOS_ENOMEM (the pool had a slot) nor -KOS_EMFILE (the caller's table had one).
 
 	  WHAT IT IS FOR: without it a task's own-creates are bounded only by its threads'
-	  capability tables, and a thread can spawn siblings to widen that bound, so one
-	  unprivileged task can empty a pool and deny every other task's creator, including a
-	  supervisor respawning a driver, whose own endpoint_create then fails.
+	  capability tables, and a thread can spawn siblings to widen that bound, so one task
+	  can empty a pool and deny a supervisor respawning a driver the endpoint that respawn
+	  needs. THE THREAT IS ACCIDENT: the party holding the slots is a well-behaved driver
+	  that died at its own legitimate maximum. It is NOT a bound on an adversary, task
+	  creation carrying no authority bit, and bounding that is a quota on task creation
+	  rather than anything here (the object-pool invariant in docs, and instance.h).
 
 	  THE DEFAULT DOES NOT BIND, AND THAT IS DELIBERATE. instance.h keeps
 	  TASK_OBJECT_RESERVE slots of every pool out of any one task's reach structurally, and
@@ -749,17 +752,22 @@ config KICKOS_KERNEL_STACK_SIZE
 	  deepest transferred dispatch measures, a board may only RAISE it, and a raise buys
 	  nothing the gate asks for while costing KICKOS_THREAD_SLOTS bytes per byte.
 
-	  EVERY DEFAULT ABOVE IS A MEASUREMENT, on all four arches that carve a block:
-	  rv32imac, rxv3, armv7m and armv6m. trap_redzone_roots.txt declares the
+	  EVERY DEFAULT ABOVE FOLLOWS ITS ARCH'S DEPTH MACROS, on all four arches that carve
+	  a block: rv32imac, rxv3, armv7m and armv6m. trap_redzone_roots.txt declares the
 	  transferred class stack=kernel and check_trap_redzone.sh measures it against this
 	  knob rather than against the spawn floor. Each arch derives its own terms in its
 	  own <arch>_trap_stack.h, which is where to read what a figure is made of; no
 	  derivation is copied here, because a copy of a measurement goes stale.
 
+	  SOME OF THOSE MACROS SIT ABOVE THEIR MEASUREMENT, deliberately, and each says by how
+	  much and what cutting it would buy. Do not cut them: a figure at exactly its
+	  measurement makes the next added assert a gate failure on whichever board happens to
+	  be deepest, and the headroom is what a future change is measured against.
+
 	  TELEMETRY IS ITS OWN SIZE CLASS ON armv7m, and it must not be folded into one
 	  number. KICKOS_TELEMETRY compiles the trace emitters and the ring drain
-	  arch_shutdown runs, which the dispatch reaches through exit_current as well as
-	  through the panic tail; it is the largest posture effect in the fleet. The blocks
+	  arch_shutdown runs, which the dispatch reaches through exit_current; it is the
+	  largest posture effect in the fleet. The blocks
 	  are per thread SLOT, so one byte here costs KICKOS_THREAD_SLOTS bytes of kernel
 	  .bss, and applying the telemetry figure fleet-wide fails to link the boards that
 	  have no telemetry variant.
@@ -773,6 +781,69 @@ config KICKOS_KERNEL_STACK_SIZE
 	  KICKOS_THREAD_SLOTS of this size in kernel .bss, and the banner reports slot size,
 	  slot count and their product. An arch that carves the blocks stops reserving a red
 	  zone for the dispatch, so no board ever holds both.
+
+config KICKOS_PANIC_STACK_SIZE
+	int
+	default 0 if ARCH_SIM
+	default 448 if ARCH_RV32IMAC
+	default 320 if ARCH_RXV3
+	default 352 if ARCH_ARMV6M
+	default 944 if ARCH_ARMV7M && TELEMETRY_RTT
+	default 432 if ARCH_ARMV7M
+	default 1024 if ARCH_LX6
+	# PROVISIONAL AND UNBACKED, not a measurement: no trap_redzone_roots.txt class walks
+	# these three, and none of them carries a static_assert either.
+	default 2048 if ARCH_ARMV8A
+	default 2048 if ARCH_RV64IMAC
+	default 2048 if ARCH_X86_64
+	default 1024
+	help
+	  The stack kpanic and kpanic_at report on. kickos_panic_stack_enter moves the stack
+	  pointer here before the banner prints, so the console descent lands on this array
+	  instead of below whatever frame the assertion fired in.
+
+	  NOT A KNOB, which is why it has no prompt, and a board may only RAISE it. THE RULE
+	  FOR A DEFAULT IS THE NEXT MULTIPLE OF 64 STRICTLY ABOVE the arch's deepest measured
+	  reporter, so a reading that is already 64-aligned still gains a step: 384 measured on
+	  rv32imac gives 448, 308 on rxv3 gives 320, 304 on armv6m and on armv7m gives 320, 800
+	  on armv7m telemetry gives 832, 736 on lx6 gives 768. Strictly above and not merely
+	  rounded, because a byte here costs ONE shared array rather than one per thread slot,
+	  and the enforced figure is what a future change is measured against.
+
+	  THE THREE PROVISIONAL FIGURES ARE THE EXCEPTION and say so at their lines: no class
+	  in trap_redzone_roots.txt walks armv8a, rv64imac or x86_64, so those numbers are
+	  UNBACKED rather than measured, and none of the three carries the static_assert the
+	  five measured arches do, there being no arch macro to assert against. Porting the
+	  gate to them is what turns those into figures.
+
+	  WHY IT EXISTS. The reporter walks the whole console, and every KICKOS_ASSERT on a
+	  dispatch chain can reach it. Charged to the chain it fired on, that tail would be the
+	  largest term in most trap red zones on the arches with least slack, and a thread near
+	  KICKOS_MIN_STACK_SIZE would have the console writer descend past stack_lo,
+	  privileged. On this array it is the PANIC class of trap_redzone_roots.txt instead,
+	  measured against THIS figure and nothing else, so the console's depth is priced once
+	  for the image rather than once per stack that can reach an assert.
+
+	  WHAT IT COSTS. ONE array per core one kernel schedules, in kernel .bss, whatever the
+	  thread count: the reporter is terminal, so a core runs it once and the array is not
+	  per thread SLOT the way KICKOS_KERNEL_STACK_SIZE is. PER CORE IS NOT GENEROSITY:
+	  nothing stops two cores of a shared kernel panicking together, and each carries its
+	  own seat in a register so that neither descends the console where the other is
+	  writing.
+
+	  IT IS A FLAT COST AND NOTHING OFFSETS IT. The per-slot blocks hold headroom this
+	  array could be paid for out of, and the tree deliberately does not spend it: each
+	  <arch>_trap_stack.h states what cutting its own figures would return, and why they
+	  are left where they are.
+
+	  TELEMETRY IS ITS OWN SIZE CLASS ON armv7m, as it is for the kernel block: the ring
+	  drain arch_shutdown runs sits below kfault_terminate, which is inside the reporter.
+
+	  ZERO MEANS NO SEPARATE STACK and the reporter runs where it was called from. ARCH_SIM
+	  alone takes it: a host thread stack is megabytes, no red-zone class measures one, and
+	  a hand-switched stack under the host's own signal and coroutine machinery would buy
+	  nothing. On any other arch a zero here puts the console tail back on every measured
+	  chain, and check_trap_redzone.sh is what refuses that.
 
 config KICKOS_TLS
 	bool "Per-thread thread_local storage"

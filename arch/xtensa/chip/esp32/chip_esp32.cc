@@ -7,6 +7,7 @@
 // chapters). Hand-rolled, no ESP-IDF/HAL sources.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/doorbell_protocol.h>
 #include <kickos/arch/lx6_doorbell.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/config/limits.h> // KICKOS_POLL_SPIN_MAX
@@ -704,7 +705,7 @@ void arch_init(void)
     hex1(arrived);
     arch_console_write_sync(ARRIVED_TAIL, sizeof(ARRIVED_TAIL) - 1);
     // AFTER ARRIVAL: the check needs every peer's route live and its mask open.
-    kickos_lx6_doorbell_selfcheck();
+    kickos_doorbell_selfcheck();
 #endif
 }
 

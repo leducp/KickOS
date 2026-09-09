@@ -24,6 +24,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
+#include <kickos/arch/doorbell_protocol.h>
 #include <kickos/arch/rv64_doorbell.h>
 
 #include <stdint.h>
@@ -142,6 +143,8 @@ extern "C"
 
 #if KICKOS_NUM_CORES > 1
 // startup.S's .smpboot carve: one doubleword per hart, and nothing else writes them.
+// volatile and not Atomic because the word is 64-bit, where a relaxed atomic load is a
+// __atomic_load_8 libcall a freestanding link cannot resolve (docs/reference/style.md).
 extern volatile uint64_t kickos_rv64_hart_release[KICKOS_NUM_CORES];
 
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
@@ -206,7 +209,7 @@ void arch_init(void)
     // here runs a kickos_rv64_init of its own against tables this hart has already installed.
     release_secondaries();
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
-    kickos_rv64_doorbell_selfcheck();
+    kickos_doorbell_selfcheck();
 #endif
 #endif
 }

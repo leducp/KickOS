@@ -532,6 +532,10 @@ jobs:
         run: |
           command -v qemu-system-x86_64 >/dev/null 2>&1 \
             || { echo "qemu-system-x86_64 is absent: every image gate below would SKIP and ctest would still exit 0"; exit 1; }
+          # The PE32+ link's `-b elf64-x86-64` is load-bearing on binutils 2.42 and inert above
+          # it, so this line is the only record of whether a run could have caught the flag's
+          # loss. The toolchain file's i386pep refusal says nothing about the version.
+          ld --version | head -1
           # The variable store must be the CODE file's OWN spelling: a 4M image paired with a
           # store of another size is not a working pair, so the match is what selects both.
           ovmf_dirs="/usr/share/OVMF /usr/share/ovmf /usr/share/edk2/x64 /usr/share/edk2-ovmf/x64 /usr/share/qemu"

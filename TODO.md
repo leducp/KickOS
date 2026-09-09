@@ -421,27 +421,137 @@ below as the decided shape, not reopened.
 Both were found during M8.3 and are recorded here rather than closed, which is what the audit's
 `Medium - accepted` and its own reading of `STATE`/`TODO` rest on.
 
-- [ ] **THE OBJECT BUDGET BOUNDS CREATES CHARGED TO A LIVING CREATOR, NOT DELEGATED HOLDS.**
-      `kernel/include/kickos/instance.h` (`task_object_admit`, `task_object_held`);
-      `kernel/task/task.cc` (`task_object_disown`). The charge sits on the pool slot and names the
-      creating task, so `task_object_disown` -- which exists to stop a recycled task slot
-      inheriting a charge -- also clears the charge from an object that is STILL LIVE on another
-      task's capability. A task at its ceiling can therefore delegate its objects into a second
-      task and die, after which one live task holds a whole pool while its own charge reads one.
-      Two tasks at their ceilings empty a pool between them regardless. So the invariant
-      `object-pool-keeps-a-slot-from-any-one-task` is true of CREATES and the denial the item was
-      opened for is reachable by a longer route. **What the reserve does still buy** is that the
-      simple loop the item describes -- one task creating until `-KOS_ENOMEM` -- cannot take a
-      pool's last slot. Direction: charge on delegation as well as creation, or count holds rather
-      than creates; both are past the shape M8.3's decided direction covers, and the second wants
-      a per-(task, slot) record rather than one owner byte. `tests/unit/taskbudget` asserts the
-      COMPLEMENT (that a recycled slot regains its ceiling) and so stays green over this.
-      **ASSIGNED TO M8.5** (2026-09-09), `roadmap.md` carrying the number. M8.4 found a THIRD route
-      past the bound while gating the syscall table: `amp_endpoint_mint` and `amp_port_bind_local`
-      both spend an endpoint-pool slot with no `task_object_admit` at all. Neither is reachable
-      from an unprivileged task, so `invariants.md` states the bound as one on what an unprivileged
-      task can take rather than widening the charge; whether an AMP endpoint SHOULD sit on a
-      ceiling is part of this item now.
+- [x] **THE OBJECT BUDGET BOUNDS CREATES CHARGED TO A LIVING CREATOR, NOT DELEGATED HOLDS.**
+      **LANDED in M8.5** by the second of the two directions, counting HOLDS rather than
+      creates, and by deriving the hold set rather than recording it. The four per-slot owner
+      arrays and `task_object_disown` are DELETED; what a task holds is read at the admission
+      off the capability tables of its live members, one bit per pool slot, and recorded
+      nowhere. So a delegated object counts against whoever holds it, a release owes no refund,
+      a dying task owes no sweep, and two capabilities on one object cost their holder one slot
+      rather than two. A spawn's grant list is admitted against the DESTINATION task as one
+      take (`task_object_admit_grants`), which is what stops a task at its ceiling passing its
+      objects into a second task and taking its whole ceiling again. AMP: neither minter gains
+      an admission, both being out of an unprivileged task's reach, but what each seats in
+      root's table now COUNTS like any other hold, which is the answer the derivation gives for
+      free. `.bss` on `hello`: microbit -40 B, bluepill-c8 -24 B; `.text` microbit -64 B,
+      bluepill-c8 +32 B. The trap red zone is unmoved on all 25 class figures across
+      rv32imac, rxv3, armv6m and armv7m, which took a fix: split across two switches the
+      slot lookup needed an unreachable default arm, and its assert put `kpanic` under
+      `syscall_dispatch` for +64 B on rv32imac SYS and +32 B on armv7m SVCK.
+      **WHAT THIS DOES NOT CLOSE AGAINST AN ADVERSARY, and no per-task bound can:** a task is
+      free to mint, so one unprivileged caller seats a thread in each of `KICKOS_MAX_TASKS`
+      puppet tasks and empties
+      any pool with no delegation at all. The reserve bounds ONE TASK, which `invariants.md`
+      now states outright rather than implying a bound on an adversary. Whether that denial is
+      a guarantee the project wants at all is the item below.
+
+- [ ] **THE OBJECT-POOL RESERVE IS AN ANTI-ACCIDENT MECHANISM WHOSE INVARIANT READS AS AN
+      ANTI-ADVERSARY ONE.** `object-pool-keeps-a-slot-from-any-one-task` says
+      `TASK_OBJECT_RESERVE` is "structural, so no single task can take a pool's last slot", and
+      motivates it with a supervisor respawning a driver needing an endpoint of its own. Read
+      against a DRIVER THAT DIED that sentence is exactly true and the mechanism is well shaped;
+      read against an ATTACKER it is not, and nothing marks which reading was meant. The
+      property is per TASK SLOT, a task is free to mint, and so the stronger reading was never
+      delivered by anything. Same shape as the two AMP minters M8.4 found, and the same remedy
+      has already been applied: `invariants.md` now names the threat at the motivation and
+      states the gap in the negative. Found while landing the object-budget item above.
+      **RAISED AS A DECISION, not filed.**
+      **The route, entirely within one unprivileged caller.** `task_create_call`
+      (`kernel/syscall/syscall_thread.cc`) checks `ram_owner_nameable` only when the call
+      brings a memory grant; with `mem_base == nullptr` it goes straight to `task_create`, and
+      `domain_for` (`kernel/domain/domain.cc`) answers `domain_default_user()` for a null grant
+      with no authority test. `AUTH_MEMORY` is consulted only to compose `DOM_CALLER_MEM_AUTH`
+      for a grant that is not being made. So: mint a task, spawn a thread into it
+      (`task_created_by` passes, the caller being the creator), have that thread run the four
+      creators up to its own ceiling, repeat. Nothing is delegated and no capability is needed.
+      **THE UNGATED CREATION IS DELIBERATE AND IS NOT THE FINDING.** `privilege-escalation-gated`
+      gates privilege INHERITANCE and then names the acts that take authority instead
+      (`irq_attach` on `AUTH_IRQ`, `ram_alloc` on `AUTH_MEMORY`); creation is deliberately not
+      among them, `thread_create_call` is ungated the same way, and the `KOS_SYS_TASK_KILL`
+      dispatch arm says so outright, "UNGATED by authority, gated by creatorship inside". That
+      invariant's own argument, that a capability to create would be unbounded to delegate and
+      meaningless to narrow, is a reason to be careful about adding one here.
+      **What makes it reachable.** `KICKOS_MAX_TASKS` is `KICKOS_MAX_THREADS + 2`
+      (`config/system.h`), so 18 on every board that does not lower `MAX_THREADS` and 4 on
+      bluepill-c8. The endpoint pool is 4 slots on every board that does not raise it, and
+      bluepill-c8 is 4/4/4/4 across all four pools. A ceiling of 3 endpoints times two puppet
+      tasks already exceeds the pool, so the reserve is gone long before the task pool is.
+      **THIS IS AVAILABILITY AND NOT ISOLATION, and it is not a new exhaustion class.** Nothing
+      crosses a protection boundary, and the tree guarantees availability nowhere: an
+      unprivileged task can already drain the RAM arena and the thread pool under no quota at
+      all, both named as `-KOS_ENOMEM` suppliers by `syscall-return-abi`. Every puppet task
+      costs a thread, so an adversary reaching the endpoint pool this way is bounded by a pool
+      it could have exhausted directly.
+      **THE THREAT THE RESERVE ANSWERS IS ACCIDENT, AND AGAINST THAT IT WORKS AS ADVERTISED.**
+      Driver task D serves and holds endpoints; D hits an unrecoverable error and exits, both
+      UART drivers ending on "Endpoint dead / EPIPE or a bad cap: unrecoverable. Exit and let
+      root respawn" (`k64uart.cc:134`, `xmcuart.cc:150`). `sched.cc:595` states the ordering
+      intent outright: the sweep's endpoint arm EPIPE-wakes a supervisor that may respawn
+      IMMEDIATELY, and `dying` exists so the corpse does not refuse that respawn through the
+      DEV-window scan (`thread.cc:118` from the other side). Root spawns D', which needs a NEW
+      endpoint, the old one being dead with every client holding a revoked cap. AND D'S SLOTS
+      ARE STILL ALLOCATED at that instant: `cap_teardown` runs after `task_release` and drops
+      IrqLock between chunks, so the recovery asks the pool for an object at the one moment the
+      pool is fullest, and `-KOS_ENOMEM` there leaves the console dark. The party holding those
+      slots is not an attacker; it is a well-behaved task that created objects up to its own
+      limit and happened to be holding them when the driver died. Against THAT the per-task
+      shape is the right shape: no task, however greedy, reaches the last slot. It never worked
+      against an adversary and could not, and the cheap reason to say so is that a respawn needs
+      a THREAD before it needs an endpoint: someone willing to mint puppet tasks to eat the last
+      endpoint has strictly cheaper ways to keep the console dead, so an adversary bound that
+      starts at the object pool is starting at the wrong pool.
+      **What the hold-counting bound above does buy**: the per-TASK property is now TRUE, which
+      it was not. A task cannot exceed its ceiling by delegating into a puppet and dying, a
+      recycled task slot cannot inherit a charge, and a task's ceiling now reflects what it
+      actually keeps alive. **What it does not buy, and no shape of it can**: the denial the
+      budget was opened for, that a supervisor respawning a driver still gets an endpoint. That
+      denial needs a bound on the ADVERSARY, and a task is a free-to-mint unit.
+      **SETTLED: A CAPABILITY TO A DEAD ENDPOINT COUNTS AGAINST ITS HOLDER, AND THAT IS
+      CORRECT.** When your socket is closed by the other side you still have to close it on
+      your side; the peer closing does not free your descriptor. Probed on the host seam at
+      `KICKOS_MAX_ENDPOINTS=4`, ceiling 2, driving the server's death through the real
+      `handle_close`: the slot then reads `slot_live=1 refs=1 recv_holders=0`, dead and EPIPE
+      to every sender, allocated only because the client's send cap names it, and the client is
+      refused at two such caps. The old create-charge scheme charged the dead driver and then
+      cleared the charge, so NOBODY paid for a slot a LIVE client was pinning: it hid a
+      client-side leak. Hold-counting introduces no problem, it makes that leak visible and
+      bills it to the only party that can end it. A cap to a slot that was actually FREED counts
+      for nothing, the handle no longer resolving, and that skip does not spare a LIVE object:
+      probed with the pool exhausted so the slot is genuinely re-handed, the recycled slot came
+      back at the same index under a bumped generation and charged its NEW holder while the
+      stale-cap holder went free.
+      **THE LEAK WAS REAL AND IS FIXED.** `user/src/newlib_stubs.cc` took -KOS_EPIPE, fell back
+      to `kos_kconsole_write` and never closed index 0, holding the dead cap for the rest of
+      the task's life. `emit.h` names the same policy in three places and says to keep them in
+      step, and all three leaked: `user/src/newlib_stubs.cc`, `user/include/kickos/sys/emit.h`,
+      `tests/tap/tap.cc`. All three now close on -KOS_EPIPE and only on it. Closing index 0 is
+      legal and was already anticipated: `handle_close` does not refuse a reserved index, and
+      `cap_run_free_release` keeps it out of the free list, its comment already reading "closing
+      the kernel's stdout slot leaves it empty and unreachable to an own create". THE CONTRACT
+      IS NOW IN `invariants.md`, where nothing had ever stated it, which is why the one client
+      in the tree did not follow it.
+      **RESPAWN ATTRITION IS CLIENT DISCIPLINE, NOT A STRUCTURAL LIMIT.** An earlier reading of
+      this item had the reserve buying only one respawn because each generation strands an
+      endpoint; that was wrong and is retracted. A client that closes on EPIPE returns the slot
+      immediately and the attrition disappears. What
+      `docs/design-m3-console-handover-stageii.md:250` decided is that old clients do
+      not RECONNECT, staying dark for their lifetime; that never required holding the dead
+      capability, and the two were conflated. Stranding is a leak with a site, not a property of
+      the design.
+      **ASSIGNED TO M8.5.1** (owner, 2026-09-10), which dissolves rather than answers it: the
+      budget never binds at its default, so making it bind retires the reserve and the denial
+      becomes a property of how the pool is sized.
+      **THE QUESTION THAT IS LEFT, and it has shrunk.** The reserve is an ANTI-ACCIDENT
+      mechanism whose invariant reads as an anti-adversary one. If anti-accident is what it is
+      meant to be, the honest invariant is the whole fix, nothing is owed, and the motivating
+      sentence should name the threat it answers rather than implying the other; that clause is
+      now in `object-pool-keeps-a-slot-from-any-one-task`. Only if the anti-adversary version is
+      WANTED does a mechanism follow, and then the object pool is the wrong place to start and
+      the thread pool is the right one. The unit is open between three candidates: a
+      per-creator task quota (derivable with no new state, `Task::creator_tag` already recording
+      the creator and `task_orphan_created_by` already sweeping `kernel().tasks[]` on that key),
+      an authority bit on creation (against which `privilege-escalation-gated` argues above),
+      and a quota on the capability slab those objects' caps live in.
 
 - [x] **THE SYSCALL TABLE'S DOCUMENTED CODE LISTS ARE READ BY NO GATE, WHICH IS WHY A REFUSAL CODE
       LANDED IN ONE HEADER AND NOT THE OTHER.** `user/include/kickos/sys/abi.h` (the
@@ -458,19 +568,65 @@ Both were found during M8.3 and are recorded here rather than closed, which is w
 
 ## Found fixing the M8.3 review's red-zone breaks (2026-09-08)
 
-- [ ] **THE PANIC TAIL IS 384 BYTES OF EVERY rv32imac RED-ZONE FIGURE AND 308 OF EVERY rxv3 ONE, SO
-      ANY NEW ASSERT ON A DISPATCH CHAIN DRAGS THE WHOLE CONSOLE.** Both of M8.3's red-zone breaks
-      were one `KICKOS_ASSERT` reaching `kpanic -> ... -> console_tx`, and neither was the site the
-      first attribution named. That is why these figures keep breaking on the arches with no slack:
-      the measured depth of a syscall chain is mostly the reporter it can reach, not the work it
-      does. **Eight figures on those two arches now sit at EXACTLY their reserve** (rv32imac TRAP,
-      SYS, SYSPRIV, EXITK, RET; rxv3 SYSK, EXITK, RET), so the next assert added anywhere on a
-      dispatch chain fails a gate on a board nobody named. Moving the panic reporter off the
-      measured stacks is a milestone rather than a fix, and it has no home yet. Direction: price a
-      reporter that runs on a stack of its own, and note that the red-zone gate's own exclusion
-      mechanism already models "which chains are walked", so the question is where the reporter
-      lives and not how it is measured. **ASSIGNED TO M8.5** (2026-09-09), `roadmap.md` carrying
-      the number.
+- [x] **THE PANIC TAIL IS 384 BYTES OF EVERY rv32imac RED-ZONE FIGURE AND 308 OF EVERY rxv3 ONE, SO
+      ANY NEW ASSERT ON A DISPATCH CHAIN DRAGS THE WHOLE CONSOLE.** `kpanic` and `kpanic_at` now
+      leave the interrupted stack before they print: `kickos_panic_stack_enter`, one `.S` body per
+      backend, masks, moves the stack pointer to the seat its caller passed in the fourth argument
+      register and branches into `kickos_panic_report`. The walk stops at that body, so the PANIC
+      reporter's console tail is the gate's new PANIC class and ends no red zone.
+
+      **THE CONSOLE HAS NOT LEFT THE RED ZONES.** The FAULT reporter reaches the same writer by
+      another route, `kickos_thread_fault_exit -> kprintf_fault -> kvprintf_route ->
+      kconsole_write_impl -> console_emit -> arch_console_write -> console_tx_write -> drain_sync
+      -> wait_slot`, and it still ends esp32c6-wroom-st FAULT 768, NESTED 768 and EXITK 720, rxv3
+      EXITK and armv6m EXITK. That is the open item further down, not this one.
+
+      **THE ITEM'S OWN PREMISE WAS ONLY A THIRD RIGHT, and the measurement says which third.** Of
+      the eight figures named, the reporter's departure frees only three: rv32imac TRAP (480
+      enforced, 480 measured, now 224), rxv3 SYSK (796, 760, now 632) and rxv3 RET (480, 480, now
+      344). **TWO OF THE EIGHT WERE NEVER AT THEIR RESERVE AT ALL**: rv32imac SYS peaks at 880
+      against 912 on esp32c6-wroom-st, and rxv3 SYSK at 760 against 796 on rx72m-st. The other
+      three are at reserve for reasons this change does not touch: rv32imac EXITK (720) and rxv3
+      EXITK (620) are the FAULT reporter; rv32imac SYSPRIV at 832 is the KICKOS_BENCH print arm on
+      esp32c6-wroom-bench; rv32imac RET at 384 is plain scheduler work whose round-up to the next
+      multiple of 64 landed on the measurement.
+
+      **AND THE AT-RESERVE LIST WAS NEVER EIGHT.** Also at exactly their reserve, on presets the
+      item does not name: armv6m EXITK 608 (picopi, picopi-st, picopi-flat), armv7m EXIT 576 (due,
+      due-st, f302nucleo, f302nucleo-st, bluepill-c8, bluepill-c8-st) and EXITK 584 (the four
+      xmc4800-relax presets), qemu-telem RET 824 and EXITK 952, xmc4800-relax-bench RET 312, and
+      lx6 PREEMPT 432 (esp32-wroom, esp32-wroom-st). A per-preset figure quoted as arch-wide is
+      what made the list look shorter and more rv32imac-shaped than it is.
+
+      Three things owed, each priced and none blocking:
+      - **The freed headroom is NOT spent.** Cutting every figure back to its measurement would
+        take the blocks to 1104 (rv32imac, 80 per slot), 944 (rxv3, 176), 720 (armv6m, 180) and
+        960/1216 (armv7m, 48 and 256). It was tried and reverted: at exactly the measurement the
+        arm below reddens again, for 16 real bytes instead of 384, which is the second half of the
+        defect this item names. Each `<arch>_trap_stack.h` states its own number.
+      - **NOTHING CHECKED THAT A BODY REALLY MOVES THE STACK POINTER, and now something does.**
+        `check_panic_stack_seat.sh` reads each backend's entry and asserts it names
+        `kickos_panic_stack_sp` and writes its own ISA's stack pointer. It is TEXT: it cannot
+        prove the write is reached, writes what was read, or precedes the branch. Breaking the
+        write reddens 8 of 8 backends and names only the broken one, in each of three shapes:
+        deleted, commented out in that ISA's own comment syntax, and replaced by an adjustment
+        of the live stack pointer. **THE COMMENT SYNTAX IS PER ISA AND THAT WAS A REAL HOLE**:
+        a blanker knowing only `/* */` and `//` passed an rxv3 body commented out with `;` and
+        an x86_64 body commented out with `#`, which are among the arches with the least
+        runtime cover. **The lx6 pattern names the move and not the register**: `entry a1, N`
+        also writes a1, so "any mnemonic writing a1" passed a body that opened its frame and
+        seated nothing.
+
+        **THE RUNTIME HALF REACHES SIX BACKENDS, NOT EIGHT.** `panicgate` registers through
+        `kickos_add_qemu_test`, so armv7m, armv6m, rv32imac, rv64imac, armv8a and x86_64 get an
+        arm and **rxv3 and lx6 get none**: on those two the source gate is the whole witness.
+      - **KICKOS_PANIC_STACK_SIZE is a provisional 2048 on armv8a, x86_64 and rv64imac.** No
+        class in `trap_redzone_roots.txt` walks those three, so those numbers are unbacked
+        rather than measured, and each says so in `Kconfig`.
+      - **The zero-headroom thread-stack figures cost nothing to widen** and are the only ones an
+        added assert can still redden: an assert now costs a chain `kpanic`'s own frame, 16 bytes
+        on rv32imac and 8 on rxv3, and rv32imac RET has 0 in hand against a floor that dominates
+        its zone by 512 bytes.
 
 - [x] **THE rxv3 SYSK POSTURE LADDER IS PRICED AND DECLINED, NOT DEFERRED.** `rx72m` and
       `rx72m-flat` measure SYSK 700 where `rx72m-st` measures 796, and the whole 96-byte gap is gcc
@@ -484,7 +640,25 @@ Both were found during M8.3 and are recorded here rather than closed, which is w
       inlining decision is a fragile thing to pin a shipped figure to. Recorded so the 1360 is not
       re-derived as a new opportunity.
 
-- [ ] **`esp32c6-wroom-st` KERNEL `.bss` ENDS 68 BYTES SHORT OF THE `.appdata` BOUNDARY, AND FALLING
+- [ ] **THE FAULT REPORTER IS THE NEXT ONE OF THIS SHAPE, AND IT CANNOT SHARE THE PANIC ARRAY.**
+      **ASSIGNED TO M8.5.1** (owner, 2026-09-10).
+      `kickos_thread_fault_exit -> kprintf_fault -> kvprintf_route -> the console` is what sets
+      rv32imac EXITK (720 on the four esp32c6-wroom presets, at exactly its reserve) and rxv3
+      EXITK (620 on all three rx72m presets, likewise), and it is why moving the PANIC reporter
+      freed those two nothing at all. It is measured against the dying thread's own kernel block,
+      `kickos_fault_stack_top` seating it at the top.
+
+      **WHY THE PANIC ARRAY IS THE WRONG HOME FOR IT.** That array is one per core and is entered
+      one way: the panic reporter is terminal, so a core runs it once and never returns. A thread
+      fault is NOT terminal, the system running on with fault isolation, so a second thread can
+      fault while the first is still printing and the two would share the array.
+
+      Direction: a reporter stack per thread SLOT costs what the block already costs and buys
+      nothing; one per core with a claim that refuses the second entrant is the shape to price
+      first, against simply narrowing what the fault reporter may call. Note that armv7m EXITK
+      and armv6m EXITK carry the same chain, so this is four arches and not two.
+
+- [x] **`esp32c6-wroom-st` KERNEL `.bss` ENDS 68 BYTES SHORT OF THE `.appdata` BOUNDARY, AND FALLING
       OFF IT COSTS 32 KiB OF ARENA SILENTLY.** The window is 32 KiB-aligned, so `.bss` crossing it
       does not fail a link -- the arena simply starts a whole window later and loses 32,768 bytes.
       `esp32c6-wroom` has 104 bytes of margin and **`esp32c6-wroom-bench` has already fallen off**,
@@ -494,6 +668,98 @@ Both were found during M8.3 and are recorded here rather than closed, which is w
       link failure naming the cliff rather than a quiet 32 KiB loss. **ASSIGNED TO M8.5**
       (2026-09-09) with the reporter item above. Note the assert cannot simply be added:
       `esp32c6-wroom-bench` has ALREADY crossed, so it lands with whatever fixes that preset.
+      **RESOLVED:** the app window base is a declared chip constant instead of an emergent
+      alignment. `esp32c6.ld` bases `.appdata` at `_kernel_data_top` (`__kickos_code_end +
+      _kernel_data_reserve`, from `KICKOS_KERNEL_DATA_RESERVE`, one 32 KiB window by default)
+      through `MAX(., _kernel_data_top)`, so the window, the newlib heap and the arena above them
+      stop moving with kernel `.bss` at all, and `ASSERT(_ebss <= _kernel_data_top)` makes a
+      crossing a link failure naming the reserve and the price of the next step. The `MAX` is what
+      keeps an overflowing `.bss` laying out, since ld evaluates every ASSERT after layout. A second
+      ASSERT refuses a reserve that is not a whole number of windows, which would put the window
+      somewhere the reserve does not name. `esp32c6-wroom-bench` declares two windows in its preset:
+      the crossing is its 3,744 bytes of accumulators (`kernel/bench/bench.cc`, `g_lat_src` and
+      `g_lat_dst` 1024 each, `g_phase` 960, `g_sw_hist` 672) against `esp32c6-wroom`'s 104 bytes of
+      margin, and recovering the 3,640 would have to cut the instrument's own span, so the loss is
+      accepted where it is paid rather than hidden. Every address in all four presets was
+      unchanged by the mechanism landing.
+      **THE ASSERT THEN FIRED ON THE MERGED MILESTONE, WHICH IS THE POINT OF IT.** With the
+      rest of M8.5 on top, `esp32c6-wroom` and `esp32c6-wroom-st` both crossed: kernel
+      `.data`/`.bss` measures 33,080 and 33,116 bytes against the 32,768-byte window, over by
+      312 and 348. Before this item the tree would have taken that silently and lost 32,768
+      arena bytes on each with no diagnostic. The consumption is +416 bytes on both, measured
+      by symbol against the branch point and not inferred: `g_panic_stack` 448,
+      `kickos_panic_stack_sp` 4 and `g_panic_msg` 4, against `kickos::detail::g_instance`
+      giving back 40. The object-budget and doorbell work therefore net RETURNED kernel data on
+      this chip rather than consuming it. `-flat` never crossed because it carries no window at
+      all, and `-bench` because it already declared two. **RESOLVED by paying the window**: the
+      chip default is 64K and `-bench`'s preset override is deleted as redundant, so all three
+      enforcing postures sit at 278,528 arena bytes with 131,072 of pool headroom, down 32,768
+      each. The alternative was cutting about 400 bytes of kernel `.bss` on this chip, and
+      nothing that size is slack: `g_panic_stack` is 448 for one core and is what took the
+      console tail out of the rv32imac red zone (TRAP 480 to 224), and everything else above
+      that size is a declared capability (`g_kstacks` 20,128, `g_instance` 9,048, `g_cap_all`
+      1,224, `g_rv_trap_stack` 960, `console_tx_buf` 512). Criterion: the arena still has
+      131,072 bytes spare after backing all 16 pool stacks, so the 32,768 buys nothing owed,
+      while the panic stack buys a red-zone property every image gets.
+      The same pow2 window aligned above kernel `.bss` is the shape `stm32f411`, `mps2` (chip
+      and the `qemu-m33` board override), `virt_rv32`, `imxrt1062`, `xmc4800`, `rx72m` and
+      `rp2040` carry, so the cliff is a CLASS of NINE scripts, not one, `mps2` counting twice
+      because the `qemu-m33` board override is a second copy of the same layout. `rp2350` and
+      `mk64f` escape it with `ALIGN(32)`, PMSAv8 and SysMPU being granular. **All nine are
+      closed**, and `grep -L _kernel_data_top` over the scripts carrying `ALIGN(_appdata_size)`
+      is what says so. **The nine were not nine SILENT cliffs**: on seven the window slides with
+      no diagnostic at all, and on `imxrt1062` and `xmc4800` the pre-existing pool-arena ASSERT
+      already refused any crossing, so there the change buys diagnosis rather than a closed
+      silent loss. The split is stated below.
+      The reserve is per-chip, because it tracks that chip's window size and kernel footprint
+      and those span 4x across the fleet: `virt_rv32` 32K, `mps2` 64K (chip and board
+      override), `esp32c6` 32K, `rp2040` 32K, `xmc4800` 32K, `imxrt1062` 128K,
+      `stm32f411` 32K as two 16K windows, `rx72m` 64K as two 32K windows. **No preset overrides
+      the chip default anywhere in the fleet**: `esp32c6` briefly did, for `-bench`, until its
+      chip default went to 64K below and the override became redundant. **`f411disco` had ALREADY crossed**, the
+      way `esp32c6-wroom-bench` had: 17,488 bytes of kernel `.data`/`.bss` against a 16K
+      window, over by 1,104, so it spends a second window and wastes 15,280 of a 128 KiB
+      part. The overshoot is `g_kstacks` (9,072) and the kernel singleton (6,408), which are
+      the board's advertised capability, so the second window is declared rather than bought
+      back by cutting thread slots. Recovering those 1,104 bytes would return 15,280 arena
+      bytes, a fifth of the board's arena, and that is a capability decision rather than a
+      cleanup.
+      **`rx72m` had also already crossed**, the third of the class after
+      `esp32c6-wroom-bench` and `f411disco`: 34,160 bytes of kernel `.data`/`.bss` at its
+      widest image against a 32K window, over by 1,392, so it spends a second window and
+      wastes 31,376 of a 512 KiB part. The overshoot is `g_kstacks` (19,040) and the kernel
+      singleton (12,512), the same pair as on `f411disco`, so the second window is declared
+      rather than bought back by cutting thread slots. Recovering the 1,392 bytes would
+      return 32,768 arena bytes. **`rx72m` is the ONLY chip in the class whose kernel `.bss`
+      varies by image** (`rx72m-st` measures both 34,152 and 34,160), so its reserve has to
+      cover the WIDEST image and a figure sampled from one image understates it. Anyone
+      retuning this reserve from a single link will set it too low and take the 32 KiB back by
+      accident.
+      **Silent on seven, loud but misattributed on two.** On `imxrt1062` and `xmc4800` the
+      crossing is not silent end to end: the margin exceeds the pool headroom, so any plant
+      large enough to cross also breaks the pre-existing pool-arena ASSERT, and the link
+      already failed with a message pointing at KICKOS_MAX_THREADS rather than at the window.
+      Demonstrating the slide on those two needed that ASSERT lifted as well. There the new
+      ASSERT refuses earlier and names the real cause, which is a diagnosis fix and not a
+      closed silent loss. On `esp32c6`, `virt_rv32`, `mps2` (both scripts), `stm32f411`,
+      `rp2040` and `rx72m` the loss fits inside the pool headroom and the link stays green,
+      which is the silent case the item opened on.
+      The alternative for `boards/qemu-m33/mps2.ld` stays recorded and not taken: PMSAv8 is
+      32-byte granular, so `ALIGN(32)` would remove the cliff there with no constant at all,
+      but the board would stop verifying the chip default's window shape.
+      The mechanism is ONE shared header, `arch/common/kernel_data_reserve.ld.h`, beside
+      `boot_arena.ld.h` and `sections.ld.h`: it carries the rule, the two GNU ld facts the
+      spelling depends on (the pin belongs in the section's address expression so the ASSERT
+      still prints, and an absolute value assigned to `.` inside a section body is taken as an
+      offset from the section start), and a `KICKOS_KERNEL_DATA_RESERVE_ASSERT` macro holding
+      the three clauses once. Each of the nine states only what genuinely differs: its reserve
+      default, the kernel-data base it passes to `KICKOS_KERNEL_DATA_RESERVE_DECL`
+      (`ORIGIN(RAM)` on seven, `__kickos_code_end` on the two whose kernel data follows a code
+      region), and its `.bss` end symbol, which is `__ebss` on `rx72m` because the RX ABI adds
+      a leading underscore to every C identifier. The `MAX(., _kernel_data_top)` stays
+      per-chip in `.appdata`'s own address expression, that section's region and `AT` clause
+      differing per chip. The header holds no macro `arch/CMakeLists.txt` or
+      `cmake/boot_arena.cmake` requires by name, so no script hides one behind an include.
 
 ## M8.4 -- gates, CI and the instrument's arithmetic
 
@@ -661,6 +927,90 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
       figure in prose; `design-m7-smp.md` 215-217 has not been updated and still carries the stale
       886. Direction: update `design-m7-smp.md` 215-217 to the measured 94/188 figures, citing
       section 8.5, in the same change that lands the P2 two-line MPU skip (M8.8).
+
+## Found landing M8.5's de-duplication (2026-09-09)
+
+- [ ] **`check_smp_doorbell.sh` STAYS GREEN OVER A DOORBELL WHOSE REQUEST CELL IS NEVER WRITTEN,
+      AND PRINTS `4 core(s) answered` WHILE IT DOES.** Found by mutation while landing DRY-2.
+      Delete the request bump from `arch_ipi_send`, so the loop loads the cell and stores nothing:
+      the gate passes on `qemu-arm64-smp`, both of its channels included. The round's postcondition
+      is `g_answer[to].seq[me] == g_request[me].seq[to]`, which holds at 0 == 0 when neither side
+      ever moves; the raise is still made, so QEMU's GIC model still counts the `GICD_SGIR` write
+      and still sees every secondary acknowledge the INTID, and the two channels still cross-check
+      to the same number. The banner the image prints is therefore a statement about a protocol
+      that certifies nothing. The only arm that caught it is the selftest image's `doorbell_xpoke`,
+      through `arch_ipi_counts`: `services 0 -> 0` and `silent == 0u`, 1 of 61 tests red.
+      **PRE-EXISTING BY CONSTRUCTION AND NOT MEASURED AT HEAD**, which is the honest bound on this:
+      the postcondition, the two channels and the per-arch refusal literals are the same before the
+      de-duplication as after, so the fold neither created the gap nor narrowed it, but the
+      mutation was only ever run on the folded tree. Direction: the gate needs a reading that
+      MOVES. The service count `arch_ipi_counts` already publishes is one (assert it rises by the
+      round count rather than merely being nonzero); a second is to have the round check a
+      sequence it chose rather than an equality both sides can satisfy by standing still. Whichever
+      is taken, add the dropped-store mutation as the arm's own control, since an arm that cannot
+      report this defect cannot go red on it.
+
+- [ ] **TWO ASSEMBLER HEADERS SHIP IN THE INSTALLED C++ INCLUDE ROOT ON lx6, AND NO GATE LOOKS.**
+      `arch/xtensa/lx6/include/kickos/arch/lx6_percpu.h` and `lx6_switch_unlock.h` are `.macro` /
+      `\reg` assembler sources carrying a `.h` extension. `${KICKOS_ARCH_INCLUDE_DIR}/` is
+      installed, so both land in the package, and `check_public_headers.sh`'s rule that every
+      installed header compiles standalone at `-std=c++17` is simply false for them: they fail with
+      the host compiler AND with `xtensa-esp32-elf-g++` (`stray '\' in program`,
+      `expected unqualified-id before '.' token`). Nothing reports it because `oot_export`
+      registers only on `sim` and `oot_export_mcu` only on the armv7m `qemu` board, and neither
+      ships an lx6 arch root. Found by running the header-compile arm by hand across one preset per
+      arch family while fixing the doorbell protocol header. Direction: decide whether an assembler
+      header keeps a `.h` name (then the gate must skip it by CONTENT, not by a list) or is renamed
+      so the corpus never claims it; and separately, whether the header-compile arm should register
+      per arch family rather than on two boards, since it is the only thing in the tree that reads
+      the package from outside.
+
+Every item below was found by doing M8.5's own work, and each carries its evidence so it
+resolves inside the tree.
+
+- [ ] **`qemu-x86_64` IS GREEN OVER TWO PAGE-TABLE HELPERS NO ARM OF IT DISTINGUISHES FROM
+      BROKEN.** `arch/x86/x86_64/aspace_x86_64.cc`. With `zero_table` made a complete no-op the
+      suite stays 48 of 48; with `table_empty` always answering empty it stays 48 of 48. Both
+      were confirmed to rebuild the object. The same two mutations redden `qemu_riscv64_selftest`
+      on rv64imac, and `zero_table` as a full no-op reddens armv8a too, so the helpers ARE
+      witnessed on the other two arches and the hole is this preset's. Pre-existing rather than
+      created by the walker share, which merely made it visible. Note `table_empty` is reached
+      only on the failed-map rollback, `prune_empty` having exactly one caller per backend inside
+      the unwind, so what the hole really names is that no x86_64 arm drives a map failure.
+      Direction: an arm that exhausts the frame pool mid-map on x86_64, which is the one path
+      that reaches both helpers.
+
+- [ ] **A BAUD OR PRESCALER DIVISOR COMPUTED FROM A FREQUENCY LITERAL IS INVISIBLE TO EVERY
+      GATE, AND ONE WAS WRONG FOR AS LONG AS IT EXISTED.** `arch/arm/chip/stm32f103/chip_stm32f103.cc`
+      wrote a USART divisor fixed at 72 MHz, so on the board's own documented degrade path, a dead
+      or absent crystal leaving the boot on the 8 MHz HSI, the console came out near 12800 baud.
+      Its sibling `stm32f302` tracked the rate and recomputed, which is what made the asymmetry
+      visible once one shared unit served both. Fixed there. **No test could have caught it here**:
+      a host unit test on the shared `usart_brr` exercises the formula and the defect was in the
+      call site's argument, the arm that catches it is a boot with the crystal removed, and no
+      emulated board in the tree models a crystal that fails to start. Direction: a static gate
+      over `arch/*/chip/*` asserting a divisor is derived from the port's tracked rate variable
+      rather than a frequency literal. It is fleet-wide, reaching every chip that computes one
+      (`mk64f`, `xmc4800`, `sam3x8e` among them), so it belongs with the milestone that owns the
+      gates rather than inside the one-line fix that exposed it.
+
+- [ ] **A FOURTH CROSS-NODE `volatile` WORD SITS OUTSIDE DRY-5's LIST AND NAMES NO EXCEPTION.**
+      `kernel/amp/ampdiag.cc` around 27: a `KICKOS_AMP_SHARED volatile uint32_t g_cells[5]` in the
+      same single-writer shape as the three DRY-5 converted, carrying no comment naming which of
+      style.md's three `volatile` exceptions it invokes. It is kernel code rather than a chip
+      backend, which is why DRY-5's chip-side sweep did not reach it. Direction: the same as
+      DRY-5, convert to `Atomic` where nothing stops it or annotate the exception.
+
+- [ ] **THE RP2xxx REGISTER HEADERS ARE NOT FOLDED, AND THE ARITHMETIC IS RECORDED SO IT IS NOT
+      RE-DERIVED AS AN OPPORTUNITY.** Nine of eleven pairs share names between
+      `arch/arm/chip/rp2040/regs/` and `rp2350/regs/`. `pll.h` is 52 against 49 lines with 23
+      differing, of which exactly ONE is code (`PRIM_POSTDIV`, `6<<16` against `5<<16`); `timer.h`
+      is the closest pair at 16 differing and 2 code lines. A shared `regs/` would save roughly 50
+      lines. Declined on two grounds: the one differing constant is a datasheet fact whose only
+      honest home is a chip header or a `-D`, and putting a family `regs/` directory on the
+      include path beside a chip `regs/` directory is exactly the same-tail shadowing that
+      `check_include_guards.sh` states in its own header that nothing compares. Overrule it with
+      those numbers rather than by re-measuring.
 
 ## Found landing M8.4's gates, CI and instrument (2026-09-09)
 
@@ -840,6 +1190,28 @@ inside the tree.
       at all. Direction: an instrument that enumerates what each job CONFIGURES, since no grep of
       that file answers the question it is asked.
 
+- [ ] **THE `qemu-x86_64` JOB'S ONE VERSION STATEMENT IS ABOUT AN EMULATION AND NOT ABOUT A
+      VERSION, AND THE FLAG IT PROTECTS EXPIRES INTO DECORATION.** `cmake/x86_64_boot.cmake`'s
+      `-b elf64-x86-64` is load-bearing on binutils 2.42, where `ld -m i386pep` reads an ELF
+      archive's symbol index and still extracts no member, and inert on 2.47, which extracts
+      either way. `cmake/toolchain-x86_64-uefi.cmake` refuses an `ld` listing no `i386pep`, which
+      a linker that cannot extract an archive member at all would pass. So the flag's necessity is
+      witnessed only on a runner at or below 2.42, and `ubuntu-latest` moves. The job now prints
+      `ld --version`, which makes a future run attributable and is not a pin. Direction: decide
+      whether a flag no reachable toolchain can be shown to need still belongs, or pin a linker
+      that needs it; the project's own standard is that a pin which cannot be shown to fire is
+      decoration.
+
+- [ ] **`IrqLock`'s CTOR AND DTOR ARE `always_inline` AT ONE CORE TOO, AND THAT IS WITNESSED ON TWO
+      PRESETS.** `kernel/include/kickos/irqlock.h` 27 and 32. The attribute used to be conditional
+      on `KICKOS_KERNEL_CORES > 1`, so a single-core board inlined only at the compiler's
+      discretion: GCC 16.2 inlines and the CI runner's 13.3 does not, and `console_reach` saw five
+      opaque nodes on CI and none locally. Verified on `qemu-x86_64` and `f302nucleo-st` only, the
+      fleet sweep for it having been out of M8.4's scope; RX and Xtensa are the untested
+      compilers. So if a red-zone or reachability gate reddens on an MCU arch, this is the first
+      place to look. Direction: M8.5's own whole-fleet sweep is the witness this owes, and closing
+      it needs no work of its own.
+
 ## M8.5 -- DRY in kernel and arch
 
 External audit, itemised into `roadmap.md` M8.5, measured by a normalised 3-shingle scan over
@@ -848,7 +1220,7 @@ brace and include lines dropped). "Containment" below is shared shingles over th
 shingle set. The arm64 chip pair (DRY-1) extends the existing item below under M7.6, "THE TWO arm64
 CHIP PORTS ARE NEAR-CLONES", rather than duplicating it.
 
-- [ ] **`aspace_image_alias` IS ONE `return nullptr` FROM LETTING THREE CALL SITES DROP THEIR
+- [x] **`aspace_image_alias` IS ONE `return nullptr` FROM LETTING THREE CALL SITES DROP THEIR
       `KICKOS_HAVE_ASPACE` GUARDS.** `kernel/init/kmain.cc` 124 and 247, `kernel/thread/reent.cc`
       around 55. `KICKOS_TLS` is the model to copy: fully total, every caller unconditional. **Lifted
       out of the M8.1.1 guard-sweep NEGATIVE RESULTS record**, which established that no call site
@@ -856,7 +1228,7 @@ CHIP PORTS ARE NEAR-CLONES", rather than duplicating it.
       so it is the one actionable item that sweep produced rather than part of its negative finding.
       Direction: make the authority total and delete the guards; do not add a sentinel beside it.
 
-- [ ] **DRY-2: THE ARMV8A AND RV64IMAC DOORBELL BACKENDS ARE THE HIGHEST-CONTAINMENT PAIR IN
+- [x] **DRY-2: THE ARMV8A AND RV64IMAC DOORBELL BACKENDS ARE THE HIGHEST-CONTAINMENT PAIR IN
       KERNEL+ARCH, AT 0.75.** `klock_armv8a.cc` / `klock_rv64imac.cc`. `doorbell_round`, `hex1`,
       `arch_ipi_wait`, `await_peers_*` (4 lines differ) and `arch_ipi_send` are identical to within
       2-4 lines; roughly 110 near-identical plus 90 parallel lines per file; the ~95-line selfcheck
@@ -865,8 +1237,18 @@ CHIP PORTS ARE NEAR-CLONES", rather than duplicating it.
       rather than using `doorbell_cells.h`, so the LX6 backend bypasses the shared header entirely.
       Direction: one doorbell protocol translation unit over `doorbell_cells.h` with per-arch raise,
       clear and fence hooks; route the LX6 backend through the same header.
+      **DONE.** `arch/common/doorbell_protocol.cc` holds the cells, `arch_ipi_send`, `arch_ipi_wait`
+      and the bring-up check, and joins the three arch archives; each backend states its part's
+      arguments in its own `kickos/arch/doorbell_part.h`. Net 376 lines. NO FENCE HOOK:
+      `check_ipi_fence.sh` reads `arch_ipi_fence`'s own body for the barrier mnemonic AND its
+      operand, so a call to a hook reads as NOBARRIER, and the service bodies stay in their own
+      files because `check_route_service_order.sh` pins three file and function pairs and matches
+      an unindented definition. rp2350 is NOT folded: the unit's bulk is the bring-up check that
+      part has none of, and it would put the TU in a fourth archive under guards for postures the
+      other three cannot have. What stays duplicated there is `arch_ipi_wait`, `hex1`, the pending
+      predicate and the cells, about 90 lines.
 
-- [ ] **DRY-1 EXTENDS THE EXISTING ITEM ABOVE (M7.6): THE ARM64 CHIP PAIR'S DUPLICATION IS NOW
+- [x] **DRY-1 EXTENDS THE EXISTING ITEM ABOVE (M7.6): THE ARM64 CHIP PAIR'S DUPLICATION IS NOW
       MEASURED AT 0.67 CONTAINMENT, WITH THE LINKER SCRIPT AT 99%.** `chip_imx8mp.cc` /
       `chip_virt_arm64.cc` (0.67; `startup.S` 0.58; the `.ld` pair 99%, the only difference being
       virt_arm64's `.amp_shared` block). `dev_va`, `r32p`, `boot_console_write`, `semihost`,
@@ -876,20 +1258,52 @@ CHIP PORTS ARE NEAR-CLONES", rather than duplicating it.
       A53-generic pieces into `arch/arm64/common`, the way the GIC driver already lives there; each
       chip keeps only its UART base and its reserved-block list.
 
-- [ ] **DRY-7: THE ARMV6M AND ARMV7M ARCH BACKENDS SHARE 0.65 CONTAINMENT, AND
+      **The C and the assembly folded; the linker script did not.** `arch/arm64/common/`
+      gained `arch_arm64_a53.cc` (the seams that name no device: `arch_clock_now`,
+      `arch_timer_arm`/`arch_timer_disarm`, `arch_shutdown`, `kickos_armv8a_percore_init`, and
+      `kickos_armv8a_timebase_init` factored out of both `arch_init`s), `a53.h` (`dev_va`, `r32p`,
+      `semihost`, the masked halt, `PPI_EL1_PHYS_TIMER`) and `vmsa.h` (the descriptor and
+      MAIR/TCR/SCTLR constants both `startup.S` preprocess).
+
+      **What the group order decides.** The rescan group is ordered chip before arch
+      (`CMakeLists.txt`), so a seam moved chip to arch crosses to the far side of any fallback in
+      `kickos_arch_armv8a`. `arch_console_flush_sync` has one there and cannot move; the five above
+      have none and can. `Reset_Handler` stays chip-side on two counts: it anchors the chip archive
+      member ahead of that fallback, and it is the reason the chip TU is on the
+      `kickos_split_image_tu` large-code-model list, its `__kickos_appbss_start`/`_end` references
+      being app-half. `kickos_arm64_bad_el` stays because a `.text.init` body may call nothing
+      outside its section and its writer and strings are the chip's.
+
+- [x] **CLOSED SUB-POINT OF DRY-1: THE 99% IDENTICAL `.ld` PAIR STAYS DUPLICATED, AND THE REASON IS
+      STRUCTURAL RATHER THAN STYLISTIC.** Two configure-time readers `file(READ)` the chip
+      `<chip>.ld` SOURCE and refuse it by name when a macro invocation is absent:
+      `arch/CMakeLists.txt` (`KICKOS_CODE_DEBRIS_SECTIONS`, `KICKOS_NONALLOC_SECTIONS`,
+      `KICKOS_STATIC_RELOC_ASSERT`, `KICKOS_TLS_TEMPLATE`, `KICKOS_TLS_FIT_ASSERT`) and
+      `cmake/boot_arena.cmake` (`KICKOS_BOOT_ARENA_ASSERT`, `KICKOS_POOL_ARENA_ASSERT`). All seven
+      sit in the body of each script, interleaved with the sections they place, so a thin
+      `<chip>.ld` that `#include`s a shared body carries none of them and fails configure on both
+      chips. Restating them in the stub to satisfy the grep would make both refusals vacuous
+      forever, which is the second truth the tree forbids. Note also that
+      `tests/static/check_appdata_no_kernel.sh` reads the LINK MAP and not the `.ld`, so it does not
+      constrain how a selector is spelled; what it does catch, loudly, is an archive that matches no
+      selector and falls through to the `.appdata`/`.appbss` catch-all. Direction if anyone wants
+      this later: change what those two readers consume (the preprocessed script, or a declared
+      manifest) rather than share the script under the readers as they stand.
+
+- [x] **DRY-7: THE ARMV6M AND ARMV7M ARCH BACKENDS SHARE 0.65 CONTAINMENT, AND
       `arch/arm/common` ALREADY EXISTS FOR EXACTLY THIS.** `arch_armv6m.cc` / `arch_armv7m.cc`.
       `bad_psp` (34 of ~85 lines differ), `no_kernel_stack`, `arch_irq_unmask`/`arch_irq_clear_pending`
       and `default_irq` are copies between the two files. Direction: fold the NVIC line operations
       and the PSP fault report into `arch_arm_common.cc`, taking BASEPRI/PRIMASK and the MMFSR layout
       as parameters.
 
-- [ ] **THE RP2xxx CHIP PAIR SHARES 0.42 CONTAINMENT, WITH NINE OF ELEVEN REGISTER HEADERS
+- [x] **THE RP2xxx CHIP PAIR SHARES 0.42 CONTAINMENT, WITH NINE OF ELEVEN REGISTER HEADERS
       SHARING NAMES.** `chip_rp2350.cc` / `chip_rp2040.cc`. 178 of 250 common normalised lines
       (71% of the rp2040 side); `pll.h` differs by exactly one constant between the two chips.
       Direction: a shared rp2xxx common translation unit; own-image extras (the RP2350 AMP window,
       the PMSAv8 MPU backend) stay chip-local.
 
-- [ ] **THE STM32F103/F302 CHIP PAIR SHARES 0.46 CONTAINMENT.** `chip_stm32f103.cc` /
+- [x] **THE STM32F103/F302 CHIP PAIR SHARES 0.46 CONTAINMENT.** `chip_stm32f103.cc` /
       `chip_stm32f302.cc`. 110 of 232 common normalised lines. Direction: the same shape as the
       rp2xxx pair above -- a shared STM32F0/F3-family translation unit, chip-specific peripherals
       staying local.
@@ -904,8 +1318,22 @@ CHIP PORTS ARE NEAR-CLONES", rather than duplicating it.
       the walker skeleton only, without a table-format policy struct or a traits/concepts design --
       the template-discipline rule (owning containers only, no metaprogramming) argues for a plain
       shared translation unit with per-arch hooks. Do not chase the larger figure; it does not exist.
+      **PARTLY LANDED, and the residue is refused rather than pending.** `zero_table` and
+      `table_empty` are shared, as an inline header rather than a translation unit, because
+      `arch/include/` is the only root all three archives already expose and a header changes no
+      archive membership. The other four named spans STAY duplicated and each refusal has a
+      reason: `installed_anywhere` and `peer_cores` are one expression each over a file-local
+      `active_cores()`, so sharing them needs a function pointer, a macro or the policy struct
+      this item forbids, and at one core it would force a translation-root read the current
+      single-core overload avoids; `invalidate_page_if` calls the per-arch `invalidate_page` and
+      touches a per-arch counter, and it is the one span whose out-lining could make a single
+      symbol reachable from both `arch_aspace_map` and `arch_aspace_activate`, which
+      `check_tlbi_shareability.sh` holds to OPPOSITE shareability verdicts; `range_ok` is
+      line-neutral, its value being one statement of the underflow argument rather than two, and
+      rv64's low-half ceiling has three further callers in its own file. So the item is closed at
+      -69 lines in the backends with four spans deliberately left, not left over.
 
-- [ ] **DRY-5: THREE CROSS-NODE SINGLE-WRITER WORDS ARE PLAIN `volatile`, THE EXACT CASE
+- [x] **DRY-5: THREE CROSS-NODE SINGLE-WRITER WORDS ARE PLAIN `volatile`, THE EXACT CASE
       `Atomic` EXISTS FOR, AND NONE NAMES WHICH OF STYLE'S THREE VOLATILE EXCEPTIONS APPLIES.**
       `chip_rp2350.cc` 105, 352, 353; `chip_virt_rv64.cc` 145. Three `KICKOS_AMP_SHARED
       volatile uint32_t` words, each written by exactly one node. The rv64 side also carries a
@@ -913,15 +1341,83 @@ CHIP PORTS ARE NEAR-CLONES", rather than duplicating it.
       carries no comment naming the exception it relies on. Direction: convert to `Atomic` where nothing
       stops it, or annotate each surviving `volatile` with the specific style.md exception it invokes.
 
+- [ ] **`check_panic_banners.sh` IS A PER-FILE PRESENCE CHECK, SO LOSING ONE BANNER OF SEVERAL IS
+      INVISIBLE.** M8.5 moved the ARM banners into `arch/arm/<isa>/isa/arm_isa.h` and the gate's
+      `REPORTERS` list did not follow, which let the whole ARM set leave its sight; both headers
+      are on the list now. Witnessed both ways after the fix: composing ALL FIVE armv7m banners
+      out of concatenated pieces reddens, naming the file that yielded none, while composing
+      exactly ONE still passes at 36 banners instead of 37. So the residue is the gate's shape and
+      not the list: it asks whether a listed file yields at least one banner, never whether the set
+      is complete. The hazard is real rather than cosmetic, because a banner the scanner cannot see
+      is a banner `tests/lib/panic.ere` may not cover, and that ERE is what makes a panic fail a
+      ctest run. Direction: count per file against a declared figure, or derive the set from the
+      emit sites rather than from the literals, so a lost banner is a failure rather than a smaller
+      number.
+
 ## M8.6 -- DRY in build, test and userspace
 
 **AND THE GATE-LIBRARY EXTRACTION WAITS FOR A REASON THE M8.4 AUDIT STATED RATHER THAN FOR
 SEQUENCING.** M8.4 added positive controls to sixteen gates and per-reader status capture to eight,
-so the static corpus now repeats corpus construction and reader scaffolding heavily and is the
-obvious candidate for the shared helper this milestone owns. Doing it inside M8.4 would have
-reopened the very instrument its evidence had just validated, which is the same argument the
-milestone used against optimising a hot path about to be rewritten. So the duplication is real, it
-is measured, and it is deliberately still here.
+so the static corpus is the obvious candidate for the shared helper this milestone owns. Doing it
+inside M8.4 would have reopened the very instrument its evidence had just validated, which is the
+same argument the milestone used against optimising a hot path about to be rewritten. So the
+duplication is deliberately still here, and it is now measured rather than called heavy.
+
+**THE MEASURED LEDGER, AND ITS FIRST FINDING IS THAT THE CONTROL HALF IS NOT WHERE THE MESS IS.**
+The static corpus is 60 gates over 19768 lines. Classifying every `# ---` banner-delimited section
+by whether its banner names a control or a self-test puts **6711 lines in the control half against
+7255 in the production check and 5810 of preamble**, so a third of the corpus is the instrument
+proving itself. That figure is a FLOOR: a classifier keyed on banner wording misses arms named for
+the case they plant rather than for being controls, which is `check_smp_predicate.sh`'s whole shape.
+**But the duplication does NOT follow that split.** Of the lines participating in a cross-file
+shared 3-shingle, 2207 are control and 3939 production, which is 32.9 percent of the control half
+against 30.2 percent of the production half: proportional, not concentrated. The reason is worth
+keeping, because it decides what the extraction is FOR. The reader skeleton, the corpus build and
+the repo-root check are production-side scaffolding defined once per file and CALLED from the
+control sections, so the control half's own duplication is the dead-tool harness and nothing larger.
+A shared library therefore buys the readers, not the controls.
+
+**WHERE THE SHARED SHINGLES ACTUALLY ARE.** The top of the pairwise table is one shape, not many:
+`check_doorbell_isb.sh` against `check_lx6_atomctl.sh` at 0.58, `check_lx6_atomctl.sh` against
+`check_lx6_park_mask.sh` at 0.53, `check_doorbell_isb.sh` against `check_lx6_park_mask.sh` at 0.51,
+then `check_ipi_fence.sh`, `check_doorbell_generic.sh` and `check_arm64_entry_order.sh` in the same
+cluster. All of them are a heredoc'd `reader.awk` symbol-body scanner over an `objdump` listing;
+**eight files carry a byte-identical 7-line scoping preamble and four of those the same 3-line
+`read_body()` wrapper**, while what differs is the per-arch mnemonic match and the `END` verdict,
+which is bespoke and correctly not shared. No static pair reaches DRY-2's kernel-side 0.75.
+`check_console_reach.sh` against `check_trap_redzone.sh` at 0.39 is a NEGATIVE finding: those two
+are the only callers of `tests/lib/scratch_ci.sh`, so most of that figure is two callers of an
+already-shared library and not unfactored duplication.
+
+**THE SECOND CORPUS HAS A DIFFERENT SHAPE AND IS NOT COVERED BY THAT ARITHMETIC.**
+`tests/integration/*.sh` is 47 files over 5228 lines, 42 of which source `tests/lib/gate.sh`; the
+five that do not are the sim scripts DRY-8 already names. Containment there runs much HIGHER than in
+the static corpus, `check_libc_exit.sh` against `check_sched_exit.sh` at 0.88 and `check_mpu_fault.sh`
+against `check_rootfault.sh` at 0.85, because these are thin per-board wrappers around `run_image`
+and a fault trigger that differ in the board and the expected signature. That is per-board cloning
+rather than reader and corpus scaffolding, so the static ledger's estimate below does not price it
+and reusing that arithmetic here would be misleading. **It wants its own measurement before it wants
+a direction.**
+
+**WHAT THE EXTRACTION IS WORTH, WITH THE ARITHMETIC SHOWN.** The repo-root check is 46 lines over 24
+files against 24 one-line calls, about -20. The `git ls-files` corpus construction is about 81 lines
+over 23 files, some building two corpora, against roughly 26 call sites, about -55. The objdump
+reader's shared preamble is 8 files at about 10 lines against a 2-line call into a parameterised
+reader, about -45. The per-reader dead-tool control is 8 files at about 5 lines, about -20. Moving
+`bad()` into `gate.sh` is about -5. **That is about -145 with confidence.** A further -40 sits in the
+41 files that export `LC_ALL=C`, and it is FLAGGED rather than counted: exporting it from `gate.sh`
+unconditionally forces it on the 19 gates that do not set it today, which needs a reading rather than
+an assumption. NOT counted at all: the `nm` symbol-size one-liner, identical in 9 files but one line
+before and one line after; the bespoke per-arch verdict logic inside every reader; the planted
+fixture bodies, which are per-defect and not one extractable block; and `gate.sh`'s own growth from
+absorbing the rest, which is a wash against the corpus rather than a reduction.
+
+**FOUR IDIOMS ARE ALREADY DONE OR ABSENT, RECORDED SO THEY ARE NOT RE-DERIVED AS OPPORTUNITIES.**
+`mktemp -d` plus its trap is fully centralised in `gate.sh`'s `scratch_dir()` and used by 59 of the
+60, with zero bare calls left anywhere. A preset-to-board ladder occurs in neither shell corpus; the
+twelve this file records live in CMake. A "this gate needs a built tree" precondition is real in two
+files only. And the 7 `readelf` readers share no literal block the way the `objdump` ones do, each
+parsing a different section shape.
 
 
 
@@ -972,13 +1468,19 @@ External audit, itemised into `roadmap.md` M8.6.
       direction is checked. Direction: one set-equality gate, roughly +15 lines, which is the cheapest
       item in this section and the only one that adds rather than removes.
 
-- [ ] **DRY-8: `tests/lib/gate.sh` IS SOURCED BY 96 OF 101 GATE SCRIPTS BUT LACKS THE CORPUS
-      HALF, SO A CORPUS-FILTER FIX GETS MADE TWENTY-ONE TIMES.** `tests/lib/gate.sh` (796 lines).
-      21 gates rebuild a `git ls-files` corpus by hand, 17 re-type the repo-root check, 13 embed
-      their own `objdump`-reader `awk`, 9 redeclare `fail()`/`bad()`; the five `tests/integration`
-      sim scripts do not source it at all. Direction: move the corpus-build, repo-root check and
-      `objdump` reader into `gate.sh` itself, one authority instead of twenty-one copies; bring the
-      five sim scripts under it too.
+- [ ] **DRY-8: `tests/lib/gate.sh` IS SOURCED BY 102 OF 107 GATE SCRIPTS BUT LACKS THE CORPUS
+      HALF, SO A CORPUS-FILTER FIX GETS MADE TWENTY-THREE TIMES.** `tests/lib/gate.sh` (796 lines).
+      23 gates rebuild a `git ls-files` corpus by hand, three of them twice in one file; 22 re-type
+      the repo-root check verbatim and 2 more in a reworded line; 16 embed their own `objdump`-reader
+      `awk`, 11 of those heredocing a dedicated reader and 8 of the 11 sharing a byte-identical
+      7-line scoping preamble. **`fail()` is redeclared by no static gate at all** -- the five copies
+      are the `tests/integration` sim scripts, which source nothing and so have none to inherit --
+      and what the static half repeats instead is the companion `bad()`, which reddens without
+      exiting, in 5 gates and identically spelled. Two more idioms nothing names: an `nm`
+      symbol-size lookup identical in 9 files, and the per-reader dead-tool control in exactly the
+      8 gates M8.4 gave one. Direction: move the corpus-build, repo-root check, `objdump` reader,
+      dead-tool control and `bad()` into `gate.sh` itself, one authority instead of twenty-three
+      copies; bring the five sim scripts under it too.
 
 - [ ] **DRY-10a: THE APP-TO-TEST DEPENDENCY IS INVERTED, AND THE 291-LINE `hello` FILE IS THE
       SYMPTOM RATHER THAN THE DEFECT.** An application is not a test, yet

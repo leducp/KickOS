@@ -248,6 +248,14 @@ extern "C"
         printf("SEAM: kfault_terminate\n");
         exit(42);
     }
+    // No stack switch, as on ARCH_SIM: a host thread stack is megabytes and no red-zone
+    // class measures one.
+    void kickos_panic_stack_enter(char const* msg, char const* file, unsigned line,
+                                  uintptr_t top)
+    {
+        (void)top;
+        kickos_panic_report(msg, file, line);
+    }
 }
 
 namespace kickos

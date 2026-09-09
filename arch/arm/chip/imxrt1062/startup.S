@@ -4,7 +4,7 @@
  * i.MX RT1062 (Teensy 4.1) startup: the boot entry trampoline and the reset
  * vector table (16 core + 160 NVIC lines; RT1060 CM7 has IRQ0..159, RM ch.4).
  * The kernel exception handlers (SVC/PendSV/SysTick) come from the armv7m arch
- * layer; every external line routes to the generic kickos_armv7m_default_irq
+ * layer; every external line routes to the generic kickos_arm_default_irq
  * (line = IPSR-16). The FlexSPI boot header (FCB/IVT/Boot Data) is C data in
  * chip_imxrt1062.cc.
  */
@@ -37,7 +37,7 @@ g_isr_vector:
     /* External interrupts 0..(KICKOS_MAX_IRQ-1) -> the generic IRQ-as-event
        entry. The .rept count and the kernel IRQ table are ONE fact (MAX_IRQ). */
     .rept KICKOS_MAX_IRQ
-    .word kickos_armv7m_default_irq
+    .word kickos_arm_default_irq
     .endr
 
     .text

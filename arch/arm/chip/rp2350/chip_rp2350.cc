@@ -6,6 +6,9 @@
 // SDK sources, consistent with the arch layer's regs.h. Section numbers in the
 // comments cite that datasheet.
 //
+// The clock, PLL and console-transport sequences this part shares with the RP2040 are in
+// arch/arm/chip/rp2xxx/chip_rp2xxx.cc, which family.cmake adds to this chip's archive.
+//
 // clk_sys
 // is raised to 150 MHz off PLL_SYS (12 MHz XOSC x125 /5 /2, the datasheet default
 // max, 8.6); SystemCoreClock tracks it so the SysTick ns<->cycle math
@@ -33,6 +36,7 @@
 #include <kickos/diag.h>
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
+#include <kickos/sys/atomic.h>
 
 #include <stdint.h>
 
@@ -51,10 +55,17 @@
 #include "regs/timer.h"
 #include "regs/uart.h"
 #include "regs/xosc.h"
+#include "../rp2xxx/rp2xxx.h"
 
 namespace mmap = kickos::rp2350::mmap;
 namespace reg = kickos::rp2350::reg;
 namespace irq = kickos::rp2350::irq;
+
+using kickos::rp2xxx::pll_sys_lock;
+using kickos::rp2xxx::POLL_TIMEOUT;
+using kickos::rp2xxx::r32;
+using kickos::rp2xxx::unreset;
+using kickos::rp2xxx::wait_mask;
 
 namespace kickos
 {
@@ -82,10 +93,6 @@ uint32_t SystemCoreClock = reg::clocks::ROSC_NOMINAL_HZ;
 
 namespace
 {
-    inline volatile uint32_t& r32(uintptr_t a)
-    {
-        return *reinterpret_cast<volatile uint32_t*>(a);
-    }
 #if defined(KICKOS_ENABLE_SELFTEST) || KICKOS_AMP_OWN_IMAGE
     // Bootrom header accessors: its magic is bytes and its pointers are halfwords, so neither
     // is reachable through r32.
@@ -101,61 +108,15 @@ namespace
     // The clk_sys the primary resolved, published for every other node to install: a peer runs
     // no clocks_init and would otherwise keep the bootrom's reset value while executing off a
     // PLL three times faster. The dsb in arch_amp_release_peers orders this store ahead of any
-    // peer's boot.
-    KICKOS_AMP_SHARED("chip") volatile uint32_t g_amp_clk_sys_hz = 0;
+    // peer's boot, so the field itself carries no ordering.
+    KICKOS_AMP_SHARED("chip")
+    kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_amp_clk_sys_hz = 0;
 #endif
 
     // Chosen by clocks_init (which source clk_peri lands on), consumed by uart1_init.
     // Boot is single-threaded and sequential, so no guard is needed.
     uint32_t g_uart_ibrd = reg::uart::IBRD_115200;
     uint32_t g_uart_fbrd = reg::uart::FBRD_115200;
-
-    // Bounded so a dead/missing crystal or stuck peripheral degrades instead of
-    // hanging the boot forever. The cap is far longer than any legitimate wait.
-    constexpr uint32_t POLL_TIMEOUT = 1000000u;
-
-    bool wait_mask(uintptr_t addr, uint32_t mask)
-    {
-        for (uint32_t i = 0; i < POLL_TIMEOUT; i++)
-        {
-            if ((r32(addr) & mask) == mask)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void unreset(uint32_t mask)
-    {
-        r32(reg::resets::RESET + mmap::ATOMIC_CLR) = mask;
-        wait_mask(reg::resets::RESET_DONE, mask); // bounded; best-effort
-    }
-
-    // Bring PLL_SYS up to 150 MHz. Returns false (PLL left powered down) if the VCO
-    // never locks, so the caller can stay on the crystal instead of switching
-    // clk_sys onto a dead PLL. Datasheet 8.6.4 sequence.
-    bool pll_sys_lock()
-    {
-        // Reset the block first so a warm reboot can't run this off stale dividers.
-        r32(reg::resets::RESET + mmap::ATOMIC_SET) = reg::resets::PLL_SYS;
-        r32(reg::resets::RESET + mmap::ATOMIC_CLR) = reg::resets::PLL_SYS;
-        wait_mask(reg::resets::RESET_DONE, reg::resets::PLL_SYS);
-
-        // Load REFDIV + FBDIV BEFORE powering the VCO.
-        r32(reg::pll::CS) = reg::pll::CS_REFDIV_1;
-        r32(reg::pll::FBDIV_INT) = reg::pll::FBDIV_125;
-        // Power up main regulator + VCO (clear PD, VCOPD). DSMPD stays set (integer
-        // FBDIV, no delta-sigma); POSTDIVPD stays set until after lock.
-        r32(reg::pll::PWR + mmap::ATOMIC_CLR) = reg::pll::PWR_PD | reg::pll::PWR_VCOPD;
-        if (not wait_mask(reg::pll::CS, reg::pll::CS_LOCK))
-        {
-            return false;
-        }
-        r32(reg::pll::PRIM) = reg::pll::PRIM_POSTDIV;
-        r32(reg::pll::PWR + mmap::ATOMIC_CLR) = reg::pll::PWR_POSTDIVPD; // enable post-dividers
-        return true;
-    }
 
 #if defined(KICKOS_USB_CONSOLE)
     // PLL_USB at 48 MHz, clk_usb onto it, and the USB block out of reset. All three
@@ -286,8 +247,8 @@ namespace
             // CLK_SYS_DIV stays at its reset value (/1). Update the core-clock truth in
             // the SAME step (arch_arm_common SysTick reads SystemCoreClock).
             SystemCoreClock = reg::clocks::CLK_SYS_HZ;
-            g_uart_ibrd = reg::uart::IBRD_150MHZ;
-            g_uart_fbrd = reg::uart::FBRD_150MHZ;
+            g_uart_ibrd = reg::uart::IBRD_PLL;
+            g_uart_fbrd = reg::uart::FBRD_PLL;
             r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_CLK_SYS; // UART clock <- clk_sys 150 MHz
         }
         else
@@ -317,8 +278,11 @@ namespace
         r32(reg::uart::IMSC) = 0; // all UART interrupt sources masked; the ring arms TXIM
         r32(reg::uart::CR) = reg::uart::CR_ENABLE;
     }
+}
 
 #if KICKOS_AMP_OWN_IMAGE
+namespace
+{
     // One UART and two kernels, so a chunk is claimed against the peer before its bytes are
     // pushed. The claim is held to the LINE, not to the chunk: console_write_user copies a user
     // buffer in 64-byte pieces and calls the writer once per piece, so a claim released at the
@@ -348,9 +312,12 @@ namespace
     constexpr uint32_t CONSOLE_HOLD_MAX_US = 50000u;
 
     // Read by a peer whose own claim failed, so they live where both nodes look. Zeroed by the
-    // partition primary before any peer runs (arch_amp_shared_zero).
-    KICKOS_AMP_SHARED("chip") volatile uint32_t g_console_owner = 0;    // 0 free, else node id + 1
-    KICKOS_AMP_SHARED("chip") volatile uint32_t g_console_deadline = 0; // TIMER0 us
+    // partition primary before any peer runs (arch_amp_shared_zero). SPINLOCK31 serialises the
+    // writers and the dsb pair below carries the ordering, so the fields carry none.
+    KICKOS_AMP_SHARED("chip")
+    kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_console_owner = 0; // 0 free, else node id + 1
+    KICKOS_AMP_SHARED("chip")
+    kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_console_deadline = 0; // TIMER0 us
 
     constexpr uint32_t CONSOLE_OWNER_SELF = KICKOS_AMP_NODE_ID + 1u;
 
@@ -362,7 +329,7 @@ namespace
         return (r32(reg::timer::TIMERAWL) - g_console_deadline) < 0x80000000u;
     }
 
-    void console_claim_taken()
+    void claim_taken()
     {
         g_console_held = true;
         g_console_deadline = r32(reg::timer::TIMERAWL) + CONSOLE_HOLD_MAX_US;
@@ -370,7 +337,11 @@ namespace
         g_console_owner = CONSOLE_OWNER_SELF;
     }
 
-    void console_acquire()
+}
+
+namespace kickos::rp2xxx
+{
+    void console_claim(void)
     {
         // A fault landing inside a run this node already holds writes into it rather than
         // spinning its budget out against its own claim. One flag serves: this node drives one
@@ -391,7 +362,7 @@ namespace
         {
             if (r32(reg::sio::SPINLOCK31) != 0)
             {
-                console_claim_taken();
+                claim_taken();
                 return;
             }
             if ((r32(reg::timer::TIMERAWL) - waited_from) >= CONSOLE_HOLD_MAX_US)
@@ -406,12 +377,12 @@ namespace
             r32(reg::sio::SPINLOCK31) = 1u;
             if (r32(reg::sio::SPINLOCK31) != 0)
             {
-                console_claim_taken();
+                claim_taken();
             }
         }
     }
 
-    void console_release(bool ended_line)
+    void console_drop(bool ended_line)
     {
         if (not g_console_held)
         {
@@ -430,9 +401,12 @@ namespace
         __asm volatile("dsb" ::: "memory"); // no peer may read this node as owner past the free
         r32(reg::sio::SPINLOCK31) = 1u;
     }
+}
 #endif
 
 #if !KICKOS_AMP_OWN_IMAGE
+namespace
+{
     // --- Buffered console TX backend (console_tx.h). The ring drains via the PL011
     // transmit interrupt with the FIFO disabled (see LCR_H_8N1); the idle->busy prime
     // starts the transfer. slot_free/push touch one data register; irq_enable/disable
@@ -458,37 +432,8 @@ namespace
     char console_tx_buf[CONSOLE_TX_SIZE];
     console_tx_backend const rp_console_backend = {
         rp_tx_slot_free, rp_tx_push, rp_tx_irq_enable, rp_tx_irq_disable};
-#endif
-
-    // The window arch_console_reclaim rewrites: UART1's whole APB slot (UART0 sits at
-    // 0x40070000, UART1 at 0x40078000, DS 12.1.8), which is the register block plus the
-    // XOR/SET/CLR aliases at +0x1000/+0x2000/+0x3000. The aliases must be inside it: a holder
-    // granted only an alias writes the very same registers.
-    constexpr uintptr_t CONSOLE_WIN_BASE = mmap::UART1_BASE;
-    constexpr size_t CONSOLE_WIN_SIZE = mmap::APB_ATOMIC_WINDOW;
-
-    static_assert(reg::uart::IBRD >= CONSOLE_WIN_BASE
-                      and reg::uart::IBRD < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::uart::FBRD < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::uart::LCR_H < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::uart::CR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::uart::IFLS < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::uart::IMSC < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::uart::DMACR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
-                  "arch_console_reclaim writes outside the window it reports");
-
-    // Which of the two divisor pairs clk_peri needs. clocks_init leaves clk_peri on either
-    // PLL_SYS at 150 MHz or a slower fallback source, and CLOCKS is the hardware's own
-    // record of which. The aux mux alone does not answer it: the bootrom already parks
-    // clk_sys on the ROSC through that same mux, so the aux SOURCE has to be PLL_SYS too.
-    bool console_clk_on_pll()
-    {
-        bool const on_aux = (r32(reg::clocks::CLK_SYS_SELECTED) & reg::clocks::CLK_SYS_SELECTED_AUX) != 0;
-        bool const aux_is_pll = (r32(reg::clocks::CLK_SYS_CTRL) & reg::clocks::CLK_SYS_AUXSRC_MASK) ==
-                                reg::clocks::CLK_SYS_AUXSRC_PLL;
-        return on_aux and aux_is_pll;
-    }
 }
+#endif
 
 extern "C"
 {
@@ -554,40 +499,6 @@ bool arch_irq_line_kernel_owned(int line)
 #endif
 }
 
-void arch_console_write(char const* buf, size_t n)
-{
-    console_tx_write(buf, n); // buffered; the routing guard (console.cc) keeps this thread-only
-}
-
-void arch_console_write_sync(char const* buf, size_t n)
-{
-    if (n == 0)
-    {
-        return;
-    }
-#if KICKOS_AMP_OWN_IMAGE
-    console_acquire();
-#endif
-    for (size_t i = 0; i < n; i++)
-    {
-        uint32_t spin = 0;
-        while ((r32(reg::uart::FR) & reg::uart::FR_TXFF) != 0)
-        {
-            if (++spin > KICKOS_POLL_SPIN_MAX)
-            {
-#if KICKOS_AMP_OWN_IMAGE
-                console_release(true); // a wedged channel keeps no claim
-#endif
-                return; // bounded: a wedged UART must not hang the panic path (drop)
-            }
-        }
-        r32(reg::uart::DR) = static_cast<uint8_t>(buf[i]);
-    }
-#if KICKOS_AMP_OWN_IMAGE
-    console_release(buf[n - 1] == '\n');
-#endif
-}
-
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
 #if KICKOS_AMP_OWN_IMAGE
@@ -606,70 +517,6 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     *irq_line = irq::UART1_IRQ;
     return &rp_console_backend;
 #endif
-}
-
-void arch_console_reclaim_window(uintptr_t* base, size_t* size)
-{
-    *base = CONSOLE_WIN_BASE;
-    *size = CONSOLE_WIN_SIZE;
-}
-
-// Panic-path reclaim (console.cc): force UART1 back to a polled-ready 8N1 TX channel after
-// a userspace driver may have garbled every writable register in the window. Runs with IRQs
-// masked, privileged; MUST be idempotent and re-entrant, so it is straight-line ABSOLUTE
-// stores only, no read-modify-write.
-// Bytes a dead driver left queued in the TX FIFO are NOT dropped: clearing LCR_H.FEN does not
-// physically empty the FIFO, it only makes the flags read as a 1-byte holding register
-// (DS 12.1.3.2.5), so those words still shift out ahead of the dump.
-// The pin mux and pads are outside the window (arch_pinmux_set refuses GP4/GP5); RESETS and
-// CLOCKS are reserved blocks.
-void arch_console_reclaim(void)
-{
-    // Silence first: a stale TXIM storms the console IRQ through the dump. Absolute store, not
-    // the ATOMIC_CLR alias rp_tx_irq_disable uses, which would leave every other source as
-    // found.
-    r32(reg::uart::IMSC) = 0;
-
-    // Stop the UART before the LCR writes below: every LCR write must precede enabling the
-    // UART (DS 12.1.7).
-    r32(reg::uart::CR) = 0;
-
-    // IBRD, FBRD, then LCR_H: the three are one internal 30-bit register that latches only on
-    // the LCR_H write (DS 12.1.3.2), so this order is load-bearing.
-    if (console_clk_on_pll())
-    {
-        r32(reg::uart::IBRD) = reg::uart::IBRD_150MHZ;
-        r32(reg::uart::FBRD) = reg::uart::FBRD_150MHZ;
-    }
-    else
-    {
-        r32(reg::uart::IBRD) = reg::uart::IBRD_115200;
-        r32(reg::uart::FBRD) = reg::uart::FBRD_115200;
-    }
-    // 8N1, FEN off. Also clears BRK, which pins UARTTXD low and sends nothing.
-    r32(reg::uart::LCR_H) = reg::uart::LCR_H_8N1;
-
-    r32(reg::uart::DMACR) = 0; // a DMA channel still armed on TXDMAE interleaves its own bytes
-    r32(reg::uart::IFLS) = reg::uart::IFLS_RESET; // inert while FEN is off; not worth depending on that
-
-    // LAST, and absolute: CTSEN gates every byte on a CTS this board does not wire, LBE feeds
-    // UARTTXD back into UARTRXD, SIREN turns the pin into IrDA pulses.
-    r32(reg::uart::CR) = reg::uart::CR_ENABLE;
-}
-
-// Console coherence (arch.h): block until UART1 is transmission-complete. FR.TXFF clear only
-// means the holding register took the byte; FR.BUSY stays set until the last stop bit has left
-// the shift register (DS 12.1.8, UARTFR).
-void arch_console_flush_sync(void)
-{
-    uint32_t spin = 0;
-    while ((r32(reg::uart::FR) & reg::uart::FR_BUSY) != 0)
-    {
-        if (++spin > KICKOS_POLL_SPIN_MAX)
-        {
-            return; // bounded, as arch.h requires: a wedged UART drops the tail, never hangs
-        }
-    }
 }
 
 // Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the console.
@@ -711,35 +558,6 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
         r32(reg::sio::GPIO_OE_SET) = 1u << pin;
     }
     return 0;
-}
-
-// Monotonic clock from the 64-bit system TIMER0 (microseconds -> ns). Uses the
-// non-latching RAW halves with a hi/lo/hi re-read to tolerate a 32-bit rollover
-// between the reads (core-safe, unlike the latching TIMELR/TIMEHR pair). Overrides
-// the required per-chip clock: TIMER0 is a true 64-bit source (no 32-bit wrap).
-uint64_t arch_clock_now(void)
-{
-    uint32_t hi = r32(reg::timer::TIMERAWH);
-    uint32_t lo;
-    while (true)
-    {
-        lo = r32(reg::timer::TIMERAWL);
-        uint32_t hi2 = r32(reg::timer::TIMERAWH);
-        if (hi2 == hi)
-        {
-            break;
-        }
-        hi = hi2;
-    }
-    return ((static_cast<uint64_t>(hi) << 32) | lo) * 1000ull;
-}
-
-// Telemetry trace clock: the low 32 bits of the free-running 1 MHz system TIMER0
-// (us, wraps ~71 min). Same source as arch_clock_now (a single RAW-low read), so the
-// SESSION-anchor rate is exactly 1000 ns/tick.
-uint32_t arch_trace_now(void)
-{
-    return r32(reg::timer::TIMERAWL);
 }
 
 #if defined(KICKOS_ENABLE_SELFTEST)

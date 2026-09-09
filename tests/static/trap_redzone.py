@@ -96,6 +96,7 @@ class Decl(object):
         self.macros = {}                             # class -> (frame macro, depth macro)
         self.trap_stack = set()                      # classes declared stack=trap
         self.kernel_stack = set()                    # classes declared stack=kernel
+        self.panic_stack = set()                     # classes declared stack=panic
         self.roots = collections.OrderedDict()        # class -> [(symbol, optional)]
         self.rootless = {}                            # class -> declared reason
         self.excludes = []                           # [(mangled, reason, optional)]
@@ -122,6 +123,7 @@ class Decl(object):
                 depth = None
                 on_trap = False
                 on_kernel = False
+                on_panic = False
                 for opt in f[3:]:
                     if opt.startswith('frame='):
                         frame = opt[len('frame='):]
@@ -131,6 +133,8 @@ class Decl(object):
                         on_trap = True
                     elif opt == 'stack=kernel':
                         on_kernel = True
+                    elif opt == 'stack=panic':
+                        on_panic = True
                     elif opt in ('kstacks=0', 'kstacks=1'):
                         # Read by check_trap_redzone.sh, which owns the live posture knob.
                         # Accepted here only so a marked record parses: a .ci tree carries no
@@ -140,7 +144,7 @@ class Decl(object):
                         die('%s: unknown class option "%s"' % (where, opt))
                 if frame is None or depth is None:
                     die('%s: class %s needs both frame= and depth=' % (where, name))
-                if on_trap and on_kernel:
+                if (on_trap + on_kernel + on_panic) > 1:
                     die('%s: class %s names two stacks; a frame goes on one of them'
                         % (where, name))
                 if name in self.macros:
@@ -149,6 +153,8 @@ class Decl(object):
                     self.trap_stack.add(name)
                 if on_kernel:
                     self.kernel_stack.add(name)
+                if on_panic:
+                    self.panic_stack.add(name)
                 self.classes.append(name)
                 self.macros[name] = (frame, depth)
                 self.roots[name] = []
@@ -206,7 +212,7 @@ class Decl(object):
 
     def off_thread(self):
         """Classes whose descent spends no unprivileged thread stack."""
-        return self.trap_stack | self.kernel_stack
+        return self.trap_stack | self.kernel_stack | self.panic_stack
 
 
 def split_site_key(key):
@@ -891,6 +897,8 @@ def run(argv):
             where = 'on the arch trap stack, exclusions NOT applied'
         if cls in decl.kernel_stack:
             where = 'on the per-thread kernel stack, exclusions NOT applied'
+        if cls in decl.panic_stack:
+            where = 'on the panic reporter stack, exclusions NOT applied'
         if cls in not_compiled:
             where += ', NOT ENFORCED: this image does not compile the entry design this' \
                      ' class describes'

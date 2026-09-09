@@ -3,7 +3,7 @@
  *
  * STM32F103C8 ("Blue Pill", Cortex-M3) startup: reset vector table (16 core + 43
  * NVIC lines, medium-density F103). SVC/PendSV/SysTick come from the armv7m arch
- * layer; every external line routes to kickos_armv7m_default_irq (line=IPSR-16).
+ * layer; every external line routes to kickos_arm_default_irq (line=IPSR-16).
  * Runs from internal flash at 0x0800_0000 (aliased to 0x0 at boot); no FPU (M3),
  * no flash config field.
  */
@@ -21,13 +21,13 @@ g_isr_vector:
     KICKOS_CORE_VECTORS_V7M
 
     /* External interrupts 0..42 -> the generic IRQ-as-event entry, except NVIC 29
-     * (TIM3) which carries the monotonic-clock wrap observer (chip_stm32f103.cc). */
+     * (TIM3) which carries the monotonic-clock wrap observer (chip_stm32f1f3.cc). */
     .rept 29
-    .word kickos_armv7m_default_irq
+    .word kickos_arm_default_irq
     .endr
-    .word kickos_tim3_clock_isr      /* 29: TIM3 update (clock-chain wrap) */
+    .word kickos_stm32_clock_isr   /* 29: TIM3 update (clock-chain wrap) */
     .rept (KICKOS_MAX_IRQ - 30)
-    .word kickos_armv7m_default_irq
+    .word kickos_arm_default_irq
     .endr
 
     .text

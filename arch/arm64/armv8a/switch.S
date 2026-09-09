@@ -331,4 +331,16 @@ kickos_armv8a_start:
 kickos_armv8a_thread_exit:
     b       kickos_thread_return
 
+/* kickos_panic_stack_enter(msg, file, line, top): leave the interrupted stack for the
+   reporter's own (arch.h). x0-x2 pass through untouched; x3 is the seat, so this body is the
+   same on one core or four and needs no per-core word to race over.
+   DAIF masked before the move, or an interrupt taken between the two stacks on the stack this
+   exists to leave. `b` and not `bl`: the -fcallgraph-info walk stops at a body with no call
+   edge, which is what keeps the console tail off every measured chain. */
+    .global kickos_panic_stack_enter
+kickos_panic_stack_enter:
+    msr     daifset, #0xf
+    mov     sp, x3
+    b       kickos_panic_report
+
     .end

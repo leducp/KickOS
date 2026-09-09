@@ -12,6 +12,8 @@
 #   kernel  the interrupted thread's own per-thread kernel block, which the entry transfers to.
 #           Compared against KICKOS_KERNEL_STACK_SIZE minus the canary word.
 #   trap    a static per-hart stack the arch owns, which no fit clause here applies to.
+#   panic   the reporter's own array, which kpanic switches to before it prints. Compared
+#           against KICKOS_PANIC_STACK_SIZE.
 #
 # HOW IT MEASURES. tests/lib/scratch_ci.sh configures a SCRATCH tree of its own with
 # -fcallgraph-info=su,da, which makes gcc drop a .ci file next to every object carrying that
@@ -104,6 +106,7 @@ decl class | awk '
             if (f[i] ~ /^depth=/) { depth = substr(f[i], 7) }
             if (f[i] == "stack=trap") { onstack = "trap" }
             if (f[i] == "stack=kernel") { onstack = "kernel" }
+            if (f[i] == "stack=panic") { onstack = "panic" }
             if (f[i] == "kstacks=0") { kstacks = "0" }
             if (f[i] == "kstacks=1") { kstacks = "1" }
         }
@@ -264,6 +267,23 @@ if awk -F"$TAB" '{ if ($4 == "kernel" || $5 != "any") { found = 1 } } END { exit
     fi
 fi
 
+# --- the reporter's own array, for the stack=panic classes --------------------
+# Read from the same generated board config the compiler read it from, and only when a class
+# asks for it.
+PSIZE=""
+if awk -F"$TAB" '{ if ($4 == "panic") { found = 1 } } END { exit !found }' "$TMP/classes"; then
+    BOARDCFG="$BUILD/generated/include/kickos/board_config.h"
+    [ -r "$BOARDCFG" ] || fail "cannot read $BOARDCFG, which is where the gate reads
+    KICKOS_PANIC_STACK_SIZE, the array a stack=panic class is measured against"
+    PSIZE="$(scrape_macro "$BOARDCFG" KICKOS_PANIC_STACK_SIZE)" || exit 1
+    if [ "$PSIZE" -eq 0 ]; then
+        fail "$ARCH declares a stack=panic class and this board resolves
+    KICKOS_PANIC_STACK_SIZE to 0, which is the no-separate-stack posture: the reporter would
+    run on whatever stack the assertion fired on and every figure below would be missing the
+    whole console tail. Zero is ARCH_SIM's answer alone (Kconfig)."
+    fi
+fi
+
 ENFORCED_ARGS=""
 rc=0
 bad() { echo "FAIL: $*" >&2; rc=1; }
@@ -271,6 +291,9 @@ bad() { echo "FAIL: $*" >&2; rc=1; }
 echo "trap_redzone: preset=$PRESET arch=$ARCH"
 echo "trap_redzone: header  $HEADER"
 echo "trap_redzone: floor   KICKOS_MIN_STACK_SIZE=$FLOOR (from $CFGFILE)"
+if [ -n "$PSIZE" ]; then
+    echo "trap_redzone: panic   KICKOS_PANIC_STACK_SIZE=$PSIZE (from $BUILD/generated/include/kickos/board_config.h)"
+fi
 if [ -n "$KSIZE" ]; then
     echo "trap_redzone: block   KICKOS_KERNEL_STACK_SIZE=$KSIZE, $KUSABLE usable above the canary"
 elif [ "$KSTACKS" -eq 0 ]; then
@@ -296,6 +319,22 @@ while IFS="$TAB" read -r cls frame_macro depth_macro onstack kstacks; do
     this class is the kstacks=$kstacks design): MEASURED AND NOT ENFORCED, it describes an
     entry design this image does not compile"
         NOTCOMPILED_ARGS="$NOTCOMPILED_ARGS --not-compiled $cls"
+        continue
+    fi
+    # A stack=panic class spends the reporter's own array. What it has to fit is that array
+    # whole: nothing preempts it, the entry masking before it moves, and no canary word is
+    # armed below it. A byte here costs KICKOS_KERNEL_CORES bytes and not one per thread slot,
+    # which is the whole reason the reporter was moved onto it.
+    if [ "$onstack" = panic ]; then
+        if [ "$zone" -gt "$PSIZE" ]; then
+            bad "PANIC STACK BELOW ITS REQUIREMENT: $ARCH needs $zone bytes of the reporter's
+    own stack ($frame_macro=$frame + $depth_macro=$depth) but KICKOS_PANIC_STACK_SIZE is
+    $PSIZE. The reporter runs off the bottom of its array and into whatever kernel .bss sits
+    below, which is the console state it is printing through.
+    REMEDY: raise the per-arch default in $SRC/Kconfig (config KICKOS_PANIC_STACK_SIZE,
+    'default <n> if ARCH_$(printf '%s' "$ARCH" | tr '[:lower:]' '[:upper:]')') from $PSIZE to
+    at least $zone. Do NOT shrink the depth to fit: it is a measurement."
+        fi
         continue
     fi
     # A stack=trap class spends a static kernel array, not a thread stack, so the floor says

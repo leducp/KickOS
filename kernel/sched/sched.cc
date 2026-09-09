@@ -600,11 +600,23 @@ namespace kickos
                 // THIS death emptied the group.
                 left_task = c->task;
                 emptied_task = task_release(c->task);
-                // Retire the name with the reference. The slot may be free now and can be
-                // re-handed in the sweep's first chunk gap; membership is a pointer
-                // comparison, so a stale c->task makes this thread a phantom member of
-                // whatever group lands there next.
-                c->task = nullptr;
+                // Retire the name with the reference ONLY where this death EMPTIED the
+                // group. The slot is free then and can be re-handed in the sweep's first
+                // chunk gap; membership is a pointer comparison, so a stale c->task would
+                // make this thread a phantom member of whatever group lands there next.
+                //
+                // WHERE A SIBLING REMAINS THE NAME MUST STAND until the sweep is done. The
+                // object budget derives what a task holds from its live members' capability
+                // tables (cap.h), and this thread's capabilities are STILL SEATED and their
+                // pool slots STILL ALLOCATED for the whole of cap_teardown below, which drops
+                // IrqLock every chunk. A member retired from the count while it still holds
+                // is a whole fresh ceiling handed to its own siblings, reserve included. The
+                // slot cannot be re-handed under us here: a remaining sibling holds the
+                // reference that keeps it.
+                if (emptied_task)
+                {
+                    c->task = nullptr;
+                }
                 // The creator's hold ends with the creator, keyed on the TAG: a recycled pool
                 // slot answers kill_tag_of with its predecessor's, so a hold left behind is
                 // creator authority its successor never earned.
@@ -616,6 +628,10 @@ namespace kickos
             cap_teardown(c);
             {
                 IrqLock lock;
+                // The sweep is done, so no capability of this thread is seated any more and
+                // the name has nothing left to account for. Retiring it here rather than
+                // above is what keeps a sibling bounded across the sweep.
+                c->task = nullptr;
                 Kernel& k = kernel();
                 // THE BRACKET AROUND THIS STORE IS LOAD-BEARING: from here the slot reads
                 // reclaimable to ThreadPool::alloc, and nothing between here and the swap may

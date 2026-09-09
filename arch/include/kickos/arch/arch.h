@@ -96,6 +96,41 @@ void arch_shutdown(int status) __attribute__((noreturn));
 // no such entry; success never returns. The backend masks interrupts itself before handing over.
 int arch_reboot(void);
 
+// Move the stack pointer to `top` and jump to kickos_panic_report, which the first three
+// arguments reach untouched. Called by kpanic and kpanic_at, so the reporter's console descent
+// lands on a stack of its own instead of below whatever frame the assertion fired in: every
+// trap red zone would otherwise reserve the whole console tail, and a thread near its floor
+// would have the reporter write past stack_lo.
+//
+// EVERYTHING TRAVELS IN REGISTERS AND NOTHING IN .bss, which is a correctness requirement and
+// not a style: the reporter's array is per core, so two cores panicking together must each
+// carry their OWN seat and their own message. A shared word holding either would let the
+// second core's write decide where the first one lands.
+//
+// Four requirements a body must meet, in this order:
+//   1. mask interrupts FIRST, before the move, or an interrupt taken between the two stacks on
+//      the one this exists to leave;
+//   2. move the stack pointer FROM THE FOURTH ARGUMENT REGISTER, with nothing of the backend's
+//      own left standing on the old stack;
+//   3. leave arguments one to three where the ABI put them;
+//   4. reach kickos_panic_report by a BRANCH, never a call: the callgraph walk
+//      check_trap_redzone.sh runs stops at a body with no call edge, and that is what takes
+//      the console tail out of every red zone.
+// It is ASSEMBLY on every backend that has a switch.S, which is also what keeps it out of that
+// walk; ARCH_SIM is the exception and says why at its body.
+// tests/static/check_panic_stack_seat.sh reads each body against its own ABI's register.
+//
+// NOT AN OPTIONAL SEAM: there is no fallback translation unit, so an unported backend fails to
+// link rather than keeping a reporter no red-zone figure reserves for.
+void kickos_panic_stack_enter(char const* msg, char const* file, unsigned line,
+                              uintptr_t top) __attribute__((noreturn));
+
+// The panic reporter, entered by kickos_panic_stack_enter with the stack already switched.
+// EXACTLY ONE of `msg` and `file` is non-null: kpanic takes the first door and kpanic_at the
+// second, and `line` is meaningless without `file`.
+void kickos_panic_report(char const* msg, char const* file,
+                         unsigned line) __attribute__((noreturn));
+
 // --- Core identity ----------------------------------------------------------
 // The 0-based index of the core executing this code, in [0, KICKOS_NUM_CORES).
 //

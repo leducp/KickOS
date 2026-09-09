@@ -44,39 +44,47 @@
  * (MinSizeRel, -fcallgraph-info=su,da) as the longest weighted path over the merged call
  * graph, rooted at the symbols switch.S branches to.
  *
- * BOTH COUNT THE NORETURN KPANIC TAIL, which every KICKOS_ASSERT in the dispatch reaches:
- * these are one kernel array per thread slot with no spawn floor to clear. That makes them
- * console-shaped, so each is the worse of the two boards the gate runs. esp32c6-wroom-st is
- * the worse: its arch_console_write is a 0-byte thunk into the TX ring the C6 drives instead
- * of a polled register, 96 bytes deeper than the qemu-riscv leaf.
+ * NEITHER COUNTS THE PANIC REPORTER. kpanic leaves the interrupted stack before it prints
+ * (kickos_panic_stack_enter, switch.S), so an assert anywhere in the dispatch costs these
+ * figures its call site and nothing under it, and what the reporter descends is the gate's
+ * PANIC class instead.
  *
- *   _TRAP  480  kickos_isr_timer[0] -> ktime_on_timer[64] -> endpoint_wait_abort[32]
- *               -> kpanic[16] -> kputs[16] -> kconsole_write[0] -> kconsole_write_impl[176]
- *               -> console_emit[48] -> arch_console_write[0] -> console_tx_write[80]
- *               -> drain_sync[32] -> wait_slot[16]        (qemu-riscv: 384)
- *   _SYS   912  syscall_dispatch[32] -> syscall_body[128] -> thread_create_call[272]
- *               -> thread_create[96] -> the same tail from kpanic down (qemu-riscv: 816)
+ * BOTH ARE DELIBERATELY ABOVE THEIR MEASUREMENT, on the terms KICKOS_RV_TRAP_NESTED_DEPTH
+ * already carries: the enforced figure is what a FUTURE change is measured against, and at
+ * exactly the measurement one added assert anywhere in the dispatch is a gate failure on
+ * whichever board happens to be deepest. Do NOT tighten them. What that would buy, stated here
+ * so it is not re-derived as a new opportunity: the block falls from 1184 to 1104, 80 bytes
+ * per KICKOS_THREAD_SLOTS.
  *
- * EACH FIGURE IS ITS MEASUREMENT, not rounded up to the next multiple of 64 the way a
- * thread-stack figure is, a kernel block being sized to it directly. FRAME_SYS + _SYS = 1168,
- * and the LOWEST word of a block is its overflow canary (kernel/thread/thread.cc), so
- * KICKOS_KERNEL_STACK_SIZE is 1184 here: 12 bytes of slack above the canary word.
+ *   _TRAP  480 enforced, 224 measured, and one reading for the whole arch now that the
+ *              console is off it: kickos_isr_timer[0] -> ktime_on_timer[64]
+ *              -> endpoint_wait_abort[32] -> sched::wake[16] -> resched_after_wake[32]
+ *              -> reschedule[32] -> the SchedPolicy hook -> policy_on_switch_in[16]
+ *              -> arm_slice[32]
+ *   _SYS   912 enforced, 832 measured on esp32c6-wroom-bench, the one dispatch left that
+ *              walks the console: syscall_dispatch[80] -> bench_phase_print[48]
+ *              -> kprintf[64] -> kvprintf_route[288] -> kconsole_write[0]
+ *              -> kconsole_write_impl[176] -> console_emit[48] -> arch_console_write[0]
+ *              -> console_tx_write[80] -> drain_sync[32] -> wait_slot[16]. Off KICKOS_BENCH
+ *              the deepest reading is 656.
  *
- * The TRAP chain WITHOUT the tail runs through an INDIRECT call, the SchedPolicy hook table;
+ * FRAME_SYS + _SYS = 1168, and the LOWEST word of a block is its overflow canary
+ * (kernel/thread/thread.cc), so KICKOS_KERNEL_STACK_SIZE is 1184 here: 12 bytes of slack
+ * above the canary word.
+ *
+ * The TRAP chain runs through an INDIRECT call, the SchedPolicy hook table;
  * tests/static/trap_redzone_indirect.txt binds each such site to the one slot that call
  * reaches, and the gate refuses to answer at all while a reachable site is unbound. */
 #define KICKOS_RV_TRAP_KERNEL_DEPTH 480
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_SYS 912
 
-/* THE SAME SYSCALL DISPATCH WITH THE KPANIC TAIL EXCLUDED, the figure the one remaining
- * THREAD-stack syscall class is measured against: a PRIVILEGED thread's ecall arrives with
+/* THE SAME SYSCALL DISPATCH ON A THREAD STACK: a PRIVILEGED thread's ecall arrives with
  * mstatus.MPP=M, so .Ltrap_from_m_ctx keeps its frame on the sp it interrupted and
- * svc_trampoline runs this same dispatch on that thread's own stack.
+ * svc_trampoline runs the dispatch on that thread's own stack.
  *
- * THE TAIL IS DROPPED HERE because a thread stack has a SPAWN FLOOR to clear: counting it
- * would put the requirement at 256 + 912 = 1168, above the non-bench rv32imac
- * KICKOS_MIN_STACK_SIZE, so a privileged thread spawned at the floor could not make a syscall
- * at all.
+ * A SEPARATE MACRO FROM _SYS FOR THE ROUNDING AND THE POSTURE, not for the roots, which are
+ * the same set and measure the same bytes: a thread-stack figure is rounded up to the next
+ * multiple of 64 and a kernel-block one is not.
  *
  * TWO FIGURES BECAUSE KICKOS_BENCH ADDS A SYSCALL ARM AND NOTHING ELSE COMPILES IT. One
  * fleet-wide number would make every non-bench board's floor reserve for a bracket its image
@@ -101,22 +109,21 @@
  * Each is its measurement rounded up to the next multiple of 64, the convention a thread-stack
  * figure carries here, so the slack cannot be spent silently.
  *
- * RESIDUAL, at KICKOS_BENCH 0 only: a kernel assertion firing while a privileged thread is
- * parked at the very bottom of a floor-sized stack has the console writer descend up to 144
- * bytes below stack_lo, privileged, with the system already terminating, the tail-included
- * chain needing 1168 against a floor of 1024. At KICKOS_BENCH 1 the bench chain is deeper than
- * the tail, so 816 is the figure with and without the exclusions. */
+ * THE RESIDUAL THIS ONCE CARRIED IS GONE. A kernel assertion firing while a privileged thread
+ * sat at the very bottom of a floor-sized stack had the console writer descend up to 144 bytes
+ * below stack_lo, privileged; the reporter runs on an array of its own and touches this stack
+ * nowhere. */
 #if KICKOS_BENCH
-#define KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC 832
+#define KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV 832
 #else
-#define KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC 704
+#define KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV 704
 #endif
 
 /* THE ONE FIGURE A PRIVILEGED THREAD'S STACK HAS TO HOLD, resolved by the posture above so
  * that the C floor assert and any reporter read the number the gate compares against. Nothing
  * refuses it at run time: an M-mode ecall carries no sp the entry may bound. */
 #define KICKOS_RV_TRAP_NEED_SYSPRIV \
-    (KICKOS_RV_TRAP_FRAME_SYS + KICKOS_RV_TRAP_KERNEL_DEPTH_SYS_NO_PANIC)
+    (KICKOS_RV_TRAP_FRAME_SYS + KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV)
 
 /* THE FRAME TERM OF THE DEATH PATH IS THE MSIP FRAME, 128, AND IT IS NOT 0. The relocating
  * stubs start from the stack TOP, but this prices what a preemption puts BELOW the deepest
@@ -136,8 +143,8 @@
 
 /* kickos_thread_return ALONE: a PRIVILEGED thread's entry-return stub, a user thread's being
  * the kickos_user_thread_return syscall instead, so no fault and no redirect relocates it and
- * it runs at the depth the entry returned from on the thread's own stack. 384 excluded, on
- * qemu-riscv; KICKOS_MIN_STACK_SIZE is set by NEED_SYSPRIV and not by this class, so the
+ * it runs at the depth the entry returned from on the thread's own stack. 384 on every
+ * registered preset; KICKOS_MIN_STACK_SIZE is set by NEED_SYSPRIV and not by this class, so the
  * 128 + 384 red zone is checked against the floor rather than setting it. */
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_RET 384
 
@@ -234,5 +241,25 @@
 #define KICKOS_RV_CTX_OFF_STACK_HI 8
 #define KICKOS_RV_CTX_OFF_KERNEL_SP 12
 #endif
+
+/* THE PANIC REPORTER'S OWN STACK, which kickos_panic_stack_enter (switch.S) moves to before a
+ * banner is printed. NOTHING ABOVE REACHES IT: kpanic's console descent ends at a body the
+ * callgraph walk cannot see through, so it is priced here and in no trap class.
+ *
+ * FRAME 0. The entry clears MIE before the move, so no interrupt lands here, and an EXCEPTION
+ * taken inside the reporter re-enters trap_entry, which swaps sp with mscratch and builds its
+ * frame on whatever that names: never this array. Such a fault is a kernel bug on a path that
+ * is already terminal, exactly as for the nested frame on the trap stack above.
+ *
+ * THE DEPTH IS NOT THE MEASUREMENT. The PANIC class measures 384 on the four esp32c6 presets,
+ * worst on the board whose arch_console_write is a thunk into the C6 TX ring, and 288 on the
+ * three qemu-riscv ones. 448 is the next multiple of 64 STRICTLY ABOVE that, which is the rule
+ * every arch's PANIC figure follows and the reason a reading already 64-aligned still gains a
+ * step: a byte here costs one shared array rather than one per thread slot, and the enforced
+ * figure is what a future change is measured against.
+ * KICKOS_PANIC_STACK_SIZE (Kconfig) is what the array is cut to and what the gate compares
+ * this against; arch_rv32imac.cc static_asserts the two agree. */
+#define KICKOS_RV_PANIC_FRAME 0
+#define KICKOS_RV_PANIC_DEPTH 448
 
 #endif /* KICKOS_ARCH_RV_TRAP_STACK_H */

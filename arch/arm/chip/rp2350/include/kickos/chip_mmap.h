@@ -49,4 +49,17 @@ namespace kickos::rp2350::mmap
     constexpr uintptr_t USBCTRL_WINDOW = 0x20000u;
 }
 
+// Family membership: the shared RP2xxx unit (arch/arm/chip/rp2xxx) names one spelling for
+// both parts. The empty definition is what lets the alias below name the namespace before
+// any regs/ header has opened it.
+namespace kickos::rp2350::reg
+{
+}
+
+namespace kickos::rp2xxx
+{
+    namespace mmap = kickos::rp2350::mmap;
+    namespace reg = kickos::rp2350::reg;
+}
+
 #endif

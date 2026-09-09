@@ -20,6 +20,7 @@
  */
 
 #include <sections.ld.h>
+#include <kernel_data_reserve.ld.h>
 
 ENTRY(_boot_entry)
 
@@ -42,6 +43,11 @@ _kernel_stack_size = 8K;               /* boot/handler (MSP) stack */
 #define KICKOS_APPDATA_SIZE 128K
 #endif
 _appdata_size = KICKOS_APPDATA_SIZE;
+/* Room for kernel .data/.bss below the app window; see kernel_data_reserve.ld.h. */
+#ifndef KICKOS_KERNEL_DATA_RESERVE
+#define KICKOS_KERNEL_DATA_RESERVE 128K
+#endif
+KICKOS_KERNEL_DATA_RESERVE_DECL(ORIGIN(RAM))
 #endif
 
 SECTIONS
@@ -183,7 +189,11 @@ SECTIONS
         _ebss = .;
     } > RAM
 
-    .appdata : ALIGN(_appdata_size)
+    /* App-granted RW window: pow2 PMSA region based at _kernel_data_top, so kernel .bss
+       growth moves neither this window nor the arena above it. The MAX belongs in this
+       ADDRESS expression and nowhere else; kernel_data_reserve.ld.h says why. The
+       section-level ALIGN keeps the base pow2-aligned when the reserve is overflowed. */
+    .appdata MAX(., _kernel_data_top) : ALIGN(_appdata_size)
     {
         __kickos_appdata_start = .;
         *(.data .data.*)
@@ -278,6 +288,7 @@ ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
 #if KICKOS_HAVE_MPU
+KICKOS_KERNEL_DATA_RESERVE_ASSERT(_ebss)
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
 /* Lower bound: an empty .appdata dropping its ALIGN would place .appbss below the base. */

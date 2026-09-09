@@ -27,6 +27,7 @@ namespace kickos::rp2040::reg::clocks
     // clk_sys glitchless mux: SRC bit0 (0=clk_ref, 1=aux); AUXSRC[7:5]=0 selects
     // clksrc_pll_sys. SELECTED is one-hot on SRC (bit0=ref, bit1=aux).
     constexpr uint32_t CLK_SYS_AUXSRC_PLL = 0x0u << 5;
+    constexpr uint32_t CLK_SYS_AUXSRC_MASK = 0x7u << 5;
     constexpr uint32_t CLK_SYS_SRC_REF = 0x0u;
     constexpr uint32_t CLK_SYS_SRC_AUX = 0x1u;
     constexpr uint32_t CLK_SYS_SELECTED_REF = 1u << 0;

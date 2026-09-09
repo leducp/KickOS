@@ -8225,6 +8225,93 @@ namespace
 
     // A far slot handed back as a local endpoint. The pool leaves a freed slot's fields
     // standing, so a create that seats only its own would keep the far route the mint wrote.
+    // FILLING THE POOL NOW TAKES TWO TASKS, and that is the object budget working rather
+    // than a defect. A task's ceiling is the pool's slots MINUS TASK_OBJECT_RESERVE, so a
+    // task at its ceiling always leaves the reserved slot free and NO ONE task can fill a
+    // pool by creating. The two arms below need the pool full AND bump-allocated to its last
+    // index, or the create after their close lands on a fresh slot instead of the freed one
+    // and proves nothing. So a second group takes what the reserve keeps out of this one's
+    // reach. Root's own AMP port capabilities count against its ceiling too, which is why it
+    // reaches that ceiling earlier here than on a board with no partition.
+    constexpr int CH_HOLD = 2; // the release semaphore, delegated second
+
+    void amp_pool_filler(void*)
+    {
+        kos_cap_t mine[AMP_REUSE_SLOTS];
+        int n = 0;
+        while (n < AMP_REUSE_SLOTS)
+        {
+            if (kos_endpoint_create(&mine[n]) != 0)
+            {
+                break;
+            }
+            n++;
+        }
+        kos_sem_post(CH_DONE);
+        kos_sem_wait(CH_HOLD); // hold the slots while root runs its close-and-create
+        for (int i = 0; i < n; i++)
+        {
+            kos_handle_close(mine[i]);
+        }
+    }
+
+    // A second group holding the pool's remaining slots. Answers false when the staging did
+    // not take, and leaves nothing behind either way.
+    struct PoolHelper
+    {
+        kos_task_t group = KOS_TASK_NONE;
+        kos_cap_t hold = KOS_CAP_NONE;
+        bool live = false;
+    };
+
+    bool amp_helper_fill(PoolHelper* h)
+    {
+        if (kos_sem_create(0, &h->hold) != 0)
+        {
+            return false;
+        }
+        if (kos_task_create(nullptr, 0, 0, &h->group) != 0)
+        {
+            kos_sem_destroy(h->hold);
+            h->hold = KOS_CAP_NONE;
+            return false;
+        }
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {h->hold, CH_FULL}};
+        auto const w = kos::thread::create_caps(amp_pool_filler, nullptr, "ampfill", 10, caps, 2,
+                                                KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                                KOS_AUTH_MEMORY, nullptr, h->group);
+        if (not w.valid())
+        {
+            (void)kos_task_kill(h->group);
+            kos_sem_destroy(h->hold);
+            h->group = KOS_TASK_NONE;
+            h->hold = KOS_CAP_NONE;
+            return false;
+        }
+        wait_n(1); // the filler has taken everything it could
+        h->live = true;
+        return true;
+    }
+
+    void amp_helper_release(PoolHelper* h)
+    {
+        if (h->live)
+        {
+            kos_sem_post(h->hold);
+            h->live = false;
+        }
+        if (h->group != KOS_TASK_NONE)
+        {
+            (void)kos_task_kill(h->group);
+            h->group = KOS_TASK_NONE;
+        }
+        if (h->hold != KOS_CAP_NONE)
+        {
+            kos_sem_destroy(h->hold);
+            h->hold = KOS_CAP_NONE;
+        }
+    }
+
     // The pool is FILLED first, which is what forces the slot: the far one is then the only
     // free slot and any allocation policy returns it.
     // The bind's OWN reference, which the far arm below has no half for: a local port
@@ -8243,20 +8330,41 @@ namespace
         }
         kos_cap_t held[AMP_REUSE_SLOTS];
         int n = 0;
-        int rc = 0;
         while (n < AMP_REUSE_SLOTS)
         {
-            rc = kos_endpoint_create(&held[n]);
-            if (rc != 0)
+            if (kos_endpoint_create(&held[n]) != 0)
             {
-                break;
+                break; // this task's own ceiling, or the pool: either way it takes no more
             }
             n++;
         }
-        // As the far arm states: -KOS_EMFILE is the cap table running out first, which leaves
-        // free slots the create below would land on whatever the close did.
-        if (rc != -KOS_ENOMEM)
+        // One back, so root keeps a unit of ceiling to PROBE the pool with below.
+        if (n > 0)
         {
+            n--;
+            kos_handle_close(held[n]);
+        }
+        PoolHelper helper;
+        if (not amp_helper_fill(&helper))
+        {
+            for (int i = 0; i < n; i++)
+            {
+                kos_handle_close(held[i]);
+            }
+            tap::skip("no second group to hold the reserved slot");
+            return;
+        }
+        // THE PROBE IS THE PRECONDITION: -KOS_ENOMEM here is the pool actually being full,
+        // which is what forces the create after the close onto the slot that close freed.
+        kos_cap_t probe = KOS_CAP_NONE;
+        int const full = kos_endpoint_create(&probe);
+        if (full != -KOS_ENOMEM)
+        {
+            if (full == 0)
+            {
+                kos_handle_close(probe);
+            }
+            amp_helper_release(&helper);
             for (int i = 0; i < n; i++)
             {
                 kos_handle_close(held[i]);
@@ -8268,6 +8376,7 @@ namespace
         kos_cap_t reused = KOS_CAP_NONE;
         int const created = kos_endpoint_create(&reused);
         // Released BEFORE the first check that can return, as the far arm does.
+        amp_helper_release(&helper);
         for (int i = 0; i < n; i++)
         {
             kos_handle_close(held[i]);
@@ -8276,7 +8385,7 @@ namespace
         {
             kos_handle_close(reused);
         }
-        tap::diag("local port slot: pool filled at %d, close %d, create after it %d", n,
+        tap::diag("local port slot: root held %d, close %d, create after it %d", n,
                   closed, created);
         TAP_CHECK(closed == 0);
         // No slot came free, so the pool is still full: the bind holds a reference of its own
@@ -8296,20 +8405,42 @@ namespace
         }
         kos_cap_t held[AMP_REUSE_SLOTS];
         int n = 0;
-        int rc = 0;
         while (n < AMP_REUSE_SLOTS)
         {
-            rc = kos_endpoint_create(&held[n]);
-            if (rc != 0)
+            if (kos_endpoint_create(&held[n]) != 0)
             {
-                break;
+                break; // this task's own ceiling, or the pool: either way it takes no more
             }
             n++;
         }
-        // -KOS_EMFILE instead means the cap table ran out first, so the pool never filled and
-        // the create below would land on any free slot rather than the far one.
-        if (rc != -KOS_ENOMEM)
+        // One back, so root keeps a unit of ceiling to PROBE the pool with below.
+        if (n > 0)
         {
+            n--;
+            kos_handle_close(held[n]);
+        }
+        PoolHelper helper;
+        if (not amp_helper_fill(&helper))
+        {
+            for (int i = 0; i < n; i++)
+            {
+                kos_handle_close(held[i]);
+            }
+            kos_handle_close(far_ep);
+            tap::skip("no second group to hold the reserved slot");
+            return;
+        }
+        // THE PROBE IS THE PRECONDITION: -KOS_ENOMEM here is the pool actually being full,
+        // which is what forces the create after the close onto the slot that close freed.
+        kos_cap_t probe = KOS_CAP_NONE;
+        int const full = kos_endpoint_create(&probe);
+        if (full != -KOS_ENOMEM)
+        {
+            if (full == 0)
+            {
+                kos_handle_close(probe);
+            }
+            amp_helper_release(&helper);
             for (int i = 0; i < n; i++)
             {
                 kos_handle_close(held[i]);
@@ -8324,6 +8455,7 @@ namespace
         // Released BEFORE the first check that can return: the slot is claimed, so the pool
         // has nothing left to hold, and a failing check would otherwise leave it full under
         // every arm that follows.
+        amp_helper_release(&helper);
         for (int i = 0; i < n; i++)
         {
             kos_handle_close(held[i]);

@@ -33,6 +33,13 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 #endif
 
 // switch.S + startup.S hard-code these arch_context field offsets.
+// The reporter's own array (kernel/init/console.cc). The frame term is one trap frame: the
+// entry raises INTLEVEL before the move, but a window or ISA exception is not maskable.
+static_assert(KICKOS_LX6_PANIC_FRAME == KICKOS_LX6_TRAP_FRAME,
+              "the panic frame term is one trap frame, which switch.S cannot compute");
+static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_LX6_PANIC_FRAME + KICKOS_LX6_PANIC_DEPTH,
+              "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
+
 static_assert(F_SIZE == KICKOS_LX6_TRAP_FRAME,
               "_kickos_int_level1 subtracts F_SIZE; the gate enforces KICKOS_LX6_TRAP_FRAME");
 

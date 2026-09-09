@@ -23,6 +23,7 @@
  */
 
 #include <sections.ld.h>
+#include <kernel_data_reserve.ld.h>
 
 ENTRY(_start)
 
@@ -35,9 +36,9 @@ _estack = ORIGIN(RAM) + LENGTH(RAM);   /* boot/handler stack: top of RAM */
 _kernel_stack_size = 16K;              /* boot/trap stack reservation */
 
 /* Pow2 sizes for the two unprivileged NAPOT regions. Both must be a power of two
-   (NAPOT); the code block starts at ORIGIN (2^31-aligned) and the app-data block
-   at __kickos_code_end (= ORIGIN + _code_size, still pow2-aligned), so each region
-   base is naturally aligned to its size. Raise _code_size / _appdata_size to the
+   (NAPOT); the code block starts at ORIGIN (2^31-aligned) and the app-data block at
+   __kickos_code_end + _kernel_data_reserve, both multiples of _appdata_size, so each
+   region base is naturally aligned to its size. Raise _code_size / _appdata_size to the
    next pow2 if an ASSERT below trips. */
 #if KICKOS_HAVE_MPU
 /* Full-C++ under PMP folds .eh_frame + .gcc_except_table into the code region and pulls
@@ -51,6 +52,10 @@ _code_size = 128K;
 #define KICKOS_APPDATA_SIZE 32K
 #endif
 _appdata_size = KICKOS_APPDATA_SIZE;
+/* Room for kernel .data/.bss below the app window; see kernel_data_reserve.ld.h. */
+#ifndef KICKOS_KERNEL_DATA_RESERVE
+#define KICKOS_KERNEL_DATA_RESERVE 32K
+#endif
 #endif
 
 SECTIONS
@@ -123,6 +128,7 @@ SECTIONS
        (not a section pad) so the image carries no zero fill. The gap between
        _code_used_end and __kickos_code_end is unused SRAM left inside the RX grant. */
     __kickos_code_end = __kickos_code_start + _code_size;
+    KICKOS_KERNEL_DATA_RESERVE_DECL(__kickos_code_end)
 
     /* != VMA under enforcement: .data's VMA is pinned at __kickos_code_end, past the code
        pad, while its LMA follows the code. The Reset_Handler copy is real (see .data). */
@@ -137,9 +143,9 @@ SECTIONS
        ordinary .data / .bss and are captured here kernel-side. The gp window
        (.sdata/.sbss + __global_pointer$) holds only
        app + C++-runtime small-data and moves into .appdata (below). Kernel .data is
-       pinned at __kickos_code_end; the app window is a pow2 NAPOT region aligned above
-       the kernel data by a top-level ALIGN (kernel .data/.bss are non-empty and advance
-       the region pointer, so no explicit-VMA empty-section fold-back). */
+       pinned at __kickos_code_end and the app window at _kernel_data_top, so the window,
+       the heap and the arena above them all sit at declared addresses rather than
+       following kernel .bss over its alignment cliff. */
     .data __kickos_code_end : ALIGN(8)
     {
         _sdata = .;
@@ -173,15 +179,18 @@ SECTIONS
         _ebss = .;
     } > RAM
 
-    /* App-owned globals as a pow2 NAPOT region above the kernel data. The section-level
-       ALIGN puts the base at a natural pow2 boundary (NAPOT). .appbss is pinned right
+    /* App-owned globals as a pow2 NAPOT region above the kernel data, based at
+       _kernel_data_top so kernel .bss growth moves neither this window nor the arena above
+       it. The MAX belongs in this ADDRESS expression and nowhere else;
+       kernel_data_reserve.ld.h says why. The section-level ALIGN keeps the base at a
+       natural pow2 boundary (NAPOT) when the reserve is overflowed. .appbss is pinned right
        after .appdata via SIZEOF, so __kickos_appbss_start == the .appdata VMA end and
        the Reset_Handler's [__kickos_appbss_start, __kickos_appdata_end) zero covers the
        whole grant with no external gap. .appdata's VMA jumps to the pow2 window base
        above the NOLOAD kernel .bss, so LMA != VMA and Reset_Handler copies it LMA->VMA
        via _appdata_lma before zeroing .appbss. The gp small-data window (anchor +
        .sdata/.sbss catch-all) lives inside this granted region. */
-    .appdata : ALIGN(_appdata_size)
+    .appdata MAX(., _kernel_data_top) : ALIGN(_appdata_size)
     {
         __kickos_appdata_start = .;
         *(.data .data.*)                         /* app + vendor .data (app-side) */
@@ -281,6 +290,7 @@ ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
 #if KICKOS_HAVE_MPU
 ASSERT(_code_used_end <= __kickos_code_end,
        "KickOS: app code overflows _code_size (raise it to the next pow2)")
+KICKOS_KERNEL_DATA_RESERVE_ASSERT(_ebss)
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
 /* Selector-mismatch guard for the inverted closed-set .data/.bss capture: the colon

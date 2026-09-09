@@ -49,13 +49,6 @@ int kickos_rv64_inject_owed(void);
 // Nonzero once hart `id` has reached the park. Read by the chip's arrival wait.
 uint32_t kickos_rv64_core_online_read(uint32_t id);
 
-// The primary's one-shot bring-up check, run with every secondary parked. Fatal on failure.
-// A SHARED KERNEL'S ONLY: what it checks is the lock and doorbell coupling, and an AMP node
-// holds no kernel lock for a far side to contend for.
-#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
-void kickos_rv64_doorbell_selfcheck(void);
-#endif
-
 }
 
 #endif

@@ -93,10 +93,16 @@
                   whole dispatch tree is measured as _SVCK.
      _SVCK   808  picopi-st, the deeper of this arch's two declared presets (microbit 624).
 
-   THE PANIC TAIL IS COUNTED, and that is what makes 808 rather than 688 the figure. A kernel
-   array has no spawn floor to clear, so trap_redzone_roots.txt declares SVCK stack=kernel and
-   a stack=kernel class is measured with no exclusion at all. That also makes the figure
-   CONSOLE-SHAPED, the tail being the console writer.
+   THE PANIC REPORTER IS NOT ON THIS CHAIN. kpanic leaves this stack before it prints
+   (kickos_panic_stack_enter, switch.S), so what 628 measures at picopi-st is grant admission
+   under thread_create_call and no console backend at all:
+     syscall_dispatch[112] -> thread_create_call[240] -> thread_create[72] -> task_for[24]
+     -> domain_for[32] -> grant_region_admissible[32] -> grant_hits_reserved[96]
+     -> arch_reserved_blocks[20]
+   808 IS ENFORCED OVER THAT 628 ON PURPOSE, as headroom a future change is measured against
+   rather than slack to spend. Cutting it to the measurement returns 180 per
+   KICKOS_THREAD_SLOTS, the block falling from 896 to 720, and buys the next added assert a
+   gate failure on whichever preset happens to be deepest.
 
    On arm-none-eabi the compiler's reported frame is the prologue push plus the sub, with the
    return address arriving in LR and no incoming slot, so a frameless leaf is 0 and a chain is
@@ -140,7 +146,11 @@
 
 /* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
    and no redirect to relocate it, so it runs at whatever depth the entry returned from on the
-   thread's own stack. 504 on picopi. */
+   thread's own stack. 504 enforced, 384 measured on picopi: the reschedule the teardown
+   performs, and no longer the panic reporter under it.
+     kickos_thread_return[8] -> exit_current[48] -> cap_teardown[40] -> teardown_entry[40]
+     -> obj_close_protocol[32] -> mutex_force_unlock[16] -> wake[16] -> resched_after_wake[16]
+     -> reschedule[24] -> ktime_rearm[16] -> arch_timer_arm[32] -> __aeabi_ldivmod[96] */
 #define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_RET 504
 
 /* What each guarded site enforces, in bytes below the live PSP: a class's structural half
@@ -168,5 +178,18 @@
 #define KICKOS_ARMV6M_CTX_OFF_STACK_HI 16
 #define KICKOS_ARMV6M_CTX_OFF_KERNEL_SP 20
 #define KICKOS_ARMV6M_CTX_OFF_TRACE_TID 24
+
+/* THE PANIC REPORTER'S OWN STACK, which kickos_panic_stack_enter (switch.S) moves to before a
+ * banner is printed, so EXITK, RET and SVCK measure no console at all.
+ *
+ * FRAME IS THE HARDWARE FRAME and not 0: the entry sets PRIMASK before the move, but PRIMASK
+ * does not mask a HardFault, and a wild access inside the reporter stacks that frame on the SP
+ * the reporter is on. A plain integer because check_trap_redzone.sh scrapes it as an immediate;
+ * arch_armv6m.cc asserts it against KICKOS_ARMV6M_TRAP_FRAME.
+ *
+ * 304 MEASURED on the three picopi presets and 224 on microbit; 320 is the next multiple of 64
+ * strictly above that, which is the rule every arch's PANIC figure follows. */
+#define KICKOS_ARMV6M_PANIC_FRAME 32
+#define KICKOS_ARMV6M_PANIC_DEPTH 320
 
 #endif /* KICKOS_ARCH_ARMV6M_TRAP_STACK_H */
