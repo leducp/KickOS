@@ -332,7 +332,16 @@ KickOS/
       armv6m/                       # M0+: PRIMASK crit, ctx-switch asm
       armv7m/                       # M3/M4/M4F/M7/M33: BASEPRI crit, CLZ, ctx-switch asm, cache
       chip/{mps2,nrf51,mk64f,rp2040,rp2350,imxrt1062,stm32f411,stm32f103,stm32f302,sam3x8e,xmc4800}/
-    arm64/ armv8a/ chip/virt_arm64/  # AArch64 (EL0/EL1, VMSAv8 page tables, GICv2, PL011)
+      chip/stm32f1f3/               # chip-FAMILY unit shared by stm32f103 + stm32f302,
+                                    #   compiled into each of their archives (family.cmake)
+    arm64/
+      common/                       # shared A53 glue: the GICv2 and GICv3 backends, the
+                                    #   architected-timer + semihosting seams (arch_arm64_a53.cc),
+                                    #   and the VMSA constants both startup.S files preprocess
+      armv8a/                       # AArch64 EL0/EL1: VMSAv8 page tables, ctx-switch asm,
+                                    #   cross-core lock + doorbell
+      chip/{virt_arm64,imx8mp}/     # QEMU virt (PL011, GICv2 or GICv3, EL1 handover) and the
+                                    #   i.MX 8M Plus EVK (imx UART, GIC-500, EL3 handover)
     rx/    rxv3/  chip/rx72m/        # Renesas RXv3 (SWINT switch, INT syscall)
     xtensa/ lx6/  chip/esp32/        # Xtensa LX6 (windowed ABI, no privilege split)
     riscv/ rv32imac/ chip/{virt_rv32,esp32c6}/  # RV32IMAC (machine mode, mtvec demux,
@@ -413,6 +422,11 @@ per-arch in `arch/<arch>/include/kickos/arch/context.h`.
 - `arch_irq_inject(irq)` -- raise an emulated device line (sim: signal; ARM: pend NVIC).
 - `arch_console_write`, `arch_idle_wait`, `arch_init`, `arch_shutdown` -- console bottom edge,
   idle (WFI / `sigsuspend`), bring-up, halt.
+- `kickos_panic_stack_enter(msg, file, line, top)` -- mask, move the stack pointer to `top` and
+  branch into `kickos_panic_report`, so the panic reporter's console descent lands on an array
+  of its own and no trap red zone reserves for it. Everything travels in registers because the
+  array is per core. Assembly on every backend but the sim, and mandatory: there is no fallback
+  body.
 - Kernel-provided callbacks the arch invokes: `kickos_isr_timer()`, `kickos_isr_irq(irq)`,
   `kickos_isr_fault(addr, is_write)`, `kickos_thread_return()`, `syscall_dispatch(...)`.
 

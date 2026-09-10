@@ -35,6 +35,13 @@
 #include <kickos/rtt.h>
 #endif
 
+// Deliberately NO fallback #define: 0 means the reporter stays on the stack it was called
+// from, which is right on ARCH_SIM and wrong everywhere else, so a build that lost the
+// generated board config must fail rather than resolve the quiet answer.
+#ifndef KICKOS_PANIC_STACK_SIZE
+#error "KICKOS_PANIC_STACK_SIZE is missing; the generated board config carries it"
+#endif
+
 namespace
 {
     using kickos::Atomic;
@@ -417,28 +424,67 @@ namespace kickos
     }
 #endif
 
+    namespace
+    {
+#if KICKOS_PANIC_STACK_SIZE > 0
+        // ONE PER CORE ONE KERNEL SCHEDULES, and per core is not spare generosity: nothing
+        // stops two cores of a shared kernel panicking together, and each has to descend the
+        // console somewhere the other is not writing. It is not per thread SLOT, the reporter
+        // being terminal, so a core runs it once.
+        alignas(KICKOS_STACK_ALIGN) uint8_t g_panic_stack[KICKOS_KERNEL_CORES]
+                                                         [KICKOS_PANIC_STACK_SIZE];
+        static_assert(KICKOS_PANIC_STACK_SIZE % KICKOS_STACK_ALIGN == 0,
+                      "the panic stack top must land on the alignment a call boundary needs");
+#endif
+
+        // always_inline: at -Os this would otherwise be a call, and its frame would stand on
+        // the stack the switch below exists to leave.
+        __attribute__((always_inline)) inline uintptr_t panic_stack_top(void)
+        {
+#if KICKOS_PANIC_STACK_SIZE > 0
+            return reinterpret_cast<uintptr_t>(
+                &g_panic_stack[kickos_kernel_core()][KICKOS_PANIC_STACK_SIZE]);
+#else
+            return 0;
+#endif
+        }
+    }
+
+    // The seat and the message go in REGISTERS, never in .bss: a shared cell for either would
+    // let a second core panicking concurrently decide where this one lands.
     void kpanic(char const* msg)
     {
-        kpanic_enter();
-        kputs("\nKERNEL PANIC: ");
-        kputs(msg);
-        kputs("\n");
-#if KICKOS_KERNEL_STACKS && KICKOS_KSTACK_REPORT
-        kputs(kstack_report_text());
-#endif
-        kfault_terminate(); // blink forever (real HW) or exit with a fault status (host/QEMU)
+        kickos_panic_stack_enter(msg, nullptr, 0, panic_stack_top());
     }
 
 #if KICKOS_DIAG_TERSE
-    // kputs plus a hand-rolled decimal: an assert fires in whatever thread context tripped
-    // it, and kfmt_vsnprintf's 256-byte frame does not fit the 512-byte idle stack the boards
-    // that select this posture provision.
     void kpanic_at(char const* file, unsigned line)
     {
-        kpanic_enter();
-        kputs("\nKERNEL PANIC: assert ");
-        kputs(file);
-        kputs(":");
+        kickos_panic_stack_enter(nullptr, file, line, panic_stack_top());
+    }
+#endif
+}
+
+// Entered by kickos_panic_stack_enter with the stack already moved, so it starts at the top of
+// this core's slice whatever depth the assertion fired at. Its console descent is measured as
+// the PANIC class of check_trap_redzone.sh and reaches no trap red zone; the FAULT reporter is
+// a different chain and still ends several of them.
+extern "C" void kickos_panic_report(char const* msg, char const* file, unsigned line)
+{
+    kpanic_enter();
+    kickos::kputs("\nKERNEL PANIC: ");
+#if !KICKOS_DIAG_TERSE
+    (void)file;
+    (void)line;
+#endif
+#if KICKOS_DIAG_TERSE
+    // kputs plus a hand-rolled decimal: kfmt_vsnprintf's 256-byte frame would be most of what
+    // this stack has to hold, and the boards selecting this posture are the small ones.
+    if (file != nullptr)
+    {
+        kickos::kputs("assert ");
+        kickos::kputs(file);
+        kickos::kputs(":");
         char digits[12];
         size_t n = sizeof(digits) - 1;
         digits[n] = '\0';
@@ -449,14 +495,18 @@ namespace kickos
             digits[n] = static_cast<char>('0' + (value % 10));
             value = value / 10;
         } while (value != 0 and n != 0);
-        kputs(&digits[n]);
-        kputs("\n");
-#if KICKOS_KERNEL_STACKS
-        kputs(kstack_report_text());
-#endif
-        kfault_terminate();
+        kickos::kputs(&digits[n]);
     }
+    else
 #endif
+    {
+        kickos::kputs(msg);
+    }
+    kickos::kputs("\n");
+#if KICKOS_KERNEL_STACKS && KICKOS_KSTACK_REPORT
+    kickos::kputs(kickos::kstack_report_text());
+#endif
+    kfault_terminate(); // blink forever (real HW) or exit with a fault status (host/QEMU)
 }
 
 // See kernel.h. The order below is load-bearing: mask FIRST so no ISR can enqueue after,

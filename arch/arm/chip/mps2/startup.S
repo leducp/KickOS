@@ -4,7 +4,7 @@
  * mps2-an386 (QEMU Cortex-M4F) startup: the reset vector table. vector[0] = the
  * initial MSP (_estack), vector[1] = Reset_Handler. The kernel exception
  * handlers (SVC/PendSV/SysTick) come from the armv7m arch layer; every external
- * NVIC line routes to the generic kickos_armv7m_default_irq (line = IPSR-16).
+ * NVIC line routes to the generic kickos_arm_default_irq (line = IPSR-16).
  */
 
 #include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
@@ -21,7 +21,7 @@ g_isr_vector:
 
     /* External interrupts 0..47 -> the generic IRQ-as-event entry. */
     .rept KICKOS_MAX_IRQ
-    .word kickos_armv7m_default_irq
+    .word kickos_arm_default_irq
     .endr
 
     .text

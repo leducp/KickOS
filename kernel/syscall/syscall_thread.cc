@@ -656,6 +656,17 @@ namespace kickos
             }
         }
 
+        // THE GRANT LIST IS A TAKE AGAINST THE CHILD'S TASK, admitted before any reference is
+        // taken so the only unwind owed is the run. Without it a task at its ceiling passes
+        // its objects into a second task and takes its whole ceiling over again, which is the
+        // pool's last slot two spawns later.
+        if (not task_object_admit_grants(tk, deleg_type, deleg_obj, ncaps))
+        {
+            cap_slab_detach(&attr.cap_run, &attr.cap_free_head, &attr.cap_width);
+            spawn_unwind(k, attr, tk, stack, stack_size, i);
+            return -KOS_EOVERFLOW; // the destination task holds its ceiling of one of the pools
+        }
+
         // EVERY delegated object reference is taken before the child exists. obj_ref_inc is the
         // last fallible step in the spawn, and the state to give back here is the slot, the
         // demand-allocated stack and the provisional task. After thread_create the unwind would

@@ -3,7 +3,7 @@
  *
  * Node 1's vector table, and the park handler every line but the doorbell points at.
  *
- * The reset table (startup.S) funnels every external line into kickos_armv7m_default_irq,
+ * The reset table (startup.S) funnels every external line into kickos_arm_default_irq,
  * which reaches kernel() through kickos_instance_index(); node 1 runs no scheduler, and with
  * multi-instance off that Kernel is core 0's LIVE state. N5's launch hands core 1 its own
  * VTOR, so this table closes that path structurally.

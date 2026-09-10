@@ -140,6 +140,7 @@ namespace kickos
     inline void aspace_activate_for(Thread const*) {}
     inline bool aspace_seated_for(Thread const*) { return true; }
     inline void aspace_install_boot(void) {}
+    inline void* aspace_image_alias(void const*) { return nullptr; }
 
 #endif
 }

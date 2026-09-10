@@ -3,7 +3,7 @@
 //
 // RP2040 SIO (single-cycle IO) GPIO register map (RP2040 datasheet, RP-008371-DS,
 // 2.3.1). SIO lives on the core-local IOPORT bus, NOT the APB, so it does NOT use
-// the +0x2000/+0x3000 atomic alias window (regs/atomic.h). Instead each GPIO_OUT /
+// the +0x2000/+0x3000 atomic alias window (chip_mmap.h). Instead each GPIO_OUT /
 // GPIO_OE register has its own dedicated SET / CLR / XOR sibling register. A pin
 // must first be muxed to FUNCSEL_SIO (regs/io_bank0.h) before SIO drives it.
 

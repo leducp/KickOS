@@ -9,6 +9,7 @@
 // root is the level-1 table and the leaves sit at level 3.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/aspace_table.h>
 #include <kickos/extent.h>
 
 #include "sysops_armv8a.h"
@@ -312,26 +313,6 @@ namespace
 #endif
     }
 
-    void zero_table(uint64_t* table)
-    {
-        for (size_t i = 0; i < PTES; i++)
-        {
-            table[i] = 0;
-        }
-    }
-
-    bool table_empty(uint64_t const* table)
-    {
-        for (size_t i = 0; i < PTES; i++)
-        {
-            if (table[i] != 0)
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
     bool memtype_attr(enum arch_map_memtype type, uint64_t* out)
     {
         if (type == ARCH_MAP_NORMAL)
@@ -472,7 +453,7 @@ namespace
                 {
                     return ARCH_ASPACE_ENOMEM;
                 }
-                zero_table(table_at(frame));
+                kickos::aspace::zero_table(table_at(frame), PTES);
                 desc = static_cast<uint64_t>(frame) | DESC_VALID | DESC_BIT1;
                 kickos_armv8a_dsb_ishst();
                 table[idx] = desc;
@@ -510,7 +491,7 @@ namespace
     {
         if (level == LEVEL_LEAF)
         {
-            return table_empty(table);
+            return kickos::aspace::table_empty(table, PTES);
         }
         for (size_t i = 0; i < PTES; i++)
         {
@@ -526,7 +507,7 @@ namespace
                 kickos_frame_free(child);
             }
         }
-        return table_empty(table);
+        return kickos::aspace::table_empty(table, PTES);
     }
 
     // Null when the range is not wholly mapped, which is what makes unmap total-or-fail.
@@ -582,18 +563,12 @@ namespace
 
     bool range_ok(uintptr_t va, size_t pages)
     {
-        if ((va & (GRANULE - 1)) != 0)
+        uintptr_t last = 0;
+        if (not kickos::extent_last_aligned(va, pages, GRANULE, &last))
         {
-            return false;
+            return false; // misaligned, 0 pages, past the pointer width, or a wrapped end
         }
-        uintptr_t end = 0;
-        if (not kickos::extent_end(va, pages, GRANULE, &end))
-        {
-            return false; // 0 pages, a byte count past the pointer width, or a wrapped end
-        }
-        // end is exclusive, and extent_end refused a zero-page range, so end - 1 is the last
-        // byte the range covers and cannot underflow.
-        return low_half_page(end - 1);
+        return low_half_page(last);
     }
 }
 
@@ -671,7 +646,7 @@ struct arch_aspace* arch_aspace_create(void)
         return nullptr;
     }
     uint64_t* const table = table_at(root);
-    zero_table(table);
+    kickos::aspace::zero_table(table, PTES);
     kickos_armv8a_dsb_ishst();
     // No kernel half is copied in: this architecture selects the table from the top bits of the
     // address, so the kernel window is TTBR1's. The handle is the root table's address.

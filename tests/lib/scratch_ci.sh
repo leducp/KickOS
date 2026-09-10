@@ -45,6 +45,16 @@ _scratch_ci_fresh() {
     _scratch_ci_configure --fresh
 }
 
+# A tree that held another checkout, or another ISA, is DELETED rather than reconfigured.
+# --fresh leaves every object and every .ci beside it, and both consumers glob '**/*.ci'
+# recursively, so a translation unit that exists only in the other checkout stays in the
+# merged callgraph: it lands as AMBIGUOUS DEFINITION where the surviving tree also defines
+# the symbol, and as a silently wider graph where it does not.
+_scratch_ci_wipe() {
+    rm -rf "$_KOS_CI_BUILD"
+    _scratch_ci_configure
+}
+
 _scratch_ci_flags_ok() {
     _cxx="$(sed -n 's/^CMAKE_CXX_FLAGS:STRING=//p' "$_KOS_CI_BUILD/CMakeCache.txt" | head -n1)"
     case " $_cxx " in
@@ -93,13 +103,13 @@ scratch_ci_build() { # <src-dir> <cmake> <preset> <build-dir>
     else
         if [ -f "$_KOS_CI_BUILD/CMakeCache.txt" ]; then
             if ! _scratch_ci_source_ok; then
-                echo "$KOS_CI_TAG: reconfiguring $_KOS_CI_BUILD from scratch; its cache names another"
-                echo "$KOS_CI_TAG: source tree, so what it holds is another checkout's depths"
+                echo "$KOS_CI_TAG: deleting $_KOS_CI_BUILD; its cache names another source tree,"
+                echo "$KOS_CI_TAG: so what it holds is another checkout's depths"
             else
-                echo "$KOS_CI_TAG: reconfiguring $_KOS_CI_BUILD from scratch; its flags are not the ones"
-                echo "$KOS_CI_TAG: this measurement needs, so what it holds is another ISA's depths"
+                echo "$KOS_CI_TAG: deleting $_KOS_CI_BUILD; its flags are not the ones this"
+                echo "$KOS_CI_TAG: measurement needs, so what it holds is another ISA's depths"
             fi
-            _scratch_ci_fresh
+            _scratch_ci_wipe
         else
             # A directory with generated Kconfig state and NO cache is the same refusal one
             # branch up: the cache is what --fresh drops, and it is the generated state that makes

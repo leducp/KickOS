@@ -2152,6 +2152,83 @@ that separates a real sweep from a reprint of an older run's status files. That 
 review said was missing, and the by-rule configure change is exactly the class that needed it: it
 moves every preset's configure and a hand-picked sample cannot speak for it.
 
+## M8.5: de-duplication in kernel and arch, and what these green runs do NOT say
+
+**THE MILESTONE'S YIELD IS NOT THE LINE COUNT. THREE SEPARATE INSTRUMENTS WERE CAUGHT LYING, ALL
+SILENTLY GREEN, AND EACH WAS FOUND BY A CONTROL RATHER THAN BY A FAILURE.** The callgraph scratch
+tree is named by PRESET alone and shared across every checkout on this box, and its
+wrong-checkout path ran `cmake --fresh`, which leaves the other tree's objects and `.ci` files
+in place for both consumers to glob: a foreign translation unit entered the merged graph, and
+where it defined no symbol the surviving tree also defined, the only effect was a WIDER graph
+that inflates a node count and can inflate a depth. Fixed by deleting such a tree rather than
+reconfiguring it. Second, an ARM linker-script bracket went vacuous because `retain` is
+unsupported there and `used` alone let `--gc-sections` delete the planted `.bss`, so three
+"links fine" arms measured an unmoved `_ebss`. Third, a red-zone sample measured four arches on
+presets that all print NOT ENFORCED beside the class the change actually touched. **The common
+shape is that the instrument answered a question nobody had asked**, and in all three the output
+said so to a reader who checked.
+
+**THE FIX PHASE WAS SUPPOSED TO BE OVER, AND DE-DUPLICATION KEPT FINDING DEFECTS ANYWAY.** Folding
+the two STM32 chips exposed a console divisor fixed at the PLL rate, so on the documented
+dead-crystal degrade path the console came out near an eighth of its baud while the sibling chip
+recomputed. Hold-counting exposed an `index_of(resolve(h))` round trip that computed an index,
+discarded it and recovered it by pointer subtraction and a divide. A red-zone break attributed to
+a new walk turned out to be one `KICKOS_ASSERT(false)` in an UNREACHABLE default arm, which the
+callgraph cannot know is unreachable, dragging the whole console reporter under a dispatch chain
+on four arches. **None of these is a de-duplication defect; each is a defect that only became
+visible when one body served two callers.**
+
+**TWO DEFECTS APPEARED ONLY AT THE MERGE, WITH EVERY BRANCH GREEN ON ITS OWN.** A per-task object
+walk broke the SVC red zone on the kstacks-0 boards, and an installed header included a per-arch
+header that only three arches ship, which the out-of-tree gate catches and no branch suite runs.
+**Both were invisible to every branch that produced them**, which is the argument for merging
+early and running the ENFORCING preset rather than a representative one.
+
+**THE PANIC ITEM'S OWN PREMISE WAS ABOUT A THIRD RIGHT, AND THE CORRECTION OUTLIVES THE FIX.** The
+reporter owns three of the eight figures said to sit at their reserve; two of the eight were never
+at reserve at all; the remainder belong to the FAULT reporter, to a bench print arm, and to plain
+scheduler work whose round-up landed on the measurement. The tail is not one number per arch
+either. **The fault reporter cannot share the panic array**: that array is one per core entered
+once because a panic is terminal, while a thread fault leaves the system running and a second
+thread can fault mid-print.
+
+**THE OBJECT RESERVE ANSWERS ACCIDENT AND NOT AN ADVERSARY, AND A CLAIM THAT IT ANSWERED BOTH WAS
+RETRACTED.** The party holding a pool slot when a driver dies is a well-behaved task that created
+objects up to its own limit; against that the per-task shape is exactly right. Against an
+adversary it never worked and could not, because a respawn needs a THREAD before it needs an
+endpoint and the thread pool carries no quota. **An intermediate reading, that respawn attrition
+was structural, was WRONG and is retracted**: the peer closing does not free this side, so a
+client that closes on EPIPE returns the slot at once. Staying dark for a client's lifetime is a
+decision about not RECONNECTING and never required holding the dead capability.
+
+**THE SEAM LAYER IS DECIDED BY ARCHIVE SCAN ORDER, WHICH NO DOCUMENT STATED.** The link rescans
+chip before arch, so a seam moved from a chip archive to an arch archive crosses to the far side
+of its own fallback, and whether it may move at all depends on whether a fallback for it exists
+in that link. Applied per SYMBOL rather than per file, that test decided three of the folds.
+
+**THE 99-PERCENT-IDENTICAL arm64 LINKER SCRIPTS CANNOT BE SHARED, AND THE REFUSAL IS STRUCTURAL.**
+Two readers `file(READ)` the chip script's SOURCE and require seven macro invocations BY NAME, so
+a stub including a shared body contains none of them and fails at configure. Proven by reducing
+one script to the stub rather than argued.
+
+**WHAT NO GREEN RUN HERE WITNESSES, and the list is longer than usual because this milestone
+touched every backend.** No silicon ran at all. The lx6 doorbell has no emulator arm, so the
+folded protocol is built and never executed there. Neither RP board can run on this bench. The
+AMP presets register no doorbell-generic gate, their kernel core count being one, so the fold is
+exercised there while its boundary clause is not. And the x86_64 suite stays green with two
+page-table helpers made no-ops, because nothing on that preset drives a failed map.
+
+**THE ONLY THING THAT READS THE INSTALLED PACKAGE FROM OUTSIDE COVERS TWO PRESETS.** `oot_export`
+registers on the host preset and its MCU sibling on one armv7m board, so a header that ships for
+one arch alone is unexamined everywhere else. Two assembler sources carrying a `.h` extension
+have been failing that compile for as long as they have existed, and nothing reports them.
+
+**A GATE CAN CERTIFY A PROTOCOL THAT DOES NOTHING.** Dropping the request-cell store from the
+doorbell's send leaves the cross-core gate GREEN and announcing that every core answered: the
+postcondition compares an answer against a request and both are zero, the raise still fires, and
+the peers still acknowledge. Only a selftest arm reading a count that must MOVE catches it. The
+hole is pre-existing by construction and was not measured before this milestone.
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).

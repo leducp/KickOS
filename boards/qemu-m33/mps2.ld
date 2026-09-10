@@ -17,6 +17,7 @@
  */
 
 #include <sections.ld.h>
+#include <kernel_data_reserve.ld.h>
 
 ENTRY(Reset_Handler)
 
@@ -39,6 +40,11 @@ _kernel_stack_size = 16K;              /* boot/handler (MSP) stack */
 #define KICKOS_APPDATA_SIZE 64K
 #endif
 _appdata_size = KICKOS_APPDATA_SIZE;
+/* Room for kernel .data/.bss below the app window; see kernel_data_reserve.ld.h. */
+#ifndef KICKOS_KERNEL_DATA_RESERVE
+#define KICKOS_KERNEL_DATA_RESERVE 64K
+#endif
+KICKOS_KERNEL_DATA_RESERVE_DECL(ORIGIN(RAM))
 #endif
 
 SECTIONS
@@ -171,11 +177,12 @@ SECTIONS
         _ebss = .;
     } > RAM
 
-    /* App-granted RW window: pow2 PMSA region, base aligned to its size by the section-
-       level ALIGN (a top-level `. = ALIGN()` is swallowed by the region pointer under
-       `> RAM`). All remaining .data/.bss/COMMON (app + runtime + KickCAT). .appdata is
+    /* App-granted RW window: pow2 PMSA region based at _kernel_data_top, so kernel .bss
+       growth moves neither this window nor the arena above it. The MAX belongs in this
+       ADDRESS expression and nowhere else; kernel_data_reserve.ld.h says why. The
+       section-level ALIGN keeps the base pow2-aligned when the reserve is overflowed. All remaining .data/.bss/COMMON (app + runtime + KickCAT). .appdata is
        loaded from flash; the gap past it + .appbss + the pad are zeroed. */
-    .appdata : ALIGN(_appdata_size)
+    .appdata MAX(., _kernel_data_top) : ALIGN(_appdata_size)
     {
         __kickos_appdata_start = .;
         *(.data .data.*)
@@ -281,6 +288,7 @@ ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
 /* App globals must fit the pow2 region. If this trips, raise _appdata_size to the
    next power of two (it is the app's MPU-granted .data/.bss window). */
 #if KICKOS_HAVE_MPU
+KICKOS_KERNEL_DATA_RESERVE_ASSERT(_ebss)
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
 /* Lower bound: an empty .appdata dropping its ALIGN would place .appbss below the base. */

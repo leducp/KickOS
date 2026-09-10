@@ -1227,6 +1227,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(death_stack_seating PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME panic_stack_seat
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_panic_stack_seat.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(panic_stack_seat PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   _add_test(NAME park_death_point
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_park_death_point.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")

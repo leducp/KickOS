@@ -41,6 +41,7 @@ static_assert(KICKOS_MAX_SPAWN_GRANTS < KICKOS_CAP_CHILD_WIDTH,
 namespace kickos
 {
     struct Thread; // kickos/thread.h
+    struct Task;   // kickos/task.h
 
     // A cap handle is (gen << KCAP_INDEX_BITS) | index. The split is FIXED fleet-wide and
     // never derived from KICKOS_MAX_HANDLES, so a per-board RAM decision cannot renumber
@@ -675,6 +676,36 @@ namespace kickos
     // partially-taken batch (the spawn delegation loop), never as a general release: it runs
     // no close protocol and frees nothing. Caller holds IrqLock.
     void obj_ref_undo(CapType type, int obj_handle, uint8_t rights);
+
+    // THE PER-TASK OBJECT BUDGET (instance.h: TASK_OBJECT_RESERVE, task_object_ceiling).
+    //
+    // What a task holds of a charged pool is DERIVED from the capability tables of its live
+    // members, one bit per pool slot, and recorded nowhere. So no release owes a refund, no
+    // dying task owes a sweep, and a delegated object counts against whoever holds it rather
+    // than against whoever made it. The unit is the SLOT: two capabilities on one object cost
+    // a task one, which is what the pool actually gives up.
+    //
+    // A DYING MEMBER KEEPS ITS TASK UNTIL ITS SWEEP IS OVER, WHENEVER A SIBLING SURVIVES.
+    // sched::exit_current clears Thread::task before cap_teardown only where the death
+    // empties the group, which is the case with no sibling to protect and the slot free to
+    // recycle. Clearing it while a sibling remains would make that member's still-open
+    // capabilities invisible for the length of a sweep that drops the lock every few
+    // entries, and the sibling would then be admitted a whole fresh ceiling.
+
+    // Whether task `t` may come to hold one more slot of `kind`'s pool. Asked BEFORE the
+    // allocation at every creator, so a task at its ceiling is refused without churning a
+    // slot and the answer does not depend on how full the pool happens to be. An uncharged
+    // kind and a null task are both admitted, the second being the boot window before a task
+    // exists. Caller holds IrqLock.
+    [[nodiscard]] bool task_object_admit(CapType kind, Task const* t);
+
+    // Whether task `t` may come to hold every charged object in a spawn's grant list, which
+    // is admitted as ONE take: a grant naming a slot the task already holds costs nothing,
+    // and two grants naming one slot cost one. A DELEGATION IS A TAKE, or a task at its
+    // ceiling would pass its objects to a second task and take its whole ceiling again.
+    // Caller holds IrqLock.
+    [[nodiscard]] bool task_object_admit_grants(Task const* t, uint8_t const* types,
+                                                int const* objs, int n);
 
     // The single authority chokepoint: may thread `c` ask the kernel to do `need` (one or more
     // AUTH_* bits)? True if it is privileged, or if its authority word carries every requested

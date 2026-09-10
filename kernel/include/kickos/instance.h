@@ -89,20 +89,14 @@ namespace kickos
         // -KOS_EOVERFLOW rather than wrapping; there is deliberately no static_assert
         // welding it to MAX_THREADS x MAX_HANDLES.
         uint8_t sem_refs[KICKOS_MAX_SEMAPHORES] = {};
-        // Which TASK is charged for slot i, as task_owner_tag() below encodes it. NOT a field
-        // in Semaphore: the charge outlives every reset the object's own claim path performs.
-        // Laid against the refs array so neither introduces fill.
-        uint8_t sem_owner[KICKOS_MAX_SEMAPHORES] = {};
         // PI-mutex pool and its object-side refcount, same shape as the sems.
         SlotPool<Mutex, KICKOS_MAX_MUTEXES> mutexes;
         uint8_t mutex_refs[KICKOS_MAX_MUTEXES] = {};
-        uint8_t mutex_owner[KICKOS_MAX_MUTEXES] = {};
         // Endpoint (IPC rendezvous) pool and its object-side refcount. recv_holders is NOT
         // here: its single home is the Endpoint struct, and it shares this ceiling because
         // one obj_ref_inc moves both counters or neither.
         SlotPool<Endpoint, KICKOS_MAX_ENDPOINTS> endpoints;
         uint8_t endpoint_refs[KICKOS_MAX_ENDPOINTS] = {};
-        uint8_t endpoint_owner[KICKOS_MAX_ENDPOINTS] = {};
         // Idle's TCB, the one thread the pool below does not seat. Placed against an
         // 8-aligned member so it introduces no fill of its own; its STACK is not here,
         // it comes from the arena (boot_stack_alloc).
@@ -138,7 +132,6 @@ namespace kickos
         // irq_ref_drop detaches BEFORE it frees.
         SlotPool<IrqBinding, KICKOS_MAX_IRQ_HANDLES> irq_bindings;
         uint8_t irq_refs[KICKOS_MAX_IRQ_HANDLES] = {};
-        uint8_t irq_owner[KICKOS_MAX_IRQ_HANDLES] = {};
         uint32_t irq_spurious_count = 0; // IRQs on a line with no driver (masked)
 
     };
@@ -150,9 +143,9 @@ namespace kickos
     // only by re-running a microbit capture and diffing .bss by hand, which is not routine.
     // This pins the adjacency the whole free-padding argument rests on. It does not prove
     // zero padding; it fails the moment the claim stops being checkable by inspection.
-    // 32-BIT ONLY, and the assert caught that itself the first time it was written without the
-    // guard: a 64-bit host aligns `sleepq` to 8, so six bytes follow `task_holds` there and the
-    // adjacency is false by construction. The claim is about the boards. Same trap
+    // 32-BIT ONLY, and the guard is load-bearing rather than defensive: a 64-bit host aligns
+    // `sleepq` to 8, so six bytes follow `task_holds` there and the adjacency is false by
+    // construction. The claim is about the boards. Same trap
     // task_scalar_bytes() documents for sizeof(Task). A host build prices the tail differently.
     static_assert(sizeof(void*) != 4
                       or offsetof(Kernel, sleepq)
@@ -171,29 +164,6 @@ namespace kickos
         return detail::g_instance.get();
     }
 
-    // A pooled object's OWNER, as the creating task's slot PLUS ONE: 0 is NOBODY, which a
-    // kernel-init mint leaves, a release writes back, and task_object_disown writes over a
-    // dying task's tag. Kept per SLOT for the OBJECT's whole life, the task that releases an
-    // object not always being the one that created it: a delegated capability outlives its
-    // creator's own, and an exiting thread's Task pointer is already cleared by the time
-    // cap_teardown drops the last reference.
-    constexpr uint8_t TASK_OWNER_NONE = 0;
-
-    static_assert(KICKOS_MAX_TASKS < 0xFF,
-                  "a task slot plus one must fit an owner byte and stay clear of "
-                  "TASK_OWNER_NONE");
-
-    // THE POINTER MUST BE ONE THE POOL OWNS: the tag is its offset in kernel().tasks, so a
-    // Task living anywhere else encodes a slot it does not occupy.
-    inline uint8_t task_owner_tag(Task const* t)
-    {
-        if (t == nullptr)
-        {
-            return TASK_OWNER_NONE;
-        }
-        return static_cast<uint8_t>((t - &kernel().tasks[0]) + 1);
-    }
-
     // Slots of every charged object pool that stay out of reach of ANY ONE task, so no task
     // can take a pool's last slot out from under a supervisor's respawn.
     //
@@ -203,7 +173,8 @@ namespace kickos
     // pizero2350-amp2.
     //
     // IT BOUNDS ONE TASK AND NOT THE SYSTEM: two tasks at their ceilings still empty a pool
-    // between them. Bounding that collusion is a quota on the capability slab and not this.
+    // between them, and KOS_SYS_TASK_CREATE carries no authority bit, so one caller reaches
+    // that by minting a second task. Bounding it is a quota on task creation, not this.
     constexpr int TASK_OBJECT_RESERVE = 1;
 
     // A POOL THIS CHARGES IS EITHER ABSENT OR WIDER THAN THE RESERVE. At exactly one slot the
@@ -223,39 +194,37 @@ namespace kickos
                   "KICKOS_MAX_IRQ_HANDLES is 1: no task could ever bind a tier-1 IRQ. Set it "
                   "to 0 to drop the pool, or to 2 or more");
 
-    // How many of a pool's `slots` the task tagged `mine` holds. THE OWNER ARRAY IS THE
-    // ACCOUNTING: a per-task counter beside it would be a second truth, and deriving the count
-    // is what makes a release give the budget back with no credit arithmetic at all.
-    inline int task_object_held(uint8_t const* owner, int slots, uint8_t mine)
+    // A HOLD SET IS 32 BITS OF POOL SLOTS (TaskObjectHolds, cap.h), so a wider pool would
+    // carry slots no ceiling can see. The Kconfig ranges are narrowed to match; this is the
+    // backstop for a board_config.h that defines a width directly.
+    static_assert(KICKOS_MAX_SEMAPHORES <= 32 and KICKOS_MAX_MUTEXES <= 32
+                      and KICKOS_MAX_ENDPOINTS <= 32 and KICKOS_MAX_IRQ_HANDLES <= 32,
+                  "a charged object pool is wider than a hold set's 32 bits: narrow the pool, "
+                  "or widen TaskObjectHolds in cap.h and this assert together");
+
+    // How many pool slots a hold set names. Costs one iteration per SET bit, so a task
+    // holding nothing pays nothing.
+    inline int task_object_count(uint32_t held)
     {
         int n = 0;
-        for (int i = 0; i < slots; i++)
+        while (held != 0)
         {
-            if (owner[i] == mine)
-            {
-                n++;
-            }
+            held = held & (held - 1u);
+            n++;
         }
         return n;
     }
 
-    // Whether `t` may take one more slot of the pool whose owners are `owner`. Asked BEFORE
-    // the pool allocation at every creator, so a task at its ceiling is refused without
-    // churning a slot and the answer does not depend on how full the pool happens to be.
-    // A caller holding no task is unbudgeted, which is the boot window before one exists.
-    inline bool task_object_admit(uint8_t const* owner, int slots, Task const* t)
+    // The most slots of a pool `slots` wide one task may hold: the SMALLER of the pool's own
+    // slots-minus-reserve and the task's budget.
+    inline int task_object_ceiling(Task const* t, int slots)
     {
-        uint8_t const mine = task_owner_tag(t);
-        if (mine == TASK_OWNER_NONE)
-        {
-            return true;
-        }
         int ceiling = slots - TASK_OBJECT_RESERVE;
         if (ceiling > static_cast<int>(t->object_budget))
         {
             ceiling = static_cast<int>(t->object_budget);
         }
-        return task_object_held(owner, slots, mine) < ceiling;
+        return ceiling;
     }
 }
 

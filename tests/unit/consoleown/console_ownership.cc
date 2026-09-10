@@ -82,6 +82,14 @@ extern "C"
         printf("FIXTURE FAIL: kfault_terminate ended the arm\n");
         exit(1);
     }
+    // No stack switch, as on ARCH_SIM: a host thread stack is megabytes and no red-zone
+    // class measures one.
+    void kickos_panic_stack_enter(char const* msg, char const* file, unsigned line,
+                                  uintptr_t top)
+    {
+        (void)top;
+        kickos_panic_report(msg, file, line);
+    }
 }
 
 namespace kickos

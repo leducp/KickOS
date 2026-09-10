@@ -21,6 +21,7 @@
 //     ARCH_ASPACE_ACQUIRE_MIN DISTINCT pages per core, not that many calls.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/aspace_table.h>
 #include <kickos/arch/rv64_paging.h>
 #include <kickos/extent.h>
 
@@ -356,26 +357,6 @@ namespace
         invalidate_page(va);
     }
 
-    void zero_table(uint64_t* table)
-    {
-        for (size_t i = 0; i < PTES; i++)
-        {
-            table[i] = 0;
-        }
-    }
-
-    bool table_empty(uint64_t const* table)
-    {
-        for (size_t i = 0; i < PTES; i++)
-        {
-            if (table[i] != 0)
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
     // An entry carries permissions and no memory type: the attribute is the physical address's,
     // fixed by the platform, and Svpbmt is absent on this part (menvcfg.PBMTE reads back 0).
     bool memtype_known(enum arch_map_memtype type)
@@ -482,7 +463,7 @@ namespace
                 {
                     return ARCH_ASPACE_ENOMEM;
                 }
-                zero_table(table_at(frame));
+                kickos::aspace::zero_table(table_at(frame), PTES);
                 desc = pa_ppn(frame) | PTE_V;
                 __asm volatile("fence w, w" ::: "memory");
                 table[idx] = desc;
@@ -523,7 +504,7 @@ namespace
     {
         if (level == LEVEL_LEAF)
         {
-            return table_empty(table);
+            return kickos::aspace::table_empty(table, PTES);
         }
         for (size_t i = 0; i < PTES; i++)
         {
@@ -547,7 +528,7 @@ namespace
                 kickos_frame_free(child);
             }
         }
-        return table_empty(table);
+        return kickos::aspace::table_empty(table, PTES);
     }
 
     // Null when the range is not wholly mapped, which is what makes unmap total-or-fail.
@@ -579,18 +560,12 @@ namespace
 
     bool range_ok(uintptr_t va, size_t pages)
     {
-        if ((va & (GRANULE - 1)) != 0)
+        uintptr_t last = 0;
+        if (not kickos::extent_last_aligned(va, pages, GRANULE, &last))
         {
-            return false;
+            return false; // misaligned, 0 pages, past the pointer width, or a wrapped end
         }
-        uintptr_t end = 0;
-        if (not kickos::extent_end(va, pages, GRANULE, &end))
-        {
-            return false; // 0 pages, a byte count past the pointer width, or a wrapped end
-        }
-        // end is exclusive, and extent_end refused a zero-page range, so end - 1 is the last
-        // byte the range covers and cannot underflow.
-        return low_half_page(end - 1);
+        return low_half_page(last);
     }
 
     // The whole output extent [pa, pa + pages * GRANULE), tested BEFORE any entry is written,

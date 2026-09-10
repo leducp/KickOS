@@ -20,11 +20,91 @@ provides two halves:
   (`arch/common/arch_diag_led_{init,set}_default.cc`), so a board with no known LED
   just leaves them out.
 
+`arch/<family>/common/` is not a third layer. It holds what several backends of ONE ISA family
+share and would otherwise copy (`arch/arm64/common/`: the GIC backends, the architected-timer and
+semihosting seams, the VMSA constants its startup assembly reads), and those translation units go
+into the ARCH archive answering the same `arch.h`. Two things differ from a chip directory. It is
+NOT globbed, so a file added there needs an explicit entry in the arch source list
+(`arch/CMakeLists.txt`). And the chip archive precedes the arch archive in the link group, so a
+seam whose fallback sits in the arch archive must keep its backend definition chip-side: moved
+here it would resolve to the fallback and the board would SILENTLY DECLINE.
+
 No KickOS seam is a weak symbol. An optional seam's fallback body lives ALONE in a
 translation unit named `<symbol>_default.cc` that defines EXACTLY ONE global symbol, and a
 backend's own definition must sit in an always-anchored archive member -- the rule is stated
 in `arch/CMakeLists.txt` ("Seam fallbacks: the lone-TU rule") and detailed under
 *Privileged register write* below.
+
+### The panic reporter runs on a stack of its own (`kickos_panic_stack_enter`)
+
+`kpanic` and `kpanic_at` do not print on the stack they were called from. They call
+`kickos_panic_stack_enter(msg, file, line, top)` with `top` in this core's slice of the reporter
+array, and every backend implements that entry in ITS OWN `switch.S`. The body owes four things,
+in order: mask interrupts; move the stack pointer FROM THE FOURTH ARGUMENT REGISTER; leave
+arguments one to three alone; branch, never call, into `kickos_panic_report`.
+
+**EVERYTHING TRAVELS IN REGISTERS AND NOTHING IN `.bss`**, and that is correctness rather than
+taste. The array is per core, so two cores of a shared kernel panicking together must each carry
+their own seat and their own message: a shared word holding either would let the second core's
+write decide where the first one lands.
+
+**IT IS A MANDATORY SEAM, with no `_default.cc` fallback**, so an unported backend fails to
+link. That is deliberate: the red-zone figures every arch enforces no longer reserve for the
+console tail, and a backend that silently kept the old reporter would spend a descent nothing
+reserves for. `ARCH_SIM` is the one backend that does not switch, and `KICKOS_PANIC_STACK_SIZE`
+is 0 there to say so; on every other arch a zero there is refused by
+`tests/static/check_trap_redzone.sh`.
+
+**Why a `.S` body and not `__attribute__((naked))`.** A function cannot move its own stack
+pointer and then continue in C, so the move has to end in a branch; and the callgraph walk that
+measures every red zone stops at a body no `.ci` file describes, which is what takes the
+console out of those figures. Assembly gives both. It also dodges the Xtensa windowed ABI,
+where a callee that skips `entry` cannot write the stack pointer its callee will see, which is
+why the lx6 body is the one that opens a 32-byte frame on the stack it is leaving.
+
+**What checks the body, and what does not.** `check_trap_redzone.sh` reads the callgraph, so it
+cannot see whether a body moved the stack pointer at all: a shim that branches without moving
+passes every figure while the reporter runs on the caller's stack.
+`tests/static/check_panic_stack_seat.sh` is what reads the body instead, naming the ISA's mask
+and the one instruction that writes its stack pointer FROM THE FOURTH ARGUMENT REGISTER. It is
+text, so it cannot show either instruction is REACHED. The running half is the qemu `panicgate`
+suite, and it does not reach every backend: `kickos_add_qemu_test` registers it for armv7m,
+armv6m, rv32imac, rv64imac, armv8a and x86_64, so **rxv3 and lx6 have no runtime arm and the
+source gate is the whole of their witness**.
+
+`KICKOS_PANIC_STACK_SIZE` is a Kconfig default per arch: the next multiple of 64 strictly above
+the gate's PANIC class reading. A new arch owes that reading before its figure means anything,
+so take the class's printed depth on a real board rather than copying another arch's number.
+
+### Chip-family units (two chips, one body)
+
+Two chips of one vendor family may share a translation unit. It sits in a family directory
+beside the chip directories, named for exactly the parts it covers
+(`arch/arm/chip/stm32f1f3/`, shared by `stm32f103` and `stm32f302`), and each chip opts in
+by shipping a `family.cmake` that sets `KICKOS_CHIP_FAMILY_DIR` and
+`KICKOS_CHIP_FAMILY_SOURCES`, the same shape as `caps.cmake` and `mpu.cmake`.
+
+Three rules make it safe:
+
+- **It is compiled into the CHIP archive, once per chip, never into an archive of its own.**
+  A chip linker script selects `.data`/`.bss` by `archive:member`, so a new archive falls
+  through to the `.appdata`/`.appbss` catch-all and lands writable by every unprivileged
+  thread, which is what `tests/static/check_appdata_no_kernel.sh` exists to catch.
+- **A chip's contribution is a compile-time constant or an inline accessor in its own
+  `family_map.h`, never a callback.** The family unit is compiled per chip with that header
+  visible, so a shared body folds to the code the chip's own unit emitted before. A function
+  pointer would instead add a call frame on paths the red-zone gate measures, and on armv7m
+  the EXIT class has no margin at all.
+- **A body is family-generic when the family's silicon determines it and only per-part
+  constants vary** (the RCC/FLASH/TIM/USART contract). It stays chip-local when the parts
+  differ in kind (the GPIO configuration model, which timers exist, which pins the board
+  owns), when the fact is per-part rather than per-family (`arch_mpu_min_region`: the
+  F302x8 has no MPU where the F302xB does), or when the build names the file by path
+  (`kickos_split_image_tu` is applied to `chip_<chip>.cc`, so `Reset_Handler` stays there).
+
+What moves out of a chip unit owes two record updates: `tests/static/trap_redzone_indirect.txt`
+names a file-scoped callee as `<basename>:<name>`, and a markdown citation into the chip file
+carries a path.
 
 ### Fault-reporter contract (panic must survive console handover)
 
@@ -352,11 +432,51 @@ and there is no source `board_config.h` for it to shadow.
 Almost nothing about a board's provisioning is stated in CMake. The knobs are declared in
 `Kconfig` with a `range` and a `default`, the arch and chip facts in `arch/Kconfig`, the
 board stanzas in `boards/Kconfig`, and the board's own values in its defconfig, which
-states only what differs from the declared defaults. The exception is
-`KICKOS_APPDATA_SIZE`: it is a CMake cache variable that no Kconfig symbol declares, read
-by the chip linker scripts alone, which state a per-chip `#ifndef` default and take a
-preset's value over it. So it appears in no `.config` and the AMP configuration
-fingerprint cannot see it.
+states only what differs from the declared defaults. The exceptions are
+`KICKOS_APPDATA_SIZE` and `KICKOS_KERNEL_DATA_RESERVE`: they are CMake cache variables that
+no Kconfig symbol declares, read by the chip linker scripts alone, which state a per-chip
+`#ifndef` default and take a preset's value over it. So they appear in no `.config` and the
+AMP configuration fingerprint cannot see them. `arch/CMakeLists.txt` builds the define list
+for the script's cpp as an explicit allowlist, so a new one of these reaches the script only
+when a line there passes it. A preset's value lands in `CMakeCache.txt` as
+`NAME:UNINITIALIZED`, which means REMOVING an override later needs the build tree deleted,
+not just a reconfigure.
+
+**THE APP WINDOW'S BASE IS A DECLARED RESERVE, NOT AN ALIGNMENT ACCIDENT.** On an enforcing
+chip whose app window must be pow2-sized and pow2-aligned, basing it on `ALIGN(_appdata_size)`
+above kernel `.bss` makes one byte of kernel `.bss` cost a WHOLE window of the user-RAM arena
+above it, with no diagnostic: the window, the newlib heap and the arena all slide one window
+higher and the link stays green. Measured on `stm32f411`, 16 bytes of kernel `.bss` cost
+16,384 of 73,728 arena bytes. No principled assert exists on the resulting gap, whose size is
+arbitrary modulo the window, so the base is declared instead:
+`_kernel_data_top = <kernel data base> + _kernel_data_reserve`, the reserve a whole number of
+windows, and the arena then stops moving with kernel `.bss` at all. Three ASSERTs hold it:
+kernel `.bss` must not pass the reserve, the reserve must not exceed what kernel `.bss` needs
+by a whole window, and the reserve must be a whole number of windows. A chip whose fattest
+posture needs a second window says so in its own default, and no preset in the fleet currently
+overrides one; where a single posture were the only one that needed the window, the override
+belongs in that preset, where the cost is visible. The reserve is per-chip rather than fleet-wide because it
+tracks that chip's window size and kernel footprint, which span 4x across the nine enforcing
+scripts that carry the pow2 window. Read the reserve a chip needs from its WIDEST image, not from
+one link: on `rx72m` the kernel `.bss` differs between images of the same preset, and a reserve
+sampled from a narrow one is too low.
+
+The rule, both ld facts below and the three ASSERTs live once in
+`arch/common/kernel_data_reserve.ld.h`, which every enforcing script includes and invokes as
+`KICKOS_KERNEL_DATA_RESERVE_DECL(<base>)` and `KICKOS_KERNEL_DATA_RESERVE_ASSERT(<bss end>)`.
+A script states only its reserve default, its kernel-data base and its `.bss` end symbol.
+
+**TWO GNU ld FACTS THAT SHAPE HOW THAT BASE IS SPELLED**, both of which cost a probe script
+to find. First, the pin belongs in the section's ADDRESS expression as
+`.appdata MAX(., _kernel_data_top) :`, never as a bare address: ld evaluates every `ASSERT`
+after layout, so an overflowing `.bss` has to keep laying out (one window higher) for the
+overflow ASSERT to be the thing that prints, and a bare address would fail the link with ld's
+own backwards-move error instead. Second, the same `MAX` written as a pad INSIDE an output
+section body does not work: an expression assigned to `.` inside a body is taken as an OFFSET
+FROM THE SECTION START whenever it evaluates absolute, so `. = MAX(., <absolute>)` lands the
+section a whole image higher and reports `will not fit in region` at a nonsense address. A
+purely absolute right-hand side with no `.` in it is refused outright as `invalid assignment
+to location counter`, and `ABSOLUTE(.)` does not rescue either spelling.
 
 **A KNOB TAKES ONE OF TWO ROUTES TO C, AND BOTH CARRY THE SAME VALUE.** A numeric symbol
 (`int` or `hex`) reaches C through `board_config.h`, which the generator writes with an
@@ -511,7 +631,7 @@ silicon-proven unless the row says otherwise:
 | `q35` | qemu-x86_64 | x86_64 | -- | QEMU (runnable CI gate, the `qemu-x86_64` job), booted as a PE32+ UEFI application under OVMF firmware the job resolves rather than names, because `-kernel` cannot start such an image at all. The chip selects no memory family, so the map is flat and there is no enforcement gate to run (`../reference/boards.md`, *CI coverage*) |
 | `xmc4800` | xmc4800-relax | M4F | PMSAv7 | **hardware** (LED + USIC VCOM console over the buffered ring; enforcement + the canonical per-thread peripheral-isolation proof) |
 | `stm32f411` | f411disco / blackpill | M4F | PMSAv7 | **hardware** (LED + UART + ping-pong; enforcement selftest + `mpu_fault` MemManage denial + an unprivileged root, all on `f411disco` 2026-07-29). Witnessed on one of the two boards; `blackpill` shares this backend and was not re-run |
-| `stm32f302` | f302nucleo | M4 | -- | **hardware** (LED PB13 + console; the full suite at the `f302nucleo-st` provisioning -- 63 ok / 0 not ok / 5 skipped on 16 KiB SRAM, measured at `124b68c`). Not an enforcement target: the F302R8 line has no MPU, so `arch_mpu_min_region()` returns 0 (`arch/arm/chip/stm32f302/chip_stm32f302.cc:321`) |
+| `stm32f302` | f302nucleo | M4 | -- | **hardware** (LED PB13 + console; the full suite at the `f302nucleo-st` provisioning -- 63 ok / 0 not ok / 5 skipped on 16 KiB SRAM, measured at `124b68c`). Not an enforcement target: the F302R8 line has no MPU, so `arch_mpu_min_region()` returns 0 (`arch/arm/chip/stm32f302/chip_stm32f302.cc:141`) |
 | `stm32f103` | bluepill-c8 | M3 | -- | **hardware** (F103 port HW-proven on the now-retired 10 K clone, 2026-07-14; RAM-limited selftest; c8 build-only). No MPU: the degraded privilege-only build |
 | `rp2040` | picopi | M0+ | PMSAv6-M | **hardware** (selftest over UART0/GP0; v6-M cross-domain fault silicon-proven 2026-07-19) |
 | `rp2350` | pizero2350 | M33 | **PMSAv8** | **hardware** (enforcement selftest + `mpu_fault` MemManage denial + bench/soak). Reuses the `armv7m` backend verbatim; only the MPU descriptor shape differs |
@@ -1230,7 +1350,7 @@ modes, keyed on `arch_mpu_min_region()` and `arch_mpu_region_pow2()`:
 
 | `min` | `pow2()` | size | geometry align | backends |
 |---|---|---|---|---|
-| 0 | n/a | 16-byte granular | 16 | the three no-MPU chips (`nrf51/chip_nrf51.cc:110`, `stm32f103/chip_stm32f103.cc:383`, `stm32f302/chip_stm32f302.cc:321`) and LX6 |
+| 0 | n/a | 16-byte granular | 16 | the three no-MPU chips (`nrf51/chip_nrf51.cc:110`, `stm32f103/chip_stm32f103.cc:151`, `stm32f302/chip_stm32f302.cc:141`) and LX6 |
 | != 0 | 1 | power of two, >= `min` | the size | ARM PMSAv7 (32), RISC-V PMP NAPOT (8) |
 | != 0 | 0 | multiple of `min` | `min` | ARM PMSAv8 (32), NXP SYSMPU (32), RX (16) |
 

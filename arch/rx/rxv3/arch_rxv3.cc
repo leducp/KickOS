@@ -48,6 +48,11 @@ static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_RX_CTX_OFF_STACK
               "switch.S reads stack_hi at F_CTX_STACK_HI");
 static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_RX_CTX_OFF_KERNEL_SP,
               "svc_trampoline and kickos_rx_pendsw load ctx.kernel_sp at F_CTX_KERNEL_SP");
+// The reporter's own array (kernel/init/console.cc), cut to the Kconfig figure and measured
+// against the header's by check_trap_redzone.sh. A board may only RAISE it.
+static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_RX_PANIC_FRAME + KICKOS_RX_PANIC_DEPTH,
+              "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
+
 static_assert(KICKOS_KERNEL_STACK_SIZE % KICKOS_RX_TRAP_SP_ALIGN == 0,
               "KICKOS_KERNEL_STACK_SIZE must be a multiple of KICKOS_RX_TRAP_SP_ALIGN, "
               "or a kernel stack's top does not land on the alignment the prologue "

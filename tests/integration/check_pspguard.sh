@@ -33,10 +33,11 @@
 # branch that fired, so "under stack_lo" and "at or above stack_hi" are reachable only by arms
 # that no in-stack PSP can produce.
 #
-# <banner> names the backend whose fault reporter must print the refusal: each spells its own
-# arch into the panic line (kickos_armv7m_bad_psp -> ARMV7M, kickos_armv6m_bad_psp ->
-# ARMV6M). Carried by the caller and not matched loosely, so an image whose refusal came out
-# of another backend's reporter fails here instead of passing on the shared wording.
+# <banner> names the profile whose refusal must reach the wire. One kickos_arm_bad_psp serves
+# both, and the noun comes from the KICKOS_ARM_BANNER_* literal in the arm_isa.h of the ISA
+# directory this image's archive put on the include path (ARMV7M or ARMV6M). Carried by the
+# caller and not matched loosely, so an image built against the other profile's parameters
+# fails here instead of passing on the shared wording.
 #
 # usage: check_pspguard.sh <pspguard.elf> <mode> <need> <site> <why> <banner> <outcome>
 

@@ -206,7 +206,7 @@ PendSV_Handler:
     ldr     r1, =KICKOS_ARMV6M_TRAP_NEED_SVC
     movs    r2, #0
     movs    r3, #0
-    ldr     r4, =kickos_armv6m_bad_psp
+    ldr     r4, =kickos_arm_bad_psp
     bx      r4                      /* (r0=PSP, r1=need, r2=0, r3=0) */
 
 /* The SVC entry alone. r3 is still the outgoing ctx*, which is exactly what the shared tail
@@ -226,7 +226,7 @@ PendSV_Handler:
                                        for an SVC refusal that charged the whole extent. */
     ldr     r2, [r3, #F_CTX_STACK_LO]
     ldr     r3, [r3, #F_CTX_STACK_HI]
-    ldr     r4, =kickos_armv6m_bad_psp
+    ldr     r4, =kickos_arm_bad_psp
     blx     r4                      /* (r0=PSP, r1=need, r2=stack_lo, r3=stack_hi) */
     /* Returns only when the offending thread was contained: it is slain and its next resume
        is claimed, and g_arch_next is the thread to run instead. */
@@ -445,7 +445,7 @@ svc_trampoline:
     bics    r2, r3                  /* CONTROL.SPSEL = 0: SP is the MSP from here */
     msr     control, r2
     isb
-    ldr     r1, =kickos_armv6m_no_kernel_stack
+    ldr     r1, =kickos_arm_no_kernel_stack
     bx      r1
 
 /* ------------------------------------------------------------------------- */
@@ -534,5 +534,27 @@ arch_syscall_reg:
     pop     {r4-r7}
     pop     {r1}
     bx      r1
+
+/* kickos_panic_stack_enter(msg, file, line, top): leave the interrupted stack for the
+   reporter's own (arch.h). r0-r2 pass through untouched; r3 is the seat and is reused as the
+   branch scratch only AFTER it has been spent.
+   PRIMASK before the move, or an exception taken between the two stacks on the stack this
+   exists to leave. The reporter is reached through a LITERAL and not `b`: on v6-M an
+   unconditional `b` is the T2 encoding, whose range is +/-2 KB, and the target sits in a
+   different archive member. Either way it is a BRANCH and not a call, which is what stops the
+   -fcallgraph-info walk here and keeps the console tail off every measured chain. */
+#if KICKOS_KERNEL_CORES > 1
+#error "one kernel over several armv6m cores has no per-core panic seat here"
+#endif
+    .thumb_func
+    .global kickos_panic_stack_enter
+kickos_panic_stack_enter:
+    cpsid   i
+    mov     sp, r3
+    ldr     r3, 1f
+    bx      r3
+    .align 2
+1:
+    .word   kickos_panic_report
 
     .end

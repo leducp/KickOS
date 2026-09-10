@@ -39,7 +39,9 @@ EXCLUDED_RE='=== THREAD FAULT ===| CONTAINED '
 # Files that MUST each yield a banner, one per fault reporter in the tree, so a shape that
 # stops matching cannot read as "no reporter emits a banner any more".
 REPORTERS='arch/arm/armv6m/arch_armv6m.cc
+arch/arm/armv6m/isa/arm_isa.h
 arch/arm/armv7m/arch_armv7m.cc
+arch/arm/armv7m/isa/arm_isa.h
 arch/arm64/armv8a/arch_armv8a.cc
 arch/riscv/rv32imac/arch_rv32imac.cc
 arch/riscv/rv64imac/arch_rv64imac.cc

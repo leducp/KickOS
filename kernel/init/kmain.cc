@@ -121,14 +121,12 @@ namespace kickos
             char const* app_stamp = g_app_build_time;
             if (app_stamp != nullptr)
             {
-#if KICKOS_HAVE_ASPACE
                 char const* const alias
                     = static_cast<char const*>(aspace_image_alias(app_stamp));
                 if (alias != nullptr)
                 {
                     app_stamp = alias;
                 }
-#endif
                 kprintf(KDIAG_F_BANNER_APP, app_stamp);
             }
             kprintf(KDIAG_F_BANNER_COMMIT, kickos_build_commit);
@@ -244,13 +242,12 @@ namespace kickos
         // image, the app window not being linked where it loads until the first space is
         // seeded.
         struct kos_init_args* args = g_init_args_home;
-#if KICKOS_HAVE_ASPACE
-        args = static_cast<struct kos_init_args*>(aspace_image_alias(g_init_args_home));
-        if (args == nullptr)
+        struct kos_init_args* const alias
+            = static_cast<struct kos_init_args*>(aspace_image_alias(g_init_args_home));
+        if (alias != nullptr)
         {
-            args = g_init_args_home;
+            args = alias;
         }
-#endif
         args->argc = argc;
         args->argv = argv;
 

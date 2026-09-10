@@ -99,23 +99,22 @@
  *   _SYS          0  svc_trampoline moves R0 to ctx.kernel_sp before it calls anything.
  *   _SYS_FAST    32  the same epilogue and so the same chain as _PENDSW. It stays a macro of
  *                    its own because it is a distinct SITE with its own guard.
- *   _SYSK       796  the deeper of the two roots on the kernel block, with the panic tail
- *                    COUNTED, trap_redzone_roots.txt declaring SYSK stack=kernel and a
- *                    stack=kernel class being measured with no exclusion. kickos_ipc_fastpath
- *                    is the other root and is dominated; syscall_dispatch sets it, read on
+ *   _SYSK       796  ENFORCED over 632 measured, as headroom a future change is measured
+ *                    against; cutting it to the measurement returns 164 per
+ *                    KICKOS_THREAD_SLOTS. THE PANIC REPORTER IS NOT ON THIS CHAIN: kpanic
+ *                    leaves this stack before it prints (kickos_panic_stack_enter,
+ *                    switch.S), so the console is the PANIC class and not a term here.
+ *                    kickos_ipc_fastpath is the other
+ *                    root and is dominated; syscall_dispatch sets the measurement, on
  *                    rx72m-st:
- *                    syscall_dispatch[36] -> syscall_body[108] -> thread_create_call[248]
- *                    -> cap_install_defaults[4] -> cap_seat_stdout[40] -> obj_ref_inc[20]
- *                    -> ref_counters[32] -> kpanic[8] -> kputs[8] -> kconsole_write[4]
- *                    -> kconsole_write_impl[152] -> console_emit[32]
- *                    -> arch_console_write[4] -> console_tx_write[48] -> drain_sync[28]
- *                    -> wait_slot[20] -> the indirect call at console_tx.cc:70:37
- *                    -> rx_tx_slot_free[4].
- *                    rx72m and rx72m-flat read 700 over the same chain: with the self-test
- *                    syscalls out of the image gcc inlines syscall_body into
- *                    syscall_dispatch, one 48-byte frame instead of 36 + 108. ONE FIGURE
- *                    COVERS BOTH POSTURES, as rv32imac's _SYS does for the same inlining, so
- *                    the non-self-test boards carry the worse reading and not their own.
+ *                    syscall_dispatch[108] -> thread_create_call[248] -> thread_create[76]
+ *                    -> task_for[32] -> domain_for[40] -> grant_region_admissible[32]
+ *                    -> grant_hits_reserved[92] -> arch_bitband_present[4].
+ *                    rx72m reads 572 and rx72m-flat 480: with the self-test syscalls out of
+ *                    the image gcc inlines syscall_body into syscall_dispatch, and FLAT drops
+ *                    the grant admission arm entirely. ONE FIGURE COVERS EVERY POSTURE, as
+ *                    rv32imac's _SYS does, so the other two boards carry the worse reading
+ *                    and not their own.
  *
  * ENFORCED figures are those measurements rounded up, 32 -> 64. _SYSK is NOT rounded, a kernel
  * block being sized to it directly, so a byte of slack there costs KICKOS_THREAD_SLOTS bytes.
@@ -128,10 +127,11 @@
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW 64
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS 0
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST 64
-/* THE MEASUREMENT EXACTLY, with no margin, the block being sized to it directly. The zone is
- * 308 + 796 = 1104, which needs 1108 bytes of block once the canary word below it is counted,
- * and thread.cc rounds the block to KICKOS_STACK_ALIGN: 1120. So 12 of that block's apparent
- * slack is alignment fill and NOT room a depth may grow into. */
+/* THE ZONE IS 308 + 796 = 1104, which needs 1108 bytes of block once the canary word below it
+ * is counted, and thread.cc rounds the block to KICKOS_STACK_ALIGN: 1120. So 12 of that
+ * block's apparent slack is alignment fill and NOT room a depth may grow into. Cutting this to
+ * its 632 measurement would take the block to 944, 176 bytes per KICKOS_THREAD_SLOTS; it is
+ * left where it is for the reason stated at _SYSK. */
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK 796
 
 /* THE EXIT CLASS, structural half: what a preemption puts below the deepest byte the DEATH
@@ -162,19 +162,17 @@
 
 /* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
  * and no redirect, so it runs at whatever depth the entry returned from on the thread's own
- * stack. 480, identical on all three registered presets. 308 + 480 = 788 against a 1024-byte
- * KICKOS_MIN_STACK_SIZE, so this figure buys nothing until it reaches 716: it is the one the
- * floor HOLDS, not the one the floor is cut to.
+ * stack. 480 enforced, 344 measured, identical on all three registered presets. 308 + 480 =
+ * 788 against a 1024-byte KICKOS_MIN_STACK_SIZE, so this figure buys nothing until it reaches
+ * 716: it is the one the floor HOLDS, not the one the floor is cut to, and its 136 of headroom
+ * costs nothing at all here.
  *
- * TWO SUB-CHAINS UNDER cap_teardown SIT 4 BYTES APART, so which one wins is a register
- * allocation away and either can move this figure:
- *     teardown_entry[44] -> obj_close_protocol[32] -> endpoint_server_clear[20]   96
- *     teardown_entry[44] -> obj_ref_drop[24] -> endpoint_ref_drop[24]             92
- * below kickos_thread_return[4] -> exit_current[40] -> cap_teardown[32], and above the same
- * panic tail the other classes here walk: kpanic[8] -> kputs[8] -> kconsole_write[4]
- * -> kconsole_write_impl[152] -> console_emit[32] -> arch_console_write[4]
- * -> console_tx_write[48] -> drain_sync[28] -> wait_slot[20] -> the indirect call at
- * console_tx.cc:70:37 -> rx_tx_slot_free[4]. */
+ * The panic reporter is not under it. What the 344 measures is the reschedule the teardown
+ * performs: kickos_thread_return[4] -> exit_current[40] -> cap_teardown[32]
+ * -> teardown_entry[44] -> obj_close_protocol[32] -> mutex_force_unlock[20] -> wake[20]
+ * -> resched_after_wake[12] -> reschedule[28] -> the SchedPolicy hook
+ * -> policy_on_switch_in[24] -> arm_slice[20] -> ktime_now[4] -> arch_clock_now[32]
+ * -> __divdi3[32]. */
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_RET 480
 
 /* What each guard enforces: room below the USP, in bytes.
@@ -240,5 +238,20 @@
 #define KICKOS_RX_CTX_OFF_STACK_HI 8
 #define KICKOS_RX_CTX_OFF_KERNEL_SP 12
 #endif
+
+/* THE PANIC REPORTER'S OWN STACK, which kickos_panic_stack_enter (switch.S) moves to before a
+ * banner is printed. The walk stops at that body, so SYSK, EXITK and RET measure no console
+ * and it is priced here instead.
+ *
+ * FRAME 0. The entry clears PSW.I before the move and sets PSW.U, so R0 names the USP from
+ * there on and an exception, which RX accepts on the ISP, lands on a stack this array does not
+ * share.
+ *
+ * 308 MEASURED on all three presets, and 320 is the next multiple of 64 strictly above it,
+ * which is the rule every arch's PANIC figure follows.
+ * KICKOS_PANIC_STACK_SIZE (Kconfig) cuts the array and is what the gate compares this against;
+ * arch_rxv3.cc static_asserts the two agree. */
+#define KICKOS_RX_PANIC_FRAME 0
+#define KICKOS_RX_PANIC_DEPTH 320
 
 #endif /* KICKOS_ARCH_RX_TRAP_STACK_H */

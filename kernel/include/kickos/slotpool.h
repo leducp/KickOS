@@ -108,6 +108,22 @@ namespace kickos
             return &slots_[index];
         }
 
+        // The validated slot INDEX a handle names, or -1 for out-of-range, freed or stale.
+        // Exactly resolve()'s test without the dereference, for a caller that wants the index
+        // and not the object: index_of(resolve(h)) recovers by pointer subtraction and so
+        // spends a DIVIDE that this never does, sizeof(T) rarely being a power of two.
+        int live_index(int handle) const
+        {
+            uint32_t const u = static_cast<uint32_t>(handle);
+            int const index = static_cast<int>(u & INDEX_MASK);
+            uint32_t const gen = u >> INDEX_BITS;
+            if (index >= N or not used_[index] or static_cast<uint32_t>(gen_[index]) != gen)
+            {
+                return -1;
+            }
+            return index;
+        }
+
         // The slot at `index`, or nullptr where `index` is outside [0, N). THE BOUND ALONE:
         // a freed slot still hands back its last occupant's fields, so live() is what makes a
         // sweep over indices legal. Takes an INDEX and never a handle, so `at(alloc())` needs

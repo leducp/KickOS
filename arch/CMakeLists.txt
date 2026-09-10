@@ -140,6 +140,11 @@ elseif(KICKOS_ARCH STREQUAL "armv7m")
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/arm/armv7m/include>"
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+  # Resolves the <arm_isa.h> arm/common/arch_arm_common.cc includes. PRIVATE and a directory
+  # of its own: it must not reach an installed consumer, and a directory holding a second
+  # regs.h would shadow the one a common TU means.
+  target_include_directories(kickos_arch_armv7m PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv7m/isa")
   install(TARGETS kickos_arch_armv7m EXPORT KickOSTargets
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv7m/include" PARENT_SCOPE)
@@ -167,6 +172,11 @@ elseif(KICKOS_ARCH STREQUAL "armv6m")
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/arm/armv6m/include>"
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+  # Resolves the <arm_isa.h> arm/common/arch_arm_common.cc includes. PRIVATE and a directory
+  # of its own: it must not reach an installed consumer, and a directory holding a second
+  # regs.h would shadow the one a common TU means.
+  target_include_directories(kickos_arch_armv6m PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv6m/isa")
   install(TARGETS kickos_arch_armv6m EXPORT KickOSTargets
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv6m/include" PARENT_SCOPE)
@@ -199,6 +209,8 @@ elseif(KICKOS_ARCH STREQUAL "lx6")
   add_library(kickos_arch_lx6 STATIC
     xtensa/lx6/arch_xtensa.cc
     xtensa/lx6/klock_lx6.cc
+    # The protocol over the doorbell, one copy for every backend that runs it.
+    common/doorbell_protocol.cc
     common/arch_ram_common.cc
     common/startup_ranges.cc
     ${_lx6_defaults}
@@ -252,9 +264,15 @@ elseif(KICKOS_ARCH STREQUAL "armv8a")
     # The cross-core kernel lock and the doorbell, which are one mechanism: the acquire loop
     # services a pending doorbell. Empty at one core.
     arm64/armv8a/klock_armv8a.cc
+    # The protocol over the doorbell, one copy for every backend that runs it.
+    common/doorbell_protocol.cc
     # Interrupt controller: the bases and the routing are the part's, and a chip states them
     # by defining that backend's map (arm64/common/gicv2.h, gicv3.h).
     ${_kos_gic_src}
+    # The A53 seams that name no device: the architected generic timer and the semihosting
+    # dead end. No fallback for any of them sits in this archive, which is what lets the
+    # definitions leave the chip archive the group scans first.
+    arm64/common/arch_arm64_a53.cc
     common/arch_ram_common.cc
     common/startup_ranges.cc
     ${_armv8a_defaults})
@@ -295,6 +313,8 @@ elseif(KICKOS_ARCH STREQUAL "rv64imac")
     riscv/rv64imac/arch_rv64imac.cc
     riscv/rv64imac/aspace_rv64imac.cc
     riscv/rv64imac/klock_rv64imac.cc
+    # The protocol over the doorbell, one copy for every backend that runs it.
+    common/doorbell_protocol.cc
     riscv/rv64imac/libgcc_rv64imac.cc
     riscv/rv64imac/switch.S
     riscv/rv64imac/trap.S
@@ -329,6 +349,7 @@ elseif(KICKOS_ARCH STREQUAL "x86_64")
     x86/x86_64/fault_x86_64.cc
     x86/x86_64/trap_x86_64.S
     x86/x86_64/switch.S
+    x86/x86_64/panic_stack.S
     ${KICKOS_SEAM_DEFAULTS_COMMON})
   kickos_apply_freestanding(kickos_arch_x86_64)
   target_include_directories(kickos_arch_x86_64 PUBLIC
@@ -453,6 +474,39 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # replace the v7-M fallback TUs.
   if(KICKOS_HAVE_MPU AND KICKOS_ARM_PMSAV8_SOURCE)
     list(APPEND _chip_src "${KICKOS_ARM_PMSAV8_SOURCE}")
+  endif()
+
+  # Chip-family bodies: two or more chips of one vendor family share a translation unit that
+  # sits in a family directory beside them, and each of them opts in with a family.cmake
+  # naming that directory. The glob above is per-chip-directory, so the entry is explicit.
+  #
+  # The family TU is compiled into THIS chip's archive, once per chip, and reads the chip's
+  # own family_map.h and regs/ off the include path below: every value a part answers
+  # differently is then a compile-time constant, which is what keeps the shared body folding
+  # to what the chip TU emitted before. An archive of its own is NOT an option, for two
+  # reasons: the chip linker scripts select .data/.bss by archive:member, so a new archive
+  # falls through to the app catch-all; and a family may straddle two ISAs (the RP2040 is
+  # armv6m and the RP2350 armv7m), which leaves no arch archive common to both. The chip
+  # archive is also the one the link rescans FIRST, so a seam defined here still beats an
+  # arch fallback.
+  set(_family_optin
+      "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/family.cmake")
+  if(EXISTS "${_family_optin}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_family_optin}")
+    include("${_family_optin}")
+    if(NOT KICKOS_CHIP_FAMILY_SOURCES OR NOT KICKOS_CHIP_FAMILY_DIR)
+      message(FATAL_ERROR
+        "KickOS: ${_family_optin} sets no KICKOS_CHIP_FAMILY_SOURCES/KICKOS_CHIP_FAMILY_DIR, "
+        "so the family bodies would silently not be compiled and the seams they define "
+        "would resolve to their arch fallbacks.")
+    endif()
+    foreach(_family_src IN LISTS KICKOS_CHIP_FAMILY_SOURCES)
+      if(NOT EXISTS "${_family_src}")
+        message(FATAL_ERROR
+          "KickOS: ${_family_optin} names ${_family_src}, which does not exist.")
+      endif()
+    endforeach()
+    list(APPEND _chip_src ${KICKOS_CHIP_FAMILY_SOURCES})
   endif()
 
   # A chip whose flash boot needs a checksummed second-stage loader ships a boot2.S. It is
@@ -586,6 +640,16 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     # Telemetry: a chip's arch_shutdown may dump the ch1 ring via the transport
     # (mps2 semihosting file), so it reads lib's rtt.h.
     "${CMAKE_CURRENT_SOURCE_DIR}/../lib/include")
+  # Appended AFTER the list above, never before it: a chip directory placed ahead of
+  # <family>/common would shadow regs.h for every source in this archive. Exactly one chip
+  # directory is ever on this path, so the family unit's own #include "regs/<periph>.h"
+  # resolves to the CONFIGURED chip's copy and two same-named register headers cannot
+  # shadow each other.
+  if(KICKOS_CHIP_FAMILY_DIR)
+    target_include_directories(kickos_chip_${KICKOS_CHIP} PRIVATE
+      "${KICKOS_CHIP_FAMILY_DIR}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}")
+  endif()
   install(TARGETS kickos_chip_${KICKOS_CHIP} EXPORT KickOSTargets
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 
@@ -706,6 +770,12 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     endif()
     if(DEFINED KICKOS_APPDATA_SIZE)
       list(APPEND _ld_defs -DKICKOS_APPDATA_SIZE=${KICKOS_APPDATA_SIZE})
+    endif()
+    # Room an enforcing script keeps for kernel .data/.bss below the pow2-aligned app
+    # window. A posture whose kernel .bss passes the chip default raises it here rather
+    # than losing a whole window of arena to the alignment.
+    if(DEFINED KICKOS_KERNEL_DATA_RESERVE)
+      list(APPEND _ld_defs -DKICKOS_KERNEL_DATA_RESERVE=${KICKOS_KERNEL_DATA_RESERVE})
     endif()
     # Non-MPU heap: the .userheap section carved before the thread arena. On an MPU chip
     # the heap is the .appdata window pad instead, so this is inert there.

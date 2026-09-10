@@ -9,11 +9,11 @@
 
 #include <kickos/arch/amp_shared.h> // arch_amp_shared_zero: the partition primary's own clear
 
-#include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
-#include <kickos/chip_limits.h>  // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
+#include <kickos/chip_limits.h> // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
 #include <kickos/sys/atomic.h>
 
-#include "gic.h"         // arch/arm64/common: the architected half of this machine's controller
+#include "a53.h" // arch/arm64/common: the A53 facts and the timer seams both chips share
+#include "gic.h" // arch/arm64/common: the architected half of this machine's controller
 #if KICKOS_ARM64_GIC_VERSION == 3
 #include "gicv3.h" // arch/arm64/common: which controller this machine has, and where
 #else
@@ -42,8 +42,6 @@ extern "C"
 {
     // Linker-script symbols (virt_arm64.ld).
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
-    // VA - PA for the kernel's half; see dev_va below.
-    extern unsigned char __kickos_arm64_va_base[];
     // The app's .bss lives in the low window, outside _sbss.._ebss, so the boot zeroing
     // covers it separately. Its .data needs no copy: the low window links VMA == LMA.
     extern uint32_t __kickos_appbss_start, __kickos_appbss_end;
@@ -65,27 +63,19 @@ extern "C"
     // the SUCCESS PSCI returns for a core it merely started.
     extern kickos::Atomic<uint8_t, kickos::Order::RELAXED> kickos_armv8a_core_online[];
 
-    // The armv8a doorbell-and-lock bring-up check. Terminates the image on a raise that goes
-    // unanswered.
-    void kickos_armv8a_doorbell_selfcheck(void);
+    // The doorbell-and-lock bring-up check (arch/common/doorbell_protocol.cc). Terminates the
+    // image on a raise that goes unanswered.
+    void kickos_doorbell_selfcheck(void);
 #endif
 }
 
 namespace
 {
-    // EVERY DEVICE REGISTER IS REACHED THROUGH THE KERNEL'S OWN HALF. The device gigabyte
-    // is mapped at PA + __kickos_arm64_va_base by TTBR1, which every address space shares;
-    // TTBR0 carries a per-process root that maps no device at all, so a low literal here
-    // would translate against whatever process happened to be running.
-    inline uintptr_t dev_va(uintptr_t pa)
-    {
-        return pa + reinterpret_cast<uintptr_t>(__kickos_arm64_va_base);
-    }
-
-    inline volatile uint32_t* r32p(uintptr_t a)
-    {
-        return reinterpret_cast<volatile uint32_t*>(dev_va(a));
-    }
+    using kickos::arm64::ADP_Stopped_ApplicationExit;
+    using kickos::arm64::halt_masked;
+    using kickos::arm64::r32p;
+    using kickos::arm64::semihost;
+    using kickos::arm64::SYS_EXIT;
 
     // QEMU `virt` PL011.
     constexpr uintptr_t UART0_BASE = 0x09000000;
@@ -124,19 +114,6 @@ namespace
     char const BAD_CNTFRQ[] =
         "KickOS: qemu-arm64 CNTFRQ_EL0 does not divide a second exactly\n";
 
-    // AArch64 semihosting: `hlt #0xF000` with the operation in x0 and the parameter in x1.
-    // ALWAYS inlined: a caller in the boot span can call nothing outside it.
-    inline __attribute__((always_inline)) long semihost(long op, void* arg)
-    {
-        register long x0 __asm("x0") = op;
-        register void* x1 __asm("x1") = arg;
-        __asm volatile("hlt #0xF000" : "+r"(x0) : "r"(x1) : "memory");
-        return x0;
-    }
-
-    constexpr long SYS_EXIT = 0x18;
-    constexpr uint64_t ADP_Stopped_ApplicationExit = 0x20026u;
-
     // The distributor is global either way. What sits beside it follows gic-version: a GICv2
     // CPU interface, or a series of GICv3 redistributors at a window that does not overlap
     // it.
@@ -153,25 +130,6 @@ namespace
 #else
     constexpr uintptr_t GICC_BASE = 0x08010000;
 #endif
-
-    // EL1 physical timer, an architecturally assigned PPI. It is NOT a kernel IRQ line:
-    // kickos_isr_timer takes no line and the timer is in no dispatch table.
-    constexpr int PPI_EL1_PHYS_TIMER = 30;
-
-    constexpr uint64_t CNTP_CTL_ENABLE = 1u << 0;
-
-    // ns per tick of the architected counter, from CNTFRQ_EL0 at bring-up. QEMU virt reports
-    // 62.5 MHz, so this is exactly 16 and the conversions are lossless.
-    uint64_t g_ns_per_tick = 0;
-
-    uint64_t counter_now(void)
-    {
-        uint64_t t = 0;
-        // The ISB is the architected ordered read: without it the counter may be sampled
-        // out of order with the surrounding instructions, and every deadline derives from it.
-        __asm volatile("isb; mrs %0, cntpct_el0" : "=r"(t));
-        return t;
-    }
 
 // A peer is started by the partition and not by the cores this image drives, so the conduit is
 // built for either: a shared kernel releasing its secondaries, or a node releasing its peers.
@@ -347,10 +305,10 @@ namespace
         // cell is read rather than assumed.
         for (uint32_t index = 0; index < KICKOS_NUM_CORES; index++)
         {
-            uint64_t const deadline = counter_now() * g_ns_per_tick + SECONDARY_ARRIVAL_NS;
+            uint64_t const deadline = arch_clock_now() + SECONDARY_ARRIVAL_NS;
             while (kickos_armv8a_core_online[index] == 0)
             {
-                if (counter_now() * g_ns_per_tick > deadline)
+                if (arch_clock_now() > deadline)
                 {
                     arch_console_write(NO_ARRIVAL, sizeof(NO_ARRIVAL) - 1);
                     console_hex(index, 2);
@@ -369,7 +327,7 @@ namespace
 
         // AFTER ARRIVAL: the check needs every core's interface live and its target bit
         // published.
-        kickos_armv8a_doorbell_selfcheck();
+        kickos_doorbell_selfcheck();
     }
 #endif
 }
@@ -385,33 +343,16 @@ struct kickos_gicv3_map const kickos_gicv3 = {
     GICR_STRIDE,
     GICR_COUNT,
     KICKOS_MAX_IRQ,
-    PPI_EL1_PHYS_TIMER,
+    kickos::arm64::PPI_EL1_PHYS_TIMER,
 };
 #else
 struct kickos_gicv2_map const kickos_gicv2 = {
     GICD_BASE,
     GICC_BASE,
     KICKOS_MAX_IRQ,
-    PPI_EL1_PHYS_TIMER,
+    kickos::arm64::PPI_EL1_PHYS_TIMER,
 };
 #endif
-
-// This core's hardware edge alone: the distributor's shared half runs once for the machine.
-//
-// A core reaches this with PSTATE.DAIF masked: the primary because startup.S leaves the reset
-// masking alone, a secondary because that is the state PSCI hands a released core.
-void kickos_armv8a_percore_init(void)
-{
-    // CNTP_CTL_EL0's reset value is architecturally UNKNOWN, so an already-asserted timer
-    // would fire the moment this core's PPI and DAIF open.
-    __asm volatile("msr cntp_ctl_el0, %0" ::"r"(uint64_t(0)));
-    // The disable governs the timer's output only past a context synchronisation event. Without
-    // this, an output still asserted when the GIC below enables this core's PPI pends the line
-    // the write above exists to silence.
-    __asm volatile("isb" ::: "memory");
-
-    kickos_armv8a_gic_percore_init();
-}
 
 #if KICKOS_AMP_OWN_IMAGE
 void arch_amp_release_peers(void)
@@ -422,16 +363,13 @@ void arch_amp_release_peers(void)
 
 void arch_init(void)
 {
-    uint64_t freq = 0;
-    __asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
-    // CNTFRQ_EL0 is firmware-programmed, so a board whose firmware never wrote it reads 0,
-    // and a frequency that does not divide a second exactly makes g_ns_per_tick lossy.
-    if (freq == 0 or (kickos::KICKOS_NS_PER_SEC % freq) != 0)
+    // CNTFRQ_EL0 is firmware-programmed, so a board whose firmware never wrote it reads 0.
+    uint64_t const freq = kickos_armv8a_timebase_init();
+    if (freq == 0)
     {
         arch_console_write(BAD_CNTFRQ, sizeof(BAD_CNTFRQ) - 1);
         kfault_terminate();
     }
-    g_ns_per_tick = kickos::KICKOS_NS_PER_SEC / freq;
     SystemCoreClock = static_cast<uint32_t>(freq);
 
     // The distributor is the machine's and not the node's, so under one image per node the
@@ -459,36 +397,6 @@ void arch_init(void)
 #endif
 
     // PSTATE.I stays SET: interrupts first reach the core through the initial thread's SPSR.
-}
-
-// A pure read, as the seam requires: the counter is 64-bit and monotonic in hardware, so
-// there is no wrap to extend and no anchor to keep, and ticks*16 needs 584 years to overflow.
-uint64_t arch_clock_now(void)
-{
-    return counter_now() * g_ns_per_tick;
-}
-
-// CNTP_CVAL_EL0 is an absolute compare, so the write is idempotent and no armed-deadline
-// dedup is owed. The division is what keeps a UINT64_MAX deadline from overflowing, where
-// a multiply would not.
-void arch_timer_arm(uint64_t deadline_ns)
-{
-    uint64_t const ticks = deadline_ns / g_ns_per_tick;
-    __asm volatile("msr cntp_cval_el0, %0" ::"r"(ticks));
-    __asm volatile("msr cntp_ctl_el0, %0" ::"r"(CNTP_CTL_ENABLE));
-    // A deadline already past leaves the compare met, which asserts the timer's output now.
-}
-
-// Disarm has to mean no callback fires. Clearing ENABLE deasserts a level-driven output, so
-// the GIC's pending state follows it down; ICPENDR covers a pend latched while masked.
-void arch_timer_disarm(void)
-{
-    __asm volatile("msr cntp_ctl_el0, %0" ::"r"(uint64_t(0)));
-    // Between the two: the disable reaches the timer's output only past a context
-    // synchronisation event, and the Device write below is not ordered against a system-register
-    // write by anything else, so a level still asserted re-pends the line behind the clear.
-    __asm volatile("isb" ::: "memory");
-    kickos_armv8a_gic_clear_pending(PPI_EL1_PHYS_TIMER);
 }
 
 // Rule 7. Only the GIC is here: the timebase is the architected generic timer, reached
@@ -548,23 +456,6 @@ void arch_console_flush_sync(void)
     }
 }
 
-// The exit status is what lets the harness tell a fault from a hang: a spin here makes every
-// gate that should FAIL time out instead. AArch64 SYS_EXIT takes a POINTER to a two-field
-// block where AArch32 passes the reason in the register.
-void arch_shutdown(int status)
-{
-    uint64_t block[2];
-    block[0] = ADP_Stopped_ApplicationExit;
-    block[1] = static_cast<uint64_t>(static_cast<unsigned>(status));
-    semihost(SYS_EXIT, block);
-    // Reached only when nothing is listening for semihosting calls.
-    __asm volatile("msr daifset, #0xf" ::: "memory");
-    while (true)
-    {
-        __asm volatile("wfi");
-    }
-}
-
 // startup.S branches here when the handover was not at EL1. Runs before .data and .bss, so
 // it touches neither, and inside the boot span, so it reaches neither arch_console_write nor
 // kfault_terminate: both are kernel text and only a walk names those.
@@ -582,14 +473,12 @@ KICKOS_BOOT_TEXT void kickos_arm64_bad_el(unsigned long el)
     block[1] = KICKOS_FATAL_STATUS;
     semihost(SYS_EXIT, block);
 
-    // Reached only when nothing is listening for semihosting calls.
-    __asm volatile("msr daifset, #0xf" ::: "memory");
-    while (true)
-    {
-        __asm volatile("wfi");
-    }
+    halt_masked();
 }
 
+// ANCHORS THIS ARCHIVE MEMBER (arch/CMakeLists.txt, "Seam fallbacks"). startup.S branches here,
+// so the link extracts this object while scanning the chip archive, which the group scans
+// before the arch archive that carries arch_console_flush_sync's fallback.
 void Reset_Handler(void)
 {
     uint32_t* src = &_sidata;

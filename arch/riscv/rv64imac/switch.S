@@ -430,6 +430,20 @@ kickos_rv64_start:
 .Lgp_anchor:
     .quad   __global_pointer$
 
+/* kickos_panic_stack_enter(msg, file, line, top): leave the interrupted stack for the      */
+/* reporter's own (arch.h). a0-a2 pass through untouched; a3 is the seat, so this body is   */
+/* the same on one hart or four and needs no per-core word to race over.                    */
+/* SIE off BEFORE the move, or a trap taken between the two lands on the stack this exists  */
+/* to leave. `tail` and not `call`: the -fcallgraph-info walk stops at a body with no call  */
+/* edge, which is what keeps the console tail off every measured chain.                     */
+    .text
+    .balign 4
+    .global kickos_panic_stack_enter
+kickos_panic_stack_enter:
+    csrci   sstatus, 2              /* SIE */
+    mv      sp, a3
+    tail    kickos_panic_report
+
 /* arch_syscall(nr, a0, a1, a2, a3): args already in a0-a4 per the psABI.
  *
  * .apptrap because an unprivileged thread FETCHES this leaf and virt_rv64.ld selects the kernel

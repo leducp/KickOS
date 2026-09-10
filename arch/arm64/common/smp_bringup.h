@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The one wait bound arm64 multicore bring-up is written against, shared so the figure has a
-// single home: the chip's wait for a released core to reach its entry and the armv8a
-// doorbell check's wait for a peer to reach the lock's acquire loop are the same quantity.
+// The wait bound the chip's release of a secondary is written against, shared between the
+// chip's wait for a released core to reach its entry and the GICv3 backend's waits. The
+// doorbell's own bring-up check owns its bound in arch/common/doorbell_protocol.cc, that one
+// being the same figure for all three backends rather than arm64's.
 
 #ifndef KICKOS_ARCH_ARM64_COMMON_SMP_BRINGUP_H
 #define KICKOS_ARCH_ARM64_COMMON_SMP_BRINGUP_H

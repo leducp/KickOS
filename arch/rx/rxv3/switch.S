@@ -651,3 +651,22 @@ _arch_syscall_reg:
     add     #4, r0
     popm    r6-r8
     rts
+
+/* kickos_panic_stack_enter(msg, file, line, top): leave the interrupted stack for the
+   reporter's own (arch.h). R1-R3 pass through untouched; R4 is the seat.
+   PSW.I before the move. `setpsw u` before the write to R0 because R0 names the USP while
+   PSW.U is set and the ISP once it is clear, and an exception is ACCEPTED on the ISP: putting
+   the reporter on the USP is what leaves a nested fault a stack of its own instead of pushing
+   it onto the reporter's. PSW.PM is untouched, so the reporter stays supervisor and the RX MPU,
+   which checks user mode only, still does not read it. `bra` and not `bsr`: the
+   -fcallgraph-info walk check_trap_redzone.sh runs stops at a body with no call edge, which is
+   what takes the console tail out of every red zone. */
+#if KICKOS_KERNEL_CORES > 1
+#error "one kernel over several rxv3 cores has no per-core panic seat here"
+#endif
+    .global _kickos_panic_stack_enter
+_kickos_panic_stack_enter:
+    clrpsw  i
+    setpsw  u
+    mov.l   r4, r0
+    bra.a   _kickos_panic_report

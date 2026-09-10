@@ -51,9 +51,6 @@ namespace kickos
                 return -1;
             }
             *ep = Endpoint{};
-            // The slot keeps its last occupant's owner tag, and this claim's two privileged
-            // callers charge nobody; endpoint_create overwrites it with its own.
-            kernel().endpoint_owner[i] = TASK_OWNER_NONE;
             *out = ep;
             return i;
         }
@@ -106,7 +103,7 @@ namespace kickos
         }
         // Before the slot, as at the other three creators. The endpoint pool is the fleet's
         // smallest at four slots, so this is the ceiling that binds first.
-        if (not task_object_admit(kernel().endpoint_owner, KICKOS_MAX_ENDPOINTS, c->task))
+        if (not task_object_admit(CapType::CAP_ENDPOINT, c->task))
         {
             return -KOS_EOVERFLOW; // this task holds its ceiling of endpoints already
         }
@@ -118,14 +115,12 @@ namespace kickos
         }
         ep->recv_holders = 1; // creator holds a WAIT-bearing cap
         kernel().endpoint_refs[i] = 1;
-        kernel().endpoint_owner[i] = task_owner_tag(c->task);
         int const obj = kernel().endpoints.handle_for(i);
         int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT,
                                    CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER, out_cap);
         if (rc != 0)
         {
             kernel().endpoint_refs[i] = 0;
-            kernel().endpoint_owner[i] = TASK_OWNER_NONE;
             kernel().endpoints.free(obj);
             return rc;
         }

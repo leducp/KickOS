@@ -17,7 +17,7 @@
  *
  * SVC/PendSV/SysTick come from the armv7m arch layer (armv8-m reuses the v7-m
  * thread/switch/NVIC path); each external line routes to the generic
- * kickos_armv7m_default_irq (line = IPSR-16). The RP2350 wires 52 NVIC inputs
+ * kickos_arm_default_irq (line = IPSR-16). The RP2350 wires 52 NVIC inputs
  * (IRQ0..51; 46..51 are spare/never-fire), matching KICKOS_MAX_IRQ.
  */
 
@@ -40,15 +40,15 @@ g_isr_vector:
        kernel irq_table slot. arch_irq_line_kernel_owned (chip_rp2350.cc) is what states that
        to irq_claim, which refuses a capability over the line. */
     .rept KICKOS_RP2350_SIO_IRQ_BELL
-    .word kickos_armv7m_default_irq
+    .word kickos_arm_default_irq
     .endr
     .word kickos_rp2350_doorbell_service
     .rept KICKOS_MAX_IRQ - KICKOS_RP2350_SIO_IRQ_BELL - 1
-    .word kickos_armv7m_default_irq
+    .word kickos_arm_default_irq
     .endr
 #else
     .rept KICKOS_MAX_IRQ
-    .word kickos_armv7m_default_irq
+    .word kickos_arm_default_irq
     .endr
 #endif
 

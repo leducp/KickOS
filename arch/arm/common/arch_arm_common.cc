@@ -3,14 +3,17 @@
 //
 // Core-generic ARM Cortex-M arch backend: the parts of the arch.h seam whose
 // implementation is IDENTICAL on ARMv6-M and ARMv7-M (deferred PendSV switch,
-// SysTick one-shot timer, NVIC mask/unmask/inject, the idle wait, and the
-// SysTick ISR entry). Compiled into BOTH kickos_arch_armv6m
-// and kickos_arch_armv7m.
+// SysTick one-shot timer, the whole NVIC line set, the default-IRQ entry, the
+// wild-PSP and no-kernel-block reports, the idle wait, and the SysTick ISR
+// entry). Compiled into BOTH kickos_arch_armv6m and kickos_arch_armv7m.
+//
+// What differs per profile arrives through <arm_isa.h>, one copy per ISA
+// directory and one on the include path per archive.
 //
 // The arch-profile-specific edges stay in arch_armv{6,7}m.cc: context init (the
 // v7-M frame carries an EXC_RETURN word), the critical section (PRIMASK vs
-// BASEPRI), NVIC priority programming, the monotonic/trace clock source, and
-// per-arch bring-up + the distinctly-named default-IRQ entry.
+// BASEPRI), the fault reporter (v6-M has no fault-status registers at all), the
+// monotonic/trace clock source, and per-arch bring-up.
 
 #include <kickos/arch/arch.h>
 
@@ -19,10 +22,17 @@
 
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the ns/cycle conversions
 
+#include <arm_isa.h> // per-profile: the panic banners and the device-priority write
+
 #include "regs.h"
 #include "mpu.h"
 
 #include <stddef.h>
+
+// 0 keeps only the one-line fault marker.
+#ifndef KICKOS_PANIC_DUMP
+#define KICKOS_PANIC_DUMP 1
+#endif
 
 namespace
 {
@@ -32,6 +42,14 @@ namespace
     using kickos::Atomic;
     using kickos::Order;
 }
+
+// kfault_terminate is the shared panic/fault dead-end (kernel.h).
+namespace kickos
+{
+    void kprintf(char const* fmt, ...);
+}
+extern "C" void kpanic_enter(void);
+extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
 extern "C"
 {
@@ -351,6 +369,36 @@ void arch_irq_mask(int line)
     reg32(NVIC_ICER0 + (l >> 5) * 4) = 1u << (l & 31);
 }
 
+void arch_irq_unmask(int line)
+{
+    if (line < 0)
+    {
+        return;
+    }
+    unsigned l = static_cast<unsigned>(line);
+    // AHEAD OF THE ENABLE, never after: on a profile that bands device lines, a line enabled
+    // at the controller's reset priority preempts an IrqLock-held section until this lands.
+    kickos_arm_irq_line_prio(l);
+    // A pending bit latched while the line was masked survives the enable and fires the
+    // instant ISER is set. The dsb drains a preceding device-flag clear, whose W1C may
+    // still sit in the write buffer (exception entry does not order device writes), so a
+    // level source that is genuinely deasserted does not re-latch.
+    __asm volatile("dsb" ::: "memory");
+    reg32(NVIC_ISER0 + (l >> 5) * 4) = 1u << (l & 31);
+}
+
+void arch_irq_clear_pending(int line)
+{
+    if (line < 0)
+    {
+        return;
+    }
+    unsigned l = static_cast<unsigned>(line);
+    // Drain any pending device write before dropping the latched NVIC pending.
+    __asm volatile("dsb" ::: "memory");
+    reg32(NVIC_ICPR0 + (l >> 5) * 4) = 1u << (l & 31);
+}
+
 void arch_irq_inject(int irq)
 {
     if (irq < 0)
@@ -372,5 +420,124 @@ void SysTick_Handler(void)
     reg32(SYST_CSR) = 0;
     kickos_isr_timer();
 }
+
+// The exception number in IPSR is 16 + the external line. The mask is the 9-bit v7-M IPSR
+// width and is correct on v6-M too, whose IPSR never exceeds 0x3F (arch_in_isr above reads
+// it the same way).
+void kickos_arm_default_irq(void)
+{
+    uint32_t ipsr;
+    __asm volatile("mrs %0, ipsr" : "=r"(ipsr));
+    int line = static_cast<int>(ipsr & 0x1FFu) - 16;
+    if (line >= 0)
+    {
+        kickos_isr_irq(line);
+    }
+}
+
+// --- Refusals raised by switch.S --------------------------------------------
+// From switch.S (PendSV and the SVC entry), when the running thread's live PSP lacks room
+// BELOW it for the callee block about to be pushed there. Runs in handler mode on the MSP.
+//
+// RETURNS TO RESUME ANOTHER THREAD when the offending one could be contained; only the thread
+// that chose the pointer dies. CONTAINS BEFORE REPORTING because kpanic_enter is one-way: it
+// masks this core's IRQs and never restores them, so a system resumed after it has no timer.
+void kickos_arm_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi)
+{
+#if KICKOS_KERNEL_STACKS
+    int const contained = kickos_arm_contain_wild_sp();
+#else
+    // NO BLOCK TO REBUILD ON, so this board cannot contain: arch_ctx_redirect falls back to
+    // fabricating the privileged exit frame on the thread's OWN USER STACK, which is the
+    // write the guard above exists to refuse. A whole-board property (armv7m is the one arch
+    // that resolves this knob to 0, on f302nucleo and bluepill-c8), so it is decided here and
+    // not per thread, and the CONTAINED spelling below is compiled out with it.
+    int const contained = 0;
+#endif
+    if (contained == 0)
+    {
+        kpanic_enter();
+    }
+#if KICKOS_PANIC_DUMP
+    // Re-derived rather than passed: one guard serves all three legs.
+    // THE NOUN IS THE DISCRIMINATOR. tests/lib/panic.ere matches "=== <ARCH> EXCEPTION", so a
+    // contained refusal spelled that way is indistinguishable from one that ended the system
+    // and assert_no_panic stops meaning anything on exactly the arms that now survive.
+    char const* why = "no room below";
+    if (psp < lo)
+    {
+        why = "under stack_lo";
+    }
+    else if (psp >= hi)
+    {
+        why = "at or above stack_hi";
+    }
+    // Which guarded push refused: nothing in the arguments separates the sites, so it comes
+    // from ICSR.VECTACTIVE.
+    uint32_t const vect = reg32(SCB_ICSR) & 0x1FFu;
+    char const* site = "handler";
+    if (vect == 11u)
+    {
+        site = "SVCall";
+    }
+    else if (vect == 14u)
+    {
+        site = "PendSV";
+    }
+#if KICKOS_KERNEL_STACKS
+    if (contained == 0)
+    {
+        ::kickos::kprintf(KICKOS_ARM_BANNER_WILD_PSP_WHY, why);
+    }
+    else
+    {
+        ::kickos::kprintf(KICKOS_ARM_BANNER_WILD_PSP_WHY_CONTAINED, why);
+    }
+#else
+    ::kickos::kprintf(KICKOS_ARM_BANNER_WILD_PSP_WHY, why);
+#endif
+    ::kickos::kprintf("  in %s PSP=0x%x need=%u stack=[0x%x,0x%x)\n", site,
+                      static_cast<unsigned>(psp), static_cast<unsigned>(need),
+                      static_cast<unsigned>(lo), static_cast<unsigned>(hi));
+#else
+    (void)psp;
+    (void)need;
+    (void)lo;
+    (void)hi;
+#if KICKOS_KERNEL_STACKS
+    if (contained == 0)
+    {
+        ::kickos::kprintf(KICKOS_ARM_BANNER_WILD_PSP);
+    }
+    else
+    {
+        ::kickos::kprintf(KICKOS_ARM_BANNER_WILD_PSP_CONTAINED);
+    }
+#else
+    ::kickos::kprintf(KICKOS_ARM_BANNER_WILD_PSP);
+#endif
+#endif
+    if (contained == 0)
+    {
+        kfault_terminate();
+    }
+}
+
+#if KICKOS_KERNEL_STACKS
+// From svc_trampoline, when the calling thread has no kernel block seated. Runs privileged
+// in THREAD mode ON THE MSP, .Lsvc_nokstack having cleared CONTROL.SPSEL before the branch;
+// `psp` is the thread's own, computed before that clear.
+void kickos_arm_no_kernel_stack(uint32_t psp)
+{
+    kpanic_enter();
+    ::kickos::kprintf(KICKOS_ARM_BANNER_NO_KERNEL_STACK);
+#if KICKOS_PANIC_DUMP
+    ::kickos::kprintf("  in svc_trampoline PSP=0x%x\n", static_cast<unsigned>(psp));
+#else
+    (void)psp;
+#endif
+    kfault_terminate();
+}
+#endif
 
 }

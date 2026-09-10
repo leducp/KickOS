@@ -284,6 +284,14 @@ namespace kickos
         return 0;
     }
 
+    // The object budget reads a task's capability tables, which this seam does not build:
+    // every arm here runs one claim on a threadless fixture, so admitting all of them is the
+    // real kernel's answer for a caller holding no task.
+    bool task_object_admit(CapType, Task const*)
+    {
+        return true;
+    }
+
     void* cap_resolve_e(Thread*, uint32_t, CapType, uint8_t, int* err)
     {
         if (g_installed_obj == nullptr)

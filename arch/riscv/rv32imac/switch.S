@@ -707,3 +707,19 @@ arch_syscall_reg:
     sw      a4, 16(t0)
     sw      a5, 20(t0)
     ret
+
+/* kickos_panic_stack_enter(msg, file, line, top): leave the interrupted stack for the      */
+/* reporter's own (arch.h). a0-a2 pass through untouched; a3 is the seat.                   */
+/* MIE off BEFORE the move, or a trap taken between the two lands on the stack this exists  */
+/* to leave. `tail` and not `call`: the -fcallgraph-info walk check_trap_redzone.sh runs    */
+/* stops at a body with no call edge, and that is what takes the console tail out of every  */
+/* red zone here; it clobbers t1 and no argument register.                                  */
+#if KICKOS_KERNEL_CORES > 1
+#error "one kernel over several rv32imac cores has no per-core panic seat here"
+#endif
+    .balign 4
+    .global kickos_panic_stack_enter
+kickos_panic_stack_enter:
+    csrci   mstatus, 8              /* MIE */
+    mv      sp, a3
+    tail    kickos_panic_report

@@ -96,9 +96,6 @@ namespace kickos
                     r = 1;                   // leak, never strand
                     return;
                 }
-                // The owner array IS the count (instance.h): clearing the tag is the refund,
-                // and there is no counter to decrement.
-                kernel().sem_owner[idx] = TASK_OWNER_NONE;
                 kernel().sems.free(obj_handle);
             }
         }
@@ -171,7 +168,6 @@ namespace kickos
                     return;
                 }
                 KICKOS_ASSERT(m == nullptr or m->owner == nullptr); // never free a locked, reachable mutex
-                kernel().mutex_owner[idx] = TASK_OWNER_NONE;
                 kernel().mutexes.free(obj_handle);
             }
         }
@@ -212,7 +208,6 @@ namespace kickos
                 // endpoint_refs can reach 0 while the field is set. A slot freed with it set
                 // would leave a chain entry pointing into a reused endpoint.
                 KICKOS_ASSERT(e == nullptr or e->server == nullptr);
-                kernel().endpoint_owner[idx] = TASK_OWNER_NONE;
                 kernel().endpoints.free(obj_handle);
             }
         }
@@ -665,6 +660,165 @@ namespace kickos
         {
             (*holders)--;
         }
+    }
+
+    namespace
+    {
+        // One task's hold sets, a bit per slot of each charged pool.
+        struct TaskObjectHolds
+        {
+            uint32_t sem;
+            uint32_t mutex;
+            uint32_t endpoint;
+            uint32_t irq;
+        };
+
+        // The hold set a charged kind's bits live in, how wide its pool is, and the pool slot
+        // `obj_handle` names in it. False = an uncharged kind, which every cap table also
+        // carries: CAP_EMPTY, CAP_REPLY, and the two address-space kinds, none of which spends
+        // a charged pool slot. `slot` is -1 where the handle does not resolve.
+        //
+        // ONE SWITCH FOR BOTH ANSWERS, so a kind cannot be charged for the ceiling and
+        // unresolved for the slot. Split in two it needed an unreachable default arm to catch
+        // that, and the assert in it put kpanic under the syscall dispatch, which the trap red
+        // zone measures: +64 bytes on rv32imac SYS and +32 on armv7m SVCK.
+        //
+        // A caller that wants only the pool passes NO_OBJECT: the all-ones index is never
+        // seated (slotpool.h), so it resolves to nothing and costs no index_of divide.
+        constexpr int NO_OBJECT = -1;
+        // always_inline, and it is load-bearing: at -Os GCC clones this per call site instead,
+        // and the clone is a FRAME under the per-entry walk, which the armv7m SVC red zone
+        // measures on a board that enforces it (KICKOS_KERNEL_STACKS=0).
+        inline __attribute__((always_inline)) bool
+        charged_pool(CapType type, int obj_handle, TaskObjectHolds* h, uint32_t** set,
+                     int* slots, int* slot)
+        {
+            switch (type)
+            {
+            case CapType::CAP_SEM:
+            {
+                *set = &h->sem;
+                *slots = KICKOS_MAX_SEMAPHORES;
+                *slot = kernel().sems.live_index(obj_handle);
+                return true;
+            }
+            case CapType::CAP_MUTEX:
+            {
+                *set = &h->mutex;
+                *slots = KICKOS_MAX_MUTEXES;
+                *slot = kernel().mutexes.live_index(obj_handle);
+                return true;
+            }
+            case CapType::CAP_ENDPOINT:
+            {
+                *set = &h->endpoint;
+                *slots = KICKOS_MAX_ENDPOINTS;
+                *slot = kernel().endpoints.live_index(obj_handle);
+                return true;
+            }
+            case CapType::CAP_IRQ:
+            {
+                *set = &h->irq;
+                *slots = KICKOS_MAX_IRQ_HANDLES;
+                *slot = kernel().irq_bindings.live_index(obj_handle);
+                return true;
+            }
+            default:
+            {
+                return false;
+            }
+            }
+        }
+
+        // Record the slot `obj_handle` names in its kind's hold set.
+        void hold_mark(CapType type, int obj_handle, TaskObjectHolds* h)
+        {
+            uint32_t* set = nullptr;
+            int slots = 0;
+            int slot = 0;
+            if (not charged_pool(type, obj_handle, h, &set, &slots, &slot) or slot < 0)
+            {
+                return;
+            }
+            *set = *set | (1u << static_cast<unsigned>(slot));
+        }
+
+        // Every charged pool slot task `t` holds, read off the capability tables of its live
+        // members. The walk is the whole accounting, so it is the one place a delegated,
+        // inherited or kernel-seated capability counts the same as an own-create.
+        void task_object_holds(Task const* t, TaskObjectHolds* out)
+        {
+            *out = TaskObjectHolds{};
+            if (t == nullptr)
+            {
+                return;
+            }
+            Kernel& k = kernel();
+            for (int i = 0; i < KICKOS_THREAD_SLOTS; i++)
+            {
+                Thread* const th = &k.threads.slots[i];
+                if (th->task != t)
+                {
+                    continue;
+                }
+                uint32_t const end = thread_cap_capacity(th);
+                for (uint32_t e = 0; e < end; e++)
+                {
+                    CapEntry const* const entry = cap_slot(th->caps, e);
+                    hold_mark(static_cast<CapType>(entry->type), entry->obj, out);
+                }
+            }
+        }
+    }
+
+    bool task_object_admit(CapType kind, Task const* t)
+    {
+        if (t == nullptr)
+        {
+            return true;
+        }
+        TaskObjectHolds holds;
+        task_object_holds(t, &holds);
+        uint32_t* set = nullptr;
+        int slots = 0;
+        int slot = 0;
+        if (not charged_pool(kind, NO_OBJECT, &holds, &set, &slots, &slot))
+        {
+            return true; // an uncharged kind sits on no ceiling
+        }
+        return task_object_count(*set) < task_object_ceiling(t, slots);
+    }
+
+    bool task_object_admit_grants(Task const* t, uint8_t const* types, int const* objs, int n)
+    {
+        if (t == nullptr or n <= 0)
+        {
+            return true; // the empty grant list, which is most spawns: do not pay the walk
+        }
+        TaskObjectHolds holds;
+        task_object_holds(t, &holds);
+        for (int i = 0; i < n; i++)
+        {
+            CapType const type = static_cast<CapType>(types[i]);
+            uint32_t* set = nullptr;
+            int slots = 0;
+            int slot = 0;
+            if (not charged_pool(type, objs[i], &holds, &set, &slots, &slot) or slot < 0)
+            {
+                continue;
+            }
+            uint32_t const bit = 1u << static_cast<unsigned>(slot);
+            if ((*set & bit) != 0)
+            {
+                continue; // a second name for a slot this task already holds takes no slot
+            }
+            if (task_object_count(*set) >= task_object_ceiling(t, slots))
+            {
+                return false;
+            }
+            *set = *set | bit;
+        }
+        return true;
     }
 
     CapEntry* cap_lookup(Thread* c, uint32_t cap_handle)

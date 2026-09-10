@@ -39,7 +39,12 @@ int _write(int fd, char const* buf, int len)
         // r == 0 (a receiver with no buffer) would spin forever: fall back, don't retry.
         if (r <= 0)
         {
-            // Pre-publish (index 0 empty, -KOS_EBADF) or the driver died (-KOS_EPIPE).
+            // Close on EPIPE only, and emit.h states why: the peer closing does not free
+            // this side, and -KOS_EBADF is pre-publish with nothing to close.
+            if (r == -KOS_EPIPE)
+            {
+                (void)kos_handle_close(KOS_CAP_STDOUT);
+            }
             // Fall back on the REMAINDER only: resending the whole buffer would duplicate
             // the chunks already delivered to the driver. Return the FULL len even so,
             // because a short write would make newlib retry and re-send the bytes IPC
