@@ -13,6 +13,9 @@
 #
 # The X3 image supplies kickos_isr_timer, kickos_isr_irq and kickos_thread_return itself; the
 # syscall entry every app needs is step X4's.
+#
+# The APPLICATION image link is cmake/x86_64_image.cmake, included below and installed, so an
+# out-of-tree consumer's kickos_emit_image() runs this exact body rather than a copy of it.
 
 # Refused before each link: an unrelaxed global-offset-table load is a CLEAN link and a fault
 # much later (see the script's own header).
@@ -20,6 +23,12 @@ set(KICKOS_NO_GOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/check-x86_64-no-got.sh")
 
 set(KICKOS_X86_64_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arch/x86/x86_64")
 set(KICKOS_Q35_DIR    "${CMAKE_CURRENT_SOURCE_DIR}/arch/x86/chip/q35")
+
+set(KICKOS_X86_64_PE_SCRIPT "${KICKOS_X86_64_DIR}/pe_image.ld")
+
+# KICKOS_X86_64_LDFLAGS and kickos_x86_64_link_image() come from here. Included before the
+# images below, which link with those same flags.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/x86_64_image.cmake")
 
 # arch/include is here for the X3 probe alone; the kernel-free images reach only the two
 # backend directories.
@@ -60,21 +69,6 @@ target_include_directories(kickos_x86_64_x2 PRIVATE ${KICKOS_X86_64_INCLUDES})
 add_library(kickos_x86_64_probe3 OBJECT "${KICKOS_X86_64_DIR}/probe3_x86_64.cc")
 kickos_apply_freestanding(kickos_x86_64_probe3)
 target_include_directories(kickos_x86_64_probe3 PRIVATE ${KICKOS_X86_64_INCLUDES})
-
-# --subsystem=10 makes the file an EFI APPLICATION; the entry symbol is the one firmware
-# calls, on the Microsoft x64 convention.
-# --no-insert-timestamp keeps the image byte-identical across builds of one tree.
-# -T is required: the emulation's internal script names no wildcard for the data sections this
-# arch compiles, and past about seventy PE sections firmware refuses to load the image at all.
-# -b names the INPUT format, and binutils 2.42 needs it: under this emulation that ld reads an
-# ELF archive's symbol index and still extracts no member for an undefined symbol, so every
-# image linking the arch and chip archives fails undefined while the object-only images link.
-# It is byte-identical on 2.47, which extracts either way, so only a CI runner catches its loss.
-set(KICKOS_X86_64_PE_SCRIPT "${KICKOS_X86_64_DIR}/pe_image.ld")
-set(KICKOS_X86_64_LDFLAGS -m i386pep --subsystem=10 --image-base=0x400000
-                          -e efi_main --no-insert-timestamp
-                          -b elf64-x86-64
-                          -T "${KICKOS_X86_64_PE_SCRIPT}")
 
 # ONE IMAGE PER FAULT CLASS. The report ends the image, so a run witnesses exactly one class;
 # only arch/x86/x86_64/probe_x86_64.cc differs between them.
@@ -241,8 +235,9 @@ add_custom_command(
 
 add_custom_target(kickos_x1_image ALL DEPENDS ${KICKOS_X86_64_IMAGES} "${KICKOS_X1_ESP}")
 
-# The witnesses are targets, not ctest cases: X1 through X3 are boot paths, and the suite
-# builds no application for this board yet.
+# The five boot witnesses, each also a ctest case below. The targets stay: a `ninja x<n>-run`
+# leaves its serial log where a developer reads it, while the ctest case takes its own
+# workdir so a run under `ctest -j` does not share one.
 add_custom_target(x1-run
   COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64.sh"
           "${KICKOS_X1_IMAGE}" "${PROJECT_BINARY_DIR}/x1run"
@@ -285,6 +280,67 @@ add_custom_target(x3-run
 # The guard's own positive control, registered here because the guard is this board's alone.
 # AR is not in the toolchain file's find_program set, CMake resolving it itself.
 if(KICKOS_BUILD_TESTS)
+  # THE ADDRESS-SPACE WITNESS AS A CTEST CASE, and it is the only arm this board has over its
+  # own map editor. The chip selects no HAS_ASPACE, so an application image compiles no caller
+  # of arch_aspace_map and links kickos_frame_alloc from nopool_x86_64.cc, which panics: the
+  # map path, its out-of-frames unwind and the two whole-table helpers that unwind reaches are
+  # in every image and reachable from nothing in it. X5 carries a frame pool of its own and an
+  # allocation-failure injector, so its refusal arms are what drive them.
+  #
+  # Without this registration, mutating either helper to a no-op changes nothing this board's
+  # suite reports.
+  add_test(NAME x86_64_x5_aspace
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x5.sh"
+            "${KICKOS_X5_IMAGE}" "${PROJECT_BINARY_DIR}/x5run-ctest")
+  # No `host` label: it boots the emulator, so it declines with every other image test.
+  #
+  # SKIP_RETURN_CODE, on this and every case below: the runners answer 77 for firmware or an ESP
+  # tool this box does not have, the way tests/lib/gate.sh does, and WITHOUT this property ctest
+  # reports that 77 as a failure naming nothing true.
+  set_tests_properties(x86_64_x5_aspace PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+
+  # X1 THROUGH X4, for the same reason X5 was registered: each was built by every configure and
+  # run by nothing. What each reads is in no other gate on this board.
+  #
+  # The workdir is a LEAF and never PROJECT_BINARY_DIR: each runner builds its own esp.img
+  # there, and at the top that name is the build's own EFI system partition.
+
+  # The UEFI handover measurement. Every image prints those lines out of efi_main and no other
+  # gate reads them, so the entry symbol, the cli, the arena the memory map yields and the
+  # x87/MMX/SSE trap posture are witnessed here alone.
+  #
+  # THE ENTRY SYMBOL HAS NO STATIC WITNESS AND IS NOT MEANT TO. Dropping `-e efi_main` from the
+  # link leaves a NONZERO entry (ld falls back to the start of text), so an image-header check
+  # cannot see it and this boot is the only thing that does; measured, it stays green in
+  # tests/integration/check_oot_export_mcu.sh and reds here. The static form would compare the
+  # image's entry against efi_main's address in the link map, which puts an arch-private symbol
+  # name inside a gate whose whole discipline is that nothing in it names an arch.
+  add_test(NAME x86_64_x1_handover
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64.sh"
+            "${KICKOS_X1_IMAGE}" "${PROJECT_BINARY_DIR}/x1run-ctest")
+  set_tests_properties(x86_64_x1_handover PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+
+  # One case per fault class rather than one over the ten: the report ends the image, so each
+  # class is its own boot either way, and a failure then names the class. The `none` image is
+  # the negative control and refuses a report.
+  foreach(_cls IN LISTS KICKOS_X2_CLASSES)
+    add_test(NAME x86_64_x2_${_cls}
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x2.sh"
+              "${_cls}" "${KICKOS_X86_64_IMAGE_${_cls}}"
+              "${PROJECT_BINARY_DIR}/x2run-ctest/${_cls}")
+    set_tests_properties(x86_64_x2_${_cls} PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+  endforeach()
+
+  add_test(NAME x86_64_x3_runtime
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x3.sh"
+            "${KICKOS_X3_IMAGE}" "${PROJECT_BINARY_DIR}/x3run-ctest")
+  set_tests_properties(x86_64_x3_runtime PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+
+  add_test(NAME x86_64_x4_ring3
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x4.sh"
+            "${KICKOS_X4_IMAGE}" "${PROJECT_BINARY_DIR}/x4run-ctest")
+  set_tests_properties(x86_64_x4_ring3 PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+
   add_test(NAME x86_64_no_got_selftest
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_no_got_selftest.sh"
             "${KICKOS_NO_GOT}" "${CMAKE_READELF}" "${CMAKE_C_COMPILER}" "${CMAKE_AR}"
@@ -354,51 +410,26 @@ string(REPLACE "," ";" _kos_x86_64_group "${_kickos_group}")
 set(KICKOS_X86_64_APP_GROUP "${_kos_x86_64_group}" CACHE INTERNAL
     "The archive group an x86_64 application image links, from the root CMakeLists")
 
-function(kickos_x86_64_link_image name)
-  set(_img "${CMAKE_CURRENT_BINARY_DIR}/${name}.efi")
+# --- What an installed package needs to run that same link -------------------
+# The image is written by ld from OBJECTS, so the objects are part of the deliverable: an app
+# built out of tree links these three exactly as an in-tree one does. install(TARGETS OBJECTS)
+# puts them in KickOSTargets as IMPORTED_OBJECTS, which is what makes $<TARGET_OBJECTS:> above
+# resolve in a consumer.
+#
+# RAW OBJECTS AND NOT AN ARCHIVE. An archive ahead of the group is scanned before the group is,
+# so kickos_x86_64_nopool's frame-pool decline would not yet be undefined and no member would
+# be extracted; the link then fails undefined at the end. The archive form is right for the
+# arch and chip halves, where a fallback TU sits beside the chip's own definition and member
+# order resolves it, and wrong here.
+set(_kos_x86_64_install_objects kickos_x86_64_boot kickos_x86_64_landed_kernel)
+if(TARGET kickos_x86_64_nopool)
+  list(APPEND _kos_x86_64_install_objects kickos_x86_64_nopool)
+endif()
+install(TARGETS ${_kos_x86_64_install_objects} EXPORT KickOSTargets
+        OBJECTS DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
 
-  set(_group_files "")
-  foreach(_t IN LISTS KICKOS_X86_64_APP_GROUP)
-    if(NOT TARGET ${_t})
-      message(FATAL_ERROR "kickos_x86_64_link_image(${name}): '${_t}' is in the KickOS link "
-        "group but is not a target, so the image would link against a bare -l name.")
-    endif()
-    list(APPEND _group_files "$<TARGET_FILE:${_t}>")
-  endforeach()
-
-  # THE ARCHIVES ARE SCANNED TOO, not the image objects alone: a global-offset-table
-  # relocation on this board lands in libkickos_kernel.a, which the objects do not show.
-  add_custom_command(
-    OUTPUT "${_img}"
-    COMMAND "${KICKOS_NO_GOT}" "${CMAKE_READELF}"
-            $<TARGET_OBJECTS:kickos_x86_64_boot>
-            $<TARGET_OBJECTS:kickos_x86_64_landed_kernel>
-            ${KICKOS_X86_64_APP_OBJECTS}
-            $<TARGET_OBJECTS:${name}>
-            ${_group_files}
-    # -Map is required: only the map names the archive MEMBER each symbol resolved from,
-    # which is what tests/static/check_seam_defaults.sh reads.
-    COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS}
-            -Map "${_img}.map"
-            -o "${_img}"
-            $<TARGET_OBJECTS:kickos_x86_64_boot>
-            $<TARGET_OBJECTS:kickos_x86_64_landed_kernel>
-            ${KICKOS_X86_64_APP_OBJECTS}
-            $<TARGET_OBJECTS:${name}>
-            --start-group ${_group_files} --end-group
-    # The OBJECT FILES, not just the targets: a DEPENDS on an OBJECT library alone is
-    # order-only, so an edited source rebuilt its object and left this link untaken.
-    DEPENDS $<TARGET_OBJECTS:kickos_x86_64_boot>
-            $<TARGET_OBJECTS:kickos_x86_64_landed_kernel>
-            ${KICKOS_X86_64_APP_OBJECTS}
-            $<TARGET_OBJECTS:${name}>
-            ${_group_files}
-            "${KICKOS_NO_GOT}"
-            "${KICKOS_X86_64_PE_SCRIPT}"
-    BYPRODUCTS "${_img}.map"
-    COMMENT "x86_64: linking the PE32+ UEFI application ${name}.efi"
-    COMMAND_EXPAND_LISTS
-    VERBATIM)
-  add_custom_target(${name}_image ALL DEPENDS "${_img}")
-  set_target_properties(${name} PROPERTIES KICKOS_IMAGE_FILE "${_img}")
-endfunction()
+# Beside the module that names them: it reads both list-dir-relative out of a package.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/x86_64_image.cmake"
+              "${KICKOS_X86_64_PE_SCRIPT}"
+        DESTINATION "${KICKOS_CMAKE_DIR}")
+install(PROGRAMS "${KICKOS_NO_GOT}" DESTINATION "${KICKOS_CMAKE_DIR}")

@@ -7,6 +7,7 @@
  */
 
 #include <sections.ld.h>
+#include <app_heap.ld.h>
 #include <kernel_data_reserve.ld.h>
 
 ENTRY(Reset_Handler)
@@ -25,19 +26,23 @@ _kernel_stack_size = 8K;
    to its size, so the app window is padded to this pow2 and section-aligned to its
    size above the kernel data; an app whose globals exceed it trips the ASSERT.
    Power of two only. */
-/* The window pad (window minus app statics + runtime) IS the newlib heap. A 4K window
-   leaves only ~2K pad under enforcement, below printf's 4K stdio granule, so the
-   default is 16K (~14K pad, >= the 8K floor). 128 KiB RAM, so the pad is cheap. Power
-   of two only. */
+/* The window pad IS the newlib heap and every thread shares it: newlib seats one
+   struct _reent per thread slot and each slot's first stdio use mallocs a 1K buffer,
+   so an image linking stdio wants a pad that scales with the slot count. There is no
+   value below 16K here. 8K LINKS GREEN ONLY WITH KICKOS_KERNEL_DATA_RESERVE MOVED TO 24K
+   ALONGSIDE IT: this board's kernel .data/.bss needs three 8K windows and the 32K default
+   is then one window too many, which the reserve's own over-generous-window ASSERT
+   refuses. The 8K pad is one no allocating image can use; 4K does not link at all, app
+   statics alone passing it. */
 #if KICKOS_HAVE_MPU
 #ifndef KICKOS_APPDATA_SIZE
 #define KICKOS_APPDATA_SIZE 16K
 #endif
 _appdata_size = KICKOS_APPDATA_SIZE;
 /* Room for kernel .data/.bss below the app window; see kernel_data_reserve.ld.h. */
-/* Two 16K windows, not one: this board's kernel .data/.bss passes the first by about a
-   kilobyte, and the overshoot is the per-thread kernel stacks and the kernel singleton,
-   which are the board's advertised capability rather than slack. */
+/* Two 16K windows, not one: this board's kernel .data/.bss passes the first, and the
+   overshoot is the per-thread kernel stacks and the kernel singleton, which are the
+   board's advertised capability rather than slack. */
 #ifndef KICKOS_KERNEL_DATA_RESERVE
 #define KICKOS_KERNEL_DATA_RESERVE 32K
 #endif
@@ -189,7 +194,7 @@ SECTIONS
     {
         __kickos_appdata_start = .;
         *(.data .data.*)
-        . = ALIGN(4);
+        . = ALIGN(8);
         __kickos_appdata_load_end = .;
     } > RAM AT > FLASH
 
@@ -207,7 +212,9 @@ SECTIONS
            that ASSERT the thing that prints. */
         . = MAX(., __kickos_appdata_start + _appdata_size); /* pad the granted window */
         __kickos_appdata_end = .;
-        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
+        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). That ALIGN is
+           relative to this section's start, which is why .appdata closes on ALIGN(8);
+           app_heap.ld.h holds the rule and the file-scope ASSERT that reads it back. */
         _kickos_heap_start = ALIGN(_appdata_used_end, 8);
         _kickos_heap_limit = __kickos_appdata_end;
     } > RAM
@@ -282,6 +289,7 @@ ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
    next power of two (it is the app's MPU-granted .data/.bss window). */
 #if KICKOS_HAVE_MPU
 KICKOS_KERNEL_DATA_RESERVE_ASSERT(_ebss)
+KICKOS_APP_HEAP_ALIGN_ASSERT(_kickos_heap_start, _appdata_used_end)
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
 /* Lower bound: an empty .appdata dropping its ALIGN would place .appbss below the base. */

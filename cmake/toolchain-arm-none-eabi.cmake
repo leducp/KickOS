@@ -26,7 +26,8 @@ set(CMAKE_SYSTEM_PROCESSOR arm)
 # not the arch. The board descriptor states arch + chip, and a CPU flag only where the
 # board itself differs from its chip; both are read here pre-project() and by the build's
 # board resolver (cmake/kickos.cmake), so the toolchain and the build cannot disagree.
-set(KICKOS_BOARD "frdmk64f" CACHE STRING "Target board (see boards/)")
+set(KICKOS_TOOLCHAIN_DEFAULT_BOARD "frdmk64f")
+set(KICKOS_BOARD "${KICKOS_TOOLCHAIN_DEFAULT_BOARD}" CACHE STRING "Target board (see boards/)")
 
 # In-tree the descriptor is boards/<board>/board.cmake relative to the repo root
 # (this file lives in <repo>/cmake). An installed MCU package ships the one board
@@ -35,16 +36,8 @@ if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake")
   include("${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake") # in-tree
 elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/board.cmake")
   # Installed single-board package: the one shipped descriptor is authoritative.
-  # Adopt its board id so the -mcpu + KICKOS_BOARD label are the package's, not
-  # this file's frdmk64f default; a genuine request for a DIFFERENT board must
-  # fail (the package ships exactly one arch/chip/linker), not silently mislabel.
   include("${CMAKE_CURRENT_LIST_DIR}/board.cmake")
-  if(NOT KICKOS_BOARD STREQUAL "frdmk64f"
-     AND NOT KICKOS_BOARD STREQUAL "${KICKOS_BOARD_ID}")
-    message(FATAL_ERROR "KickOS: this package provides board '${KICKOS_BOARD_ID}', "
-      "not '${KICKOS_BOARD}': a KickOS MCU package is single-board")
-  endif()
-  set(KICKOS_BOARD "${KICKOS_BOARD_ID}" CACHE STRING "Target board" FORCE)
+  include("${CMAKE_CURRENT_LIST_DIR}/toolchain-package-board.cmake")
 else()
   message(FATAL_ERROR "KickOS arm toolchain: no board descriptor for '${KICKOS_BOARD}'")
 endif()

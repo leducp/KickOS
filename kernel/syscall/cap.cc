@@ -673,15 +673,15 @@ namespace kickos
             uint32_t irq;
         };
 
-        // The hold set a charged kind's bits live in, how wide its pool is, and the pool slot
-        // `obj_handle` names in it. False = an uncharged kind, which every cap table also
-        // carries: CAP_EMPTY, CAP_REPLY, and the two address-space kinds, none of which spends
-        // a charged pool slot. `slot` is -1 where the handle does not resolve.
+        // The hold set a charged kind's bits live in, and the pool slot `obj_handle` names
+        // in it. False = an uncharged kind, which every cap table also carries: CAP_EMPTY,
+        // CAP_REPLY, and the two address-space kinds, none of which spends a charged pool
+        // slot. `slot` is -1 where the handle does not resolve.
         //
-        // ONE SWITCH FOR BOTH ANSWERS, so a kind cannot be charged for the ceiling and
-        // unresolved for the slot. Split in two it needed an unreachable default arm to catch
-        // that, and the assert in it put kpanic under the syscall dispatch, which the trap red
-        // zone measures: +64 bytes on rv32imac SYS and +32 on armv7m SVCK.
+        // ONE SWITCH FOR BOTH ANSWERS, so a kind cannot be charged and unresolved at once.
+        // Split in two it needed an unreachable default arm to catch that, and the assert in
+        // it put kpanic under the syscall dispatch, which the trap red zone measures: +64
+        // bytes on rv32imac SYS and +32 on armv7m SVCK.
         //
         // A caller that wants only the pool passes NO_OBJECT: the all-ones index is never
         // seated (slotpool.h), so it resolves to nothing and costs no index_of divide.
@@ -691,35 +691,31 @@ namespace kickos
         // measures on a board that enforces it (KICKOS_KERNEL_STACKS=0).
         inline __attribute__((always_inline)) bool
         charged_pool(CapType type, int obj_handle, TaskObjectHolds* h, uint32_t** set,
-                     int* slots, int* slot)
+                     int* slot)
         {
             switch (type)
             {
             case CapType::CAP_SEM:
             {
                 *set = &h->sem;
-                *slots = KICKOS_MAX_SEMAPHORES;
                 *slot = kernel().sems.live_index(obj_handle);
                 return true;
             }
             case CapType::CAP_MUTEX:
             {
                 *set = &h->mutex;
-                *slots = KICKOS_MAX_MUTEXES;
                 *slot = kernel().mutexes.live_index(obj_handle);
                 return true;
             }
             case CapType::CAP_ENDPOINT:
             {
                 *set = &h->endpoint;
-                *slots = KICKOS_MAX_ENDPOINTS;
                 *slot = kernel().endpoints.live_index(obj_handle);
                 return true;
             }
             case CapType::CAP_IRQ:
             {
                 *set = &h->irq;
-                *slots = KICKOS_MAX_IRQ_HANDLES;
                 *slot = kernel().irq_bindings.live_index(obj_handle);
                 return true;
             }
@@ -734,9 +730,8 @@ namespace kickos
         void hold_mark(CapType type, int obj_handle, TaskObjectHolds* h)
         {
             uint32_t* set = nullptr;
-            int slots = 0;
             int slot = 0;
-            if (not charged_pool(type, obj_handle, h, &set, &slots, &slot) or slot < 0)
+            if (not charged_pool(type, obj_handle, h, &set, &slot) or slot < 0)
             {
                 return;
             }
@@ -780,13 +775,12 @@ namespace kickos
         TaskObjectHolds holds;
         task_object_holds(t, &holds);
         uint32_t* set = nullptr;
-        int slots = 0;
         int slot = 0;
-        if (not charged_pool(kind, NO_OBJECT, &holds, &set, &slots, &slot))
+        if (not charged_pool(kind, NO_OBJECT, &holds, &set, &slot))
         {
             return true; // an uncharged kind sits on no ceiling
         }
-        return task_object_count(*set) < task_object_ceiling(t, slots);
+        return task_object_count(*set) < task_object_ceiling(kind);
     }
 
     bool task_object_admit_grants(Task const* t, uint8_t const* types, int const* objs, int n)
@@ -801,9 +795,8 @@ namespace kickos
         {
             CapType const type = static_cast<CapType>(types[i]);
             uint32_t* set = nullptr;
-            int slots = 0;
             int slot = 0;
-            if (not charged_pool(type, objs[i], &holds, &set, &slots, &slot) or slot < 0)
+            if (not charged_pool(type, objs[i], &holds, &set, &slot) or slot < 0)
             {
                 continue;
             }
@@ -812,7 +805,7 @@ namespace kickos
             {
                 continue; // a second name for a slot this task already holds takes no slot
             }
-            if (task_object_count(*set) >= task_object_ceiling(t, slots))
+            if (task_object_count(*set) >= task_object_ceiling(type))
             {
                 return false;
             }

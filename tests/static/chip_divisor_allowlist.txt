@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Console divisor sites whose constant is a FIXED HARDWARE FACT rather than a system clock,
+# read by check_chip_divisor_rate.sh. One key per line, <file>:<sink>, keyed on the file and
+# the register so a line move does not invalidate the record and a rename does.
+#
+# A SITE THAT MERELY HAS NOT BEEN FIXED YET DOES NOT BELONG HERE. Every entry has to say what
+# makes the constant right, and the gate refuses an entry that names no live site, so a waiver
+# cannot outlive the code it was written for.
+
+# The 16550 divisor latch runs off the UART's own 1.8432 MHz reference crystal, which is part
+# of the PC serial controller and has no relation to any clock this port programs or degrades.
+# Divisor 1 IS 115200 baud, and there is no rate for it to track.
+arch/x86/chip/q35/com1_q35.cc:reg_divisor_lo
+arch/x86/chip/q35/com1_q35.cc:reg_divisor_hi
+
+# UART0 is clocked from the fixed 80 MHz APB, not from the CPU PLL that clock_init_240mhz
+# moves, so SystemCoreClock is the wrong number here and following it would be the defect.
+# The reclaim also runs on the panic path, where SystemCoreClock is writable state a faulted
+# image may have moved; the constant is what makes the reclaim independent of it.
+arch/xtensa/chip/esp32/chip_esp32.cc:reg::uart::CLKDIV

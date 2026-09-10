@@ -8,8 +8,7 @@
 #include <kickos/ampwindow.h>
 #include <kickos/kernel.h>
 #include <kickos/arch/amp_shared.h>
-
-#include <atomic>
+#include <kickos/sys/atomic.h>
 
 #include <stdint.h>
 
@@ -24,7 +23,9 @@ namespace kickos
             //
             // [0] magic  [1] this node's index  [2] its exception vector base
             // [3] a build-stated tag  [4] the core clock this node derives its timing from.
-            KICKOS_AMP_SHARED("diag") volatile uint32_t g_cells[5] = {0u, 0u, 0u, 0u, 0u};
+            KICKOS_AMP_SHARED("diag")
+            Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> g_cells[5] = {0u, 0u, 0u, 0u,
+                                                                           0u};
 
             constexpr uint32_t MAGIC = 0x4B534431u;
 
@@ -64,7 +65,6 @@ namespace kickos
             g_cells[2] = vector_base();
             g_cells[3] = static_cast<uint32_t>(KICKOS_AMP_DIAG_TAG);
             g_cells[4] = arch_cpu_clock_hz();
-            std::atomic_thread_fence(std::memory_order_release);
             g_cells[0] = MAGIC; // last: the reader gates on this
         }
 
@@ -87,9 +87,6 @@ namespace kickos
                     return;
                 }
             }
-            // Pairs with the peer's release: the cells below are read only after the magic
-            // that publishes them has been seen.
-            std::atomic_thread_fence(std::memory_order_acquire);
             kprintf("# ampdiag: peer node=%u vectors=0x%x tag=%u clk=%u self clk=%u\n",
                     static_cast<unsigned>(g_cells[1]), static_cast<unsigned>(g_cells[2]),
                     static_cast<unsigned>(g_cells[3]), static_cast<unsigned>(g_cells[4]),

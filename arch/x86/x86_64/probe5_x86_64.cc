@@ -3,6 +3,15 @@
 //
 // SCAFFOLDING: the aspace family on a single root register, held against a booting image.
 // Every arm reports at the privileged level, and there is no thread here at all.
+//
+// THE FILE-SCOPE `volatile` WORDS BELOW INVOKE style.md's SECOND EXCEPTION, an object the
+// compiler must not elide or hoist, stated here once rather than at each of the four, and
+// this file is the exception's clearest case. `resumable_load` writes `g_skip_bytes`, takes a
+// DELIBERATE FAULT, and compares `g_faults` against what it read before: the handler runs
+// between two statements of one function, across an instruction the compiler does not model
+// as a call at all. Without `volatile` the two stores are dead and the comparison folds to
+// false. `g_fault_vector` and `g_fault_addr` are 8 bytes, which `Atomic` refuses
+// (`sizeof(T) <= 4`), so they carry the 64-bit exception as well.
 
 #include <kickos/arch/apic.h>
 #include <kickos/arch/arch.h>
@@ -488,6 +497,12 @@ namespace
         put_dec(aspace_first_child_entries());
         put("\n");
 
+        // A count of zero is a read of the wrong table, and a count short of a full table is
+        // a firmware that left room: either one makes hanging the window off a ROOT slot the
+        // wrong shape, so the premise is asserted and not merely printed.
+        arm("first_child_table_is_full",
+            aspace_first_child_entries()
+                == static_cast<unsigned>(arch_aspace_granule() / sizeof(uint64_t)));
         arm("kernel_window_anchored", kwin != 0 and aspace_kernel_window_pages() != 0);
         // The range this port took is the kernel half's, so no space may map into it. The
         // per-slot leg of the range test.
@@ -823,6 +838,26 @@ namespace
         arm("partway_refusal_left_no_partial_mapping", clean);
         arch_aspace_destroy(c);
         arm("partway_refusal_leaked_no_frame", g_outstanding == held);
+
+        // A REFUSAL OVER A SPACE THAT ALREADY MAPS SOMETHING, and it is the only shape here
+        // that asks the unwind whether a table is EMPTY and can be told wrong. The prune walks
+        // every table the live page hangs off, so one read as empty is one its parent clears
+        // and frees with a leaf still naming a frame inside it; the two refusals above run in a
+        // space holding nothing else, where empty and read-as-empty agree on every table they
+        // reach. The span sits one table-span above the live page, so the two share every level
+        // but the last.
+        c = arch_aspace_create();
+        arm("a_live_page_before_the_refusal",
+            do_map(c, g_va, g_frame_a, 1, ARCH_MAP_R, ARCH_MAP_NORMAL) == ARCH_ASPACE_OK);
+        g_fail_from = g_allocs + 1;
+        rc = do_map(c, g_span_va, g_span_pa, pages, ARCH_MAP_R, ARCH_MAP_NORMAL);
+        g_fail_from = 0;
+        arm("out_of_frames_beside_a_live_page", rc == ARCH_ASPACE_ENOMEM);
+        arm("the_live_page_survived_the_unwind", arch_aspace_frame_at(c, g_va) == g_frame_a);
+        // The lent frame goes back before the space does, which is destroy's rule in arch.h.
+        arm("the_live_page_unmapped_before_destroy", do_unmap(c, g_va, 1) == ARCH_ASPACE_OK);
+        arch_aspace_destroy(c);
+        arm("refusal_beside_a_live_page_leaked_no_frame", g_outstanding == held);
     }
 
     void arm_acquire(void)

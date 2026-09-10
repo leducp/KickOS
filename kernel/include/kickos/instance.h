@@ -164,36 +164,6 @@ namespace kickos
         return detail::g_instance.get();
     }
 
-    // Slots of every charged object pool that stay out of reach of ANY ONE task, so no task
-    // can take a pool's last slot out from under a supervisor's respawn.
-    //
-    // ONE, because the smallest pools in the fleet hold 4 slots (every board's endpoints, and
-    // bluepill-c8's semaphores, mutexes and IRQ handles) against a single task's whole
-    // capability-table width of own-creates, 8 on a default-supply board and 12 on
-    // pizero2350-amp2.
-    //
-    // IT BOUNDS ONE TASK AND NOT THE SYSTEM: two tasks at their ceilings still empty a pool
-    // between them, and KOS_SYS_TASK_CREATE carries no authority bit, so one caller reaches
-    // that by minting a second task. Bounding it is a quota on task creation, not this.
-    constexpr int TASK_OBJECT_RESERVE = 1;
-
-    // A POOL THIS CHARGES IS EITHER ABSENT OR WIDER THAN THE RESERVE. At exactly one slot the
-    // ceiling in task_object_admit is 0, so the pool costs .bss and nothing can ever allocate
-    // it; letting that slot through instead hands a task the pool's last slot. A Kconfig range
-    // cannot spell "0 or more than one", so the relation is asserted here.
-    static_assert(KICKOS_MAX_SEMAPHORES == 0 or KICKOS_MAX_SEMAPHORES > TASK_OBJECT_RESERVE,
-                  "KICKOS_MAX_SEMAPHORES is 1: no task could ever create a semaphore. Set it "
-                  "to 0 to drop the pool, or to 2 or more");
-    static_assert(KICKOS_MAX_MUTEXES == 0 or KICKOS_MAX_MUTEXES > TASK_OBJECT_RESERVE,
-                  "KICKOS_MAX_MUTEXES is 1: no task could ever create a mutex. Set it to 0 to "
-                  "drop the pool, or to 2 or more");
-    static_assert(KICKOS_MAX_ENDPOINTS == 0 or KICKOS_MAX_ENDPOINTS > TASK_OBJECT_RESERVE,
-                  "KICKOS_MAX_ENDPOINTS is 1: no task could ever create an endpoint. Set it to "
-                  "0 to drop the pool, or to 2 or more");
-    static_assert(KICKOS_MAX_IRQ_HANDLES == 0 or KICKOS_MAX_IRQ_HANDLES > TASK_OBJECT_RESERVE,
-                  "KICKOS_MAX_IRQ_HANDLES is 1: no task could ever bind a tier-1 IRQ. Set it "
-                  "to 0 to drop the pool, or to 2 or more");
-
     // A HOLD SET IS 32 BITS OF POOL SLOTS (TaskObjectHolds, cap.h), so a wider pool would
     // carry slots no ceiling can see. The Kconfig ranges are narrowed to match; this is the
     // backstop for a board_config.h that defines a width directly.
@@ -213,18 +183,6 @@ namespace kickos
             n++;
         }
         return n;
-    }
-
-    // The most slots of a pool `slots` wide one task may hold: the SMALLER of the pool's own
-    // slots-minus-reserve and the task's budget.
-    inline int task_object_ceiling(Task const* t, int slots)
-    {
-        int ceiling = slots - TASK_OBJECT_RESERVE;
-        if (ceiling > static_cast<int>(t->object_budget))
-        {
-            ceiling = static_cast<int>(t->object_budget);
-        }
-        return ceiling;
     }
 }
 

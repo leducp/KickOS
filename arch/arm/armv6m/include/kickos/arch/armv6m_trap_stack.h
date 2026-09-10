@@ -91,7 +91,8 @@
      _PENDSV   0  handler mode uses SP_main.
      _SVC      0  svc_trampoline moves SP to ctx.kernel_sp before it calls anything, so the
                   whole dispatch tree is measured as _SVCK.
-     _SVCK   808  picopi-st, the deeper of this arch's two declared presets (microbit 624).
+     _SVCK   808  picopi-st at 628, the deepest of this arch's four declared presets
+                  (picopi 572, microbit and picopi-flat 504).
 
    THE PANIC REPORTER IS NOT ON THIS CHAIN. kpanic leaves this stack before it prints
    (kickos_panic_stack_enter, switch.S), so what 628 measures at picopi-st is grant admission
@@ -135,14 +136,20 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
    BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
-   kickos_thread_slay_exit. 608 on picopi, the fault stub the deeper of the two through
-   kprintf_fault. NO POSTURE LADDER on this arch: it has neither a telemetry nor a bench
+   kickos_thread_slay_exit. 432 on picopi, the fault stub the deeper of the two through
+   kprintf_fault, which formats into KDIAG_FAULT_LINE_MAX bytes and not the 256 an ordinary
+   kprintf gets. NO POSTURE LADDER on this arch: it has neither a telemetry nor a bench
    variant, so one figure covers every registered preset. This arch selects
    ARCH_KERNEL_STACKS_MANDATORY, so no kstacks=0 fallback class stands beside it the way one
    does on armv7m.
 
-   IT NEVER BINDS: 68 + 608 = 676 against 892 usable, where SVCK asks 892 exactly. */
-#define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK 608
+   IT NEVER BINDS, WHICH IS WHY IT IS ROUNDED LIKE A THREAD-STACK FIGURE. A kernel-block
+   figure is normally left at its measurement because it sizes KICKOS_KERNEL_STACK_SIZE and a
+   byte there costs KICKOS_THREAD_SLOTS; this class sizes nothing, SVCK winning the block on
+   every registered preset, so the reason for that convention does not reach it. 448 is the
+   432 measured rounded up to the next multiple of 64: 68 + 448 = 516 against 892 usable,
+   where SVCK asks 892 exactly, so this would have to grow 376 more before it bound. */
+#define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK 448
 
 /* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
    and no redirect to relocate it, so it runs at whatever depth the entry returned from on the
@@ -180,7 +187,9 @@
 #define KICKOS_ARMV6M_CTX_OFF_TRACE_TID 24
 
 /* THE PANIC REPORTER'S OWN STACK, which kickos_panic_stack_enter (switch.S) moves to before a
- * banner is printed, so EXITK, RET and SVCK measure no console at all.
+ * banner is printed, so an assert on EXITK, RET or SVCK costs those figures its call site and
+ * nothing under it. THE FAULT REPORTER IS A DIFFERENT CHAIN and is not priced here: it runs in
+ * thread context on the dying thread's own block and is what EXITK still measures.
  *
  * FRAME IS THE HARDWARE FRAME and not 0: the entry sets PRIMASK before the move, but PRIMASK
  * does not mask a HardFault, and a wild access inside the reporter stacks that frame on the SP

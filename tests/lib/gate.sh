@@ -128,6 +128,34 @@ tool_out() { # <outfile> <landmark-ere, empty for success-only> <tool> <arg>...
     fi
 }
 
+# The -D arguments an installed KickOS package puts on a consumer's compile line, read back
+# off a BUILT out-of-tree app rather than restated. The exported target carries them as
+# generator expressions, so the app's own compile_commands.json is the only place they exist
+# resolved, and a set written by hand is right for the arch it was written on and wrong
+# elsewhere.
+#
+# PER TRANSLATION UNIT, never a union of the whole corpus: a union can hand
+# check_public_headers.sh a combination no single consumer TU ever compiles with, and the
+# probe cannot tell that apart from real agreement. Every TU in the corpus must carry the
+# SAME set; a disagreement is refused by name (tests/lib/package_defs.py) rather than merged
+# or resolved by picking one TU's file, which would hardcode a consumer's layout into a gate
+# helper shared by every arch.
+package_defs() { # <compile_commands.json> <outfile>
+    [ -f "$1" ] || fail "no compile_commands.json at $1, so what a consumer inherits from
+      this package cannot be read"
+    command -v python3 >/dev/null 2>&1 || fail "python3 not found; package_defs cannot read $1"
+    _pd_reader="$(dirname "$0")/../lib/package_defs.py"
+    [ -r "$_pd_reader" ] || fail "$_pd_reader is unreadable; the per-TU -D set cannot be read"
+    python3 "$_pd_reader" "$1" > "$2" 2>"$2.err" || {
+        sed -n '1,20p' "$2.err" >&2
+        fail "the out-of-tree corpus's translation units do not agree on their -D set (see
+      above); the public-header probe has no honest basis for picking one TU's set over
+      another's"
+    }
+    require_nonempty "$2" "the out-of-tree app's compile line carries no -D at all, so
+      either the exported target lost its usage requirements or $1 is not a compile database"
+}
+
 # HOW AN IMAGE IS HANDED TO THE EMULATOR, per board, into KOS_BOOT_ARGS as a word list the
 # two runners below leave unquoted. The default is `-semihosting -kernel <elf>`.
 #

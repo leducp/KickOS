@@ -664,11 +664,6 @@ jobs:
   # kernel_ctor_placement passes VACUOUSLY here: every app in this matrix links an empty
   # .kickos_app_init_array window, so the check takes its "window empty -> PASS" early-out.
   # It still proves the ctor-split section symbols EXIST.
-  #
-  # The bare ctest (no -R) is what gives oot_export_mcu its teeth. Only the pizero2350 run
-  # can catch a descriptor bake that writes nothing: qemu is one of the four mps2 boards that
-  # state their own KICKOS_MCPU, so its shipped board.cmake is complete either way, while
-  # pizero2350 leaves the core to the chip.
   build-boards-mpu:
     runs-on: ubuntu-latest
     timeout-minutes: 40

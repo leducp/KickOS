@@ -1504,8 +1504,9 @@ namespace
             // WHICH supply ran out is the diagnosis, and the three have opposite fixes:
             // -KOS_EMFILE is this thread's capability table (widen the declared demand),
             // -KOS_EOVERFLOW is this TASK's ceiling for one of the pools with the pool itself
-            // still holding slots (raise KICKOS_TASK_OBJECT_BUDGET), anything else is an
-            // object pool that is genuinely out. Collapsing the middle one into "pool too
+            // still holding slots (raise KICKOS_TASK_SEMAPHORE_BUDGET, and the pool with
+            // it), anything else is an object pool that is genuinely out. Collapsing the
+            // middle one into "pool too
             // small" is the mislabelled skip syscall-return-abi warns about.
             char const* why = "pool too small";
             if (refused == -KOS_EMFILE)
@@ -8226,11 +8227,11 @@ namespace
     // A far slot handed back as a local endpoint. The pool leaves a freed slot's fields
     // standing, so a create that seats only its own would keep the far route the mint wrote.
     // FILLING THE POOL NOW TAKES TWO TASKS, and that is the object budget working rather
-    // than a defect. A task's ceiling is the pool's slots MINUS TASK_OBJECT_RESERVE, so a
-    // task at its ceiling always leaves the reserved slot free and NO ONE task can fill a
-    // pool by creating. The two arms below need the pool full AND bump-allocated to its last
+    // than a defect. KICKOS_TASK_ENDPOINT_BUDGET sits strictly below the pool's width, so a
+    // task at its ceiling always leaves slots free and NO ONE task can fill a pool by
+    // creating. The two arms below need the pool full AND bump-allocated to its last
     // index, or the create after their close lands on a fresh slot instead of the freed one
-    // and proves nothing. So a second group takes what the reserve keeps out of this one's
+    // and proves nothing. So a second group takes what this one's budget keeps out of its
     // reach. Root's own AMP port capabilities count against its ceiling too, which is why it
     // reaches that ceiling earlier here than on a board with no partition.
     constexpr int CH_HOLD = 2; // the release semaphore, delegated second
@@ -11923,10 +11924,12 @@ namespace
     // means the table is full; -KOS_ENOMEM or -KOS_EOVERFLOW that both kinds are spent.
     //
     // -KOS_EOVERFLOW FALLS BACK EXACTLY AS -KOS_ENOMEM DOES, and on the supply-7 boards it is
-    // the one that fires: the per-task object budget stops a task a slot short of each pool
-    // (KICKOS_TASK_OBJECT_BUDGET), so on a 4-slot semaphore pool this task runs out of
-    // SEMAPHORES one create before the pool runs out of slots. Either way the question the
-    // callers ask is the same one, whether some kind is still available to this task.
+    // the one that fires: KICKOS_TASK_SEMAPHORE_BUDGET is set below the semaphore pool, so on
+    // a 4-slot pool this task runs out of SEMAPHORES one create before the pool runs out of
+    // slots. Either way the question the callers ask is the same one, whether some kind is
+    // still available to this task. THIS FILL IS WHAT SIZES BOTH BUDGETS TOGETHER: it wants
+    // the TABLE to refuse, so the semaphore and mutex budgets must sum to at least the
+    // table's free width or t_cap_index0 and t_cap_gen_reuse never reach -KOS_EMFILE.
     int fill_one_cap_typed(kos_cap_t* out, bool* is_sem)
     {
         *is_sem = true;

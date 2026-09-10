@@ -17,7 +17,8 @@
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR rx)
 
-set(KICKOS_BOARD "rx72m" CACHE STRING "Target board: rx72m")
+set(KICKOS_TOOLCHAIN_DEFAULT_BOARD "rx72m")
+set(KICKOS_BOARD "${KICKOS_TOOLCHAIN_DEFAULT_BOARD}" CACHE STRING "Target board: rx72m")
 
 # Board descriptor: sets KICKOS_ARCH / KICKOS_ARCH_FAMILY / KICKOS_CHIP and the
 # per-board CPU flags (KICKOS_MCPU). Externalized (like the arm toolchain) so a
@@ -28,15 +29,8 @@ if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake")
   include("${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake") # in-tree
 elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/board.cmake")
   # Installed single-board package: the one shipped descriptor is authoritative.
-  # Adopt its board id; a genuine request for a DIFFERENT board must fail (the
-  # package ships exactly one arch/chip/linker), not silently mislabel.
   include("${CMAKE_CURRENT_LIST_DIR}/board.cmake")
-  if(NOT KICKOS_BOARD STREQUAL "rx72m"
-     AND NOT KICKOS_BOARD STREQUAL "${KICKOS_BOARD_ID}")
-    message(FATAL_ERROR "KickOS: this package provides board '${KICKOS_BOARD_ID}', "
-      "not '${KICKOS_BOARD}': a KickOS MCU package is single-board")
-  endif()
-  set(KICKOS_BOARD "${KICKOS_BOARD_ID}" CACHE STRING "Target board" FORCE)
+  include("${CMAKE_CURRENT_LIST_DIR}/toolchain-package-board.cmake")
 else()
   message(FATAL_ERROR "KickOS rx toolchain: no board descriptor for '${KICKOS_BOARD}'")
 endif()

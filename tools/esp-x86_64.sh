@@ -19,6 +19,12 @@ set -u
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# A TOOL THIS BOX DOES NOT HAVE IS NOT A DEFECT IN WHAT IS BEING TESTED. 77 is ctest's skip
+# status, and tests/lib/gate.sh refuses the same absence with the same code before it ever calls
+# here; tools/run-qemu-x86_64-common.sh propagates this one rather than keeping a second copy of
+# the list below.
+skip() { echo "SKIP: $*"; exit 77; }
+
 if [ "$#" -ne 2 ]; then
     fail "usage: esp-x86_64.sh <application.efi> <esp.img>"
 fi
@@ -27,7 +33,7 @@ IMG="$2"
 
 [ -f "$APP" ] || fail "no application at $APP"
 for t in dd mformat mmd mcopy; do
-    command -v "$t" >/dev/null 2>&1 || fail "$t is not installed (Debian: mtools, coreutils)"
+    command -v "$t" >/dev/null 2>&1 || skip "$t is not installed (Debian: mtools, coreutils)"
 done
 
 # The operands, not the vendor: a dd that does not know one of them refuses the WHOLE

@@ -3,6 +3,13 @@
 //
 // SCAFFOLDING: the arms that witness the console, the clock, the one-shot timer, the software
 // interrupt controller, the context switch and idle, taken AT THE ARCH SEAM.
+//
+// THE FILE-SCOPE `volatile` WORDS BELOW INVOKE style.md's SECOND EXCEPTION, an object the
+// compiler must not elide or hoist, stated here once rather than at each of the eleven. The
+// arms spin on them through `wait_for_count` with interrupts live, and a hoisted load never
+// returns. `g_timer_at` is 8 bytes, which `Atomic` refuses (`sizeof(T) <= 4`), so it carries
+// the 64-bit exception too. One image on one core: the writer is an ISR of this same
+// instruction stream, never a peer core.
 
 #include <kickos/arch/apic.h>
 #include <kickos/arch/arch.h>

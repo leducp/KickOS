@@ -13,6 +13,22 @@ endif()
 # drags the member in beside a backend that defines the seam and collides with it.
 # tests/static/check_seam_defaults.sh asserts the one-symbol rule and the per-board resolution.
 #
+# HOW A SEAM RESOLVES, stated here and nowhere else:
+#   Within ONE archive the FIRST member in member order that defines the symbol is extracted
+#   for it, member order being the source order of the add_library() call. A later member
+#   defining it too is extracted only if some OTHER undefined symbol needs it, and the link
+#   then fails with multiple definition. So a fallback beside its own backend either replaces
+#   it silently or breaks the link, on an order nothing states.
+#   Across archives the group is scanned left to right on every pass, so the rescan does not
+#   change which archive wins: a definition in a later archive is dropped when nothing else
+#   anchors its member, and is a multiple-definition error when something does. The order is
+#   kickos_kernel, kickos_chip_<chip>, kickos_arch_<arch> (_kickos_group in the root
+#   CMakeLists.txt); tests/static/check_link_scan_order.sh reads it back off the link map.
+# Two rules follow, both enforced rather than restated. A fallback never shares an archive
+# with a backend for the same seam (leg 1 of check_seam_defaults.sh), so each list below drops
+# the members the backend in that archive defines. And an arch-neutral fallback for a seam the
+# KERNEL declares never sits in kickos_kernel, the archive the group scans first.
+#
 # The load-bearing invariant is on the backend side: a backend's definition must live in an
 # archive member that is ALWAYS ANCHORED, one the link pulls for some other reason
 # (chip_<chip>.cc, force-loaded via -u g_isr_vector -> startup.S -> Reset_Handler;
@@ -20,12 +36,6 @@ endif()
 # dedicated TU nothing else references is not protected by scan order: the fallback resolves
 # the reference first and the board SILENTLY DECLINES at runtime. Leg 2 of the gate enforces
 # the anchoring rule.
-#
-# Arch-neutral fallbacks for seams the KERNEL declares must NOT sit in kickos_kernel: the
-# group scans the kernel archive before the chip archive, so a fallback there is extracted in
-# the same pass that makes the symbol undefined and then collides with the chip's definition.
-# Each list below drops the members the arch backend itself defines: two definitions of one
-# symbol in ONE archive resolve by member order.
 set(KICKOS_SEAM_DEFAULTS_COMMON
   common/arch_console_flush_sync_default.cc
   common/arch_console_reclaim_default.cc
@@ -56,8 +66,7 @@ if(KICKOS_FAULT_ISOLATION)
     common/arch_fault_redirect_to_exit_default.cc)
 endif()
 # A chip whose arch_shutdown reaches a debug or emulator channel (terminate.cmake) takes the
-# exiting fault dead-end. A SWAP and not an addition: two definitions of one symbol in ONE
-# archive resolve by member order, so the LED fallback leaves the list with it.
+# exiting fault dead-end. A SWAP and not an addition: the two define one symbol.
 if(KICKOS_CHIP_EXITS_ON_FAULT)
   list(REMOVE_ITEM KICKOS_SEAM_DEFAULTS_COMMON common/kfault_terminate_default.cc)
   list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/kfault_terminate_shutdown.cc)
@@ -83,7 +92,7 @@ endif()
 if(KICKOS_ARCH STREQUAL "sim")
   # sim.cc is the backend for arch_console_write_sync, arch_console_tx_backend,
   # arch_console_reclaim_window, kfault_terminate and arch_periph_reg_write, so those fallbacks
-  # are dropped: a fallback beside a backend in ONE archive resolves by member order.
+  # are dropped.
   # SystemCoreClock has no chip to define it here.
   set(_sim_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
   list(REMOVE_ITEM _sim_defaults
@@ -203,7 +212,7 @@ elseif(KICKOS_ARCH STREQUAL "rxv3")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rx/rxv3/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "lx6")
   # ESP32 Xtensa LX6. arch_xtensa.cc is the backend for arch_irq_line_core, so that fallback
-  # leaves the list: a fallback beside a backend in ONE archive resolves by member order.
+  # leaves the list.
   set(_lx6_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
   list(REMOVE_ITEM _lx6_defaults common/arch_irq_line_core_default.cc)
   add_library(kickos_arch_lx6 STATIC
@@ -250,8 +259,7 @@ elseif(KICKOS_ARCH STREQUAL "armv8a")
       "2 and 3. The board states it through the Kconfig choice ARM64_GIC_V2 / ARM64_GIC_V3.")
   endif()
   # The GIC backend is the backend for arch_irq_line_kernel_owned (the doorbell's SGI), so
-  # that fallback leaves the list: a fallback beside a backend in ONE archive resolves by
-  # member order.
+  # that fallback leaves the list.
   set(_armv8a_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
   list(REMOVE_ITEM _armv8a_defaults common/arch_irq_line_kernel_owned_default.cc)
   add_library(kickos_arch_armv8a STATIC
@@ -487,7 +495,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # reasons: the chip linker scripts select .data/.bss by archive:member, so a new archive
   # falls through to the app catch-all; and a family may straddle two ISAs (the RP2040 is
   # armv6m and the RP2350 armv7m), which leaves no arch archive common to both. The chip
-  # archive is also the one the link rescans FIRST, so a seam defined here still beats an
+  # archive also precedes the arch archive in the group, so a seam defined here still beats an
   # arch fallback.
   set(_family_optin
       "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/family.cmake")

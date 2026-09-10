@@ -2229,6 +2229,100 @@ postcondition compares an answer against a request and both are zero, the raise 
 the peers still acknowledge. Only a selftest arm reading a count that must MOVE catches it. The
 hole is pre-existing by construction and was not measured before this milestone.
 
+## M8.5.1: what M8.5 measured and left, and what these green runs do NOT say
+
+**FOUR FIGURES AND NOT ONE, ON THE MEASUREMENT THAT DECIDED IT.** A single per-task budget
+build-checked against every charged pool is forced down to the narrowest charged pool minus one,
+and a self-test image needs more than that -- bisected on `qemu` at the pre-change tree, 8 and 6
+run clean, 5 turns `mutex_deadlock` into a SKIP the gate refuses, 4 costs 114 arms and 3 costs
+100. Buying the six means widening the ENDPOINT pool on every board that runs the suite, for a
+demand that was never in endpoints and that the next board wanting more semaphores would have to
+pay again. The tree's own defaults are the project already saying these four resources are not
+priced alike.
+
+**EVERY PRESET'S FOUR CEILINGS ARE NUMERICALLY UNCHANGED BY THIS WORK.** What changed is which
+term decides, that the term is stated per board, and that a violation is unrepresentable rather
+than clamped. No image may hold more or less than it could before, so a run that passes here
+would have passed before: the evidence is the build refusing what it should refuse, never a
+behaviour delta.
+
+**THE PER-KIND DEMAND WAS MEASURED AND THE INSTRUMENT IS NOT IN THE TREE.** A throwaway
+high-water recorder in `task_object_admit`, printing through a raw `write(2)` because `kprintf`
+does not link into the host seam, read the whole `sim` corpus and the whole `qemu` corpus: peak
+semaphore holds 8 (a ninth admitted by the budget and then refused by the capability table),
+mutex 2, endpoint 2, tier-1 IRQ 2. Nothing in either corpus was refused by a ceiling except
+`objbudget`, which probes past it on purpose. The endpoint figure is the thin one, as it has
+always been.
+
+**ROOT'S ENDPOINT HOLDS ARE NOT ALL ITS OWN CREATES, WHICH IS WHY THE PARTITION DEFCONFIGS STATE
+THAT FIGURE.** A published console costs root capability index 0 on that endpoint for the life of
+the image; a `KOS_DRV_EP_RETAIN` driver endpoint costs another, so a service-list board holds two
+of a four-slot pool steady before an app asks; and each `CONFIG_KICKOS_AMP_PORTS` entry is seated
+in root's table by `amp_ports_seat` with NO ADMISSION and counted from then on. A partition
+taking the fleet default would leave root at its own ceiling before `main`.
+
+**AND THAT SEAT WAS OUTSIDE EVERY CHECK, SO THE PROPERTY THE MILESTONE CLAIMS WAS HELD BY THE
+GUARD IT REPLACED.** The build compared the port count against the POOL and never against the
+budget, so a partition could state four ports against a ceiling of one, configure clean, and boot
+root holding four slots. `amp_ports_seat` panics rather than refusing, so nothing at run time
+could have caught it either. The last-slot property survived on the shipped presets through the
+older pool guard, not through the four asserts the roadmap credited with carrying it. The two
+relations are jointly tight now, and the plausible wrong fix -- raising the budget to the pool
+width -- is refused by the assert rather than by the new clause.
+
+**THE HOLD WALK IS BOUNDED BY TABLE WIDTHS AND NOT BY THE BUDGETS, WHICH IS NOT WHAT THE NAME
+SUGGESTS.** A budget bounds distinct pool SLOTS; the walk is over ENTRIES, and two capabilities on
+one object are two entries and one slot. Entry reads dominate the cost, a spawn pays one walk
+rather than one per grant, and neither armv7m nor rv32imac emits a divide on that path -- the
+invariant claimed the last of those and nothing had checked it. The masked window is bounded in
+INSTRUCTIONS and is still not measured in target time; no preset that runs here carries a cycle
+counter worth trusting for it.
+
+**THE FAULT REPORTER'S OWN STACK WAS PRICED AND REFUSED, AND THE REASON GENERALISES.** A per-core
+reporter array returns nothing on any preset in the fleet, EXITK sizing no allocation anywhere,
+while costing kernel `.bss` on every one of them -- more than the panic array does, because the
+fault line goes through the formatter and the panic reporter's deliberately does not. It also has
+no acceptable refusal arm: the window is preemptible, so refusing the second entrant means
+printing nothing, falling back to the block the array was meant to spare, or waiting, which is the
+wedge the kill path forbids. What was actually costing the figures was one diagnostic buffer
+serving every kernel message alike.
+
+**WHAT THESE GREEN RUNS DO NOT SAY.**
+
+- **NO SILICON RAN AT ALL.** Every figure in this milestone is a linked image, a callgraph or a
+  host measurement. The two chips whose console divisor was fixed are exactly the ones whose fix
+  only matters on a crystal-failure path, and nothing in the tree emulates a crystal that fails to
+  start.
+- **THREE NEW GATES PASSED OVER THE DEFECT CLASS THEY NAME**, and asking what would falsify each
+  claim is what found them, not reading the diff. A divisor written inside a guard, a page table
+  read as zero, and a banner losing one of a pair all passed. For a milestone whose product is
+  "the gate now says so", that is the failure mode to expect and to look for by construction.
+- **A ZERO-SLACK CONDITION WAS CLAIMED REMOVED AND WAS NOT.** Twenty of the 54 declared presets sat
+  at exactly `measured == enforced` before this milestone, and the same twenty sat there after its
+  narrowing: every figure moved and not one moved off its reserve. It is structural -- the depth
+  macro IS the fleet maximum, so the deepest preset reads zero slack by construction. Margin was
+  added afterwards, and the reason beyond churn is that this box and CI pin DIFFERENT ARM
+  toolchains, so a figure sitting at exactly its measurement makes the gate's verdict a function of
+  which compiler ran it.
+- **RET AND THREE OTHER CLASSES STILL SIT AT ZERO SLACK, DELIBERATELY.** RET is a thread-stack
+  figure the spawn-floor comparison reads, so its margin pushes on `KICKOS_MIN_STACK_SIZE` and has
+  a different price from a kernel-block class that sizes nothing. It is a decision that was not
+  taken, not one that was missed.
+- **A RE-ADDED `min(budget, width - 1)` CLAMP AT THE CREATOR WOULD REDDEN NOTHING**, the build
+  assert making it provably the identity. The single-authority claim rests on that assert and on
+  reading the code, never on a test that could catch its return.
+- **NO SHIPPED BOARD STATES A BUDGET BELOW ITS POOL'S WIDTH MINUS ONE**, so nothing in the fleet
+  witnesses a tighter figure refusing. The only proof that one does is the host gate's posture,
+  whose four ceilings are deliberately unequal and unequal to the pools they guard.
+- **THE OUT-OF-TREE PACKAGE IS BUILT, NEVER RUN.** Widening it from two presets to every arch found
+  four defect classes rather than the one it was opened for, including a single-board guard missing
+  from four of six toolchain files -- so a consumer naming another board was silently given the
+  packaged one. The gate compiles a consumer; it boots nothing, on any arch.
+- **A `selftest` arm went red once under load and the arm was not captured**, so clean serial
+  reruns do not clear it. The same class was attributed this session to an arm resting on a
+  duration margin, which reddens on the pre-change tree under the same load; this sighting is
+  CONSISTENT WITH that and is not independent evidence of it.
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).

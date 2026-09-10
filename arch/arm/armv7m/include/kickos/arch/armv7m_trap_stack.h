@@ -154,12 +154,12 @@
  * KICKOS_THREAD_SLOTS blocks of a tail its image does not contain: bluepill-c8 has 3 slots
  * and 224 spare bytes per slot, so the telemetry figure fails to link it.
  *
- * 768 enforced against 720 measured at xmc4800-relax-bench, whose bench arm prints through
+ * 768 enforced against 704 measured at xmc4800-relax-bench, whose bench arm prints through
  * the deepest console backend in the armv7m fleet, so it is still a console reading and not a
- * dispatch one; every other non-telemetry preset reads 444 to 616. 1240 and 1224 enforced
- * against 984 measured, at qemu-telem through arch_shutdown's telemetry tail and at the two
- * partition nodes through the window scaffolding. qemu/telem is the only telemetry variant of
- * any armv7m board: a second one is where that figure gets re-measured, not assumed.
+ * dispatch one; every other non-telemetry preset reads 444 to 616. 1240 enforced against 960
+ * measured at qemu-telem through arch_shutdown's telemetry tail, and 1224 against 984 at the
+ * two partition nodes through the window scaffolding. qemu/telem is the only telemetry variant
+ * of any armv7m board: a second one is where that figure gets re-measured, not assumed.
  *
  * The panic reporter is on none of the three: kpanic leaves the block before it prints, so
  * each figure is what the dispatch itself descends. ALL THREE ARE ENFORCED ABOVE THEIR
@@ -178,11 +178,10 @@
  * handler mode on SP_main and is UNMEASURED, per the PENDSV reason in
  * tests/static/trap_redzone_roots.txt. So off this posture nothing here bounds those three.
  * Measured at pizero2350-amp2-n0 and -n1, both 984, the only armv7m presets that are nodes.
- * THAT READING NOW EQUALS THE TELEMETRY ONE AND IS NOT THE SAME CHAIN: this one runs
- * amp_probe -> forge_reply_depth_recovery -> node_service -> endpoint_far_call_deliver, the
- * telemetry one exit_current -> kickos_terminate -> arch_shutdown -> the trace drain. The two
- * arms stay separate on that ground, one coincident reading being no reason to make a change
- * to either move both. */
+ * IT IS NOT THE TELEMETRY CHAIN: this one runs amp_probe -> forge_reply_depth_recovery
+ * -> node_service -> endpoint_far_call_deliver, the telemetry one exit_current
+ * -> kickos_terminate -> arch_shutdown -> the trace drain. The two arms stay separate on that
+ * ground, so a change moving one is not to be assumed to move the other. */
 #if KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 1240
 #elif KICKOS_AMP_NODE && defined(KICKOS_ENABLE_SELFTEST)
@@ -207,40 +206,56 @@
 
 /* The measured descent of the three stubs a dying thread runs PRIVILEGED on its own stack:
  * kickos_thread_fault_exit, kickos_thread_slay_exit and kickos_thread_return. The fault stub
- * is the deepest at every posture, reaching the console through kprintf_fault; under
- * telemetry all three converge on arch_shutdown's drain.
+ * is the deepest at every posture, reaching the console through kprintf_fault, which formats
+ * into KDIAG_FAULT_LINE_MAX bytes and not the 256 an ordinary kprintf gets; under telemetry
+ * all three converge on arch_shutdown's drain.
  *
  * The kstacks=0 fallback and nothing else, so it carries no posture ladder: the six presets
- * that enforce it have neither a telemetry nor a bench variant and all six measure 576.
+ * that enforce it have neither a telemetry nor a bench variant and all six measure 400.
  * Where a block IS seated the two relocating stubs are EXITK below and kickos_thread_return
- * is RET. */
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT 576
+ * is RET.
+ *
+ * 448 IS THAT MEASUREMENT ROUNDED UP TO THE NEXT MULTIPLE OF 64, the convention a
+ * thread-stack figure carries here (_SVC above is 448 over 444 on the same terms). At exactly
+ * the measurement, one added assert anywhere in the three stubs is a gate failure on all six
+ * presets at once. It COSTS NOTHING: nothing allocates at
+ * KICKOS_MIN_STACK_SIZE, and 208 + 448 = 656 still fits the 960 floor. What it does move is
+ * which class the floor's headroom is measured against, EXIT displacing _SVC's 632 as the
+ * arch's largest thread-stack requirement on those six presets, 304 under the floor. */
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT 448
 
 /* THE SAME TWO STUBS ON THE KERNEL BLOCK. kickos_fault_stack_top answers with ctx.kernel_sp,
  * so the fault redirect and the slay rebuild both land at the block TOP, discarding whatever
  * dispatch frames it held. That discard is what keeps the block requirement the MAX of SVCK
  * and this rather than their sum: nested under a live dispatch frame the two would add, and
- * 992 + 784 fits no block on any arch.
+ * 992 + 656 fits no block on any arch.
  *
- * It never binds: 208 + 584 = 792 against 1004 usable off telemetry, 208 + 952 = 1160 against
- * 1468 on, where SVCK asks 992 and 1464. Off telemetry 584 is the measurement; on it, 952 is
- * enforced over 832 measured. rxv3 is the arch with least room for that to change, its EXITK
- * needing 168 more bytes before it displaced SYSK. */
+ * IT NEVER BINDS, WHICH IS WHY IT IS ROUNDED LIKE A THREAD-STACK FIGURE. A kernel-block
+ * figure is normally left at its measurement because it sizes KICKOS_KERNEL_STACK_SIZE and a
+ * byte there costs KICKOS_THREAD_SLOTS; this class sizes nothing, SVCK winning the block on
+ * every registered preset, so the reason for that convention does not reach it. Off
+ * telemetry 448 is the 408 measured rounded up to the next multiple of 64; on it, 952 was
+ * already enforced over 808 measured.
+ *
+ * 208 + 448 = 656 against 1004 usable off telemetry, 208 + 952 = 1160 against 1468 on, where
+ * SVCK asks 992 and 1464. rxv3 is the arch with least room for that to change, its EXITK
+ * needing 348 more bytes before it displaced SYSK. */
 #if KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 952
 #else
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 584
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 448
 #endif
 
 /* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
  * and no redirect to relocate it, so it runs on the thread's own stack under BOTH designs.
  * Relocating it needs an arch trampoline of its own.
  *
- * 312 is xmc4800-relax-bench and 296 the other 32 non-telemetry presets. Under telemetry it
- * is 824, so this root and not the two that moved is what carries the KICKOS_MIN_STACK_SIZE
- * pressure on qemu-telem. */
+ * 312 is xmc4800-relax-bench, 304 is f302nucleo, f302nucleo-st, bluepill-c8 and
+ * bluepill-c8-st, and 296 the other 31 non-telemetry presets. Under telemetry it is 800, so
+ * this root and not the two that moved is what carries the KICKOS_MIN_STACK_SIZE pressure on
+ * qemu-telem. */
 #if KICKOS_TELEMETRY
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET 824
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET 800
 #else
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET 312
 #endif
@@ -289,8 +304,10 @@
 #define KICKOS_ARMV7M_CTX_OFF_TRACE_TID 24
 
 /* THE PANIC REPORTER'S OWN STACK, which kickos_panic_stack_enter (switch.S) moves to before a
- * banner is printed. The console is priced here and on no other class of this arch: SVC,
- * SVCK, EXIT and EXITK reach the reporter through a body the callgraph walk stops at.
+ * banner is printed. The PANIC console is priced here and on no other class of this arch: SVC,
+ * SVCK, EXIT and EXITK reach the reporter through a body the callgraph walk stops at. THE
+ * FAULT REPORTER IS A DIFFERENT CHAIN and is not priced here: it runs in thread context on the
+ * dying thread's own stack and is what EXIT and EXITK still measure.
  *
  * FRAME IS THE HARDWARE FRAME, KICKOS_ARMV7M_TRAP_FRAME_MAX, and not 0. The entry sets PRIMASK
  * before the move, so no interrupt lands here, but PRIMASK does not mask a HardFault: a wild
@@ -305,7 +322,7 @@
  * ladder is.
  *
  * NEITHER IS THE MEASUREMENT: 304 is the deepest non-telemetry reading, at f302nucleo and
- * bluepill-c8, and 800 the telemetry one at qemu-telem. 320 and 832 are the next multiple of 64
+ * bluepill-c8, and 776 the telemetry one at qemu-telem. 320 and 832 are the next multiple of 64
  * strictly above each, which is the rule every arch's PANIC figure follows. */
 #define KICKOS_ARMV7M_PANIC_FRAME 100
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY

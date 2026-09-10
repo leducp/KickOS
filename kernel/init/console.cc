@@ -313,10 +313,12 @@ namespace kickos
 
     namespace
     {
-        void kvprintf_route(char const* fmt, va_list ap, bool route)
+        // The buffer belongs to the CALLER, and that is the whole reason this is not one
+        // function with one array: kprintf_fault descends under a trap red zone measured by
+        // tests/static/check_trap_redzone.sh and cannot spend what kprintf spends.
+        void kvprintf_route(char* buf, size_t cap, char const* fmt, va_list ap, bool route)
         {
-            char buf[256];
-            kfmt_vsnprintf(buf, sizeof(buf), fmt, ap);
+            kfmt_vsnprintf(buf, cap, fmt, ap);
             size_t const n = kstrlen(buf);
             kconsole_write(buf, n);
             // USER_OWNED only. RECLAIMED means the kernel has the device back and the driver
@@ -335,17 +337,23 @@ namespace kickos
 
     void kprintf(char const* fmt, ...)
     {
+        char buf[256];
         va_list ap;
         va_start(ap, fmt);
-        kvprintf_route(fmt, ap, false);
+        kvprintf_route(buf, sizeof(buf), fmt, ap, false);
         va_end(ap);
     }
 
+    // KDIAG_FAULT_LINE_MAX and not 256: this runs on the dying thread's block below the exit
+    // red zone, where the array is the largest term of the whole descent. A line past the
+    // bound is truncated, and tests/unit/faultline proves every record of the catalogue fits
+    // at its worst case.
     void kprintf_fault(char const* fmt, ...)
     {
+        char buf[KDIAG_FAULT_LINE_MAX];
         va_list ap;
         va_start(ap, fmt);
-        kvprintf_route(fmt, ap, true);
+        kvprintf_route(buf, sizeof(buf), fmt, ap, true);
         va_end(ap);
     }
 

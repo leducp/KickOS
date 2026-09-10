@@ -36,6 +36,8 @@ namespace kickos::doorbell
         = "KickOS: rv64 doorbell wait returned early, rounds settled 0x";
     constexpr char PART_NO_CONTEND[] = "KickOS: rv64 peers never completed an acquisition, held ";
     constexpr char PART_NO_SPIN[] = "KickOS: rv64 peers never reached the acquire loop, seen 0x";
+    constexpr char PART_STILL_SETTLED[]
+        = "KickOS: rv64 doorbell round settled a request that never moved, peers ";
 }
 
 #endif

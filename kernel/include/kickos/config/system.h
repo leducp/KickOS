@@ -161,13 +161,20 @@
 #define KICKOS_MAX_FRAME_RUNS 8
 #endif
 
-// The most objects of ONE charged kind (semaphores, mutexes, endpoints, tier-1 IRQ bindings)
-// a single TASK may hold live. TASK_OBJECT_RESERVE in instance.h keeps a slot of every pool
-// out of any one task's reach whatever this says, and the smaller of the two binds; this
-// default is above every pool, so the reserve is what binds until a board lowers this. A
-// task's own-creates are otherwise bounded only by its threads' capability tables.
-#ifndef KICKOS_TASK_OBJECT_BUDGET
-#define KICKOS_TASK_OBJECT_BUDGET 255
+// The most slots of one charged pool a single TASK may hold live, one figure per pool. Each
+// must sit strictly below its own pool's width, which cap.h asserts at build time; that
+// relation is the whole of "no task can take a pool's last slot".
+#ifndef KICKOS_TASK_SEMAPHORE_BUDGET
+#define KICKOS_TASK_SEMAPHORE_BUDGET 15
+#endif
+#ifndef KICKOS_TASK_MUTEX_BUDGET
+#define KICKOS_TASK_MUTEX_BUDGET 7
+#endif
+#ifndef KICKOS_TASK_ENDPOINT_BUDGET
+#define KICKOS_TASK_ENDPOINT_BUDGET 3
+#endif
+#ifndef KICKOS_TASK_IRQ_HANDLE_BUDGET
+#define KICKOS_TASK_IRQ_HANDLE_BUDGET 7
 #endif
 
 namespace kickos

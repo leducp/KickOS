@@ -677,7 +677,7 @@ namespace kickos
     // no close protocol and frees nothing. Caller holds IrqLock.
     void obj_ref_undo(CapType type, int obj_handle, uint8_t rights);
 
-    // THE PER-TASK OBJECT BUDGET (instance.h: TASK_OBJECT_RESERVE, task_object_ceiling).
+    // THE PER-TASK OBJECT BUDGET.
     //
     // What a task holds of a charged pool is DERIVED from the capability tables of its live
     // members, one bit per pool slot, and recorded nowhere. So no release owes a refund, no
@@ -691,6 +691,65 @@ namespace kickos
     // recycle. Clearing it while a sibling remains would make that member's still-open
     // capabilities invisible for the length of a sweep that drops the lock every few
     // entries, and the sibling would then be admitted a whole fresh ceiling.
+
+    // The most slots of `kind`'s pool one task may hold. THE ONLY CEILING there is: no pool
+    // width is read here, the relation between the two being settled at build time by the
+    // asserts below rather than clamped at every creator. An uncharged kind never reaches
+    // this, charged_pool refusing it first; the default arm answers 0 so a charged kind added
+    // there and forgotten here refuses every create rather than admitting one, and it carries
+    // no assert because kpanic on the syscall descent is what the trap red zone measures.
+    constexpr int task_object_ceiling(CapType kind)
+    {
+        switch (kind)
+        {
+        case CapType::CAP_SEM:
+        {
+            return KICKOS_TASK_SEMAPHORE_BUDGET;
+        }
+        case CapType::CAP_MUTEX:
+        {
+            return KICKOS_TASK_MUTEX_BUDGET;
+        }
+        case CapType::CAP_ENDPOINT:
+        {
+            return KICKOS_TASK_ENDPOINT_BUDGET;
+        }
+        case CapType::CAP_IRQ:
+        {
+            return KICKOS_TASK_IRQ_HANDLE_BUDGET;
+        }
+        default:
+        {
+            return 0;
+        }
+        }
+    }
+
+    // A CHARGED POOL IS EITHER ABSENT OR WIDER THAN ITS BUDGET, which is the whole of "no
+    // single task can take a pool's last slot": at budget == slots one task empties the pool
+    // and the supervisor respawning a driver finds nothing left to respawn it with. The
+    // budget floor of 1 makes this also refuse a pool of exactly one slot, where a ceiling
+    // could only ever be 0 and the pool would cost .bss nothing could allocate.
+    static_assert(KICKOS_MAX_SEMAPHORES == 0
+                      or KICKOS_TASK_SEMAPHORE_BUDGET < KICKOS_MAX_SEMAPHORES,
+                  "KICKOS_TASK_SEMAPHORE_BUDGET reaches KICKOS_MAX_SEMAPHORES: one task could "
+                  "take the pool's last slot. Lower the budget below the pool width, or widen "
+                  "the pool above the budget");
+    static_assert(KICKOS_MAX_MUTEXES == 0 or KICKOS_TASK_MUTEX_BUDGET < KICKOS_MAX_MUTEXES,
+                  "KICKOS_TASK_MUTEX_BUDGET reaches KICKOS_MAX_MUTEXES: one task could take "
+                  "the pool's last slot. Lower the budget below the pool width, or widen the "
+                  "pool above the budget");
+    static_assert(KICKOS_MAX_ENDPOINTS == 0
+                      or KICKOS_TASK_ENDPOINT_BUDGET < KICKOS_MAX_ENDPOINTS,
+                  "KICKOS_TASK_ENDPOINT_BUDGET reaches KICKOS_MAX_ENDPOINTS: one task could "
+                  "take the pool's last slot, which is the endpoint a supervisor respawning a "
+                  "driver needs. Lower the budget below the pool width, or widen the pool "
+                  "above the budget");
+    static_assert(KICKOS_MAX_IRQ_HANDLES == 0
+                      or KICKOS_TASK_IRQ_HANDLE_BUDGET < KICKOS_MAX_IRQ_HANDLES,
+                  "KICKOS_TASK_IRQ_HANDLE_BUDGET reaches KICKOS_MAX_IRQ_HANDLES: one task "
+                  "could take the pool's last slot. Lower the budget below the pool width, or "
+                  "widen the pool above the budget");
 
     // Whether task `t` may come to hold one more slot of `kind`'s pool. Asked BEFORE the
     // allocation at every creator, so a task at its ceiling is refused without churning a

@@ -227,12 +227,6 @@ if(KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(sim_published_console PROPERTIES TIMEOUT 300)
   set_property(TEST sim_published_console APPEND PROPERTY ENVIRONMENT ${_selftest_env})
 
-  add_test(
-    NAME    oot_export
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_export.sh"
-            "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
-            "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
-  set_tests_properties(oot_export PROPERTIES TIMEOUT 120)
 endif()
 
 # One image per board, at the arm count that image recorded, under the derived
@@ -280,16 +274,51 @@ if(KICKOS_BOARD STREQUAL "microbit")
   endforeach()
 endif()
 
-if(KICKOS_BOARD STREQUAL "qemu")
-  add_test(
-    NAME    oot_export_mcu
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_export_mcu.sh"
-            "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
-            "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
+# The out-of-tree package gate, on ONE BOARD PER KICKOS_ARCH. Registered on two of the
+# seventy-one presets it leaves every arch-private installed header unexamined.
+#
+# The map is data (tests/integration/oot_arch_boards.txt) and tests/static/check_oot_arch_cover.sh
+# holds it whole against boards/*/board.cmake, so a new arch cannot quietly get no row.
+set(_oot_map "${PROJECT_SOURCE_DIR}/tests/integration/oot_arch_boards.txt")
+# A literal space, never [ \t]: CMake's regex engine has no tab escape, so the class would
+# silently reduce to "space or the letter t". check_oot_arch_cover.sh refuses a tab anywhere in
+# the map for that reason.
+file(STRINGS "${_oot_map}" _oot_rows REGEX "^covers ")
+if(_oot_rows STREQUAL "")
+  message(FATAL_ERROR "${_oot_map} states no covers row, so the out-of-tree package gate "
+                      "would register on no board at all")
+endif()
+set(_oot_board "")
+foreach(_oot_row IN LISTS _oot_rows)
+  if(_oot_row MATCHES "^covers +([A-Za-z0-9_]+) +([A-Za-z0-9_-]+)")
+    if(CMAKE_MATCH_1 STREQUAL KICKOS_ARCH)
+      set(_oot_board "${CMAKE_MATCH_2}")
+    endif()
+  endif()
+endforeach()
+
+if(_oot_board AND KICKOS_BOARD STREQUAL _oot_board)
   # FIXTURES_REQUIRED is named explicitly: without it ctest -j runs cmake --install on the
   # build dir concurrently with kickos_build and fails about one run in ten.
-  set_tests_properties(oot_export_mcu PROPERTIES TIMEOUT 120
-                       FIXTURES_REQUIRED kickos_build LABELS host)
+  if(KICKOS_ARCH STREQUAL "sim")
+    add_test(
+      NAME    oot_export
+      COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_export.sh"
+              "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
+              "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
+    set_tests_properties(oot_export PROPERTIES TIMEOUT 300
+                         FIXTURES_REQUIRED kickos_build LABELS host)
+  else()
+    # The HOST readelf, not this board's: it reads every machine the fleet targets, and the
+    # xtensa and rx toolchains ship none for CMAKE_READELF to find.
+    add_test(
+      NAME    oot_export_mcu
+      COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_export_mcu.sh"
+              "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
+              "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
+    set_tests_properties(oot_export_mcu PROPERTIES TIMEOUT 300
+                         FIXTURES_REQUIRED kickos_build LABELS host)
+  endif()
 endif()
 
 if(KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")
@@ -342,6 +371,15 @@ add_test(
           "${PROJECT_SOURCE_DIR}/tests/static/weak_allowlist.txt"
           ${_seam_archives})
 set_tests_properties(seam_defaults PROPERTIES TIMEOUT 120 LABELS host)
+
+# The order the gate above rests on. seam_defaults says WHICH member resolved each seam; this
+# says the archives were scanned in the order that makes the answer the intended one, read off
+# the linker's own LOAD record rather than off the variable that builds the group.
+add_test(
+  NAME    link_scan_order
+  COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_link_scan_order.sh"
+          "${_selftest_map}")
+set_tests_properties(link_scan_order PROPERTIES TIMEOUT 60 LABELS host)
 
 # Driver-class shadowing gate, on the SAME inventory. The last argument before the inventory is
 # 1 when this image compiles the mocks, which is the gate's positive control: it must SEE a
@@ -427,10 +465,12 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
 endif()
 
 # App-window leak guard for the inverted .appdata scheme: the enforcing linker scripts name the
-# CLOSED privileged set (kernel/arch/chip/lib) and .appdata/.appbss catch everything else, so ONE
-# renamed selector drops a whole archive into a window domain.cc grants R+W to every
-# unprivileged thread, with the script's own ASSERT(_ebss > _sbss) still true. The gate refuses
-# an image with no __kickos_appdata_start, which is why sim is out.
+# CLOSED privileged set and the app sections catch everything else, so ONE renamed selector drops
+# a whole archive into a window domain.cc grants to every unprivileged thread, with the script's
+# own ASSERT(_ebss > _sbss) still true.
+#
+# The window bounds and the privileged set both differ by board shape, so both are arguments.
+# MPU boards carve one writable window and select kernel/arch/chip/lib kernel-side.
 if(KICKOS_HAVE_MPU AND NOT KICKOS_ARCH STREQUAL "sim")
   add_test(
     NAME    appdata_no_kernel
@@ -438,9 +478,36 @@ if(KICKOS_HAVE_MPU AND NOT KICKOS_ARCH STREQUAL "sim")
             "${CMAKE_NM}"
             "$<TARGET_FILE:selftest>"
             "${_selftest_map}"
+            "__kickos_appdata_start:__kickos_appdata_end"
+            "--"
             "$<TARGET_FILE:kickos_kernel>"
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
             "$<TARGET_FILE:kickos_lib>")
+  set_tests_properties(appdata_no_kernel PROPERTIES TIMEOUT 60 LABELS host)
+endif()
+
+# The split-image boards carve TWO windows: the app's writable state, and the app's own
+# EL0/U-mode executable half, which is the one a kernel object landing app-side turns into
+# fetchable privileged code. Their scripts select kernel/arch/chip kernel-side and leave
+# libkickos_lib.a app-side by design, so the privileged set here is three and not four.
+#
+# x86_64 is out and stays out: arch/x86/x86_64/pe_image.ld carves no app window at all and
+# STATES each one as start == end, `ld -m i386pep` building no GOT so a weak-undefined window
+# symbol would resolve to itself. Dropping this exclusion does not make the gate vacuous
+# there, it makes it fail on the empty window, which is the loud end of that mistake.
+if(KICKOS_HAVE_ASPACE AND NOT KICKOS_ARCH STREQUAL "x86_64")
+  add_test(
+    NAME    appdata_no_kernel
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_appdata_no_kernel.sh"
+            "${CMAKE_NM}"
+            "$<TARGET_FILE:selftest>"
+            "${_selftest_map}"
+            "__kickos_app_sram_start:__kickos_app_sram_end"
+            "__kickos_app_rom_start:__kickos_app_rom_end"
+            "--"
+            "$<TARGET_FILE:kickos_kernel>"
+            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
   set_tests_properties(appdata_no_kernel PROPERTIES TIMEOUT 60 LABELS host)
 endif()

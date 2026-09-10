@@ -26,6 +26,7 @@
 #include "regs/scu.h"
 #include "regs/usic.h"
 
+#include <kickos/arch/arch.h> // arch_periph_clock_hz: the live fPERIPH the baud follows
 #include <kickos/console_tx.h>
 
 #include <stddef.h>
@@ -130,8 +131,15 @@ void kickos_xmc_usic_init(void)
     u::module_clock_enable(rs::CGATCLR0, rs::PRCLR0, rs::USIC0_GATE_BIT);
     u::kernel_clock_enable(U0C0);
 
-    // Baud rate generator (fractional divider + ASC bit-time dividers).
-    u::set_baud(U0C0, u::BAUD_115200_72MHZ);
+    // Baud rate generator (fractional divider + ASC bit-time dividers), for the branch
+    // clock this boot actually landed on. A bring-up that fell back to fOFI leaves
+    // fPERIPH at 24 MHz, which the table does cover; an fPERIPH it does not cover leaves
+    // the generator alone, which is the same refusal arch_console_retune makes.
+    u::Baud b;
+    if (u::baud_for_periph(arch_periph_clock_hz(U0C0), &b))
+    {
+        u::set_baud(U0C0, b);
+    }
 
     // Shift + transmit + protocol config while the channel is still disabled.
     u::reg32(U0C0 + u::off::SCTR) = ru::SCTR_WLE_8 | ru::SCTR_FLE_8 | ru::SCTR_TRM_ACTIVE | ru::SCTR_PDL;
@@ -172,9 +180,11 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 // Panic-path reclaim (console.cc D6): force U0C0 back to a known polled-ready ASC
 // channel after a userspace driver may have garbled EVERY writable register inside
 // its granted 0x200 window. Runs with IRQs masked, privileged; MUST be idempotent +
-// re-entrant, so it is straight-line ABSOLUTE stores only, NO read-modify-write on any
+// re-entrant, so every store here is ABSOLUTE, NO read-modify-write on any
 // driver-touched register: an RMW on a garbled value is not safe to repeat from a
-// nested-fault re-entry.
+// nested-fault re-entry. The one exception is the baud rewrite below, gated on
+// baud_for_periph resolving a divisor for the live peripheral clock; skipping it on
+// failure is itself idempotent.
 //
 // Reclaim depth = every in-window writable register init sets (baud/mode/DMA/IRQ) plus
 // the ones init leaves at reset default that a hostile driver can set to cause SILENT
@@ -197,8 +207,14 @@ void arch_console_reclaim(void)
     u::reg32(CONSOLE_WIN_BASE + u::off::RBCTR) = 0;
 
     // (c) Re-establish baud + full ASC config to the exact init values. TCSR absolute
-    // store also clears any DMA-trigger / interrupt-enable bits the driver set.
-    u::set_baud(CONSOLE_WIN_BASE, u::BAUD_115200_72MHZ); // FDR + BRG
+    // store also clears any DMA-trigger / interrupt-enable bits the driver set. The baud
+    // comes off the live branch clock, as at init: a reclaim that reprogrammed the
+    // 72 MHz point would garble a console that had been working at another rate.
+    u::Baud b;
+    if (u::baud_for_periph(arch_periph_clock_hz(CONSOLE_WIN_BASE), &b))
+    {
+        u::set_baud(CONSOLE_WIN_BASE, b); // FDR + BRG
+    }
     u::reg32(CONSOLE_WIN_BASE + u::off::SCTR) = ru::SCTR_WLE_8 | ru::SCTR_FLE_8 | ru::SCTR_TRM_ACTIVE | ru::SCTR_PDL;
     u::reg32(CONSOLE_WIN_BASE + u::off::TCSR) = ru::TCSR_TDEN_TDV | ru::TCSR_TDSSM;
     u::reg32(CONSOLE_WIN_BASE + u::off::PCR) = ru::PCR_ASC_SP | ru::PCR_ASC_SMD | ru::PCR_ASC_TSTEN;
@@ -263,22 +279,18 @@ void arch_console_flush_sync(void)
     }
 }
 
-// retune: reprogram the baud generator (FDR + BRG) for the new fPERIPH = SystemCoreClock/2,
-// selecting the precomputed point for the landed clock. The reprogram is live (the
-// channel stays enabled) but is reached only with the channel idle and IRQs masked.
-// An unrecognized clock leaves the baud untouched: a P-state whose fPERIPH has no
-// in-tolerance divisor is rejected at the seam.
+// retune: reprogram the baud generator (FDR + BRG) for the new fPERIPH, selecting the
+// precomputed point for the landed clock. The reprogram is live (the channel stays
+// enabled) but is reached only with the channel idle and IRQs masked. An unrecognized
+// clock leaves the baud untouched: a P-state whose fPERIPH has no in-tolerance divisor is
+// rejected at the seam.
 void arch_console_retune(void)
 {
     u::Baud b;
-    switch (SystemCoreClock)
+    if (u::baud_for_periph(arch_periph_clock_hz(U0C0), &b))
     {
-    case 144000000u: { b = u::BAUD_115200_72MHZ; break; } // fPERIPH 72 MHz
-    case 96000000u:  { b = u::BAUD_115200_48MHZ; break; } // fPERIPH 48 MHz
-    case 48000000u:  { b = u::BAUD_115200_24MHZ; break; } // fPERIPH 24 MHz
-    default: { return; }                                  // unknown clock: do not touch baud
+        u::set_baud(U0C0, b);
     }
-    u::set_baud(U0C0, b);
 }
 
 // Non-blocking RX drain: copy up to n received words into buf, return the count

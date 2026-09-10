@@ -279,10 +279,10 @@ config KICKOS_AMP_DIAG_REPORT
 	range 0 1
 	default 0
 	help
-	  A diagnostic for a peer that drives no console: it writes four words into the
-	  region every node already shares and the primary prints them. Two of the four are
+	  A diagnostic for a peer that drives no console: it writes five words into the
+	  region every node already shares and the primary prints them. Three of the five are
 	  values the primary already knows, which is what tells a real report from an
-	  artefact. Costs the primary a bounded spin at boot, and places a 16-byte object
+	  artefact. Costs the primary a bounded spin at boot, and places a 20-byte object
 	  LAST in the shared region so nothing above it moves when this is turned on.
 
 config KICKOS_AMP_DIAG_TAG
@@ -589,35 +589,72 @@ config KICKOS_MAX_IRQ_HANDLES
 	range 0 32
 	default 8
 
-config KICKOS_TASK_OBJECT_BUDGET
-	int "Objects of one kind one task may hold"
-	range 1 255
-	default 255
+config KICKOS_TASK_SEMAPHORE_BUDGET
+	int "Semaphores one task may hold"
+	range 1 31
+	default 15
 	help
-	  The most semaphores, or mutexes, or endpoints, or tier-1 IRQ bindings ONE TASK may
-	  hold live at once. Refused with -KOS_EOVERFLOW at the creator, which is neither
-	  -KOS_ENOMEM (the pool had a slot) nor -KOS_EMFILE (the caller's table had one).
+	  The most semaphores ONE TASK may hold live at once, a delegated and a
+	  kernel-seated capability counting alongside an own-create. Refused with
+	  -KOS_EOVERFLOW at the creator, which is neither -KOS_ENOMEM (the pool had a slot)
+	  nor -KOS_EMFILE (the caller's table had one).
 
-	  WHAT IT IS FOR: without it a task's own-creates are bounded only by its threads'
-	  capability tables, and a thread can spawn siblings to widen that bound, so one task
-	  can empty a pool and deny a supervisor respawning a driver the endpoint that respawn
-	  needs. THE THREAT IS ACCIDENT: the party holding the slots is a well-behaved driver
-	  that died at its own legitimate maximum. It is NOT a bound on an adversary, task
-	  creation carrying no authority bit, and bounding that is a quota on task creation
-	  rather than anything here (the object-pool invariant in docs, and instance.h).
+	  THESE FOUR BUDGETS ARE THE WHOLE CEILING, one per charged pool. Each is checked
+	  at BUILD time against its own pool and must sit strictly below it, so no task can
+	  take a pool's last slot and a supervisor respawning a driver still finds one. A
+	  board that narrows a pool narrows the matching budget with it or the build fails
+	  naming both. That is why there are four figures and not one: the pools are sized
+	  apart on purpose, and a single budget would price a semaphore at an endpoint.
 
-	  THE DEFAULT DOES NOT BIND, AND THAT IS DELIBERATE. instance.h keeps
-	  TASK_OBJECT_RESERVE slots of every pool out of any one task's reach structurally, and
-	  the smaller of the two ceilings applies; 255 is above every pool this bounds, so the
-	  reserve is the whole ceiling until a board lowers this. A board CANNOT go much
-	  lower on a selftest image: the suite fills one task's capability table with
-	  own-creates and its deadlock arm needs six objects live at once, so a budget under
-	  that turns those into budget refusals instead. Measured by bisection on qemu, a
-	  default-supply board with ten table slots: 8 and 6 clean, 5 short, and what 5
-	  costs is the mutex_deadlock arm, which then skips for want of a sixth object.
+	  WHAT THEY ARE FOR: without them a task's own-creates are bounded only by its
+	  threads' capability tables, and a thread can spawn siblings to widen that bound,
+	  so one task can empty a pool. THE THREAT IS ACCIDENT: the party holding the slots
+	  is a well-behaved driver that died at its own legitimate maximum. It is NOT a
+	  bound on an adversary, task creation carrying no authority bit, and bounding that
+	  is a quota on task creation rather than anything here (the object-pool invariant
+	  in docs, and cap.h).
 
-	  Neither ceiling stops N COLLUDING tasks from emptying a pool between them. Bounding
-	  that is a quota on the capability slab the caps live in, not on the pools.
+	  A SELFTEST IMAGE NEEDS SIX HERE, and six is an arm's own demand: the suite's
+	  deadlock arm holds four semaphores plus the shared completion semaphore live at
+	  once. On a default-supply board with the other three budgets at their defaults, 5
+	  turns mutex_deadlock into a SKIP the gate refuses, and 4 and 3 turn the
+	  capability-table arms RED instead, that fill reaching for semaphores before it
+	  falls back on mutexes.
+
+	  Neither this nor the pool width stops N COLLUDING tasks from emptying a pool
+	  between them. Bounding that is a quota on the capability slab the caps live in.
+
+config KICKOS_TASK_MUTEX_BUDGET
+	int "Mutexes one task may hold"
+	range 1 31
+	default 7
+	help
+	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the mutex pool: strictly below
+	  KICKOS_MAX_MUTEXES or the build fails. TWO is a selftest image's own demand, the
+	  deadlock arm holding two at once; at one, five mutex arms go RED on qemu rather
+	  than skipping, and the failures cascade into every later arm that wanted an
+	  object.
+
+config KICKOS_TASK_ENDPOINT_BUDGET
+	int "Endpoints one task may hold"
+	range 1 31
+	default 3
+	help
+	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the endpoint pool: strictly below
+	  KICKOS_MAX_ENDPOINTS or the build fails. THE POOL THIS ONE GUARDS IS THE
+	  RESPAWN'S, so the headroom it leaves is the endpoint a supervisor needs after a
+	  driver died holding its own. Count what the image already spends before an app
+	  asks: a published console costs root one slot for the life of the image, a
+	  retained driver endpoint another, and a partition's AMP ports one each.
+
+config KICKOS_TASK_IRQ_HANDLE_BUDGET
+	int "Tier-1 IRQ bindings one task may hold"
+	range 1 31
+	default 7
+	help
+	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the tier-1 IRQ binding pool: strictly below
+	  KICKOS_MAX_IRQ_HANDLES or the build fails. A tier-0 kos_irq_attach is uncharged
+	  and does not spend this.
 
 config KICKOS_MAX_SPAWN_GRANTS
 	int "Caps one spawn may delegate"

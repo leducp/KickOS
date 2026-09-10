@@ -93,6 +93,7 @@ need "no unprivileged register line" \
 need "no dispatch line" \
      "^  $TOK dispatch rsp=0x[0-9a-f]\{16\} flags=0x[0-9a-f]\{16\} cs=0x[0-9a-f]\{16\}\$"
 
+listed=0
 for a in efer_sce_set fmask_clears_if fmask_clears_iopl \
          star_syscall_cs star_sysret_base lstar_in_image \
          smep_smap_clear user_leaves_granted \
@@ -136,7 +137,20 @@ for a in efer_sce_set fmask_clears_if fmask_clears_iopl \
          ring0_syscall_result ring0_syscall_dispatched ring0_syscall_on_caller_stack
 do
     arm_ok "$a"
+    listed=$((listed + 1))
 done
+
+# THE SET AND NOT ONLY ITS MEMBERS. Every name above is asserted to have reported, which says
+# nothing about an arm the image reported and this list does not name. A FAILING unlisted arm is
+# still caught, by the image's own FAIL line and by its exit status; what is lost without this
+# count is the NAME, so the arm runs unread here and a reader of this script cannot tell it
+# exists.
+onwire="$(grep -c "^  $TOK arm=" "$PLAIN")" || onwire=0
+if [ "$listed" -ne "$onwire" ]; then
+    fail "the image reported $onwire arm(s) and this script names $listed. An arm the list
+  does not name is one nothing here reads, so add it above rather than leaving the two counts
+  to differ"
+fi
 
 if grep -q "$TOK FAIL" "$PLAIN"; then
     fail "the image reported its own failure"
@@ -145,5 +159,5 @@ need "the image did not reach its PASS" "^$TOK PASS\$"
 
 kos_require_clean_exit
 
-echo "PASS: $KOS_TOKEN, every arm reported ok"
+echo "PASS: $KOS_TOKEN, all $listed arm(s) reported ok"
 echo "      serial: $PLAIN"

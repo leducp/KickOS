@@ -26,6 +26,11 @@
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# WHAT THIS BOX LACKS IS NOT WHAT IS BEING TESTED. 77 is ctest's skip status, and every add_test
+# in cmake/x86_64_boot.cmake carries SKIP_RETURN_CODE 77 for it; without that property an exit 77
+# is reported as a FAILURE. tests/lib/gate.sh refuses the same two absences the same way.
+skip() { echo "SKIP: $*"; exit 77; }
+
 # CODE and VARS are the names tests/lib/gate.sh reads; COMBINED is this script's own, no gate
 # having a bios path. The ovmf package's own filenames differ across releases, so the defaults
 # below are a fallback and not the authority.
@@ -81,17 +86,37 @@ kos_boot() { # <application.efi> [workdir]
         KOS_CPU_ARGS="-cpu ${KICKOS_X86_64_CPU}"
     fi
 
+    # Before the ESP is built: a 48 MiB image is no use without firmware to boot it.
+    case "$KOS_FIRMWARE" in
+        pflash)
+            [ -f "$KOS_OVMF_CODE" ] || skip "no firmware at $KOS_OVMF_CODE (Debian: ovmf)"
+            [ -f "$KOS_OVMF_VARS" ] \
+                || skip "no variable store at $KOS_OVMF_VARS (Debian: ovmf)"
+            ;;
+        bios)
+            [ -f "$KOS_OVMF_COMBINED" ] \
+                || skip "no firmware at $KOS_OVMF_COMBINED (Debian: ovmf)"
+            ;;
+        *)
+            fail "KICKOS_${KOS_STEP}_FIRMWARE must be pflash or bios, not '$KOS_FIRMWARE'"
+            ;;
+    esac
+
     KOS_ESP="$WORK/esp.img"
-    "$KOS_TOOLS/esp-x86_64.sh" "$APP" "$KOS_ESP" || fail "could not build the ESP"
+    # 77 is the ESP builder's own skip, for a tool this box does not have; the list it checks is
+    # its own and is not repeated here.
+    "$KOS_TOOLS/esp-x86_64.sh" "$APP" "$KOS_ESP"
+    kos_esp_rc=$?
+    if [ "$kos_esp_rc" -eq 77 ]; then
+        exit 77
+    fi
+    [ "$kos_esp_rc" -eq 0 ] || fail "could not build the ESP"
 
     KOS_LOG="$WORK/serial.log"
     rm -f "$KOS_LOG"
 
     case "$KOS_FIRMWARE" in
         pflash)
-            [ -f "$KOS_OVMF_CODE" ] || fail "no firmware at $KOS_OVMF_CODE (Debian: ovmf)"
-            [ -f "$KOS_OVMF_VARS" ] \
-                || fail "no variable store at $KOS_OVMF_VARS (Debian: ovmf)"
             # The shipped store is root-owned and read-only; firmware writes to it.
             KOS_VARS="$WORK/OVMF_VARS.fd"
             cp "$KOS_OVMF_VARS" "$KOS_VARS" \
@@ -102,12 +127,7 @@ kos_boot() { # <application.efi> [workdir]
                 -drive "if=pflash,format=raw,unit=1,file=$KOS_VARS"
             ;;
         bios)
-            [ -f "$KOS_OVMF_COMBINED" ] \
-                || fail "no firmware at $KOS_OVMF_COMBINED (Debian: ovmf)"
             kos_run_qemu -bios "$KOS_OVMF_COMBINED"
-            ;;
-        *)
-            fail "KICKOS_${KOS_STEP}_FIRMWARE must be pflash or bios, not '$KOS_FIRMWARE'"
             ;;
     esac
 

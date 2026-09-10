@@ -55,7 +55,7 @@ need "no boot-space report line" \
 need "no attribute-table report line" \
      "^  $TOK pat live=$HEX16 power_up=$HEX16\$"
 need "no kernel-window report line" \
-     "^  $TOK window va=0x[0-9a-f]\{16\} pages=[1-9][0-9]* first_child_entries=[0-9][0-9]*\$"
+     "^  $TOK window va=0x[0-9a-f]\{16\} pages=[1-9][0-9]* first_child_entries=[1-9][0-9]*\$"
 need "no root report line" \
      "^  $TOK roots boot=0x[0-9a-f]\{16\} a=0x[0-9a-f]\{16\} b=0x[0-9a-f]\{16\}\$"
 need "no table-cost report line" "^  $TOK tables per span=[1-9][0-9]*\$"
@@ -66,6 +66,7 @@ need "no frame-accounting report line" \
 need "no result-class report line" \
      "^  $TOK results ok=[1-9][0-9]* enomem=[1-9][0-9]* ecapacity=0 einval=[1-9][0-9]*\$"
 
+listed=0
 for a in granule_is_4k levels_four_or_five levels_match_control_register \
          model_granule_bore_out model_physical_range_bore_out \
          model_identifier_matches_record model_physical_bits_reported \
@@ -79,6 +80,7 @@ for a in granule_is_4k levels_four_or_five levels_match_control_register \
          create_a create_costs_one_frame create_b two_spaces_are_distinct \
          kernel_half_in_a kernel_half_in_b conventional_memory_in_a \
          user_half_empty_in_a user_half_empty_in_b \
+         first_child_table_is_full \
          kernel_window_anchored kernel_window_outside_the_user_half \
          map_at_the_window_refused \
          kernel_window_starts_unmapped kernel_window_unmapped_in_a \
@@ -128,6 +130,9 @@ for a in granule_is_4k levels_four_or_five levels_match_control_register \
          space_still_maps_after_a_refusal and_the_mapping_answers cleanup_unmap \
          first_table_refusal_leaked_no_frame out_of_frames_partway \
          partway_refusal_left_no_partial_mapping partway_refusal_leaked_no_frame \
+         a_live_page_before_the_refusal out_of_frames_beside_a_live_page \
+         the_live_page_survived_the_unwind the_live_page_unmapped_before_destroy \
+         refusal_beside_a_live_page_leaked_no_frame \
          acquire_answers_the_frames_own_address acquire_reads_the_frame \
          acquire_carries_the_offset acquire_of_an_unmapped_page_is_null \
          acquire_of_a_null_space_is_null acquire_floor_is_met \
@@ -149,7 +154,20 @@ for a in granule_is_4k levels_four_or_five levels_match_control_register \
          capacity_refusal_is_unproducible root_register_ends_on_the_boot_space
 do
     arm_ok "$a"
+    listed=$((listed + 1))
 done
+
+# THE SET AND NOT ONLY ITS MEMBERS. Every name above is asserted to have reported, which says
+# nothing about an arm the image reported and this list does not name. A FAILING unlisted arm is
+# still caught, by the image's own FAIL line and by its exit status; what is lost without this
+# count is the NAME, so the arm runs unread here and a reader of this script cannot tell it
+# exists.
+onwire="$(grep -c "^  $TOK arm=" "$PLAIN")" || onwire=0
+if [ "$listed" -ne "$onwire" ]; then
+    fail "the image reported $onwire arm(s) and this script names $listed. An arm the list
+  does not name is one nothing here reads, so add it above rather than leaving the two counts
+  to differ"
+fi
 
 if grep -q "$TOK FAIL" "$PLAIN"; then
     fail "the image reported its own failure"
@@ -158,5 +176,5 @@ need "the image did not reach its PASS" "^$TOK PASS\$"
 
 kos_require_clean_exit
 
-echo "PASS: $KOS_TOKEN, every arm reported ok"
+echo "PASS: $KOS_TOKEN, all $listed arm(s) reported ok"
 echo "      serial: $PLAIN"

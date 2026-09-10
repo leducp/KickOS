@@ -462,10 +462,12 @@ uint32_t arch_cpu_clock_set(uint32_t target)
 }
 
 // Branch-clock oracle (arch.h): report the branch clock feeding a peripheral block so a
-// userspace driver derives its own divisor. Every XMC4800 USIC runs at fPERIPH = fCPU/2
-// (SCU PBCLKCR.PBDIV=1), read from the LIVE SystemCoreClock so a clock-select retune is
-// reflected. The three USIC modules are two 0x200 channels each: USIC0 @0x40030000,
-// USIC1 @0x48020000, USIC2 @0x48024000. Any other block returns 0.
+// userspace driver derives its own divisor. Every XMC4800 USIC runs at fPERIPH, which is
+// fCPU divided by PBCLKCR.PBDIV. BOTH TERMS ARE READ LIVE and neither is assumed: a
+// clock-select retune moves SystemCoreClock, and clock_init writes PBCLKCR only after its
+// two degrade returns, so on the fOFI path PBDIV is still its reset 0 and fPERIPH equals
+// fCPU rather than half of it. The three USIC modules are two 0x200 channels each:
+// USIC0 @0x40030000, USIC1 @0x48020000, USIC2 @0x48024000. Any other block returns 0.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
     bool in_usic = base >= mmap::USIC0_CH0_BASE and base < mmap::USIC0_CH0_BASE + mmap::USIC_MODULE_SPAN;
@@ -479,7 +481,11 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
     }
     if (in_usic)
     {
-        return SystemCoreClock / 2u; // fPERIPH = fCPU/2 (PBCLKCR.PBDIV=1)
+        if ((r32(scu::PBCLKCR) & scu::PBCLKCR_PBDIV_DIV2) != 0u)
+        {
+            return SystemCoreClock / 2u;
+        }
+        return SystemCoreClock;
     }
     return 0;
 }

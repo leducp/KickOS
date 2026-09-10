@@ -131,7 +131,29 @@ further down: it binds every tracked file.
   - `volatile` stays for the three things it *is* the tool for: MMIO, an object the
     compiler must not elide or hoist, and a **64-bit** cross-thread field, because a
     relaxed 64-bit atomic load is a `__atomic_load_8` libcall on every backend including
-    armv7m. Say which of the three at the declaration.
+    armv7m. Say which of the three at the declaration. **not gated**
+    **SAY IT ONCE PER FILE where every such word in a translation unit invokes the same
+    exception or exceptions**, at the top rather than on each declaration: the x86_64
+    bring-up probes carry sixty-three between them and sixty-three line comments would say
+    less than one paragraph does. The point of the clause is that a reader can tell an
+    INVOKED exception from an unexamined one, and a file-level statement does that as well
+    as a per-line one. It has to name which exception and be true of every word below it, so
+    a TU whose words split across exceptions says so, as `probe4_x86_64.cc` does.
+    **AN ISR WRITING A FIELD IS THE RULE, NOT AN EXCEPTION TO IT.** That case is the first
+    sentence above and its answer is `Atomic`. Where such a field stays `volatile` it is
+    because one of the three applies on its own merits, most often because the wrapper
+    refuses the width or because the observing loop would hoist. A two-writer word is neither:
+    `Atomic` exposes no read-modify-write, so a contended cell is a lock problem or a
+    hardware primitive being measured, and it is outside this mechanism rather than exempt
+    from it (`user/apps/esp32-wroom/lx6smp`).
+    **NOTHING CHECKS EITHER UNIT, and the reason is the corpus rather than the rule.** Most
+    tracked files carrying the keyword spell it inside an MMIO accessor body or on a spin
+    bound the compiler must not elide, and almost none of them says which exception applies.
+    An instrument would have to tell a declaration from a cast and from a parameter, and
+    every file it then read would need the sentence written before it could be green: that is
+    a source sweep, not a gate. So this clause holds by review, and an unannotated
+    `volatile` reaches the tree unremarked whether it is spelled at the declaration or at the
+    top of the file.
 - **Check a return** that can fail. A discarded status is how a correct refusal becomes a silent
   hang; `(void)` it only where the value carries nothing, and say why.
 

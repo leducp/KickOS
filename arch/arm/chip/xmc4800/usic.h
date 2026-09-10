@@ -166,9 +166,16 @@ namespace usic
     // STEP=354, PDIV+1=9, DCTQ+1=16 -> 48e6*354/1024/9/16 = 115234.375 baud (+0.03%).
     constexpr Baud BAUD_115200_48MHZ = { 354u, 8u, 0u, 15u };
 
-    // 115200 baud from fPERIPH = 24 MHz (fCPU=48 MHz, KOS_PSTATE_LOW):
+    // 115200 baud from fPERIPH = 24 MHz (fCPU=48 MHz, KOS_PSTATE_LOW; ALSO the fOFI
+    // degrade, where fCPU is 24 MHz and PBCLKCR is left at its reset PBDIV=0):
     // STEP=393, PDIV+1=5, DCTQ+1=16 -> 24e6*393/1024/5/16 = 115137 baud (-0.05%).
     constexpr Baud BAUD_115200_24MHZ = { 393u, 4u, 0u, 15u };
+
+    // The point for a branch clock, or false where no point covers it. Keyed on fPERIPH
+    // and not on fCPU: PBCLKCR.PBDIV is written by clock_init AFTER both of its degrade
+    // returns, so the two rates stop being a fixed ratio exactly on the path that needs
+    // this most.
+    bool baud_for_periph(uint32_t periph_hz, Baud* out);
 
     // ---- Generic USIC-common operations (all take the channel base) ----------
 

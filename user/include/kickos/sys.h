@@ -43,7 +43,8 @@ void kos_sleep_ns(uint64_t ns);
 // of them: -KOS_ENOMEM is the object's own shared pool (here KICKOS_MAX_SEMAPHORES) with no
 // slot left, -KOS_EMFILE is THIS thread's capability table with no slot left, and
 // -KOS_EOVERFLOW is THIS TASK at its ceiling for that pool while the pool still has slots
-// (KICKOS_TASK_OBJECT_BUDGET, and one slot of every pool that no single task can reach).
+// (KICKOS_TASK_SEMAPHORE_BUDGET here, one such figure per charged pool, each set below its
+// pool's width so a slot of every pool stays out of any one task's reach).
 // -> 0; -KOS_ENOMEM; -KOS_EMFILE; -KOS_EOVERFLOW; -KOS_EINVAL (`initial` outside
 // [0, KOS_SEM_COUNT_MAX], or a null/misaligned out_cap); -KOS_EFAULT (out_cap is not writable
 // by the caller).

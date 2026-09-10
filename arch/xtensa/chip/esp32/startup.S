@@ -67,8 +67,8 @@
    ONLY on this preemptive path: the cooperative switch's caller-saved f-regs are
    spilled by the compiler, so xtensa_switch needs none. */
 #include <kickos/arch/xtensa_frame.h>
-#include <kickos/arch/lx6_switch_unlock.h>
-#include <kickos/arch/lx6_percpu.h>
+#include <kickos/arch/lx6_switch_unlock.inc>
+#include <kickos/arch/lx6_percpu.inc>
 
     .text
 

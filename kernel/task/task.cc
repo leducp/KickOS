@@ -132,7 +132,6 @@ namespace kickos
         *t = Task{};
         t->gen = gen;
         t->domain = d;
-        task_object_seed(t);
         return t;
     }
 
@@ -164,7 +163,6 @@ namespace kickos
         *t = Task{};
         t->gen = gen;
         t->domain = d;
-        task_object_seed(t);
         // The hold, taken before the reservation is visible: an explicit task sits at
         // refcount 0 between create and its first spawn, and only this reference stops the
         // domain pool re-handing the slot underneath it.

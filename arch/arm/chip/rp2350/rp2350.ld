@@ -25,6 +25,7 @@
  */
 
 #include <sections.ld.h>
+#include <app_heap.ld.h>
 
 ENTRY(Reset_Handler)
 
@@ -212,7 +213,7 @@ SECTIONS
     {
         __kickos_appdata_start = .;
         *(.data .data.*)
-        . = ALIGN(4);
+        . = ALIGN(8);
         __kickos_appdata_load_end = .;
     } > RAM AT > FLASH
 
@@ -229,7 +230,9 @@ SECTIONS
            that ASSERT the thing that prints. */
         . = MAX(., __kickos_appdata_start + _appdata_size); /* pad the granted window */
         __kickos_appdata_end = .;
-        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
+        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). That ALIGN is
+           relative to this section's start, which is why .appdata closes on ALIGN(8);
+           app_heap.ld.h holds the rule and the file-scope ASSERT that reads it back. */
         _kickos_heap_start = ALIGN(_appdata_used_end, 8);
         _kickos_heap_limit = __kickos_appdata_end;
     } > RAM
@@ -345,6 +348,7 @@ ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
 
 #if KICKOS_HAVE_MPU
 /* App globals must fit the granted window. If this trips, raise KICKOS_APPDATA_SIZE. */
+KICKOS_APP_HEAP_ALIGN_ASSERT(_kickos_heap_start, _appdata_used_end)
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise KICKOS_APPDATA_SIZE)")
 /* Lower bound: an empty .appdata dropping its ALIGN would place .appbss below the base. */

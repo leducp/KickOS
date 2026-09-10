@@ -980,6 +980,21 @@ if(KICKOS_AMP_NODE)
       "CONFIG_KICKOS_MAX_ENDPOINTS in this board's defconfig.")
   endif()
 
+  # The seat is the one charged endpoint install with NO admission: amp_ports_seat panics
+  # rather than refusing, so nothing at run time can hold root to its ceiling. The cap.h
+  # assert does not reach this either. It relates the budget to the POOL, and a partition
+  # whose ports outnumber the budget still sits below the pool. Without this the ceiling is
+  # false from root's first instruction.
+  if(_amp_ports_len GREATER KICKOS_TASK_ENDPOINT_BUDGET)
+    message(FATAL_ERROR
+      "KickOS: KICKOS_AMP_PORTS names ${_amp_ports_len} crossing(s) and the board allows one "
+      "task ${KICKOS_TASK_ENDPOINT_BUDGET} endpoint slot(s). Every entry is seated in ROOT's "
+      "table before its first instruction and counts against root from then on, so root "
+      "would boot already past its own ceiling. Raise "
+      "CONFIG_KICKOS_TASK_ENDPOINT_BUDGET in this board's defconfig, keeping it below "
+      "CONFIG_KICKOS_MAX_ENDPOINTS.")
+  endif()
+
   set(KICKOS_AMP_PORT_COUNT "${_amp_ports_len}")
   string(REPLACE ";" "," KICKOS_AMP_PORT_NODE_INIT "${_amp_port_nodes}")
   string(REPLACE ";" "," KICKOS_AMP_PORT_PORT_INIT "${_amp_port_ports}")
@@ -1089,6 +1104,10 @@ endif()
 # Must precede the components: their $<INSTALL_INTERFACE:...> uses CMAKE_INSTALL_INCLUDEDIR.
 include(GNUInstallDirs)
 
+# Here and not down in the install section: cmake/x86_64_boot.cmake installs its image
+# recipe there too, and is included well before it.
+set(KICKOS_CMAKE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/KickOS")
+
 if(KICKOS_BUILD_TESTS)
   enable_testing()
 
@@ -1187,6 +1206,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(shell_special_names PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME oot_arch_cover
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_oot_arch_cover.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(oot_arch_cover PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
 
   # Takes the generated board config: the gate must read the knob spelling C reads.
   _add_test(NAME cpu_id_fold
@@ -1212,6 +1236,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(ternary PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME chip_divisor_rate
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_chip_divisor_rate.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(chip_divisor_rate PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   _add_test(NAME panic_banners
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_panic_banners.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1236,6 +1265,21 @@ if(KICKOS_BUILD_TESTS)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_park_death_point.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(park_death_point PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
+  _add_test(NAME kernel_data_reserve
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kernel_data_reserve.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(kernel_data_reserve PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
+  _add_test(NAME app_heap_align
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_app_heap_align.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(app_heap_align PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
+  _add_test(NAME object_budget_asserts
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_object_budget_asserts.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(object_budget_asserts PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   # --- The preset a per-preset gate registers under ------------------------------
   # CMake names no preset, so a gate registered per preset REBUILDS the name: the base variant
@@ -1421,6 +1465,11 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/kstring/CMakeLists.txt")
   add_subdirectory(tests/unit/kstring)
+endif()
+
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/faultline/CMakeLists.txt")
+  add_subdirectory(tests/unit/faultline)
 endif()
 
 if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
@@ -1842,14 +1891,22 @@ endif()
 # --- Install / export: the dependency-inversion package --------------------
 include(CMakePackageConfigHelpers)
 
-set(KICKOS_CMAKE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/KickOS")
-
 # CeCILL-C is file-level copyleft: ship the license with the package.
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/licenses/${PROJECT_NAME}")
 
 # The arch backend's include dir is the path the arch subdir reports (arch/sim/include,
 # arch/arm/armv7m/include), never an arch/${KICKOS_ARCH}/include guess.
+#
+# mpu_encoded.h is the one header whose presence is a property of THIS BUILD and not of the
+# arch: arch.h includes it only under KICKOS_HAVE_MPU and forward-declares the type
+# otherwise, and the armv6m and armv7m copies #error on a KICKOS_ARM_MPU no backend answers,
+# which is what a non-enforcing board's package states. Shipped there, it is a header no
+# consumer can include.
+set(_kos_hdr_exclude "")
+if(NOT KICKOS_HAVE_MPU)
+  set(_kos_hdr_exclude PATTERN "mpu_encoded.h" EXCLUDE)
+endif()
 install(DIRECTORY
           "${CMAKE_CURRENT_SOURCE_DIR}/include/"
           "${CMAKE_CURRENT_SOURCE_DIR}/arch/include/"
@@ -1859,7 +1916,8 @@ install(DIRECTORY
           "${CMAKE_CURRENT_SOURCE_DIR}/user/include/"
           "${CMAKE_CURRENT_SOURCE_DIR}/system/include/"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-        PATTERN "*.h.in" EXCLUDE)
+        PATTERN "*.h.in" EXCLUDE
+        ${_kos_hdr_exclude})
 
 # An installed consumer that includes a kernel header must take the same width as the
 # prebuilt libraries, or its sizeof(Thread) does not match theirs.
@@ -1929,24 +1987,35 @@ install(FILES
 # An out-of-tree consumer configures with
 # -DCMAKE_TOOLCHAIN_FILE=<prefix>/.../toolchain-<family>*.cmake. This board's descriptor
 # ships beside it as board.cmake, so the toolchain finds the baseline with no boards/ tree.
+#
+# The file shipped is THE ONE THAT CONFIGURED THIS BUILD, never a family name matched again
+# here: a ladder over KICKOS_ARCH_FAMILY handed the arm64 and x86 packages the M-profile ARM
+# toolchain, which resolves no CPU baseline for their boards and fails the consumer's
+# project() line.
 if(NOT KICKOS_ARCH STREQUAL "sim")
-  if(KICKOS_ARCH_FAMILY STREQUAL "rx")
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-rx-elf.cmake"
-            DESTINATION "${KICKOS_CMAKE_DIR}")
-  elseif(KICKOS_ARCH_FAMILY STREQUAL "xtensa")
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-xtensa-esp32-elf.cmake"
-            DESTINATION "${KICKOS_CMAKE_DIR}")
-  elseif(KICKOS_ARCH_FAMILY STREQUAL "riscv")
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-riscv-none-elf.cmake"
-                  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-cxx-runtime-check.cmake"
-            DESTINATION "${KICKOS_CMAKE_DIR}")
-  else()
-    # The compiler-capability gate is include()d list-dir-relative by the ARM +
-    # RISC-V toolchain files, so it must land beside them in the package.
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-arm-none-eabi.cmake"
-                  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-cxx-runtime-check.cmake"
-            DESTINATION "${KICKOS_CMAKE_DIR}")
+  if(NOT CMAKE_TOOLCHAIN_FILE)
+    message(FATAL_ERROR "KickOS: board '${KICKOS_BOARD}' is a cross target configured with no "
+      "CMAKE_TOOLCHAIN_FILE, so the package would ship none and no out-of-tree consumer could "
+      "build against it.")
   endif()
+  set(_kos_tc_install "${CMAKE_TOOLCHAIN_FILE}")
+  # Its fragments travel with it: a toolchain file include()s them list-dir-relative, so one
+  # left behind fails the consumer's project() line and not this install. Derived from the
+  # file's own text rather than listed, and only the toolchain-* names, because the
+  # ${CMAKE_CURRENT_LIST_DIR}/board.cmake it also includes is the descriptor baked below.
+  file(READ "${CMAKE_TOOLCHAIN_FILE}" _kos_tc_text)
+  string(REGEX MATCHALL "\\\${CMAKE_CURRENT_LIST_DIR}/toolchain-[A-Za-z0-9_.-]+\\.cmake"
+         _kos_tc_incs "${_kos_tc_text}")
+  foreach(_kos_inc IN LISTS _kos_tc_incs)
+    string(REPLACE "\${CMAKE_CURRENT_LIST_DIR}/" "" _kos_inc "${_kos_inc}")
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/${_kos_inc}")
+      message(FATAL_ERROR "KickOS: ${CMAKE_TOOLCHAIN_FILE} includes ${_kos_inc}, which is "
+        "not in cmake/, so the package would ship a toolchain file that cannot configure.")
+    endif()
+    list(APPEND _kos_tc_install "${CMAKE_CURRENT_SOURCE_DIR}/cmake/${_kos_inc}")
+  endforeach()
+  list(REMOVE_DUPLICATES _kos_tc_install)
+  install(FILES ${_kos_tc_install} DESTINATION "${KICKOS_CMAKE_DIR}")
 # The CPU baseline is baked in: a package has no arch/ tree for the toolchain file to read a
 # cpu.cmake out of. Only the knobs the descriptor leaves to the chip are appended.
   set(_kos_baked "${PROJECT_BINARY_DIR}/generated/board.cmake")

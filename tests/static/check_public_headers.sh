@@ -13,10 +13,12 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-PREFIX="${1:?usage: check_public_headers.sh <prefix> <cxx> <std> <cc>}"
-CXX="${2:?}"
-STD="${3:?}"
-CC="${4:?usage: check_public_headers.sh <prefix> <cxx> <std> <cc>}"
+USAGE="usage: check_public_headers.sh <prefix> <cxx> <std> <cc> <defs-file>"
+PREFIX="${1:?$USAGE}"
+CXX="${2:?$USAGE}"
+STD="${3:?$USAGE}"
+CC="${4:?$USAGE}"
+DEFS_FILE="${5:?$USAGE}"
 command -v "$CC" >/dev/null 2>&1 || fail "not an executable C compiler: $CC"
 
 scratch_dir
@@ -24,18 +26,45 @@ scratch_dir
 INC="$PREFIX/include"
 [ -d "$INC" ] || fail "no include directory in the package at $PREFIX"
 
-# The usage requirements a consumer inherits from the target, minus the generator
-# expressions CMake resolves per configuration. An ARRAY, not a joined string: joined, the
-# whole thing arrives as one unrecognised argument and every define is dropped.
-DEFS=(-Dmain=kickos_app_main -D__KickOS__=1
-      -DKICKOS_TELEMETRY=0 -DKICKOS_TELEMETRY_RTT=0 -DKICKOS_TRACE_ARCH=0
-      -DKICKOS_HAVE_MPU=1 -DKICKOS_HAVE_ASPACE=0 -DKICKOS_MEMORY_ENFORCED=1
-      -DKICKOS_DEBUG=0)
-# A sim package ships no chip_limits.h, and config/board.h refuses to guess an IRQ count
-# without one. The real consumer gets this from the target's INTERFACE definitions.
-if [ ! -f "$INC/kickos/chip_limits.h" ]; then
-    DEFS+=(-DKICKOS_ARCH_SIM=1)
+# The definitions THIS package puts on a consumer's compile line, one -D per line, taken by
+# the caller from the built out-of-tree app's compile_commands.json. Never a set written
+# here: a hardcoded -DKICKOS_HAVE_MPU=1 is false on every arch no board enforces on, where
+# arch.h then reaches for an mpu_encoded.h the package correctly does not ship, and 26 of
+# the installed headers report a missing include that no consumer would ever see.
+#
+# An ARRAY, not a joined string: joined, the whole thing arrives as one unrecognised
+# argument and every define is dropped.
+[ -s "$DEFS_FILE" ] || fail "no package definitions at $DEFS_FILE, so every header below
+      would be compiled without the ones a consumer inherits"
+DEFS=()
+while IFS= read -r _d; do
+    case "$_d" in
+        -D*) DEFS+=("$_d") ;;
+        "")  ;;
+        *)   fail "$DEFS_FILE holds a line that is not a -D argument: $_d" ;;
+    esac
+done < "$DEFS_FILE"
+[ "${#DEFS[@]}" -gt 0 ] || fail "$DEFS_FILE holds no -D argument"
+
+# The instrument, proven BOTH ways before it is used: one #ifndef per definition, so the
+# probe reddens if any of them fails to arrive and not merely if the array is empty.
+: > "$TMP/defs_probe.h"
+for _d in "${DEFS[@]}"; do
+    _n="${_d#-D}"
+    _n="${_n%%=*}"
+    printf '#ifndef %s\n#error "a package definition did not reach the compiler"\n#endif\n' \
+        "$_n" >> "$TMP/defs_probe.h"
+done
+"$CXX" -std="$STD" -fsyntax-only "${DEFS[@]}" -x c++ "$TMP/defs_probe.h" 2>"$TMP/defs.err" || {
+    sed -n '1,4p' "$TMP/defs.err" >&2
+    fail "${#DEFS[@]} package definition(s) were passed and at least one did not reach the
+      compiler, so every verdict below would be taken under the wrong configuration"
+}
+if "$CXX" -std="$STD" -fsyntax-only -x c++ "$TMP/defs_probe.h" 2>/dev/null; then
+    fail "the same probe compiles with NO definition passed, so it is blind to a dropped
+      -D and proves nothing about the ones above"
 fi
+echo "== ${#DEFS[@]} package definition(s) from $DEFS_FILE reach the compiler =="
 
 n=0
 bad=0

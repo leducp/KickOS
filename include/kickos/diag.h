@@ -83,15 +83,19 @@ namespace kickos
 #define KDIAG_F_BANNER_NOHEAP KICKOS_DIAG_PICK("   heap    none\n", "h 0\n")
 #define KDIAG_F_BANNER_KSTACK KICKOS_DIAG_PICK("   kstack  %u B x %u = %u B\n", "k %u %u %u\n")
 
-// Thread fault (kernel/init/fault.cc).
+// Thread fault (kernel/init/fault.cc). The reporter formats into a stack array of exactly
+// KDIAG_FAULT_LINE_MAX bytes, and that array is the largest term of a descent the trap
+// red-zone gate measures as EXITK (and as EXIT where no kernel block is carved), so the bound
+// is a stack figure and not a taste. It clears every record below at a 38-character thread name,
+// which KICKOS_THREAD_NAME_MAX does not permit, so the fit has headroom rather than being tight
+// and truncation is unreachable today. tests/unit/faultline is where the fit is proved.
+#define KDIAG_FAULT_LINE_MAX 96
 #define KDIAG_F_THREAD_FAULT KICKOS_DIAG_PICK("\n=== THREAD FAULT === thread '%s' killed, system continues\n", \
                                               "\n=== THREAD FAULT === thread '%s' killed\n")
 #define KDIAG_F_FAULT_PC_LOST KICKOS_DIAG_PICK("  PC lost to a later fault\n", "F1\n")
 #define KDIAG_F_FAULT_PC      KICKOS_DIAG_PICK("  PC=%p\n", "F2 %p\n")
 #define KDIAG_F_FAULT_PC_STAT KICKOS_DIAG_PICK("  PC=%p %s=0x%llx\n", "F3 %p %s %llx\n")
 #define KDIAG_F_FAULT_ADDR    KICKOS_DIAG_PICK("  ADDR=%p\n", "ADDR=%p\n")
-#define KDIAG_F_FAULT_STUB_DEEP KICKOS_DIAG_PICK("  STUB DEEP: %u bytes below the stack top\n", \
-                                                "F4 %u\n")
 
 // MPU fault report (kernel/init/console.cc).
 #define KDIAG_F_MPU_FAULT KICKOS_DIAG_PICK("\nMPU FAULT: thread '%s' attempted %s at %p, reported\n", \

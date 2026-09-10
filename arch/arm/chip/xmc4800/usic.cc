@@ -40,6 +40,15 @@ namespace usic
                                | (static_cast<uint32_t>(b.pctq) << BRG_PCTQ_SHIFT);
     }
 
+    bool baud_for_periph(uint32_t periph_hz, Baud* out)
+    {
+        if (periph_hz == 72000000u) { *out = BAUD_115200_72MHZ; return true; }
+        if (periph_hz == 60000000u) { *out = BAUD_115200_60MHZ; return true; }
+        if (periph_hz == 48000000u) { *out = BAUD_115200_48MHZ; return true; }
+        if (periph_hz == 24000000u) { *out = BAUD_115200_24MHZ; return true; }
+        return false;
+    }
+
     void select_input(uintptr_t base, uintptr_t dxn_off, uint32_t dsel)
     {
         reg32(base + dxn_off) = dsel & DX_DSEL_MASK;
