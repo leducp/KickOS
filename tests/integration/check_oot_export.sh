@@ -40,13 +40,6 @@ echo "== installing KickOS package to $TMP/prefix =="
 "$CMAKE" --install "$KICKOS_BUILD" --prefix "$TMP/prefix" >/dev/null \
   || fail "cmake --install failed"
 
-# The package ADVERTISES cxx_std_17 while the kernel is built at C++20, so every header
-# it ships has to compile at the advertised level. The fourth argument is the C compiler for
-# the C-facing half of the same package.
-"$(dirname "$0")/../static/check_public_headers.sh" "$TMP/prefix" "${CXX:-g++}" c++17 "${CC:-gcc}" \
-  || fail "the installed headers do not compile at the level the package advertises"
-
-
 echo "== configuring out-of-tree app via find_package(KickOS) =="
 "$CMAKE" -S "$KICKOS_SRC/examples/oot-app" -B "$TMP/build" -G "$GEN" \
   -DCMAKE_PREFIX_PATH="$TMP/prefix" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
@@ -59,6 +52,15 @@ echo "== building out-of-tree app =="
 
 APP="$TMP/build/oot_app"
 [ -x "$APP" ] || fail "out-of-tree app binary not produced"
+
+# The package ADVERTISES cxx_std_17 while the kernel is built at C++20, so every header
+# it ships has to compile at the advertised level. The fourth argument is the C compiler for
+# the C-facing half of the same package, and the fifth the definitions this package puts on
+# the compile line above, which is why the arm runs after the app is built and not before.
+package_defs "$TMP/build/compile_commands.json" "$TMP/defs"
+"$(dirname "$0")/../static/check_public_headers.sh" "$TMP/prefix" "${CXX:-g++}" c++17 "${CC:-gcc}" \
+  "$TMP/defs" \
+  || fail "the installed headers do not compile at the level the package advertises"
 
 # Our warning flags are this project's hygiene policy and not part of the interface, so
 # nothing on the exported targets may carry one.

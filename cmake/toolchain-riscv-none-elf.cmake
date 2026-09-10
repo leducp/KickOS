@@ -15,15 +15,17 @@
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR riscv)
 
-set(KICKOS_BOARD "qemu-riscv" CACHE STRING "Target board: qemu-riscv | qemu-riscv64 | esp32c6-wroom")
+set(KICKOS_TOOLCHAIN_DEFAULT_BOARD "qemu-riscv")
+set(KICKOS_BOARD "${KICKOS_TOOLCHAIN_DEFAULT_BOARD}" CACHE STRING "Target board: qemu-riscv | qemu-riscv64 | esp32c6-wroom")
 
 # Board descriptor: sets KICKOS_ARCH / KICKOS_ARCH_FAMILY / KICKOS_CHIP and the per-board
 # CPU flags. An installed single-board package ships it beside this toolchain file.
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake")
   include("${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake") # in-tree
 elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/board.cmake")
+  # Installed single-board package: the one shipped descriptor is authoritative.
   include("${CMAKE_CURRENT_LIST_DIR}/board.cmake")
-  set(KICKOS_BOARD "${KICKOS_BOARD_ID}" CACHE STRING "Target board" FORCE)
+  include("${CMAKE_CURRENT_LIST_DIR}/toolchain-package-board.cmake")
 else()
   message(FATAL_ERROR "KickOS riscv toolchain: no board descriptor for '${KICKOS_BOARD}'")
 endif()

@@ -24,6 +24,7 @@
  */
 
 #include <sections.ld.h>
+#include <app_heap.ld.h>
 #include <kernel_data_reserve.ld.h>
 
 ENTRY(_start)
@@ -195,7 +196,7 @@ SECTIONS
         __sdata_start = .;
         PROVIDE(__global_pointer$ = . + 0x800);  /* gp: anchor inside the app grant */
         *(.sdata .sdata.* .sdata2.*)             /* ONLY runtime small-data reaches here */
-        . = ALIGN(4);
+        . = ALIGN(8);
         __sdata_end = .;
     } > RAM
     _appdata_lma = LOADADDR(.appdata);
@@ -211,7 +212,9 @@ SECTIONS
            fails the link before the overflow ASSERT below can print. */
         . = MAX(., __kickos_appdata_start + _appdata_size); /* pad the block up to pow2 */
         __kickos_appdata_end = .;
-        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
+        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). That ALIGN is
+           relative to this section's start, which is why .appdata closes on ALIGN(8);
+           app_heap.ld.h holds the rule and the file-scope ASSERT that reads it back. */
         _kickos_heap_start = ALIGN(_appdata_used_end, 8);
         _kickos_heap_limit = __kickos_appdata_end;
     } > RAM
@@ -295,6 +298,7 @@ ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
 ASSERT(_code_used_end <= __kickos_code_end,
        "KickOS: app code overflows _code_size (raise it to the next pow2)")
 KICKOS_KERNEL_DATA_RESERVE_ASSERT(_ebss)
+KICKOS_APP_HEAP_ALIGN_ASSERT(_kickos_heap_start, _appdata_used_end)
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
 /* Selector-mismatch guard for the inverted closed-set .data/.bss capture: the colon

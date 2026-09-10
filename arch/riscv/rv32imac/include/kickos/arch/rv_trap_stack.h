@@ -61,9 +61,9 @@
  *              -> endpoint_wait_abort[32] -> sched::wake[16] -> resched_after_wake[32]
  *              -> reschedule[32] -> the SchedPolicy hook -> policy_on_switch_in[16]
  *              -> arm_slice[32]
- *   _SYS   912 enforced, 832 measured on esp32c6-wroom-bench, the one dispatch left that
+ *   _SYS   912 enforced, 800 measured on esp32c6-wroom-bench, the one dispatch left that
  *              walks the console: syscall_dispatch[80] -> bench_phase_print[48]
- *              -> kprintf[64] -> kvprintf_route[288] -> kconsole_write[0]
+ *              -> kprintf[320] -> kconsole_write[0]
  *              -> kconsole_write_impl[176] -> console_emit[48] -> arch_console_write[0]
  *              -> console_tx_write[80] -> drain_sync[32] -> wait_slot[16]. Off KICKOS_BENCH
  *              the deepest reading is 656.
@@ -96,14 +96,13 @@
  *          -> thread_create[96] -> task_for[16] -> domain_for[32]
  *          -> grant_region_admissible[32] -> grant_hits_reserved[80]
  *
- *   KICKOS_BENCH 1, 832 over 816 measured on the worse board. The bench arm prints, so it
+ *   KICKOS_BENCH 1, 832 over 800 measured on the worse board. The bench arm prints, so it
  *   walks the console and the figure is per board. gcc inlines syscall_body into
- *   syscall_dispatch here, so the head is one frame rather than 32 + 128 and its size differs
- *   per board (64 here, 80 on qemu-riscv-bench):
- *     816  syscall_dispatch[64] -> bench_phase_print[48] -> kprintf[64]
- *          -> kvprintf_route[288] -> kconsole_write[0] -> kconsole_write_impl[176]
+ *   syscall_dispatch here, so the head is one frame rather than 32 + 128:
+ *     800  syscall_dispatch[80] -> bench_phase_print[48] -> kprintf[320]
+ *          -> kconsole_write[0] -> kconsole_write_impl[176]
  *          -> console_emit[48] -> arch_console_write[0] -> console_tx_write[80]
- *          -> drain_sync[32] -> wait_slot[16]     (qemu-riscv-bench: 736, its
+ *          -> drain_sync[32] -> wait_slot[16]     (qemu-riscv-bench: 704, its
  *                                                  arch_console_write being a 32-byte leaf)
  *
  * Each is its measurement rounded up to the next multiple of 64, the convention a thread-stack
@@ -137,9 +136,16 @@
 
 /* The two death-path stubs that relocate, on the thread's own KERNEL BLOCK: .Lfault moves sp
  * to kickos_fault_stack_top and arch_ctx_redirect fabricates a frame there, both answering
- * with ctx.kernel_sp. 720 on esp32c6-wroom, the fault reporter winning, and no posture moves
- * it. NEVER BINDS: 128 + 720 = 848 against 1180 usable, where NEED_SYSK asks more. */
-#define KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK 720
+ * with ctx.kernel_sp. 544 on esp32c6-wroom, the fault reporter winning, and no posture moves
+ * it. The reporter formats into KDIAG_FAULT_LINE_MAX bytes and not the 256 an ordinary
+ * kprintf gets, which is why its array no longer dominates the console tail below it.
+ * NEVER BINDS, WHICH IS WHY IT IS ROUNDED LIKE A THREAD-STACK FIGURE. A kernel-block figure
+ * is normally left at its measurement because it sizes KICKOS_KERNEL_STACK_SIZE and a byte
+ * there costs KICKOS_THREAD_SLOTS; this class sizes nothing, _SYS winning the block on every
+ * registered preset, so the reason for that convention does not reach it. 576 is the 544
+ * measured rounded up to the next multiple of 64: 128 + 576 = 704 against 1180 usable, where
+ * _SYS asks 1168, so this would have to grow 464 more before it bound. */
+#define KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK 576
 
 /* kickos_thread_return ALONE: a PRIVILEGED thread's entry-return stub, a user thread's being
  * the kickos_user_thread_return syscall instead, so no fault and no redirect relocates it and
@@ -181,10 +187,10 @@
  *
  * .Lfault's reporter sizes this stack, the four .Lintr ISR arms being shallower. The figure is
  * the worse of the two boards, the console backend being per board:
- *   672  kickos_rv_fault_report[32] -> kickos_isr_fault[32] -> kprintf[64]
- *        -> kvprintf_route[288] -> kconsole_write[0] -> kconsole_write_impl[176]
+ *   640  kickos_rv_fault_report[32] -> kickos_isr_fault[32] -> kprintf[320]
+ *        -> kconsole_write[0] -> kconsole_write_impl[176]
  *        -> console_emit[48] -> arch_console_write[32]            (qemu-riscv)
- *   768  the same chain on esp32c6-wroom-st, whose arch_console_write is a 0-byte thunk into
+ *   736  the same chain on esp32c6-wroom-st, whose arch_console_write is a 0-byte thunk into
  *        console_tx_write[80] -> drain_sync[32] -> wait_slot[16].
  *
  * ENFORCED TWICE, over the same reporter chain on two different stacks: an ACCEPTED U-mode
@@ -192,7 +198,7 @@
  * gate's FAULT class charges KICKOS_RV_TRAP_FRAME plus this depth, 960, against the block.
  *
  * THIS CLASS IS THE ONE THAT WALKS THE CONSOLE, so a console change moves it. 832 is
- * deliberately 64 above the 768 measured: the enforced figure is what a FUTURE change is
+ * deliberately above the 736 measured: the enforced figure is what a FUTURE change is
  * measured against, and the margin costs one shared kernel array rather than per-thread
  * bytes. Do NOT tighten it back to the measurement. */
 #define KICKOS_RV_TRAP_NESTED_DEPTH 832

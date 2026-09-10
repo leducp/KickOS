@@ -7,6 +7,14 @@
 //
 // Every arm reports at ring 0, the console being port I/O and port I/O being refused at ring 3.
 // An unprivileged arm records into a global and the syscall trap carries it out.
+//
+// THE FILE-SCOPE `volatile` WORDS BELOW INVOKE style.md's SECOND EXCEPTION, an object the
+// compiler must not elide or hoist, stated here once rather than at each of the forty-eight.
+// A trap or an unprivileged arm writes them and the ring-0 body reads them back, one arm
+// spinning on `g_preempts` where a hoisted load never returns. NINETEEN are 8 bytes on this
+// arch, which `Atomic` refuses (`sizeof(T) <= 4`), and they describe the same events as the
+// narrower ones: `g_fault_vector` and `g_fault_cs` beside `g_faults`, so one record would
+// otherwise be split across two mechanisms by operand width. One image on one core.
 
 #include <kickos/arch/apic.h>
 #include <kickos/arch/arch.h>

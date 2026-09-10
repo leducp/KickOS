@@ -36,6 +36,8 @@ namespace kickos::doorbell
     constexpr char PART_NO_CONTEND[] = "KickOS: armv8a kernel lock uncontended, peers ";
     constexpr char PART_NO_SPIN[]
         = "KickOS: armv8a no peer reached the acquire loop, spinning mask 0x";
+    constexpr char PART_STILL_SETTLED[]
+        = "KickOS: armv8a doorbell round settled a request that never moved, peers ";
 }
 
 #endif

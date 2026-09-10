@@ -7,10 +7,10 @@
 // gated, syscall_ipc.cc being absent from the host seam's source set.
 //
 // THE ENDPOINT POOL IS WHY THIS IS AN IMAGE ARM AT ALL. It is the fleet's smallest at four
-// slots, so its ceiling (slots minus the reserve, or KICKOS_TASK_OBJECT_BUDGET, whichever is
-// smaller) sits BELOW this thread's capability table width and the budget is what refuses
-// first. On the semaphore pool the table fills before the budget does, which is why arm 5
-// below asks the opposite question of the semaphores.
+// slots, so KICKOS_TASK_ENDPOINT_BUDGET sits BELOW this thread's capability table width and
+// is what refuses first. On the semaphore pool the table fills before the budget does, which
+// is why arm 5 below asks the opposite question of the semaphores. Arm 4's second task lands
+// only because the budget is below the pool's width, which the build asserts (cap.h).
 //
 // A DIAGNOSTIC IMAGE: KICKOS_ENABLE_SELFTEST only, and nothing here needs a selftest syscall.
 

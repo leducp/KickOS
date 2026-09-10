@@ -102,6 +102,37 @@ namespace kickos::doorbell
 
         constexpr char CHECK_HEAD[] = "# doorbell: ";
         constexpr char CHECK_TAIL[] = " core(s) answered, rounds 0x";
+        constexpr char CHECK_UNMOVED[] = ", unmoved 0x";
+
+        // The sequence each peer owes this core, CHOSEN before the raise rather than read back
+        // out of the request cell afterwards. A postcondition read off that cell is satisfied
+        // at 0 == 0 by a send that stored nothing, which both sides reach by standing still;
+        // this is the number that has to move for a round to settle.
+        void owe_next(uint32_t me, uint32_t peers, uint32_t* owed)
+        {
+            for (uint32_t to = 0; to < KICKOS_DOORBELL_CORES; to++)
+            {
+                owed[to] = 0;
+                if ((peers & (1u << to)) != 0)
+                {
+                    owed[to] = g_request[me].seq[to].load() + 1u;
+                }
+            }
+        }
+
+        // How many of `peers` have answered this core up to the sequence owe_next chose.
+        uint32_t settled_against(uint32_t me, uint32_t peers, uint32_t const* owed)
+        {
+            uint32_t settled = 0;
+            for (uint32_t to = 0; to < KICKOS_DOORBELL_CORES; to++)
+            {
+                if ((peers & (1u << to)) != 0 and g_answer[to].seq[me].load() == owed[to])
+                {
+                    settled++;
+                }
+            }
+            return settled;
+        }
 
         // One round's raise and rendezvous, WITH THE LOCK ALREADY HELD, and the postcondition
         // read before the caller releases it: what arch_ipi_wait owes is that every peer
@@ -109,19 +140,33 @@ namespace kickos::doorbell
         // would satisfy a count taken at the end.
         bool doorbell_round(uint32_t me, uint32_t peers, uint32_t peer_count)
         {
+            uint32_t owed[KICKOS_DOORBELL_CORES] = {};
+            owe_next(me, peers, owed);
+
             arch_ipi_send(peers);
             arch_ipi_wait(peers);
 
-            uint32_t settled = 0;
-            for (uint32_t to = 0; to < KICKOS_DOORBELL_CORES; to++)
-            {
-                if ((peers & (1u << to)) != 0
-                    and g_answer[to].seq[me].load() == g_request[me].seq[to].load())
-                {
-                    settled++;
-                }
-            }
-            return settled == peer_count;
+            return settled_against(me, peers, owed) == peer_count;
+        }
+
+        // THE ROUND'S OWN CONTROL, and it plants the defect the postcondition exists to catch:
+        // the raise made with the request cell left where it was, which is arch_ipi_send with
+        // its bump deleted. Every peer takes the raise, finds nothing owed, answers nothing,
+        // and arch_ipi_wait returns at once because it reads the same unmoved cell back.
+        // Returns how many of `peers` the postcondition still refused, which must be all of
+        // them: a round that settled here would certify a doorbell that never asked.
+        //
+        // RUN WITH EVERY PEER'S INTERRUPTS OPEN and with the previous round settled, so an
+        // answer cell that moves under it moved for this raise.
+        uint32_t unmoved_under_a_still_request(uint32_t me, uint32_t peers, uint32_t peer_count)
+        {
+            uint32_t owed[KICKOS_DOORBELL_CORES] = {};
+            owe_next(me, peers, owed);
+
+            kickos_doorbell_raise(peers);
+            arch_ipi_wait(peers);
+
+            return peer_count - settled_against(me, peers, owed);
         }
 
 #if KICKOS_KERNEL_CORES > 1
@@ -297,6 +342,12 @@ void kickos_doorbell_selfcheck(void)
         arch_kernel_unlock();
     }
 
+    // THE CONTROL FOR EVERY ROUND ABOVE AND BELOW, run here because phase one has just settled
+    // every cell and phase two has not yet taken the peers out of their open-interrupt spin.
+    arch_kernel_lock();
+    uint32_t const unmoved = unmoved_under_a_still_request(me, peers, peer_count);
+    arch_kernel_unlock();
+
 #if KICKOS_KERNEL_CORES > 1
     // PHASE TWO, EVERY PEER INSIDE THE ACQUIRE LOOP UNDER ITS OWN MASK: the overlap is WAITED
     // FOR with the lock held rather than hoped for inside a round count, and the poll in that
@@ -351,6 +402,16 @@ void kickos_doorbell_selfcheck(void)
         kfault_terminate();
     }
 
+    // Every peer the control raised on refused to be counted, or the rounds above certify a
+    // protocol both sides satisfy by standing still and the count they printed states nothing.
+    if (unmoved != peer_count)
+    {
+        part_write(PART_STILL_SETTLED, sizeof(PART_STILL_SETTLED) - 1);
+        hex1(peer_count - unmoved);
+        part_write(NL, sizeof(NL) - 1);
+        kfault_terminate();
+    }
+
 #if KICKOS_KERNEL_CORES > 1
     if (contended != peer_count)
     {
@@ -366,6 +427,8 @@ void kickos_doorbell_selfcheck(void)
     part_write(CHECK_TAIL, sizeof(CHECK_TAIL) - 1);
     hex1(settled_rounds / 16u);
     hex1(settled_rounds % 16u);
+    part_write(CHECK_UNMOVED, sizeof(CHECK_UNMOVED) - 1);
+    hex1(unmoved);
     part_write(NL, sizeof(NL) - 1);
 }
 #endif

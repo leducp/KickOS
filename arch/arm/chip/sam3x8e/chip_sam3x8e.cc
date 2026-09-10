@@ -22,6 +22,15 @@ namespace kickos
     int kmain(int argc, char** argv);
 }
 
+namespace
+{
+    // The two MAINCK sources. Every rate this file states is one of these two through the
+    // PLLA multiply and the MCKR prescaler in clock_init, and never a second spelling of a
+    // product. Ahead of SystemCoreClock because its initialiser is the rate at reset.
+    constexpr uint32_t MAINCK_RC_HZ = 4000000u;
+    constexpr uint32_t MAINCK_XTAL_HZ = 12000000u;
+}
+
 extern "C"
 {
     void kickos_armv7m_init(void);
@@ -30,7 +39,9 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    uint32_t SystemCoreClock = 4000000u; // fast RC at reset; clock_init() raises it to 84 MHz
+    // PMC_MCKR comes out of reset selecting MAINCK undivided (sec.28.15.11, reset 0x1) and
+    // MAINCK is the fast RC, so MCK is this until clock_init moves one of the two terms.
+    uint32_t SystemCoreClock = MAINCK_RC_HZ;
 }
 
 namespace
@@ -78,17 +89,69 @@ namespace
     constexpr uint32_t MOR_CRYSTAL = MOR_KEY | MOR_MOSCXTST | MOR_MOSCRCEN | MOR_MOSCXTEN;
 
     // CKGR_PLLAR (sec.28): PLLA = MAINCK * (MULA+1) / DIVA. ONE (bit 29) reads 1;
-    // MULA (26:16) = 13 -> x14; DIVA (7:0) = 1; PLLCOUNT (13:8) = LOCK delay in SLCK.
-    // 12 MHz * 14 / 1 = 168 MHz.
+    // PLLCOUNT (13:8) = LOCK delay in SLCK. MULA (26:16) and DIVA (7:0) are the register
+    // spellings of the two figures beside them, so the rate cannot drift from the register.
+    constexpr uint32_t PLLA_MUL = 14u;
+    constexpr uint32_t PLLA_DIV = 1u;
+    constexpr uint32_t PLLA_HZ = MAINCK_XTAL_HZ * PLLA_MUL / PLLA_DIV;
     constexpr uint32_t PLLAR_ONE = 1u << 29;
-    constexpr uint32_t PLLAR_MULA = 13u << 16;
+    constexpr uint32_t PLLAR_MULA = (PLLA_MUL - 1u) << 16;
     constexpr uint32_t PLLAR_COUNT = 0x3Fu << 8;
-    constexpr uint32_t PLLAR_DIVA = 1u << 0;
+    constexpr uint32_t PLLAR_DIVA = PLLA_DIV << 0;
 
-    // PMC_MCKR (sec.28): CSS (1:0) source, PRES (6:4) prescaler. PLLA/2 = 84 MHz.
+    // PMC_MCKR (sec.28.15.11): CSS (1:0) source, PRES (6:4) prescaler.
+    constexpr uint32_t MCKR_CSS_MASK = 3u << 0;
     constexpr uint32_t MCKR_CSS_MAIN = 1u << 0;
     constexpr uint32_t MCKR_CSS_PLLA = 2u << 0;
+    constexpr uint32_t MCKR_PRES_MASK = 7u << 4;
     constexpr uint32_t MCKR_PRES_DIV2 = 1u << 4;
+
+    // The three words this backend ever writes to PMC_MCKR.
+    constexpr uint32_t MCKR_MAIN = MCKR_CSS_MAIN;
+    constexpr uint32_t MCKR_MAIN_DIV2 = MCKR_PRES_DIV2 | MCKR_CSS_MAIN;
+    constexpr uint32_t MCKR_PLLA_DIV2 = MCKR_PRES_DIV2 | MCKR_CSS_PLLA;
+
+    // MCK from a PMC_MCKR word. PRES DIVIDES WHATEVER CSS SELECTED, so PRES_DIV2 beside
+    // CSS_MAIN is the crystal halved and not PLLA halved. Every store of SystemCoreClock
+    // below goes through this on the same word it just wrote, so the rate and the register
+    // cannot be moved apart. A CSS this backend never writes answers 0, which a divisor
+    // cannot mistake for a working clock.
+    constexpr uint32_t mck_for(uint32_t mckr, uint32_t mainck)
+    {
+        uint32_t src = 0u;
+        if ((mckr & MCKR_CSS_MASK) == MCKR_CSS_MAIN)
+        {
+            src = mainck;
+        }
+        else if ((mckr & MCKR_CSS_MASK) == MCKR_CSS_PLLA)
+        {
+            src = PLLA_HZ;
+        }
+        uint32_t div = 1u;
+        if ((mckr & MCKR_PRES_MASK) == MCKR_PRES_DIV2)
+        {
+            div = 2u;
+        }
+        return src / div;
+    }
+
+    // The part's own maximum, and the bound FWS=4 was chosen against (sec.45 covers 90 MHz).
+    constexpr uint32_t MCK_MAX_HZ = 84000000u;
+
+    // The datasheet's own reading of the three words, checked against the derivation rather
+    // than restated at the stores. The middle one is the whole reason this helper exists.
+    static_assert(mck_for(MCKR_MAIN, MAINCK_XTAL_HZ) == MAINCK_XTAL_HZ,
+                  "CSS_MAIN with no PRES is MAINCK undivided");
+    static_assert(mck_for(MCKR_MAIN_DIV2, MAINCK_XTAL_HZ) == 6000000u,
+                  "PRES_DIV2 beside CSS_MAIN halves the CRYSTAL: the intermediate state of "
+                  "the PLL switch is 6 MHz, not the 12 MHz the crystal runs at");
+    static_assert(mck_for(MCKR_PLLA_DIV2, MAINCK_XTAL_HZ) == MCK_MAX_HZ,
+                  "PLLA over the MCKR prescaler must land on the SAM3X8E maximum MCK; the "
+                  "flash wait states are sized for that bound too");
+
+    // Selects a master clock and records the rate that selection runs at. ONE word for both,
+    // so PMC_MCKR and SystemCoreClock cannot come to name different selections.
+    void mckr_select(uint32_t mckr, uint32_t mainck);
 
     // PMC_SR (sec.28) poll bits.
     constexpr uint32_t SR_MOSCXTS = 1u << 0;   // crystal oscillator stable
@@ -113,6 +176,12 @@ namespace
         return false;
     }
 
+    // NO DEGRADE RETURN CARRIES A RATE OF ITS OWN. SystemCoreClock is restated at every edge
+    // that moves MCK and every failure below just returns, so a step added or reordered
+    // cannot leave a stale figure behind for uart_init's divisor to follow. PMC_MCKR comes
+    // out of reset selecting MAINCK undivided (sec.28.15.11, reset 0x1), which is what makes
+    // the initialiser above the rate at entry and what makes step 3's MOSCSEL move MCK with
+    // no PMC_MCKR write of its own.
     void clock_init()
     {
         // 1. Flash wait states first, both banks (sec.18 / sec.45), before raising
@@ -122,55 +191,57 @@ namespace
 
         // 2. Start the 12 MHz crystal (RC stays MAINCK meanwhile). If MOSCXTS never
         //    asserts there is no usable crystal: stay on the 4 MHz fast RC so the core
-        //    and diag LED still run. The UART divisor is computed for 84 MHz MCK, so
-        //    the console is unusable on this path: degraded, not dead-locked.
+        //    and diag LED still run. uart_init derives the divisor from this rate, which
+        //    4 MHz cannot divide to 115200: degraded console, not a dead-locked part.
         r32(CKGR_MOR) = MOR_CRYSTAL;
         if (not pmc_wait(SR_MOSCXTS))
         {
-            SystemCoreClock = 4000000u;
             return;
         }
 
-        // 3. Select the crystal as MAINCK, then run MCK off it before touching PLLA.
+        // 3. Select the crystal as MAINCK, then run MCK off it before touching PLLA. The
+        //    MOSCSEL switch is glitch-free and signals on MOSCSELS, not MCKRDY (sec.27.5.3),
+        //    and CSS already names MAINCK, so MCK is on the crystal before the write below.
         r32(CKGR_MOR) = MOR_CRYSTAL | MOR_MOSCSEL;
         if (not pmc_wait(SR_MOSCSELS))
         {
-            SystemCoreClock = 4000000u;
             return;
         }
-        r32(PMC_MCKR) = MCKR_CSS_MAIN;
+        mckr_select(MCKR_MAIN, MAINCK_XTAL_HZ);
         if (not pmc_wait(SR_MCKRDY))
         {
-            SystemCoreClock = 4000000u;
             return;
         }
 
-        // 4. PLLA = 12 MHz * 14 / 1 = 168 MHz (sec.28 CKGR_PLLAR). If it never locks,
-        //    MCK is already stable on the 12 MHz crystal, so stay there (console
-        //    still off since BRGR targets 84 MHz).
+        // 4. PLLA (sec.28 CKGR_PLLAR). If it never locks, MCK is already stable on the
+        //    crystal, so stay there (console still off: 12 MHz divides to 107143 baud,
+        //    outside 8N1 tolerance).
         r32(CKGR_PLLAR) = PLLAR_ONE | PLLAR_MULA | PLLAR_COUNT | PLLAR_DIVA;
         if (not pmc_wait(SR_LOCKA))
         {
-            SystemCoreClock = 12000000u;
             return;
         }
 
-        // 5. Switch MCK to PLLA/2 = 84 MHz. sec.28 mandates, for a PLL source: set
-        //    PRES, wait MCKRDY, then set CSS, wait MCKRDY (two writes, not one).
-        r32(PMC_MCKR) = MCKR_PRES_DIV2 | MCKR_CSS_MAIN;
+        // 5. Switch MCK to PLLA/2. sec.28.12 mandates, for a PLL source: set PRES, wait
+        //    MCKRDY, then set CSS, wait MCKRDY (two writes, not one). THE FIRST WRITE
+        //    HALVES MAINCK, so the intermediate state is 6 MHz and not 12: PRES divides
+        //    whatever CSS names, and CSS still names MAINCK here.
+        mckr_select(MCKR_MAIN_DIV2, MAINCK_XTAL_HZ);
         if (not pmc_wait(SR_MCKRDY))
         {
-            SystemCoreClock = 12000000u;
             return;
         }
-        r32(PMC_MCKR) = MCKR_PRES_DIV2 | MCKR_CSS_PLLA;
+        mckr_select(MCKR_PLLA_DIV2, MAINCK_XTAL_HZ);
         if (not pmc_wait(SR_MCKRDY))
         {
-            SystemCoreClock = 12000000u;
             return;
         }
+    }
 
-        SystemCoreClock = 84000000u;
+    void mckr_select(uint32_t mckr, uint32_t mainck)
+    {
+        r32(PMC_MCKR) = mckr;
+        SystemCoreClock = mck_for(mckr, mainck);
     }
 
     // PMC (sec.28): per-peripheral clock enable by peripheral ID.
@@ -227,9 +298,25 @@ namespace
     constexpr uint32_t MR_NO_PARITY = 4u << 9; // PAR=100 (none), CHMODE=normal
     constexpr uint32_t SR_TXRDY = 1u << 1;
     constexpr uint32_t IER_TXRDY = 1u << 1; // TXRDY bit in IER/IDR/IMR (same position as SR)
-    // CD = MCK/(16*baud) = 84e6/(16*115200) = 45.57 -> 46; actual 84e6/(16*46) =
-    // 114130 baud (-0.93%, well inside the 5% limit in sec.34).
-    constexpr uint32_t BRGR_115200 = 46;
+    constexpr uint32_t CONSOLE_BAUD = 115200u;
+
+    // CD = MCK/(16*baud), rounded (sec.34). CD 0 stops the generator, so a clock too slow
+    // to divide gets 1 rather than silence. This UART has no fractional divisor and a fixed
+    // 16x oversample, so what it can reach is set by MCK: 84 MHz gives CD 46 = 114130 baud
+    // (-0.93%), while NONE of the three degrade rates reaches 115200 at all: 12 MHz gives
+    // CD 7 = 107143 (-7.0%), 6 MHz CD 3 = 125000 (+8.5%) and 4 MHz CD 2 = 125000 (+8.5%),
+    // every one past what 8N1 framing tolerates. Deriving it is still what keeps the 84 MHz
+    // path correct if MCK ever moves.
+    uint32_t uart_brgr_cd(uint32_t mck, uint32_t baud)
+    {
+        uint32_t const div = 16u * baud;
+        uint32_t const cd = (mck + div / 2u) / div;
+        if (cd == 0u)
+        {
+            return 1u;
+        }
+        return cd;
+    }
 
     // --- TC0 channel 0: the monotonic time base (SAM3X datasheet sec.37) --------
     // arch_clock_now is a REQUIRED chip contract: the armv7m layer ships no clock
@@ -311,7 +398,7 @@ namespace
         r32(PIOA_PDR) = PA8_PA9;              // PA8/PA9 -> peripheral A (ABSR=0 at reset)
         r32(UART_CR) = CR_RSTRX_RSTTX;
         r32(UART_MR) = MR_NO_PARITY;
-        r32(UART_BRGR) = BRGR_115200;
+        r32(UART_BRGR) = uart_brgr_cd(SystemCoreClock, CONSOLE_BAUD);
         r32(UART_IDR) = 0xFFFFFFFFu; // all UART interrupt sources off; the ring arms TXRDY
         r32(UART_CR) = CR_RXEN_TXEN;
     }

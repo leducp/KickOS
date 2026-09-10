@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * Ends the kernel lock's span over a context swap. ASSEMBLY ONLY: this header defines one
- * macro and declares nothing a C translation unit can use.
+ * Ends the kernel lock's span over a context swap.
  *
  * Single-sourced: the cooperative swap ends in arch/xtensa/lx6/switch.S and the deferred
  * preemptive one ends in the chip's level-1 interrupt entry.
@@ -27,8 +26,8 @@
  * property of the CALL SITES: do not call this where more than one window is live.
  */
 
-#ifndef KICKOS_ARCH_LX6_SWITCH_UNLOCK_H
-#define KICKOS_ARCH_LX6_SWITCH_UNLOCK_H
+#ifndef KICKOS_ARCH_LX6_SWITCH_UNLOCK_INC
+#define KICKOS_ARCH_LX6_SWITCH_UNLOCK_INC
 
     .macro  SWITCH_UNLOCK
 #if KICKOS_KERNEL_CORES > 1
@@ -36,4 +35,4 @@
 #endif
     .endm
 
-#endif /* KICKOS_ARCH_LX6_SWITCH_UNLOCK_H */
+#endif /* KICKOS_ARCH_LX6_SWITCH_UNLOCK_INC */

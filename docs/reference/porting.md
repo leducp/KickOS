@@ -26,8 +26,13 @@ semihosting seams, the VMSA constants its startup assembly reads), and those tra
 into the ARCH archive answering the same `arch.h`. Two things differ from a chip directory. It is
 NOT globbed, so a file added there needs an explicit entry in the arch source list
 (`arch/CMakeLists.txt`). And the chip archive precedes the arch archive in the link group, so a
-seam whose fallback sits in the arch archive must keep its backend definition chip-side: moved
-here it would resolve to the fallback and the board would SILENTLY DECLINE.
+seam whose fallback sits in the arch archive must keep its backend definition chip-side. Moved
+here the backend would share an archive with its own fallback, and which one the image takes is
+then the source order of that `add_library()` call: the fallback listed first replaces the
+backend and the board SILENTLY DECLINES, the backend listed first leaves the fallback
+unextracted. `tests/static/check_seam_defaults.sh` refuses the pair either way, and
+`tests/static/check_link_scan_order.sh` is what says the group still has the order this
+paragraph rests on.
 
 No KickOS seam is a weak symbol. An optional seam's fallback body lives ALONE in a
 translation unit named `<symbol>_default.cc` that defines EXACTLY ONE global symbol, and a
@@ -50,8 +55,11 @@ write decide where the first one lands.
 
 **IT IS A MANDATORY SEAM, with no `_default.cc` fallback**, so an unported backend fails to
 link. That is deliberate: the red-zone figures every arch enforces no longer reserve for the
-console tail, and a backend that silently kept the old reporter would spend a descent nothing
-reserves for. `ARCH_SIM` is the one backend that does not switch, and `KICKOS_PANIC_STACK_SIZE`
+PANIC console tail, and a backend that silently kept the old reporter would spend a descent
+nothing reserves for. The FAULT reporter is a different chain and is not on this seam: it runs
+in thread context on the dying thread's own block and is what the gate's `EXITK` (and `EXIT`)
+class still measures, which is why its line array is bounded by `KDIAG_FAULT_LINE_MAX` rather
+than by the 256 bytes an ordinary `kprintf` gets. `ARCH_SIM` is the one backend that does not switch, and `KICKOS_PANIC_STACK_SIZE`
 is 0 there to say so; on every other arch a zero there is refused by
 `tests/static/check_trap_redzone.sh`.
 
@@ -1050,8 +1058,10 @@ unconditionally and collide on every chip with a backend.
 always-ANCHORED archive member** -- one the link pulls for some other reason
 (`chip_<chip>.cc`, force-loaded via `-u g_isr_vector` -> `startup.S` -> `Reset_Handler`;
 `arch/arm/chip/xmc4800/usic_uart.cc`, pulled for `arch_console_tx_backend`). Scan order
-(`kickos_arch_*` after `kickos_chip_*` in the rescan group) is only a BACKSTOP: MEASURED
-with the group reversed, the link still resolves correctly from the anchored chip member.
+(`kickos_arch_*` after `kickos_chip_*` in the rescan group) is only a BACKSTOP, not a
+resolution guarantee: `arch/CMakeLists.txt` states the mechanism, and reversing the group
+FAILS THE LINK with a multiple-definition error wherever both a fallback and its backend
+are anchored (`TODO.md` carries the `qemu-m33` and `qemu-arm64` evidence).
 **A chip that puts its definition in a dedicated TU nothing else references gets NEITHER
 protection -- the fallback resolves the reference first and the board SILENTLY DECLINES at
 runtime.** Proved by mutation: the group reversed plus `arch_idle_wait` moved into an

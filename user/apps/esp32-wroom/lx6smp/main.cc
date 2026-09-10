@@ -48,6 +48,13 @@ extern "C"
         uint32_t rounds;
     };
 
+    // GENUINELY CROSS-CORE, and OUTSIDE `Atomic` rather than an exception to it: `counter` is
+    // the target of an `s32c1i` compare-and-swap from BOTH cores, here in `pro_rounds` and at
+    // app_cpu.S CELL_COUNTER, and the wrapper exposes no read-modify-write surface at all
+    // (style.md, and tests/static/check_atomic_rmw.sh holds it). Two writers contending one
+    // word is the shape that rule sends to a lock, and this app exists to measure the
+    // hardware primitive instead. `volatile` also carries style.md's second exception for the
+    // rest: `wait_for` spins on a cell the other core writes, and a hoisted load never returns.
     alignas(16) volatile lx6smp_cells g_lx6smp_cells;
 
     void kickos_lx6smp_app_entry(void);

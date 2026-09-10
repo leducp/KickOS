@@ -41,8 +41,8 @@
     .set RESUME_COOP,  0
 
 #include <kickos/arch/xtensa_frame.h>
-#include <kickos/arch/lx6_switch_unlock.h>
-#include <kickos/arch/lx6_percpu.h>
+#include <kickos/arch/lx6_switch_unlock.inc>
+#include <kickos/arch/lx6_percpu.inc>
 
 
 /* SPILL_ALL_WINDOWS: XCHAL_NUM_AREGS == 64 on LX6, so rotate the window a full

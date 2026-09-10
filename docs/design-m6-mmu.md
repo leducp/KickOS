@@ -5783,8 +5783,9 @@ entry holds 512 present entries, every one of them a 1 GiB leaf identity mapping
 there is no free entry anywhere inside the adopted kernel half to hang anything from. What is left
 is a slot of the root itself, and taking one is sound for exactly one reason: it happens in
 `aspace_init`, before the first create, so every space that will ever exist copies it. The figure
-is printed with the witness (`first_child_entries=512`) because it is the premise, and a firmware
-that left room would make a different design correct.
+is printed with the witness (`first_child_entries=512`) and asserted by its arm
+`first_child_table_is_full`, because it is the premise, and a firmware that left room would make a
+different design correct.
 
 **SO THE KERNEL HALF IS TWO THINGS HERE, AND F1's "FIXED HIGH RANGE" IS THE SECOND CLAIM THIS
 BACKEND FALSIFIES.** F8 already records that F1's "the kernel half is untouched by a switch" fails

@@ -287,7 +287,7 @@ extern "C"
 
     // Shared with switch.S/arch_start/startup.S, written by C and by asm: the ctx of the
     // running thread, and the deferred-switch target when arch_switch runs in ISR context.
-    // Per core; the asm indexes them through PERCPU_CELL (lx6_percpu.h).
+    // Per core; the asm indexes them through PERCPU_CELL (lx6_percpu.inc).
     kickos::Atomic<struct arch_context*, kickos::Order::RELAXED>
         g_arch_current[KICKOS_NUM_CORES] = {};
     kickos::Atomic<struct arch_context*, kickos::Order::RELAXED>

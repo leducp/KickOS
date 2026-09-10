@@ -23,7 +23,8 @@
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR xtensa)
 
-set(KICKOS_BOARD "esp32-wroom" CACHE STRING "Target board: esp32-wroom")
+set(KICKOS_TOOLCHAIN_DEFAULT_BOARD "esp32-wroom")
+set(KICKOS_BOARD "${KICKOS_TOOLCHAIN_DEFAULT_BOARD}" CACHE STRING "Target board: esp32-wroom")
 
 # The board descriptor is the single source of truth for arch/chip (mirrors the
 # ARM toolchain). In-tree it is boards/<board>/board.cmake relative to the repo
@@ -32,8 +33,9 @@ set(KICKOS_BOARD "esp32-wroom" CACHE STRING "Target board: esp32-wroom")
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake")
   include("${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake") # in-tree
 elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/board.cmake")
+  # Installed single-board package: the one shipped descriptor is authoritative.
   include("${CMAKE_CURRENT_LIST_DIR}/board.cmake")
-  set(KICKOS_BOARD "${KICKOS_BOARD_ID}" CACHE STRING "Target board" FORCE)
+  include("${CMAKE_CURRENT_LIST_DIR}/toolchain-package-board.cmake")
 else()
   message(FATAL_ERROR "KickOS xtensa toolchain: no board descriptor for '${KICKOS_BOARD}'")
 endif()

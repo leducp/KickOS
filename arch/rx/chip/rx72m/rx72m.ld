@@ -25,6 +25,7 @@
  */
 
 #include <sections.ld.h>
+#include <app_heap.ld.h>
 #include <kernel_data_reserve.ld.h>
 
 ENTRY(_start)
@@ -224,7 +225,7 @@ SECTIONS
         ___kickos_emutls_v_end = .;
         *(.data .data.*)
         *(D D_1 D_2)           /* RX-native initialized data */
-        . = ALIGN(4);
+        . = ALIGN(8);
         ___kickos_appdata_load_end = .;
     } > RAM AT > ROM
 
@@ -242,8 +243,10 @@ SECTIONS
            fails the link before the overflow ASSERT below can print. */
         . = MAX(., ___kickos_appdata_start + _appdata_size); /* pad the block up to pow2 */
         ___kickos_appdata_end = .;
-        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). Double
-           underscore: C `_kickos_heap_*` gains the RX one-underscore psABI prefix. */
+        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). That ALIGN is
+           relative to this section's start, which is why .appdata closes on ALIGN(8);
+           app_heap.ld.h holds the rule. Double underscore: C `_kickos_heap_*` gains
+           the RX one-underscore psABI prefix. */
         __kickos_heap_start = ALIGN(_appdata_used_end, 8);
         __kickos_heap_limit = ___kickos_appdata_end;
     } > RAM
@@ -339,6 +342,7 @@ ASSERT(___kickos_app_fini_array_end == ___kickos_app_fini_array_start,
    next power of two (it is the app's MPU-granted .data/.bss window). */
 #if KICKOS_HAVE_MPU
 KICKOS_KERNEL_DATA_RESERVE_ASSERT(__ebss)
+KICKOS_APP_HEAP_ALIGN_ASSERT(__kickos_heap_start, _appdata_used_end)
 ASSERT(_appdata_used_end <= ___kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
 /* Lower bound: an empty .appdata dropping its ALIGN would place .appbss below the base. */

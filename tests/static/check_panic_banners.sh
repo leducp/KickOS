@@ -14,6 +14,22 @@
 # by-name exemption list to maintain. A comment that spells a WHOLE banner including its
 # `\n` escape DOES report, and the fix is to stop spelling an escape sequence in prose.
 #
+# THE SET, AND NOT ONE PER FILE. Every line carrying a banner marker inside a run of adjacent
+# string literals is an EMIT SITE, and the match above must resolve a whole banner on each one. Without that pairing
+# the file-by-file leg below is satisfied by a reporter that keeps four of its five banners and
+# composes the fifth out of concatenated pieces: the count comes back smaller and nothing
+# refuses. What it costs is that prose may name a banner in pieces (`matches "=== RX"`) but may
+# not spell an escaped opening or a terminating closer without spelling the whole banner.
+# THE RUN CROSSES LINES, because C does: adjacent literals separated by nothing but whitespace
+# are one literal, so a banner split mid-marker over three lines is whole on the wire and was
+# whole in NO leg here. And the counts have floors, because every other leg is decided per file
+# or per site and a set that goes quiet moves no per-file number.
+#
+# BOTH DIRECTIONS. A banner the ERE does not match is a fault read as a pass; an ERE
+# alternative that matches no banner is a rule nothing can violate. The second is the one that
+# rots silently, so each banner-shaped alternative must still match a banner some reporter
+# emits.
+#
 # THE NAME: where the banner name is itself the conversion, `\n=== %s ===`, the labels come
 # from the argument NAME on the emit line and from every `<name> = "..."` assignment in the
 # same file. Every other conversion is substituted with a placeholder, the ERE keying on the
@@ -54,6 +70,18 @@ arch/sim/sim.cc'
 # label scan went vacuous, which would otherwise read as a clean tree.
 MIN_LABELS=3
 
+# THE SET CANNOT SHRINK QUIETLY. Every other leg here is per-file or per-site: a reporter that
+# loses one of two banners still yields one, its labels still resolve, and the site it no
+# longer has is a site nothing looks for. Nothing moves but these two numbers. They are
+# tripwires and not a declared inventory, sized under the live counts so an ordinary
+# deletion still passes, and a collapse cannot.
+BANNER_FLOOR=30
+SITE_FLOOR=28
+
+# A floor on the alternatives read out of the ERE, so a split that stopped splitting reads as
+# a failure rather than as one long alternative that matches everything.
+ALT_FLOOR=8
+
 scratch_dir
 
 # THE CORPUS IS A TOTAL CLASSIFICATION OF THE TREE AND NOT A LIST OF ROOTS, because every
@@ -86,10 +114,41 @@ B_TRUNC='\\n'
 B_CONV='%s'
 B_ASSIGN='[ \t]*=[ \t]*"[^"]*"'
 
+# THE UNIT IS THE LITERAL AND NOT THE LINE. C concatenates adjacent string literals and
+# nothing but whitespace may sit between them, so a banner split across LINES is ONE literal
+# to the compiler and reaches the wire whole. Read line by line, no piece of such a split
+# carries either marker, no emit site is seen and no banner is resolved: the file keeps its
+# other banners, every leg below stays green, and a board that DIED reads as one that passed.
+# Both readers take this joined copy. The run's text lands on the line it OPENS and the lines
+# it absorbed are emptied, so the line count and every line number stay the file's own.
+# A backslash continuation is NOT a join: pieces separated by a macro argument are not
+# adjacent literals, and each one that kept a marker is its own unresolved site.
+logical() { # <file>
+    awk '
+        function tail_quote(s) { sub(/[ \t]+$/, "", s); return substr(s, length(s)) == "\"" }
+        function head_quote(s) { sub(/^[ \t]+/, "", s); return substr(s, 1, 1) == "\"" }
+        { raw[NR] = $0 }
+        END {
+            for (n = 1; n <= NR; n++) {
+                t = raw[n]
+                k = n
+                while (k < NR && tail_quote(t) && head_quote(raw[k + 1])) {
+                    k++
+                    t = t " " raw[k]
+                }
+                print t
+                for (j = n + 1; j <= k; j++) { print "" }
+                n = k
+            }
+        }
+    ' "$1"
+}
+
 # Emits one tab-separated record per resolved banner:
 #   <file> <line> <slot> <banner text>
 # slot is `fixed` for a literal name and `label` for one substituted into a `%s` name slot.
-extract() { # <file> <esc> <mark> <close> <trunc> <conv> <assign>
+# Reads the JOINED copy on stdin; the name is handed in so the record names the real file.
+extract() { # <file> <esc> <mark> <close> <trunc> <conv> <assign>, joined text on stdin
     awk -v FNAME="$1" -v ESC="$2" -v MARK="$3" -v CLOSE="$4" -v TRUNC="$5" \
         -v CONV="$6" -v ASSIGN="$7" '
         # Placeholder for every conversion that is not the name slot. The ERE keys on the
@@ -175,11 +234,85 @@ extract() { # <file> <esc> <mark> <close> <trunc> <conv> <assign>
                 }
             }
         }
-    ' "$1"
+    '
 }
 
 scan() { # <file>, with the rule as it stands
-    extract "$1" "$B_ESC" "$B_MARK" "$B_CLOSE" "$B_TRUNC" "$B_CONV" "$B_ASSIGN"
+    logical "$1" | extract "$1" "$B_ESC" "$B_MARK" "$B_CLOSE" "$B_TRUNC" "$B_CONV" "$B_ASSIGN"
+}
+
+# Emits one tab-separated record per EMIT SITE:
+#   <file> <line>
+# A site is a line carrying, inside a run of adjacent quoted literals, either the ESCAPED
+# OPENING or a CLOSING marker that ENDS the banner. The extractor above must then resolve a banner on that same line.
+# That pairing is what makes a banner LOST to a respelling a failure rather than a smaller
+# number: the REPORTERS leg below asks only whether a file yielded one, so a reporter that keeps
+# four of its five banners and composes the fifth out of concatenated pieces passes it.
+#
+# THE TWO MARKERS AND NEVER THE BARE `=== `. Prose naming a banner spells it without the escape
+# and without a closer (`matches "=== RISC-V TRAP"`), and a rule drawn in `=` signs carries
+# ` ===` inside its run; keying on the bare marker reports both and would need the by-name
+# exemption list this gate refuses. What the pairing costs is that a comment spelling the
+# escaped opening must spell the WHOLE banner, which is the same rule the header states.
+sites() { # <file> <esc> <mark> <close> <trunc>, joined text on stdin
+    awk -v FNAME="$1" -v ESC="$2" -v MARK="$3" -v CLOSE="$4" -v TRUNC="$5" '
+        # A marker in the text a run of literals spells.
+        function marks(t,   k, after) {
+            if (index(t, ESC MARK) > 0) { return 1 }
+            # The closer only counts where the banner ENDS: at the end of the text, or at the
+            # escape a reporter writes after it.
+            k = index(t, CLOSE)
+            while (k > 0) {
+                after = substr(t, k + length(CLOSE))
+                if (after == "") { return 1 }
+                if (substr(after, 1, length(TRUNC)) == TRUNC) { return 1 }
+                t = substr(t, k + 1)
+                k = index(t, CLOSE)
+            }
+            return 0
+        }
+        # READ IN RUNS, because a run of literals with nothing but whitespace between them is
+        # ONE literal to the compiler: a banner split mid-marker across such a run leaves no
+        # piece carrying either marker, and the run is where it is whole again.
+        function is_site(s,   pos, p, q, start, rest, body, run, gap, have) {
+            pos = 1
+            run = ""
+            have = 0
+            while (1) {
+                p = index(substr(s, pos), "\"")
+                if (p == 0) { break }
+                start = pos + p - 1
+                gap = substr(s, pos, start - pos)
+                if (have == 0 || gap !~ /^[[:space:]]*$/) {
+                    if (have && marks(run)) { return 1 }
+                    run = ""
+                }
+                rest = substr(s, start + 1)
+                q = index(rest, "\"")
+                if (q == 0) { break }
+                body = substr(rest, 1, q - 1)
+                run = run body
+                have = 1
+                pos = start + q + 1
+            }
+            if (have && marks(run)) { return 1 }
+            return 0
+        }
+        { if (is_site($0)) { printf "%s\t%d\n", FNAME, NR } }
+    '
+}
+
+scan_sites() { # <file>, with the rule as it stands
+    logical "$1" | sites "$1" "$B_ESC" "$B_MARK" "$B_CLOSE" "$B_TRUNC"
+}
+
+# One line per site the extractor resolved no banner on, as `<file> <line>`.
+site_findings() { # <sites file> <resolved keys file>
+    while IFS= read -r _s; do
+        if ! grep -qxF "$_s" "$2"; then
+            printf '%s\n' "$_s"
+        fi
+    done < "$1"
 }
 
 # One line per banner the ERE pair judges wrongly, as `<kind> <file> <line> <slot> <text>`.
@@ -197,6 +330,39 @@ match_findings() { # <banners file> <excluded-ere> <panic-ere>
             printf 'UNMATCHED\t%s\t%s\t%s\t%s\n' "$_f" "$_n" "$_slot" "$_text"
         fi
     done < "$1"
+}
+
+# One banner-shaped alternative of the ERE per line, with a single parenthesised group
+# expanded. The alternatives that are not banner-shaped (`KERNEL PANIC:` and the two FAULT
+# prefixes) are judged against kernel print sites and not against this corpus.
+ere_alts() { # <ere>
+    awk -v RE="$1" '
+        BEGIN {
+            n = 0
+            depth = 0
+            cur = ""
+            for (i = 1; i <= length(RE); i++) {
+                c = substr(RE, i, 1)
+                if (c == "(") { depth++ }
+                if (c == ")") { depth-- }
+                if (c == "|" && depth == 0) { alt[++n] = cur; cur = ""; continue }
+                cur = cur c
+            }
+            alt[++n] = cur
+            for (k = 1; k <= n; k++) {
+                a = alt[k]
+                if (substr(a, 1, 4) != "=== ") { continue }
+                p = index(a, "(")
+                q = index(a, ")")
+                if (p == 0 || q < p) { print a; continue }
+                head = substr(a, 1, p - 1)
+                body = substr(a, p + 1, q - p - 1)
+                rest = substr(a, q + 1)
+                m = split(body, part, "|")
+                for (j = 1; j <= m; j++) { print head part[j] rest }
+            }
+        }
+    '
 }
 
 # --- self-test: prove every clause of the rule, one control per clause ---------
@@ -282,7 +448,7 @@ label_case "$TMP/st_lab_empty.cc" 0 "an empty assignment resolves no label"
 # clause that only ever reports LESS cannot show that a silent negative was near.
 NEVER='KICKOS_THIS_NEEDLE_MATCHES_NOTHING'
 mutate() { # <what> <file> <esc> <mark> <close> <trunc> <conv> <assign> <expect>
-    _m="$(extract "$2" "$3" "$4" "$5" "$6" "$7" "$8" | wc -l | tr -d ' ')"
+    _m="$(logical "$2" | extract "$2" "$3" "$4" "$5" "$6" "$7" "$8" | wc -l | tr -d ' ')"
     [ "$_m" -eq "$9" ] || fail "with the $1 needle respelled the extractor read $_m banner(s)
       of $2, expected $9; the controls for it are not near misses and prove nothing"
 }
@@ -307,7 +473,8 @@ mutate "escape" "$TMP/st_neg.cc" '' "$B_MARK" "$B_CLOSE" "$B_TRUNC" "$B_CONV" "$
 T_ON="$(scan "$TMP/st_pos.cc" | grep -cF '\n')" || T_ON=0
 [ "$T_ON" -eq 0 ] || fail "$T_ON planted banner(s) reach the ERE with an escape still in the
       text, so a multi-line format is checked against a string no reporter ever prints"
-extract "$TMP/st_pos.cc" "$B_ESC" "$B_MARK" "$B_CLOSE" "$NEVER" "$B_CONV" "$B_ASSIGN" \
+logical "$TMP/st_pos.cc" \
+    | extract "$TMP/st_pos.cc" "$B_ESC" "$B_MARK" "$B_CLOSE" "$NEVER" "$B_CONV" "$B_ASSIGN" \
     > "$TMP/st_trunc"
 T_OFF="$(grep -cF '\n' "$TMP/st_trunc")" || T_OFF=0
 [ "$T_OFF" -eq 7 ] || fail "with the truncation needle respelled $T_OFF planted banner(s)
@@ -315,6 +482,81 @@ T_OFF="$(grep -cF '\n' "$TMP/st_trunc")" || T_OFF=0
 T_MULTI="$(cut -f4 "$TMP/st_trunc" | grep -cxF '=== FROB EXCEPTION (X) ===')" || T_MULTI=0
 [ "$T_MULTI" -eq 0 ] || fail "the multi-line control still reads as its banner line with the
       truncation needle respelled, so nothing here pins where a banner ends"
+
+# --- self-test: the emit-site leg, one control per clause ---------------------
+# What this leg states and the REPORTERS leg cannot: a file that keeps its other banners and
+# respells one out of concatenated pieces still yields banners, so only a count of the SITES the
+# shape can still see reports it. Each control is a MINIMAL PAIR: the same emit, whole against
+# split, read for BOTH the site count and the banners resolved on it.
+cat > "$TMP/st_site_pos.cc" <<'EOF'
+    kprintf("\n=== FROB FAULT ===\n");
+    // tests/lib/panic.ere matches "=== FROB", so the noun stays out of the format
+    kprintf("  ==========================\n");
+EOF
+cat > "$TMP/st_site_neg.cc" <<'EOF'
+#define FROB_BANNER "\n=== FROB " ARCH_NOUN \
+                    " FAULT ===\n"
+EOF
+# The cross-line split: three adjacent literals, no piece carrying a whole marker, one
+# literal to the compiler. Read line by line this file is silent in EVERY leg of this gate
+# while the wire carries a banner panic.ere was never held to.
+cat > "$TMP/st_site_split.cc" <<'EOF'
+    kprintf("\n=="
+            "= FROB FAULT =="
+            "= x\n");
+EOF
+# The same join must not turn an ordinary multi-literal emit into a finding: the banner is
+# whole in the first literal and the rest of the format follows it.
+cat > "$TMP/st_site_join.cc" <<'EOF'
+    kprintf("\n=== FROB FAULT ===\n"
+            "  PC=0x%x\n", pc);
+EOF
+
+site_case() { # <file> <expected sites> <expected banners> <what the pair pins>
+    _ss="$(scan_sites "$1" | wc -l | tr -d ' ')"
+    _sb="$(scan "$1" | wc -l | tr -d ' ')"
+    [ "$_ss" -eq "$2" ] && [ "$_sb" -eq "$3" ] \
+        || fail "the site control $1 found $_ss site(s) and $_sb banner(s), expected $2 and $3:
+      $4"
+}
+site_case "$TMP/st_site_pos.cc" 1 1 "a whole banner is one site and resolves; prose naming one
+      without the escape and a rule drawn in equals signs are neither"
+site_case "$TMP/st_site_neg.cc" 2 0 "a banner composed out of concatenated pieces is still seen
+      as a site by each piece that kept a marker, and resolves nothing"
+site_case "$TMP/st_site_split.cc" 1 0 "adjacent literals across LINES are one literal to the
+      compiler, so the run is whole again at the line it opens and reports there; read line by
+      line no piece carries a marker and this file is silent everywhere"
+site_case "$TMP/st_site_join.cc" 1 1 "joining the run must not cost an ordinary emit whose
+      banner is whole in its first literal and whose format continues on the next line"
+
+# EACH negative on its own, so a site reported for the wrong clause is visible.
+i=0
+while IFS= read -r sline; do
+    i=$((i + 1))
+    printf '%s\n' "$sline" > "$TMP/st_site_one$i.cc"
+    n="$(scan_sites "$TMP/st_site_one$i.cc" | wc -l | tr -d ' ')"
+    r="$(scan "$TMP/st_site_one$i.cc" | wc -l | tr -d ' ')"
+    [ "$n" -eq 1 ] && [ "$r" -eq 0 ] \
+        || fail "site control $i answers $n site(s) and $r banner(s), expected 1 and 0: $sline"
+done < "$TMP/st_site_neg.cc"
+[ "$i" -eq 2 ] || fail "$i site control(s) ran, expected 2"
+
+# The mutations the site clauses exist to survive, each on the ONE control line that clause is
+# the whole of: an arm that only ever reports LESS cannot show a silent negative was near, so
+# the TRUNC arm hands a PLAUSIBLE WRONG SPELLING and reports MORE.
+site_mutate() { # <what> <file> <esc> <mark> <close> <trunc> <expect>
+    _sm="$(logical "$2" | sites "$2" "$3" "$4" "$5" "$6" | wc -l | tr -d ' ')"
+    [ "$_sm" -eq "$7" ] || fail "with the $1 needle respelled the site scan found $_sm site(s)
+      of $2, expected $7; the controls for it are not near misses and prove nothing"
+}
+# The piece that kept the OPENING is a site through the escape alone, carrying no closer.
+site_mutate "escape" "$TMP/st_site_one1.cc" "$NEVER" "$B_MARK" "$B_CLOSE" "$B_TRUNC" 0
+# The piece that kept the CLOSER is a site through that alone, carrying no escaped opening.
+site_mutate "closing" "$TMP/st_site_one2.cc" "$B_ESC" "$B_MARK" "$NEVER" "$B_TRUNC" 0
+# TRUNC emptied is the shape a reader gets by taking any ` ===` for a banner's end: the rule
+# drawn in equals signs then reports, which is the by-name exemption this leg exists to avoid.
+site_mutate "banner-end" "$TMP/st_site_pos.cc" "$B_ESC" "$B_MARK" "$B_CLOSE" '' 2
+
 
 # The verdict leg, over PLANTED records: what it asserts is the ERE pair, and driving it off
 # today's tree would assert the tree instead. Record 4 is the shape the exclusion exists for,
@@ -360,6 +602,23 @@ P_EX="$(grep -c '^EXCLUDED' "$TMP/st_vmut")" || P_EX=0
 [ "$P_UN" -eq 2 ] && [ "$P_EX" -eq 0 ] \
     || fail "with panic.ere disabled the verdict leg answers $P_UN unmatched and $P_EX
       excluded, expected 2 and 0; it is not reading the ERE it reports against"
+
+# ere_alts, over a planted ERE and not over today's: driving it off tests/lib/panic.ere would
+# assert that file instead of the splitting.
+A_RE='KERNEL PANIC:|=== (A|B) FAULT|=== C TRAP|MPU FAULT: thread'
+ere_alts "$A_RE" > "$TMP/st_alts"
+A_N="$(wc -l < "$TMP/st_alts" | tr -d ' ')"
+[ "$A_N" -eq 3 ] || fail "the alternative split answered $A_N of 3 banner-shaped alternatives
+      over a planted ERE; a split that stops splitting reads one long alternative that matches
+      whatever the first one does"
+for want in '=== A FAULT' '=== B FAULT' '=== C TRAP'; do
+    grep -qxF "$want" "$TMP/st_alts" \
+        || fail "the alternative split resolved no alternative reading exactly [$want], so the
+      group it expands is not expanded and a dead noun inside one is unreportable"
+done
+grep -q 'PANIC' "$TMP/st_alts" \
+    && fail "the alternative split kept an alternative that is not banner-shaped; it is judged
+      against kernel print sites and would read as dead here"
 
 # corpus_class, one control per arm plus the near miss that discriminates it. Only the
 # leading directory is read, so no control opens a file: the three refusals name paths that
@@ -437,6 +696,7 @@ CORPUS_FLOOR=250
       $CORPUS_FLOOR; the tree this gate read is not this tree"
 
 : > "$TMP/banners"
+: > "$TMP/sites"
 while IFS= read -r f; do
     # REFUSED, not skipped: a silent skip is how a corpus shrinks with no count moving, and
     # the headline below counts the files that YIELDED a banner rather than the corpus.
@@ -444,6 +704,10 @@ while IFS= read -r f; do
     if ! scan "$f" >> "$TMP/banners"; then
         fail "the extractor exited nonzero on $f, so that file's banners went unread and its
       verdict is UNKNOWN, not clean"
+    fi
+    if ! scan_sites "$f" >> "$TMP/sites"; then
+        fail "the site scan exited nonzero on $f, so that file's emit sites went unread and
+      whether each resolved is UNKNOWN, not clean"
     fi
 done < "$TMP/corpus"
 
@@ -467,6 +731,64 @@ if [ "$labels" -lt "$MIN_LABELS" ]; then
     echo x >> "$TMP/rc"
 fi
 
+# EVERY EMIT SITE RESOLVED, which is the leg the REPORTERS list above cannot state: it asks
+# whether a listed file yielded a banner, never whether that file's set is whole.
+require_nonempty "$TMP/sites" \
+    "no emit site was found in any file: the site shape no longer matches an emit line, so
+      every banner in the corpus would read as accounted for by a leg that saw nothing"
+cut -f1,2 "$TMP/banners" > "$TMP/resolved"
+sites_seen=$(wc -l < "$TMP/sites" | tr -d ' ')
+site_findings "$TMP/sites" "$TMP/resolved" > "$TMP/sitemiss"
+while IFS="$TAB" read -r f n; do
+    echo "FAIL: $f:$n carries a banner marker inside a string literal and NO whole banner." >&2
+    echo "      A banner spelled in pieces reaches the wire and reaches this gate as nothing," >&2
+    echo "      so tests/lib/panic.ere is never held to it. Spell the banner in one literal." >&2
+    echo x >> "$TMP/rc"
+done < "$TMP/sitemiss"
+
+# EVERY RESOLVED BANNER SITS ON A SITE, the converse of the leg above. The two shapes read
+# the same file through different needles, and only holding them to each other says they still
+# agree: one drifting from the other is how a banner ends up read by exactly one of them.
+cut -f1,2 "$TMP/banners" | sort -u > "$TMP/banner_lines"
+sort -u "$TMP/sites" > "$TMP/site_lines"
+comm -23 "$TMP/banner_lines" "$TMP/site_lines" > "$TMP/orphan"
+while IFS="$TAB" read -r f n; do
+    echo "FAIL: $f:$n resolved a banner on a line the site scan does not call an emit site." >&2
+    echo "      The two shapes have drifted apart, so a banner is now read by one of them" >&2
+    echo "      and the pairing that catches a respelling is no longer total." >&2
+    echo x >> "$TMP/rc"
+done < "$TMP/orphan"
+
+# THE FLOORS, and they are the only legs that see the SET. Everything above is decided per
+# file or per site.
+if [ "$sites_seen" -lt "$SITE_FLOOR" ]; then
+    echo "FAIL: $sites_seen emit site(s) over the corpus, under the floor of $SITE_FLOOR." >&2
+    echo "      A reporter respelling a banner leaves one fewer site and no other leg here" >&2
+    echo "      moves, so the set going quiet is only ever visible as this number." >&2
+    echo x >> "$TMP/rc"
+fi
+
+# --- the ERE is held to the tree in BOTH directions --------------------------
+# Every leg above asks whether a banner is matched. None asks whether an alternative still
+# matches a banner: one naming a noun no reporter emits any more is a rule nothing can
+# violate, and the next reporter to spell that noun differently inherits a green gate.
+ere_alts "$KOS_PANIC_RE" > "$TMP/alts"
+require_nonempty "$TMP/alts" "not one banner-shaped alternative was read out of
+      tests/lib/panic.ere, so the reverse leg below judges nothing"
+NALT="$(wc -l < "$TMP/alts" | tr -d ' ')"
+[ "$NALT" -ge "$ALT_FLOOR" ] || fail "$NALT banner-shaped alternative(s) read out of
+      tests/lib/panic.ere, under the floor of $ALT_FLOOR; the split did not parse it"
+cut -f4 "$TMP/banners" > "$TMP/banner_text"
+while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    if ! grep -qE "$a" "$TMP/banner_text"; then
+        echo "FAIL: tests/lib/panic.ere alternative '$a' matches no banner any reporter" >&2
+        echo "      emits. It is a rule nothing can violate, and the reporter that next" >&2
+        echo "      spells that noun differently is checked against nothing." >&2
+        echo x >> "$TMP/rc"
+    fi
+done < "$TMP/alts"
+
 # --- every banner must be matched -------------------------------------------
 checked=$(wc -l < "$TMP/banners" | tr -d ' ')
 match_findings "$TMP/banners" "$EXCLUDED_RE" "$KOS_PANIC_RE" > "$TMP/mismatch"
@@ -483,6 +805,13 @@ while IFS="$TAB" read -r kind f n slot text; do
     echo x >> "$TMP/rc"
 done < "$TMP/mismatch"
 
+if [ "$checked" -lt "$BANNER_FLOOR" ]; then
+    echo "FAIL: $checked banner(s) over the corpus, under the floor of $BANNER_FLOOR." >&2
+    echo "      A reporter that loses one of its two banners still yields one and passes" >&2
+    echo "      every per-file leg above; the set is only visible in this number." >&2
+    echo x >> "$TMP/rc"
+fi
+
 if [ -s "$TMP/rc" ]; then
     rc=1
 fi
@@ -491,6 +820,7 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 echo "PASS: $checked banner(s) from $(cut -f1 "$TMP/banners" | sort -u | wc -l) of $N" \
-     "tracked file(s), $labels resolved from a name slot, all accounted for by" \
-     "tests/lib/panic.ere"
+     "tracked file(s), $labels resolved from a name slot, $sites_seen emit site(s) each" \
+     "resolving one and each resolved banner on a site, all accounted for by" \
+     "tests/lib/panic.ere, whose $NALT banner alternative(s) each still match one"
 exit 0

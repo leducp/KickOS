@@ -5,18 +5,28 @@
 # Gate on the cross-core doorbell and the kernel lock for a qemu-arm64 image built at more than
 # one core. One boot, read through two independent channels.
 #
-#   the image     must print `# doorbell: <n> core(s) answered, rounds 0x<r>` once with n the
-#                 configured count, raise no unanswered-doorbell refusal, and go on running.
+#   the image     must print `# doorbell: <n> core(s) answered, rounds 0x<r>, unmoved 0x<p>`
+#                 once with n the configured count and p every peer, raise no
+#                 unanswered-doorbell refusal, and go on running.
 #   the emulator  QEMU's own GIC model, through its trace events, must report a GICD_SGIR write
 #                 and must report the CPU INTERFACE of every secondary acknowledging the
 #                 doorbell INTID.
 #
-# THE EMULATOR-SIDE ARMS READ THE ROUND'S OWN WINDOW, which is the trace up to and including the
-# LAST raise the round made. The round runs inside arch_init, ahead of any other raise, so its
-# raises are the FIRST ones in the boot and the count the image printed is where they end. A
-# running kernel raises the doorbell too, a cross-core wake being one, and such a raise would
-# inflate the count the round is checked against and put the doorbell on core zero's own
-# interface, which the round forbids.
+# THE `unmoved` FIGURE IS THE ROUND'S OWN CONTROL and the reason the round count is worth
+# reading at all. The rounds settle on a sequence the initiator CHOSE, so a send that stored
+# nothing leaves them refused; the image proves that once per boot by making the raise with the
+# request cell left where it was and counting the peers the postcondition still refuses. Every
+# peer owes one. Without it the round's postcondition was an equality both sides satisfy by
+# standing still, and this whole gate stayed green over a doorbell that never asked: the raise
+# is still made, so the GIC model still counts the write and still sees every secondary
+# acknowledge the INTID.
+#
+# THE EMULATOR-SIDE ARMS READ THE BRING-UP CHECK'S OWN WINDOW, which is the trace up to and
+# including its LAST raise: one per round plus the control's. The check runs inside arch_init,
+# ahead of any other raise, so its raises are the FIRST ones in the boot and the count the image
+# printed, the control's raise added, is where they end. A running kernel raises the doorbell
+# too, a cross-core wake being one, and such a raise would inflate the count the check is held
+# against and put the doorbell on core zero's own interface, which the check forbids.
 #
 # THE SECOND CHANNEL IS THE ORACLE: `gic_acknowledge_irq cpu 3 acknowledged irq 0` is QEMU's
 # model stating that core 3's CPU interface read that INTID out of GICC_IAR, which guest code
@@ -55,18 +65,21 @@ need_qemu
 # four arms below assert nothing. Each is matched as a literal and passes require_literal first.
 CHECK_HEAD="# doorbell: "
 CHECK_TAIL=" core(s) answered, rounds 0x"
+CHECK_UNMOVED=", unmoved 0x"
 case "$backend" in
     armv8a) # arch/arm64/armv8a/klock_armv8a.cc
         UNANSWERED="KickOS: armv8a doorbell unanswered by core "
         EARLY_WAIT="KickOS: armv8a doorbell wait returned unanswered, rounds 0x"
         NO_CONTEND="KickOS: armv8a kernel lock uncontended, peers "
         NO_SPIN="KickOS: armv8a no peer reached the acquire loop, spinning mask 0x"
+        STILL_SETTLED="KickOS: armv8a doorbell round settled a request that never moved, peers "
         ;;
     rv64imac) # arch/riscv/rv64imac/klock_rv64imac.cc
         UNANSWERED="KickOS: rv64 doorbell unanswered by core "
         EARLY_WAIT="KickOS: rv64 doorbell wait returned early, rounds settled 0x"
         NO_CONTEND="KickOS: rv64 peers never completed an acquisition, held "
         NO_SPIN="KickOS: rv64 peers never reached the acquire loop, seen 0x"
+        STILL_SETTLED="KickOS: rv64 doorbell round settled a request that never moved, peers "
         ;;
     *)
         fail "check_smp_doorbell.sh knows no backend '$backend'. Every refusal below is spelled
@@ -74,8 +87,8 @@ case "$backend" in
   and pass without asserting anything" ;;
 esac
 BANNER_HEAD="# smp: "
-for _m in "$UNANSWERED" "$EARLY_WAIT" "$NO_CONTEND" "$NO_SPIN" "$CHECK_HEAD" "$CHECK_TAIL" \
-          "$BANNER_HEAD"; do
+for _m in "$UNANSWERED" "$EARLY_WAIT" "$NO_CONTEND" "$NO_SPIN" "$STILL_SETTLED" \
+          "$CHECK_HEAD" "$CHECK_TAIL" "$CHECK_UNMOVED" "$BANNER_HEAD"; do
     require_literal "$_m" "a doorbell marker"
 done
 literal_matcher_control
@@ -240,6 +253,15 @@ if [ "$KOS_COUNT" -ne 0 ]; then
   the word the whole time. A peer that published intent cannot leave that window until the
   release, so this is a core that never got there rather than a race the image lost"
 fi
+# THE ROUND'S POSTCONDITION CAN REPORT A REQUEST THAT NEVER MOVED, which is what the image
+# plants for itself once per boot: a raise made with the request cell left where it was, run
+# with the peers settled and their interrupts open, and every peer must still be refused.
+count_literal "$STILL_SETTLED"
+if [ "$KOS_COUNT" -ne 0 ]; then
+    printf '%s\n' "$OUT" | grep -F -e "$STILL_SETTLED"
+    fail "the round settled a raise whose request cell never moved, so its postcondition is an
+  equality both sides satisfy by standing still and every round count above states nothing"
+fi
 # CONTENTION HAPPENED, which is what puts the coupling through its exercise: a peer that
 # completed an acquisition is one the lock was actually handed to.
 count_literal "$NO_CONTEND"
@@ -285,6 +307,28 @@ if [ "$rounds" -eq 0 ]; then
   vacuously satisfied"
 fi
 
+# THE CONTROL'S OWN READING, on the same line and by a route the round count does not share:
+# how many peers the postcondition refused when the raise was made with the request cell left
+# where it was. It must be every peer, and the peer count is what this gate was handed minus
+# the initiator, so a control that quietly stopped covering a core reports a smaller number
+# rather than the same word.
+unmoved_hex="$(printf '%s\n' "$OUT" \
+    | sed -n "s/^.*$CHECK_UNMOVED\\([0-9a-f][0-9a-f]*\\).*\$/\\1/p" | head -n1)"
+case "$unmoved_hex" in
+    ''|*[!0-9a-f]*) fail "could not read the control's unmoved count out of the image's own
+  line: the round's control did not report, so nothing here says the postcondition can refuse
+  a request that never moved" ;;
+esac
+unmoved=$(printf '%d' "0x$unmoved_hex")
+require_number "$unmoved" "the unmoved peer count"
+if [ "$unmoved" -ne $((want - 1)) ]; then
+    printf '%s\n' "$OUT" | grep -F -e "$CHECK_HEAD"
+    fail "the control refused $unmoved of $((want - 1)) peer(s) over a raise whose request
+  cell never moved. Every peer it raised on owes a refusal, and a peer counted as settled
+  there is one the round's postcondition cannot tell from a doorbell that never asked"
+fi
+echo "   the control refused $unmoved peer(s) over a request that never moved"
+
 # --- Channel 2: what the EMULATOR said ----------------------------------------
 require_nonempty "$TRACE" "QEMU wrote no trace log at $TRACE, so the oracle is UNKNOWN rather
   than negative and every assertion below it would read as an absence"
@@ -317,34 +361,41 @@ if [ "$HAS_RAISE" -eq 0 ]; then
    userspace entry: $(wc -l < "$HEAD") of $(wc -l < "$TRACE") traced line(s)"
 else
 
-# A raise happened at all, and at least as many as the image says rounds it ran.
+# WHAT THE BRING-UP CHECK OWES THE CONTROLLER: one raise per round, plus the ONE the control
+# makes with the request cell left where it was. The control's raise is a real GICD_SGIR write
+# and lands between two rounds, so a window counted off at the round count alone would stop one
+# round short of the last.
+raises_owed=$((rounds + 1))
+
+# A raise happened at all, and at least as many as the image says it owes.
 raises="$(grep -c -F -e "$SGIR_LINE" "$TRACE")" || raises=0
 require_number "$raises" "the GICD_SGIR write count"
 if [ "$raises" -eq 0 ]; then
     fail "QEMU's GIC model logged no write to GICD_SGIR ($SGIR_LINE). No software-generated
   interrupt was ever raised, whatever the image printed about cores answering"
 fi
-if [ "$raises" -lt "$rounds" ]; then
-    fail "QEMU counted $raises GICD_SGIR write(s) and the image reports $rounds round(s). The
-  two numbers reach this gate by different routes and one raise per round is what the send
-  owes; fewer means rounds completed without reaching the controller"
+if [ "$raises" -lt "$raises_owed" ]; then
+    fail "QEMU counted $raises GICD_SGIR write(s) and the image reports $rounds round(s) plus
+  its one control raise. The two numbers reach this gate by different routes and one raise per
+  round is what the send owes; fewer means rounds completed without reaching the controller"
 fi
 
-# THE ROUND'S OWN WINDOW: every line up to and including the round's last raise. Its raises are
+# THE BRING-UP CHECK'S OWN WINDOW: every line up to and including its last raise. Its raises are
 # the first in the boot, so counting them off is what finds the boundary, and everything the
-# round owes, each peer's acknowledgement of the raise it answered, lies inside it.
-awk -v want="$rounds" -v pat="$SGIR_LINE" '
+# rounds owe, each peer's acknowledgement of the raise it answered, lies inside it.
+awk -v want="$raises_owed" -v pat="$SGIR_LINE" '
     index($0, pat) > 0 { seen = seen + 1; if (seen > want) { exit } }
     { print }
 ' "$TRACE" > "$HEAD"
 require_nonempty "$HEAD" "the round's window is empty, so the cut found no raise to count off"
 head_raises="$(grep -c -F -e "$SGIR_LINE" "$HEAD")" || head_raises=0
 require_number "$head_raises" "the windowed GICD_SGIR write count"
-if [ "$head_raises" -ne "$rounds" ]; then
-    fail "the round's window holds $head_raises raise(s) for $rounds round(s), so the cut did
-  not land: every assertion below it would read a window that is not the round's"
+if [ "$head_raises" -ne "$raises_owed" ]; then
+    fail "the check's window holds $head_raises raise(s) for $rounds round(s) and one control
+  raise, so the cut did not land: every assertion below it would read a window that is not the
+  check's"
 fi
-echo "   the emulator counted $raises GICD_SGIR write(s), $head_raises of them the round's,
+echo "   the emulator counted $raises GICD_SGIR write(s), $head_raises of them the check's,
    over $(wc -l < "$HEAD") of $(wc -l < "$TRACE") traced line(s)"
 fi
 

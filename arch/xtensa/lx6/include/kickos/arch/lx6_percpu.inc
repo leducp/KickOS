@@ -1,15 +1,14 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * Addressing this core's cell of a per-core array, from assembly. ASSEMBLY ONLY: this header
- * defines one macro and declares nothing a C translation unit can use.
+ * Addressing this core's cell of a per-core array, from assembly.
  *
  * ONE ARRAY PER CELL, not one per-core block: at one core each array is one element, so every
  * symbol keeps its name and its address and the single-core image is byte-identical.
  */
 
-#ifndef KICKOS_ARCH_LX6_PERCPU_H
-#define KICKOS_ARCH_LX6_PERCPU_H
+#ifndef KICKOS_ARCH_LX6_PERCPU_INC
+#define KICKOS_ARCH_LX6_PERCPU_INC
 
 #include <kickos/chip_cpuid.h>
 
@@ -24,4 +23,4 @@
 #endif
     .endm
 
-#endif /* KICKOS_ARCH_LX6_PERCPU_H */
+#endif /* KICKOS_ARCH_LX6_PERCPU_INC */

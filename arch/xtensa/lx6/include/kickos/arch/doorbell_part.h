@@ -41,6 +41,8 @@ namespace kickos::doorbell
     constexpr char PART_NO_CONTEND[] = "KickOS: lx6 kernel lock uncontended, peers ";
     constexpr char PART_NO_SPIN[]
         = "KickOS: lx6 no peer reached the acquire loop, spinning mask 0x";
+    constexpr char PART_STILL_SETTLED[]
+        = "KickOS: lx6 doorbell round settled a request that never moved, peers ";
 }
 
 #endif

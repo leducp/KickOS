@@ -11,14 +11,16 @@
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 
-set(KICKOS_BOARD "qemu-x86_64" CACHE STRING "Target board: qemu-x86_64")
+set(KICKOS_TOOLCHAIN_DEFAULT_BOARD "qemu-x86_64")
+set(KICKOS_BOARD "${KICKOS_TOOLCHAIN_DEFAULT_BOARD}" CACHE STRING "Target board: qemu-x86_64")
 
 # Board descriptor: sets KICKOS_ARCH / KICKOS_ARCH_FAMILY / KICKOS_CHIP and any board CPU flag.
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake")
   include("${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake") # in-tree
 elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/board.cmake")
+  # Installed single-board package: the one shipped descriptor is authoritative.
   include("${CMAKE_CURRENT_LIST_DIR}/board.cmake")
-  set(KICKOS_BOARD "${KICKOS_BOARD_ID}" CACHE STRING "Target board" FORCE)
+  include("${CMAKE_CURRENT_LIST_DIR}/toolchain-package-board.cmake")
 else()
   message(FATAL_ERROR "KickOS x86_64 toolchain: no board descriptor for '${KICKOS_BOARD}'")
 endif()

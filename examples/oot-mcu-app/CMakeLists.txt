@@ -19,11 +19,19 @@ project(kickos_oot_mcu_app LANGUAGES C CXX ASM)
 
 find_package(KickOS REQUIRED)
 
-# The one supported path: plain modern CMake.
-add_executable(oot_mcu_app main.cc)
+# The one supported path: plain modern CMake. kickos_add_app_target is add_executable on every
+# arch but x86_64, where what firmware loads is a PE32+ UEFI application CMake cannot drive a
+# linker for, so the app is an OBJECT library and kickos_emit_image writes the image from its
+# objects. A consumer who targets one arch may write that arch's line directly.
+if(KICKOS_ARCH STREQUAL "x86_64")
+  kickos_add_app_target(oot_mcu_app main.cc)
+else()
+  add_executable(oot_mcu_app main.cc)
+endif()
 target_link_libraries(oot_mcu_app PRIVATE kickos)
-# The one bare-metal extra: flashing needs a .bin/.hex, and a POST_BUILD action
-# cannot ride a usage requirement, so it is an explicit opt-in line.
+# The one bare-metal extra: flashing needs a .bin/.hex (an .efi where the image IS the
+# deliverable), and a POST_BUILD action cannot ride a usage requirement, so it is an explicit
+# opt-in line.
 kickos_emit_image(oot_mcu_app)
 
 # What the KickOS build this links against resolved for those knobs, forwarded so main.cc

@@ -1043,7 +1043,7 @@ trap-stack measurement between `480767f1` and this fix**. The failure read
 `FAIL: build failed in /var/tmp/kickos-trap-redzone-<preset>, twice, the second time after a fresh
 configure`, which is a build error wearing a depth gate's name. The `base` twins were unaffected
 throughout and both still measure: `bluepill-c8` and `f302nucleo` each report `SVC 444 <= 448,
-EXIT 576 <= 576, RET 296 <= 312`.
+EXIT 400 <= 400, RET 304 <= 312`.
 
 **Witnessed on `f302nucleo` as a TWO-image split, and never on `bluepill-c8`.** Both `f302nucleo`
 images booted at `9a00e73` (`1..44` and `1..30`, zero `not ok`) and all three restored arms ran

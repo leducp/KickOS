@@ -890,7 +890,7 @@ is the next one's baseline.
 | M8.3 | isolation and syscall robustness: region-board grant ownership, the copy that may fail, per-task object budgets |
 | M8.4 | the gates, the CI matrix, and the instrument's own arithmetic |
 | M8.5 | DRY in the kernel and the arch backends |
-| M8.5.1 | what M8.5 measured and left: the budget that never binds, the window that is too coarse, the reporter that is still on the chain |
+| M8.5.1 | what M8.5 measured and left: the budget made to bind per kind, the window priced and declined, the reporter narrowed, and the package read from outside on every arch |
 | M8.6 | DRY in the build, the gate library and userspace |
 | M8.7 | P0: the rebaseline campaign, and the end-to-end instrument |
 | M8.8 | the per-switch and per-wake plumbing |
@@ -946,9 +946,9 @@ and no number. The first is the per-task object budget bounding CREATES rather t
 at its ceiling can delegate its objects and die and one live task ends up holding a whole pool; the
 direction is charging on delegation or counting holds, and the second wants a per-(task, slot)
 record rather than one owner byte. The second is the panic reporter's tail, which is most of what a
-red-zone figure measures on rv32imac and rxv3, where eight figures now sit at exactly their reserve
-so the next assert on any dispatch chain fails a gate on a board nobody named; the direction is
-pricing a reporter that runs on a stack of its own. Its sibling is the `esp32c6-wroom-st` kernel
+red-zone figure measures on rv32imac and rxv3, where eight figures then sat at exactly their reserve
+so the next assert on any dispatch chain would fail a gate on a board nobody named; the direction
+was pricing a reporter that runs on a stack of its own. Its sibling is the `esp32c6-wroom-st` kernel
 `.bss` ending 68 bytes short of the `.appdata` boundary, where a crossing costs 32 KiB of arena and
 fails nothing, and **that one cannot simply be asserted**: `esp32c6-wroom-bench` has already
 crossed, so the assert lands with whatever fixes that preset.
@@ -958,33 +958,83 @@ RATHER THAN AN INTENTION.** It is not a spillover row: each item below was measu
 M8.5's own work, recorded with its evidence, and deliberately not acted on because acting would
 have widened a de-duplication milestone into a design one.
 
-**THE OBJECT BUDGET NEVER BINDS, SO THE RESERVE IS THE WHOLE BOUND WEARING THE BUDGET'S NAME.**
-`KICKOS_TASK_OBJECT_BUDGET` defaults to 255 and no board overrides it, against pools of four to
-eight slots, so `min(budget, slots - reserve)` is `slots - reserve` on every board in the fleet.
-A task therefore cannot spend a budget it was granted, and the thing that actually stops it is
-named nowhere in the grant. That is the second-truth shape the tree refuses elsewhere. The
-direction is to make the budget the real bound, per board, and to retire `TASK_OBJECT_RESERVE`
-in favour of a BUILD-TIME check that the budget fits the pool, which is the make-it-unrepresentable
-move rather than a runtime clamp. **It also settles the supervisor-respawn question by dissolving
-it**: with a budget that binds, the denial is a sizing property of the pool and not a reserve
-carved out of somebody's allowance.
+**THE OBJECT BUDGET NEVER BOUND, SO THE RESERVE WAS THE WHOLE BOUND WEARING THE BUDGET'S NAME.
+LANDED.** The one object budget defaulted to 255 and no board overrode it, against pools
+of four to sixteen slots, so `min(budget, slots - reserve)` was `slots - reserve` everywhere and
+the term named in the grant never decided. There is one ceiling now, and the board states it:
+four per-pool budgets, each asserted at BUILD time to sit strictly below its own pool's width,
+which is what carries "no task takes a pool's last slot" without a runtime clamp. **THE ASSERTS
+BOUND WHAT A TASK MAY TAKE AND NOT WHAT IT MAY HOLD**, and the AMP port seat is the one charged
+install that adds a hold no admission ever saw: `amp_ports_seat` panics rather than refusing, so
+a partition naming more crossings than the endpoint budget would boot root already past its own
+ceiling and the four asserts would pass. What holds root there is a second build-time relation,
+in `CMakeLists.txt` beside the pool one, so the shape is `ports <= budget < pool` and the
+ceiling is true from root's first instruction.
+`TASK_OBJECT_RESERVE` is gone, and so is `Task::object_budget`, which stored a compile-time
+constant per task and was the same shape one layer down. **FOUR FIGURES AND NOT ONE**: a single
+budget forced down to the narrowest charged pool would cost the other three kinds `.bss` for
+slots a task never asked for (`STATE.md` carries the bisection that measured it). **The
+supervisor-respawn question is dissolved rather than answered**: the denial is now a sizing
+property of the pool.
 
-**THE APP WINDOW IS QUANTISED TOO COARSELY ON THE ONE PART THAT CANNOT AFFORD IT.** `f411disco`
-has 128 KiB of SRAM, a 16 KiB `_appdata_size` and kernel data overshooting one window by 1,104
-bytes, so it declares two and wastes 15,280 bytes, twelve percent of the part. The direction is
-NOT cutting thread slots: it is pricing a smaller `_appdata_size` on that board, which makes the
-reserve finer-grained and the overshoot cheap, against what it costs in MPU regions. `rx72m` and
-`esp32c6-wroom` sit in the same shape at six percent of 512 KiB each, which is rounding on a big
-part rather than a capability decision, so they are revisited only if the f411 measurement says
-the granularity rule is wrong everywhere.
+**THE APP WINDOW IS QUANTISED TOO COARSELY ON THE ONE PART THAT CANNOT AFFORD IT, AND 16 KiB IS
+THE ONLY VALUE THE PART ADMITS. MEASURED AND DECLINED.** `f411disco` has 128 KiB of SRAM, a 16
+KiB `_appdata_size` and 17,888 bytes of kernel `.data`/`.bss`, so it declares a 32 KiB reserve
+of which 14,880 bytes are dead, 11.4 percent of the part. M8.5 recorded 17,488 over by 1,104 for
+15,280; the drift since is `g_panic_stack`, 432 bytes this tree did not have then, less 40 the
+kernel singleton has shed. `blackpill` shares the script and measures identically at every
+symbol, so the figure stays a chip figure and no board file gains one.
 
-**THE FAULT REPORTER IS THE NEXT ITEM OF THE PANIC REPORTER'S SHAPE AND CANNOT REUSE ITS
-MECHANISM.** `kickos_thread_fault_exit -> kprintf_fault -> kvprintf_route -> the console` sets
-rv32imac and rxv3 EXITK, and armv7m and armv6m carry the same chain, so it is four arches. It
-cannot share the panic array: that array is one per core entered once because a panic is terminal,
-while a thread fault leaves the system running and a second thread can fault mid-print. The
-direction is one per core with a claim that refuses the second entrant, priced against simply
-narrowing what the fault reporter may call.
+**THE DIRECTION M8.5 NAMED DOES NOT PAY, AND THE LINK IS WHAT SAYS SO.** App statics already
+fill 7,864 of the 16,384, so a 4 KiB window fails the link on the window-overflow ASSERT, and an
+8 KiB window LINKS GREEN, but only with `KICKOS_KERNEL_DATA_RESERVE` moved to 24K alongside
+`KICKOS_APPDATA_SIZE`: the reserve's own over-generous-window ASSERT refuses the 32K default
+once the window shrinks to 8K. That gives a pad of 328 bytes on `selftest` and at most 2,744 on
+any image in the preset. The pad is the newlib heap and every thread shares it: newlib seats one
+`struct _reent` per thread slot -- 9 here, 4,608 bytes of the window -- and each slot's first
+stdio use mallocs a 1,024-byte buffer, so the slot count this board advertises wants about 9 KiB
+of pad. `gpioblink` is the only image on the board that links an allocator and it has 9,816
+bytes today. A 32 KiB window is worse in the other direction, the arena losing 16,384. So the
+rung below does not run and the rung above costs more than the waste.
+
+**THE TWO ROLES CAN BE SEPARATED ON PMSAv7 AND IT STILL DOES NOT PAY.** `MPU_RASR[15:8]` is the
+subregion-disable field, one bit per eighth of a region of 256 bytes or more, and this tree
+writes it as zero everywhere. A 64 KiB enclosing region at the RAM base with 8 KiB subregions
+grants the window as subregions 3 and 4 and returns 8,192 of the 14,880. The price is
+`arch_mpu_encode_default.cc` and `arch_mpu_region_encodable_default.cc`, the shared PMSAv7 path
+for armv7m AND armv6m, whose pow2 rule `cmake/boot_arena.cmake` scrapes out of
+`arch_mpu_region_pow2()`, plus a subregion mask the portable `struct arch_mpu_region` has no
+field for and that PMP NAPOT and the K64F SysMPU cannot express.
+
+**AND THE 14,880 BYTES COST NO ADVERTISED CAPABILITY.** The arena is 73,728 and the tree's own
+`KICKOS_POOL_ARENA_ASSERT` demand -- idle 512, root 4,096, eight pool stacks of 4,096 with their
+pow2 run-ups -- tops out at `0x20016000`, leaving 32,768 spare. That is the criterion M8.5
+itself applied to the panic stack: what buys nothing owed is headroom, not loss.
+
+**RECORDED AND NOT TAKEN: PLACING THE WINDOW AT THE RAM BASE INSTEAD OF ABOVE KERNEL DATA**, two
+`MEMORY` regions rather than one, which removes the quantum entirely -- the base is aligned for
+free, kernel `.bss` growth costs its own size and nothing more -- and returns 14,336 bytes at no
+cost in heap or in MPU descriptors. It moves every RAM address on the board, `arch_mpu_probe_addr`'s
+`guard_word` in kernel `.bss` included, so the PMSAv7 silicon witness recorded in
+`docs/reference/boards.md` stops matching what the board would print; and it makes one chip
+diverge from the nine-script reserve class M8.5 has just landed. `rx72m` and `esp32c6-wroom` are
+untouched. The granularity rule is not wrong, it is exact, and the f411 measurement says this
+knob has nowhere to go rather than that the rule has.
+
+**THE FAULT REPORTER LOOKED LIKE THE PANIC REPORTER'S SHAPE AND WAS NOT.**
+`kickos_thread_fault_exit -> kprintf_fault -> kvprintf_route -> the console` set rv32imac and rxv3
+EXITK, with armv7m and armv6m carrying the same chain, so it read as four arches of the same
+problem. What made moving the PANIC reporter pay was that ONE console tail was charged to four
+classes at once, every `KICKOS_ASSERT` on a dispatch chain reaching it; the fault reporter is on
+exactly one class per arch, so that argument does not transfer. The measurement then said EXITK
+sizes no allocation on any of the 54 declared presets -- SYS, SYSK or SVCK binds every kernel
+block, 188 to 332 bytes above it -- so a per-core array would have spent 576 to 704 bytes of
+kernel `.bss` to return none, and its claim has no refusal arm that keeps the second faulter's
+announcement. Refused on those two grounds, and what was actually costing the figures was a stack
+ARRAY rather than the console: the reporter now formats into `KDIAG_FAULT_LINE_MAX` bytes instead
+of the 256 every kernel diagnostic gets, taking EXITK to 576 on rv32imac, 448 on rxv3 and 448 on
+armv6m and EXIT to 448 on armv7m. The one place the reporter did size something is the armv7m
+spawn floor, which it no longer holds and which `TODO.md` carries as its own decision.
 
 **AND AN APP IS BUILT OUT OF TREE FOR EVERY ARCH, WHICH RETIRES A COVERAGE HOLE RATHER THAN
 DOCUMENTING IT.** `oot_export` registers on the host preset and its MCU sibling on one armv7m

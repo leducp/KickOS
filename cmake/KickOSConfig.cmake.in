@@ -69,6 +69,18 @@ include("${CMAKE_CURRENT_LIST_DIR}/kickos.cmake")
 
 include("${CMAKE_CURRENT_LIST_DIR}/KickOSTargets.cmake")
 
+# x86_64's deliverable is a PE32+ UEFI application ld writes from objects, so kickos_emit_image
+# has an image to link here rather than an ELF to objcopy. The same body as in tree, over the
+# object libraries KickOSTargets just imported and the archive group this package was built
+# with; the two assets it names ship beside this file.
+if(KICKOS_ARCH STREQUAL "x86_64")
+  set(KICKOS_X86_64_PE_SCRIPT   "${CMAKE_CURRENT_LIST_DIR}/pe_image.ld")
+  set(KICKOS_NO_GOT             "${CMAKE_CURRENT_LIST_DIR}/check-x86_64-no-got.sh")
+  set(KICKOS_X86_64_APP_GROUP   "@KICKOS_X86_64_APP_GROUP@")
+  set(KICKOS_X86_64_APP_OBJECTS "@KICKOS_X86_64_APP_OBJECTS@")
+  include("${CMAKE_CURRENT_LIST_DIR}/x86_64_image.cmake")
+endif()
+
 # The DRIVER-CLASS backends this package was built to answer with, replayed so an out-of-tree
 # app naming a class (CLASSES on kickos_add_app_target) links the same one an in-tree app does.
 # Frozen at KickOS build time like the init provider: every backend of one class defines the

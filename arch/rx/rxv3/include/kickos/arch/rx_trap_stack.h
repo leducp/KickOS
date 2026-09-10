@@ -152,13 +152,21 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
  * BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
- * kickos_thread_slay_exit. 620, the fault stub the deeper through kprintf_fault's console
- * chain, identical on all three registered presets.
+ * kickos_thread_slay_exit. 440, the fault stub the deeper through kprintf_fault's console
+ * chain, identical on all three registered presets. kprintf_fault formats into
+ * KDIAG_FAULT_LINE_MAX bytes and not the 256 an ordinary kprintf gets, so its array no longer
+ * dominates the console tail below it.
  *
- * IT NEVER BINDS, and this is the arch with least room for that to change: 308 + 620 = 928
- * against 1100 usable, where SYSK asks 1096, so EXITK would have to grow 168 bytes before it
- * displaced SYSK and forced a KICKOS_KERNEL_STACK_SIZE raise. */
-#define KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK 620
+ * IT NEVER BINDS, and this is the arch with least room for that to change: 308 + 448 = 756
+ * against 1116 usable, where SYSK asks 1104, so EXITK would have to grow 348 bytes before it
+ * displaced SYSK and forced a KICKOS_KERNEL_STACK_SIZE raise.
+ *
+ * THAT IS ALSO WHY IT IS ROUNDED LIKE A THREAD-STACK FIGURE. A kernel-block figure is
+ * normally left at its measurement because it sizes KICKOS_KERNEL_STACK_SIZE and a byte
+ * there costs KICKOS_THREAD_SLOTS; this class sizes nothing, so the reason for that
+ * convention does not reach it. 448 is the 440 measured rounded up to the next multiple
+ * of 64. */
+#define KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK 448
 
 /* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
  * and no redirect, so it runs at whatever depth the entry returned from on the thread's own
@@ -240,8 +248,10 @@
 #endif
 
 /* THE PANIC REPORTER'S OWN STACK, which kickos_panic_stack_enter (switch.S) moves to before a
- * banner is printed. The walk stops at that body, so SYSK, EXITK and RET measure no console
- * and it is priced here instead.
+ * banner is printed. The walk stops at that body, so an assert on SYSK, EXITK or RET costs
+ * those figures its call site and nothing under it, and the panic console is priced here
+ * instead. THE FAULT REPORTER IS A DIFFERENT CHAIN and is not priced here: it runs in thread
+ * context on the dying thread's own block and is what EXITK still measures.
  *
  * FRAME 0. The entry clears PSW.I before the move and sets PSW.U, so R0 names the USP from
  * there on and an exception, which RX accepts on the ISP, lands on a stack this array does not

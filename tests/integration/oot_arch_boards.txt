@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Which board carries the out-of-tree package gate for each KICKOS_ARCH.
+#
+# The gate installs the package and builds examples/oot-*-app against it from outside the
+# tree (docs/reference/architecture.md states why this is the tree's one such reader). This
+# file maps each KICKOS_ARCH to the board that carries its gate. Keyed on the ARCH and not on
+# the family: KICKOS_ARCH_INCLUDE_DIR is per-arch, so a header that ships for armv6m alone is
+# in no other arch's package.
+#
+# Read by tests/integration/gates/selftest.cmake, which registers the gate on the named board
+# and nowhere else, and by tests/static/check_oot_arch_cover.sh, which holds this file whole
+# against boards/*/board.cmake. A new arch with no row here fails that gate.
+#
+#   covers   <arch> <board>   the board whose preset runs the gate
+#   declines <arch> <reason>  an arch no package can be consumed on yet, and why
+#
+# The boards are the emulated one of their arch where there is one, so a CI job already
+# builds the preset.
+#
+# A `covers` row names the board that RUNS the gate, not that CI runs it: on rxv3 it is
+# witnessed on a developer box alone, recorded in TODO.md, "rxv3 IS IN NO CI JOB AT ALL".
+
+covers   armv6m   microbit
+covers   armv7m   qemu
+covers   armv8a   qemu-arm64
+covers   lx6      esp32-wroom
+covers   rv32imac qemu-riscv
+covers   rv64imac qemu-riscv64
+covers   rxv3     rx72m
+covers   sim      sim
+covers   x86_64   qemu-x86_64

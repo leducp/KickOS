@@ -46,6 +46,7 @@ need "the image never reached its arms" "^$TOK arms\$"
 need "no apic report line" \
      "^  $TOK apic mode=\(x2apic\|xapic\) timer_hz=[1-9][0-9]* tsc_hz=[1-9][0-9]* ref_hz=[1-9][0-9]* ram_size=[1-9][0-9]*\$"
 
+listed=0
 for a in calibrated \
          clock_monotonic clock_advances \
          timer_fired timer_not_early timer_in_tolerance timer_disarmed \
@@ -58,11 +59,24 @@ for a in calibrated \
          flush_sync_returns
 do
     arm_ok "$a"
+    listed=$((listed + 1))
 done
 
 need "no voluntary switch order line" "^  $TOK switch voluntary order=MVVXM\$"
 need "no preemptive switch order line" \
      "^  $TOK switch preempt order=\(AB\)\(AB\)\(AB\)*A* deferred=[0-9][0-9]*\$"
+
+# THE SET AND NOT ONLY ITS MEMBERS. Every name above is asserted to have reported, which says
+# nothing about an arm the image reported and this list does not name. A FAILING unlisted arm is
+# still caught, by the image's own FAIL line and by its exit status; what is lost without this
+# count is the NAME, so the arm runs unread here and a reader of this script cannot tell it
+# exists.
+onwire="$(grep -c "^  $TOK arm=" "$PLAIN")" || onwire=0
+if [ "$listed" -ne "$onwire" ]; then
+    fail "the image reported $onwire arm(s) and this script names $listed. An arm the list
+  does not name is one nothing here reads, so add it above rather than leaving the two counts
+  to differ"
+fi
 
 if grep -q "$TOK FAIL" "$PLAIN"; then
     fail "the image reported its own failure"
@@ -71,5 +85,5 @@ need "the image did not reach its PASS" "^$TOK PASS\$"
 
 kos_require_clean_exit
 
-echo "PASS: $KOS_TOKEN, every arm reported ok"
+echo "PASS: $KOS_TOKEN, all $listed arm(s) reported ok"
 echo "      serial: $PLAIN"
