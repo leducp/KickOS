@@ -6,6 +6,7 @@
 // machine defaulting to a core that refuses an A64 image.
 
 #include <kickos/arch/arch.h>
+#include <kickos/console_tx.h>
 
 #include <kickos/arch/amp_shared.h> // arch_amp_shared_zero: the partition primary's own clear
 
@@ -88,6 +89,17 @@ namespace
     // panic and shutdown paths, where a wedged UART must cost a dropped tail rather than a
     // hang. The same reasoning binds the writer below.
     constexpr uint32_t UART_POLL_BOUND = 100000;
+
+    // --- Buffered console TX backend (console_tx.h). No TX interrupt is wired on this
+    // machine, so irq_line is -1 and the producer drains. ---
+    int pl011_tx_slot_free(void) { return (*r32p(UART_FR) & UART_FR_TXFF) == 0; }
+    void pl011_tx_push(uint8_t b) { *r32p(UART_DR) = static_cast<uint32_t>(b); }
+    void pl011_tx_irq_enable(void) {}
+    void pl011_tx_irq_disable(void) {}
+
+    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
+    console_tx_backend const pl011_console_backend = {
+        pl011_tx_slot_free, pl011_tx_push, pl011_tx_irq_enable, pl011_tx_irq_disable};
 
     // The refusal path's own writer, with the PL011 at the address the bus sees: the MMU
     // is off, so dev_va's high alias translates through nothing.
@@ -427,9 +439,14 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
     return n;
 }
 
+int arch_console_write(char const* buf, size_t n)
+{
+    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
+}
+
 // The PL011 comes out of QEMU's reset already enabled at the machine's default baud, so
 // the polled path needs no bring-up.
-void arch_console_write(char const* buf, size_t n)
+void arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
@@ -440,6 +457,14 @@ void arch_console_write(char const* buf, size_t n)
         }
         *r32p(UART_DR) = static_cast<uint32_t>(static_cast<unsigned char>(buf[i]));
     }
+}
+
+console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+{
+    *storage = console_tx_buf;
+    *size = KICKOS_CONSOLE_TX_SIZE;
+    *irq_line = -1; // no TX line is routed on this machine; the producer drains
+    return &pl011_console_backend;
 }
 
 // TXFF says the FIFO can take a byte; BUSY says the device is still clocking one out, which

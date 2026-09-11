@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// What the self-test translation units share. The arm BODIES are cut across several files;
-// the registration list in main.cc is not. An arm belongs to the image whose region holds
-// its TAP_ADD line there, never to the file its body sits in.
+// What the self-test translation units share.
 
 #ifndef KICKOS_USER_APPS_COMMON_SELFTEST_SELFTEST_H
 #define KICKOS_USER_APPS_COMMON_SELFTEST_SELFTEST_H
@@ -133,7 +131,6 @@ namespace selftest
 #endif
 
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
-    // selftest_aspace.cc
     KICKOS_SELFTEST_LOCAL void t_cap_objects();
     KICKOS_SELFTEST_LOCAL void t_cap_map();
     KICKOS_SELFTEST_LOCAL void t_stack_slot_returns();
@@ -184,7 +181,6 @@ namespace selftest
 #endif
 
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_NODE
-    // selftest_amp.cc
     KICKOS_SELFTEST_LOCAL void t_amp_reset_record();
     KICKOS_SELFTEST_LOCAL void t_amp_far_reset_answers();
     KICKOS_SELFTEST_LOCAL void t_amp_far_answer_deferred();
@@ -212,7 +208,6 @@ namespace selftest
 #endif
 
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
-    // selftest_smp.cc
     KICKOS_SELFTEST_LOCAL void t_pin_places();
     KICKOS_SELFTEST_LOCAL void t_pin_wrong_core_never();
     KICKOS_SELFTEST_LOCAL void t_unpin_restores();

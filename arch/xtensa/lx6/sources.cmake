@@ -12,7 +12,6 @@ list(REMOVE_ITEM _lx6_defaults common/arch_irq_line_core_default.cc)
 set(KICKOS_ARCH_SOURCES
   xtensa/lx6/arch_xtensa.cc
   xtensa/lx6/klock_lx6.cc
-  # The protocol over the doorbell, one copy for every backend that runs it.
   common/doorbell_protocol.cc
   common/arch_ram_common.cc
   common/startup_ranges.cc

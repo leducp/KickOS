@@ -43,9 +43,10 @@ _kernel_stack_size = 16K;              /* boot/trap stack reservation */
    next pow2 if an ASSERT below trips. */
 #if KICKOS_HAVE_MPU
 /* Full-C++ under PMP folds .eh_frame + .gcc_except_table into the code region and pulls
-   libstdc++/libsupc++ text; the cxxtest link measures ~80K of code+rodata, so 128K is the
-   fitting pow2. */
-_code_size = 128K;
+   libstdc++/libsupc++ text. The selftest link is the largest, not cxxtest: it measures
+   131407 bytes of code+rodata, 335 over 128K, so the fitting pow2 is 256K. NAPOT admits no
+   intermediate size, and RAM is 8M, so the step is paid out of the arena. */
+_code_size = 256K;
 /* App writable window: the pad (window minus app statics + runtime + gp small-data) IS
    the newlib heap. cxxtest's measured peak (~4.2K on RISC-V DWARF) and printf both fit
    the ~14K pad a 32K window leaves. */
@@ -53,9 +54,11 @@ _code_size = 128K;
 #define KICKOS_APPDATA_SIZE 32K
 #endif
 _appdata_size = KICKOS_APPDATA_SIZE;
-/* Room for kernel .data/.bss below the app window; see kernel_data_reserve.ld.h. */
+/* Room for kernel .data/.bss below the app window; see kernel_data_reserve.ld.h. Two windows:
+   kernel .data/.bss measures 33192 bytes on the enforcing posture, 424 over one window, the
+   console TX ring having taken the 88 bytes of headroom one window used to leave. */
 #ifndef KICKOS_KERNEL_DATA_RESERVE
-#define KICKOS_KERNEL_DATA_RESERVE 32K
+#define KICKOS_KERNEL_DATA_RESERVE 64K
 #endif
 #endif
 

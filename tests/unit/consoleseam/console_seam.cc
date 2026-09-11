@@ -187,8 +187,8 @@ extern "C"
         return 0;
     }
 
-    // The disarm fallback pushes here, unmasked, so these bytes land on the wire without
-    // counting against the masked-push metric.
+    // Unmasked, so these bytes land on the wire without counting against the masked-push
+    // metric.
     void arch_console_write_sync(char const* buf, size_t n)
     {
         for (size_t i = 0; i < n; i++)
@@ -197,7 +197,6 @@ extern "C"
         }
     }
 
-    // Reached only through the irq_line_op stub below; no arm here masks.
     void arch_irq_mask(int)
     {
     }
@@ -218,8 +217,7 @@ extern "C"
 
 namespace kickos
 {
-    // The deinit cases reach irq_detach; set_isr_runs_in_gap models the drain ISR it nulls,
-    // so this stub only has to link.
+    // What irq_detach nulls is modelled by set_isr_runs_in_gap; these only have to link.
     bool irq_attach(int, IrqHandler, void*)
     {
         return true;

@@ -163,7 +163,7 @@ namespace
         {
             n++;
         }
-        arch_console_write(s, n);
+        arch_console_write_sync(s, n);
     }
 
     void put_hex(uint64_t v)
@@ -181,7 +181,7 @@ namespace
             }
             buf[2 + i] = c;
         }
-        arch_console_write(buf, 18);
+        arch_console_write_sync(buf, 18);
     }
 
     void put_dec(uint64_t v)
@@ -190,7 +190,7 @@ namespace
         int n = 0;
         if (v == 0)
         {
-            arch_console_write("0", 1);
+            arch_console_write_sync("0", 1);
             return;
         }
         while (v != 0)
@@ -202,7 +202,7 @@ namespace
         while (n > 0)
         {
             n--;
-            arch_console_write(&buf[n], 1);
+            arch_console_write_sync(&buf[n], 1);
         }
     }
 

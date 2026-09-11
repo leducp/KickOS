@@ -1,15 +1,40 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Buffered, IRQ-drained console TX: a byte ring with ONE producer (thread context) and
-// ONE consumer (the TX-empty ISR). The panic / fault / pre-arm paths must bypass it and
-// use the synchronous writer (arch_console_write_sync); see console.cc.
+// Buffered console TX: a byte ring fed one whole line at a time by console_tx_insert_line,
+// drained by the TX-empty ISR on a backend that has one and in the producer's own context on
+// a backend that does not (irq_line < 0). Panic and pre-arm output bypasses it for the
+// synchronous writer (arch_console_write_sync); see console.cc.
 
 #ifndef KICKOS_CONSOLE_TX_H
 #define KICKOS_CONSOLE_TX_H
 
 #include <stddef.h>
 #include <stdint.h>
+
+#include <kickos/diag.h>
+
+#ifdef __cplusplus
+// THE LINE IS THE INDEPENDENT VARIABLE AND THE RING IS DERIVED FROM IT. A ring that did not
+// hold a whole line would make console_tx_insert_line refuse every one, which prints the same
+// through the locked writer and moves nothing a run reports.
+//
+// One '\n' can become two bytes, kfmt_vsnprintf terminates so at most KICKOS_DIAG_LINE_MAX-1
+// characters arrive, and one slot stays reserved so head == tail means empty. The indices
+// reduce mod size by masking, hence the power of two.
+constexpr uint32_t kickos_console_tx_pow2(uint32_t need)
+{
+    uint32_t size = 1u;
+    while (size < need)
+    {
+        size = size << 1;
+    }
+    return size;
+}
+
+constexpr uint32_t KICKOS_CONSOLE_TX_SIZE =
+    kickos_console_tx_pow2(2u * (KICKOS_DIAG_LINE_MAX - 1u) + 1u);
+#endif
 
 // Publish barrier between the ring payload store and the head update. Compiler-only by
 // default, which holds on an in-order single-core M-class part; a weakly-ordered core
@@ -26,7 +51,8 @@ extern "C"
 
 // The per-chip TX edge. slot_free/push touch one data register; irq_enable/
 // irq_disable gate the TX-empty/transmit-buffer interrupt AT THE PERIPHERAL (the
-// NVIC line stays enabled once armed). None may block or reschedule.
+// NVIC line stays enabled once armed), and are empty bodies on a chip whose console has no
+// TX interrupt. None may block or reschedule.
 struct console_tx_backend
 {
     int (*slot_free)(void);    // nonzero if the TX data register can take a byte now
@@ -38,7 +64,8 @@ struct console_tx_backend
 // Arm the buffered path. `size` MUST be a power of two (index masking); usable
 // capacity is size-1. Call once, after irq_init has seeded the dispatch table.
 // Until then, writes route to the synchronous path.
-// `irq_line` is the line console_tx_deinit detaches.
+// `irq_line` is the line console_tx_deinit detaches, or negative on a chip with no TX
+// interrupt, where the producer drains.
 void console_tx_init(struct console_tx_backend const* be, char* storage, uint32_t size,
                      int irq_line);
 
@@ -55,6 +82,20 @@ int console_tx_armed(void);
 // the still-kernel-owned UART, which HANDING_OFF holds for a writer already inside the
 // chip-writer bracket, and is dropped only once a driver has the device.
 void console_tx_write(char const* buf, size_t n);
+
+// One line, indivisibly, or nothing (nonzero on success). NEVER WAITS, so it is safe from ISR
+// and fault context. crlf nonzero expands '\n' to CR+LF during the copy.
+//
+// A LINE THAT DOES NOT FIT IS REFUSED WHOLE AND DOES NOT GO OUT. The caller owes it NO
+// fallback and must not write it at the device: the drain is already a writer there, and the
+// two interleave mid-line. The kernel console is a debug facility, so a line lost to pressure
+// is lost; a caller that needs to know reads the return, which is what the console syscall
+// reports as a short write.
+int console_tx_insert_line(char const* buf, size_t n, int crlf);
+
+// The synchronous line writer, in console.cc. Takes RAW bytes and expands '\n' to CR+LF
+// itself where the build asks for it, under one IrqLock held across the device writes.
+void console_write_line_sync(char const* buf, size_t n);
 
 // Consumer (ISR context). Push ring bytes while a slot is free; disable the TX
 // IRQ once the ring empties. Bound to the TX line via irq_attach; MUST NOT

@@ -3,8 +3,8 @@
 #
 # The part every KickOS cross toolchain file spells the same way.
 #
-# MACROS, not functions: a toolchain file runs before project() and these set variables that
-# CMake and the including file read afterwards, which a function's own scope would not export.
+# MACROS, not functions: these set variables CMake and the including file read afterwards,
+# which a function's own scope would not export.
 #
 # CMAKE_CURRENT_LIST_DIR inside a macro body is the INCLUDING file's directory, so the relative
 # paths below resolve against the toolchain file: cmake/ in tree, lib/cmake/KickOS/ in an
@@ -28,9 +28,9 @@ endmacro()
 
 # kickos_toolchain_cpu_baseline(<label> <arch-dir>)
 #
-# Sets _kos_cpu in the caller. Included AFTER the board descriptor so a board that states its
+# Sets _kos_cpu in the caller. Included AFTER the board descriptor, so a board that states its
 # own core or float ABI wins. An installed package has no arch/ tree and ships a descriptor
-# with the flags resolved into it, so a missing cpu.cmake is not an error; a missing value is.
+# with the flags resolved into it: a missing cpu.cmake is not an error, a missing value is.
 macro(kickos_toolchain_cpu_baseline _kos_tc_label _kos_tc_arch)
   set(_kos_tc_cpu_chip
       "${CMAKE_CURRENT_LIST_DIR}/../arch/${_kos_tc_arch}/chip/${KICKOS_CHIP}/cpu.cmake")
@@ -48,9 +48,8 @@ endmacro()
 
 # kickos_arm_cpu(FLOAT <soft|softfp|hard> MCPU <flags...>)
 #
-# What an arch/arm/chip/<chip>/cpu.cmake states. A macro, so the two sets land in the
-# including scope; the FLOAT default is guarded because a board descriptor is read FIRST and
-# a board that states its own ABI wins.
+# What an arch/arm/chip/<chip>/cpu.cmake states. The FLOAT default is guarded: the board
+# descriptor is read first and a board that states its own ABI wins.
 macro(kickos_arm_cpu)
   cmake_parse_arguments(_kos_ac "" "FLOAT" "MCPU" ${ARGN})
   if(NOT _kos_ac_MCPU)
@@ -66,9 +65,6 @@ macro(kickos_arm_cpu)
 endmacro()
 
 # kickos_toolchain_export_baseline(<cpu-flags>)
-#
-# KICKOS_MCPU_FLAGS is read by sub-links that bypass the normal compile path (the RP2040 boot2
-# stage, the x86_64 boot stub) and by tests/lib/scratch_ci.sh out of the cache.
 macro(kickos_toolchain_export_baseline _kos_tc_cpu)
   set(KICKOS_ARCH "${KICKOS_ARCH}" CACHE STRING
       "KickOS arch backend selected by this toolchain")
@@ -77,14 +73,13 @@ endmacro()
 
 # kickos_toolchain_cross_programs(<tool-prefix> <hint-cache-var>)
 #
-# The hint is seeded from the environment so no contributor's home directory is baked into the
-# repo; left empty, HINTS contributes nothing and PATH decides, and a pinned install SHADOWS an
-# on-PATH toolchain. It is then re-exported to the environment because CMake's compiler-ABI
-# probe re-reads the toolchain file in a SEPARATE cmake process with a fresh cache, which
-# inherits the environment and PATH but never a -D cache entry.
+# The hint is seeded from the environment; left empty, HINTS contributes nothing and PATH
+# decides, and a pinned install SHADOWS an on-PATH toolchain. It is then re-exported to the
+# environment for CMake's compiler-ABI probe, which re-reads the toolchain file in a SEPARATE
+# cmake process with a fresh cache: that inherits the environment and PATH, never a -D cache
+# entry.
 #
-# These finds prove a program by that NAME exists, nothing more: the caller runs the capability
-# gate afterwards with the flags that select this board's multilib.
+# These finds prove a program by that NAME exists, nothing more.
 macro(kickos_toolchain_cross_programs _kos_tc_prefix _kos_tc_hint)
   set(${_kos_tc_hint} "$ENV{${_kos_tc_hint}}" CACHE PATH
       "Directory holding the ${_kos_tc_prefix}-* programs (empty => use PATH)")
@@ -112,7 +107,7 @@ endmacro()
 # kickos_toolchain_bare_metal_rules()
 #
 # STATIC_LIBRARY try-compile: the board's linker script and startup are supplied only at the
-# application-link step, and a step boundary must always configure standalone.
+# application-link step.
 #
 # The Generic platform does not predefine the LINK_GROUP RESCAN feature that the
 # arch/kernel/chip archive cycle needs; GNU ld provides it via --start-group/--end-group.

@@ -5,11 +5,7 @@
 # relative to arch/, not to this directory, and the list order is the archive's member order.
 
 # ARMv8-A in AArch64 state (QEMU virt, Cortex-A53).
-# One interrupt-controller backend per image, on the version the board states.
 if(KICKOS_ARM64_GIC_VERSION EQUAL 2)
-  # A GICv2 target list names CPU interface numbers, which the architecture ties to no
-  # identity register, so only the core a number names can publish it. GICv3 targets the
-  # affinity in MPIDR instead.
   if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
     message(FATAL_ERROR
       "KickOS: the own-image AMP posture is refused under ARM64_GIC_V2. A GICv2 doorbell "
@@ -40,17 +36,16 @@ set(KICKOS_ARCH_SOURCES
   arm64/armv8a/vectors.S
   arm64/armv8a/switch.S
   arm64/armv8a/secondary.S
-  # The cross-core kernel lock and the doorbell, which are one mechanism: the acquire loop
-  # services a pending doorbell. Empty at one core.
+  # The cross-core kernel lock and the doorbell are one mechanism: the acquire loop services
+  # a pending doorbell. Empty at one core.
   arm64/armv8a/klock_armv8a.cc
-  # The protocol over the doorbell, one copy for every backend that runs it.
   common/doorbell_protocol.cc
-  # Interrupt controller: the bases and the routing are the part's, and a chip states them
-  # by defining that backend's map (arm64/common/gicv2.h, gicv3.h).
+  # A chip states the bases and the routing by defining this backend's map
+  # (arm64/common/gicv2.h, gicv3.h).
   ${_kos_gic_src}
   # The A53 seams that name no device: the architected generic timer and the semihosting
-  # dead end. No fallback for any of them sits in this archive, which is what lets the
-  # definitions leave the chip archive the group scans first.
+  # dead end. No fallback for any of them sits in this archive; the definitions come from
+  # the chip archive the group scans first.
   arm64/common/arch_arm64_a53.cc
   common/arch_ram_common.cc
   common/startup_ranges.cc

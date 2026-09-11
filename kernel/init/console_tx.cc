@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Buffered, IRQ-drained console TX ring (see console_tx.h). The routing guard in
-// console.cc keeps the producer out of ISR context.
+// Buffered console TX ring (see console_tx.h), drained by a TX interrupt where the backend
+// has one and in the producer's own context where it has none.
 //
-// One IrqLock spans ONE ring chunk, never a whole write. A write larger than the
-// free space is therefore NOT atomic against a concurrent producer: it can be
-// interleaved at a chunk boundary. The CRLF cooking in console.cc already splits
-// every write over 127 bytes the same way on each board that has a ring.
+// THE UNIT OF ATOMICITY IS A LINE, and console_tx_insert_line holds it: one IrqLock spans the
+// whole copy, or the line is refused. console_tx_write promises no such thing, its IrqLock
+// spanning ONE ring chunk, so a write wider than the free space can be interleaved at a chunk
+// boundary by a concurrent producer.
 
 #include <kickos/irq_route.h>
 #include <kickos/console_tx.h>
@@ -31,6 +31,13 @@ namespace
     using kickos::Atomic;
     using kickos::Order;
 
+    // TWO INDEPENDENT BUFFERS SHARE ONE RING, and only the ordinary one sizes it. A fault
+    // record wider than an ordinary line would be refused, and the reporter would take the
+    // locked writer on the descent the red-zone gate measures.
+    static_assert(KDIAG_FAULT_LINE_MAX <= KICKOS_DIAG_LINE_MAX,
+                  "the fault reporter's line is wider than the one the console ring is sized "
+                  "from, so the ring cannot take it whole");
+
     // Only head/tail are shared between the thread producer and the drain ISR. Every
     // other field is set once at init and read-only after.
     struct ConsoleTxRing
@@ -39,10 +46,22 @@ namespace
         char* buf = nullptr;
         uint32_t size = 0; // power of two; usable capacity = size - 1
         uint32_t mask = 0;
-        Atomic<uint32_t, Order::RELAXED> head = 0; // producer advances (bytes queued)
-        Atomic<uint32_t, Order::RELAXED> tail = 0; // ISR advances (bytes drained)
+        Atomic<uint32_t, Order::RELAXED> head = 0; // bytes queued; written by a producer
+        Atomic<uint32_t, Order::RELAXED> tail = 0; // bytes drained; written by the drain OR a producer
         int irq_line = -1;          // TX IRQ line (from the backend); console_tx_deinit detaches it
         bool armed = false;
+        // Set across the copy in console_tx_insert_line. IrqLock masks interrupts, so nothing
+        // ASYNCHRONOUS can land in there, but a synchronous CPU fault (illegal instruction,
+        // MPU, bus) is not gated by the mask, and its reporter writes to this same console. A
+        // nested insert would build its line at the head this one has not published yet and
+        // then have its publication overwritten by this one's. It is refused instead.
+        bool inserting = false;
+        // Set by whichever producer is draining in its own context, on a backend with no TX
+        // interrupt. The INSERT is serialised by IrqLock; the DRAIN must not be, or the
+        // masked window would be a transmission again, so it needs an exclusion of its own.
+        // A producer that finds a drainer running queues its line and returns: the running
+        // drainer will carry it, because it re-reads head every pass.
+        bool draining = false;
 
         // Indices stay in [0, size); power-of-two size makes (head - tail) & mask the
         // used count (unsigned wrap reduces mod size). One slot reserved so head==tail
@@ -197,6 +216,148 @@ void console_tx_init(console_tx_backend const* be, char* storage, uint32_t size,
 
 int console_tx_armed(void) { return static_cast<int>(tx().armed); }
 
+static void drain_in_producer(void);
+
+// One line, indivisibly, or nothing (nonzero on success). NEVER WAITS UNDER THE LOCK, which
+// makes it safe from ISR and fault context. A line that does not fit is refused WHOLE and the
+// caller owes it NO fallback.
+//
+// A LINE THE RING CANNOT TAKE DOES NOT GO OUT. The kernel console is a DEBUG facility, so
+// losing a line under console pressure is the honest outcome; what is not acceptable is a
+// SPLIT line, and any direct write while the ring holds bytes produces one: the drain and
+// the direct writer are two writers at one device and interleave mid-line.
+//
+// The one direct write left is the UNARMED ring, before console_tx_init has run. No ring means
+// no drain means no second writer, and early-boot output predates the ring. That case is
+// decided under the same lock as everything else, so it cannot race an arm.
+//
+// CRLF is expanded during the copy. A caller-side cooked buffer would stand on the fault
+// reporter's descent, which the trap red-zone gate measures (kickos/diag.h).
+int console_tx_insert_line(char const* buf, size_t n, int crlf)
+{
+    ConsoleTxRing& r = tx();
+    if (n == 0)
+    {
+        return 1;
+    }
+
+    bool unbuffered = false;
+    {
+        kickos::IrqLock lock;
+        if (not r.armed)
+        {
+            unbuffered = true;
+        }
+        else
+        {
+            if (r.inserting)
+            {
+                return 0;
+            }
+            uint32_t needed = static_cast<uint32_t>(n);
+            if (crlf != 0)
+            {
+                for (size_t i = 0; i < n; i++)
+                {
+                    if (buf[i] == '\n')
+                    {
+                        needed++;
+                    }
+                }
+            }
+            if (needed > r.space())
+            {
+                return 0;
+            }
+
+            bool const was_empty = (r.used() == 0);
+            uint32_t idx = r.head;
+            r.inserting = true;
+            for (size_t i = 0; i < n; i++)
+            {
+                if (crlf != 0 and buf[i] == '\n')
+                {
+                    r.buf[idx] = '\r';
+                    idx = (idx + 1u) & r.mask;
+                }
+                r.buf[idx] = buf[i];
+                idx = (idx + 1u) & r.mask;
+            }
+            KICKOS_CONSOLE_TX_BARRIER();
+            r.head = idx;
+            r.inserting = false;
+            r.backend->irq_enable();
+
+            // A transition-triggered TX interrupt raises nothing on an idle channel, so the
+            // first byte is pushed here. Citations in enqueue_locked.
+            //
+            // NOT WHILE A PRODUCER DRAIN OWNS A BYTE. That drain takes its byte under this
+            // same lock and pushes it with the lock open, so between the two the ring reads
+            // EMPTY while a byte is still going to the device. Priming on that reading puts a
+            // second writer on the wire and splits the line already in flight, which is the
+            // defect the whole drop rule exists to remove.
+            uint32_t const tail = r.tail;
+            if (was_empty and not r.draining and idx != tail and r.backend->slot_free() != 0)
+            {
+                r.backend->push(static_cast<uint8_t>(r.buf[tail]));
+                r.tail = (tail + 1u) & r.mask;
+            }
+        }
+    }
+
+    if (unbuffered)
+    {
+        console_write_line_sync(buf, n);
+        return 1;
+    }
+    drain_in_producer();
+    return 1;
+}
+
+static void drain_in_producer(void)
+{
+    ConsoleTxRing& r = tx();
+    {
+        kickos::IrqLock lock;
+        if (not r.armed or r.irq_line >= 0 or r.draining)
+        {
+            return;
+        }
+        r.draining = true;
+    }
+    while (true)
+    {
+        uint8_t b = 0;
+        {
+            // THE BYTE IS TAKEN, NOT BORROWED. tail advances here, under the lock, BEFORE the
+            // device write, so this byte belongs to this drain alone. Advancing after the
+            // push instead lets a flush landing in the open window send the same byte and
+            // this path send it again: an external audit reproduced the duplicate as
+            // ABCDEFGHB. Validating the sampled tail after the write cannot fix that, because
+            // the second send has already happened by the time the check runs.
+            kickos::IrqLock lock;
+            if (r.tail == r.head)
+            {
+                r.draining = false;
+                return;
+            }
+            b = static_cast<uint8_t>(r.buf[r.tail]);
+            r.tail = (r.tail + 1u) & r.mask;
+        }
+        // Bounded, like every other poll on this path: a wedged device must not hang a
+        // producer that was only trying to print.
+        if (not wait_slot())
+        {
+            kickos::IrqLock lock;
+            uint32_t const h = r.head;
+            r.tail = h; // discard rather than spin forever; the bytes are already lost
+            r.draining = false;
+            return;
+        }
+        r.backend->push(b);
+    }
+}
+
 void console_tx_write(char const* buf, size_t n)
 {
     ConsoleTxRing& r = tx();
@@ -279,8 +440,17 @@ void console_tx_write(char const* buf, size_t n)
 // in for the chip-writer bracket every other device poke takes.
 void console_tx_isr(void)
 {
+    // ONE WRITER OF `tail` AT A TIME. At one kernel core the producers' own IrqLock masks
+    // this line across their read-and-write of tail; above one core that mask reaches only
+    // the core that took it and an insert primes the channel from another, so the drain
+    // takes the same lock. The wait is safe from here: IrqLock masks before it acquires and
+    // releases before it unmasks, so no core holds it with this line deliverable, and klock's
+    // `owed` covers the one span where a core holds it at depth zero (kickos/klock.h).
+#if KICKOS_KERNEL_CORES > 1
+    kickos::IrqLock lock;
+#endif
     ConsoleTxRing& r = tx();
-    uint32_t const head = r.head; // producer cannot run during this ISR (priority)
+    uint32_t const head = r.head;
     uint32_t tail = r.tail;
     while (tail != head and r.backend->slot_free() != 0)
     {
@@ -320,8 +490,14 @@ void console_buffer_init(void)
     uint32_t size = 0;
     int line = -1;
     console_tx_backend const* be = arch_console_tx_backend(&buf, &size, &line);
-    if (be == nullptr or buf == nullptr or size == 0 or line < 0)
+    if (be == nullptr or buf == nullptr or size == 0)
     {
+        return;
+    }
+    // A backend with no TX interrupt still arms the ring; drain_in_producer carries it.
+    if (line < 0)
+    {
+        console_tx_init(be, buf, size, line);
         return;
     }
     // A dropped attach would leave the ring armed but never drained: output fills it, falls
@@ -355,7 +531,10 @@ void console_tx_deinit(void)
     kickos::IrqLock lock;
     console_tx_flush_sync();
     r.backend->irq_disable();
-    kickos::irq_detach(r.irq_line);
+    if (r.irq_line >= 0)
+    {
+        kickos::irq_detach(r.irq_line);
+    }
     r.armed = false;
 }
 

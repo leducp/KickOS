@@ -994,15 +994,18 @@ int arch_irq_line_core(int line);
 bool arch_irq_line_kernel_owned(int line);
 
 // --- Minimal debug console (bottom edge of the in-kernel console driver) ---
-// Write-only. Two edges:
-//   arch_console_write:      normal path. A chip with a buffered console makes
-//                              this enqueue + prime the TX IRQ (see console_tx.h);
-//                              otherwise it is the polled writer.
+// Write-only. Two edges, and EVERY chip defines both:
+//   arch_console_write:      normal path. Hands the buffer to console_tx_insert_line
+//                              (console_tx.h) as ONE line and answers what it answered.
 //   arch_console_write_sync: polled, bounded; safe with the scheduler/IRQs down.
-//                              Panic / fault / assert / pre-arm output uses this.
-//                              Defaults to arch_console_write through a lone-TU fallback;
-//                              a chip with a buffered console defines its own polled writer.
-void arch_console_write(char const* buf, size_t n);
+//                              Panic / fault / assert / pre-arm output uses this. A chip
+//                              that supplies none resolves to a lone-TU fallback that
+//                              forwards to arch_console_write: define one.
+//   arch_console_write:      inserts ONE LINE into the console ring, and answers nonzero when
+//                              the ring took it. A line it refuses DOES NOT GO OUT: a port
+//                              must not write it at the device instead, because the drain is
+//                              already a writer there and the two interleave mid-line.
+int arch_console_write(char const* buf, size_t n);
 void arch_console_write_sync(char const* buf, size_t n);
 
 // Force the UART back to a known polled-ready channel on the panic path after a userspace

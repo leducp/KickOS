@@ -5,9 +5,9 @@
 // in <kickos/sys/abi.h> and whose wrappers are in <kickos/sys.h>. Every value below is a
 // frozen contract: append, never reorder.
 //
-// A consumer that never probes must not have to parse this: nothing in <kickos/sys.h> or
-// <kickos/sys/abi.h> includes it, and neither may come to. Which is also why the extern "C"
-// block below wraps no declaration: it is what puts a header with C consumers and no C-facing
+// Nothing in <kickos/sys.h> or <kickos/sys/abi.h> includes this, and neither may come to: a
+// consumer that never probes must not have to parse it. The extern "C" block below wraps no
+// declaration and must stay: it is what puts a header with C consumers and no C-facing
 // includer into tests/static/check_c_headers.sh's corpus.
 
 #ifndef KICKOS_SYS_ABI_PROBE_H
@@ -173,9 +173,9 @@ enum kos_aspace_op
                                  //             on, which is its ACTIVE-CORE SET counted
                                  //   The middle field equalling the high one is the invariant
                                  //   that no core holds a root it is not running
-    // 31 and 32 through 49 are SPENT and may not be reused: the shared window's and the
-    // doorbell's ops answered here before they were given syscalls of their own. See enum
-    // kos_amp_op and enum kos_doorbell_op.
+    // 31 and 32 through 49 are SPENT and may not be reused: they answered the shared
+    // window's and the doorbell's ops, which hold syscalls of their own. See enum kos_amp_op
+    // and enum kos_doorbell_op.
     KOS_ASPACE_OP_RELEASE_PEER_HITS = 50, // () -> peer cores a space destroy has found still
                                  //   holding the space it was destroying, since boot. 0 is the
                                  //   only right answer: a dying member vacates its space

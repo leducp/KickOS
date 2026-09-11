@@ -3,10 +3,6 @@
 //
 // The AMP arms: the shared window, the far call and its reply ring, and the ports a
 // partition names this node.
-// One guarded block: the `#if` below is the guard the registration list in main.cc
-// registers these arms under, and this app's CMakeLists compiles the file only where
-// it holds. A mismatch between the two is an undefined reference at link, never a
-// lost arm.
 
 #include "selftest.h"
 
@@ -122,8 +118,6 @@ namespace selftest
         // for the life of the image.
         TAP_CHECK((bits & 4u) != 0u);
         TAP_CHECK((bits & 8u) != 0u);
-        // And the loss is now readable from OUTSIDE the kernel, which is the whole of why the
-        // op exists: a counter userspace can read but nothing can move is decoration.
         TAP_CHECK(unsent1 == unsent0 + 1);
     }
 
@@ -148,8 +142,8 @@ namespace selftest
                   static_cast<long>(unsent2));
         TAP_CHECK((defer & 8u) != 0u);
         TAP_CHECK((defer & 1u) != 0u);
-        // THE PROPERTY THE OLD RULE GAVE UP, and what makes the loss the bytes' alone: the slot
-        // is still this node's, so the caller it names is still owed an answer.
+        // What makes the loss the bytes' alone: the slot is still this node's, so the caller
+        // it names is still owed an answer.
         TAP_CHECK((defer & 2u) != 0u);
         TAP_CHECK((defer & 4u) != 0u);
         TAP_CHECK(unsent1 == unsent0 + 1);
@@ -246,9 +240,6 @@ namespace selftest
         // an accessor answering a real node's row instead would answer nonzero here. The
         // publication counters cannot serve, the forges writing their slots directly rather
         // than through amp::send, so `sent` is still zero at this point on every posture.
-        //
-        // Every counter op passes its index straight from userspace, which is why the accessor
-        // owes an answer for every index rather than the nearest one it holds.
         TAP_CHECK(amp_count(KOS_AMP_OP_DEPTH_RESET, AMP_SELF_ROW) > 0);
         TAP_CHECK(amp_count(KOS_AMP_OP_DEPTH_RESET, KICKOS_AMP_NODES) == 0);
         TAP_CHECK(amp_count(KOS_AMP_OP_DEPTH_RESET, KICKOS_AMP_NODES + 7u) == 0);
@@ -1174,8 +1165,7 @@ namespace selftest
     {
         // READ SIGNED, AND AT THE POINTER WIDTH. A board with no address-space seam compiles
         // the probe's whole dispatch arm out and the syscall is REFUSED, so the answer is a
-        // negative errno and never the 0 this once tested: that guard could not fire on the
-        // very boards it was written for. The width is the second half of it, uintptr_t being
+        // negative errno and never 0. The width is the second half of it, uintptr_t being
         // the return type: a 32-bit refusal widened to 64 bits first reads POSITIVE.
         // Such a board's access_copy is an unconditional kmemcpy, leaving the overlap refusal
         // as its only reachable one, so there is nothing here to witness.
@@ -1870,14 +1860,12 @@ namespace selftest
 
     // A far slot handed back as a local endpoint. The pool leaves a freed slot's fields
     // standing, so a create that seats only its own would keep the far route the mint wrote.
-    // FILLING THE POOL NOW TAKES TWO TASKS, and that is the object budget working rather
-    // than a defect. KICKOS_TASK_ENDPOINT_BUDGET sits strictly below the pool's width, so a
-    // task at its ceiling always leaves slots free and NO ONE task can fill a pool by
-    // creating. The two arms below need the pool full AND bump-allocated to its last
-    // index, or the create after their close lands on a fresh slot instead of the freed one
-    // and proves nothing. So a second group takes what this one's budget keeps out of its
-    // reach. Root's own AMP port capabilities count against its ceiling too, which is why it
-    // reaches that ceiling earlier here than on a board with no partition.
+    // FILLING THE POOL TAKES TWO TASKS. KICKOS_TASK_ENDPOINT_BUDGET sits strictly below the
+    // pool's width, so a task at its ceiling always leaves slots free and NO ONE task can
+    // fill a pool by creating. The two arms below need the pool full AND bump-allocated to
+    // its last index, or the create after their close lands on a fresh slot instead of the
+    // freed one and proves nothing. So a second group takes what this one's budget keeps out
+    // of its reach. Root's own AMP port capabilities count against its ceiling too.
     constexpr int CH_HOLD = 2; // the release semaphore, delegated second
 
     void amp_pool_filler(void*)

@@ -17,7 +17,10 @@ namespace kickos
     int kmain(int argc, char** argv);
 
     // Console fan-out to every enabled backend (KICKOS_CONSOLE = chip|rtt|both|none).
-    void kconsole_write(char const* buf, size_t n);
+    // Nonzero when the line reached the transport. A kernel caller may ignore it: the console
+    // is a debug facility and a line lost to pressure is lost. The SYSCALL may not, or a
+    // dropped middle chunk leaves a hole in a line whose later chunks were taken.
+    int kconsole_write(char const* buf, size_t n);
 
     // Debug console (in-kernel, write-only, unbuffered). Routes via kconsole_write.
     void kputs(char const* s);

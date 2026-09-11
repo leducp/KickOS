@@ -522,9 +522,9 @@ int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
 // (if KICKOS_CONSOLE=both) is teed by the kernel console core, not here.
 // arch_console_write is buffered (the console ring drains on the TB interrupt);
 // arch_console_write_sync is the bounded polled writer used by panic/fault/pre-arm.
-void arch_console_write(char const* buf, size_t n)
+int arch_console_write(char const* buf, size_t n)
 {
-    console_tx_write(buf, n);
+    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
 void arch_console_write_sync(char const* buf, size_t n)

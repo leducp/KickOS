@@ -337,7 +337,8 @@ namespace
     // --- Buffered console TX backend (console_tx.h). The ring drains via the UART0
     // TX-empty interrupt; slot_free/push touch the FIFO + status regs, irq_enable/
     // disable gate reg::uart::TXFIFO_EMPTY_INT AT THE PERIPHERAL; the CPU line's own
-    // INTENABLE bit is the kernel's mask and is not touched here. ---
+    // INTENABLE bit is the kernel's mask and is not touched here. The source is a latch,
+    // dropped by the INT_CLR writes in esp32_tx_push and esp32_tx_irq_enable. ---
     uint32_t uart0_txfifo_cnt()
     {
         return (r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK;
@@ -347,18 +348,27 @@ namespace
     {
         return uart0_txfifo_cnt() < reg::uart::TXFIFO_LIMIT;
     }
-    void esp32_tx_push(uint8_t b) { r32(reg::uart::FIFO) = b; }
+    void esp32_tx_push(uint8_t b)
+    {
+        r32(reg::uart::FIFO) = b;
+        // Drop the TX-empty latch after every push. UART_INT_RAW is self-set and cleared only
+        // by INT_CLR (regs/uart.h), so once the FIFO has passed the threshold the latch, and
+        // with it the matrix source, stays asserted on a condition that is no longer true.
+        // The kernel drain runs with the line UNMASKED (irq_attach, not a tier-1 binding), so
+        // an undropped latch re-enters the dispatcher forever whenever the FIFO fills before
+        // the ring empties.
+        r32(reg::uart::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT;
+    }
     void esp32_tx_irq_enable(void)
     {
+        r32(reg::uart::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT; // any latch left from a stopped burst
         r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) | reg::uart::TXFIFO_EMPTY_INT;
     }
     void esp32_tx_irq_disable(void)
     {
         r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) & ~reg::uart::TXFIFO_EMPTY_INT;
     }
-
-    constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
-    char console_tx_buf[CONSOLE_TX_SIZE];
+    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const esp32_console_backend = {
         esp32_tx_slot_free, esp32_tx_push, esp32_tx_irq_enable, esp32_tx_irq_disable};
 
@@ -732,9 +742,9 @@ uint32_t arch_trace_now(void)
     return static_cast<uint32_t>(timg_ticks());
 }
 
-void arch_console_write(char const* buf, size_t n)
+int arch_console_write(char const* buf, size_t n)
 {
-    console_tx_write(buf, n); // buffered; the routing guard (console.cc) keeps this thread-only
+    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
 // Synchronous polled writer for the panic / fault / pre-arm path (console.cc selects it
@@ -785,7 +795,7 @@ void arch_console_flush_sync(void)
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = console_tx_buf;
-    *size = CONSOLE_TX_SIZE;
+    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = irq::CONSOLE_TX_LINE;
     return &esp32_console_backend;
 }

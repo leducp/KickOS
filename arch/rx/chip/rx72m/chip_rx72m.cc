@@ -311,9 +311,7 @@ namespace
     void rx_tx_push(uint8_t b) { r8(sci::TDR) = b; }
     void rx_tx_irq_enable(void) { r8(sci::SCR) = static_cast<uint8_t>(r8(sci::SCR) | sci::SCR_TIE); }
     void rx_tx_irq_disable(void) { r8(sci::SCR) = static_cast<uint8_t>(r8(sci::SCR) & ~sci::SCR_TIE); }
-
-    constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
-    char console_tx_buf[CONSOLE_TX_SIZE];
+    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const rx_console_backend = {
         rx_tx_slot_free, rx_tx_push, rx_tx_irq_enable, rx_tx_irq_disable};
 
@@ -531,9 +529,9 @@ int arch_periph_enable(uintptr_t base)
     return 0;
 }
 
-void arch_console_write(char const* buf, size_t n)
+int arch_console_write(char const* buf, size_t n)
 {
-    console_tx_write(buf, n); // buffered; the routing guard (console.cc) keeps this thread-only
+    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
 // Bounded polled writer: panic / fault / pre-arm boot route here (console.cc). Must stay
@@ -569,7 +567,7 @@ void arch_console_flush_sync(void)
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = console_tx_buf;
-    *size = CONSOLE_TX_SIZE;
+    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = irq::SCI6_TXI;
     return &rx_console_backend;
 }

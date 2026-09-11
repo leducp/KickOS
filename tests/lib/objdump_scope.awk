@@ -2,8 +2,8 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # The symbol-body scope of an `objdump -d` listing, as the rules a per-arch reader is appended
-# to. It is never run alone: gate.sh's scoped_body() hands awk this file and the reader, in
-# that order, with sym= set to the symbol wanted.
+# to. Never run alone: awk takes this file and the reader, in that order, with sym= set to
+# the symbol wanted (gate.sh's scoped_body()).
 #
 # RULE ORDER IS THE MECHANISM AND THE TWO -f ARGUMENTS ARE NOT INTERCHANGEABLE: awk runs rules
 # in the order it read them, so a reader placed first sees every other body's instructions.

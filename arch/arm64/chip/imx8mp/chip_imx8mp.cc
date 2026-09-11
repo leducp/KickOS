@@ -8,6 +8,7 @@
 // normally have run. Everything here executes at Non-secure EL1.
 
 #include <kickos/arch/arch.h>
+#include <kickos/console_tx.h>
 
 #include <kickos/chip_limits.h> // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
 
@@ -119,6 +120,17 @@ namespace
         *ucr1 = UCR1_UARTEN;
         *ucr2 = UCR2_SRST | UCR2_TXEN | UCR2_RXEN | UCR2_WS_8BIT;
     }
+
+    // --- Buffered console TX backend (console_tx.h). No TX interrupt is wired here, so
+    // irq_line is -1 and the producer drains. ---
+    int imx_tx_slot_free(void) { return (*r32p(UART_UTS) & UTS_TXFULL) == 0; }
+    void imx_tx_push(uint8_t b) { *r32p(UART_UTXD) = static_cast<uint32_t>(b); }
+    void imx_tx_irq_enable(void) {}
+    void imx_tx_irq_disable(void) {}
+
+    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
+    console_tx_backend const imx_console_backend = {
+        imx_tx_slot_free, imx_tx_push, imx_tx_irq_enable, imx_tx_irq_disable};
 
     // The refusal path's own writer, with the UART at the address the bus sees: the MMU
     // is off, so dev_va's high alias translates through nothing.
@@ -233,7 +245,12 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
     return n;
 }
 
-void arch_console_write(char const* buf, size_t n)
+int arch_console_write(char const* buf, size_t n)
+{
+    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
+}
+
+void arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
@@ -244,6 +261,14 @@ void arch_console_write(char const* buf, size_t n)
         }
         *r32p(UART_UTXD) = static_cast<uint32_t>(static_cast<unsigned char>(buf[i]));
     }
+}
+
+console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+{
+    *storage = console_tx_buf;
+    *size = KICKOS_CONSOLE_TX_SIZE;
+    *irq_line = -1; // no TX line is routed here; the producer drains
+    return &imx_console_backend;
 }
 
 // TXFULL says the FIFO can take a byte; USR2.TXDC says the transmitter has finished clocking

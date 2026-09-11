@@ -10,7 +10,6 @@ set(KICKOS_ARCH_SOURCES
   riscv/rv64imac/arch_rv64imac.cc
   riscv/rv64imac/aspace_rv64imac.cc
   riscv/rv64imac/klock_rv64imac.cc
-  # The protocol over the doorbell, one copy for every backend that runs it.
   common/doorbell_protocol.cc
   riscv/rv64imac/libgcc_rv64imac.cc
   riscv/rv64imac/switch.S

@@ -145,20 +145,25 @@ site x86_64 * kickos::sched::tick_rr@2/2           policy_fifo_rr.cc:policy_on_s
 # seam arch_console_tx_backend(), of which exactly ONE definition links per image, so the tuple
 # is per board and the scope column carries that.
 #
-# qemu-riscv resolves the seam to the arch/common fallback, which returns nullptr, so
-# console_tx_init never arms the ring and no site can run.
-site rv32imac qemu-riscv console_tx.cc:wait_slot@1/1  NONE
-site rv32imac qemu-riscv console_tx.cc:drain_sync@1/1 NONE
-site rv32imac qemu-riscv console_tx_write@1/5         NONE
-site rv32imac qemu-riscv console_tx_write@2/5         NONE
-site rv32imac qemu-riscv console_tx_write@3/5         NONE
-site rv32imac qemu-riscv console_tx_write@4/5         NONE
-site rv32imac qemu-riscv console_tx_write@5/5         NONE
-site rv32imac qemu-riscv console_tx_isr@1/3           NONE
-site rv32imac qemu-riscv console_tx_isr@2/3           NONE
-site rv32imac qemu-riscv console_tx_isr@3/3           NONE
-site rv32imac qemu-riscv console_tx_flush_sync@1/1    NONE
-site rv32imac qemu-riscv console_tx_deinit@1/1        NONE
+# A backend with no TX interrupt (irq_line -1) still arms a ring and is drained in the
+# producer's own context, so its irq_enable/irq_disable slots bind to empty bodies. NONE is
+# for a board that binds no backend at all.
+site rv32imac qemu-riscv console_tx.cc:wait_slot@1/1  chip_virt_rv32.cc:rv32_tx_slot_free
+site rv32imac qemu-riscv console_tx.cc:drain_sync@1/1 chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv console_tx_write@1/5         chip_virt_rv32.cc:rv32_tx_irq_enable
+site rv32imac qemu-riscv console_tx_write@2/5         chip_virt_rv32.cc:rv32_tx_slot_free
+site rv32imac qemu-riscv console_tx_write@3/5         chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv console_tx_write@4/5         chip_virt_rv32.cc:rv32_tx_irq_disable
+site rv32imac qemu-riscv console_tx_write@5/5         chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv console_tx_isr@1/3           chip_virt_rv32.cc:rv32_tx_slot_free
+site rv32imac qemu-riscv console_tx_isr@2/3           chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv console_tx_isr@3/3           chip_virt_rv32.cc:rv32_tx_irq_disable
+site rv32imac qemu-riscv console_tx_flush_sync@1/1    chip_virt_rv32.cc:rv32_tx_irq_disable
+site rv32imac qemu-riscv console_tx_deinit@1/1        chip_virt_rv32.cc:rv32_tx_irq_disable
+site rv32imac qemu-riscv console_tx_insert_line@1/4 chip_virt_rv32.cc:rv32_tx_irq_enable
+site rv32imac qemu-riscv console_tx_insert_line@2/4 chip_virt_rv32.cc:rv32_tx_slot_free
+site rv32imac qemu-riscv console_tx_insert_line@3/4 chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv console_tx_insert_line@4/4 chip_virt_rv32.cc:rv32_tx_push
 
 site rv32imac esp32c6-wroom-st console_tx.cc:wait_slot@1/1  chip_esp32c6.cc:c6_tx_slot_free
 site rv32imac esp32c6-wroom-st console_tx.cc:drain_sync@1/1 chip_esp32c6.cc:c6_tx_push
@@ -172,6 +177,10 @@ site rv32imac esp32c6-wroom-st console_tx_isr@2/3           chip_esp32c6.cc:c6_t
 site rv32imac esp32c6-wroom-st console_tx_isr@3/3           chip_esp32c6.cc:c6_tx_irq_disable
 site rv32imac esp32c6-wroom-st console_tx_flush_sync@1/1    chip_esp32c6.cc:c6_tx_irq_disable
 site rv32imac esp32c6-wroom-st console_tx_deinit@1/1        chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-st console_tx_insert_line@1/4 chip_esp32c6.cc:c6_tx_irq_enable
+site rv32imac esp32c6-wroom-st console_tx_insert_line@2/4 chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-st console_tx_insert_line@3/4 chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-st console_tx_insert_line@4/4 chip_esp32c6.cc:c6_tx_push
 
 site rxv3 rx72m-st console_tx.cc:wait_slot@1/1  chip_rx72m.cc:rx_tx_slot_free
 site rxv3 rx72m-st console_tx.cc:drain_sync@1/1 chip_rx72m.cc:rx_tx_push
@@ -185,62 +194,268 @@ site rxv3 rx72m-st console_tx_isr@2/3           chip_rx72m.cc:rx_tx_push
 site rxv3 rx72m-st console_tx_isr@3/3           chip_rx72m.cc:rx_tx_irq_disable
 site rxv3 rx72m-st console_tx_flush_sync@1/1    chip_rx72m.cc:rx_tx_irq_disable
 site rxv3 rx72m-st console_tx_deinit@1/1        chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-st console_tx_insert_line@1/4 chip_rx72m.cc:rx_tx_irq_enable
+site rxv3 rx72m-st console_tx_insert_line@2/4 chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m-st console_tx_insert_line@3/4 chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-st console_tx_insert_line@4/4 chip_rx72m.cc:rx_tx_push
 
-# qemu-arm64, qemu-riscv64, qemu-riscv64-sv48 and qemu-x86_64 all resolve the seam to the
-# arch/common fallback, which returns nullptr, so no site can run. A real-hardware board on any
-# of these arches carries a backend of its own and needs its own preset scope here.
+# The three translating arches. Each preset carries its own chip's backend, so a board added
+# on any of them needs a scope of its own here.
 
-site armv8a qemu-arm64 console_tx.cc:wait_slot@1/1  NONE
-site armv8a qemu-arm64 console_tx.cc:drain_sync@1/1 NONE
-site armv8a qemu-arm64 console_tx_write@1/5         NONE
-site armv8a qemu-arm64 console_tx_write@2/5         NONE
-site armv8a qemu-arm64 console_tx_write@3/5         NONE
-site armv8a qemu-arm64 console_tx_write@4/5         NONE
-site armv8a qemu-arm64 console_tx_write@5/5         NONE
-site armv8a qemu-arm64 console_tx_isr@1/3           NONE
-site armv8a qemu-arm64 console_tx_isr@2/3           NONE
-site armv8a qemu-arm64 console_tx_isr@3/3           NONE
-site armv8a qemu-arm64 console_tx_flush_sync@1/1    NONE
-site armv8a qemu-arm64 console_tx_deinit@1/1        NONE
+site armv8a qemu-arm64 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64 console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64 console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64 console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64 console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64 console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64 console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64 console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64 console_tx_insert_line@1/4 chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64 console_tx_insert_line@2/4 chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64 console_tx_insert_line@3/4 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64 console_tx_insert_line@4/4 chip_virt_arm64.cc:pl011_tx_push
 
-site rv64imac qemu-riscv64 console_tx.cc:wait_slot@1/1  NONE
-site rv64imac qemu-riscv64 console_tx.cc:drain_sync@1/1 NONE
-site rv64imac qemu-riscv64 console_tx_write@1/5         NONE
-site rv64imac qemu-riscv64 console_tx_write@2/5         NONE
-site rv64imac qemu-riscv64 console_tx_write@3/5         NONE
-site rv64imac qemu-riscv64 console_tx_write@4/5         NONE
-site rv64imac qemu-riscv64 console_tx_write@5/5         NONE
-site rv64imac qemu-riscv64 console_tx_isr@1/3           NONE
-site rv64imac qemu-riscv64 console_tx_isr@2/3           NONE
-site rv64imac qemu-riscv64 console_tx_isr@3/3           NONE
-site rv64imac qemu-riscv64 console_tx_flush_sync@1/1    NONE
-site rv64imac qemu-riscv64 console_tx_deinit@1/1        NONE
+site armv8a qemu-arm64-smp console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smp console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smp console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-smp console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smp console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smp console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smp console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smp console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smp console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smp console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smp console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smp console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smp console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-smp console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smp console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smp console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
 
-site rv64imac qemu-riscv64-sv48 console_tx.cc:wait_slot@1/1  NONE
-site rv64imac qemu-riscv64-sv48 console_tx.cc:drain_sync@1/1 NONE
-site rv64imac qemu-riscv64-sv48 console_tx_write@1/5         NONE
-site rv64imac qemu-riscv64-sv48 console_tx_write@2/5         NONE
-site rv64imac qemu-riscv64-sv48 console_tx_write@3/5         NONE
-site rv64imac qemu-riscv64-sv48 console_tx_write@4/5         NONE
-site rv64imac qemu-riscv64-sv48 console_tx_write@5/5         NONE
-site rv64imac qemu-riscv64-sv48 console_tx_isr@1/3           NONE
-site rv64imac qemu-riscv64-sv48 console_tx_isr@2/3           NONE
-site rv64imac qemu-riscv64-sv48 console_tx_isr@3/3           NONE
-site rv64imac qemu-riscv64-sv48 console_tx_flush_sync@1/1    NONE
-site rv64imac qemu-riscv64-sv48 console_tx_deinit@1/1        NONE
+site armv8a qemu-arm64-smpiso console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smpiso console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smpiso console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-smpiso console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smpiso console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smpiso console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smpiso console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smpiso console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smpiso console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smpiso console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smpiso console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smpiso console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smpiso console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-smpiso console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smpiso console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smpiso console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
 
-site x86_64 qemu-x86_64 console_tx.cc:wait_slot@1/1  NONE
-site x86_64 qemu-x86_64 console_tx.cc:drain_sync@1/1 NONE
-site x86_64 qemu-x86_64 console_tx_write@1/5         NONE
-site x86_64 qemu-x86_64 console_tx_write@2/5         NONE
-site x86_64 qemu-x86_64 console_tx_write@3/5         NONE
-site x86_64 qemu-x86_64 console_tx_write@4/5         NONE
-site x86_64 qemu-x86_64 console_tx_write@5/5         NONE
-site x86_64 qemu-x86_64 console_tx_isr@1/3           NONE
-site x86_64 qemu-x86_64 console_tx_isr@2/3           NONE
-site x86_64 qemu-x86_64 console_tx_isr@3/3           NONE
-site x86_64 qemu-x86_64 console_tx_flush_sync@1/1    NONE
-site x86_64 qemu-x86_64 console_tx_deinit@1/1        NONE
+site armv8a qemu-arm64-gicv3 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-gicv3 console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-gicv3 console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-gicv3 console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-gicv3 console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-gicv3 console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-gicv3 console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-gicv3 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-gicv3 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-gicv3 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-gicv3 console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-gicv3 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-gicv3 console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-gicv3 console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-gicv3 console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-gicv3 console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
+
+site armv8a qemu-arm64-amp console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-amp console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-amp console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
+
+site armv8a qemu-arm64-amp2-n0 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp2-n0 console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp2-n0 console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-amp2-n0 console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp2-n0 console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp2-n0 console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp2-n0 console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp2-n0 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp2-n0 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp2-n0 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp2-n0 console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp2-n0 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp2-n0 console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-amp2-n0 console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp2-n0 console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp2-n0 console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
+
+site armv8a qemu-arm64-amp2-n1 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp2-n1 console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp2-n1 console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-amp2-n1 console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp2-n1 console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp2-n1 console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp2-n1 console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp2-n1 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp2-n1 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp2-n1 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp2-n1 console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp2-n1 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp2-n1 console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-amp2-n1 console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp2-n1 console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp2-n1 console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
+
+site armv8a qemu-arm64-amp3-n0 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp3-n0 console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n0 console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-amp3-n0 console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp3-n0 console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n0 console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp3-n0 console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n0 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp3-n0 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n0 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp3-n0 console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp3-n0 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp3-n0 console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-amp3-n0 console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp3-n0 console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n0 console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
+
+site armv8a qemu-arm64-amp3-n1 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp3-n1 console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n1 console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-amp3-n1 console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp3-n1 console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n1 console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp3-n1 console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n1 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp3-n1 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n1 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp3-n1 console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp3-n1 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp3-n1 console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-amp3-n1 console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp3-n1 console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n1 console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
+
+site armv8a qemu-arm64-amp3-n2 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp3-n2 console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n2 console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-amp3-n2 console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp3-n2 console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n2 console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp3-n2 console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n2 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp3-n2 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n2 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp3-n2 console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp3-n2 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-amp3-n2 console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-amp3-n2 console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-amp3-n2 console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-amp3-n2 console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
+
+site armv8a imx8mp-evk console_tx.cc:wait_slot@1/1  chip_imx8mp.cc:imx_tx_slot_free
+site armv8a imx8mp-evk console_tx.cc:drain_sync@1/1 chip_imx8mp.cc:imx_tx_push
+site armv8a imx8mp-evk console_tx_write@1/5         chip_imx8mp.cc:imx_tx_irq_enable
+site armv8a imx8mp-evk console_tx_write@2/5         chip_imx8mp.cc:imx_tx_slot_free
+site armv8a imx8mp-evk console_tx_write@3/5         chip_imx8mp.cc:imx_tx_push
+site armv8a imx8mp-evk console_tx_write@4/5         chip_imx8mp.cc:imx_tx_irq_disable
+site armv8a imx8mp-evk console_tx_write@5/5         chip_imx8mp.cc:imx_tx_push
+site armv8a imx8mp-evk console_tx_isr@1/3           chip_imx8mp.cc:imx_tx_slot_free
+site armv8a imx8mp-evk console_tx_isr@2/3           chip_imx8mp.cc:imx_tx_push
+site armv8a imx8mp-evk console_tx_isr@3/3           chip_imx8mp.cc:imx_tx_irq_disable
+site armv8a imx8mp-evk console_tx_flush_sync@1/1    chip_imx8mp.cc:imx_tx_irq_disable
+site armv8a imx8mp-evk console_tx_deinit@1/1        chip_imx8mp.cc:imx_tx_irq_disable
+site armv8a imx8mp-evk console_tx_insert_line@1/4   chip_imx8mp.cc:imx_tx_irq_enable
+site armv8a imx8mp-evk console_tx_insert_line@2/4   chip_imx8mp.cc:imx_tx_slot_free
+site armv8a imx8mp-evk console_tx_insert_line@3/4   chip_imx8mp.cc:imx_tx_push
+site armv8a imx8mp-evk console_tx_insert_line@4/4   chip_imx8mp.cc:imx_tx_push
+
+site rv64imac qemu-riscv64 console_tx.cc:wait_slot@1/1  chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64 console_tx.cc:drain_sync@1/1 chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64 console_tx_write@1/5         chip_virt_rv64.cc:ns16550_tx_irq_enable
+site rv64imac qemu-riscv64 console_tx_write@2/5         chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64 console_tx_write@3/5         chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64 console_tx_write@4/5         chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64 console_tx_write@5/5         chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64 console_tx_isr@1/3           chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64 console_tx_isr@2/3           chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64 console_tx_isr@3/3           chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64 console_tx_flush_sync@1/1    chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64 console_tx_deinit@1/1        chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64 console_tx_insert_line@1/4 chip_virt_rv64.cc:ns16550_tx_irq_enable
+site rv64imac qemu-riscv64 console_tx_insert_line@2/4 chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64 console_tx_insert_line@3/4 chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64 console_tx_insert_line@4/4 chip_virt_rv64.cc:ns16550_tx_push
+
+site rv64imac qemu-riscv64-sv48 console_tx.cc:wait_slot@1/1  chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-sv48 console_tx.cc:drain_sync@1/1 chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-sv48 console_tx_write@1/5         chip_virt_rv64.cc:ns16550_tx_irq_enable
+site rv64imac qemu-riscv64-sv48 console_tx_write@2/5         chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-sv48 console_tx_write@3/5         chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-sv48 console_tx_write@4/5         chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-sv48 console_tx_write@5/5         chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-sv48 console_tx_isr@1/3           chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-sv48 console_tx_isr@2/3           chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-sv48 console_tx_isr@3/3           chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-sv48 console_tx_flush_sync@1/1    chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-sv48 console_tx_deinit@1/1        chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-sv48 console_tx_insert_line@1/4 chip_virt_rv64.cc:ns16550_tx_irq_enable
+site rv64imac qemu-riscv64-sv48 console_tx_insert_line@2/4 chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-sv48 console_tx_insert_line@3/4 chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-sv48 console_tx_insert_line@4/4 chip_virt_rv64.cc:ns16550_tx_push
+
+site rv64imac qemu-riscv64-smp console_tx.cc:wait_slot@1/1  chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-smp console_tx.cc:drain_sync@1/1 chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-smp console_tx_write@1/5         chip_virt_rv64.cc:ns16550_tx_irq_enable
+site rv64imac qemu-riscv64-smp console_tx_write@2/5         chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-smp console_tx_write@3/5         chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-smp console_tx_write@4/5         chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-smp console_tx_write@5/5         chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-smp console_tx_isr@1/3           chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-smp console_tx_isr@2/3           chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-smp console_tx_isr@3/3           chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-smp console_tx_flush_sync@1/1    chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-smp console_tx_deinit@1/1        chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-smp console_tx_insert_line@1/4   chip_virt_rv64.cc:ns16550_tx_irq_enable
+site rv64imac qemu-riscv64-smp console_tx_insert_line@2/4   chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-smp console_tx_insert_line@3/4   chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-smp console_tx_insert_line@4/4   chip_virt_rv64.cc:ns16550_tx_push
+
+site x86_64 qemu-x86_64 console_tx.cc:wait_slot@1/1  console_q35.cc:q35_tx_slot_free
+site x86_64 qemu-x86_64 console_tx.cc:drain_sync@1/1 console_q35.cc:q35_tx_push
+site x86_64 qemu-x86_64 console_tx_write@1/5         console_q35.cc:q35_tx_irq_enable
+site x86_64 qemu-x86_64 console_tx_write@2/5         console_q35.cc:q35_tx_slot_free
+site x86_64 qemu-x86_64 console_tx_write@3/5         console_q35.cc:q35_tx_push
+site x86_64 qemu-x86_64 console_tx_write@4/5         console_q35.cc:q35_tx_irq_disable
+site x86_64 qemu-x86_64 console_tx_write@5/5         console_q35.cc:q35_tx_push
+site x86_64 qemu-x86_64 console_tx_isr@1/3           console_q35.cc:q35_tx_slot_free
+site x86_64 qemu-x86_64 console_tx_isr@2/3           console_q35.cc:q35_tx_push
+site x86_64 qemu-x86_64 console_tx_isr@3/3           console_q35.cc:q35_tx_irq_disable
+site x86_64 qemu-x86_64 console_tx_flush_sync@1/1    console_q35.cc:q35_tx_irq_disable
+site x86_64 qemu-x86_64 console_tx_deinit@1/1        console_q35.cc:q35_tx_irq_disable
+site x86_64 qemu-x86_64 console_tx_insert_line@1/4 console_q35.cc:q35_tx_irq_enable
+site x86_64 qemu-x86_64 console_tx_insert_line@2/4 console_q35.cc:q35_tx_slot_free
+site x86_64 qemu-x86_64 console_tx_insert_line@3/4 console_q35.cc:q35_tx_push
+site x86_64 qemu-x86_64 console_tx_insert_line@4/4 console_q35.cc:q35_tx_push
 # --- POINTER C: Kernel::irq_table[irq].handler, one site -----------------------
 # The table is TOTAL (irq_init seeds every slot with irq_default_handler) and the callee set is
 # CLOSED: user code cannot register a function pointer, and the kos_irq_attach syscall only ever
@@ -298,122 +513,158 @@ site armv7m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
 # All twelve sites are declared whatever the posture: a flat variant reaches four of them where
 # an enforcing one reaches nine.
 
-site armv7m qemu console_tx.cc:wait_slot@1/1  NONE
-site armv7m qemu console_tx.cc:drain_sync@1/1 NONE
-site armv7m qemu console_tx_write@1/5         NONE
-site armv7m qemu console_tx_write@2/5         NONE
-site armv7m qemu console_tx_write@3/5         NONE
-site armv7m qemu console_tx_write@4/5         NONE
-site armv7m qemu console_tx_write@5/5         NONE
-site armv7m qemu console_tx_isr@1/3           NONE
-site armv7m qemu console_tx_isr@2/3           NONE
-site armv7m qemu console_tx_isr@3/3           NONE
-site armv7m qemu console_tx_flush_sync@1/1    NONE
-site armv7m qemu console_tx_deinit@1/1        NONE
+site armv7m qemu console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu console_tx.cc:drain_sync@1/1 chip_mps2.cc:mps2_tx_push
+site armv7m qemu console_tx_write@1/5         chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu console_tx_write@2/5         chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu console_tx_write@3/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu console_tx_write@4/5         chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu console_tx_write@5/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
+site armv7m qemu console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu console_tx_flush_sync@1/1    chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu console_tx_insert_line@1/4 chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu console_tx_insert_line@2/4 chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu console_tx_insert_line@3/4 chip_mps2.cc:mps2_tx_push
+site armv7m qemu console_tx_insert_line@4/4 chip_mps2.cc:mps2_tx_push
 
-site armv7m qemu-flat console_tx.cc:wait_slot@1/1  NONE
-site armv7m qemu-flat console_tx.cc:drain_sync@1/1 NONE
-site armv7m qemu-flat console_tx_write@1/5         NONE
-site armv7m qemu-flat console_tx_write@2/5         NONE
-site armv7m qemu-flat console_tx_write@3/5         NONE
-site armv7m qemu-flat console_tx_write@4/5         NONE
-site armv7m qemu-flat console_tx_write@5/5         NONE
-site armv7m qemu-flat console_tx_isr@1/3           NONE
-site armv7m qemu-flat console_tx_isr@2/3           NONE
-site armv7m qemu-flat console_tx_isr@3/3           NONE
-site armv7m qemu-flat console_tx_flush_sync@1/1    NONE
-site armv7m qemu-flat console_tx_deinit@1/1        NONE
+site armv7m qemu-flat console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-flat console_tx.cc:drain_sync@1/1 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-flat console_tx_write@1/5         chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-flat console_tx_write@2/5         chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-flat console_tx_write@3/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-flat console_tx_write@4/5         chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-flat console_tx_write@5/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-flat console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-flat console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
+site armv7m qemu-flat console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-flat console_tx_flush_sync@1/1    chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-flat console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-flat console_tx_insert_line@1/4 chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-flat console_tx_insert_line@2/4 chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-flat console_tx_insert_line@3/4 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-flat console_tx_insert_line@4/4 chip_mps2.cc:mps2_tx_push
 
-site armv7m qemu-telem console_tx.cc:wait_slot@1/1  NONE
-site armv7m qemu-telem console_tx.cc:drain_sync@1/1 NONE
-site armv7m qemu-telem console_tx_write@1/5         NONE
-site armv7m qemu-telem console_tx_write@2/5         NONE
-site armv7m qemu-telem console_tx_write@3/5         NONE
-site armv7m qemu-telem console_tx_write@4/5         NONE
-site armv7m qemu-telem console_tx_write@5/5         NONE
-site armv7m qemu-telem console_tx_isr@1/3           NONE
-site armv7m qemu-telem console_tx_isr@2/3           NONE
-site armv7m qemu-telem console_tx_isr@3/3           NONE
-site armv7m qemu-telem console_tx_flush_sync@1/1    NONE
-site armv7m qemu-telem console_tx_deinit@1/1        NONE
+site armv7m qemu-telem console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-telem console_tx.cc:drain_sync@1/1 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-telem console_tx_write@1/5         chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-telem console_tx_write@2/5         chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-telem console_tx_write@3/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-telem console_tx_write@4/5         chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-telem console_tx_write@5/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-telem console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-telem console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
+site armv7m qemu-telem console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-telem console_tx_flush_sync@1/1    chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-telem console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-telem console_tx_insert_line@1/4 chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-telem console_tx_insert_line@2/4 chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-telem console_tx_insert_line@3/4 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-telem console_tx_insert_line@4/4 chip_mps2.cc:mps2_tx_push
 
-site armv7m qemu-m3 console_tx.cc:wait_slot@1/1  NONE
-site armv7m qemu-m3 console_tx.cc:drain_sync@1/1 NONE
-site armv7m qemu-m3 console_tx_write@1/5         NONE
-site armv7m qemu-m3 console_tx_write@2/5         NONE
-site armv7m qemu-m3 console_tx_write@3/5         NONE
-site armv7m qemu-m3 console_tx_write@4/5         NONE
-site armv7m qemu-m3 console_tx_write@5/5         NONE
-site armv7m qemu-m3 console_tx_isr@1/3           NONE
-site armv7m qemu-m3 console_tx_isr@2/3           NONE
-site armv7m qemu-m3 console_tx_isr@3/3           NONE
-site armv7m qemu-m3 console_tx_flush_sync@1/1    NONE
-site armv7m qemu-m3 console_tx_deinit@1/1        NONE
+site armv7m qemu-m3 console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m3 console_tx.cc:drain_sync@1/1 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m3 console_tx_write@1/5         chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-m3 console_tx_write@2/5         chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m3 console_tx_write@3/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m3 console_tx_write@4/5         chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m3 console_tx_write@5/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m3 console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m3 console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m3 console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m3 console_tx_flush_sync@1/1    chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m3 console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m3 console_tx_insert_line@1/4 chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-m3 console_tx_insert_line@2/4 chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m3 console_tx_insert_line@3/4 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m3 console_tx_insert_line@4/4 chip_mps2.cc:mps2_tx_push
 
-site armv7m qemu-m3-flat console_tx.cc:wait_slot@1/1  NONE
-site armv7m qemu-m3-flat console_tx.cc:drain_sync@1/1 NONE
-site armv7m qemu-m3-flat console_tx_write@1/5         NONE
-site armv7m qemu-m3-flat console_tx_write@2/5         NONE
-site armv7m qemu-m3-flat console_tx_write@3/5         NONE
-site armv7m qemu-m3-flat console_tx_write@4/5         NONE
-site armv7m qemu-m3-flat console_tx_write@5/5         NONE
-site armv7m qemu-m3-flat console_tx_isr@1/3           NONE
-site armv7m qemu-m3-flat console_tx_isr@2/3           NONE
-site armv7m qemu-m3-flat console_tx_isr@3/3           NONE
-site armv7m qemu-m3-flat console_tx_flush_sync@1/1    NONE
-site armv7m qemu-m3-flat console_tx_deinit@1/1        NONE
+site armv7m qemu-m3-flat console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m3-flat console_tx.cc:drain_sync@1/1 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m3-flat console_tx_write@1/5         chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-m3-flat console_tx_write@2/5         chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m3-flat console_tx_write@3/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m3-flat console_tx_write@4/5         chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m3-flat console_tx_write@5/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m3-flat console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m3-flat console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m3-flat console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m3-flat console_tx_flush_sync@1/1    chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m3-flat console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m3-flat console_tx_insert_line@1/4 chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-m3-flat console_tx_insert_line@2/4 chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m3-flat console_tx_insert_line@3/4 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m3-flat console_tx_insert_line@4/4 chip_mps2.cc:mps2_tx_push
 
-site armv7m qemu-m7 console_tx.cc:wait_slot@1/1  NONE
-site armv7m qemu-m7 console_tx.cc:drain_sync@1/1 NONE
-site armv7m qemu-m7 console_tx_write@1/5         NONE
-site armv7m qemu-m7 console_tx_write@2/5         NONE
-site armv7m qemu-m7 console_tx_write@3/5         NONE
-site armv7m qemu-m7 console_tx_write@4/5         NONE
-site armv7m qemu-m7 console_tx_write@5/5         NONE
-site armv7m qemu-m7 console_tx_isr@1/3           NONE
-site armv7m qemu-m7 console_tx_isr@2/3           NONE
-site armv7m qemu-m7 console_tx_isr@3/3           NONE
-site armv7m qemu-m7 console_tx_flush_sync@1/1    NONE
-site armv7m qemu-m7 console_tx_deinit@1/1        NONE
+site armv7m qemu-m7 console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m7 console_tx.cc:drain_sync@1/1 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m7 console_tx_write@1/5         chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-m7 console_tx_write@2/5         chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m7 console_tx_write@3/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m7 console_tx_write@4/5         chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m7 console_tx_write@5/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m7 console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m7 console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m7 console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m7 console_tx_flush_sync@1/1    chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m7 console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m7 console_tx_insert_line@1/4 chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-m7 console_tx_insert_line@2/4 chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m7 console_tx_insert_line@3/4 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m7 console_tx_insert_line@4/4 chip_mps2.cc:mps2_tx_push
 
-site armv7m qemu-m7-flat console_tx.cc:wait_slot@1/1  NONE
-site armv7m qemu-m7-flat console_tx.cc:drain_sync@1/1 NONE
-site armv7m qemu-m7-flat console_tx_write@1/5         NONE
-site armv7m qemu-m7-flat console_tx_write@2/5         NONE
-site armv7m qemu-m7-flat console_tx_write@3/5         NONE
-site armv7m qemu-m7-flat console_tx_write@4/5         NONE
-site armv7m qemu-m7-flat console_tx_write@5/5         NONE
-site armv7m qemu-m7-flat console_tx_isr@1/3           NONE
-site armv7m qemu-m7-flat console_tx_isr@2/3           NONE
-site armv7m qemu-m7-flat console_tx_isr@3/3           NONE
-site armv7m qemu-m7-flat console_tx_flush_sync@1/1    NONE
-site armv7m qemu-m7-flat console_tx_deinit@1/1        NONE
+site armv7m qemu-m7-flat console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m7-flat console_tx.cc:drain_sync@1/1 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m7-flat console_tx_write@1/5         chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-m7-flat console_tx_write@2/5         chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m7-flat console_tx_write@3/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m7-flat console_tx_write@4/5         chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m7-flat console_tx_write@5/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m7-flat console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m7-flat console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m7-flat console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m7-flat console_tx_flush_sync@1/1    chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m7-flat console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m7-flat console_tx_insert_line@1/4 chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-m7-flat console_tx_insert_line@2/4 chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m7-flat console_tx_insert_line@3/4 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m7-flat console_tx_insert_line@4/4 chip_mps2.cc:mps2_tx_push
 
-site armv7m qemu-m33 console_tx.cc:wait_slot@1/1  NONE
-site armv7m qemu-m33 console_tx.cc:drain_sync@1/1 NONE
-site armv7m qemu-m33 console_tx_write@1/5         NONE
-site armv7m qemu-m33 console_tx_write@2/5         NONE
-site armv7m qemu-m33 console_tx_write@3/5         NONE
-site armv7m qemu-m33 console_tx_write@4/5         NONE
-site armv7m qemu-m33 console_tx_write@5/5         NONE
-site armv7m qemu-m33 console_tx_isr@1/3           NONE
-site armv7m qemu-m33 console_tx_isr@2/3           NONE
-site armv7m qemu-m33 console_tx_isr@3/3           NONE
-site armv7m qemu-m33 console_tx_flush_sync@1/1    NONE
-site armv7m qemu-m33 console_tx_deinit@1/1        NONE
+site armv7m qemu-m33 console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m33 console_tx.cc:drain_sync@1/1 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m33 console_tx_write@1/5         chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-m33 console_tx_write@2/5         chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m33 console_tx_write@3/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m33 console_tx_write@4/5         chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m33 console_tx_write@5/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m33 console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m33 console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m33 console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m33 console_tx_flush_sync@1/1    chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m33 console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m33 console_tx_insert_line@1/4 chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-m33 console_tx_insert_line@2/4 chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m33 console_tx_insert_line@3/4 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m33 console_tx_insert_line@4/4 chip_mps2.cc:mps2_tx_push
 
-site armv7m qemu-m33-flat console_tx.cc:wait_slot@1/1  NONE
-site armv7m qemu-m33-flat console_tx.cc:drain_sync@1/1 NONE
-site armv7m qemu-m33-flat console_tx_write@1/5         NONE
-site armv7m qemu-m33-flat console_tx_write@2/5         NONE
-site armv7m qemu-m33-flat console_tx_write@3/5         NONE
-site armv7m qemu-m33-flat console_tx_write@4/5         NONE
-site armv7m qemu-m33-flat console_tx_write@5/5         NONE
-site armv7m qemu-m33-flat console_tx_isr@1/3           NONE
-site armv7m qemu-m33-flat console_tx_isr@2/3           NONE
-site armv7m qemu-m33-flat console_tx_isr@3/3           NONE
-site armv7m qemu-m33-flat console_tx_flush_sync@1/1    NONE
-site armv7m qemu-m33-flat console_tx_deinit@1/1        NONE
+site armv7m qemu-m33-flat console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m33-flat console_tx.cc:drain_sync@1/1 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m33-flat console_tx_write@1/5         chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-m33-flat console_tx_write@2/5         chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m33-flat console_tx_write@3/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m33-flat console_tx_write@4/5         chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m33-flat console_tx_write@5/5         chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m33-flat console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m33-flat console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m33-flat console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m33-flat console_tx_flush_sync@1/1    chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m33-flat console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
+site armv7m qemu-m33-flat console_tx_insert_line@1/4 chip_mps2.cc:mps2_tx_irq_enable
+site armv7m qemu-m33-flat console_tx_insert_line@2/4 chip_mps2.cc:mps2_tx_slot_free
+site armv7m qemu-m33-flat console_tx_insert_line@3/4 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m33-flat console_tx_insert_line@4/4 chip_mps2.cc:mps2_tx_push
 
 site armv7m frdmk64f console_tx.cc:wait_slot@1/1  chip_mk64f.cc:k64_tx_slot_free
 site armv7m frdmk64f console_tx.cc:drain_sync@1/1 chip_mk64f.cc:k64_tx_push
@@ -427,6 +678,10 @@ site armv7m frdmk64f console_tx_isr@2/3           chip_mk64f.cc:k64_tx_push
 site armv7m frdmk64f console_tx_isr@3/3           chip_mk64f.cc:k64_tx_irq_disable
 site armv7m frdmk64f console_tx_flush_sync@1/1    chip_mk64f.cc:k64_tx_irq_disable
 site armv7m frdmk64f console_tx_deinit@1/1        chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f console_tx_insert_line@1/4 chip_mk64f.cc:k64_tx_irq_enable
+site armv7m frdmk64f console_tx_insert_line@2/4 chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f console_tx_insert_line@3/4 chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f console_tx_insert_line@4/4 chip_mk64f.cc:k64_tx_push
 
 site armv7m frdmk64f-flat console_tx.cc:wait_slot@1/1  chip_mk64f.cc:k64_tx_slot_free
 site armv7m frdmk64f-flat console_tx.cc:drain_sync@1/1 chip_mk64f.cc:k64_tx_push
@@ -440,6 +695,10 @@ site armv7m frdmk64f-flat console_tx_isr@2/3           chip_mk64f.cc:k64_tx_push
 site armv7m frdmk64f-flat console_tx_isr@3/3           chip_mk64f.cc:k64_tx_irq_disable
 site armv7m frdmk64f-flat console_tx_flush_sync@1/1    chip_mk64f.cc:k64_tx_irq_disable
 site armv7m frdmk64f-flat console_tx_deinit@1/1        chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-flat console_tx_insert_line@1/4 chip_mk64f.cc:k64_tx_irq_enable
+site armv7m frdmk64f-flat console_tx_insert_line@2/4 chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f-flat console_tx_insert_line@3/4 chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-flat console_tx_insert_line@4/4 chip_mk64f.cc:k64_tx_push
 
 site armv7m frdmk64f-st console_tx.cc:wait_slot@1/1  chip_mk64f.cc:k64_tx_slot_free
 site armv7m frdmk64f-st console_tx.cc:drain_sync@1/1 chip_mk64f.cc:k64_tx_push
@@ -453,6 +712,10 @@ site armv7m frdmk64f-st console_tx_isr@2/3           chip_mk64f.cc:k64_tx_push
 site armv7m frdmk64f-st console_tx_isr@3/3           chip_mk64f.cc:k64_tx_irq_disable
 site armv7m frdmk64f-st console_tx_flush_sync@1/1    chip_mk64f.cc:k64_tx_irq_disable
 site armv7m frdmk64f-st console_tx_deinit@1/1        chip_mk64f.cc:k64_tx_irq_disable
+site armv7m frdmk64f-st console_tx_insert_line@1/4 chip_mk64f.cc:k64_tx_irq_enable
+site armv7m frdmk64f-st console_tx_insert_line@2/4 chip_mk64f.cc:k64_tx_slot_free
+site armv7m frdmk64f-st console_tx_insert_line@3/4 chip_mk64f.cc:k64_tx_push
+site armv7m frdmk64f-st console_tx_insert_line@4/4 chip_mk64f.cc:k64_tx_push
 
 site armv7m teensy41 console_tx.cc:wait_slot@1/1  chip_imxrt1062.cc:lp6_tx_slot_free
 site armv7m teensy41 console_tx.cc:drain_sync@1/1 chip_imxrt1062.cc:lp6_tx_push
@@ -466,6 +729,10 @@ site armv7m teensy41 console_tx_isr@2/3           chip_imxrt1062.cc:lp6_tx_push
 site armv7m teensy41 console_tx_isr@3/3           chip_imxrt1062.cc:lp6_tx_irq_disable
 site armv7m teensy41 console_tx_flush_sync@1/1    chip_imxrt1062.cc:lp6_tx_irq_disable
 site armv7m teensy41 console_tx_deinit@1/1        chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41 console_tx_insert_line@1/4 chip_imxrt1062.cc:lp6_tx_irq_enable
+site armv7m teensy41 console_tx_insert_line@2/4 chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41 console_tx_insert_line@3/4 chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41 console_tx_insert_line@4/4 chip_imxrt1062.cc:lp6_tx_push
 
 site armv7m teensy41-flat console_tx.cc:wait_slot@1/1  chip_imxrt1062.cc:lp6_tx_slot_free
 site armv7m teensy41-flat console_tx.cc:drain_sync@1/1 chip_imxrt1062.cc:lp6_tx_push
@@ -479,6 +746,10 @@ site armv7m teensy41-flat console_tx_isr@2/3           chip_imxrt1062.cc:lp6_tx_
 site armv7m teensy41-flat console_tx_isr@3/3           chip_imxrt1062.cc:lp6_tx_irq_disable
 site armv7m teensy41-flat console_tx_flush_sync@1/1    chip_imxrt1062.cc:lp6_tx_irq_disable
 site armv7m teensy41-flat console_tx_deinit@1/1        chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-flat console_tx_insert_line@1/4 chip_imxrt1062.cc:lp6_tx_irq_enable
+site armv7m teensy41-flat console_tx_insert_line@2/4 chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41-flat console_tx_insert_line@3/4 chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-flat console_tx_insert_line@4/4 chip_imxrt1062.cc:lp6_tx_push
 
 site armv7m teensy41-st console_tx.cc:wait_slot@1/1  chip_imxrt1062.cc:lp6_tx_slot_free
 site armv7m teensy41-st console_tx.cc:drain_sync@1/1 chip_imxrt1062.cc:lp6_tx_push
@@ -492,6 +763,10 @@ site armv7m teensy41-st console_tx_isr@2/3           chip_imxrt1062.cc:lp6_tx_pu
 site armv7m teensy41-st console_tx_isr@3/3           chip_imxrt1062.cc:lp6_tx_irq_disable
 site armv7m teensy41-st console_tx_flush_sync@1/1    chip_imxrt1062.cc:lp6_tx_irq_disable
 site armv7m teensy41-st console_tx_deinit@1/1        chip_imxrt1062.cc:lp6_tx_irq_disable
+site armv7m teensy41-st console_tx_insert_line@1/4 chip_imxrt1062.cc:lp6_tx_irq_enable
+site armv7m teensy41-st console_tx_insert_line@2/4 chip_imxrt1062.cc:lp6_tx_slot_free
+site armv7m teensy41-st console_tx_insert_line@3/4 chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-st console_tx_insert_line@4/4 chip_imxrt1062.cc:lp6_tx_push
 
 site armv7m xmc4800-relax console_tx.cc:wait_slot@1/1  usic_uart.cc:xmc_tx_slot_free
 site armv7m xmc4800-relax console_tx.cc:drain_sync@1/1 usic_uart.cc:xmc_tx_push
@@ -505,6 +780,10 @@ site armv7m xmc4800-relax console_tx_isr@2/3           usic_uart.cc:xmc_tx_push
 site armv7m xmc4800-relax console_tx_isr@3/3           usic_uart.cc:xmc_tx_irq_disable
 site armv7m xmc4800-relax console_tx_flush_sync@1/1    usic_uart.cc:xmc_tx_irq_disable
 site armv7m xmc4800-relax console_tx_deinit@1/1        usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax console_tx_insert_line@1/4 usic_uart.cc:xmc_tx_irq_enable
+site armv7m xmc4800-relax console_tx_insert_line@2/4 usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax console_tx_insert_line@3/4 usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax console_tx_insert_line@4/4 usic_uart.cc:xmc_tx_push
 
 site armv7m xmc4800-relax-flat console_tx.cc:wait_slot@1/1  usic_uart.cc:xmc_tx_slot_free
 site armv7m xmc4800-relax-flat console_tx.cc:drain_sync@1/1 usic_uart.cc:xmc_tx_push
@@ -518,6 +797,10 @@ site armv7m xmc4800-relax-flat console_tx_isr@2/3           usic_uart.cc:xmc_tx_
 site armv7m xmc4800-relax-flat console_tx_isr@3/3           usic_uart.cc:xmc_tx_irq_disable
 site armv7m xmc4800-relax-flat console_tx_flush_sync@1/1    usic_uart.cc:xmc_tx_irq_disable
 site armv7m xmc4800-relax-flat console_tx_deinit@1/1        usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-flat console_tx_insert_line@1/4 usic_uart.cc:xmc_tx_irq_enable
+site armv7m xmc4800-relax-flat console_tx_insert_line@2/4 usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-flat console_tx_insert_line@3/4 usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-flat console_tx_insert_line@4/4 usic_uart.cc:xmc_tx_push
 
 site armv7m xmc4800-relax-st console_tx.cc:wait_slot@1/1  usic_uart.cc:xmc_tx_slot_free
 site armv7m xmc4800-relax-st console_tx.cc:drain_sync@1/1 usic_uart.cc:xmc_tx_push
@@ -531,6 +814,10 @@ site armv7m xmc4800-relax-st console_tx_isr@2/3           usic_uart.cc:xmc_tx_pu
 site armv7m xmc4800-relax-st console_tx_isr@3/3           usic_uart.cc:xmc_tx_irq_disable
 site armv7m xmc4800-relax-st console_tx_flush_sync@1/1    usic_uart.cc:xmc_tx_irq_disable
 site armv7m xmc4800-relax-st console_tx_deinit@1/1        usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-st console_tx_insert_line@1/4 usic_uart.cc:xmc_tx_irq_enable
+site armv7m xmc4800-relax-st console_tx_insert_line@2/4 usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-st console_tx_insert_line@3/4 usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-st console_tx_insert_line@4/4 usic_uart.cc:xmc_tx_push
 
 site armv7m xmc4800-relax-bench console_tx.cc:wait_slot@1/1  usic_uart.cc:xmc_tx_slot_free
 site armv7m xmc4800-relax-bench console_tx.cc:drain_sync@1/1 usic_uart.cc:xmc_tx_push
@@ -544,6 +831,10 @@ site armv7m xmc4800-relax-bench console_tx_isr@2/3           usic_uart.cc:xmc_tx
 site armv7m xmc4800-relax-bench console_tx_isr@3/3           usic_uart.cc:xmc_tx_irq_disable
 site armv7m xmc4800-relax-bench console_tx_flush_sync@1/1    usic_uart.cc:xmc_tx_irq_disable
 site armv7m xmc4800-relax-bench console_tx_deinit@1/1        usic_uart.cc:xmc_tx_irq_disable
+site armv7m xmc4800-relax-bench console_tx_insert_line@1/4 usic_uart.cc:xmc_tx_irq_enable
+site armv7m xmc4800-relax-bench console_tx_insert_line@2/4 usic_uart.cc:xmc_tx_slot_free
+site armv7m xmc4800-relax-bench console_tx_insert_line@3/4 usic_uart.cc:xmc_tx_push
+site armv7m xmc4800-relax-bench console_tx_insert_line@4/4 usic_uart.cc:xmc_tx_push
 
 site armv7m f411disco console_tx.cc:wait_slot@1/1  chip_stm32f411.cc:f4_tx_slot_free
 site armv7m f411disco console_tx.cc:drain_sync@1/1 chip_stm32f411.cc:f4_tx_push
@@ -557,6 +848,10 @@ site armv7m f411disco console_tx_isr@2/3           chip_stm32f411.cc:f4_tx_push
 site armv7m f411disco console_tx_isr@3/3           chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m f411disco console_tx_flush_sync@1/1    chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m f411disco console_tx_deinit@1/1        chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco console_tx_insert_line@1/4 chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m f411disco console_tx_insert_line@2/4 chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco console_tx_insert_line@3/4 chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco console_tx_insert_line@4/4 chip_stm32f411.cc:f4_tx_push
 
 site armv7m f411disco-flat console_tx.cc:wait_slot@1/1  chip_stm32f411.cc:f4_tx_slot_free
 site armv7m f411disco-flat console_tx.cc:drain_sync@1/1 chip_stm32f411.cc:f4_tx_push
@@ -570,6 +865,10 @@ site armv7m f411disco-flat console_tx_isr@2/3           chip_stm32f411.cc:f4_tx_
 site armv7m f411disco-flat console_tx_isr@3/3           chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m f411disco-flat console_tx_flush_sync@1/1    chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m f411disco-flat console_tx_deinit@1/1        chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-flat console_tx_insert_line@1/4 chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m f411disco-flat console_tx_insert_line@2/4 chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-flat console_tx_insert_line@3/4 chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-flat console_tx_insert_line@4/4 chip_stm32f411.cc:f4_tx_push
 
 site armv7m f411disco-st console_tx.cc:wait_slot@1/1  chip_stm32f411.cc:f4_tx_slot_free
 site armv7m f411disco-st console_tx.cc:drain_sync@1/1 chip_stm32f411.cc:f4_tx_push
@@ -583,6 +882,10 @@ site armv7m f411disco-st console_tx_isr@2/3           chip_stm32f411.cc:f4_tx_pu
 site armv7m f411disco-st console_tx_isr@3/3           chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m f411disco-st console_tx_flush_sync@1/1    chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m f411disco-st console_tx_deinit@1/1        chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-st console_tx_insert_line@1/4 chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m f411disco-st console_tx_insert_line@2/4 chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-st console_tx_insert_line@3/4 chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-st console_tx_insert_line@4/4 chip_stm32f411.cc:f4_tx_push
 
 site armv7m blackpill console_tx.cc:wait_slot@1/1  chip_stm32f411.cc:f4_tx_slot_free
 site armv7m blackpill console_tx.cc:drain_sync@1/1 chip_stm32f411.cc:f4_tx_push
@@ -596,6 +899,10 @@ site armv7m blackpill console_tx_isr@2/3           chip_stm32f411.cc:f4_tx_push
 site armv7m blackpill console_tx_isr@3/3           chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m blackpill console_tx_flush_sync@1/1    chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m blackpill console_tx_deinit@1/1        chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill console_tx_insert_line@1/4 chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m blackpill console_tx_insert_line@2/4 chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill console_tx_insert_line@3/4 chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill console_tx_insert_line@4/4 chip_stm32f411.cc:f4_tx_push
 
 site armv7m blackpill-flat console_tx.cc:wait_slot@1/1  chip_stm32f411.cc:f4_tx_slot_free
 site armv7m blackpill-flat console_tx.cc:drain_sync@1/1 chip_stm32f411.cc:f4_tx_push
@@ -609,6 +916,10 @@ site armv7m blackpill-flat console_tx_isr@2/3           chip_stm32f411.cc:f4_tx_
 site armv7m blackpill-flat console_tx_isr@3/3           chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m blackpill-flat console_tx_flush_sync@1/1    chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m blackpill-flat console_tx_deinit@1/1        chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-flat console_tx_insert_line@1/4 chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m blackpill-flat console_tx_insert_line@2/4 chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill-flat console_tx_insert_line@3/4 chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-flat console_tx_insert_line@4/4 chip_stm32f411.cc:f4_tx_push
 
 site armv7m blackpill-st console_tx.cc:wait_slot@1/1  chip_stm32f411.cc:f4_tx_slot_free
 site armv7m blackpill-st console_tx.cc:drain_sync@1/1 chip_stm32f411.cc:f4_tx_push
@@ -622,6 +933,10 @@ site armv7m blackpill-st console_tx_isr@2/3           chip_stm32f411.cc:f4_tx_pu
 site armv7m blackpill-st console_tx_isr@3/3           chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m blackpill-st console_tx_flush_sync@1/1    chip_stm32f411.cc:f4_tx_irq_disable
 site armv7m blackpill-st console_tx_deinit@1/1        chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m blackpill-st console_tx_insert_line@1/4 chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m blackpill-st console_tx_insert_line@2/4 chip_stm32f411.cc:f4_tx_slot_free
+site armv7m blackpill-st console_tx_insert_line@3/4 chip_stm32f411.cc:f4_tx_push
+site armv7m blackpill-st console_tx_insert_line@4/4 chip_stm32f411.cc:f4_tx_push
 
 site armv7m due console_tx.cc:wait_slot@1/1  chip_sam3x8e.cc:sam_tx_slot_free
 site armv7m due console_tx.cc:drain_sync@1/1 chip_sam3x8e.cc:sam_tx_push
@@ -635,6 +950,10 @@ site armv7m due console_tx_isr@2/3           chip_sam3x8e.cc:sam_tx_push
 site armv7m due console_tx_isr@3/3           chip_sam3x8e.cc:sam_tx_irq_disable
 site armv7m due console_tx_flush_sync@1/1    chip_sam3x8e.cc:sam_tx_irq_disable
 site armv7m due console_tx_deinit@1/1        chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due console_tx_insert_line@1/4 chip_sam3x8e.cc:sam_tx_irq_enable
+site armv7m due console_tx_insert_line@2/4 chip_sam3x8e.cc:sam_tx_slot_free
+site armv7m due console_tx_insert_line@3/4 chip_sam3x8e.cc:sam_tx_push
+site armv7m due console_tx_insert_line@4/4 chip_sam3x8e.cc:sam_tx_push
 
 site armv7m due-st console_tx.cc:wait_slot@1/1  chip_sam3x8e.cc:sam_tx_slot_free
 site armv7m due-st console_tx.cc:drain_sync@1/1 chip_sam3x8e.cc:sam_tx_push
@@ -648,6 +967,10 @@ site armv7m due-st console_tx_isr@2/3           chip_sam3x8e.cc:sam_tx_push
 site armv7m due-st console_tx_isr@3/3           chip_sam3x8e.cc:sam_tx_irq_disable
 site armv7m due-st console_tx_flush_sync@1/1    chip_sam3x8e.cc:sam_tx_irq_disable
 site armv7m due-st console_tx_deinit@1/1        chip_sam3x8e.cc:sam_tx_irq_disable
+site armv7m due-st console_tx_insert_line@1/4 chip_sam3x8e.cc:sam_tx_irq_enable
+site armv7m due-st console_tx_insert_line@2/4 chip_sam3x8e.cc:sam_tx_slot_free
+site armv7m due-st console_tx_insert_line@3/4 chip_sam3x8e.cc:sam_tx_push
+site armv7m due-st console_tx_insert_line@4/4 chip_sam3x8e.cc:sam_tx_push
 
 site armv7m pizero2350 console_tx.cc:wait_slot@1/1  chip_rp2350.cc:rp_tx_slot_free
 site armv7m pizero2350 console_tx.cc:drain_sync@1/1 chip_rp2350.cc:rp_tx_push
@@ -661,6 +984,10 @@ site armv7m pizero2350 console_tx_isr@2/3           chip_rp2350.cc:rp_tx_push
 site armv7m pizero2350 console_tx_isr@3/3           chip_rp2350.cc:rp_tx_irq_disable
 site armv7m pizero2350 console_tx_flush_sync@1/1    chip_rp2350.cc:rp_tx_irq_disable
 site armv7m pizero2350 console_tx_deinit@1/1        chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350 console_tx_insert_line@1/4 chip_rp2350.cc:rp_tx_irq_enable
+site armv7m pizero2350 console_tx_insert_line@2/4 chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350 console_tx_insert_line@3/4 chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350 console_tx_insert_line@4/4 chip_rp2350.cc:rp_tx_push
 
 # Nine of the twelve sites the sibling presets carry; console_tx.cc:285, :287 and :295 are not
 # in this preset's graph, and an over-declared set is refused as loudly as an under-declared one.
@@ -673,6 +1000,10 @@ site armv7m pizero2350-amp console_tx_write@4/5         chip_rp2350.cc:rp_tx_irq
 site armv7m pizero2350-amp console_tx_write@5/5         chip_rp2350.cc:rp_tx_push
 site armv7m pizero2350-amp console_tx_flush_sync@1/1    chip_rp2350.cc:rp_tx_irq_disable
 site armv7m pizero2350-amp console_tx_deinit@1/1        chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350-amp console_tx_insert_line@1/4 chip_rp2350.cc:rp_tx_irq_enable
+site armv7m pizero2350-amp console_tx_insert_line@2/4 chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350-amp console_tx_insert_line@3/4 chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-amp console_tx_insert_line@4/4 chip_rp2350.cc:rp_tx_push
 
 # THE SAME NINE SITES AND NO CALLEE AT ANY OF THEM. A partition compiles no buffered TX
 # backend (arch_console_tx_backend), so nothing takes the address of one and the ring's
@@ -687,6 +1018,10 @@ site armv7m pizero2350-amp2-n0 console_tx_write@4/5         NONE
 site armv7m pizero2350-amp2-n0 console_tx_write@5/5         NONE
 site armv7m pizero2350-amp2-n0 console_tx_flush_sync@1/1    NONE
 site armv7m pizero2350-amp2-n0 console_tx_deinit@1/1        NONE
+site armv7m pizero2350-amp2-n0 console_tx_insert_line@1/4 NONE
+site armv7m pizero2350-amp2-n0 console_tx_insert_line@2/4 NONE
+site armv7m pizero2350-amp2-n0 console_tx_insert_line@3/4 NONE
+site armv7m pizero2350-amp2-n0 console_tx_insert_line@4/4 NONE
 
 # THE SAME NINE SITES AND NO CALLEE AT ANY OF THEM. A partition compiles no buffered TX
 # backend (arch_console_tx_backend), so nothing takes the address of one and the ring's
@@ -701,6 +1036,10 @@ site armv7m pizero2350-amp2-n1 console_tx_write@4/5         NONE
 site armv7m pizero2350-amp2-n1 console_tx_write@5/5         NONE
 site armv7m pizero2350-amp2-n1 console_tx_flush_sync@1/1    NONE
 site armv7m pizero2350-amp2-n1 console_tx_deinit@1/1        NONE
+site armv7m pizero2350-amp2-n1 console_tx_insert_line@1/4 NONE
+site armv7m pizero2350-amp2-n1 console_tx_insert_line@2/4 NONE
+site armv7m pizero2350-amp2-n1 console_tx_insert_line@3/4 NONE
+site armv7m pizero2350-amp2-n1 console_tx_insert_line@4/4 NONE
 
 site armv7m pizero2350-flat console_tx.cc:wait_slot@1/1  chip_rp2350.cc:rp_tx_slot_free
 site armv7m pizero2350-flat console_tx.cc:drain_sync@1/1 chip_rp2350.cc:rp_tx_push
@@ -714,6 +1053,10 @@ site armv7m pizero2350-flat console_tx_isr@2/3           chip_rp2350.cc:rp_tx_pu
 site armv7m pizero2350-flat console_tx_isr@3/3           chip_rp2350.cc:rp_tx_irq_disable
 site armv7m pizero2350-flat console_tx_flush_sync@1/1    chip_rp2350.cc:rp_tx_irq_disable
 site armv7m pizero2350-flat console_tx_deinit@1/1        chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350-flat console_tx_insert_line@1/4 chip_rp2350.cc:rp_tx_irq_enable
+site armv7m pizero2350-flat console_tx_insert_line@2/4 chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350-flat console_tx_insert_line@3/4 chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-flat console_tx_insert_line@4/4 chip_rp2350.cc:rp_tx_push
 
 site armv7m pizero2350-st console_tx.cc:wait_slot@1/1  chip_rp2350.cc:rp_tx_slot_free
 site armv7m pizero2350-st console_tx.cc:drain_sync@1/1 chip_rp2350.cc:rp_tx_push
@@ -727,6 +1070,10 @@ site armv7m pizero2350-st console_tx_isr@2/3           chip_rp2350.cc:rp_tx_push
 site armv7m pizero2350-st console_tx_isr@3/3           chip_rp2350.cc:rp_tx_irq_disable
 site armv7m pizero2350-st console_tx_flush_sync@1/1    chip_rp2350.cc:rp_tx_irq_disable
 site armv7m pizero2350-st console_tx_deinit@1/1        chip_rp2350.cc:rp_tx_irq_disable
+site armv7m pizero2350-st console_tx_insert_line@1/4 chip_rp2350.cc:rp_tx_irq_enable
+site armv7m pizero2350-st console_tx_insert_line@2/4 chip_rp2350.cc:rp_tx_slot_free
+site armv7m pizero2350-st console_tx_insert_line@3/4 chip_rp2350.cc:rp_tx_push
+site armv7m pizero2350-st console_tx_insert_line@4/4 chip_rp2350.cc:rp_tx_push
 
 site armv7m f302nucleo console_tx.cc:wait_slot@1/1  chip_stm32f1f3.cc:stm32_tx_slot_free
 site armv7m f302nucleo console_tx.cc:drain_sync@1/1 chip_stm32f1f3.cc:stm32_tx_push
@@ -740,6 +1087,10 @@ site armv7m f302nucleo console_tx_isr@2/3           chip_stm32f1f3.cc:stm32_tx_p
 site armv7m f302nucleo console_tx_isr@3/3           chip_stm32f1f3.cc:stm32_tx_irq_disable
 site armv7m f302nucleo console_tx_flush_sync@1/1    chip_stm32f1f3.cc:stm32_tx_irq_disable
 site armv7m f302nucleo console_tx_deinit@1/1        chip_stm32f1f3.cc:stm32_tx_irq_disable
+site armv7m f302nucleo console_tx_insert_line@1/4 chip_stm32f1f3.cc:stm32_tx_irq_enable
+site armv7m f302nucleo console_tx_insert_line@2/4 chip_stm32f1f3.cc:stm32_tx_slot_free
+site armv7m f302nucleo console_tx_insert_line@3/4 chip_stm32f1f3.cc:stm32_tx_push
+site armv7m f302nucleo console_tx_insert_line@4/4 chip_stm32f1f3.cc:stm32_tx_push
 
 site armv7m f302nucleo-st console_tx.cc:wait_slot@1/1  chip_stm32f1f3.cc:stm32_tx_slot_free
 site armv7m f302nucleo-st console_tx.cc:drain_sync@1/1 chip_stm32f1f3.cc:stm32_tx_push
@@ -753,6 +1104,10 @@ site armv7m f302nucleo-st console_tx_isr@2/3           chip_stm32f1f3.cc:stm32_t
 site armv7m f302nucleo-st console_tx_isr@3/3           chip_stm32f1f3.cc:stm32_tx_irq_disable
 site armv7m f302nucleo-st console_tx_flush_sync@1/1    chip_stm32f1f3.cc:stm32_tx_irq_disable
 site armv7m f302nucleo-st console_tx_deinit@1/1        chip_stm32f1f3.cc:stm32_tx_irq_disable
+site armv7m f302nucleo-st console_tx_insert_line@1/4 chip_stm32f1f3.cc:stm32_tx_irq_enable
+site armv7m f302nucleo-st console_tx_insert_line@2/4 chip_stm32f1f3.cc:stm32_tx_slot_free
+site armv7m f302nucleo-st console_tx_insert_line@3/4 chip_stm32f1f3.cc:stm32_tx_push
+site armv7m f302nucleo-st console_tx_insert_line@4/4 chip_stm32f1f3.cc:stm32_tx_push
 
 site armv7m bluepill-c8 console_tx.cc:wait_slot@1/1  chip_stm32f1f3.cc:stm32_tx_slot_free
 site armv7m bluepill-c8 console_tx.cc:drain_sync@1/1 chip_stm32f1f3.cc:stm32_tx_push
@@ -766,6 +1121,10 @@ site armv7m bluepill-c8 console_tx_isr@2/3           chip_stm32f1f3.cc:stm32_tx_
 site armv7m bluepill-c8 console_tx_isr@3/3           chip_stm32f1f3.cc:stm32_tx_irq_disable
 site armv7m bluepill-c8 console_tx_flush_sync@1/1    chip_stm32f1f3.cc:stm32_tx_irq_disable
 site armv7m bluepill-c8 console_tx_deinit@1/1        chip_stm32f1f3.cc:stm32_tx_irq_disable
+site armv7m bluepill-c8 console_tx_insert_line@1/4 chip_stm32f1f3.cc:stm32_tx_irq_enable
+site armv7m bluepill-c8 console_tx_insert_line@2/4 chip_stm32f1f3.cc:stm32_tx_slot_free
+site armv7m bluepill-c8 console_tx_insert_line@3/4 chip_stm32f1f3.cc:stm32_tx_push
+site armv7m bluepill-c8 console_tx_insert_line@4/4 chip_stm32f1f3.cc:stm32_tx_push
 
 site armv7m bluepill-c8-st console_tx.cc:wait_slot@1/1  chip_stm32f1f3.cc:stm32_tx_slot_free
 site armv7m bluepill-c8-st console_tx.cc:drain_sync@1/1 chip_stm32f1f3.cc:stm32_tx_push
@@ -779,6 +1138,10 @@ site armv7m bluepill-c8-st console_tx_isr@2/3           chip_stm32f1f3.cc:stm32_
 site armv7m bluepill-c8-st console_tx_isr@3/3           chip_stm32f1f3.cc:stm32_tx_irq_disable
 site armv7m bluepill-c8-st console_tx_flush_sync@1/1    chip_stm32f1f3.cc:stm32_tx_irq_disable
 site armv7m bluepill-c8-st console_tx_deinit@1/1        chip_stm32f1f3.cc:stm32_tx_irq_disable
+site armv7m bluepill-c8-st console_tx_insert_line@1/4 chip_stm32f1f3.cc:stm32_tx_irq_enable
+site armv7m bluepill-c8-st console_tx_insert_line@2/4 chip_stm32f1f3.cc:stm32_tx_slot_free
+site armv7m bluepill-c8-st console_tx_insert_line@3/4 chip_stm32f1f3.cc:stm32_tx_push
+site armv7m bluepill-c8-st console_tx_insert_line@4/4 chip_stm32f1f3.cc:stm32_tx_push
 
 # --- armv7m: the RP2350 bootrom entry, pizero2350 only --------------------------
 # arch_reboot reads two function pointers out of ROM and calls through them. No call graph can
@@ -831,18 +1194,22 @@ site armv6m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
 # nullptr, so console_tx_init never arms the ring and no site can run. rp2040 has a real
 # PL011 backend, so picopi-st binds each site to the slot that call reaches.
 
-site armv6m microbit console_tx.cc:wait_slot@1/1  NONE
-site armv6m microbit console_tx.cc:drain_sync@1/1 NONE
-site armv6m microbit console_tx_write@1/5         NONE
-site armv6m microbit console_tx_write@2/5         NONE
-site armv6m microbit console_tx_write@3/5         NONE
-site armv6m microbit console_tx_write@4/5         NONE
-site armv6m microbit console_tx_write@5/5         NONE
-site armv6m microbit console_tx_isr@1/3           NONE
-site armv6m microbit console_tx_isr@2/3           NONE
-site armv6m microbit console_tx_isr@3/3           NONE
-site armv6m microbit console_tx_flush_sync@1/1    NONE
-site armv6m microbit console_tx_deinit@1/1        NONE
+site armv6m microbit console_tx.cc:wait_slot@1/1  chip_nrf51.cc:nrf51_tx_slot_free
+site armv6m microbit console_tx.cc:drain_sync@1/1 chip_nrf51.cc:nrf51_tx_push
+site armv6m microbit console_tx_write@1/5         chip_nrf51.cc:nrf51_tx_irq_enable
+site armv6m microbit console_tx_write@2/5         chip_nrf51.cc:nrf51_tx_slot_free
+site armv6m microbit console_tx_write@3/5         chip_nrf51.cc:nrf51_tx_push
+site armv6m microbit console_tx_write@4/5         chip_nrf51.cc:nrf51_tx_irq_disable
+site armv6m microbit console_tx_write@5/5         chip_nrf51.cc:nrf51_tx_push
+site armv6m microbit console_tx_isr@1/3           chip_nrf51.cc:nrf51_tx_slot_free
+site armv6m microbit console_tx_isr@2/3           chip_nrf51.cc:nrf51_tx_push
+site armv6m microbit console_tx_isr@3/3           chip_nrf51.cc:nrf51_tx_irq_disable
+site armv6m microbit console_tx_flush_sync@1/1    chip_nrf51.cc:nrf51_tx_irq_disable
+site armv6m microbit console_tx_deinit@1/1        chip_nrf51.cc:nrf51_tx_irq_disable
+site armv6m microbit console_tx_insert_line@1/4 chip_nrf51.cc:nrf51_tx_irq_enable
+site armv6m microbit console_tx_insert_line@2/4 chip_nrf51.cc:nrf51_tx_slot_free
+site armv6m microbit console_tx_insert_line@3/4 chip_nrf51.cc:nrf51_tx_push
+site armv6m microbit console_tx_insert_line@4/4 chip_nrf51.cc:nrf51_tx_push
 
 site armv6m picopi-st console_tx.cc:wait_slot@1/1  chip_rp2040.cc:rp_tx_slot_free
 site armv6m picopi-st console_tx.cc:drain_sync@1/1 chip_rp2040.cc:rp_tx_push
@@ -856,6 +1223,10 @@ site armv6m picopi-st console_tx_isr@2/3           chip_rp2040.cc:rp_tx_push
 site armv6m picopi-st console_tx_isr@3/3           chip_rp2040.cc:rp_tx_irq_disable
 site armv6m picopi-st console_tx_flush_sync@1/1    chip_rp2040.cc:rp_tx_irq_disable
 site armv6m picopi-st console_tx_deinit@1/1        chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi-st console_tx_insert_line@1/4 chip_rp2040.cc:rp_tx_irq_enable
+site armv6m picopi-st console_tx_insert_line@2/4 chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi-st console_tx_insert_line@3/4 chip_rp2040.cc:rp_tx_push
+site armv6m picopi-st console_tx_insert_line@4/4 chip_rp2040.cc:rp_tx_push
 
 # --- armv6m: the RP2040 bootrom entry, picopi only ------------------------------
 # arch_reboot reads two function pointers out of ROM and calls through them. No call graph can
@@ -868,31 +1239,39 @@ site armv6m picopi-st arch_reboot@2/2 NONE
 # arch_console_tx_backend to the arch/common fallback whatever the variant, and all four
 # esp32c6-wroom presets bind the C6 slots.
 
-site rv32imac qemu-riscv-flat console_tx.cc:wait_slot@1/1  NONE
-site rv32imac qemu-riscv-flat console_tx.cc:drain_sync@1/1 NONE
-site rv32imac qemu-riscv-flat console_tx_write@1/5         NONE
-site rv32imac qemu-riscv-flat console_tx_write@2/5         NONE
-site rv32imac qemu-riscv-flat console_tx_write@3/5         NONE
-site rv32imac qemu-riscv-flat console_tx_write@4/5         NONE
-site rv32imac qemu-riscv-flat console_tx_write@5/5         NONE
-site rv32imac qemu-riscv-flat console_tx_isr@1/3           NONE
-site rv32imac qemu-riscv-flat console_tx_isr@2/3           NONE
-site rv32imac qemu-riscv-flat console_tx_isr@3/3           NONE
-site rv32imac qemu-riscv-flat console_tx_flush_sync@1/1    NONE
-site rv32imac qemu-riscv-flat console_tx_deinit@1/1        NONE
+site rv32imac qemu-riscv-flat console_tx.cc:wait_slot@1/1  chip_virt_rv32.cc:rv32_tx_slot_free
+site rv32imac qemu-riscv-flat console_tx.cc:drain_sync@1/1 chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv-flat console_tx_write@1/5         chip_virt_rv32.cc:rv32_tx_irq_enable
+site rv32imac qemu-riscv-flat console_tx_write@2/5         chip_virt_rv32.cc:rv32_tx_slot_free
+site rv32imac qemu-riscv-flat console_tx_write@3/5         chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv-flat console_tx_write@4/5         chip_virt_rv32.cc:rv32_tx_irq_disable
+site rv32imac qemu-riscv-flat console_tx_write@5/5         chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv-flat console_tx_isr@1/3           chip_virt_rv32.cc:rv32_tx_slot_free
+site rv32imac qemu-riscv-flat console_tx_isr@2/3           chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv-flat console_tx_isr@3/3           chip_virt_rv32.cc:rv32_tx_irq_disable
+site rv32imac qemu-riscv-flat console_tx_flush_sync@1/1    chip_virt_rv32.cc:rv32_tx_irq_disable
+site rv32imac qemu-riscv-flat console_tx_deinit@1/1        chip_virt_rv32.cc:rv32_tx_irq_disable
+site rv32imac qemu-riscv-flat console_tx_insert_line@1/4 chip_virt_rv32.cc:rv32_tx_irq_enable
+site rv32imac qemu-riscv-flat console_tx_insert_line@2/4 chip_virt_rv32.cc:rv32_tx_slot_free
+site rv32imac qemu-riscv-flat console_tx_insert_line@3/4 chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv-flat console_tx_insert_line@4/4 chip_virt_rv32.cc:rv32_tx_push
 
-site rv32imac qemu-riscv-bench console_tx.cc:wait_slot@1/1  NONE
-site rv32imac qemu-riscv-bench console_tx.cc:drain_sync@1/1 NONE
-site rv32imac qemu-riscv-bench console_tx_write@1/5         NONE
-site rv32imac qemu-riscv-bench console_tx_write@2/5         NONE
-site rv32imac qemu-riscv-bench console_tx_write@3/5         NONE
-site rv32imac qemu-riscv-bench console_tx_write@4/5         NONE
-site rv32imac qemu-riscv-bench console_tx_write@5/5         NONE
-site rv32imac qemu-riscv-bench console_tx_isr@1/3           NONE
-site rv32imac qemu-riscv-bench console_tx_isr@2/3           NONE
-site rv32imac qemu-riscv-bench console_tx_isr@3/3           NONE
-site rv32imac qemu-riscv-bench console_tx_flush_sync@1/1    NONE
-site rv32imac qemu-riscv-bench console_tx_deinit@1/1        NONE
+site rv32imac qemu-riscv-bench console_tx.cc:wait_slot@1/1  chip_virt_rv32.cc:rv32_tx_slot_free
+site rv32imac qemu-riscv-bench console_tx.cc:drain_sync@1/1 chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv-bench console_tx_write@1/5         chip_virt_rv32.cc:rv32_tx_irq_enable
+site rv32imac qemu-riscv-bench console_tx_write@2/5         chip_virt_rv32.cc:rv32_tx_slot_free
+site rv32imac qemu-riscv-bench console_tx_write@3/5         chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv-bench console_tx_write@4/5         chip_virt_rv32.cc:rv32_tx_irq_disable
+site rv32imac qemu-riscv-bench console_tx_write@5/5         chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv-bench console_tx_isr@1/3           chip_virt_rv32.cc:rv32_tx_slot_free
+site rv32imac qemu-riscv-bench console_tx_isr@2/3           chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv-bench console_tx_isr@3/3           chip_virt_rv32.cc:rv32_tx_irq_disable
+site rv32imac qemu-riscv-bench console_tx_flush_sync@1/1    chip_virt_rv32.cc:rv32_tx_irq_disable
+site rv32imac qemu-riscv-bench console_tx_deinit@1/1        chip_virt_rv32.cc:rv32_tx_irq_disable
+site rv32imac qemu-riscv-bench console_tx_insert_line@1/4 chip_virt_rv32.cc:rv32_tx_irq_enable
+site rv32imac qemu-riscv-bench console_tx_insert_line@2/4 chip_virt_rv32.cc:rv32_tx_slot_free
+site rv32imac qemu-riscv-bench console_tx_insert_line@3/4 chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv-bench console_tx_insert_line@4/4 chip_virt_rv32.cc:rv32_tx_push
 
 site rv32imac esp32c6-wroom console_tx.cc:wait_slot@1/1  chip_esp32c6.cc:c6_tx_slot_free
 site rv32imac esp32c6-wroom console_tx.cc:drain_sync@1/1 chip_esp32c6.cc:c6_tx_push
@@ -906,6 +1285,10 @@ site rv32imac esp32c6-wroom console_tx_isr@2/3           chip_esp32c6.cc:c6_tx_p
 site rv32imac esp32c6-wroom console_tx_isr@3/3           chip_esp32c6.cc:c6_tx_irq_disable
 site rv32imac esp32c6-wroom console_tx_flush_sync@1/1    chip_esp32c6.cc:c6_tx_irq_disable
 site rv32imac esp32c6-wroom console_tx_deinit@1/1        chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom console_tx_insert_line@1/4 chip_esp32c6.cc:c6_tx_irq_enable
+site rv32imac esp32c6-wroom console_tx_insert_line@2/4 chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom console_tx_insert_line@3/4 chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom console_tx_insert_line@4/4 chip_esp32c6.cc:c6_tx_push
 
 site rv32imac esp32c6-wroom-flat console_tx.cc:wait_slot@1/1  chip_esp32c6.cc:c6_tx_slot_free
 site rv32imac esp32c6-wroom-flat console_tx.cc:drain_sync@1/1 chip_esp32c6.cc:c6_tx_push
@@ -919,6 +1302,10 @@ site rv32imac esp32c6-wroom-flat console_tx_isr@2/3           chip_esp32c6.cc:c6
 site rv32imac esp32c6-wroom-flat console_tx_isr@3/3           chip_esp32c6.cc:c6_tx_irq_disable
 site rv32imac esp32c6-wroom-flat console_tx_flush_sync@1/1    chip_esp32c6.cc:c6_tx_irq_disable
 site rv32imac esp32c6-wroom-flat console_tx_deinit@1/1        chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-flat console_tx_insert_line@1/4 chip_esp32c6.cc:c6_tx_irq_enable
+site rv32imac esp32c6-wroom-flat console_tx_insert_line@2/4 chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-flat console_tx_insert_line@3/4 chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-flat console_tx_insert_line@4/4 chip_esp32c6.cc:c6_tx_push
 
 site rv32imac esp32c6-wroom-bench console_tx.cc:wait_slot@1/1  chip_esp32c6.cc:c6_tx_slot_free
 site rv32imac esp32c6-wroom-bench console_tx.cc:drain_sync@1/1 chip_esp32c6.cc:c6_tx_push
@@ -932,6 +1319,10 @@ site rv32imac esp32c6-wroom-bench console_tx_isr@2/3           chip_esp32c6.cc:c
 site rv32imac esp32c6-wroom-bench console_tx_isr@3/3           chip_esp32c6.cc:c6_tx_irq_disable
 site rv32imac esp32c6-wroom-bench console_tx_flush_sync@1/1    chip_esp32c6.cc:c6_tx_irq_disable
 site rv32imac esp32c6-wroom-bench console_tx_deinit@1/1        chip_esp32c6.cc:c6_tx_irq_disable
+site rv32imac esp32c6-wroom-bench console_tx_insert_line@1/4 chip_esp32c6.cc:c6_tx_irq_enable
+site rv32imac esp32c6-wroom-bench console_tx_insert_line@2/4 chip_esp32c6.cc:c6_tx_slot_free
+site rv32imac esp32c6-wroom-bench console_tx_insert_line@3/4 chip_esp32c6.cc:c6_tx_push
+site rv32imac esp32c6-wroom-bench console_tx_insert_line@4/4 chip_esp32c6.cc:c6_tx_push
 
 # The other two rx72m presets, same board and so the same SCI backend.
 
@@ -947,6 +1338,10 @@ site rxv3 rx72m console_tx_isr@2/3           chip_rx72m.cc:rx_tx_push
 site rxv3 rx72m console_tx_isr@3/3           chip_rx72m.cc:rx_tx_irq_disable
 site rxv3 rx72m console_tx_flush_sync@1/1    chip_rx72m.cc:rx_tx_irq_disable
 site rxv3 rx72m console_tx_deinit@1/1        chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m console_tx_insert_line@1/4 chip_rx72m.cc:rx_tx_irq_enable
+site rxv3 rx72m console_tx_insert_line@2/4 chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m console_tx_insert_line@3/4 chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m console_tx_insert_line@4/4 chip_rx72m.cc:rx_tx_push
 
 site rxv3 rx72m-flat console_tx.cc:wait_slot@1/1  chip_rx72m.cc:rx_tx_slot_free
 site rxv3 rx72m-flat console_tx.cc:drain_sync@1/1 chip_rx72m.cc:rx_tx_push
@@ -960,6 +1355,10 @@ site rxv3 rx72m-flat console_tx_isr@2/3           chip_rx72m.cc:rx_tx_push
 site rxv3 rx72m-flat console_tx_isr@3/3           chip_rx72m.cc:rx_tx_irq_disable
 site rxv3 rx72m-flat console_tx_flush_sync@1/1    chip_rx72m.cc:rx_tx_irq_disable
 site rxv3 rx72m-flat console_tx_deinit@1/1        chip_rx72m.cc:rx_tx_irq_disable
+site rxv3 rx72m-flat console_tx_insert_line@1/4 chip_rx72m.cc:rx_tx_irq_enable
+site rxv3 rx72m-flat console_tx_insert_line@2/4 chip_rx72m.cc:rx_tx_slot_free
+site rxv3 rx72m-flat console_tx_insert_line@3/4 chip_rx72m.cc:rx_tx_push
+site rxv3 rx72m-flat console_tx_insert_line@4/4 chip_rx72m.cc:rx_tx_push
 
 # The other two picopi presets. arch_reboot sits under #if defined(KICKOS_ENABLE_SELFTEST)
 # (chip_rp2040.cc), so the two chip_rp2040 bootrom sites exist in the -st graph alone.
@@ -976,6 +1375,10 @@ site armv6m picopi console_tx_isr@2/3           chip_rp2040.cc:rp_tx_push
 site armv6m picopi console_tx_isr@3/3           chip_rp2040.cc:rp_tx_irq_disable
 site armv6m picopi console_tx_flush_sync@1/1    chip_rp2040.cc:rp_tx_irq_disable
 site armv6m picopi console_tx_deinit@1/1        chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi console_tx_insert_line@1/4 chip_rp2040.cc:rp_tx_irq_enable
+site armv6m picopi console_tx_insert_line@2/4 chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi console_tx_insert_line@3/4 chip_rp2040.cc:rp_tx_push
+site armv6m picopi console_tx_insert_line@4/4 chip_rp2040.cc:rp_tx_push
 
 site armv6m picopi-flat console_tx.cc:wait_slot@1/1  chip_rp2040.cc:rp_tx_slot_free
 site armv6m picopi-flat console_tx.cc:drain_sync@1/1 chip_rp2040.cc:rp_tx_push
@@ -989,6 +1392,10 @@ site armv6m picopi-flat console_tx_isr@2/3           chip_rp2040.cc:rp_tx_push
 site armv6m picopi-flat console_tx_isr@3/3           chip_rp2040.cc:rp_tx_irq_disable
 site armv6m picopi-flat console_tx_flush_sync@1/1    chip_rp2040.cc:rp_tx_irq_disable
 site armv6m picopi-flat console_tx_deinit@1/1        chip_rp2040.cc:rp_tx_irq_disable
+site armv6m picopi-flat console_tx_insert_line@1/4 chip_rp2040.cc:rp_tx_irq_enable
+site armv6m picopi-flat console_tx_insert_line@2/4 chip_rp2040.cc:rp_tx_slot_free
+site armv6m picopi-flat console_tx_insert_line@3/4 chip_rp2040.cc:rp_tx_push
+site armv6m picopi-flat console_tx_insert_line@4/4 chip_rp2040.cc:rp_tx_push
 
 # xtensa. The same six SchedPolicy sites every arch binds; the table is one static instance
 # (policy_fifo_rr.cc) and the site's pointer can hold nothing else.
@@ -1024,6 +1431,12 @@ site lx6 * console_tx_isr@3/3 chip_esp32.cc:esp32_tx_irq_disable
 site lx6 * console_tx.cc:wait_slot@1/1  chip_esp32.cc:esp32_tx_slot_free
 site lx6 * console_tx.cc:drain_sync@1/1 chip_esp32.cc:esp32_tx_push
 site lx6 * console_tx_flush_sync@1/1    chip_esp32.cc:esp32_tx_irq_disable
+# The line insert, which every chip's arch_console_write now enters. Its fourth site is
+# drain_in_producer's push, gcc inlining that body into this one.
+site lx6 * console_tx_insert_line@1/4 chip_esp32.cc:esp32_tx_irq_enable
+site lx6 * console_tx_insert_line@2/4 chip_esp32.cc:esp32_tx_slot_free
+site lx6 * console_tx_insert_line@3/4 chip_esp32.cc:esp32_tx_push
+site lx6 * console_tx_insert_line@4/4 chip_esp32.cc:esp32_tx_push
 # gcc emits ONE UNLOCATED __indirect_call edge out of this body while the emitted code holds no
 # indirect call at all, so NONE charges 0 for it. Re-read this body by hand if it ever gains a
 # real callback: the aggregate absorbs it and no count moves, so nothing here is refused.

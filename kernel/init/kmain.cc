@@ -414,7 +414,11 @@ namespace kickos
         peer_start_await();
 #endif
 
-        sched::start(); // returns only if the scheduler ever unwinds to boot
+        sched::start();
+        // Reached only if the scheduler ever unwinds to boot. Through the funnel and not
+        // through the chip's own Reset_Handler tail, which calls arch_shutdown with whatever
+        // is still queued: that tail is the one terminal path with no drain in front of it.
+        kickos_terminate(0);
         return 0;
     }
 }

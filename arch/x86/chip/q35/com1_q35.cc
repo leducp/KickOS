@@ -55,14 +55,24 @@ namespace kickos::q35
         put(reg_modem_ctrl, 0x03);
     }
 
+    int com1_slot_free(void)
+    {
+        return (get(reg_line_status) & line_status_thr_empty) != 0;
+    }
+
+    void com1_push(uint8_t b)
+    {
+        put(reg_data, b);
+    }
+
     void com1_putc(char c)
     {
         uint32_t spin = 0;
-        while ((get(reg_line_status) & line_status_thr_empty) == 0 and spin < poll_bound)
+        while (com1_slot_free() == 0 and spin < poll_bound)
         {
             spin++;
         }
-        put(reg_data, static_cast<uint8_t>(c));
+        com1_push(static_cast<uint8_t>(c));
     }
 
     void com1_drain(void)

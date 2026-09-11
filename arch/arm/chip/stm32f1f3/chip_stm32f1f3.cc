@@ -82,9 +82,7 @@ namespace
     void stm32_tx_push(uint8_t b) { reg32(chip::USART_DR) = b; }
     void stm32_tx_irq_enable(void) { reg32(chip::USART_CR1) |= chip::CR1_TXEIE; }
     void stm32_tx_irq_disable(void) { reg32(chip::USART_CR1) &= ~chip::CR1_TXEIE; }
-
-    constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
-    char console_tx_buf[CONSOLE_TX_SIZE];
+    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const stm32_console_backend = {
         stm32_tx_slot_free, stm32_tx_push, stm32_tx_irq_enable, stm32_tx_irq_disable};
 }
@@ -159,9 +157,9 @@ void kickos_stm32_clock_isr(void)
     clk_ticks();
 }
 
-void arch_console_write(char const* buf, size_t n)
+int arch_console_write(char const* buf, size_t n)
 {
-    console_tx_write(buf, n); // buffered; the routing guard (console.cc) keeps this thread-only
+    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
 void arch_console_write_sync(char const* buf, size_t n)
@@ -183,7 +181,7 @@ void arch_console_write_sync(char const* buf, size_t n)
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = console_tx_buf;
-    *size = CONSOLE_TX_SIZE;
+    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = chip::CONSOLE_IRQ;
     return &stm32_console_backend;
 }

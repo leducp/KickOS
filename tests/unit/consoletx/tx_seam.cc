@@ -29,6 +29,12 @@ extern "C"
     void console_chip_writer_leave(void)
     {
     }
+
+    // console.cc's. The insert reaches it for the UNARMED ring alone, where there is no ring
+    // to interleave with, so this suite needs only the symbol.
+    void console_write_line_sync(char const*, size_t)
+    {
+    }
 }
 
 namespace kickos

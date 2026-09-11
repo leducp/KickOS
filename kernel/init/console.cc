@@ -215,12 +215,43 @@ extern "C" int console_chip_writers(void)
     return g_chip_writers;
 }
 
+// The line writer of last resort. IrqLock spans the whole transmission, which is the masked
+// window the ring exists to avoid, and is what keeps the line atomic without one.
+//
+// CR+LF goes out as its own segment: a cooked buffer here would stand on a descent the trap
+// red-zone gate measures (kickos/diag.h).
+extern "C" void console_write_line_sync(char const* buf, size_t n)
+{
+    kickos::IrqLock lock;
+#if KICKOS_CONSOLE_CRLF
+    static char const CRLF[2] = { '\r', '\n' };
+    size_t start = 0;
+    for (size_t i = 0; i < n; i++)
+    {
+        if (buf[i] != '\n')
+        {
+            continue;
+        }
+        if (i > start)
+        {
+            arch_console_write_sync(buf + start, i - start);
+        }
+        arch_console_write_sync(CRLF, sizeof(CRLF));
+        start = i + 1;
+    }
+    if (n > start)
+    {
+        arch_console_write_sync(buf + start, n - start);
+    }
+#else
+    arch_console_write_sync(buf, n);
+#endif
+}
+
 namespace kickos
 {
 #if KICKOS_CONSOLE_CHIP
-    // Takes an already-CRLF-expanded chunk. This is the single choke point that keeps the
-    // ring a true single-producer, so no other site may enqueue.
-    static void console_emit(char const* buf, size_t n, bool force_sync)
+    static int console_emit(char const* buf, size_t n, bool force_sync)
     {
         // The count is taken under the same masked read that selects the transport, so
         // publish either drains this writer or the writer never reaches the device. The
@@ -230,33 +261,43 @@ namespace kickos
         ConsoleState state = ConsoleState::KERNEL_OWNED;
         if (chip_writer_enter(&state))
         {
-            if (state == ConsoleState::KERNEL_OWNED and console_tx_armed() != 0
-                and arch_in_isr() == 0 and not g_console_panicking)
+            // PANIC KEEPS THE SYNCHRONOUS PATH. The system stops after a panic, so a line
+            // left queued is a line nobody reads.
+            //
+            // The chip seam is the only door into the ring: every arch_console_write inserts
+            // the line, and a line the ring refuses does not go out.
+            int took = 1;
+            if (state == ConsoleState::KERNEL_OWNED and not g_console_panicking)
             {
-                arch_console_write(buf, n);
+                took = arch_console_write(buf, n);
             }
             else
             {
-                arch_console_write_sync(buf, n);
+                console_write_line_sync(buf, n);
             }
             console_chip_writer_leave();
-            return;
+            return took;
         }
         // USER_OWNED: DROP, the driver owns the UART (RTT still carries it, see
         // kconsole_write). force_sync accepts interleaving with the driver's in-flight
         // bytes, and is set only after the published route has already refused these ones.
         if (force_sync)
         {
-            arch_console_write_sync(buf, n);
+            console_write_line_sync(buf, n);
         }
+        // USER_OWNED: the driver owns the UART and a kernel chip write is dropped BY DESIGN,
+        // not by pressure. Reported as taken, because the distinction the caller acts on is
+        // "the ring is full, try again" and no retry can win this one: the route is simply
+        // not the chip any more. kvprintf_route reaches the published console separately.
+        return 1;
     }
 #endif
 
     // Locking is PER BACKEND. RTT's WrOff RMW is written from thread, ISR and fault
     // context, so it takes the crit section for the few microseconds it needs. The chip
-    // transport locks internally and must NEVER be held under IrqLock across a whole
-    // transmission: a 256 B write at 115200 would mask interrupts for ~22 ms.
-    static void kconsole_write_impl(char const* buf, size_t n, bool force_sync)
+    // transport masks the ring COPY alone; only its refusal path masks a whole transmission,
+    // which at 115200 is ~22 ms for a 256 B line.
+    static int kconsole_write_impl(char const* buf, size_t n, bool force_sync)
     {
         (void)force_sync;
 #if !KICKOS_CONSOLE_CHIP && !KICKOS_CONSOLE_RTT
@@ -272,38 +313,17 @@ namespace kickos
         }
 #endif
 #if KICKOS_CONSOLE_CHIP
-#if KICKOS_CONSOLE_CRLF
-        // The kernel never emits '\r' itself, so this cannot double one. RTT above stays
-        // raw because its viewer cooks. The flush leaves room for a '\r'+'\n' pair, so
-        // correctness does not depend on the scratch size.
-        char cooked[128];
-        size_t j = 0;
-        for (size_t i = 0; i < n; i++)
-        {
-            if (j > sizeof(cooked) - 2)
-            {
-                console_emit(cooked, j, force_sync);
-                j = 0;
-            }
-            if (buf[i] == '\n')
-            {
-                cooked[j++] = '\r';
-            }
-            cooked[j++] = buf[i];
-        }
-        if (j > 0)
-        {
-            console_emit(cooked, j, force_sync);
-        }
+        // RAW: the '\n' lowering happens at the device end of the path, where one line stays
+        // one emit. RTT above stays raw either way, its viewer cooking.
+        return console_emit(buf, n, force_sync);
 #else
-        console_emit(buf, n, force_sync);
-#endif
+        return 1;
 #endif
     }
 
-    void kconsole_write(char const* buf, size_t n)
+    int kconsole_write(char const* buf, size_t n)
     {
-        kconsole_write_impl(buf, n, false);
+        return kconsole_write_impl(buf, n, false);
     }
 
     void kputs(char const* s)
@@ -337,7 +357,7 @@ namespace kickos
 
     void kprintf(char const* fmt, ...)
     {
-        char buf[256];
+        char buf[KICKOS_DIAG_LINE_MAX];
         va_list ap;
         va_start(ap, fmt);
         kvprintf_route(buf, sizeof(buf), fmt, ap, false);
