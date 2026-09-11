@@ -5,43 +5,22 @@
 # application, built here with the HOST gcc and the HOST binutils: the target ISA is the
 # host's, so only the object format differs, and GNU ld carries the PE+ emulation (i386pep)
 # that turns the ELF objects into that image.
-#
-# This file introduces the family value "x86" (arm|rx|xtensa|riscv|arm64|x86).
 
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 
+include("${CMAKE_CURRENT_LIST_DIR}/toolchain-common.cmake")
+
 set(KICKOS_TOOLCHAIN_DEFAULT_BOARD "qemu-x86_64")
 set(KICKOS_BOARD "${KICKOS_TOOLCHAIN_DEFAULT_BOARD}" CACHE STRING "Target board: qemu-x86_64")
 
-# Board descriptor: sets KICKOS_ARCH / KICKOS_ARCH_FAMILY / KICKOS_CHIP and any board CPU flag.
-if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake")
-  include("${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake") # in-tree
-elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/board.cmake")
-  # Installed single-board package: the one shipped descriptor is authoritative.
-  include("${CMAKE_CURRENT_LIST_DIR}/board.cmake")
-  include("${CMAKE_CURRENT_LIST_DIR}/toolchain-package-board.cmake")
-else()
-  message(FATAL_ERROR "KickOS x86_64 toolchain: no board descriptor for '${KICKOS_BOARD}'")
-endif()
+kickos_toolchain_board_descriptor("x86_64")
+kickos_toolchain_cpu_baseline("x86_64" "x86")
+kickos_toolchain_export_baseline("${_kos_cpu}")
 
-set(_kos_cpu_chip "${CMAKE_CURRENT_LIST_DIR}/../arch/x86/chip/${KICKOS_CHIP}/cpu.cmake")
-if(EXISTS "${_kos_cpu_chip}")
-  include("${_kos_cpu_chip}")
-endif()
+set(KICKOS_ARCH_FAMILY "x86" CACHE STRING "KickOS ISA family (arm|rx|xtensa|riscv|arm64|x86)")
 
-if(NOT DEFINED KICKOS_MCPU)
-  message(FATAL_ERROR "KickOS x86_64 toolchain: board '${KICKOS_BOARD}' resolved no CPU "
-    "baseline from boards/${KICKOS_BOARD}/board.cmake or "
-    "arch/x86/chip/${KICKOS_CHIP}/cpu.cmake")
-endif()
-set(_kos_cpu ${KICKOS_MCPU})
-
-set(KICKOS_ARCH        "${KICKOS_ARCH}" CACHE STRING "KickOS arch backend selected by this toolchain")
-set(KICKOS_ARCH_FAMILY "x86"            CACHE STRING "KickOS ISA family (arm|rx|xtensa|riscv|arm64|x86)")
-
-set(KICKOS_MCPU_FLAGS "${_kos_cpu}" CACHE INTERNAL "Per-chip x86_64 -march baseline")
-
+# Host binutils, not a cross prefix: only the object format differs.
 find_program(CMAKE_C_COMPILER   gcc     REQUIRED)
 find_program(CMAKE_CXX_COMPILER g++     REQUIRED)
 find_program(CMAKE_ASM_COMPILER gcc     REQUIRED)
@@ -68,10 +47,6 @@ if(NOT _kos_ld_rc EQUAL 0 OR NOT "${_kos_ld_emulations}" MATCHES "i386pep")
     "emulations (Debian: binutils-x86-64-linux-gnu, verified on 2.47).")
 endif()
 
-# No linker script and no startup during CMake's compiler probe: the image is linked by a
-# custom command.
-set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
-
 # -fpie is load-bearing and not a hardening flag: it keeps every reference from CODE
 # PC-relative, so no instruction carries an absolute address. Built -fno-pic the same
 # sources emit R_X86_64_32/32S all through the text.
@@ -94,16 +69,7 @@ string(JOIN " " _kos_common ${_kos_cpu}
        -mno-sse -mno-mmx -mno-80387
        -fno-asynchronous-unwind-tables -fno-unwind-tables
        -ffunction-sections -fdata-sections)
-set(CMAKE_C_FLAGS_INIT   "${_kos_common}")
-set(CMAKE_CXX_FLAGS_INIT "${_kos_common} -fno-exceptions -fno-rtti")
-set(CMAKE_ASM_FLAGS_INIT "${_kos_common}")
+kickos_toolchain_flags_init("${_kos_common}")
+string(APPEND CMAKE_CXX_FLAGS_INIT " -fno-exceptions -fno-rtti")
 
-foreach(_lang C CXX ASM)
-  set(CMAKE_${_lang}_LINK_GROUP_USING_RESCAN_SUPPORTED TRUE)
-  set(CMAKE_${_lang}_LINK_GROUP_USING_RESCAN "LINKER:--start-group" "LINKER:--end-group")
-endforeach()
-
-set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+kickos_toolchain_bare_metal_rules()

@@ -287,7 +287,8 @@ believe before it reads them, and this is the part that is easy to get wrong.
   class instead of silently inheriting one.
 - `KICKOS_FAULT_ISOLATION` is the derived flag, and it does two jobs from one fact. It
   selects the backend seam TUs (`arch/CMakeLists.txt` drops the two declining fallbacks from
-  the shared list, and adds `arch/arm/armv6m/arch_armv6m_fault.cc` only where it holds), and
+  the shared list, and `arch/arm/armv6m/sources.cmake` adds
+  `arch/arm/armv6m/arch_armv6m_fault.cc` only where it holds), and
   spelled as `KICKOS_FAULT_OUTCOME` (`panic` or `thread-kill`) it is the token the fault
   gates parse. The link and the test therefore assert the same fact, and no gate re-derives
   the posture from an arch name of its own. `tests/integration/check_faultsurvive.sh` is the witness.
@@ -551,9 +552,13 @@ so what happens to the rest depends on who put the name there:
 Where the gates that read all this live: the tree-wide source checks are
 `tests/static/check_*.sh`, registered by the root `CMakeLists.txt` and run on every board;
 the scripts that boot an image are `tests/integration/check_*.sh`, and the ctest
-registration for each is a fragment of its own under `tests/integration/gates/`, included
-by name from `tests/integration/CMakeLists.txt`. A new integration gate is a new fragment
-there PLUS its name in that list, the inclusion being by name and not a glob.
+registration for each is a fragment of its own under `tests/integration/gates/`, globbed by
+`tests/integration/CMakeLists.txt`. A new integration gate is a new fragment there and
+nothing else: the glob carries `CONFIGURE_DEPENDS`, so adding one re-runs the configure that
+picks it up. A fragment that registers a gate reading the tree or a linked image rather than
+booting one takes `kickos_host_gate` for its tail, which is where the `host` label comes from;
+without that label the root's decline pass reads the gate as a runner of an image and disables
+it wherever the integration tests are off.
 
 `KICKOS_CONSOLE` and `KICKOS_TELEMETRY` are the one hand-written translation left. Both
 are promptless projections of a choice, so the rule above drops the candidate and the root
@@ -684,7 +689,7 @@ through to `PATH` when the hinted directory is absent, so a fresh clone on anoth
 silently resolve a distro cross-gcc -- and Debian's `arm-none-eabi-g++` is C-only picolibc with no
 `libstdc++`/`libsupc++` for any multilib, which used to surface ~40 build steps later as
 `fatal error: exception: No such file or directory`. The ARM and RISC-V toolchain files therefore
-probe the compiler they actually resolved (`cmake/toolchain-cxx-runtime-check.cmake`) and refuse
+probe the compiler they actually resolved (`cmake/cross_cxx_capability.cmake`) and refuse
 it at configure time, naming the compiler, the multilib, what was missing, the override variable
 and the official tarball URL. The probes carry the board's own `-mcpu`/`-march`, because a
 toolchain can ship `libstdc++` for one multilib and not another and the default multilib would
@@ -1637,8 +1642,8 @@ of refusing it, and refuses only when the floor itself exceeds the board's suppl
 width the sum never produces. A build that misses the generated `kickos/config/cap_width.h`
 does not reach them: it fails on the missing include. The suite's own floor is measured off the suite's own call sites. **Two** of the 63 cases need a 4th concurrent
 worker: `call_infoless_revert`, four mutually-dependent workers spawned before any join
-(`../../user/apps/common/selftest/main.cc:2212-2215`), and `mutex_chain_boost`, a four-link
-boost chain (`main.cc:1010-1013`). **Both** ask first, with `pool_can_host(4)`, and since
+(`../../user/apps/common/selftest/main.cc`, `t_call_infoless_revert`), and `mutex_chain_boost`,
+a four-link boost chain (`t_mutex_chain` in the same file). **Both** ask first, with `pool_can_host(4)`, and since
 that probe spawns four real threads it tests the arena as much as the pool. Asking first is
 not only about the message: each of the two now creates staging semaphores before its
 spawns, and a board too small to host the workers is also too small to supply those, so a

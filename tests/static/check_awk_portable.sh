@@ -25,10 +25,7 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
 scratch_dir
 
@@ -60,11 +57,8 @@ _neg="$(grep -cE "$EXT" "$TMP/neg")" || _neg=0
       every count below it is unattributable"
 
 # --- the corpus -----------------------------------------------------------------------------
-git ls-files -- 'tools/*.sh' 'tools/*.awk' 'tests/*.sh' 'tests/*.awk' > "$TMP/list" \
-    || fail "git ls-files failed; the corpus is UNKNOWN and not empty"
-require_nonempty "$TMP/list" \
-    "the corpus is empty: no tracked *.sh or *.awk under tools/ or tests/, so this gate would
-      pass on any tree at all. An untracked file is invisible here (git add first)."
+corpus "$TMP/list" "tracked *.sh or *.awk under tools/ or tests/" \
+    'tools/*.sh' 'tools/*.awk' 'tests/*.sh' 'tests/*.awk'
 _n="$(wc -l < "$TMP/list")"
 echo "check_awk_portable: $_n file(s) in the corpus"
 

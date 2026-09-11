@@ -57,6 +57,6 @@ inline void emit(char const* s)
     }
 }
 
-} // namespace kickos
+}
 
 #endif

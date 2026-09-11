@@ -46,9 +46,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The awk below keys on nm's symbol-type letters.
-export LC_ALL=C
-
 if [ "$#" -lt 2 ]; then
     echo "usage: $0 <nm> <archive>..." >&2
     exit 2

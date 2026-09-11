@@ -42,11 +42,7 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-export LC_ALL=C
-
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
+require_repo_root
 command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
 
 scratch_dir

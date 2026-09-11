@@ -52,7 +52,7 @@ add_test(NAME amp_elf_agree
           "${CMAKE_COMMAND}" "${CMAKE_BINARY_DIR}" "${CMAKE_READELF}"
           "$<TARGET_FILE:ampping_n0>" "${CMAKE_BINARY_DIR}/amp-peers"
           "${KICKOS_AMP_NODES}" ampserve)
-set_tests_properties(amp_elf_agree PROPERTIES TIMEOUT 900 LABELS host)
+kickos_host_gate(amp_elf_agree TIMEOUT 900)
 
 if(_amp_emulated)
   # The gate boots the ARTEFACT, and building it is the first thing the script does.

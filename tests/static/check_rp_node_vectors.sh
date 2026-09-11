@@ -26,10 +26,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The host binutils is localised and prints translated headers, which every parse below reads.
-LC_ALL=C
-export LC_ALL
-
 _usage="usage: check_rp_node_vectors.sh <elf> <nm> <objdump> <chip> <src-dir>"
 elf="${1:?$_usage}"
 nm="${2:?$_usage}"
@@ -229,16 +225,9 @@ echo "   corpus: $words slot(s) read, $((words - 1)) expected to hold '$PARK' an
 # --- the park is bounded ------------------------------------------------------
 # Every branch in the body targets the body, and nothing in it is a call: a park that leaves
 # passes the routing check above.
+# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
+# tests/lib/objdump_scope.awk ahead of this file.
 cat > "$TMP/park.awk" <<'AWK'
-/^[0-9a-f]+ <.*>:$/ {
-    name = $2
-    gsub(/[<>:]/, "", name)
-    inbody = (name == sym)
-    if (inbody) { seen = 1 }
-    next
-}
-!inbody { next }
-$0 !~ /^[ \t]*[0-9a-f]+:/ { next }
 {
     text = $0
     sub(/^[^:]*:[ \t]*/, "", text)
@@ -269,7 +258,7 @@ cat > "$TMP/ctl_park_ok" <<EOF
 100012be:      wfi
 100012c0:      b.n     100012be <$PARK+0x2>
 EOF
-ctl="$(awk -v sym="$PARK" -f "$TMP/park.awk" "$TMP/ctl_park_ok" | tr '\n' ' ')"
+ctl="$(scoped_body "$TMP/park.awk" "$TMP/ctl_park_ok" "$PARK" | tr '\n' ' ')"
 case "$ctl" in
     "BOUNDED 3 ") ;;
     *) fail "the park reader answered [$ctl] for a planted park that masks, waits and branches
@@ -282,7 +271,7 @@ cat > "$TMP/ctl_park_bad" <<EOF
 100012be:      bl      100012c4 <kickos_isr_irq>
 100012c2:      b.n     100012be <$PARK+0x2>
 EOF
-ctl="$(awk -v sym="$PARK" -f "$TMP/park.awk" "$TMP/ctl_park_bad" | tr '\n' ' ')"
+ctl="$(scoped_body "$TMP/park.awk" "$TMP/ctl_park_bad" "$PARK" | tr '\n' ' ')"
 case "$ctl" in
     "CALL bl ") ;;
     *) fail "the park reader answered [$ctl] for a planted park that calls out of itself. That
@@ -291,7 +280,7 @@ case "$ctl" in
 esac
 
 tool_out "$TMP/dis" "^[0-9a-f]+ <.*>:\$" "$objdump" -d --no-show-raw-insn "$elf"
-rec="$(awk -v sym="$PARK" -f "$TMP/park.awk" "$TMP/dis" | tr '\n' ' ')"
+rec="$(scoped_body "$TMP/park.awk" "$TMP/dis" "$PARK" | tr '\n' ' ')"
 case "$rec" in
     "NOSYM "*)
         fail "'$PARK' is a defined symbol in $elf but the disassembly carries no body for it,

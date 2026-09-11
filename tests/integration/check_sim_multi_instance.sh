@@ -26,15 +26,13 @@
 # usage: check_sim_multi_instance.sh <kickos-source-dir> <cmake>
 
 set -eu
+. "$(dirname "$0")/../lib/gate.sh"
 
 KICKOS_SRC="$1"
 CMAKE="${2:-cmake}"
 INSTANCES=50
 
-fail() { echo "FAIL: $1"; exit 1; }
-
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+scratch_dir
 
 echo "== configuring the sim with KICKOS_MULTI_INSTANCE=ON =="
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build" \

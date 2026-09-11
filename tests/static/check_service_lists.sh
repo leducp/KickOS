@@ -54,10 +54,7 @@ SRC="$2"
 [ -x "$CMAKE" ] || fail "no cmake at $CMAKE"
 [ -d "$SRC" ] || fail "no source directory at $SRC"
 cd "$SRC" || fail "cannot enter $SRC"
-[ -f CMakeLists.txt ] || fail "$SRC is not the repo root"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "$SRC is not the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root "$SRC is not the repo root"
 
 DECL="tests/static/service_lists.txt"
 FLATTEN="tests/static/preset_boards.cmake"
@@ -534,8 +531,7 @@ POS="$(found_count)"
       the board's own Kconfig is answering for the universal provider too"
 
 # --- the providers, from the calls that create them ---------------------------
-git ls-files -- CMakeLists.txt '*/CMakeLists.txt' > "$TMP/lists" || fail "git ls-files failed"
-require_nonempty "$TMP/lists" "git ls-files matched no CMakeLists.txt; every check below would pass vacuously"
+corpus "$TMP/lists" "CMakeLists.txt" CMakeLists.txt '*/CMakeLists.txt'
 
 : > "$TMP/cand"
 while IFS= read -r f; do
@@ -574,8 +570,7 @@ tool_out "$TMP/flatten.log" '' \
 require_nonempty "$TMP/presets" "the preset flattener produced no table"
 
 # --- every provider a Kconfig names as a board default ------------------------
-git ls-files -- Kconfig '*/Kconfig' > "$TMP/kconfigs" || fail "git ls-files failed"
-require_nonempty "$TMP/kconfigs" "git ls-files matched no Kconfig"
+corpus "$TMP/kconfigs" "Kconfig" Kconfig '*/Kconfig'
 : > "$TMP/kdefaults"
 while IFS= read -r kf; do
     kconfig_defaults "$kf" >> "$TMP/kdefaults"

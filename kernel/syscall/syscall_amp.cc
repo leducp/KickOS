@@ -20,6 +20,7 @@
 #include <kickos/task.h>
 #include <kickos/thread.h>
 #include <kickos/sys/abi.h>
+#include <kickos/sys/abi_probe.h>
 #include <kickos/sys/errno.h>
 
 namespace kickos

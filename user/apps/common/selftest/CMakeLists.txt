@@ -42,7 +42,22 @@ if(KICKOS_CHIP STREQUAL "stm32f103" OR KICKOS_CHIP STREQUAL "stm32f302"
   set(_selftest_split 1)
 endif()
 
-set(_selftest_srcs main.cc "${PROJECT_SOURCE_DIR}/tests/tap/tap.cc")
+set(_selftest_srcs main.cc selftest_common.cc
+                   "${PROJECT_SOURCE_DIR}/tests/tap/tap.cc")
+# Three blocks of arms sit in files of their own. Each still carries the `#if` its block had in
+# main.cc, so a file compiled where its guard is off is empty and costs only the header; the
+# conditions here spare that parse and must therefore MATCH those guards. Getting one wrong
+# cannot shrink a suite: the registration list names every arm, so a file this list omits while
+# main.cc still registers its arms is an undefined reference at link.
+if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
+  list(APPEND _selftest_srcs selftest_aspace.cc)
+endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
+  list(APPEND _selftest_srcs selftest_amp.cc)
+endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
+  list(APPEND _selftest_srcs selftest_smp.cc)
+endif()
 # spi_mock.cc is a stand-in SPI backend under t_bus_device_slots, gated exactly like that arm. It
 # DEFINES the public kos_spi_* names while the image may also carry a chip driver, which is
 # legal only because the SPI SERVICE drivers rename their class symbols;
@@ -95,6 +110,32 @@ else()
 endif()
 set_target_properties(selftest PROPERTIES
   KICKOS_IMAGE_ELF "${_selftest_elf}" KICKOS_IMAGE_MAP "${_selftest_map}")
+
+# An arm whose body left main.cc has EXTERNAL linkage, so the compiler no longer reports it
+# unused when its TAP_ADD line goes. Every such arm is declared in selftest.h and registered in
+# main.cc, and this holds the two sets equal, which is the guard -Werror=unused-function gives
+# the arms that stayed. It reads the files rather than a list, so neither side can be satisfied
+# by a name written here.
+file(STRINGS main.cc _selftest_added REGEX "^ *TAP_ADD\\(")
+set(_selftest_registered "")
+foreach(_row IN LISTS _selftest_added)
+  if(_row MATCHES "TAP_ADD\\(\"[^\"]*\", *([A-Za-z_][A-Za-z0-9_]*)\\)")
+    list(APPEND _selftest_registered "${CMAKE_MATCH_1}")
+  endif()
+endforeach()
+file(STRINGS selftest.h _selftest_declared_rows REGEX "void t_[A-Za-z0-9_]*\\(\\);")
+foreach(_row IN LISTS _selftest_declared_rows)
+  string(REGEX MATCH "(t_[A-Za-z0-9_]*)\\(\\);" _m "${_row}")
+  if(NOT "${CMAKE_MATCH_1}" IN_LIST _selftest_registered)
+    message(FATAL_ERROR
+      "selftest.h declares the arm ${CMAKE_MATCH_1}, which no TAP_ADD line in main.cc "
+      "registers. Its body is in a file of its own, so it has external linkage and the "
+      "compiler cannot report it unused: the arm would be built into every image and run in "
+      "none. Register it, or delete the declaration and the body together.")
+  endif()
+endforeach()
+list(LENGTH _selftest_declared_rows _selftest_declared_n)
+message(STATUS "selftest: ${_selftest_declared_n} arm(s) declared in selftest.h, all registered")
 
 # The EXACT number of tap::add calls main.cc reaches in this posture. tap.cc plans `1..N` from the
 # RUNTIME registry, so plan and case count shrink together when an arm is deleted and only an

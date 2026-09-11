@@ -43,8 +43,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-export LC_ALL=C
-
 if [ "$#" -lt 2 ]; then
     echo "usage: $0 <readelf> <archive>..." >&2
     exit 2

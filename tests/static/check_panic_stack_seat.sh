@@ -43,7 +43,6 @@ set -u
 set -f
 . "$(dirname "$0")/../lib/gate.sh"
 
-export LC_ALL=C
 scratch_dir
 
 ENTRY=kickos_panic_stack_enter
@@ -379,12 +378,9 @@ one no_records 'declares no seat, mask or'
 echo "== control: every claim fires on planted input, and the clean world reports nothing =="
 
 # --- the tree ------------------------------------------------------------------
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
-git ls-files > "$TMP/tracked" || fail "git ls-files failed; the corpus would be short"
-require_nonempty "$TMP/tracked" "git ls-files listed nothing"
+corpus_all "$TMP/tracked"
 
 # The two facts a claim reads live in DIFFERENT Kconfig files: arch/Kconfig declares the arch
 # symbols and the top-level one carries KICKOS_PANIC_STACK_SIZE, so the corpus is every tracked

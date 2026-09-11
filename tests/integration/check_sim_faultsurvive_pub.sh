@@ -19,14 +19,12 @@
 # usage: check_sim_faultsurvive_pub.sh <kickos-source-dir> <cmake>
 
 set -eu
+. "$(dirname "$0")/../lib/gate.sh"
 
 KICKOS_SRC="${1:?usage: check_sim_faultsurvive_pub.sh <src> <cmake>}"
 CMAKE="${2:-cmake}"
 
-fail() { echo "FAIL: $1"; exit 1; }
-
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+scratch_dir
 
 echo "== configuring the sim with the publishing service list =="
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build" \

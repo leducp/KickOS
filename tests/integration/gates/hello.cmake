@@ -76,7 +76,7 @@ if(KICKOS_ARCH STREQUAL "armv8a")
   add_test(NAME tlbi_shareability
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_tlbi_shareability.sh"
             "$<TARGET_FILE:hello>" "${KICKOS_KERNEL_CORES}" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
-  set_tests_properties(tlbi_shareability PROPERTIES TIMEOUT 120 LABELS host)
+  kickos_host_gate(tlbi_shareability)
 endif()
 
 # Three orderings the arm64 entry and timer paths owe, read out of the linked image: the SPSel
@@ -91,7 +91,7 @@ if(KICKOS_ARCH STREQUAL "armv8a")
   add_test(NAME arm64_entry_order
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_arm64_entry_order.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
-  set_tests_properties(arm64_entry_order PROPERTIES TIMEOUT 120 LABELS host)
+  kickos_host_gate(arm64_entry_order)
 endif()
 
 # The doorbell service body's instruction barrier and its position, read out of the linked image.
@@ -106,7 +106,7 @@ if(KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_NUM_CORES GREATER 1)
   add_test(NAME doorbell_isb
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_doorbell_isb.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
-  set_tests_properties(doorbell_isb PROPERTIES TIMEOUT 120 LABELS host)
+  kickos_host_gate(doorbell_isb)
 endif()
 
 # Where the route drain sits in every doorbell service body, read out of the SOURCE TREE. Keyed
@@ -115,7 +115,7 @@ endif()
 add_test(NAME route_service_order
   COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_route_service_order.sh"
           "${PROJECT_SOURCE_DIR}")
-set_tests_properties(route_service_order PROPERTIES TIMEOUT 120 LABELS host)
+kickos_host_gate(route_service_order)
 
 # The IrqLock bracket on the IRQ syscall arms that touch image-wide controller words, read out
 # of the SOURCE TREE. Keyed on nothing: IrqLock folds to the local mask at one kernel core, so
@@ -124,7 +124,7 @@ set_tests_properties(route_service_order PROPERTIES TIMEOUT 120 LABELS host)
 add_test(NAME irq_syscall_locked
   COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_irq_syscall_locked.sh"
           "${PROJECT_SOURCE_DIR}")
-set_tests_properties(irq_syscall_locked PROPERTIES TIMEOUT 120 LABELS host)
+kickos_host_gate(irq_syscall_locked)
 
 # The sole decider of a logical line's delivery gating, read out of the SOURCE TREE. Keyed on
 # nothing: the rule binds at one kernel core too.
@@ -132,7 +132,7 @@ set_tests_properties(irq_syscall_locked PROPERTIES TIMEOUT 120 LABELS host)
 add_test(NAME irq_line_op_sole
   COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_irq_line_op_sole.sh"
           "${PROJECT_SOURCE_DIR}")
-set_tests_properties(irq_line_op_sole PROPERTIES TIMEOUT 120 LABELS host)
+kickos_host_gate(irq_line_op_sole)
 
 # The per-core ATOMCTL seat and the read-back beside it, read out of the linked image.
 # UNCONDITIONAL on the core count: ATOMCTL governs every S32C1I the image can execute, and a
@@ -143,7 +143,7 @@ if(KICKOS_ARCH STREQUAL "lx6")
   add_test(NAME lx6_atomctl
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_lx6_atomctl.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
-  set_tests_properties(lx6_atomctl PROPERTIES TIMEOUT 120 LABELS host)
+  kickos_host_gate(lx6_atomctl)
 endif()
 
 # The interrupt posture the LX6 secondary park holds across its sleep decision, read out of the
@@ -154,7 +154,7 @@ if(KICKOS_ARCH STREQUAL "lx6" AND KICKOS_NUM_CORES GREATER 1)
   add_test(NAME lx6_park_mask
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_lx6_park_mask.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
-  set_tests_properties(lx6_park_mask PROPERTIES TIMEOUT 120 LABELS host)
+  kickos_host_gate(lx6_park_mask)
 endif()
 
 # arch_ipi_fence's own barrier, read out of the linked image. It is reached through a plain call
@@ -188,7 +188,7 @@ if(NOT _fence_full STREQUAL "")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_ipi_fence.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}"
             "${_fence_full}" "${_fence_refused}")
-  set_tests_properties(ipi_fence PROPERTIES TIMEOUT 120 LABELS host)
+  kickos_host_gate(ipi_fence)
 endif()
 
 # The store->load fence both sides of the rv64imac interrupt-controller handshake owe, read out
@@ -204,7 +204,7 @@ if(KICKOS_ARCH STREQUAL "rv64imac")
   add_test(NAME rv64_irq_fence
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_rv64_irq_fence.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
-  set_tests_properties(rv64_irq_fence PROPERTIES TIMEOUT 120 LABELS host)
+  kickos_host_gate(rv64_irq_fence)
 endif()
 
 # The one-cell-per-line invariant the lx6 interrupt-controller cells rest on, read out of the
@@ -222,7 +222,7 @@ if(KICKOS_ARCH STREQUAL "lx6" AND KICKOS_ENABLE_SELFTEST)
   add_test(NAME lx6_irq_cells
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_lx6_irq_cells.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
-  set_tests_properties(lx6_irq_cells PROPERTIES TIMEOUT 120 LABELS host)
+  kickos_host_gate(lx6_irq_cells)
 endif()
 
 # The boundary between the doorbell's rendezvous half and its scheduling half, read out of the
@@ -236,7 +236,7 @@ if(KICKOS_KERNEL_CORES GREATER 1
   add_test(NAME doorbell_generic
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_doorbell_generic.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}" "${KICKOS_ARCH}")
-  set_tests_properties(doorbell_generic PROPERTIES TIMEOUT 120 LABELS host)
+  kickos_host_gate(doorbell_generic)
 endif()
 
 # Node 1's own vector table, read out of the linked image: every line but the doorbell parks,
@@ -247,5 +247,5 @@ if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_CHIP STREQUAL "rp2350")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_rp_node_vectors.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}" "${KICKOS_CHIP}"
             "${PROJECT_SOURCE_DIR}")
-  set_tests_properties(rp_node_vectors PROPERTIES TIMEOUT 120 LABELS host)
+  kickos_host_gate(rp_node_vectors)
 endif()

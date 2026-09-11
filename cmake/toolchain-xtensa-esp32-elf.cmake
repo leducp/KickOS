@@ -1,105 +1,45 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Cross toolchain for the KickOS ESP32 (Xtensa LX6) target: the first non-ARM
-# ISA. Sibling of toolchain-arm-none-eabi.cmake; the ISA-agnostic parts (the
-# board-descriptor include, the LINK_GROUP RESCAN feature, the static-library
-# try-compile, the bare-metal find rules) mirror that file.
+# Cross toolchain for the KickOS ESP32 (Xtensa LX6) target.
 #
-# Unlike arm-none-eabi (one toolchain, -mcpu selects the core), the Xtensa core
-# configuration is baked into the toolchain at build time, so the toolchain is
-# chip-family-specific (xtensa-esp32-elf-* is the classic ESP32 LX6 overlay) and
-# there is no per-board -mcpu. We use the toolchain's DEFAULT (windowed) ABI: the
-# prebuilt esp32 multilib ships ONLY a windowed-ABI libgcc/libc, so windowed code
-# links against it cleanly, notably the 64-bit divide/modulo helpers
-# (_udivdi3/_umoddi3) the ns<->cycle clock math pulls in. (The earlier call0 draft
-# hit a hard wall here: `-mabi=call0 -print-multi-directory` still resolves to the
-# windowed `esp32` multilib, so call0 code + windowed libgcc mismatched at link and
-# would fault on HW. Windowed is the ecosystem-standard ABI and what ROM/BLE/WiFi
-# blobs are built with.) The switch cost is a spill-all-windows context switch
-# (arch/xtensa/lx6/switch.S) + the mandatory window over/underflow vectors
-# (arch/xtensa/chip/esp32/startup.S).
+# The Xtensa core configuration is baked into the toolchain at build time, so the toolchain is
+# chip-family-specific (xtensa-esp32-elf-* is the classic ESP32 LX6 overlay) and there is no
+# per-board -mcpu. We take the toolchain's DEFAULT (windowed) ABI: the prebuilt esp32 multilib
+# ships ONLY a windowed-ABI libgcc/libc. `-mabi=call0 -print-multi-directory` still resolves to
+# the windowed `esp32` multilib, so call0 code plus windowed libgcc mismatches at link and
+# faults on HW.
 
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR xtensa)
 
+include("${CMAKE_CURRENT_LIST_DIR}/toolchain-common.cmake")
+
 set(KICKOS_TOOLCHAIN_DEFAULT_BOARD "esp32-wroom")
 set(KICKOS_BOARD "${KICKOS_TOOLCHAIN_DEFAULT_BOARD}" CACHE STRING "Target board: esp32-wroom")
 
-# The board descriptor is the single source of truth for arch/chip (mirrors the
-# ARM toolchain). In-tree it is boards/<board>/board.cmake relative to the repo
-# root (this file lives in <repo>/cmake); an installed single-board package ships
-# the one board's descriptor beside this file.
-if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake")
-  include("${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake") # in-tree
-elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/board.cmake")
-  # Installed single-board package: the one shipped descriptor is authoritative.
-  include("${CMAKE_CURRENT_LIST_DIR}/board.cmake")
-  include("${CMAKE_CURRENT_LIST_DIR}/toolchain-package-board.cmake")
-else()
-  message(FATAL_ERROR "KickOS xtensa toolchain: no board descriptor for '${KICKOS_BOARD}'")
-endif()
+kickos_toolchain_board_descriptor("xtensa")
 
-set(KICKOS_ARCH        "${KICKOS_ARCH}" CACHE STRING "KickOS arch backend selected by this toolchain")
-set(KICKOS_ARCH_FAMILY "xtensa"         CACHE STRING "KickOS arch family (arm|xtensa)")
+# No per-board CPU baseline to resolve: the core is fixed by the toolchain build.
+set(_kos_cpu "")
+kickos_toolchain_export_baseline("${_kos_cpu}")
 
-# The Espressif prebuilt toolchain is not on PATH by default (it lives under
-# ~/.espressif), so the finds below take a HINT, seeded from the environment so no
-# contributor's home directory is baked into the repo (export KICKOS_XTENSA_BIN
-# once, or pass -D). Left empty, HINTS contributes nothing and PATH decides. A
-# pinned install SHADOWS an on-PATH toolchain.
-set(KICKOS_XTENSA_BIN
-    "$ENV{KICKOS_XTENSA_BIN}"
-    CACHE PATH "Directory holding xtensa-esp32-elf-* programs (empty => use PATH)")
+set(KICKOS_ARCH_FAMILY "xtensa" CACHE STRING "KickOS arch family (arm|xtensa)")
 
-# Re-export the resolved hint: CMake's compiler-ABI probe re-reads this file in a
-# SEPARATE cmake process with a fresh cache, which inherits the environment and PATH
-# but never a -D cache entry. Re-exporting makes -D, the environment and a
-# reconfigure agree. An empty value clears the variable, leaving PATH to decide.
-# Same in all four family toolchain files.
-set(ENV{KICKOS_XTENSA_BIN} "${KICKOS_XTENSA_BIN}")
+kickos_toolchain_cross_programs(xtensa-esp32-elf KICKOS_XTENSA_BIN)
 
-find_program(CMAKE_C_COMPILER   xtensa-esp32-elf-gcc     HINTS "${KICKOS_XTENSA_BIN}" REQUIRED)
-find_program(CMAKE_CXX_COMPILER xtensa-esp32-elf-g++     HINTS "${KICKOS_XTENSA_BIN}" REQUIRED)
-find_program(CMAKE_ASM_COMPILER xtensa-esp32-elf-gcc     HINTS "${KICKOS_XTENSA_BIN}" REQUIRED)
-find_program(CMAKE_OBJCOPY      xtensa-esp32-elf-objcopy HINTS "${KICKOS_XTENSA_BIN}" REQUIRED)
-find_program(CMAKE_SIZE         xtensa-esp32-elf-size    HINTS "${KICKOS_XTENSA_BIN}")
-
-# No linker script + startup during CMake's compiler probe (the board supplies
-# them at the app-link step), so probe with a static library; a step boundary
-# must always configure standalone.
-set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
-
-# Windowed ABI = toolchain default: emit NO -mabi flag, so the correct (windowed)
-# esp32 multilib is selected for compile AND link. -mlongcalls: let the assembler
-# relax calls that exceed the +/-512 KB call range. -mtext-section-literals: keep
-# each function's literal pool in .text so hand-written .S vectors carry their own
-# literals (the GCC default splits literals into a section the bare-metal link
-# would otherwise have to place). -ffunction/-fdata-sections + --gc-sections (at
-# link) drop unreferenced code.
-set(KICKOS_MCPU_FLAGS "" CACHE INTERNAL "Xtensa ABI/core baseline (windowed default)")
-
+# Emit NO -mabi flag, so the windowed esp32 multilib is selected for compile AND link.
+# -mlongcalls: let the assembler relax calls that exceed the +/-512 KB call range.
+# -mtext-section-literals: keep each function's literal pool in .text so hand-written .S
+# vectors carry their own literals.
+#
 # -mserialize-volatile IS PINNED. It brackets every volatile access with MEMW, and MEMW is the
-# ordering this backend's MMIO sequences rest on: the APP_CPU release writes six registers in an
-# order the part requires, and the TIMG counter is read through a shadow register that must be
-# latched before it is read. Neither carries a barrier of its own. It is the toolchain default
-# at esp-16.1.0, and pinned here so the next toolchain's default cannot decide it.
+# ordering this backend's MMIO sequences rest on: the APP_CPU release writes six registers in
+# an order the part requires, and the TIMG counter is read through a shadow register that must
+# be latched before it is read. Neither carries a barrier of its own. It is the toolchain
+# default at esp-16.1.0, and pinned here so the next toolchain's default cannot decide it.
 string(JOIN " " _kos_common -mlongcalls -mtext-section-literals -mserialize-volatile
        -ffunction-sections -fdata-sections)
-set(CMAKE_C_FLAGS_INIT   "${_kos_common}")
-set(CMAKE_CXX_FLAGS_INIT "${_kos_common}")
-set(CMAKE_ASM_FLAGS_INIT "${_kos_common}")
+kickos_toolchain_flags_init("${_kos_common}")
 
-# The Generic (bare-metal) platform doesn't predefine the LINK_GROUP RESCAN
-# feature that the arch<->kernel<->chip archive cycle needs; GNU ld provides it
-# via --start-group/--end-group. Declare it for every possible link language.
-foreach(_lang C CXX ASM)
-  set(CMAKE_${_lang}_LINK_GROUP_USING_RESCAN_SUPPORTED TRUE)
-  set(CMAKE_${_lang}_LINK_GROUP_USING_RESCAN "LINKER:--start-group" "LINKER:--end-group")
-endforeach()
-
-# Bare-metal search rules: toolchain sysroot, never the host.
-set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+kickos_toolchain_bare_metal_rules()

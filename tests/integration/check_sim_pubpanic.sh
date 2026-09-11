@@ -27,6 +27,7 @@
 # usage: check_sim_pubpanic.sh <kickos-source-dir> <cmake>
 
 set -eu
+. "$(dirname "$0")/../lib/gate.sh"
 
 KICKOS_SRC="$1"
 CMAKE="${2:-cmake}"
@@ -36,15 +37,11 @@ OUTCOME="${3:-panic}"
 
 FAULT_STATUS=132 # kfault_terminate -> arch_shutdown(132) on the host
 
-fail() { echo "FAIL: $1"; exit 1; }
-# grep as a predicate, with `set -e` kept out of the way.
-has() { printf '%s\n' "$OUT" | grep -q "$1"; }
 # grep -c exits 1 on zero matches, so without `|| true` set -e kills the script before its
 # fail message prints.
 count_of() { printf '%s\n' "$OUT" | grep -c "$1" || true; }
 
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+scratch_dir
 
 echo "== configuring the sim with the publishing service list =="
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build" \

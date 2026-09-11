@@ -52,10 +52,7 @@ SCAN="$(dirname "$0")/cpu_id_fold.awk"
 [ "$#" -eq 1 ] || fail "usage: $0 <build>/generated/include/kickos/board_config.h"
 CONFIG="$1"
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 [ -r "$SCAN" ] || fail "tests/static/cpu_id_fold.awk is unreadable; nothing below can
       classify a site that names the seam"
 
@@ -375,10 +372,7 @@ posture_is unreadable "$ctldir/b_absent.h" 1  'cannot read the generated board c
 posture "$CONFIG"
 leg1 "$SEAM" 1
 
-git ls-files -- '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp' '*.S' '*.inc' '*.h.in' \
-    > "$TMP/sources" || fail "git ls-files failed"
-require_nonempty "$TMP/sources" \
-    "git ls-files matched no C/C++ file; the definition scan would pass vacuously"
+corpus_sources "$TMP/sources"
 SOURCES="$(wc -l < "$TMP/sources" | tr -d ' ')"
 
 scan_corpus "$TMP/sources" "$SCAN" "$GUARD_ERE" "$EXPR_KWS" "$TMP/findings" "$TMP/refused"

@@ -18,10 +18,7 @@ set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # Findings accumulate over the whole corpus, so set -e must stay off.
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
 scratch_dir
 
@@ -73,9 +70,7 @@ if LC_ALL=C awk -f "$STRIP" "$TMP/unterm.c" > /dev/null 2>&1; then
 fi
 
 # --- the corpus ---------------------------------------------------------------
-git ls-files -- '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp' '*.inc' '*.h.in' '*.S' \
-    > "$TMP/all" || fail "git ls-files failed"
-require_nonempty "$TMP/all" "git ls-files matched no C/C++ file; every check below would pass vacuously"
+corpus_sources "$TMP/all"
 N="$(wc -l < "$TMP/all" | tr -d ' ')"
 
 : > "$TMP/findings"

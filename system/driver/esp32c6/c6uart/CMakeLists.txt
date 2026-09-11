@@ -10,4 +10,4 @@
 # raw UART class <kickos/driver/uart.h> and owns every register; c6uart.cc is the service
 # composed on it. An image gets exactly one definition of that class, so a second esp32c6
 # UART driver may not be linked beside this one.
-kickos_add_driver(c6uart SOURCES c6uart.cc uart_c6.cc REGDIR arch/riscv/chip/esp32c6)
+kickos_add_driver(c6uart SOURCES c6uart.cc uart_c6.cc ../../espuart/uart_esp.cc REGDIR arch/riscv/chip/esp32c6)

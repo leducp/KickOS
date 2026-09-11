@@ -34,6 +34,11 @@
 #
 # Every input is a number the build states: the provisioning integers come from the
 # generated CMake fragment and the structural constants from cmake/cap_geometry.cmake.
+#
+# kickos_endpoint_seats_check below is a SECOND arithmetic over two of the same
+# declarations, and deliberately not folded into the sum: it counts ENDPOINT POOL SLOTS
+# against a per-task ceiling, where the sum counts capability table INDICES against a board
+# supply, and the two answer for one crossing with different numbers.
 
 # What an app that declares nothing gets: the widest peak that still configures on the
 # fleet's smallest supply (7 slots) once the reserved plane is paid, so a plain `int main`
@@ -143,6 +148,76 @@ function(kickos_declare_app_capabilities target peak optional reply)
       "reaches nothing. A create past it returns -KOS_EMFILE at runtime, whatever this says. "
       "${_how}")
   endif()
+endfunction()
+
+# The endpoint POOL SLOTS this image seats in ROOT before the app's first instruction, against
+# the ceiling one task may hold. NOT the width above: that counts capability table indices,
+# this counts pool slots, and a console handover spends one of the second and none of the
+# first.
+#
+# IT CANNOT LIVE BESIDE THE POOL RELATION in cmake/amp_partition.cmake: that file is
+# include()d before add_subdirectory(system), where the service-list target does not yet
+# exist and every property of it reads as NOTFOUND.
+#
+# ROOT is the task charged, because the charge is derived from the capability tables of a
+# task's live threads (task_object_holds, kernel/syscall/cap.cc) and the app runs on root's
+# own table. Three things sit there for the life of the image: an AMP port capability seated
+# at init, a KOS_DRV_EP_RETAIN driver endpoint root keeps, and the endpoint behind a
+# published console, whose reserved KOS_CAP_STDOUT index names it after the publisher's own
+# capability is closed.
+function(kickos_endpoint_seats_check service_list)
+  set(_budget "${KICKOS_TASK_ENDPOINT_BUDGET}")
+  if(NOT "${_budget}" MATCHES "^[0-9]+$")
+    message(FATAL_ERROR
+      "KickOS: the endpoint seat check has no KICKOS_TASK_ENDPOINT_BUDGET value. It comes "
+      "from the generated kickos_config.cmake, which was not read before this call.")
+  endif()
+
+  set(_ports 0)
+  if("${KICKOS_AMP_PORT_COUNT}" MATCHES "^[0-9]+$")
+    set(_ports "${KICKOS_AMP_PORT_COUNT}")
+  endif()
+
+  set(_eps 0)
+  set(_eps_by "${service_list}")
+  if(TARGET ${service_list})
+    # Matched numerically for the reason the retained-cap read above gives: an unset property
+    # reads as `<var>-NOTFOUND`, and a negative would narrow the sum instead of failing.
+    get_target_property(_declared ${service_list} KICKOS_ENDPOINT_RETAINED)
+    if(_declared MATCHES "^[0-9]+$")
+      set(_eps "${_declared}")
+    endif()
+  else()
+    set(_eps_by "${service_list} (not a target; nothing retained)")
+  endif()
+
+  math(EXPR _seated "${_ports} + ${_eps}")
+  if(_seated GREATER 0)
+    message(STATUS "KickOS: endpoint seats = ${_seated} slot(s) held in root for the life of "
+                   "the image = ${_ports} partition port(s) + ${_eps} retained by "
+                   "${_eps_by}; one task may hold ${_budget}")
+  endif()
+  if(_seated LESS _budget)
+    return()
+  endif()
+
+  # STRICT, and the strictness is the app's: at equality root boots exactly at its ceiling
+  # and the app running on root's table cannot create one endpoint of its own.
+  message(FATAL_ERROR
+    "KickOS: this image seats ${_seated} endpoint pool slot(s) in ROOT before the app's "
+    "first instruction, and one task may hold ${_budget}. Root would reach its own ceiling "
+    "on the seating alone, and amp_ports_seat panics rather than refusing, so nothing at "
+    "run time would hold it there.\n"
+    "  partition ports, seated into root at init (KICKOS_AMP_PORTS) : ${_ports}\n"
+    "  retained for the life of the image by ${_eps_by} (RETAINED_ENDPOINTS) : "
+    "${_eps}\n"
+    "  = seated in root : ${_seated}\n"
+    "  one task's ceiling (KICKOS_TASK_ENDPOINT_BUDGET) : ${_budget}\n"
+    "THIS SUM IS NOT EVERY SEAT. A driver the APP brings up under KOS_DRV_EP_RETAIN keeps a "
+    "further slot in root, and that posture is a runtime one no build can read, so the "
+    "headroom this relation leaves is what those have to come out of. Raise "
+    "CONFIG_KICKOS_TASK_ENDPOINT_BUDGET in this board's defconfig, keeping it below "
+    "CONFIG_KICKOS_MAX_ENDPOINTS, or name a service list that retains fewer endpoints.")
 endfunction()
 
 # Sum the declarations, check the total against the board's supply, and forward the width.

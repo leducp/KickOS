@@ -2,11 +2,5 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # ST STM32F103: Cortex-M3, no FPU.
-#
-# Included by the cross toolchain file pre-project(), after the board descriptor.
 
-set(KICKOS_MCPU -mcpu=cortex-m3)
-
-if(NOT DEFINED KICKOS_MFLOAT_ABI)
-  set(KICKOS_MFLOAT_ABI soft)
-endif()
+kickos_arm_cpu(FLOAT soft MCPU -mcpu=cortex-m3)

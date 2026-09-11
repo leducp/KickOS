@@ -20,9 +20,6 @@ set -f
 KOS_CI_TAG=console_reach
 . "$(dirname "$0")/../lib/scratch_ci.sh"
 
-# The record parses below are structural, never keyed on a translated heading.
-export LC_ALL=C
-
 if [ "$#" -ne 4 ]; then
     echo "usage: $0 <src-dir> <cmake> <preset> <arch>" >&2
     exit 2

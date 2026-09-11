@@ -37,9 +37,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The awk below keys on ld's English "Linker script and memory map" heading.
-export LC_ALL=C
-
 if [ "$#" -lt 6 ]; then
     echo "usage: $0 <nm> <elf> <map> <start-sym>:<end-sym>... '--' <archive>..." >&2
     exit 2

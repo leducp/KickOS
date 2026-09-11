@@ -15,6 +15,7 @@
 
 #include <kickos/amp.h>
 #include <kickos/sys.h>
+#include <kickos/sys/abi_probe.h>
 
 #define AMPPING_ROUNDS 4
 #define AMPPING_CALL_US (500u * 1000u)

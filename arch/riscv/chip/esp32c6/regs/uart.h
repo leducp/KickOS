@@ -128,4 +128,12 @@ namespace kickos::esp32c6::reg::uart
     constexpr uint32_t IDLE_CONF_DEFAULT = (0x100u << IDLE_CONF_TX_IDLE_NUM_S) | 0x100u;
 }
 
+// Family membership: the shared ESP UART body (system/driver/espuart) names ONE spelling for
+// both parts. A chip joins by aliasing its own register namespace here and by spelling what
+// that unit names.
+namespace kickos::espuart
+{
+    namespace reg = kickos::esp32c6::reg;
+}
+
 #endif

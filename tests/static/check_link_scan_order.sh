@@ -21,10 +21,6 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-# ld's `LOAD` line is not translated, but the heading a locale would move is not read here at
-# all; LC_ALL is set for sort and grep collation.
-export LC_ALL=C
-
 [ "$#" -eq 1 ] || { echo "usage: $0 <map>" >&2; exit 2; }
 MAP="$1"
 [ -r "$MAP" ] || fail "cannot read $MAP"

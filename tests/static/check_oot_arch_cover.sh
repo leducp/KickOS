@@ -27,7 +27,7 @@ MAP=tests/integration/oot_arch_boards.txt
 # --- the arches the tree actually has ---------------------------------------
 # git ls-files, not a glob: an untracked board.cmake is not in the build either, and a glob
 # would also pick a stale copy out of a build directory.
-git ls-files -- 'boards/*/board.cmake' > "$TMP/descriptors" || fail "git ls-files failed"
+corpus "$TMP/descriptors" "board descriptor" 'boards/*/board.cmake'
 require_nonempty "$TMP/descriptors" "no tracked boards/*/board.cmake, so every check below
       would pass over an empty fleet"
 BOARDS="$(wc -l < "$TMP/descriptors" | tr -d ' ')"
@@ -46,8 +46,7 @@ sort -u "$TMP/tree_arches" > "$TMP/tree_arches.u"
 ARCHES="$(wc -l < "$TMP/tree_arches.u" | tr -d ' ')"
 
 # --- the presets, so a covered board is one CI can configure ----------------
-git ls-files -- 'CMakePresets.json' 'cmake/presets/*.json' > "$TMP/presetfiles" \
-    || fail "git ls-files failed"
+corpus "$TMP/presetfiles" "preset file" 'CMakePresets.json' 'cmake/presets/*.json'
 require_nonempty "$TMP/presetfiles" "no tracked preset file, so the preset clause below would
       pass vacuously"
 : > "$TMP/presetnames"

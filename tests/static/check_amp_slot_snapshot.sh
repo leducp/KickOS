@@ -26,10 +26,8 @@ set -u
 set -f
 . "$(dirname "$0")/../lib/gate.sh"
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
+require_repo_root
 
-export LC_ALL=C
 scratch_dir
 
 STRIP="$(dirname "$0")/../lib/strip_comments.awk"
@@ -43,7 +41,6 @@ SRC=kernel/amp/ampwindow.cc
 [ -f "$SRC" ] || fail "$SRC is missing; the takes cannot be read"
 
 rc=0
-bad() { echo "FAIL: $*" >&2; rc=1; }
 
 # The fields a take spends. The tag is NOT here: it is two words, cannot be one atomic, and no
 # arm of the window spends it, so a torn one is handed back torn and refused at the calling

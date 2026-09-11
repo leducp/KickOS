@@ -25,10 +25,7 @@ set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # NOT set -e: the point is to collect EVERY finding in one run, not to stop at the first.
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
 # The two exempt patterns, each with the reason the bytes are not ours to change.
 #
@@ -53,8 +50,7 @@ exempt() {
 
 scratch_dir
 
-git ls-files > "$TMP/all" || fail "git ls-files failed"
-require_nonempty "$TMP/all" "git ls-files matched nothing; every check below would pass vacuously"
+corpus_all "$TMP/all"
 
 # Built with printf: a literal 0x80..0xFF range cannot be typed into this file, which is
 # itself part of the corpus above. Proven both ways every run, because a shell that left

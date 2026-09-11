@@ -20,6 +20,7 @@
 #include <kickos/sys/byte_ring.h>
 #include <kickos/sys/bytes.h> // mem_copy
 #include <kickos/sys/console_ring.h>
+#include <kickos/sys/console_service.h>
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart.h>
@@ -36,7 +37,7 @@ namespace kickos::uart
 enum
 {
     // Service thread: the request endpoint (WAIT) and the line cap it rings (SIGNAL).
-    KOS_UART_CAP_EP = KOS_SPAWN_DELEGATED_CAP0,
+    KOS_UART_CAP_EP = console::KOS_CONSOLE_CAP_EP,
     KOS_UART_CAP_DOORBELL = console::KOS_CONSOLE_CAP_DOORBELL,
     // IRQ thread: the line cap it waits on (WAIT).
     KOS_UART_CAP_LINE = KOS_SPAWN_DELEGATED_CAP0
@@ -206,39 +207,29 @@ void irq_thread(Ctx* ctx, UartParams const& p)
 }
 
 // ---------------------------------------------------------------------------------
-// The ring side of the console is <kickos/sys/console_ring.h>; the rules, the budgets and
-// the CRLF posture are stated there. These four bind it to this layer's Shared block.
-//
-// The flush passes nullptr: bytes leave this ring into the device's own FIFO or shift
-// register, which `kos_uart_flush` drains on close and no ring test can see.
-uint32_t tx_write(Shared* sh, uint8_t const* p, uint32_t n);
-
-// A ZERO-LENGTH plain send on a console endpoint means FLUSH: length is the only field a
-// plain send carries.
-uint32_t console_flush(Shared* sh);
-
-uint32_t push_all(Shared* sh, uint8_t const* p, uint32_t n);
-
-uint32_t console_write(Shared* sh, uint8_t const* p, uint32_t n);
+// The request side of the console is <kickos/sys/console_service.h>. This is what a UART
+// changes about it: a UART drains whether or not anything is listening, so no mode bit is
+// required and a blocking write is honourable; bytes leave the ring into the device's own
+// FIFO and shift register, which `kos_uart_flush` drains on close and no ring test can see,
+// so there is no in-flight count to wait on; and no TX loss is counted outside the ring.
+struct Transport
+{
+    static constexpr uint32_t MODE_REQUIRED = 0u;
+    static Atomic<uint32_t, Order::RELAXED> const* inflight(Shared*) { return nullptr; }
+    static uint32_t tx_lost(Shared const*) { return 0u; }
+};
 
 // The service thread. Replies out of ring state and never touches the device.
-// Returns kos_reply's result: a reply can fail on a dead cap, and a caller that has gone is
-// the one thing this arm cannot see from its own state.
-int reply_status(kos_cap_t reply_cap, int32_t status, uint16_t len);
-
-// Parse + run one request frame; the reply is this function's, on every path.
 //
 // `mode` is null for a service with no unframed console arm, which is what makes
 // KOS_UART_SET_MODE refuse there instead of storing a mode nothing reads.
 int serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t const* msg, size_t n,
               kos_cap_t reply_cap);
 
-// Recv/dispatch loop. Returns only when the endpoint dies, which is the respawn signal.
+// Recv/dispatch loop with no console arm. Returns only when the endpoint dies, which is the
+// respawn signal.
 void serve_loop(Shared* sh);
 
-// The same loop with the CONSOLE arm: this endpoint carries TWO protocols, a kos_call being
-// a kos_uart_req frame and a plain send raw console bytes, so the recv must be info-bearing
-// to tell them apart.
 void console_serve_loop(Shared* sh);
 
 // The console service thread entry: its ARG is the Ctx the bring-up granted.

@@ -42,10 +42,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The host binutils is localised and prints translated headers, which every parse below reads.
-LC_ALL=C
-export LC_ALL
-
 _usage="usage: check_arm64_entry_order.sh <elf> <nm> <objdump>"
 elf="${1:?$_usage}"
 nm="${2:?$_usage}"
@@ -71,16 +67,9 @@ scratch_dir
 #
 # Matched against the instruction TEXT and not the mnemonic alone: `mov sp, x0` is a write to SP
 # and `mov x0, sp` is not, and a mnemonic-only reader cannot tell them apart.
+# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
+# tests/lib/objdump_scope.awk ahead of this file.
 cat > "$TMP/reader.awk" <<'AWK'
-/^[0-9a-f]+ <.*>:$/ {
-    name = $2
-    gsub(/[<>:]/, "", name)
-    inbody = (name == sym)
-    if (inbody) { seen = 1 }
-    next
-}
-!inbody { next }
-$0 !~ /^[ \t]*[0-9a-f]+:/ { next }
 {
     text = $0
     sub(/^[^:]*:[ \t]*/, "", text)
@@ -105,8 +94,8 @@ END {
 AWK
 
 read_body() { # <listing> <symbol> <open-ere> <need-ere> <close-ere>
-    awk -v sym="$2" -v openre="$3" -v needre="$4" -v closere="$5" \
-        -f "$TMP/reader.awk" "$1"
+    scoped_body "$TMP/reader.awk" "$1" "$2" \
+        -v openre="$3" -v needre="$4" -v closere="$5"
 }
 
 # --- the reader's controls, before the image is read --------------------------

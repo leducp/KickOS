@@ -43,10 +43,6 @@ set -f
 KOS_CI_TAG=trap_redzone
 . "$(dirname "$0")/../lib/scratch_ci.sh"
 
-# The macro scrape and the awk record parses are structural, never keyed on a translated
-# heading.
-export LC_ALL=C
-
 if [ "$#" -ne 4 ]; then
     echo "usage: $0 <src-dir> <cmake> <preset> <arch>" >&2
     exit 2
@@ -286,7 +282,6 @@ fi
 
 ENFORCED_ARGS=""
 rc=0
-bad() { echo "FAIL: $*" >&2; rc=1; }
 
 echo "trap_redzone: preset=$PRESET arch=$ARCH"
 echo "trap_redzone: header  $HEADER"

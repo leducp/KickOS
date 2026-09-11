@@ -30,6 +30,6 @@ void tls_seat(void* base);
 // 512-byte block is not, by design, and it reaches no thread_local.
 bool tls_stack_admissible(uintptr_t base, size_t size);
 
-} // namespace kickos
+}
 
 #endif

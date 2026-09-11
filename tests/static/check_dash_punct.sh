@@ -54,10 +54,7 @@ set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # NOT set -e: the point is to collect EVERY finding in one run, not to stop at the first.
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
 scratch_dir
 
@@ -211,11 +208,10 @@ if scan "$TMP/open.sh" 1 > /dev/null 2>&1; then
 fi
 
 # --- the corpus ---------------------------------------------------------------
-git ls-files -- '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp' '*.inc' '*.h.in' '*.S' \
+corpus "$TMP/all" "source file" \
+    '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp' '*.inc' '*.h.in' '*.S' \
     '*.ld' '*.lds' '*.py' '*.sh' '*.cmake' '*.awk' '*.yml' \
-    CMakeLists.txt '*/CMakeLists.txt' Kconfig '*/Kconfig' > "$TMP/all" \
-    || fail "git ls-files failed"
-require_nonempty "$TMP/all" "git ls-files matched no source file; every check below would pass vacuously"
+    CMakeLists.txt '*/CMakeLists.txt' Kconfig '*/Kconfig'
 N="$(wc -l < "$TMP/all" | tr -d ' ')"
 
 : > "$TMP/findings"

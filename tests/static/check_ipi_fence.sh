@@ -23,10 +23,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The host binutils is localised and prints translated headers, which every parse below reads.
-LC_ALL=C
-export LC_ALL
-
 _usage="usage: check_ipi_fence.sh <elf> <nm> <objdump> <full-operand> <refused-operands>"
 elf="${1:?$_usage}"
 nm="${2:?$_usage}"
@@ -46,16 +42,9 @@ scratch_dir
 # --- the reader ---------------------------------------------------------------
 # One record: the barrier's operand, and how many instructions the body holds. The operand is
 # what separates a full barrier from a half, so a mnemonic-only reader would see neither.
+# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
+# tests/lib/objdump_scope.awk ahead of this file.
 cat > "$TMP/reader.awk" <<'AWK'
-/^[0-9a-f]+ <.*>:$/ {
-    name = $2
-    gsub(/[<>:]/, "", name)
-    inbody = (name == sym)
-    if (inbody) { seen = 1 }
-    next
-}
-!inbody { next }
-$0 !~ /^[ \t]*[0-9a-f]+:/ { next }
 {
     text = $0
     sub(/^[^:]*:[ \t]*/, "", text)
@@ -78,7 +67,7 @@ END {
 AWK
 
 read_body() { # <listing> <symbol>
-    awk -v sym="$2" -f "$TMP/reader.awk" "$1"
+    scoped_body "$TMP/reader.awk" "$1" "$2"
 }
 
 # --- the reader's controls, before the image is read --------------------------
@@ -110,8 +99,8 @@ case "$_p" in
     *) fail "the reader did not report a planted body whose barrier was DELETED (got '$_p').
   That is the case this gate exists for, so a reader that cannot see it proves nothing." ;;
 esac
-_p="$(read_body "$TMP/ctl_other" "$SYM")"
-[ "$_p" = NOSYM ] || fail "the reader accepted a listing that defines another symbol (got '$_p')"
+ctl_dead_reader "$(read_body "$TMP/ctl_other" "$SYM")" \
+    "a listing defining another symbol would read as this one's clean body"
 
 for _bad in $refused; do
     cat > "$TMP/ctl_half" <<EOF

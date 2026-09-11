@@ -157,9 +157,9 @@ namespace kickos::xmc::reg::usic
     // 72 MHz SSC baud profile (fCPU=144 MHz): FDR fractional mode (DM=10B) STEP=367; BRG
     // PDIV+1=14, PCTQ+1=1, DCTQ+1=16 (RM eq.18.8; RM p.18-178 / p.18-179).
     constexpr uint32_t FDR_STEP_367 = 367u;
-    constexpr uint32_t BRG_PDIV_13 = 13u << 16; // PDIV+1 = 14
-    constexpr uint32_t BRG_DCTQ_15 = 15u << 10; // DCTQ+1 = 16
-    constexpr uint32_t BRG_PCTQ_0 = 0u << 8;    // PCTQ+1 = 1
+    constexpr uint32_t BRG_PDIV_13 = 13u << 16;
+    constexpr uint32_t BRG_DCTQ_15 = 15u << 10;
+    constexpr uint32_t BRG_PCTQ_0 = 0u << 8;
 
     // SCTR (RM p.18-183): SDIR(0)=1 MSB-first (SPI bit order); FLE[21:16]=63 (0x3F)
     // leaves the frame length to the software TCSR.SOF/EOF markers (RM 18.4.3.6).

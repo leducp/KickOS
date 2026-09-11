@@ -35,12 +35,8 @@ set -f
 . "$(dirname "$0")/../lib/gate.sh"
 # Findings accumulate over the whole corpus, so set -e must stay off.
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
-export LC_ALL=C
 scratch_dir
 
 # The alignment the macro hardcodes. A body aligning to anything else is comparing against a
@@ -237,9 +233,7 @@ CTL_A16="$(bad_count 16 "$CTL_OK" | tr -d ' ')"
       $CTL_A16 finding(s), expected 1; the constant is not what decides the clause"
 
 # --- the corpus ---------------------------------------------------------------
-git ls-files -- '*.ld' > "$TMP/all" || fail "git ls-files failed"
-require_nonempty "$TMP/all" "git ls-files matched no linker script; every check below would
-      pass vacuously"
+corpus "$TMP/all" "linker script" '*.ld'
 N="$(wc -l < "$TMP/all" | tr -d ' ')"
 grep -q '[[:space:]]' "$TMP/all" \
     && fail "a tracked linker-script path contains whitespace; the corpus is re-split unquoted"

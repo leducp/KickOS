@@ -30,10 +30,7 @@ set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # Findings accumulate over the whole corpus, so set -e must stay off.
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
 # One tracked path -> need | none | refuse.
 #
@@ -307,8 +304,7 @@ header_mutation spdx-tag 5 "$NEVER" "$COPYRIGHT_ERE" "$COPYRIGHT_SPAN" 10 0
 header_mutation copyright-word 5 "$SPDX_ERE" "$NEVER" "$COPYRIGHT_SPAN" 2 8
 
 # --- the corpus ---------------------------------------------------------------
-git ls-files > "$TMP/all" || fail "git ls-files failed"
-require_nonempty "$TMP/all" "git ls-files matched nothing; every check below would pass vacuously"
+corpus_all "$TMP/all"
 # Sized at about HALF what the tree tracks, so an ordinary deletion still passes while a
 # truncated listing refuses. Nonempty is not a floor: this gate asserts an ABSENCE over
 # every tracked file, and a handful of them satisfies it as readily as all of them.
