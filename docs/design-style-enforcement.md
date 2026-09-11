@@ -129,7 +129,7 @@ conversion and not a one-line fix, so Q6 has to be answered before that rule can
   as its corpus or names those file types as exempt. Either way it is now a zero-holding rule.
 - **Q2. Spelled operators in `#if`.** `and` / `or` are valid preprocessor tokens, yet 102 lines of
   preprocessor condition in the C tier spell it `&&` and only two conditions spell it `and`
-  (`user/apps/common/selftest/main.cc:27` and `:6361`). Exempt by intent, or drift?
+  (`user/apps/common/selftest/selftest.h` and `main.cc`). Exempt by intent, or drift?
 - **Q3. Python.** Does no-ternary bind the S tier? `git ls-files '*.py' | xargs grep -ln ' if .* else '`
   is the live list, five files at the time of this edit.
 - **Q4. Pre-commit hook.** Ship an opt-in hook under `tools/`? Developer-local, so it can only ever be

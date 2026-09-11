@@ -18,9 +18,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-LC_ALL=C
-export LC_ALL
-
 ROOT="${1:-$(cd "$(dirname "$0")/../.." && pwd)}"
 [ -d "$ROOT/kernel" ] || fail "no kernel/ under $ROOT: this is not a KickOS tree, and an empty
   corpus below would read as a clean one"

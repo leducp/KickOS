@@ -30,6 +30,7 @@
 #include <kickos/task.h>
 
 #include <kickos/sys/abi.h>
+#include <kickos/sys/abi_probe.h>
 
 #include "syscall_internal.h"
 

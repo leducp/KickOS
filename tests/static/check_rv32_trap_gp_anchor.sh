@@ -75,10 +75,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The host binutils is localised and prints translated headers, which every parse below reads.
-LC_ALL=C
-export LC_ALL
-
 _usage="usage: check_rv32_trap_gp_anchor.sh <objdump> <chip-limits-h> <archive> <image>..."
 OBJDUMP="${1:?$_usage}"
 LIMITS="${2:?$_usage}"

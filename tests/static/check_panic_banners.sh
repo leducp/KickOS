@@ -39,10 +39,7 @@ set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # Findings accumulate over the whole corpus, so set -e must stay off.
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
 # THE EXCLUSIONS, and they are one ruling: these banners say a thread died and the SYSTEM DID
 # NOT, so a gate reads them while asserting no panic occurred and the ERE must not match them.
@@ -660,8 +657,7 @@ done < "$TMP/st_class"
 [ "$C_REFUSE" -eq 3 ] || fail "corpus_class answered refuse for $C_REFUSE of 3 controls"
 
 # --- the corpus ---------------------------------------------------------------
-git ls-files > "$TMP/tracked" || fail "git ls-files failed, so the tree is UNKNOWN, not empty"
-require_nonempty "$TMP/tracked" "git ls-files matched nothing"
+corpus_all "$TMP/tracked"
 # The extensions are the tree's own, `.cc` and `.h` per docs/reference/style.md. The one
 # tracked `.inc` is an assembler vector-table fragment that calls nothing, so widening this
 # adds arms nothing reaches. rc 1 is an empty filter result and the floor below catches it;

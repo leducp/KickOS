@@ -12,7 +12,7 @@
 
 #include <kickos/console_tx.h>
 
-#include "tx_seam.h"
+#include "console_seam.h"
 
 namespace
 {
@@ -33,7 +33,7 @@ namespace
     class ConsoleTxMaskedWindow : public ::testing::Test
     {
     protected:
-        void SetUp() override { consoletxfix::reset(kRing); }
+        void SetUp() override { consoleseam::reset(kRing); }
     };
 }
 
@@ -42,8 +42,8 @@ TEST_F(ConsoleTxMaskedWindow, BurstThatFitsPushesAtMostThePrimeUnderTheMask)
 {
     std::string const in = pattern(128, 'a');
     console_tx_write(in.data(), in.size());
-    EXPECT_EQ(consoletxfix::wire(), in);
-    EXPECT_LE(consoletxfix::max_masked_pushes(), 1u);
+    EXPECT_EQ(consoleseam::wire(), in);
+    EXPECT_LE(consoleseam::max_masked_pushes(), 1u);
 }
 
 // 4096 bytes pushed with the mask held would be ~356 ms of interrupt-off time at 115200 8N1.
@@ -51,8 +51,8 @@ TEST_F(ConsoleTxMaskedWindow, OversizedBurstDoesNotBitBangUnderTheMask)
 {
     std::string const in = pattern(4096, 'a');
     console_tx_write(in.data(), in.size());
-    EXPECT_EQ(consoletxfix::wire(), in);
-    EXPECT_LE(consoletxfix::max_masked_pushes(), 1u);
+    EXPECT_EQ(consoleseam::wire(), in);
+    EXPECT_LE(consoleseam::max_masked_pushes(), 1u);
 }
 
 // Anti-vacuity for the case above: the bound must be met by OPENING the mask, not by
@@ -61,8 +61,8 @@ TEST_F(ConsoleTxMaskedWindow, OversizedBurstOpensTheMaskOncePerRingFull)
 {
     std::string const in = pattern(8u * kCapacity, 'a');
     console_tx_write(in.data(), in.size());
-    EXPECT_EQ(consoletxfix::wire().size(), in.size());
-    EXPECT_GE(consoletxfix::gap_count(), 7u);
+    EXPECT_EQ(consoleseam::wire().size(), in.size());
+    EXPECT_GE(consoleseam::gap_count(), 7u);
 }
 
 // No masked span may exceed the ring, whatever the burst: the enqueue copies at most
@@ -71,11 +71,11 @@ TEST_F(ConsoleTxMaskedWindow, MaskedSpanIsBoundedByTheRingForEveryBurstSize)
 {
     for (size_t n = 1; n <= 4u * kCapacity; n *= 3u)
     {
-        consoletxfix::reset(kRing);
+        consoleseam::reset(kRing);
         std::string const in = pattern(n, 'a');
         console_tx_write(in.data(), in.size());
-        EXPECT_EQ(consoletxfix::wire(), in) << "n=" << n;
-        EXPECT_LE(consoletxfix::max_masked_pushes(), kCapacity) << "n=" << n;
+        EXPECT_EQ(consoleseam::wire(), in) << "n=" << n;
+        EXPECT_LE(consoleseam::max_masked_pushes(), kCapacity) << "n=" << n;
     }
 }
 
@@ -83,8 +83,8 @@ TEST_F(ConsoleTxMaskedWindow, MaskedSpanIsBoundedByTheRingForEveryBurstSize)
 // and it must terminate with the TX register permanently full.
 TEST_F(ConsoleTxMaskedWindow, WedgedChannelWithNoDrainTerminates)
 {
-    consoletxfix::set_isr_runs_in_gap(false);
-    consoletxfix::set_slot_free(0);
+    consoleseam::set_isr_runs_in_gap(false);
+    consoleseam::set_slot_free(0);
     std::string const in = pattern(4096, 'a');
     console_tx_write(in.data(), in.size());
     SUCCEED(); // reaching here is the assertion
@@ -104,13 +104,13 @@ namespace
 
 TEST_F(ConsoleTxMaskedWindow, ProducerSeatedInTheGapInterleavesWithoutLosingBytes)
 {
-    consoletxfix::run_in_first_gap(seat_second_producer);
+    consoleseam::run_in_gap(1u, seat_second_producer);
     std::string const in = pattern(4u * kCapacity, 'a');
     console_tx_write(in.data(), in.size());
 
     std::string mine;
     size_t theirs = 0;
-    for (char const c : consoletxfix::wire())
+    for (char const c : consoleseam::wire())
     {
         if (c == 'Z')
         {
@@ -137,40 +137,40 @@ namespace
     void seat_deinit(void)
     {
         console_tx_deinit();
-        consoletxfix::set_isr_runs_in_gap(false); // irq_detach plus the NVIC mask
+        consoleseam::set_isr_runs_in_gap(false); // irq_detach plus the NVIC mask
     }
 }
 
 TEST_F(ConsoleTxMaskedWindow, DeinitSeatedInTheGapLosesNoBytes)
 {
-    consoletxfix::run_in_first_gap(seat_deinit);
+    consoleseam::run_in_gap(1u, seat_deinit);
     std::string const in = pattern(kCapacity + kSpillPastOneRing, 'a');
     console_tx_write(in.data(), in.size());
     console_tx_flush_sync(); // refused on a disarmed ring: whatever is stranded stays stranded
     EXPECT_EQ(console_tx_armed(), 0);
-    EXPECT_EQ(consoletxfix::wire(), in);
+    EXPECT_EQ(consoleseam::wire(), in);
 }
 
 TEST_F(ConsoleTxMaskedWindow, DeinitSeatedInTheGapLeavesTheTxInterruptDisabled)
 {
-    consoletxfix::run_in_first_gap(seat_deinit);
+    consoleseam::run_in_gap(1u, seat_deinit);
     std::string const in = pattern(kCapacity + kSpillPastOneRing, 'a');
     console_tx_write(in.data(), in.size());
     EXPECT_EQ(console_tx_armed(), 0);
-    EXPECT_FALSE(consoletxfix::tx_irq_enabled());
+    EXPECT_FALSE(consoleseam::tx_irq_enabled());
 }
 
 // A zero-length write has no chunk to queue, so the chunk loop never runs. Falling through
 // it into the synchronous fallback drains every byte already queued with the mask held.
 TEST_F(ConsoleTxMaskedWindow, ZeroLengthWritePushesNothingUnderTheMask)
 {
-    consoletxfix::set_isr_runs_in_gap(false);
+    consoleseam::set_isr_runs_in_gap(false);
     std::string const queued = pattern(400, 'a');
     console_tx_write(queued.data(), queued.size());
-    ASSERT_EQ(consoletxfix::max_masked_pushes(), 1u); // the prime; 399 bytes sit in the ring
-    ASSERT_EQ(consoletxfix::wire().size(), 1u);
+    ASSERT_EQ(consoleseam::max_masked_pushes(), 1u); // the prime; 399 bytes sit in the ring
+    ASSERT_EQ(consoleseam::wire().size(), 1u);
 
     console_tx_write(queued.data(), 0);
-    EXPECT_EQ(consoletxfix::max_masked_pushes(), 1u);
-    EXPECT_EQ(consoletxfix::wire().size(), 1u);
+    EXPECT_EQ(consoleseam::max_masked_pushes(), 1u);
+    EXPECT_EQ(consoleseam::wire().size(), 1u);
 }

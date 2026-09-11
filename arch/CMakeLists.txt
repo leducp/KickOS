@@ -25,9 +25,10 @@ endif()
 #   kickos_kernel, kickos_chip_<chip>, kickos_arch_<arch> (_kickos_group in the root
 #   CMakeLists.txt); tests/static/check_link_scan_order.sh reads it back off the link map.
 # Two rules follow, both enforced rather than restated. A fallback never shares an archive
-# with a backend for the same seam (leg 1 of check_seam_defaults.sh), so each list below drops
-# the members the backend in that archive defines. And an arch-neutral fallback for a seam the
-# KERNEL declares never sits in kickos_kernel, the archive the group scans first.
+# with a backend for the same seam (leg 1 of check_seam_defaults.sh), so an arch's own
+# sources.cmake drops the members the backend in that archive defines. And an arch-neutral
+# fallback for a seam the KERNEL declares never sits in kickos_kernel, the archive the group
+# scans first.
 #
 # The load-bearing invariant is on the backend side: a backend's definition must live in an
 # archive member that is ALWAYS ANCHORED, one the link pulls for some other reason
@@ -89,291 +90,52 @@ if(KICKOS_HAVE_MPU)
     arm/common/kickos_arm_mpu_fixed_default.cc)
 endif()
 
-if(KICKOS_ARCH STREQUAL "sim")
-  # sim.cc is the backend for arch_console_write_sync, arch_console_tx_backend,
-  # arch_console_reclaim_window, kfault_terminate and arch_periph_reg_write, so those fallbacks
-  # are dropped.
-  # SystemCoreClock has no chip to define it here.
-  set(_sim_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
-  list(REMOVE_ITEM _sim_defaults
-    common/arch_console_tx_backend_default.cc
-    common/arch_console_reclaim_window_default.cc
-    common/arch_console_write_sync_default.cc
-    common/arch_periph_reg_write_default.cc
-    common/kfault_terminate_default.cc)
-  add_library(kickos_arch_sim STATIC sim/sim.cc sim/start.cc
-    sim/system_core_clock_default.cc
-    ${_sim_defaults})
-  kickos_apply_hosted(kickos_arch_sim)
-  target_include_directories(kickos_arch_sim PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/sim/include>"
-    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-  # The arch-neutral cpp constants (fatal_status.ld.h).
-  target_include_directories(kickos_arch_sim PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/common")
-  # Telemetry: the sim flushes the RTT ch1 ring to a file at shutdown, so it reads lib's rtt.h.
-  target_include_directories(kickos_arch_sim PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../lib/include")
-  if(KICKOS_MULTI_INSTANCE)
-    # PUBLIC, not PRIVATE: -pthread has to reach the final link of every app, not just
-    # this archive's compiles.
-    find_package(Threads REQUIRED)
-    target_link_libraries(kickos_arch_sim PUBLIC Threads::Threads)
-  endif()
-  install(TARGETS kickos_arch_sim EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-  set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sim/include" PARENT_SCOPE)
-elseif(KICKOS_ARCH STREQUAL "armv7m")
-  add_library(kickos_arch_armv7m STATIC
-    arm/armv7m/arch_armv7m.cc
-    arm/armv7m/cache.cc
-    arm/common/arch_arm_common.cc
-    common/arch_ram_common.cc
-    common/startup_ranges.cc
-    ${KICKOS_SEAM_DEFAULTS_COMMON}
-    ${KICKOS_SEAM_DEFAULTS_ARM}
-    arm/armv7m/arch_fault_report_extra_default.cc
-    arm/armv7m/arch_trace_now_default.cc
-    arm/read_tp.S
-    arm/armv7m/switch.S)
-  kickos_apply_freestanding(kickos_arch_armv7m)
-  # The DWT arch_trace_now fallback runs on the PendSV-tail emit path, so its TU (and
-  # arch_armv7m.cc, which carries the rest of that path) must be FP-register-free.
-  if(KICKOS_TELEMETRY_ON)
-    set_source_files_properties(arm/armv7m/arch_armv7m.cc
-                                arm/armv7m/arch_trace_now_default.cc
-      PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
-  endif()
-  target_include_directories(kickos_arch_armv7m PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/arm/armv7m/include>"
-    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-  # Resolves the <arm_isa.h> arm/common/arch_arm_common.cc includes. PRIVATE and a directory
-  # of its own: it must not reach an installed consumer, and a directory holding a second
-  # regs.h would shadow the one a common TU means.
-  target_include_directories(kickos_arch_armv7m PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv7m/isa")
-  install(TARGETS kickos_arch_armv7m EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-  set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv7m/include" PARENT_SCOPE)
-elseif(KICKOS_ARCH STREQUAL "armv6m")
-  # Cortex-M0/M0+ (RP2040). No arch_trace_now fallback: v6-M has no DWT, so the trace clock
-  # is a chip contract. Fault isolation has a real v6-M backend (it reads CONTROL.nPRIV),
-  # linked in place of the declining fallbacks removed from KICKOS_SEAM_DEFAULTS_COMMON under
-  # the same gate.
-  set(KICKOS_ARMV6M_FAULT "")
-  if(KICKOS_FAULT_ISOLATION)
-    set(KICKOS_ARMV6M_FAULT arm/armv6m/arch_armv6m_fault.cc)
-  endif()
-  add_library(kickos_arch_armv6m STATIC
-    arm/armv6m/arch_armv6m.cc
-    ${KICKOS_ARMV6M_FAULT}
-    arm/common/arch_arm_common.cc
-    common/arch_ram_common.cc
-    common/startup_ranges.cc
-    ${KICKOS_SEAM_DEFAULTS_COMMON}
-    ${KICKOS_SEAM_DEFAULTS_ARM}
-    arm/read_tp.S
-    arm/armv6m/switch.S)
-  kickos_apply_freestanding(kickos_arch_armv6m)
-  target_include_directories(kickos_arch_armv6m PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/arm/armv6m/include>"
-    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-  # Resolves the <arm_isa.h> arm/common/arch_arm_common.cc includes. PRIVATE and a directory
-  # of its own: it must not reach an installed consumer, and a directory holding a second
-  # regs.h would shadow the one a common TU means.
-  target_include_directories(kickos_arch_armv6m PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv6m/isa")
-  install(TARGETS kickos_arch_armv6m EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-  set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv6m/include" PARENT_SCOPE)
-elseif(KICKOS_ARCH STREQUAL "rxv3")
-  # Renesas RX72M (RXv3).
-  add_library(kickos_arch_rxv3 STATIC
-    rx/rxv3/arch_rxv3.cc
-    rx/rxv3/emutls.cc
-    common/arch_ram_common.cc
-    common/startup_ranges.cc
-    ${KICKOS_SEAM_DEFAULTS_COMMON}
-    rx/rxv3/kickos_rx_dev_dispatch_default.cc
-    rx/rxv3/kickos_rx_group_arm_default.cc
-    rx/rxv3/switch.S)
-  kickos_apply_freestanding(kickos_arch_rxv3)
-  target_include_directories(kickos_arch_rxv3 PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/rx/rxv3/include>"
-    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-  target_include_directories(kickos_arch_rxv3 PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../lib/include") # console_tx.h (buffered console)
-  install(TARGETS kickos_arch_rxv3 EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-  set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rx/rxv3/include" PARENT_SCOPE)
-elseif(KICKOS_ARCH STREQUAL "lx6")
-  # ESP32 Xtensa LX6. arch_xtensa.cc is the backend for arch_irq_line_core, so that fallback
-  # leaves the list.
-  set(_lx6_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
-  list(REMOVE_ITEM _lx6_defaults common/arch_irq_line_core_default.cc)
-  add_library(kickos_arch_lx6 STATIC
-    xtensa/lx6/arch_xtensa.cc
-    xtensa/lx6/klock_lx6.cc
-    # The protocol over the doorbell, one copy for every backend that runs it.
-    common/doorbell_protocol.cc
-    common/arch_ram_common.cc
-    common/startup_ranges.cc
-    ${_lx6_defaults}
-    xtensa/lx6/arch_clock_now_default.cc
-    xtensa/lx6/arch_trace_now_default.cc
-    xtensa/lx6/switch.S)
-  kickos_apply_freestanding(kickos_arch_lx6)
-  target_include_directories(kickos_arch_lx6 PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/xtensa/lx6/include>"
-    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-  install(TARGETS kickos_arch_lx6 EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-  set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xtensa/lx6/include" PARENT_SCOPE)
-elseif(KICKOS_ARCH STREQUAL "armv8a")
-  # ARMv8-A in AArch64 state (QEMU virt, Cortex-A53).
-  # One interrupt-controller backend per image, on the version the board states.
-  if(KICKOS_ARM64_GIC_VERSION EQUAL 2)
-    # A GICv2 target list names CPU interface numbers, which the architecture ties to no
-    # identity register, so only the core a number names can publish it. GICv3 targets the
-    # affinity in MPIDR instead.
-    if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
-      message(FATAL_ERROR
-        "KickOS: the own-image AMP posture is refused under ARM64_GIC_V2. A GICv2 doorbell "
-        "targets CPU INTERFACE numbers, which the architecture ties to no identity register, "
-        "so each core must publish its own and a peer's publication never reaches this "
-        "image. What would fix it is a target number carried in the partition's shared "
-        "region, published by each node before any peer sends. Build this partition under "
-        "CONFIG_ARM64_GIC_V3, whose target is the affinity in MPIDR.")
-    endif()
-    set(_kos_gic_src arm64/common/arch_arm64_gicv2.cc)
-  elseif(KICKOS_ARM64_GIC_VERSION EQUAL 3)
-    set(_kos_gic_src arm64/common/arch_arm64_gicv3.cc)
-  else()
-    message(FATAL_ERROR
-      "KICKOS_ARM64_GIC_VERSION is '${KICKOS_ARM64_GIC_VERSION}'; this arch implements "
-      "2 and 3. The board states it through the Kconfig choice ARM64_GIC_V2 / ARM64_GIC_V3.")
-  endif()
-  # The GIC backend is the backend for arch_irq_line_kernel_owned (the doorbell's SGI), so
-  # that fallback leaves the list.
-  set(_armv8a_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
-  list(REMOVE_ITEM _armv8a_defaults common/arch_irq_line_kernel_owned_default.cc)
-  add_library(kickos_arch_armv8a STATIC
-    arm64/armv8a/arch_armv8a.cc
-    arm64/armv8a/aspace_armv8a.cc
-    arm64/armv8a/cache_armv8a.cc
-    arm64/armv8a/vectors.S
-    arm64/armv8a/switch.S
-    arm64/armv8a/secondary.S
-    # The cross-core kernel lock and the doorbell, which are one mechanism: the acquire loop
-    # services a pending doorbell. Empty at one core.
-    arm64/armv8a/klock_armv8a.cc
-    # The protocol over the doorbell, one copy for every backend that runs it.
-    common/doorbell_protocol.cc
-    # Interrupt controller: the bases and the routing are the part's, and a chip states them
-    # by defining that backend's map (arm64/common/gicv2.h, gicv3.h).
-    ${_kos_gic_src}
-    # The A53 seams that name no device: the architected generic timer and the semihosting
-    # dead end. No fallback for any of them sits in this archive, which is what lets the
-    # definitions leave the chip archive the group scans first.
-    arm64/common/arch_arm64_a53.cc
-    common/arch_ram_common.cc
-    common/startup_ranges.cc
-    ${_armv8a_defaults})
-  kickos_apply_freestanding(kickos_arch_armv8a)
-  target_include_directories(kickos_arch_armv8a PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/arm64/armv8a/include>"
-    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-  install(TARGETS kickos_arch_armv8a EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-  set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arm64/armv8a/include" PARENT_SCOPE)
-elseif(KICKOS_ARCH STREQUAL "rv32imac")
-  # RISC-V RV32IMAC (ESP32-C6 + QEMU virt).
-  add_library(kickos_arch_rv32imac STATIC
-    riscv/rv32imac/arch_rv32imac.cc
-    common/arch_ram_common.cc
-    common/startup_ranges.cc
-    ${KICKOS_SEAM_DEFAULTS_COMMON}
-    riscv/rv32imac/arch_rv_ext_eoi_default.cc
-    riscv/rv32imac/arch_rv_has_mcounteren_default.cc
-    riscv/rv32imac/arch_rv_hw_mask_default.cc
-    riscv/rv32imac/arch_rv_hw_unmask_default.cc
-    riscv/rv32imac/arch_rv_inject_deliver_default.cc
-    riscv/rv32imac/kickos_rv_ext_dispatch_dev_default.cc
-    riscv/rv32imac/switch.S)
-  kickos_apply_freestanding(kickos_arch_rv32imac)
-  target_include_directories(kickos_arch_rv32imac PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/riscv/rv32imac/include>"
-    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-  install(TARGETS kickos_arch_rv32imac EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-  set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/riscv/rv32imac/include" PARENT_SCOPE)
-elseif(KICKOS_ARCH STREQUAL "rv64imac")
-  # RISC-V RV64IMAC (QEMU virt). libgcc_rv64imac.cc holds the two compiler-runtime helpers
-  # kernel text calls, which the split image cannot take from the multilib in the app's half.
-  add_library(kickos_arch_rv64imac STATIC
-    riscv/rv64imac/arch_rv64imac.cc
-    riscv/rv64imac/aspace_rv64imac.cc
-    riscv/rv64imac/klock_rv64imac.cc
-    # The protocol over the doorbell, one copy for every backend that runs it.
-    common/doorbell_protocol.cc
-    riscv/rv64imac/libgcc_rv64imac.cc
-    riscv/rv64imac/switch.S
-    riscv/rv64imac/trap.S
-    common/arch_ram_common.cc
-    common/startup_ranges.cc
-    ${KICKOS_SEAM_DEFAULTS_COMMON})
-  kickos_apply_freestanding(kickos_arch_rv64imac)
-  target_include_directories(kickos_arch_rv64imac PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/riscv/rv64imac/include>"
-    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-  install(TARGETS kickos_arch_rv64imac EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-  set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/riscv/rv64imac/include" PARENT_SCOPE)
-elseif(KICKOS_ARCH STREQUAL "x86_64")
-  # x86_64 in long mode, entered by UEFI with paging already enabled.
-  #
-  # NO common/arch_ram_common.cc: that file reads the chip linker script's __kickos_ram_start
-  # pair, and the image firmware loads here is a PE32+ application with no KickOS script at
-  # all. The RAM bounds are the FIRMWARE's answer, taken from the UEFI memory map, so the
-  # chip keeps its own copies.
-  #
-  # NO common/startup_ranges.cc either: the UEFI loader places .data with its initialised
-  # content and zero-fills the tail of a section whose virtual size exceeds its raw size, so
-  # there is no copy table and no zero table for a Reset_Handler to walk.
-  add_library(kickos_arch_x86_64 STATIC
-    x86/x86_64/arch_x86_64.cc
-    x86/x86_64/apic_x86_64.cc
-    x86/x86_64/aspace_x86_64.cc
-    x86/x86_64/desc_x86_64.cc
-    x86/x86_64/ring3_x86_64.cc
-    x86/x86_64/fault_x86_64.cc
-    x86/x86_64/trap_x86_64.S
-    x86/x86_64/switch.S
-    x86/x86_64/panic_stack.S
-    ${KICKOS_SEAM_DEFAULTS_COMMON})
-  kickos_apply_freestanding(kickos_arch_x86_64)
-  target_include_directories(kickos_arch_x86_64 PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/x86/x86_64/include>"
-    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-  # The fault report prints through the chip's COM1 primitives rather than through kprintf:
-  # the same reporter serves the kernel-free boot images, which link no kernel to print with.
-  target_include_directories(kickos_arch_x86_64 PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/x86/chip/${KICKOS_CHIP}/include")
-  install(TARGETS kickos_arch_x86_64 EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-  set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/x86/x86_64/include" PARENT_SCOPE)
-else()
-  message(FATAL_ERROR "KickOS: arch backend '${KICKOS_ARCH}' not available")
+# --- The arch archive --------------------------------------------------------
+# arch/<family>/<arch>/sources.cmake names this arch's members. It is included into THIS
+# directory scope, so its paths are relative here and it can set a source property itself;
+# what it hands back is KICKOS_ARCH_SOURCES plus, where the arch needs them,
+# KICKOS_ARCH_PRIVATE_INCLUDE_DIRS, KICKOS_ARCH_LINK_LIBRARIES and KICKOS_ARCH_HOSTED.
+set(_kos_arch_dir "${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}")
+if(KICKOS_ARCH_FAMILY STREQUAL KICKOS_ARCH)
+  # The sim's backend sits at arch/sim, with no family level.
+  set(_kos_arch_dir "${KICKOS_ARCH}")
 endif()
+set(_kos_arch_optin "${CMAKE_CURRENT_SOURCE_DIR}/${_kos_arch_dir}/sources.cmake")
+if(NOT EXISTS "${_kos_arch_optin}")
+  message(FATAL_ERROR "KickOS: arch backend '${KICKOS_ARCH}' not available "
+    "(no ${_kos_arch_optin})")
+endif()
+set(KICKOS_ARCH_SOURCES "")
+set(KICKOS_ARCH_PRIVATE_INCLUDE_DIRS "")
+set(KICKOS_ARCH_LINK_LIBRARIES "")
+set(KICKOS_ARCH_HOSTED OFF)
+include("${_kos_arch_optin}")
+if(NOT KICKOS_ARCH_SOURCES)
+  message(FATAL_ERROR
+    "KickOS: ${_kos_arch_optin} sets no KICKOS_ARCH_SOURCES, so the arch archive would be "
+    "empty and every seam it answers would resolve to a fallback or to nothing.")
+endif()
+
+add_library(kickos_arch_${KICKOS_ARCH} STATIC ${KICKOS_ARCH_SOURCES})
+if(KICKOS_ARCH_HOSTED)
+  kickos_apply_hosted(kickos_arch_${KICKOS_ARCH})
+else()
+  kickos_apply_freestanding(kickos_arch_${KICKOS_ARCH})
+endif()
+target_include_directories(kickos_arch_${KICKOS_ARCH} PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/${_kos_arch_dir}/include>"
+  "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+if(KICKOS_ARCH_PRIVATE_INCLUDE_DIRS)
+  target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE
+    ${KICKOS_ARCH_PRIVATE_INCLUDE_DIRS})
+endif()
+if(KICKOS_ARCH_LINK_LIBRARIES)
+  target_link_libraries(kickos_arch_${KICKOS_ARCH} PUBLIC ${KICKOS_ARCH_LINK_LIBRARIES})
+endif()
+install(TARGETS kickos_arch_${KICKOS_ARCH} EXPORT KickOSTargets
+        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${_kos_arch_dir}/include" PARENT_SCOPE)
 
 # kickos_system sits above the arch layer, so its headers (the KOS_E* taxonomy the declining
 # fallbacks name, kickos/sys/atomic.h for the backends' cross-thread fields) are included here

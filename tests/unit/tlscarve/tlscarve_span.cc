@@ -70,7 +70,7 @@ void assert_fabricated_layout()
     ASSERT_EQ(static_cast<size_t>(__kickos_tbss_end - __kickos_tdata_start), k_span);
 }
 
-} // namespace
+}
 
 TEST(TlsCarveSpan, block_size_spans_the_linker_pad)
 {

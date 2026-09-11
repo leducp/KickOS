@@ -35,10 +35,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# readelf's headings ("Machine:") are translated under any other locale, and they are
-# parsed below.
-export LC_ALL=C
-
 # readelf -sW numbers every symbol-table row; a file it could not read has no row.
 READELF_SYM_RE='^ *[0-9]+: '
 

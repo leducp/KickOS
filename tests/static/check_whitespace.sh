@@ -38,10 +38,7 @@ set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # NOT set -e: the point is to collect EVERY finding in one run, not to stop at the first.
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
 # Sized at about HALF what the tree tracks, so an ordinary deletion still passes while an
 # empty walk, a run outside a checkout and a corpus narrowed by an edit here all refuse. The
@@ -181,8 +178,7 @@ fi
 echo "== control: the filter passes an unlisted record and refuses a listed one gone missing =="
 
 # --- the corpus ---------------------------------------------------------------
-git ls-files > "$TMP/all" || fail "git ls-files failed"
-require_nonempty "$TMP/all" "git ls-files matched nothing; every check below would pass vacuously"
+corpus_all "$TMP/all"
 
 N_TRACKED="$(wc -l < "$TMP/all" | tr -d ' ')"
 [ "$N_TRACKED" -ge "$CORPUS_FLOOR" ] \

@@ -28,11 +28,8 @@ set -u
 set -f
 . "$(dirname "$0")/../lib/gate.sh"
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
-export LC_ALL=C
 scratch_dir
 
 STRIP="$(dirname "$0")/../lib/strip_comments.awk"
@@ -41,7 +38,6 @@ BODY="$(dirname "$0")/fn_body.awk"
 [ -r "$BODY" ] || fail "tests/static/fn_body.awk is unreadable; no function body can be extracted"
 
 rc=0
-bad() { echo "FAIL: $*" >&2; rc=1; }
 
 # The body of <fn> in <file>, comments and literals blanked, as "<line>:<text>" records.
 extract() { # <file> <fn> <outfile>
@@ -233,8 +229,7 @@ require_nonempty "$TMP/kstack_arches" \
       every backend below would be excused"
 NARCH="$(wc -l < "$TMP/kstack_arches" | tr -d ' ')"
 
-git ls-files -- 'arch/*.cc' > "$TMP/archsrc" || fail "git ls-files failed"
-require_nonempty "$TMP/archsrc" "git ls-files matched no arch source; every check below would pass vacuously"
+corpus "$TMP/archsrc" "arch source" 'arch/*.cc'
 
 : > "$TMP/backends"
 : > "$TMP/excused"

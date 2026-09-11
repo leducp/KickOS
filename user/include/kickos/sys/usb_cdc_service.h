@@ -49,6 +49,7 @@
 #include <kickos/sys/byte_ring.h>
 #include <kickos/sys/bytes.h> // mem_copy, mem_zero
 #include <kickos/sys/console_ring.h>
+#include <kickos/sys/console_service.h>
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart.h>
@@ -66,7 +67,7 @@ namespace kickos::usb
 // Child cap indices the two threads read. A driver NAMES them; the bring-up chooses them.
 enum
 {
-    KOS_USB_CAP_EP = KOS_SPAWN_DELEGATED_CAP0,
+    KOS_USB_CAP_EP = console::KOS_CONSOLE_CAP_EP,
     KOS_USB_CAP_DOORBELL = console::KOS_CONSOLE_CAP_DOORBELL,
     KOS_USB_CAP_LINE = KOS_SPAWN_DELEGATED_CAP0
 };
@@ -123,12 +124,7 @@ static_assert(sizeof(struct Shared) <= KOS_USB_BLOCK_SIZE,
 static_assert(KOS_USB_TX_SIZE >= 2 and (KOS_USB_TX_SIZE & (KOS_USB_TX_SIZE - 1)) == 0,
               "the TX ring size must be a power of two >= 2 or it never accepts a byte");
 
-// Call before either thread exists, so it races nothing.
-//
-// Seats NON-BLOCKING, unlike the UART: no IN token is issued until a host both enumerates the
-// device AND opens the tty, so a blocking write here is unbounded. That is a static property
-// of the transport and must NOT be keyed on Shared::configured, which never clears on
-// unplug.
+// Call before either thread exists, so it races nothing. Seats Transport::MODE_REQUIRED.
 void shared_init(Shared* s);
 
 // The offset a generic bring-up polls the readiness latch through, it being unable to name
@@ -655,38 +651,33 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
 }
 
 // ---------------------------------------------------------------------------------
-// The ring side of the console is <kickos/sys/console_ring.h>; the rules, the budgets and
-// the CRLF posture are stated there. These three bind it to this layer's Shared block.
+// The request side of the console is <kickos/sys/console_service.h>. This is what USB CDC
+// changes about it.
 //
-// The woken pass re-reads LIVE controller status, which recovers a bulk IN completion the
-// class layer missed: the one state in which a full ring has no completion coming.
+// MODE_REQUIRED is NON-BLOCKING, unlike the UART: no IN token is issued until a host both
+// enumerates the device AND opens the tty, so a blocking write here is unbounded. That is a
+// static property of the transport and must NOT be keyed on Shared::configured, which never
+// clears on unplug.
 //
-// PRECONDITION: KOS_USB_CAP_DOORBELL is the line's SIGNAL cap, which the two-thread spawn
-// provides. Any other caller has the notify refused on the cap TYPE check.
-uint32_t tx_write(Shared* sh, uint8_t const* p, uint32_t n);
-
 // An empty ring is NOT an empty channel here: up to one bulk packet still sits in the
-// controller's DPRAM buffer, holding the tail of the stream.
-uint32_t console_flush(Shared* sh);
-
-uint32_t console_write(Shared* sh, uint8_t const* p, uint32_t n);
+// controller's DPRAM buffer, holding the tail of the stream, so a flush waits on
+// tx_inflight too. The woken pass re-reads LIVE controller status, which recovers a bulk IN
+// completion the class layer missed: the one state in which a full ring has no completion
+// coming.
+struct Transport
+{
+    static constexpr uint32_t MODE_REQUIRED = KOS_UART_F_NONBLOCK;
+    static Atomic<uint32_t, Order::RELAXED> const* inflight(Shared* sh)
+    {
+        return &sh->tx_inflight;
+    }
+    static uint32_t tx_lost(Shared const* sh) { return sh->tx_lost_link; }
+};
 
 // ---------------------------------------------------------------------------------
 // The service thread. Parks in recv, replies out of ring state, never touches the device.
-// A kos_call is a <kickos/sys/uart.h> frame; a plain send is a raw console write.
-// Returns kos_reply's result: a reply can fail on a dead cap, and a caller that has gone is
-// the one thing this arm cannot see from its own state.
-int reply_status(kos_cap_t reply_cap, int32_t status, uint16_t len);
-
-// Parse + run one request frame; the reply is this function's, on every path.
-//
-// `mode` is null for a service with no unframed console arm, which is what makes
-// KOS_UART_SET_MODE refuse there instead of storing a mode nothing reads.
-int serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t const* msg, size_t n,
-              kos_cap_t reply_cap);
-
-// Recv/dispatch loop for a CONSOLE endpoint: a kos_call is a request frame, a plain
-// send is raw console bytes. Returns only when the endpoint dies.
+// A kos_call is a <kickos/sys/uart.h> frame; a plain send is a raw console write. Returns
+// only when the endpoint dies.
 void console_serve_loop(Shared* sh);
 
 // ---------------------------------------------------------------------------------

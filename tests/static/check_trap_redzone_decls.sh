@@ -46,10 +46,7 @@ SRC="$2"
 [ -x "$CMAKE" ] || fail "no cmake at $CMAKE"
 [ -d "$SRC" ] || fail "no source directory at $SRC"
 cd "$SRC" || fail "cannot enter $SRC"
-[ -f CMakeLists.txt ] || fail "$SRC is not the repo root"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "$SRC is not the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root "$SRC is not the repo root"
 
 ROOTS="tests/static/trap_redzone_roots.txt"
 REACH="tests/static/console_reach_roots.txt"
@@ -524,7 +521,7 @@ grep -q '^FAIL: exit ' "$TMP/jo" \
 
 # --- the tree ----------------------------------------------------------------
 tool_out "$TMP/flatten.log" '' "$CMAKE" "-DSRC=$SRC" "-DOUT=$TMP/presets" -P "$FLATTEN"
-git ls-files -- 'arch/*_trap_stack.h' > "$TMP/headers" || fail "git ls-files failed"
+corpus "$TMP/headers" "arch trap-stack header" 'arch/*_trap_stack.h'
 
 : > "$TMP/findings.txt"
 judge . "$ROOTS" "$REACH" "$INDIRECT" "$TMP/presets" "$TMP/headers" arch/Kconfig \

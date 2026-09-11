@@ -32,9 +32,6 @@ set -u
 set -f
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The map and the tool output are parsed structurally, never by translated headings.
-export LC_ALL=C
-
 if [ "$#" -lt 5 ]; then
     echo "usage: $0 <nm> <headerdirs> <map> <expect-app-definition> <source>..." >&2
     exit 2
@@ -75,9 +72,6 @@ IFS=$_oldifs
 
 scratch_dir
 rc=0
-# A shadowing violation is accumulated so one run names them all; a broken tool takes
-# gate.sh's hard exit instead.
-bad() { echo "FAIL: $*" >&2; rc=1; }
 
 # nm prints "<addr> <type> <symbol>", prefixed "<archive>:<member>:" with -A. Requiring at
 # least one match is a positive control on the nm invocation itself.

@@ -30,7 +30,9 @@ kickos_add_unit_test(NAME console_ownership
 # needs an instrumented arch_irq_save/restore and no second thread.
 kickos_add_unit_test(NAME console_publish_handoff
   SOURCES publish_handoff.cc publish_seam.cc
+          "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam"
   KERNEL)

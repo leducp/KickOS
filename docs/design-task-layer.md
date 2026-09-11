@@ -465,8 +465,9 @@ subtracted.
 | kernel `thread_create_call` / `thread_create` | 4 (`syscall.cc:499`, `syscall_thread.cc:483`, `kmain.cc:233`, `:278`) | changed |
 | **total spawn sites** | **230** | **~10 must change** |
 
-Concentration worth knowing: `user/apps/common/selftest/main.cc` holds 152 of the 230. If the task
-parameter were **not** defaulted, that one file is the milestone. Defaulting it is therefore not a
+Concentration worth knowing: the self-test suite under `user/apps/common/selftest/` holds 152 of
+the 230, counted when the suite was one file. If the task parameter were **not** defaulted, that
+suite is the milestone. Defaulting it is therefore not a
 convenience, it is the difference between a contained change and a tree-wide one.
 
 | surface | sites | note |

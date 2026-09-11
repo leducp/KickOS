@@ -747,10 +747,9 @@ void arch_fault_redirect_to_exit(void* frame)
 // another one as current.
 struct arch_context* kickos_rv_contain_wild_sp(uint32_t sp)
 {
-    // NAMED, because this entry now catches what the PMP-denial report used to: a thread that
-    // overflows its own stack reaches the refusal before that report, so without the name a
-    // stack overflow dies anonymously. Read on the trap stack, where this reporter already
-    // runs, and never from the exit stub.
+    // NAMED: a thread that overflows its own stack reaches this refusal before the PMP-denial
+    // report runs, so without the name here a stack overflow dies anonymously. Read on the trap
+    // stack, where this reporter already runs, and never from the exit stub.
     char const* who = "?";
     struct arch_context* const next = kickos_thread_contain_wild_stack(g_arch_current, &who);
     if (next == nullptr)

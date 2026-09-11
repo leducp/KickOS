@@ -28,13 +28,11 @@
 # usage: check_sim_drvdeath.sh <kickos-source-dir> <cmake>
 
 set -eu
+. "$(dirname "$0")/../lib/gate.sh"
 
 KICKOS_SRC="$1"
 CMAKE="${2:-cmake}"
 
-fail() { echo "FAIL: $1"; exit 1; }
-# grep as a predicate, with `set -e` kept out of the way.
-has() { printf '%s\n' "$OUT" | grep -q "$1"; }
 # grep -c exits 1 on zero matches, which under `set -e` kills the script before its fail
 # message prints: red for the right reason, with no diagnostic.
 count_of() { printf '%s\n' "$OUT" | grep -c "$1" || true; }
@@ -42,8 +40,7 @@ count_of() { printf '%s\n' "$OUT" | grep -c "$1" || true; }
 # both land on fd 1 unbuffered, so their order on the wire is program order.
 line_of() { printf '%s\n' "$OUT" | grep -n "$1" | head -1 | cut -d: -f1; }
 
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+scratch_dir
 
 echo "== configuring the sim: publishing service list, driver bounded to 2 messages =="
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build" \

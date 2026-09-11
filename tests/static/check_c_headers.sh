@@ -66,10 +66,7 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
 CC="${1:-}"
 [ -n "$CC" ] || fail "usage: check_c_headers.sh <c-compiler> <include-root>..."
@@ -88,8 +85,7 @@ scratch_dir
 
 # --- include roots -------------------------------------------------------------------------
 
-git ls-files > "$TMP/tracked" || fail "git ls-files failed"
-require_nonempty "$TMP/tracked" "git ls-files matched nothing; every check below would pass vacuously"
+corpus_all "$TMP/tracked"
 
 ROOTS=""
 sed -n 's|^\(.*\)include/kickos/.*|\1include|p' "$TMP/tracked" | sort -u > "$TMP/roots.tree"
@@ -385,8 +381,7 @@ INCARGS="$SAVED_INCARGS"
 
 # --- the corpus ----------------------------------------------------------------------------
 
-git ls-files -- '*.h' '*.hh' '*.hpp' > "$TMP/headers" || fail "git ls-files failed"
-require_nonempty "$TMP/headers" "git ls-files matched no header; every check below would pass vacuously"
+corpus_headers "$TMP/headers"
 HDRS="$(wc -l < "$TMP/headers" | tr -d ' ')"
 
 seeds_of "$TMP/headers" > "$TMP/seeds"

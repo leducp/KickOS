@@ -14,6 +14,7 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/sys/abi_probe.h>
 
 int main(int, char**)
 {

@@ -22,7 +22,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "publish_seam.h"
+#include "console_seam.h"
 
 namespace
 {
@@ -66,7 +66,7 @@ namespace
         g_writers_at_handover = console_chip_writers();
         kickos::IrqLock lock;
         console_handover_begin();
-        consolepub::set_isr_runs_in_gap(false); // irq_detach plus the NVIC line mask
+        consoleseam::set_isr_runs_in_gap(false); // irq_detach plus the NVIC line mask
     }
 
     // The same syscall's tail, run once the publisher is rescheduled. Root may spawn the
@@ -80,7 +80,7 @@ namespace
             ASSERT_LT(g_drain_passes, 1000) << "the publish drain did not converge";
         }
         console_owner_set_user();
-        consolepub::note_commit();
+        consoleseam::note_commit();
     }
 
     // The ownership state is a one-way street, so each arm gets its own process.
@@ -129,11 +129,11 @@ namespace
 
     void expect_device_quiet_after_the_drain()
     {
-        EXPECT_EQ(consolepub::pushes_after_commit(), 0u)
+        EXPECT_EQ(consoleseam::pushes_after_commit(), 0u)
             << "a kernel byte reached the UART after the publish drain returned";
-        size_t const settled = consolepub::wire().size();
+        size_t const settled = consoleseam::wire().size();
         kickos::kputs("late");
-        EXPECT_EQ(consolepub::wire().size(), settled)
+        EXPECT_EQ(consoleseam::wire().size(), settled)
             << "a kernel write after the handover reached the driver's UART";
         EXPECT_EQ(console_chip_writers(), 0) << "a refused writer was counted";
     }
@@ -145,12 +145,12 @@ namespace
 TEST(ConsolePublishHandoff, AChunkedWriteWithNoPublishReachesTheWireWhole)
 {
     run_isolated([]() {
-        consolepub::reset(kRing);
+        consoleseam::reset(kRing);
         std::string const in = message();
         kickos::kconsole_write(in.data(), in.size());
-        EXPECT_EQ(consolepub::wire(), in);
-        EXPECT_GE(consolepub::gap_count(), 4u) << "the producer did not chunk";
-        EXPECT_LE(consolepub::max_masked_pushes(), 1u);
+        EXPECT_EQ(consoleseam::wire(), in);
+        EXPECT_GE(consoleseam::gap_count(), 4u) << "the producer did not chunk";
+        EXPECT_LE(consoleseam::max_masked_pushes(), 1u);
     });
 }
 
@@ -160,13 +160,13 @@ TEST(ConsolePublishHandoff, AChunkedWriteWithNoPublishReachesTheWireWhole)
 TEST(ConsolePublishHandoff, AWriterPublishedOverMidChunkingLosesNoBytes)
 {
     run_isolated([]() {
-        consolepub::reset(kRing);
-        consolepub::run_in_gap(kGapMidChunking, publish_lock_held);
+        consoleseam::reset(kRing);
+        consoleseam::run_in_gap(kGapMidChunking, publish_lock_held);
         std::string const in = message();
         kickos::kconsole_write(in.data(), in.size());
-        ASSERT_TRUE(consolepub::seat_fired()) << "the publish never fired: no race was run";
+        ASSERT_TRUE(consoleseam::seat_fired()) << "the publish never fired: no race was run";
         publish_tail();
-        EXPECT_EQ(consolepub::wire(), in) << "the publish truncated an in-flight message";
+        EXPECT_EQ(consoleseam::wire(), in) << "the publish truncated an in-flight message";
         expect_device_quiet_after_the_drain();
     });
 }
@@ -177,13 +177,13 @@ TEST(ConsolePublishHandoff, AWriterPublishedOverMidChunkingLosesNoBytes)
 TEST(ConsolePublishHandoff, AWriterPublishedOverBeforeTheRingCheckLosesNoBytes)
 {
     run_isolated([]() {
-        consolepub::reset(kRing);
-        consolepub::run_in_gap(kGapBeforeRingCheck, publish_lock_held);
+        consoleseam::reset(kRing);
+        consoleseam::run_in_gap(kGapBeforeRingCheck, publish_lock_held);
         std::string const in = message();
         kickos::kconsole_write(in.data(), in.size());
-        ASSERT_TRUE(consolepub::seat_fired()) << "the publish never fired: no race was run";
+        ASSERT_TRUE(consoleseam::seat_fired()) << "the publish never fired: no race was run";
         publish_tail();
-        EXPECT_EQ(consolepub::wire(), in) << "the publish dropped a whole in-flight message";
+        EXPECT_EQ(consoleseam::wire(), in) << "the publish dropped a whole in-flight message";
         expect_device_quiet_after_the_drain();
     });
 }
@@ -193,11 +193,11 @@ TEST(ConsolePublishHandoff, AWriterPublishedOverBeforeTheRingCheckLosesNoBytes)
 TEST(ConsolePublishHandoff, TheInFlightWriterIsCountedWhenThePublishBegins)
 {
     run_isolated([]() {
-        consolepub::reset(kRing);
-        consolepub::run_in_gap(kGapMidChunking, publish_lock_held);
+        consoleseam::reset(kRing);
+        consoleseam::run_in_gap(kGapMidChunking, publish_lock_held);
         std::string const in = message();
         kickos::kconsole_write(in.data(), in.size());
-        ASSERT_TRUE(consolepub::seat_fired());
+        ASSERT_TRUE(consoleseam::seat_fired());
         EXPECT_GT(g_writers_at_handover, 0)
             << "the publish drain was blind to the writer it raced";
         publish_tail();
@@ -210,12 +210,12 @@ TEST(ConsolePublishHandoff, TheInFlightWriterIsCountedWhenThePublishBegins)
 TEST(ConsolePublishHandoff, AWriterArrivingAfterTheHandoverBeginsIsRefused)
 {
     run_isolated([]() {
-        consolepub::reset(kRing);
+        consoleseam::reset(kRing);
         publish_lock_held();
         std::string const in = message();
-        size_t const before = consolepub::wire().size();
+        size_t const before = consoleseam::wire().size();
         kickos::kconsole_write(in.data(), in.size());
-        EXPECT_EQ(consolepub::wire().size(), before) << "a new writer reached the UART";
+        EXPECT_EQ(consoleseam::wire().size(), before) << "a new writer reached the UART";
         EXPECT_EQ(console_chip_writers(), 0) << "a refused writer was counted";
         publish_tail();
         EXPECT_EQ(g_drain_passes, 0) << "a refused writer extended the drain";
@@ -228,13 +228,13 @@ TEST(ConsolePublishHandoff, AWriterArrivingAfterTheHandoverBeginsIsRefused)
 TEST(ConsolePublishHandoff, ThePublishDoesNotWidenTheMaskedWindow)
 {
     run_isolated([]() {
-        consolepub::reset(kRing);
-        consolepub::run_in_gap(kGapMidChunking, publish_lock_held);
+        consoleseam::reset(kRing);
+        consoleseam::run_in_gap(kGapMidChunking, publish_lock_held);
         std::string const in = message();
         kickos::kconsole_write(in.data(), in.size());
-        ASSERT_TRUE(consolepub::seat_fired());
+        ASSERT_TRUE(consoleseam::seat_fired());
         publish_tail();
-        EXPECT_LE(consolepub::max_masked_pushes(), kRing - 1u);
+        EXPECT_LE(consoleseam::max_masked_pushes(), kRing - 1u);
     });
 }
 
@@ -243,12 +243,12 @@ TEST(ConsolePublishHandoff, ThePublishDoesNotWidenTheMaskedWindow)
 TEST(ConsolePublishHandoff, AnUnbracketedProducerRefusesADriverOwnedUart)
 {
     run_isolated([]() {
-        consolepub::reset(kRing);
+        consoleseam::reset(kRing);
         publish_lock_held();
         publish_tail();
-        size_t const settled = consolepub::wire().size();
+        size_t const settled = consoleseam::wire().size();
         console_tx_write("unbracketed", 11);
-        EXPECT_EQ(consolepub::wire().size(), settled)
+        EXPECT_EQ(consoleseam::wire().size(), settled)
             << "the ring producer poked a UART the driver owns";
     });
 }
@@ -268,8 +268,8 @@ namespace
 TEST(ConsolePublishHandoff, HandingOverWithAWriterStillCountedIsRefused)
 {
     run_isolated_expecting_panic([]() {
-        consolepub::reset(kRing);
-        consolepub::run_in_gap(kGapMidChunking, publish_without_draining);
+        consoleseam::reset(kRing);
+        consoleseam::run_in_gap(kGapMidChunking, publish_without_draining);
         std::string const in = message();
         kickos::kconsole_write(in.data(), in.size());
     });
@@ -283,19 +283,19 @@ namespace
     void deinit_only(void)
     {
         console_tx_deinit();
-        consolepub::set_isr_runs_in_gap(false);
+        consoleseam::set_isr_runs_in_gap(false);
     }
 }
 
 TEST(ConsolePublishHandoff, ADeinitWithNoOwnershipMoveCannotSeeTheTruncation)
 {
     run_isolated([]() {
-        consolepub::reset(kRing);
-        consolepub::run_in_gap(kGapMidChunking, deinit_only);
+        consoleseam::reset(kRing);
+        consoleseam::run_in_gap(kGapMidChunking, deinit_only);
         std::string const in = message();
         kickos::kconsole_write(in.data(), in.size());
-        ASSERT_TRUE(consolepub::seat_fired());
+        ASSERT_TRUE(consoleseam::seat_fired());
         ASSERT_NE(console_owner_is_kernel(), 0) << "this injection moved the ownership state";
-        EXPECT_EQ(consolepub::wire(), in);
+        EXPECT_EQ(consoleseam::wire(), in);
     });
 }

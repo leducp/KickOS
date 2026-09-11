@@ -40,14 +40,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# BOTH TOOLS BELOW HAVE THEIR OUTPUT READ BACK, so the locale is part of the contract. A French
-# binutils prints `Fichier:` where slice_readelf keys on `File:`, and the member is then absent
-# from a slice that is never empty, so the whole scan is refused as vacuous with a message
-# blaming a renamed translation unit. The relocation and symbol columns are untranslated, so
-# nothing else here moves.
-LC_ALL=C
-export LC_ALL
-
 READELF="${1:?usage: check_no_privileged_tls.sh <readelf> <nm> <archive|archive::member>...}"
 shift
 NM="${1:?usage: check_no_privileged_tls.sh <readelf> <nm> <archive|archive::member>...}"

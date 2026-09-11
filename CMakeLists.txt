@@ -698,316 +698,7 @@ if(KICKOS_AMP_DIAG_REPORT)
                  "its node index, its vector-table base and that tag into the shared region")
 endif()
 
-# --- The AMP partition's geometry -------------------------------------------------------
-# Under one image per node the region every node writes has to sit at one address two link
-# scripts agree on. They agree by DERIVING it: each image states its own node index and the
-# three partition facts, and arch/common/amp_partition.ld.h computes every address from them.
-if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
-  foreach(_geo KICKOS_AMP_PARTITION_BASE KICKOS_AMP_NODE_SHARE KICKOS_AMP_SHARED_SIZE)
-    # Through math(), so every spelling of zero answers zero: a string test would pass 0x00.
-    set(_geo_v 0)
-    if(NOT "${${_geo}}" STREQUAL "")
-      math(EXPR _geo_v "${${_geo}}")
-    endif()
-    if(_geo_v EQUAL 0)
-      message(FATAL_ERROR
-        "KickOS: the own-image AMP posture states no ${_geo}. Every node's image is linked at "
-        "KICKOS_AMP_PARTITION_BASE plus its own index times KICKOS_AMP_NODE_SHARE, and the "
-        "region every node writes sits above the last of them and is KICKOS_AMP_SHARED_SIZE "
-        "wide. With any of the three unstated the images link on top of each other. Give all "
-        "three in boards/<board>/configs/<variant>/defconfig.")
-    endif()
-  endforeach()
-
-  # The second span is a pair or it is nothing. Half stated otherwise fails in the link, and
-  # obscurely: ld reports a FLASH overflow that names neither knob.
-  set(_amp_text_v "")
-  foreach(_geo KICKOS_AMP_TEXT_BASE KICKOS_AMP_TEXT_SHARE)
-    # Through math(), so every spelling of zero answers zero: a string test would pass 0x00.
-    set(_geo_v 0)
-    if(NOT "${${_geo}}" STREQUAL "")
-      math(EXPR _geo_v "${${_geo}}")
-    endif()
-    list(APPEND _amp_text_v "${_geo_v}")
-  endforeach()
-  list(GET _amp_text_v 0 _amp_text_base_v)
-  list(GET _amp_text_v 1 _amp_text_share_v)
-  if(_amp_text_base_v EQUAL 0 AND NOT _amp_text_share_v EQUAL 0)
-    message(FATAL_ERROR
-      "KickOS: the own-image AMP posture states KICKOS_AMP_TEXT_SHARE and no "
-      "KICKOS_AMP_TEXT_BASE. The two describe ONE aperture, the separate span a part executing "
-      "out of execute-in-place memory keeps its text in, and a node's text is linked at that "
-      "base plus its own index times that stride. A stride without a base puts every node's "
-      "text at zero. State both, or neither, in boards/<board>/configs/<variant>/defconfig: "
-      "neither means the part has one span and KICKOS_AMP_PARTITION_BASE describes all of it.")
-  endif()
-  if(_amp_text_share_v EQUAL 0 AND NOT _amp_text_base_v EQUAL 0)
-    message(FATAL_ERROR
-      "KickOS: the own-image AMP posture states KICKOS_AMP_TEXT_BASE and no "
-      "KICKOS_AMP_TEXT_SHARE. The two describe ONE aperture, the separate span a part executing "
-      "out of execute-in-place memory keeps its text in, and a node's text is linked at that "
-      "base plus its own index times that stride. A base without a stride links every node's "
-      "text at the same address and gives the region no length. State both, or neither, in "
-      "boards/<board>/configs/<variant>/defconfig: neither means the part has one span and "
-      "KICKOS_AMP_PARTITION_BASE describes all of it.")
-  endif()
-
-  # amp::ring turns a node index into a doorbell target, and the two coincide only under the
-  # shared-image posture, where a node's identity IS the core register. Under one image per
-  # node they are unrelated, so without this map the doorbell would ring whichever local core
-  # carries the target's index, silently and with no refusal.
-  string(REPLACE "," ";" _amp_cores "${KICKOS_AMP_NODE_CORES}")
-  list(LENGTH _amp_cores _amp_cores_len)
-  if(NOT _amp_cores_len EQUAL KICKOS_AMP_NODES)
-    message(FATAL_ERROR
-      "KickOS: KICKOS_AMP_NODE_CORES is '${KICKOS_AMP_NODE_CORES}', which names "
-      "${_amp_cores_len} cores for a partition of ${KICKOS_AMP_NODES} nodes. It states, per "
-      "node and in node order, which machine core carries that node, and amp::ring takes its "
-      "doorbell target from it. Without one a node index would be spent as a hardware core "
-      "mask, which holds only under CONFIG_KICKOS_AMP_POSTURE_SHARED_IMAGE. Give one core per "
-      "node in boards/<board>/configs/<variant>/defconfig.")
-  endif()
-  set(_amp_seen "")
-  set(_amp_node 0)
-  foreach(_core IN LISTS _amp_cores)
-    if(NOT _core MATCHES "^[0-9]+$")
-      message(FATAL_ERROR
-        "KickOS: KICKOS_AMP_NODE_CORES entry '${_core}' is not a core index.")
-    endif()
-    if(_core GREATER_EQUAL KICKOS_AMP_PARTITION_CORES)
-      message(FATAL_ERROR
-        "KickOS: KICKOS_AMP_NODE_CORES puts node ${_amp_node} on core ${_core}, and the "
-        "partition spans ${KICKOS_AMP_PARTITION_CORES} cores. The doorbell's cells are indexed "
-        "by core, so this node would answer out of the matrix.")
-    endif()
-    if(_core IN_LIST _amp_seen)
-      message(FATAL_ERROR
-        "KickOS: KICKOS_AMP_NODE_CORES puts two nodes on core ${_core}. Each node's image "
-        "drives its own core, and the doorbell's rendezvous row is written by that core alone.")
-    endif()
-    list(APPEND _amp_seen "${_core}")
-    math(EXPR _amp_node "${_amp_node} + 1")
-  endforeach()
-  # Node 0 is the partition primary and the node the machine enters; arch_amp_release_peers
-  # starts every OTHER node at the core this map names it, so a map putting a peer on the
-  # primary's own core makes the primary release itself. No chip in the tree states which core
-  # it resets into, so 0 is the assumption.
-  list(GET _amp_cores 0 _amp_node0_core)
-  if(NOT _amp_node0_core EQUAL 0)
-    message(FATAL_ERROR
-      "KickOS: KICKOS_AMP_NODE_CORES is '${KICKOS_AMP_NODE_CORES}', which puts node 0 on core "
-      "${_amp_node0_core}. Node 0 is the partition primary and runs on the core the machine "
-      "resets into, which this tree takes to be core 0. Stated otherwise, some peer is mapped "
-      "onto the core the primary is already running on, and releasing that peer is the primary "
-      "releasing itself: the boot dies in the launch handshake rather than at build time, on "
-      "qemu-arm64 as 'KickOS: PSCI CPU_ON refused for AMP node 01, status "
-      "0xfffffffffffffffc', which is PSCI_ALREADY_ON. Give node 0 core 0 and permute the peers "
-      "instead.")
-  endif()
-
-  list(GET _amp_cores ${KICKOS_AMP_NODE_ID} KICKOS_AMP_SELF_CORE)
-  string(REPLACE ";" "," _amp_core_init "${_amp_cores}")
-  add_compile_definitions(KICKOS_AMP_NODE_CORE_LIST={${_amp_core_init}})
-  add_compile_definitions(KICKOS_AMP_SELF_CORE=${KICKOS_AMP_SELF_CORE})
-  # The geometry reaches a chip's startup ASSEMBLY too: its translation tables map the
-  # partition.
-  add_compile_definitions(
-    KICKOS_AMP_PARTITION_BASE=${KICKOS_AMP_PARTITION_BASE}
-    KICKOS_AMP_NODE_SHARE=${KICKOS_AMP_NODE_SHARE}
-    KICKOS_AMP_SHARED_SIZE=${KICKOS_AMP_SHARED_SIZE}
-    KICKOS_AMP_NODE_ID=${KICKOS_AMP_NODE_ID}
-    KICKOS_AMP_TEXT_BASE=${KICKOS_AMP_TEXT_BASE}
-    KICKOS_AMP_TEXT_SHARE=${KICKOS_AMP_TEXT_SHARE})
-  # --- What a peer node is configured from, and what proves two images agree ---------------
-  # The seed is this node's RESOLVED .config, because a knob forwarded under its Kconfig name
-  # rather than a KICKOS_ one reaches .config and no KICKOS_* cache entry. It is half of what a
-  # peer is configured from; build-partition.sh sweeps the cache beside it for the knobs that
-  # are no Kconfig symbol, and its header says why neither half covers the other.
-  #
-  # KICKOS_AMP_NODE_ID is the one symbol a node may differ in, so the seed omits it and
-  # build-partition.sh states it per node. Everything else is derived from that index, at build
-  # time or through KICKOS_AMP_NODE_CORES at run time.
-  file(STRINGS "${PROJECT_BINARY_DIR}/generated/.config" _amp_cfg_lines
-       REGEX "^CONFIG_[A-Z0-9_]+=")
-  foreach(_line IN LISTS _amp_cfg_lines)
-    string(REGEX REPLACE "^CONFIG_([A-Z0-9_]+)=.*$" "\\1" _amp_n "${_line}")
-    string(REGEX REPLACE "^CONFIG_[A-Z0-9_]+=" "" _amp_v "${_line}")
-    string(REGEX REPLACE "^\"(.*)\"$" "\\1" _amp_cfg_${_amp_n} "${_amp_v}")
-  endforeach()
-
-  # Written as an initial-cache script rather than as a list of switches, so a seeded value
-  # carrying a space or a semicolon reaches the peer whole.
-  set(_amp_seed "# Written by node ${KICKOS_AMP_NODE_ID}'s configure. Read by tools/amp/build-partition.sh.\n")
-  foreach(_amp_name IN LISTS KICKOS_KCONFIG_PROMPTED_VALUE
-                    ITEMS KICKOS_CONSOLE KICKOS_TELEMETRY)
-    if(_amp_name STREQUAL "KICKOS_AMP_NODE_ID")
-      continue()
-    endif()
-    if(DEFINED _amp_cfg_${_amp_name})
-      string(APPEND _amp_seed
-             "set(${_amp_name} \"${_amp_cfg_${_amp_name}}\" CACHE STRING \"\" FORCE)\n")
-    endif()
-  endforeach()
-  # Both directions, and unconditionally: kconfiglib writes an off bool as a COMMENT rather
-  # than as `=n`, so absent from the resolved .config is off and not unstated. Seeded as
-  # unstated the peer would take its Kconfig default instead.
-  foreach(_amp_name IN LISTS KICKOS_KCONFIG_PROMPTED_FLAG)
-    set(_amp_v "OFF")
-    if(DEFINED _amp_cfg_${_amp_name} AND _amp_cfg_${_amp_name} STREQUAL "y")
-      set(_amp_v "ON")
-    endif()
-    string(APPEND _amp_seed "set(${_amp_name} ${_amp_v} CACHE BOOL \"\" FORCE)\n")
-  endforeach()
-  file(WRITE "${PROJECT_BINARY_DIR}/generated/amp-peer-seed.cmake" "${_amp_seed}")
-
-  # The fingerprint the IMAGE carries, over that same resolved configuration with the one
-  # per-node symbol taken out, so a stale or foreign peer image is refused from the ARTEFACT and
-  # not from the tree that produced it. TWO absolute symbols of 32 bits: a 32-bit linker
-  # truncates one 64-bit --defsym without saying so.
-  #
-  # IT COVERS THE KCONFIG HALF ALONE, which is narrower than "two nodes agree". The hash is over
-  # .config, so two images differing only in an input that is a CMake cache entry and no Kconfig
-  # symbol carry the SAME fingerprint: KICKOS_APPDATA_SIZE=112K and =120K are indistinguishable
-  # here, and so are the toolchain and the build type. The cache half is carried by
-  # build-partition.sh instead, which configures every peer FROM node 0's own KICKOS_* cache
-  # entries and so cannot produce a peer that differs in one. Widening the hash to cover them
-  # would have to enumerate the cache at a point where the cache is complete, and this is not
-  # that point: KICKOS_INIT_PROVIDER is declared further down this file.
-  string(REGEX REPLACE "CONFIG_KICKOS_AMP_NODE_ID=[0-9]+" "" _amp_common "${_amp_cfg_lines}")
-  string(SHA256 _amp_fp "${_amp_common}")
-  string(SUBSTRING "${_amp_fp}" 0 8 _amp_fp_hi)
-  string(SUBSTRING "${_amp_fp}" 8 8 _amp_fp_lo)
-  add_link_options("LINKER:--defsym=kickos_amp_config_fp_hi=0x${_amp_fp_hi}"
-                   "LINKER:--defsym=kickos_amp_config_fp_lo=0x${_amp_fp_lo}")
-
-  message(STATUS
-    "KickOS: AMP node ${KICKOS_AMP_NODE_ID} of ${KICKOS_AMP_NODES} on core "
-    "${KICKOS_AMP_SELF_CORE}, map ${KICKOS_AMP_NODE_CORES}, kconfig "
-    "${_amp_fp_hi}${_amp_fp_lo}")
-endif()
-
-# --- The partition's port capabilities ---------------------------------------------------
-# ONE list for the whole partition: every node's image reads the same string and derives both
-# its sets from its own index, so there is no second list to disagree with this one.
-#
-# The order here is the order the kernel seats them into root's table, so an entry's position
-# IS its capability index and every check below defends that.
-if(KICKOS_AMP_NODE)
-  # Which node this image seats for. Under the shared image the identity is a core register
-  # and exactly one core runs a kernel, the one kmain boots on; kernel/init/kmain.cc asserts
-  # the two agree rather than trusting this.
-  set(KICKOS_AMP_SELF_NODE 0)
-  if(KICKOS_AMP_OWN_IMAGE)
-    set(KICKOS_AMP_SELF_NODE "${KICKOS_AMP_NODE_ID}")
-  endif()
-
-  string(REPLACE "," ";" _amp_ports "${KICKOS_AMP_PORTS}")
-  list(LENGTH _amp_ports _amp_ports_len)
-  if("${KICKOS_AMP_PORTS}" STREQUAL "")
-    set(_amp_ports "")
-    set(_amp_ports_len 0)
-  endif()
-  if(_amp_ports_len EQUAL 0)
-    message(FATAL_ERROR
-      "KickOS: this board is a node of an AMP partition and KICKOS_AMP_PORTS names no "
-      "crossing at all. A node whose partition hands it no port capability can neither be "
-      "called nor call, and it would boot and answer nothing with nothing to say so. State "
-      "the whole partition's ports once, as node:port pairs in node order, in "
-      "boards/<board>/configs/<variant>/defconfig. For example "
-      "CONFIG_KICKOS_AMP_PORTS=\"0:2,1:3\" for a node 0 serving port 2 and a node 1 "
-      "serving port 3.")
-  endif()
-
-  set(_amp_port_nodes "")
-  set(_amp_port_ports "")
-  set(_amp_port_seen "")
-  set(_amp_port_local 0)
-  foreach(_entry IN LISTS _amp_ports)
-    if(NOT _entry MATCHES "^([0-9]+):([0-9]+)$")
-      message(FATAL_ERROR
-        "KickOS: KICKOS_AMP_PORTS entry '${_entry}' is not a node:port pair. The list names, "
-        "for the WHOLE partition, which node serves which port; every node's image reads it "
-        "and derives its own two sets from its own index.")
-    endif()
-    set(_n "${CMAKE_MATCH_1}")
-    set(_p "${CMAKE_MATCH_2}")
-    if(_n GREATER_EQUAL KICKOS_AMP_NODES)
-      message(FATAL_ERROR
-        "KickOS: KICKOS_AMP_PORTS entry '${_entry}' names node ${_n} and the partition holds "
-        "${KICKOS_AMP_NODES} node(s). A crossing to a node the partition does not hold has "
-        "no ring to travel on.")
-    endif()
-    if(_p EQUAL 1)
-      message(FATAL_ERROR
-        "KickOS: KICKOS_AMP_PORTS entry '${_entry}' names port 1, which is the port every "
-        "reply travels on: a message published on it is a REPLY and is routed to the caller "
-        "its token names, so no node can serve it. Service ports start at 2.")
-    endif()
-    if(_p EQUAL 0 AND _n EQUAL KICKOS_AMP_SELF_NODE)
-      message(FATAL_ERROR
-        "KickOS: KICKOS_AMP_PORTS entry '${_entry}' names port 0 for this image's own node. "
-        "Port 0 is the echo the WINDOW LAYER answers with no thread involved, and a node that "
-        "runs a kernel binds every port the partition names it, so this entry would take the "
-        "echo away from the window layer and hand it to a thread. Name port 0 only for a peer "
-        "that runs no kernel of its own, or give this node a service port from 2 up.")
-    endif()
-    if(_p GREATER_EQUAL 32)
-      message(FATAL_ERROR
-        "KickOS: KICKOS_AMP_PORTS entry '${_entry}' names port ${_p} and a node's mint is a "
-        "32-bit mask, so 31 is its last port.")
-    endif()
-    if("${_n}:${_p}" IN_LIST _amp_port_seen)
-      message(FATAL_ERROR
-        "KickOS: KICKOS_AMP_PORTS names node ${_n} port ${_p} twice. A repeated crossing "
-        "would seat two capabilities for one endpoint and shift every constant after it.")
-    endif()
-    list(APPEND _amp_port_seen "${_n}:${_p}")
-    list(APPEND _amp_port_nodes "${_n}")
-    list(APPEND _amp_port_ports "${_p}")
-    if(_n EQUAL KICKOS_AMP_SELF_NODE)
-      math(EXPR _amp_port_local "${_amp_port_local} + 1")
-    endif()
-  endforeach()
-
-  # Checked where a number can still be changed: a pool that cannot cover the list would
-  # panic at boot on a board that configured and built cleanly.
-  if(NOT KICKOS_MAX_ENDPOINTS GREATER _amp_ports_len)
-    message(FATAL_ERROR
-      "KickOS: KICKOS_AMP_PORTS names ${_amp_ports_len} crossing(s) and the board provisions "
-      "${KICKOS_MAX_ENDPOINTS} endpoint slot(s). Each entry claims one for the life of the "
-      "image, a local one for the port it binds and a far one for the crossing it names, so "
-      "this partition cannot seat itself and would leave nothing for the app besides. Raise "
-      "CONFIG_KICKOS_MAX_ENDPOINTS in this board's defconfig.")
-  endif()
-
-  # The seat is the one charged endpoint install with NO admission: amp_ports_seat panics
-  # rather than refusing, so nothing at run time can hold root to its ceiling. The cap.h
-  # assert does not reach this either. It relates the budget to the POOL, and a partition
-  # whose ports outnumber the budget still sits below the pool. Without this the ceiling is
-  # false from root's first instruction.
-  if(_amp_ports_len GREATER KICKOS_TASK_ENDPOINT_BUDGET)
-    message(FATAL_ERROR
-      "KickOS: KICKOS_AMP_PORTS names ${_amp_ports_len} crossing(s) and the board allows one "
-      "task ${KICKOS_TASK_ENDPOINT_BUDGET} endpoint slot(s). Every entry is seated in ROOT's "
-      "table before its first instruction and counts against root from then on, so root "
-      "would boot already past its own ceiling. Raise "
-      "CONFIG_KICKOS_TASK_ENDPOINT_BUDGET in this board's defconfig, keeping it below "
-      "CONFIG_KICKOS_MAX_ENDPOINTS.")
-  endif()
-
-  set(KICKOS_AMP_PORT_COUNT "${_amp_ports_len}")
-  string(REPLACE ";" "," KICKOS_AMP_PORT_NODE_INIT "${_amp_port_nodes}")
-  string(REPLACE ";" "," KICKOS_AMP_PORT_PORT_INIT "${_amp_port_ports}")
-  math(EXPR _amp_port_far "${KICKOS_AMP_PORT_COUNT} - ${_amp_port_local}")
-  message(STATUS
-    "KickOS: AMP node ${KICKOS_AMP_SELF_NODE} derives ${_amp_port_local} local port(s) and "
-    "${_amp_port_far} far endpoint(s) from KICKOS_AMP_PORTS='${KICKOS_AMP_PORTS}'")
-else()
-  set(KICKOS_AMP_SELF_NODE 0)
-  set(KICKOS_AMP_PORT_COUNT 0)
-  set(KICKOS_AMP_PORT_NODE_INIT "")
-  set(KICKOS_AMP_PORT_PORT_INIT "")
-endif()
+include("${CMAKE_SOURCE_DIR}/cmake/amp_partition.cmake")
 
 # The microbench accumulates into one set of phase cells for the whole image, and its own
 # contract is that every write happens under the interrupt lock or on one thread. A switch span
@@ -1403,6 +1094,11 @@ if(KICKOS_BUILD_TESTS)
                     "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(service_lists PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME preset_defconfig
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_preset_defconfig.sh"
+                    "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(preset_defconfig PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   kickos_find_kconfig(_kconfig_py _kconfig_found)
   _add_test(NAME kconfig_gen
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_gen.sh"
@@ -1446,208 +1142,13 @@ if(KICKOS_BUILD_TESTS)
 endif()
 
 foreach(_dir lib arch kernel user system)
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_dir}/CMakeLists.txt")
-    add_subdirectory(${_dir})
-  endif()
+  add_subdirectory(${_dir})
 endforeach()
 
-# A host tool.
-if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/telemetry/CMakeLists.txt")
-  add_subdirectory(tests/unit/telemetry)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/slotpool/CMakeLists.txt")
-  add_subdirectory(tests/unit/slotpool)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/kstring/CMakeLists.txt")
-  add_subdirectory(tests/unit/kstring)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/faultline/CMakeLists.txt")
-  add_subdirectory(tests/unit/faultline)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/frame/CMakeLists.txt")
-  add_subdirectory(tests/unit/frame)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/vrange/CMakeLists.txt")
-  add_subdirectory(tests/unit/vrange)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/ktime/CMakeLists.txt")
-  add_subdirectory(tests/unit/ktime)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tlscarve/CMakeLists.txt")
-  add_subdirectory(tests/unit/tlscarve)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/captable/CMakeLists.txt")
-  add_subdirectory(tests/unit/captable)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/uartclass/CMakeLists.txt")
-  add_subdirectory(tests/unit/uartclass)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/capreply/CMakeLists.txt")
-  add_subdirectory(tests/unit/capreply)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/grantnocache/CMakeLists.txt")
-  add_subdirectory(tests/unit/grantnocache)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/ramowner/CMakeLists.txt")
-  add_subdirectory(tests/unit/ramowner)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/drvbringup/CMakeLists.txt")
-  add_subdirectory(tests/unit/drvbringup)
-endif()
-
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/consoleown/CMakeLists.txt")
-  add_subdirectory(tests/unit/consoleown)
-endif()
-
-# The K-seam host fixture must precede its consumers below: they call the function it
-# defines.
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/kfixture/CMakeLists.txt")
-  add_subdirectory(tests/unit/kfixture)
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/schedwake/CMakeLists.txt")
-    add_subdirectory(tests/unit/schedwake)
-  endif()
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/taskdeath/CMakeLists.txt")
-    add_subdirectory(tests/unit/taskdeath)
-  endif()
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/parkresult/CMakeLists.txt")
-    add_subdirectory(tests/unit/parkresult)
-  endif()
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/capsweep/CMakeLists.txt")
-    add_subdirectory(tests/unit/capsweep)
-  endif()
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/capprobe/CMakeLists.txt")
-    add_subdirectory(tests/unit/capprobe)
-  endif()
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/cancelkind/CMakeLists.txt")
-    add_subdirectory(tests/unit/cancelkind)
-  endif()
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/faultband/CMakeLists.txt")
-    add_subdirectory(tests/unit/faultband)
-  endif()
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/slayhook/CMakeLists.txt")
-    add_subdirectory(tests/unit/slayhook)
-  endif()
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/wildstack/CMakeLists.txt")
-    add_subdirectory(tests/unit/wildstack)
-  endif()
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/rootslot/CMakeLists.txt")
-    add_subdirectory(tests/unit/rootslot)
-  endif()
-endif()
-
-# Outside the K-seam block above: it compiles kernel/init/console_tx.cc with its own arch
-# seam, and the K-seam's would be a second definition of arch_irq_save.
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/consoletx/CMakeLists.txt")
-  add_subdirectory(tests/unit/consoletx)
-endif()
-
-# Outside it for the same reason, and additionally because it compiles kernel/irq/irq.cc at a
-# core count the preset does not carry.
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/irqquiesce/CMakeLists.txt")
-  add_subdirectory(tests/unit/irqquiesce)
-endif()
-
-# The K-seam sources over again at two kernel cores, for the same reason: the preset drives
-# one, where the lock the swap carries compiles to nothing.
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/exitquiesce/CMakeLists.txt")
-  add_subdirectory(tests/unit/exitquiesce)
-  # Links the object library the directory above defines, so it cannot precede it.
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/migrateask/CMakeLists.txt")
-    add_subdirectory(tests/unit/migrateask)
-  endif()
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/slaypeer/CMakeLists.txt")
-    add_subdirectory(tests/unit/slaypeer)
-  endif()
-endif()
-
-# The K-seam sources a THIRD time, at two kernel cores AND with a translating backend: no
-# board the host arch answers for selects HAS_ASPACE, so the exit path's whole address-space
-# arm is compiled out of both libraries above.
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/deathspace/CMakeLists.txt")
-  add_subdirectory(tests/unit/deathspace)
-endif()
-
-# The K-seam sources again with two object pools resized and the per-task object budget below
-# one of them, plus syscall_obj.cc: no preset can state that geometry, and at the preset's own
-# the budget refusal is unreachable from a pool the table fills first.
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/taskbudget/CMakeLists.txt")
-  add_subdirectory(tests/unit/taskbudget)
-endif()
-
-# The K-seam sources with KICKOS_ARCH_HAS_IPC_FASTPATH forced to 1: the knob is an arch
-# backend's own declaration, no board the host arch answers for ships one, and so the
-# fastpath's whole translation unit compiles to nothing at every preset's posture. Outside
-# the K-seam block because it also compiles kernel/syscall/syscall_mem.cc with its own arch
-# seam, and at a posture the preset cannot state.
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/fastrefuse/CMakeLists.txt")
-  add_subdirectory(tests/unit/fastrefuse)
-endif()
-
-# The ARM64 stage-1 map editor itself, compiled for the host: the instruction-side debt a
-# break-before-make over an executable leaf owes is wiring in that backend, and no image gate
-# can read it (QEMU re-executes nothing it has already fetched). Registered from the host arch
-# alone, whose toolchain is the only one that compiles the backend's system operations as
-# declarations rather than instructions.
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/mapexec/CMakeLists.txt")
-  add_subdirectory(tests/unit/mapexec)
-endif()
-
-# Header-only, and outside the K-seam block because it needs an ISOLATION MASK no preset
-# carries: a mask over SEVERAL isolated cores, the pool an explicit affinity reserves, needs two
-# and qemu-arm64-smpiso isolates one.
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/placeadmit/CMakeLists.txt")
-  add_subdirectory(tests/unit/placeadmit)
-endif()
-
-# Outside the K-seam block for the same reason as irqquiesce: it compiles kernel/sync/klock.cc
-# with its own arch seam, at a core count the preset does not carry.
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/reschedowed/CMakeLists.txt")
-  add_subdirectory(tests/unit/reschedowed)
-endif()
-
-# Outside it again: it compiles kernel/amp/ampwindow.cc with its own arch seam, at a core
-# count and under a multicore model the preset carries neither of.
-if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/ampwindow/CMakeLists.txt")
-  add_subdirectory(tests/unit/ampwindow)
+# After the trees above: the gates under it compile kernel and lib sources, and read the
+# include path and definitions off the targets those trees create.
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
+  add_subdirectory(tests/unit)
 endif()
 
 # Set before kickos_core below, whose LINK_GROUP pulls the provider archive.
@@ -1812,16 +1313,14 @@ endif()
 # Apps need a chip target (or the sim); a board whose chip is named but not yet brought up
 # builds the libraries only.
 if(KICKOS_BUILD_APPS
-   AND ((KICKOS_ARCH STREQUAL "sim") OR (KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP}))
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/user/apps/CMakeLists.txt")
+   AND ((KICKOS_ARCH STREQUAL "sim") OR (KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})))
   add_subdirectory(user/apps)
 endif()
 
 # AFTER user/apps, which is what makes it the test side rather than a second app tree: every
 # app target a gate rides already exists there, so `if(TARGET <app>)` inside it is the real
 # answer and no gate restates the posture the app's parent already decided on.
-if(KICKOS_BUILD_TESTS
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/CMakeLists.txt")
+if(KICKOS_BUILD_TESTS)
   add_subdirectory(tests/integration)
 endif()
 
@@ -1841,6 +1340,22 @@ if(TARGET kickos_core)
   if(NOT TARGET ${KICKOS_SERVICE_LIST})
     message(FATAL_ERROR "KICKOS_SERVICE_LIST='${KICKOS_SERVICE_LIST}' is not a CMake target. Name a target that defines kickos_board_services, or use the default kickos_services_none (count = 0).")
   endif()
+  # The TOTAL half of the retention mandate. kickos_add_board_provider refuses a provider
+  # NAMED services_* that declares none, which a provider called anything else escapes; this
+  # asks the target actually selected, so a list cannot reach an image undeclared under any
+  # name. An undeclared list reads as retaining zero and the seat sum is then short by
+  # whatever it holds, which is the defect the declaration exists to close.
+  get_target_property(_sl_declared ${KICKOS_SERVICE_LIST} KICKOS_ENDPOINT_RETAINED_DECLARED)
+  if(NOT _sl_declared)
+    message(FATAL_ERROR
+      "KickOS: KICKOS_SERVICE_LIST='${KICKOS_SERVICE_LIST}' states no RETAINED_ENDPOINTS. "
+      "A service list must state how many endpoint pool slots it leaves ROOT holding for the "
+      "life of the image: count a console publish or handover as 1 and each "
+      "KOS_DRV_EP_HANDOVER or KOS_DRV_EP_RETAIN driver endpoint as 1, and state 0 explicitly "
+      "if it holds none. cmake/cap_table.cmake sums it against "
+      "CONFIG_KICKOS_TASK_ENDPOINT_BUDGET, so a list that declined to answer is counted as "
+      "zero and the ceiling it is checked against is false.")
+  endif()
   # Without this a misspelled target name reaches the LINK_GROUP as a bare -l, so the board
   # silently keeps kickos_pinmap_none and boots with unmuxed pins.
   if(NOT TARGET ${KICKOS_BOARD_PINMAP})
@@ -1848,8 +1363,10 @@ if(TARGET kickos_core)
   endif()
 endif()
 
-# Must stay AFTER add_subdirectory(user/apps): that is the last place an app can declare its
-# peak.
+# Both must stay AFTER add_subdirectory(system), where the service-list target is created;
+# the resolve also after add_subdirectory(user/apps), that being the last place an app can
+# declare its peak.
+kickos_endpoint_seats_check("${KICKOS_SERVICE_LIST}")
 kickos_cap_table_resolve("${KICKOS_SERVICE_LIST}" KICKOS_CAP_TABLE_SLOTS
                          KICKOS_CAP_TABLE_CHUNK KICKOS_CAP_TABLE_CHILD_WIDTH
                          KICKOS_CAP_TABLE_REPLY_MAX)
@@ -1999,21 +1516,32 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
       "build against it.")
   endif()
   set(_kos_tc_install "${CMAKE_TOOLCHAIN_FILE}")
-  # Its fragments travel with it: a toolchain file include()s them list-dir-relative, so one
-  # left behind fails the consumer's project() line and not this install. Derived from the
-  # file's own text rather than listed, and only the toolchain-* names, because the
-  # ${CMAKE_CURRENT_LIST_DIR}/board.cmake it also includes is the descriptor baked below.
-  file(READ "${CMAKE_TOOLCHAIN_FILE}" _kos_tc_text)
-  string(REGEX MATCHALL "\\\${CMAKE_CURRENT_LIST_DIR}/toolchain-[A-Za-z0-9_.-]+\\.cmake"
-         _kos_tc_incs "${_kos_tc_text}")
-  foreach(_kos_inc IN LISTS _kos_tc_incs)
-    string(REPLACE "\${CMAKE_CURRENT_LIST_DIR}/" "" _kos_inc "${_kos_inc}")
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/${_kos_inc}")
-      message(FATAL_ERROR "KickOS: ${CMAKE_TOOLCHAIN_FILE} includes ${_kos_inc}, which is "
-        "not in cmake/, so the package would ship a toolchain file that cannot configure.")
-    endif()
-    list(APPEND _kos_tc_install "${CMAKE_CURRENT_SOURCE_DIR}/cmake/${_kos_inc}")
-  endforeach()
+  # Its fragments travel with it, and a fragment's own fragments too: a toolchain file
+  # include()s them list-dir-relative, so one left behind fails the consumer's project() line
+  # and not this install. Derived from the files' own text rather than listed, so a fragment
+  # that moves an include down a level does not have to be named here. Only
+  # ${CMAKE_CURRENT_LIST_DIR}/board.cmake is excluded: that is the descriptor baked below.
+  set(_kos_tc_pending "${CMAKE_TOOLCHAIN_FILE}")
+  set(_kos_tc_seen "")
+  while(_kos_tc_pending)
+    list(POP_FRONT _kos_tc_pending _kos_tc_from)
+    file(READ "${_kos_tc_from}" _kos_tc_text)
+    string(REGEX MATCHALL "\\\${CMAKE_CURRENT_LIST_DIR}/[A-Za-z0-9_.+-]+\\.cmake"
+           _kos_tc_incs "${_kos_tc_text}")
+    foreach(_kos_inc IN LISTS _kos_tc_incs)
+      string(REPLACE "\${CMAKE_CURRENT_LIST_DIR}/" "" _kos_inc "${_kos_inc}")
+      if(_kos_inc STREQUAL "board.cmake" OR _kos_inc IN_LIST _kos_tc_seen)
+        continue()
+      endif()
+      list(APPEND _kos_tc_seen "${_kos_inc}")
+      if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/${_kos_inc}")
+        message(FATAL_ERROR "KickOS: ${_kos_tc_from} includes ${_kos_inc}, which is "
+          "not in cmake/, so the package would ship a toolchain file that cannot configure.")
+      endif()
+      list(APPEND _kos_tc_install "${CMAKE_CURRENT_SOURCE_DIR}/cmake/${_kos_inc}")
+      list(APPEND _kos_tc_pending "${CMAKE_CURRENT_SOURCE_DIR}/cmake/${_kos_inc}")
+    endforeach()
+  endwhile()
   list(REMOVE_DUPLICATES _kos_tc_install)
   install(FILES ${_kos_tc_install} DESTINATION "${KICKOS_CMAKE_DIR}")
 # The CPU baseline is baked in: a package has no arch/ tree for the toolchain file to read a

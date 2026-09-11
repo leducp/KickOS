@@ -609,6 +609,27 @@ function(kickos_add_qemu_test)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# kickos_host_gate(<name>... [TIMEOUT <s>])
+#   The tail a gate that runs on the BUILD HOST owes: the `host` label the root's decline pass
+#   reads, and a timeout, defaulting to 120s. A gate without the label is taken for a runner of
+#   an image and declined wherever the integration tests are off.
+#
+#   It states the TAIL and not the add_test, and widening it to carry the COMMAND would be a
+#   defect: an argument holding an escaped `;` survives a literal add_test and is SPLIT by any
+#   re-expansion through cmake_parse_arguments, shifting every positional after it.
+# ---------------------------------------------------------------------------
+function(kickos_host_gate)
+  cmake_parse_arguments(HG "" "TIMEOUT" "" ${ARGN})
+  if(NOT HG_UNPARSED_ARGUMENTS)
+    message(FATAL_ERROR "kickos_host_gate: at least one registered test name is required")
+  endif()
+  if(NOT HG_TIMEOUT)
+    set(HG_TIMEOUT 120)
+  endif()
+  set_tests_properties(${HG_UNPARSED_ARGUMENTS} PROPERTIES TIMEOUT ${HG_TIMEOUT} LABELS host)
+endfunction()
+
+# ---------------------------------------------------------------------------
 # The host gate seam: real kernel translation units compiled for the build host at a
 # POSTURE the running preset does not carry.
 #
@@ -740,7 +761,7 @@ endfunction()
 
 # ---------------------------------------------------------------------------
 # kickos_add_board_provider(<name> SOURCE <cc> [LINK <libs...>] [RETAINED_CAPS <n>]
-#                           [INBOUND_REPLY_CAPS <r>])
+#                           [RETAINED_ENDPOINTS <e>] [INBOUND_REPLY_CAPS <r>])
 #   A board-descriptor provider library (pinmap or service-list): a freestanding STATIC lib
 #   defining one board-descriptor symbol, seeing only system/include, exported to
 #   KickOSTargets. LINK carries a service list's board driver targets, which back-reference
@@ -749,6 +770,13 @@ endfunction()
 #   RETAINED_CAPS is how many capabilities a SERVICE LIST leaves in root's table for the life
 #   of the image (cmake/cap_table.cmake). It is RETENTION: a list whose bring-up transiently
 #   holds more than its retention plus the app's peak must declare the transient.
+#
+#   RETAINED_ENDPOINTS is how many ENDPOINT POOL SLOTS the list leaves root holding for the
+#   life of the image (cmake/cap_table.cmake). A DIFFERENT QUANTITY FROM RETAINED_CAPS, which
+#   counts capability table indices: a console handover retains no index of its own, the
+#   published route living at the reserved KOS_CAP_STDOUT, yet root's table still names that
+#   endpoint and so holds its pool slot until the image dies. A console handover is therefore
+#   1 here and 0 there, and a KOS_DRV_EP_RETAIN driver endpoint is 1 in both.
 #
 #   INBOUND_REPLY_CAPS is how many CAP_REPLY capabilities one of the list's SERVICES holds at
 #   once as the server side of kos_call. The widest declaration in the tree wins, so it is
@@ -784,12 +812,13 @@ function(kickos_service_libs_closure target out)
 endfunction()
 
 function(kickos_add_board_provider name)
-  cmake_parse_arguments(BP "" "SOURCE;RETAINED_CAPS;INBOUND_REPLY_CAPS" "LINK" ${ARGN})
+  cmake_parse_arguments(BP ""
+    "SOURCE;RETAINED_CAPS;RETAINED_ENDPOINTS;INBOUND_REPLY_CAPS" "LINK" ${ARGN})
   # A misspelled keyword would otherwise be dropped and the count silently default.
   if(BP_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "kickos_add_board_provider(${name}): unrecognised argument(s) "
       "'${BP_UNPARSED_ARGUMENTS}'. Keywords are SOURCE, LINK, RETAINED_CAPS, "
-      "INBOUND_REPLY_CAPS.")
+      "RETAINED_ENDPOINTS, INBOUND_REPLY_CAPS.")
   endif()
   # A keyword given no value (or an empty one, which the unquoted ${ARGN} drops) leaves the
   # variable UNDEFINED, so the DEFINED guards below would default it past the numeric check.
@@ -805,19 +834,43 @@ function(kickos_add_board_provider name)
   if(NOT DEFINED BP_RETAINED_CAPS)
     set(BP_RETAINED_CAPS 0)
   endif()
+  # A service list must TYPE its retention, zero included. Defaulting it would make a list
+  # that forgot to declare read as one that holds nothing, which is the seat that went
+  # uncounted on twelve providers before it was summed at all. Pinmaps seat nothing and are
+  # never a KICKOS_SERVICE_LIST, so they keep the default.
+  #
+  # THE NAME PREFIX IS A CONVENIENCE AND NOT THE AUTHORITY: it refuses early and names the
+  # declarer, but a provider called anything else escapes it. What closes the class is the
+  # selection site in the root file, which refuses a KICKOS_SERVICE_LIST whose target carries
+  # no declaration whatever it is called, so this clause is a courtesy and that one is total.
+  set_property(TARGET kickos_${name} PROPERTY KICKOS_ENDPOINT_RETAINED_DECLARED TRUE)
+  if(NOT DEFINED BP_RETAINED_ENDPOINTS)
+    set_property(TARGET kickos_${name} PROPERTY KICKOS_ENDPOINT_RETAINED_DECLARED FALSE)
+    if(name MATCHES "^services_")
+      message(FATAL_ERROR
+        "kickos_add_board_provider(${name}): a service list must state RETAINED_ENDPOINTS, "
+        "the number of endpoint pool slots it leaves ROOT holding for the life of the image. "
+        "Count a console publish or handover as 1 and each KOS_DRV_EP_HANDOVER or "
+        "KOS_DRV_EP_RETAIN driver endpoint as 1. State 0 explicitly if it holds none; "
+        "cmake/cap_table.cmake sums this against KICKOS_TASK_ENDPOINT_BUDGET and a list that "
+        "declined to answer would be counted as zero.")
+    endif()
+    set(BP_RETAINED_ENDPOINTS 0)
+  endif()
   if(NOT DEFINED BP_INBOUND_REPLY_CAPS)
     set(BP_INBOUND_REPLY_CAPS "${KICKOS_CAP_REPLY_DEFAULT}")
   endif()
   # Refused HERE, where the declarer is named: the resolve reads these properties
   # numerically and would take a negative as a term that narrows the summed width.
-  foreach(_n "${BP_RETAINED_CAPS}" "${BP_INBOUND_REPLY_CAPS}")
+  foreach(_n "${BP_RETAINED_CAPS}" "${BP_RETAINED_ENDPOINTS}" "${BP_INBOUND_REPLY_CAPS}")
     if(NOT "${_n}" MATCHES "^[0-9]+$")
       message(FATAL_ERROR "kickos_add_board_provider(${name}): '${_n}' is not a non-negative "
         "integer count of concurrently held capabilities")
     endif()
   endforeach()
   set_target_properties(kickos_${name} PROPERTIES
-    KICKOS_CAP_RETAINED "${BP_RETAINED_CAPS}" KICKOS_CAP_REPLY "${BP_INBOUND_REPLY_CAPS}")
+    KICKOS_CAP_RETAINED "${BP_RETAINED_CAPS}" KICKOS_CAP_REPLY "${BP_INBOUND_REPLY_CAPS}"
+    KICKOS_ENDPOINT_RETAINED "${BP_RETAINED_ENDPOINTS}")
   kickos_apply_freestanding(kickos_${name})
   target_include_directories(kickos_${name} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include")

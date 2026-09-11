@@ -26,6 +26,7 @@
 #include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/sys/abi.h>
+#include <kickos/sys/abi_probe.h>
 #include <kickos/sys/errno.h>
 
 namespace kickos

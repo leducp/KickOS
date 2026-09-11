@@ -21,10 +21,8 @@ if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME sim_reclaimwit_drain
     COMMAND "${_reclaimwit_script}" "$<TARGET_FILE:reclaimwit_drain>" drain)
   set_tests_properties(sim_reclaimwit_park sim_reclaimwit_drain PROPERTIES TIMEOUT 120)
-elseif(KICKOS_CHIP STREQUAL "mps2"
-       OR KICKOS_BOARD STREQUAL "microbit"
-       OR KICKOS_BOARD STREQUAL "qemu-riscv"
-       OR KICKOS_BOARD STREQUAL "qemu-riscv64")
+# Not armv8a and not x86_64: those build the app and register no arm today.
+elseif(NOT KICKOS_ARCH STREQUAL "armv8a" AND NOT KICKOS_ARCH STREQUAL "x86_64")
   # The park arm is polled and killed, so its TIMEOUT must clear the poll bound
   # (QEMU_TIMEOUT * 5 polls at 0.2 s) rather than the boot.
   kickos_add_qemu_test(NAME ${_tag}_reclaimwit_park TARGET reclaimwit TIMEOUT 120

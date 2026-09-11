@@ -41,12 +41,6 @@ require_number "$NODES" "the partition's node count"
 [ "$NODES" -ge 2 ] || fail "KICKOS_AMP_NODES is $NODES: a partition of two is the smallest
   useful one (docs/design-multicore.md N6c), so there is no second image to agree with."
 
-# The host binutils is localised and prints translated section and segment headers, so every
-# parse below is pinned. The cross readelf is not, so an unpinned break shows on one machine
-# only.
-LC_ALL=C
-export LC_ALL
-
 # --- the clause reader, over a table one line per node: <node> <addr> <size> <type> <lo> <hi>
 #
 # Findings go to stdout one per line, and the count on a FINDINGS line of its own, NOT the exit

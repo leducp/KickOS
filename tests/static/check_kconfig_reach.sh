@@ -33,7 +33,6 @@ GEN="$SRC/tools/kconfig/genconfig.py"
 [ -f "$SRC/Kconfig" ] || fail "no Kconfig at $SRC/Kconfig"
 [ -f "$GEN" ] || fail "no generator at $GEN"
 
-export LC_ALL=C
 scratch_dir
 
 # The line every declared KICKOS_* symbol must carry in the fragment, one per line as

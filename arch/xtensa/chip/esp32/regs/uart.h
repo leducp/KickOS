@@ -60,24 +60,24 @@ namespace kickos::esp32::reg::uart
     // STATUS occupancy fields (TRM Register 19.8). Each is only the LOW 8 bits of its
     // count; the 3 high bits (tx_mem_cnt / rx_mem_cnt) sit in UART_MEM_CNT_STATUS_REG and
     // matter only once a FIFO is extended past its default 128-byte block.
-    constexpr uint32_t TXFIFO_CNT_SHIFT = 16; // [23:16]
+    constexpr uint32_t TXFIFO_CNT_S = 16; // [23:16]
     constexpr uint32_t TXFIFO_CNT_MASK = 0xFFu;
-    constexpr uint32_t RXFIFO_CNT_SHIFT = 0; // [7:0]
+    constexpr uint32_t RXFIFO_CNT_S = 0; // [7:0]
     constexpr uint32_t RXFIFO_CNT_MASK = 0xFFu;
 
     // Transmitter finite state machine, same register (TRM Register 19.8), whose states the
     // TRM enumerates: 0 TX_IDLE, 1 TX_STRT, 2-9 TX_DAT0..7, 10 TX_PRTY, 11 TX_STP1,
     // 12 TX_STP2, 13 TX_DL0, 14 TX_DL1.
-    constexpr uint32_t ST_UTX_OUT_SHIFT = 24; // [27:24]
+    constexpr uint32_t ST_UTX_OUT_S = 24; // [27:24]
     constexpr uint32_t ST_UTX_OUT_MASK = 0xFu;
     constexpr uint32_t ST_UTX_OUT_TX_IDLE = 0u;
 
     // CONF0 framing (TRM Register 19.9).
     constexpr uint32_t CONF0_PARITY = 1u << 0; // 0 even, 1 odd
     constexpr uint32_t CONF0_PARITY_EN = 1u << 1;
-    constexpr uint32_t CONF0_BIT_NUM_SHIFT = 2; // 0:5b 1:6b 2:7b 3:8b
+    constexpr uint32_t CONF0_BIT_NUM_S = 2; // 0:5b 1:6b 2:7b 3:8b
     constexpr uint32_t CONF0_BIT_NUM_MASK = 0x3u;
-    constexpr uint32_t CONF0_STOP_BIT_NUM_SHIFT = 4; // 1:1b 2:1.5b 3:2b; 0 is invalid
+    constexpr uint32_t CONF0_STOP_BIT_NUM_S = 4; // 1:1b 2:1.5b 3:2b; 0 is invalid
     constexpr uint32_t CONF0_STOP_BIT_NUM_MASK = 0x3u;
     constexpr uint32_t CONF0_RXFIFO_RST = 1u << 17; // R/W, NOT self-clearing
     constexpr uint32_t CONF0_TXFIFO_RST = 1u << 18; // R/W, NOT self-clearing
@@ -86,14 +86,14 @@ namespace kickos::esp32::reg::uart
     constexpr uint32_t CONF0_TICK_REF_ALWAYS_ON = 1u << 27;
 
     // CONF1 thresholds (TRM Register 19.10), 7 bits each.
-    constexpr uint32_t TXFIFO_EMPTY_THRHD_SHIFT = 8; // [14:8]
+    constexpr uint32_t TXFIFO_EMPTY_THRHD_S = 8; // [14:8]
     constexpr uint32_t TXFIFO_EMPTY_THRHD_MASK = 0x7Fu;
-    constexpr uint32_t RXFIFO_FULL_THRHD_SHIFT = 0; // [6:0]
+    constexpr uint32_t RXFIFO_FULL_THRHD_S = 0; // [6:0]
     constexpr uint32_t RXFIFO_FULL_THRHD_MASK = 0x7Fu;
 
     // CLKDIV fractional divider (TRM Register 19.6): integer [19:0], 1/16 fraction [23:20].
     constexpr uint32_t CLKDIV_INT_MASK = 0xFFFFFu;
-    constexpr uint32_t CLKDIV_FRAC_SHIFT = 20;
+    constexpr uint32_t CLKDIV_FRAC_S = 20;
 
     // Default FIFO block per controller, out of the 1024-byte RAM the three UARTs share
     // (TRM 19.3.3, Figure 19.3-2).
@@ -108,8 +108,16 @@ namespace kickos::esp32::reg::uart
     // 8N1 on the APB clock as one absolute CONF0 word. Storing it also clears TXD_INV,
     // LOOPBACK, IRDA_EN, TX_FLOW_EN and TXD_BRK, each of which silently corrupts or
     // withholds every outgoing byte.
-    constexpr uint32_t CONF0_8N1 = CONF0_TICK_REF_ALWAYS_ON | (3u << CONF0_BIT_NUM_SHIFT)
-                                   | (1u << CONF0_STOP_BIT_NUM_SHIFT);
+    constexpr uint32_t CONF0_8N1 = CONF0_TICK_REF_ALWAYS_ON | (3u << CONF0_BIT_NUM_S)
+                                   | (1u << CONF0_STOP_BIT_NUM_S);
+}
+
+// Family membership: the shared ESP UART body (system/driver/espuart) names ONE spelling for
+// both parts. A chip joins by aliasing its own register namespace here and by spelling what
+// that unit names.
+namespace kickos::espuart
+{
+    namespace reg = kickos::esp32::reg;
 }
 
 #endif

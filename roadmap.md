@@ -892,6 +892,7 @@ is the next one's baseline.
 | M8.5 | DRY in the kernel and the arch backends |
 | M8.5.1 | what M8.5 measured and left: the budget made to bind per kind, the window priced and declined, the reporter narrowed, and the package read from outside on every arch |
 | M8.6 | DRY in the build, the gate library and userspace |
+| M8.6.1 | the console's unit of atomicity becomes a LINE, and every chip gets a ring |
 | M8.7 | P0: the rebaseline campaign, and the end-to-end instrument |
 | M8.8 | the per-switch and per-wake plumbing |
 | M8.9 | the IPC structure: the reserved reply slot, and the fused reply-receive |
@@ -1056,6 +1057,46 @@ page-table helpers no arm of it distinguishes from broken; the doorbell send who
 request-cell store leaves the cross-core gate announcing that every core answered; and the ninety
 lines the RP2350 doorbell still duplicates.
 
+**M8.6.1 TAKES A PIECE OF M9's GROUND DELIBERATELY, AND THE RATE IS THE ARGUMENT.** M9 owns
+console locking, and the tear was left to it with the rate recorded as the reason to take it
+early. It is taken here because it costs a CI job about a quarter of its runs under load and
+because the fix turned out to be smaller than the item assumed, not because the phase order
+bends.
+**WHAT THE DESIGN DISCUSSION SETTLED, and three of the four turns were corrections to a claim
+this file would otherwise have carried.** The unit of atomicity the console owes is a LINE, not
+a byte and not a report: a reader parses lines, so whole lines in any order stay legible while
+two producers inside one line destroy it. That is why the fix is an indivisible insert and not a
+lock across the transmission, which at 115200 would mask for about 22 ms.
+Three claims made on the way were WRONG and are recorded because each one nearly became the
+design. **"The fault path bypasses the ring by design"**: it does not, and nothing hardcodes it.
+`console_emit` routed faults to the synchronous writer through `arch_in_isr()`, a blanket rule
+standing for "this context may not wait" -- true of `console_tx_write`, which chunks and waits
+UNMASKED between chunks, and false of buffering as such. A non-waiting insert is safe from any
+context, which is what let the fault path keep the ring. **"A ring needs a TX interrupt"**: it
+does not. A producer can drain its own queue outside the lock under a single-drainer flag, and
+the interrupt is one way to trigger a drain rather than a precondition for having a queue.
+**"Panic and fault both need synchrony"**: only panic does. The system stops after a panic so a
+queued line is one nobody reads, while a thread fault leaves the system running and the drain
+carries it -- and because the ring is FIFO, deferring the fault report also ORDERS it, landing
+after the queued lines instead of inside one.
+**THE RING SIZE WAS NEVER A CHOICE AND WAS ELEVEN COPIES OF ONE NUMBER.** 512 is forced: the
+ring reserves one slot, so a 256-byte `kprintf` line does not fit 256, and CRLF expansion raises
+the floor again. It is now one knob with a build-time assert tying it to the line bound, because
+a too-small ring FAILS SAFE -- the insert refuses, the locked writer takes over, everything
+works and the short masked window is silently gone.
+**AND THE COOK BUFFER WAS THE LARGEST TERM OF THREE RED-ZONE CLASSES, which nothing said.**
+`diag.h` claimed the 96-byte fault line array was the largest term of the EXITK descent; it was,
+at 256, until M8.5.1 shrank it past `console.cc`'s 128-byte CRLF buffer and left the claim
+behind. Measured by moving each: the fault array is worth 160 bytes of EXITK, the cook buffer
+128 of EXITK, FAULT and PANIC alike. Expanding CRLF during the ring copy deletes that buffer, so
+the milestone buys stack on three classes before it buys the flake.
+**WHAT IT CANNOT FIX, stated so a green run is not read as one.** `qemu-arm64-amp2` tears on the
+same mechanism and a kernel lock cannot reach it: two nodes, two kernels, two images, one UART
+with no arbitration. rp2350 is the fleet's only answer to that shape, a claim serialised by
+SPINLOCK31 with a hold bound priced on wire time, and the two AMP backends therefore disagree
+about whether a shared console is owned. That is a partition-wide ownership contract and stays
+M9's.
+
 **M8.6 HAS A MEASURED LEDGER RATHER THAN AN AMBITION, AND THE TREE ALREADY OWNS THE IDIOM THAT
 REMOVES MOST OF IT.** The build corpus is 11925 lines over 272 files and the root file alone is 16
 percent of it. No function in the shared module is dead and the heavy helpers are correctly placed:
@@ -1067,6 +1108,28 @@ and the root holds a 310-line AMP arithmetic block whose job is identical to two
 already modules. Net about 870 lines, the root from 1875 to roughly 1300, and the first four moves
 are independent of each other and carry no semantic risk. One ordering constraint is real: the AMP
 block must keep running before the capability-table sizing, whose width depends on the port count.
+
+**LANDED, AND THE LEDGER'S ARITHMETIC WAS WRONG IN BOTH DIRECTIONS ON FOUR SEPARATE ITEMS. THE
+PATTERN IS THE DURABLE PART, NOT THE TOTAL.** Measured: the build corpus went 12741 lines over 284
+files to 12470 over 296, the root file 2039 to 1551, `main.cc` 14209 to 7417, `abi.h` 1157 to 644.
+Not the predicted 870. The toolchain extraction BEAT its estimate at -398 on the six real files.
+The arch ladder MISSED at net +27 against -135: only 99 of the nine branches' 286 lines were
+repeated dispatch, the other 187 being source lists that MOVE rather than fold, and nine new files
+cost nine gated SPDX headers. The gate library came to -104 against -145, its corpus builder -3
+where -55 was predicted, while `LC_ALL=C` -- flagged and not counted -- was -117 because 39 files
+each carried a paragraph explaining the line. And the integration corpus, said to want its own
+measurement, wants no refactor at all: both pairs quoted for it collapsed from 0.88 and 0.85 to
+0.41 and 0.61 once the gate library landed, and 348 of its 570 nominally foldable line occurrences
+are shell syntax, script prologue, or calls INTO the library, which is what an extraction leaves
+behind.
+**THE COMMON CAUSE IS THAT A CONTAINMENT OR SHINGLE METRIC COUNTS LINES THAT LOOK ALIKE.** A source
+list resembles another source list, a per-board wrapper resembles another per-board wrapper, and a
+descriptor literal resembles another, without any of them being duplication. **So every remaining
+shingle-derived estimate in this roadmap is an upper bound on the fold and not a promise**, and an
+item's own figures are to be re-measured before it is briefed: `abi.h` was 1157 lines and not 1001
+with 44 percent probe surface and not 30, the selftest TU 14209 and not 12566, the driver adapters
+92 to 126 lines and not 46 to 108, and two items -- DRY-10a and DRY-10b -- were already closed on
+master before the milestone opened.
 
 **WHAT M8.1.1 DID NOT FINISH IS M8.6's, AND IT IS THE SAME SHAPE M8.1.1 REMOVED FROM THE APPS.**
 Three of the four arrows turned. What kept the old pattern is the root file itself -- 22 flat copies

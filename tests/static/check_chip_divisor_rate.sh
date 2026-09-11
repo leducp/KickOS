@@ -47,11 +47,7 @@ set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # Findings accumulate over the whole fleet, so set -e must stay off.
 
-LC_ALL=C
-export LC_ALL
-
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
+require_repo_root
 command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
 
 READER="$(dirname "$0")/chip_divisor_rate.py"

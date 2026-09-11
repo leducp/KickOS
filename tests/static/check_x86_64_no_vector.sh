@@ -34,12 +34,6 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-# Every objdump below reads its own output back, so the locale is part of the contract: this
-# box's binutils is localised and prints `format de fichier` where the parses here read
-# `file format`.
-LC_ALL=C
-export LC_ALL
-
 # An unbuilt tree and a walk that found the wrong directory are what this refuses.
 OBJ_FLOOR=64
 # A tree whose objects compiled and whose links did not leaves the text the linker contributes

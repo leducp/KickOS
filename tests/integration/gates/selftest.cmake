@@ -306,8 +306,8 @@ if(_oot_board AND KICKOS_BOARD STREQUAL _oot_board)
       COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_export.sh"
               "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
               "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
-    set_tests_properties(oot_export PROPERTIES TIMEOUT 300
-                         FIXTURES_REQUIRED kickos_build LABELS host)
+    kickos_host_gate(oot_export TIMEOUT 300)
+    set_tests_properties(oot_export PROPERTIES FIXTURES_REQUIRED kickos_build)
   else()
     # The HOST readelf, not this board's: it reads every machine the fleet targets, and the
     # xtensa and rx toolchains ship none for CMAKE_READELF to find.
@@ -316,8 +316,8 @@ if(_oot_board AND KICKOS_BOARD STREQUAL _oot_board)
       COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_export_mcu.sh"
               "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
               "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
-    set_tests_properties(oot_export_mcu PROPERTIES TIMEOUT 300
-                         FIXTURES_REQUIRED kickos_build LABELS host)
+    kickos_host_gate(oot_export_mcu TIMEOUT 300)
+    set_tests_properties(oot_export_mcu PROPERTIES FIXTURES_REQUIRED kickos_build)
   endif()
 endif()
 
@@ -330,7 +330,7 @@ if(KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
             "$<TARGET_FILE:kickos_lib>")
-  set_tests_properties(kernel_ctor_placement PROPERTIES TIMEOUT 60 LABELS host)
+  kickos_host_gate(kernel_ctor_placement TIMEOUT 60)
 endif()
 
 # Every archive of the rescan group, so the gate sees the WHOLE set of definitions the link had
@@ -370,7 +370,7 @@ add_test(
           "${_selftest_elf}" "${_selftest_map}"
           "${PROJECT_SOURCE_DIR}/tests/static/weak_allowlist.txt"
           ${_seam_archives})
-set_tests_properties(seam_defaults PROPERTIES TIMEOUT 120 LABELS host)
+kickos_host_gate(seam_defaults)
 
 # The order the gate above rests on. seam_defaults says WHICH member resolved each seam; this
 # says the archives were scanned in the order that makes the answer the intended one, read off
@@ -379,7 +379,7 @@ add_test(
   NAME    link_scan_order
   COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_link_scan_order.sh"
           "${_selftest_map}")
-set_tests_properties(link_scan_order PROPERTIES TIMEOUT 60 LABELS host)
+kickos_host_gate(link_scan_order TIMEOUT 60)
 
 # Driver-class shadowing gate, on the SAME inventory. The last argument before the inventory is
 # 1 when this image compiles the mocks, which is the gate's positive control: it must SEE a
@@ -397,7 +397,7 @@ add_test(
           "${PROJECT_SOURCE_DIR}/user/include/kickos/driver\;${PROJECT_SOURCE_DIR}/user/include/kickos\;${PROJECT_SOURCE_DIR}/user/include/kickos/sys"
           "${_selftest_map}" "${_class_expect_app}"
           ${_seam_archives})
-set_tests_properties(class_backend PROPERTIES TIMEOUT 120 LABELS host)
+kickos_host_gate(class_backend)
 
 # RISC-V small-data guard: the KickOS libs (built -msmall-data-limit=0) must emit ZERO
 # .sdata/.sbss, so gp anchors the app's window and nothing of the kernel's. NECESSARY AND NOT
@@ -414,7 +414,7 @@ if((KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "rv32imac")
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
             "$<TARGET_FILE:kickos_lib>")
-  set_tests_properties(riscv_no_smalldata PROPERTIES TIMEOUT 60 LABELS host)
+  kickos_host_gate(riscv_no_smalldata TIMEOUT 60)
 endif()
 
 # The three rv64 image readers below take THREE images, so a reference the optimiser only emits
@@ -431,7 +431,7 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
             "$<TARGET_FILE:selftest>"
             "$<TARGET_FILE:hello>"
             "$<TARGET_FILE:cxxtest>")
-  set_tests_properties(riscv_kernel_gp PROPERTIES TIMEOUT 120 LABELS host)
+  kickos_host_gate(riscv_kernel_gp)
 
   # The same hazard in its larger form: the app window is at 0x40000000, inside medlow's
   # absolute reach, so the linker relaxes such a reference to lui+addi and the link succeeds
@@ -449,7 +449,7 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
             "$<TARGET_FILE:kickos_kernel>"
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
-  set_tests_properties(riscv_kernel_apphalf PROPERTIES TIMEOUT 120 LABELS host)
+  kickos_host_gate(riscv_kernel_apphalf)
 
   # And the kernel window's own leaves, out of the same three images. The boundary they are held
   # against is the image's own section table, so a layout that moved a fetched or a stored
@@ -461,7 +461,7 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
             "$<TARGET_FILE:selftest>"
             "$<TARGET_FILE:hello>"
             "$<TARGET_FILE:cxxtest>")
-  set_tests_properties(riscv_kernel_wx PROPERTIES TIMEOUT 120 LABELS host)
+  kickos_host_gate(riscv_kernel_wx)
 endif()
 
 # App-window leak guard for the inverted .appdata scheme: the enforcing linker scripts name the
@@ -484,7 +484,7 @@ if(KICKOS_HAVE_MPU AND NOT KICKOS_ARCH STREQUAL "sim")
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
             "$<TARGET_FILE:kickos_lib>")
-  set_tests_properties(appdata_no_kernel PROPERTIES TIMEOUT 60 LABELS host)
+  kickos_host_gate(appdata_no_kernel TIMEOUT 60)
 endif()
 
 # The split-image boards carve TWO windows: the app's writable state, and the app's own
@@ -509,5 +509,5 @@ if(KICKOS_HAVE_ASPACE AND NOT KICKOS_ARCH STREQUAL "x86_64")
             "$<TARGET_FILE:kickos_kernel>"
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
-  set_tests_properties(appdata_no_kernel PROPERTIES TIMEOUT 60 LABELS host)
+  kickos_host_gate(appdata_no_kernel TIMEOUT 60)
 endif()

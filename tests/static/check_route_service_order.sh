@@ -16,9 +16,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-LC_ALL=C
-export LC_ALL
-
 ROOT="${1:-$(cd "$(dirname "$0")/../.." && pwd)}"
 
 # <file>:<service function> for every backend a shared kernel is declarable on.

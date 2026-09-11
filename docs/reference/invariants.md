@@ -167,7 +167,8 @@
     of production)
   - *source:* kernel/syscall/syscall.cc (the KOS_SYS_IRQ_INJECT dispatch arm);
     kernel/syscall/syscall_aspace.cc (cap_mint_authorised and the two ops it guards);
-    user/apps/common/selftest/main.cc (t_irq_kernel_line_reserved, t_cap_objects)
+    user/apps/common/selftest/main.cc (t_irq_kernel_line_reserved);
+    user/apps/common/selftest/selftest_aspace.cc (t_cap_objects)
 
 - **`object-pool-keeps-a-slot-from-any-one-task`** -- The semaphore, mutex, endpoint and tier-1
   IRQ-binding pools are one global `SlotPool` each, and a TASK may HOLD at most that pool's own
@@ -248,14 +249,21 @@
   SLOT is claimed. `cap_seat_stdout` claims none: it is an `obj_ref_inc` on the endpoint the
   console was already published on, so the task's hold count rises by at most ONE and only for
   a task that did not already hold that slot, and the slot it names is spent for the life of
-  the image whatever anyone's ceiling says. **The two AMP minters DO claim, and their claim is
+  the image whatever anyone's ceiling says, which is why the SLOT behind slot 0 is a seat the
+  image spends and the INDEX is not. **The two AMP minters DO claim, and their claim is
   bounded at BUILD time and not at run time.** `amp_ports_seat` panics on a refusal, so there
-  is no run-time answer that could hold root to its ceiling; `CMakeLists.txt` therefore refuses
-  a partition naming more crossings than `KICKOS_TASK_ENDPOINT_BUDGET` beside the check that
-  they fit `KICKOS_MAX_ENDPOINTS`. The two relations together are `ports <= budget < pool`, and
-  the `cap.h` assert alone does NOT reach this: it relates the budget to the pool, and a
-  partition whose ports outnumber the budget still sits below the pool, so without the CMake
-  check root boots past its own ceiling on a board that configured and built cleanly.
+  is no run-time answer that could hold root to its ceiling. Two relations carry it, and they
+  live apart because they read different declarations at different points of the configure:
+  `cmake/amp_partition.cmake` refuses a partition whose crossings do not fit
+  `KICKOS_MAX_ENDPOINTS`, and `kickos_endpoint_seats_check`
+  (`cmake/cap_table.cmake`, called once the service-list target exists) refuses
+  `ports + RETAINED_ENDPOINTS >= KICKOS_TASK_ENDPOINT_BUDGET`. Together with the `cap.h`
+  assert that is `ports + retained < budget < pool`. The assert alone does NOT reach it: it
+  relates the budget to the pool, and an image whose seats outnumber the budget still sits
+  below the pool, so without the CMake relation root boots at or past its own ceiling on a
+  board that configured and built cleanly. **THE BUILD SUM IS NOT EVERY SEAT.** A driver an
+  APP brings up under `KOS_DRV_EP_RETAIN` keeps a further slot in root, and no build can read
+  that posture, so the headroom the strict relation leaves is what those come out of.
 
   The bound is per TASK and not per THREAD because a thread's own capability table already
   bounds one thread and a thread can spawn siblings to widen that. **IT BOUNDS ONE TASK AND
@@ -581,7 +589,7 @@
     not only AMP: a forged publication, a host seam standing in for a backend, and a loopback
     console are the same shape.
   - *source:* docs/design-multicore.md (N6f, the measurement rule beside the receiving side's
-    rules); user/apps/common/selftest/main.cc (t_amp_far_call, t_amp_far_reply_guard)
+    rules); user/apps/common/selftest/selftest_amp.cc (t_amp_far_call, t_amp_far_reply_guard)
 
 ## App entry & init seam
 

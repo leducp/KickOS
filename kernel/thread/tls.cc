@@ -130,4 +130,4 @@ void tls_seat(void*)
 
 #endif
 
-} // namespace kickos
+}

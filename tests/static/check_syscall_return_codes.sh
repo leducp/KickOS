@@ -60,10 +60,7 @@ set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # NOT set -e: the point is to collect EVERY finding in one run, not to stop at the first.
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
 scratch_dir
 
@@ -483,9 +480,8 @@ if awk -v F="fake/dispatch.cc" -v ARMS=1 -f "$HARVEST" "$TMP/st/res.noarm" \
 fi
 
 # --- the corpus ---------------------------------------------------------------
-git ls-files -- 'kernel/*.cc' 'kernel/*.h' 'arch/*.cc' 'arch/*.h' 'system/*.cc' 'system/*.h' \
-    > "$TMP/all" || fail "git ls-files failed"
-require_nonempty "$TMP/all" "git ls-files matched no kernel or arch source file; every check below would pass vacuously"
+corpus "$TMP/all" "kernel or arch source file" \
+    'kernel/*.cc' 'kernel/*.h' 'arch/*.cc' 'arch/*.h' 'system/*.cc' 'system/*.h'
 grep -qxF "$DISPATCH" "$TMP/all" \
     || fail "$DISPATCH is not in the corpus; the dispatch arms would go unread and every entry would read clean"
 N="$(wc -l < "$TMP/all" | tr -d ' ')"

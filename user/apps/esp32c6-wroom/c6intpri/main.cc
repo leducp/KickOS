@@ -30,6 +30,7 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/sys/abi_probe.h>
 #include <kickos/sys/errno.h>
 #include <kickos/libc/fmt.h>
 

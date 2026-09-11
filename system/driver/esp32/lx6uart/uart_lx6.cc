@@ -1,62 +1,23 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32 (Xtensa LX6) UART0 backend of <kickos/driver/uart.h>, for a channel the ROM has
-// already brought up. Register facts: ESP32 TRM v5.8 ch.19, via arch/xtensa/chip/esp32/regs/uart.h.
-//
-// UART_INT_ST == UART_INT_RAW & UART_INT_ENA, and RAW is a LATCH that only an INT_CLR write
-// drops (TRM appendix "Interrupt Configuration Registers"), so every serviced source needs a
-// clear.
-//
-// UART_TXFIFO_EMPTY's condition is level on occupancy (TRM Register 19.10), so enabling it on
-// an idle channel raises immediately.
-//
-// UART_RXFIFO_FULL_INT_CLR "can be set only when data in Rx_FIFO is less than
-// UART_RXFIFO_FULL_THRHD" (TRM Register 19.5), so with the threshold at 1 the clear must
-// follow a full drain.
+// ESP32 (Xtensa LX6) UART0 open, for a channel the ROM has already brought up. Everything
+// below open is the family body in system/driver/espuart. Register facts: ESP32 TRM v5.8
+// ch.19, via arch/xtensa/chip/esp32/regs/uart.h.
 
 #include <kickos/driver/uart.h>
 
 #include <kickos/io/mmio.h>   // r32
 #include <kickos/sys.h>       // kos_periph_clock_hz
-#include <kickos/sys/errno.h> // KOS_ENOTSUP, KOS_ENOSYS, KOS_EBUSY
+#include <kickos/sys/errno.h> // KOS_ENOTSUP, KOS_ENOSYS
 
-#include <regs/uart.h>
+#include "../../espuart/uart_esp.h"
 
 #include <stdint.h>
 
 namespace
 {
-    namespace ru = kickos::esp32::reg::uart;
-
-    // TX-empty is armed on demand by kos_uart_write.
-    constexpr uint32_t RX_INT_MASK =
-        ru::RXFIFO_FULL_INT | ru::RXFIFO_OVF_INT | ru::FRM_ERR_INT | ru::PARITY_ERR_INT;
-
-    constexpr uint32_t FLUSH_POLL_MAX = 1000000u;
-
-    uint32_t txfifo_cnt(uintptr_t base)
-    {
-        return (r32(base + ru::OFF_STATUS) >> ru::TXFIFO_CNT_SHIFT) & ru::TXFIFO_CNT_MASK;
-    }
-
-    uint32_t rxfifo_cnt(uintptr_t base)
-    {
-        return (r32(base + ru::OFF_STATUS) >> ru::RXFIFO_CNT_SHIFT) & ru::RXFIFO_CNT_MASK;
-    }
-
-    void tx_int_set(uintptr_t base, bool on)
-    {
-        uint32_t const ena = r32(base + ru::OFF_INT_ENA);
-        if (on)
-        {
-            // Enable only: the stale latch IS the re-raise for a burst that stopped on a
-            // full FIFO.
-            r32(base + ru::OFF_INT_ENA) = ena | ru::TXFIFO_EMPTY_INT;
-            return;
-        }
-        r32(base + ru::OFF_INT_ENA) = ena & ~ru::TXFIFO_EMPTY_INT;
-    }
+    namespace ru = kickos::espuart::reg::uart;
 
     // CLKDIV is a 20-bit integer plus a 4-bit 1/16 fraction and baud = fclk / (int + frac/16)
     // (TRM Register 19.6), computed as fclk * 16 / clkdiv16 to stay in integer arithmetic.
@@ -80,7 +41,7 @@ namespace
         uint32_t const clkdiv = r32(base + ru::OFF_CLKDIV);
         uint64_t const clkdiv16 =
             (static_cast<uint64_t>(clkdiv & ru::CLKDIV_INT_MASK) << 4)
-            | ((clkdiv >> ru::CLKDIV_FRAC_SHIFT) & 0xFu);
+            | ((clkdiv >> ru::CLKDIV_FRAC_S) & 0xFu);
         if (clkdiv16 == 0u)
         {
             return -KOS_ENOTSUP; // a zero divisor stops the generator
@@ -123,9 +84,9 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     r32(u->base + ru::OFF_INT_ENA) = 0;
     r32(u->base + ru::OFF_INT_CLR) = 0xFFFFFFFFu;
     r32(u->base + ru::OFF_CONF1) =
-        ((ru::TXFIFO_EMPTY_THRHD & ru::TXFIFO_EMPTY_THRHD_MASK) << ru::TXFIFO_EMPTY_THRHD_SHIFT)
-        | ((ru::RXFIFO_FULL_THRHD & ru::RXFIFO_FULL_THRHD_MASK) << ru::RXFIFO_FULL_THRHD_SHIFT);
-    r32(u->base + ru::OFF_INT_ENA) = RX_INT_MASK;
+        ((ru::TXFIFO_EMPTY_THRHD & ru::TXFIFO_EMPTY_THRHD_MASK) << ru::TXFIFO_EMPTY_THRHD_S)
+        | ((ru::RXFIFO_FULL_THRHD & ru::RXFIFO_FULL_THRHD_MASK) << ru::RXFIFO_FULL_THRHD_S);
+    r32(u->base + ru::OFF_INT_ENA) = kickos::espuart::RX_INT_MASK;
 
     int32_t const rate = achieved_baud(u->base);
     if (rate < 0)
@@ -133,94 +94,6 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
         (void)kos_uart_close(u); // a refused open must not leave a source armed
     }
     return rate;
-}
-
-uint32_t kos_uart_read(struct kos_uart* u, unsigned char* dst, uint32_t n)
-{
-    // UART_FIFO_REG carries the data byte only, with no per-byte error tag: an error flag is
-    // counted, and the erroneous byte itself stays in the stream. These three latches are
-    // ungated, so the clear takes immediately.
-    uint32_t const st = r32(u->base + ru::OFF_INT_ST);
-    uint32_t err_clr = 0;
-    if ((st & ru::RXFIFO_OVF_INT) != 0u)
-    {
-        kos_counter_increment(&u->stats->rx_overrun, 1u);
-        err_clr |= ru::RXFIFO_OVF_INT;
-    }
-    if ((st & ru::FRM_ERR_INT) != 0u)
-    {
-        kos_counter_increment(&u->stats->rx_framing, 1u);
-        err_clr |= ru::FRM_ERR_INT;
-    }
-    if ((st & ru::PARITY_ERR_INT) != 0u)
-    {
-        kos_counter_increment(&u->stats->rx_parity, 1u);
-        err_clr |= ru::PARITY_ERR_INT;
-    }
-    if (err_clr != 0u)
-    {
-        r32(u->base + ru::OFF_INT_CLR) = err_clr;
-    }
-
-    // One bounded pass: a byte arriving mid-pass leaves the threshold condition true, so the
-    // clear below is refused and the line re-posts.
-    uint32_t cnt = rxfifo_cnt(u->base);
-    if (cnt > n)
-    {
-        cnt = n;
-    }
-    for (uint32_t i = 0; i < cnt; i++)
-    {
-        dst[i] = static_cast<unsigned char>(r32(u->base + ru::OFF_FIFO) & 0xFFu);
-    }
-    kos_counter_increment(&u->stats->rx_bytes, cnt);
-    // AFTER the drain, and only then does the hardware accept it (Register 19.5).
-    r32(u->base + ru::OFF_INT_CLR) = ru::RXFIFO_FULL_INT;
-    return cnt;
-}
-
-uint32_t kos_uart_write(struct kos_uart* u, unsigned char const* src, uint32_t n)
-{
-    uint32_t i = 0;
-    while (i < n)
-    {
-        if (txfifo_cnt(u->base) >= ru::TXFIFO_LIMIT)
-        {
-            break;
-        }
-        r32(u->base + ru::OFF_FIFO) = src[i];
-        // The latch survives the FIFO passing the threshold, so it is dropped per push
-        // rather than once at the end of the burst.
-        r32(u->base + ru::OFF_INT_CLR) = ru::TXFIFO_EMPTY_INT;
-        i++;
-    }
-    // Armed only when the FIFO refused a byte: arming with nothing left to send is a storm,
-    // the condition being level on occupancy.
-    tx_int_set(u->base, i < n);
-    return i;
-}
-
-int32_t kos_uart_flush(struct kos_uart* u)
-{
-    // THE WEAK CONTRACT ON THIS PART: drained means the FIFO emptied, and a byte may still be
-    // in the shifter. A consumer that must not clip the final byte needs a delay of its own.
-    for (uint32_t i = 0; i < FLUSH_POLL_MAX; i++)
-    {
-        if (txfifo_cnt(u->base) == 0u)
-        {
-            return 0;
-        }
-    }
-    return -KOS_EBUSY;
-}
-
-int32_t kos_uart_close(struct kos_uart* u)
-{
-    // The ROM owns CONF0's framing, and a rewrite truncates a frame still shifting, so this
-    // drops the interrupt enables alone.
-    r32(u->base + ru::OFF_INT_ENA) = 0;
-    r32(u->base + ru::OFF_INT_CLR) = 0xFFFFFFFFu;
-    return 0;
 }
 
 }

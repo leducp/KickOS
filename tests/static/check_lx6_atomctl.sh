@@ -19,10 +19,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The host binutils is localised and prints translated headers, which every parse below reads.
-LC_ALL=C
-export LC_ALL
-
 _usage="usage: check_lx6_atomctl.sh <elf> <nm> <objdump>"
 elf="${1:?$_usage}"
 nm="${2:?$_usage}"
@@ -41,16 +37,9 @@ scratch_dir
 
 # --- the reader ---------------------------------------------------------------
 # The verdict is an order, so records carry ordinals. Emits exactly one record.
+# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
+# tests/lib/objdump_scope.awk ahead of this file.
 cat > "$TMP/reader.awk" <<'AWK'
-/^[0-9a-f]+ <.*>:$/ {
-    name = $2
-    gsub(/[<>:]/, "", name)
-    inbody = (name == sym)
-    if (inbody) { seen = 1 }
-    next
-}
-!inbody { next }
-$0 !~ /^[ \t]*[0-9a-f]+:/ { next }
 {
     text = $0
     sub(/^[^:]*:[ \t]*/, "", text)
@@ -76,7 +65,7 @@ END {
 AWK
 
 read_body() { # <listing> <symbol>
-    awk -v sym="$2" -f "$TMP/reader.awk" "$1"
+    scoped_body "$TMP/reader.awk" "$1" "$2"
 }
 
 # --- the reader's controls, before the image is read --------------------------
@@ -137,12 +126,8 @@ case "$ctl" in
   never reads it back, so an image trusting a write the part ignored would read as a clean one" ;;
 esac
 
-ctl="$(read_body "$TMP/ctl_ok" a_symbol_no_listing_carries)"
-case "$ctl" in
-    NOSYM) ;;
-    *) fail "the reader answered [$ctl] for a symbol the listing does not carry, so a renamed
-  init body would read as a clean one" ;;
-esac
+ctl_dead_reader "$(read_body "$TMP/ctl_ok" a_symbol_no_listing_carries)" \
+    "a renamed init body would read as a clean one"
 
 # --- the symbol table, and the body in it -------------------------------------
 tool_out "$TMP/nm" "[0-9a-fA-F]" "$nm" -S --defined-only "$elf"

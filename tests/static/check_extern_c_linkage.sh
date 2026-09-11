@@ -31,11 +31,8 @@ set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
 AWK_PROG="$(dirname "$0")/extern_c_linkage.awk"
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
+require_repo_root
 [ -f "$AWK_PROG" ] || fail "scanner missing: $AWK_PROG"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
 
 scratch_dir
 
@@ -99,9 +96,7 @@ ctl="$(scan_ctl "$TMP/ctl_contd.cc")"
     every hit in it, then reads as clean at depth 0"
 
 # `git ls-files`, not find: an untracked scratch file is neither gated nor counted.
-git ls-files -- '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp' > "$TMP/all" \
-    || fail "git ls-files failed"
-require_nonempty "$TMP/all" "git ls-files matched no C/C++ file; every check below would pass vacuously"
+corpus "$TMP/all" "C/C++ file" '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp'
 
 # Only a file carrying BOTH an extern "C" and a namespace opener can be a hit, so the
 # character-level scan runs over a few dozen files rather than the whole corpus.

@@ -956,7 +956,9 @@ re-deriving `_tap_arms`.
   and not a failure -- so a misfiled name is not caught by the gate at all, only by that rule.
 - Which arm sits in which part is decided by POSITION in the registration list at the bottom of
   `user/apps/common/selftest/main.cc`, not by an annotation; the boundaries are the `#undef TAP_ADD`
-  lines. Adding or moving an arm means updating the whole-suite floor AND the matching per-part
+  lines. **Not by which FILE the arm's body is in.** The bodies are spread over `main.cc`,
+  `selftest_aspace.cc`, `selftest_amp.cc` and `selftest_smp.cc`; the registration list is in
+  `main.cc` alone and is what the partition reads. Adding or moving an arm means updating the whole-suite floor AND the matching per-part
   clause in `user/apps/common/selftest/CMakeLists.txt` -- getting it wrong is a configure error on
   every board in the fleet, not a quietly smaller suite.
 
@@ -1026,10 +1028,12 @@ that measurement:
 | `selftest_p2` | 55,332 B, **10,204 free** | 55,356 B, **10,180 free** |
 | `selftest_p3` | 52,012 B, **13,524 free** | 52,020 B, **13,516 free** |
 
-The arm counts move with the boundaries -- 37 / 26 / 39 in this posture, from 49 / 22 / 31 -- and
-the coverage does not: the same arms run in the same order, each exactly once across the three
-parts. Witnessed on `microbit`, whose three QEMU gates report the same 102 names in the same
-sequence before and after, with the same skip and partial sets. Part 2 is the binding image now.
+The arm counts moved with the boundaries -- 37 / 26 / 39 at the re-split, from 49 / 22 / 31 -- and
+arms added since have moved them again, to 37 / 26 / 44. Read them off the configure line above,
+never from here. The coverage does not move: the same arms run in the same order, each exactly
+once across the three parts. Witnessed on `microbit`, whose three QEMU gates report the same names
+in the same sequence before and after, with the same skip and partial sets. Part 2 is the binding
+image.
 
 **THE BYTE COUNTS ARE TOOLCHAIN-DEPENDENT.** These are `arm-gnu-toolchain-15.3.rel1`; `ci.yml`
 pins `15.2.rel1`, which reads a few bytes higher on the same trees. Compare the SIGN, not the
